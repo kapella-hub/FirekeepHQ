@@ -9,7 +9,20 @@ celery>=5.4,<6
 httpx>=0.28,<1
 slowapi>=0.1.9,<1
 fastmcp>=3.1,<4
-cryptography>=42.0,<44
+# Fernet-only usage (vault/store.py, vault/config.py) -- no other cryptography
+# API surface in the tree. The <44 ceiling had no stated compatibility reason
+# in the commit that introduced it (added alongside the Fernet vault, in this
+# code's private history prior to the Firekeep seed); it was simply the
+# current major at the time. Verified clean against 49.0.0 (latest as of
+# 2026-07): full cortex suite 1188 passed/29 skipped, identical to the
+# 43.0.3 baseline; a manylinux2014 cp311 wheel exists (the shipped image is
+# python:3.11-slim), so no source/Rust-toolchain build risk. The client kit
+# (client/, symdex/) already ships cryptography 49.0.0 as a transitive
+# dependency today (see NOTICE) -- this pin was the outlier, not the leading
+# edge. Floor raised to 43.0 (the oldest version actually exercised here);
+# intermediate 44-48 versions were not individually tested, but Fernet's API
+# has been stable across all of them.
+cryptography>=43.0,<50
 markdownify>=1.2,<2
 
 # Dev / Test

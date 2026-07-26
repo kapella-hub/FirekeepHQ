@@ -44,7 +44,7 @@ Server (Cortex / Bridge / Relay / Sentinel)
     Licence: MIT
 * attrs 26.1.0
     Licence: MIT
-* Authlib 1.6.12 — https://github.com/authlib/authlib
+* Authlib 1.7.2 — https://github.com/authlib/authlib
     Licence: License :: OSI Approved :: BSD License
 * beartype 0.22.9
     Licence: License :: OSI Approved :: MIT License
@@ -72,8 +72,8 @@ Server (Cortex / Bridge / Relay / Sentinel)
     Licence: MIT
 * colorama 0.4.6 — https://github.com/tartley/colorama
     Licence: License :: OSI Approved :: BSD License
-* cryptography 43.0.3 — https://github.com/pyca/cryptography
-    Licence: License :: OSI Approved :: Apache Software License ; License :: OSI Approved :: BSD License
+* cryptography 49.0.0 — https://github.com/pyca/cryptography
+    Licence: Apache-2.0 OR BSD-3-Clause
 * cyclopts 4.22.2 — https://github.com/BrianPugh/cyclopts
     Licence: Apache-2.0
 * Deprecated 1.3.1 — https://github.com/laurent-laporte-pro/deprecated
@@ -126,7 +126,7 @@ Server (Cortex / Bridge / Relay / Sentinel)
     Licence: MIT
 * jaraco.functools 4.6.0 — https://github.com/jaraco/jaraco.functools
     Licence: MIT
-* joserfc 1.5.0 — https://github.com/authlib/joserfc
+* joserfc 1.7.4 — https://github.com/authlib/joserfc
     Licence: License :: OSI Approved :: BSD License
 * jsonref 1.1.0 — https://github.com/gazpachoking/jsonref
     Licence: MIT
@@ -958,7 +958,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
---- Authlib 1.6.12 ---
+--- Authlib 1.7.2 ---
 
 BSD 3-Clause License
 
@@ -1605,7 +1605,7 @@ CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
---- cryptography 43.0.3 ---
+--- cryptography 49.0.0 ---
 
 This software is made available under the terms of *either* of the licenses
 found in LICENSE.APACHE or LICENSE.BSD. Contributions to cryptography are made
@@ -3517,7 +3517,7 @@ EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
 IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
 USE OR OTHER DEALINGS IN THE SOFTWARE.
 
---- joserfc 1.5.0 ---
+--- joserfc 1.7.4 ---
 
 BSD 3-Clause License
 
