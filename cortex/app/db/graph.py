@@ -6,6 +6,7 @@ and graph traversal queries for the RAG engine.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import re
@@ -83,19 +84,63 @@ class Neo4jClient:
         self._driver: neo4j.AsyncDriver | None = None
 
     async def connect(self) -> None:
-        """Create the async Neo4j driver."""
-        try:
-            self._driver = AsyncGraphDatabase.driver(
-                self._uri,
-                auth=(self._user, self._password),
-                max_connection_pool_size=self._settings.NEO4J_POOL_SIZE,
-            )
-            await self._driver.verify_connectivity()
-            logger.info("Connected to Neo4j at %s", self._uri)
-        except Exception as exc:
-            raise GraphConnectionError(
-                f"Failed to connect to Neo4j at {self._uri}: {exc}"
-            ) from exc
+        """Create the async Neo4j driver, retrying while the server comes up.
+
+        This is called unconditionally from the FastAPI lifespan, so raising
+        here aborts startup and exits the container. On 2026-07-26 that happened
+        in production: during a rolling restart cortex-api came up before Neo4j
+        had DNS, the first attempt raised "Cannot resolve address neo4j:7687",
+        and the API stayed down until a human intervened. One transient blip,
+        permanent outage.
+
+        Bounded retry with exponential backoff fixes that in both directions —
+        it rides out a dependency that is merely slow, and it still fails loudly
+        against one that is genuinely misconfigured rather than hanging a deploy.
+        Set NEO4J_CONNECT_ATTEMPTS=1 to restore the old single-shot behaviour.
+        """
+        attempts = max(1, int(getattr(self._settings, "NEO4J_CONNECT_ATTEMPTS", 1)))
+        backoff = float(getattr(self._settings, "NEO4J_CONNECT_BACKOFF_SECONDS", 0.0))
+        last_exc: Exception | None = None
+
+        for attempt in range(1, attempts + 1):
+            driver = None
+            try:
+                driver = AsyncGraphDatabase.driver(
+                    self._uri,
+                    auth=(self._user, self._password),
+                    max_connection_pool_size=self._settings.NEO4J_POOL_SIZE,
+                )
+                await driver.verify_connectivity()
+            except Exception as exc:  # noqa: BLE001 — any failure is retryable here
+                last_exc = exc
+                # Never keep a driver whose connectivity check failed: leaving it
+                # on self._driver would hand later calls a half-open handle.
+                if driver is not None:
+                    try:
+                        await driver.close()
+                    except Exception:  # noqa: BLE001 — closing a dead driver is best-effort
+                        pass
+                if attempt < attempts:
+                    delay = backoff * (2 ** (attempt - 1))
+                    logger.warning(
+                        "Neo4j connect attempt %d/%d failed (%s); retrying in %.2fs",
+                        attempt, attempts, exc, delay,
+                    )
+                    await asyncio.sleep(delay)
+                continue
+
+            self._driver = driver
+            if attempt > 1:
+                logger.info(
+                    "Connected to Neo4j at %s after %d attempts", self._uri, attempt
+                )
+            else:
+                logger.info("Connected to Neo4j at %s", self._uri)
+            return
+
+        raise GraphConnectionError(
+            f"Failed to connect to Neo4j at {self._uri} after {attempts} attempt(s): {last_exc}"
+        ) from last_exc
 
     async def close(self) -> None:
         """Close the Neo4j driver."""

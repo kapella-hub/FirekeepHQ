@@ -16,6 +16,12 @@ class Settings(BaseSettings):
     NEO4J_USER: str = "neo4j"
     NEO4J_PASSWORD: str = ""  # Must be set via environment / .env
     NEO4J_POOL_SIZE: int = 50
+    # Bounded retry for the lifespan connect. Cortex aborts startup if the graph
+    # is unreachable, so a dependency that is merely slow to come up used to take
+    # the API down permanently (observed in production 2026-07-26 during a
+    # rolling restart). Set attempts to 1 to restore single-shot behaviour.
+    NEO4J_CONNECT_ATTEMPTS: int = 6
+    NEO4J_CONNECT_BACKOFF_SECONDS: float = 1.0
 
     # Qdrant
     QDRANT_HOST: str = "localhost"
