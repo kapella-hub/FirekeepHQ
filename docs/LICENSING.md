@@ -71,3 +71,28 @@ reserved" — meaning a purchaser would have had no legal right to run the
 software. That is fixed for now by the root `LICENSE`, but the fix is a
 placeholder. This file exists so the placeholder is not mistaken for a decision,
 and so the sequence above is not rediscovered later under time pressure.
+
+---
+
+## Name status: pre-filtered, NOT cleared
+
+"Firekeep" has passed a registry/domain/live-product pre-filter. **USPTO classes
+9 and 42 and EUIPO searches remain outstanding, and they gate the rename.** A
+pre-filter is not clearance and must never be recorded as one — the repository
+now carries the name in ~350 files, so a refusal is expensive and the reserve
+candidate (`Remanence`) exists precisely so a refusal does not restart the
+search from zero.
+
+Mark owner: **Omnicron, LLC**.
+
+## Pending: service-name collapse (Stage 2)
+
+The seed renamed components to `FirekeepCortex` / `FirekeepBridge` /
+`FirekeepRelay`. The decided end state is a collapse to **`firekeep-memory`**,
+**`firekeep-sessions`** and **`firekeep-coord`** — "Cortex" has its own
+collision with cortex.io.
+
+This was deliberately not done in the seed: renaming the `cortex/` directory
+moves every import path in the tree, and that cost belongs in the Stage 2
+estimate alongside the Neo4j decoupling rather than being smuggled into a
+mechanical find-and-replace.
