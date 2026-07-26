@@ -1,76 +1,89 @@
-# Licensing — current state and the open decision
+# Licensing — current state and remaining work
 
 _Last updated 2026-07-26._
 
+**This file and the `LICENSE` it describes were written by an engineer, not a
+lawyer. Have a lawyer review the licence text before the first paid sale** —
+nothing here should be treated as vetted legal advice, particularly the
+liability cap, the expiry/degrade term, and the trademark notice.
+
 ## Where things stand
 
-`LICENSE` at the repository root is **proprietary, all rights reserved**. That is
-correct for today — the repo is private and nothing has been distributed — and it
-is **not** the licence a customer will ever receive. It grants nothing, which is
-the right posture with no customers and the wrong one the instant there is one.
+`LICENSE` at the repository root is now the real licence, not a placeholder.
+**Decided model: free core, not open source.** A single-user tier is gratis
+and closed source (no redistribution, no derivative works, no source
+disclosure); team features are unlocked by a licence key under a separate
+commercial agreement. This is **not** open-core — there is no permissively
+licensed component, no source split, and nothing about the free tier implies
+a right to the source.
 
-## The open decision: open-core
-
-**Recommended, not yet decided.** Two models are on the table.
-
-| | Fully proprietary | Open-core (recommended) |
+| | Free tier | Team tier |
 |---|---|---|
-| Client kit, single-user core | Commercial licence | Permissive (Apache-2.0 / MIT) |
-| Team features (relay coordination, team memory attribution, replay/evals dashboard) | Commercial licence | Commercial, licence-key gated |
-| Distribution | Direct sales only | Free tier is the funnel |
-| Enforcement | Contract | **Server-side.** Client-side gating in self-hosted software is decoration — the customer runs the binary. |
+| Client kit, single-user core | Gratis, closed source | — |
+| Team features (relay coordination, team memory attribution, replay/evals dashboard) | Not included | Commercial, licence-key gated |
+| Distribution | Direct install, no fee | Sold under a separate commercial agreement |
+| Source | Never disclosed, either tier | Never disclosed, either tier |
+| Enforcement | Contract (licence terms) + licence-key gating server-side for Team Features | Same |
 
-The case for open-core is distribution. A closed self-hosted product sold to
-small teams has no discovery mechanism without either an open-source funnel or a
-marketing budget. The client kit is the natural free half: it is differentiated
-plumbing rather than the moat, so giving it away costs little and reaches people.
-
-**What decides it:** whether the free tier is genuinely good enough to attract
-users without cannibalising the paid one. That is a product judgement, not a
-legal one, and it is the author's to make.
+Pricing, seat counts, and trial duration are deliberately **not** decided and
+are not in the licence — they are referred to "the applicable commercial
+agreement" wherever they would otherwise appear.
 
 ## What must happen before anything is distributed
 
-These are ordered. Nothing below is done.
-
-1. **Pick the model.** Everything else depends on it.
-2. **Write the real licence.** If open-core: a permissive licence file for the
-   free components plus a separate commercial agreement for team features. If
-   proprietary: an EULA covering grant scope, deployment count, term, support,
-   warranty disclaimer, liability cap and third-party flow-downs.
-3. **Licence lifecycle policy.** Settle these before the enforcement mechanism is
-   designed, because the mechanism encodes them:
-   - **Expiry: degrade, do not brick.** Block writes and new-feature routes;
-     keep recall, export and read paths working indefinitely. Bricking a
-     customer's accumulated memory is incompatible with a self-hosted,
-     data-sovereignty pitch. This should be a term in the licence, not an
-     implementation detail someone can change later.
-   - **Exit:** the customer's memory, skills and traces are theirs, with a
-     documented export that works after expiry.
-   - **Vendor continuity:** what happens if a single-maintainer vendor stops.
-     Source escrow or a perpetuity clause. Buyers of solo-maintained software
-     ask this, and it is cheap to answer well.
-   - **Trial:** what an evaluation licence permits, and for how long.
-4. **Package metadata.** Add `license` and `license-files` to
-   `client/pyproject.toml` and `symdex/pyproject.toml`. Both currently declare
-   neither. Do this before any wheel is published anywhere.
-5. **Third-party attribution.** Produce a `NOTICE` covering bundled dependencies.
-   `scripts/check_licenses.py` already gates against GPL/AGPL/SSPL/BSL in CI
-   across cortex, client and symdex; attribution is the separate obligation that
-   permissive licences still impose.
-6. **Datastore licences.** Firekeep ships a compose file that pulls Neo4j, Redis,
-   Qdrant and Ollama. Redistribution obligations differ by edition and version,
-   and by whether images are bundled or pulled at runtime by the customer.
-   Neo4j Community is GPLv3; Redis changed licence at 7.4. Re-check the pinned
-   versions against the chosen model before publishing anything.
+1. ~~**Pick the model.**~~ **Done.** Free core, not open source (above).
+2. ~~**Write the real licence.**~~ **Done.** `LICENSE` at the repo root covers:
+   free-tier grant (single user, one deployment, non-transferable, gratis,
+   closed source, no redistribution/derivative works), the paid team-tier
+   grant (Team Features licence-key gated, terms deferred to the commercial
+   agreement),
+   warranty disclaimer, a liability cap, third-party components governed by
+   their own terms, and the licence-lifecycle term below. **Needs a lawyer
+   read before first sale — see the note at the top of this file.**
+3. **Licence lifecycle policy.**
+   - ~~**Expiry: degrade, do not brick.**~~ **Done, as a licence term** (`LICENSE`
+     §3): on expiry, writes and Team Feature / new-feature routes may be
+     blocked; recall, export, and other read paths keep working indefinitely.
+   - ~~**Exit / data export guarantee.**~~ **Done, as a licence term**
+     (`LICENSE` §3): export works at all times, including after expiry or
+     termination, and survives termination of the licence.
+   - **Vendor continuity** (source escrow / perpetuity clause if the
+     single-maintainer vendor stops) — **not yet decided**, not in `LICENSE`.
+     Still open.
+   - **Trial** (what an evaluation licence permits, and for how long) —
+     **deliberately undecided**, not in `LICENSE`; left to the commercial
+     agreement so no number gets invented here.
+4. ~~**Package metadata.**~~ **Done.** `client/pyproject.toml` and
+   `symdex/pyproject.toml` now declare `license = "LicenseRef-Firekeep-Proprietary"`
+   and `license-files = ["LICENSE"]` (each package carries its own copy of the
+   root `LICENSE` — PEP 639 `license-files` globs cannot point outside the
+   project directory, so `client/LICENSE` and `symdex/LICENSE` are copies of
+   the root file, not the source of truth; keep them in sync if `LICENSE`
+   changes). `client`'s build-system now requires `setuptools>=77` and
+   `symdex`'s requires `hatchling>=1.27` — both are the minimum versions that
+   understand the PEP 639 `license`/`license-files` fields; verified by
+   building both wheels and confirming `License-Expression`/`License-File`
+   land correctly in `METADATA`.
+5. **Third-party attribution.** Produce a `NOTICE` covering bundled
+   dependencies. `scripts/check_licenses.py` already gates against
+   GPL/AGPL/SSPL/BSL in CI across cortex, client and symdex; attribution is
+   the separate obligation that permissive licences still impose. Not done.
+6. **Datastore licences.** Firekeep ships a compose file that pulls Neo4j,
+   Redis, Qdrant and Ollama. Redistribution obligations differ by edition and
+   version, and by whether images are bundled or pulled at runtime by the
+   customer. Neo4j Community is GPLv3; Redis changed licence at 7.4. Re-check
+   the pinned versions against the free/team-tier model before publishing
+   anything. Not done.
 
 ## Why this file exists
 
-A readiness audit found no `LICENSE` anywhere and a README that said "all rights
-reserved" — meaning a purchaser would have had no legal right to run the
-software. That is fixed for now by the root `LICENSE`, but the fix is a
-placeholder. This file exists so the placeholder is not mistaken for a decision,
-and so the sequence above is not rediscovered later under time pressure.
+A readiness audit found no `LICENSE` anywhere and a README that said "all
+rights reserved" — meaning a purchaser would have had no legal right to run
+the software. The root `LICENSE` now grants real rights under the decided
+free-core model. This file exists so the remaining open items (vendor
+continuity, trial terms, third-party attribution, datastore licences) are not
+lost, and so the licence text is not treated as final without the lawyer
+review noted at the top.
 
 ---
 

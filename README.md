@@ -226,4 +226,7 @@ This is currently a private repository. If you are interested in early access or
 
 ## License
 
-All rights reserved.
+Firekeep is free-core software, not open source: a gratis, closed-source
+single-user tier plus paid team features under a separate commercial
+agreement. See `LICENSE` for the full grant and `docs/LICENSING.md` for
+status.
