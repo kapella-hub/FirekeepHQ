@@ -1,7 +1,14 @@
 # Sentinel removal — consumer survey
 
-**Status:** survey only. No removal work has been done. This exists so the decision
-is made against measurements rather than an estimate.
+**Status: SETTLED 2026-07-26 — Sentinel is KEPT.** The owner ratified the survey's
+recommendation. Removal is off the roadmap; this document is now the record of why,
+not a proposal. Do not re-open it without new evidence — the facts below were
+measured, not estimated, and the cost of re-deriving them is a re-read.
+
+This is the second of the commercialization design's two proposed removals to be
+reversed on survey (Neo4j was the first, at 107 h against an assumed 25–40 h). Two for
+two is a signal about the design's removal estimates generally, not about these two
+components.
 
 **Why this document exists.** The commercialization design listed Neo4j and Sentinel
 as its two expensive removals and had verified neither. Neo4j was assumed to be
