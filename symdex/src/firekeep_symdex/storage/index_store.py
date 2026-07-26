@@ -17,6 +17,26 @@ from ..parser.symbols import Symbol
 # Bump this when the index schema changes in an incompatible way.
 INDEX_VERSION = 2
 
+try:
+    import fcntl
+
+    def _lock_file_exclusive(fd) -> None:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+
+    def _unlock_file(fd) -> None:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+
+except ImportError:  # Windows has no fcntl; fall back to msvcrt region locking.
+    import msvcrt
+
+    def _lock_file_exclusive(fd) -> None:
+        fd.seek(0)
+        msvcrt.locking(fd.fileno(), msvcrt.LK_LOCK, 1)
+
+    def _unlock_file(fd) -> None:
+        fd.seek(0)
+        msvcrt.locking(fd.fileno(), msvcrt.LK_UNLCK, 1)
+
 
 def _file_hash(content: str) -> str:
     """SHA-256 hash of file content string."""
@@ -989,15 +1009,17 @@ class IndexStore:
         Only appends entries for symbols whose content_hash changed since the
         last recorded entry (or that are new to the history).
         """
-        import fcntl
-
         history_path = self._history_path(owner, name)
 
         # Use file locking around the read-modify-write cycle
         lock_path = history_path.with_suffix(".lock")
         lock_path.touch(exist_ok=True)
-        with open(lock_path, "r") as lock_fd:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        # msvcrt.locking() requires at least one byte to lock; an empty file
+        # (the common case right after touch()) fails with an OSError on Windows.
+        if lock_path.stat().st_size == 0:
+            lock_path.write_bytes(b"\0")
+        with open(lock_path, "r+b") as lock_fd:
+            _lock_file_exclusive(lock_fd)
             try:
                 # Load existing history
                 history: dict[str, list[dict]] = {}
@@ -1034,7 +1056,7 @@ class IndexStore:
                     json.dump(history, f, indent=2)
                 tmp_path.replace(history_path)
             finally:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                _unlock_file(lock_fd)
 
     def load_history(self, owner: str, name: str) -> dict[str, list[dict]]:
         """Load the symbol history file. Returns {symbol_id: [entries...]}."""
