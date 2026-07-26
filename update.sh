@@ -105,30 +105,47 @@ docker image prune -f
 echo ""
 echo "Verifying health..."
 
+# name:port:probe-path — kept identical in shape to install.sh's array so the
+# two health checks cannot drift apart again. tests/test_install_health_probe.py
+# parses both and fails if either stops agreeing with the compose port map.
 services=(
-    "Cortex API:8100"
-    "Cortex MCP:8080"
-    "FirekeepBridge:8070"
-    "FirekeepSentinel:8060"
-    "FirekeepRelay:8050"
+    "Cortex API:8100:/health"
+    "Cortex MCP:8080:/mcp"
+    "FirekeepBridge:8070:/health"
+    "FirekeepSentinel:8060:/health"
+    "FirekeepRelay:8050:/health"
     # FirekeepSymdex deliberately absent: the server-side symdex container was
     # removed (client-side stdio only) — checking :8090 fails every update.
-    "Dashboard:8040"
+    "Dashboard:8040:/"
 )
 
 FAILED=0
 
 for svc in "${services[@]}"; do
+    # Split by position — see the note in install.sh: `${svc##*:}` returns the
+    # probe path on a three-field entry, not the port.
     name="${svc%%:*}"
-    port="${svc##*:}"
+    rest="${svc#*:}"
+    port="${rest%%:*}"
+    probe="${rest#*:}"
     printf "  %-16s " "$name"
     for i in $(seq 1 30); do
-        if curl -sf --max-time 2 "http://localhost:${port}/" &>/dev/null || curl -sf --max-time 2 "http://localhost:${port}/health" &>/dev/null || bash -c "</dev/tcp/localhost/${port}" 2>/dev/null; then
-            echo "[OK]"
-            break
-        fi
+        # This used to fall back to `bash -c "</dev/tcp/localhost/$port"`,
+        # which any listening socket satisfies. A dashboard nginx that was up
+        # but 500ing on every request — the exact failure a missing or
+        # corrupted .htpasswd produces — reported [OK] and the update was
+        # declared successful. Read the status code instead, and accept only
+        # what install.sh accepts: 2xx, 401 (nginx enforcing basic auth) and
+        # 405 (cortex-mcp's /mcp route exists but does not allow GET).
+        code="$(curl -s -o /dev/null --max-time 2 -w '%{http_code}' "http://localhost:${port}${probe}" 2>/dev/null)" || code="000"
+        case "$code" in
+            2??|401|405)
+                echo "[OK]"
+                break
+                ;;
+        esac
         if [ "$i" -eq 30 ]; then
-            echo "[TIMEOUT]"
+            echo "[TIMEOUT] (last HTTP ${code} from http://localhost:${port}${probe})"
             FAILED=1
         fi
         sleep 2

@@ -48,6 +48,17 @@ jobs:
           - name: client
             install: pip install pytest
             test: cd client && python -m pytest tests -q
+          # Root tests/ — deploy scripts, provenance, backup/restore, the support
+          # bundle, and the install/update health-probe guard. NOTHING RAN THESE
+          # IN CI: the `licenses` and `forbidden-tokens` jobs each invoke one
+          # single FILE from this directory, which is what made the gap look
+          # covered. 123 tests over the install path, and the install path is
+          # where the defects have actually been. pytest + pyyaml only (the
+          # compose-provenance checks parse docker-compose.yml); bash comes with
+          # the runner and test_install_health_probe.py needs a real one.
+          - name: repo-scripts
+            install: pip install pytest pyyaml
+            test: pytest tests -q
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6

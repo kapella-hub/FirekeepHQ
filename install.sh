@@ -264,29 +264,39 @@ services=(
 
 FAILED=0
 for svc in "${services[@]}"; do
+    # Three colon-separated fields: name:port:probe-path. Split them by
+    # POSITION. `${svc##*:}` strips the LONGEST `*:` prefix, so on a
+    # three-field entry it returns the PROBE PATH, not the port -- which built
+    # the URL `http://localhost:/health/`, made curl fail with 000 for every
+    # service, and exited this script 1 on every clean install. `%%:*` happens
+    # to be correct for the name only because the name is field 1.
     name="${svc%%:*}"
-    port="${svc##*:}"
+    rest="${svc#*:}"            # "8100:/health"
+    port="${rest%%:*}"          # "8100"
+    probe="${rest#*:}"          # "/health"
     printf "  %-16s " "$name"
     for i in $(seq 1 30); do
-        # A 401 means nginx (Dashboard) is up and correctly enforcing basic
-        # auth on every path -- that's evidence of health, not failure. A
-        # plain `curl -sf` treats any >=400 as failure, so once
-        # dashboard/.htpasswd exists this loop would otherwise time out on
-        # the Dashboard service forever. Read the status code instead.
-        code_root="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:${port}/" 2>/dev/null)" || code_root="000"
-        code_health="$code_root"
-        case "$code_root" in
-            2??|401) ;;
-            *) code_health="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:${port}/health" 2>/dev/null)" || code_health="000" ;;
-        esac
-        case "$code_health" in
-            2??|401)
+        # Probe the path this service actually serves, and accept three codes:
+        #   2xx  healthy.
+        #   401  nginx (Dashboard) is up and enforcing basic auth on every
+        #        path. Evidence of health, not failure -- a plain `curl -sf`
+        #        treats it as an error and would time out here forever once
+        #        dashboard/.htpasswd exists.
+        #   405  the route exists but GET is not allowed. This is what
+        #        cortex-mcp returns for GET /mcp: it mounts no /health at all,
+        #        so a /health probe 404s forever. Method-not-allowed is proof
+        #        the route is mounted and serving.
+        # A dead service gives 000 (connection refused) and a broken one 5xx,
+        # so none of the three accepted codes can mask a real failure.
+        code="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:${port}${probe}" 2>/dev/null)" || code="000"
+        case "$code" in
+            2??|401|405)
                 echo "[OK]"
                 break
                 ;;
         esac
         if [ "$i" -eq 30 ]; then
-            echo "[TIMEOUT]"
+            echo "[TIMEOUT] (last HTTP ${code} from http://localhost:${port}${probe})"
             FAILED=1
         fi
         sleep 2
