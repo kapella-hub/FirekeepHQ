@@ -436,4 +436,15 @@ uv run pytest
 
 ## License
 
-MIT
+Proprietary — see [`LICENSE`](../LICENSE). Not open source.
+
+`firekeep-symdex` is a component of Firekeep and is covered by the same licence as the
+rest of the product; it is not separately licensed. This section previously read `MIT`,
+inherited from the standalone tool this package grew out of. Because `pyproject.toml`
+sets `readme = "README.md"`, that line was the wheel's long description, so the built
+`firekeep-symdex` METADATA carried both `License-Expression:
+LicenseRef-Firekeep-Proprietary` and a contradictory `MIT` — on every developer machine,
+since the bootstrap always installs this package.
+
+Third-party dependency licences (including the tree-sitter grammar bundle) are
+reproduced in [`NOTICE`](./NOTICE).

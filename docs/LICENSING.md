@@ -29,6 +29,33 @@ Pricing, seat counts, and trial duration are deliberately **not** decided and
 are not in the licence — they are referred to "the applicable commercial
 agreement" wherever they would otherwise appear.
 
+### Every place a licence gets stated
+
+A wheel carries **two** licence statements and they are set in different files.
+`pyproject.toml`'s `license` field becomes `License-Expression` in the built
+METADATA; the file named by `readme` becomes the long description **in that same
+METADATA**. Correcting one and not the other ships a self-contradicting artifact.
+
+That is not hypothetical: `symdex/pyproject.toml` was corrected to
+`LicenseRef-Firekeep-Proprietary` while `symdex/README.md` still said `MIT`, so
+every `firekeep-symdex` wheel — installed unconditionally by the bootstrap on
+every developer machine — asserted both. Fixed 2026-07-26 and now guarded by
+`tests/test_package_licence_consistency.py`, which fails if a packaged README's
+License section opens with an OSI identifier.
+
+| Surface | Where | Guarded by |
+|---|---|---|
+| Wheel `License-Expression` | `client/pyproject.toml`, `symdex/pyproject.toml` → `license` | `test_pyproject_declares_the_proprietary_licence` |
+| Wheel long description | the file each `readme` field names | `test_readme_licence_section_does_not_contradict_metadata` |
+| Bundled licence text | `license-files = ["LICENSE", "NOTICE"]` | `test_root_licence_file_is_not_an_osi_licence` |
+| Third-party notices | `NOTICE`, `client/NOTICE`, `symdex/NOTICE` (identical) | `scripts/generate_notice.py` + the CI licences job |
+| Datastore obligations | `docs/THIRD-PARTY-DATASTORES.md` | prose; reviewed by hand |
+
+Known gap, not a contradiction: `client/pyproject.toml` declares no `readme` at
+all, so the `firekeep-client` wheel ships with no long description and therefore
+no human-readable licence statement in its metadata. Worth filling, but it states
+nothing false today.
+
 ## What must happen before anything is distributed
 
 1. ~~**Pick the model.**~~ **Done.** Free core, not open source (above).
