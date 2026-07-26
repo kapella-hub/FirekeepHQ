@@ -11,31 +11,62 @@ check on Sentinel *before* sizing the work, not during it. This is that check.
 
 ## Verdict up front
 
-Sentinel is a **leaf**. Nothing computes a result from it; every consumer displays it.
-That is the opposite of Neo4j's shape, and it is why the two removals are not
-comparable despite sitting in the same row of the same plan.
+**Defer. Do not remove Sentinel.** Not because it is expensive — it is cheap, ~10–16 h
+against Neo4j's 107 h — but because nothing is bought. Sentinel is a leaf: nothing
+computes a result from it, every consumer displays it, and it is coupled to no write
+path. That is the opposite of Neo4j's shape, and it is also the reason the removal can
+be done later at the same price. Leaf components do not accrete coupling while you
+wait.
 
-Cost is **~10–16 h**, with **two product decisions**, not twenty.
+Two facts push it past "cheap either way" and into "leave it":
+
+- It is **documented to customers as a product feature** (§Area 5). Removal is a
+  contract break, not a display deletion.
+- Its removal buys a smaller surface and one container. It does not make the product
+  faster, more correct, more durable, or shippable sooner.
+
+The rest of this document is the measurement, including the one place where a stack
+*does* depend on Sentinel and my first pass got it wrong.
 
 ## Area 1 — Boot path
 
 Neo4j's reversal turned on this: `MULTIHOP_ENABLED` gated *traversal*, while the
 lifespan connected unconditionally and raised, so Cortex could not boot without it.
 
-Sentinel has no such edge.
+Sentinel has one such edge, and my first pass missed it the same way the Neo4j
+estimate did — by inferring config semantics instead of reading them.
 
 | Check | Result |
 |---|---|
-| Any service with `depends_on: sentinel` | `dashboard` only — and only for start ordering |
 | `cortex-api` / `cortex-mcp` dependency | None. They hold `SENTINEL_URL` and call it over HTTP |
 | Sentinel's own dependencies | `redis` only |
-| Failure containment | `environment_section()` catches per section; a dead Sentinel yields `status: unavailable` and `degraded: true`, and `GET /briefing` still returns **200** |
+| Briefing failure containment | `environment_section()` catches per section; a dead Sentinel yields `status: unavailable` and `degraded: true`, and `GET /briefing` still returns **200** (verified: `test_environment_unavailable_on_health_failure`) |
+| nginx upstream | **Safe.** `set $upstream_sentinel http://sentinel:8060;` + `proxy_pass $upstream_sentinel;` with `resolver 127.0.0.11 valid=10s` — the variable form defers DNS to request time, so the dashboard container still starts when the name does not resolve |
+| `depends_on` | **Not safe.** `dashboard` declares `sentinel: {condition: service_healthy}` |
 
-There is no `SENTINEL_ENABLED` flag — but unlike Neo4j, the absence of a flag does
-not imply a hard dependency here, because the call path is an outbound HTTP fan-in
-already written to tolerate failure. **Stopping the container is a supported state
-today.** That is the single most important difference from Neo4j and it is directly
-verifiable: `docker compose stop sentinel` and the stack keeps serving.
+**The correction.** An earlier draft of this document claimed "stopping the container
+is a supported state today." That is half true and the half that is false is the half
+that matters:
+
+- **Runtime stop is tolerated.** `depends_on` governs start ordering only, so
+  `docker compose stop sentinel` on a running stack leaves the dashboard up and the
+  briefing degrading gracefully. This part holds.
+- **Cold start is not.** `docker compose up` blocks the dashboard until Sentinel
+  reports healthy. Sentinel's healthcheck is TCP-only
+  (`echo > /dev/tcp/localhost/8060`), so it passes as soon as the port is listening —
+  but a Sentinel that cannot start at all takes the dashboard with it.
+
+I produced the wrong answer first because I parsed `depends_on` with
+`list(dep) if isinstance(dep, dict) else dep`, which prints the service names and
+silently discards the `condition:` under each one. The names looked like a plain list,
+so I read it as plain start ordering. This is the same error class as reading
+`MULTIHOP_ENABLED` as proof Neo4j was optional: **a config whose semantics were
+inferred from shape rather than read.** Recording it here because the lesson is the
+document's whole purpose.
+
+Removal would therefore also delete a real (if minor) startup coupling — a point in
+favour of removal, not against it. It does not change the verdict, because the
+coupling costs nothing while Sentinel works.
 
 ## Area 2 — Consumer surface
 
@@ -43,7 +74,7 @@ verifiable: `docker compose stop sentinel` and the stack keeps serving.
 
 | Consumer | Sites | Nature |
 |---|---|---|
-| `sentinel/` itself | ~1,324 LOC (854 app / 470 test) | Deleted wholesale |
+| `sentinel/` itself | 1,324 LOC (**787 app / 537 test**) | Deleted wholesale |
 | `dashboard/index.html` | 5 call sites + ~14 CSS rules | One tab, one health bar, two overview widgets |
 | `cortex/app/briefing/sections.py` | 2 | The `environment` section |
 | `cortex/tests/test_briefing_*` | 9 | Tests of that section |
@@ -85,7 +116,35 @@ touched, nothing becomes less durable.
 The git collector's best-effort POST to `SYMDEX_URL` is already dead (there is no
 server-side symdex) and costs nothing.
 
-## The two product decisions
+## Area 5 — Sentinel is a documented product surface
+
+This is the finding that turns the verdict from "cheap either way" into "leave it,"
+and I had it filed under "nothing" until it was challenged.
+
+`docs/INTEGRATIONS.md` publishes Sentinel to customers as one of four registerable
+MCP endpoints:
+
+| Service | URL |
+|---|---|
+| FirekeepSentinel | `http://<VPS_IP>:8060/mcp` |
+
+…and names it explicitly in the product ladder: *"Full platform experience: add
+Sentinel for environment awareness."* The client kit reinforces it — `firekeep install`
+renders a `firekeep-sentinel` MCP server into every runtime's native config, and the
+global agent instructions tell agents to call `sentinel_push_event` to record
+observations.
+
+So the inbound side is not empty. `sentinel_push_event` is an **instructed agent
+behaviour**, not just a display feed, and any customer following the published
+integration guide has Sentinel wired into their agents' configured toolset. Removing
+it breaks a documented contract and silently drops a tool that instructions still tell
+agents to call.
+
+That is fixable — docs get edited, adapters get re-rendered — but it converts the
+work from "delete a leaf" to "deprecate a published surface," which carries a notice
+period rather than a commit.
+
+## The two product decisions (for whenever this is revisited)
 
 1. **Does a memory product ship infrastructure monitoring at all?** Every customer
    who would run this already runs something that does container and git observability
@@ -94,16 +153,27 @@ server-side symdex) and costs nothing.
    piece with no equivalent elsewhere. It could move to a ~40-line webhook receiver on
    Cortex, or be dropped.
 
-## Recommendation
+## Recommendation: defer
 
-Remove it, and keep the alert path only if decision 2 says so. But note the honest
-counter-argument, since the Neo4j reversal came from ignoring one: at 1,324 LOC with
-a green test suite and zero coupling to the write path, Sentinel is **cheap to keep**.
-Its removal buys a smaller surface and one less container, not a faster or more
-correct product. If the goal is shipping sooner, deleting a working, isolated,
-already-tested component is not on the critical path — and unlike Neo4j, it can be
-removed later at the same cost, because leaf components do not accrete coupling.
+The measurements point one way and the earlier draft of this section pointed the
+other. It recommended removal and then spent a paragraph arguing removal buys nothing
+— an equivocal verdict in a document whose entire purpose is to prevent a second
+Neo4j-shaped misjudgment. Resolved in favour of the evidence:
 
-**The measurement that would decide it:** nothing here needs one. Neo4j's open
-question was empirical (does the graph beat pure vector on recall?) and remains
-unanswered. Sentinel's is a product-scope question with the facts already in hand.
+- 1,324 LOC, green suite, zero write-path coupling → **cheap to keep**.
+- No eval, pattern, or memory path reads it → **removal changes no output**.
+- Leaf shape → **removable later at the same price**. Nothing is lost by waiting.
+- Published to customers as a supported endpoint → **removal costs a deprecation**,
+  which is strictly more than removing it costs today in benefit.
+
+Deleting a working, isolated, already-tested, already-documented component is not on
+the path to a sellable product. It shrinks a diagram.
+
+**Scope note.** Sentinel's existence is not a defect found in the codebase — it is a
+scope preference from a design document, and one whose companion proposal (Neo4j) has
+already been reversed on survey. Treat removal as a product decision awaiting an
+explicit call, not as outstanding work.
+
+**Nothing here needs a further measurement.** Neo4j's open question was empirical
+(does the graph leg beat pure vector on recall?) and is still unanswered. Sentinel's
+is a product-scope question, and the facts are now all in hand.
