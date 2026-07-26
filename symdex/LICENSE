@@ -105,7 +105,8 @@ The Software incorporates and depends upon third-party software distributed
 under its own terms. Those terms are unaffected by this licence and continue
 to govern the components they cover, independent of the tier under which you
 use the Software. Third-party attribution is maintained separately; see
-docs/LICENSING.md for the current state of that work.
+NOTICE for the bundled dependency list and docs/LICENSING.md for the
+current state of that work.
 
 5. NO WARRANTY
 ---------------
