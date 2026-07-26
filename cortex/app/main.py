@@ -727,12 +727,40 @@ from auth.config import get_auth_settings as _get_auth_settings
 
 app.add_middleware(RequestBodySizeLimitMiddleware)
 
+# Auth skip list, split into prefix vs. exact matches (auth/asgi.py:
+# skip_paths does path.startswith(prefix); skip_exact_paths matches the
+# literal path only). "/dashboard" MUST be exact, not prefix: a bare
+# "/dashboard" prefix exempts everything under it, including
+# GET /dashboard/api/memories — which returned real memory content to any
+# unauthenticated caller (verified against a running instance 2026-07-26,
+# fixed here). The dashboard.py router serves exactly two shell paths for
+# the HTML page (GET /dashboard and GET /dashboard/, which FastAPI's
+# redirect_slashes sends /dashboard -> /dashboard/ 307); everything under
+# /dashboard/api/* is now auth-gated like every other REST route,
+# including the previously-key-free POST /dashboard/api/dlq/retry (see the
+# reversal note on that route in cortex/app/ops.py). A login-less HTML
+# shell with no secrets in it is fine; a login-less data/mutation API is
+# not. The nginx-fronted unified dashboard (dashboard/index.html, port
+# 8040) is unaffected: nginx already injects X-API-Key: DASHBOARD_API_KEY
+# on every /api/cortex/* proxy call (dashboard/nginx.conf.template), which
+# is how that SPA already reaches other auth-gated routes today (e.g.
+# /ops/dlq/retry-events, /patterns/, /evals/summary — none of those are on
+# any skip list). Cortex's OWN embedded SPA
+# (cortex/app/static/dashboard.html), served directly by this process with
+# no key of its own, loses its data tabs when AUTH_ENABLED=true — that is
+# the intended, not accidental, consequence of closing this hole.
+AUTH_SKIP_PREFIXES: tuple[str, ...] = (
+    "/health", "/version", "/docs", "/redoc", "/openapi.json",
+)
+AUTH_SKIP_EXACT_PATHS: tuple[str, ...] = ("/dashboard", "/dashboard/")
+
 _auth_settings = _get_auth_settings()
 app.add_middleware(
     FirekeepKeyAuthMiddleware,
     enabled=_auth_settings.ENABLED,
     redis_url=_auth_settings.REDIS_URL,
-    skip_paths=("/health", "/version", "/docs", "/redoc", "/openapi.json", "/dashboard"),
+    skip_paths=AUTH_SKIP_PREFIXES,
+    skip_exact_paths=AUTH_SKIP_EXACT_PATHS,
 )
 app.add_middleware(RequestIDMiddleware)
 

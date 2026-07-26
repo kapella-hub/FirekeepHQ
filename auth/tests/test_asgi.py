@@ -33,6 +33,9 @@ def _make_app(**mw_kwargs) -> Starlette:
             Route("/protected", _echo_identity),
             Route("/health", _echo_identity),
             Route("/.well-known/agent.json", _echo_identity),
+            Route("/dashboard", _echo_identity),
+            Route("/dashboard/", _echo_identity),
+            Route("/dashboard/api/memories", _echo_identity),
         ],
         middleware=[Middleware(FirekeepKeyAuthMiddleware, **mw_kwargs)],
     )
@@ -131,6 +134,25 @@ class TestEnabled:
         assert protected.status_code == 401
 
     @pytest.mark.asyncio
+    async def test_skip_exact_paths_bypass_but_nested_paths_stay_gated(self, redis):
+        """skip_exact_paths matches ONLY the literal path — unlike skip_paths'
+        prefix match, "/dashboard" here must NOT exempt "/dashboard/api/x"."""
+        app = _make_app(
+            enabled=True,
+            redis_url="redis://unused/7",
+            redis_client=redis,
+            skip_paths=("/health",),
+            skip_exact_paths=("/dashboard", "/dashboard/"),
+        )
+        async with _client(app) as c:
+            shell = await c.get("/dashboard")
+            shell_slash = await c.get("/dashboard/")
+            nested = await c.get("/dashboard/api/memories")
+        assert shell.status_code == 200
+        assert shell_slash.status_code == 200
+        assert nested.status_code == 401
+
+    @pytest.mark.asyncio
     async def test_redis_down_fails_closed_503(self):
         """Reliability Principle: enabled + store down => 503, never fall open."""
         app = _make_app(
@@ -171,4 +193,13 @@ class TestBuildAuthMiddleware:
             "enabled": True,
             "redis_url": "redis://redis:6379/7",
             "skip_paths": ("/health", "/.well-known/agent.json"),
+            "skip_exact_paths": (),
         }
+
+    def test_enabled_passes_through_skip_exact_paths(self):
+        mws = build_auth_middleware(
+            AuthSettings(ENABLED=True, REDIS_URL="redis://redis:6379/7"),
+            skip_paths=("/health",),
+            skip_exact_paths=("/dashboard", "/dashboard/"),
+        )
+        assert mws[0].kwargs["skip_exact_paths"] == ("/dashboard", "/dashboard/")

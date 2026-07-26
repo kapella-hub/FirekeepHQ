@@ -27,6 +27,7 @@ from auth.keys import validate_key
 logger = logging.getLogger(__name__)
 
 DEFAULT_SKIP_PATHS: tuple[str, ...] = ("/health",)
+DEFAULT_SKIP_EXACT_PATHS: tuple[str, ...] = ()
 
 
 class FirekeepKeyAuthMiddleware:
@@ -44,12 +45,19 @@ class FirekeepKeyAuthMiddleware:
         enabled: bool,
         redis_url: str,
         skip_paths: tuple[str, ...] = DEFAULT_SKIP_PATHS,
+        skip_exact_paths: tuple[str, ...] = DEFAULT_SKIP_EXACT_PATHS,
         redis_client=None,
     ) -> None:
         self.app = app
         self.enabled = enabled
         self.redis_url = redis_url
         self.skip_paths = tuple(skip_paths)
+        # Exact-match skip list: use this for a single path that must bypass
+        # auth WITHOUT exempting everything nested under it via prefix match
+        # (skip_paths does `path.startswith(prefix)` — a bare "/foo" prefix
+        # there silently exempts "/foo/api/secret-data" too). See Cortex's
+        # dashboard wiring in app/main.py for the motivating case.
+        self.skip_exact_paths = tuple(skip_exact_paths)
         # Test seam: pass a client explicitly; production lazily creates one.
         self._redis = redis_client
 
@@ -66,6 +74,9 @@ class FirekeepKeyAuthMiddleware:
             return
 
         path = scope.get("path", "")
+        if path in self.skip_exact_paths:
+            await self.app(scope, receive, send)
+            return
         if any(path.startswith(prefix) for prefix in self.skip_paths):
             await self.app(scope, receive, send)
             return
@@ -113,7 +124,9 @@ class FirekeepKeyAuthMiddleware:
 
 
 def build_auth_middleware(
-    settings, skip_paths: tuple[str, ...] = DEFAULT_SKIP_PATHS
+    settings,
+    skip_paths: tuple[str, ...] = DEFAULT_SKIP_PATHS,
+    skip_exact_paths: tuple[str, ...] = DEFAULT_SKIP_EXACT_PATHS,
 ) -> list[Middleware]:
     """Middleware list for mcp.run(...) / Starlette from AuthSettings.
 
@@ -128,6 +141,7 @@ def build_auth_middleware(
             enabled=True,
             redis_url=settings.REDIS_URL,
             skip_paths=tuple(skip_paths),
+            skip_exact_paths=tuple(skip_exact_paths),
         )
     ]
 

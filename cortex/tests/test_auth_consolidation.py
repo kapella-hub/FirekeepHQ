@@ -186,9 +186,25 @@ class TestMainWiring:
             m for m in main_mod.app.user_middleware
             if m.cls.__name__ == "FirekeepKeyAuthMiddleware"
         )
+        # Hardcoded literal (not imported from app.main) so this test actually
+        # pins production wiring instead of trivially agreeing with itself.
         assert mw.kwargs["skip_paths"] == (
-            "/health", "/version", "/docs", "/redoc", "/openapi.json", "/dashboard",
+            "/health", "/version", "/docs", "/redoc", "/openapi.json",
         )
+
+    def test_dashboard_is_exact_skip_not_prefix(self):
+        """Regression guard for the unauthenticated-dashboard hole
+        (2026-07-26): /dashboard must be an EXACT skip, never a prefix —
+        a prefix match would silently exempt /dashboard/api/memories,
+        which returned real memory content to any unauthenticated caller."""
+        import app.main as main_mod
+
+        mw = next(
+            m for m in main_mod.app.user_middleware
+            if m.cls.__name__ == "FirekeepKeyAuthMiddleware"
+        )
+        assert mw.kwargs["skip_exact_paths"] == ("/dashboard", "/dashboard/")
+        assert "/dashboard" not in mw.kwargs["skip_paths"]
 
     def test_cors_is_outermost_of_auth(self):
         """user_middleware[0] is outermost (Starlette wraps in reverse of the

@@ -170,6 +170,16 @@ curl -s -o /dev/null -w '%{http_code}\n' https://<host>/mcp/symdex   # expect: 4
 curl -s -o /dev/null -w '%{http_code}\n' https://<host>/api/cortex/memory/stats                     # expect: 401
 curl -s -o /dev/null -w '%{http_code}\n' -H "X-API-Key: $KEY" https://<host>/api/cortex/memory/stats # expect: 200
 curl -s -o /dev/null -w '%{http_code}\n' https://<host>/api/cortex/health                            # expect: 200
+# 4b. dashboard: the public office front 404s /api/cortex/dashboard* at Caddy
+#     (see deploy/Caddyfile) before auth even runs, so that path proves the
+#     Caddy layer, not the auth layer. Probe the auth layer directly against
+#     cortex-api (run from the box, e.g. over SSH or the office compose
+#     override's 127.0.0.1:8100 rebind): the HTML shell stays keyless, its
+#     /api/* data routes do not.
+curl -s -o /dev/null -w '%{http_code}\n' https://<host>/api/cortex/dashboard/api/memories             # expect: 404 (Caddy, not auth)
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8100/dashboard/                              # expect: 200 (shell, keyless)
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8100/dashboard/api/memories                  # expect: 401 (keyless, gated)
+curl -s -o /dev/null -w '%{http_code}\n' -H "X-API-Key: $KEY" http://127.0.0.1:8100/dashboard/api/memories # expect: 200
 # 5. confused-deputy closed: non-admin key calling vault_retrieve through cortex-mcp
 #    -> in-band 403/permission error (NOT a decrypted secret)
 curl -s -X POST https://<host>/mcp/cortex -H "X-API-Key: $TEAM" \

@@ -49,24 +49,30 @@ https://{$FIREKEEP_OFFICE_HOST:firekeep.office}, https://localhost {
     # Cortex's EMBEDDED dashboard (mounted by cortex-api itself at
     # /dashboard — see cortex/app/dashboard.py) is a browser SPA that
     # cannot attach X-API-Key, so auth/asgi.py's FirekeepKeyAuthMiddleware
-    # skip_paths deliberately exempts the whole /dashboard prefix (breaking
-    # that would break the embedded dashboard's own fetch calls). That
-    # means every /dashboard/api/* route — including the destructive
-    # DELETE /dashboard/api/dlq/clear — is auth-exempt by design. Gating it
-    # at the auth layer is therefore NOT the fix; excluding it from this
-    # public office front IS. This handle matcher (/api/cortex/dashboard*)
+    # exempts only the literal shell paths GET /dashboard and /dashboard/
+    # (app/main.py's AUTH_SKIP_EXACT_PATHS — an EXACT match, not a prefix,
+    # as of 2026-07-26). Every /dashboard/api/* route — including the
+    # destructive DELETE /dashboard/api/dlq/clear — is now auth-gated at
+    # the middleware layer, closing the hole where GET /dashboard/api/memories
+    # returned real memory content to any unauthenticated caller. This
+    # Caddy block is therefore REDUNDANT defense-in-depth, not the sole
+    # fix it once was — keep it anyway: this office front is public, and a
+    # second layer that fails closed even if the auth wiring ever regresses
+    # is worth the two lines. This handle matcher (/api/cortex/dashboard*)
     # is more specific than the /api/cortex/* proxy below, and Caddy
     # auto-sorts `handle` blocks by matcher specificity regardless of file
     # order, so it always wins and short-circuits to 404 here — verified
     # via `caddy adapt` (see deploy/README or task history). The embedded
     # dashboard stays reachable for the owner via SSH/localhost on the
     # cortex-api port, which the office compose override
-    # (docker-compose.office.yml) rebinds to 127.0.0.1:8100. Do NOT remove
-    # this block to "simplify" routing — that reopens the key-free
-    # destructive-DLQ hole through the public front. The real unified
-    # dashboard (dashboard/ nginx SPA on :8040) is unaffected: it lives at
-    # a different path entirely and is never proxied through
-    # /api/cortex/*.
+    # (docker-compose.office.yml) rebinds to 127.0.0.1:8100 — and even
+    # there, its /api/* calls now need a valid X-API-Key. Do NOT remove
+    # this block to "simplify" routing — that drops the second layer
+    # through the public front. The real unified dashboard (dashboard/
+    # nginx SPA on :8040) is unaffected: it lives at a different path
+    # entirely and is never proxied through /api/cortex/*, and it already
+    # carries a valid key on every /api/cortex/* call via nginx's
+    # DASHBOARD_API_KEY injection (dashboard/nginx.conf.template).
     handle /api/cortex/dashboard* {
         respond 404
     }
