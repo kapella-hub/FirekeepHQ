@@ -443,11 +443,25 @@ case "$(cat "$SB/stderr.txt")" in
     *'AUTH DISABLED BY REQUEST'*) pass "--insecure-no-auth -> announced loudly on stderr" ;;
     *) fail "--insecure-no-auth -> announced loudly on stderr" ;;
 esac
-# The banner has to name what it exposes, or it is just noise.
-case "$(cat "$SB/stderr.txt")" in
-    *'/vault/secrets'*) pass "--insecure-no-auth -> names the exposed surfaces" ;;
-    *) fail "--insecure-no-auth -> names the exposed surfaces" ;;
+# The banner has to name what it exposes, or it is just noise -- and it has to
+# name the RIGHT things. This assertion used to require the string
+# "/vault/secrets", which was correct until audit blocker 7 was fixed and is now
+# exactly backwards: with auth off, cortex/app/main.py refuses to mount the vault
+# and auth routers, so /vault/* and /auth/* are the only surfaces that are
+# CLOSED (503). A warning that points at the two closed doors while /memory/*
+# and the whole MCP surface stand open misdirects the reader precisely when they
+# are paying attention.
+BANNER="$(cat "$SB/stderr.txt")"
+case "$BANNER" in
+    *'/memory/learn'*|*'/memory/recall'*) pass "--insecure-no-auth -> names surfaces that are actually open" ;;
+    *) fail "--insecure-no-auth -> names surfaces that are actually open" ;;
 esac
+# ...and must not present the unmounted admin surface as an exposure.
+if printf '%s' "$BANNER" | grep -qE '(reads your stored secrets|mints new API keys)'; then
+    fail "--insecure-no-auth -> does not describe /vault or /auth/keys as exposed"
+else
+    pass "--insecure-no-auth -> does not describe /vault or /auth/keys as exposed"
+fi
 # Nothing else in .env may be collateral damage.
 if grep -q '^BIND_ADDR=127.0.0.1$' "$SB/.env"; then
     pass "--insecure-no-auth -> leaves the rest of .env intact"
@@ -485,6 +499,45 @@ case "$BOOTSTRAP" in
         pass "relay key is scoped to session:write only" ;;
     *) fail "relay key is scoped to session:write only" ;;
 esac
+
+# --- vault_status_line must not claim a control that is not serving ----------
+# Audit Major 20 was "the installer reports Vault: Enabled even when it skipped
+# key generation". It was fixed by checking VAULT_KEY -- and came back in a new
+# form, because a keyed vault on an auth-off install is ALSO not serving: the
+# router is unmounted and every /vault/* path answers 503.
+VS="$TMP/vaultstatus"
+mkdir -p "$VS"
+printf 'VAULT_KEY=abc123
+AUTH_ENABLED=false
+' > "$VS/.env"
+OUT="$(bash -c "source '$REPO_ROOT/deploy/lib.sh'; vault_status_line '$VS/.env'")"
+case "$OUT" in
+    *'NOT SERVED'*) pass "vault_status_line: keyed + auth off -> not claimed as Enabled" ;;
+    *) fail "vault_status_line: keyed + auth off -> not claimed as Enabled (got: $OUT)" ;;
+esac
+printf 'VAULT_KEY=abc123
+AUTH_ENABLED=true
+' > "$VS/.env"
+OUT="$(bash -c "source '$REPO_ROOT/deploy/lib.sh'; vault_status_line '$VS/.env'")"
+case "$OUT" in
+    *'Enabled'*) pass "vault_status_line: keyed + auth on -> Enabled" ;;
+    *) fail "vault_status_line: keyed + auth on -> Enabled (got: $OUT)" ;;
+esac
+
+# --- the exposure warning must not recommend a firewall that cannot work -----
+# ufw never governed these ports: Docker's published-port DNAT lands in the
+# DOCKER chain, traversed before ufw's rules. This advice was printed for months
+# and acted on once, over a still-exposed wallet key.
+if grep -q 'ufw allow from' "$REPO_ROOT/install.sh"; then
+    fail "install.sh: no 'ufw allow' advice (Docker bypasses ufw)"
+else
+    pass "install.sh: no 'ufw allow' advice (Docker bypasses ufw)"
+fi
+if grep -q 'DOCKER-USER' "$REPO_ROOT/install.sh"; then
+    pass "install.sh: points at DOCKER-USER, the chain that IS consulted"
+else
+    fail "install.sh: points at DOCKER-USER, the chain that IS consulted"
+fi
 
 echo ""
 if [ "$FAILS" -eq 0 ]; then

@@ -19,7 +19,22 @@ vault_status_line() {
     fi
 
     if [ -n "$value" ]; then
-        echo "  Vault:         Enabled (secrets encrypted at rest in Redis)"
+        # A key is only half the story. Since audit blocker 7, cortex/app/main.py
+        # refuses to MOUNT the vault router when auth is disabled and substitutes
+        # a 503 stand-in on every /vault/* path — so a keyed vault on an
+        # --insecure-no-auth install is completely unusable, and reporting
+        # "Enabled" there is the same false-reassurance defect the audit already
+        # caught once (Major 20: the installer claimed Vault: Enabled after
+        # skipping key generation). Checking VAULT_KEY and nothing else is what
+        # let it come back in a new form.
+        if auth_enforced "$envfile"; then
+            echo "  Vault:         Enabled (secrets encrypted at rest in Redis)"
+        else
+            echo "  Vault:         KEY SET, BUT NOT SERVED — /vault/* answers 503"
+            echo "                 The vault router is not mounted while"
+            echo "                 AUTH_ENABLED=false. Set AUTH_ENABLED=true and"
+            echo "                 run: bash update.sh"
+        fi
     else
         echo "  Vault:         DISABLED — VAULT_KEY is not set in .env"
         echo "                 Generate one:  python3 -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'"

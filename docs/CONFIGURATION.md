@@ -58,10 +58,22 @@ now-gated `/auth/keys`, so it cannot lock itself out.
 **`AUTH_ENABLED=false` is no longer an admin bypass.** The anonymous identity
 handed to callers when enforcement is off now carries every scope *except*
 `admin`, and the scope check actually runs on that path — so vault CRUD,
-`/auth/keys`, DLQ requeue, policy-rule toggles and pattern quarantine are
-refused with a 403 whether auth is on or off. Narrowing the scope list alone
-would have been half a fix: until 2026-07-26 the disabled path returned the
-anonymous identity without consulting the required scope at all.
+`/auth/keys`, DLQ requeue, policy-rule toggles and pattern quarantine are all
+refused whether auth is on or off. Narrowing the scope list alone would have
+been half a fix: until 2026-07-26 the disabled path returned the anonymous
+identity without consulting the required scope at all.
+
+Two independent layers do this, and they answer with different status codes —
+worth knowing before you diagnose one as the other:
+
+| Layer | With auth **off** you get | Why |
+|---|---|---|
+| Router mounting (`cortex/app/main.py`) | **503** on any `/vault/*` or `/auth/*` path | those routers are not mounted at all; a stand-in answers |
+| Scope check (`require_scope`) | **403** on other admin-gated routes (DLQ requeue, policy toggles, pattern quarantine) | the router is mounted, the scope is refused |
+
+So a 503 from `/vault/secrets` on an auth-off box is the control working, not a
+broken backend. See the 503 entry under Troubleshooting in
+[DEPLOYMENT.md](DEPLOYMENT.md), which covers the other cause.
 
 **That is not the same as safe.** With auth off, everything below admin —
 reading and writing memories, sessions, relay traffic, replay, evals — is open

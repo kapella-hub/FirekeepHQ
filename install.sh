@@ -99,8 +99,14 @@ if [ ! -f .env ]; then
         echo "#" >&2
         echo "# Every API on this host is now open to anyone who can reach" >&2
         echo "# the port, with NO key required. That includes:" >&2
-        echo "#   GET  /vault/secrets   — reads your stored secrets" >&2
-        echo "#   POST /auth/keys       — mints new API keys" >&2
+        echo "#   POST /memory/learn    — writes into your team memory" >&2
+        echo "#   POST /memory/recall   — reads everything in it" >&2
+        echo "#   POST /knowledge/ingest-url — fetches URLs from this host" >&2
+        echo "#   the whole Bridge / Relay / Sentinel MCP surface" >&2
+        echo "#" >&2
+        echo "# NOT open: /vault/* and /auth/* are unmounted while auth is" >&2
+        echo "# off and answer 503. Losing the vault is a CONSEQUENCE of this" >&2
+        echo "# flag, not a protection it gives you." >&2
         echo "#" >&2
         echo "# This is only defensible when the ports are unreachable from" >&2
         echo "# anywhere but this machine. Keep BIND_ADDR=127.0.0.1 in .env" >&2
@@ -487,9 +493,11 @@ if auth_enforced .env; then
     echo "  admin-scoped DASHBOARD_API_KEY from .env on every /api/ proxy."
 else
     echo "  Auth:          ⚠️  DISABLED — every API on this host is OPEN."
-    echo "                 Anyone who can reach a port can read your vault"
-    echo "                 secrets (GET /vault/secrets) and mint API keys"
-    echo "                 (POST /auth/keys). No key is required."
+    echo "                 Anyone who can reach a port can read and write"
+    echo "                 your team memory (POST /memory/recall, /learn)"
+    echo "                 and drive Bridge, Relay and Sentinel. No key."
+    echo "                 /vault/* and /auth/* are unmounted (503) — that"
+    echo "                 is a consequence of this flag, not a mitigation."
     echo "                 Turn it on: set AUTH_ENABLED=true in .env, then"
     echo "                 run: bash update.sh"
 fi
@@ -503,19 +511,47 @@ echo ""
 # wrong half the time is one people learn to skip past.
 if bind_addr_is_public "$BIND_ADDR_EFFECTIVE"; then
     echo "⚠️  SECURITY: service ports 8040-8100 are published on ${BIND_ADDR_EFFECTIVE}"
-    echo "   — reachable from off this machine. Restrict them:"
-    echo "   ufw allow from YOUR_IP to any port 8040:8100 proto tcp"
+    echo "   — reachable from off this machine."
+    echo ""
+    echo "   ufw will NOT contain these ports. Docker programs its own"
+    echo "   iptables DOCKER chain for published ports, and that chain is"
+    echo "   traversed BEFORE ufw's rules — so 'ufw deny 8100' is never"
+    echo "   consulted while 'ufw status' shows it active. Restrict them"
+    echo "   one of these ways instead:"
+    echo "     1. BIND_ADDR=127.0.0.1 in .env + 'bash update.sh', then reach"
+    echo "        the host over an SSH tunnel:  ssh -L 8100:127.0.0.1:8100 ..."
+    echo "     2. Publish only a TLS reverse proxy (docker-compose.office.yml"
+    echo "        does this with Caddy) and keep the app ports on loopback."
+    echo "     3. If you need a host firewall rule, it must go in DOCKER-USER,"
+    echo "        which IS consulted (and does not survive reboot on its own):"
+    echo "        iptables -I DOCKER-USER -p tcp --dport 8040:8100 \\"
+    echo "                 '!' -s YOUR_IP -j DROP"
     if ! auth_enforced .env; then
         echo ""
         echo "   You have BOTH auth disabled AND non-loopback ports. That is"
         echo "   the exact configuration that leaks secrets to the internet."
         echo "   Fix one of the two before this host sees real data."
     fi
+elif grep -q '^FIREKEEP_OFFICE_MODE=true' .env 2>/dev/null; then
+    # Office mode pins docker-compose.office.yml, which keeps the six APP ports
+    # on 127.0.0.1 and publishes Caddy on 0.0.0.0:443 and :80 as the single
+    # deliberate front door. Deriving reachability from BIND_ADDR alone — the
+    # only thing the branch above reads — would print "reachable only from this
+    # machine" about a host that is serving the network on 443, which is a false
+    # all-clear in the one place an operator looks for the real answer.
+    echo "🔒 App ports 8040-8100 are bound to ${BIND_ADDR_EFFECTIVE} — not"
+    echo "   reachable off this machine. Caddy fronts them on 0.0.0.0:443"
+    echo "   (and :80, redirect only), which IS published to the network."
+    echo "   That is this deployment's single reachable surface — firewall"
+    echo "   443/80 rather than the app range, and see"
+    echo "   docs/DEPLOYMENT-OFFICE.md."
 else
     echo "🔒 Ports are bound to ${BIND_ADDR_EFFECTIVE} — reachable only from this"
     echo "   machine. To reach the dashboard from your laptop, tunnel:"
     echo "     ssh -L 8040:127.0.0.1:8040 <user>@${VPS_IP}"
-    echo "   To publish them instead, set BIND_ADDR=0.0.0.0 in .env, run"
-    echo "   'bash update.sh', and firewall the range."
+    echo "   To publish them instead, set BIND_ADDR=0.0.0.0 in .env and run"
+    echo "   'bash update.sh' — and note a host firewall will not contain"
+    echo "   them: Docker's DOCKER chain is traversed before ufw's rules."
+    echo "   Use DOCKER-USER, or prefer a TLS reverse proxy."
 fi
 echo ""

@@ -59,6 +59,17 @@ jobs:
           - name: repo-scripts
             install: pip install pytest pyyaml
             test: pytest tests -q
+          # deploy/tests/test_auth_posture.sh drives install.sh's and
+          # deploy/lib.sh's summary/warning logic in a sandbox — no Docker, no
+          # network, no containers. It is the only thing that checks the text an
+          # operator is shown about auth posture and port exposure, which is
+          # where two false-reassurance defects have already shipped (a
+          # "Vault: Enabled" line for a vault that answers 503, and firewall
+          # advice that Docker bypasses). It ran nowhere until now.
+          # Its siblings in deploy/tests/ DO need Docker and stay out of CI.
+          - name: deploy-posture
+            install: "true"
+            test: bash deploy/tests/test_auth_posture.sh
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6

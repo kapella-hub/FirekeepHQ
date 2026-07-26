@@ -465,7 +465,8 @@ the old `firekeepcortex_*` volumes. Keep them as a rollback for at least a week.
   `deploy/firekeep-admin` — there is no single shared `API_KEY` (see
   [DEPLOYMENT-OFFICE.md](DEPLOYMENT-OFFICE.md)). Setting `AUTH_ENABLED=false` no longer
   hands out `admin` — the anonymous identity is granted every scope except that one, and
-  the check runs, so `/vault/*` and `/auth/keys` stay 403 either way. It still opens
+  the check runs. `/vault/*` and `/auth/*` go further: they are not mounted at all with
+  auth off and answer **503**, while other admin-gated routes answer 403. It still opens
   everything below admin (memory, sessions, relay, replay, evals) to anyone who can reach
   the port, with no attribution; do not do it on a stack anything else can reach.
 - **CORS** — `CORS_ORIGINS` restricts *browser* callers that hit a service directly
@@ -506,10 +507,18 @@ and still get 401, check that the key is registered rather than merely present i
 `.env`: `bash deploy/bootstrap-keys.sh` is idempotent and re-registers key hashes that
 a `docker compose down -v` wiped from Redis DB 7.
 
-A **503** is a different failure and means the opposite of open: auth is enabled and
-its Redis DB 7 is unreachable, so the middleware fails closed rather than passing
-requests through. Compose healthchecks are TCP-only, so containers stay green while
-this happens. Check `docker compose exec redis redis-cli -n 7 ping` first.
+A **503** has two causes and they are opposite in meaning. Check the path first:
+
+1. **On `/vault/*` or `/auth/*`, with `AUTH_ENABLED=false`** — expected, and it is the
+   control working. Those routers are deliberately not mounted while auth is off, so a
+   stand-in answers every method on every path under them. Nothing is broken and there
+   is nothing to repair; set `AUTH_ENABLED=true` and re-run `bash update.sh` if you want
+   the vault back. `install.sh`'s summary reports this as
+   `Vault: KEY SET, BUT NOT SERVED`.
+2. **On any other path** — auth is enabled and its Redis DB 7 is unreachable, so the
+   middleware fails closed rather than passing requests through. Compose healthchecks
+   are TCP-only, so containers stay green while this happens. Check
+   `docker compose exec redis redis-cli -n 7 ping` first.
 
 ### Connection refused from another machine
 Also expected — app ports bind to `127.0.0.1` by default. Tunnel, or set

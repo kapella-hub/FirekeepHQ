@@ -577,13 +577,14 @@ services:
       NR_CORS_ORIGINS: ${CORS_ORIGINS:-["*"]}
       NR_BRIDGE_URL: ${BRIDGE_URL:-http://bridge:8070}
       # SP2: outbound key for Relay->Bridge decision writes (origin:"mcp"
-      # scope sessions). Requires session:write scope. Currently provisioned
-      # manually — not yet issued by SP1a's automated key-bootstrap, and now
-      # that AUTH_ENABLED defaults to true that gap bites on a FRESH install
-      # too, not just an office one: unset here means those Relay->Bridge
-      # writes 401. Only NexusScope `origin:"mcp"` sessions use this path, so
-      # the rest of the stack is unaffected. Mint one and set it in .env:
-      #   deploy/firekeep-admin keys create --agent relay-internal
+      # scope sessions). Minted by deploy/bootstrap-keys.sh with exactly
+      # ["session:write"] — the gap this comment used to describe (manual
+      # provisioning only) closed when auth became the default, because it
+      # would otherwise have bitten every FRESH install rather than just an
+      # office one. Do not hand-mint with `firekeep-admin keys create`: that
+      # grants the full non-admin scope set to a single internal write path.
+      # Unset means only NexusScope origin:"mcp" writes 401; the rest of the
+      # stack is unaffected.
       NR_FIREKEEP_API_KEY: ${RELAY_INTERNAL_API_KEY:-}
       RP_REDIS_URL: redis://redis:6379/6
       AUTH_ENABLED: ${AUTH_ENABLED:-true}

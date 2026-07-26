@@ -112,8 +112,13 @@ else
     echo "# .env sets AUTH_ENABLED=false explicitly, which overrides the"
     echo "# new secure default. Every API on this host stays open to"
     echo "# anyone who can reach the port — with no key:"
-    echo "#   GET  /vault/secrets   — reads your stored secrets"
-    echo "#   POST /auth/keys       — mints new API keys"
+    echo "#   POST /memory/learn    — writes into your team memory"
+    echo "#   POST /memory/recall   — reads everything in it"
+    echo "#   the whole Bridge / Relay / Sentinel MCP surface"
+    echo "#"
+    echo "# /vault/* and /auth/* now answer 503 rather than serving — they"
+    echo "# are unmounted while auth is off. That is a consequence of the"
+    echo "# setting, not a reason to leave it."
     echo "#"
     echo "# Fix (one line, then re-run this script):"
     echo "#   AUTH_ENABLED=true"
@@ -149,6 +154,31 @@ if [ -z "$(env_value .env BIND_ADDR)" ]; then
         # fires for it.
         echo "BIND_ADDR=0.0.0.0" >> .env
         echo "############################################################"
+        if ! auth_enforced .env; then
+            # The two halves of this script each make a defensible call, and
+            # together they write the audited configuration into the .env of
+            # every pre-BIND_ADDR deployment that also kept auth off: no key
+            # required, all six ports on every interface. That is verbatim what
+            # leaked 12 secrets. install.sh escalates on exactly this pair; an
+            # upgrade path must too, or the population most exposed is the one
+            # population never told.
+            echo "# ⚠️  READ THIS BEFORE THE NOTICE BELOW."
+            echo "#"
+            echo "# You have auth DISABLED (above) and this script just wrote"
+            echo "# BIND_ADDR=0.0.0.0, publishing all six ports on every"
+            echo "# interface. Together that is an open, unauthenticated API"
+            echo "# on the public internet — the exact configuration this"
+            echo "# project shipped when it leaked 12 real secrets."
+            echo "#"
+            echo "# The write preserved the reachability you already had; it"
+            echo "# did not create the exposure. Fix ONE of the two now:"
+            echo "#   AUTH_ENABLED=true    (preferred — keeps remote access)"
+            echo "#   BIND_ADDR=127.0.0.1  (loopback + ssh -L)"
+            echo "# then re-run this script."
+            echo "#"
+            echo "############################################################"
+            echo "############################################################"
+        fi
         echo "# NOTICE: BIND_ADDR=0.0.0.0 was added to your .env."
         echo "#"
         echo "# Published ports now honour \${BIND_ADDR:-127.0.0.1}. Your .env"
