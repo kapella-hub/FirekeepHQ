@@ -90,6 +90,40 @@ jobs:
         shell: pwsh
         working-directory: client
 
+  symdex-windows:
+    name: symdex (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      # symdex/src/firekeep_symdex/storage/index_store.py selects its history-file
+      # locking primitive by `try: import fcntl / except ImportError: import msvcrt`,
+      # so the ubuntu `symdex` matrix entry above can only ever take the POSIX
+      # branch. This job is the only place in CI that reaches the msvcrt branch,
+      # mirroring client-windows above it.
+      #
+      # It exists because that branch was added blind: an unconditional `import
+      # fcntl` had made every save_index() call raise on Windows (150 failed,
+      # 31 collection errors) and no CI job could see it. A platform branch with
+      # no CI on the other side is an untested branch -- this is the gate, not
+      # the fix.
+      - run: pip install -e "symdex[test]"
+      # On failure, surface the pytest tail as ONE ::error:: annotation: annotations
+      # are publicly readable on this repo while raw job logs require auth, and
+      # nobody on the team has a Windows box — this job must be debuggable from the
+      # public API alone.
+      - run: |
+          python -m pytest symdex/tests -q 2>&1 | Tee-Object -FilePath pytest-out.txt
+          if ($LASTEXITCODE -ne 0) {
+            $tail = (Get-Content pytest-out.txt -Tail 60) -join '%0A'
+            Write-Output "::error title=symdex (windows) pytest failure::$tail"
+            exit 1
+          }
+        shell: pwsh
+
   licenses:
     name: Dependency licences
     runs-on: ubuntu-latest
