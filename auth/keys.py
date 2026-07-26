@@ -52,11 +52,69 @@ _redis = None          # Redis DB 7 client, set via init_auth()
 _KEY_PREFIX = "auth:key:"
 _KEY_INDEX = "auth:key_index"  # sorted set of key IDs
 
+# ---------------------------------------------------------------------------
+# Anonymous identity (the AUTH_ENABLED=false path)
+# ---------------------------------------------------------------------------
+
+# The scope set handed to a caller who presented no key because enforcement is
+# off. DERIVED from SCOPES rather than listed literally, so a scope added later
+# is granted automatically instead of being silently withheld — but "admin" is
+# subtracted unconditionally, and "*" cannot sneak in from SCOPES either (it is
+# not a member; the explicit subtraction below states the intent regardless).
+#
+# WHY not []: with auth disabled the product must still work for a single user
+# who has done no key management at all, and an empty set 403s every
+# require_scope route — memory, sessions, replay, evals, the lot.
+#
+# WHY not ["*"] (what shipped until audit blocker 7): "admin" IS the exposure.
+# It is the scope gating decrypted secret reads (vault/api.py) and API-key
+# minting (auth/api.py), and granting it to every anonymous caller is what put
+# 12 real secrets from the author's VPS on the public internet. Everything
+# except the keys to the kingdom is the line.
+ANONYMOUS_SCOPES: tuple[str, ...] = tuple(sorted(SCOPES - {"admin", "*"}))
+
 _ANONYMOUS_IDENTITY = {
     "agent_id": "anonymous",
-    "scopes": ["*"],
+    "scopes": list(ANONYMOUS_SCOPES),
     "authenticated": False,
 }
+
+
+def scopes_allow(scopes, required: str, *, allow_wildcard: bool = True) -> bool:
+    """Does `scopes` satisfy `required`?
+
+    allow_wildcard=True is the AUTHENTICATED path: the keys
+    deploy/bootstrap-keys.sh mints for the owner and the dashboard carry ["*"]
+    and must keep passing every gate, admin included.
+
+    allow_wildcard=False is the AUTH-DISABLED path. A "*" reaching that path
+    could only come from a regression in ANONYMOUS_SCOPES above, and honouring
+    it would silently re-open the vault and key-minting surfaces this module
+    exists to close — so a caller that never presented a key gets a plain
+    membership test, never a wildcard.
+    """
+    if allow_wildcard and "*" in scopes:
+        return True
+    return required in scopes
+
+
+def anonymous_denied_detail(required: str) -> str:
+    """403 body for an anonymous caller refused `required` (auth disabled).
+
+    By construction "admin" is the only scope this can fire for. Operators meet
+    this message on a default-configured box — the dashboard's DLQ Requeue
+    button, a vault_store MCP call — so it has to say what is wrong AND how to
+    fix it, not just "forbidden".
+    """
+    return (
+        f"Insufficient scope: requires '{required}'. Auth is disabled "
+        "(AUTH_ENABLED=false), so every caller is the anonymous identity, and "
+        f"the anonymous identity is deliberately never granted '{required}' — "
+        "it gates decrypted secret reads (/vault/*) and API-key minting "
+        "(/auth/*). To use admin routes: set AUTH_ENABLED=true, restart, and "
+        "send the admin key as X-API-Key. deploy/bootstrap-keys.sh (run by "
+        "install.sh/update.sh) mints that key and prints it exactly once."
+    )
 
 
 # ---------------------------------------------------------------------------

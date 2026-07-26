@@ -4,6 +4,7 @@ import asyncio
 
 import fakeredis.aioredis
 import pytest
+from unittest.mock import patch
 from cryptography.fernet import Fernet
 from httpx import ASGITransport, AsyncClient
 
@@ -218,8 +219,26 @@ class TestVaultRouter:
         init_vault(self.redis, self.key)
 
         app = FastAPI()
-        # Bypass auth — require_scope returns anonymous identity
-        router = create_vault_router()
+        # Build the router with the admin gate stubbed out, so these tests
+        # exercise vault CRUD rather than authorization.
+        #
+        # This used to read "Bypass auth — require_scope returns anonymous
+        # identity", and it needed no stub because that was literally true: on
+        # the AUTH_ENABLED=false path require_scope returned the anonymous
+        # identity WITHOUT comparing scopes, so every admin route answered 200
+        # to anyone. That is audit blocker 7 — it is how GET /vault/secrets
+        # served 12 real secrets off a public VPS. The comment was describing
+        # the vulnerability as a testing convenience.
+        #
+        # Patch `vault.api.require_scope`, not `auth.middleware.require_scope`:
+        # vault/api.py:11 imported the name at module load, so it holds its own
+        # reference. The patch must be live while the router is CONSTRUCTED,
+        # because the dependency is captured at decoration time.
+        # The gate itself is covered by test_vault_routes_refuse_anonymous below.
+        with patch("vault.api.require_scope",
+                   lambda scope: (lambda: {"agent_id": "test-admin",
+                                           "scopes": ["*"], "authenticated": True})):
+            router = create_vault_router()
         app.include_router(router)
         self.app = app
         yield
@@ -277,3 +296,35 @@ class TestVaultRouter:
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.get("/vault/secrets/nonexistent")
             assert resp.status_code == 404
+
+
+class TestVaultAdminGate:
+    """The gate TestVaultRouter stubs out must actually refuse.
+
+    Regression guard for audit blocker 7. Asserting only that
+    keys.ANONYMOUS_SCOPES excludes "admin" would NOT catch a regression here:
+    the pre-fix code never consulted that list on the disabled path.
+    """
+
+    @pytest.mark.asyncio
+    async def test_vault_routes_refuse_anonymous(self):
+        from fastapi import FastAPI
+        from vault.api import create_vault_router
+
+        from auth import keys as _keys
+
+        assert _keys._AUTH_ENABLED is False, "this test is about the auth-DISABLED path"
+
+        app = FastAPI()
+        app.include_router(create_vault_router())  # the REAL gate
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            for method, path in (
+                ("get", "/vault/secrets"),
+                ("get", "/vault/secrets/anything"),
+                ("post", "/vault/secrets"),
+                ("delete", "/vault/secrets/anything"),
+            ):
+                kwargs = {"json": {"key": "k", "value": "v"}} if method == "post" else {}
+                resp = await getattr(client, method)(path, **kwargs)
+                assert resp.status_code == 403, f"{method.upper()} {path} -> {resp.status_code}"

@@ -9,7 +9,19 @@ set -euo pipefail
 #      internal key cannot mint keys or read vault). Plaintext -> .env.
 #   2. DASHBOARD_API_KEY — dashboard nginx proxy key (spec §4.4b: the
 #      dashboard IS the owner's admin surface). Scopes: ["*"]. Plaintext -> .env.
-#   3. Admin key — the owner's key. Scopes: ["*"]. Plaintext printed ONCE,
+#   3. RELAY_INTERNAL_API_KEY — Relay's outbound key for the ONE call it makes
+#      into Bridge: POST /sessions/{agent_id}/context, which persists NexusScope
+#      decisions for origin:"mcp" sessions (relay/app/scope.py _persist_to_bridge).
+#      Bridge gates that route with require_scope_asgi(request, "session:write")
+#      (bridge/app/mcp_server.py:561), so that single scope is the whole
+#      requirement — deliberately NOT the internal key's set and NOT ["*"].
+#      docker-compose.yml already reads it (NR_FIREKEEP_API_KEY:
+#      ${RELAY_INTERNAL_API_KEY:-}); nothing minted it, so the var resolved
+#      empty and the write went out unkeyed. That was survivable only while
+#      auth was off by default: _persist_to_bridge is best-effort and swallows
+#      the failure, so with auth ON the decisions would have silently stopped
+#      persisting with nothing but a warning in relay's log. Plaintext -> .env.
+#   4. Admin key — the owner's key. Scopes: ["*"]. Plaintext printed ONCE,
 #      never written to disk.
 #
 # Redis layout replicates auth/middleware.py create_key() EXACTLY:
@@ -104,8 +116,18 @@ touch "$ENV_FILE"
 
 ensure_env_key FIREKEEP_INTERNAL_KEY  firekeep-internal  '["memory:write","session:read","eval:read","eval:write"]'
 ensure_env_key DASHBOARD_API_KEY firekeep-dashboard '["*"]'
+ensure_env_key RELAY_INTERNAL_API_KEY firekeep-relay '["session:write"]'
 
-# --- 3: owner admin key (printed once, never stored) -------------------------
+# --- 4: owner admin key (printed once, never stored) -------------------------
+#
+# NOTE for anyone adding a key above: mint it through ensure_env_key, never a
+# hand-rolled echo. ensure_env_key prints only the VAR NAME, agent_id and
+# scopes — never the plaintext — which is what makes the admin key below the
+# only `nxs_...` literal in this script's output. install.sh relies on exactly
+# that to re-surface the admin key in its closing summary (it greps its
+# captured bootstrap output for a single nxs_ token). A second plaintext in
+# this stream would both leak that key into install.sh's captured stdout and
+# make the summary print the wrong one.
 
 ADMIN_MARKER="auth:bootstrap:admin_hash"
 ADMIN_HASH="$("${REDIS[@]}" GET "$ADMIN_MARKER")"

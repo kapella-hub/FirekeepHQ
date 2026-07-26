@@ -9,8 +9,11 @@
   `EMBEDDING_DIM=384`). Below that, containers are OOM-killed while HTTP health
   checks still pass — a failure mode that is easy to misdiagnose. (See
   "Resource Limits" below for the full breakdown.)
-- Ports 8040-8100 open for external access (or use a reverse proxy)
 - Git installed
+- **No open ports required.** A default install binds its app ports (8040-8100)
+  to `127.0.0.1` and is reachable only from the host. Serving a laptop or a
+  teammate is an explicit opt-in — see
+  [Access and authentication](#access-and-authentication).
 
 ## Fresh Installation
 
@@ -35,10 +38,16 @@ registry that is unreachable from anywhere else.
 3. Prompts for:
    - **VPS IP** — used for CORS origins and printed in MCP URLs
    - **Neo4j password** — required, no default
-4. Bootstraps auth keys (`deploy/bootstrap-keys.sh`) — mints `FIREKEEP_INTERNAL_KEY` and `DASHBOARD_API_KEY` into `.env` and prints a one-time admin key. See [DEPLOYMENT-OFFICE.md](DEPLOYMENT-OFFICE.md) for the full per-person key model.
+4. Bootstraps auth keys (`deploy/bootstrap-keys.sh`) — mints `FIREKEEP_INTERNAL_KEY` and `DASHBOARD_API_KEY` into `.env` and prints a one-time admin key. **Copy that admin key somewhere durable before the terminal scrolls; it is never written to disk.** See [DEPLOYMENT-OFFICE.md](DEPLOYMENT-OFFICE.md) for the full per-person key model.
 5. Runs `docker compose up -d --build`
 6. Waits for all services to pass health checks
 7. Prints a status table with all MCP URLs
+
+Step 4 runs *before* step 5 on purpose: auth is enforced from the first request,
+so the keys have to exist before anything is listening. The health checks in
+step 6 still pass — `/health` and `/version` are pre-auth, and the one probe
+that does hit a gated path (`GET /mcp` on cortex-mcp) is satisfied by the 401,
+which is itself proof the route is mounted and enforcing.
 
 The installer generates `dashboard/.htpasswd` with user `admin` and a random
 password. The password is written **once** to `dashboard/.htpasswd.cred`
@@ -84,6 +93,128 @@ docker compose up -d --build
 docker compose ps
 ```
 
+## Access and authentication
+
+A fresh install is **closed by default** in two independent ways:
+
+| Default | Value | Was |
+|---------|-------|-----|
+| `AUTH_ENABLED` | `true` | `false` |
+| `BIND_ADDR` | `127.0.0.1` | ports published on `0.0.0.0` |
+
+Both changed on 2026-07-26 and both are security fixes. Previously a stock
+install published six ports on every interface and treated every caller as an
+anonymous admin — enough to read the vault and mint API keys. That combination
+leaked twelve real secrets off this project's own VPS.
+
+If you are following an older walkthrough and getting `401` or "connection
+refused", nothing is broken. Read on.
+
+### Your first authenticated call
+
+Use the admin key `deploy/bootstrap-keys.sh` printed during install. On the host:
+
+```bash
+KEY="nxs_..."   # the one-time admin key from the installer
+
+# Pre-auth paths still answer keyless — this is how you tell "up" from "gated":
+curl -fsS http://127.0.0.1:8100/health
+curl -fsS http://127.0.0.1:8100/version
+
+# A real route without a key: 401
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8100/memory/stats     # 401
+
+# ...and with one: 200
+curl -fsS -H "X-API-Key: $KEY" http://127.0.0.1:8100/memory/stats
+```
+
+`{"detail":"Missing X-API-Key header"}` means the stack is healthy and doing its
+job. Don't reach for `AUTH_ENABLED=false` — mint yourself a day-to-day key
+instead, so the admin key stays reserved for key management and vault access:
+
+```bash
+deploy/firekeep-admin keys create --agent "$(whoami)"   # full non-admin scope set, printed once
+```
+
+That prompts for the admin key (silently) unless you pass it as
+`FIREKEEP_ADMIN_KEY=... deploy/firekeep-admin ...` — mind your shell history if
+you use the env-var form.
+
+Lost the admin key? Do not disable auth to recover — see
+[DEPLOYMENT-OFFICE.md → Recovery](DEPLOYMENT-OFFICE.md#6-recovery).
+
+### Reaching the dashboard
+
+`http://<VPS_IP>:8040` no longer resolves on a default install. From the host,
+`http://localhost:8040`. From anywhere else, tunnel:
+
+```bash
+ssh -L 8040:127.0.0.1:8040 user@vps-host
+# then open http://localhost:8040
+```
+
+The dashboard asks for its own basic-auth credentials (user `admin`, password in
+`dashboard/.htpasswd.cred`). Behind that, nginx injects `DASHBOARD_API_KEY` on
+every `/api/*` proxy, so the SPA reaches auth-gated routes without you pasting a
+key into the browser. If the tabs load but show errors, that key is missing —
+re-run `bash deploy/bootstrap-keys.sh` and recreate the container
+(`docker compose up -d dashboard`); it is read at container start, not per
+request.
+
+### Connecting an agent from another machine
+
+The client kit talks to the stack over HTTP, so it needs a reachable address and
+a key. Two options:
+
+1. **Tunnel** (nothing exposed). Forward the ports you need, then point the
+   client's profile at `127.0.0.1`:
+   ```bash
+   ssh -L 8100:127.0.0.1:8100 -L 8080:127.0.0.1:8080 \
+       -L 8070:127.0.0.1:8070 -L 8060:127.0.0.1:8060 -L 8050:127.0.0.1:8050 user@vps-host
+   firekeep install --host 127.0.0.1
+   ```
+2. **Expose deliberately** (below), then `firekeep install --host <VPS_IP>`.
+
+Either way, put the key in the profile — `firekeep install` prompts for
+`api_key`, or edit `~/.firekeep/config` directly. `firekeep-shim` injects it as
+`X-API-Key` on every request. `firekeep doctor` verifies connectivity and auth
+end to end; an unkeyed profile against a keyed server shows up there as a failed
+check rather than as mysterious tool errors mid-session.
+
+### Exposing the stack deliberately
+
+```bash
+# .env already carries BIND_ADDR=127.0.0.1 — edit that line, don't append a second one
+sed -i 's/^BIND_ADDR=.*/BIND_ADDR=0.0.0.0/' .env
+docker compose up -d          # recreates app containers with the new bindings
+```
+
+(If your `.env` predates the variable and has no `BIND_ADDR` line at all,
+`update.sh` adds one for you — see
+[Upgrading](#upgrading-across-the-2026-07-26-security-defaults).)
+
+Only the six app ports move. Neo4j, Qdrant, Redis and Ollama stay pinned to
+`127.0.0.1` literally, by design — nothing about serving agents should also
+publish a passwordless Redis and a plaintext vector store.
+
+> **A host firewall will not contain a published port.** Docker publishes a port
+> by writing its own `DOCKER` iptables chain, which is traversed *before* ufw's
+> `INPUT` rules. `ufw deny 8100` does not close it and `ufw allow from <ip> to
+> any port 8040:8100` does not restrict it to that IP — the packet is DNAT'd
+> past your policy before ufw ever sees it. That is precisely how this stack sat
+> open to the internet behind an ufw its owner believed was working.
+>
+> If you need host-level filtering in front of a published port, write the rules
+> into the `DOCKER-USER` chain, which *is* evaluated first. Otherwise keep
+> `BIND_ADDR=127.0.0.1` and front the stack with a reverse proxy (see
+> [DEPLOYMENT-OFFICE.md](DEPLOYMENT-OFFICE.md) for the Caddy + internal-CA
+> pattern) or an SSH tunnel.
+>
+> With `BIND_ADDR=0.0.0.0`, the API key is the only boundary left. Keep
+> `AUTH_ENABLED=true`, and remember the ports are plaintext HTTP — anything on
+> the path can read the key and everything it carries. Over an untrusted
+> network, terminate TLS in front.
+
 ## Updating
 
 ```bash
@@ -92,6 +223,59 @@ bash update.sh
 ```
 
 This runs `git pull`, rebuilds only changed images, restarts services, and verifies health.
+
+### Upgrading across the 2026-07-26 security defaults
+
+**Run `update.sh`; do not upgrade with a bare `docker compose up -d`.** Both new
+defaults are compose-level fallbacks read from `.env`, and your `.env` predates
+them. `update.sh` inspects it after the `git pull` and tells you — loudly — what
+each one is about to do. A bare `docker compose up -d` applies the same defaults
+with no explanation.
+
+What actually happens to an existing install depends on what your `.env` already
+says, and the two variables land in opposite directions:
+
+**`BIND_ADDR` — your reachability is preserved, not silently cut.** Your `.env`
+has no `BIND_ADDR` line, so the new `127.0.0.1` default would otherwise drop all
+six ports to loopback on restart and cut off every remote client with nothing but
+"connection refused" to explain it. `update.sh` therefore appends
+`BIND_ADDR=0.0.0.0` to your `.env` and prints a notice saying so: an upgrade
+script should not sever your access as a side effect. Your exposure is unchanged
+— which means it is still exposure. Once your clients are keyed, tighten it:
+
+```bash
+sed -i 's/^BIND_ADDR=.*/BIND_ADDR=127.0.0.1/' .env
+bash update.sh
+```
+
+**`AUTH_ENABLED` — this is the part that needs you.** Two cases:
+
+- **`.env` has an explicit `AUTH_ENABLED=false`** (most installs — it came from
+  the old `.env.example`). An explicit value beats a compose default, so **the
+  fix does not reach you**. Your stack stays open to anyone who can reach the
+  port. `update.sh` prints a warning block about this every run; it is the
+  loudest thing it says. Fix it:
+  ```bash
+  bash deploy/bootstrap-keys.sh                       # idempotent; prints an admin key once
+  sed -i 's/^AUTH_ENABLED=.*/AUTH_ENABLED=true/' .env
+  chmod 600 .env                                      # it now holds live keys
+  bash update.sh
+  ```
+  Bootstrap the keys **first**. Flipping the flag with no keys registered locks
+  you out through the API — `POST /auth/keys` needs a key it cannot give you.
+  Nothing is unrecoverable: `deploy/bootstrap-keys.sh` writes Redis directly and
+  works against a locked stack ([Recovery](DEPLOYMENT-OFFICE.md#6-recovery)).
+  Doing it in the right order just saves you the detour.
+- **`.env` has no `AUTH_ENABLED` line at all.** The new default applies and auth
+  switches on at this restart. `update.sh` announces it. The dashboard and all
+  internal service-to-service calls keep working (their keys are minted into
+  `.env` by `deploy/bootstrap-keys.sh`, which `update.sh` runs); anything else
+  calling the API directly needs a key.
+
+Either way, turning auth on is a breaking change for anything already talking to
+the stack: client-kit profiles need `api_key` set, and hand-rolled scripts need an
+`X-API-Key` header. Nothing degrades gracefully — an unkeyed caller gets a 401,
+by design.
 
 ## Operations
 
@@ -177,6 +361,12 @@ Every service exposes a health endpoint:
 | Relay A2A | `GET :8050/.well-known/agent.json` | A2A Agent Card for external discovery (discovery-only) |
 | Dashboard | HTTP check on :8040 | nginx serves index.html |
 
+Every row above answers **without a key** — `/health`, `/version` and the A2A
+agent card are on the auth skip list, and the dashboard's 401 is nginx basic
+auth, not the API gate. That is deliberate: a monitor should be able to tell
+"the service is down" from "you didn't authenticate". None of them touch a
+backend either, so they still answer when Neo4j or Redis is unavailable.
+
 ## Resource Limits
 
 Defined in `docker-compose.yml`:
@@ -246,8 +436,8 @@ the old `firekeepcortex_*` volumes. Keep them as a rollback for at least a week.
 
 - All services run on the default Docker Compose bridge network
 - Services communicate by container name (e.g., `cortex-api`, `redis`)
-- Infrastructure ports (Neo4j, Qdrant, Redis, Ollama) are bound to `127.0.0.1` only
-- Application ports (8040-8100) are on `0.0.0.0`
+- Infrastructure ports (Neo4j, Qdrant, Redis, Ollama) are bound to `127.0.0.1` literally — `BIND_ADDR` does not move them
+- Application ports (8040-8100) bind to `${BIND_ADDR:-127.0.0.1}`, i.e. loopback unless you opt out ([Access and authentication](#access-and-authentication))
 
 ### Security Considerations
 
@@ -265,11 +455,24 @@ the old `firekeepcortex_*` volumes. Keep them as a rollback for at least a week.
   — the one call the collector makes.
 - **Sentinel filesystem access** — the repository root is **no longer** bind-mounted into
   the Sentinel container. It previously mounted `./:/watch:ro`, which put `.env`
-  (`NEO4J_PASSWORD`, `VAULT_KEY`, minted API keys) inside a service whose HTTP port is
-  published and unauthenticated by default. Mount only the trees you want watched and
-  point `NS_WATCH_PATHS` at them.
-- **API keys** — set `AUTH_ENABLED=true` in `.env` to require a valid `X-API-Key` on all MCP and REST endpoints. Keys are minted per-agent via `deploy/bootstrap-keys.sh` / `deploy/firekeep-admin` (no single shared `API_KEY` — see [DEPLOYMENT-OFFICE.md](DEPLOYMENT-OFFICE.md)).
-- **CORS** — configure `CORS_ORIGINS` in `.env` to restrict dashboard access.
+  (`NEO4J_PASSWORD`, `VAULT_KEY`, minted API keys) inside a service whose HTTP port was
+  published on every interface and unauthenticated by default. Mount only the trees you
+  want watched and point `NS_WATCH_PATHS` at them.
+- **API keys** — `AUTH_ENABLED=true` is the default; a valid `X-API-Key` is required on
+  all MCP and REST endpoints except the pre-auth paths (`/health`, `/version`,
+  `/.well-known/agent.json`, and Cortex's `/docs`, `/redoc`, `/openapi.json` and keyless
+  `/dashboard` HTML shell). Keys are minted per-agent via `deploy/bootstrap-keys.sh` /
+  `deploy/firekeep-admin` — there is no single shared `API_KEY` (see
+  [DEPLOYMENT-OFFICE.md](DEPLOYMENT-OFFICE.md)). Setting `AUTH_ENABLED=false` no longer
+  hands out `admin` — the anonymous identity is granted every scope except that one, and
+  the check runs, so `/vault/*` and `/auth/keys` stay 403 either way. It still opens
+  everything below admin (memory, sessions, relay, replay, evals) to anyone who can reach
+  the port, with no attribution; do not do it on a stack anything else can reach.
+- **CORS** — `CORS_ORIGINS` restricts *browser* callers that hit a service directly
+  across origins. It is **not** in the path for the bundled dashboard on :8040: that SPA
+  is served by nginx and calls its own origin (`/api/*`), which nginx proxies
+  server-side, so the browser never makes a cross-origin request. Tightening
+  `CORS_ORIGINS` will not break it, and loosening it will not fix it.
 
 ## Troubleshooting
 
@@ -296,10 +499,34 @@ docker compose logs ollama-pull
 ### Redis connection errors
 Verify the Redis DB numbers don't conflict. Each service uses a dedicated DB (0-7): Cortex(0), Celery broker(1), Celery results(2), Bridge(3), Sentinel(4), Relay(5), Replay+Evals(6), Auth(7).
 
+### Everything returns 401
+Expected on a default install — auth is on. Send `X-API-Key` (see
+[Your first authenticated call](#your-first-authenticated-call)). If you hold a key
+and still get 401, check that the key is registered rather than merely present in
+`.env`: `bash deploy/bootstrap-keys.sh` is idempotent and re-registers key hashes that
+a `docker compose down -v` wiped from Redis DB 7.
+
+A **503** is a different failure and means the opposite of open: auth is enabled and
+its Redis DB 7 is unreachable, so the middleware fails closed rather than passing
+requests through. Compose healthchecks are TCP-only, so containers stay green while
+this happens. Check `docker compose exec redis redis-cli -n 7 ping` first.
+
+### Connection refused from another machine
+Also expected — app ports bind to `127.0.0.1` by default. Tunnel, or set
+`BIND_ADDR=0.0.0.0` deliberately: see
+[Access and authentication](#access-and-authentication).
+
 ### Dashboard shows "Service unreachable"
-- Check CORS: `CORS_ORIGINS` in `.env` must include `http://<VPS_IP>:8040`
 - Check the service is running: `docker compose ps`
 - Check browser console for network errors
+- If the tabs load but data calls fail, `DASHBOARD_API_KEY` is missing or stale —
+  nginx drops empty `proxy_set_header` values, so the SPA sends no key at all. Re-run
+  `bash deploy/bootstrap-keys.sh`, then `docker compose up -d dashboard`; the value is
+  read at container start.
+- CORS is almost certainly not your problem: the bundled dashboard is same-origin
+  through nginx's `/api/*` proxies. `CORS_ORIGINS` only matters if you pointed the SPA
+  at a different origin via its own config override, or wrote a browser client of your
+  own against a service directly.
 
 ## Local Development
 
@@ -353,8 +580,9 @@ docker stats
 ### Sentinel events (via MCP)
 The Sentinel service monitors Docker container health and reports events. Check via the dashboard Events tab or call the `sentinel_get_events` MCP tool.
 
-## Office Deployment (TLS + auth)
+## Office Deployment (TLS front)
 
-For the office instance — Caddy TLS front with an internal CA, `AUTH_ENABLED=true`,
-per-person API keys, and app ports rebound to 127.0.0.1 — see
+Auth and loopback binding are now the baseline everywhere, so the office instance is no
+longer distinguished by those. What it adds is a Caddy TLS front with an internal CA,
+path routing (`/mcp/<svc>` and `/api/<svc>/`), and a per-person key model — see
 [DEPLOYMENT-OFFICE.md](DEPLOYMENT-OFFICE.md).

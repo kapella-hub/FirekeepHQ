@@ -11,10 +11,11 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import HTMLResponse
 
 from app.config import get_settings
+from auth.middleware import require_scope
 from app.db.graph import Neo4jClient
 from app.db.vector import VectorClient
 
@@ -134,8 +135,18 @@ def create_dashboard_router(
             return {"items": [], "total": 0, "limit": limit, "offset": offset, "error": "Internal service error"}
 
     @router.post("/api/dlq/retry")
-    async def api_dlq_retry():
-        """Move items from DLQ back to the main queue."""
+    async def api_dlq_retry(
+        identity: dict = Depends(require_scope("admin")),
+    ):
+        """Move items from DLQ back to the main queue.
+
+        Admin-scoped, matching its byte-equivalent twin
+        POST /ops/dlq/retry-events (ops.py:228) — same rpop/lpush over the same
+        two keys. Until 2026-07-26 this one carried no scope at all, so with
+        AUTH_ENABLED=false, where FirekeepKeyAuthMiddleware does not run, it was
+        reachable by anyone on the port while the twin was refused. Gating one
+        route and not its double is the specific way that fix fails.
+        """
         dlq_key = f"{get_settings().REDIS_STREAM_KEY}:dlq"
         stream_key = get_settings().REDIS_STREAM_KEY
         try:
@@ -152,8 +163,16 @@ def create_dashboard_router(
             return {"status": "error", "error": "Internal service error"}
 
     @router.delete("/api/dlq/clear")
-    async def api_dlq_clear():
-        """Clear the DLQ."""
+    async def api_dlq_clear(
+        identity: dict = Depends(require_scope("admin")),
+    ):
+        """Clear the DLQ.
+
+        Admin-scoped, and the more urgent of the pair: this one is DESTRUCTIVE
+        and had no equivalent in ops.py to be compared against, so nothing
+        flagged it. An unauthenticated DELETE dropped every dead-lettered event
+        with no undo.
+        """
         dlq_key = f"{get_settings().REDIS_STREAM_KEY}:dlq"
         try:
             deleted = await redis_client.delete(dlq_key)

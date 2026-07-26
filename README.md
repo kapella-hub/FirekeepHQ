@@ -54,6 +54,8 @@ It is a **control plane for AI coding agents** — infrastructure that sits behi
   checks still pass — a failure mode that is easy to misdiagnose.
 - Docker and Docker Compose v2
 - Git
+- No open ports. A default install binds everything to `127.0.0.1`; serving
+  another machine is an explicit opt-in (see [Reaching it](#reaching-it)).
 
 ### Deploy
 
@@ -63,7 +65,33 @@ cd Firekeep
 bash install.sh
 ```
 
-The installer prompts for your VPS IP and Neo4j password, builds the full stack (13 containers: the Cortex API / MCP / worker / beat quartet, Bridge, Sentinel, Relay, the dashboard, the Neo4j / Qdrant / Redis / Ollama backends, and a one-shot Ollama model puller), and prints MCP URLs when ready.
+The installer prompts for your VPS IP and Neo4j password, builds the full stack (13 containers: the Cortex API / MCP / worker / beat quartet, Bridge, Sentinel, Relay, the dashboard, the Neo4j / Qdrant / Redis / Ollama backends, and a one-shot Ollama model puller), mints your API keys, and prints MCP URLs when ready.
+
+Among those keys is an **admin key, printed exactly once**. Save it before the
+terminal scrolls — it is never written to disk.
+
+**The install is closed by default.** `AUTH_ENABLED=true`, so every MCP and REST
+call needs an `X-API-Key`; `BIND_ADDR=127.0.0.1`, so the ports listen on loopback
+only. Both defaults changed on 2026-07-26 — before that a stock install published
+six ports on every interface and treated every caller as an anonymous admin, which
+is how twelve real secrets left this project's own VPS. If you are following an
+older guide and hitting 401s or connection refusals, that is the new default
+working, not a broken install — see
+**[docs/DEPLOYMENT.md → Access and authentication](docs/DEPLOYMENT.md#access-and-authentication)**.
+
+### Reaching it
+
+From the host, `http://localhost:8040`. From anywhere else, tunnel:
+
+```bash
+ssh -L 8040:127.0.0.1:8040 user@vps-host      # then open http://localhost:8040
+```
+
+To serve remote clients directly, set `BIND_ADDR=0.0.0.0` in `.env` and
+`docker compose up -d` — but read
+[the exposure warning](docs/DEPLOYMENT.md#exposing-the-stack-deliberately) first:
+Docker's published-port rules are evaluated *before* ufw's, so a host firewall
+does not contain a published port.
 
 ### Connect Codex
 
@@ -73,7 +101,9 @@ Add Firekeep's MCP servers to Codex and start Codex from this repository so it p
 firekeep install --runtime codex
 ```
 
-See **[docs/SETUP-CODEX.md](docs/SETUP-CODEX.md)** for the full Codex setup.
+See **[docs/SETUP-CODEX.md](docs/SETUP-CODEX.md)** for the full Codex setup. As
+with every runtime, the profile needs an API key and a reachable host — see the
+note under Connect Claude Code below.
 
 ### Connect Claude Code
 
@@ -83,9 +113,22 @@ See **[docs/SETUP-CODEX.md](docs/SETUP-CODEX.md)** for the full Codex setup.
 
 This installs the `firekeep-client` kit into `~/.firekeep/venv`, writes user-scoped `~/.claude.json` + `~/.claude/settings.json` (MCP servers via `firekeep-shim`, five hook cores), and bootstraps `~/.firekeep/config`. Two stdio-local servers — code intelligence (`firekeep-symdex`) and the Decision Board (`firekeep-decision`) — are installed automatically, always-on, no flag needed.
 
+The installer prompts for the connection **and an API key**. Mint one on the
+server with `deploy/firekeep-admin keys create --agent <you>`; `firekeep-shim`
+then injects it on every request. A profile with no key against a keyed server
+fails every tool call — `firekeep doctor` reports that as a failed check rather
+than leaving you to guess mid-session.
+
 ### Verify
 
-Open `http://<VPS_IP>:8040` — the dashboard shows service health, memory stats, active sessions, and live events.
+On the host, open `http://localhost:8040` (or tunnel — see [Reaching it](#reaching-it)) — the dashboard shows service health, memory stats, active sessions, and live events.
+
+Or check from the command line:
+
+```bash
+curl -fsS http://127.0.0.1:8100/health                          # pre-auth, no key needed
+curl -fsS -H "X-API-Key: $KEY" http://127.0.0.1:8100/memory/stats   # keyed route
+```
 
 > For detailed installation, updating, backups, and troubleshooting, see **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**.
 
@@ -122,6 +165,11 @@ Local Machine                              VPS
 
 Symdex and the Decision Board run **client-side** as stdio-local MCP servers (installed with the kit) — Symdex must be local to the working tree it indexes, so it is no longer a VPS container.
 
+The two arrows crossing that boundary are **not open by default**. Out of the
+box the VPS side listens on loopback only and requires an API key, so the
+local-machine half reaches it over an SSH tunnel until you deliberately widen
+the binding. See [Reaching it](#reaching-it).
+
 | Service | What it does |
 |---------|-------------|
 | **FirekeepCortex** | Long-term memory. Semantic + graph RAG, knowledge lifecycle, sleep-cycle consolidation, four memory types with type-aware decay, versioned memories with confidence scoring, automatic contradiction supersession, agent-authored skills (`skill_create`) + a docs→skills pipeline, and the Agent Gateway (predict-then-act surface). |
@@ -138,7 +186,11 @@ Shared modules (no extra containers): **Replay Engine** (structured trace log ac
 
 ## Dashboard
 
-Access at `http://<VPS_IP>:8040`.
+Access at `http://localhost:8040` on the host, or through a tunnel from
+elsewhere ([Reaching it](#reaching-it)). It has its own basic-auth login (user
+`admin`; the password is written once to `dashboard/.htpasswd.cred`). Behind
+that, nginx injects the dashboard's API key on every backend call, so the SPA
+works against the auth-gated stack without you pasting a key into the browser.
 
 | Tab | What it shows |
 |-----|--------------|
@@ -210,7 +262,7 @@ All LLM inference runs locally via Ollama. Zero API costs.
 - A2A agent card endpoint (`/.well-known/agent.json`) for external discovery
 - Business knowledge ingestion: chunk documents into vector store, surface during memory recall
 - Webhook notifications (Slack, Discord, generic HTTP)
-- Authentication: API key scopes (memory:read/write, session:read/write, replay:read, eval:read, etc.)
+- Authentication: per-key API scopes (memory:read/write, session:read/write, replay:read, eval:read, admin, …), **on by default**, with keys bootstrapped by the installer
 
 ### Planned
 - Grafana metrics export

@@ -38,6 +38,89 @@ office_mode_requested() {
     return 1
 }
 
+# no_auth_requested "$@"
+# True only when --insecure-no-auth is passed explicitly.
+#
+# Deliberately verbose. Auth is ON by default because the previous default —
+# unauthenticated, with every anonymous caller handed scopes ["*"] — put
+# GET /vault/secrets and POST /auth/keys on the open internet, and leaked 12
+# real secrets off the author's VPS. Anyone turning that back on should have
+# to type the word "insecure"; a terse --no-auth is too easy to copy out of a
+# forum post without reading what it does.
+no_auth_requested() {
+    local arg
+    for arg in "$@"; do
+        [ "$arg" = "--insecure-no-auth" ] && return 0
+    done
+    return 1
+}
+
+# env_value <envfile> <key>
+# Echo the LAST value assigned to <key> in <envfile>, or "" if the file or key
+# is absent. Last-wins matches how docker compose parses a .env with a
+# duplicated key, so a summary built on this can't disagree with what compose
+# actually loaded.
+#
+# The `|| true` is load-bearing under `set -euo pipefail`: grep exits 1 on
+# no-match and pipefail propagates that out of the command substitution,
+# aborting the caller instead of reporting "unset" (the same trap
+# vault_status_line documents above).
+env_value() {
+    local envfile="${1:?envfile required}" key="${2:?key required}"
+    [ -f "$envfile" ] || { printf '%s\n' ""; return 0; }
+    grep -E "^[[:space:]]*${key}=" "$envfile" 2>/dev/null | tail -n1 | cut -d= -f2- || true
+}
+
+# auth_enforced <envfile>
+# True when this deployment will ENFORCE X-API-Key auth.
+#
+# Mirrors two layers that must agree, or the installer's summary lies:
+#   1. docker-compose.yml passes AUTH_ENABLED: ${AUTH_ENABLED:-true}. The `:-`
+#      form treats UNSET *and EMPTY* alike, so both an absent line and a bare
+#      `AUTH_ENABLED=` resolve to the compose default, true.
+#   2. The services parse it with pydantic (auth/config.py AuthSettings.ENABLED:
+#      bool), which reads 0/off/f/false/n/no as false and 1/on/t/true/y/yes as
+#      true. Anything else raises at startup — loud, not silent — so treating
+#      only the documented false-y spellings as "off" here cannot understate
+#      enforcement on a stack that actually boots.
+auth_enforced() {
+    local envfile="${1:?envfile required}" value
+    value="$(env_value "$envfile" AUTH_ENABLED)"
+    # Empty/absent -> compose default (true).
+    [ -n "$value" ] || return 0
+    case "$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')" in
+        0|off|f|false|n|no) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+# effective_bind_addr <envfile>
+# Echo the address the published ports will actually bind to. Absent or empty
+# resolves to 127.0.0.1, matching docker-compose.yml's ${BIND_ADDR:-127.0.0.1}
+# (`:-` again: empty behaves as unset). The installer's closing summary prints
+# reachable URLs and a firewall warning off this — both are false statements
+# if it assumes the pre-BIND_ADDR 0.0.0.0 behaviour.
+effective_bind_addr() {
+    local envfile="${1:?envfile required}" value
+    value="$(env_value "$envfile" BIND_ADDR)"
+    if [ -z "$value" ]; then
+        printf '%s\n' "127.0.0.1"
+    else
+        printf '%s\n' "$value"
+    fi
+}
+
+# bind_addr_is_public <addr>
+# True when <addr> accepts connections from off-box. Only the loopback
+# literals are private; anything else (0.0.0.0, ::, a LAN IP, a public IP)
+# reaches at least one non-loopback interface and earns the firewall warning.
+bind_addr_is_public() {
+    case "${1:-}" in
+        127.0.0.1|localhost|::1|"[::1]") return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
 # configure_env <envfile> <example> <vps_ip> <neo4j_password>
 #
 # Validates the two installer prompts and atomically writes <envfile> from

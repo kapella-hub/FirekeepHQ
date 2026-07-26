@@ -14,6 +14,14 @@ jobs:
   install-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    # Every `run:` here uses `bash -eo pipefail`, not the Linux default `bash -e`.
+    # Without pipefail, `a | b` reports b's exit status: a failing `curl` piped
+    # into `tar`, or a failing `install.sh` piped into `tee`, both report success
+    # and the job goes green over a broken result. Guarded by
+    # tests/test_workflow_pipefail.py.
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
 
@@ -32,11 +40,27 @@ jobs:
       - name: Run the documented install non-interactively
         env:
           # A stranger runs `bash install.sh` and answers two prompts.
+          # No flags: this must exercise the SHIPPED defaults, which since
+          # audit blocker 7 means auth enforced. Adding --insecure-no-auth
+          # here would make every assertion below test the wrong product.
           FIREKEEP_SMOKE_VPS_IP: "127.0.0.1"
           FIREKEEP_SMOKE_NEO4J_PASSWORD: "smoke-test-password"
+        # `shell: bash` is load-bearing, not style. The DEFAULT shell for a
+        # `run:` step on Linux is `bash -e {0}` -- WITHOUT pipefail. Piping
+        # install.sh into `tee` moved it out of the last position, so the step's
+        # exit status became tee's, which is always 0: a failing install would
+        # have reported success and every assertion below would then run against
+        # a half-built stack. `shell: bash` selects
+        # `bash --noprofile --norc -eo pipefail {0}`, which restores it -- and
+        # makes the two later comments in this file that already claim
+        # "the step shell is bash -eo pipefail" true.
+        #
+        # NOTE: install.log holds the one-time admin key install.sh prints. The
+        # runner is destroyed after the job and nothing uploads it as an
+        # artifact. Do not add an upload-artifact step for it.
         run: |
           printf '%s\n%s\n' "$FIREKEEP_SMOKE_VPS_IP" "$FIREKEEP_SMOKE_NEO4J_PASSWORD" \
-            | bash install.sh
+            | bash install.sh 2>&1 | tee install.log
 
       - name: Assert no unsubstituted placeholders survived in .env
         run: |
@@ -98,18 +122,130 @@ jobs:
             *) echo "::error::dashboard rejected the installer's own generated credentials (got $code) -- the stored password hash is likely unparseable by nginx"; exit 1 ;;
           esac
 
-      - name: Assert a memory round-trips
+      - name: Assert the audit's actual finding is closed — vault is not open
+        # Blocker 7 in one probe. On the shipped default this returned 200 and
+        # the metadata of every stored secret to an unauthenticated caller; on
+        # the author's own VPS that meant 12 real secrets reachable from the
+        # public internet. 401 is the only acceptable answer.
+        #
+        # The other two codes are named explicitly because they fail for
+        # DIFFERENT reasons and a bare "not 401" would hide which:
+        #   503 — AUTH_ENABLED regressed to false. cortex then refuses to
+        #         mount /vault/* at all and serves the disabled-surface router
+        #         instead (cortex/app/main.py). The stack is open again.
+        #   200 — the route is mounted and answered an unkeyed request. The
+        #         middleware is not enforcing. This is the original bug.
         run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8100/vault/secrets)
+          echo "unauthenticated GET /vault/secrets -> $code"
+          case "$code" in
+            401) echo "vault is closed to unauthenticated callers" ;;
+            503) echo "::error::AUTH_ENABLED is false on a default install — the blocker-7 remedy has regressed"; exit 1 ;;
+            200) echo "::error::/vault/secrets served an UNAUTHENTICATED request — secrets are exposed"; exit 1 ;;
+            *)   echo "::error::unexpected response from /vault/secrets ($code)"; exit 1 ;;
+          esac
+
+      - name: Assert a memory round-trips — rejected unkeyed, works with the minted key
+        # Two-sided ON PURPOSE. The keyed round-trip alone is not a test of
+        # this fix: it passes just as happily against a wide-open stack, so if
+        # the default ever flipped back to unauthenticated this job would stay
+        # green. The unkeyed half is what makes the check discriminate.
+        #
+        # And the keyed half is not merely "the key works": it asserts the
+        # written memory comes BACK, so a genuinely broken write/embed/recall
+        # path still fails here even when auth is perfectly configured.
+        run: |
+          # (1) Unkeyed must be REJECTED.
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8100/memory/learn \
+            -H 'Content-Type: application/json' \
+            -d '{"domain":"smoke","action":"unauthenticated probe","outcome":"must be rejected"}')
+          echo "unauthenticated POST /memory/learn -> $code"
+          if [ "$code" != "401" ]; then
+            echo "::error::POST /memory/learn accepted an unauthenticated write (got $code, want 401)"
+            exit 1
+          fi
+
+          # (2) Keyed must round-trip. FIREKEEP_INTERNAL_KEY is minted into .env
+          # by deploy/bootstrap-keys.sh during the install above -- this is the
+          # operator's real post-install path, not a key manufactured by CI.
+          # `|| true` because the step shell is `bash -eo pipefail`: a grep
+          # miss would otherwise abort with no diagnosis of WHY.
+          KEY="$(grep '^FIREKEEP_INTERNAL_KEY=' .env | cut -d= -f2- || true)"
+          if [ -z "$KEY" ]; then
+            echo "::error::install.sh did not mint FIREKEEP_INTERNAL_KEY into .env"
+            exit 1
+          fi
+          echo "::add-mask::$KEY"
+
           curl -fsS -X POST http://127.0.0.1:8100/memory/learn \
             -H 'Content-Type: application/json' \
+            -H "X-API-Key: $KEY" \
             -d '{"domain":"smoke","action":"ran the install smoke test",
                  "outcome":"the stack accepted a write"}'
           sleep 5
           BODY=$(curl -fsS -X POST http://127.0.0.1:8100/memory/recall \
             -H 'Content-Type: application/json' \
+            -H "X-API-Key: $KEY" \
             -d '{"task":"install smoke test","format":"raw"}')
           echo "$BODY"
           echo "$BODY" | grep -q "smoke" || { echo "::error::recall did not return the written memory"; exit 1; }
+
+      - name: Assert every key the stack needs to talk to itself was minted
+        # Under AUTH_ENABLED=true the internal service-to-service calls are no
+        # longer optional plumbing -- an unminted key means a silent 401 on a
+        # path that swallows its own failures. RELAY_INTERNAL_API_KEY is the
+        # one that was missing: docker-compose.yml has always read it
+        # (NR_FIREKEEP_API_KEY: ${RELAY_INTERNAL_API_KEY:-}) but nothing minted
+        # it, so Relay's NexusScope decision writes into Bridge went out
+        # unkeyed. Bridge gates that route on session:write, and
+        # relay/app/scope.py _persist_to_bridge is best-effort -- it would have
+        # logged a warning and dropped the decision, with nothing user-visible.
+        run: |
+          rc=0
+          for var in FIREKEEP_INTERNAL_KEY DASHBOARD_API_KEY RELAY_INTERNAL_API_KEY; do
+            val="$(grep "^${var}=" .env | cut -d= -f2- || true)"
+            if [ -z "$val" ]; then
+              echo "::error::${var} is empty or absent in .env after install"
+              rc=1
+            else
+              echo "::add-mask::$val"
+              echo "$var: minted"
+            fi
+          done
+          exit $rc
+
+      - name: Assert the installer told the operator how to authenticate
+        # With auth on by default, an operator who finishes the install without
+        # the admin key cannot mint teammate keys or read the vault -- and the
+        # key is printed once and deliberately never stored. bootstrap-keys.sh
+        # prints it near the START of the run, before a container build and a
+        # ~3.3GB model pull, so by the time the summary appears it is thousands
+        # of lines up the scrollback. install.sh re-surfaces it in the closing
+        # summary; if that ever silently stops happening, a fresh install
+        # becomes unadministrable and nothing else in this job would notice.
+        run: |
+          rc=0
+          grep -q 'Auth:          ENFORCED' install.log \
+            || { echo "::error::summary did not report auth as ENFORCED"; rc=1; }
+          grep -q 'ADMIN API KEY' install.log \
+            || { echo "::error::summary did not surface the admin API key"; rc=1; }
+          grep -q 'firekeep-admin keys create' install.log \
+            || { echo "::error::summary did not show how to issue a teammate key"; rc=1; }
+          # The admin key block must appear AFTER the health checks, not only
+          # in bootstrap-keys.sh's output at the top -- that is the entire
+          # point of re-surfacing it.
+          #
+          # `|| true` on both: the step shell is `bash -eo pipefail`, so a grep
+          # that matches nothing would abort the step right here and the
+          # ::error:: below would never print -- turning a precise diagnosis
+          # into a silent exit code.
+          last_admin=$(grep -n 'ADMIN API KEY' install.log | tail -n1 | cut -d: -f1 || true)
+          firekeep_running=$(grep -n 'Firekeep is running' install.log | tail -n1 | cut -d: -f1 || true)
+          if [ -z "$last_admin" ] || [ -z "$firekeep_running" ] || [ "$last_admin" -lt "$firekeep_running" ]; then
+            echo "::error::the admin key is not reprinted in the closing summary (only at the top, where it scrolls away)"
+            rc=1
+          fi
+          exit $rc
 
       - name: Record the real resource high-water mark
         run: |

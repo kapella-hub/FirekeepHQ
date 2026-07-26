@@ -168,22 +168,33 @@ def require_scope_asgi(request, scope: str) -> dict:
     which only init_auth() sets and only the Cortex REST lifespan calls: in
     the FastMCP service processes (bridge/relay/sentinel) that flag is
     permanently False, which made every scope gate here pass anonymously
-    until the 2026-07-16 fix. When auth is disabled, this passes through
-    anonymously, mirroring require_scope(). When auth IS enabled but no
-    identity was attached (e.g. this route sits under FirekeepKeyAuthMiddleware's
-    skip_paths, or the middleware isn't wired into this app), this fails
-    closed with a 401 rather than silently granting anonymous/wildcard access.
+    until the 2026-07-16 fix. When auth is disabled, the caller becomes the
+    anonymous identity and is scope-checked like any other — mirroring
+    require_scope(); non-admin scopes pass, "admin" is refused (audit blocker
+    7). When auth IS enabled but no identity was attached (e.g. this route sits
+    under FirekeepKeyAuthMiddleware's skip_paths, or the middleware isn't wired
+    into this app), this fails closed with a 401 rather than silently granting
+    anonymous/wildcard access.
     """
     from auth import keys as _keys
 
     if not get_auth_settings().ENABLED:
-        return _keys._ANONYMOUS_IDENTITY
+        # Same correction as require_scope(): this used to return the anonymous
+        # identity WITHOUT consulting `scope`, so Bridge's admin-only
+        # POST /ops/distill-dlq/requeue was open to anyone on the port whenever
+        # auth was off. Wildcard is not honoured on this path — see
+        # keys.scopes_allow.
+        anon = _keys._ANONYMOUS_IDENTITY
+        if not _keys.scopes_allow(anon["scopes"], scope, allow_wildcard=False):
+            raise ScopeError(403, _keys.anonymous_denied_detail(scope))
+        return anon
 
     identity = request.scope.get("state", {}).get("identity")
     if identity is None:
         raise ScopeError(401, "No identity attached — auth is enabled but this route is not covered by FirekeepKeyAuthMiddleware")
 
+    # Wildcard IS honoured for a real key: the owner/dashboard keys carry ["*"].
     scopes = identity.get("scopes", [])
-    if "*" not in scopes and scope not in scopes:
+    if not _keys.scopes_allow(scopes, scope):
         raise ScopeError(403, f"Insufficient scope: requires '{scope}', key has {scopes}")
     return identity

@@ -73,6 +73,37 @@ def test_ops_router_registers_expected_paths():
     assert "/ops/dlq/requeue" in paths
 
 
+# --- admin-scope gate -------------------------------------------------------
+# Three routes here are `Depends(require_scope("admin"))`. Since 2026-07-26 that
+# gate bites even when AUTH_ENABLED=false: the disabled path used to return the
+# anonymous identity without consulting the scope at all, which is what left
+# /vault/secrets and /auth/keys open on a default install (audit blocker 7).
+#
+# These tests assert the routes' own logic -- that they forward `limit` and name
+# the right queue -- so they build the router with the gate stubbed out. The gate
+# itself is covered by test_admin_routes_refuse_anonymous_when_auth_disabled
+# below, and by auth/tests/. Bypassing a check in a unit test is only safe when
+# some other test proves the check is there.
+_ADMIN = {"agent_id": "test-admin", "scopes": ["*"], "authenticated": True}
+
+
+def _ops_router_without_admin_gate():
+    """create_ops_router() with require_scope patched to a no-op at build time.
+
+    Patch `app.ops.require_scope`, not `auth.middleware.require_scope`:
+    app/ops.py did `from auth.middleware import require_scope` at import, so it
+    holds its own reference and patching the source module would not reach it.
+    The patch must also be active while the router is CONSTRUCTED, because the
+    dependency is captured into the route at decoration time.
+    """
+    from unittest.mock import patch
+
+    from app.ops import create_ops_router
+
+    with patch("app.ops.require_scope", lambda scope: (lambda: _ADMIN)):
+        return create_ops_router()
+
+
 def test_post_dlq_requeue_forwards_limit_and_names_queue():
     """POST /ops/dlq/requeue drives app.workers.backfill.requeue_dlq and tags
     the response with the queue it operates on (memory_backfill_dlq only —
@@ -83,10 +114,9 @@ def test_post_dlq_requeue_forwards_limit_and_names_queue():
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from app.ops import create_ops_router
 
     test_app = FastAPI()
-    test_app.include_router(create_ops_router())
+    test_app.include_router(_ops_router_without_admin_gate())
 
     requeue_result = {
         "status": "completed",
@@ -112,10 +142,9 @@ def test_post_dlq_requeue_rejects_out_of_range_limit():
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from app.ops import create_ops_router
 
     test_app = FastAPI()
-    test_app.include_router(create_ops_router())
+    test_app.include_router(_ops_router_without_admin_gate())
     client = TestClient(test_app)
 
     assert client.post("/ops/dlq/requeue?limit=0").status_code == 422
@@ -227,10 +256,9 @@ def test_post_event_dlq_retry_route_forwards_limit_and_names_queue():
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from app.ops import create_ops_router
 
     test_app = FastAPI()
-    test_app.include_router(create_ops_router())
+    test_app.include_router(_ops_router_without_admin_gate())
     retry_result = {"status": "completed", "requeued": 2, "failed": 0, "remaining": 0}
 
     with patch("app.ops.retry_event_dlq", AsyncMock(return_value=retry_result)) as spy:
@@ -437,3 +465,37 @@ def test_distill_dlq_read_from_bridge_db_3():
         resp = TestClient(test_app).get("/ops/queues")
 
     assert resp.json()["queues"]["distill_dlq"] == 11  # read from /3, not -999
+
+
+def test_admin_routes_refuse_anonymous_when_auth_disabled():
+    """The gate the three tests above stub out must actually refuse.
+
+    This is the regression guard for audit blocker 7's second remedy. Before the
+    fix, require_scope returned the anonymous identity on the AUTH_ENABLED=false
+    path WITHOUT comparing scopes, so every admin route answered 200 to anyone
+    who could reach the port. Asserting only the contents of ANONYMOUS_SCOPES
+    would not have caught that -- the list was never consulted.
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from app.ops import create_ops_router
+    from auth import keys as _keys
+
+    assert _keys._AUTH_ENABLED is False, "this test is about the auth-DISABLED path"
+    assert "admin" not in _keys.ANONYMOUS_SCOPES
+
+    test_app = FastAPI()
+    test_app.include_router(create_ops_router())  # the REAL gate, not the stub
+    client = TestClient(test_app)
+
+    for method, path in (
+        ("post", "/ops/dlq/requeue"),
+        ("post", "/ops/dlq/retry-events"),
+    ):
+        resp = getattr(client, method)(path)
+        assert resp.status_code == 403, f"{method.upper()} {path} -> {resp.status_code}"
+        assert "admin" in resp.json()["detail"]
+
+    # ...while an ungated route on the same router still answers.
+    assert client.get("/ops/queues").status_code in (200, 500)

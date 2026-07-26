@@ -38,8 +38,17 @@ services:
   # App services — rebound to loopback (Caddy proxies to them
   # over the compose network; host bindings kept for SSH/local
   # debugging only). `!override` replaces the base list instead
-  # of merging (a merge would double-bind the same host port).
-  # Requires Docker Compose >= v2.24.4.
+  # of merging (a merge would double-bind the same host port —
+  # "address already in use" on `up`). Requires Docker Compose
+  # >= v2.24.4.
+  #
+  # Still load-bearing now that the base file defaults to
+  # ${BIND_ADDR:-127.0.0.1}: these are LITERAL 127.0.0.1 on
+  # purpose, so an office operator who sets BIND_ADDR=0.0.0.0
+  # for some other reason cannot accidentally publish the app
+  # services alongside Caddy. Caddy above is the one deliberate
+  # exception — it IS the network-reachable surface here, and
+  # it terminates TLS with the internal CA.
   # ============================================================
   dashboard:
     ports: !override

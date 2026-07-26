@@ -1,9 +1,18 @@
 # Office Deployment Runbook — TLS front + full-surface auth (SP1a)
 
-The office instance differs from the personal VPS in three ways:
-1. `AUTH_ENABLED=true` — every MCP and REST request needs a valid `X-API-Key`.
-2. All app ports are rebound to `127.0.0.1` via the `docker-compose.office.yml`
-   override; the only network-reachable surface is Caddy on :443 (+ :80 redirect).
+Since 2026-07-26 the first two items below are **baseline everywhere**, not office
+specifics: `AUTH_ENABLED` defaults to `true` and app ports bind to `127.0.0.1` on
+every install. What still makes this deployment different is the TLS front and the
+multi-person key model.
+
+1. `AUTH_ENABLED=true` — every MCP and REST request needs a valid `X-API-Key`. Now
+   the default; the office difference is that keys are issued *per person* rather
+   than one owner holding the admin key.
+2. App ports are pinned to `127.0.0.1` by the `docker-compose.office.yml` override
+   rather than by `BIND_ADDR`. The override uses `!override` on each `ports:` list,
+   so it wins regardless of what `BIND_ADDR` is set to — an operator who sets
+   `BIND_ADDR=0.0.0.0` here does **not** widen the office deployment. The only
+   network-reachable surface stays Caddy on :443 (+ :80 redirect).
 3. Caddy terminates TLS with an internal CA and routes by path:
    `https://<host>/mcp/<svc>` → the service's `/mcp` endpoint, and
    `https://<host>/api/<svc>/...` → the service's REST routes.
@@ -18,9 +27,13 @@ keys locks itself out (even `POST /auth/keys` returns 401).
 BARE `docker compose` (no `-f` flags) for every build/up/restart. Docker
 Compose v2 reads `COMPOSE_FILE` from `.env` automatically, so setting it once
 makes every future bare `docker compose` call transparently load both files —
-without it, a routine `update.sh` silently drops the Caddy TLS front and
-rebinds every app port back to `0.0.0.0` (see §6 of the ledger / final-review
-fix wave). `install.sh --office` writes this line automatically on a fresh
+without it, a routine `update.sh` silently drops the Caddy TLS front (see §6 of
+the ledger / final-review fix wave) — so the only TLS-terminated, path-routed
+entry point to this deployment disappears, and the app ports fall back to
+whatever `BIND_ADDR` says in the base compose file. That is loopback by default,
+which fails safe; but if this host also sets `BIND_ADDR=0.0.0.0` for any reason,
+losing the override republishes every app port in the clear, with no Caddy in
+front. `install.sh --office` writes this line automatically on a fresh
 `.env` (it also writes `FIREKEEP_OFFICE_MODE=true`, a separate marker that
 `update.sh`'s office-front safety guard uses to know this deployment is
 office at all — the guard can't use `docker-compose.office.yml`'s mere
@@ -204,12 +217,27 @@ it re-registers the internal + dashboard keys from the plaintext still in
 `.env` and mints a NEW admin key (printed once). Teammate keys must be
 re-issued via `deploy/firekeep-admin keys create`.
 
-**Locked out?** (lost admin key, bootstrap script unavailable): two doors, on
-the office host itself:
-1. Soft: set `AUTH_ENABLED=false` in `.env`, `docker compose up -d`, mint keys
-   via `POST /auth/keys` (anonymous passes through when disabled), flip back.
-2. Direct hash write (no restart) — mirrors `auth/middleware.py` `create_key`
-   exactly (`auth:key:{sha256}` hash + `auth:key_index` zset):
+**Locked out?** (lost admin key): two doors, on the office host itself.
+
+1. **Re-run the bootstrap script** — the normal answer:
+   ```bash
+   bash deploy/bootstrap-keys.sh     # idempotent; prints a NEW admin key once
+   ```
+   It talks to Redis DB 7 with `redis-cli` and never calls the HTTP API, so
+   being locked out of `/auth/keys` does not block it. No restart needed: keys
+   are read per request.
+
+   > **Turning auth off is NOT a recovery door, and stopped being one on
+   > 2026-07-26.** This runbook used to say: set `AUTH_ENABLED=false`, mint via
+   > `POST /auth/keys` because "anonymous passes through when disabled", then
+   > flip back. That route is `require_scope("admin")`, and the anonymous
+   > identity is now deliberately never granted `admin` — with auth off you get
+   > a **403**, not a pass-through. Disabling auth to recover now costs you the
+   > stack's protection and still does not mint a key.
+
+2. **Direct hash write** (if the script itself is unavailable) — mirrors
+   `auth/middleware.py` `create_key` exactly (`auth:key:{sha256}` hash +
+   `auth:key_index` zset):
    ```bash
    KEY="nxs_$(openssl rand -hex 24)"
    HASH=$(printf '%s' "$KEY" | sha256sum | cut -d' ' -f1)

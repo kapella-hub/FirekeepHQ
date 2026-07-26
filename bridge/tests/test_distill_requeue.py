@@ -181,9 +181,37 @@ class TestRequeueRoute:
         spy.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_auth_disabled_passes_through(self, auth_disabled, monkeypatch):
+    async def test_auth_disabled_still_refuses_anonymous(self, auth_disabled, monkeypatch):
+        """Disabling auth is not a way to reach an admin route.
+
+        This test was named `test_auth_disabled_passes_through` and asserted
+        200. That WAS the behaviour, and it was audit blocker 7: require_scope_asgi
+        returned the anonymous identity on the disabled path without ever
+        comparing scopes, so this DLQ requeue — and, on Cortex, GET /vault/secrets
+        and POST /auth/keys — answered anyone who could reach the port.
+
+        The requeue must also not run: a 403 that still drained the DLQ would be
+        a refusal in name only.
+        """
         spy = AsyncMock(return_value=dict(_OK_RESULT, requeued=0))
         monkeypatch.setattr(mcp_mod, "requeue_distill_dlq_records", spy)
         monkeypatch.setattr(mcp_mod, "get_redis", AsyncMock(return_value=AsyncMock()))
         resp = await mcp_mod._requeue_distill_dlq(_make_request())
-        assert resp.status_code == 200
+        assert resp.status_code == 403
+        spy.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_auth_disabled_allows_a_non_admin_scope(self, auth_disabled, monkeypatch):
+        """...and the disabled path is not simply refusing everything.
+
+        With auth off the product must still work for a single user without key
+        management. Only `admin` is withheld — see auth/keys.py ANONYMOUS_SCOPES.
+        """
+        from auth import keys as _keys
+
+        assert "session:write" in _keys.ANONYMOUS_SCOPES
+        assert "admin" not in _keys.ANONYMOUS_SCOPES
+        assert _keys.scopes_allow(list(_keys.ANONYMOUS_SCOPES), "session:write",
+                                  allow_wildcard=False) is True
+        assert _keys.scopes_allow(list(_keys.ANONYMOUS_SCOPES), "admin",
+                                  allow_wildcard=False) is False

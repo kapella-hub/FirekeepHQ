@@ -19,16 +19,19 @@ from fastapi import HTTPException, Request
 
 from auth import keys as _keys
 from auth.keys import (  # noqa: F401 — re-exports (same objects as auth.keys)
+    ANONYMOUS_SCOPES,
     SCOPES,
     _ANONYMOUS_IDENTITY,
     _KEY_INDEX,
     _KEY_PREFIX,
     _hash_key,
+    anonymous_denied_detail,
     create_key,
     generate_api_key,
     init_auth,
     list_keys,
     revoke_key,
+    scopes_allow,
     validate_key,
 )
 
@@ -43,7 +46,8 @@ logger = logging.getLogger(__name__)
 def require_scope(scope: str):
     """Create a FastAPI dependency that checks for a required scope.
 
-    When AUTH_ENABLED=False: returns anonymous identity (pass-through).
+    When AUTH_ENABLED=False: the caller is the anonymous identity, which is
+    scope-checked like any other — non-admin scopes pass, "admin" is refused.
     When AUTH_ENABLED=True: validates X-API-Key header and checks scopes.
 
     NOTE: reads the enable flag via the auth.keys module attribute (not an
@@ -56,7 +60,19 @@ def require_scope(scope: str):
     """
     async def _check_scope(request: Request) -> dict[str, Any]:
         if not _keys._AUTH_ENABLED:
-            return _keys._ANONYMOUS_IDENTITY
+            # Pass-through, but NOT a free pass. Until audit blocker 7 this
+            # returned the anonymous identity unconditionally, WITHOUT looking
+            # at `scope` at all — so require_scope("admin") on /vault/secrets
+            # and /auth/keys was satisfied by anyone who could reach the port,
+            # whatever the anonymous scope list said. Narrowing that list is
+            # only half the fix; the check has to actually run.
+            anon = _keys._ANONYMOUS_IDENTITY
+            if not _keys.scopes_allow(anon["scopes"], scope, allow_wildcard=False):
+                raise HTTPException(
+                    status_code=403,
+                    detail=_keys.anonymous_denied_detail(scope),
+                )
+            return anon
 
         # Extract API key from header
         api_key = request.headers.get("X-API-Key")
@@ -74,9 +90,10 @@ def require_scope(scope: str):
                 detail="Invalid or expired API key",
             )
 
-        # Check scope
+        # Check scope. Wildcard IS honoured here: bootstrap-keys.sh mints the
+        # owner's admin key and the dashboard key with ["*"].
         key_scopes = identity.get("scopes", [])
-        if "*" not in key_scopes and scope not in key_scopes:
+        if not _keys.scopes_allow(key_scopes, scope):
             raise HTTPException(
                 status_code=403,
                 detail=f"Insufficient scope: requires '{scope}', key has {key_scopes}",

@@ -112,9 +112,10 @@ def test_briefing_sections_status_and_vault_fail_loud(monkeypatch):
     strategy_tips, cross_agent, skills, discipline, dlq) report "empty" —
     nothing to show. Five sections correctly degrade to "unavailable" because
     their upstream genuinely fails in this minimal app:
-    - vault: module-level vault store is never init_vault()-ed, and the
-      anonymous dev identity's ["*"] scope passes the admin gate, so
-      vault_section calls the real list_secrets() and the raise propagates.
+    - vault: see below. As of 2026-07-26 the anonymous identity no longer
+      carries ["*"], so on the auth-disabled path vault_section is OMITTED
+      for scope rather than attempted — which is the correct new behaviour
+      and is asserted separately.
     - environment / tasks / bulletins / resumable_sessions (Task 8): the
       no-op http_client fake raises RuntimeError("offline") on every call, so
       each outbound section's primary _get_json() call raises and the
@@ -128,21 +129,59 @@ def test_briefing_sections_status_and_vault_fail_loud(monkeypatch):
     for name, sec in body["sections"].items():
         assert set(sec.keys()) == {"status", "error", "data"}, name
 
-    unavailable_sections = {"environment", "tasks", "bulletins", "resumable_sessions", "vault"}
+    unavailable_sections = {"environment", "tasks", "bulletins", "resumable_sessions"}
     for name, sec in body["sections"].items():
-        if name in unavailable_sections:
+        if name in unavailable_sections or name == "vault":
             continue
         assert sec["status"] == "empty", f"{name}: {sec}"
 
-    for name in unavailable_sections - {"vault"}:
+    for name in unavailable_sections:
         sec = body["sections"][name]
         assert sec["status"] == "unavailable", f"{name}: {sec}"
         assert "offline" in (sec["error"] or ""), f"{name}: {sec}"
 
+    # Vault is now OMITTED, not attempted: the anonymous identity lost "*" when
+    # audit blocker 7 was fixed, so it no longer passes the admin gate. The
+    # distinction the briefing schema draws matters here -- "empty with an
+    # omitted_reason" is a deliberate withholding, NOT a silent failure, and it
+    # must not count toward degraded.
     vault = body["sections"]["vault"]
-    assert vault["status"] == "unavailable"
-    assert "vault" in (vault["error"] or "").lower()
+    assert vault["status"] == "empty", vault
+    assert vault["error"] is None, vault
+    assert vault["data"]["omitted_reason"] == "insufficient scope", vault
 
-    # Genuine upstream failures (vault uninitialized + 4 outbound sections
-    # hitting the offline http_client fake) => degraded True.
+    # 4 genuine upstream failures (the outbound sections hitting the offline
+    # http_client fake) => degraded True. Vault contributes nothing either way.
     assert body["degraded"] is True
+
+
+def test_vault_section_still_fails_loud_for_an_admin_caller(monkeypatch):
+    """Withholding for scope must not have replaced the fail-loud contract.
+
+    The test above lost its vault-failure coverage when the anonymous identity
+    stopped being admin -- the section is now withheld before it can fail. That
+    would leave "a broken vault backend is reported, not swallowed" untested, so
+    assert it directly with a caller that DOES pass the gate. Without this, a
+    regression that silently ate vault errors would go unnoticed, because the
+    only test that covered it now takes the omitted branch.
+    """
+    import asyncio
+
+    import pytest as _pytest
+
+    from app.briefing.sections import vault_section
+
+    # The section itself does not produce "unavailable" — it PROPAGATES, and the
+    # orchestrator (briefing/api.py) converts the raise into that status. So the
+    # contract to guard here is "an admin caller reaches the backend and a broken
+    # backend is not swallowed". A section that caught its own errors and returned
+    # {"status": "empty"} would look identical to the withheld case above and the
+    # briefing would report a dead vault as nothing-to-show.
+    with _pytest.raises(RuntimeError, match="[Vv]ault"):
+        asyncio.run(vault_section(["admin"]))
+
+    # ...and the withheld path returns instead of raising, for the same caller
+    # shape minus the scope. These two branches must stay distinguishable.
+    withheld = asyncio.run(vault_section(["memory:read"]))
+    assert withheld["status"] == "empty"
+    assert withheld["data"]["omitted_reason"] == "insufficient scope"

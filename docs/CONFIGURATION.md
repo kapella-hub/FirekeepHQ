@@ -11,7 +11,7 @@ cp .env.example .env
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `NEO4J_PASSWORD` | (required) | Neo4j database password |
-| `CORS_ORIGINS` | `["*"]` | Allowed CORS origins (set to dashboard URL) |
+| `CORS_ORIGINS` | `["*"]` | Allowed CORS origins. Only affects browsers calling a service **directly across origins** — the bundled dashboard on :8040 is same-origin through nginx, so this neither breaks nor fixes it |
 | `LLM_MODEL` | `qwen3:4b` | Ollama model for LLM inference |
 | `EMBEDDING_MODEL` | `mxbai-embed-large` | Embedding model |
 | `CORTEX_INSTALL_FINETUNE_DEPS` | `False` | Build-time toggle for optional CPU-only embedding fine-tuning deps on `cortex-worker` |
@@ -19,7 +19,8 @@ cp .env.example .env
 | `NB_PROACTIVE_RECALL_ENABLED` | `True` | Auto-inject memories on ctx_update |
 | `RP_ENABLED` | `True` | Enable replay trace event recording |
 | `RP_RETENTION_DAYS` | `30` | How long replay events are retained |
-| `AUTH_ENABLED` | `False` | Enforce API key authentication on all endpoints |
+| `BIND_ADDR` | `127.0.0.1` | Host interface the six published app ports (8040-8100) bind to. Loopback by default — a fresh install is reachable only from the machine it runs on. See [Binding and exposure](#binding-and-exposure). |
+| `AUTH_ENABLED` | `True` | Enforce per-key `X-API-Key` authentication on every MCP and REST surface. **Changed from `False` on 2026-07-26** — see [Authentication](#authentication). |
 | `SECRET_SCAN_ENABLED` | `True` | Scan memory writes for secrets |
 | `SECRET_SCAN_MODE` | `warn` | `warn` (log) or `block` (reject) when secrets found |
 | `EVAL_LLM_ENABLED` | `False` | Enable Tier 2 LLM-judged eval metrics |
@@ -36,6 +37,54 @@ cp .env.example .env
 | `CONFLUENCE_COLLECTOR_ENABLED` | `False` | Confluence (wiki) collector; requires `COLLECTORS_ENABLED=true` and `CONFLUENCE_SPACE_KEYS` |
 | `DECISION_ENABLED` | `True` | Enable the Decision Board synthesize endpoint (`POST /decision/synthesize`), backing the client-stdio `firekeep-decision` server |
 | `POLICY_DENY_PATHS` | `.env,*.key,*.pem,*.secret` | Comma-separated glob patterns for files that should be blocked from editing |
+
+## Authentication
+
+`AUTH_ENABLED` defaults to **`true`**. Every MCP and REST request needs a valid
+`X-API-Key` header; `/health`, `/version` and `/.well-known/agent.json` are the
+only pre-auth paths (plus `/docs`, `/redoc`, `/openapi.json` and the keyless
+`/dashboard` HTML shell on Cortex REST).
+
+The default flipped on 2026-07-26. It used to be `false`, which meant every
+caller on a fresh install was anonymous and held the `admin` scope — enough to
+read `GET /vault/secrets` and mint keys via `POST /auth/keys`. Combined with the
+old `0.0.0.0` port bindings, that was internet-reachable on a stock install.
+
+`install.sh` and `update.sh` both run `deploy/bootstrap-keys.sh` before the app
+containers start, so the keys exist by the time anything enforces them. That
+script writes Redis DB 7 directly with `redis-cli` rather than POSTing to a
+now-gated `/auth/keys`, so it cannot lock itself out.
+
+**`AUTH_ENABLED=false` is no longer an admin bypass.** The anonymous identity
+handed to callers when enforcement is off now carries every scope *except*
+`admin`, and the scope check actually runs on that path — so vault CRUD,
+`/auth/keys`, DLQ requeue, policy-rule toggles and pattern quarantine are
+refused with a 403 whether auth is on or off. Narrowing the scope list alone
+would have been half a fix: until 2026-07-26 the disabled path returned the
+anonymous identity without consulting the required scope at all.
+
+**That is not the same as safe.** With auth off, everything below admin —
+reading and writing memories, sessions, relay traffic, replay, evals — is open
+to whoever can reach the port, with no per-caller identity and no attribution.
+Do not turn it off on a stack anything else can reach. If you want single-user
+convenience without managing keys, be casual by leaving `BIND_ADDR` at
+`127.0.0.1` and keeping auth on, not by disabling auth.
+
+Keys minted by `deploy/bootstrap-keys.sh`:
+
+| Key | Where it lands | Scopes |
+|-----|----------------|--------|
+| `FIREKEEP_INTERNAL_KEY` | `.env` | `memory:write`, `session:read`, `eval:read`, `eval:write` — deliberately **not** admin |
+| `DASHBOARD_API_KEY` | `.env`, injected by dashboard nginx as `X-API-Key` on `/api/*` | `*` (admin) — behind nginx basic auth |
+| admin key | printed once to the terminal, never written to disk | `*` |
+
+`DASHBOARD_API_KEY` is load-bearing now, not optional: empty means nginx sends no
+header and every dashboard data tab 401s. Teammate keys come from
+`deploy/firekeep-admin keys create --agent <name>` (full non-admin scope set).
+
+See [DEPLOYMENT.md → Access and authentication](DEPLOYMENT.md#access-and-authentication)
+for the first-call walkthrough and [DEPLOYMENT-OFFICE.md](DEPLOYMENT-OFFICE.md)
+for the multi-person key model.
 
 ## Model Sizing
 
@@ -88,9 +137,44 @@ baked into the collection at creation.
 | 6379 | Redis | Redis (localhost) |
 | 11434 | Ollama | HTTP (localhost) |
 
-Infrastructure ports are bound to `127.0.0.1` only. Application ports are on `0.0.0.0`.
-
 Two MCP servers ship in the client kit as **stdio-local** processes and bind no port: `firekeep-symdex` (code intelligence, always installed) and `firekeep-decision` (the Decision Board, always installed — backed by Cortex `POST /decision/synthesize`).
+
+### Binding and exposure
+
+Infrastructure ports (Neo4j, Qdrant, Redis, Ollama) are bound to `127.0.0.1`
+literally and are **not** affected by `BIND_ADDR`. Widening the app surface
+should never publish the datastores: Redis here has no password at all, Qdrant
+holds every memory in plaintext, and Neo4j's password lives in the same `.env`
+an exposed service could leak. Need one remotely? Tunnel it
+(`ssh -L 6379:127.0.0.1:6379 <host>`).
+
+Application ports (8040-8100) bind to `${BIND_ADDR:-127.0.0.1}`. The default is
+loopback, so a stock install serves only the machine it runs on. Reach the
+dashboard from elsewhere with a tunnel:
+
+```bash
+ssh -L 8040:127.0.0.1:8040 user@host    # then open http://localhost:8040
+```
+
+To serve remote clients — a laptop running the agent kit against a VPS — set it
+explicitly:
+
+```bash
+# .env ships BIND_ADDR=127.0.0.1 — edit the line in place, never append a second one
+sed -i 's/^BIND_ADDR=.*/BIND_ADDR=0.0.0.0/' .env
+docker compose up -d          # recreates the app containers with new bindings
+```
+
+> **A host firewall will not contain a published port.** Docker publishes a port
+> by writing its own `DOCKER` iptables chain, which is evaluated *before* ufw's
+> `INPUT` rules — so `ufw deny 8100` does not close it, and `ufw allow from
+> <ip>` does not restrict it to that IP. This is not theoretical: it is exactly
+> how this stack's ports stayed open to the internet behind an active ufw. If
+> you need host-level filtering on a published port, write it into the
+> `DOCKER-USER` chain, which *is* traversed first; otherwise bind to loopback
+> and put a reverse proxy (see [DEPLOYMENT-OFFICE.md](DEPLOYMENT-OFFICE.md)) or
+> an SSH tunnel in front. `BIND_ADDR=0.0.0.0` plus `AUTH_ENABLED=true` means the
+> API key is the boundary — treat it that way.
 
 ## Intelligence Features
 

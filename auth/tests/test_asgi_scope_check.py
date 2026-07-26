@@ -27,6 +27,22 @@ def auth_enabled(monkeypatch):
     )
 
 
+@pytest.fixture
+def auth_disabled(monkeypatch):
+    """Pin disabled-ness EXPLICITLY rather than relying on the shipped default.
+
+    AuthSettings.ENABLED's default is flipping to true (audit blocker 7), and
+    AuthSettings also reads .env — a disabled-path test that leaves this
+    implicit would silently start exercising the enabled path instead.
+    """
+    import auth.asgi as asgi_module
+    from auth.config import AuthSettings
+    monkeypatch.setattr(
+        asgi_module, "get_auth_settings", lambda: AuthSettings(ENABLED=False),
+        raising=False,
+    )
+
+
 def test_enforces_scopes_from_env_settings_without_init_auth(monkeypatch):
     """Production regression (2026-07-16 review): the FastMCP services
     (bridge, relay, sentinel) never call init_auth(), so keys._AUTH_ENABLED
@@ -65,12 +81,22 @@ class TestRequireScopeAsgi:
             require_scope_asgi(_request({"agent_id": "a", "scopes": ["relay:read"], "key_id": "k1"}), "relay:write")
         assert exc_info.value.status_code == 403
 
-    def test_passes_through_anonymous_when_auth_disabled(self):
+    def test_passes_through_anonymous_when_auth_disabled(self, auth_disabled):
         # No identity attached to scope['state'] — mirrors FirekeepKeyAuthMiddleware
         # never having run because auth is disabled.
         identity = require_scope_asgi(_request(None), "relay:write")
         assert identity["agent_id"] == "anonymous"
-        assert "*" in identity["scopes"]
+        assert "admin" not in identity["scopes"]
+        assert "*" not in identity["scopes"]
+
+    def test_admin_refused_for_anonymous_when_auth_disabled(self, auth_disabled):
+        """Audit blocker 7, ASGI twin: the disabled path used to return the
+        anonymous identity without consulting `scope`, leaving Bridge's
+        admin-only POST /ops/distill-dlq/requeue open on an auth-off box."""
+        with pytest.raises(ScopeError) as exc_info:
+            require_scope_asgi(_request(None), "admin")
+        assert exc_info.value.status_code == 403
+        assert "AUTH_ENABLED" in exc_info.value.detail
 
     def test_raises_when_auth_enabled_but_no_identity_attached(self, auth_enabled):
         # Regression test: auth IS enabled but no identity was attached

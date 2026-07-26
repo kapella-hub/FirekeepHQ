@@ -59,6 +59,119 @@ fi
 echo "Pulling latest changes..."
 git pull
 
+# --- Security-default migration guard (runs AFTER the pull) ---------------
+# Two defaults changed in docker-compose.yml: AUTH_ENABLED now defaults to
+# true and the published ports now bind ${BIND_ADDR:-127.0.0.1} instead of
+# 0.0.0.0. Both are read from .env, and an .env written by an older installer
+# predates both — so this update silently changes the security posture of a
+# running deployment in two opposite directions. Neither may pass unremarked.
+#
+# Deliberately placed after `git pull` (the new compose file has to be on disk
+# for these defaults to mean anything) and before the rebuild/restart below,
+# so anything written here is in place when compose next reads .env.
+source "$(dirname "$0")/deploy/lib.sh"
+
+echo ""
+if auth_enforced .env; then
+    if [ -z "$(env_value .env AUTH_ENABLED)" ]; then
+        # No AUTH_ENABLED line at all: compose's ${AUTH_ENABLED:-true} turns
+        # enforcement ON at this restart. That is the fix landing, and it is
+        # the right outcome — but it is not what this deployment was doing a
+        # minute ago, and unkeyed callers are about to start getting 401.
+        echo "############################################################"
+        echo "# AUTH IS NOW ENFORCED on this deployment."
+        echo "#"
+        echo "# Your .env has no AUTH_ENABLED line, so it picks up the new"
+        echo "# default (true). Until now every API here accepted unkeyed"
+        echo "# calls, including GET /vault/secrets and POST /auth/keys."
+        echo "#"
+        echo "# What keeps working with no action from you:"
+        echo "#   - the dashboard (its nginx injects DASHBOARD_API_KEY)"
+        echo "#   - all internal service-to-service calls (keys are minted"
+        echo "#     into .env by deploy/bootstrap-keys.sh, run below)"
+        echo "#"
+        echo "# What breaks until you give it a key:"
+        echo "#   - any script, agent or client calling these APIs directly."
+        echo "#     Mint one per teammate:"
+        echo "#       deploy/firekeep-admin keys create --agent <name>"
+        echo "#"
+        echo "# To stay unauthenticated (NOT recommended — this is the"
+        echo "# configuration that leaked 12 secrets), add to .env:"
+        echo "#   AUTH_ENABLED=false"
+        echo "############################################################"
+    else
+        echo "[OK] Auth: ENFORCED (AUTH_ENABLED=$(env_value .env AUTH_ENABLED))"
+    fi
+else
+    # Explicitly false in .env. compose's :- default cannot override an
+    # explicit value, so this deployment stays wide open and the remedy has
+    # NOT reached it. This is the loudest thing update.sh prints.
+    echo "############################################################"
+    echo "# WARNING: AUTH IS DISABLED on this deployment."
+    echo "#"
+    echo "# .env sets AUTH_ENABLED=false explicitly, which overrides the"
+    echo "# new secure default. Every API on this host stays open to"
+    echo "# anyone who can reach the port — with no key:"
+    echo "#   GET  /vault/secrets   — reads your stored secrets"
+    echo "#   POST /auth/keys       — mints new API keys"
+    echo "#"
+    echo "# Fix (one line, then re-run this script):"
+    echo "#   AUTH_ENABLED=true"
+    echo "############################################################"
+fi
+
+echo ""
+if [ -z "$(env_value .env BIND_ADDR)" ]; then
+    # Pre-BIND_ADDR .env. Leaving the line absent would let compose's
+    # ${BIND_ADDR:-127.0.0.1} rebind all six published ports to loopback,
+    # cutting off every remote dashboard user, agent and client mid-update —
+    # a routine `git pull` script severing access, with "connection refused"
+    # as the only symptom and nothing in the output explaining it.
+    #
+    # ...unless this is an office deployment, where loopback is the INTENDED
+    # posture: docker-compose.office.yml rebinds every app port to 127.0.0.1
+    # and clients come in through Caddy on :443. Writing 0.0.0.0 there would
+    # preserve reachability nobody uses, and would do so by betting on how
+    # the base and override `ports:` entries merge. Keying off the same
+    # FIREKEEP_OFFICE_MODE marker the guard at the top of this script uses is
+    # correct either way, so the bet is never placed.
+    if grep -q '^FIREKEEP_OFFICE_MODE=true' .env 2>/dev/null; then
+        echo "[OK] Office deploy: leaving BIND_ADDR unset (ports stay on"
+        echo "     127.0.0.1 behind Caddy — see docs/DEPLOYMENT-OFFICE.md)"
+    else
+        # Preserve the reachability this deployment already had, explicitly,
+        # and say exactly what was written and how to lock it down. The
+        # judgement: for an UPGRADE path, silent breakage is worse than
+        # preserving the status quo loudly — and the auth block above means
+        # these ports are no longer the unauthenticated surface they were. A
+        # FRESH install gets the secure default instead: .env.example ships
+        # BIND_ADDR=127.0.0.1, so the line is present and this branch never
+        # fires for it.
+        echo "BIND_ADDR=0.0.0.0" >> .env
+        echo "############################################################"
+        echo "# NOTICE: BIND_ADDR=0.0.0.0 was added to your .env."
+        echo "#"
+        echo "# Published ports now honour \${BIND_ADDR:-127.0.0.1}. Your .env"
+        echo "# predates that setting, so without this line all six ports"
+        echo "# (8040-8100) would have dropped to loopback on this restart and"
+        echo "# cut off every remote client. Your current reachability is"
+        echo "# preserved unchanged."
+        echo "#"
+        echo "# Recommended once your clients are keyed: bind to loopback and"
+        echo "# reach the host over an SSH tunnel. In .env set"
+        echo "#   BIND_ADDR=127.0.0.1"
+        echo "# then re-run this script."
+        echo "############################################################"
+    fi
+else
+    BIND_ADDR_EFFECTIVE="$(effective_bind_addr .env)"
+    if bind_addr_is_public "$BIND_ADDR_EFFECTIVE"; then
+        echo "[OK] Ports publish on ${BIND_ADDR_EFFECTIVE} (reachable off-box)"
+    else
+        echo "[OK] Ports bind ${BIND_ADDR_EFFECTIVE} (loopback only)"
+    fi
+fi
+
 # --- Rebuild ---
 echo ""
 echo "Rebuilding changed services..."

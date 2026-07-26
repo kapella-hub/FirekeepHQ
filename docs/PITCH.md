@@ -131,7 +131,10 @@ Cost surface is bounded by what you choose to spend on the LLM tier; the cogniti
 
 ## What Management Actually Sees
 
-The **dashboard** at port 8040 is the public face. It is not a feature museum — it is operational:
+The **dashboard** on port 8040 is the public face — "public" to the operator, not
+to the network: it binds to loopback by default and sits behind its own login,
+so reaching it from a laptop means an SSH tunnel or a deliberate decision to
+expose it. It is not a feature museum — it is operational:
 
 - **Today's events** — live count of memory writes, recalls, coordination actions
 - **Agent inventory** — who's online, what they're working on, who's holding which leases
@@ -168,12 +171,18 @@ It is fully model-agnostic. Cortex is the memory layer regardless of whether the
 | **Deployment** | Single VPS, `docker compose up -d`; helper scripts for VPS provisioning and updates |
 | **Data stores** | Neo4j (graph), Qdrant (vectors), Redis (cache / streams / queues), Ollama (LLM inference) — all self-hosted |
 | **Local dev story** | `./install` / `firekeep install` installs the portable `firekeep-client` kit (`~/.firekeep/config` profiles, `firekeep-shim` transport, hook cores, sidecar); agents connect to the VPS/office over HTTP(S) with keyed, attributed identity |
-| **Security posture** | Backend ports localhost-only; optional API key auth with scopes; Fernet-encrypted vault; pre-edit policy engine; deny-list for sensitive paths (`.env`, `*.key`, `*.pem`) |
+| **Security posture** | Closed by default: app ports bind to localhost (`BIND_ADDR`, opt-in to widen); the datastores are loopback-only unconditionally and no setting exposes them; per-key scoped API auth is **on** (`AUTH_ENABLED=true`) with keys minted by the installer. Plus: Fernet-encrypted vault, pre-edit policy engine, deny-list for sensitive paths (`.env`, `*.key`, `*.pem`) |
 | **Symdex languages** | Python, JavaScript, TypeScript, Go, Rust, Java, PHP, C, C#, Ruby, Kotlin, Swift |
 
 ---
 
 ## The Demo (10 minutes)
+
+**Set up before the room fills.** Every angle below ends at a dashboard tab, and the
+dashboard binds to loopback by default — run the demo on the host itself, or bring the
+tunnel up in advance (`ssh -L 8040:127.0.0.1:8040 user@host`) and confirm the page loads.
+Have the dashboard login to hand. Discovering this in front of management is a bad ten
+minutes.
 
 For a management briefing, run one real task end-to-end. Three angles, pick one:
 

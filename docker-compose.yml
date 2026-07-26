@@ -1,6 +1,14 @@
 services:
   # ============================================================
   # Infrastructure
+  #
+  # These bindings stay LITERAL 127.0.0.1 — deliberately NOT ${BIND_ADDR}.
+  # BIND_ADDR exists so an operator can publish the APP ports to a LAN or the
+  # internet; nothing about that decision should also publish the datastores.
+  # Redis here has no password at all, Qdrant holds every memory in plaintext,
+  # and Neo4j's password lives in the same .env an exposed service could leak.
+  # Need one of these remotely? Tunnel it (ssh -L 6379:127.0.0.1:6379 host)
+  # instead of widening the binding.
   # ============================================================
 
   neo4j:
@@ -121,14 +129,37 @@ services:
         REGISTRY: ${REGISTRY:-docker.io/library}
     restart: unless-stopped
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    # BIND_ADDR is the HOST interface every published app port binds to, and it
+    # defaults to loopback: a default install is reachable only from the machine
+    # it runs on. Set BIND_ADDR=0.0.0.0 in .env to serve remote clients — and
+    # read the warning next to it in .env.example first, because a host firewall
+    # will not save you: Docker publishes a port by writing its own iptables
+    # DOCKER chain, which is evaluated BEFORE ufw's INPUT chain, so `ufw deny`
+    # does not contain a published port. That is exactly how this stack's ports
+    # stayed open to the internet behind an active ufw.
+    #
+    # The `--host 0.0.0.0` above is the IN-CONTAINER bind and must stay 0.0.0.0:
+    # it is what lets the compose network — and therefore the mapping below —
+    # reach uvicorn at all. Same for every MCP_HOST in this file.
     ports:
-      - "0.0.0.0:8100:8000"
+      - "${BIND_ADDR:-127.0.0.1}:8100:8000"
     environment:
       LLM_BASE_URL: http://ollama:11434/v1
       CORS_ORIGINS: ${CORS_ORIGINS:-["*"]}
       # v2: Replay, Auth
       RP_REDIS_URL: redis://redis:6379/6
-      AUTH_ENABLED: ${AUTH_ENABLED:-false}
+      # Auth is ON by default (all five services below carry the same default).
+      # With it off every caller is anonymous, and an anonymous caller could
+      # read GET /vault/secrets and mint keys via POST /auth/keys — that is how
+      # 12 real secrets left this stack's own VPS. Safe to default on because
+      # install.sh and update.sh both run deploy/bootstrap-keys.sh BEFORE the
+      # app containers start, and that script writes Redis DB 7 directly with
+      # redis-cli rather than POSTing to a now-401-gated /auth/keys, so it
+      # cannot lock itself out. /health and /version are on the auth skip list,
+      # so the installer's probes still pass. An existing .env that already
+      # says AUTH_ENABLED=false keeps winning — compose interpolates from .env,
+      # so this changes the default for NEW installs, not existing ones.
+      AUTH_ENABLED: ${AUTH_ENABLED:-true}
       AUTH_REDIS_URL: redis://redis:6379/7
       # Vault (encrypted secret storage, shares Redis DB 7 with auth)
       VAULT_ENABLED: ${VAULT_ENABLED:-true}
@@ -242,7 +273,7 @@ services:
     restart: unless-stopped
     command: python -m app.mcp_server
     ports:
-      - "0.0.0.0:8080:8080"
+      - "${BIND_ADDR:-127.0.0.1}:8080:8080"
     environment:
       FIREKEEP_API_URL: http://cortex-api:8000
       # SP1a: cortex-mcp holds NO key of its own — it forwards the CALLER's
@@ -252,7 +283,7 @@ services:
       MCP_HOST: "0.0.0.0"
       MCP_PORT: "8080"
       CORS_ORIGINS: ${CORS_ORIGINS:-["*"]}
-      AUTH_ENABLED: ${AUTH_ENABLED:-false}
+      AUTH_ENABLED: ${AUTH_ENABLED:-true}
       AUTH_REDIS_URL: redis://redis:6379/7
       # SP1b: briefing aggregator upstreams (Relay tasks/bulletins, Sentinel env)
       RELAY_URL: ${RELAY_URL:-http://relay:8050}
@@ -429,7 +460,7 @@ services:
         APP_VERSION: ${APP_VERSION:-0.6.0}
     restart: unless-stopped
     ports:
-      - "0.0.0.0:8070:8070"
+      - "${BIND_ADDR:-127.0.0.1}:8070:8070"
     environment:
       NB_REDIS_URL: redis://redis:6379/3
       NB_MCP_HOST: "0.0.0.0"
@@ -440,7 +471,7 @@ services:
       NB_FIREKEEP_API_KEY: ${FIREKEEP_INTERNAL_KEY:-}
       NB_FIREKEEP_NAMESPACE: ${NB_FIREKEEP_NAMESPACE:-default}
       RP_REDIS_URL: redis://redis:6379/6
-      AUTH_ENABLED: ${AUTH_ENABLED:-false}
+      AUTH_ENABLED: ${AUTH_ENABLED:-true}
       AUTH_REDIS_URL: redis://redis:6379/7
     env_file:
       - .env
@@ -474,7 +505,7 @@ services:
         APP_VERSION: ${APP_VERSION:-0.6.0}
     restart: unless-stopped
     ports:
-      - "0.0.0.0:8060:8060"
+      - "${BIND_ADDR:-127.0.0.1}:8060:8060"
     environment:
       NS_REDIS_URL: redis://redis:6379/4
       NS_MCP_HOST: "0.0.0.0"
@@ -485,7 +516,7 @@ services:
       NS_FIREKEEP_INTERNAL_KEY: ${FIREKEEP_INTERNAL_KEY:-}
       NS_CORS_ORIGINS: ${CORS_ORIGINS:-["*"]}
       RP_REDIS_URL: redis://redis:6379/6
-      AUTH_ENABLED: ${AUTH_ENABLED:-false}
+      AUTH_ENABLED: ${AUTH_ENABLED:-true}
       AUTH_REDIS_URL: redis://redis:6379/7
     env_file:
       - .env
@@ -538,7 +569,7 @@ services:
         APP_VERSION: ${APP_VERSION:-0.6.0}
     restart: unless-stopped
     ports:
-      - "0.0.0.0:8050:8050"
+      - "${BIND_ADDR:-127.0.0.1}:8050:8050"
     environment:
       NR_REDIS_URL: redis://redis:6379/5
       NR_MCP_HOST: "0.0.0.0"
@@ -547,10 +578,15 @@ services:
       NR_BRIDGE_URL: ${BRIDGE_URL:-http://bridge:8070}
       # SP2: outbound key for Relay->Bridge decision writes (origin:"mcp"
       # scope sessions). Requires session:write scope. Currently provisioned
-      # manually — not yet issued by SP1a's automated key-bootstrap.
+      # manually — not yet issued by SP1a's automated key-bootstrap, and now
+      # that AUTH_ENABLED defaults to true that gap bites on a FRESH install
+      # too, not just an office one: unset here means those Relay->Bridge
+      # writes 401. Only NexusScope `origin:"mcp"` sessions use this path, so
+      # the rest of the stack is unaffected. Mint one and set it in .env:
+      #   deploy/firekeep-admin keys create --agent relay-internal
       NR_FIREKEEP_API_KEY: ${RELAY_INTERNAL_API_KEY:-}
       RP_REDIS_URL: redis://redis:6379/6
-      AUTH_ENABLED: ${AUTH_ENABLED:-false}
+      AUTH_ENABLED: ${AUTH_ENABLED:-true}
       AUTH_REDIS_URL: redis://redis:6379/7
     env_file:
       - .env
@@ -577,11 +613,16 @@ services:
     image: nginx:alpine
     restart: unless-stopped
     ports:
-      - "0.0.0.0:8040:80"
+      - "${BIND_ADDR:-127.0.0.1}:8040:80"
     environment:
       # Dedicated admin-scoped key injected as X-API-Key on all /api/ proxies.
-      # Minted by deploy/bootstrap-keys.sh. Empty (default) => header not sent
-      # (nginx drops empty proxy_set_header values) => personal-VPS unchanged.
+      # Minted into .env by deploy/bootstrap-keys.sh, which install.sh and
+      # update.sh both run before the app containers start. Now that
+      # AUTH_ENABLED defaults to true this key is LOAD-BEARING, not optional:
+      # empty means nginx sends no header at all (it drops empty
+      # proxy_set_header values) and every dashboard data tab 401s. If that
+      # happens, re-run `bash deploy/bootstrap-keys.sh` and recreate this
+      # container — the value is read at container start, not per request.
       DASHBOARD_API_KEY: ${DASHBOARD_API_KEY:-}
     volumes:
       - ./dashboard/index.html:/usr/share/nginx/html/index.html:ro

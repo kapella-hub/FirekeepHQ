@@ -81,6 +81,35 @@ if [ ! -f .env ]; then
         echo "[OK] COMPOSE_FILE pinned for office deploy (--office)"
     fi
 
+    # --- Deliberate auth opt-out (--insecure-no-auth) ---
+    # .env is copied from .env.example, which ships AUTH_ENABLED=true. This is
+    # the ONLY way an install ends up unauthenticated, and it has to be asked
+    # for by name. Rewriting the line (rather than appending a second one)
+    # keeps a single source of truth in .env; the `grep || append` covers a
+    # hand-edited .env.example that dropped the key entirely.
+    if no_auth_requested "$@"; then
+        if grep -qE '^[[:space:]]*AUTH_ENABLED=' .env; then
+            sed -i "s|^[[:space:]]*AUTH_ENABLED=.*|AUTH_ENABLED=false|" .env
+        else
+            echo "AUTH_ENABLED=false" >> .env
+        fi
+        echo ""
+        echo "############################################################" >&2
+        echo "# AUTH DISABLED BY REQUEST (--insecure-no-auth)" >&2
+        echo "#" >&2
+        echo "# Every API on this host is now open to anyone who can reach" >&2
+        echo "# the port, with NO key required. That includes:" >&2
+        echo "#   GET  /vault/secrets   — reads your stored secrets" >&2
+        echo "#   POST /auth/keys       — mints new API keys" >&2
+        echo "#" >&2
+        echo "# This is only defensible when the ports are unreachable from" >&2
+        echo "# anywhere but this machine. Keep BIND_ADDR=127.0.0.1 in .env" >&2
+        echo "# (the default) or firewall 8040-8100 completely." >&2
+        echo "#" >&2
+        echo "# To undo: set AUTH_ENABLED=true in .env and run: bash update.sh" >&2
+        echo "############################################################" >&2
+    fi
+
     echo ""
     echo "[OK] .env configured"
 else
@@ -92,6 +121,18 @@ else
         echo "  deployment. Add these two lines to .env by hand, then re-run:" >&2
         echo "    COMPOSE_FILE=docker-compose.yml:docker-compose.office.yml" >&2
         echo "    FIREKEEP_OFFICE_MODE=true" >&2
+    fi
+    # Same precedent as --office directly above: an existing .env is never
+    # rewritten by a flag, because the flag cannot know what else the operator
+    # has changed in it. Say plainly that the request had no effect rather
+    # than letting them believe auth is off when it is on (or the reverse).
+    if no_auth_requested "$@"; then
+        echo ""
+        echo "WARNING: --insecure-no-auth was given but .env already exists, so" >&2
+        echo "  this run did NOT change the auth setting. Edit .env by hand:" >&2
+        echo "    AUTH_ENABLED=false" >&2
+        echo "  then re-run. (The summary at the end reports what is actually" >&2
+        echo "  configured, not what was asked for.)" >&2
     fi
 fi
 
@@ -194,7 +235,37 @@ fi
 # Bootstrap auth keys BEFORE app containers are created, so
 # FIREKEEP_INTERNAL_KEY exists in .env when bridge starts (idempotent).
 docker compose up -d redis
-bash deploy/bootstrap-keys.sh
+
+# The output is CAPTURED, not streamed, so the closing summary can re-surface
+# the admin key. bootstrap-keys.sh prints that key exactly once and never
+# writes it to disk — and it prints it HERE, before a container build and a
+# model pull that can run 15 minutes and thousands of lines. On a fresh
+# install it is off the top of the scrollback long before the operator reads
+# the summary, and it is the only credential that can mint teammate keys or
+# read the vault. Losing it means re-minting (see the summary).
+#
+# Captured in a shell variable, never a temp file: keeping "not written to
+# disk" true is the point. Held only for this process's lifetime.
+#
+# `if cmd; then` rather than a bare call: command substitution under `set -e`
+# would abort here and discard the output with it, so a bootstrap failure
+# would print nothing about why. Capture, echo, then decide.
+if BOOTSTRAP_OUT="$(bash deploy/bootstrap-keys.sh 2>&1)"; then
+    printf '%s\n' "$BOOTSTRAP_OUT"
+else
+    printf '%s\n' "$BOOTSTRAP_OUT"
+    echo "" >&2
+    echo "ERROR: auth key bootstrap failed (see output above). Nothing was started." >&2
+    exit 1
+fi
+
+# The admin key is the only plaintext key in that output — every other mint is
+# reported by variable name only (deploy/bootstrap-keys.sh ensure_env_key), and
+# deploy/tests/test_bootstrap_keys.sh asserts exactly one nxs_ token appears, so
+# this grep cannot silently start matching the wrong key. Empty on an
+# idempotent re-run, which the summary reports honestly rather than papering
+# over.
+ADMIN_KEY="$(printf '%s\n' "$BOOTSTRAP_OUT" | grep -oE 'nxs_[0-9a-f]{48}' | head -n1 || true)"
 
 docker compose up -d --build
 
@@ -288,6 +359,26 @@ for svc in "${services[@]}"; do
         #        the route is mounted and serving.
         # A dead service gives 000 (connection refused) and a broken one 5xx,
         # so none of the three accepted codes can mask a real failure.
+        #
+        # KNOWN DEGRADATION under AUTH_ENABLED=true (now the default): the four
+        # /health probes are unaffected -- /health is on the auth skip list on
+        # every service (auth/asgi.py DEFAULT_SKIP_PATHS, and each service's
+        # own build_auth_middleware call). But cortex-mcp is probed at /mcp,
+        # which is NOT skip-listed (cortex/app/mcp_server.py passes
+        # skip_paths=("/health",)), so this unkeyed probe now gets 401 from
+        # FirekeepKeyAuthMiddleware -- which runs BEFORE routing. That still
+        # proves the process is up and serving (000/5xx both still fail the
+        # probe), but it no longer proves the /mcp route is mounted, which is
+        # what the 405 used to establish.
+        #
+        # Deliberately NOT "fixed" by sending FIREKEEP_INTERNAL_KEY here. What a
+        # keyed GET /mcp returns from fastmcp streamable-http is not 405 by
+        # assumption -- a bare GET with no `Accept: text/event-stream` can
+        # answer 406 or 400. Any of those falls outside the accepted set, the
+        # loop times out, and `bash install.sh` exits 1 on a healthy stack:
+        # strictly worse than a weaker-but-correct liveness signal. Restoring
+        # the stronger check needs the real response code observed against a
+        # running stack first.
         code="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:${port}${probe}" 2>/dev/null)" || code="000"
         case "$code" in
             2??|401|405)
@@ -312,28 +403,119 @@ fi
 # --- Print status ---
 VPS_IP=$(grep "^VPS_IP=" .env | cut -d= -f2)
 
+# Every reachability claim below is DERIVED from the .env that was actually
+# written, never assumed. The ports bind to ${BIND_ADDR:-127.0.0.1} now, so
+# printing http://${VPS_IP}:8040 unconditionally would hand the operator a URL
+# that refuses connections on a default install -- a claim a prospect
+# disproves in one click.
+BIND_ADDR_EFFECTIVE="$(effective_bind_addr .env)"
+if bind_addr_is_public "$BIND_ADDR_EFFECTIVE"; then
+    REACH_HOST="$VPS_IP"
+    REACH_NOTE=""
+else
+    # Loopback: only reachable from this machine. Say so, and give the
+    # SSH-tunnel one-liner instead of a URL that cannot work remotely.
+    REACH_HOST="localhost"
+    REACH_NOTE="  (loopback only — BIND_ADDR=${BIND_ADDR_EFFECTIVE})"
+fi
+
 echo ""
 echo "============================================"
 echo "  Firekeep is running!"
 echo "============================================"
 echo ""
-echo "  Dashboard:     http://${VPS_IP}:8040"
+echo "  Dashboard:     http://${REACH_HOST}:8040${REACH_NOTE}"
 echo "  Dashboard login: ${DASHBOARD_CREDS}"
 echo ""
 echo "  MCP Endpoints:"
-echo "    Cortex:      http://${VPS_IP}:8080/mcp"
-echo "    Bridge:      http://${VPS_IP}:8070/mcp"
-echo "    Sentinel:    http://${VPS_IP}:8060/mcp"
-echo "    Relay:       http://${VPS_IP}:8050/mcp"
+echo "    Cortex:      http://${REACH_HOST}:8080/mcp"
+echo "    Bridge:      http://${REACH_HOST}:8070/mcp"
+echo "    Sentinel:    http://${REACH_HOST}:8060/mcp"
+echo "    Relay:       http://${REACH_HOST}:8050/mcp"
 echo ""
 echo "  REST APIs:"
-echo "    Cortex API:  http://${VPS_IP}:8100"
+echo "    Cortex API:  http://${REACH_HOST}:8100"
 echo ""
 vault_status_line .env
 echo ""
+
+# --- Auth posture: the single most important line in this summary ---------
+# Reported from .env, not from what the flags asked for, so it stays true when
+# --insecure-no-auth was ignored (existing .env) or when someone hand-edited
+# the file between runs.
+if auth_enforced .env; then
+    echo "  Auth:          ENFORCED — every API call needs an X-API-Key header"
+    echo ""
+    echo "============================================================"
+    if [ -n "$ADMIN_KEY" ]; then
+        echo "  ADMIN API KEY — shown once at the START of this run, and"
+        echo "  again here because it is NOT stored anywhere on disk."
+        echo "  Put it in your password manager NOW:"
+        echo ""
+        echo "    ${ADMIN_KEY}"
+        echo ""
+        echo "  Your first authenticated call:"
+        echo ""
+        echo "    curl -H \"X-API-Key: ${ADMIN_KEY}\" \\"
+        echo "      http://localhost:8100/auth/keys"
+        echo ""
+        echo "  Issue a key for each teammate (never share the admin key):"
+        echo ""
+        echo "    FIREKEEP_ADMIN_KEY='${ADMIN_KEY}' \\"
+        echo "      deploy/firekeep-admin keys create --agent <name>"
+    else
+        # Idempotent re-run: bootstrap-keys.sh found the admin key already
+        # registered and minted nothing, so there is no plaintext to reprint.
+        # It is unrecoverable by design (only its SHA-256 is stored) — do not
+        # imply otherwise; give the re-mint path instead.
+        echo "  ADMIN API KEY — already provisioned by an earlier run."
+        echo ""
+        echo "  It was printed once, then, and is NOT recoverable: only its"
+        echo "  SHA-256 is stored. If you no longer have it, revoke the old"
+        echo "  one and mint a fresh key:"
+        echo ""
+        echo "    docker compose exec -T redis redis-cli -n 7 \\"
+        echo "      DEL \"auth:key:\$(docker compose exec -T redis \\"
+        echo "      redis-cli -n 7 GET auth:bootstrap:admin_hash)\""
+        echo "    docker compose exec -T redis redis-cli -n 7 \\"
+        echo "      DEL auth:bootstrap:admin_hash"
+        echo "    bash deploy/bootstrap-keys.sh"
+    fi
+    echo "============================================================"
+    echo ""
+    echo "  The dashboard needs no key from you — its nginx injects the"
+    echo "  admin-scoped DASHBOARD_API_KEY from .env on every /api/ proxy."
+else
+    echo "  Auth:          ⚠️  DISABLED — every API on this host is OPEN."
+    echo "                 Anyone who can reach a port can read your vault"
+    echo "                 secrets (GET /vault/secrets) and mint API keys"
+    echo "                 (POST /auth/keys). No key is required."
+    echo "                 Turn it on: set AUTH_ENABLED=true in .env, then"
+    echo "                 run: bash update.sh"
+fi
+echo ""
 echo "  Run 'bash update.sh' to update after git pull."
 echo ""
-echo "⚠️  SECURITY: Service ports 8040-8100 are exposed on 0.0.0.0"
-echo "   Configure your firewall to restrict access:"
-echo "   ufw allow from YOUR_IP to any port 8040:8100 proto tcp"
+
+# --- Exposure warning: only when it is TRUE -------------------------------
+# This used to claim "exposed on 0.0.0.0" unconditionally. Under the
+# BIND_ADDR default that is simply false, and a security warning that is
+# wrong half the time is one people learn to skip past.
+if bind_addr_is_public "$BIND_ADDR_EFFECTIVE"; then
+    echo "⚠️  SECURITY: service ports 8040-8100 are published on ${BIND_ADDR_EFFECTIVE}"
+    echo "   — reachable from off this machine. Restrict them:"
+    echo "   ufw allow from YOUR_IP to any port 8040:8100 proto tcp"
+    if ! auth_enforced .env; then
+        echo ""
+        echo "   You have BOTH auth disabled AND non-loopback ports. That is"
+        echo "   the exact configuration that leaks secrets to the internet."
+        echo "   Fix one of the two before this host sees real data."
+    fi
+else
+    echo "🔒 Ports are bound to ${BIND_ADDR_EFFECTIVE} — reachable only from this"
+    echo "   machine. To reach the dashboard from your laptop, tunnel:"
+    echo "     ssh -L 8040:127.0.0.1:8040 <user>@${VPS_IP}"
+    echo "   To publish them instead, set BIND_ADDR=0.0.0.0 in .env, run"
+    echo "   'bash update.sh', and firewall the range."
+fi
 echo ""

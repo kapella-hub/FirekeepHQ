@@ -25,6 +25,14 @@ env:
 jobs:
   release:
     runs-on: ubuntu-latest
+    # Every `run:` here uses `bash -eo pipefail`, not the Linux default `bash -e`.
+    # Without pipefail, `a | b` reports b's exit status: a failing `curl` piped
+    # into `tar`, or a failing `install.sh` piped into `tee`, both report success
+    # and the job goes green over a broken result. Guarded by
+    # tests/test_workflow_pipefail.py.
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
 

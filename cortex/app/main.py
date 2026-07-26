@@ -140,6 +140,97 @@ limiter = Limiter(key_func=get_remote_address)
 # ---------------------------------------------------------------------------
 
 
+_ENABLE_AUTH_HINT = (
+    " To enable: set AUTH_ENABLED=true in .env, restart, and send the admin "
+    "key as X-API-Key. deploy/bootstrap-keys.sh (run by install.sh/update.sh) "
+    "mints that key and prints it exactly once."
+)
+
+
+def _admin_surface_disabled_router(prefix: str, tag: str, reason: str):
+    """A stand-in router that 503s every path under `prefix` with `reason`.
+
+    Mounted in place of an admin-only router when auth is disabled. It exists
+    so the refusal is SELF-EXPLANATORY: a bare 404 on /vault/secrets looks like
+    a broken deployment and sends the operator hunting through logs, whereas
+    this says which setting turned the surface off and what to do about it.
+    """
+    from fastapi import APIRouter
+
+    router = APIRouter(prefix=prefix, tags=[tag])
+
+    @router.api_route(
+        "/{_unused:path}",
+        methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+        include_in_schema=False,
+    )
+    async def _refuse(_unused: str) -> None:
+        raise HTTPException(status_code=503, detail=reason + _ENABLE_AUTH_HINT)
+
+    return router
+
+
+def _register_admin_surface_routers(app: FastAPI) -> None:
+    """Mount /auth/* and /vault/* — but only when auth enforcement is on.
+
+    DEFENCE IN DEPTH (audit blocker 7). Both routers are admin-only via
+    require_scope("admin"), and with auth off no caller can hold that scope any
+    more (auth/keys.py ANONYMOUS_SCOPES). That alone closes the hole. Refusing
+    to mount them as well closes it a SECOND time, so a regression in the
+    anonymous scope set — the exact regression that leaked 12 real secrets —
+    cannot by itself re-expose decrypted secret reads and API-key minting.
+
+    Enabled-ness comes from AuthSettings (env var AUTH_ENABLED), the same truth
+    build_auth_middleware reads — NOT keys._AUTH_ENABLED, which is process
+    state only init_auth() writes. The two agree in production (the lifespan
+    derives its init_auth(enabled=...) argument from this same settings object,
+    a few lines earlier), but AuthSettings is the one that answers correctly for
+    a caller that has not run the lifespan at all.
+
+    Split out of _register_feature_routers so the branch is directly callable:
+    a test can mount it on a bare app and observe what it actually serves,
+    rather than asserting about the source text.
+    """
+    from auth.config import get_auth_settings as _auth_cfg
+
+    if _auth_cfg().ENABLED:
+        # Auth endpoints (/auth/*) — init happens in lifespan (async), registration here (sync)
+        try:
+            from auth.api import create_auth_router
+            app.include_router(create_auth_router())
+            logger.info("Auth router registered at /auth/*")
+        except Exception as exc:
+            logger.warning("Auth router not registered (non-critical): %s", exc)
+
+        # Vault endpoints (/vault/*)
+        try:
+            from vault.api import create_vault_router
+            app.include_router(create_vault_router())
+            logger.info("Vault router registered at /vault/*")
+        except Exception as exc:
+            logger.warning("Vault router not registered (non-critical): %s", exc)
+        return
+
+    app.include_router(_admin_surface_disabled_router(
+        "/auth", "auth",
+        "API-key management (/auth/*) is disabled because auth enforcement is "
+        "off (AUTH_ENABLED=false). Minting and listing keys is an admin "
+        "operation, and with no auth there is no admin — serving it here would "
+        "hand key creation to any caller who can reach this port.",
+    ))
+    app.include_router(_admin_surface_disabled_router(
+        "/vault", "vault",
+        "The secrets vault (/vault/*) is disabled because auth enforcement is "
+        "off (AUTH_ENABLED=false). These routes return DECRYPTED secret values "
+        "and are admin-only; with no auth there is no admin.",
+    ))
+    logger.warning(
+        "AUTH_ENABLED=false — /auth/* and /vault/* are NOT served (they are "
+        "admin-only, and with no auth there is no admin). Set AUTH_ENABLED=true "
+        "and restart to use them."
+    )
+
+
 def _register_feature_routers(app: FastAPI) -> None:
     """Register all feature routers with the app. Called during lifespan startup."""
     app.include_router(create_dashboard_router(
@@ -169,21 +260,7 @@ def _register_feature_routers(app: FastAPI) -> None:
     ))
     app.include_router(create_ops_router())
 
-    # Auth endpoints (/auth/*) — init happens in lifespan (async), registration here (sync)
-    try:
-        from auth.api import create_auth_router
-        app.include_router(create_auth_router())
-        logger.info("Auth router registered at /auth/*")
-    except Exception as exc:
-        logger.warning("Auth router not registered (non-critical): %s", exc)
-
-    # Vault endpoints (/vault/*)
-    try:
-        from vault.api import create_vault_router
-        app.include_router(create_vault_router())
-        logger.info("Vault router registered at /vault/*")
-    except Exception as exc:
-        logger.warning("Vault router not registered (non-critical): %s", exc)
+    _register_admin_surface_routers(app)
 
     # Corpus — Business Knowledge Graph
     try:

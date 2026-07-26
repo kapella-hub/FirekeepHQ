@@ -61,10 +61,22 @@ async def redis():
 
 @pytest_asyncio.fixture
 async def auth_env(redis):
+    """A TEAMMATE key: authenticated, deliberately NOT admin.
+
+    The scope set matters. Several routes under /dashboard/api are admin-only,
+    so this fixture is what proves a valid key is not a free pass.
+    """
     await keys.init_auth(redis_client=redis, enabled=True)
     key = await keys.create_key("teammate", ["memory:read"])
     yield key["api_key"]
     await keys.init_auth(redis_client=None, enabled=False)
+
+
+@pytest_asyncio.fixture
+async def admin_key(redis, auth_env):
+    """An admin key on the same store — depends on auth_env so init order holds."""
+    key = await keys.create_key("owner", ["admin"])
+    return key["api_key"]
 
 
 def _app(redis) -> FastAPI:
@@ -175,12 +187,27 @@ class TestDashboardApiRequiresKey:
         assert resp.status_code == 401
 
     @pytest.mark.asyncio
-    async def test_dlq_retry_keyed_200(self, redis, auth_env):
+    async def test_dlq_retry_teammate_key_403(self, redis, auth_env):
+        """A valid key is not a free pass — requeueing the DLQ is admin-only.
+
+        This asserted 200 until 2026-07-26: the route carried no scope at all,
+        so any authenticated caller could replay the dead-letter queue while its
+        byte-equivalent twin POST /ops/dlq/retry-events required admin.
+        """
         async with _client(_app(redis)) as c:
             resp = await c.post(
                 "/dashboard/api/dlq/retry", headers={"X-API-Key": auth_env}
             )
-        assert resp.status_code == 200
+        assert resp.status_code == 403, resp.text
+
+    @pytest.mark.asyncio
+    async def test_dlq_retry_admin_key_200(self, redis, admin_key):
+        """...and the gate is not simply refusing everyone."""
+        async with _client(_app(redis)) as c:
+            resp = await c.post(
+                "/dashboard/api/dlq/retry", headers={"X-API-Key": admin_key}
+            )
+        assert resp.status_code == 200, resp.text
 
     @pytest.mark.asyncio
     async def test_dlq_clear_keyless_401(self, redis, auth_env):
@@ -190,12 +217,26 @@ class TestDashboardApiRequiresKey:
         assert resp.status_code == 401
 
     @pytest.mark.asyncio
-    async def test_dlq_clear_keyed_200(self, redis, auth_env):
+    async def test_dlq_clear_teammate_key_403(self, redis, auth_env):
+        """The destructive route: authenticated is not sufficient, admin is required.
+
+        Clearing the DLQ drops every dead-lettered event with no undo, and this
+        route had no scope check at all — nor any twin in ops.py to be compared
+        against, which is why nothing flagged it.
+        """
         async with _client(_app(redis)) as c:
             resp = await c.delete(
                 "/dashboard/api/dlq/clear", headers={"X-API-Key": auth_env}
             )
-        assert resp.status_code == 200
+        assert resp.status_code == 403, resp.text
+
+    @pytest.mark.asyncio
+    async def test_dlq_clear_admin_key_200(self, redis, admin_key):
+        async with _client(_app(redis)) as c:
+            resp = await c.delete(
+                "/dashboard/api/dlq/clear", headers={"X-API-Key": admin_key}
+            )
+        assert resp.status_code == 200, resp.text
 
 
 class TestNestedPathIsNotSwallowedByExactMatch:
