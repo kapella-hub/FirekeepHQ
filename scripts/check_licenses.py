@@ -7,6 +7,12 @@ markdownify sets an MIT classifier and no License-Expression.
 
 Exit 1 on any denied package. Unknown packages are reported, not fatal —
 they need a human read, and failing on them would make the gate noise.
+
+Also doubles as the attribution reader for NOTICE generation: run with
+`--attributions` to emit one JSON record per installed third-party
+distribution (JSONL to stdout) instead of gating. See
+scripts/generate_notice.py, which invokes this in each isolated venv and
+merges the results into the repository's NOTICE file.
 """
 from __future__ import annotations
 
@@ -113,6 +119,66 @@ def _truncate_for_print(detail: str) -> str:
     return detail[:DETAIL_PRINT_MAX_CHARS] + f"... [{len(detail)} chars total, truncated]"
 
 
+# Packages excluded from attribution output: venv bootstrap tooling that is
+# never imported by shipped application code (present in every venv
+# regardless of what was actually requested), plus this repo's own
+# first-party distributions, which install their own name into whatever
+# venv installs them (`pip install ./client` -> "firekeep-client" shows up
+# in distributions() alongside its real third-party dependencies) and carry
+# the proprietary licence, not a third-party one.
+ATTRIBUTION_EXCLUDE = frozenset(
+    {"pip", "setuptools", "wheel", "firekeep-client", "firekeep-symdex"}
+)
+
+
+def collect_attribution(dist) -> dict[str, str]:
+    """Return one third-party-attribution record for a distribution.
+
+    Reuses classify() so the NOTICE generator and the CI gate agree on what
+    a package's licence *is* — there is exactly one place that interprets
+    License-Expression/Classifier/License, not two scanners that could
+    silently drift apart.
+    """
+    name = dist.metadata.get("Name", "") or "<unnamed>"
+    version = dist.metadata.get("Version", "") or "unknown"
+    meta: dict[str, list[str]] = {f: dist.metadata.get_all(f) or [] for f in FIELDS}
+    verdict, detail = classify(meta)
+    home_page = dist.metadata.get("Home-page", "") or ""
+    if not home_page:
+        for project_url in dist.metadata.get_all("Project-URL") or []:
+            label, _, url = project_url.partition(",")
+            if label.strip().lower() in ("homepage", "home", "source", "repository"):
+                home_page = url.strip()
+                break
+    return {
+        "name": name,
+        "version": version,
+        "verdict": verdict,
+        "license": _truncate_for_print(detail),
+        "home_page": home_page,
+    }
+
+
+def print_attributions() -> int:
+    """Emit one JSON record per line (JSONL) for every third-party
+    distribution installed in the current interpreter, to stdout.
+
+    Intended to be invoked once per isolated venv by
+    scripts/generate_notice.py, which is the only piece that knows how to
+    merge the per-component results into the repository's NOTICE file —
+    this function's only job is reading the *current* environment, exactly
+    like main()'s gate does.
+    """
+    import json
+
+    for dist in distributions():
+        name = dist.metadata.get("Name", "") or "<unnamed>"
+        if name.lower() in ATTRIBUTION_EXCLUDE:
+            continue
+        print(json.dumps(collect_attribution(dist)))
+    return 0
+
+
 def main() -> int:
     denied: list[str] = []
     unknown: list[str] = []
@@ -143,4 +209,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    if "--attributions" in sys.argv:
+        sys.exit(print_attributions())
     sys.exit(main())

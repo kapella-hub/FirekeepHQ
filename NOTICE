@@ -1,0 +1,394 @@
+Firekeep — Third-Party Software Notices
+============================================================
+
+Firekeep is proprietary software (see LICENSE). It incorporates the
+third-party open-source components listed below, each governed by
+its own licence, independent of the Firekeep licence terms.
+
+This file covers Python dependencies installed into the shipped
+server image (cortex/requirements.txt, which also covers bridge,
+relay, and sentinel) and the two client wheels distributed to every
+customer (firekeep-client, firekeep-symdex). It does not cover the
+bundled datastore container images (Neo4j, Redis, Qdrant, Ollama) —
+see docs/THIRD-PARTY-DATASTORES.md for those.
+
+Generated 2026-07-26 by scripts/generate_notice.py. Regenerate after any dependency change;
+do not hand-edit the package list below.
+
+------------------------------------------------------------
+Server (Cortex / Bridge / Relay / Sentinel)
+------------------------------------------------------------
+
+* aiofile 3.11.1 — https://github.com/mosquito/aiofile
+    Licence: Apache-2.0
+* amqp 5.3.1 — http://github.com/celery/py-amqp
+    Licence: License :: OSI Approved :: BSD License
+* annotated-doc 0.0.4 — https://github.com/fastapi/annotated-doc
+    Licence: MIT
+* annotated-types 0.8.0 — https://github.com/annotated-types/annotated-types
+    Licence: MIT
+* anyio 4.14.2
+    Licence: MIT
+* attrs 26.1.0
+    Licence: MIT
+* Authlib 1.6.12 — https://github.com/authlib/authlib
+    Licence: License :: OSI Approved :: BSD License
+* beartype 0.22.9
+    Licence: License :: OSI Approved :: MIT License
+* beautifulsoup4 4.15.0 — https://www.crummy.com/software/BeautifulSoup/bs4/
+    Licence: License :: OSI Approved :: MIT License
+* billiard 4.2.4 — https://github.com/celery/billiard
+    Licence: License :: OSI Approved :: BSD License
+* cachetools 7.1.6 — https://github.com/tkem/cachetools/
+    Licence: MIT
+* caio 0.9.25
+    Licence: Apache-2.0 (confirmed by reading the bundled COPYING file — no scannable metadata field declares it; see comment in this script)
+* celery 5.6.3 — https://docs.celeryq.dev/
+    Licence: BSD-3-Clause
+* certifi 2026.7.22 — https://github.com/certifi/python-certifi
+    Licence: License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)
+* cffi 2.1.0
+    Licence: MIT-0
+* click 8.4.2 — https://github.com/pallets/click/
+    Licence: BSD-3-Clause
+* click-didyoumean 0.3.1 — https://github.com/click-contrib/click-didyoumean
+    Licence: License :: OSI Approved :: MIT License
+* click-plugins 1.1.1.2 — https://github.com/click-contrib/click-plugins
+    Licence: License :: OSI Approved :: BSD License
+* click-repl 0.3.0 — https://github.com/untitaker/click-repl
+    Licence: MIT
+* colorama 0.4.6 — https://github.com/tartley/colorama
+    Licence: License :: OSI Approved :: BSD License
+* cryptography 43.0.3 — https://github.com/pyca/cryptography
+    Licence: License :: OSI Approved :: Apache Software License ; License :: OSI Approved :: BSD License
+* cyclopts 4.22.2 — https://github.com/BrianPugh/cyclopts
+    Licence: Apache-2.0
+* Deprecated 1.3.1 — https://github.com/laurent-laporte-pro/deprecated
+    Licence: License :: OSI Approved :: MIT License
+* dnspython 2.8.0 — https://www.dnspython.org
+    Licence: License :: OSI Approved :: ISC License (ISCL)
+* docstring_parser 0.18.0 — https://github.com/rr-/docstring_parser
+    Licence: License :: OSI Approved :: MIT License
+* email-validator 2.3.0 — https://github.com/JoshData/python-email-validator
+    Licence: License :: OSI Approved :: The Unlicense (Unlicense)
+* exceptiongroup 1.3.1
+    Licence: License :: OSI Approved :: MIT License
+* fakeredis 2.37.0 — https://github.com/cunla/fakeredis-py
+    Licence: BSD-3-Clause
+* fastapi 0.140.0 — https://github.com/fastapi/fastapi
+    Licence: MIT
+* fastmcp 3.4.4 — https://gofastmcp.com
+    Licence: Apache-2.0
+* fastmcp-slim 3.4.4 — https://gofastmcp.com
+    Licence: Apache-2.0
+* griffelib 2.1.0
+    Licence: ISC
+* grpcio 1.83.0 — https://grpc.io
+    Licence: Apache-2.0
+* h11 0.16.0 — https://github.com/python-hyper/h11
+    Licence: License :: OSI Approved :: MIT License
+* h2 4.4.0 — https://github.com/python-hyper/h2/
+    Licence: MIT
+* hiredis 3.4.0 — https://github.com/redis/hiredis-py
+    Licence: License :: OSI Approved :: MIT License
+* hpack 4.2.0 — https://github.com/python-hyper/hpack/
+    Licence: MIT
+* httpcore 1.0.9 — https://www.encode.io/httpcore/
+    Licence: BSD-3-Clause
+* httptools 0.8.0 — https://github.com/MagicStack/httptools
+    Licence: MIT
+* httpx 0.28.1 — https://github.com/encode/httpx
+    Licence: License :: OSI Approved :: BSD License
+* httpx-sse 0.4.3 — https://github.com/florimondmanca/httpx-sse
+    Licence: MIT
+* hyperframe 6.1.0 — https://github.com/python-hyper/hyperframe/
+    Licence: License :: OSI Approved :: MIT License
+* idna 3.18 — https://github.com/kjd/idna
+    Licence: BSD-3-Clause
+* iniconfig 2.3.0 — https://github.com/pytest-dev/iniconfig
+    Licence: MIT
+* jaraco.classes 3.4.0 — https://github.com/jaraco/jaraco.classes
+    Licence: License :: OSI Approved :: MIT License
+* jaraco.context 6.1.2 — https://github.com/jaraco/jaraco.context
+    Licence: MIT
+* jaraco.functools 4.6.0 — https://github.com/jaraco/jaraco.functools
+    Licence: MIT
+* joserfc 1.5.0 — https://github.com/authlib/joserfc
+    Licence: License :: OSI Approved :: BSD License
+* jsonref 1.1.0 — https://github.com/gazpachoking/jsonref
+    Licence: MIT
+* jsonschema 4.26.0 — https://github.com/python-jsonschema/jsonschema
+    Licence: MIT
+* jsonschema-path 0.5.0 — https://github.com/p1c2u/jsonschema-path
+    Licence: License :: OSI Approved :: Apache Software License
+* jsonschema-specifications 2025.9.1 — https://github.com/python-jsonschema/jsonschema-specifications
+    Licence: MIT
+* keyring 25.7.0 — https://github.com/jaraco/keyring
+    Licence: MIT
+* kombu 5.6.2 — https://kombu.readthedocs.io
+    Licence: BSD-3-Clause
+* limits 5.8.0 — https://limits.readthedocs.org
+    Licence: MIT
+* markdown-it-py 4.2.0 — https://github.com/executablebooks/markdown-it-py
+    Licence: License :: OSI Approved :: MIT License
+* markdownify 1.2.3 — http://github.com/matthewwithanm/python-markdownify
+    Licence: License :: OSI Approved :: MIT License
+* mcp 1.28.1 — https://modelcontextprotocol.io
+    Licence: License :: OSI Approved :: MIT License
+* mdurl 0.1.2 — https://github.com/executablebooks/mdurl
+    Licence: License :: OSI Approved :: MIT License
+* more-itertools 11.1.0 — https://github.com/more-itertools/more-itertools
+    Licence: MIT
+* neo4j 5.28.4 — https://neo4j.com/
+    Licence: License :: OSI Approved :: Apache Software License
+* numpy 2.5.1 — https://numpy.org
+    Licence: BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0
+* openapi-pydantic 0.5.1 — https://github.com/mike-oakley/openapi-pydantic
+    Licence: License :: OSI Approved :: MIT License
+* opentelemetry-api 1.44.0 — https://github.com/open-telemetry/opentelemetry-python/tree/main/opentelemetry-api
+    Licence: Apache-2.0
+* packaging 26.2 — https://github.com/pypa/packaging
+    Licence: Apache-2.0 OR BSD-2-Clause
+* pathable 0.6.0 — https://github.com/p1c2u/pathable
+    Licence: License :: OSI Approved :: Apache Software License
+* platformdirs 4.11.0 — https://github.com/tox-dev/platformdirs
+    Licence: MIT
+* pluggy 1.6.0
+    Licence: License :: OSI Approved :: MIT License
+* portalocker 3.2.0 — https://github.com/wolph/portalocker/
+    Licence: BSD-3-Clause
+* prompt_toolkit 3.0.52 — https://github.com/prompt-toolkit/python-prompt-toolkit
+    Licence: License :: OSI Approved :: BSD License
+* protobuf 7.35.1 — https://developers.google.com/protocol-buffers/
+    Licence: 3-Clause BSD License
+* py-key-value-aio 0.4.5
+    Licence: Apache-2.0
+* pycparser 3.0 — https://github.com/eliben/pycparser
+    Licence: BSD-3-Clause
+* pydantic 2.13.4 — https://github.com/pydantic/pydantic
+    Licence: MIT
+* pydantic-settings 2.14.2 — https://github.com/pydantic/pydantic-settings
+    Licence: MIT
+* pydantic_core 2.46.4 — https://github.com/pydantic/pydantic
+    Licence: MIT
+* Pygments 2.20.0 — https://pygments.org
+    Licence: BSD-2-Clause
+* PyJWT 2.13.0 — https://github.com/jpadilla/pyjwt
+    Licence: MIT
+* pyperclip 1.11.0 — https://github.com/asweigart/pyperclip
+    Licence: License :: OSI Approved :: BSD License
+* pytest 8.4.2 — https://docs.pytest.org/en/latest/
+    Licence: License :: OSI Approved :: MIT License
+* pytest-asyncio 0.26.0 — https://github.com/pytest-dev/pytest-asyncio
+    Licence: Apache-2.0
+* python-dateutil 2.9.0.post0 — https://github.com/dateutil/dateutil
+    Licence: License :: OSI Approved :: BSD License ; License :: OSI Approved :: Apache Software License
+* python-dotenv 1.2.2 — https://github.com/theskumar/python-dotenv
+    Licence: BSD-3-Clause
+* python-multipart 0.0.32 — https://github.com/Kludex/python-multipart
+    Licence: Apache-2.0
+* pytz 2026.3.post1 — http://pythonhosted.org/pytz
+    Licence: License :: OSI Approved :: MIT License
+* pywin32 312 — https://github.com/mhammond/pywin32
+    Licence: License :: OSI Approved :: Python Software Foundation License
+* pywin32-ctypes 0.2.3 — https://github.com/enthought/pywin32-ctypes
+    Licence: BSD-3-Clause
+* PyYAML 6.0.3 — https://pyyaml.org/
+    Licence: License :: OSI Approved :: MIT License
+* qdrant-client 1.18.0 — https://github.com/qdrant/qdrant-client
+    Licence: License :: OSI Approved :: Apache Software License
+* redis 5.3.1 — https://github.com/redis/redis-py
+    Licence: License :: OSI Approved :: MIT License
+* referencing 0.37.0 — https://github.com/python-jsonschema/referencing
+    Licence: MIT
+* rich 15.0.0 — https://github.com/Textualize/rich
+    Licence: License :: OSI Approved :: MIT License
+* rich-rst 2.1.0 — https://github.com/wasi-master/rich-rst
+    Licence: MIT
+* rpds-py 2026.6.3 — https://github.com/crate-py/rpds
+    Licence: MIT
+* six 1.17.0 — https://github.com/benjaminp/six
+    Licence: License :: OSI Approved :: MIT License
+* slowapi 0.1.10 — https://github.com/laurents/slowapi
+    Licence: License :: OSI Approved :: MIT License
+* sortedcontainers 2.4.0 — http://www.grantjenks.com/docs/sortedcontainers/
+    Licence: License :: OSI Approved :: Apache Software License
+* soupsieve 2.9.1 — https://github.com/facelessuser/soupsieve
+    Licence: MIT
+* sse-starlette 3.4.6 — https://github.com/sysid/sse-starlette
+    Licence: BSD-3-Clause
+* starlette 1.3.1 — https://github.com/Kludex/starlette
+    Licence: BSD-3-Clause
+* typing-inspection 0.4.2 — https://github.com/pydantic/typing-inspection
+    Licence: MIT
+* typing_extensions 4.16.0 — https://github.com/python/typing_extensions
+    Licence: PSF-2.0
+* tzdata 2026.3 — https://github.com/python/tzdata
+    Licence: Apache-2.0
+* tzlocal 5.4.4
+    Licence: MIT
+* uncalled-for 0.3.2 — https://github.com/chrisguidry/uncalled-for
+    Licence: License :: OSI Approved :: MIT License
+* urllib3 2.7.0
+    Licence: MIT
+* uvicorn 0.51.0 — https://uvicorn.dev/
+    Licence: BSD-3-Clause
+* vine 5.1.0 — https://github.com/celery/vine
+    Licence: License :: OSI Approved :: BSD License
+* watchfiles 1.2.0 — https://github.com/samuelcolvin/watchfiles
+    Licence: License :: OSI Approved :: MIT License
+* wcwidth 0.8.2 — https://github.com/jquast/wcwidth
+    Licence: MIT
+* websockets 16.1.1 — https://github.com/python-websockets/websockets
+    Licence: BSD-3-Clause
+* wrapt 2.2.2 — https://github.com/GrahamDumpleton/wrapt
+    Licence: BSD-2-Clause
+
+------------------------------------------------------------
+Client kit (firekeep-client)
+------------------------------------------------------------
+
+* annotated-types 0.8.0 — https://github.com/annotated-types/annotated-types
+    Licence: MIT
+* anyio 4.14.2
+    Licence: MIT
+* attrs 26.1.0
+    Licence: MIT
+* certifi 2026.7.22 — https://github.com/certifi/python-certifi
+    Licence: License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)
+* cffi 2.1.0
+    Licence: MIT-0
+* click 8.4.2 — https://github.com/pallets/click/
+    Licence: BSD-3-Clause
+* colorama 0.4.6 — https://github.com/tartley/colorama
+    Licence: License :: OSI Approved :: BSD License
+* cryptography 49.0.0 — https://github.com/pyca/cryptography
+    Licence: Apache-2.0 OR BSD-3-Clause
+* h11 0.16.0 — https://github.com/python-hyper/h11
+    Licence: License :: OSI Approved :: MIT License
+* httpcore 1.0.9 — https://www.encode.io/httpcore/
+    Licence: BSD-3-Clause
+* httpx 0.28.1 — https://github.com/encode/httpx
+    Licence: License :: OSI Approved :: BSD License
+* httpx-sse 0.4.3 — https://github.com/florimondmanca/httpx-sse
+    Licence: MIT
+* idna 3.18 — https://github.com/kjd/idna
+    Licence: BSD-3-Clause
+* jsonschema 4.26.0 — https://github.com/python-jsonschema/jsonschema
+    Licence: MIT
+* jsonschema-specifications 2025.9.1 — https://github.com/python-jsonschema/jsonschema-specifications
+    Licence: MIT
+* mcp 1.28.1 — https://modelcontextprotocol.io
+    Licence: License :: OSI Approved :: MIT License
+* pycparser 3.0 — https://github.com/eliben/pycparser
+    Licence: BSD-3-Clause
+* pydantic 2.13.4 — https://github.com/pydantic/pydantic
+    Licence: MIT
+* pydantic-settings 2.14.2 — https://github.com/pydantic/pydantic-settings
+    Licence: MIT
+* pydantic_core 2.46.4 — https://github.com/pydantic/pydantic
+    Licence: MIT
+* PyJWT 2.13.0 — https://github.com/jpadilla/pyjwt
+    Licence: MIT
+* python-dotenv 1.2.2 — https://github.com/theskumar/python-dotenv
+    Licence: BSD-3-Clause
+* python-multipart 0.0.32 — https://github.com/Kludex/python-multipart
+    Licence: Apache-2.0
+* pywin32 312 — https://github.com/mhammond/pywin32
+    Licence: License :: OSI Approved :: Python Software Foundation License
+* referencing 0.37.0 — https://github.com/python-jsonschema/referencing
+    Licence: MIT
+* rpds-py 2026.6.3 — https://github.com/crate-py/rpds
+    Licence: MIT
+* sse-starlette 3.4.6 — https://github.com/sysid/sse-starlette
+    Licence: BSD-3-Clause
+* starlette 1.3.1 — https://github.com/Kludex/starlette
+    Licence: BSD-3-Clause
+* truststore 0.10.4 — https://github.com/sethmlarson/truststore
+    Licence: MIT
+* typing-inspection 0.4.2 — https://github.com/pydantic/typing-inspection
+    Licence: MIT
+* typing_extensions 4.16.0 — https://github.com/python/typing_extensions
+    Licence: PSF-2.0
+* uvicorn 0.51.0 — https://uvicorn.dev/
+    Licence: BSD-3-Clause
+
+------------------------------------------------------------
+Symdex (firekeep-symdex)
+------------------------------------------------------------
+
+* annotated-types 0.8.0 — https://github.com/annotated-types/annotated-types
+    Licence: MIT
+* anyio 4.14.2
+    Licence: MIT
+* attrs 26.1.0
+    Licence: MIT
+* certifi 2026.7.22 — https://github.com/certifi/python-certifi
+    Licence: License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)
+* cffi 2.1.0
+    Licence: MIT-0
+* click 8.4.2 — https://github.com/pallets/click/
+    Licence: BSD-3-Clause
+* colorama 0.4.6 — https://github.com/tartley/colorama
+    Licence: License :: OSI Approved :: BSD License
+* cryptography 49.0.0 — https://github.com/pyca/cryptography
+    Licence: Apache-2.0 OR BSD-3-Clause
+* h11 0.16.0 — https://github.com/python-hyper/h11
+    Licence: License :: OSI Approved :: MIT License
+* httpcore 1.0.9 — https://www.encode.io/httpcore/
+    Licence: BSD-3-Clause
+* httpx 0.28.1 — https://github.com/encode/httpx
+    Licence: License :: OSI Approved :: BSD License
+* httpx-sse 0.4.3 — https://github.com/florimondmanca/httpx-sse
+    Licence: MIT
+* idna 3.18 — https://github.com/kjd/idna
+    Licence: BSD-3-Clause
+* jsonschema 4.26.0 — https://github.com/python-jsonschema/jsonschema
+    Licence: MIT
+* jsonschema-specifications 2025.9.1 — https://github.com/python-jsonschema/jsonschema-specifications
+    Licence: MIT
+* mcp 1.28.1 — https://modelcontextprotocol.io
+    Licence: License :: OSI Approved :: MIT License
+* pathspec 1.1.1
+    Licence: License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)
+* pycparser 3.0 — https://github.com/eliben/pycparser
+    Licence: BSD-3-Clause
+* pydantic 2.13.4 — https://github.com/pydantic/pydantic
+    Licence: MIT
+* pydantic-settings 2.14.2 — https://github.com/pydantic/pydantic-settings
+    Licence: MIT
+* pydantic_core 2.46.4 — https://github.com/pydantic/pydantic
+    Licence: MIT
+* PyJWT 2.13.0 — https://github.com/jpadilla/pyjwt
+    Licence: MIT
+* python-dotenv 1.2.2 — https://github.com/theskumar/python-dotenv
+    Licence: BSD-3-Clause
+* python-multipart 0.0.32 — https://github.com/Kludex/python-multipart
+    Licence: Apache-2.0
+* pywin32 312 — https://github.com/mhammond/pywin32
+    Licence: License :: OSI Approved :: Python Software Foundation License
+* referencing 0.37.0 — https://github.com/python-jsonschema/referencing
+    Licence: MIT
+* rpds-py 2026.6.3 — https://github.com/crate-py/rpds
+    Licence: MIT
+* sse-starlette 3.4.6 — https://github.com/sysid/sse-starlette
+    Licence: BSD-3-Clause
+* starlette 1.3.1 — https://github.com/Kludex/starlette
+    Licence: BSD-3-Clause
+* tree-sitter 0.26.0 — https://tree-sitter.github.io/tree-sitter/
+    Licence: License :: OSI Approved :: MIT License
+* tree-sitter-c-sharp 0.23.5 — https://github.com/tree-sitter/tree-sitter-c-sharp
+    Licence: License :: OSI Approved :: MIT License
+* tree-sitter-embedded-template 0.25.0 — https://github.com/tree-sitter/tree-sitter-embedded-template
+    Licence: MIT
+* tree-sitter-language-pack 0.13.0 — https://github.com/Goldziher/tree-sitter-language-pack
+    Licence: MIT OR Apache-2.0
+* tree-sitter-yaml 0.7.2 — https://github.com/tree-sitter-grammars/tree-sitter-yaml
+    Licence: MIT
+* typing-inspection 0.4.2 — https://github.com/pydantic/typing-inspection
+    Licence: MIT
+* typing_extensions 4.16.0 — https://github.com/python/typing_extensions
+    Licence: PSF-2.0
+* uvicorn 0.51.0 — https://uvicorn.dev/
+    Licence: BSD-3-Clause
+
