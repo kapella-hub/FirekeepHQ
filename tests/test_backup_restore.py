@@ -37,6 +37,31 @@ if [ "$1" = "volume" ] && [ "$2" = "create" ]; then
     exit 0
 fi
 if [ "$1" = "run" ]; then
+    # A faithful `docker run` also PRODUCES the artifact. backup.sh no longer
+    # trusts tar's exit code -- it checks the tarball exists and is non-empty --
+    # so a stub that only exits 0 simulates the exact bug that check catches
+    # (Docker Desktop resolving the host mount inside its own VM).
+    # DOCKER_STUB_RUN_PRODUCES_NOTHING=1 deliberately simulates that bug.
+    if [ "${DOCKER_STUB_RUN_EXIT:-0}" = "0" ] && [ -z "${DOCKER_STUB_RUN_PRODUCES_NOTHING:-}" ]; then
+        _to_host=""; _archive=""
+        _prev=""
+        for _a in "$@"; do
+            case "$_a" in
+                *:/to) _to_host="${_a%:/to}" ;;
+                /to/*.tar.gz) _archive="${_a##*/}" ;;
+            esac
+            _prev="$_a"
+        done
+        if [ -n "$_to_host" ] && [ -n "$_archive" ]; then
+            # host_path() hands docker a Windows path on Git Bash; convert back
+            # so the stub can write where the real daemon would have.
+            if command -v cygpath >/dev/null 2>&1; then
+                _to_host="$(cygpath -u "$_to_host")"
+            fi
+            mkdir -p "$_to_host"
+            printf 'stub-archive-content\n' > "${_to_host}/${_archive}"
+        fi
+    fi
     exit "${DOCKER_STUB_RUN_EXIT:-0}"
 fi
 exit 0
@@ -219,6 +244,33 @@ def test_backup_composes_the_correct_volume_name_and_mounts_on_success(tmp_path,
             f"backup.sh did not bind-mount {full} read-only for {vol}; log was: {log!r}"
         assert f"tar czf /to/{vol}.tar.gz -C /from ." in log, \
             f"backup.sh did not tar {vol} to the expected archive name; log was: {log!r}"
+
+
+def test_backup_fails_when_tar_exits_zero_but_writes_nothing(tmp_path, monkeypatch):
+    """The artifact check's own regression test.
+
+    This is the real bug, observed on Docker Desktop: the host side of the bind
+    mount resolved inside the daemon's Linux VM, so tar exited 0 having written
+    3.1GB into ephemeral VM storage. Nothing about the exit code revealed it.
+    backup.sh must refuse to call that a backup.
+    """
+    monkeypatch.setenv("COMPOSE_PROJECT_NAME", "happyprefix")
+    out_dir = tmp_path / "out"
+
+    result, _log = _run_with_docker_stub(
+        BACKUP_SCRIPT, [_p(out_dir)], tmp_path,
+        VOLUME_INSPECT_EXIT=0,          # volumes "exist"
+        RUN_EXIT=0,                     # tar "succeeds"
+        RUN_PRODUCES_NOTHING=1,         # ...but no archive appears
+    )
+
+    assert result.returncode != 0, (
+        "backup.sh reported success while producing no archive — "
+        "this is the silent-empty-backup bug\n" + result.stdout + result.stderr
+    )
+    assert "NOT a backup" in (result.stdout + result.stderr) \
+        or "missing or empty" in (result.stdout + result.stderr), \
+        "failure message must say plainly that this is not a backup"
 
 
 def test_restore_composes_the_correct_volume_name_and_mounts_on_success(tmp_path, monkeypatch):

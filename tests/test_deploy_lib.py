@@ -238,8 +238,10 @@ def test_reports_disabled_when_key_absent_entirely(tmp_path):
 
 
 def test_reports_disabled_when_envfile_missing(tmp_path):
-    out = _vault_status(tmp_path, "")
-    (tmp_path / ".env").unlink()
+    # No .env is created at all — tmp_path is empty, so this exercises the
+    # genuinely-missing case. The previous version wrote the file and then
+    # unlinked it, which tested the same thing more obscurely and left an
+    # unused variable behind.
     result = subprocess.run(
         [BASH, "-c", f'source "{_p(LIB)}"; vault_status_line "{_p(tmp_path)}/.env"'],
         capture_output=True, text=True, check=True,
