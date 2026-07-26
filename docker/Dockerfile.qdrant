@@ -1,1 +1,19 @@
+# ---------------------------------------------------------------------------
+# NOT BUILT OR PUBLISHED BY ANY PIPELINE TODAY. Read this before changing that.
+#
+# docker-compose.yml pulls qdrant/qdrant:v1.13.2 directly, so the CUSTOMER obtains it
+# from its upstream registry and Firekeep never redistributes it. Building this
+# Dockerfile and publishing the result to any registry reverses that: Firekeep
+# becomes a redistributor of the bundled software, and its licence obligations
+# attach to us rather than passing through.
+#
+# Qdrant is Apache-2.0, so redistribution here is permissive -- the
+# obligation is attribution, which NOTICE covers. This header exists for
+# consistency with its siblings and because the conveyance distinction
+# above applies to every bundled component, not only the copyleft one.
+#
+# Do not wire this into a release pipeline without reading
+# docs/THIRD-PARTY-DATASTORES.md and getting a legal read. Shipping an
+# appliance, OVA or all-in-one installer has the same effect.
+# ---------------------------------------------------------------------------
 FROM qdrant/qdrant:v1.13.2

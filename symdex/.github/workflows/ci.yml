@@ -30,3 +30,35 @@ jobs:
 
       - name: Check coverage threshold
         run: uv run coverage report --fail-under=65
+
+  test-windows:
+    name: test (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: uv sync --extra test
+
+      # symdex/src/firekeep_symdex/index_store.py picks fcntl.flock on POSIX
+      # and msvcrt.locking on Windows -- nothing else in CI ever ran this file
+      # on Windows, which is how the original fcntl-only code shipped
+      # undetected. On failure, surface the pytest tail as ONE ::error::
+      # annotation: annotations are publicly readable while raw job logs
+      # require auth, and nobody on the team has a Windows box -- this job
+      # must be debuggable from the public API alone.
+      - name: Run tests
+        run: |
+          uv run pytest tests/ -q 2>&1 | Tee-Object -FilePath pytest-out.txt
+          if ($LASTEXITCODE -ne 0) {
+            $tail = (Get-Content pytest-out.txt -Tail 60) -join '%0A'
+            Write-Output "::error title=symdex (windows) pytest failure::$tail"
+            exit 1
+          }
+        shell: pwsh

@@ -1,1 +1,20 @@
+# ---------------------------------------------------------------------------
+# NOT BUILT OR PUBLISHED BY ANY PIPELINE TODAY. Read this before changing that.
+#
+# docker-compose.yml pulls redis:7-alpine directly, so the CUSTOMER obtains it
+# from its upstream registry and Firekeep never redistributes it. Building this
+# Dockerfile and publishing the result to any registry reverses that: Firekeep
+# becomes a redistributor of the bundled software, and its licence obligations
+# attach to us rather than passing through.
+#
+# `redis:7-alpine` currently resolves to **7.4.10**, which is PAST Redis's
+# 7.4 relicensing: it is RSALv2 or SSPLv1 (dual, source-available, NOT OSI
+# open source), not the old BSD terms. RSALv2 forbids offering the software
+# to third parties as a managed service. Self-hosted-by-the-customer is
+# fine; a hosted Firekeep offering would not be.
+#
+# Do not wire this into a release pipeline without reading
+# docs/THIRD-PARTY-DATASTORES.md and getting a legal read. Shipping an
+# appliance, OVA or all-in-one installer has the same effect.
+# ---------------------------------------------------------------------------
 FROM redis:7-alpine
