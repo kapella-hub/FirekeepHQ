@@ -1,0 +1,73 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment
+.env*
+!.env.example
+
+# Docker
+docker-compose.override.yml
+dashboard/.htpasswd
+dashboard/.htpasswd.cred
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Indexes (Symdex)
+*.firekeep-index/
+
+# Lock files (Symdex uses pyproject.toml)
+symdex/uv.lock
+
+# Benchmark results (large JSON files)
+symdex/benchmarks/results/
+
+# Serena
+.serena/
+
+# Codex local project config
+.codex
+
+# Node (if any)
+node_modules/
+
+# Session scratch (never commit)
+.superpowers/
+.playwright-mcp/
+.claude/
+relay/test_output.txt
+
+# PowerShell profile-path cruft accidentally created when the CWD is the repo root
+Microsoft/
+
+# Backup archives (deploy/backup.sh's default OUT_DIR) -- these can contain
+# Neo4j/Qdrant/Redis/Ollama data, including vault secrets and memory content.
+# Never let `git add -A` stage a database dump into history.
+/backups/
+*.tar.gz

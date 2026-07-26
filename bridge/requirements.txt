@@ -1,0 +1,8 @@
+pydantic-settings>=2.7,<3
+redis[hiredis]>=5.2,<6
+httpx>=0.28,<1
+fastmcp>=3.1,<4
+
+# Dev / Test
+pytest>=8.0,<9
+pytest-asyncio>=0.24,<1

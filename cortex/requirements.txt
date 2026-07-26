@@ -1,0 +1,18 @@
+# For reproducible production builds, use: pip-compile --generate-hashes requirements.txt -o requirements.lock
+fastapi>=0.115,<1
+uvicorn[standard]>=0.34,<1
+pydantic-settings>=2.7,<3
+neo4j>=5.27,<6
+qdrant-client>=1.13,<2
+redis[hiredis]>=5.2,<6
+celery>=5.4,<6
+httpx>=0.28,<1
+slowapi>=0.1.9,<1
+fastmcp>=3.1,<4
+cryptography>=42.0,<44
+markdownify>=1.2,<2
+
+# Dev / Test
+pytest>=8.0,<9
+pytest-asyncio>=0.24,<1
+fakeredis>=2.21,<3

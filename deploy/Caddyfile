@@ -1,0 +1,99 @@
+{
+    # Internal CA for everything; no ACME, no outbound calls.
+    # Root CA key lives in the caddy_data volume — back up like VAULT_KEY.
+    local_certs
+}
+
+# Plain-HTTP visitors get bounced to HTTPS (any Host on :80).
+http:// {
+    redir https://{host}{uri} permanent
+}
+
+# `https://localhost` is a second site address so the compose healthcheck
+# (wget https://localhost/health-caddy from inside the container) gets a
+# matching certificate; the internal CA mints it automatically.
+https://{$FIREKEEP_OFFICE_HOST:firekeep.office}, https://localhost {
+    tls internal
+
+    # Caddy-level liveness probe (used by the compose healthcheck).
+    respond /health-caddy 200
+
+    # ---- MCP surfaces (streamable HTTP) ----
+    # Rewrite to EXACTLY /mcp (no trailing slash -> no redirect escapes
+    # the prefix). NOTE: no `encode` directive on these routes (SSE +
+    # compression edge cases) and no read timeouts (long streams must
+    # survive). Caddy auto-flushes text/event-stream responses.
+    #
+    # /mcp/symdex is DELIBERATELY NOT ROUTED: office symdex runs
+    # stdio-local (SP1b); the HTTP surface has no office consumer and
+    # no auth middleware, so exposing it would be a key-free bypass.
+    handle /mcp/cortex* {
+        rewrite * /mcp
+        reverse_proxy cortex-mcp:8080
+    }
+    handle /mcp/bridge* {
+        rewrite * /mcp
+        reverse_proxy bridge:8070
+    }
+    handle /mcp/sentinel* {
+        rewrite * /mcp
+        reverse_proxy sentinel:8060
+    }
+    handle /mcp/relay* {
+        rewrite * /mcp
+        reverse_proxy relay:8050
+    }
+
+    # ---- REST surfaces (prefix-strip, mirrors dashboard nginx convention) ----
+
+    # Cortex's EMBEDDED dashboard (mounted by cortex-api itself at
+    # /dashboard — see cortex/app/dashboard.py) is a browser SPA that
+    # cannot attach X-API-Key, so auth/asgi.py's FirekeepKeyAuthMiddleware
+    # skip_paths deliberately exempts the whole /dashboard prefix (breaking
+    # that would break the embedded dashboard's own fetch calls). That
+    # means every /dashboard/api/* route — including the destructive
+    # DELETE /dashboard/api/dlq/clear — is auth-exempt by design. Gating it
+    # at the auth layer is therefore NOT the fix; excluding it from this
+    # public office front IS. This handle matcher (/api/cortex/dashboard*)
+    # is more specific than the /api/cortex/* proxy below, and Caddy
+    # auto-sorts `handle` blocks by matcher specificity regardless of file
+    # order, so it always wins and short-circuits to 404 here — verified
+    # via `caddy adapt` (see deploy/README or task history). The embedded
+    # dashboard stays reachable for the owner via SSH/localhost on the
+    # cortex-api port, which the office compose override
+    # (docker-compose.office.yml) rebinds to 127.0.0.1:8100. Do NOT remove
+    # this block to "simplify" routing — that reopens the key-free
+    # destructive-DLQ hole through the public front. The real unified
+    # dashboard (dashboard/ nginx SPA on :8040) is unaffected: it lives at
+    # a different path entirely and is never proxied through
+    # /api/cortex/*.
+    handle /api/cortex/dashboard* {
+        respond 404
+    }
+
+    handle_path /api/cortex/* {
+        reverse_proxy cortex-api:8000
+    }
+    handle_path /api/bridge/* {
+        reverse_proxy bridge:8070
+    }
+    handle_path /api/sentinel/* {
+        reverse_proxy sentinel:8060
+    }
+    handle_path /api/relay/* {
+        reverse_proxy relay:8050
+    }
+
+    # A2A discovery (served by relay at a well-known root path; pre-auth
+    # by design — it is on the auth middleware skip list).
+    handle /.well-known/agent.json {
+        reverse_proxy relay:8050
+    }
+
+    # Everything else (including the dashboard, which is NOT exposed
+    # through the office front — it stays on its own 127.0.0.1 binding
+    # behind nginx basic-auth) -> 404.
+    handle {
+        respond 404
+    }
+}

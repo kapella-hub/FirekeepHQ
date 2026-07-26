@@ -1,0 +1,10 @@
+#!/bin/sh
+# Firekeep client kit installer — DEVELOPER path (install from a checkout).
+# Teammates should use the release bootstrap instead: client/bootstrap/install.sh, which
+# brings its own Python and needs no repo. This script requires a system python3 >= 3.10.
+# Thin entry -> python -m firekeep_client.cli install. Runs the CLI from the unpacked/checked-out
+# dir so firekeep_client resolves before it is pip-installed.
+set -eu
+here="$(cd "$(dirname "$0")" && pwd)"
+export PYTHONPATH="${here}${PYTHONPATH:+:${PYTHONPATH}}"
+exec python3 -m firekeep_client.cli install "$@"

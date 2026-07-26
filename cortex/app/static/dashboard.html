@@ -1,0 +1,922 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FirekeepCortex Dashboard</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg-primary: #0d1117;
+  --bg-secondary: #161b22;
+  --bg-tertiary: #21262d;
+  --border: #30363d;
+  --text-primary: #e6edf3;
+  --text-secondary: #8b949e;
+  --text-muted: #6e7681;
+  --accent-blue: #58a6ff;
+  --accent-green: #3fb950;
+  --accent-orange: #d29922;
+  --accent-red: #f85149;
+  --accent-purple: #bc8cff;
+  --accent-cyan: #39d2c0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  line-height: 1.5;
+  min-height: 100vh;
+}
+
+/* Header */
+.header {
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  padding: 16px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.header h1 {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.header-info {
+  display: flex;
+  gap: 16px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.header-info span { white-space: nowrap; }
+
+/* Tabs */
+.tabs {
+  display: flex;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  padding: 0 24px;
+  gap: 0;
+}
+
+.tab {
+  padding: 10px 16px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  border-bottom: 2px solid transparent;
+  font-size: 14px;
+  transition: color 0.15s, border-color 0.15s;
+  user-select: none;
+}
+
+.tab:hover { color: var(--text-primary); }
+
+.tab.active {
+  color: var(--accent-blue);
+  border-bottom-color: var(--accent-blue);
+}
+
+/* Main layout */
+.main { padding: 24px; }
+
+.panel { display: none; }
+.panel.active { display: block; }
+
+/* Stats cards */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.stat-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 20px;
+}
+
+.stat-card .label {
+  font-size: 12px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+
+.stat-card .value {
+  font-size: 28px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* Search */
+.search-bar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.search-bar input, .search-bar select {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 12px;
+  color: var(--text-primary);
+  font-size: 14px;
+  outline: none;
+}
+
+.search-bar input:focus, .search-bar select:focus {
+  border-color: var(--accent-blue);
+}
+
+.search-bar input { flex: 1; min-width: 200px; }
+
+.btn {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 16px;
+  color: var(--text-primary);
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.15s;
+  white-space: nowrap;
+}
+
+.btn:hover { background: var(--border); }
+
+.btn-primary {
+  background: #1f6feb;
+  border-color: #1f6feb;
+}
+
+.btn-primary:hover { background: #388bfd; }
+
+.btn-danger {
+  background: #da3633;
+  border-color: #da3633;
+}
+
+.btn-danger:hover { background: #f85149; }
+
+/* Memory list */
+.memory-list { display: flex; flex-direction: column; gap: 8px; }
+
+.memory-item {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 18px;
+}
+
+.memory-item .mem-text {
+  font-size: 14px;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+  word-break: break-word;
+}
+
+.memory-item .mem-meta {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.memory-item .mem-meta .tag {
+  background: var(--bg-tertiary);
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+}
+
+.memory-item .mem-meta .score {
+  color: var(--accent-green);
+  font-weight: 600;
+}
+
+/* Graph canvas */
+.graph-container {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  position: relative;
+}
+
+.graph-container canvas {
+  display: block;
+  width: 100%;
+  cursor: grab;
+}
+
+.graph-container canvas:active { cursor: grabbing; }
+
+.graph-toolbar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.graph-legend {
+  display: flex;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  flex-wrap: wrap;
+}
+
+.graph-legend .legend-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+/* DLQ */
+.dlq-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  align-items: center;
+}
+
+.dlq-actions .dlq-count {
+  color: var(--text-secondary);
+  font-size: 14px;
+  margin-left: auto;
+}
+
+.dlq-list { display: flex; flex-direction: column; gap: 6px; }
+
+.dlq-item {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  color: var(--text-secondary);
+  word-break: break-all;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+/* Pagination */
+.pagination {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+  align-items: center;
+  justify-content: center;
+}
+
+.pagination .page-info {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+/* Loading / empty */
+.loading, .empty-state {
+  text-align: center;
+  padding: 40px;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+/* Toast notifications */
+.toast-container {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.toast {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 16px;
+  font-size: 13px;
+  color: var(--text-primary);
+  animation: slideIn 0.2s ease;
+  max-width: 360px;
+}
+
+.toast.success { border-left: 3px solid var(--accent-green); }
+.toast.error { border-left: 3px solid var(--accent-red); }
+
+@keyframes slideIn {
+  from { opacity: 0; transform: translateX(20px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>FirekeepCortex Dashboard</h1>
+  <div class="header-info">
+    <span id="hdr-version">v--</span>
+    <span id="hdr-uptime">Uptime: --</span>
+    <span id="hdr-status">Status: --</span>
+  </div>
+</div>
+
+<div class="tabs">
+  <div class="tab active" data-panel="overview">Overview</div>
+  <div class="tab" data-panel="memories">Memories</div>
+  <div class="tab" data-panel="graph">Graph</div>
+  <div class="tab" data-panel="dlq">DLQ</div>
+</div>
+
+<div class="main">
+  <!-- Overview Panel -->
+  <div class="panel active" id="panel-overview">
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="label">Memories</div>
+        <div class="value" id="stat-memories">--</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Graph Nodes</div>
+        <div class="value" id="stat-nodes">--</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Graph Edges</div>
+        <div class="value" id="stat-edges">--</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">DLQ Depth</div>
+        <div class="value" id="stat-dlq">--</div>
+      </div>
+    </div>
+    <div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:8px;padding:18px 22px;">
+      <h3 style="margin-bottom:10px;font-size:15px;color:var(--text-secondary);">Domains</h3>
+      <div id="domain-list" style="display:flex;flex-wrap:wrap;gap:8px;">
+        <span class="loading">Loading domains...</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Memories Panel -->
+  <div class="panel" id="panel-memories">
+    <div class="search-bar">
+      <input type="text" id="mem-search" placeholder="Search memories..." />
+      <select id="mem-namespace">
+        <option value="">All domains</option>
+      </select>
+      <button class="btn btn-primary" onclick="searchMemories()">Search</button>
+    </div>
+    <div id="memory-results" class="memory-list">
+      <div class="loading">Enter a search or browse memories</div>
+    </div>
+    <div class="pagination">
+      <button class="btn" id="mem-prev" onclick="memPage(-1)" disabled>Previous</button>
+      <span class="page-info" id="mem-page-info"></span>
+      <button class="btn" id="mem-next" onclick="memPage(1)" disabled>Next</button>
+    </div>
+  </div>
+
+  <!-- Graph Panel -->
+  <div class="panel" id="panel-graph">
+    <div class="graph-toolbar">
+      <input type="text" id="graph-search" placeholder="Center on concept..." style="background:var(--bg-tertiary);border:1px solid var(--border);border-radius:6px;padding:8px 12px;color:var(--text-primary);font-size:14px;width:240px;" />
+      <button class="btn btn-primary" onclick="loadGraph()">Load Graph</button>
+      <button class="btn" onclick="resetGraphView()">Reset View</button>
+      <div class="graph-legend">
+        <div class="legend-item"><span class="legend-dot" style="background:#58a6ff"></span> Domain</div>
+        <div class="legend-item"><span class="legend-dot" style="background:#3fb950"></span> Concept</div>
+        <div class="legend-item"><span class="legend-dot" style="background:#d29922"></span> Action</div>
+        <div class="legend-item"><span class="legend-dot" style="background:#f85149"></span> Outcome</div>
+        <div class="legend-item"><span class="legend-dot" style="background:#bc8cff"></span> Resolution</div>
+      </div>
+    </div>
+    <div class="graph-container">
+      <canvas id="graph-canvas" width="900" height="500"></canvas>
+    </div>
+  </div>
+
+  <!-- DLQ Panel -->
+  <div class="panel" id="panel-dlq">
+    <div class="dlq-actions">
+      <button class="btn btn-primary" onclick="retryDLQ()">Retry All</button>
+      <button class="btn btn-danger" onclick="clearDLQ()">Clear DLQ</button>
+      <span class="dlq-count" id="dlq-total">0 items</span>
+    </div>
+    <div id="dlq-results" class="dlq-list">
+      <div class="loading">Loading DLQ...</div>
+    </div>
+    <div class="pagination">
+      <button class="btn" id="dlq-prev" onclick="dlqPage(-1)" disabled>Previous</button>
+      <span class="page-info" id="dlq-page-info"></span>
+      <button class="btn" id="dlq-next" onclick="dlqPage(1)" disabled>Next</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast-container" id="toasts"></div>
+
+<script>
+// ---- State ----
+const BASE = '/dashboard/api';
+let memOffset = 0;
+const memLimit = 20;
+let dlqOffset = 0;
+const dlqLimit = 20;
+
+// ---- Tabs ----
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById('panel-' + tab.dataset.panel).classList.add('active');
+    if (tab.dataset.panel === 'memories') loadMemories();
+    if (tab.dataset.panel === 'graph') loadGraph();
+    if (tab.dataset.panel === 'dlq') loadDLQ();
+  });
+});
+
+// ---- Toast ----
+function toast(msg, type) {
+  const c = document.getElementById('toasts');
+  const d = document.createElement('div');
+  d.className = 'toast ' + (type || '');
+  d.textContent = msg;
+  c.appendChild(d);
+  setTimeout(() => d.remove(), 4000);
+}
+
+// ---- Stats ----
+async function loadStats() {
+  try {
+    const r = await fetch(BASE + '/stats');
+    const d = await r.json();
+    document.getElementById('stat-memories').textContent = fmt(d.memory_count);
+    document.getElementById('stat-nodes').textContent = fmt(d.node_count);
+    document.getElementById('stat-edges').textContent = fmt(d.edge_count);
+    document.getElementById('stat-dlq').textContent = fmt(d.dlq_depth);
+
+    const dl = document.getElementById('domain-list');
+    if (d.domains && d.domains.length > 0) {
+      dl.innerHTML = d.domains.map(name =>
+        '<span style="background:var(--bg-tertiary);padding:4px 12px;border-radius:14px;font-size:13px;color:var(--accent-cyan);">' + esc(name) + '</span>'
+      ).join('');
+      // Populate namespace dropdown
+      const sel = document.getElementById('mem-namespace');
+      const current = sel.value;
+      sel.innerHTML = '<option value="">All domains</option>';
+      d.domains.forEach(name => {
+        const o = document.createElement('option');
+        o.value = name;
+        o.textContent = name;
+        sel.appendChild(o);
+      });
+      sel.value = current;
+    } else {
+      dl.innerHTML = '<span style="color:var(--text-muted);">No domains found</span>';
+    }
+  } catch (e) {
+    console.error('Stats error:', e);
+  }
+}
+
+async function loadHealthInfo() {
+  try {
+    const r = await fetch('/health');
+    const d = await r.json();
+    document.getElementById('hdr-version').textContent = 'v' + (d.version || '?');
+    if (d.uptime_seconds != null) {
+      document.getElementById('hdr-uptime').textContent = 'Uptime: ' + fmtUptime(d.uptime_seconds);
+    }
+    document.getElementById('hdr-status').textContent = 'Status: ' + (d.status || '--');
+  } catch (e) {
+    document.getElementById('hdr-status').textContent = 'Status: unreachable';
+  }
+}
+
+function fmt(n) { return n != null ? n.toLocaleString() : '--'; }
+
+function fmtUptime(s) {
+  if (s < 60) return Math.floor(s) + 's';
+  if (s < 3600) return Math.floor(s / 60) + 'm ' + Math.floor(s % 60) + 's';
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (h < 24) return h + 'h ' + m + 'm';
+  const days = Math.floor(h / 24);
+  return days + 'd ' + (h % 24) + 'h';
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s || '';
+  return d.innerHTML;
+}
+
+// ---- Memories ----
+async function loadMemories() {
+  const q = document.getElementById('mem-search').value.trim();
+  const ns = document.getElementById('mem-namespace').value;
+  let url = BASE + '/memories?limit=' + memLimit + '&offset=' + memOffset;
+  if (q) url += '&q=' + encodeURIComponent(q);
+  if (ns) url += '&namespace=' + encodeURIComponent(ns);
+
+  const container = document.getElementById('memory-results');
+  container.innerHTML = '<div class="loading">Loading...</div>';
+
+  try {
+    const r = await fetch(url);
+    const d = await r.json();
+    if (!d.memories || d.memories.length === 0) {
+      container.innerHTML = '<div class="empty-state">No memories found</div>';
+    } else {
+      container.innerHTML = d.memories.map(m => `
+        <div class="memory-item">
+          <div class="mem-text">${esc(m.text)}</div>
+          <div class="mem-meta">
+            <span>Domain: ${esc(m.domain)}</span>
+            ${m.score != null ? '<span class="score">Score: ' + m.score.toFixed(3) + '</span>' : ''}
+            <span>${esc(m.timestamp)}</span>
+            ${(m.tags || []).map(t => '<span class="tag">' + esc(t) + '</span>').join('')}
+          </div>
+        </div>
+      `).join('');
+    }
+
+    document.getElementById('mem-prev').disabled = memOffset === 0;
+    document.getElementById('mem-next').disabled = d.memories.length < memLimit;
+    document.getElementById('mem-page-info').textContent =
+      d.memories.length > 0 ? ('Showing ' + (memOffset + 1) + '-' + (memOffset + d.memories.length)) : '';
+  } catch (e) {
+    container.innerHTML = '<div class="empty-state">Error loading memories</div>';
+    console.error(e);
+  }
+}
+
+function searchMemories() {
+  memOffset = 0;
+  loadMemories();
+}
+
+function memPage(dir) {
+  memOffset = Math.max(0, memOffset + dir * memLimit);
+  loadMemories();
+}
+
+document.getElementById('mem-search').addEventListener('keydown', e => {
+  if (e.key === 'Enter') searchMemories();
+});
+
+// ---- Graph ----
+let graphNodes = [];
+let graphEdges = [];
+let graphSim = null;
+let graphDrag = null;
+let graphPan = { x: 0, y: 0 };
+let graphZoom = 1;
+
+const LABEL_COLORS = {
+  Domain: '#58a6ff',
+  Concept: '#3fb950',
+  Action: '#d29922',
+  Outcome: '#f85149',
+  Resolution: '#bc8cff',
+};
+
+async function loadGraph() {
+  const concept = document.getElementById('graph-search').value.trim();
+  let url = BASE + '/graph?limit=50';
+  if (concept) url += '&concept=' + encodeURIComponent(concept);
+
+  try {
+    const r = await fetch(url);
+    const d = await r.json();
+    graphNodes = (d.nodes || []).map((n, i) => ({
+      ...n,
+      x: 450 + (Math.random() - 0.5) * 300,
+      y: 250 + (Math.random() - 0.5) * 200,
+      vx: 0,
+      vy: 0,
+      radius: 20,
+    }));
+    graphEdges = (d.edges || []).filter(e => {
+      const si = graphNodes.findIndex(n => n.id === e.source);
+      const ti = graphNodes.findIndex(n => n.id === e.target);
+      return si >= 0 && ti >= 0;
+    }).map(e => ({
+      ...e,
+      sourceIdx: graphNodes.findIndex(n => n.id === e.source),
+      targetIdx: graphNodes.findIndex(n => n.id === e.target),
+    }));
+    graphPan = { x: 0, y: 0 };
+    graphZoom = 1;
+    startSimulation();
+  } catch (e) {
+    console.error('Graph load error:', e);
+    toast('Failed to load graph', 'error');
+  }
+}
+
+function resetGraphView() {
+  graphPan = { x: 0, y: 0 };
+  graphZoom = 1;
+}
+
+// Force-directed layout
+function startSimulation() {
+  if (graphSim) cancelAnimationFrame(graphSim);
+  let iterations = 0;
+  const maxIter = 300;
+
+  function tick() {
+    if (iterations > maxIter) { drawGraph(); return; }
+    iterations++;
+
+    const alpha = Math.max(0.01, 1 - iterations / maxIter);
+    const N = graphNodes.length;
+
+    // Repulsion
+    for (let i = 0; i < N; i++) {
+      for (let j = i + 1; j < N; j++) {
+        let dx = graphNodes[j].x - graphNodes[i].x;
+        let dy = graphNodes[j].y - graphNodes[i].y;
+        let dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        let force = 5000 / (dist * dist);
+        let fx = (dx / dist) * force * alpha;
+        let fy = (dy / dist) * force * alpha;
+        graphNodes[i].vx -= fx;
+        graphNodes[i].vy -= fy;
+        graphNodes[j].vx += fx;
+        graphNodes[j].vy += fy;
+      }
+    }
+
+    // Attraction (edges)
+    for (const e of graphEdges) {
+      const s = graphNodes[e.sourceIdx];
+      const t = graphNodes[e.targetIdx];
+      let dx = t.x - s.x;
+      let dy = t.y - s.y;
+      let dist = Math.sqrt(dx * dx + dy * dy) || 1;
+      let force = (dist - 100) * 0.05 * alpha;
+      let fx = (dx / dist) * force;
+      let fy = (dy / dist) * force;
+      s.vx += fx;
+      s.vy += fy;
+      t.vx -= fx;
+      t.vy -= fy;
+    }
+
+    // Center gravity
+    for (const n of graphNodes) {
+      n.vx += (450 - n.x) * 0.001 * alpha;
+      n.vy += (250 - n.y) * 0.001 * alpha;
+    }
+
+    // Apply velocity + damping
+    for (const n of graphNodes) {
+      n.vx *= 0.6;
+      n.vy *= 0.6;
+      n.x += n.vx;
+      n.y += n.vy;
+    }
+
+    drawGraph();
+    graphSim = requestAnimationFrame(tick);
+  }
+
+  tick();
+}
+
+function drawGraph() {
+  const canvas = document.getElementById('graph-canvas');
+  const ctx = canvas.getContext('2d');
+  const rect = canvas.parentElement.getBoundingClientRect();
+  canvas.width = rect.width * (window.devicePixelRatio || 1);
+  canvas.height = 500 * (window.devicePixelRatio || 1);
+  canvas.style.height = '500px';
+  const scale = (window.devicePixelRatio || 1);
+
+  ctx.setTransform(scale, 0, 0, scale, 0, 0);
+  ctx.clearRect(0, 0, rect.width, 500);
+
+  ctx.save();
+  ctx.translate(graphPan.x, graphPan.y);
+  ctx.scale(graphZoom, graphZoom);
+
+  // Edges
+  ctx.strokeStyle = '#30363d';
+  ctx.lineWidth = 1;
+  for (const e of graphEdges) {
+    const s = graphNodes[e.sourceIdx];
+    const t = graphNodes[e.targetIdx];
+    ctx.beginPath();
+    ctx.moveTo(s.x, s.y);
+    ctx.lineTo(t.x, t.y);
+    ctx.stroke();
+
+    // Edge label
+    if (e.type) {
+      const mx = (s.x + t.x) / 2;
+      const my = (s.y + t.y) / 2;
+      ctx.fillStyle = '#6e7681';
+      ctx.font = '9px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(e.type, mx, my - 3);
+    }
+  }
+
+  // Nodes
+  for (const n of graphNodes) {
+    const color = LABEL_COLORS[n.label] || '#8b949e';
+    ctx.beginPath();
+    ctx.arc(n.x, n.y, n.radius, 0, Math.PI * 2);
+    ctx.fillStyle = color + '33';
+    ctx.fill();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Label
+    const displayName = (n.name || '').length > 18 ? (n.name || '').substring(0, 16) + '..' : (n.name || '');
+    ctx.fillStyle = '#e6edf3';
+    ctx.font = '11px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(displayName, n.x, n.y + n.radius + 14);
+
+    // Type badge
+    ctx.fillStyle = color;
+    ctx.font = 'bold 9px sans-serif';
+    ctx.fillText((n.label || '')[0] || '?', n.x, n.y + 4);
+  }
+
+  ctx.restore();
+}
+
+// Canvas interaction
+(function() {
+  const canvas = document.getElementById('graph-canvas');
+  let isDragging = false;
+  let dragNode = null;
+  let lastMouse = null;
+
+  function canvasCoords(e) {
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: (e.clientX - rect.left - graphPan.x) / graphZoom,
+      y: (e.clientY - rect.top - graphPan.y) / graphZoom,
+    };
+  }
+
+  function findNode(cx, cy) {
+    for (const n of graphNodes) {
+      const dx = n.x - cx;
+      const dy = n.y - cy;
+      if (dx * dx + dy * dy < n.radius * n.radius) return n;
+    }
+    return null;
+  }
+
+  canvas.addEventListener('mousedown', e => {
+    const c = canvasCoords(e);
+    dragNode = findNode(c.x, c.y);
+    isDragging = true;
+    lastMouse = { x: e.clientX, y: e.clientY };
+  });
+
+  canvas.addEventListener('mousemove', e => {
+    if (!isDragging) return;
+    if (dragNode) {
+      const c = canvasCoords(e);
+      dragNode.x = c.x;
+      dragNode.y = c.y;
+      drawGraph();
+    } else if (lastMouse) {
+      graphPan.x += e.clientX - lastMouse.x;
+      graphPan.y += e.clientY - lastMouse.y;
+      lastMouse = { x: e.clientX, y: e.clientY };
+      drawGraph();
+    }
+  });
+
+  canvas.addEventListener('mouseup', () => {
+    isDragging = false;
+    dragNode = null;
+    lastMouse = null;
+  });
+
+  canvas.addEventListener('mouseleave', () => {
+    isDragging = false;
+    dragNode = null;
+    lastMouse = null;
+  });
+
+  canvas.addEventListener('dblclick', e => {
+    const c = canvasCoords(e);
+    const node = findNode(c.x, c.y);
+    if (node && node.name) {
+      document.getElementById('graph-search').value = node.name;
+      loadGraph();
+    }
+  });
+
+  canvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    const delta = e.deltaY > 0 ? 0.9 : 1.1;
+    graphZoom = Math.min(3, Math.max(0.2, graphZoom * delta));
+    drawGraph();
+  }, { passive: false });
+})();
+
+// ---- DLQ ----
+async function loadDLQ() {
+  const url = BASE + '/dlq?limit=' + dlqLimit + '&offset=' + dlqOffset;
+  const container = document.getElementById('dlq-results');
+  container.innerHTML = '<div class="loading">Loading...</div>';
+
+  try {
+    const r = await fetch(url);
+    const d = await r.json();
+    document.getElementById('dlq-total').textContent = (d.total || 0) + ' items';
+
+    if (!d.items || d.items.length === 0) {
+      container.innerHTML = '<div class="empty-state">DLQ is empty</div>';
+    } else {
+      container.innerHTML = d.items.map(item =>
+        '<div class="dlq-item">' + esc(JSON.stringify(item, null, 2)) + '</div>'
+      ).join('');
+    }
+
+    document.getElementById('dlq-prev').disabled = dlqOffset === 0;
+    document.getElementById('dlq-next').disabled = (d.items || []).length < dlqLimit;
+    document.getElementById('dlq-page-info').textContent =
+      (d.items || []).length > 0 ? ('Showing ' + (dlqOffset + 1) + '-' + (dlqOffset + d.items.length) + ' of ' + (d.total || 0)) : '';
+  } catch (e) {
+    container.innerHTML = '<div class="empty-state">Error loading DLQ</div>';
+    console.error(e);
+  }
+}
+
+function dlqPage(dir) {
+  dlqOffset = Math.max(0, dlqOffset + dir * dlqLimit);
+  loadDLQ();
+}
+
+async function retryDLQ() {
+  try {
+    const r = await fetch(BASE + '/dlq/retry', { method: 'POST' });
+    const d = await r.json();
+    toast('Retried ' + (d.retried || 0) + ' items', 'success');
+    loadDLQ();
+    loadStats();
+  } catch (e) {
+    toast('Retry failed', 'error');
+  }
+}
+
+async function clearDLQ() {
+  if (!confirm('Clear all DLQ items? This cannot be undone.')) return;
+  try {
+    const r = await fetch(BASE + '/dlq/clear', { method: 'DELETE' });
+    const d = await r.json();
+    toast('DLQ cleared', 'success');
+    dlqOffset = 0;
+    loadDLQ();
+    loadStats();
+  } catch (e) {
+    toast('Clear failed', 'error');
+  }
+}
+
+// ---- Init ----
+loadStats();
+loadHealthInfo();
+setInterval(() => { loadStats(); loadHealthInfo(); }, 30000);
+</script>
+</body>
+</html>

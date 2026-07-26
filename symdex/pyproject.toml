@@ -1,0 +1,51 @@
+[project]
+name = "firekeep-symdex"
+version = "0.2.13"
+description = "Token-efficient MCP server for source code exploration via tree-sitter AST parsing"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=1.0.0,<2.0.0",
+    "httpx>=0.27.0",
+    "tree-sitter-language-pack>=0.7.0,<1.0.0",
+    "pathspec>=0.12.0",
+    "sse-starlette>=2.1.0",
+    "uvicorn>=0.30.0",
+    "starlette>=0.37.0",
+]
+
+[project.optional-dependencies]
+anthropic = ["anthropic>=0.40.0"]
+gemini = ["google-generativeai>=0.8.0"]
+all = ["anthropic>=0.40.0", "google-generativeai>=0.8.0"]
+test = ["pytest", "pytest-asyncio", "pytest-cov"]
+benchmark = ["anthropic>=0.40.0", "tiktoken>=0.7.0"]
+
+[project.scripts]
+firekeep-symdex = "firekeep_symdex.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/firekeep_symdex"]
+
+[tool.hatch.build.targets.sdist]
+exclude = [".claude/", "claude-plugin/"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.coverage.run]
+source = ["src/firekeep_symdex"]
+
+[tool.coverage.report]
+fail_under = 65
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.",
+    "raise NotImplementedError",
+]

@@ -1,0 +1,11 @@
+ARG REGISTRY=docker.io/library
+FROM ${REGISTRY}/nginx:alpine
+COPY dashboard/index.html /usr/share/nginx/html/index.html
+# Rendered by the stock nginx entrypoint (envsubst on /etc/nginx/templates/*),
+# substituting DASHBOARD_API_KEY into the /api/ proxy headers at start. Note:
+# in k8s the ingress routes /api/<svc> straight to the services, so these
+# proxies (and the docker-DNS resolver they use) only matter on compose-style
+# deploys — the pod effectively serves the SPA.
+COPY dashboard/nginx.conf.template /etc/nginx/templates/default.conf.template
+COPY docker/dashboard-htpasswd.sh /docker-entrypoint.d/15-dashboard-htpasswd.sh
+RUN chmod +x /docker-entrypoint.d/15-dashboard-htpasswd.sh

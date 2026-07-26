@@ -1,0 +1,596 @@
+services:
+  # ============================================================
+  # Infrastructure
+  # ============================================================
+
+  neo4j:
+    image: neo4j:5-community
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:7474:7474"
+      - "127.0.0.1:7687:7687"
+    environment:
+      NEO4J_AUTH: ${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set}
+      NEO4J_server_memory_heap_initial__size: 512m
+      NEO4J_server_memory_pagecache_size: 512m
+    volumes:
+      - neo4j_data:/data
+    healthcheck:
+      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "${NEO4J_PASSWORD}", "RETURN 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+          cpus: "1.0"
+
+  qdrant:
+    image: qdrant/qdrant:v1.13.2
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/6333'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "0.5"
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: "0.25"
+
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 8g
+          cpus: "4.0"
+
+  ollama-pull:
+    image: ollama/ollama:latest
+    depends_on:
+      ollama:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        ollama pull ${LLM_MODEL:-qwen3:4b} && \
+        ollama pull ${EMBEDDING_MODEL:-mxbai-embed-large} && \
+        echo "Models ready"
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    restart: "no"
+
+  # ============================================================
+  # FirekeepCortex — Long-term Memory
+  # ============================================================
+
+  cortex-api:
+    build:
+      context: .
+      dockerfile: cortex/Dockerfile
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
+        APP_VERSION: ${APP_VERSION:-0.6.0}
+        # Base-image registry. Personal deploys default to Docker Hub; the office
+        # docker-host path pins its the registry mirror mirror in docker-compose.office.yml
+        # (office CI builds bare `docker build`, which keeps the Dockerfile's own
+        # mirror default). Without this passthrough the Dockerfile default made a
+        # personal `update.sh` unbuildable off-lab (2026-07-18 VPS deploy failure).
+        REGISTRY: ${REGISTRY:-docker.io/library}
+    restart: unless-stopped
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "0.0.0.0:8100:8000"
+    environment:
+      LLM_BASE_URL: http://ollama:11434/v1
+      CORS_ORIGINS: ${CORS_ORIGINS:-["*"]}
+      # v2: Replay, Auth
+      RP_REDIS_URL: redis://redis:6379/6
+      AUTH_ENABLED: ${AUTH_ENABLED:-false}
+      AUTH_REDIS_URL: redis://redis:6379/7
+      # Vault (encrypted secret storage, shares Redis DB 7 with auth)
+      VAULT_ENABLED: ${VAULT_ENABLED:-true}
+      VAULT_KEY: ${VAULT_KEY:-}
+      VAULT_REDIS_URL: redis://redis:6379/7
+      # Corpus (business knowledge graph)
+      CORPUS_ENABLED: ${CORPUS_ENABLED:-true}
+      # Knowledge Ingestion (docs -> skills orchestration, SP2)
+      KNOWLEDGE_ENABLED: ${KNOWLEDGE_ENABLED:-true}
+      KNOWLEDGE_MAX_PROCEDURES: ${KNOWLEDGE_MAX_PROCEDURES:-10}
+      KNOWLEDGE_CLASSIFY_TIMEOUT_SECONDS: ${KNOWLEDGE_CLASSIFY_TIMEOUT_SECONDS:-300}
+      KNOWLEDGE_STATUS_TTL_SECONDS: ${KNOWLEDGE_STATUS_TTL_SECONDS:-2592000}
+      # URL ingestion (SSRF-guarded crawler -> knowledge pipeline)
+      KNOWLEDGE_URL_INGEST_ENABLED: ${KNOWLEDGE_URL_INGEST_ENABLED:-true}
+      KNOWLEDGE_CRAWL_MAX_DEPTH: ${KNOWLEDGE_CRAWL_MAX_DEPTH:-2}
+      KNOWLEDGE_CRAWL_MAX_PAGES: ${KNOWLEDGE_CRAWL_MAX_PAGES:-25}
+      KNOWLEDGE_CRAWL_TIMEOUT_SECONDS: ${KNOWLEDGE_CRAWL_TIMEOUT_SECONDS:-15}
+      KNOWLEDGE_CRAWL_MAX_PAGE_BYTES: ${KNOWLEDGE_CRAWL_MAX_PAGE_BYTES:-2000000}
+      # Decision Board (SP4)
+      DECISION_ENABLED: ${DECISION_ENABLED:-true}
+      DECISION_SYNTH_TIMEOUT_SECONDS: ${DECISION_SYNTH_TIMEOUT_SECONDS:-20}
+      DECISION_MAX_QUESTIONS: ${DECISION_MAX_QUESTIONS:-8}
+      # Pattern validation (promotion ladder + A/B) — frozen until session volume (N=1)
+      PATTERN_VALIDATION_ENABLED: ${PATTERN_VALIDATION_ENABLED:-false}
+      # Policy Engine
+      POLICY_DENY_PATHS: ${POLICY_DENY_PATHS:-.env,*.key,*.pem,*.secret}
+      # Memory improvements — Phase 1-3
+      EVICTION_THRESHOLD: ${EVICTION_THRESHOLD:-1.5}
+      DEDUP_SIMILARITY_THRESHOLD: ${DEDUP_SIMILARITY_THRESHOLD:-0.78}
+      DEDUP_ENABLED: ${DEDUP_ENABLED:-false}
+      RECALL_TOKEN_BUDGET: ${RECALL_TOKEN_BUDGET:-600}
+      RECALL_TOP_K: ${RECALL_TOP_K:-3}
+      RECALL_SYNTHESIS_ENABLED: ${RECALL_SYNTHESIS_ENABLED:-true}
+      RECALL_SCORE_FLOOR: ${RECALL_SCORE_FLOOR:-0.35}
+      # Outcome-Weighted Memory (recall ranking term)
+      OWM_ENABLED: ${OWM_ENABLED:-true}
+      OWM_WEIGHT: ${OWM_WEIGHT:-0.15}
+      # SP0 memory reliability
+      EMBED_RETRY_ATTEMPTS: ${EMBED_RETRY_ATTEMPTS:-3}
+      BACKFILL_MAX_ATTEMPTS: ${BACKFILL_MAX_ATTEMPTS:-10}
+      # Skill Synthesis
+      BRIDGE_URL: ${BRIDGE_URL:-http://bridge:8070}
+      # SP1b: briefing aggregator upstreams (Relay tasks/bulletins, Sentinel env)
+      RELAY_URL: ${RELAY_URL:-http://relay:8050}
+      SENTINEL_URL: ${SENTINEL_URL:-http://sentinel:8060}
+      SKILL_SYNTHESIS_ENABLED: ${SKILL_SYNTHESIS_ENABLED:-false}
+      SKILL_SCORE_THRESHOLD: ${SKILL_SCORE_THRESHOLD:-0.6}
+      SKILL_STALE_AFTER_DAYS: ${SKILL_STALE_AFTER_DAYS:-90}
+      SKILL_ERROR_DENSITY_WEIGHT: ${SKILL_ERROR_DENSITY_WEIGHT:-0.30}
+      SKILL_ANOMALY_WEIGHT: ${SKILL_ANOMALY_WEIGHT:-0.20}
+      SKILL_RESOLUTION_WEIGHT: ${SKILL_RESOLUTION_WEIGHT:-0.35}
+      SKILL_AGENT_SCHEDULE_HOURS: ${SKILL_AGENT_SCHEDULE_HOURS:-6}
+      SKILL_SYNTH_TIMEOUT_SECONDS: ${SKILL_SYNTH_TIMEOUT_SECONDS:-300.0}
+      # Team continuity — agent identity
+      FIREKEEP_AGENT_ID: "${FIREKEEP_AGENT_ID:-firekeep-server}"
+      # Agent Gateway
+      AGENT_GATEWAY_ENABLED: ${AGENT_GATEWAY_ENABLED:-true}
+      AGENT_PREDICTION_CONFIDENCE_THRESHOLD: ${AGENT_PREDICTION_CONFIDENCE_THRESHOLD:-0.6}
+      AGENT_RECONCILE_DEADLINE_SECONDS: ${AGENT_RECONCILE_DEADLINE_SECONDS:-300}
+      AGENT_RETHINK_MAX_LOOPS: ${AGENT_RETHINK_MAX_LOOPS:-3}
+      AGENT_FASTPATH_MIN_SAMPLES: ${AGENT_FASTPATH_MIN_SAMPLES:-20}
+      AGENT_FASTPATH_MIN_SUCCESS_RATE: ${AGENT_FASTPATH_MIN_SUCCESS_RATE:-0.9}
+      AGENT_FASTPATH_CACHE_TTL_SECONDS: ${AGENT_FASTPATH_CACHE_TTL_SECONDS:-86400}
+      # Collectors (SP3) — Confluence
+      COLLECTORS_ENABLED: ${COLLECTORS_ENABLED:-false}
+      CONFLUENCE_COLLECTOR_ENABLED: ${CONFLUENCE_COLLECTOR_ENABLED:-false}
+      CONFLUENCE_BASE_URL: ${CONFLUENCE_BASE_URL:-}
+      CONFLUENCE_SPACE_KEYS: ${CONFLUENCE_SPACE_KEYS:-}
+      CONFLUENCE_LABEL: ${CONFLUENCE_LABEL:-}
+      CONFLUENCE_PAT_VAULT_KEY: ${CONFLUENCE_PAT_VAULT_KEY:-confluence_pat}
+      CONFLUENCE_PAT: ${CONFLUENCE_PAT:-}
+      CONFLUENCE_COLLECTOR_SCHEDULE_HOURS: ${CONFLUENCE_COLLECTOR_SCHEDULE_HOURS:-24}
+      COLLECTOR_LOCK_TTL_SECONDS: ${COLLECTOR_LOCK_TTL_SECONDS:-3600}
+    env_file:
+      - .env
+    depends_on:
+      neo4j:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "1.0"
+
+  cortex-mcp:
+    build:
+      context: .
+      dockerfile: cortex/Dockerfile
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
+        APP_VERSION: ${APP_VERSION:-0.6.0}
+        # Base-image registry. Personal deploys default to Docker Hub; the office
+        # docker-host path pins its the registry mirror mirror in docker-compose.office.yml
+        # (office CI builds bare `docker build`, which keeps the Dockerfile's own
+        # mirror default). Without this passthrough the Dockerfile default made a
+        # personal `update.sh` unbuildable off-lab (2026-07-18 VPS deploy failure).
+        REGISTRY: ${REGISTRY:-docker.io/library}
+    restart: unless-stopped
+    command: python -m app.mcp_server
+    ports:
+      - "0.0.0.0:8080:8080"
+    environment:
+      FIREKEEP_API_URL: http://cortex-api:8000
+      # SP1a: cortex-mcp holds NO key of its own — it forwards the CALLER's
+      # X-API-Key (confused-deputy fix, cortex/app/mcp_server.py _get_client).
+      # Pinned empty so a stale .env value cannot resurrect the old behavior.
+      FIREKEEP_API_KEY: ""
+      MCP_HOST: "0.0.0.0"
+      MCP_PORT: "8080"
+      CORS_ORIGINS: ${CORS_ORIGINS:-["*"]}
+      AUTH_ENABLED: ${AUTH_ENABLED:-false}
+      AUTH_REDIS_URL: redis://redis:6379/7
+      # SP1b: briefing aggregator upstreams (Relay tasks/bulletins, Sentinel env)
+      RELAY_URL: ${RELAY_URL:-http://relay:8050}
+      SENTINEL_URL: ${SENTINEL_URL:-http://sentinel:8060}
+      # Knowledge Ingestion (docs -> skills orchestration, SP2)
+      KNOWLEDGE_ENABLED: ${KNOWLEDGE_ENABLED:-true}
+      KNOWLEDGE_MAX_PROCEDURES: ${KNOWLEDGE_MAX_PROCEDURES:-10}
+      KNOWLEDGE_CLASSIFY_TIMEOUT_SECONDS: ${KNOWLEDGE_CLASSIFY_TIMEOUT_SECONDS:-300}
+      KNOWLEDGE_STATUS_TTL_SECONDS: ${KNOWLEDGE_STATUS_TTL_SECONDS:-2592000}
+      # Decision Board (SP4)
+      DECISION_ENABLED: ${DECISION_ENABLED:-true}
+      DECISION_SYNTH_TIMEOUT_SECONDS: ${DECISION_SYNTH_TIMEOUT_SECONDS:-20}
+      DECISION_MAX_QUESTIONS: ${DECISION_MAX_QUESTIONS:-8}
+    env_file:
+      - .env
+    depends_on:
+      cortex-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/8080'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: "0.25"
+
+  cortex-worker:
+    build:
+      context: .
+      dockerfile: cortex/Dockerfile
+      args:
+        CORTEX_INSTALL_FINETUNE_DEPS: ${CORTEX_INSTALL_FINETUNE_DEPS:-false}
+        GIT_SHA: ${GIT_SHA:-unknown}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
+        APP_VERSION: ${APP_VERSION:-0.6.0}
+        REGISTRY: ${REGISTRY:-docker.io/library}
+    restart: unless-stopped
+    command: celery -A app.workers.sleep_cycle worker --loglevel=info --concurrency=1 --pool=solo
+    environment:
+      LLM_BASE_URL: http://ollama:11434/v1
+      # Team continuity — agent identity
+      FIREKEEP_AGENT_ID: "${FIREKEEP_AGENT_ID:-firekeep-server}"
+      # Vault (encrypted secret storage, shares Redis DB 7 with auth) — needed
+      # by the collector's _bootstrap_vault_and_pat (new vault consumer, SP3)
+      VAULT_ENABLED: ${VAULT_ENABLED:-true}
+      VAULT_KEY: ${VAULT_KEY:-}
+      VAULT_REDIS_URL: redis://redis:6379/7
+      # Memory improvements — GC + dedup
+      EVICTION_THRESHOLD: ${EVICTION_THRESHOLD:-1.5}
+      DEDUP_SIMILARITY_THRESHOLD: ${DEDUP_SIMILARITY_THRESHOLD:-0.78}
+      DEDUP_ENABLED: ${DEDUP_ENABLED:-false}
+      EMBED_RETRY_ATTEMPTS: ${EMBED_RETRY_ATTEMPTS:-3}
+      BACKFILL_MAX_ATTEMPTS: ${BACKFILL_MAX_ATTEMPTS:-10}
+      # Skill Synthesis
+      BRIDGE_URL: ${BRIDGE_URL:-http://bridge:8070}
+      SKILL_SYNTHESIS_ENABLED: ${SKILL_SYNTHESIS_ENABLED:-false}
+      SKILL_SCORE_THRESHOLD: ${SKILL_SCORE_THRESHOLD:-0.6}
+      SKILL_STALE_AFTER_DAYS: ${SKILL_STALE_AFTER_DAYS:-90}
+      SKILL_ERROR_DENSITY_WEIGHT: ${SKILL_ERROR_DENSITY_WEIGHT:-0.30}
+      SKILL_ANOMALY_WEIGHT: ${SKILL_ANOMALY_WEIGHT:-0.20}
+      SKILL_RESOLUTION_WEIGHT: ${SKILL_RESOLUTION_WEIGHT:-0.35}
+      SKILL_AGENT_SCHEDULE_HOURS: ${SKILL_AGENT_SCHEDULE_HOURS:-6}
+      SKILL_SYNTH_TIMEOUT_SECONDS: ${SKILL_SYNTH_TIMEOUT_SECONDS:-300.0}
+      # Pattern validation (promotion ladder + A/B) — frozen until session volume (N=1);
+      # cortex-worker runs promote_all_patterns, so it must read the same flag.
+      PATTERN_VALIDATION_ENABLED: ${PATTERN_VALIDATION_ENABLED:-false}
+      # URL ingestion (SSRF-guarded crawler -> knowledge pipeline) — run_url_ingest
+      # (Celery, this worker) does the actual crawl + per-page ingest.
+      KNOWLEDGE_URL_INGEST_ENABLED: ${KNOWLEDGE_URL_INGEST_ENABLED:-true}
+      KNOWLEDGE_CRAWL_MAX_DEPTH: ${KNOWLEDGE_CRAWL_MAX_DEPTH:-2}
+      KNOWLEDGE_CRAWL_MAX_PAGES: ${KNOWLEDGE_CRAWL_MAX_PAGES:-25}
+      KNOWLEDGE_CRAWL_TIMEOUT_SECONDS: ${KNOWLEDGE_CRAWL_TIMEOUT_SECONDS:-15}
+      KNOWLEDGE_CRAWL_MAX_PAGE_BYTES: ${KNOWLEDGE_CRAWL_MAX_PAGE_BYTES:-2000000}
+      # Collectors (SP3) — Confluence
+      COLLECTORS_ENABLED: ${COLLECTORS_ENABLED:-false}
+      CONFLUENCE_COLLECTOR_ENABLED: ${CONFLUENCE_COLLECTOR_ENABLED:-false}
+      CONFLUENCE_BASE_URL: ${CONFLUENCE_BASE_URL:-}
+      CONFLUENCE_SPACE_KEYS: ${CONFLUENCE_SPACE_KEYS:-}
+      CONFLUENCE_LABEL: ${CONFLUENCE_LABEL:-}
+      CONFLUENCE_PAT_VAULT_KEY: ${CONFLUENCE_PAT_VAULT_KEY:-confluence_pat}
+      CONFLUENCE_PAT: ${CONFLUENCE_PAT:-}
+      CONFLUENCE_COLLECTOR_SCHEDULE_HOURS: ${CONFLUENCE_COLLECTOR_SCHEDULE_HOURS:-24}
+      # Outcome-Weighted Memory (nightly scoring pass)
+      OWM_ENABLED: ${OWM_ENABLED:-true}
+      OWM_PRIOR_N: ${OWM_PRIOR_N:-5}
+      OWM_WINDOW_DAYS: ${OWM_WINDOW_DAYS:-30}
+      OWM_AGENT_CAP: ${OWM_AGENT_CAP:-5}
+      OWM_SCHEDULE_HOURS: ${OWM_SCHEDULE_HOURS:-24}
+      # OWM reads replay/eval data from DB 6 — pinned inline like cortex-api
+      # (an older .env without RP_REDIS_URL would otherwise point at localhost)
+      RP_REDIS_URL: redis://redis:6379/6
+      COLLECTOR_LOCK_TTL_SECONDS: ${COLLECTOR_LOCK_TTL_SECONDS:-3600}
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.workers.sleep_cycle inspect ping --timeout 5"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+          cpus: "2.0"
+
+  cortex-beat:
+    build:
+      context: .
+      dockerfile: cortex/Dockerfile
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
+        APP_VERSION: ${APP_VERSION:-0.6.0}
+        # Base-image registry. Personal deploys default to Docker Hub; the office
+        # docker-host path pins its the registry mirror mirror in docker-compose.office.yml
+        # (office CI builds bare `docker build`, which keeps the Dockerfile's own
+        # mirror default). Without this passthrough the Dockerfile default made a
+        # personal `update.sh` unbuildable off-lab (2026-07-18 VPS deploy failure).
+        REGISTRY: ${REGISTRY:-docker.io/library}
+    restart: unless-stopped
+    command: celery -A app.workers.sleep_cycle beat --loglevel=info
+    environment:
+      # Collectors (SP3) — Confluence (beat needs the schedule-hours value to
+      # build beat_schedule at startup; the rest mirror worker/api for parity)
+      COLLECTORS_ENABLED: ${COLLECTORS_ENABLED:-false}
+      CONFLUENCE_COLLECTOR_ENABLED: ${CONFLUENCE_COLLECTOR_ENABLED:-false}
+      CONFLUENCE_BASE_URL: ${CONFLUENCE_BASE_URL:-}
+      CONFLUENCE_SPACE_KEYS: ${CONFLUENCE_SPACE_KEYS:-}
+      CONFLUENCE_LABEL: ${CONFLUENCE_LABEL:-}
+      CONFLUENCE_PAT_VAULT_KEY: ${CONFLUENCE_PAT_VAULT_KEY:-confluence_pat}
+      CONFLUENCE_PAT: ${CONFLUENCE_PAT:-}
+      CONFLUENCE_COLLECTOR_SCHEDULE_HOURS: ${CONFLUENCE_COLLECTOR_SCHEDULE_HOURS:-24}
+      OWM_SCHEDULE_HOURS: ${OWM_SCHEDULE_HOURS:-24}
+      COLLECTOR_LOCK_TTL_SECONDS: ${COLLECTOR_LOCK_TTL_SECONDS:-3600}
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          cpus: "0.1"
+
+  # ============================================================
+  # FirekeepBridge — Session Context
+  # ============================================================
+
+  bridge:
+    build:
+      context: .
+      dockerfile: bridge/Dockerfile
+      args:
+        REGISTRY: ${REGISTRY:-docker.io/library}
+        GIT_SHA: ${GIT_SHA:-unknown}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
+        APP_VERSION: ${APP_VERSION:-0.6.0}
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:8070:8070"
+    environment:
+      NB_REDIS_URL: redis://redis:6379/3
+      NB_MCP_HOST: "0.0.0.0"
+      NB_MCP_PORT: "8070"
+      NB_FIREKEEP_API_URL: http://cortex-api:8000
+      # SP1a: internal service key (minted by deploy/bootstrap-keys.sh;
+      # scopes memory:write/session:read/eval:read/eval:write — NOT admin)
+      NB_FIREKEEP_API_KEY: ${FIREKEEP_INTERNAL_KEY:-}
+      NB_FIREKEEP_NAMESPACE: ${NB_FIREKEEP_NAMESPACE:-default}
+      RP_REDIS_URL: redis://redis:6379/6
+      AUTH_ENABLED: ${AUTH_ENABLED:-false}
+      AUTH_REDIS_URL: redis://redis:6379/7
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/8070'"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: "0.25"
+
+  # ============================================================
+  # FirekeepSentinel — Environment Observer
+  # ============================================================
+
+  sentinel:
+    build:
+      context: .
+      dockerfile: sentinel/Dockerfile
+      args:
+        REGISTRY: ${REGISTRY:-docker.io/library}
+        GIT_SHA: ${GIT_SHA:-unknown}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
+        APP_VERSION: ${APP_VERSION:-0.6.0}
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:8060:8060"
+    environment:
+      NS_REDIS_URL: redis://redis:6379/4
+      NS_MCP_HOST: "0.0.0.0"
+      NS_MCP_PORT: "8060"
+      # SP1b §11: internal service key for Sentinel's outbound calls
+      # (alert broadcast -> Relay, webhook fire -> Cortex) under office
+      # AUTH_ENABLED=true. Unset on personal VPS -> calls unchanged.
+      NS_FIREKEEP_INTERNAL_KEY: ${FIREKEEP_INTERNAL_KEY:-}
+      NS_CORS_ORIGINS: ${CORS_ORIGINS:-["*"]}
+      RP_REDIS_URL: redis://redis:6379/6
+      AUTH_ENABLED: ${AUTH_ENABLED:-false}
+      AUTH_REDIS_URL: redis://redis:6379/7
+    env_file:
+      - .env
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./:/watch:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/8060'"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: "0.25"
+
+  # ============================================================
+  # FirekeepRelay — Agent Communication
+  # ============================================================
+
+  relay:
+    build:
+      context: .
+      dockerfile: relay/Dockerfile
+      args:
+        REGISTRY: ${REGISTRY:-docker.io/library}
+        GIT_SHA: ${GIT_SHA:-unknown}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
+        APP_VERSION: ${APP_VERSION:-0.6.0}
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:8050:8050"
+    environment:
+      NR_REDIS_URL: redis://redis:6379/5
+      NR_MCP_HOST: "0.0.0.0"
+      NR_MCP_PORT: "8050"
+      NR_CORS_ORIGINS: ${CORS_ORIGINS:-["*"]}
+      NR_BRIDGE_URL: ${BRIDGE_URL:-http://bridge:8070}
+      # SP2: outbound key for Relay->Bridge decision writes (origin:"mcp"
+      # scope sessions). Requires session:write scope. Currently provisioned
+      # manually — not yet issued by SP1a's automated key-bootstrap.
+      NR_FIREKEEP_API_KEY: ${RELAY_INTERNAL_API_KEY:-}
+      RP_REDIS_URL: redis://redis:6379/6
+      AUTH_ENABLED: ${AUTH_ENABLED:-false}
+      AUTH_REDIS_URL: redis://redis:6379/7
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/8050'"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: "0.25"
+
+  # ============================================================
+  # Dashboard — Unified Web UI
+  # ============================================================
+
+  dashboard:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:8040:80"
+    environment:
+      # Dedicated admin-scoped key injected as X-API-Key on all /api/ proxies.
+      # Minted by deploy/bootstrap-keys.sh. Empty (default) => header not sent
+      # (nginx drops empty proxy_set_header values) => personal-VPS unchanged.
+      DASHBOARD_API_KEY: ${DASHBOARD_API_KEY:-}
+    volumes:
+      - ./dashboard/index.html:/usr/share/nginx/html/index.html:ro
+      # Template rendered by the nginx image entrypoint (envsubst on
+      # /etc/nginx/templates/*.template -> /etc/nginx/conf.d/default.conf,
+      # substituting ONLY defined container env vars).
+      - ./dashboard/nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ./dashboard/.htpasswd:/etc/nginx/.htpasswd:ro
+    depends_on:
+      cortex-api:
+        condition: service_healthy
+      bridge:
+        condition: service_healthy
+      sentinel:
+        condition: service_healthy
+      relay:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 64m
+          cpus: "0.1"
+
+volumes:
+  neo4j_data:
+  qdrant_data:
+  redis_data:
+  ollama_data:

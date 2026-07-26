@@ -1,0 +1,31 @@
+# Ruff configuration for Firekeep.
+# Pins the lint surface so CI (.github/workflows/ci.yml) and local runs agree.
+
+target-version = "py311"
+line-length = 120
+
+[lint]
+# Focused surface: pyflakes (F) catches real problems (unused names, undefined
+# names, bad imports); a curated subset of pycodestyle errors (E) catches import
+# placement and ambiguous names. W (whitespace) is intentionally excluded — 140+
+# blank-line-whitespace hits are pure churn with no correctness value. Expand later.
+select = ["E4", "E7", "E9", "F"]
+ignore = [
+    "E501",  # line-too-long — long strings/URLs are pervasive; not worth churn now.
+]
+
+[lint.per-file-ignores]
+# E402 (import-not-at-top): legitimate, deliberate patterns —
+# - conftest.py manipulates sys.path before importing app modules
+# - mcp_server.py modules register tools/routes before late imports
+# - server.py / benchmark_runner.py do conditional setup before imports
+"*/conftest.py" = ["E402"]
+"*/mcp_server.py" = ["E402"]
+"symdex/src/firekeep_symdex/server.py" = ["E402"]
+"symdex/benchmarks/benchmark_runner.py" = ["E402"]
+"cortex/tests/test_patterns.py" = ["E402"]
+# - main.py (SP1a): middleware imports deliberately sit AFTER app creation with a
+#   documented execution-order comment (CORS -> RequestID -> FirekeepKeyAuth -> ...)
+"cortex/app/main.py" = ["E402"]
+# - test_memory_agent.py (SP0): sectioned mid-file import mirroring test_patterns.py
+"cortex/tests/test_memory_agent.py" = ["E402"]

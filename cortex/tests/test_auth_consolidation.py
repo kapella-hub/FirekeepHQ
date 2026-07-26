@@ -1,0 +1,216 @@
+"""SP1a §7 consolidation: one validator on the whole app; require_scope refines.
+
+Composes a mini FastAPI app from the REAL auth + vault routers and a stand-in
+for an ungated core route (/memory/learn has no require_scope in production),
+wrapped by the REAL FirekeepKeyAuthMiddleware — the exact class app.main now
+registers in place of the legacy APIKeyMiddleware. (The production app binds
+its middleware config at import time from env, so enabled=True composition is
+tested on a mini app; the production wiring is pinned in TestMainWiring.)
+"""
+
+from __future__ import annotations
+
+import fakeredis.aioredis
+import httpx
+import pytest
+import pytest_asyncio
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from auth import keys
+from auth.api import create_auth_router
+from auth.asgi import FirekeepKeyAuthMiddleware
+from auth.keys import SCOPES
+from vault.api import create_vault_router
+
+# Mirrors the NON_ADMIN_SCOPES constant in deploy/firekeep-admin (teammate keys).
+NON_ADMIN_SCOPES = sorted(SCOPES - {"admin"})
+
+SKIP_PATHS = ("/health", "/version", "/docs", "/redoc", "/openapi.json", "/dashboard")
+
+# Mirrors app.main's production CORS config (allow_origins from Settings.CORS_ORIGINS).
+CORS_ORIGIN = "http://localhost:3000"
+
+
+@pytest_asyncio.fixture
+async def redis():
+    r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    yield r
+    await r.aclose()
+
+
+@pytest_asyncio.fixture
+async def auth_env(redis):
+    """Enable auth globals (require_scope) and seed non-admin + admin keys."""
+    await keys.init_auth(redis_client=redis, enabled=True)
+    non_admin = await keys.create_key("teammate", NON_ADMIN_SCOPES)
+    admin = await keys.create_key("owner", ["admin"])
+    yield {"non_admin": non_admin["api_key"], "admin": admin["api_key"]}
+    await keys.init_auth(redis_client=None, enabled=False)
+
+
+def _mini_cortex(redis) -> FastAPI:
+    app = FastAPI()
+    app.include_router(create_auth_router())
+    app.include_router(create_vault_router())
+
+    @app.post("/memory/learn")  # stand-in: production route has no require_scope
+    async def learn_stub() -> dict:
+        return {"status": "ok"}
+
+    @app.get("/health")
+    async def health() -> dict:
+        return {"status": "ok"}
+
+    # Mirror app.main's registration order: auth first, CORS last. add_middleware
+    # PREPENDS, so CORS ends up OUTERMOST — a keyless preflight OPTIONS is
+    # answered by CORS and never reaches (and never gets 401'd by) the auth gate.
+    app.add_middleware(
+        FirekeepKeyAuthMiddleware,
+        enabled=True,
+        redis_url="redis://unused/7",
+        redis_client=redis,
+        skip_paths=SKIP_PATHS,
+    )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[CORS_ORIGIN],
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "DELETE", "PATCH"],
+        allow_headers=["Content-Type", "X-API-Key", "X-Request-Id"],
+    )
+    return app
+
+
+def _client(app):
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    )
+
+
+class TestConsolidation:
+    @pytest.mark.asyncio
+    async def test_non_admin_key_passes_ungated_core_route(self, redis, auth_env):
+        async with _client(_mini_cortex(redis)) as c:
+            resp = await c.post(
+                "/memory/learn", headers={"X-API-Key": auth_env["non_admin"]}
+            )
+        assert resp.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_no_key_401_on_core_route(self, redis, auth_env):
+        """The gap: /memory/learn was reachable keyless even with auth on."""
+        async with _client(_mini_cortex(redis)) as c:
+            resp = await c.post("/memory/learn")
+        assert resp.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_non_admin_key_403_on_vault(self, redis, auth_env):
+        async with _client(_mini_cortex(redis)) as c:
+            resp = await c.get(
+                "/vault/secrets/db-pass", headers={"X-API-Key": auth_env["non_admin"]}
+            )
+        assert resp.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_non_admin_key_403_on_auth_keys(self, redis, auth_env):
+        async with _client(_mini_cortex(redis)) as c:
+            resp = await c.post(
+                "/auth/keys",
+                headers={"X-API-Key": auth_env["non_admin"]},
+                json={"agent_id": "x", "scopes": ["replay:read"]},
+            )
+        assert resp.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_admin_key_can_mint_keys(self, redis, auth_env):
+        async with _client(_mini_cortex(redis)) as c:
+            resp = await c.post(
+                "/auth/keys",
+                headers={"X-API-Key": auth_env["admin"]},
+                json={"agent_id": "newbie", "scopes": ["replay:read"]},
+            )
+        assert resp.status_code == 200
+        assert resp.json()["api_key"].startswith("nxs_")
+
+    @pytest.mark.asyncio
+    async def test_health_skipped(self, redis, auth_env):
+        async with _client(_mini_cortex(redis)) as c:
+            resp = await c.get("/health")
+        assert resp.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_cors_preflight_bypasses_auth_but_post_still_gated(self, redis, auth_env):
+        """CORS is outermost: a keyless preflight OPTIONS is answered by CORS
+        (200 + allow-origin), NOT 401'd by auth — while real POSTs stay gated.
+
+        Regression guard for the middleware-ordering bug: with auth wrapping
+        CORS, the browser preflight (no X-API-Key) got 401'd before CORS could
+        attach its headers, blocking every valid-key cross-origin client.
+        """
+        async with _client(_mini_cortex(redis)) as c:
+            # Preflight: no X-API-Key, must be answered by CORS, not blocked by auth.
+            preflight = await c.options(
+                "/memory/learn",
+                headers={
+                    "Origin": CORS_ORIGIN,
+                    "Access-Control-Request-Method": "POST",
+                },
+            )
+            assert preflight.status_code == 200
+            assert preflight.headers.get("access-control-allow-origin") == CORS_ORIGIN
+
+            # Real request without a key is still rejected — reorder opened no hole.
+            no_key = await c.post("/memory/learn")
+            assert no_key.status_code == 401
+
+            # Real request with a valid key still passes through auth.
+            with_key = await c.post(
+                "/memory/learn", headers={"X-API-Key": auth_env["non_admin"]}
+            )
+            assert with_key.status_code == 200
+
+
+class TestMainWiring:
+    def test_legacy_middleware_gone_and_validator_registered(self):
+        import app.main as main_mod
+
+        names = [m.cls.__name__ for m in main_mod.app.user_middleware]
+        assert "APIKeyMiddleware" not in names
+        assert "FirekeepKeyAuthMiddleware" in names
+
+    def test_validator_skip_list(self):
+        import app.main as main_mod
+
+        mw = next(
+            m for m in main_mod.app.user_middleware
+            if m.cls.__name__ == "FirekeepKeyAuthMiddleware"
+        )
+        assert mw.kwargs["skip_paths"] == (
+            "/health", "/version", "/docs", "/redoc", "/openapi.json", "/dashboard",
+        )
+
+    def test_cors_is_outermost_of_auth(self):
+        """user_middleware[0] is outermost (Starlette wraps in reverse of the
+        list). CORS must sit outside auth so keyless preflights short-circuit at
+        CORS instead of being 401'd by the auth gate.
+        """
+        import app.main as main_mod
+
+        names = [m.cls.__name__ for m in main_mod.app.user_middleware]
+        assert names.index("CORSMiddleware") < names.index("FirekeepKeyAuthMiddleware")
+
+    def test_config_api_key_retired(self):
+        from app.config import Settings
+
+        assert "API_KEY" not in Settings.model_fields
+        assert "LLM_API_KEY" in Settings.model_fields  # unrelated setting stays
+
+    def test_auth_init_no_longer_fails_open(self):
+        import inspect
+
+        import app.main as main_mod
+
+        src = inspect.getsource(main_mod)
+        assert "Auth init failed (non-critical" not in src
+        assert "FATAL-LOUD" in src  # marker comment on the new init block

@@ -1,0 +1,157 @@
+"""UserPromptSubmit core — poll tasks + tasks-channel, heartbeat, 5th snapshot.
+
+Ports scripts/multi-agent-poll.sh: poll pending tasks (Relay GET /tasks REST) and
+the 'tasks' channel (relay_get_messages MCP), refresh presence heartbeat with the
+active session_id+goal (Bridge GET /sessions REST), and every 5th prompt push a
+git workspace snapshot to Bridge scratch. Returns a systemMessage ONLY when there
+is NEWS — not merely a non-empty inbox: channel messages are filtered to
+newer-than-last-shown (and never the agent's own broadcasts echoed back), pending
+tasks only re-render when the set actually changes, and everything is one compact
+line per item, duplicates collapsed. The raw-JSON-every-prompt behavior this
+replaces re-injected the same five stale messages into context on every single
+user message (field complaint, 2026-07-14).
+"""
+from __future__ import annotations
+
+import hashlib
+import urllib.parse
+
+from firekeep_client import hooklog, resolver, state, transport
+from firekeep_client.hooks import _git, _mcp, never_raise
+
+_HOOK = "prompt"
+
+
+def _dedup_lines(items: list[str]) -> list[str]:
+    """Collapse consecutive-or-not duplicate lines into 'line (xN)'."""
+    counts: dict[str, int] = {}
+    order: list[str] = []
+    for it in items:
+        if it not in counts:
+            order.append(it)
+        counts[it] = counts.get(it, 0) + 1
+    return [f"{it} (x{counts[it]})" if counts[it] > 1 else it for it in order]
+
+
+def _task_line(task: dict) -> str:
+    title = str(task.get("title") or task.get("description") or task.get("id") or "task")
+    tid = str(task.get("id") or "")
+    creator = str(task.get("creator") or task.get("created_by") or "")
+    line = f"- {title}"
+    if tid:
+        line += f" [{tid}]"
+    if creator:
+        line += f" (from {creator})"
+    return line
+
+
+@never_raise({})
+def run(payload: dict) -> dict:
+    cfg = resolver.load_config()
+    profile = resolver.active_profile(cfg)
+    agent = resolver.agent_id(cfg, profile)
+
+    inbox = []
+
+    # 1. Pending tasks (Relay GET /tasks REST). Rendered ONLY when the pending
+    # set changes — a stable todo list re-injected on every prompt is noise
+    # (the briefing already surfaces it at session start).
+    try:
+        rep = resolver.resolve("relay", cfg=cfg)
+        qs = urllib.parse.urlencode({"assignee": agent, "status": "pending", "limit": 5})
+        tasks = transport.get_json(
+            f"{rep.rest_base}/tasks?{qs}", headers=rep.headers, verify=rep.verify
+        )
+        rows = tasks.get("tasks", []) if isinstance(tasks, dict) else []
+        if rows:
+            digest = hashlib.sha256(
+                "|".join(sorted(str(t.get("id", t)) for t in rows)).encode()
+            ).hexdigest()[:16]
+            digest_key = f"tasks_digest_{agent}@{profile}"
+            if state.read_scratch(digest_key) != digest:
+                state.write_scratch(digest_key, digest)
+                lines = _dedup_lines([_task_line(t) for t in rows])
+                inbox.append(f"pending tasks ({len(rows)}):\n" + "\n".join(lines))
+    except Exception as e:  # noqa: BLE001
+        hooklog.log_failure(_HOOK, f"GET /tasks failed: {e}")
+
+    # 2. 'tasks' channel (relay_get_messages MCP — no REST route). Show only
+    # messages NEWER than the last one already shown, and never the agent's own
+    # broadcasts echoed back.
+    try:
+        msgs = _mcp.call_tool("relay", "relay_get_messages",
+                              {"channel": "tasks", "limit": 5}, cfg=cfg)
+        rows = msgs.get("messages", []) if isinstance(msgs, dict) else []
+        seen_key = f"channel_seen_{agent}@{profile}"
+        raw_seen = state.read_scratch(seen_key)
+        try:
+            last_seen = float(raw_seen) if raw_seen else 0.0
+        except ValueError:
+            last_seen = 0.0
+        fresh = []
+        newest = last_seen
+        for m in rows:
+            try:
+                ts = float(m.get("timestamp") or 0.0)
+            except (TypeError, ValueError):
+                ts = 0.0
+            newest = max(newest, ts)
+            if ts <= last_seen or str(m.get("sender") or "") == agent:
+                continue
+            sender = str(m.get("sender") or "?")
+            content = " ".join(str(m.get("content") or "").split())
+            fresh.append(f"- {content} — {sender}")
+        if newest > last_seen:
+            state.write_scratch(seen_key, repr(newest))
+        if fresh:
+            inbox.append(f"new channel messages ({len(fresh)}):\n"
+                         + "\n".join(_dedup_lines(fresh)))
+    except Exception as e:  # noqa: BLE001
+        hooklog.log_failure(_HOOK, f"relay_get_messages failed: {e}")
+
+    # 3. Active session_id + goal (Bridge GET /sessions REST) for the heartbeat.
+    session_id, goal = "", ""
+    try:
+        bep = resolver.resolve("bridge", cfg=cfg)
+        qs = urllib.parse.urlencode({"status": "active", "agent_id": agent, "limit": 1})
+        sess = transport.get_json(
+            f"{bep.rest_base}/sessions?{qs}", headers=bep.headers, verify=bep.verify
+        )
+        rows = sess.get("sessions", []) if isinstance(sess, dict) else []
+        if rows:
+            session_id = rows[0].get("session_id", "") or ""
+            goal = rows[0].get("goal", "") or ""
+    except Exception as e:  # noqa: BLE001
+        hooklog.log_failure(_HOOK, f"GET /sessions failed: {e}")
+
+    # 4. Heartbeat presence (best-effort).
+    try:
+        hb = {"agent_id": agent}
+        if session_id:
+            hb["session_id"] = session_id
+        if goal:
+            hb["goal"] = goal
+        _mcp.call_tool("relay", "relay_heartbeat_presence", hb, cfg=cfg)
+    except Exception as e:  # noqa: BLE001
+        hooklog.log_failure(_HOOK, f"relay_heartbeat_presence failed: {e}")
+
+    # 5. Every 5th prompt: workspace snapshot -> Bridge scratch.
+    try:
+        key = f"poll_count_{agent}@{profile}"
+        raw = state.read_scratch(key)
+        count = (int(raw) if raw and raw.isdigit() else 0) + 1
+        state.write_scratch(key, str(count))
+        if count % 5 == 0 and session_id:
+            _mcp.call_tool(
+                "bridge", "ctx_update",
+                {"category": "scratch", "key": "workspace_snapshot",
+                 "content": _git.workspace_snapshot(), "agent_id": agent},
+                cfg=cfg,
+            )
+    except Exception as e:  # noqa: BLE001
+        hooklog.log_failure(_HOOK, f"snapshot failed: {e}")
+
+    if not inbox:
+        return {}
+    body = "\n".join(inbox)
+    return {"systemMessage": f"[relay] {body}"}

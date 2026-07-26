@@ -1,0 +1,13 @@
+{
+  "name": "firekeep-symdex",
+  "owner": {
+    "name": "FirekeepSymdex"
+  },
+  "plugins": [
+    {
+      "name": "symdex",
+      "source": "./symdex",
+      "description": "Automatic code comprehension for Claude Code — primes sessions with architecture context and injects caller awareness before edits"
+    }
+  ]
+}

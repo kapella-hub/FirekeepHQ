@@ -1,0 +1,182 @@
+[
+  {
+    "id": 1,
+    "question": "How does Click determine the order in which parameters are processed during command parsing?",
+    "category": "comprehension",
+    "answer_key": "Click uses the `iter_params_for_processing` function in core.py to determine parameter processing order. It sorts parameters by a two-element tuple key: `(not item.is_eager, idx)`, where `idx` is the parameter's position in the invocation order (or infinity if not invoked). This means eager parameters are always processed first, and among non-eager parameters, the order in which the user provided them on the CLI is respected, falling back to declaration order for parameters not explicitly invoked.",
+    "relevant_files": ["core.py"],
+    "relevant_symbols": ["iter_params_for_processing", "Parameter.is_eager"],
+    "search_hints": ["iter_params_for_processing", "is_eager", "invocation_order"]
+  },
+  {
+    "id": 2,
+    "question": "How does the Choice type handle case-insensitive matching and what method controls the normalization of choice values?",
+    "category": "comprehension",
+    "answer_key": "The `Choice` type in types.py uses the `normalize_choice` method to normalize each choice value for comparison. If `case_sensitive` is False, it calls `casefold()` on the string value. It also applies `ctx.token_normalize_func` if one is set on the context. The `convert` method normalizes the input value and iterates through `_normalized_mapping()` to find the original choice whose normalized form matches, returning the original (unnormalized) choice value.",
+    "relevant_files": ["types.py"],
+    "relevant_symbols": ["Choice", "Choice.normalize_choice", "Choice.convert", "Choice._normalized_mapping"],
+    "search_hints": ["Choice", "normalize_choice", "case_sensitive", "_normalized_mapping"]
+  },
+  {
+    "id": 3,
+    "question": "How does Click's Context class manage resource cleanup, and what is the relationship between `with_resource`, `call_on_close`, and the `_exit_stack`?",
+    "category": "comprehension",
+    "answer_key": "The Context class uses a `contextlib.ExitStack` stored in `_exit_stack` to manage cleanup. `with_resource` calls `_exit_stack.enter_context()` to register context managers, while `call_on_close` calls `_exit_stack.callback()` to register plain cleanup functions. When the context is closed (via `close()` or exiting the context manager), `_close_with_exception_info` calls `_exit_stack.__exit__()` which unwinds all registered resources. After closing, a new ExitStack is created so the context can be reused.",
+    "relevant_files": ["core.py"],
+    "relevant_symbols": ["Context.with_resource", "Context.call_on_close", "Context.close", "Context._close_with_exception_info"],
+    "search_hints": ["with_resource", "call_on_close", "ExitStack", "_close_with_exception_info"]
+  },
+  {
+    "id": 4,
+    "question": "How does the `Group.invoke` method handle chain mode differently from normal (non-chain) mode?",
+    "category": "comprehension",
+    "answer_key": "In normal mode, `Group.invoke` resolves a single subcommand via `resolve_command`, sets `ctx.invoked_subcommand` to the command name, invokes the group callback via `super().invoke(ctx)`, then creates a sub-context for the subcommand and invokes it, passing the result through `_process_result`. In chain mode, it sets `ctx.invoked_subcommand` to '*', invokes the group callback, then iterates through remaining args resolving and creating contexts for each subcommand. All subcommands are invoked sequentially and their return values are collected into a list, which is passed to `_process_result`.",
+    "relevant_files": ["core.py"],
+    "relevant_symbols": ["Group.invoke", "Group.resolve_command", "Group.parse_args"],
+    "search_hints": ["Group", "chain", "resolve_command", "invoke_without_command"]
+  },
+  {
+    "id": 5,
+    "question": "How does Click's `Parameter.consume_value` method determine where a parameter's value comes from, and what is the precedence order?",
+    "category": "comprehension",
+    "answer_key": "The `consume_value` method in core.py checks four sources in order of precedence: (1) command-line input from the parser via `opts.get(self.name)`, tagged as `COMMANDLINE`; (2) environment variables via `self.value_from_envvar(ctx)`, tagged as `ENVIRONMENT`; (3) the context's default map via `ctx.lookup_default(self.name)`, tagged as `DEFAULT_MAP`; (4) the parameter's own default via `self.get_default(ctx)`, tagged as `DEFAULT`. It returns the first non-UNSET value found along with its `ParameterSource` enum value.",
+    "relevant_files": ["core.py"],
+    "relevant_symbols": ["Parameter.consume_value", "ParameterSource", "Parameter.value_from_envvar", "Parameter.resolve_envvar_value"],
+    "search_hints": ["consume_value", "ParameterSource", "value_from_envvar", "resolve_envvar_value"]
+  },
+  {
+    "id": 6,
+    "question": "How does the BoolParamType convert string values to booleans, and what string values does it recognize?",
+    "category": "comprehension",
+    "answer_key": "The `BoolParamType` class in types.py has a `bool_states` dict that maps lowercase strings to booleans. It recognizes: '1'/'yes'/'true'/'on'/'t'/'y' as True, and '0'/'no'/'false'/'off'/'f'/'n'/'' as False. The `str_to_bool` static method strips whitespace, lowercases the input, and looks it up in `bool_states`. If the value is already a bool, it's returned as-is. If the string doesn't match any known state, `str_to_bool` returns None and `convert` calls `self.fail()` to raise a BadParameter error.",
+    "relevant_files": ["types.py"],
+    "relevant_symbols": ["BoolParamType", "BoolParamType.str_to_bool", "BoolParamType.convert", "BoolParamType.bool_states"],
+    "search_hints": ["BoolParamType", "str_to_bool", "bool_states"]
+  },
+  {
+    "id": 7,
+    "question": "How does Command.main handle the complete lifecycle of a CLI invocation, including error handling and standalone mode?",
+    "category": "comprehension",
+    "answer_key": "The `Command.main` method in core.py first processes args (defaulting to `sys.argv[1:]`, with Windows glob expansion if enabled). It detects the program name and checks for shell completion via `_main_shell_completion`. Then it creates a context with `make_context`, invokes the command, and handles the result. In standalone mode (default), it catches `ClickException` and calls `e.show()` then `sys.exit(e.exit_code)`, catches `EOFError`/`KeyboardInterrupt` and converts to `Abort`, catches `OSError` with `EPIPE` and wraps stdout/stderr with `PacifyFlushWrapper`, and catches `Abort` to print 'Aborted!' and exit with code 1. In non-standalone mode, exceptions propagate and the return value is returned directly.",
+    "relevant_files": ["core.py"],
+    "relevant_symbols": ["Command.main", "Command.make_context", "Command.invoke", "Command._main_shell_completion"],
+    "search_hints": ["Command.main", "standalone_mode", "make_context", "PacifyFlushWrapper"]
+  },
+  {
+    "id": 8,
+    "question": "Where is the `CliRunner.isolation` context manager implemented, and what global state does it mock?",
+    "category": "navigation",
+    "answer_key": "The `isolation` context manager is implemented in the `CliRunner` class in testing.py. It replaces `sys.stdin`, `sys.stdout`, and `sys.stderr` with in-memory streams using `_NamedTextIOWrapper` over `StreamMixer` byte streams. It also sets `formatting.FORCED_WIDTH` to 80, and replaces `termui.visible_prompt_func`, `termui.hidden_prompt_func`, `termui._getchar`, and `utils.should_strip_ansi`/`_compat.should_strip_ansi` with test-friendly implementations. Environment variables from `self.env` are applied via `self.make_env`.",
+    "relevant_files": ["testing.py"],
+    "relevant_symbols": ["CliRunner.isolation", "CliRunner", "StreamMixer", "EchoingStdin"],
+    "search_hints": ["CliRunner", "isolation", "StreamMixer", "visible_prompt_func"]
+  },
+  {
+    "id": 9,
+    "question": "Where is shell completion for the Bash shell implemented, and what class provides the Bash-specific completion logic?",
+    "category": "navigation",
+    "answer_key": "Bash shell completion is implemented in shell_completion.py. The `ShellComplete` base class provides the framework, and `BashComplete` is the Bash-specific subclass. The Bash completion script template is stored in the module-level `_SOURCE_BASH` string constant. The `shell_complete` function at module level is the entry point that parses the completion instruction, instantiates the appropriate completion class via `get_completion_class(shell)`, and calls either `source()` or `complete()` based on whether the instruction is 'source' or 'complete'.",
+    "relevant_files": ["shell_completion.py"],
+    "relevant_symbols": ["ShellComplete", "shell_complete", "CompletionItem"],
+    "search_hints": ["ShellComplete", "BashComplete", "_SOURCE_BASH", "shell_complete"]
+  },
+  {
+    "id": 10,
+    "question": "Where is the `HelpFormatter.write_dl` method implemented, and how does it handle definition lists that are too wide?",
+    "category": "navigation",
+    "answer_key": "The `write_dl` method is implemented in the `HelpFormatter` class in formatting.py. It calculates column widths using `measure_table`, caps the first column width at `col_max` (default 30) plus `col_spacing` (default 2). For each row, if the first column's text fits within `first_col - col_spacing` characters, the second column starts on the same line. If the first column text is too wide, the second column wraps to the next line with appropriate indentation. The second column text is wrapped using `wrap_text` with `preserve_paragraphs=True`.",
+    "relevant_files": ["formatting.py"],
+    "relevant_symbols": ["HelpFormatter.write_dl", "HelpFormatter", "measure_table", "wrap_text"],
+    "search_hints": ["write_dl", "HelpFormatter", "measure_table", "col_max"]
+  },
+  {
+    "id": 11,
+    "question": "Where is the `Option._parse_decls` method, and how does it extract the parameter name from option declarations like '--verbose/-v'?",
+    "category": "navigation",
+    "answer_key": "The `Option._parse_decls` method is in the `Option` class in core.py. It iterates over the declaration strings: if a declaration is a Python identifier, it's used as the name directly. Otherwise, it splits on '/' (or ';' if the declaration starts with '/') to separate primary and secondary options. It collects `possible_names` using `_split_opt` from the parser module. If no explicit name was given, it picks the longest-prefix option name, replaces '-' with '_', and lowercases it. For example, '--verbose' becomes name='verbose'.",
+    "relevant_files": ["core.py"],
+    "relevant_symbols": ["Option._parse_decls", "Option", "Parameter._parse_decls"],
+    "search_hints": ["_parse_decls", "Option", "_split_opt", "param_decls"]
+  },
+  {
+    "id": 12,
+    "question": "Where is the `CommandCollection` class defined, and how does it look up commands across multiple groups?",
+    "category": "navigation",
+    "answer_key": "The `CommandCollection` class is defined in core.py as a subclass of `Group`. Its `get_command` method first calls `super().get_command(ctx, cmd_name)` to check its own commands dict, and if not found, iterates through `self.sources` (a list of `Group` objects) calling `source.get_command(ctx, cmd_name)` on each until a match is found. Its `list_commands` method collects command names from itself and all sources into a set, then returns them sorted. This effectively 'flattens' commands from multiple groups into one.",
+    "relevant_files": ["core.py"],
+    "relevant_symbols": ["CommandCollection", "CommandCollection.get_command", "CommandCollection.list_commands", "CommandCollection.add_source"],
+    "search_hints": ["CommandCollection", "add_source", "sources"]
+  },
+  {
+    "id": 13,
+    "question": "Where are the exception classes defined that Click uses for different error scenarios, and what is the inheritance hierarchy?",
+    "category": "navigation",
+    "answer_key": "All exception classes are defined in exceptions.py. The hierarchy is: `ClickException(Exception)` is the base with `exit_code=1` and a `show` method that writes to stderr. `UsageError(ClickException)` has `exit_code=2` and shows usage info with help hints. `BadParameter(UsageError)` formats messages with parameter names. `MissingParameter(BadParameter)` handles missing required parameters. `NoSuchOption(UsageError)` suggests similar options. `BadOptionUsage(UsageError)` and `BadArgumentUsage(UsageError)` handle incorrect usage. `FileError(ClickException)` handles file open errors. `Abort(RuntimeError)` and `Exit(RuntimeError)` are separate signal exceptions not inheriting from ClickException.",
+    "relevant_files": ["exceptions.py"],
+    "relevant_symbols": ["ClickException", "UsageError", "BadParameter", "MissingParameter", "NoSuchOption", "Abort", "Exit"],
+    "search_hints": ["ClickException", "UsageError", "BadParameter", "MissingParameter", "NoSuchOption"]
+  },
+  {
+    "id": 14,
+    "question": "Where is the `pass_context` decorator implemented, and how does it inject the current context into the callback?",
+    "category": "navigation",
+    "answer_key": "The `pass_context` decorator is implemented in decorators.py. It wraps the decorated function `f` in a `new_func` that calls `get_current_context()` (imported from `click.globals`) to retrieve the thread-local current context, then calls the original function with that context as the first argument: `return f(get_current_context(), *args, **kwargs)`. It uses `functools.update_wrapper` to preserve the original function's metadata. Similarly, `pass_obj` passes `get_current_context().obj`, and `make_pass_decorator` creates type-specific decorators using `ctx.find_object` or `ctx.ensure_object`.",
+    "relevant_files": ["decorators.py"],
+    "relevant_symbols": ["pass_context", "pass_obj", "make_pass_decorator"],
+    "search_hints": ["pass_context", "pass_obj", "make_pass_decorator", "get_current_context"]
+  },
+  {
+    "id": 15,
+    "question": "How would you add a new built-in parameter type (e.g., an EmailParamType) to Click's type system?",
+    "category": "modification",
+    "answer_key": "You would create a new class in types.py that subclasses `ParamType`, set a `name` class attribute (e.g., `name = 'email'`), and implement the `convert` method to validate and return the email string (calling `self.fail()` on invalid input). Optionally implement `get_metavar` for custom help text display. To make it a built-in singleton like STRING/INT, create a module-level instance (e.g., `EMAIL = EmailParamType()`) and export it in `__init__.py`. You would also need to update the `convert_type` function in types.py if you want automatic type detection.",
+    "relevant_files": ["types.py"],
+    "relevant_symbols": ["ParamType", "ParamType.convert", "ParamType.fail", "StringParamType"],
+    "search_hints": ["ParamType", "convert", "convert_type", "StringParamType"]
+  },
+  {
+    "id": 16,
+    "question": "How would you modify Click to support a new shell (e.g., PowerShell) for tab completion?",
+    "category": "modification",
+    "answer_key": "You would add a new class in shell_completion.py that subclasses `ShellComplete`, setting `name = 'powershell'` and providing a `source_template` string with the PowerShell completion script. You must implement `get_completion_args` to parse PowerShell's environment variables into `(args, incomplete)`, and `format_completion` to format `CompletionItem` objects into the format the script expects. Finally, register it by calling `add_completion_class(PowerShellComplete)` at module level, which adds it to the `_completion_classes` dict keyed by the `name` attribute.",
+    "relevant_files": ["shell_completion.py"],
+    "relevant_symbols": ["ShellComplete", "ShellComplete.get_completion_args", "ShellComplete.format_completion", "ShellComplete.source_template"],
+    "search_hints": ["ShellComplete", "add_completion_class", "get_completion_class", "source_template"]
+  },
+  {
+    "id": 17,
+    "question": "How would you modify Click's help formatting to add a custom section (e.g., 'Examples') to every command's help output?",
+    "category": "modification",
+    "answer_key": "You would override the `format_help` method on `Command` in core.py. Currently it calls `format_usage`, `format_help_text`, `format_options`, and `format_epilog` in sequence. You could add a new method like `format_examples` and call it from `format_help`. The new method would use `formatter.section('Examples')` context manager (which writes a paragraph, heading, and indents), then call `formatter.write_text()` with the example content. Alternatively, you could subclass `Command` and override `format_help` to insert the examples section between options and epilog.",
+    "relevant_files": ["core.py", "formatting.py"],
+    "relevant_symbols": ["Command.format_help", "Command.format_options", "HelpFormatter.section", "HelpFormatter.write_text"],
+    "search_hints": ["format_help", "format_options", "format_epilog", "section"]
+  },
+  {
+    "id": 18,
+    "question": "How would you modify Click to support a new parameter value source (e.g., reading defaults from a TOML config file) that takes precedence over the default but not the command line?",
+    "category": "modification",
+    "answer_key": "You would modify the `Parameter.consume_value` method in core.py. Currently it checks sources in order: COMMANDLINE, ENVIRONMENT, DEFAULT_MAP, DEFAULT. The DEFAULT_MAP already supports this pattern -- you can populate `Context.default_map` in a group callback or via `context_settings`. For a dedicated TOML source, you could add a new `ParameterSource` enum value (e.g., `CONFIG_FILE`) in the `ParameterSource` class, then insert a new check in `consume_value` between the ENVIRONMENT and DEFAULT_MAP checks that reads from the config file and tags the source appropriately. You would also need to update `Context.__init__` to accept and store the config file path.",
+    "relevant_files": ["core.py"],
+    "relevant_symbols": ["Parameter.consume_value", "ParameterSource", "Context.default_map", "Context.lookup_default"],
+    "search_hints": ["consume_value", "ParameterSource", "default_map", "lookup_default"]
+  },
+  {
+    "id": 19,
+    "question": "How would you modify Click's CliRunner to capture timing information for command execution?",
+    "category": "modification",
+    "answer_key": "You would modify the `CliRunner.invoke` method in testing.py and the `Result` class. Add a `duration` field to `Result.__init__` to store elapsed time. In `CliRunner.invoke`, wrap the command invocation with `time.perf_counter()` calls before and after `cli.main(args=args, ...)` inside the `isolation` context manager. Pass the computed duration to the `Result` constructor. The `Result` class already captures `exit_code`, `exception`, `stdout_bytes`, `stderr_bytes`, `output_bytes`, and `return_value`, so adding `duration: float` follows the same pattern.",
+    "relevant_files": ["testing.py"],
+    "relevant_symbols": ["CliRunner", "CliRunner.invoke", "Result"],
+    "search_hints": ["CliRunner", "Result", "invoke", "exit_code"]
+  },
+  {
+    "id": 20,
+    "question": "How would you add support for mutually exclusive options in Click?",
+    "category": "modification",
+    "answer_key": "Click does not have built-in mutual exclusion for options. You would implement this by adding a `mutually_exclusive` parameter to `Option.__init__` in core.py that stores a list of conflicting option names. Then override `Option.handle_parse_result` to check if any mutually exclusive option was already set in `ctx.params` with a source of `ParameterSource.COMMANDLINE` (via `ctx.get_parameter_source`). If a conflict is found, raise a `UsageError` explaining which options conflict. Alternatively, you could implement this as a callback or a custom `Command` subclass that validates after all parameters are parsed.",
+    "relevant_files": ["core.py"],
+    "relevant_symbols": ["Option", "Option.handle_parse_result", "Parameter.handle_parse_result", "Context.get_parameter_source"],
+    "search_hints": ["Option", "handle_parse_result", "get_parameter_source", "UsageError"]
+  }
+]

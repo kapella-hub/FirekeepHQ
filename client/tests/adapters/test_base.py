@@ -1,0 +1,195 @@
+import sys
+
+import pytest
+
+from firekeep_client.adapters.base import (
+    Adapter, shim_servers, hook_command, merge_owned, HOOK_MARKER, FIREKEEP_MCP_KEYS,
+)
+from firekeep_client.adapters import get_adapter
+
+
+def _exe(path):
+    """Expected console-script path for the CURRENT (real, unmocked) host platform."""
+    text = str(path)
+    return text + ".exe" if sys.platform == "win32" else text
+
+
+def test_adapter_abc_cannot_instantiate():
+    with pytest.raises(TypeError):
+        Adapter()
+
+
+def test_shim_servers_always_includes_symdex_and_decision(tmp_path):
+    venv_bin = tmp_path / "venv" / "bin"
+    servers = shim_servers(venv_bin)                       # no symdex kwarg
+    # Both stdio-local servers are ALWAYS present (never through the shim, no --service)
+    assert servers["firekeep-symdex"] == (_exe(venv_bin / "firekeep-symdex"), [])
+    assert servers["firekeep-decision"] == (_exe(venv_bin / "firekeep-decision"), [])
+    # HTTP services still go through the shim
+    assert servers["firekeep-cortex"] == (_exe(venv_bin / "firekeep-shim"), ["--service", "cortex"])
+    assert set(servers) == set(FIREKEEP_MCP_KEYS)             # full always-on set
+
+
+def test_shim_servers_appends_exe_on_win32(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    venv_bin = tmp_path / "Scripts"
+    servers = shim_servers(venv_bin)
+    assert servers["firekeep-cortex"][0] == str(venv_bin / "firekeep-shim") + ".exe"
+    assert servers["firekeep-symdex"][0] == str(venv_bin / "firekeep-symdex") + ".exe"
+
+
+def test_shim_servers_no_exe_on_posix(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+    venv_bin = tmp_path / "bin"
+    servers = shim_servers(venv_bin)
+    assert servers["firekeep-cortex"][0] == str(venv_bin / "firekeep-shim")
+    assert servers["firekeep-symdex"][0] == str(venv_bin / "firekeep-symdex")
+
+
+def test_hook_command_appends_exe_on_win32(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    venv_bin = tmp_path / "Scripts"
+    cmd = hook_command(venv_bin, "session_start")
+    # forward slashes: hook commands are bash-executed shell strings on Windows too
+    expected_py = str(venv_bin / "python").replace("\\", "/") + ".exe"
+    assert cmd == f"{expected_py} -m firekeep_client.hooks session_start"
+
+
+def test_hook_command_no_exe_on_posix(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+    venv_bin = tmp_path / "bin"
+    cmd = hook_command(venv_bin, "session_start")
+    expected_py = str(venv_bin / "python").replace("\\", "/")
+    assert cmd == f"{expected_py} -m firekeep_client.hooks session_start"
+
+
+def test_hook_command_carries_stable_marker(tmp_path):
+    venv_bin = tmp_path / "Scripts"
+    cmd = hook_command(venv_bin, "session_start")
+    assert HOOK_MARKER in cmd                       # venv-independent unrender marker
+    assert cmd.endswith("-m firekeep_client.hooks session_start")
+    assert str(venv_bin / "python").replace("\\", "/") in cmd
+
+
+def test_hook_command_forward_slashes_survive_bash_on_windows(monkeypatch):
+    """Claude runs {"type":"command"} hooks through bash even on Windows. An unquoted
+    Windows backslash interpreter path (C:\\Users\\mogan\\...) has its backslashes eaten as
+    bash escape chars -> `C:Usersmogan...: command not found` (the reported bug). Render
+    forward slashes, which survive bash AND remain valid for Windows CreateProcess.
+    Uses PureWindowsPath so real backslashes are exercised regardless of the host OS running
+    this test -- the win32 tests above use tmp_path, a POSIX path on CI, so they never saw a
+    real backslash, which is exactly how this shipped."""
+    from pathlib import PureWindowsPath
+    monkeypatch.setattr(sys, "platform", "win32")
+    venv_bin = PureWindowsPath(r"C:\Users\mogan\.firekeep\venv\Scripts")
+    cmd = hook_command(venv_bin, "prompt")
+    assert "\\" not in cmd                          # no backslash reaches the bash string
+    assert cmd == "C:/Users/mogan/.firekeep/venv/Scripts/python.exe -m firekeep_client.hooks prompt"
+
+
+def test_hook_command_quotes_spaced_windows_path_with_forward_slashes(monkeypatch):
+    """A venv under a path with spaces must still be quoted (bash word-splits an unquoted
+    spaced path) AND use forward slashes (bash-safe) -- both concerns handled together."""
+    from pathlib import PureWindowsPath
+    monkeypatch.setattr(sys, "platform", "win32")
+    venv_bin = PureWindowsPath(r"C:\Users\First Last\.firekeep\venv\Scripts")
+    cmd = hook_command(venv_bin, "session_start")
+    assert "\\" not in cmd
+    assert cmd == '"C:/Users/First Last/.firekeep/venv/Scripts/python.exe" -m firekeep_client.hooks session_start'
+
+
+def test_hook_command_dispatcher_form_is_module_not_submodule(tmp_path):
+    """The rendered command must invoke the `firekeep_client.hooks` PACKAGE (so its
+    __main__.py dispatcher runs and actually calls run()), NOT `firekeep_client.hooks.<core>`
+    as a submodule import -- the latter has no __main__ and silently no-ops (exit 0,
+    run() never called). This is the dead-hook bug the dispatcher form fixes."""
+    venv_bin = tmp_path / "Scripts"
+    cmd = hook_command(venv_bin, "pre_tool")
+    assert " -m firekeep_client.hooks pre_tool" in cmd
+    assert " -m firekeep_client.hooks.pre_tool" not in cmd
+
+
+def test_hook_command_extra_args_appended(tmp_path):
+    venv_bin = tmp_path / "Scripts"
+    cmd = hook_command(venv_bin, "pre_tool", extra_args="--block-exit 2")
+    assert cmd.endswith("-m firekeep_client.hooks pre_tool --block-exit 2")
+
+
+def test_hook_command_no_extra_args_by_default(tmp_path):
+    venv_bin = tmp_path / "Scripts"
+    cmd = hook_command(venv_bin, "post_tool")
+    assert cmd.endswith("-m firekeep_client.hooks post_tool")
+
+
+def test_merge_owned_preserves_foreign():
+    existing = {"foreign": 1}
+    out = merge_owned(existing, {"firekeep-cortex": 2})
+    assert out is existing
+    assert existing == {"foreign": 1, "firekeep-cortex": 2}
+
+
+def test_firekeep_mcp_keys_frozen():
+    assert FIREKEEP_MCP_KEYS == (
+        "firekeep-cortex", "firekeep-bridge", "firekeep-sentinel", "firekeep-relay",
+        "firekeep-symdex", "firekeep-decision")
+
+
+def test_get_adapter_unknown_raises():
+    with pytest.raises(ValueError):
+        get_adapter("bogus")
+
+
+def test_hook_command_quotes_paths_with_spaces(monkeypatch, tmp_path):
+    r"""settings.json hook commands are shell strings; a venv under a path
+    with spaces (C:\Users\First Last\...) must not word-split."""
+    import sys as _sys
+
+    from firekeep_client.adapters import base
+
+    monkeypatch.setattr(_sys, "platform", "win32")
+    venv_bin = tmp_path / "First Last" / ".firekeep" / "venv" / "Scripts"
+    cmd = base.hook_command(venv_bin, "pre_tool", extra_args="--block-exit 2")
+    assert cmd.startswith('"') and '" -m firekeep_client.hooks pre_tool' in cmd
+    assert cmd.endswith("--block-exit 2")
+
+
+def test_hook_command_unquoted_when_no_spaces(tmp_path):
+    from firekeep_client.adapters import base
+
+    venv_bin = tmp_path / "venv" / "bin"
+    cmd = base.hook_command(venv_bin, "stop")
+    assert not cmd.startswith('"')
+
+
+# --- read_pin: render's ONLY config dependency must never fail an install ----
+
+
+def test_read_pin_missing_config_returns_none(tmp_path, monkeypatch):
+    from firekeep_client.adapters import base
+
+    monkeypatch.setenv("FIREKEEP_CONFIG", str(tmp_path / "no-such-config"))
+    assert base.read_pin("kiro") is None
+
+
+def test_read_pin_returns_pinned_profile(tmp_path, monkeypatch):
+    from firekeep_client.adapters import base
+
+    cfg = tmp_path / "config"
+    cfg.write_text("[office]\nagent_id = tester\n\n[pins]\nkiro = office\n",
+                   encoding="utf-8")
+    monkeypatch.setenv("FIREKEEP_CONFIG", str(cfg))
+    assert base.read_pin("kiro") == "office"
+    assert base.read_pin("claude") is None  # unpinned runtime, same config
+
+
+def test_read_pin_malformed_ini_returns_none(tmp_path, monkeypatch):
+    """A present-but-MALFORMED config raises raw configparser.Error out of
+    load_config (not ConfigError). Per the docstring that must render UNPINNED —
+    escaping here would fail `firekeep install` on a botched hand-edit."""
+    from firekeep_client.adapters import base
+
+    cfg = tmp_path / "config"
+    cfg.write_text("not an ini file\n= dangling value before any section\n",
+                   encoding="utf-8")
+    monkeypatch.setenv("FIREKEEP_CONFIG", str(cfg))
+    assert base.read_pin("kiro") is None  # must not raise

@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# firekeep-admin — thin curl wrapper for Firekeep admin operations (SP1a §4.3).
+#
+# Usage:
+#   firekeep-admin keys create --agent <name> [--expires-days N]
+#
+# Environment:
+#   FIREKEEP_ADMIN_KEY        admin API key (from bootstrap-keys.sh; prompted if unset)
+#   FIREKEEP_API_URL          Cortex REST base URL (default: http://localhost:8100)
+#   FIREKEEP_ADMIN_DRY_RUN=1  print the request instead of sending it (tests)
+
+# The teammate scope set: every scope EXCEPT "admin". Deliberately NOT ["*"]
+# — "*" passes require_scope("admin"), which would let every teammate read
+# vault secrets and mint keys (spec §3). Only holds because cortex-mcp
+# forwards the CALLER's key (§4.2 confused-deputy fix).
+# MUST stay in sync with SCOPES in auth/middleware.py minus {"admin"}
+# (post-SP1a table: eval:write added, twin:read removed) — the test
+# deploy/tests/test_firekeep_admin.sh enforces this.
+NON_ADMIN_SCOPES='["memory:read","memory:write","session:read","session:write","replay:read","relay:read","relay:write","eval:read","eval:write"]'
+
+API_URL="${FIREKEEP_API_URL:-http://localhost:8100}"
+
+usage() {
+    cat >&2 <<'EOF'
+Usage: firekeep-admin keys create --agent <name> [--expires-days N]
+
+Issues a teammate API key with the full non-admin scope set.
+Requires FIREKEEP_ADMIN_KEY (or interactive prompt) and a reachable Cortex API
+(FIREKEEP_API_URL, default http://localhost:8100).
+EOF
+    exit 1
+}
+
+[ "${1:-}" = "keys" ] && [ "${2:-}" = "create" ] || usage
+shift 2
+
+AGENT=""
+EXPIRES_DAYS=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --agent)        AGENT="${2:?--agent requires a value}"; shift 2 ;;
+        --expires-days) EXPIRES_DAYS="${2:?--expires-days requires a value}"; shift 2 ;;
+        *) echo "Unknown argument: $1" >&2; usage ;;
+    esac
+done
+[ -n "$AGENT" ] || usage
+
+BODY="{\"agent_id\": \"${AGENT}\", \"scopes\": ${NON_ADMIN_SCOPES}"
+if [ -n "$EXPIRES_DAYS" ]; then
+    BODY="${BODY}, \"expires_days\": ${EXPIRES_DAYS}"
+fi
+BODY="${BODY}}"
+
+if [ "${FIREKEEP_ADMIN_DRY_RUN:-0}" = "1" ]; then
+    echo "POST ${API_URL}/auth/keys"
+    echo "$BODY"
+    exit 0
+fi
+
+if [ -z "${FIREKEEP_ADMIN_KEY:-}" ]; then
+    read -rsp "Admin API key: " FIREKEEP_ADMIN_KEY
+    echo
+fi
+
+RESPONSE="$(curl -sf -X POST "${API_URL}/auth/keys" \
+    -H "Content-Type: application/json" \
+    -H "X-API-Key: ${FIREKEEP_ADMIN_KEY}" \
+    -d "$BODY")" || {
+    echo "ERROR: key creation failed." >&2
+    echo "  Check: FIREKEEP_ADMIN_KEY is the bootstrap admin key, AUTH_ENABLED" >&2
+    echo "  is consistent on the server, and ${API_URL} is reachable." >&2
+    exit 1
+}
+
+echo "$RESPONSE"
+echo ""
+echo "Send the api_key above to ${AGENT} out-of-band (it is shown only once)." >&2

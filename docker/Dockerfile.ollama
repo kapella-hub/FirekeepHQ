@@ -1,0 +1,107 @@
+ARG REGISTRY=docker.io/library
+
+# ============================================================================
+# Chunked ollama image. The office registry promote/the deployment automation/replication chain
+# has NEVER moved a blob larger than ~168MB (measured 2026-07-14: the largest
+# layer of every image that fully transferred; the stock ollama runtime
+# (~1.1GB) and baked-model (~3.3GB) layers stranded on every attempt, and the
+# CI account cannot upload to ise-docker-prod directly). So: every payload
+# file is chunked to <=95MiB pieces, bin-packed into /chunks/dNNN dirs, one
+# COPY layer each — and reassembled at container start by
+# ollama-entrypoint.sh. See docker/ollama-chunk.sh for the packing contract.
+# GPU runner libs are dropped (CPU-only cluster).
+# ============================================================================
+
+# --- 1. src: obtain the runtime + models, ALLOWLIST the payload ----------------
+# Pinned like Dockerfile.embed: bump deliberately, never track :latest.
+FROM ${REGISTRY}/ollama/ollama:0.32.0 AS src
+# /payload built by ALLOWLIST: /bin/ollama, the TOP-LEVEL files/symlinks of
+# /usr/lib/ollama (CPU libs — every GPU runtime is a SUBDIRECTORY: cuda_v12/
+# v13, cuda_jetpack5/6, rocm), and the model store. The old denylist variant
+# dragged the full 3.5GB lib dir into the chunker stage before pruning and
+# blew the runner disk (v0.1.4 ENOSPC).
+RUN ollama serve & SERVE_PID=$!; \
+    sleep 5 && \
+    ollama pull granite-embedding:30m && \
+    ollama pull llama3.2:3b && \
+    kill "$SERVE_PID" && \
+    sleep 2 && \
+    mkdir -p /payload/usr/bin /payload/root /payload/usr/lib/ollama && \
+    cp -a /bin/ollama /payload/usr/bin/ollama && \
+    find /usr/lib/ollama -maxdepth 1 \( -type f -o -type l \) -exec cp -a {} /payload/usr/lib/ollama/ \; && \
+    cp -a /root/.ollama /payload/root/.ollama && \
+    du -sm /payload
+
+# --- 2. chunker: repack everything into <=95MiB dirs ---------------------------
+FROM ${REGISTRY}/ubuntu:24.04 AS chunker
+COPY --from=src /payload /payload
+COPY docker/ollama-chunk.sh /ollama-chunk.sh
+RUN sh /ollama-chunk.sh
+
+# --- 3. final: small base + one small layer per chunk dir ---------------------
+FROM ${REGISTRY}/ubuntu:24.04
+COPY docker/ollama-entrypoint.sh /ollama-entrypoint.sh
+COPY --from=chunker /chunks/d000 /layers/d000
+COPY --from=chunker /chunks/d001 /layers/d001
+COPY --from=chunker /chunks/d002 /layers/d002
+COPY --from=chunker /chunks/d003 /layers/d003
+COPY --from=chunker /chunks/d004 /layers/d004
+COPY --from=chunker /chunks/d005 /layers/d005
+COPY --from=chunker /chunks/d006 /layers/d006
+COPY --from=chunker /chunks/d007 /layers/d007
+COPY --from=chunker /chunks/d008 /layers/d008
+COPY --from=chunker /chunks/d009 /layers/d009
+COPY --from=chunker /chunks/d010 /layers/d010
+COPY --from=chunker /chunks/d011 /layers/d011
+COPY --from=chunker /chunks/d012 /layers/d012
+COPY --from=chunker /chunks/d013 /layers/d013
+COPY --from=chunker /chunks/d014 /layers/d014
+COPY --from=chunker /chunks/d015 /layers/d015
+COPY --from=chunker /chunks/d016 /layers/d016
+COPY --from=chunker /chunks/d017 /layers/d017
+COPY --from=chunker /chunks/d018 /layers/d018
+COPY --from=chunker /chunks/d019 /layers/d019
+COPY --from=chunker /chunks/d020 /layers/d020
+COPY --from=chunker /chunks/d021 /layers/d021
+COPY --from=chunker /chunks/d022 /layers/d022
+COPY --from=chunker /chunks/d023 /layers/d023
+COPY --from=chunker /chunks/d024 /layers/d024
+COPY --from=chunker /chunks/d025 /layers/d025
+COPY --from=chunker /chunks/d026 /layers/d026
+COPY --from=chunker /chunks/d027 /layers/d027
+COPY --from=chunker /chunks/d028 /layers/d028
+COPY --from=chunker /chunks/d029 /layers/d029
+COPY --from=chunker /chunks/d030 /layers/d030
+COPY --from=chunker /chunks/d031 /layers/d031
+COPY --from=chunker /chunks/d032 /layers/d032
+COPY --from=chunker /chunks/d033 /layers/d033
+COPY --from=chunker /chunks/d034 /layers/d034
+COPY --from=chunker /chunks/d035 /layers/d035
+COPY --from=chunker /chunks/d036 /layers/d036
+COPY --from=chunker /chunks/d037 /layers/d037
+COPY --from=chunker /chunks/d038 /layers/d038
+COPY --from=chunker /chunks/d039 /layers/d039
+COPY --from=chunker /chunks/d040 /layers/d040
+COPY --from=chunker /chunks/d041 /layers/d041
+COPY --from=chunker /chunks/d042 /layers/d042
+COPY --from=chunker /chunks/d043 /layers/d043
+COPY --from=chunker /chunks/d044 /layers/d044
+COPY --from=chunker /chunks/d045 /layers/d045
+COPY --from=chunker /chunks/d046 /layers/d046
+COPY --from=chunker /chunks/d047 /layers/d047
+COPY --from=chunker /chunks/d048 /layers/d048
+COPY --from=chunker /chunks/d049 /layers/d049
+COPY --from=chunker /chunks/d050 /layers/d050
+COPY --from=chunker /chunks/d051 /layers/d051
+COPY --from=chunker /chunks/d052 /layers/d052
+COPY --from=chunker /chunks/d053 /layers/d053
+COPY --from=chunker /chunks/d054 /layers/d054
+COPY --from=chunker /chunks/d055 /layers/d055
+COPY --from=chunker /chunks/d056 /layers/d056
+COPY --from=chunker /chunks/d057 /layers/d057
+COPY --from=chunker /chunks/d058 /layers/d058
+COPY --from=chunker /chunks/d059 /layers/d059
+RUN chmod +x /ollama-entrypoint.sh
+ENV OLLAMA_HOST=0.0.0.0
+EXPOSE 11434
+ENTRYPOINT ["/ollama-entrypoint.sh"]

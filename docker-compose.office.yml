@@ -1,0 +1,98 @@
+# Firekeep — OFFICE deployment override.
+#
+# Usage:  docker compose -f docker-compose.yml -f docker-compose.office.yml up -d
+#
+# Adds the Caddy TLS front (internal CA). Task 10 extends this file to
+# rebind every app-service host port to 127.0.0.1 so the ONLY
+# network-reachable surface on the office host is Caddy (:443 + :80).
+# The base docker-compose.yml (personal VPS profile) is unchanged.
+
+services:
+  # ============================================================
+  # TLS front — the single network-reachable surface
+  # ============================================================
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:443:443"
+      - "0.0.0.0:80:80"      # HTTP -> HTTPS redirect only
+    environment:
+      FIREKEEP_OFFICE_HOST: ${FIREKEEP_OFFICE_HOST:-firekeep.office}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data      # holds the internal CA private key — back up like VAULT_KEY
+      - caddy_config:/config
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "--no-check-certificate", "https://localhost/health-caddy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          cpus: "0.25"
+
+  # ============================================================
+  # App services — rebound to loopback (Caddy proxies to them
+  # over the compose network; host bindings kept for SSH/local
+  # debugging only). `!override` replaces the base list instead
+  # of merging (a merge would double-bind the same host port).
+  # Requires Docker Compose >= v2.24.4.
+  # ============================================================
+  dashboard:
+    ports: !override
+      - "127.0.0.1:8040:80"
+
+  relay:
+    build:
+      args:
+        REGISTRY: ${REGISTRY:-docker.io/library}
+    ports: !override
+      - "127.0.0.1:8050:8050"
+
+  sentinel:
+    build:
+      args:
+        REGISTRY: ${REGISTRY:-docker.io/library}
+    ports: !override
+      - "127.0.0.1:8060:8060"
+
+  bridge:
+    build:
+      args:
+        REGISTRY: ${REGISTRY:-docker.io/library}
+    ports: !override
+      - "127.0.0.1:8070:8070"
+
+  cortex-mcp:
+    build:
+      args:
+        REGISTRY: ${REGISTRY:-docker.io/library}
+    ports: !override
+      - "127.0.0.1:8080:8080"
+
+  cortex-api:
+    build:
+      args:
+        REGISTRY: ${REGISTRY:-docker.io/library}
+    ports: !override
+      - "127.0.0.1:8100:8000"
+
+  # No port overrides needed, but their base images must still come from the
+  # office mirror (the base compose file now defaults REGISTRY to Docker Hub for
+  # personal deploys).
+  cortex-worker:
+    build:
+      args:
+        REGISTRY: ${REGISTRY:-docker.io/library}
+
+  cortex-beat:
+    build:
+      args:
+        REGISTRY: ${REGISTRY:-docker.io/library}
+
+volumes:
+  caddy_data:
+  caddy_config:

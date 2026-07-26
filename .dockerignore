@@ -1,0 +1,44 @@
+# Git
+.git
+.gitignore
+
+# IDE
+.vscode
+.idea
+*.swp
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.mypy_cache
+.ruff_cache
+*.egg-info
+
+# Env files (secrets)
+.env
+.env.*
+!.env.example
+
+# Docs and plans
+docs/
+*.md
+
+# Test data
+*/tests/
+replay/tests/
+
+# Docker
+docker-compose*.yml
+Dockerfile
+
+# Symdex data
+symdex_data/
+.firekeep-symdex/
+
+# Claude
+.claude/
+
+# OS
+.DS_Store

@@ -1,0 +1,97 @@
+server {
+    listen 80;
+    server_name _;
+
+    # Re-resolve DNS on each request (prevents stale IPs after container recreation)
+    # proxy_pass with a variable forces nginx to use the resolver at runtime
+    resolver 127.0.0.11 valid=10s;
+
+    # Basic auth — protects the SPA and all /api/ proxies. Backends receive
+    # but ignore the Authorization header (none of them use Basic auth).
+    # SECOND DOOR (deliberate, documented): the /api/ locations below inject
+    # the dashboard's dedicated admin-scoped API key (DASHBOARD_API_KEY,
+    # minted by deploy/bootstrap-keys.sh), so basic-auth fronts an admin key
+    # to the whole stack. Acceptable: this is the single-owner admin UI, not
+    # a teammate surface, and it is NOT routed through the Caddy office front.
+    auth_basic "Firekeep Dashboard";
+    auth_basic_user_file /etc/nginx/.htpasswd;
+
+    # Dashboard SPA — no-cache to prevent stale JS
+    location / {
+        root /usr/share/nginx/html;
+        try_files $uri $uri/ /index.html;
+        add_header Cache-Control "no-cache, no-store, must-revalidate";
+        add_header Pragma "no-cache";
+    }
+
+    # API proxies — using variables to force runtime DNS resolution
+    location /api/cortex/ {
+        set $upstream_cortex http://cortex-api:8000;
+        rewrite ^/api/cortex/(.*)$ /$1 break;
+        proxy_pass $upstream_cortex;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-API-Key "${DASHBOARD_API_KEY}";
+    }
+
+    location /api/cortex-mcp/ {
+        set $upstream_cortex_mcp http://cortex-mcp:8080;
+        rewrite ^/api/cortex-mcp/(.*)$ /$1 break;
+        proxy_pass $upstream_cortex_mcp;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header X-API-Key "${DASHBOARD_API_KEY}";
+    }
+
+    location /api/bridge/ {
+        set $upstream_bridge http://bridge:8070;
+        rewrite ^/api/bridge/(.*)$ /$1 break;
+        proxy_pass $upstream_bridge;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header X-API-Key "${DASHBOARD_API_KEY}";
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 300s;
+    }
+
+    location /api/sentinel/ {
+        set $upstream_sentinel http://sentinel:8060;
+        rewrite ^/api/sentinel/(.*)$ /$1 break;
+        proxy_pass $upstream_sentinel;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header X-API-Key "${DASHBOARD_API_KEY}";
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 300s;
+    }
+
+    location /api/relay/ {
+        set $upstream_relay http://relay:8050;
+        rewrite ^/api/relay/(.*)$ /$1 break;
+        proxy_pass $upstream_relay;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header X-API-Key "${DASHBOARD_API_KEY}";
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 300s;
+    }
+}

@@ -1,0 +1,275 @@
+"""Outcome-Weighted Memory (OWM): recall ranked by real-world results.
+
+Every /memory/recall stamps the RETURNED memory ids into its replay
+``memory_read`` event; auto-evals + Bridge status say how each session ENDED.
+This module joins the two: for each memory, of the sessions that recalled it
+and have a KNOWN outcome, what fraction succeeded? The score is shrunk toward
+neutral 0.5 with a Beta prior (``OWM_PRIOR_N`` pseudo-observations), so a
+memory seen once or twice cannot swing rankings — the term only speaks once
+evidence accumulates. Results land on the Qdrant payload (``owm_efficacy``,
+``owm_n``, ``owm_updated_at``) where:
+
+  - the RAG lifecycle scorer multiplies recall scores by
+    ``1 + OWM_WEIGHT * 2 * (efficacy - 0.5)`` (neutral == bit-identical to
+    pre-OWM ranking, including every memory never scored), and
+  - the GC composite eviction score gains an efficacy factor (neutral 0.5 is
+    bit-identical; persistently misleading memories age out faster).
+
+Session success is DETERMINISTIC, no LLM, no statistics beyond the shrinkage:
+Bridge ``abandoned`` is a failure regardless of metrics; otherwise the eval
+``failure_rate`` decides (<= OWM_SUCCESS_MAX_FAILURE_RATE succeeds,
+>= OWM_FAILURE_MIN_FAILURE_RATE fails, the ambiguous middle band is EXCLUDED
+from the join rather than guessed); with no failure_rate metric, the eval's own
+outcome field is used. Runs as a nightly Celery pass (confluence-collector
+registration pattern); the whole pass is idempotent — recomputed from scratch
+every run over the eval window, so drift self-heals.
+"""
+from __future__ import annotations
+
+import asyncio
+import datetime
+import logging
+import time
+from typing import Callable
+
+logger = logging.getLogger(__name__)
+
+_SUCCESS_MAX_FR = 0.2   # failure_rate at or below -> session succeeded
+_FAILURE_MIN_FR = 0.5   # failure_rate at or above -> session failed
+
+
+def compute_efficacy(successes: int, n: int, prior_n: int = 5) -> float:
+    """Beta-shrunk success fraction: (s + prior/2) / (n + prior). 0.5 at n=0."""
+    return (successes + prior_n * 0.5) / (n + prior_n)
+
+
+def session_success(eval_data: dict, bridge_status: str | None) -> bool | None:
+    """True/False when the session's outcome is knowable, None to exclude it."""
+    if bridge_status == "abandoned":
+        return False
+    metrics = eval_data.get("metrics") or {}
+    fr = metrics.get("failure_rate")
+    if isinstance(fr, (int, float)):
+        if fr <= _SUCCESS_MAX_FR:
+            return True
+        if fr >= _FAILURE_MIN_FR:
+            return False
+        return None  # ambiguous middle band: no guessing
+    outcome = eval_data.get("outcome")
+    if outcome == "success":
+        return True
+    if outcome == "failure":
+        return False
+    return None
+
+
+async def run_pass(replay_r, vector, settings, *,
+                   bridge_statuses: dict[str, str] | None = None,
+                   timeline_fn: Callable | None = None) -> dict:
+    """One full OWM scoring pass. Returns a status dict; never raises for a
+    single bad session/memory (those are counted, logged, and skipped).
+
+    Fairness/hygiene guarantees (wf_51dd7c4e review):
+      - a session counts ONCE per memory, and a single agent identity counts at
+        most OWM_AGENT_CAP observations per memory (a CI bot's failing loop
+        cannot bury a shared memory);
+      - corpus chunks and skill points are excluded (outcome-scoring a document
+        by ambient session failure is meaningless);
+      - memories scored in a previous pass but absent from this run's evidence
+        get their OWM keys DELETED (reset to neutral) — no permanent penalties,
+        no self-reinforcing death spiral once evals expire (30d TTL);
+      - abandoned-session detection depends on the Bridge status map, which the
+        REST route caps at its 200 newest sessions — beyond that horizon a
+        walked-away session with clean metrics counts as success (documented
+        best-effort limit).
+    """
+    import json as _json
+
+    from replay import reader as _reader
+
+    timeline_fn = timeline_fn or _reader.get_session_timeline
+    bridge_statuses = bridge_statuses or {}
+    out = {"sessions_scanned": 0, "sessions_joined": 0, "memories_scored": 0,
+           "write_errors": 0, "stale_reset": 0}
+    agent_cap = int(getattr(settings, "OWM_AGENT_CAP", 5) or 5)
+
+    window_start = time.time() - settings.OWM_WINDOW_DAYS * 86400
+    session_ids = await replay_r.zrangebyscore("rp:eval_index", window_start, "+inf")
+
+    # memory_id -> agent_id -> [successes, n] (n capped per agent at write-out)
+    stats: dict[str, dict[str, list[int]]] = {}
+    for sid_raw in session_ids:
+        sid = sid_raw.decode() if isinstance(sid_raw, bytes) else sid_raw
+        out["sessions_scanned"] += 1
+        try:
+            raw = await replay_r.get(f"rp:eval:{sid}")
+            if not raw:
+                continue  # 30d value TTL beat the never-pruned index entry
+            success = session_success(_json.loads(raw), bridge_statuses.get(sid))
+            if success is None:
+                continue
+
+            # get_session_timeline returns an ENVELOPE {"events": [...], ...} —
+            # iterating it directly yields string keys (the critical
+            # silently-no-ops bug the adversarial review caught pre-ship).
+            timeline = await timeline_fn(replay_r, sid, event_type="memory_read",
+                                         limit=1000)
+            events = (timeline or {}).get("events") or []
+            mem_agents: dict[str, str] = {}
+            for ev in events:
+                agent = str(ev.get("agent_id") or "unknown")
+                ids = (ev.get("payload") or {}).get("memory_ids") or []
+                for m in ids:
+                    if m:
+                        mem_agents.setdefault(str(m), agent)
+            if not mem_agents:
+                continue  # pre-OWM event (no ids stamped) or no recalls
+
+            out["sessions_joined"] += 1
+            for mid, agent in mem_agents.items():  # once per (session, memory)
+                per_agent = stats.setdefault(mid, {})
+                s, n = per_agent.get(agent, (0, 0))
+                if n >= agent_cap:
+                    continue  # one identity cannot dominate a memory's score
+                per_agent[agent] = [s + (1 if success else 0), n + 1]
+        except Exception as exc:  # noqa: BLE001 — one bad session never stops the pass
+            logger.warning("OWM: session %s skipped: %s", sid, exc)
+
+    # Exclude corpus chunks + skills: their ids flow through the same recall
+    # results, but playbooks/documents must not carry outcome scores.
+    scorable: dict[str, tuple[int, int]] = {}
+    all_ids = list(stats.keys())
+    for i in range(0, len(all_ids), 100):
+        batch = all_ids[i:i + 100]
+        try:
+            points = await vector._client.retrieve(
+                collection_name=settings.QDRANT_COLLECTION, ids=batch,
+                with_payload=True, with_vectors=False)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("OWM: retrieve batch failed: %s", exc)
+            continue
+        for pt in points:
+            payload = pt.payload or {}
+            if payload.get("memory_type") == "skill" or payload.get("source") == "corpus":
+                continue
+            per_agent = stats.get(str(pt.id)) or {}
+            s_total = sum(v[0] for v in per_agent.values())
+            n_total = sum(v[1] for v in per_agent.values())
+            if n_total:
+                scorable[str(pt.id)] = (s_total, n_total)
+
+    now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    written: set[str] = set()
+    for mid, (successes, n) in scorable.items():
+        payload = {
+            "owm_efficacy": round(compute_efficacy(successes, n, settings.OWM_PRIOR_N), 4),
+            "owm_n": n,
+            "owm_updated_at": now_iso,
+        }
+        try:
+            await vector._client.set_payload(
+                collection_name=settings.QDRANT_COLLECTION,
+                payload=payload,
+                points=[mid],
+            )
+            out["memories_scored"] += 1
+            written.add(mid)
+        except Exception as exc:  # noqa: BLE001 — deleted/foreign ids are expected
+            logger.warning("OWM: payload write failed for %s: %s", mid, exc)
+            out["write_errors"] += 1
+
+    # Stale reset: previously-scored points with no in-window evidence go back
+    # to neutral (keys deleted). Recompute-from-scratch is only honest if
+    # absence of evidence actually clears the old verdict.
+    try:
+        from qdrant_client import models as _qm
+
+        offset = None
+        while True:
+            points, offset = await vector._client.scroll(
+                collection_name=settings.QDRANT_COLLECTION,
+                scroll_filter=_qm.Filter(must=[_qm.FieldCondition(
+                    key="owm_n", range=_qm.Range(gte=1))]),
+                limit=1000, offset=offset,
+                with_payload=False, with_vectors=False)
+            for pt in points or []:
+                pid = str(pt.id)
+                if pid in written:
+                    continue
+                try:
+                    await vector._client.delete_payload(
+                        collection_name=settings.QDRANT_COLLECTION,
+                        keys=["owm_efficacy", "owm_n", "owm_updated_at"],
+                        points=[pid])
+                    out["stale_reset"] += 1
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("OWM: stale reset failed for %s: %s", pid, exc)
+            if not offset:
+                break
+    except Exception as exc:  # noqa: BLE001 — reset is hygiene, never fatal
+        logger.warning("OWM: stale-reset sweep failed: %s", exc)
+
+    logger.info("OWM pass: %s", out)
+    return out
+
+
+async def _fetch_bridge_statuses(settings) -> dict[str, str]:
+    """Best-effort session-status map from Bridge REST (abandoned == failure).
+    Bridge unreachable degrades to eval-only signals, never fails the pass."""
+    try:
+        import httpx
+
+        headers = {}
+        internal = getattr(settings, "FIREKEEP_INTERNAL_KEY", "") or ""
+        if internal:
+            headers["X-API-Key"] = internal
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(f"{settings.BRIDGE_URL}/sessions",
+                                    params={"limit": 200}, headers=headers)  # route clamps at 200
+            resp.raise_for_status()
+            rows = resp.json().get("sessions", [])
+        return {r["session_id"]: r.get("status", "") for r in rows
+                if r.get("session_id")}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("OWM: bridge statuses unavailable (%s) — eval-only", exc)
+        return {}
+
+
+async def _run_owm_impl() -> dict:
+    import redis.asyncio
+
+    from app.config import get_settings
+    from app.db.vector import VectorClient
+
+    settings = get_settings()
+    r = redis.asyncio.from_url(settings.RP_REDIS_URL, decode_responses=True)
+    vector = VectorClient(settings)
+    try:
+        statuses = await _fetch_bridge_statuses(settings)
+        return await run_pass(r, vector, settings, bridge_statuses=statuses)
+    finally:
+        for closer in (r.aclose, vector.close):
+            try:
+                await closer()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+# Import placement is load-bearing (confluence-collector precedent): celery_app
+# is imported at the BOTTOM so this module's public surface exists first.
+from app.workers.sleep_cycle import celery_app  # noqa: E402
+
+
+@celery_app.task(name="app.owm.run_owm_scoring")
+def run_owm_scoring() -> dict:
+    """Beat fires unconditionally; the task self-gates on OWM_ENABLED and never
+    raises — failures come back as a status dict."""
+    from app.config import get_settings
+
+    if not get_settings().OWM_ENABLED:
+        return {"status": "disabled"}
+    try:
+        return asyncio.run(_run_owm_impl())
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("OWM pass crashed")
+        return {"status": "error", "error": str(exc)}

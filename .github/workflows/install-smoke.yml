@@ -1,0 +1,126 @@
+name: Install smoke (the stranger test)
+
+# The defect class this exists to catch: the stack worked on exactly one
+# machine — its author's. This runs the documented install on a clean runner
+# with nothing preconfigured.
+# Manual-trigger ONLY while the install is still broken. This workflow is
+# written before the fixes and is expected to fail; gating PRs on a
+# known-red check trains people to ignore it. Task 11 adds the automatic
+# triggers once it is green.
+on:
+  workflow_dispatch:
+
+jobs:
+  install-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Record runner resources (these become the docs' sizing figures)
+        run: |
+          free -h
+          df -h /
+          nproc
+          docker --version && docker compose version
+
+      - name: Reclaim runner disk before pulling ~3.3GB of models
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          df -h /
+
+      - name: Run the documented install non-interactively
+        env:
+          # A stranger runs `bash install.sh` and answers two prompts.
+          FIREKEEP_SMOKE_VPS_IP: "127.0.0.1"
+          FIREKEEP_SMOKE_NEO4J_PASSWORD: "smoke-test-password"
+        run: |
+          printf '%s\n%s\n' "$FIREKEEP_SMOKE_VPS_IP" "$FIREKEEP_SMOKE_NEO4J_PASSWORD" \
+            | bash install.sh
+
+      - name: Assert no unsubstituted placeholders survived in .env
+        run: |
+          if grep -nE "<VPS_IP>|YOUR_VPS_IP_HERE" .env; then
+            echo "::error::unsubstituted placeholder(s) left in .env"
+            exit 1
+          fi
+          echo "no placeholders remain"
+
+      - name: Assert every service reports healthy
+        run: |
+          for port in 8100 8070 8060 8050; do
+            echo "--- probing :$port/health"
+            curl -fsS --retry 30 --retry-delay 5 --retry-all-errors \
+              "http://127.0.0.1:$port/health" || exit 1
+            echo
+          done
+
+      - name: Assert the dashboard serves
+        # No -f here: once dashboard/.htpasswd exists nginx correctly 401s
+        # every unauthenticated request (including this probe), and -f would
+        # treat that as failure. A 401 is proof nginx is up and enforcing
+        # auth, not evidence of a broken dashboard -- only inspect the code.
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' --retry 20 --retry-delay 3 --retry-all-errors http://127.0.0.1:8040/)
+          echo "dashboard http_code=$code"
+          case "$code" in
+            2??|401) echo "dashboard responded ($code)" ;;
+            *) echo "::error::dashboard did not respond as expected (got $code)"; exit 1 ;;
+          esac
+
+      - name: Assert the dashboard's own generated credentials actually authenticate
+        # The 401 probe above only proves nginx is enforcing auth -- it is
+        # ALSO exactly what nginx returns when ngx_crypt cannot parse the
+        # stored hash at all (e.g. an apr1 hash on a build that can't verify
+        # it). A dashboard that no credential could ever open would keep
+        # that check permanently green. Read the credentials install.sh
+        # actually wrote and require a genuine 2xx with them -- the only
+        # check in this workflow that would catch a hash nginx rejects,
+        # and what validates the htpasswd/openssl algorithm choice in
+        # install.sh's "Dashboard basic auth" block.
+        run: |
+          if [ ! -f dashboard/.htpasswd.cred ]; then
+            echo "::error::dashboard/.htpasswd.cred is missing -- cannot verify the generated credentials work"
+            exit 1
+          fi
+          DASH_USER="$(sed -n 's/^user=//p' dashboard/.htpasswd.cred)"
+          DASH_PASS="$(sed -n 's/^pass=//p' dashboard/.htpasswd.cred)"
+          if [ -z "$DASH_USER" ] || [ -z "$DASH_PASS" ]; then
+            echo "::error::dashboard/.htpasswd.cred did not parse to a user/pass pair"
+            exit 1
+          fi
+          echo "::add-mask::$DASH_PASS"
+          code=$(curl -s -o /dev/null -w '%{http_code}' -u "${DASH_USER}:${DASH_PASS}" \
+            --retry 10 --retry-delay 3 --retry-all-errors http://127.0.0.1:8040/)
+          echo "authenticated dashboard http_code=$code"
+          case "$code" in
+            2??) echo "dashboard authenticated successfully ($code)" ;;
+            *) echo "::error::dashboard rejected the installer's own generated credentials (got $code) -- the stored password hash is likely unparseable by nginx"; exit 1 ;;
+          esac
+
+      - name: Assert a memory round-trips
+        run: |
+          curl -fsS -X POST http://127.0.0.1:8100/memory/learn \
+            -H 'Content-Type: application/json' \
+            -d '{"domain":"smoke","action":"ran the install smoke test",
+                 "outcome":"the stack accepted a write"}'
+          sleep 5
+          BODY=$(curl -fsS -X POST http://127.0.0.1:8100/memory/recall \
+            -H 'Content-Type: application/json' \
+            -d '{"task":"install smoke test","format":"raw"}')
+          echo "$BODY"
+          echo "$BODY" | grep -q "smoke" || { echo "::error::recall did not return the written memory"; exit 1; }
+
+      - name: Record the real resource high-water mark
+        run: |
+          free -h
+          df -h /
+          docker stats --no-stream --format 'table {{.Name}}\t{{.MemUsage}}'
+
+      - name: Dump diagnostics on failure
+        if: failure()
+        run: |
+          docker compose ps
+          docker compose logs --tail 100
+          free -h
+          df -h /

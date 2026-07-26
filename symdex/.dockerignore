@@ -1,0 +1,7 @@
+docs/
+tests/
+benchmarks/
+claude-plugin/
+*.pyc
+__pycache__
+.git

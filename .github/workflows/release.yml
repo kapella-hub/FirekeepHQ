@@ -1,0 +1,85 @@
+# Client release — GitHub port of the .gitlab-ci.yml `client-release` job.
+#
+# Triggered by a `client-v<X.Y.Z>` tag. Builds the client + symdex wheels, mirrors
+# the pinned uv binaries, runs make_release.py (SHA256SUMS + latest.json), and
+# publishes to the `gh-pages` branch in the exact layout the bootstrap fetches:
+#   <version>/  -> firekeep_client-*.whl, firekeep_symdex-*.whl, uv-*, SHA256SUMS
+#   latest/     -> install.sh, install.ps1, latest.json
+# GitHub Pages then serves these at FIREKEEP_DIST_BASE = https://<owner>.github.io/<repo>.
+# Publishing is ACCUMULATIVE — old <version>/ dirs are preserved so `firekeep update --to`
+# keeps resolving them. (Interim GitHub host; the GitLab package-registry pipeline
+# in .gitlab-ci.yml remains the office path.)
+name: client-release
+
+on:
+  push:
+    tags:
+      - 'client-v*'
+
+permissions:
+  contents: write   # push artifacts to the gh-pages branch
+
+env:
+  UV_VERSION: "0.5.11"   # pinned: the bootstrap verifies uv against SHA256SUMS
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Resolve + verify version
+        run: |
+          VERSION="${GITHUB_REF_NAME#client-v}"
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+          # The tag is the source of truth; both version markers must agree or the
+          # release is wrong (mirrors the GitLab guard).
+          grep -q "^version = \"${VERSION}\"$" client/pyproject.toml \
+            || { echo "tag ${GITHUB_REF_NAME} != client/pyproject.toml version"; exit 1; }
+          grep -q "^__version__ = \"${VERSION}\"$" client/firekeep_client/__init__.py \
+            || { echo "tag ${GITHUB_REF_NAME} != firekeep_client.__version__"; exit 1; }
+
+      - name: Build client + symdex wheels
+        run: |
+          python -m pip install build
+          mkdir -p dist
+          (cd client && python -m build --wheel --outdir ../dist)
+          (cd symdex && python -m build --wheel --outdir ../dist)
+
+      - name: Mirror uv binaries
+        run: |
+          for t in aarch64-apple-darwin x86_64-apple-darwin \
+                   x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+            curl -fsSL "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-${t}.tar.gz" \
+              | tar -xz -O --wildcards '*/uv' > "dist/uv-${t}"
+          done
+          curl -fsSL "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-pc-windows-msvc.zip" -o /tmp/uv.zip
+          python -c "import zipfile; zipfile.ZipFile('/tmp/uv.zip').extract('uv.exe','dist')"
+          mv dist/uv.exe dist/uv-x86_64-pc-windows-msvc.exe
+
+      - name: Assemble release (SHA256SUMS + latest.json)
+        run: |
+          cp client/bootstrap/install.sh client/bootstrap/install.ps1 dist/
+          python client/scripts/make_release.py "${VERSION}" dist --dist-base "https://kapella-hub.github.io/Firekeep"
+
+      - name: Publish to gh-pages (accumulative)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
+            git fetch origin gh-pages
+            git worktree add gh gh-pages
+          else
+            git worktree add --orphan -b gh-pages gh
+          fi
+          mkdir -p "gh/${VERSION}" gh/latest
+          cp dist/firekeep_client-*.whl dist/firekeep_symdex-*.whl dist/uv-* dist/SHA256SUMS "gh/${VERSION}/"
+          cp dist/install.sh dist/install.ps1 dist/latest.json gh/latest/
+          touch gh/.nojekyll   # serve files verbatim; no Jekyll rewriting
+          git -C gh add -A
+          git -C gh commit -m "release ${VERSION}" || { echo "nothing to publish"; exit 0; }
+          git -C gh push origin gh-pages

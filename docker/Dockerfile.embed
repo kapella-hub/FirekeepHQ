@@ -1,0 +1,66 @@
+ARG REGISTRY=docker.io/library
+
+# ============================================================================
+# Embedding-only ollama image (~250-350MB total): the CPU ollama runtime plus
+# ONLY granite-embedding:30m (62MB), no generation model. GPU libraries are
+# dropped (CPU-only cluster — they ARE most of the stock image's bulk).
+#
+# RETIRED-FALLBACK status (2026-07-17): the office now deploys the FULL
+# firekeep-ollama image (docker/Dockerfile.ollama: granite + llama3.2:3b) via
+# the DEDICATED path, which replicates since the the registry mirror ticket landed (see
+# that Dockerfile's header + the chart). This embed-only image is kept ONLY as a
+# fallback for embeddings-without-generation if the dedicated path ever
+# regresses — still built (build-embed) and published as a piggybacked tag on
+# the firekeep-dashboard path (firekeep-dashboard:embed-<tag>), but it is NO
+# LONGER the deploy's ollama image and is non-gating in verify_pull.
+#
+# Same chunking contract as Dockerfile.ollama (ollama-chunk.sh /
+# ollama-entrypoint.sh): no blob above the ~168MB proven replication ceiling.
+# ============================================================================
+
+# --- 1. src: obtain the runtime + the embedding model, ALLOWLIST the payload --
+# Pinned: bump deliberately, never track :latest (a silent upstream bump would
+# change runtime behavior under an unchanged image tag on our side).
+FROM ${REGISTRY}/ollama/ollama:0.32.0 AS src
+# Build /payload here by ALLOWLIST: /bin/ollama, the TOP-LEVEL files/symlinks
+# of /usr/lib/ollama (the CPU ggml/llama libs — every GPU runtime lives in a
+# SUBDIRECTORY: cuda_v12/v13, cuda_jetpack5/6, rocm...), and the model store.
+# The v0.1.4 build died ENOSPC because the denylist variant copied the full
+# 3.5GB lib dir into the chunker stage before pruning; the allowlist keeps
+# the GPU bulk out of later stages entirely (~115MB payload, measured).
+RUN ollama serve & SERVE_PID=$!; \
+    sleep 5 && \
+    ollama pull granite-embedding:30m && \
+    kill "$SERVE_PID" && \
+    sleep 2 && \
+    mkdir -p /payload/usr/bin /payload/root /payload/usr/lib/ollama && \
+    cp -a /bin/ollama /payload/usr/bin/ollama && \
+    find /usr/lib/ollama -maxdepth 1 \( -type f -o -type l \) -exec cp -a {} /payload/usr/lib/ollama/ \; && \
+    cp -a /root/.ollama /payload/root/.ollama && \
+    du -sm /payload
+
+# --- 2. chunker: repack into <=95MiB dirs (12 max — payload is ~115MB) ---------
+FROM ${REGISTRY}/ubuntu:24.04 AS chunker
+COPY --from=src /payload /payload
+COPY docker/ollama-chunk.sh /ollama-chunk.sh
+RUN CHUNK_MAX_DIRS=12 sh /ollama-chunk.sh
+
+# --- 3. final: small base + one small layer per chunk dir ---------------------
+FROM ${REGISTRY}/ubuntu:24.04
+COPY docker/ollama-entrypoint.sh /ollama-entrypoint.sh
+COPY --from=chunker /chunks/d000 /layers/d000
+COPY --from=chunker /chunks/d001 /layers/d001
+COPY --from=chunker /chunks/d002 /layers/d002
+COPY --from=chunker /chunks/d003 /layers/d003
+COPY --from=chunker /chunks/d004 /layers/d004
+COPY --from=chunker /chunks/d005 /layers/d005
+COPY --from=chunker /chunks/d006 /layers/d006
+COPY --from=chunker /chunks/d007 /layers/d007
+COPY --from=chunker /chunks/d008 /layers/d008
+COPY --from=chunker /chunks/d009 /layers/d009
+COPY --from=chunker /chunks/d010 /layers/d010
+COPY --from=chunker /chunks/d011 /layers/d011
+RUN chmod +x /ollama-entrypoint.sh
+ENV OLLAMA_HOST=0.0.0.0
+EXPOSE 11434
+ENTRYPOINT ["/ollama-entrypoint.sh"]

@@ -1,0 +1,148 @@
+"""SP1b-server: Cortex GET /briefing aggregator endpoint tests."""
+from __future__ import annotations
+
+from unittest.mock import MagicMock
+
+import fakeredis.aioredis
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from app.briefing import sections as S
+from app.briefing.api import create_briefing_router
+from app.version import get_version_info
+
+# The 12 sections that MUST always be present (fail-loud: never omitted).
+# `observed` is the N=1 learning surface (descriptive, unvalidated) added in the
+# n1-learning-loop work — it always ships alongside the original 11.
+ALL_SECTIONS = {
+    "environment", "tasks", "bulletins", "quality", "strategy_tips", "observed",
+    "cross_agent", "skills", "vault", "discipline", "dlq", "resumable_sessions",
+}
+
+
+async def _zero_depths():
+    return {"celery": 0, "event_stream": 0, "event_dlq": 0,
+            "memory_backfill": 0, "memory_backfill_dlq": 0, "distill_dlq": 0}
+
+
+def _make_app(monkeypatch, section_timeout: float = 2.0) -> FastAPI:
+    """Build a minimal app with the briefing router and working fake app.state.
+
+    Task 7 made 7 in-process sections real (they now dereference the shared
+    clients on app.state), so None-valued state is no longer sufficient — a
+    None client is a genuine upstream failure that the orchestrator (correctly)
+    converts to "unavailable". These fakes give every in-process section a
+    live-but-empty backend so it reports "empty" instead of degrading:
+    - replay_redis / redis_client: real fakeredis (evals, patterns, untagged).
+    - vector_client._client.scroll: async, returns ([], None) (skills → empty).
+    - collect_queue_depths: patched to all-zero so the dlq section neither hits
+      real Redis nor times out (in production it reads live broker/data/bridge
+      DBs; that path is covered by test_ops.py, not this fixture).
+
+    http_client is a no-op that raises on every call. Task 8 made the 4
+    outbound sections (environment, tasks, bulletins, resumable_sessions) real,
+    so they now genuinely dereference http_client and correctly degrade to
+    "unavailable" here (asserted in test_briefing_sections_status_and_vault_fail_loud
+    below) — full success-path coverage for those 4 lives in
+    test_briefing_sections_outbound.py.
+
+    Vault is the one section that legitimately stays "unavailable" here: the
+    anonymous dev identity carries scopes=["*"] which passes vault_visible, so
+    vault_section calls the real list_secrets(), which raises
+    RuntimeError("Vault not initialized") because init_vault() is never called
+    in this minimal app. That is correct fail-loud behavior, asserted below.
+    """
+    monkeypatch.setattr(S, "collect_queue_depths", _zero_depths)
+
+    app = FastAPI()
+    app.include_router(create_briefing_router(section_timeout=section_timeout))
+    app.state.replay_redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    app.state.redis_client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+    vector = MagicMock()
+
+    async def _scroll(**_kwargs):
+        return ([], None)
+
+    vector._client = MagicMock()
+    vector._client.scroll = _scroll
+    app.state.vector_client = vector
+
+    class _NoopClient:
+        async def get(self, *_a, **_k):
+            raise RuntimeError("offline")  # outbound sections degrade; not asserted here
+
+    app.state.http_client = _NoopClient()
+    return app
+
+
+def test_briefing_returns_200_with_all_12_sections(monkeypatch):
+    client = TestClient(_make_app(monkeypatch))
+    resp = client.get("/briefing?agent_id=moganes&goal=fix+the+collector")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert set(body["sections"].keys()) == ALL_SECTIONS
+
+
+def test_briefing_envelope_shape(monkeypatch):
+    client = TestClient(_make_app(monkeypatch))
+    resp = client.get("/briefing?agent_id=moganes&goal=g")
+    body = resp.json()
+    for key in ("generated_at", "server_version", "agent_id", "goal",
+                "project", "briefing_id", "degraded", "sections",
+                "instructions", "rendered"):
+        assert key in body, f"missing envelope key: {key}"
+    assert body["agent_id"] == "moganes"
+    assert body["goal"] == "g"
+    assert body["project"] is None
+    # briefing_id is minted server-side (D2) and surfaced top-level.
+    assert isinstance(body["briefing_id"], str) and body["briefing_id"]
+
+
+def test_briefing_server_version_matches_version_module(monkeypatch):
+    client = TestClient(_make_app(monkeypatch))
+    resp = client.get("/briefing?agent_id=x")
+    assert resp.json()["server_version"] == get_version_info()["version"]
+
+
+def test_briefing_sections_status_and_vault_fail_loud(monkeypatch):
+    """Real (post-Task-8) behavior with live-but-empty fakes.
+
+    The 6 in-process sections with a live-but-empty backend (quality,
+    strategy_tips, cross_agent, skills, discipline, dlq) report "empty" —
+    nothing to show. Five sections correctly degrade to "unavailable" because
+    their upstream genuinely fails in this minimal app:
+    - vault: module-level vault store is never init_vault()-ed, and the
+      anonymous dev identity's ["*"] scope passes the admin gate, so
+      vault_section calls the real list_secrets() and the raise propagates.
+    - environment / tasks / bulletins / resumable_sessions (Task 8): the
+      no-op http_client fake raises RuntimeError("offline") on every call, so
+      each outbound section's primary _get_json() call raises and the
+      orchestrator converts it to "unavailable" with that error preserved.
+    These 5 genuine upstream failures make degraded=True. This is the
+    fail-loud contract working: a real backend failure is surfaced, not
+    silently swallowed.
+    """
+    client = TestClient(_make_app(monkeypatch))
+    body = client.get("/briefing?agent_id=x").json()
+    for name, sec in body["sections"].items():
+        assert set(sec.keys()) == {"status", "error", "data"}, name
+
+    unavailable_sections = {"environment", "tasks", "bulletins", "resumable_sessions", "vault"}
+    for name, sec in body["sections"].items():
+        if name in unavailable_sections:
+            continue
+        assert sec["status"] == "empty", f"{name}: {sec}"
+
+    for name in unavailable_sections - {"vault"}:
+        sec = body["sections"][name]
+        assert sec["status"] == "unavailable", f"{name}: {sec}"
+        assert "offline" in (sec["error"] or ""), f"{name}: {sec}"
+
+    vault = body["sections"]["vault"]
+    assert vault["status"] == "unavailable"
+    assert "vault" in (vault["error"] or "").lower()
+
+    # Genuine upstream failures (vault uninitialized + 4 outbound sections
+    # hitting the offline http_client fake) => degraded True.
+    assert body["degraded"] is True
