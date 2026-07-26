@@ -359,4 +359,4 @@ No schema migration system. Neo4j schema is append-only (MERGE-based). Qdrant co
 - TLS between services (handled at network level or reverse proxy)
 - Proactive agent notification (MCP doesn't support server-push yet)
 
-> **Since shipped (no longer out of scope):** optional scope-based API-key auth (`AUTH_ENABLED`, default off on the personal VPS, on for the office deployment behind Caddy); and FirekeepSentinel → FirekeepRelay forwarding (Sentinel now HTTP-broadcasts alerts to Relay).
+> **Since shipped (no longer out of scope):** scope-based API-key auth — `AUTH_ENABLED` is **on by default** as of 2026-07-26 (it was optional and default-off; a stock install treated every caller as an anonymous admin, which is how vault secrets left this project's own VPS). Even with it explicitly disabled, the admin-gated surface stays refused. Ports bind `127.0.0.1` by default via `BIND_ADDR`. And FirekeepSentinel → FirekeepRelay forwarding (Sentinel now HTTP-broadcasts alerts to Relay).

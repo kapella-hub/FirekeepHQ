@@ -24,12 +24,20 @@ Firekeep is MCP-native. The client-specific setup varies, but the integration mo
 
 For any MCP-capable client, register these HTTP endpoints:
 
+> **Reachability and auth, before you register anything.** A default install binds these
+> ports to `127.0.0.1` and requires an `X-API-Key` on every call. So from the Firekeep
+> host use `127.0.0.1`; from another machine either tunnel
+> (`ssh -L 8080:127.0.0.1:8080 …`) or set `BIND_ADDR=0.0.0.0` deliberately, and in both
+> cases supply a key — mint one with
+> `deploy/firekeep-admin keys create --agent <you>`. Substitute `<HOST>` below
+> accordingly. See [DEPLOYMENT.md](DEPLOYMENT.md#access-and-authentication).
+
 | Service | URL |
 |---|---|
-| FirekeepCortex | `http://<VPS_IP>:8080/mcp` |
-| FirekeepBridge | `http://<VPS_IP>:8070/mcp` |
-| FirekeepSentinel | `http://<VPS_IP>:8060/mcp` |
-| FirekeepRelay | `http://<VPS_IP>:8050/mcp` |
+| FirekeepCortex | `http://<HOST>:8080/mcp` |
+| FirekeepBridge | `http://<HOST>:8070/mcp` |
+| FirekeepSentinel | `http://<HOST>:8060/mcp` |
+| FirekeepRelay | `http://<HOST>:8050/mcp` |
 
 Code intelligence (`firekeep-symdex`) and the Decision Board (`firekeep-decision`) are **not** HTTP endpoints — they are client-installed stdio-local MCP servers, registered automatically by `firekeep install`. There is no symdex server or port 8090.
 
@@ -115,7 +123,7 @@ Add to `~/.cursor/mcp.json`:
 {
   "mcpServers": {
     "firekeep-cortex": {
-      "url": "http://<cortex-host>:8080/mcp"
+      "url": "http://<HOST>:8080/mcp"
     }
   }
 }
@@ -128,10 +136,13 @@ Two HTTP calls — no SDK required.
 ```python
 import requests
 
-CORTEX = "http://<cortex-host>:8100"
-# Required if AUTH_ENABLED=true — mint one with `deploy/bootstrap-keys.sh` /
-# `deploy/firekeep-admin keys create --agent <you>`. There is no single shared
-# API_KEY env var; each caller gets its own scoped key.
+CORTEX = "http://<HOST>:8100"   # 127.0.0.1 on a default install
+# Required. AUTH_ENABLED defaults to true, so every call needs a key — mint one
+# with `deploy/bootstrap-keys.sh` / `deploy/firekeep-admin keys create --agent
+# <you>`. There is no single shared API_KEY env var; each caller gets its own
+# scoped key. (Even with AUTH_ENABLED=false the admin-gated routes — vault,
+# /auth/keys — refuse an anonymous caller, so disabling auth is not a way to
+# skip this.)
 FIREKEEP_KEY = "nxs_..."
 
 def action_before(session_id, agent_id, action_type, target, prediction=None):

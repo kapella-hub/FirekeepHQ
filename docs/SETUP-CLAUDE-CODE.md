@@ -85,7 +85,11 @@ After setup, restart Claude Code in the project directory. You should see:
 
 2. Run `/mcp` to confirm all 6 servers show connected (`firekeep-symdex` is always installed)
 
-3. Open `http://<VPS_IP>:8040` to verify the dashboard loads
+3. Open the dashboard to verify it loads. A default install binds it to `127.0.0.1`, so
+   from the machine running Firekeep that is `http://localhost:8040`; from anywhere else,
+   tunnel first (`ssh -L 8040:127.0.0.1:8040 user@host`). `http://<VPS_IP>:8040` only
+   resolves if you deliberately set `BIND_ADDR=0.0.0.0` — see
+   [DEPLOYMENT.md](DEPLOYMENT.md#access-and-authentication).
 
 ## Multi-Agent Setup (Optional)
 
@@ -123,7 +127,14 @@ The installer is the supported path; there is no manual alternative that reaches
 ## Troubleshooting
 
 ### Dashboard shows everything offline
-- Check CORS: `CORS_ORIGINS` in `.env` must include `http://<VPS_IP>:8040`
+- **Most likely: `DASHBOARD_API_KEY` is unset.** With `AUTH_ENABLED=true` (the default)
+  nginx must inject that key on every `/api/*` proxy; it drops empty
+  `proxy_set_header` values, so an unset key means every tab gets a 401 and renders as
+  offline. Re-run `bash deploy/bootstrap-keys.sh`, then **recreate** the container
+  (`docker compose up -d dashboard`) — the key is read at container start, not per request.
+- Not CORS. The SPA is served by the same nginx that proxies `/api/*` and calls
+  `window.location.origin`, so the browser never makes a cross-origin request and
+  `CORS_ORIGINS` cannot cause this.
 - Clear browser localStorage: `localStorage.removeItem('firekeep_config')`
 
 ### Claude doesn't use the MCP tools
@@ -134,7 +145,11 @@ The installer is the supported path; there is no manual alternative that reaches
 ### Briefing shows "Service unreachable"
 - The host/base_url in your active `~/.firekeep/config` profile must be reachable from your machine
 - Run `firekeep doctor` — it checks connectivity, auth, and version-skew for every service in one pass
-- Try: `curl http://YOUR_VPS_IP:8100/health`
+- Try `curl http://127.0.0.1:8100/health` **on the Firekeep host** — `/health` is pre-auth,
+  so it answers without a key and tells you the service is up. From another machine that
+  call only works if you set `BIND_ADDR=0.0.0.0`; on a default install, tunnel instead.
+- A `401` from any other path is not a fault — it means the stack is up and enforcing auth.
+  Put your key in the profile rather than turning auth off.
 
 ### Hooks not firing
 - Hooks are user-scoped — check `~/.claude/settings.json` exists and has the `hooks` key

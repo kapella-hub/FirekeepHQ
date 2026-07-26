@@ -43,7 +43,7 @@
 
 - FirekeepCortex does NOT run its own LLM inference server. It calls an external OpenAI-compatible API (Ollama, vLLM, OpenAI, etc.).
 - No user-facing UI in v1. *(Superseded: Firekeep now ships a unified web dashboard on port 8040, and Cortex itself registers a `/dashboard` router.)*
-- No multi-tenancy or authentication in v1. Single-tenant deployment assumed. *(Superseded: scope-based per-key auth is now implemented via a shared ASGI validator and is opt-in with `AUTH_ENABLED=true`; default off on the personal VPS.)*
+- No multi-tenancy or authentication in v1. Single-tenant deployment assumed. *(Superseded: scope-based per-key auth is implemented via a shared ASGI validator and is **ON by default** as of 2026-07-26 — `AUTH_ENABLED=true`. It was opt-in and default-off until then, which meant a stock install treated every caller as an anonymous admin. Even when explicitly disabled, the admin-gated surface now refuses anonymous callers. Multi-tenancy remains out of scope: the tenant boundary is the customer's own deployment.)*
 - No horizontal scaling of Neo4j or Qdrant in v1. Single-node deployments.
 
 ### Assumptions
@@ -2079,7 +2079,7 @@ run_sleep_cycle()
 
 **File**: `docker-compose.yml`
 
-> **This is the v1 standalone compose, not the deployed topology.** The real stack is the **root** `docker-compose.yml` (13 containers): `neo4j`, `qdrant` (v1.13.2), `redis`, `ollama`, `ollama-pull` (init), `cortex-api` (published `0.0.0.0:8100:8000`), `cortex-mcp` (8080), `cortex-worker` (`celery worker --pool=solo`), a **separate** `cortex-beat` (celery beat), plus `bridge`, `sentinel`, `relay`, and `dashboard`. Cortex builds from `cortex/Dockerfile` with the repo root as build context. Infra ports bind to `127.0.0.1`; the four data volumes are `external: true` and named `firekeepcortex_{neo4j,qdrant,redis,ollama}_data`. There is **no** `symdex` service — code intelligence ships client-side as the stdio `firekeep-symdex` MCP server. The single-`app` / `worker` YAML below is retained only as the v1 reference.
+> **This is the v1 standalone compose, not the deployed topology.** The real stack is the **root** `docker-compose.yml` (13 containers): `neo4j`, `qdrant` (v1.13.2), `redis`, `ollama`, `ollama-pull` (init), `cortex-api` (published `${BIND_ADDR:-127.0.0.1}:8100:8000`), `cortex-mcp` (8080), `cortex-worker` (`celery worker --pool=solo`), a **separate** `cortex-beat` (celery beat), plus `bridge`, `sentinel`, `relay`, and `dashboard`. Cortex builds from `cortex/Dockerfile` with the repo root as build context. **Two claims here were corrected in 2026-07:** app ports were `0.0.0.0` and are now `${BIND_ADDR:-127.0.0.1}` (datastore ports were and remain literal `127.0.0.1` — widening app access must never widen database access); and the four data volumes were `external: true`, naming volumes that nothing ever created, which made `install.sh` fail on its first Docker command for anyone but the author. They are ordinary compose-managed volumes now. There is **no** `symdex` service — code intelligence ships client-side as the stdio `firekeep-symdex` MCP server. The single-`app` / `worker` YAML below is retained only as the v1 reference.
 
 ```yaml
 version: "3.8"
@@ -2193,7 +2193,7 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
 | Concern | Mitigation |
 |---|---|
-| Authentication | **Implemented (post-v1)** — scope-based per-key auth via a shared pure-ASGI validator (`auth/asgi.py`, `FirekeepKeyAuthMiddleware`) on Cortex REST and every MCP surface, opt-in with `AUTH_ENABLED=true` (fail-closed if Redis DB 7 is unreachable). Default off on the personal VPS. Keys minted by `deploy/bootstrap-keys.sh`; scopes include `memory:read/write`, `session:read/write`, `admin`. |
+| Authentication | **Implemented (post-v1)** — scope-based per-key auth via a shared pure-ASGI validator (`auth/asgi.py`, `FirekeepKeyAuthMiddleware`) on Cortex REST and every MCP surface, **on by default** since 2026-07-26 (`AUTH_ENABLED=true`; fail-closed if Redis DB 7 is unreachable). Setting it to `false` no longer grants admin: the anonymous identity carries every scope except `admin`, and the scope check runs on the disabled path too. Keys minted by `deploy/bootstrap-keys.sh`; scopes include `memory:read/write`, `session:read/write`, `admin`. |
 | Cypher injection | All queries use parameterized variables (`$id`, `$props`). Node labels and edge types come from enums, never user input. |
 | Payload injection | `GenericEventIngest.payload` is JSON-serialized before Redis storage. Never interpolated into queries. |
 | LLM prompt injection | Extraction prompt is system-controlled. User data goes in user message. Extractions validated via Pydantic before graph writes. |
