@@ -27,11 +27,19 @@ class TestSentinelBriefingHandlers:
         )
         result = await handle_get_environment(redis)
         assert result["redis"] == "connected"
-        assert set(result["collectors"]) == {"docker", "git", "files"}
+        # `collectors` reports what is RUNNING. The docker collector is opt-in
+        # (NS_DOCKER_COLLECTOR_ENABLED, default false — mounting the Docker socket is
+        # host-root-equivalent), so it is absent here rather than present-and-False:
+        # the briefing renders any falsey entry as "Collector(s) degraded", and a
+        # deliberate opt-out is not a fault. See test_docker_collector_optin.py.
+        assert set(result["collectors"]) == {"git", "files"}
         # Full detail — the /health custom_route body omits these three keys:
         assert "containers" in result
         assert "container_count" in result
         assert "healthy" in result
+        # Container detail is reconstructed from the Redis event stream, NOT by calling
+        # the Docker API, so it survives the collector being off — events pushed while
+        # it ran (or by any other producer via sentinel_push_event) still render.
         assert result["containers"]["web"]["state"] == "running"
 
     @pytest.mark.asyncio

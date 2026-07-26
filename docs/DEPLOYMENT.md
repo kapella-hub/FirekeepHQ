@@ -252,7 +252,22 @@ the old `firekeepcortex_*` volumes. Keep them as a rollback for at least a week.
 ### Security Considerations
 
 - **No TLS between services** — all communication is on the internal Docker network
-- **Docker socket access** — Sentinel mounts `/var/run/docker.sock` for container health monitoring. This is read-only but grants visibility into all containers.
+- **Docker socket access** — **not mounted by default** (changed 2026-07-26). Sentinel's
+  docker collector is opt-in via `NS_DOCKER_COLLECTOR_ENABLED=true`, which also requires
+  restoring the `/var/run/docker.sock` mount in `docker-compose.yml`.
+
+  This entry previously read *"This is read-only but grants visibility into all
+  containers."* **That was wrong in both halves.** The mount carried no `:ro` flag, and
+  `:ro` would not have made it read-only anyway — it restricts the socket *file*, not the
+  Docker API served over it, so `POST /containers/create` with a host bind mount still
+  works. Access to that socket is root on the host, not visibility. If you enable the
+  collector, front the socket with a read-only proxy exposing only `GET /containers/json`
+  — the one call the collector makes.
+- **Sentinel filesystem access** — the repository root is **no longer** bind-mounted into
+  the Sentinel container. It previously mounted `./:/watch:ro`, which put `.env`
+  (`NEO4J_PASSWORD`, `VAULT_KEY`, minted API keys) inside a service whose HTTP port is
+  published and unauthenticated by default. Mount only the trees you want watched and
+  point `NS_WATCH_PATHS` at them.
 - **API keys** — set `AUTH_ENABLED=true` in `.env` to require a valid `X-API-Key` on all MCP and REST endpoints. Keys are minted per-agent via `deploy/bootstrap-keys.sh` / `deploy/firekeep-admin` (no single shared `API_KEY` — see [DEPLOYMENT-OFFICE.md](DEPLOYMENT-OFFICE.md)).
 - **CORS** — configure `CORS_ORIGINS` in `.env` to restrict dashboard access.
 

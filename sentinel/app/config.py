@@ -6,6 +6,16 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379/4"
     DOCKER_SOCKET: str = "/var/run/docker.sock"
+    # Default OFF. Reaching the Docker API requires bind-mounting
+    # /var/run/docker.sock into this container, and a process that can talk to
+    # that socket can create a container with a host bind mount -- i.e. it is
+    # root on the host. There is no read-only mode: `:ro` on the mount restricts
+    # the socket FILE, not the API served over it, so POST /containers/create
+    # still works. This collector issues exactly one call
+    # (GET /containers/json), so the grant is enormously wider than the need.
+    # Enable it, and add the mount back in docker-compose.yml, only if you want
+    # container states in the dashboard and accept that trade.
+    DOCKER_COLLECTOR_ENABLED: bool = False
     POLL_INTERVAL_DOCKER: int = 30
     POLL_INTERVAL_GIT: int = 60
     POLL_INTERVAL_FILES: int = 30

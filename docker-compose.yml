@@ -489,9 +489,25 @@ services:
       AUTH_REDIS_URL: redis://redis:6379/7
     env_file:
       - .env
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ./:/watch:ro
+    # Both former mounts are removed from the default install. Neither did
+    # anything out of the box, and each was a serious grant:
+    #
+    #   /var/run/docker.sock  -- host-root-equivalent. A process that can reach
+    #     the Docker API can create a container with a host bind mount. There is
+    #     no read-only form: `:ro` restricts the socket file, not the API. The
+    #     docker collector is now default-off (NS_DOCKER_COLLECTOR_ENABLED), so
+    #     nothing here opens it. To opt in, set that flag AND restore:
+    #         - /var/run/docker.sock:/var/run/docker.sock
+    #     Prefer fronting it with a read-only socket proxy exposing only
+    #     GET /containers/json, which is the single call the collector makes.
+    #
+    #   ./:/watch:ro  -- mounted the ENTIRE repository into this container,
+    #     including .env, which holds NEO4J_PASSWORD, VAULT_KEY and the minted
+    #     API keys. The git and file collectors read their watch list from Redis
+    #     (WATCHES_KEY) and NS_WATCH_PATHS, both empty by default, so this
+    #     mount was never read. To watch a tree, mount just that tree:
+    #         - /srv/my-project:/watch/my-project:ro
+    #     and set NS_WATCH_PATHS=/watch/my-project.
     depends_on:
       redis:
         condition: service_healthy

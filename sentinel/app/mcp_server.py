@@ -51,7 +51,16 @@ async def _ensure_collectors():
     settings = get_settings()
     redis = await get_redis()
 
-    asyncio.create_task(run_docker_collector(redis, settings, _stop_event))
+    # Opt-in: talking to the Docker socket is host-root-equivalent (see the note
+    # on DOCKER_COLLECTOR_ENABLED in config.py). With it off, nothing in this
+    # process ever opens the socket, and docker-compose.yml does not mount it.
+    if settings.DOCKER_COLLECTOR_ENABLED:
+        asyncio.create_task(run_docker_collector(redis, settings, _stop_event))
+    else:
+        logger.info(
+            "Docker collector disabled (NS_DOCKER_COLLECTOR_ENABLED=false). "
+            "Container states will be absent from /environment."
+        )
     asyncio.create_task(run_git_collector(redis, settings, _stop_event))
     asyncio.create_task(run_file_collector(redis, settings, _stop_event))
     asyncio.create_task(_retention_loop(redis, settings))
@@ -84,11 +93,17 @@ async def handle_get_environment(redis) -> dict:
     except Exception:
         redis_status = "error"
 
+    # A disabled collector is OMITTED, not reported False. The briefing's
+    # _environment_summary renders any falsey entry as "Collector(s) degraded",
+    # so reporting the opt-out as False would put a permanent fake fault in
+    # every agent's session briefing -- the failure mode where a warning that is
+    # always on stops being read.
     collectors = {
-        "docker": get_docker_collector().healthy,
         "git": get_git_collector().healthy,
         "files": get_file_collector().healthy,
     }
+    if get_settings().DOCKER_COLLECTOR_ENABLED:
+        collectors["docker"] = get_docker_collector().healthy
 
     event_count = await get_event_count(redis) if redis_status == "connected" else 0
 
