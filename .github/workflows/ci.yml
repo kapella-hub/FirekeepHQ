@@ -140,3 +140,19 @@ jobs:
         run: pip install "ruff>=0.6,<1"
       - name: Run ruff
         run: ruff check .
+
+  forbidden-tokens:
+    name: Forbidden-token scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # The guard must be able to fail. Its own tests plant each token and
+      # assert detection -- an earlier shell version silently passed while a
+      # residual sat in the tree, which is how a check becomes decoration.
+      - name: Prove the guard can detect a plant
+        run: pip install pytest && python -m pytest tests/test_forbidden_tokens.py -q
+      - name: Scan the tree
+        run: python scripts/check_forbidden_tokens.py .

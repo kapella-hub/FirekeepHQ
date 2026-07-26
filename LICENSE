@@ -1,0 +1,42 @@
+Firekeep — Proprietary Software Licence
+
+Copyright (c) 2026 Kapella Hub. All rights reserved.
+
+STATUS OF THIS FILE
+-------------------
+This is the licence that applies to Firekeep TODAY, while the repository is
+private and the software has not been distributed to anyone. It is deliberately
+restrictive and deliberately provisional.
+
+The intended commercial model is OPEN-CORE: a permissively-licensed client kit
+and single-user core, with team features licensed commercially. That decision is
+recorded as pending in docs/LICENSING.md and has not been made. When it is, this
+file is replaced — and the replacement, not this file, is what any customer
+receives.
+
+Do not treat this file as the commercial licence. It grants a customer nothing,
+which is correct while there are no customers and wrong the moment there is one.
+
+GRANT
+-----
+No licence is granted to any third party. The copyright holder reserves all
+rights. No permission is given to use, copy, modify, merge, publish, distribute,
+sublicense, or sell this software or any portion of it.
+
+Access to this repository does not confer a licence to use the software.
+
+THIRD-PARTY COMPONENTS
+----------------------
+Firekeep incorporates and depends upon third-party software distributed under
+its own terms. Those terms are unaffected by this file and continue to govern
+the components they cover. Third-party attribution is maintained separately;
+see docs/LICENSING.md for the current state of that work.
+
+NO WARRANTY
+-----------
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
