@@ -10,9 +10,11 @@ they need a human read, and failing on them would make the gate noise.
 
 Also doubles as the attribution reader for NOTICE generation: run with
 `--attributions` to emit one JSON record per installed third-party
-distribution (JSONL to stdout) instead of gating. See
-scripts/generate_notice.py, which invokes this in each isolated venv and
-merges the results into the repository's NOTICE file.
+distribution (JSONL to stdout) identifying its licence, or `--license-texts`
+to emit one JSON record per distribution that has a locatable bundled
+licence-text file (the actual text, not just its name) -- instead of
+gating. See scripts/generate_notice.py, which invokes both in each isolated
+venv and merges the results into the repository's NOTICE file.
 """
 from __future__ import annotations
 
@@ -179,6 +181,152 @@ def print_attributions() -> int:
     return 0
 
 
+# Naming this scan targets: a pre-PEP-639 package (declares no License-File
+# metadata at all, e.g. httpx 0.28.1) that still bundles a licence file
+# under a recognizable name. Checked only as a fallback, after the
+# metadata-declared list, so a package that DOES declare License-File never
+# falls back to a guess.
+LICENSE_FILENAME_PREFIXES = ("license", "licence", "copying")
+
+
+def _match_declared_file(files: list, rel: str):
+    """Resolve one PEP 639 `License-File` metadata value to the installed
+    PackagePath it names.
+
+    The declared value is a path relative to the dist-info's `licenses/`
+    subdirectory (e.g. pywin32's `License-File: com/License.txt` names
+    `pywin32-312.dist-info/licenses/com/License.txt`, not the also-installed
+    `com/License.txt` runtime copy, which may not even be the same file for
+    every package). Falls back to an exact installed-path match, then a
+    bare basename match, for older layouts that don't use the `licenses/`
+    subdirectory convention at all.
+    """
+    rel_norm = rel.replace("\\", "/")
+    for f in files:
+        if str(f).replace("\\", "/").endswith(f"licenses/{rel_norm}"):
+            return f
+    for f in files:
+        if str(f).replace("\\", "/") == rel_norm:
+            return f
+    base = rel_norm.rsplit("/", 1)[-1].lower()
+    for f in files:
+        if f.name.lower() == base:
+            return f
+    return None
+
+
+def _looks_like_top_level_license_file(path_str: str) -> bool:
+    """True only for a licence-shaped basename sitting at the top level of
+    the install (a bare `LICENSE`/`COPYING`-style file next to the
+    package) or inside the distribution's own `*.dist-info/` directory.
+
+    This is deliberately narrow. It exists only for the pre-PEP-639
+    fallback case (no declared `License-File` metadata at all), where
+    matching on basename alone is dangerously easy to get wrong: openapi-
+    pydantic 0.5.1 ships a real source module at
+    `openapi_pydantic/v3/v3_0/license.py` (plus its `__pycache__` .pyc) --
+    a basename-only scan reads the compiled bytecode as "licence text" and
+    corrupts the appendix with binary garbage. Requiring top-level-or-
+    dist-info placement excludes that without needing an extension
+    denylist that would also have to special-case real license-file
+    naming conventions like cryptography's `LICENSE.APACHE`/`LICENSE.BSD`.
+    """
+    parts = path_str.split("/")
+    if "__pycache__" in parts:
+        return False
+    if len(parts) == 1:
+        return True
+    return parts[0].endswith(".dist-info")
+
+
+def _candidate_license_paths(dist) -> list:
+    """Return the dist.files PackagePath entries most likely to hold this
+    distribution's bundled licence text, preferring the files the
+    distribution's own PEP 639 `License-File` metadata names."""
+    files = list(getattr(dist, "files", None) or [])
+    if not files:
+        return []
+
+    declared = dist.metadata.get_all("License-File") or []
+    if declared:
+        matches = []
+        for rel in declared:
+            match = _match_declared_file(files, rel)
+            if match is not None:
+                matches.append(match)
+        if matches:
+            return matches
+
+    return [
+        f for f in files
+        if _looks_like_top_level_license_file(str(f).replace("\\", "/"))
+        and any(f.name.lower().startswith(prefix) for prefix in LICENSE_FILENAME_PREFIXES)
+    ]
+
+
+def collect_license_text(dist) -> str | None:
+    """Return the concatenated bundled licence-file text for a
+    distribution, or None if no such file could be located in what was
+    actually installed.
+
+    This is the text-reproduction half of attribution that identifying a
+    licence by name does not discharge: MIT/BSD conventionally require the
+    copyright notice and permission text to travel with a redistribution,
+    and Apache-2.0 §4(d) requires carrying forward any upstream NOTICE
+    content. See scripts/generate_notice.py, which assembles these into
+    NOTICE's licence-text appendix.
+    """
+    paths = _candidate_license_paths(dist)
+    if not paths:
+        return None
+
+    blocks: list[str] = []
+    seen: set[str] = set()
+    for path in paths:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            try:
+                text = path.read_binary().decode("utf-8", errors="replace")
+            except (OSError, ValueError):
+                continue
+        except (OSError, ValueError):
+            continue
+        if text and text.strip():
+            blocks.append(text.strip())
+
+    return "\n\n".join(blocks) if blocks else None
+
+
+def print_license_texts() -> int:
+    """Emit one JSON record per line (JSONL) for every third-party
+    distribution that has a locatable bundled licence-text file, to
+    stdout. Companion to print_attributions(): that function identifies
+    *which* licence a package carries; this one reproduces the actual text,
+    read from the same isolated venv so scripts/generate_notice.py can
+    bundle real licence text into NOTICE, not just the licence's name.
+    Distributions with no locatable licence file are omitted here (not
+    emitted with a null text) — generate_notice.py treats "no record" as
+    "nothing found" and says so explicitly in the appendix.
+    """
+    import json
+
+    for dist in distributions():
+        name = dist.metadata.get("Name", "") or "<unnamed>"
+        if name.lower() in ATTRIBUTION_EXCLUDE:
+            continue
+        text = collect_license_text(dist)
+        if text is None:
+            continue
+        version = dist.metadata.get("Version", "") or "unknown"
+        print(json.dumps({"name": name, "version": version, "license_text": text}))
+    return 0
+
+
 def main() -> int:
     denied: list[str] = []
     unknown: list[str] = []
@@ -211,4 +359,6 @@ def main() -> int:
 if __name__ == "__main__":
     if "--attributions" in sys.argv:
         sys.exit(print_attributions())
+    if "--license-texts" in sys.argv:
+        sys.exit(print_license_texts())
     sys.exit(main())

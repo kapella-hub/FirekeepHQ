@@ -25,6 +25,10 @@ COPY vault/ ./vault/
 COPY corpus/ ./corpus/
 COPY provenance/ ./provenance/
 
+# Third-party attribution -- must actually land in the shipped image, not
+# just exist at the repo root (see docs/LICENSING.md).
+COPY NOTICE .
+
 RUN chown -R appuser:appuser /app
 
 # Build provenance — injected at build time, read at runtime by app/version.py
