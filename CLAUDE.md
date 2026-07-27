@@ -588,6 +588,39 @@ For tasks that span 3+ files or have parallelizable work streams, use Claude Cod
 
 After all agents complete, the team lead runs the full test suite and does a manual read-through of critical-path files before calling it done. Don't trust agent summaries alone — verify the wiring.
 
+## Dependency locking
+
+`<svc>/requirements.txt` holds loose ranges and is the **input**;
+`<svc>/requirements.lock` is the resolved, hash-pinned **output**, and it is what
+`cortex|bridge|sentinel|relay/Dockerfile` installs. Before this, two builds of the same
+commit produced different images — a customer reporting against a git SHA was not
+describing a knowable artifact, and the CVE gate and SBOM described whatever resolved on
+the day they ran. It surfaced as three tests passing on a dev box holding `fastapi` 0.128
+and failing in a clean venv resolving 0.140, both allowed by `fastapi>=0.115,<1`.
+
+Regenerate after editing any `requirements.txt` (CI fails if they drift):
+
+```bash
+uv pip compile <svc>/requirements.txt --python-platform linux --python-version 3.11   --generate-hashes --output-file <svc>/requirements.lock
+```
+
+`--python-platform linux` matters: the lock is generated on whatever machine you are on
+but must install in `python:3.11-slim`. Verified by building all four images and
+importing each service's modules.
+
+Hashes put pip in `--require-hashes` mode implicitly — every requirement must be pinned
+and hashed, and a re-uploaded artifact fails the build rather than installing.
+
+**`client/` and `symdex/` are deliberately NOT locked.** They ship as wheels into a
+user's virtualenv; pinning a library's transitive dependencies forces them on every
+consumer and fights the bootstrap's own resolution. `tests/test_requirements_lock.py`
+asserts they stay unlocked.
+
+Guards in `tests/test_requirements_lock.py`: every direct requirement is present in the
+lock, at a version its specifier allows; the lock is fully hash-pinned; and the
+Dockerfile installs the lock rather than the `.txt`. It deliberately does **not**
+regenerate-and-diff — that fails whenever any upstream publishes, which is not drift.
+
 ## Security
 
 - **`SECURITY.md`** (root) — disclosure policy, SLA targets, in/out-of-scope, supported

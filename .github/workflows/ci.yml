@@ -17,10 +17,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Cortex: fully-mocked suite. requirements.txt brings scikit-learn
-          # (-> joblib) so the full suite incl. test_ranker runs, and also provides
-          # every dep the shared modules (replay/auth/vault/corpus) need — they are
-          # imported via sys.path by cortex/tests/conftest.py.
+          # Cortex: fully-mocked suite. requirements.txt provides every dep the
+          # shared modules (replay/auth/vault/corpus) need — they are imported via
+          # sys.path by cortex/tests/conftest.py.
+          #
+          # This comment used to say requirements.txt "brings scikit-learn (-> joblib)
+          # so the full suite incl. test_ranker runs". Neither is true: scikit-learn is
+          # in no requirements file (checked at HEAD and in history) and test_ranker
+          # does not exist — the recall-ranker was deleted and the comment outlived it.
+          # Found by asserting sklearn imported in the built cortex image; it does not.
           - name: cortex
             install: pip install -r cortex/requirements.txt -r cortex/requirements-dev.txt
             test: pytest cortex/tests -q
@@ -149,58 +154,76 @@ jobs:
   security:
     name: Dependency CVEs + SBOM
     runs-on: ubuntu-latest
-    # Same isolation discipline as the licences job below, and for the same
-    # reason: one shared environment would merge three dependency sets and the
-    # result would describe nothing a customer installs.
-    #
-    # BLOCKING, deliberately. The first run of this over the shipped set found
-    # 7 CVEs in exactly 2 packages -- `pip` itself (the venv's own tooling,
-    # upgraded below so it is not counted against the product) and `pytest`,
-    # which was listed in cortex/requirements.txt and therefore SHIPPED inside
-    # the production image. Both are now out of the shipped set, leaving zero.
-    # An advisory-only scanner over a clean tree is a scanner nobody reads; a
-    # blocking one starting from zero stays meaningful.
-    #
-    # When this does fail, it is telling you a customer is running a known-
-    # vulnerable package. Fix or pin -- do not add --ignore-vuln without
-    # writing down, here, why the CVE cannot affect this product.
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Audit cortex (+ bridge/relay/sentinel superset) dependencies
+      - run: pip install --upgrade pip pip-audit
+
+      - name: Audit the four service LOCKS — what actually ships
+        # `-r <lock>`, not "install into a venv then audit the venv". The venv
+        # approach also audits pip-audit's OWN dependencies, so an unrelated CVE
+        # in a CI tool would fail the product's gate. Auditing the file audits
+        # exactly the pinned set the images install and nothing else.
+        #
+        # The locks, not requirements.txt: a fresh resolve tells you "the set
+        # resolvable today is clean", which is not the question — the Dockerfiles
+        # install requirements.lock. Each service has its own (bridge 74
+        # packages, cortex 110), so each is audited separately.
+        #
+        # BLOCKING (--strict), deliberately. Verified green against all four
+        # locks inside python:3.11-slim before this job was written. A gate that
+        # starts red is one people learn to skip; starting from zero it stays
+        # meaningful. When it fails it is telling you a customer is running a
+        # known-vulnerable package — fix or pin, and if you ever add
+        # --ignore-vuln, write the reason here.
         run: |
-          python -m venv /tmp/audit-cortex
-          /tmp/audit-cortex/bin/pip install -q --upgrade pip
-          /tmp/audit-cortex/bin/pip install -q pip-audit
-          /tmp/audit-cortex/bin/pip install -q -r cortex/requirements.txt
-          /tmp/audit-cortex/bin/pip-audit --progress-spinner off --strict
-      - name: Audit client (firekeep-client wheel) dependencies
+          for svc in cortex bridge sentinel relay; do
+            echo "::group::$svc"
+            pip-audit --progress-spinner off --strict -r "$svc/requirements.lock"
+            echo "::endgroup::"
+          done
+
+      - name: Audit the two shipped wheels
+        # client/ and symdex/ are libraries installed into a user's venv, so they
+        # are deliberately NOT locked (pinning a library's transitive deps fights
+        # the bootstrap's own resolution). They still need auditing, which means
+        # resolving them — accepted, because for a wheel "what resolves" IS what
+        # the user gets.
         run: |
-          python -m venv /tmp/audit-client
-          /tmp/audit-client/bin/pip install -q --upgrade pip
-          /tmp/audit-client/bin/pip install -q pip-audit
-          /tmp/audit-client/bin/pip install -q ./client
-          /tmp/audit-client/bin/pip-audit --progress-spinner off --strict
-      - name: Audit symdex (firekeep-symdex wheel) dependencies
-        run: |
-          python -m venv /tmp/audit-symdex
-          /tmp/audit-symdex/bin/pip install -q --upgrade pip
-          /tmp/audit-symdex/bin/pip install -q pip-audit
-          /tmp/audit-symdex/bin/pip install -q ./symdex
-          /tmp/audit-symdex/bin/pip-audit --progress-spinner off --strict
+          for pkg in client symdex; do
+            echo "::group::$pkg"
+            python -m venv "/tmp/audit-$pkg"
+            "/tmp/audit-$pkg/bin/pip" install -q --upgrade pip
+            "/tmp/audit-$pkg/bin/pip" install -q "./$pkg"
+            "/tmp/audit-$pkg/bin/pip" install -q pip-audit
+            "/tmp/audit-$pkg/bin/pip-audit" --progress-spinner off --strict
+            echo "::endgroup::"
+          done
+
       - name: Generate CycloneDX SBOMs
-        # One per shipped artifact. Uploaded as a build artifact rather than
-        # committed: an SBOM is only true for the resolution that produced it,
-        # and a stale committed one is worse than none.
+        # An SBOM is only true for the resolution that produced it. For the four
+        # services that resolution is the lock, so these are reproducible; for
+        # the two wheels it is a point-in-time resolve. Uploaded rather than
+        # committed either way — a stale committed SBOM is worse than none.
         run: |
           mkdir -p sbom
-          for s in cortex client symdex; do
-            /tmp/audit-$s/bin/pip-audit --progress-spinner off \
-              --format cyclonedx-json --output "sbom/firekeep-$s.cdx.json" || true
+          for svc in cortex bridge sentinel relay; do
+            pip-audit --progress-spinner off -r "$svc/requirements.lock"               --format cyclonedx-json --output "sbom/firekeep-$svc.cdx.json"
+          done
+          for pkg in client symdex; do
+            "/tmp/audit-$pkg/bin/pip-audit" --progress-spinner off               --format cyclonedx-json --output "sbom/firekeep-$pkg.cdx.json"
           done
           ls -la sbom/
+          # Fail rather than upload an empty bill of materials.
+          for f in sbom/*.cdx.json; do
+            [ -s "$f" ] || { echo "::error::$f is empty"; exit 1; }
+          done
+
       - uses: actions/upload-artifact@v4
         with:
           name: sbom

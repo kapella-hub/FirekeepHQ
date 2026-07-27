@@ -8,8 +8,22 @@ RUN groupadd --gid 1000 appuser && \
 
 WORKDIR /app
 
-COPY cortex/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Dependencies come from the LOCK, not requirements.txt. The .txt file holds
+# loose ranges (`fastapi>=0.115,<1`) and is the INPUT to resolution; the .lock is
+# the resolved, hash-pinned output and is what gets installed. Without this, two
+# builds of the same commit produce different images -- a customer reporting a
+# bug against a git SHA would not be describing a knowable artifact. It also
+# makes the CI CVE gate and the SBOM mean something: both now describe what
+# ships rather than whatever resolves on the day they run.
+#
+# Hashes make pip enter --require-hashes mode implicitly: every requirement must
+# be pinned with == and carry a hash, and a tampered or re-uploaded artifact
+# fails the build loudly instead of installing.
+#
+# Regenerate after editing requirements.txt (CI fails if they drift):
+#   uv pip compile <svc>/requirements.txt --python-platform linux #     --python-version 3.11 --generate-hashes --output-file <svc>/requirements.lock
+COPY cortex/requirements.txt cortex/requirements.lock ./
+RUN pip install --no-cache-dir -r requirements.lock
 
 # Service code
 COPY cortex/app/ ./app/
