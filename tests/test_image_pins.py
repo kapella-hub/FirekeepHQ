@@ -348,18 +348,6 @@ def pinned_datastore_versions(refs) -> set[str]:
     return out
 
 
-def documented_pin_mismatches(
-    root: Path, documented: set[str], doc_text: str
-) -> tuple[set[str], set[str]]:
-    """(documented but no longer pinned, documented but not named in the doc).
-
-    The `DOCUMENTED_DATASTORE_PINS` half of the check, over a tree root. The
-    doc-text half is a substring test on purpose: it asks only whether the
-    version is *named somewhere* in the prose, which the summary-table parse
-    (`documented_datastore_versions`) then tightens to "named in the table".
-    """
-    pinned = pinned_datastore_versions(all_refs(root))
-    return documented - pinned, {p for p in documented if p not in doc_text}
 
 
 def _report(refs) -> str:
@@ -550,6 +538,39 @@ def _write(root: Path, rel: str, text: str) -> None:
     path = root / rel
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+
+
+def test_plant_discovery_gap_is_caught(tmp_path):
+    """The floor assertion needs a plant like everything else.
+
+    `test_discovery_covers_every_file_that_must_be_covered` is the guard's own
+    floor: if discovery stops reaching a file, every other assertion here keeps
+    passing while watching less. That makes it the one assertion whose silent
+    failure is invisible — so it is the last one that should go unplanted.
+
+    A tree containing only SOME of CRITICAL_FILES must be reported as a gap.
+    """
+    _write(
+        tmp_path,
+        "docker-compose.yml",
+        "\n".join(["services:", "  a:", "    image: x@sha256:" + "a" * 64, ""]),
+    )
+    found = {_rel(pp, tmp_path) for pp in find_compose_files(tmp_path) + find_dockerfiles(tmp_path)}
+    missing = CRITICAL_FILES - found
+    assert missing, "a tree missing every Dockerfile was not reported as a discovery gap"
+    assert "docker/Dockerfile.redis" in missing
+
+
+def test_plant_discovery_gap_check_is_not_vacuous(tmp_path):
+    """...and the same computation returns EMPTY for the real tree.
+
+    Without this, the assertion above would also pass if CRITICAL_FILES were
+    emptied — `set() - found` is falsy, and a guard whose floor is the empty set
+    guards nothing.
+    """
+    assert CRITICAL_FILES, "CRITICAL_FILES is empty — the floor assertion is vacuous"
+    found = {_rel(pp, REPO) for pp in find_compose_files(REPO) + find_dockerfiles(REPO)}
+    assert not (CRITICAL_FILES - found)
 
 
 def test_plant_compose_image_without_a_digest_is_caught(tmp_path):

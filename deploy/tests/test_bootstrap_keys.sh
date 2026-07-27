@@ -11,7 +11,11 @@ command -v "$PYTHON_BIN" > /dev/null || PYTHON_BIN=python
 
 CONTAINER=firekeep-bootstrap-test
 docker rm -f "$CONTAINER" > /dev/null 2>&1 || true
-docker run -d --name "$CONTAINER" -p 127.0.0.1:16379:6379 redis:7-alpine > /dev/null
+# Pinned to the same reference docker-compose.test.yml uses. NOTE:
+# tests/test_image_pins.py does NOT discover this file (it scans compose
+# files and Dockerfiles), so this line has no automated guard — it was the
+# last live floating tag left in the repo after the pinning pass.
+docker run -d --name "$CONTAINER" -p 127.0.0.1:16379:6379 redis:7.4.10-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2 > /dev/null
 trap 'docker rm -f "$CONTAINER" > /dev/null 2>&1' EXIT
 until docker exec "$CONTAINER" redis-cli ping 2>/dev/null | grep -q PONG; do sleep 0.5; done
 

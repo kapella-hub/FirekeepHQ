@@ -1,7 +1,7 @@
 # Base image pinned by tag AND digest. `3.11-slim` is a FLOATING tag: it moved
 # to 3.11.15 with no commit here, so two builds of the same git SHA were two
-# different images — the same reproducibility hole requirements.lock closes for
-# Python packages, one layer further down. The digest is what makes it
+# different images — the same reproducibility hole `requirements.lock` closes
+# for Python packages, which this file now installs (below). The digest is what makes it
 # immutable; the tag is what lets a human read this line and know what they are
 # running. Both, never a bare digest.
 #
@@ -31,8 +31,18 @@ RUN groupadd --gid 1000 appuser && \
 
 WORKDIR /app
 
-COPY cortex/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# This is the SECOND cortex Dockerfile — cortex/Dockerfile is the compose build,
+# this one is the CI build (see CLAUDE.md). It installed requirements.txt while
+# its sibling installed requirements.lock, so the CI-built cortex image was
+# unpinned at the Python layer while its base image was pinned. Two images from
+# one commit, differing by whichever versions resolved that day.
+#
+# tests/test_requirements_lock.py missed it: the check iterated
+# <svc>/Dockerfile and this file is at the repo root, so "cortex installs the
+# lock" was true of a path that is not the only cortex build. That gap is now
+# closed in the test as well.
+COPY cortex/requirements.txt cortex/requirements.lock ./
+RUN pip install --no-cache-dir -r requirements.lock
 
 # Service code
 COPY cortex/app/ ./app/

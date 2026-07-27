@@ -137,17 +137,26 @@ def test_lock_is_fully_hash_pinned(service: str) -> None:
     )
 
 
-@pytest.mark.parametrize("service", SERVICES)
-def test_dockerfile_installs_the_lock_not_the_txt(service: str) -> None:
+# (service, Dockerfile path). The repo-root Dockerfile is a SECOND cortex build —
+# cortex/Dockerfile is the compose one, the root one is CI's. Parameterising by
+# service name alone checked `<svc>/Dockerfile` and silently exempted the root
+# file, so "cortex installs the lock" was true of one of the two cortex images
+# and the other shipped an unpinned Python layer.
+DOCKERFILES = tuple((s, f"{s}/Dockerfile") for s in SERVICES) + (("cortex", "Dockerfile"),)
+
+
+@pytest.mark.parametrize("service,dockerfile", DOCKERFILES,
+                         ids=[d for _, d in DOCKERFILES])
+def test_dockerfile_installs_the_lock_not_the_txt(service: str, dockerfile: str) -> None:
     """The lock is inert unless the image actually installs it."""
-    text = (REPO / service / "Dockerfile").read_text(encoding="utf-8")
+    text = (REPO / dockerfile).read_text(encoding="utf-8")
     code = "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
     assert "-r requirements.lock" in code, (
-        f"{service}/Dockerfile does not install requirements.lock — the lock exists "
+        f"{dockerfile} does not install requirements.lock — the lock exists "
         f"but the image is still resolved at build time"
     )
     assert "-r requirements.txt" not in code, (
-        f"{service}/Dockerfile still installs requirements.txt; that reintroduces "
+        f"{dockerfile} still installs requirements.txt; that reintroduces "
         f"build-time resolution alongside the lock"
     )
 
