@@ -23,6 +23,7 @@ from fastapi.testclient import TestClient
 import app.main as main_mod
 
 
+
 def _mount(monkeypatch, *, auth_enabled: bool) -> TestClient:
     """Run the production stanza with AuthSettings pinned either way.
 
@@ -83,11 +84,21 @@ class TestDisabledRefusesLegibly:
         assert "AUTH_ENABLED" in detail
         assert "key" in detail.lower()
 
-    def test_real_routers_are_absent_from_the_route_table(self, client):
-        """Not merely shadowed — the real handlers were never mounted."""
-        paths = {r.path for r in client.app.routes}
-        assert "/vault/secrets/{key}" not in paths
-        assert "/auth/keys/{key_id}" not in paths
+    def test_real_handlers_never_run(self, client):
+        """Not merely shadowed — the real handlers are not reachable.
+
+        Asserted by BEHAVIOUR, not by reading app.routes. The route table is a
+        private FastAPI structure whose shape changes between versions: 0.128
+        flattens included routers, 0.140 wraps them in `_IncludedRouter` objects
+        with no `.path` and no `.routes`. The pin `fastapi>=0.115,<1` spans both,
+        so a structural assertion passes on a dev box and fails in CI. A request
+        answers the actual question — is the real handler serving? — and cannot
+        drift with an internal refactor.
+        """
+        # A path parameter the real router defines and the stand-in matches only
+        # via its catch-all: 503 proves the stand-in answered, not the handler.
+        assert client.get("/vault/secrets/some-key").status_code == 503
+        assert client.delete("/auth/keys/some-id").status_code == 503
 
 
 class TestEnabledStillServes:
@@ -98,9 +109,16 @@ class TestEnabledStillServes:
         return _mount(monkeypatch, auth_enabled=True)
 
     def test_real_routers_are_mounted(self, client):
-        paths = {r.path for r in client.app.routes}
-        assert "/vault/secrets/{key}" in paths
-        assert "/auth/keys/{key_id}" in paths
+        """With auth ON the real routers serve, so nothing answers 503.
+
+        The gate still refuses an unkeyed caller — 401 from the middleware or
+        403 from require_scope — and either proves the real handler is mounted.
+        503 is the one answer that would mean the stand-in took over.
+        """
+        for resp in (client.get("/vault/secrets/some-key"),
+                     client.delete("/auth/keys/some-id")):
+            assert resp.status_code != 503, (resp.status_code, resp.text)
+            assert resp.status_code in (401, 403, 404, 422), resp.status_code
 
     def test_requests_reach_require_scope_not_a_503_stand_in(self, client, monkeypatch):
         """With enforcement on and no key presented that is a 401 — proving the
@@ -168,7 +186,10 @@ class TestAuthOnRouterFailureIsLegible:
         The stand-in exists so the failure is legible, not so the process dies:
         memory, sessions and coordination are unaffected by a broken vault.
         """
-        app = client.app
-        paths = {r.path for r in app.routes}
-        assert any(p.startswith("/vault") for p in paths), paths
-        assert any(p.startswith("/auth") for p in paths), paths
+        # Both surfaces answer the legible 503 rather than a bare 404 or a dead
+        # process — checked by request, for the version-portability reason in
+        # test_real_handlers_never_run above.
+        for path in ("/vault/secrets", "/vault/secrets/k", "/auth/keys"):
+            resp = client.get(path)
+            assert resp.status_code == 503, (path, resp.status_code)
+            assert "failed to start" in resp.json()["detail"], path
