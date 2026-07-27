@@ -251,9 +251,34 @@ def split_ref(raw: str) -> tuple[str, str | None, str | None]:
     return raw, tag, digest
 
 
+# Images this repo BUILDS AND PUBLISHES itself. They are exempt from the
+# digest requirement, and the distinction is not a loophole — it is the whole
+# reason the rule exists.
+#
+# A third-party tag can move under us: `redis:7-alpine` silently crossed a
+# LICENCE boundary from BSD to RSALv2/SSPL with no commit here, which is what
+# the pinning pass was for. A first-party tag cannot: it names an image built
+# from this commit by our own release workflow, and its digest does not exist
+# when the compose file is written. Demanding one is not "stricter", it is
+# impossible.
+#
+# The compensating control is real, not a promise: `image:` resolves
+# `${IMAGE_TAG}`, and a digest-bearing ref is valid there — a customer who wants
+# immutability sets IMAGE_TAG to `v1.2.3@sha256:...`, and server-release.yml
+# prints each pushed digest into the job summary so there is something to copy.
+FIRST_PARTY_PREFIX = "ghcr.io/kapella-hub/firekeep-"
+
+
+def _is_first_party(ref: str) -> bool:
+    return ref.startswith(FIRST_PARTY_PREFIX)
+
+
 def unpinned(refs) -> list[Ref]:
-    """References carrying no digest at all."""
-    return [r for r in refs if split_ref(r.raw)[2] is None]
+    """Third-party references carrying no digest at all."""
+    return [
+        r for r in refs
+        if split_ref(r.raw)[2] is None and not _is_first_party(r.raw)
+    ]
 
 
 def malformed_digests(refs) -> list[Ref]:
@@ -827,3 +852,32 @@ def test_venv_dockerfiles_are_not_discovered(tmp_path):
 )
 def test_split_ref(raw, expected):
     assert split_ref(raw) == expected
+
+
+def test_the_first_party_exemption_is_narrow():
+    """The exemption must not become a way to skip pinning anything else.
+
+    It keys off our own registry path. A third-party image cannot acquire it,
+    and if someone ever publishes under a different path the exemption stops
+    applying to them rather than silently widening.
+    """
+    for bad in ("redis:7-alpine", "ghcr.io/someone-else/firekeep-cortex:v1",
+                "docker.io/kapella-hub/firekeep-cortex:v1",
+                "ghcr.io/kapella-hub/other-thing:v1"):
+        assert not _is_first_party(bad), f"exemption wrongly covers {bad}"
+    assert _is_first_party("ghcr.io/kapella-hub/firekeep-cortex:${IMAGE_TAG:-dev}")
+
+
+def test_first_party_images_are_actually_present():
+    """...and the exemption is not covering an empty set.
+
+    If the published images were removed from compose, `unpinned` would return
+    nothing for them and every pinning assertion would pass while the product
+    had no distribution path at all.
+    """
+    refs = [r.raw for r in compose_image_refs(REPO)]
+    first_party = [r for r in refs if _is_first_party(r)]
+    assert len(first_party) >= 7, (
+        f"expected the 7 built services to name published images, found "
+        f"{len(first_party)} — see tests/test_server_release.py"
+    )
