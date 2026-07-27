@@ -62,8 +62,13 @@ jobs:
           # compose-provenance checks parse docker-compose.yml); bash comes with
           # the runner and test_install_health_probe.py needs a real one.
           - name: repo-scripts
-            install: pip install pytest pyyaml
-            test: pytest tests -q
+            install: pip install pytest pyyaml packaging
+            # `python -m pytest`, NOT `pytest`. The console script does not put the
+            # CWD on sys.path; `python -m` does. tests/test_provenance.py imports
+            # the repo-root `provenance` package, so the two invocations differ —
+            # and I only ever ran the `python -m` form locally, which is exactly
+            # how a job can be red for eight commits while local is green.
+            test: python -m pytest tests -q
           # deploy/tests/test_auth_posture.sh drives install.sh's and
           # deploy/lib.sh's summary/warning logic in a sandbox — no Docker, no
           # network, no containers. It is the only thing that checks the text an
@@ -200,6 +205,14 @@ jobs:
             python -m venv "/tmp/audit-$pkg"
             "/tmp/audit-$pkg/bin/pip" install -q --upgrade pip
             "/tmp/audit-$pkg/bin/pip" install -q "./$pkg"
+            # Remove the FIRST-PARTY distribution before auditing. pip-audit
+            # --strict fails on any package it cannot resolve on PyPI, and
+            # firekeep-client / firekeep-symdex are ours and have never been
+            # published there — so --strict turned "this is our own code" into a
+            # build failure. Uninstalling leaves exactly the third-party
+            # dependency tree, which is the thing worth auditing, and keeps
+            # --strict meaningful for everything else.
+            "/tmp/audit-$pkg/bin/pip" uninstall -y -q "firekeep-$pkg"
             "/tmp/audit-$pkg/bin/pip" install -q pip-audit
             "/tmp/audit-$pkg/bin/pip-audit" --progress-spinner off --strict
             echo "::endgroup::"

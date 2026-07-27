@@ -116,13 +116,23 @@ def _migrate_legacy(home: Path) -> None:
             cli_json.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
     except Exception:  # noqa: BLE001 — total backstop, same contract as the mcp.json block
         pass
-    for legacy in (home / ".kiro" / "agents" / "firekeep.json",
-                   home / ".kiro" / "firekeep.env"):
-        try:
-            if legacy.exists():
-                legacy.replace(legacy.with_name(legacy.name + ".bak"))
-        except OSError:
-            pass
+    # NO LEGACY-ARTIFACT ARCHIVING HERE. This loop used to move
+    # ~/.kiro/agents/firekeep.json and ~/.kiro/firekeep.env aside to .bak.
+    #
+    # In the predecessor product those were two DISTINCT paths under
+    # ~/.kiro/agents/: the kit wrote its own agent file under a SHORT product
+    # name, and the pre-kit manual-setup artifact it cleaned up used the LONGER
+    # full product name. The rename mapped both of those onto `firekeep`,
+    # collapsing them into one path — so render() archived ITS OWN OUTPUT. Every
+    # `firekeep install --runtime kiro` moved the user's live config, including
+    # any MCP servers and hooks they had added themselves, to .bak and wrote a
+    # fresh file. That is precisely the clobbering this module's docstring
+    # promises not to do.
+    #
+    # Removed rather than re-pointed at some other name: the artifacts it
+    # cleaned up belonged to a product Firekeep customers never ran, so there is
+    # nothing here to migrate. Two tests asserted opposite things about this
+    # path after the rename, which is what surfaced it.
 
 
 class KiroAdapter(Adapter):

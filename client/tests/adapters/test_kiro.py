@@ -150,21 +150,20 @@ def test_render_tolerates_missing_and_malformed_legacy_mcp_json(fake_home, tmp_p
     assert p.read_text(encoding="utf-8") == "{not json"
 
 
-def test_render_survives_non_object_top_level_mcp_json_and_still_archives(fake_home, tmp_path):
-    # Syntactically-valid JSON whose top level is NOT an object: json.loads succeeds, so
-    # the (OSError, ValueError) net alone doesn't cover it — `data.get(...)` on a list
-    # raises AttributeError. The mcp.json step must skip (file byte-identical) WITHOUT
-    # aborting the rest of the migration: the archival step must still run in the SAME
-    # render() call (both fixtures seeded here to prove archival isn't aborted).
+def test_render_survives_non_object_top_level_mcp_json(fake_home, tmp_path):
+    # The malformed-mcp.json step must skip (file byte-identical) WITHOUT aborting
+    # the rest of render(). This previously also asserted that the legacy-archival
+    # step still ran in the same call; that step is gone — it archived the kit's own
+    # agent file, discarding the user's live config (see
+    # test_render_does_not_archive_its_own_agent_file). What survives, and is what
+    # actually mattered, is that a legacy artifact cannot fail an install: render()
+    # completes and still writes its own output.
     p = _legacy_mcp_json(fake_home, "[]")
-    agent = fake_home / ".kiro" / "agents" / "firekeep.json"
-    agent.parent.mkdir(parents=True, exist_ok=True)
-    agent.write_text('{"name": "firekeep"}', encoding="utf-8")
     get_adapter("kiro").render(venv_bin=tmp_path / "vbin")
     assert p.read_text(encoding="utf-8") == "[]"
-    assert not agent.exists()
-    assert (agent.parent / "firekeep.json.bak").exists()
-
+    agent = fake_home / ".kiro" / "agents" / "firekeep.json"
+    assert agent.exists(), "render() aborted before writing its own agent file"
+    assert "firekeep-cortex" in _read(agent)["mcpServers"]
 
 def test_render_survives_non_dict_mcpservers_value(fake_home, tmp_path):
     # Object top level but mcpServers itself is a list: iterating yields the legacy name,
@@ -176,39 +175,52 @@ def test_render_survives_non_dict_mcpservers_value(fake_home, tmp_path):
     assert p.read_text(encoding="utf-8") == payload
 
 
-def test_render_survives_pathologically_deep_mcp_json_and_still_archives(fake_home, tmp_path):
-    # Deep-nested JSON blows the recursion limit INSIDE json.loads: RecursionError is a
-    # RuntimeError subclass, outside any enumerated (OSError, ValueError, TypeError,
-    # AttributeError) tuple — proof the backstop must be a total `except Exception`, not
-    # an enumeration. Render must succeed, the file stays byte-identical, and the
-    # archival step must still run in the same call.
-    # Depth 100_000: the C scanner's recursion guard trips at ~10_000 on this CPython
-    # (3.12, default limits) — 3_000 parses fine and would pin nothing; 100_000 gives
-    # margin across interpreter versions/platform stack sizes while staying a 200KB file.
+def test_render_survives_pathologically_deep_mcp_json(fake_home, tmp_path):
+    # The malformed-mcp.json step must skip (file byte-identical) WITHOUT aborting
+    # the rest of render(). This previously also asserted that the legacy-archival
+    # step still ran in the same call; that step is gone — it archived the kit's own
+    # agent file, discarding the user's live config (see
+    # test_render_does_not_archive_its_own_agent_file). What survives, and is what
+    # actually mattered, is that a legacy artifact cannot fail an install: render()
+    # completes and still writes its own output.
     payload = "[" * 100_000 + "]" * 100_000
     p = _legacy_mcp_json(fake_home, payload)
-    agent = fake_home / ".kiro" / "agents" / "firekeep.json"
-    agent.parent.mkdir(parents=True, exist_ok=True)
-    agent.write_text('{"name": "firekeep"}', encoding="utf-8")
     get_adapter("kiro").render(venv_bin=tmp_path / "vbin")
     assert p.read_text(encoding="utf-8") == payload
-    assert not agent.exists()
-    assert (agent.parent / "firekeep.json.bak").exists()
+    agent = fake_home / ".kiro" / "agents" / "firekeep.json"
+    assert agent.exists(), "render() aborted before writing its own agent file"
+    assert "firekeep-cortex" in _read(agent)["mcpServers"]
 
+def test_render_does_not_archive_its_own_agent_file(fake_home, tmp_path):
+    """render() must never move ~/.kiro/agents/firekeep.json aside.
 
-def test_render_archives_legacy_firekeep_agent_and_env(fake_home, tmp_path):
+    This test asserted the OPPOSITE — that the file was archived to .bak — and
+    it passed, because the adapter really did that. It was wrong, and it
+    contradicted test_kiro_non_clobbering above, which asserts foreign entries in
+    that same file survive a render. Both cannot hold.
+
+    The cause was the rename. In the predecessor the kit's agent file and the
+    pre-kit artifact it archived were two distinct names under `agents/` — one
+    the short product name, one the longer full one. Mapping both onto
+    `firekeep` collapsed them, so the adapter archived its own output and every
+    `firekeep install --runtime kiro` silently discarded the user's live kiro
+    config into a .bak nobody reads.
+    """
     agent = fake_home / ".kiro" / "agents" / "firekeep.json"
     agent.parent.mkdir(parents=True, exist_ok=True)
-    agent.write_text('{"name": "firekeep"}', encoding="utf-8")
-    env = fake_home / ".kiro" / "firekeep.env"
-    env.write_text("FIREKEEP_AGENT_ID=old", encoding="utf-8")
+    agent.write_text(json.dumps({"mcpServers": {"mine": {"command": "keepme"}}}), encoding="utf-8")
+
     get_adapter("kiro").render(venv_bin=tmp_path / "vbin")
-    assert not agent.exists()
-    assert (agent.parent / "firekeep.json.bak").read_text(encoding="utf-8") == '{"name": "firekeep"}'
-    assert not env.exists()
-    assert (fake_home / ".kiro" / "firekeep.env.bak").exists()
-    # idempotent: second render with nothing left to migrate must not raise
+
+    assert agent.exists(), "render archived its own agent file"
+    assert not (agent.parent / "firekeep.json.bak").exists(), "a .bak was created"
+    data = _read(agent)
+    assert data["mcpServers"]["mine"] == {"command": "keepme"}, "user's own entry lost"
+    assert "firekeep-cortex" in data["mcpServers"], "kit entries not merged in"
+
+    # idempotent: a second render must not raise and must still preserve it
     get_adapter("kiro").render(venv_bin=tmp_path / "vbin")
+    assert _read(agent)["mcpServers"]["mine"] == {"command": "keepme"}
 
 
 def test_render_migrates_default_agent_off_the_archived_firekeep(fake_home, tmp_path):
