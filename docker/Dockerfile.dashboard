@@ -1,5 +1,12 @@
 ARG REGISTRY=docker.io/library
-FROM ${REGISTRY}/nginx:alpine
+# Pinned by tag AND digest. `alpine` FLOATS: it tracks nginx mainline, and had
+# reached 1.31.3 with no commit here. The digest is what makes it immutable, the
+# tag is what makes the line readable — a bare digest is unreviewable. It is the
+# multi-arch MANIFEST LIST digest (top-level "Digest:" from
+# `docker buildx imagetools inspect nginx:<tag>`), not a per-platform one, so
+# non-amd64 builds still resolve. ${REGISTRY} is kept: a content-addressed
+# digest resolves identically through a pull-through mirror.
+FROM ${REGISTRY}/nginx:1.31.3-alpine@sha256:4a73073bd557c65b759505da037898b61f1be6cbcc3c2c3aeac22d2a470c1752
 COPY dashboard/index.html /usr/share/nginx/html/index.html
 # Rendered by the stock nginx entrypoint (envsubst on /etc/nginx/templates/*),
 # substituting DASHBOARD_API_KEY into the /api/ proxy headers at start. Note:

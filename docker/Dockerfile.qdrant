@@ -7,13 +7,20 @@
 # becomes a redistributor of the bundled software, and its licence obligations
 # attach to us rather than passing through.
 #
-# Qdrant is Apache-2.0, so redistribution here is permissive -- the
-# obligation is attribution, which NOTICE covers. This header exists for
-# consistency with its siblings and because the conveyance distinction
-# above applies to every bundled component, not only the copyleft one.
+# Qdrant is Apache-2.0 (confirmed from qdrant/qdrant LICENSE at tag v1.13.2 --
+# upstream, the exact version pinned below; the image bundles no licence file,
+# only an org.opencontainers.image.source label pointing at that repo). So
+# redistribution here is permissive -- the obligation is attribution, which
+# NOTICE covers. This header exists for consistency with its siblings and
+# because the conveyance distinction above applies to every bundled component,
+# not only the copyleft one.
 #
 # Do not wire this into a release pipeline without reading
 # docs/THIRD-PARTY-DATASTORES.md and getting a legal read. Shipping an
 # appliance, OVA or all-in-one installer has the same effect.
 # ---------------------------------------------------------------------------
-FROM qdrant/qdrant:v1.13.2
+# Pinned by tag AND digest (the multi-arch manifest list). The tag was already
+# concrete, so this changes no version — it adds immutability: a tag can be
+# re-pushed to different content, a digest cannot. No ${REGISTRY} indirection
+# here, matching this file's siblings and the direct pull in docker-compose.yml.
+FROM qdrant/qdrant:v1.13.2@sha256:81bdf0a9deedbeec68eed207145ade0b9d5db15e2f84069180711aa9698445b1

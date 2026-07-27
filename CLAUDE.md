@@ -605,7 +605,8 @@ uv pip compile <svc>/requirements.txt --python-platform linux --python-version 3
 ```
 
 `--python-platform linux` matters: the lock is generated on whatever machine you are on
-but must install in `python:3.11-slim`. Verified by building all four images and
+but must install in the pinned `python:3.11.15-slim` base (see "Image pinning" below —
+a base bump is also a lock-compatibility question). Verified by building all four images and
 importing each service's modules.
 
 Hashes put pip in `--require-hashes` mode implicitly — every requirement must be pinned
@@ -620,6 +621,72 @@ Guards in `tests/test_requirements_lock.py`: every direct requirement is present
 lock, at a version its specifier allows; the lock is fully hash-pinned; and the
 Dockerfile installs the lock rather than the `.txt`. It deliberately does **not**
 regenerate-and-diff — that fails whenever any upstream publishes, which is not drift.
+
+## Image pinning
+
+The same job as dependency locking, one layer down: the images those locks install
+*into*. Every `image:` in a compose file and every `FROM` in a Dockerfile is pinned by
+**tag and digest**:
+
+```yaml
+image: redis:7.4.10-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2
+```
+
+The digest is what makes it immutable; the tag is what lets a human read the line and
+know what it is. **Both, never a bare digest** — `redis@sha256:e7723ff7…` is equally
+immutable and tells nobody it is 7.4.10, which is the difference between RSALv2/SSPLv1
+and the old BSD terms.
+
+Floating tags cost three things, in descending order of how much they matter for
+software being sold. First, **the licence of what ships can change with no commit** —
+`redis:7-alpine` is the proven case, not a hypothetical: Redis relicensed at 7.4 and
+that tag carried Firekeep across the boundary on its own schedule, unnoticed. Second,
+**one-way data migrations** — `neo4j:5-community` floats across 5.x minors and Neo4j
+store-format upgrades are irreversible, so a customer's `docker compose pull` could
+upgrade their database into a state they cannot roll back. Third, reproducibility.
+
+### Updating a pin
+
+```bash
+docker buildx imagetools inspect redis:7.5.0-alpine
+```
+
+1. **Take the TOP-LEVEL `Digest:`** — the manifest list (OCI image index), not any of
+   the per-platform digests listed underneath it under `Manifests:`. This is the single
+   most likely way to get this wrong, and it fails on somebody else's machine, not
+   yours: a platform manifest pins one architecture and breaks every other. Verify by
+   re-inspecting what you pinned — `docker buildx imagetools inspect <ref>@<digest>`
+   must report `application/vnd.oci.image.index.v1+json` (or the Docker
+   `manifest.list.v2+json`) and list more than one platform. A single-platform
+   manifest means you captured the wrong one.
+2. **Where the tag floats on a major/minor** (`redis:7-alpine`, `nginx:alpine`,
+   `ollama/ollama:latest`), first resolve what concrete version it *is* — inspect the
+   candidate concrete tag and confirm its index digest matches the floating tag's, then
+   pin the concrete one. Ask the artifact, not your memory: a plausible-but-wrong
+   digest is worse than an obviously-wrong one.
+3. **Update the tag and the digest together.** A bumped digest under a stale tag is a
+   line that lies about what it runs.
+4. **Re-check the licence row.** For a datastore, the licence is stated per exact
+   version in `docs/THIRD-PARTY-DATASTORES.md`; a version bump can move it across a
+   licence boundary (Redis 7.2→7.4 did exactly that). The pin is what keeps that file
+   true between reviews — bumping one without revisiting the row is how the analysis
+   goes stale, and it is the one thing pinning cannot protect you from.
+5. **Rebuild and run the guard:** `pytest tests/test_image_pins.py` (CI job
+   `repo-scripts`).
+
+Constraints the guard enforces beyond "has a digest": all five Python bases
+(root, cortex, bridge, sentinel, relay — `python:3.11.15-slim` today) share one digest
+and one tag, and that tag stays on the 3.11 line the locks are compiled for
+(`uv pip compile --python-version 3.11`); the two compose
+`ollama/ollama` services share one digest (`ollama-pull` populates the model store the
+`ollama` service reads); any tag appearing in more than one file resolves to the same
+digest; and the datastore versions named in `docs/THIRD-PARTY-DATASTORES.md`'s summary
+table are the versions actually pinned.
+
+`${REGISTRY}` prefixes are deliberately kept in the Dockerfiles. A digest is
+content-addressed, so a pull-through mirror serves the identical manifest; a mirror that
+**re-pushes** rather than proxies may not carry the digest at all, which fails loudly at
+build time — the right outcome, and the reason not to hard-code `docker.io` there.
 
 ## Security
 

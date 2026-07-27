@@ -12,7 +12,17 @@ services:
   # TLS front — the single network-reachable surface
   # ============================================================
   caddy:
-    image: caddy:2-alpine
+    # 2.11.4 — the version the old floating `2-alpine` tag resolved to on
+    # 2026-07-26. Licence: Apache-2.0, read from the image's own
+    # org.opencontainers.image.licenses label.
+    #
+    # Pinned for the same reason as every image in docker-compose.yml: this is
+    # a PULLED image, so without a digest the office host fetches whatever the
+    # tag points at on the day it deploys. It carries extra weight here — Caddy
+    # is the single network-reachable surface of the office deployment and it
+    # terminates TLS with the internal CA, so an unreviewed change to it is an
+    # unreviewed change to the security boundary.
+    image: caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
     restart: unless-stopped
     ports:
       - "0.0.0.0:443:443"

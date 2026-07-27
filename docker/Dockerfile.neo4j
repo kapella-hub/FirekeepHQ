@@ -1,14 +1,14 @@
 # ---------------------------------------------------------------------------
 # NOT BUILT OR PUBLISHED BY ANY PIPELINE TODAY. Read this before changing that.
 #
-# docker-compose.yml pulls neo4j:5-community directly, so the CUSTOMER obtains it
+# docker-compose.yml pulls the neo4j image directly, so the CUSTOMER obtains it
 # from its upstream registry and Firekeep never redistributes it. Building this
 # Dockerfile and publishing the result to any registry reverses that: Firekeep
 # becomes a redistributor of the bundled software, and its licence obligations
 # attach to us rather than passing through.
 #
-# Neo4j Community Edition is **GPLv3** (confirmed from the image's own
-# bundled NOTICE.txt; pinned tag currently resolves to 5.26.28). Publishing
+# Neo4j Community Edition is **GPLv3** (confirmed from the bundled
+# LICENSE.txt/NOTICE.txt inside the exact image pinned below, 5.26.28). Publishing
 # an image containing it triggers GPLv3's redistribution terms in full --
 # corresponding source offer, licence text, the lot. Note also that this
 # republishes under a vendor-branded image name carrying the Neo4j mark,
@@ -18,4 +18,10 @@
 # docs/THIRD-PARTY-DATASTORES.md and getting a legal read. Shipping an
 # appliance, OVA or all-in-one installer has the same effect.
 # ---------------------------------------------------------------------------
-FROM neo4j:5-community
+# Pinned by tag AND digest (multi-arch manifest list). `5-community` floated
+# across 5.x minors, and that is worse here than anywhere else in the tree:
+# Neo4j store-format upgrades are ONE-WAY. A customer running `docker compose
+# pull` could carry their database to a version they cannot roll back from,
+# with no change to any file in this repo. The digest makes the upgrade a
+# deliberate, reviewable commit instead of a side effect of pulling.
+FROM neo4j:5.26.28-community@sha256:362542416de6c09a971484d1893878016cc3b5cdec166e54b1c824a220ecd6b9

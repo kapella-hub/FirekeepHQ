@@ -1,7 +1,27 @@
 # Base pulled via the registry mirror (not Docker Hub directly)
 # — the bare pull hit a Docker Hub 502 in the v0.2.0 build. REGISTRY overridable.
+#
+# Base image pinned by tag AND digest. `3.11-slim` is a FLOATING tag: it moved
+# to 3.11.15 with no commit here, so two builds of the same git SHA were two
+# different images — the same reproducibility hole requirements.lock (below)
+# closes for Python packages, one layer further down. The digest is what makes
+# it immutable; the tag is what lets a human read this line and know what they
+# are running. Both, never a bare digest.
+#
+# It is the multi-arch MANIFEST LIST (OCI index) digest, NOT a per-platform one
+# — pinning a platform manifest breaks every architecture except the one it was
+# resolved on. Re-resolve from the TOP-LEVEL "Digest:" of:
+#   docker buildx imagetools inspect python:<tag>
+# All five service Dockerfiles (root, cortex, bridge, sentinel, relay) must
+# carry the SAME value — a stack whose services sit on different Python patch
+# releases is a debugging trap nobody thinks to suspect.
+#
+# ${REGISTRY} is deliberately preserved: a digest is content-addressed, so a
+# pull-through mirror serves the identical manifest. A mirror that RE-PUSHES
+# rather than proxies may not carry this digest — that fails loudly at build,
+# which is the right outcome and the reason not to hard-code docker.io here.
 ARG REGISTRY=docker.io/library
-FROM ${REGISTRY}/python:3.11-slim
+FROM ${REGISTRY}/python:3.11.15-slim@sha256:db3ff2e1800a8581e2c48a27c3995339d47bdf046da21c7627accd3d51053a93
 
 RUN groupadd --gid 1000 appuser && \
     useradd --uid 1000 --gid 1000 --create-home appuser

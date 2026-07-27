@@ -9,10 +9,42 @@ services:
   # and Neo4j's password lives in the same .env an exposed service could leak.
   # Need one of these remotely? Tunnel it (ssh -L 6379:127.0.0.1:6379 host)
   # instead of widening the binding.
+  #
+  # IMAGE PINS — every image here is `tag@sha256:digest`, and both halves earn
+  # their place. The DIGEST is what makes the pin immutable: these images are
+  # not built here, so without it a customer's `docker compose pull` fetches
+  # whatever the tag happens to point at on the day they install, and two
+  # installs a month apart are different products. The TAG is kept beside it so
+  # a human can read this file and know what is running — a bare digest is
+  # unreviewable, and an unreviewable pin is one nobody ever audits.
+  #
+  # Two things a floating tag can change with no commit and no review: the
+  # LICENCE of what we ship (see redis below — this already happened) and the
+  # on-disk data format (see neo4j below). That is why this is pinned rather
+  # than merely tidy.
+  #
+  # To move a pin deliberately:
+  #   docker buildx imagetools inspect <tag>     # take the TOP-LEVEL Digest
+  # That top-level value is the manifest-list (multi-arch index) digest. Do not
+  # use one of the per-platform digests listed underneath it — that pins the
+  # stack to a single architecture and breaks every other one. Never "fix" a
+  # pull failure by deleting the digest to get the latest.
   # ============================================================
 
   neo4j:
-    image: neo4j:5-community
+    # 5.26.28 — the version the old floating `5-community` tag resolved to on
+    # 2026-07-26. Licence: GPLv3 (read from /var/lib/neo4j/LICENSE.txt inside
+    # this exact image; community edition).
+    #
+    # This pin is not just reproducibility — Neo4j store-format upgrades are
+    # ONE-WAY. Not every version bump migrates the store, but when one does it
+    # happens automatically on first start and there is no downgrade path; the
+    # only way back is a restore from backup. On the old floating tag a
+    # customer running `docker compose pull` could be carried across a 5.x
+    # minor and migrated into a store their previous binary can no longer
+    # open, having chosen nothing. Moving this pin is a decision that needs a
+    # backup and a rollback plan, never an incidental refresh.
+    image: neo4j:5.26.28-community@sha256:362542416de6c09a971484d1893878016cc3b5cdec166e54b1c824a220ecd6b9
     restart: unless-stopped
     ports:
       - "127.0.0.1:7474:7474"
@@ -36,7 +68,16 @@ services:
           cpus: "1.0"
 
   qdrant:
-    image: qdrant/qdrant:v1.13.2
+    # Apache-2.0. This image ships no licence file of its own, so unlike the
+    # others here the claim comes from the upstream LICENSE at tag v1.13.2 in
+    # the repo the image's own org.opencontainers.image.source label points to.
+    # The chain closes because the image self-reports the same version twice:
+    # an org.opencontainers.image.version label of v1.13.2, and `qdrant
+    # --version` printing 1.13.2 from inside this digest.
+    #
+    # Already version-pinned, digest added anyway: a tag can be re-pushed, so
+    # `v1.13.2` alone is a promise, not a guarantee. The digest is the guarantee.
+    image: qdrant/qdrant:v1.13.2@sha256:81bdf0a9deedbeec68eed207145ade0b9d5db15e2f84069180711aa9698445b1
     restart: unless-stopped
     ports:
       - "127.0.0.1:6333:6333"
@@ -56,7 +97,26 @@ services:
           cpus: "0.5"
 
   redis:
-    image: redis:7-alpine
+    # 7.4.10 — the version the old floating `7-alpine` tag resolved to on
+    # 2026-07-26 (confirmed with `redis-server --version` inside this digest).
+    #
+    # LICENCE, and the reason this is the most load-bearing pin in the file:
+    # Redis relicensed AT 7.4. Up to 7.2 it was BSD-3-Clause; from 7.4 it is
+    # dual Redis Source Available License v2 / Server Side Public License v1 —
+    # source-available, NOT OSI open source (upstream LICENSE.txt at tag
+    # 7.4.10). RSALv2's Limitations section forbids making "the functionality
+    # of the Software ... available to third parties as a service".
+    #
+    # What that means for Firekeep concretely: fine as shipped, because the
+    # customer self-hosts this for their own use. It would be fatal to a
+    # HOSTED or managed Firekeep offering, where we would be the ones exposing
+    # Redis functionality to third parties. If a hosted product is ever on the
+    # table, re-examine this line first — before writing any code.
+    #
+    # The point of the pin: on `redis:7-alpine` that licence boundary was
+    # crossed with no commit, no review, and nothing a reader of this repo
+    # could have seen. A version bump here is a licensing decision.
+    image: redis:7.4.10-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2
     restart: unless-stopped
     command: redis-server --appendonly yes
     ports:
@@ -76,7 +136,17 @@ services:
           cpus: "0.25"
 
   ollama:
-    image: ollama/ollama:latest
+    # 0.32.4 — the version the old `latest` tag resolved to on 2026-07-26.
+    # Licence: MIT (upstream LICENSE at tag v0.32.4). The image also carries an
+    # Ubuntu 24.04 base and NVIDIA userspace libraries under their own terms.
+    #
+    # `latest` was the least defensible tag in this file: completely unpinned,
+    # so the inference engine underneath every memory operation could change
+    # between two installs of the same Firekeep version. It moves often —
+    # 0.32.5 was already in release-candidate when this pin was taken.
+    #
+    # Keep this digest IDENTICAL to ollama-pull below; see the note there.
+    image: ollama/ollama:0.32.4@sha256:10c13eb515db310990527d36ca14a136da4bcc0fbf2bf3b15e9c1f111e9d3cd4
     restart: unless-stopped
     ports:
       - "127.0.0.1:11434:11434"
@@ -95,7 +165,13 @@ services:
           cpus: "4.0"
 
   ollama-pull:
-    image: ollama/ollama:latest
+    # MUST stay byte-identical to the `ollama` service's image line above. This
+    # init container is the same ollama build as the server it pulls models
+    # into; letting the two drift means the client writing the model blobs and
+    # the server reading them are different versions, which is exactly the
+    # class of bug that presents as an unreproducible model-load failure.
+    # Bump both together, or neither.
+    image: ollama/ollama:0.32.4@sha256:10c13eb515db310990527d36ca14a136da4bcc0fbf2bf3b15e9c1f111e9d3cd4
     depends_on:
       ollama:
         condition: service_healthy
@@ -611,7 +687,16 @@ services:
   # ============================================================
 
   dashboard:
-    image: nginx:alpine
+    # 1.31.3 — the version the old floating `alpine` tag resolved to on
+    # 2026-07-26 (confirmed with `nginx -v` inside this digest). Licence:
+    # BSD-2-Clause, recorded as "2-clause BSD-like license" in the apk package
+    # database inside the image itself.
+    #
+    # Worth knowing before bumping: `nginx:alpine` follows the MAINLINE branch,
+    # so that tag moved across FEATURE releases, not just patches — it could
+    # change nginx behaviour under the dashboard's proxy config (see
+    # dashboard/nginx.conf.template) without any change here.
+    image: nginx:1.31.3-alpine@sha256:4a73073bd557c65b759505da037898b61f1be6cbcc3c2c3aeac22d2a470c1752
     restart: unless-stopped
     ports:
       - "${BIND_ADDR:-127.0.0.1}:8040:80"

@@ -49,7 +49,7 @@ License section opens with an OSI identifier.
 | Wheel long description | the file each `readme` field names | `test_readme_licence_section_does_not_contradict_metadata` |
 | Bundled licence text | `license-files = ["LICENSE", "NOTICE"]` | `test_root_licence_file_is_not_an_osi_licence` |
 | Third-party notices | `NOTICE`, `client/NOTICE`, `symdex/NOTICE` (identical) | `scripts/generate_notice.py` + the CI licences job |
-| Datastore obligations | `docs/THIRD-PARTY-DATASTORES.md` | prose; reviewed by hand |
+| Datastore obligations | `docs/THIRD-PARTY-DATASTORES.md` | prose; reviewed by hand. `tests/test_image_pins.py` guards the *pins* underneath it — that every image reference is digest-pinned, and that the versions the summary table states a licence for are the versions actually pinned. It cannot check a licence; it can stop the versions moving out from under one |
 
 Known gap, not a contradiction: `client/pyproject.toml` declares no `readme` at
 all, so the `firekeep-client` wheel ships with no long description and therefore
@@ -165,10 +165,22 @@ nothing false today.
    something this change resolves.
 6. ~~**Datastore licences.**~~ **Analysis done; two action items open.** See
    `docs/THIRD-PARTY-DATASTORES.md` for the full analysis of Neo4j, Redis,
-   Qdrant, and Ollama against their actual pinned versions (not assumed
-   ones — the Redis pin in particular resolves to a version past the 7.4
-   licence change, not the BSD-licensed line a casual read of "Redis
-   changed licence at 7.4" might suggest). Summary: the sold product
+   Qdrant, and Ollama against their exact pinned versions (not assumed
+   ones — the Redis pin in particular is **7.4.10**, past the 7.4 licence
+   change, not the BSD-licensed line a casual read of "Redis changed licence
+   at 7.4" might suggest: what Firekeep ships is source-available under
+   RSALv2/SSPLv1, fine self-hosted, not fine for a hosted offering).
+
+   **Those version claims are now load-bearing and enforced.** Every image
+   reference in the compose files and Dockerfiles is pinned by **tag and
+   digest** (`redis:7.4.10-alpine@sha256:e7723ff7…`), so a version — and
+   therefore a licence — cannot change without a commit. Before that, all four
+   datastores floated: `redis:7-alpine` had already carried this product across
+   the BSD → RSALv2/SSPLv1 boundary with no diff anywhere, which is the concrete
+   reason this is listed as a licensing item and not merely a reproducibility
+   one. `tests/test_image_pins.py` fails CI if a reference loses its digest, if
+   a pin drops its human-readable tag, or if a datastore is bumped without the
+   licence analysis being revisited. Summary: the sold product
    (`docker-compose.yml` + `install.sh`) is clean today — Neo4j and Ollama
    model weights are pulled by the customer's own Docker/Ollama daemon, not
    conveyed by Firekeep, and Redis's dual RSALv2/SSPLv1 terms permit the

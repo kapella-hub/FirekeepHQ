@@ -14,7 +14,18 @@ ARG REGISTRY=docker.io/library
 
 # --- 1. src: obtain the runtime + models, ALLOWLIST the payload ----------------
 # Pinned like Dockerfile.embed: bump deliberately, never track :latest.
-FROM ${REGISTRY}/ollama/ollama:0.32.0 AS src
+# Tag AND digest (multi-arch manifest list, top-level "Digest:" from
+# `docker buildx imagetools inspect ollama/ollama:<tag>`) — the tag alone is
+# re-pushable, and this stage BAKES models, so a silent upstream change here
+# alters what the deployed image infers with.
+#
+# PRE-EXISTING, not introduced by the pin: the ARG default at the top of this
+# file (docker.io/library) CANNOT resolve THIS line — ollama/ollama is not a
+# `library/` image, and docker.io/library/ollama/ollama returns
+# insufficient_scope. This file builds only with REGISTRY set to something that
+# proxies the whole Hub namespace (the office mirror, or plain `docker.io`).
+# The digest is fine; it is the path in front of it that is wrong.
+FROM ${REGISTRY}/ollama/ollama:0.32.0@sha256:57f573b47f1f71ebb445789f279fe3e596a8beab182f7cf486db9205bad87c5a AS src
 # /payload built by ALLOWLIST: /bin/ollama, the TOP-LEVEL files/symlinks of
 # /usr/lib/ollama (CPU libs — every GPU runtime is a SUBDIRECTORY: cuda_v12/
 # v13, cuda_jetpack5/6, rocm), and the model store. The old denylist variant
@@ -33,13 +44,18 @@ RUN ollama serve & SERVE_PID=$!; \
     du -sm /payload
 
 # --- 2. chunker: repack everything into <=95MiB dirs ---------------------------
-FROM ${REGISTRY}/ubuntu:24.04 AS chunker
+# `24.04` is already the concrete LTS release; the digest pins the point-release
+# rebuild it would otherwise float across. Manifest-list digest, so arm64 still
+# resolves. The chunker and final stages MUST stay on the same one — chunks
+# packed on one userland and reassembled on another is a subtle way to break.
+FROM ${REGISTRY}/ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90 AS chunker
 COPY --from=src /payload /payload
 COPY docker/ollama-chunk.sh /ollama-chunk.sh
 RUN sh /ollama-chunk.sh
 
 # --- 3. final: small base + one small layer per chunk dir ---------------------
-FROM ${REGISTRY}/ubuntu:24.04
+# Same ubuntu digest as the chunker stage above, deliberately.
+FROM ${REGISTRY}/ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90
 COPY docker/ollama-entrypoint.sh /ollama-entrypoint.sh
 COPY --from=chunker /chunks/d000 /layers/d000
 COPY --from=chunker /chunks/d001 /layers/d001
