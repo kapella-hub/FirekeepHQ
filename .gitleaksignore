@@ -22,3 +22,12 @@
 # force-push to erase two fake keys is not a trade worth making.
 404fe35ec30385c9c84d825ab3cd46893cfdf023:.gitleaksignore:generic-api-key:6
 404fe35ec30385c9c84d825ab3cd46893cfdf023:.gitleaksignore:generic-api-key:8
+#
+# The CI job runs gitleaks TWICE and the two emit DIFFERENT fingerprint formats:
+#   `gitleaks detect` scans history  -> <commit>:<path>:<rule>:<line>
+#   `gitleaks dir`    scans the tree -> <path>:<rule>:<line>   (no commit)
+# An allowlist carrying only the first suppresses history and leaves the
+# working-tree scan red — which is exactly what happened, and is invisible
+# until you read which of the two commands reported the finding.
+tests/test_deploy_lib.py:generic-api-key:224
+client/tests/test_resolver.py:generic-api-key:128
