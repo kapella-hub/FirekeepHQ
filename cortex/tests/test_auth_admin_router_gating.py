@@ -110,3 +110,65 @@ class TestEnabledStillServes:
         monkeypatch.setattr(keys, "_AUTH_ENABLED", True)
         assert client.get("/auth/keys").status_code == 401
         assert client.get("/vault/secrets").status_code == 401
+
+
+class TestAuthOnRouterFailureIsLegible:
+    """A router that fails to construct must not leave a bare 404.
+
+    The auth-OFF branch explains itself with a 503 naming the setting and the
+    fix. The auth-ON branch used to log a warning and move on, leaving every
+    /vault/* path answering 404 — which reads as a typo, a wrong port or an old
+    build, and sends the operator looking anywhere but at the actual fault.
+    Since auth-on is now the default, that was the branch nearly everyone runs.
+    """
+
+    @pytest.fixture
+    def client(self, monkeypatch) -> TestClient:
+        """Auth ENABLED, but both router factories raise.
+
+        Patches the modules the stanza imports locally (auth.api / vault.api),
+        which is what its `from ... import` actually resolves — the same reason
+        _mount patches the attribute on auth.config rather than the imported name.
+        """
+        import auth.api
+        import auth.config as auth_config
+        import vault.api
+        from auth.config import AuthSettings
+
+        def _boom():
+            raise RuntimeError("simulated construction failure")
+
+        monkeypatch.setattr(auth.api, "create_auth_router", _boom)
+        monkeypatch.setattr(vault.api, "create_vault_router", _boom)
+        monkeypatch.setattr(
+            auth_config, "get_auth_settings", lambda: AuthSettings(ENABLED=True)
+        )
+        app = FastAPI()
+        main_mod._register_admin_surface_routers(app)
+        return TestClient(app)
+
+    def test_vault_failure_503s_with_a_reason_not_404(self, client):
+        resp = client.get("/vault/secrets")
+        assert resp.status_code == 503, resp.status_code
+        detail = resp.json()["detail"]
+        assert "failed to start" in detail
+        assert "simulated construction failure" in detail
+        # ...and must not be mistaken for the deliberate auth-off withholding,
+        # which is a configuration choice rather than a fault.
+        assert "AUTH_ENABLED=false" not in detail
+
+    def test_auth_failure_503s_with_a_reason_not_404(self, client):
+        resp = client.get("/auth/keys")
+        assert resp.status_code == 503, resp.status_code
+        assert "failed to start" in resp.json()["detail"]
+
+    def test_both_surfaces_are_still_mounted(self, client):
+        """A dead vault must not be a dead API.
+
+        The stand-in exists so the failure is legible, not so the process dies:
+        memory, sessions and coordination are unaffected by a broken vault.
+        """
+        app = client.app
+        paths = {r.path for r in app.routes}
+        assert any(p.startswith("/vault") for p in paths), paths
+        assert any(p.startswith("/auth") for p in paths), paths

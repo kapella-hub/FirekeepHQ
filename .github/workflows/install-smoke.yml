@@ -122,11 +122,28 @@ jobs:
             *) echo "::error::dashboard rejected the installer's own generated credentials (got $code) -- the stored password hash is likely unparseable by nginx"; exit 1 ;;
           esac
 
-      - name: Assert the audit's actual finding is closed — vault is not open
-        # Blocker 7 in one probe. On the shipped default this returned 200 and
-        # the metadata of every stored secret to an unauthenticated caller; on
-        # the author's own VPS that meant 12 real secrets reachable from the
-        # public internet. 401 is the only acceptable answer.
+      - name: Assert the shipped default closes the vault to unauthenticated callers
+        # On the shipped default this returned 200 and the metadata of every
+        # stored secret to an unauthenticated caller; on the author's own VPS
+        # that meant 12 real secrets reachable from the public internet. 401 is
+        # the only acceptable answer.
+        #
+        # SCOPE, stated so this is not read as more than it is: blocker 7 had
+        # TWO remedies and this job only exercises the first. Everything here
+        # runs against AUTH_ENABLED=true, where FirekeepKeyAuthMiddleware
+        # rejects at auth/asgi.py before routing and before any scope check —
+        # so the second remedy (the anonymous identity losing `admin`, which
+        # protects a deployment that deliberately turns auth OFF) is never
+        # touched. Revert auth/keys.py entirely and this job stays green.
+        #
+        # That half is covered by unit tests instead, deliberately: proving it
+        # end-to-end would need a second 45-minute install with
+        # --insecure-no-auth, for a configuration no customer should run.
+        #   auth/tests/test_anonymous_scopes.py
+        #   cortex/tests/test_auth_anonymous_scopes.py
+        #   cortex/tests/test_auth_admin_router_gating.py
+        #   vault/tests/test_vault.py::TestVaultAdminGate
+        #   bridge/tests/test_distill_requeue.py
         #
         # The other two codes are named explicitly because they fail for
         # DIFFERENT reasons and a bare "not 401" would hide which:

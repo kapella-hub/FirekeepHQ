@@ -195,12 +195,32 @@ def _register_admin_surface_routers(app: FastAPI) -> None:
 
     if _auth_cfg().ENABLED:
         # Auth endpoints (/auth/*) — init happens in lifespan (async), registration here (sync)
+        # Both mounts below fall back to the SAME 503 stand-in the disabled
+        # branch uses, rather than logging a warning and moving on.
+        #
+        # The old behaviour left a bare 404 on every /auth/* and /vault/* path
+        # if the router failed to construct — indistinguishable from a typo, a
+        # wrong port, or an old build, with the only explanation in a log line
+        # nobody reads until they already suspect the answer. Meanwhile the
+        # auth-OFF branch below went to real trouble to explain itself. The
+        # default is now auth-ON, so the branch with no legibility became the
+        # one nearly everyone runs.
+        #
+        # Not a hard raise: a broken vault must not take the whole API down
+        # when memory, sessions and coordination are unaffected. Fail loud on
+        # the surface that is actually missing, and only there.
         try:
             from auth.api import create_auth_router
             app.include_router(create_auth_router())
             logger.info("Auth router registered at /auth/*")
         except Exception as exc:
-            logger.warning("Auth router not registered (non-critical): %s", exc)
+            logger.error("Auth router FAILED to register: %s", exc, exc_info=True)
+            app.include_router(_admin_surface_disabled_router(
+                "/auth", "auth",
+                f"API-key management (/auth/*) failed to start: {exc}. This is a "
+                f"fault, not a configuration choice — auth enforcement IS enabled. "
+                f"Check the cortex-api logs for the traceback.",
+            ))
 
         # Vault endpoints (/vault/*)
         try:
@@ -208,7 +228,13 @@ def _register_admin_surface_routers(app: FastAPI) -> None:
             app.include_router(create_vault_router())
             logger.info("Vault router registered at /vault/*")
         except Exception as exc:
-            logger.warning("Vault router not registered (non-critical): %s", exc)
+            logger.error("Vault router FAILED to register: %s", exc, exc_info=True)
+            app.include_router(_admin_surface_disabled_router(
+                "/vault", "vault",
+                f"The secrets vault (/vault/*) failed to start: {exc}. This is a "
+                f"fault, not a configuration choice — auth enforcement IS enabled. "
+                f"Check the cortex-api logs for the traceback.",
+            ))
         return
 
     app.include_router(_admin_surface_disabled_router(
