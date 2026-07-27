@@ -11,7 +11,6 @@ class Settings(BaseSettings):
     BULLETIN_TTL_HOURS: int = Field(default=24, gt=0)
     CHANNEL_BACKLOG_SIZE: int = Field(default=100, gt=0)
     CLAIM_TTL_MINUTES: int = Field(default=30, gt=0)
-    CORS_ORIGINS: str = '["*"]'
     BRIDGE_URL: str = "http://bridge:8070"
     FIREKEEP_API_KEY: str | None = None
 

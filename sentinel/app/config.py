@@ -22,7 +22,6 @@ class Settings(BaseSettings):
     EVENT_RETENTION_HOURS: int = 72
     EVENT_MAXLEN: int = 10000
     WATCH_PATHS: str = ""
-    CORS_ORIGINS: str = '["*"]'
     # Alerting: broadcast error+ events to Relay
     RELAY_URL: str = "http://relay:8050"
     ALERT_SEVERITIES: str = "error,critical"

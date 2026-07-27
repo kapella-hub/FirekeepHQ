@@ -14,7 +14,6 @@ cp .env.example .env
 | `CORS_ORIGINS` | `["*"]` | Allowed CORS origins. Only affects browsers calling a service **directly across origins** — the bundled dashboard on :8040 is same-origin through nginx, so this neither breaks nor fixes it |
 | `LLM_MODEL` | `qwen3:4b` | Ollama model for LLM inference |
 | `EMBEDDING_MODEL` | `mxbai-embed-large` | Embedding model |
-| `CORTEX_INSTALL_FINETUNE_DEPS` | `False` | Build-time toggle for optional CPU-only embedding fine-tuning deps on `cortex-worker` |
 | `MULTIHOP_ENABLED` | `True` | Enable multi-hop graph traversal |
 | `NB_PROACTIVE_RECALL_ENABLED` | `True` | Auto-inject memories on ctx_update |
 | `RP_ENABLED` | `True` | Enable replay trace event recording |
@@ -202,5 +201,13 @@ The memory agent automatically extracts skills, preferences, and goals from your
 ### Proactive Recall
 When you call `ctx_update` with a plan or progress update, FirekeepBridge automatically queries FirekeepCortex for relevant past experience and injects it into your session shadow.
 
-### Embedding Fine-tuning (optional)
-Generate training triplets and fine-tune the embedding model with `POST /admin/embeddings/finetune`. The default Cortex images do not install the training stack. Set `CORTEX_INSTALL_FINETUNE_DEPS=true` and rebuild `cortex-worker` to enable the CPU-only fine-tuning dependencies.
+### Embedding fine-tuning — REMOVED, not disabled
+This section previously described `POST /admin/embeddings/finetune` and a
+`CORTEX_INSTALL_FINETUNE_DEPS=true` rebuild. **Neither exists.** There is no such
+route, nothing imports `sentence_transformers`, the package is in no requirements
+file, and the build arg was declared by no Dockerfile — `docker-compose.yml` passed
+it into a build that ignored it. A reader following these instructions would have
+set a flag, rebuilt, and called an endpoint that 404s.
+
+Removed rather than implemented: the capability was never built here, and shipping
+documentation for a feature a customer cannot use is worse than not offering it.

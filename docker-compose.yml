@@ -395,7 +395,6 @@ services:
       context: .
       dockerfile: cortex/Dockerfile
       args:
-        CORTEX_INSTALL_FINETUNE_DEPS: ${CORTEX_INSTALL_FINETUNE_DEPS:-false}
         GIT_SHA: ${GIT_SHA:-unknown}
         BUILD_TIME: ${BUILD_TIME:-unknown}
         APP_VERSION: ${APP_VERSION:-0.6.0}
