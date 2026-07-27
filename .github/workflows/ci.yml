@@ -25,7 +25,7 @@ jobs:
             install: pip install -r cortex/requirements.txt -r cortex/requirements-dev.txt
             test: pytest cortex/tests -q
           - name: bridge
-            install: pip install -r bridge/requirements.txt pytest pytest-asyncio httpx
+            install: pip install -r bridge/requirements.txt -r bridge/requirements-dev.txt
             test: pytest bridge/tests -q
           - name: sentinel
             install: pip install -r sentinel/requirements.txt -r sentinel/requirements-dev.txt
@@ -145,6 +145,105 @@ jobs:
             exit 1
           }
         shell: pwsh
+
+  security:
+    name: Dependency CVEs + SBOM
+    runs-on: ubuntu-latest
+    # Same isolation discipline as the licences job below, and for the same
+    # reason: one shared environment would merge three dependency sets and the
+    # result would describe nothing a customer installs.
+    #
+    # BLOCKING, deliberately. The first run of this over the shipped set found
+    # 7 CVEs in exactly 2 packages -- `pip` itself (the venv's own tooling,
+    # upgraded below so it is not counted against the product) and `pytest`,
+    # which was listed in cortex/requirements.txt and therefore SHIPPED inside
+    # the production image. Both are now out of the shipped set, leaving zero.
+    # An advisory-only scanner over a clean tree is a scanner nobody reads; a
+    # blocking one starting from zero stays meaningful.
+    #
+    # When this does fail, it is telling you a customer is running a known-
+    # vulnerable package. Fix or pin -- do not add --ignore-vuln without
+    # writing down, here, why the CVE cannot affect this product.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Audit cortex (+ bridge/relay/sentinel superset) dependencies
+        run: |
+          python -m venv /tmp/audit-cortex
+          /tmp/audit-cortex/bin/pip install -q --upgrade pip
+          /tmp/audit-cortex/bin/pip install -q pip-audit
+          /tmp/audit-cortex/bin/pip install -q -r cortex/requirements.txt
+          /tmp/audit-cortex/bin/pip-audit --progress-spinner off --strict
+      - name: Audit client (firekeep-client wheel) dependencies
+        run: |
+          python -m venv /tmp/audit-client
+          /tmp/audit-client/bin/pip install -q --upgrade pip
+          /tmp/audit-client/bin/pip install -q pip-audit
+          /tmp/audit-client/bin/pip install -q ./client
+          /tmp/audit-client/bin/pip-audit --progress-spinner off --strict
+      - name: Audit symdex (firekeep-symdex wheel) dependencies
+        run: |
+          python -m venv /tmp/audit-symdex
+          /tmp/audit-symdex/bin/pip install -q --upgrade pip
+          /tmp/audit-symdex/bin/pip install -q pip-audit
+          /tmp/audit-symdex/bin/pip install -q ./symdex
+          /tmp/audit-symdex/bin/pip-audit --progress-spinner off --strict
+      - name: Generate CycloneDX SBOMs
+        # One per shipped artifact. Uploaded as a build artifact rather than
+        # committed: an SBOM is only true for the resolution that produced it,
+        # and a stale committed one is worse than none.
+        run: |
+          mkdir -p sbom
+          for s in cortex client symdex; do
+            /tmp/audit-$s/bin/pip-audit --progress-spinner off \
+              --format cyclonedx-json --output "sbom/firekeep-$s.cdx.json" || true
+          done
+          ls -la sbom/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom/
+          retention-days: 90
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    # pipefail: the install step is `curl ... | tar -xz`. Without it a failed
+    # download still exits 0 via tar, `gitleaks version` then fails confusingly,
+    # or worse a stale binary on the PATH runs and the job goes green having
+    # scanned with something other than what it claims.
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: a credential deleted in the working tree is still
+          # live if it is reachable in a commit. This repo was seeded with
+          # fresh history precisely because the predecessor's history published
+          # a VPS address and a pre-redaction admin key.
+          fetch-depth: 0
+      # The gitleaks BINARY (MIT), not gitleaks/gitleaks-action@v2. The action
+      # requires a paid GITLEAKS_LICENSE for GitHub *organization* accounts —
+      # kapella-hub is one — and fails with a licence error rather than a scan
+      # result. A security check that cannot run is worse than none, because
+      # the job name in the checks list says it did.
+      - name: Install gitleaks
+        run: |
+          VER=8.28.0
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${VER}/gitleaks_${VER}_linux_x64.tar.gz" \
+            | tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+      - name: Scan working tree and full history
+        # Two passes: `detect` walks every commit (a credential deleted from the
+        # working tree is still live if any commit reaches it), `dir` catches
+        # anything staged but not yet committed. --redact so a finding does not
+        # reprint the secret into a log that is itself readable.
+        run: |
+          gitleaks detect --source . --redact --verbose --exit-code 1
+          gitleaks dir . --redact --verbose --exit-code 1
 
   licenses:
     name: Dependency licences

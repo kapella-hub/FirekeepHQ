@@ -25,7 +25,7 @@ fastmcp>=3.1,<4
 cryptography>=43.0,<50
 markdownify>=1.2,<2
 
-# Dev / Test
-pytest>=8.0,<9
-pytest-asyncio>=0.24,<1
-fakeredis>=2.21,<3
+# Test dependencies live in requirements-dev.txt, NOT here. cortex/Dockerfile:12
+# installs this file, so anything listed here ships inside the production image
+# — pytest and fakeredis were, which is both needless attack surface and the
+# only CVE the dependency audit finds in the shipped set.

@@ -588,6 +588,28 @@ For tasks that span 3+ files or have parallelizable work streams, use Claude Cod
 
 After all agents complete, the team lead runs the full test suite and does a manual read-through of critical-path files before calling it done. Don't trust agent summaries alone — verify the wiring.
 
+## Security
+
+- **`SECURITY.md`** (root) — disclosure policy, SLA targets, in/out-of-scope, supported
+  versions. **The contact address is still a placeholder** and is tracked as blocking
+  first sale; everything else in the file is accurate.
+- **`docs/THREAT-MODEL.md`** (2026-07-26) — all four services, the dashboard, the client
+  kit and the URL crawler. Supersedes `cortex/docs/SECURITY_REVIEW.md`, which covers
+  Cortex v0.1.0 as of 2026-03-02 and predates auth, the vault, the agent gateway and the
+  crawler; that file is kept as a record of what was reviewed then, not as current state.
+  Findings marked **OPEN** in the threat model are not mitigated — the largest are the
+  unsigned `SHA256SUMS` on the client update path (release-host compromise reaches every
+  developer machine) and memory poisoning by a compromised agent holding a valid
+  non-admin key.
+- **CI gates** (`.github/workflows/ci.yml`): `security` runs `pip-audit --strict` over
+  each shipped dependency set in its own clean venv and uploads CycloneDX SBOMs;
+  `secrets` runs the gitleaks binary over the working tree and full history. Both are
+  blocking. The CVE gate starts from zero — test frameworks were removed from
+  `cortex/requirements.txt` and `bridge/requirements.txt`, where they had been shipping
+  inside the production images and were the only CVEs in the shipped set.
+  `secrets` uses the gitleaks BINARY, not `gitleaks/gitleaks-action@v2`, which requires a
+  paid licence for GitHub organization accounts.
+
 ## Design Spec
 
 See `docs/DESIGN.md` for the full architecture design spec.

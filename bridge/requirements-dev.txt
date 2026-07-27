@@ -1,0 +1,12 @@
+# Dev/test dependencies for FirekeepBridge.
+# Runtime deps live in requirements.txt. Install both for the host test run:
+#   pip install -r requirements.txt -r requirements-dev.txt && pytest
+#
+# This file exists because pytest and pytest-asyncio were listed in
+# requirements.txt, which bridge/Dockerfile:12 installs — so a test framework
+# shipped inside the production image. CI had been installing them inline
+# (ci.yml), which masked the fact that the runtime file did not need them.
+pytest>=8.0,<9
+pytest-asyncio>=0.24,<1
+httpx>=0.27,<1
+fakeredis>=2.21,<3
