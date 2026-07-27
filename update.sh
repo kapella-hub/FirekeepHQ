@@ -56,8 +56,70 @@ if grep -q '^FIREKEEP_OFFICE_MODE=true' .env 2>/dev/null \
 fi
 
 # --- Pull latest ---
+# Capture the pinned datastore images BEFORE the pull so the update can tell
+# whether it is about to move a database version. That is not a cosmetic
+# difference: Neo4j store-format upgrades are ONE-WAY, so a bumped neo4j pin
+# turns `docker compose up` into an irreversible migration of the customer's
+# data. It is the reason the images are digest-pinned at all.
+DATASTORE_BEFORE="$(grep -hoE '^\s+image:\s*(neo4j|redis|qdrant/qdrant|ollama/ollama)[^ ]*'     docker-compose.yml 2>/dev/null | sed 's/^ *image: *//' | sort || true)"
+
 echo "Pulling latest changes..."
 git pull
+
+DATASTORE_AFTER="$(grep -hoE '^\s+image:\s*(neo4j|redis|qdrant/qdrant|ollama/ollama)[^ ]*'     docker-compose.yml 2>/dev/null | sed 's/^ *image: *//' | sort || true)"
+
+# --- Backup before anything is rebuilt or recreated -----------------------
+# update.sh used to `git pull` and restart with no backup at all. On a stack
+# whose Neo4j store upgrades cannot be undone, that made every routine update a
+# one-way door with no way back.
+#
+# Default ON. Disk is cheap and the data is the one thing a customer cannot
+# recreate; deploy/backup.sh stops neo4j/qdrant/redis first so the archive is
+# actually restorable, and restarts them on every exit path.
+SKIP_BACKUP=0
+for arg in "$@"; do
+    [ "$arg" = "--no-backup" ] && SKIP_BACKUP=1
+done
+
+if [ "$DATASTORE_BEFORE" != "$DATASTORE_AFTER" ]; then
+    echo ""
+    echo "############################################################"
+    echo "# A DATASTORE IMAGE CHANGED IN THIS UPDATE."
+    echo "#"
+    echo "# Before: ${DATASTORE_BEFORE:-<none found>}"
+    echo "# After:  ${DATASTORE_AFTER:-<none found>}"
+    echo "#"
+    echo "# If Neo4j moved, starting the new image UPGRADES THE STORE"
+    echo "# FORMAT AND THAT CANNOT BE UNDONE. The backup below is the"
+    echo "# only way back. Do not skip it here."
+    echo "############################################################"
+    if [ "$SKIP_BACKUP" -eq 1 ]; then
+        echo "ERROR: --no-backup was passed and a datastore image changed." >&2
+        echo "       Refusing: this combination is how data is lost for good." >&2
+        echo "       Re-run without --no-backup, or pin the old image and" >&2
+        echo "       upgrade deliberately." >&2
+        exit 1
+    fi
+fi
+
+if [ "$SKIP_BACKUP" -eq 1 ]; then
+    echo "Skipping backup (--no-backup)."
+else
+    echo ""
+    echo "Backing up volumes before the rebuild..."
+    if bash "$(dirname "$0")/deploy/backup.sh"; then
+        echo "[OK] Backup taken. If this update goes wrong, restore with the"
+        echo "     path printed above, then: docker compose up -d"
+    else
+        echo "" >&2
+        echo "ERROR: backup failed — stopping before anything is rebuilt." >&2
+        echo "       Nothing has changed yet except the checkout (git pull)." >&2
+        echo "       Fix the backup, or re-run with --no-backup if you accept" >&2
+        echo "       running this update with no way back." >&2
+        exit 1
+    fi
+fi
+
 
 # --- Security-default migration guard (runs AFTER the pull) ---------------
 # Two defaults changed in docker-compose.yml: AUTH_ENABLED now defaults to

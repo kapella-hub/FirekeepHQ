@@ -22,6 +22,64 @@ mkdir -p "$OUT_DIR"
 
 VOLUMES="neo4j_data qdrant_data redis_data ollama_data"
 
+# Services whose volumes are being WRITTEN while they run. Tarring a live store
+# is not a backup: Neo4j Community has no online-backup facility (that is an
+# Enterprise feature), and a filesystem copy of a running store can capture a
+# half-written page or an inconsistent transaction log. Qdrant segments and
+# Redis's RDB have the same exposure. The result restores without error and is
+# wrong — which is worse than no backup, because it is trusted.
+#
+# ollama_data is deliberately NOT stopped: it holds model weights, written once
+# at pull time and read-only afterwards, so there is no torn write to capture
+# and no reason to make the outage longer than it has to be.
+QUIESCE_SERVICES="neo4j qdrant redis"
+
+HOT=0
+for arg in "$@"; do
+    [ "$arg" = "--hot" ] && HOT=1
+done
+
+STOPPED=""
+# Restart on ANY exit path, including a failure mid-backup or a Ctrl-C. A backup
+# script that leaves the customer's stack down because tar returned non-zero has
+# caused more damage than the missing backup would have.
+restart_quiesced() {
+    if [ -n "$STOPPED" ]; then
+        echo "Restarting: $STOPPED"
+        # shellcheck disable=SC2086
+        docker compose start $STOPPED >/dev/null 2>&1 || {
+            echo "ERROR: could not restart $STOPPED — run 'docker compose up -d' now." >&2
+        }
+        STOPPED=""
+    fi
+}
+trap restart_quiesced EXIT INT TERM
+
+if [ "$HOT" -eq 1 ]; then
+    echo "WARNING: --hot — services stay up. Neo4j/Qdrant/Redis are being written" >&2
+    echo "         while their volumes are read, so this archive may restore into" >&2
+    echo "         an inconsistent store. Use it only if you accept that." >&2
+else
+    running=""
+    for svc in $QUIESCE_SERVICES; do
+        if [ -n "$(docker compose ps -q "$svc" 2>/dev/null)" ]; then
+            running="$running $svc"
+        fi
+    done
+    if [ -n "$running" ]; then
+        echo "Stopping for a consistent snapshot:$running"
+        # shellcheck disable=SC2086
+        if docker compose stop $running >/dev/null 2>&1; then
+            STOPPED="$running"
+        else
+            echo "ERROR: could not stop$running — refusing to take a backup that" >&2
+            echo "       would silently be inconsistent. Re-run with --hot to" >&2
+            echo "       override, understanding the risk." >&2
+            exit 1
+        fi
+    fi
+fi
+
 echo "Backing up volumes with prefix '${PREFIX}_' to $OUT_DIR"
 
 failed=0
@@ -55,6 +113,10 @@ for vol in $VOLUMES; do
 done
 
 printf '%s\n' "$PREFIX" > "$OUT_DIR/PREFIX"
+# A restorer must be able to tell a quiesced archive from a --hot one. Without
+# this the two are indistinguishable, and the inconsistent kind is the one you
+# find out about while restoring it.
+printf '%s\n' "$([ "$HOT" -eq 1 ] && echo hot || echo cold)" > "$OUT_DIR/MODE"
 git rev-parse HEAD > "$OUT_DIR/COMMIT" 2>/dev/null || true
 
 if [ "$failed" -ne 0 ]; then
