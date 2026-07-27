@@ -13,3 +13,12 @@
 # at if you need to re-check them.
 1fa0e9fa046ad2b6ff0d420a58e5676129e34197:tests/test_deploy_lib.py:generic-api-key:224
 1fa0e9fa046ad2b6ff0d420a58e5676129e34197:client/tests/test_resolver.py:generic-api-key:128
+#
+# The two entries below are this file's own earlier version. It quoted the fake
+# values while explaining them, gitleaks flagged the allowlist itself, and I
+# removed them — but `gitleaks detect` scans FULL HISTORY, so commit 404fe35
+# still contains that text and always will. A working-tree edit cannot unmake a
+# committed finding; only an allowlist entry or a history rewrite can, and a
+# force-push to erase two fake keys is not a trade worth making.
+404fe35ec30385c9c84d825ab3cd46893cfdf023:.gitleaksignore:generic-api-key:6
+404fe35ec30385c9c84d825ab3cd46893cfdf023:.gitleaksignore:generic-api-key:8
