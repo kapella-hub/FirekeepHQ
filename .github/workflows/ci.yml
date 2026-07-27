@@ -203,7 +203,12 @@ jobs:
           for pkg in client symdex; do
             echo "::group::$pkg"
             python -m venv "/tmp/audit-$pkg"
-            "/tmp/audit-$pkg/bin/pip" install -q --upgrade pip
+            # Upgrade the venv's OWN tooling before auditing. `python -m venv`
+            # seeds pip and setuptools, and pip-audit sees them alongside the
+            # real dependencies — a CVE in the venv's setuptools failed this
+            # gate while being no part of what Firekeep ships. Same rationale
+            # as upgrading pip: audit the product, not the scaffolding.
+            "/tmp/audit-$pkg/bin/pip" install -q --upgrade pip setuptools
             "/tmp/audit-$pkg/bin/pip" install -q "./$pkg"
             # Remove the FIRST-PARTY distribution before auditing. pip-audit
             # --strict fails on any package it cannot resolve on PyPI, and

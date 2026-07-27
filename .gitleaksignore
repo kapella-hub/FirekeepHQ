@@ -1,13 +1,15 @@
-# gitleaks findings deliberately allowed. Each entry is a FINGERPRINT
-# (commit:path:rule:line), so it stops applying the moment the line moves —
-# a blanket rule-disable would hide the next real one.
+# gitleaks allowlist. Entries are FINGERPRINTS (commit:path:rule:line), so an
+# entry stops applying the moment the line moves — a blanket rule-disable would
+# hide the next real finding.
 #
-# Both are test fixtures, verified rather than assumed:
-#   tests/test_deploy_lib.py:224  VAULT_KEY=aGVsbG8td29ybGQtdGhpcy1pcy1hLWtleQ==
-#     base64-decodes to the literal string "hello-world-this-is-a-key".
-#   client/tests/test_resolver.py:128  api_key = nxs_secret_key_123
-#     a sample profile whose base_url is https://firekeep.office.example.
+# Both suppressed findings are test fixtures. Verified, not assumed: one is a
+# base64 string that decodes to an obvious English placeholder; the other is a
+# sample client profile whose base_url points at a .example hostname. gitleaks
+# is right to flag the SHAPE — the values are not credentials.
 #
-# gitleaks is right to flag the SHAPE; the values are not credentials.
+# The literal values are deliberately NOT reproduced here. The first version of
+# this file quoted them to explain itself and gitleaks flagged THIS FILE,
+# turning the allowlist into a new leak. Read the lines the fingerprints point
+# at if you need to re-check them.
 1fa0e9fa046ad2b6ff0d420a58e5676129e34197:tests/test_deploy_lib.py:generic-api-key:224
 1fa0e9fa046ad2b6ff0d420a58e5676129e34197:client/tests/test_resolver.py:generic-api-key:128
