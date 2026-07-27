@@ -1,0 +1,122 @@
+# Server release — publishes the four Firekeep service images.
+#
+# WHY THIS EXISTS: until now there was no way to deliver the server at all.
+# docs/DEPLOYMENT.md and README told a customer to `git clone` a PRIVATE repo,
+# and install.sh assumed it was running inside a checkout and built every image
+# from source. There was no tarball, no vX.Y.Z tag, and no registry — the
+# product was not deliverable in the literal sense.
+#
+# WHY IMAGES AND NOT A SOURCE TARBALL: the licence model is free-core, closed
+# source. A tarball ships the source it does not grant rights to. A Python image
+# does contain the .py files, which is why these packages are PRIVATE — the
+# access control is the registry, not obscurity.
+#
+# WHAT IS DELIBERATELY NOT PUBLISHED: neo4j, redis, qdrant and ollama. The
+# customer's own daemon pulls those from their upstream registries, exactly as
+# it does today. Publishing an image CONTAINING Neo4j would make Firekeep a
+# redistributor of GPLv3 software rather than a party that references it —
+# see docs/THIRD-PARTY-DATASTORES.md and the headers on docker/Dockerfile.*.
+# The four images below contain no third-party datastore.
+name: server-release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag to publish (e.g. v0.1.0-rc1)'
+        required: true
+
+concurrency:
+  group: server-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  OWNER: kapella-hub
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # cortex-api, cortex-mcp, cortex-worker and cortex-beat are four
+          # SERVICES from one image — they differ only by command.
+          #
+          # cortex/Dockerfile, not the repo-root Dockerfile. Both build cortex;
+          # compose references this one. Publishing from the other would hand a
+          # customer an image built from a different file than the one the
+          # compose they run describes, which is the reproducibility hole the
+          # dependency locking closed. The duplication itself is a separate
+          # follow-up.
+          - name: cortex
+            dockerfile: cortex/Dockerfile
+          - name: bridge
+            dockerfile: bridge/Dockerfile
+          - name: sentinel
+            dockerfile: sentinel/Dockerfile
+          - name: relay
+            dockerfile: relay/Dockerfile
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve the tag
+        id: meta
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          case "$TAG" in
+            v*) ;;
+            *) echo "::error::tag must start with v (got '$TAG')"; exit 1 ;;
+          esac
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "image=${REGISTRY}/${OWNER}/firekeep-${{ matrix.name }}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        # Provenance args match what install.sh/update.sh pass locally, so a
+        # published image answers GET /version with the same shape a
+        # locally-built one does. APP_VERSION is the release tag itself.
+        run: |
+          docker build \
+            -f "${{ matrix.dockerfile }}" \
+            --build-arg GIT_SHA="$(git rev-parse --short HEAD)" \
+            --build-arg BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --build-arg APP_VERSION="${{ steps.meta.outputs.tag }}" \
+            -t "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}" \
+            .
+          docker push "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}"
+
+      - name: Record the pushed digest
+        # The digest, not the tag, is what a customer should pin. Printed into
+        # the job summary so a release has a copyable record rather than
+        # requiring someone to go and inspect the registry.
+        run: |
+          DIGEST="$(docker inspect --format='{{index .RepoDigests 0}}' \
+            "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}" 2>/dev/null || echo unknown)"
+          echo "| firekeep-${{ matrix.name }} | \`$DIGEST\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "$DIGEST"
+
+      - name: Verify the published image runs
+        # A push is not a release. Pull the pushed artifact back and start the
+        # service's own entrypoint far enough to prove the image is not broken —
+        # `docker push` succeeding says only that bytes moved.
+        run: |
+          docker rmi "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}" || true
+          docker pull "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}"
+          docker run --rm "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}" \
+            python -c "import provenance; print('version:', provenance.get_version_info('${{ matrix.name }}'))"

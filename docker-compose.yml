@@ -190,6 +190,7 @@ services:
   # ============================================================
 
   cortex-api:
+    image: ghcr.io/kapella-hub/firekeep-cortex:${IMAGE_TAG:-dev}
     build:
       context: .
       dockerfile: cortex/Dockerfile
@@ -333,6 +334,7 @@ services:
           cpus: "1.0"
 
   cortex-mcp:
+    image: ghcr.io/kapella-hub/firekeep-cortex:${IMAGE_TAG:-dev}
     build:
       context: .
       dockerfile: cortex/Dockerfile
@@ -391,6 +393,7 @@ services:
           cpus: "0.25"
 
   cortex-worker:
+    image: ghcr.io/kapella-hub/firekeep-cortex:${IMAGE_TAG:-dev}
     build:
       context: .
       dockerfile: cortex/Dockerfile
@@ -479,6 +482,7 @@ services:
           cpus: "2.0"
 
   cortex-beat:
+    image: ghcr.io/kapella-hub/firekeep-cortex:${IMAGE_TAG:-dev}
     build:
       context: .
       dockerfile: cortex/Dockerfile
@@ -525,6 +529,7 @@ services:
   # ============================================================
 
   bridge:
+    image: ghcr.io/kapella-hub/firekeep-bridge:${IMAGE_TAG:-dev}
     build:
       context: .
       dockerfile: bridge/Dockerfile
@@ -570,6 +575,7 @@ services:
   # ============================================================
 
   sentinel:
+    image: ghcr.io/kapella-hub/firekeep-sentinel:${IMAGE_TAG:-dev}
     build:
       context: .
       dockerfile: sentinel/Dockerfile
@@ -634,6 +640,7 @@ services:
   # ============================================================
 
   relay:
+    image: ghcr.io/kapella-hub/firekeep-relay:${IMAGE_TAG:-dev}
     build:
       context: .
       dockerfile: relay/Dockerfile
