@@ -593,6 +593,35 @@ def _check_api_key(cfg, profile: str | None = None,
     except resolver.ConfigError as exc:
         return (label, "warn", str(exc))
     if scheme != "https":
+        # `http` USED to imply "personal, no auth expected". That is false for the
+        # standard personal-VPS shape: the server binds to loopback, the client
+        # reaches it over an SSH tunnel as http://127.0.0.1, and AUTH_ENABLED is
+        # true. A keyless profile then passes every check above (health/version are
+        # auth-exempt) while every real call 401s -- the same FALSE-GREEN TRAP this
+        # function was written to close, just reached over http instead of https.
+        #
+        # So don't infer auth-expectation from the scheme. If there is no key, ASK
+        # the server whether it enforces auth, using a gated read-only route.
+        if cfg.get(profile, "api_key", fallback="").strip():
+            return None
+        try:
+            ep = resolver.resolve("cortex", cfg=cfg, profile=profile)
+        except resolver.ConfigError:
+            return None
+        try:
+            get_json(f"{ep.rest_base}/vault/secrets", headers=ep.headers, verify=ep.verify)
+        except TransportError as exc:
+            if getattr(exc, "status", None) in (401, 403):
+                return (
+                    label, "fail",
+                    f"profile '{profile}' has no api_key but {ep.rest_base} enforces auth "
+                    "-- health/version are auth-exempt, so the checks above pass while "
+                    "every real MCP call 401s. Mint one on the server: "
+                    "`deploy/firekeep-admin keys create --agent <you>`, or run "
+                    "`firekeep connect <user@host>` to do it for you",
+                )
+        except OSError:
+            pass          # unreachable is _check_health's row to report, not ours
         return None
     key = cfg.get(profile, "api_key", fallback="").strip()
     if not key:
@@ -870,6 +899,19 @@ def _check_personal_mode() -> tuple[str, str, str]:
             f"ON — {why}; Firekeep bypassed, nothing logged/recalled")
 
 
+
+def cmd_connect(args) -> int:
+    """Thin entry point; the work lives in firekeep_client.connect (see its module
+    docstring for why this command exists at all)."""
+    from firekeep_client.connect import ConnectError, connect
+    try:
+        return connect(args.target, profile=args.profile, agent_id=args.agent_id,
+                       remote_dir=args.remote_dir, use_tunnel=not args.no_tunnel)
+    except ConnectError as exc:
+        print(f"connect failed: {exc}", file=sys.stderr)
+        return 1
+
+
 def cmd_doctor(args) -> int:
     try:
         _env_profile_notice()
@@ -1037,6 +1079,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "action", nargs="?", choices=["on", "off", "status", "toggle"], default="toggle",
     )
     personal.set_defaults(func=cmd_personal)
+
+    conn = sub.add_parser(
+        "connect",
+        help="point this machine at a Firekeep server over ssh (mint key, tunnel, verify)")
+    conn.add_argument("target", help="ssh target for the server, e.g. root@203.0.113.10")
+    conn.add_argument("--profile", default="personal", help="profile to write (default: personal)")
+    conn.add_argument("--agent-id", default=None, help="identity to mint the key for")
+    conn.add_argument("--remote-dir", default=None, help="server install dir if not auto-detected")
+    conn.add_argument("--no-tunnel", action="store_true",
+                      help="do not manage an SSH tunnel (needs a non-loopback server)")
+    conn.set_defaults(func=cmd_connect)
 
     doc = sub.add_parser("doctor", help="preflight health / skew / perm checks")
     doc.set_defaults(func=cmd_doctor)
