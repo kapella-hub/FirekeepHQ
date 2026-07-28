@@ -31,20 +31,40 @@ HOOK_MARKER = "firekeep_client.hooks"
 # Deliberately NOT listed: the legacy PreCompact `echo` hook. It still works, the kit
 # renders no PreCompact hook of its own, and silently deleting a working behavior is worse
 # than leaving one tidy artifact behind.
+# DO NOT RENAME THE STRINGS IN THIS BLOCK. They name artifacts left by PREVIOUS
+# generations of the kit, so they must keep spelling the OLD thing forever. A
+# repo-wide find-and-replace is exactly how this cleanup breaks: the predecessor
+# rename turned LEGACY_ENV_KEYS into FIREKEEP_*_URL, which no machine has ever
+# had, silently disarming the migration while every test stayed green. Renaming a
+# legacy token is not a rename, it is a deletion.
 LEGACY_HOOK_MARKERS = (
+    # Generation 1 — the retired bash hook layer.
     "scripts/briefing.sh",
     "scripts/debrief.sh",
     "scripts/multi-agent-poll.sh",
     "scripts/multi-agent-precheck.sh",
     "scripts/multi-agent-postaction.sh",
+    # Generation 2 — the predecessor Python kit. Same hazard as generation 1 and
+    # the same remedy: without this, an upgraded machine keeps BOTH hook layers
+    # and fires every lifecycle event twice (doubled presence registration,
+    # doubled distill enqueues), while the predecessor half points at a profile
+    # that no longer resolves.
+    "nexus_client.hooks",
 )
 # Retired by the resolver: URL/auth/TLS come from the active ~/.firekeep/config profile now.
 # No client-kit code reads these; left in place they only mislead whoever reads the file next.
 LEGACY_ENV_KEYS = (
-    "FIREKEEP_CORTEX_URL",
-    "FIREKEEP_BRIDGE_URL",
-    "FIREKEEP_SENTINEL_URL",
-    "FIREKEEP_RELAY_URL",
+    "NEXUS_CORTEX_URL",
+    "NEXUS_BRIDGE_URL",
+    "NEXUS_SENTINEL_URL",
+    "NEXUS_RELAY_URL",
+)
+# Predecessor MCP server keys. Firekeep registers its own six under firekeep-*, so
+# without this an upgraded machine carries TWELVE servers — six of them pointing at
+# a config path that no longer exists, failing to connect on every session start.
+LEGACY_MCP_KEYS = (
+    "nexus-cortex", "nexus-bridge", "nexus-sentinel", "nexus-relay",
+    "nexus-symdex", "nexus-decision",
 )
 
 
