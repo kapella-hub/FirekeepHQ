@@ -188,10 +188,14 @@ class TestStop:
 
 
 class TestStopPersonalMode:
-    """A personal-mode session end: clear the marker (auto-clear semantics) and make
-    ZERO server calls — no deregister, snapshot, or distill enqueue."""
+    """A personal-mode TURN end: make ZERO server calls, and leave personal mode ON.
 
-    def test_bypassed_stop_clears_marker_and_makes_no_calls(self, client_env, monkeypatch):
+    Stop fires at every assistant turn end, so clearing the marker here ended
+    personal mode after turn 1 — `/personal` protected exactly one turn and then
+    silently rejoined team logging. The auto-clear lives in `session_end` now.
+    """
+
+    def test_bypassed_stop_makes_no_calls_and_LEAVES_PERSONAL_ON(self, client_env, monkeypatch):
         from firekeep_client import resolver, state
         from firekeep_client.hooks import stop
 
@@ -203,8 +207,9 @@ class TestStopPersonalMode:
 
         assert out == {}                              # no completion reminder for a personal session
         assert calls == []                            # nothing reached Relay/Bridge
-        assert resolver.is_personal() is False        # auto-cleared at session end
-        assert not resolver.personal_marker_path().exists()
+        # THE REGRESSION GUARD: personal mode must survive a turn boundary.
+        assert resolver.is_personal() is True
+        assert resolver.personal_marker_path().exists()
         # Stop fires PER TURN (Claude 'Stop' event) — it must NOT clear the
         # session stash, or attribution dies after turn 1. Session-end clearing
         # is the tap's job (complete/abandon) + session_start's top-clear + TTL.
