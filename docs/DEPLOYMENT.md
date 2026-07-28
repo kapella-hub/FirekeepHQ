@@ -413,7 +413,7 @@ Defined in `docker-compose.yml`:
 | cortex-api | 512 MB | 1.0 |
 | cortex-worker | 2 GB | 2.0 |
 | cortex-mcp | 256 MB | 0.25 |
-| cortex-beat | 128 MB | 0.1 |
+| cortex-beat | 256 MB | 0.1 |
 | qdrant | 512 MB | 0.5 |
 | redis | 256 MB | 0.25 |
 | bridge | 256 MB | 0.25 |
@@ -421,9 +421,25 @@ Defined in `docker-compose.yml`:
 | relay | 256 MB | 0.25 |
 | dashboard | 64 MB | 0.1 |
 
-**Total:** ~14.4 GB memory limit and ~8 CPU-core limits (actual usage will be lower — these are caps, not reservations, and Docker does not check their sum).
+**Total:** ~14.5 GB memory limit and ~8 CPU-core limits (actual usage will be lower — these are caps, not reservations, and Docker does not check their sum).
 
 **Minimum host: 2 cores.** CPU limits are not like memory limits — Docker refuses to *create* a container whose `cpus` exceeds the host's core count, so an over-large value fails `docker compose up` outright instead of degrading. Every per-service limit above is therefore at or below 2.0, and ollama's is configurable via `OLLAMA_CPUS` (default 2.0). Raise it on a larger host; ollama is the inference engine under every memory operation and benefits most.
+
+**Measured, not estimated.** The stranger-install smoke test records real usage on every run.
+On a 2-core / 7.8 GiB runner with the whole stack up and a memory round-tripped:
+
+| | |
+|---|---|
+| Whole system, stack running | **3.4 GiB used** of 7.8 GiB |
+| Largest container (ollama) | 812 MiB |
+| Everything else combined | ~715 MiB |
+
+So the ~14.5 GB total above is the sum of **caps**, and overstates real usage by roughly 4x.
+Budget against the measured figure; the caps exist to stop one service starving the rest, not
+to describe demand. CI fails the install if any container exceeds 85% of its own cap
+(`scripts/check_container_headroom.py`) - that gate exists because cortex-beat was found
+sitting at 91% of a 128 MB limit, where an OOM kill would have silently stopped every
+scheduled task.
 
 ## Volumes
 
