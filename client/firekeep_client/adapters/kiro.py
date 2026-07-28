@@ -46,6 +46,7 @@ from pathlib import Path
 from firekeep_client.adapters.base import (
     FIREKEEP_INSTRUCTIONS,
     FIREKEEP_MCP_KEYS,
+    LEGACY_MCP_KEYS,
     Adapter,
     drop_owned,
     hook_command,
@@ -80,7 +81,12 @@ def _is_legacy_firekeep_key(key: str) -> bool:
     # Exact kit names plus parked variants like `firekeep-cortex_DISABLED` — the pre-kit
     # manual setup's entries in ~/.kiro/settings/mcp.json. Deliberately NOT a bare
     # `firekeep-` prefix match: a user's own `firekeep-somethingelse` server is foreign.
-    return key in FIREKEEP_MCP_KEYS or key.startswith(tuple(f"{k}_" for k in FIREKEEP_MCP_KEYS))
+    #
+    # LEGACY_MCP_KEYS covers the PREDECESSOR kit's six entries for the same reason: an
+    # upgraded machine otherwise keeps them alongside ours, and they point at a config
+    # path that no longer exists.
+    owned = FIREKEEP_MCP_KEYS + LEGACY_MCP_KEYS
+    return key in owned or key.startswith(tuple(f"{k}_" for k in owned))
 
 
 def _migrate_legacy(home: Path) -> None:

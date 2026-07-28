@@ -50,6 +50,7 @@ from pathlib import Path
 from firekeep_client.adapters.base import (
     FIREKEEP_INSTRUCTIONS,
     FIREKEEP_MCP_KEYS,
+    LEGACY_MCP_KEYS,
     Adapter,
     console_script_path,
     drop_owned,
@@ -183,6 +184,10 @@ class OpencodeAdapter(Adapter):
 
         config = read_json(self._config_path())
         servers = config.setdefault("mcp", {})
+        # Migration: drop the PREDECESSOR kit's server entries. Firekeep registers its
+        # own six; leaving these makes twelve, half of them pointing at a config path
+        # that no longer exists and failing to connect on every session start.
+        drop_owned(servers, LEGACY_MCP_KEYS)
         entries = {
             name: {"type": "local", "command": [cmd, *args], "enabled": True,
                    **({"environment": {"FIREKEEP_PROFILE": pin}} if pin else {})}
@@ -246,7 +251,7 @@ class OpencodeAdapter(Adapter):
 
     def unrender(self) -> None:
         config = read_json(self._config_path())
-        drop_owned(config.get("mcp", {}), FIREKEEP_MCP_KEYS)
+        drop_owned(config.get("mcp", {}), FIREKEEP_MCP_KEYS + LEGACY_MCP_KEYS)
         write_json(self._config_path(), config)
 
         path = self._plugin_path()

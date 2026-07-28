@@ -11,6 +11,7 @@ from pathlib import Path
 from firekeep_client.adapters.base import (
     FIREKEEP_INSTRUCTIONS,
     LEGACY_ENV_KEYS,
+    LEGACY_MCP_KEYS,
     FIREKEEP_ENV_KEYS,
     FIREKEEP_MCP_KEYS,
     Adapter,
@@ -135,6 +136,10 @@ class ClaudeAdapter(Adapter):
 
         config = read_json(claude_json)
         servers = config.setdefault("mcpServers", {})
+        # Migration: drop the PREDECESSOR kit's server entries. Firekeep registers its
+        # own six; leaving these makes twelve, half of them pointing at a config path
+        # that no longer exists and failing to connect on every session start.
+        drop_owned(servers, LEGACY_MCP_KEYS)
         entries = {
             name: {"type": "stdio", "command": cmd, "args": args, **pin_env}
             for name, (cmd, args) in shim_servers(venv_bin).items()
@@ -184,7 +189,7 @@ class ClaudeAdapter(Adapter):
         claude_json, settings_json = self._paths()
 
         config = read_json(claude_json)
-        drop_owned(config.get("mcpServers", {}), FIREKEEP_MCP_KEYS)
+        drop_owned(config.get("mcpServers", {}), FIREKEEP_MCP_KEYS + LEGACY_MCP_KEYS)
         write_json(claude_json, config)
 
         settings = read_json(settings_json)

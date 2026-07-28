@@ -161,8 +161,8 @@ def _legacy_settings():
     side. The bash scripts no longer exist, so every session errors on them."""
     return {
         "env": {
-            "FIREKEEP_CORTEX_URL": "http://203.0.113.10:8100",
-            "FIREKEEP_RELAY_URL": "http://203.0.113.10:8050",
+            "NEXUS_CORTEX_URL": "http://203.0.113.10:8100",
+            "NEXUS_RELAY_URL": "http://203.0.113.10:8050",
             "FIREKEEP_AGENT_ID": "Alex",
             "FOO": "bar",
         },
@@ -222,8 +222,8 @@ def test_claude_render_drops_retired_url_env_but_keeps_agent_id(fake_home, tmp_p
     get_adapter("claude").render(venv_bin=tmp_path / "venv" / "bin")
     env = _read(fake_home / ".claude" / "settings.json")["env"]
 
-    assert "FIREKEEP_CORTEX_URL" not in env
-    assert "FIREKEEP_RELAY_URL" not in env
+    assert "NEXUS_CORTEX_URL" not in env
+    assert "NEXUS_RELAY_URL" not in env
     assert env["FIREKEEP_AGENT_ID"] == "Alex"
     assert env["FOO"] == "bar"
 
