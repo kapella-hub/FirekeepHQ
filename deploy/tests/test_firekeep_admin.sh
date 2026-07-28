@@ -40,4 +40,24 @@ if FIREKEEP_ADMIN_DRY_RUN=1 bash deploy/firekeep-admin keys create 2>/dev/null; 
     exit 1
 fi
 
-echo "PASS: firekeep-admin dry-run + scope sync"
+# No admin key, no TTY, no reachable Redis -> must FAIL FAST with a diagnosis.
+# Regression guard: this used to call `read` unconditionally, so under BatchMode or
+# CI it blocked on a prompt nobody could answer until the caller timed out, with no
+# indication of why. Onboarding a teammate died here.
+START="$(date +%s)"
+OUT3="$(BOOTSTRAP_REDIS_CMD=false bash deploy/firekeep-admin keys create --agent carol </dev/null 2>&1 || true)"
+ELAPSED=$(( $(date +%s) - START ))
+echo "$OUT3" | grep -q "no FIREKEEP_ADMIN_KEY" || { echo "FAIL: no diagnosis on the unusable path"; echo "$OUT3"; exit 1; }
+[ "$ELAPSED" -lt 10 ] || { echo "FAIL: took ${ELAPSED}s - it is prompting again"; exit 1; }
+if BOOTSTRAP_REDIS_CMD=false bash deploy/firekeep-admin keys create --agent carol </dev/null >/dev/null 2>&1; then
+    echo "FAIL: unusable path should exit nonzero"; exit 1
+fi
+
+# The local-mint path must be reachable WITHOUT an admin key. The admin key is
+# printed once by bootstrap-keys.sh and never stored, so on any server that has
+# been running a while it is gone - and with it, teammate onboarding. Assert the
+# code path exists; the live mint is covered by install-smoke's environment.
+grep -q "mint_local" deploy/firekeep-admin || { echo "FAIL: local mint path missing"; exit 1; }
+grep -q "BOOTSTRAP_REDIS_CMD" deploy/firekeep-admin || { echo "FAIL: redis override missing"; exit 1; }
+
+echo "PASS: firekeep-admin dry-run + scope sync + fail-fast + local-mint path"

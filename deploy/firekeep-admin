@@ -59,11 +59,64 @@ if [ "${FIREKEEP_ADMIN_DRY_RUN:-0}" = "1" ]; then
     exit 0
 fi
 
+# --- LOCAL path: on the server, with no admin key ---------------------------
+#
+# The admin key is printed exactly once by bootstrap-keys.sh and deliberately
+# never stored, so on any server that has been running a while it is simply gone
+# -- and with it, the ability to onboard a teammate. That made this command
+# unusable in the one situation it exists for. (Found live: onboarding the
+# author's own second machine required writing the key into Redis by hand.)
+#
+# Resolution: when no admin key is available AND Redis DB 7 is reachable, mint
+# directly, exactly as deploy/bootstrap-keys.sh already does. This is not a
+# weakening. Reaching Redis here means a shell on the server, which already
+# implies total control -- `docker exec redis-cli` can mint a key with or
+# without this script. Requiring an unrecoverable HTTP credential on top bought
+# no security, only an onboarding dead end.
+#
+# The HTTP path below remains for genuine REMOTE administration, where the admin
+# key IS the authorization.
+IFS=' ' read -r -a REDIS <<< "${BOOTSTRAP_REDIS_CMD:-docker compose exec -T redis redis-cli -n 7}"
+
+mint_local() {
+    local key hash now
+    key="fk_$(openssl rand -hex 24)"
+    hash="$(printf '%s' "$key" | sha256sum | awk '{print $1}')"
+    now="$(date -u +"%Y-%m-%dT%H:%M:%S+00:00")"
+    "${REDIS[@]}" HSET "auth:key:${hash}" \
+        agent_id "$AGENT" scopes "$NON_ADMIN_SCOPES" created_at "$now" \
+        key_id "${hash:0:16}" >/dev/null
+    if [ -n "$EXPIRES_DAYS" ]; then
+        "${REDIS[@]}" HSET "auth:key:${hash}" \
+            expires_at "$(date -u -d "+${EXPIRES_DAYS} days" +"%Y-%m-%dT%H:%M:%S+00:00")" >/dev/null
+    fi
+    "${REDIS[@]}" ZADD auth:key_index "$(date -u +%s)" "${hash:0:16}" >/dev/null
+    printf '{"agent_id": "%s", "key_id": "%s", "api_key": "%s"}\n' \
+        "$AGENT" "${hash:0:16}" "$key"
+}
+
 if [ -z "${FIREKEEP_ADMIN_KEY:-}" ]; then
+    if "${REDIS[@]}" PING 2>/dev/null | grep -q PONG; then
+        mint_local
+        echo "" >&2
+        echo "Minted locally against Redis DB 7 (no admin key needed on the server)." >&2
+        echo "Send the api_key above to ${AGENT} out-of-band -- it is shown only once." >&2
+        exit 0
+    fi
+    # Only prompt when a human can actually answer. Previously this called
+    # `read` unconditionally, so under BatchMode/CI it blocked until the caller
+    # timed out with no diagnosis at all.
+    if [ ! -t 0 ]; then
+        echo "ERROR: no FIREKEEP_ADMIN_KEY, no TTY to prompt, and Redis DB 7 is unreachable." >&2
+        echo "  On the server: run this from the compose project dir (it mints locally)." >&2
+        echo "  Remotely:      set FIREKEEP_ADMIN_KEY, or override BOOTSTRAP_REDIS_CMD." >&2
+        exit 1
+    fi
     read -rsp "Admin API key: " FIREKEEP_ADMIN_KEY
     echo
 fi
 
+# --- REMOTE path: admin key supplied ----------------------------------------
 RESPONSE="$(curl -sf -X POST "${API_URL}/auth/keys" \
     -H "Content-Type: application/json" \
     -H "X-API-Key: ${FIREKEEP_ADMIN_KEY}" \
