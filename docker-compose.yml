@@ -162,7 +162,19 @@ services:
       resources:
         limits:
           memory: 8g
-          cpus: "4.0"
+          # Configurable, and the default is deliberately LOW, because a cpus
+          # limit behaves differently from a memory limit: Docker refuses to
+          # CREATE a container whose cpus exceeds the host's core count
+          # ("range of CPUs is from 0.01 to 2.00, as there are only 2 CPUs
+          # available"), whereas a memory limit above host RAM is accepted as a
+          # cap and merely over-subscribes. So a hard-coded 4.0 did not degrade
+          # on a small host — it failed `docker compose up` outright, which is
+          # how the stranger-install smoke test found it on a 2-core runner.
+          #
+          # 2.0 installs everywhere worth supporting. Raise it on a bigger box:
+          # ollama is the inference engine under every memory operation, so more
+          # cores here is the single most effective throughput knob.
+          cpus: "${OLLAMA_CPUS:-2.0}"
 
   ollama-pull:
     # MUST stay byte-identical to the `ollama` service's image line above. This

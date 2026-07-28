@@ -409,7 +409,7 @@ Defined in `docker-compose.yml`:
 | Container | Memory | CPU |
 |-----------|--------|-----|
 | neo4j | 2 GB | 1.0 |
-| ollama | 8 GB | 4.0 |
+| ollama | 8 GB | `${OLLAMA_CPUS:-2.0}` |
 | cortex-api | 512 MB | 1.0 |
 | cortex-worker | 2 GB | 2.0 |
 | cortex-mcp | 256 MB | 0.25 |
@@ -421,7 +421,9 @@ Defined in `docker-compose.yml`:
 | relay | 256 MB | 0.25 |
 | dashboard | 64 MB | 0.1 |
 
-**Total:** ~14.4 GB memory limit (actual usage will be lower).
+**Total:** ~14.4 GB memory limit and ~8 CPU-core limits (actual usage will be lower — these are caps, not reservations, and Docker does not check their sum).
+
+**Minimum host: 2 cores.** CPU limits are not like memory limits — Docker refuses to *create* a container whose `cpus` exceeds the host's core count, so an over-large value fails `docker compose up` outright instead of degrading. Every per-service limit above is therefore at or below 2.0, and ollama's is configurable via `OLLAMA_CPUS` (default 2.0). Raise it on a larger host; ollama is the inference engine under every memory operation and benefits most.
 
 ## Volumes
 
