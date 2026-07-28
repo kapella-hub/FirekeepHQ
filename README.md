@@ -118,6 +118,19 @@ note under Connect Claude Code below.
 
 ### Connect Claude Code
 
+If the server is reachable over ssh, one command does everything:
+
+```bash
+firekeep connect root@<server>
+```
+
+It probes the server, mints an API key for you, starts an SSH tunnel if the
+server binds to loopback (the shipped default), writes `~/.firekeep/config`, and
+runs `firekeep doctor` to prove it worked. Re-running it is safe — an existing
+tunnel is reused, not duplicated.
+
+The manual path, if you would rather do it yourself or have no ssh access:
+
 ```bash
 ./install            # or: firekeep install --runtime claude
 ```
@@ -126,9 +139,11 @@ This installs the `firekeep-client` kit into `~/.firekeep/venv`, writes user-sco
 
 The installer prompts for the connection **and an API key**. Mint one on the
 server with `deploy/firekeep-admin keys create --agent <you>`; `firekeep-shim`
-then injects it on every request. A profile with no key against a keyed server
-fails every tool call — `firekeep doctor` reports that as a failed check rather
-than leaving you to guess mid-session.
+then injects it on every request. A profile with no key against a keyed server fails every tool call. `firekeep
+doctor` now catches this for BOTH http and https profiles: it asks the server
+whether it enforces auth rather than inferring from the scheme, because the
+standard personal-VPS shape is plain http to 127.0.0.1 over a tunnel against a
+keyed server — which the old scheme-based check skipped silently.
 
 ### Verify
 
