@@ -17,14 +17,49 @@
 
 ## Fresh Installation
 
-```bash
-# Clone
-git clone https://github.com/kapella-hub/Firekeep.git
-cd Firekeep
+There are two paths, and they are not interchangeable.
 
-# Install (interactive — prompts for config)
+### As a customer — pull the published images
+
+You need three things: the deployment files, a registry token, and the version
+you were sold. The server images are private packages on `ghcr.io`; the token is
+issued with your licence.
+
+```bash
+# 1. Authenticate to the registry (token issued with your licence)
+echo <your-token> | docker login ghcr.io -u <your-username> --password-stdin
+
+# 2. Set the version you were given
+#    IMAGE_TAG=dev is the default and is NEVER published — install.sh --pull
+#    stops and tells you so rather than failing later with 'manifest unknown'.
+cp .env.example .env
+$EDITOR .env            # set IMAGE_TAG=v0.1.0
+
+# 3. Install (interactive — prompts for VPS IP and Neo4j password)
+bash install.sh --pull
+```
+
+`--pull` verifies the registry is readable **before** it writes anything or
+starts a container, so a missing credential fails at the top instead of half-way
+through.
+
+Only the four Firekeep service images are published. Neo4j, Redis, Qdrant and
+Ollama are pulled by your own Docker daemon from their upstream registries —
+Firekeep never redistributes them (see
+[THIRD-PARTY-DATASTORES.md](THIRD-PARTY-DATASTORES.md)).
+
+### As a developer — build from source
+
+```bash
+git clone https://github.com/kapella-hub/Firekeep.git   # private; requires access
+cd Firekeep
 bash install.sh
 ```
+
+Without `--pull`, `install.sh` builds all seven services from this checkout,
+which is what you want when you are changing them. The mode is chosen by the
+flag, never guessed from which files happen to be present — a partial checkout
+would otherwise silently build something different from what was released.
 
 `bash install.sh` performs a standard install. Pass `--office` **only** on the
 internal office cluster — it pins the Caddy TLS front and the 127.0.0.1 port

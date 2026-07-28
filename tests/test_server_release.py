@@ -142,3 +142,66 @@ def test_release_is_tag_triggered_not_push_triggered() -> None:
     assert "branches" not in on.get("push", {}), (
         "server-release triggers on branch pushes — every merge would publish"
     )
+
+
+# --- the customer install path ------------------------------------------------
+
+def _install_sh() -> str:
+    return (REPO / "install.sh").read_text(encoding="utf-8")
+
+
+def test_install_supports_a_pull_mode() -> None:
+    """A customer must be able to install without the source.
+
+    Before this, install.sh built all seven services from a git checkout — so
+    the only way to run Firekeep was to be handed the code the licence does not
+    grant rights to.
+    """
+    code = "\n".join(ln for ln in _install_sh().splitlines() if not ln.lstrip().startswith("#"))
+    assert '"--pull"' in code, "install.sh has no --pull mode"
+    assert "docker compose pull" in code, "--pull never actually pulls"
+    assert "docker compose up -d --build" in code, "the build path was lost"
+
+
+def test_pull_mode_refuses_the_unpublished_default() -> None:
+    """`dev` is never published. Failing early beats 'manifest unknown' later.
+
+    The check must happen BEFORE .env is written and Redis is started, or the
+    operator debugs a half-built install instead of reading one line.
+    """
+    code = _install_sh()
+    assert 'IMAGE_TAG_VALUE" = "dev"' in code, (
+        "install.sh --pull does not reject the unpublished default tag"
+    )
+    assert "manifest unknown" in code, "the failure message does not name the symptom"
+
+
+def test_env_example_and_compose_agree_on_the_default_tag() -> None:
+    """Two places name the default; they must not drift.
+
+    compose says `${IMAGE_TAG:-dev}` and .env.example ships `IMAGE_TAG=dev`. If
+    those disagreed, a developer's build and a `.env`-driven run would tag
+    different images and neither would be obviously wrong.
+    """
+    env_default = None
+    for raw in (REPO / ".env.example").read_text(encoding="utf-8").splitlines():
+        if raw.strip().startswith("IMAGE_TAG="):
+            env_default = raw.split("=", 1)[1].strip()
+            break
+    assert env_default, ".env.example does not ship an IMAGE_TAG"
+
+    compose = (REPO / "docker-compose.yml").read_text(encoding="utf-8")
+    fallbacks = set(re.findall(r"\$\{IMAGE_TAG:-([^}]+)\}", compose))
+    assert fallbacks, "compose does not reference ${IMAGE_TAG:-...}"
+    assert fallbacks == {env_default}, (
+        f".env.example ships IMAGE_TAG={env_default} but compose falls back to "
+        f"{fallbacks} — a build and a .env-driven run would tag different images"
+    )
+
+
+def test_docs_tell_a_customer_how_to_install_without_source() -> None:
+    """README and DEPLOYMENT both told customers to `git clone` a PRIVATE repo."""
+    for name in ("README.md", "docs/DEPLOYMENT.md"):
+        text = (REPO / name).read_text(encoding="utf-8")
+        assert "install.sh --pull" in text, f"{name} does not document the customer path"
+        assert "docker login ghcr.io" in text, f"{name} does not say how to authenticate"

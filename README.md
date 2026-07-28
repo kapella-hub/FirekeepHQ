@@ -59,13 +59,24 @@ It is a **control plane for AI coding agents** — infrastructure that sits behi
 
 ### Deploy
 
+**If you were given a licence** — the server images are published; you do not
+need the source:
+
 ```bash
-git clone https://github.com/kapella-hub/Firekeep.git
+echo <your-token> | docker login ghcr.io -u <your-username> --password-stdin
+cp .env.example .env && $EDITOR .env      # set IMAGE_TAG to your version
+bash install.sh --pull
+```
+
+**If you have source access** — build it:
+
+```bash
+git clone https://github.com/kapella-hub/Firekeep.git   # private
 cd Firekeep
 bash install.sh
 ```
 
-The installer prompts for your VPS IP and Neo4j password, builds the full stack (13 containers: the Cortex API / MCP / worker / beat quartet, Bridge, Sentinel, Relay, the dashboard, the Neo4j / Qdrant / Redis / Ollama backends, and a one-shot Ollama model puller), mints your API keys, and prints MCP URLs when ready.
+Either way the installer prompts for your VPS IP and Neo4j password, brings up the full stack (13 containers: the Cortex API / MCP / worker / beat quartet, Bridge, Sentinel, Relay, the dashboard, the Neo4j / Qdrant / Redis / Ollama backends, and a one-shot Ollama model puller), mints your API keys, and prints MCP URLs when ready.
 
 Among those keys is an **admin key, printed exactly once**. Save it before the
 terminal scrolls — it is never written to disk.

@@ -142,9 +142,48 @@ else
     fi
 fi
 
-# --- Build and start ---
-echo ""
-echo "Building and starting services..."
+# --- Build from source, or pull published images? ---------------------------
+# install.sh assumed a git checkout and built all seven services locally. That
+# is right for a developer and wrong for a customer: the images are published to
+# ghcr.io (see .github/workflows/server-release.yml) precisely so nobody has to
+# be handed the source to run this.
+#
+# Chosen explicitly rather than guessed. Auto-detecting "is there source here"
+# would make the mode depend on which files happen to exist, and a partial
+# checkout would silently build something different from what was released.
+#   --pull   fetch the published images (needs IMAGE_TAG and a registry login)
+#   default  build from this checkout, as before
+PULL_MODE=0
+for arg in "$@"; do
+    [ "$arg" = "--pull" ] && PULL_MODE=1
+done
+
+if [ "$PULL_MODE" -eq 1 ]; then
+    IMAGE_TAG_VALUE="$(env_value .env IMAGE_TAG)"
+    if [ -z "$IMAGE_TAG_VALUE" ] || [ "$IMAGE_TAG_VALUE" = "dev" ]; then
+        echo "ERROR: --pull needs a release tag." >&2
+        echo "       Set IMAGE_TAG in .env to the version you were given, e.g." >&2
+        echo "         IMAGE_TAG=v0.1.0" >&2
+        echo "       The default ('dev') names images that are never published;" >&2
+        echo "       pulling it would fail with 'manifest unknown' after this" >&2
+        echo "       script had already written .env and started Redis." >&2
+        exit 1
+    fi
+    if ! docker manifest inspect "ghcr.io/kapella-hub/firekeep-cortex:${IMAGE_TAG_VALUE}" >/dev/null 2>&1; then
+        echo "ERROR: cannot read ghcr.io/kapella-hub/firekeep-cortex:${IMAGE_TAG_VALUE}" >&2
+        echo "       The packages are private. Log in with the token you were" >&2
+        echo "       issued, then re-run:" >&2
+        echo "         echo <token> | docker login ghcr.io -u <your-username> --password-stdin" >&2
+        echo "       Checked BEFORE building anything so a missing credential" >&2
+        echo "       fails here rather than half-way through the install." >&2
+        exit 1
+    fi
+    echo ""
+    echo "Pulling published images (IMAGE_TAG=${IMAGE_TAG_VALUE})..."
+else
+    echo ""
+    echo "Building and starting services from source..."
+fi
 export GIT_SHA="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 export BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 # --match excludes this repo's client-vX.Y.Z release tags (client/ has its own
@@ -273,7 +312,12 @@ fi
 # over.
 ADMIN_KEY="$(printf '%s\n' "$BOOTSTRAP_OUT" | grep -oE 'nxs_[0-9a-f]{48}' | head -n1 || true)"
 
-docker compose up -d --build
+if [ "$PULL_MODE" -eq 1 ]; then
+    docker compose pull
+    docker compose up -d
+else
+    docker compose up -d --build
+fi
 
 # --- Wait for the model pull ---
 # cortex-api depends on `ollama: service_healthy`, NOT on ollama-pull
