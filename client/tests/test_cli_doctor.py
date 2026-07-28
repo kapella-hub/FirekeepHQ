@@ -61,29 +61,53 @@ def test_check_health_reports_fail_on_transport_error(tmp_path, monkeypatch):
     assert all(status == "fail" for _, status, _ in results)
 
 
-def test_check_skew_ok_when_versions_match(tmp_path, monkeypatch):
+def test_versions_row_is_ok_for_a_REALISTIC_server_version(tmp_path, monkeypatch):
+    """THE REGRESSION GUARD.
+
+    The old test stubbed the server as returning the CLIENT's own version and
+    asserted "ok" — an input production cannot produce, since the client ships on
+    `client-v*` (0.1.23) and the server on `v[0-9]+.[0-9]+.[0-9]+`. It proved the
+    code worked for a case that never occurs, which is exactly why `doctor` shipped
+    a `version-skew: warn` on every correct install without any test noticing.
+
+    So this stubs a REAL server version and requires ok.
+    """
     cfg = _cfg(tmp_path, monkeypatch, PERSONAL)
-    monkeypatch.setattr(cli, "get_json", lambda url, **kw: {"version": __version__})
-    name, status, _ = cli._check_skew(cfg)
-    assert name == "version-skew" and status == "ok"
+    monkeypatch.setattr(cli, "get_json", lambda url, **kw: {"version": "0.6.0"})
+    name, status, detail = cli._check_versions(cfg)
+    assert name == "versions"
+    assert status == "ok", "a normal install must not warn about differing versions"
+    assert __version__ in detail and "0.6.0" in detail   # reports BOTH, judges neither
 
 
-def test_check_skew_warns_on_mismatch(tmp_path, monkeypatch):
+def test_versions_row_never_warns_merely_because_they_differ(tmp_path, monkeypatch):
+    """Differing versions are the NORMAL state, not a finding. Any version the
+    server reports must produce ok — the row has no verdict to render."""
     cfg = _cfg(tmp_path, monkeypatch, PERSONAL)
-    monkeypatch.setattr(cli, "get_json", lambda url, **kw: {"version": "9.9.9"})
-    _, status, detail = cli._check_skew(cfg)
-    assert status == "warn" and "9.9.9" in detail
+    for server_version in ("0.6.0", "9.9.9", "1.0.0-rc1", __version__):
+        monkeypatch.setattr(cli, "get_json", lambda url, _v=server_version, **kw: {"version": _v})
+        _, status, _ = cli._check_versions(cfg)
+        assert status == "ok", f"warned on server version {server_version!r}"
 
 
-def test_check_skew_warns_when_unreachable(tmp_path, monkeypatch):
+def test_versions_row_warns_when_server_reports_no_version(tmp_path, monkeypatch):
+    """A reachable /version that yields nothing IS a real, checkable defect —
+    unlike skew, which is not."""
+    cfg = _cfg(tmp_path, monkeypatch, PERSONAL)
+    monkeypatch.setattr(cli, "get_json", lambda url, **kw: {})
+    _, status, _ = cli._check_versions(cfg)
+    assert status == "warn"
+
+
+def test_versions_row_warns_when_unreachable(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path, monkeypatch, PERSONAL)
 
     def boom(url, **kw):
         raise transport.TransportError("down")
 
     monkeypatch.setattr(cli, "get_json", boom)
-    _, status, _ = cli._check_skew(cfg)
-    assert status == "warn"  # skew unknown, not a hard fail
+    _, status, _ = cli._check_versions(cfg)
+    assert status == "warn"  # unreachable is real; not a hard fail
 
 
 def test_check_health_survives_ssl_errors_not_wrapped_by_transport(tmp_path, monkeypatch):
@@ -104,7 +128,7 @@ def test_check_health_survives_ssl_errors_not_wrapped_by_transport(tmp_path, mon
     assert all(status == "fail" for _, status, _ in results)
 
 
-def test_check_skew_survives_ssl_errors_not_wrapped_by_transport(tmp_path, monkeypatch):
+def test_check_versions_survives_ssl_errors_not_wrapped_by_transport(tmp_path, monkeypatch):
     import ssl as _ssl
     cfg = _cfg(tmp_path, monkeypatch, PERSONAL)
 
@@ -112,7 +136,7 @@ def test_check_skew_survives_ssl_errors_not_wrapped_by_transport(tmp_path, monke
         raise _ssl.SSLError("no certificate or crl found")
 
     monkeypatch.setattr(cli, "get_json", boom)
-    _, status, _ = cli._check_skew(cfg)
+    _, status, _ = cli._check_versions(cfg)
     assert status == "warn"
 
 
@@ -259,7 +283,7 @@ def test_check_venv_scripts_missing_entirely_is_not_labeled_partial(tmp_path):
 def test_run_doctor_includes_agent_id_check(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path, monkeypatch, PERSONAL_CHANGEME)
     monkeypatch.setattr(cli, "_check_health", lambda cfg: [])
-    monkeypatch.setattr(cli, "_check_skew", lambda cfg: ("version-skew", "ok", ""))
+    monkeypatch.setattr(cli, "_check_versions", lambda cfg: ("versions", "ok", ""))
     monkeypatch.setattr(cli, "_check_venv_scripts", lambda venv, is_windows=None: ("venv-scripts", "ok", ""))
     monkeypatch.setattr(cli, "_check_config_perms", lambda config, is_windows=None: ("config-perms", "ok", ""))
     monkeypatch.setattr(cli, "_check_ca_expiry", lambda cfg: None)

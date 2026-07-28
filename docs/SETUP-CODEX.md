@@ -133,7 +133,7 @@ Presence/heartbeat/snapshot/exit lifecycle is *intended* to be owned by the `fir
 
 ### Codex cannot see the servers
 
-- Run `firekeep doctor` — it verifies the rendered `firekeep-shim` paths exist, checks connectivity/auth/version-skew for the active profile, and flags a lingering `CHANGEME` agent_id
+- Run `firekeep doctor` — it verifies the rendered `firekeep-shim` paths exist, checks connectivity and auth for the active profile, reports client and cortex versions, and flags a lingering `CHANGEME` agent_id
 - Run `codex mcp list` and confirm the entries exist
 - Check that the host in `~/.firekeep/config`'s active profile is reachable from your machine
 - Verify `docker compose ps` on the VPS shows services healthy
