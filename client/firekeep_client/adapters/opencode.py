@@ -117,7 +117,12 @@ export const FirekeepHooks = async () => {
       ensureStarted(sid)
       emit(runCore("prompt", {}, 8000))
     } else if (event.type === "session.deleted") {
+      // session.deleted IS real session end here (unlike claude's per-turn Stop),
+      // so both cores run: stop for the snapshot + distill enqueue, session_end
+      // for the presence deregister. Sequential, not emitted: nobody is left to
+      // read a systemMessage once the session is deleted.
       runCore("stop", {}, 5000)
+      runCore("session_end", {}, 5000)
     }
   },
   "tool.execute.before": async (input, output) => {

@@ -41,7 +41,14 @@ import os
 import sys
 
 from firekeep_client import hooklog, resolver
-from firekeep_client.hooks import post_tool, pre_tool, prompt, session_start, stop
+from firekeep_client.hooks import (
+    post_tool,
+    pre_tool,
+    prompt,
+    session_end,
+    session_start,
+    stop,
+)
 
 # Shown (as a Claude systemMessage) on session_start/prompt while personal mode is on,
 # so an active bypass is loud and hard to forget.
@@ -54,12 +61,19 @@ _BYPASS_MSG = (
 _CORE_MODULES = {
     "session_start": session_start,
     "stop": stop,
+    "session_end": session_end,
     "prompt": prompt,
     "pre_tool": pre_tool,
     "post_tool": post_tool,
 }
 _INT_CORES = frozenset({"pre_tool", "post_tool"})
-_DICT_CORES = frozenset({"session_start", "stop", "prompt"})
+_DICT_CORES = frozenset({"session_start", "stop", "session_end", "prompt"})
+
+# Cores that must run even while personal mode is ON, because they self-handle
+# bypass and own end-of-session cleanup: `stop` clears the personal marker
+# itself, and `session_end` must be free to decline comms without the dispatcher
+# printing _BYPASS_MSG at a session nobody is reading any more.
+_BYPASS_EXEMPT = frozenset({"stop", "session_end"})
 
 
 def _usage() -> None:
@@ -172,11 +186,12 @@ def main(argv: list[str] | None = None) -> int:
 
     # Personal / bypass mode: Firekeep goes dormant for this session. Checked LIVE
     # (every hook invocation re-reads the marker) so a mid-session `/personal` toggle
-    # takes effect at once. `stop` is deliberately NOT short-circuited here — it
-    # self-handles bypass (clears the marker so personal mode auto-ends with the
-    # session, and skips its own Relay/Bridge comms).
+    # takes effect at once. `stop` and `session_end` are deliberately NOT
+    # short-circuited here (see _BYPASS_EXEMPT) — they self-handle bypass: `stop`
+    # clears the marker so personal mode auto-ends with the session, and both skip
+    # their own Relay/Bridge comms rather than being skipped wholesale.
     try:
-        if core_name != "stop" and resolver.is_bypassed():
+        if core_name not in _BYPASS_EXEMPT and resolver.is_bypassed():
             if core_name in _INT_CORES:
                 return 0  # allow the edit; no policy/gateway call reaches the server
             print(json.dumps({"systemMessage": _BYPASS_MSG}))  # session_start / prompt

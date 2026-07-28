@@ -32,10 +32,17 @@ from firekeep_client.adapters.base import (
 # deletes OUR file, never a hand-written ~/.claude/commands/personal.md a user owns.
 COMMAND_MARKER = "firekeep-owned: personal-mode toggle"
 
-# (Claude event, hook core, matcher | None, timeout) — 5 lifecycle hooks -> hook-core entry points.
+# (Claude event, hook core, matcher | None, timeout) — 6 lifecycle hooks -> hook-core entry points.
+#
+# SessionEnd is what makes the presence lifecycle correct: Stop fires at EVERY
+# assistant turn end, so the deregister that used to ride it deleted presence
+# after turn 1 and heartbeat (update-only) could never restore it. SessionEnd is
+# the only Claude event carrying the turn-vs-session distinction. See
+# hooks/session_end.py.
 CLAUDE_HOOKS = (
     ("SessionStart", "session_start", None, 15),
     ("Stop", "stop", None, 5),
+    ("SessionEnd", "session_end", None, 5),
     ("UserPromptSubmit", "prompt", None, 8),
     ("PreToolUse", "pre_tool", "^(Edit|Write)$", 5),
     ("PostToolUse", "post_tool", "^(Edit|Write|MultiEdit|Bash)$", 10),
