@@ -22,6 +22,26 @@ this file"). This document records what was actually observed and the resulting 
 | 5 | Per-entry non-clobbering merge; flat `hooks: {event: [{command, matcher?}]}` | **CONFIRMED** | Schema matches; `upsert_flat_hook` keys on the firekeep marker in the command. |
 | 6 | `"env": {...}` on an `mcpServers` entry is accepted AND passed to the spawned process | **CONFIRMED (2026-07-13, kiro-cli 2.12.1)** | `agent validate` rc=0 with env dicts on every entry. Live spawn probe: a throwaway agent's server command wrapped in a script dumping `$FIREKEEP_PROFILE` before exec'ing the real shim; `kiro-cli chat --agent firekeepprobe --no-interactive` spawned it and the dump read `personal` — kiro passes the env dict through. The shim `--profile` args fallback stays implemented but is not needed on 2.12.1. |
 
+| 7 | `stop` fires once per SESSION (implied by the "1:1 with Claude" mapping) | **PER TURN — same as Claude** | Probe 2026-07-28, kiro-cli 2.12.1: throwaway `fkprobe` agent logging every hook invocation; three prompts piped into ONE interactive `kiro-cli chat` session. Counts: `agentSpawn` **1**, `userPromptSubmit` **3**, `stop` **3**. So kiro carried the identical turn-1 presence bug as Claude, and it is fixed by the same change (the deregister leaving the shared `stop` core). |
+| 8 | Hook stdin payload carries a per-session id | **NO — no id of any kind** | Same probe. Payload keys are exactly `cwd`, `hook_event_name`, and `prompt` (agentSpawn/userPromptSubmit) or `assistant_response` (stop). Zero keys matching `*session*` or `*id`. Note kiro *does* have sessions at the CLI surface (`chat --resume-id <SESSION_ID>`, `--list-sessions`) — it simply does not pass the id to hooks. |
+
+## Consequence: kiro cannot deregister presence, by any mechanism
+
+Rows 7 and 8 together close the question the `session_end` work left open:
+
+- kiro has **no session-end event**. Its five events are `agentSpawn`, `userPromptSubmit`,
+  `preToolUse`, `postToolUse`, `stop` — and `stop` is per-turn (row 7). There is nothing to
+  hang a deregister on.
+- kiro passes **no session id** (row 8), so the per-session scratch-marker pattern that would
+  otherwise let a per-turn event fire once per session cannot be keyed.
+
+Therefore kiro is deliberately **not** wired to the `session_end` core, and this is the final
+answer rather than an interim one. The consequence is bounded and benign: presence is one key
+per `agent_id` with idempotent overwrite (`relay/app/presence.py:27-29`), so kiro leaves at most
+**one** idle record per agent, reclaimed by that agent's next `agentSpawn` and filtered out of
+`who_is_online` by computed status. That is strictly better than the previous behaviour, where
+presence was deleted at the end of turn 1 and could never return.
+
 ## The two bugs found
 
 1. **Matcher never matched (gate silently dead).** The adapter rendered Claude's tool names

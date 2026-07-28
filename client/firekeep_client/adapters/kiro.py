@@ -11,7 +11,14 @@ VALIDATED against kiro-cli 2.12.1 (see docs/KIRO-VALIDATION.md for the empirical
      --path <file>` accepts this shape.
   2. The 5 lifecycle events are `agentSpawn`, `userPromptSubmit`, `preToolUse`,
      `postToolUse`, `stop`, mapping 1:1 to Claude's SessionStart/UserPromptSubmit/
-     PreToolUse/PostToolUse/Stop.
+     PreToolUse/PostToolUse/Stop. VALIDATED 2026-07-28 (KIRO-VALIDATION.md rows 7-8),
+     including the cadence the mapping had only ever asserted: `stop` fires PER TURN,
+     exactly like Claude's Stop (3 prompts in one session -> agentSpawn 1, stop 3).
+     Two consequences: kiro carried the same turn-1 presence bug and is fixed by the
+     same change; and kiro is deliberately NOT wired to `session_end`, because it has
+     no session-end event AND its hook payload carries no session id (keys are only
+     cwd / hook_event_name / prompt|assistant_response), so a per-session marker
+     cannot be keyed either. See hooks/session_end.py.
   3. `matcher` is an EXACT kiro tool-name/alias match, NOT a regex: `.*` and Claude's
      `Edit|Write` match NOTHING (the old values meant the hook never fired at all); `"*"`
      matches every tool. kiro's file create/edit tool is `fs_write` (alias `write`), so the

@@ -67,33 +67,38 @@ class TestGitHelper:
 
 
 class TestStop:
-    def test_skips_deregister_within_race_window(self, client_env, monkeypatch):
-        from firekeep_client import state
+    def test_stop_never_deregisters_presence(self, client_env, monkeypatch):
+        """REGRESSION GUARD for the turn-1 presence bug.
+
+        Stop fires at EVERY assistant turn end, so deregistering here deleted
+        presence at the end of turn 1 -- and relay heartbeat_presence is
+        update-only (returns {"refreshed": False} at HTTP 200, which no client
+        detects), so nothing could ever restore it. The deregister now lives in
+        `session_end`. If it reappears here, that bug is back.
+
+        The no-prior-mark case is used deliberately: it is the one that used to
+        FORCE a deregister, because should_deregister() returns True when the
+        mark is absent.
+        """
         from firekeep_client.hooks import stop
-        state.write_scratch("presence_registered_tester@personal", str(int(time.time())))
         calls = _record_calls(monkeypatch)
         out = stop.run({})
         tools = [t for t, _ in calls]
-        assert "relay_deregister" not in tools     # guarded: newer session present
-        assert "ctx_update" in tools               # snapshot still pushed
-        assert state.read_scratch("presence_registered_tester@personal") is None  # consumed
+        assert "relay_deregister" not in tools
+        assert "ctx_update" in tools          # snapshot is correctly per-turn, still pushed
         assert "systemMessage" in out
 
-    def test_deregisters_when_registration_is_stale(self, client_env, monkeypatch):
+    def test_stop_does_not_consume_the_registration_mark(self, client_env, monkeypatch):
+        """The mark belongs to session_end. If stop consumed it, session_end's
+        race guard would later read "no mark" -> deregister, and clobber the
+        presence of a newer session that had just taken over this agent_id."""
         from firekeep_client import state
         from firekeep_client.hooks import stop
-        state.write_scratch("presence_registered_tester@personal", str(int(time.time()) - 60))
-        calls = _record_calls(monkeypatch)
+        key = "presence_registered_tester@personal"
+        state.write_scratch(key, str(int(time.time())))
+        _record_calls(monkeypatch)
         stop.run({})
-        tools = [t for t, _ in calls]
-        assert "relay_deregister" in tools
-        assert ("ctx_update" in tools)
-
-    def test_deregisters_when_no_prior_registration(self, client_env, monkeypatch):
-        from firekeep_client.hooks import stop
-        calls = _record_calls(monkeypatch)
-        stop.run({})
-        assert "relay_deregister" in [t for t, _ in calls]
+        assert state.read_scratch(key) is not None
 
     def test_normal_stop_does_not_clear_session_stash(self, client_env, monkeypatch):
         """Stop fires every turn, not at session end — clearing the session

@@ -188,3 +188,37 @@ def test_opencode_rerender_is_idempotent(fake_home, tmp_path):
     assert _config(fake_home).read_text() == first
     # exactly one owned plugin file, still marker-bearing
     assert "firekeep-owned: opencode hook bridge" in _plugin(fake_home).read_text(encoding="utf-8")
+
+
+def test_opencode_session_deleted_runs_both_stop_and_session_end(fake_home, tmp_path):
+    """session.deleted is opencode's REAL session end (unlike claude's per-turn
+    Stop), so it must drive both cores: `stop` for the snapshot + distill enqueue,
+    `session_end` for the presence deregister.
+
+    Regression guard with teeth: OPENCODE-VALIDATION.md row 7 confirmed opencode's
+    deregister empirically, but it did so via the deregister that used to live in
+    the `stop` core. That code moved to `session_end`; if this dispatch is dropped,
+    opencode silently stops deregistering and row 7's evidence no longer describes
+    the shipped behaviour.
+    """
+    adapter = get_adapter("opencode")
+    adapter.render(venv_bin=tmp_path / "vbin")
+    js = _plugin(fake_home).read_text(encoding="utf-8")
+
+    # Slice to the next handler, not to the next "}," — that would cut at the `{}`
+    # ARGUMENT inside runCore("stop", {}, 5000) and hide the session_end call.
+    branch = js[js.index("session.deleted"):js.index('"tool.execute.before"')]
+    assert 'runCore("stop"' in branch
+    assert 'runCore("session_end"' in branch
+
+
+def test_opencode_plugin_dispatches_every_hook_core(fake_home, tmp_path):
+    """All six cores reachable from the bridge. Catches a core added to the
+    dispatcher but never wired into opencode (kiro/claude have their own tables;
+    opencode's wiring is hand-written JS and is the easiest to forget)."""
+    adapter = get_adapter("opencode")
+    adapter.render(venv_bin=tmp_path / "vbin")
+    js = _plugin(fake_home).read_text(encoding="utf-8")
+
+    for core in ("session_start", "prompt", "stop", "session_end", "pre_tool", "post_tool"):
+        assert f'runCore("{core}"' in js, f"opencode plugin never dispatches {core}"
