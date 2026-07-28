@@ -128,5 +128,5 @@ def test_kit_hangs_together(firekeep_env, write_config, monkeypatch):
 
     names = {name for name, _, _ in results}
     assert set(SERVICES) <= names  # per-service health rows present
-    assert {"version-skew", "agent-id", "api-key", "venv-scripts",
+    assert {"versions", "agent-id", "api-key", "venv-scripts",
             "config-perms", "ca-expiry"} <= names

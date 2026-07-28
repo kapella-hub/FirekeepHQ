@@ -144,7 +144,7 @@ The installer is the supported path; there is no manual alternative that reaches
 
 ### Briefing shows "Service unreachable"
 - The host/base_url in your active `~/.firekeep/config` profile must be reachable from your machine
-- Run `firekeep doctor` — it checks connectivity, auth, and version-skew for every service in one pass
+- Run `firekeep doctor` — it checks connectivity and auth for every service in one pass, reports the client and cortex versions, and flags a stale client against the release manifest
 - Try `curl http://127.0.0.1:8100/health` **on the Firekeep host** — `/health` is pre-auth,
   so it answers without a key and tells you the service is up. From another machine that
   call only works if you set `BIND_ADDR=0.0.0.0`; on a default install, tunnel instead.

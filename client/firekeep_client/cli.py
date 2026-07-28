@@ -191,8 +191,8 @@ def cmd_version(args) -> int:
     except resolver.ConfigError:
         print("skew: no config (run firekeep install)")
         return 0
-    _, _, detail = _check_skew(cfg)
-    print(f"skew: {detail}")
+    _, _, detail = _check_versions(cfg)
+    print(detail)
     return 0
 
 
@@ -512,18 +512,41 @@ def _ep_url(svc, cfg) -> str:
         return svc
 
 
-def _check_skew(cfg) -> tuple[str, str, str]:
+def _check_versions(cfg) -> tuple[str, str, str]:
+    """Report the client and cortex versions. Deliberately does NOT judge them.
+
+    This used to be `version-skew`, and it returned "ok" only when
+    `server == __version__`. That is structurally unsatisfiable: the client ships
+    on `client-v*` tags (currently 0.1.23) and the server on `v[0-9]+.[0-9]+.[0-9]+`
+    (see .github/workflows/release.yml vs server-release.yml) — two independently
+    released artifacts on different tag series. Equality is not merely unlikely,
+    it is meaningless, so EVERY correct install emitted `version-skew: warn`.
+    A row that is always wrong is worse than no row: it teaches the reader to
+    skip the whole report.
+
+    Judging real incompatibility would need a declared protocol/compat version,
+    which exists nowhere in this codebase; inventing one spans four MCP services,
+    shim.py, five hook cores and doctor — the "new subsystem" docs/STRATEGY.md
+    freezes. Until such a declaration exists, this reports and the reader judges.
+
+    The ACTIONABLE half is already covered, against an authority that actually
+    exists: `_check_client_version` compares the kit to the release manifest and
+    tells you to run `firekeep update`. This row is for support ("what are you
+    running?"), not for verdicts.
+
+    Unreachable stays a warn: that is a real, checkable condition, unlike skew.
+    """
     try:
         ep = resolver.resolve("cortex", cfg=cfg)
         data = get_json(f"{ep.rest_base}/version", headers=ep.headers, verify=ep.verify)
         server = data.get("version") if isinstance(data, dict) else None
-        if server == __version__:
-            return ("version-skew", "ok", f"client and cortex both {__version__}")
-        return ("version-skew", "warn", f"client {__version__} != cortex {server}")
+        if not server:
+            return ("versions", "warn", f"client {__version__}, cortex reported no version")
+        return ("versions", "ok", f"client {__version__}, cortex {server}")
     except (TransportError, resolver.ConfigError, OSError) as exc:
         # OSError: see _check_health's comment -- an unverifiable ca_path
-        # raises ssl.SSLError, not TransportError. Skew unknown, not fatal.
-        return ("version-skew", "warn", f"cortex /version unreachable: {exc}")
+        # raises ssl.SSLError, not TransportError. Unreachable, not fatal.
+        return ("versions", "warn", f"cortex /version unreachable: {exc}")
 
 
 def _check_agent_id(cfg) -> tuple[str, str, str] | None:
@@ -708,9 +731,13 @@ def _check_client_version(cfg) -> tuple[str, str, str] | None:
 
     Returns None for a checkout install (no [dist] section) — that developer never used the
     bootstrap and has nothing to update from. Never 'fail': a stale-but-working client is a
-    nudge, not an outage. This is the actionable half of what _check_skew gestures at:
-    _check_skew compares client to CORTEX, which conflates 'my client is old' with 'the
-    server moved'.
+    nudge, not an outage.
+
+    This is the ONLY version check that renders a verdict, and it can because it compares
+    the kit against an authority that exists (the release manifest). Its former sibling
+    compared client to CORTEX — two independently released artifacts — which conflated 'my
+    client is old' with 'the server moved' and could never return ok; that row is now the
+    verdict-free `_check_versions` report.
     """
     try:
         base = updater.dist_base(cfg)
@@ -740,7 +767,7 @@ def run_doctor(cfg=None) -> list[tuple[str, str, str]]:
     # raising, so one check's failure can never mask or short-circuit the
     # rest -- doctor always runs the full suite and reports everything.
     results.extend(_check_health(cfg))
-    results.append(_check_skew(cfg))
+    results.append(_check_versions(cfg))
     client_version = _check_client_version(cfg)
     if client_version is not None:
         results.append(client_version)

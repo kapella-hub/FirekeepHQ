@@ -23,22 +23,18 @@ def _write_cfg(tmp_path, monkeypatch):
     monkeypatch.setenv("FIREKEEP_CONFIG", str(cfg))
 
 
-def test_version_prints_version_and_skew_in_sync(tmp_path, monkeypatch, capsys):
+def test_version_reports_both_client_and_server(tmp_path, monkeypatch, capsys):
+    """`firekeep version` reports both sides and asserts nothing about their
+    relationship. The old test stubbed the server as returning the CLIENT's
+    version and asserted the word "both" — an impossible input describing an
+    "in sync" state that cannot exist across two independent tag series."""
     _write_cfg(tmp_path, monkeypatch)
-    monkeypatch.setattr(cli, "get_json", lambda url, **kw: {"version": __version__})
+    monkeypatch.setattr(cli, "get_json", lambda url, **kw: {"version": "0.6.0"})
     assert cli.main(["version"]) == 0
     out = capsys.readouterr().out
     assert __version__ in out
-    assert "skew:" in out
-    assert "both" in out  # in-sync detail from _check_skew
-
-
-def test_version_reports_skew_on_mismatch(tmp_path, monkeypatch, capsys):
-    _write_cfg(tmp_path, monkeypatch)
-    monkeypatch.setattr(cli, "get_json", lambda url, **kw: {"version": "8.8.8"})
-    assert cli.main(["version"]) == 0
-    out = capsys.readouterr().out
-    assert "8.8.8" in out
+    assert "0.6.0" in out
+    assert "skew" not in out.lower()   # no verdict is rendered any more
 
 
 def test_version_no_config_is_soft(tmp_path, monkeypatch, capsys):
