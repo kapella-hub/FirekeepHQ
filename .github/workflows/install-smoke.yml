@@ -8,6 +8,27 @@ name: Install smoke (the stranger test)
 # known-red check trains people to ignore it. Task 11 adds the automatic
 # triggers once it is green.
 on:
+  # Auto-triggers added 2026-07-28, once the install first went green (12/12).
+  # The header above explains why they were withheld until then: gating on a
+  # known-red check trains people to ignore it.
+  #
+  # Deliberately NOT on pull_request. This run pulls ~3.3GB of models and takes
+  # ~7 minutes; paying that on every PR would buy little, because the failure
+  # class it catches lives in docker-compose.yml and install.sh, not in the
+  # client changes that make up most PRs. main + nightly catches a regression
+  # within one merge or one day, which is the right trade for a 45-minute job.
+  push:
+    branches: [main]
+    paths:
+      - 'docker-compose.yml'
+      - 'install.sh'
+      - 'deploy/**'
+      - 'docker/**'
+      - 'Dockerfile'
+      - '.env.example'
+      - '.github/workflows/install-smoke.yml'
+  schedule:
+    - cron: '0 4 * * *'   # 04:00 UTC daily — catches drift from upstream image tags
   workflow_dispatch:
 
 jobs:
@@ -264,11 +285,16 @@ jobs:
           fi
           exit $rc
 
-      - name: Record the real resource high-water mark
+      - name: Assert no container is running close to its memory cap
+        # Was a passive `Record` step. It printed cortex-beat at 116.9MiB against
+        # a 128MiB limit -- 91% -- and nobody read it, because recording a number
+        # asserts nothing. An OOM kill here is SILENT: beat dies and periodic
+        # tasks just stop firing. Now it gates.
         run: |
           free -h
           df -h /
-          docker stats --no-stream --format 'table {{.Name}}\t{{.MemUsage}}'
+          docker stats --no-stream --format '{{.Name}}\t{{.MemUsage}}' \
+            | python3 scripts/check_container_headroom.py
 
       - name: Dump diagnostics on failure
         if: failure()

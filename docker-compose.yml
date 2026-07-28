@@ -533,7 +533,13 @@ services:
     deploy:
       resources:
         limits:
-          memory: 128m
+          # Was 128m, and the stranger-install smoke test measured this container
+          # at 116.9 MiB against it — 91% of its cap, one load spike from an OOM
+          # kill whose failure mode is SILENT: beat dies, scheduled tasks simply
+          # stop firing, and nothing reports it. 256m restores real headroom and
+          # matches the house size for the other small services (cortex-mcp,
+          # bridge, sentinel, relay are all 256m).
+          memory: 256m
           cpus: "0.1"
 
   # ============================================================
