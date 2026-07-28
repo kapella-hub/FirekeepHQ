@@ -61,8 +61,7 @@ class TestSessionEnd:
         assert session_end.run({}) == {}
 
     def test_personal_mode_sends_nothing(self, client_env, monkeypatch):
-        """Bypass is self-handled: no Relay comms leave a personal session. The
-        marker itself is stop's to clear, so session_end must NOT touch it."""
+        """Bypass is self-handled: no Relay comms leave a personal session."""
         from firekeep_client import resolver, state
         from firekeep_client.hooks import session_end
         monkeypatch.setattr(resolver, "is_bypassed", lambda: True)
@@ -70,7 +69,24 @@ class TestSessionEnd:
         calls = _record_calls(monkeypatch)
         session_end.run({})
         assert calls == []
-        assert state.read_scratch(_MARK) is not None   # untouched, not consumed
+        assert state.read_scratch(_MARK) is not None   # registration mark untouched
+
+    def test_personal_mode_auto_clears_the_marker(self, client_env, monkeypatch):
+        """The documented "auto-clears at session end" semantics, on the event that
+        actually means session end. This moved off `stop`, which fires every turn
+        and therefore ended personal mode after turn 1."""
+        from firekeep_client import resolver
+        from firekeep_client.hooks import session_end
+
+        resolver.set_personal(True)
+        assert resolver.is_personal() is True
+        calls = _record_calls(monkeypatch)
+
+        session_end.run({})
+
+        assert calls == []                               # still no comms
+        assert resolver.is_personal() is False
+        assert not resolver.personal_marker_path().exists()
 
     def test_never_raises(self, client_env, monkeypatch):
         """@never_raise({}) — a hook must never break the caller's process."""

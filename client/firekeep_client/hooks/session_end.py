@@ -50,11 +50,23 @@ _HOOK = "session_end"
 
 @never_raise({})
 def run(payload: dict) -> dict:
-    # Personal mode: no comms reach the server for a personal session. `stop`
-    # owns clearing the marker itself (its documented "clears at session end"
-    # semantics), so this core only declines to talk -- it must not also clear,
-    # or the two cores would race to own one piece of state.
+    # Personal mode: clear the marker (the documented "auto-clears at session
+    # end" semantics) and skip ALL comms. This moved here from `stop`, which
+    # fires at EVERY assistant turn end and therefore ended personal mode after
+    # turn 1 -- `/personal` protected one turn, then silently rejoined team
+    # logging.
+    #
+    # set_personal(False) clears the MARKER tier only. The FIREKEEP_BYPASS env
+    # tier is startup-scoped and deliberately not clearable from here.
+    #
+    # kiro consequence, accepted: it has no session-end event (see the runtime
+    # notes above), so personal mode there persists until the
+    # FIREKEEP_PERSONAL_TTL_HOURS backstop (default 12h) or an explicit
+    # `firekeep personal off`. That is what the TTL exists for, and it cannot
+    # fail silently: session_start prints a loud PERSONAL MODE banner every
+    # session and `firekeep doctor` carries a warning row.
     if resolver.is_bypassed():
+        resolver.set_personal(False)
         return {}
 
     cfg = resolver.load_config()

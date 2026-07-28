@@ -31,12 +31,17 @@ _MSG = (
 
 @never_raise({})
 def run(payload: dict) -> dict:
-    # Personal mode: auto-clear it here (the user's chosen "clears at session end"
-    # semantics) and skip ALL comms — no deregister, snapshot, or distill enqueue
-    # reaches the server for a personal session. The dispatcher routes `stop` here
-    # (rather than short-circuiting it) precisely so this cleanup always runs.
+    # Personal mode: skip ALL comms — no snapshot or distill enqueue reaches the
+    # server for a personal session. The dispatcher routes `stop` here (rather
+    # than short-circuiting it) so this stays self-handled.
+    #
+    # It deliberately does NOT clear the marker any more. Stop fires at EVERY
+    # assistant turn end, so clearing here ended personal mode after turn 1 —
+    # `/personal` protected exactly one turn and then silently rejoined team
+    # logging, the opposite of what the user asked for. The documented
+    # "auto-clears at session end" semantics now live in `session_end`, on the
+    # event that actually means session end.
     if resolver.is_bypassed():
-        resolver.set_personal(False)
         return {}
 
     cfg = resolver.load_config()
