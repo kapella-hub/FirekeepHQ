@@ -204,12 +204,25 @@ echo "firekeep: installing ${symdex_wheel}"
     || die "symdex wheel install failed"
 
 # --- 7c. SWAP: the staged tree becomes the live one ---------------------------
-# Verify the staged kit RUNS before anything is swapped. Provisioning can succeed
-# while producing something unusable (a wheel built for another platform, a
+# Verify the staged kit is USABLE before anything is swapped. Provisioning can
+# succeed while producing something unusable (a wheel for the wrong platform, a
 # truncated interpreter), and the point of staging is that such a failure leaves
 # the working install untouched.
-"${STAGE}/bin/python" -c 'import firekeep_client' 2>/dev/null \
-    || { rm -rf "${STAGE}"; die "the staged kit does not import — leaving the existing install in place"; }
+#
+# The check is that `firekeep` is EXECUTABLE, not that `firekeep_client` imports.
+# That is deliberate and was learned from a red CI run: the import form failed the
+# POSIX bootstrap suite because the harness's stub uv creates bin/firekeep and
+# deliberately no-ops `pip install`, so nothing was importable and the guard
+# aborted every install. The guard was right; the CHECK asserted a property the
+# next step does not need.
+#
+# What the bootstrap does next is run "${VENV}/bin/firekeep install", so a runnable
+# firekeep IS the precondition. A staged tree that cannot produce one is exactly
+# the failure worth refusing.
+if [ ! -x "${STAGE}/bin/firekeep" ]; then
+    rm -rf "${STAGE}"
+    die "the staged kit has no runnable firekeep - leaving the existing install in place"
+fi
 
 # Two renames, not one: POSIX rename(2) is atomic per call, so the window in which
 # neither tree is at ${VENV} is the duration of a directory rename — microseconds,

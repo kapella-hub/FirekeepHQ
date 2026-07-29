@@ -93,11 +93,19 @@ class TestTheLiveVenvIsNeverCleared:
 
     def test_the_staged_tree_is_smoke_tested_before_the_swap(self):
         """Provisioning can succeed and still produce something unusable. Staging
-        only buys safety if the swap is gated on the new tree actually working."""
+        only buys safety if the swap is gated on the new tree actually working.
+
+        The gate checks that `bin/firekeep` is EXECUTABLE, not that
+        `firekeep_client` imports. The import form was written first and failed the
+        POSIX bootstrap suite on CI: the harness's stub uv creates bin/firekeep and
+        deliberately no-ops `pip install`, so nothing was importable and the guard
+        aborted every install. A runnable firekeep is also the ACTUAL precondition,
+        since running it is the bootstrap's very next act.
+        """
         i, j = SRC.find('STAGE="${VENV}.new"'), SRC.find('mv "${STAGE}" "${VENV}"')
         assert i != -1 and j != -1 and i < j
-        assert "import firekeep_client" in SRC[i:j], (
-            "nothing verifies the staged kit imports before it replaces a working "
+        assert 'STAGE}/bin/firekeep' in SRC[i:j], (
+            "nothing verifies the staged kit is usable before it replaces a working "
             "install — a bad wheel would be swapped in and break the machine"
         )
 
@@ -127,18 +135,23 @@ def _swap_block() -> str:
     i, j = SRC.find(SWAP_START), SRC.find(SWAP_END)
     assert i != -1 and j != -1, "swap block markers missing from install.sh"
     body = SRC[i:j]
-    # Drop the import smoke-test: it needs a real interpreter. Its presence is
-    # asserted structurally above; here we exercise the RENAME semantics.
-    out = []
-    skip = False
+    # Drop the usability guard: it needs a real staged tree containing a firekeep
+    # executable, and these tests exercise the RENAME semantics against a fake one.
+    # Its presence is asserted structurally above.
+    #
+    # Matches on the PATH anywhere in the line, because the guard reads
+    # `if [ ! -x "${STAGE}/bin/firekeep" ]; then` -- a match anchored to the start
+    # of the expression would never fire, and every semantic test would then abort
+    # inside the guard rather than exercising the renames.
+    out, in_guard = [], False
     for ln in body.splitlines():
-        if '"${STAGE}/bin/python"' in ln:
-            skip = True
+        if not in_guard and "STAGE}/bin/firekeep" in ln and ln.strip().startswith("if"):
+            in_guard = True
             continue
-        if skip:
-            skip = False
-            if ln.strip().startswith("||"):
-                continue
+        if in_guard:
+            if ln.strip() == "fi":
+                in_guard = False
+            continue
         out.append(ln)
     return "\n".join(out)
 
