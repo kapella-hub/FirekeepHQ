@@ -1,8 +1,15 @@
 # Dashboard redesign + brand identity — design
 
 **Date:** 2026-07-28
-**Status:** design approved, not yet implemented
-**Scope:** `dashboard/` — `index.html`, new `dashboard/brand/`, `docker/Dockerfile.dashboard`
+**Scope:** `dashboard/` — `index.html`, new `dashboard/brand/`,
+`docker/Dockerfile.dashboard`, `docker-compose.yml`
+
+**Status — partially implemented.** §3 (brand assets, mark, head tags) and §4
+(ember palette) are shipped and deployed. §5–§10 are not. Sections are marked
+`SHIPPED` or `PENDING` at their heading.
+
+Line references below are as of the pre-implementation file and have since
+shifted; treat them as landmarks, not coordinates.
 
 ---
 
@@ -24,7 +31,8 @@ work was cut on evidence.
 
 What is actually wrong is **brand, honesty, and consistency** — not styling.
 Approach chosen: **restyle in place, keep vanilla.** No React, no npm, no build
-step. `docker/Dockerfile.dashboard` remains a single `COPY`.
+step. `docker/Dockerfile.dashboard` gains one `COPY` for the brand assets and
+otherwise stays a plain file-copy image.
 
 The Corona React admin template was evaluated and rejected. It is MIT (no legal
 blocker) but has only 2 commits, and adopting it would mean rewriting 3,188
@@ -50,7 +58,7 @@ inspection of the UI description.
 Finding 1 is the most commercially damaging: it is on the first screen a buyer
 sees, and it manufactures false confidence in a broken install.
 
-## 3. Brand
+## 3. Brand — SHIPPED
 
 ### 3.1 The mark
 
@@ -74,7 +82,12 @@ are worth recording because they are not obvious:
 ### 3.2 Assets — `dashboard/brand/`
 
 Single source of truth for **both** the dashboard and the marketing website.
-The mark is not redrawn inline in `index.html`.
+
+One deliberate exception: the topbar mark **is** inlined as a `<path>` in
+`index.html`, because `currentColor` only resolves against a parent element and
+an `<img>` has none (see decision 1 below). The inlined copy and `mark.svg`
+carry identical geometry and must be kept in sync; both are commented to say so.
+Everything else references the files.
 
 | File | Colour | Use |
 |---|---|---|
@@ -84,13 +97,27 @@ The mark is not redrawn inline in `index.html`.
 | `lockup.svg` | `currentColor` | Mark + wordmark. Needs DM Sans. |
 | `README.md` | — | Usage rules, clearspace, colour roles. |
 
-**Shipping them is a separate act from creating them.**
-`docker/Dockerfile.dashboard` copies `dashboard/index.html` — a *file*, not the
-directory — so anything added under `dashboard/` is invisible to the image
-without its own `COPY`. A local `python -m http.server` in the source tree
-serves the assets perfectly, which is exactly why the omission is easy to miss:
-they work everywhere except in production. `COPY dashboard/brand/` is added
-alongside the assets.
+**Shipping them is a separate act from creating them — and there are TWO
+delivery paths, which is the trap.**
+
+* **k8s / CI** builds `docker/Dockerfile.dashboard`, which copies
+  `dashboard/index.html` — a *file*, not the directory. Needs `COPY
+  dashboard/brand/`.
+* **compose (the VPS)** never builds that image at all. It runs **stock nginx**
+  (`image: nginx:...-alpine@sha256:...`) with single-file bind mounts. Needs
+  `- ./dashboard/brand:/usr/share/nginx/html/brand:ro`.
+
+Fixing only the Dockerfile leaves the assets 404ing on every compose
+deployment, and vice versa. A local `python -m http.server` in the source tree
+serves them perfectly either way, which is exactly why the omission is easy to
+miss: they work everywhere except where it counts.
+
+This also explains an apparent contradiction worth recording:
+`docker/dashboard-htpasswd.sh` and its `DASHBOARD_HTPASSWD` mechanism are **not
+present in the running compose container and never execute there** — they exist
+only in an image compose does not build. Compose authenticates from the
+bind-mounted `./dashboard/.htpasswd` instead. The two mechanisms look
+interchangeable and are not.
 
 Three implementation decisions, all verified by rendering:
 
@@ -132,20 +159,37 @@ mark work on the marketing site.
 **Firekeep.** One word, capital F, no camel case. `FirekeepStack` is a bug
 wherever it appears.
 
-## 4. Palette
+## 4. Palette — SHIPPED
 
 The accent moves from electric blue to ember. A product called Firekeep with a
 blue accent was always a mismatch, and if the brand is being built the accent
 is the brand.
 
-| Token | Value | Role |
-|---|---|---|
-| `--accent` | `#FF7A2F` | Brand + interaction only. |
-| `--accent-hi` | `#FFA05C` | Hover / raised. |
-| `--accent-dim` | `#C2560D` | Pressed; `#E2620F` on light. |
-| `--ok` | `#46C77F` | unchanged |
-| `--warn` | `#E8C547` | amber → **yellow** |
-| `--danger` | `#F2555A` | → **truer red** |
+These are the **existing** token names in `:root`. An earlier draft of this
+section invented `--accent-hi` / `--accent-dim` / `--ok` / `--warn` / `--danger`,
+which exist nowhere in the codebase — following it would have minted parallel
+tokens and left 588 lines of CSS still pointing at the originals. Use these:
+
+| Token | Was | Now | Role |
+|---|---|---|---|
+| `--accent` | `#4C9AFF` | `#FF7A2F` | Brand + interaction only. |
+| `--accent-2` | `#2F7FE6` | `#E2620F` | Gradient partner / pressed. |
+| `--accent-bright` | `#82B8FF` | `#FFA05C` | Hover / raised. |
+| `--accent-muted` | `rgba(76,154,255,.12)` | `rgba(255,122,47,.12)` | Tinted fills. |
+| `--accent-glow` | `rgba(76,154,255,.06)` | `rgba(255,122,47,.06)` | Ambient wash. |
+| `--accent-shadow` | `rgba(76,154,255,.22)` | `rgba(255,122,47,.22)` | Glow / drop-shadow. |
+| `--pulse` | `#58B0FF` | `#FF9147` | Sparkline stroke. |
+| `--pulse-glow` | `rgba(88,176,255,.26)` | `rgba(255,145,71,.26)` | Sparkline bloom. |
+| `--green` | `#46C77F` | unchanged | OK state. |
+| `--amber` | `#E0A93B` | `#E8C547` | amber → **yellow** (warn). |
+| `--red` | `#E5635F` | `#F2555A` | → **truer red** (danger). |
+
+`--green-muted` / `--amber-muted` / `--red-muted` follow their parents.
+
+**`--pulse` also exists as a hard-coded JS fallback** (`'#58B0FF'`, in the
+sparkline renderer). A token sweep that only reads CSS misses it, and the
+sparkline would render blue on any browser where the computed var came back
+empty.
 
 Two rules follow, and they are load-bearing:
 
@@ -160,7 +204,7 @@ Two rules follow, and they are load-bearing:
 Warning moves to yellow and danger to a truer red so the brand orange sits alone
 in its hue band.
 
-## 5. Health honesty *(separate commit)*
+## 5. Health honesty — PENDING *(separate commit)*
 
 `renderHealthGrid` (`index.html:2147`) is rewritten to require **`2xx` and a
 parseable JSON body**. The `404`/`405` tolerance is deleted.
@@ -211,14 +255,14 @@ Regression test: a stubbed `404` response must produce `down`. The current
 implementation must fail that test — if it passes against the old code, the
 test is not testing anything.
 
-## 6. Icons
+## 6. Icons — PENDING
 
 One inline SVG sprite, monochrome, `currentColor`, ~14 glyphs — one per nav
 item. Replaces every HTML-entity glyph so nothing renders as an OS emoji.
 Sprite lives in `index.html` (inline, so `currentColor` works) rather than in
 `brand/`, because these are UI chrome, not brand assets.
 
-## 7. Navigation
+## 7. Navigation — PENDING
 
 The four existing groups are kept unchanged — they are already correct.
 
@@ -226,7 +270,7 @@ The `1`–`9` `kbd-hint` badges are demoted to muted monospace characters,
 right-aligned, so they stop reading as unread counts. They remain visible
 (they are genuinely useful) but stop lying.
 
-## 8. Hero → status ribbon
+## 8. Hero → status ribbon — PENDING
 
 Delete `OBSERVATORY`, *"The stack is listening."* and *"Reading the collective
 state of your agents…"*. Replace with a compact status ribbon: four service
@@ -235,7 +279,7 @@ chips with live state plus the at-a-glance counts, on one row.
 Reclaims roughly 300px so real data sits above the fold. The `FIREKEEP PULSE`
 sparkline is retained — it is the one piece of the hero that shows something.
 
-## 9. States
+## 9. States — PENDING
 
 Four distinct treatments, applied consistently across all 14 tabs:
 
@@ -244,7 +288,7 @@ Four distinct treatments, applied consistently across all 14 tabs:
 * **error** — the reason and a retry control, never a bare sentence
 * **degraded** — its own treatment, not collapsed into error
 
-## 10. Fonts
+## 10. Fonts — PENDING
 
 Self-host DM Sans and JetBrains Mono as subset `woff2` under
 `dashboard/brand/fonts/`, drop all three Google `<link>`s. Air-gapped installs
@@ -267,7 +311,8 @@ not intended to be sold. Removing them is a product decision, not a design one,
 and is flagged here rather than actioned.
 
 Also out of scope: any change to the 3,188 lines of JS beyond
-`renderHealthGrid` and the state-rendering helpers.
+`renderHealthGrid`, the state-rendering helpers, the hero/ribbon markup, and
+colour literals embedded in JS (the `--pulse` fallback was one).
 
 ## 12. Risks
 
@@ -276,4 +321,5 @@ Also out of scope: any change to the 3,188 lines of JS beyond
 | The health fix turns the live VPS red. | Ships as its own commit, ahead of the restyle, so the finding is legible on its own. |
 | Ember accent collides with danger red. | Warning → yellow, danger → truer red, accent barred from encoding state, and every state carries a text label. |
 | `lockup.svg` renders wrong without DM Sans. | Documented; compose the lockup in HTML where the font cannot be guaranteed. Outlining the wordmark needs a font toolchain and is deliberately not faked. |
+| A single-file bind mount serves stale content after a deploy. | Docker resolves a single-file mount to an INODE at container start. Writing in place (`>`) is seen; REPLACING the file (`cp`+`mv`, scp, editors that write-then-rename) is not — the host shows new content while the container serves the old file, silently. Write in place, or recreate the container. Cost 20min on the .htpasswd rotation. |
 | Brand assets drift between dashboard and website. | `dashboard/brand/` is the single source; `mark.svg` and `mark-ember.svg` must be kept in sync if the path changes. |
