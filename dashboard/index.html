@@ -4,6 +4,17 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Firekeep Dashboard</title>
+<!-- Brand assets live in dashboard/brand/ (single source for dashboard + website).
+     favicon.svg and mark-ember.svg carry a BAKED colour deliberately: an SVG
+     loaded through <link rel="icon">, <img> or og:image renders in an isolated
+     document with no parent, so currentColor would resolve to black. -->
+<link rel="icon" type="image/svg+xml" href="brand/favicon.svg">
+<link rel="apple-touch-icon" href="brand/mark-ember.svg">
+<!-- deep background, NOT the accent: this tints browser chrome, and an ember
+     chrome bar would read as a warning state. -->
+<meta name="theme-color" content="#0A0B0E">
+<meta property="og:title" content="Firekeep">
+<meta property="og:image" content="brand/mark-ember.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -11,9 +22,21 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-    /* Graphite Pro — true-neutral graphite, one electric-blue accent, no color
-       wash. Engineering-grade calm: minimal gradients, hairline borders, muted
-       status colors. Fully token-driven: the whole stack recolors from here. */
+    /* Graphite Pro — true-neutral graphite, one ember accent, no color wash.
+       Engineering-grade calm: minimal gradients, hairline borders, muted status
+       colors. Fully token-driven: the whole stack recolors from here.
+
+       THE ACCENT NEVER ENCODES STATE. It means brand and interaction only —
+       active nav, links, focus, the pulse line. Health and severity use
+       --green / --amber / --red exclusively.
+
+       That rule is why --amber and --red moved when the accent went ember:
+       brand orange sits ~27deg of hue from the old danger red, and one colour
+       family cannot mean both "fine" and "on fire" in an operator console.
+       --amber is now a true yellow and --red a truer red, so the accent sits
+       alone in its band. State is additionally never colour-ALONE — every
+       status carries a text label, which is also the only way this is legible
+       to the ~8% of male operators who cannot separate red from green. */
     --bg-deep: #0A0B0E;
     --bg: #0E0F12;
     --surface: #16181D;
@@ -23,20 +46,20 @@
     --text: #E6E8EC;
     --text-secondary: #9AA0AB;
     --text-dim: #626873;
-    --accent: #4C9AFF;
-    --accent-2: #2F7FE6;
-    --accent-bright: #82B8FF;
-    --accent-muted: rgba(76, 154, 255, 0.12);
-    --accent-glow: rgba(76, 154, 255, 0.06);
-    --accent-shadow: rgba(76, 154, 255, 0.22);
-    --pulse: #58B0FF;
-    --pulse-glow: rgba(88, 176, 255, 0.26);
+    --accent: #FF7A2F;
+    --accent-2: #E2620F;
+    --accent-bright: #FFA05C;
+    --accent-muted: rgba(255, 122, 47, 0.12);
+    --accent-glow: rgba(255, 122, 47, 0.06);
+    --accent-shadow: rgba(255, 122, 47, 0.22);
+    --pulse: #FF9147;
+    --pulse-glow: rgba(255, 145, 71, 0.26);
     --green: #46C77F;
     --green-muted: rgba(70, 199, 127, 0.13);
-    --red: #E5635F;
-    --red-muted: rgba(229, 99, 95, 0.12);
-    --amber: #E0A93B;
-    --amber-muted: rgba(224, 169, 59, 0.12);
+    --red: #F2555A;
+    --red-muted: rgba(242, 85, 90, 0.12);
+    --amber: #E8C547;
+    --amber-muted: rgba(232, 197, 71, 0.12);
     --violet: #8B93B8;
     --violet-muted: rgba(139, 147, 184, 0.14);
     /* aliases — several components referenced these names which were never defined
@@ -105,16 +128,17 @@ body::after {
 
 .logo { display: flex; align-items: center; gap: 10px; text-decoration: none; flex-shrink: 0; }
 
+/* The mark is now the SHAPE itself, not a letter in a tinted box — so no
+   background, no border-radius (the keep supplies its own corners), and the
+   glow moves from box-shadow to drop-shadow so it follows the silhouette and
+   the knocked-out flame rather than a square. */
 .logo-mark {
-    width: 28px; height: 28px; border-radius: 7px;
-    background: linear-gradient(135deg, var(--accent), var(--accent-2));
-    display: flex; align-items: center; justify-content: center;
-    font-family: var(--font-mono); font-weight: 700; font-size: 14px;
-    color: var(--bg-deep); box-shadow: 0 0 16px var(--accent-shadow);
+    width: 28px; height: 28px; flex-shrink: 0;
+    color: var(--accent);
+    filter: drop-shadow(0 0 9px var(--accent-shadow));
 }
 
 .logo-text { font-family: var(--font-mono); font-size: 15px; font-weight: 600; color: var(--text); letter-spacing: -0.5px; }
-.logo-text span { color: var(--accent); }
 .topbar-spacer { flex: 1; }
 .topbar-status { font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); letter-spacing: 0.3px; }
 
@@ -601,8 +625,15 @@ button.btn-outline:hover { border-color: var(--accent); color: var(--accent); ba
 <div class="app">
     <div class="topbar">
         <div class="logo">
-            <div class="logo-mark">N</div>
-            <div class="logo-text">Firekeep<span>Stack</span></div>
+            <!-- Inlined (not <img>) so currentColor takes the accent. Geometry is
+                 identical to dashboard/brand/mark.svg — keep the two in sync.
+                 One path, fill-rule="evenodd", three subpaths: keep -> filled,
+                 flame -> knocked out, ember -> stands again inside it. No <mask>,
+                 because a mask needs an id and ids collide when inlined twice. -->
+            <svg class="logo-mark" viewBox="0 0 32 32" width="28" height="28" role="img" aria-label="Firekeep">
+                <path fill="currentColor" fill-rule="evenodd" d="M10.5 2H21.5A8.5 8.5 0 0 1 30 10.5V21.5A8.5 8.5 0 0 1 21.5 30H10.5A8.5 8.5 0 0 1 2 21.5V10.5A8.5 8.5 0 0 1 10.5 2Z M17.61 5.58C18.13 9.84 21.87 11.75 21.87 16.62C21.87 21.06 19.00 24.28 15.35 24.28C11.61 24.28 9.00 21.58 9.00 17.84C9.00 14.62 11.34 12.71 12.39 10.01C12.82 12.62 13.95 13.75 15.00 14.28C14.39 10.88 15.43 8.10 17.61 5.58Z M16.30 14.54C16.65 16.71 18.48 17.76 18.48 19.67C18.48 21.41 17.17 22.63 15.43 22.63C13.69 22.63 12.39 21.50 12.39 19.93C12.39 18.63 13.26 17.84 13.95 16.62C14.13 17.76 14.56 18.28 15.09 18.54C14.82 17.15 15.26 15.93 16.30 14.54Z"/>
+            </svg>
+            <div class="logo-text">Firekeep</div>
         </div>
         <div class="topbar-search">
             <input type="search" id="globalSearchInput" placeholder="Search memories, docs, sessions…" autocomplete="off" aria-label="Global search">
@@ -2073,7 +2104,7 @@ function initFirekeepPulse() {
         if (!canvas || !canvas.getContext) return;
         var ctx = canvas.getContext('2d');
         var css = getComputedStyle(document.documentElement);
-        var pulseColor = (css.getPropertyValue('--pulse') || '#58B0FF').trim();
+        var pulseColor = (css.getPropertyValue('--pulse') || '#FF9147').trim();
         var reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
         function size() {
