@@ -266,12 +266,18 @@ main {
 .health-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: var(--border); transition: background var(--transition); }
 .health-card.is-up::before { background: var(--green); }
 .health-card.is-down::before { background: var(--red); }
-.health-card.is-loading::before { background: var(--amber); }
+.health-card.is-degraded::before { background: var(--amber); }
+.health-card.is-loading::before { background: var(--border); }
 
 .health-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
-.health-dot.up { background: var(--green); box-shadow: 0 0 10px rgba(52, 211, 153, 0.5); }
-.health-dot.down { background: var(--red); box-shadow: 0 0 10px rgba(248, 113, 113, 0.5); }
-.health-dot.loading { background: var(--amber); animation: pulse 1.4s ease-in-out infinite; }
+/* Glows were hard-coded rgba() left over from an older palette — literally
+   different greens and reds than --green/--red, so the dot and its own halo
+   disagreed. Now derived from the tokens, which is what makes a palette change
+   a palette change. */
+.health-dot.up { background: var(--green); box-shadow: 0 0 10px var(--green-muted); }
+.health-dot.down { background: var(--red); box-shadow: 0 0 10px var(--red-muted); }
+.health-dot.degraded { background: var(--amber); box-shadow: 0 0 10px var(--amber-muted); }
+.health-dot.loading { background: var(--text-dim); animation: pulse 1.4s ease-in-out infinite; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 
 .health-info { flex: 1; min-width: 0; }
@@ -2175,36 +2181,95 @@ function loadOverviewPresence() {
     });
 }
 
+/* >>> healthVerdict — extracted and executed by tests/test_dashboard_health.py.
+   Keep this block self-contained and free of DOM/browser references: the test
+   pulls the text between these sentinels straight into node.
+
+   WHY THIS IS A PURE FUNCTION AT ALL: the previous implementation decided
+   health inline inside a fetch callback, tangled with DOM writes, so its
+   behaviour could not be asserted without a browser. It was wrong for months
+   and nothing could have caught it.
+
+   THE BUG IT REPLACES: `if (r.ok || r.status === 405 || r.status === 404)`
+   painted the card GREEN. That is not a health check, it is a port-liveness
+   check wearing one — a misrouted proxy, a container that boots but cannot
+   reach Qdrant, or a half-finished install all answered 404 and read as
+   healthy. Verified: a render against a server with no API showed all four
+   services green at 31-34ms while every single request 404'd. */
+var HEALTHY_WORDS = ['ok', 'healthy', 'connected', 'up', 'ready', 'available', 'enabled'];
+function _healthyWord(v) {
+    return typeof v === 'string' && HEALTHY_WORDS.indexOf(v.toLowerCase()) !== -1;
+}
+function healthVerdict(httpStatus, bodyText) {
+    if (!(httpStatus >= 200 && httpStatus < 300)) return { state: 'down', detail: 'HTTP ' + httpStatus };
+    var body;
+    try { body = JSON.parse(bodyText); } catch (e) { return { state: 'down', detail: 'unparseable response' }; }
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return { state: 'down', detail: 'unexpected response' };
+    if (body.status !== undefined && !_healthyWord(body.status)) {
+        return { state: 'degraded', detail: 'status: ' + body.status };
+    }
+    var bad = [];
+    Object.keys(body).forEach(function (k) {
+        var v = body[k];
+        // Nested {dep: {status: ...}} — cortex's `services` block.
+        if (v && typeof v === 'object' && !Array.isArray(v)) {
+            Object.keys(v).forEach(function (dk) {
+                var dv = v[dk];
+                if (dv && typeof dv === 'object' && dv.status !== undefined && !_healthyWord(dv.status)) bad.push(dk);
+            });
+            return;
+        }
+        // Top-level connection strings — sentinel's `redis: "connected"`.
+        // Deliberately narrow: only strings that READ as a failed state count.
+        // A bare `"service": "sentinel"` is an identifier, not a verdict, and
+        // treating every non-healthy string as a fault would report a false
+        // DEGRADED — the same defect as the false green, pointing the other way.
+        if (k !== 'status' && k !== 'service' && typeof v === 'string' && !_healthyWord(v)) {
+            if (/^(dis)?connect|error|down|fail|unavailable|degrad|timeout/i.test(v)) bad.push(k);
+        }
+        // Booleans are NOT health. sentinel's `collectors: {docker: true, git: false}`
+        // are feature switches; a disabled collector is not a sick service.
+    });
+    if (bad.length) return { state: 'degraded', detail: bad.join(', ') + ' unhealthy' };
+    return { state: 'up', detail: '' };
+}
+/* <<< healthVerdict */
+
 function renderHealthGrid() {
     var grid = $('healthGrid'); clear(grid);
     SERVICES.forEach(function(svc) {
         var dot = el('div', { className: 'health-dot loading' });
-        var lat = el('span', { className: 'health-latency', textContent: '...' });
+        var lat = el('span', { className: 'health-latency', textContent: 'checking' });
         var card = el('div', { className: 'card health-card is-loading' }, [
             dot, el('div', { className: 'health-info' }, [ el('div', { className: 'health-name', textContent: svc.name }), el('div', { className: 'health-url', textContent: svc.desc || CONFIG[svc.key] }) ]), lat
         ]);
         grid.appendChild(card);
         var t0 = performance.now();
-        function up(r) {
-            var ms = Math.round(performance.now() - t0);
-            if (r.ok || r.status === 405 || r.status === 404) {
-                dot.className = 'health-dot up'; card.className = 'card health-card is-up'; lat.textContent = ms + 'ms';
-                if (prevHealth[svc.key] === false) toast(svc.name + ' is back online', 'success');
-                prevHealth[svc.key] = true;
-            } else {
-                dot.className = 'health-dot down'; card.className = 'card health-card is-down'; lat.textContent = r.status;
-                if (prevHealth[svc.key] === true) toast(svc.name + ' returned ' + r.status, 'error');
-                prevHealth[svc.key] = false;
-            }
+
+        function paint(v, ms) {
+            // State is never colour-alone: the dot carries a hue, the label
+            // carries a WORD. Required for greyscale, for screenshots, and for
+            // the ~8% of male operators who cannot separate red from green.
+            dot.className = 'health-dot ' + v.state;
+            card.className = 'card health-card is-' + v.state;
+            lat.textContent = v.state === 'up' ? ('up · ' + ms + 'ms') : (v.state + (v.detail ? ' · ' + v.detail : ''));
+            lat.title = v.detail || '';
+            var wasUp = prevHealth[svc.key];
+            if (v.state === 'up' && wasUp === false) toast(svc.name + ' is back online', 'success');
+            if (v.state !== 'up' && wasUp === true) toast(svc.name + ' is ' + v.state + (v.detail ? ': ' + v.detail : ''), 'error');
+            prevHealth[svc.key] = (v.state === 'up');
         }
-        function dn() {
-            dot.className = 'health-dot down'; card.className = 'card health-card is-down'; lat.textContent = 'offline';
-            if (prevHealth[svc.key] === true) toast(svc.name + ' is offline', 'error');
-            prevHealth[svc.key] = false;
-        }
-        safeFetch(CONFIG[svc.key] + '/health', {}, 5000).then(up).catch(function() {
-            safeFetch(CONFIG[svc.key] + '/', {}, 3000).then(up).catch(dn);
-        });
+
+        // No `/` fallback. It returns 401 on an auth-enabled deployment, so once
+        // a 2xx is required it could only ever produce `down` — the same answer
+        // the primary call already gave. A branch that cannot change an outcome
+        // is not a safety net, it is noise.
+        safeFetch(CONFIG[svc.key] + '/health', {}, 5000)
+            .then(function (r) {
+                var ms = Math.round(performance.now() - t0);
+                return r.text().then(function (t) { paint(healthVerdict(r.status, t), ms); });
+            })
+            .catch(function () { paint({ state: 'down', detail: 'unreachable' }, 0); });
     });
 }
 
