@@ -68,8 +68,8 @@ Half the mark's height on every side. In the lockup that is 16 units in a
 **Firekeep.** One word, capital F, no camel case.
 
 There is no "FirekeepStack" — that string was a find-and-replace artifact of the
-NexusStack rename that survived into the shipped header, with the dead half
-highlighted in the accent colour. If you find it anywhere, it is a bug.
+rename that survived into the shipped header, with the dead half highlighted in
+the accent colour. If you find it anywhere, it is a bug.
 
 `lockup.svg` uses live text rather than outlines, so it needs DM Sans available.
 Where the font cannot be guaranteed, compose the lockup in HTML — `mark.svg`

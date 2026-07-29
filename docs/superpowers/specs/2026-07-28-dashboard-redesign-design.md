@@ -40,10 +40,10 @@ inspection of the UI description.
 | # | Finding | Evidence |
 |---|---|---|
 | 1 | **The health grid reports failure as success.** | `index.html:2159` — `if (r.ok \|\| r.status === 405 \|\| r.status === 404)` paints the card green. A render against a server with no API showed all four services green at 31–34ms while every request returned 404. |
-| 2 | **The brand is still the previous product.** | `index.html:604` `<div class="logo-mark">N</div>` (N for NexusStack); `:605` `Firekeep<span>Stack</span>` — a find-and-replace artifact, with the dead half highlighted in the accent colour. `<title>` is correct. |
+| 2 | **The brand is still the previous product.** | `index.html:604` `<div class="logo-mark">N</div>` — the predecessor's initial; `:605` `Firekeep<span>Stack</span>` — a find-and-replace artifact, with the dead half highlighted in the accent colour. `<title>` is correct. |
 | 3 | **Icons are half geometry, half emoji.** | `&#9673;` ◉ and `&#8644;` ⇄ are monochrome glyphs; `&#9889;` ⚡ and `&#10067;` ❓ are emoji-presentation codepoints that render full-colour and differently per OS. |
 | 4 | **Keyboard hints impersonate unread counts.** | `<span class="kbd-hint">1</span>` … `9`, styled as badges beside nav labels. |
-| 5 | **~400px of hero says nothing.** | "OBSERVATORY", *"The stack is listening."*, *"Reading the collective state of your agents…"* — mystical voice in an operator console, and "stack" is more NexusStack residue. |
+| 5 | **~400px of hero says nothing.** | "OBSERVATORY", *"The stack is listening."*, *"Reading the collective state of your agents…"* — mystical voice in an operator console, and "the stack" is more of the same rename residue. |
 | 6 | **Loading, empty and failed are indistinguishable.** | `– –` serves as both loading and empty; failure is a bare "Could not load events" with no reason and no retry. |
 | 7 | **Three `<link>`s to `fonts.googleapis.com`.** | Contradicts "nothing leaves your infrastructure" and degrades on an air-gapped install. |
 
