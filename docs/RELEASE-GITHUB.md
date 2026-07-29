@@ -51,7 +51,27 @@ $env:FIREKEEP_DIST_BASE='https://kapella-hub.github.io/FirekeepHQ'; irm https://
 
 The bootstrap fetches `latest/latest.json` → resolves the version → fetches
 `<version>/SHA256SUMS`, then the checksum-verified `uv` and both wheels, exactly as with
-the GitLab registry. Artifacts carry no secrets; the repo is public.
+the GitLab registry.
+
+> **UNRESOLVED — this channel does not work yet, and the sentence that used to sit
+> here was false.** It read *"Artifacts carry no secrets; the repo is public."*
+> `kapella-hub/FirekeepHQ` is **private**, and that claim was the stated
+> justification for publishing unauthenticated. Three facts have to be reconciled
+> before the first `client-v*` tag:
+>
+> 1. **GitHub Pages cannot serve from a private repository** on a non-Enterprise
+>    plan. The Pages API returns 404 for this repo — Pages has never been enabled.
+> 2. **Making the repo public publishes the entire client kit** of a commercial,
+>    closed-source product. That is a licensing decision, not a deployment detail.
+> 3. **The bootstraps fetch unauthenticated.** `install.sh:47` and `install.ps1:70`
+>    send no `Authorization` header, so an SSO-gated or token-gated origin returns
+>    login HTML and `updater.py` fails with `malformed manifest` — not a usable
+>    private channel without new client code.
+>
+> The realistic options are a **small public artifacts-only repo** (Pages works,
+> the product source stays private), **object storage** (R2/S3 + CDN), or
+> **self-hosting** the artifacts. Whichever is chosen, replace this block with the
+> real arrangement — do not restore a security rationale that is not true.
 
 ## Release notes
 

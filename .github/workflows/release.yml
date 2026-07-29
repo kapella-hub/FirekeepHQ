@@ -19,11 +19,54 @@ on:
 permissions:
   contents: write   # push artifacts to the gh-pages branch
 
+# gh-pages is a SHARED MUTABLE branch and this job does a read-modify-write of it
+# (fetch -> add files -> push). Two tags in flight without this group means the
+# loser's push is rejected non-fast-forward and its <version>/ directory never
+# publishes at all -- while its job still reports success.
+#
+# The group MUST be ref-independent. server-release.yml scopes its group to
+# ${{ github.ref }}, which is correct there but useless here: two different tags
+# are two different refs, so a ref-scoped group would place concurrent releases
+# in DIFFERENT groups and serialize nothing.
+#
+# cancel-in-progress: false -- a half-published release is worse than a queued one.
+concurrency:
+  group: gh-pages-publish
+  cancel-in-progress: false
+
 env:
   UV_VERSION: "0.5.11"   # pinned: the bootstrap verifies uv against SHA256SUMS
 
 jobs:
+  # ci.yml triggers on `push: branches:[main]` and `pull_request` ONLY, so a
+  # `client-v*` tag matches neither and used to run ZERO verification before
+  # publishing. A tag on an unmerged hotfix branch would ship a wheel whose own
+  # tests had never executed -- including client/tests/test_package.py, which
+  # asserts the packaged version. The GitLab pipeline this was ported from gates
+  # its release job on tests; that gate was lost in the port.
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install client + test deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e "client[dev]" 2>/dev/null || { pip install -e client; pip install pytest; }
+      - name: Client test suite
+        run: cd client && python -m pytest -q
+      - name: Release-path guards
+        # These specifically cover what a release depends on being correct:
+        # published URLs, the manifest builder, and the bootstrap contracts.
+        run: python -m pytest -q tests/test_release_urls.py client/tests/test_make_release.py
+
   release:
+    needs: test
     runs-on: ubuntu-latest
     # Every `run:` here uses `bash -eo pipefail`, not the Linux default `bash -e`.
     # Without pipefail, `a | b` reports b's exit status: a failing `curl` piped
@@ -79,15 +122,89 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           if git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
-            git fetch origin gh-pages
-            git worktree add gh gh-pages
+            # --depth=1: without it every run clones the FULL accumulated binary
+            # history of every prior release just to add one directory.
+            git fetch --depth=1 origin gh-pages
+            git worktree add gh FETCH_HEAD
+            git -C gh checkout -B gh-pages
           else
             git worktree add --orphan -b gh-pages gh
           fi
           mkdir -p "gh/${VERSION}" gh/latest
+
+          # The versioned copy is UNCONDITIONAL: `firekeep update --to <older>`
+          # resolves that version's own wheel and SHA256SUMS from here, so every
+          # release must land in its own directory even when re-run.
           cp dist/firekeep_client-*.whl dist/firekeep_symdex-*.whl dist/uv-* dist/SHA256SUMS "gh/${VERSION}/"
-          cp dist/install.sh dist/install.ps1 dist/latest.json gh/latest/
+
+          # The latest/ pointer is GUARDED. Re-running an older tag's workflow
+          # used to rewrite this pointer BACKWARDS, and nothing repairs the fleet
+          # afterwards: updater.is_newer("0.1.20", "0.1.23") is False, so every
+          # client already on a newer version reports "already up to date"
+          # forever and background auto-update never fires again. Silent fleet
+          # pinning with no error at any layer. Verified by execution, not read.
+          # Single-line python -c only. A multi-line embedded script breaks the
+          # YAML block scalar's indentation and the whole workflow stops parsing.
+          publish_latest=1
+          if [ -f gh/latest/latest.json ]; then
+            prev="$(python -c 'import json,sys;print(json.load(open(sys.argv[1])).get("version",""))' gh/latest/latest.json 2>/dev/null || echo '')"
+            if [ -n "$prev" ]; then
+              # Reuses the SHIPPED comparison, not a reimplementation of it: this
+              # is the exact predicate every client runs to decide whether an
+              # update applies, so the publish rule and the client rule cannot drift.
+              if ! PYTHONPATH=client python -c 'import sys;from firekeep_client.updater import is_newer;sys.exit(0 if is_newer(sys.argv[1],sys.argv[2]) else 1)' "${VERSION}" "$prev"; then
+                publish_latest=0
+                echo "::warning::latest/ already points at ${prev} (>= ${VERSION}); publishing ${VERSION}/ but NOT moving the pointer backwards."
+              fi
+            fi
+          fi
+          if [ "$publish_latest" = "1" ]; then
+            cp dist/install.sh dist/install.ps1 dist/latest.json gh/latest/
+          fi
+
           touch gh/.nojekyll   # serve files verbatim; no Jekyll rewriting
           git -C gh add -A
+          # `exit 0` here is deliberate but narrow: a re-run of an ALREADY
+          # published tag legitimately produces no diff. It must not mask a
+          # failed copy, which is why the verify step below fetches the live
+          # site rather than trusting this job's exit status.
           git -C gh commit -m "release ${VERSION}" || { echo "nothing to publish"; exit 0; }
-          git -C gh push origin gh-pages
+
+          # Retry the push: the concurrency group serialises this workflow, but a
+          # manual gh-pages edit between fetch and push would still reject it.
+          for attempt in 1 2 3; do
+            if git -C gh push origin gh-pages; then
+              exit 0
+            fi
+            echo "push rejected (attempt ${attempt}); re-fetching and retrying"
+            git -C gh fetch --depth=1 origin gh-pages && git -C gh rebase FETCH_HEAD || true
+          done
+          echo "::error::could not push to gh-pages after 3 attempts"
+          exit 1
+
+      # The workflow's last act used to be `git push`, so NOTHING at any layer
+      # ever confirmed the artifacts were actually SERVED. Pages can be disabled,
+      # the site build can fail on size, or the repo can be private (it is) --
+      # and in every one of those cases this job still reported success while
+      # clients fetched nothing.
+      #
+      # This step is also the detector for the unresolved distribution question:
+      # it is EXPECTED to fail on run #1 until Pages is genuinely serving.
+      - name: Verify the release is actually served
+        run: |
+          BASE="https://kapella-hub.github.io/FirekeepHQ"
+          for i in $(seq 1 24); do
+            got="$(curl -fsS "${BASE}/latest/latest.json" 2>/dev/null \
+                   | python -c "import json,sys;print(json.load(sys.stdin).get('version',''))" 2>/dev/null || echo '')"
+            if [ "$got" = "${VERSION}" ]; then
+              echo "verified: ${BASE}/latest/latest.json serves ${VERSION}"
+              exit 0
+            fi
+            [ -n "$got" ] && echo "  serving ${got}, waiting for ${VERSION} (${i}/24)" \
+                          || echo "  not served yet (${i}/24)"
+            sleep 5
+          done
+          echo "::error::${BASE}/latest/latest.json did not serve ${VERSION} within 2 minutes."
+          echo "::error::If this is the first release: GitHub Pages is not enabled, or cannot be."
+          echo "::error::Pages requires a PUBLIC repo (or GitHub Enterprise). See docs/RELEASE-GITHUB.md."
+          exit 1
