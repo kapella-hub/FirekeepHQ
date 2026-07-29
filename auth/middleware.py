@@ -102,3 +102,60 @@ def require_scope(scope: str):
         return identity
 
     return _check_scope
+
+
+def require_any_scope(*scopes: str):
+    """Like require_scope, but satisfied by ANY ONE of `scopes`.
+
+    Added for the vault read routes, which accept "vault:read" OR "admin". A
+    chain of two require_scope dependencies cannot express that -- FastAPI ANDs
+    dependencies, so it would demand both.
+
+    Deliberately mirrors require_scope's auth-disabled branch rather than
+    short-circuiting it. That branch is load-bearing: until audit blocker 7 the
+    disabled path returned the anonymous identity WITHOUT consulting the required
+    scope at all, which satisfied require_scope("admin") on the vault for anyone
+    who could reach the port. A new gate that skipped the check would reopen
+    exactly that hole, so this one runs it too -- and because "vault:read" is
+    subtracted from ANONYMOUS_SCOPES, an anonymous caller is still refused here
+    even with enforcement off.
+    """
+    if not scopes:
+        raise ValueError("require_any_scope needs at least one scope")
+
+    async def _check_any(request: Request) -> dict[str, Any]:
+        if not _keys._AUTH_ENABLED:
+            anon = _keys._ANONYMOUS_IDENTITY
+            if not any(
+                _keys.scopes_allow(anon["scopes"], s, allow_wildcard=False) for s in scopes
+            ):
+                # Report the LEAST-privileged option: it is the one an operator
+                # should grant. Naming "admin" would invite over-granting.
+                raise HTTPException(
+                    status_code=403,
+                    detail=_keys.anonymous_denied_detail(scopes[0]),
+                )
+            return anon
+
+        api_key = request.headers.get("X-API-Key")
+        if not api_key:
+            raise HTTPException(status_code=401, detail="Missing X-API-Key header")
+
+        identity = await validate_key(api_key)
+        if identity is None:
+            raise HTTPException(status_code=401, detail="Invalid or expired API key")
+
+        key_scopes = identity.get("scopes", [])
+        if not any(_keys.scopes_allow(key_scopes, s) for s in scopes):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"Insufficient scope: requires one of {list(scopes)}, "
+                    f"key has {key_scopes}"
+                ),
+            )
+
+        return identity
+
+    return _check_any
+

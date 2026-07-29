@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="Firekeep">
+  <title>Firekeep</title>
+  <!--
+    mark.svg with the ember accent BAKED IN, for every context that cannot
+    supply a `color`: <img src>, CSS background-image, og:image, a CMS upload,
+    a slide deck, a README badge. Identical geometry to mark.svg — only the
+    fill differs. Keep the two in sync if the path ever changes.
+
+    Use mark.svg (currentColor) when the SVG is inlined into the DOM and should
+    take the surrounding colour; use this one everywhere else.
+  -->
+  <path fill="#FF7A2F" fill-rule="evenodd" d="
+    M10.5 2H21.5A8.5 8.5 0 0 1 30 10.5V21.5A8.5 8.5 0 0 1 21.5 30H10.5A8.5 8.5 0 0 1 2 21.5V10.5A8.5 8.5 0 0 1 10.5 2Z
+    M17.61 5.58C18.13 9.84 21.87 11.75 21.87 16.62C21.87 21.06 19.00 24.28 15.35 24.28C11.61 24.28 9.00 21.58 9.00 17.84C9.00 14.62 11.34 12.71 12.39 10.01C12.82 12.62 13.95 13.75 15.00 14.28C14.39 10.88 15.43 8.10 17.61 5.58Z
+    M16.30 14.54C16.65 16.71 18.48 17.76 18.48 19.67C18.48 21.41 17.17 22.63 15.43 22.63C13.69 22.63 12.39 21.50 12.39 19.93C12.39 18.63 13.26 17.84 13.95 16.62C14.13 17.76 14.56 18.28 15.09 18.54C14.82 17.15 15.26 15.93 16.30 14.54Z"/>
+</svg>

@@ -69,7 +69,7 @@ Two always-on stdio MCP servers run next to the agent, not on the VPS:
 
 | Server | Purpose |
 |--------|---------|
-| **FirekeepSymdex** (`firekeep-symdex`) | Code intelligence via tree-sitter AST parsing — 38 tools (30 visible, 8 analytics hidden) across 12 languages, **80–96% token savings vs. raw file reading**. Must be local to the working tree it indexes, so it ships client-side (no VPS container) |
+| **FirekeepSymdex** (`firekeep-symdex`) | Code intelligence via tree-sitter AST parsing — 38 tools (30 visible, 8 analytics hidden) across 12 languages. Token savings depend entirely on the task — see [Symdex token savings](#symdex-token-savings-measured) for the measured figures and their scopes. Must be local to the working tree it indexes, so it ships client-side (no VPS container) |
 | **FirekeepDecision** (`firekeep-decision`) | Globally-informed local clarification board — synthesizes clarifying questions from the whole team's memory (Cortex `POST /decision/synthesize`) and answers them in the human's browser |
 
 ### Shared infrastructure
@@ -125,6 +125,43 @@ Two always-on stdio MCP servers run next to the agent, not on the VPS:
 > it only where a fast generation backend exists — on CPU it costs 30 s per call and returns
 > nothing extra.
 
+### Symdex token savings (measured)
+
+Measured by `symdex/benchmarks/benchmark_runner.py` against `pallets/click` (17 files,
+767 symbols): 20 questions × 3 runs = **60 paired samples**. Each question is answered twice
+— once from a Symdex-built context, once from raw file reads — and an LLM judge scores both
+for accuracy, completeness and relevance on a 5-point rubric. Savings without a quality
+control mean nothing, since returning less always saves tokens.
+
+| Task type | Context tokens saved | Symdex accuracy | Raw accuracy | n |
+|---|---|---|---|---|
+| **Comprehension** ("how does X work") | **−45.8%** | 4.62 | 4.67 | 21 |
+| **Navigation** ("where is X") | **−20.8%** | 4.43 | 4.43 | 21 |
+| **Modification** ("add X") | **+37.8% (more)** | 4.17 | 4.22 | 18 |
+| **Mixed workload, all 60** | **−12.0%** | **4.42** | **4.45** | 60 |
+
+Overall: **12% fewer context tokens at accuracy that is statistically indistinguishable**
+(4.42 vs 4.45; 37 of 60 comparisons were exact ties). Completeness and relevance came out
+marginally *higher* for Symdex (4.62 vs 4.52, 4.98 vs 4.93).
+
+**Modification tasks deliberately cost more.** `build_symdex_context` routes them to raw files
+*plus* structural intelligence, on the theory that extending code needs full context. The
+measurement does not support a quality gain from that (4.17 vs 4.22) — it is 38% more tokens
+for the same answer. Stated because a prospect running a modification-heavy workload will
+measure a negative number, and should hear it here first.
+
+**Single targeted lookups are a different scope entirely.** Fetching one function costs ~280
+tokens against ~6,755 to read its file — **96%** (`symdex/README.md`). That is the number this
+document used to quote as a flat product claim. It is real, but it describes one lookup, not
+one task, and a customer's bill is per task. Both scopes are given above so neither can be
+mistaken for the other.
+
+**Two limits worth knowing.** `stdev` on per-question savings is 40 points — the mean hides a
+range from −63% to +79%. And 24 context-construction strategies were evaluated against these
+same 20 questions on this same repository, so 12% is an **in-sample** figure: it is the
+honest ceiling on what can be claimed today, not a prediction for another codebase. A
+held-out repository is the next measurement.
+
 Cost surface is bounded by what you choose to spend on the LLM tier; the cognitive infrastructure itself runs on commodity hardware.
 
 ---
@@ -161,6 +198,33 @@ Off-the-shelf AI assistants give you a smart contractor with amnesia and no supe
 
 It is fully model-agnostic. Cortex is the memory layer regardless of whether the agent on top is Claude, GPT, Gemini, or local Llama. The investment compounds across model upgrades, not against them.
 
+### What changed in the last hardening pass (2026-07-26 → 29)
+
+Stated because most of it is the kind of thing a security review asks for and most solo
+products cannot answer:
+
+- **The default install was insecure and is not any more.** It shipped `AUTH_ENABLED=false`,
+  and with auth off every caller was handed wildcard scope — `GET /vault/secrets` and
+  `POST /auth/keys` were open to anyone who could reach the port, on ports bound to `0.0.0.0`.
+  Auth is now on by default, the anonymous identity no longer carries `admin`, and ports bind
+  loopback. Verified on the project's own deployment, where that configuration had exposed
+  real secrets.
+- **`bash install.sh` exited 1 on every clean install** — a service-table parsing bug meant
+  every health probe hit a malformed URL. Fixed, with a regression test that executes the
+  shell expansion rather than re-implementing it.
+- **Test frameworks were shipping inside the production images** and were the only CVE in the
+  shipped dependency set. Removed; the gate now starts from zero.
+- **Sentinel mounted the Docker socket read-write** (host-root-equivalent) and the whole
+  repository including `.env`. Neither did anything by default; both are gone, the docker
+  collector is opt-in.
+- **Backups were not restorable.** They tarred live databases — Neo4j Community has no
+  online-backup facility, so the archive could capture a torn write and restore without error.
+  Now quiesced, and verified by a full wipe-and-restore round trip.
+
+**Not yet done, and load-bearing for a first sale:** no licence-key mechanism, no seat
+counting, no entitlement surface — so the free/paid boundary is currently unenforceable. No
+release tag has been cut, so nothing is published for `--pull` to fetch yet.
+
 ---
 
 ## Operational Profile
@@ -173,6 +237,12 @@ It is fully model-agnostic. Cortex is the memory layer regardless of whether the
 | **Local dev story** | `./install` / `firekeep install` installs the portable `firekeep-client` kit (`~/.firekeep/config` profiles, `firekeep-shim` transport, hook cores, sidecar); agents connect to the VPS/office over HTTP(S) with keyed, attributed identity |
 | **Security posture** | Closed by default: app ports bind to localhost (`BIND_ADDR`, opt-in to widen); the datastores are loopback-only unconditionally and no setting exposes them; per-key scoped API auth is **on** (`AUTH_ENABLED=true`) with keys minted by the installer. Plus: Fernet-encrypted vault, pre-edit policy engine, deny-list for sensitive paths (`.env`, `*.key`, `*.pem`) |
 | **Symdex languages** | Python, JavaScript, TypeScript, Go, Rust, Java, PHP, C, C#, Ruby, Kotlin, Swift |
+| **Delivery** | Four service images published to a private registry on a `vX.Y.Z` tag; `install.sh --pull` needs no source access. Developers build from a checkout with the same compose file |
+| **Reproducible builds** | Every Python dependency hash-pinned in a per-service `requirements.lock`; every base and datastore image pinned to an immutable digest. Two builds of one commit produce the same images |
+| **Supply chain** | `pip-audit --strict` gates each shipped dependency set in CI (currently zero CVEs), CycloneDX SBOM per artifact, gitleaks over the working tree and full history |
+| **Disaster recovery** | `deploy/backup.sh` quiesces Neo4j/Qdrant/Redis before snapshotting, so the archive is actually restorable, and restarts them on every exit path. `update.sh` takes a backup before it rebuilds and refuses `--no-backup` if a datastore image moved — Neo4j store upgrades are one-way |
+| **Disclosure** | `SECURITY.md` with scope and response targets; `docs/THREAT-MODEL.md` covering all four services, the client kit and the URL crawler, listing what is *not* mitigated |
+
 
 ---
 

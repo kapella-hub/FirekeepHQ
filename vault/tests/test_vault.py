@@ -235,9 +235,14 @@ class TestVaultRouter:
         # reference. The patch must be live while the router is CONSTRUCTED,
         # because the dependency is captured at decoration time.
         # The gate itself is covered by test_vault_routes_refuse_anonymous below.
-        with patch("vault.api.require_scope",
-                   lambda scope: (lambda: {"agent_id": "test-admin",
-                                           "scopes": ["*"], "authenticated": True})):
+        # BOTH gate factories must be stubbed. The read routes moved to
+        # require_any_scope("vault:read", "admin") on 2026-07-29; patching only
+        # require_scope left those two routes on the real gate, which correctly
+        # 403'd the anonymous caller -- so these router tests failed for an auth
+        # reason while claiming to test router behaviour.
+        _ident = lambda *a, **k: (lambda: {"agent_id": "test-admin",
+                                           "scopes": ["*"], "authenticated": True})
+        with patch("vault.api.require_scope", _ident),              patch("vault.api.require_any_scope", _ident):
             router = create_vault_router()
         app.include_router(router)
         self.app = app

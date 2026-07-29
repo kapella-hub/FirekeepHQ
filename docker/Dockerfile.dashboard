@@ -8,6 +8,12 @@ ARG REGISTRY=docker.io/library
 # digest resolves identically through a pull-through mirror.
 FROM ${REGISTRY}/nginx:1.31.3-alpine@sha256:4a73073bd557c65b759505da037898b61f1be6cbcc3c2c3aeac22d2a470c1752
 COPY dashboard/index.html /usr/share/nginx/html/index.html
+# Brand assets (mark, favicon, lockup). COPIED EXPLICITLY because the line above
+# copies a FILE, not the directory — so anything added under dashboard/ is
+# invisible to the image unless it gets its own COPY. A local `python -m
+# http.server` in the source tree serves these fine, which is exactly why the
+# omission is easy to miss: the assets work everywhere except in production.
+COPY dashboard/brand/ /usr/share/nginx/html/brand/
 # Rendered by the stock nginx entrypoint (envsubst on /etc/nginx/templates/*),
 # substituting DASHBOARD_API_KEY into the /api/ proxy headers at start. Note:
 # in k8s the ingress routes /api/<svc> straight to the services, so these

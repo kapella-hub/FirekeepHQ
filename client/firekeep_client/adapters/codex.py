@@ -1,14 +1,34 @@
-"""Codex adapter: ~/.codex/config.toml [mcp_servers.*] (stdio shim commands), no hooks.
+"""Codex adapter: ~/.codex/config.toml [mcp_servers.*] plus ~/.codex/AGENTS.md.
 
 TOML has no stdlib writer, so the firekeep MCP servers are managed as a marker-delimited
 TEXT block. Foreign [mcp_servers.*] sections outside the markers are never parsed or
 rewritten, so they survive render/unrender untouched (non-clobbering).
+
+Codex has NO HOOK SURFACE — no session_start, no pre_tool, nothing. Every other
+runtime gets the cognitive protocol two ways (the rendered instruction block AND
+the hook-delivered briefing); Codex can only get it the first way. Until 2026-07-29
+it got neither: this adapter rendered MCP servers and no instruction file at all,
+so a Codex user received ~94 tools and not one word about when to use them, while
+docs/SETUP-CODEX.md described an AGENTS.md that was never written.
+
+That made Codex the worst-affected runtime for the failure this fixes — an agent
+told "deploy to my vps" answering that it did not know, with the answer sitting in
+memory at 100% confidence.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
-from firekeep_client.adapters.base import Adapter, read_pin, shim_servers, strip_block, upsert_block
+from firekeep_client.adapters.base import (
+    FIREKEEP_INSTRUCTIONS,
+    Adapter,
+    read_pin,
+    shim_servers,
+    strip_block,
+    strip_marked_block,
+    upsert_block,
+    upsert_marked_block,
+)
 
 CODEX_START = "# >>> firekeep-client (managed — do not edit below) >>>"
 CODEX_END = "# <<< firekeep-client (managed) <<<"
@@ -34,14 +54,47 @@ class CodexAdapter(Adapter):
     def _path(self) -> Path:
         return Path.home() / ".codex" / "config.toml"
 
+    def _instructions_path(self) -> Path:
+        # Codex's global rules file. A USER-OWNED file, so only the
+        # marker-delimited block is ever touched — the claude-CLAUDE.md precedent,
+        # not kiro's whole-file steering doc.
+        return Path.home() / ".codex" / "AGENTS.md"
+
+    def _render_instructions(self) -> None:
+        # Best-effort, mirroring the opencode adapter: an unwritable AGENTS.md must
+        # never fail the install. The MCP servers are the load-bearing part; losing
+        # the instruction block degrades behaviour, losing the servers breaks it.
+        path = self._instructions_path()
+        try:
+            existing = path.read_text(encoding="utf-8") if path.exists() else ""
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(upsert_marked_block(existing, FIREKEEP_INSTRUCTIONS),
+                            encoding="utf-8")
+        except OSError:
+            pass
+
+    def _unrender_instructions(self) -> None:
+        path = self._instructions_path()
+        try:
+            if not path.exists():
+                return
+            existing = path.read_text(encoding="utf-8")
+            stripped = strip_marked_block(existing)
+            if stripped != existing:
+                path.write_text(stripped, encoding="utf-8")
+        except OSError:
+            pass
+
     def render(self, *, venv_bin: Path) -> None:
         path = self._path()
         text = path.read_text(encoding="utf-8") if path.exists() else ""
         updated = upsert_block(text, _toml_block(venv_bin, read_pin(self.name)), CODEX_START, CODEX_END)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(updated, encoding="utf-8")
+        self._render_instructions()
 
     def unrender(self) -> None:
+        self._unrender_instructions()
         path = self._path()
         if not path.exists():
             return

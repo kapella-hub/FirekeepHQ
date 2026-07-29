@@ -44,12 +44,17 @@ class TestScopes:
             "session:read", "session:write",
             "replay:read", "eval:write",
             "relay:read", "relay:write",
-            "eval:read", "admin",
+            "eval:read",
+            # Vault READ, split off admin 2026-07-29 so a teammate's agent can
+            # retrieve a credential without holding a key-minting scope. WRITE and
+            # DELETE on the vault stay admin-only.
+            "vault:read",
+            "admin",
         }
         assert SCOPES == expected
 
     def test_scope_count(self):
-        assert len(SCOPES) == 10
+        assert len(SCOPES) == 11
 
 
 @pytest.fixture
@@ -107,9 +112,14 @@ class TestAnonymousIdentity:
         assert "scopes" in _ANONYMOUS_IDENTITY
         assert "authenticated" in _ANONYMOUS_IDENTITY
 
-    def test_no_wildcard_and_no_admin(self):
-        """The anonymous scope set is every scope EXCEPT admin — never ["*"]."""
+    def test_no_wildcard_no_admin_and_no_secret_reading(self):
+        """The anonymous scope set withholds admin AND vault:read — never ["*"].
+
+        vault:read is withheld for the same reason admin is: it decrypts secrets,
+        and ANONYMOUS_SCOPES is derived from SCOPES, so a new scope is granted to
+        unauthenticated callers automatically unless subtracted by name."""
         scopes = set(_ANONYMOUS_IDENTITY["scopes"])
         assert "*" not in scopes
         assert "admin" not in scopes
-        assert scopes == SCOPES - {"admin"}
+        assert "vault:read" not in scopes
+        assert scopes == SCOPES - {"admin", "vault:read"}

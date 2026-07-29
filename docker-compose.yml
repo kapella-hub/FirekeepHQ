@@ -741,6 +741,21 @@ services:
       # substituting ONLY defined container env vars).
       - ./dashboard/nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
       - ./dashboard/.htpasswd:/etc/nginx/.htpasswd:ro
+      # NOTE: every mount above is a SINGLE FILE, and docker resolves a
+      # single-file bind mount to an INODE at container start. Editing such a
+      # file in place (`>`, sed -i without --follow-symlinks caveats) is seen by
+      # the container; REPLACING it (cp+mv, editors that write-then-rename)
+      # silently is not — the container keeps serving the old inode while the
+      # host shows the new content. Recreate the container after any replace.
+      # Found the hard way rotating .htpasswd: the host had the new user, the
+      # container still authenticated the old one, and every credential 401'd.
+      #
+      # Brand assets are a DIRECTORY mount, so new files appear without a
+      # compose change. This is deliberately not covered by
+      # docker/Dockerfile.dashboard's `COPY dashboard/brand/` — that image is
+      # the k8s/CI path; compose runs stock nginx and never builds it. Both
+      # paths need the assets, and they need them by different mechanisms.
+      - ./dashboard/brand:/usr/share/nginx/html/brand:ro
     depends_on:
       cortex-api:
         condition: service_healthy

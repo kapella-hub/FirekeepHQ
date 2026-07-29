@@ -51,7 +51,34 @@ async def _lifespan(server):
         await close_distiller()
 
 
-mcp = FastMCP("FirekeepBridge", lifespan=_lifespan)
+# Served in the MCP `initialize` handshake. This is the ONLY instruction channel
+# that needs no client-side adapter, so it is the only one that reaches Codex (which
+# has no hook surface and no instruction file) and a user who has deleted the
+# rendered block from their own instruction file.
+#
+# It exists because of a real failure: a user asked "deploy to my vps" and the agent
+# said it did not know, while the answer sat in memory as a 100%-confidence first
+# result. Storage and retrieval worked; nothing triggered them. Tool descriptions do
+# not fix this -- memory_recall's description already states its trigger and still
+# does not fire (same lesson as decision_board in client 0.1.11).
+#
+# Keep it SHORT. It is sent once per session, not per request, but it competes for
+# attention with everything else in the handshake.
+_INSTRUCTIONS = """Firekeep -- persistent team memory for agents.
+
+Recall BEFORE answering, and treat not knowing as the trigger: if the user names a
+host, IP, path, service, credential or convention you cannot name from the current
+conversation ("my VPS", "our server"), or uses history words ("again", "still",
+"last time", "how did we"), call memory_recall(task=<their request>) first. Never
+claim you don't know about the user's own systems before calling it once. If a
+result names a vault key, follow up with vault_retrieve.
+
+Write as you go: ctx_update after each meaningful step, memory_learn the moment a
+fix works (including what failed first), skill_create after a hard-won fix,
+ctx_complete_session when done. Secrets go to vault_store, never memory_learn.
+"""
+
+mcp = FastMCP("FirekeepBridge", lifespan=_lifespan, instructions=_INSTRUCTIONS)
 
 
 def _default_agent_id(agent_id: str | None = None) -> str:

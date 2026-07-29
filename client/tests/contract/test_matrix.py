@@ -22,11 +22,21 @@ def test_pre_edit_block_degrades_per_runtime():
     assert capabilities("opencode")["pre_edit_block"] == "guaranteed (plugin throw, validated 1.14.22)"
 
 
-def test_precompact_only_claude():
-    assert capabilities("claude")["precompact"] == "yes"
-    assert capabilities("kiro")["precompact"] == "none"
-    assert capabilities("codex")["precompact"] == "none"
-    assert capabilities("opencode")["precompact"] == "none"
+def test_precompact_is_wired_nowhere():
+    """Corrected 2026-07-29: the matrix claimed claude="yes" and this test enforced
+    it, but the claude adapter renders NO PreCompact hook and no precompact hook
+    core exists anywhere in the kit — verified by grep, zero matches in both.
+
+    A capability matrix that overstates coverage is worse than one with a gap:
+    `firekeep doctor` and the docs both read from it, so it told users a
+    context-compaction save was happening when nothing ran. The retired legacy
+    bash PreCompact echo hook (documented as deliberately left in place on
+    upgraded machines) is not the kit wiring it."""
+    for runtime in ("claude", "kiro", "codex", "opencode"):
+        assert capabilities(runtime)["precompact"] == "none", (
+            f"{runtime} claims a precompact capability; nothing in the kit renders "
+            f"a PreCompact hook, so the claim is false"
+        )
 
 
 def test_presence_hook_for_hook_capable_sidecar_for_mcp_only():

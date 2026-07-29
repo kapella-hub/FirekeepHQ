@@ -6,11 +6,29 @@ once-a-day version check calls `maybe_spawn()`, which fire-and-forgets a DETACHE
 `firekeep update` when a newer release exists.
 
 Why detached + "applies next session": `firekeep update` re-execs the bootstrap and
-rebuilds ~/.firekeep/venv. It can't replace the install it is running from — on POSIX
-that's unlink-safe (running processes keep old inodes; new files land for next
-time), and on Windows the bootstrap refuses to overwrite a venv with live agent
-processes. So this automates the SAME operation a user runs by hand mid-session:
-the update lands for the NEXT session, never the running one.
+rebuilds ~/.firekeep/venv. It can't replace the install it is running from, so the
+update lands for the NEXT session, never the running one.
+
+The bootstrap now BUILDS BESIDE AND SWAPS (`${VENV}.new` -> rename), which is what
+makes running this in the background acceptable. The previous rationale here was
+wrong and worth recording, because it reads as reassuring:
+
+    "on POSIX that's unlink-safe (running processes keep old inodes; new files
+     land for next time)"
+
+Unlink safety covers files a process has ALREADY MAPPED. It does not cover a new
+exec — and every lifecycle hook spawns a fresh `${VENV}/bin/python` (PreToolUse
+gates every Edit; PostToolUse, UserPromptSubmit, SessionStart and Stop all fire
+per event; the three stdio MCP servers re-exec on reconnect). The old
+`uv venv --clear` deleted the live venv and took 30-120s to repopulate it, so for
+that entire window every hook on every live macOS/Linux session failed with
+"No such file or directory" — with auto-update ON by default, meaning nobody had
+asked for that window to open.
+
+Windows was never exposed to this: the bootstrap there refused outright to
+overwrite a venv held by live agent processes. Staging retires that asymmetry
+instead of copying the guard to POSIX — neither platform now deletes an in-use
+venv, and the swap window is one rename(2) rather than a reinstall.
 
 At most one spawn per calendar day per target version — the daily check caches a
 'newer' verdict, so without this guard every session start that day would relaunch.

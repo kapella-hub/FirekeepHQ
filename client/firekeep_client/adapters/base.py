@@ -324,9 +324,103 @@ above when you're unsure.
 """
 
 
+MEMORY_INSTRUCTIONS = """\
+## Firekeep Memory
+
+You have a persistent team memory. Most "I don't know" answers are already in it.
+
+**Recall before you answer — not knowing something IS the trigger.**
+Call `memory_recall(task=<the user's request, verbatim>)` BEFORE answering when:
+- The user names a host, IP, path, service, credential, deploy target or convention
+  you cannot name from THIS conversation — "my VPS", "our server", "the staging box".
+- They use history words: "again", "still", "last time", "how did we", "like before".
+- You are starting a non-trivial task, or you just hit an error.
+
+Never say "I don't know" or "I don't have access to that" about the user's own
+systems before calling it once. A miss costs a second; an unasked question costs
+the session.
+
+- A recalled memory naming a vault key rather than a value → `vault_retrieve(key)`.
+- Operational or repeated-failure task → also `skill_recall(task)`. The
+  session-start briefing only ever matched your ORIGINAL goal, never what the user
+  asked on turn 7.
+- Your own earlier plan or decisions missing from context (after compaction) →
+  `ctx_get_shadow` before asking the user to repeat themselves.
+
+**Write as you go, not at the end.**
+- `ctx_update` after each meaningful step: category `plan` | `decision` |
+  `file` (key=path) | `progress`. Three or more actions without one means you are
+  behind — do it now.
+- `memory_learn` the moment a fix works or a decision is made. Include what you
+  tried first and why it failed; that is the part that saves the next session.
+- `skill_create(trigger, symptoms, steps, gotchas, domain)` after a hard-won fix or
+  a reusable technique. You hold the session context; the server does not
+  synthesize this for you.
+- Secrets (passwords, tokens, keys, connection strings) → `vault_store`, NEVER
+  `memory_learn`. Non-secret operational facts (IPs, URLs, hostnames, paths) →
+  `memory_learn(namespace="infrastructure")`.
+- `ctx_complete_session(outcome=...)` when the work is done. Skipping it discards
+  the session.
+"""
+
+
 # The full firekeep-owned instruction block rendered into each runtime's instruction
-# surface (Claude global CLAUDE.md, kiro steering). Append new sections here.
-FIREKEEP_INSTRUCTIONS = f"{DECISION_INSTRUCTIONS}\n\n{KNOWLEDGE_INGEST_INSTRUCTIONS}"
+# surface (Claude global CLAUDE.md, kiro steering, opencode AGENTS.md, codex
+# AGENTS.md). Append new sections here.
+#
+# MEMORY_INSTRUCTIONS is first ON PURPOSE. It is the one section that governs
+# ordinary turns; the other two fire on specific, rarer situations.
+#
+# WHY THIS SECTION EXISTS AT ALL — the failure it fixes, so nobody trims it back:
+# a user asked their agent "deploy to my vps" and was told the agent did not know
+# what the VPS was. The user said "look at your memories", the agent called
+# memory_recall, and the answer was the FIRST result at 100% confidence, complete
+# with the IP, ssh-as-root and the checkout path. Storage and retrieval were
+# perfect. Nothing triggered them.
+#
+# It survived because this block previously held only the decision-board and
+# knowledge-ingest sections: no "recall before", no memory_learn, no
+# vault_retrieve. The session-start briefing does say "then memory_recall", but
+# ONCE, before the agent has anything to recall against — it cannot look up a VPS
+# before the user has mentioned one. And the author's own machine behaved better
+# only because he had hand-written these rules into his personal CLAUDE.md years
+# earlier, so the gap was invisible from the inside.
+#
+# The wording is deliberate in two places, and both are load-bearing:
+#   1. The recall trigger is an OBSERVABLE TEST against the current turn ("can I
+#      name this thing from THIS conversation?"), not an exhortation to remember.
+#      "Recall when relevant" has no edge a model can evaluate.
+#   2. The ctx_update rule is COUNTABLE ("three or more actions"). "As you work"
+#      is unfalsifiable, so it gets skipped.
+#
+# Do NOT solve this by rewording tool descriptions. memory_recall's own
+# description already states its trigger correctly and still does not fire; this
+# repo proved the same thing for decision_board in client 0.1.11, which is the
+# reason DECISION_INSTRUCTIONS exists.
+FIREKEEP_INSTRUCTIONS = (
+    f"{MEMORY_INSTRUCTIONS}\n\n{DECISION_INSTRUCTIONS}\n\n{KNOWLEDGE_INGEST_INSTRUCTIONS}"
+)
+
+
+# Short form for the MCP `initialize` handshake (FastMCP's `instructions=`).
+# Highest reach per line in the whole fix: it is served by the SERVER, so it
+# arrives at every MCP client with no adapter involvement — including Codex, and
+# including a user who deletes the rendered block from their CLAUDE.md. It is paid
+# for once per session rather than per request, but keep it tight regardless.
+MCP_SERVER_INSTRUCTIONS = """\
+Firekeep — persistent team memory for agents.
+
+Recall BEFORE answering, and treat not knowing as the trigger: if the user names a
+host, IP, path, service, credential or convention you cannot name from the current
+conversation ("my VPS", "our server"), or uses history words ("again", "still",
+"last time", "how did we"), call memory_recall(task=<their request>) first. Never
+claim you don't know about the user's own systems before calling it once. If a
+result names a vault key, follow up with vault_retrieve.
+
+Write as you go: ctx_update after each meaningful step, memory_learn the moment a
+fix works (including what failed first), skill_create after a hard-won fix,
+ctx_complete_session when done. Secrets go to vault_store, never memory_learn.
+"""
 
 
 def upsert_marked_block(existing: str, content: str) -> str:

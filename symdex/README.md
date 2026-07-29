@@ -2,7 +2,14 @@
 
 Token-efficient MCP server for source code exploration via tree-sitter AST parsing.
 
-Instead of dumping entire files into context, firekeep-symdex parses your codebase into symbols (functions, classes, methods, types, constants, routes, variables) and serves only what you need -- saving 80-96% of tokens compared to raw file reading.
+Instead of dumping entire files into context, firekeep-symdex parses your codebase into symbols (functions, classes, methods, types, constants, routes, variables) and serves only what you need.
+
+**On a single targeted lookup** — fetch one function instead of reading its file — that
+saves 80-96% of tokens (see the table below). **Across a whole task**, where an agent needs
+several symbols and their callers, the measured figure is 12% on a mixed workload and 46% on
+comprehension questions, at equal answer quality — and modification tasks deliberately cost
+more. `benchmarks/benchmark_runner.py` produces those numbers; do not quote the per-lookup
+figure as a per-task one.
 
 > **Inside Firekeep**, firekeep-symdex is installed and registered automatically by `firekeep install` as one of six always-on client MCP servers (`firekeep-cortex`, `firekeep-bridge`, `firekeep-sentinel`, `firekeep-relay`, `firekeep-decision`, `firekeep-symdex`). It runs as a **local stdio server** against your working tree — there is no server-side container and no `--with-symdex` opt-in flag. The standalone install steps below are for running firekeep-symdex on its own, outside Firekeep.
 

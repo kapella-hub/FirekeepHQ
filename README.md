@@ -28,7 +28,7 @@ Firekeep fixes this by giving agents durable memory, live operational awareness,
 | **Replay & Explainability** | Every memory read/write, session lifecycle event, environment change, coordination action, and gateway decision is recorded as a structured trace. Inspect, narrow, and reconstruct context at any prior event. |
 | **Encrypted Secrets** | Fernet-backed vault for infrastructure credentials, API tokens, and connection strings. Distinct from memory — secrets never appear in recall. |
 | **Business Knowledge** | Ingest company documents (wiki pages, tickets, API docs) — manually, or via scheduled Confluence collectors. Chunks land in the vector store and surface naturally during memory recall alongside operational memories. |
-| **Code Intelligence** | Tree-sitter-based symbol search, caller graphs, architecture maps, and impact analysis at zero token cost — runs **client-side** (stdio-local `firekeep-symdex`, installed with the kit). 38 MCP tools (8 analytics tools hidden by default behind `SYMDEX_ANALYTICS_ENABLED`). |
+| **Code Intelligence** | Tree-sitter-based symbol search, caller graphs, architecture maps, and impact analysis that returns symbol slices instead of whole files — runs **client-side** (stdio-local `firekeep-symdex`, installed with the kit). 38 MCP tools (8 analytics tools hidden by default behind `SYMDEX_ANALYTICS_ENABLED`). |
 
 ## Why Firekeep Is Different
 
@@ -71,7 +71,7 @@ bash install.sh --pull
 **If you have source access** — build it:
 
 ```bash
-git clone https://github.com/kapella-hub/Firekeep.git   # private
+git clone https://github.com/kapella-hub/FirekeepHQ.git   # private
 cd Firekeep
 bash install.sh
 ```

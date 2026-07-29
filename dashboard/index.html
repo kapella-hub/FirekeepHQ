@@ -4,6 +4,17 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Firekeep Dashboard</title>
+<!-- Brand assets live in dashboard/brand/ (single source for dashboard + website).
+     favicon.svg and mark-ember.svg carry a BAKED colour deliberately: an SVG
+     loaded through <link rel="icon">, <img> or og:image renders in an isolated
+     document with no parent, so currentColor would resolve to black. -->
+<link rel="icon" type="image/svg+xml" href="brand/favicon.svg">
+<link rel="apple-touch-icon" href="brand/mark-ember.svg">
+<!-- deep background, NOT the accent: this tints browser chrome, and an ember
+     chrome bar would read as a warning state. -->
+<meta name="theme-color" content="#0A0B0E">
+<meta property="og:title" content="Firekeep">
+<meta property="og:image" content="brand/mark-ember.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -11,9 +22,21 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-    /* Graphite Pro — true-neutral graphite, one electric-blue accent, no color
-       wash. Engineering-grade calm: minimal gradients, hairline borders, muted
-       status colors. Fully token-driven: the whole stack recolors from here. */
+    /* Graphite Pro — true-neutral graphite, one ember accent, no color wash.
+       Engineering-grade calm: minimal gradients, hairline borders, muted status
+       colors. Fully token-driven: the whole stack recolors from here.
+
+       THE ACCENT NEVER ENCODES STATE. It means brand and interaction only —
+       active nav, links, focus, the pulse line. Health and severity use
+       --green / --amber / --red exclusively.
+
+       That rule is why --amber and --red moved when the accent went ember:
+       brand orange sits ~27deg of hue from the old danger red, and one colour
+       family cannot mean both "fine" and "on fire" in an operator console.
+       --amber is now a true yellow and --red a truer red, so the accent sits
+       alone in its band. State is additionally never colour-ALONE — every
+       status carries a text label, which is also the only way this is legible
+       to the ~8% of male operators who cannot separate red from green. */
     --bg-deep: #0A0B0E;
     --bg: #0E0F12;
     --surface: #16181D;
@@ -23,20 +46,20 @@
     --text: #E6E8EC;
     --text-secondary: #9AA0AB;
     --text-dim: #626873;
-    --accent: #4C9AFF;
-    --accent-2: #2F7FE6;
-    --accent-bright: #82B8FF;
-    --accent-muted: rgba(76, 154, 255, 0.12);
-    --accent-glow: rgba(76, 154, 255, 0.06);
-    --accent-shadow: rgba(76, 154, 255, 0.22);
-    --pulse: #58B0FF;
-    --pulse-glow: rgba(88, 176, 255, 0.26);
+    --accent: #FF7A2F;
+    --accent-2: #E2620F;
+    --accent-bright: #FFA05C;
+    --accent-muted: rgba(255, 122, 47, 0.12);
+    --accent-glow: rgba(255, 122, 47, 0.06);
+    --accent-shadow: rgba(255, 122, 47, 0.22);
+    --pulse: #FF9147;
+    --pulse-glow: rgba(255, 145, 71, 0.26);
     --green: #46C77F;
     --green-muted: rgba(70, 199, 127, 0.13);
-    --red: #E5635F;
-    --red-muted: rgba(229, 99, 95, 0.12);
-    --amber: #E0A93B;
-    --amber-muted: rgba(224, 169, 59, 0.12);
+    --red: #F2555A;
+    --red-muted: rgba(242, 85, 90, 0.12);
+    --amber: #E8C547;
+    --amber-muted: rgba(232, 197, 71, 0.12);
     --violet: #8B93B8;
     --violet-muted: rgba(139, 147, 184, 0.14);
     /* aliases — several components referenced these names which were never defined
@@ -105,16 +128,17 @@ body::after {
 
 .logo { display: flex; align-items: center; gap: 10px; text-decoration: none; flex-shrink: 0; }
 
+/* The mark is now the SHAPE itself, not a letter in a tinted box — so no
+   background, no border-radius (the keep supplies its own corners), and the
+   glow moves from box-shadow to drop-shadow so it follows the silhouette and
+   the knocked-out flame rather than a square. */
 .logo-mark {
-    width: 28px; height: 28px; border-radius: 7px;
-    background: linear-gradient(135deg, var(--accent), var(--accent-2));
-    display: flex; align-items: center; justify-content: center;
-    font-family: var(--font-mono); font-weight: 700; font-size: 14px;
-    color: var(--bg-deep); box-shadow: 0 0 16px var(--accent-shadow);
+    width: 28px; height: 28px; flex-shrink: 0;
+    color: var(--accent);
+    filter: drop-shadow(0 0 9px var(--accent-shadow));
 }
 
 .logo-text { font-family: var(--font-mono); font-size: 15px; font-weight: 600; color: var(--text); letter-spacing: -0.5px; }
-.logo-text span { color: var(--accent); }
 .topbar-spacer { flex: 1; }
 .topbar-status { font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); letter-spacing: 0.3px; }
 
@@ -126,11 +150,20 @@ body::after {
 }
 .topbar-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-glow); }
 
+/* These are KEYBOARD SHORTCUTS, not counts. As a bordered pill sitting right
+   of a nav label they were indistinguishable from an unread badge, so every
+   item in the sidebar appeared to be reporting a quantity — nine small lies.
+   Demoted to a bare monospace character, pushed to the far right, and surfaced
+   on hover/focus or when the item is active. Still discoverable, no longer
+   claiming to be data. */
 .kbd-hint {
-    font-family: var(--font-mono); font-size: 9px; color: var(--text-dim);
-    background: var(--bg-deep); border: 1px solid var(--border); border-radius: 3px;
-    padding: 1px 5px; margin-left: 4px; line-height: 1.4;
+    font-family: var(--font-mono); font-size: 10px; color: var(--text-dim);
+    margin-left: auto; padding-left: 8px; line-height: 1.4;
+    opacity: 0; transition: opacity var(--transition);
 }
+.nav-btn:hover .kbd-hint,
+.nav-btn:focus-visible .kbd-hint,
+.nav-btn.active .kbd-hint { opacity: 0.55; }
 
 /* Sidebar */
 .sidebar {
@@ -152,7 +185,10 @@ body::after {
 }
 .nav-btn:hover { color: var(--text); background: var(--accent-glow); }
 .nav-btn.active { color: var(--accent); background: var(--accent-glow); border-left-color: var(--accent); }
-.nav-icon { width: 18px; height: 18px; display: flex; align-items: center; justify-content: center; font-size: 14px; opacity: 0.7; flex-shrink: 0; }
+.nav-icon { width: 18px; height: 18px; flex-shrink: 0; opacity: 0.62;
+            fill: none; stroke: currentColor; stroke-width: 1.7;
+            stroke-linecap: round; stroke-linejoin: round;
+            transition: opacity var(--transition); }
 .nav-btn.active .nav-icon { opacity: 1; }
 
 /* Main */
@@ -167,7 +203,7 @@ main {
 /* ===== Overview hero + Firekeep Pulse (the signature) ===== */
 .hero {
     position: relative; border: 1px solid var(--border); border-radius: 12px;
-    padding: 26px 28px 0; overflow: hidden; margin-bottom: 30px;
+    padding: 22px 28px 0; overflow: hidden; margin-bottom: 28px;
     background: linear-gradient(180deg, var(--surface), var(--bg));
 }
 .hero-top { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
@@ -179,12 +215,18 @@ main {
 @keyframes liveDot { 0% { box-shadow: 0 0 0 0 var(--pulse-glow); } 70%, 100% { box-shadow: 0 0 0 8px transparent; } }
 .hero-headline { font-family: var(--font-display); font-weight: 700; font-size: clamp(28px, 3.0vw, 40px);
     line-height: 1.05; letter-spacing: -1.0px; color: var(--text); margin: 16px 0 10px; }
-.hero-summary { font-size: 14px; color: var(--text-secondary); max-width: 64ch; line-height: 1.6; }
+.hero-summary { font-size: 19px; color: var(--text-secondary); max-width: 72ch; line-height: 1.5; margin-top: 14px; }
 .hero-summary b { color: var(--text); font-weight: 600; }
 .hero-summary .hs-accent { color: var(--accent-bright); font-weight: 600; }
-.pulse-wrap { position: relative; margin: 34px -28px 0; height: 150px; }
-.pulse-canvas { display: block; width: 100%; height: 150px; }
-.pulse-legend { position: absolute; left: 28px; bottom: 12px; display: flex; align-items: baseline; gap: 12px;
+/* The wrap is TALLER than the canvas on purpose. The legend is absolutely
+   positioned inside it, and with canvas == wrap the waveform baseline (h*0.72,
+   so y≈75 of 104) landed within a few pixels of the legend text top (y≈79) —
+   they shared the same band and read as collided. The canvas now ends at 78px
+   and the remaining 26px is the legend's own strip, so the two cannot overlap
+   at any height. */
+.pulse-wrap { position: relative; margin: 20px -28px 0; height: 104px; }
+.pulse-canvas { display: block; width: 100%; height: 78px; }
+.pulse-legend { position: absolute; left: 28px; bottom: 9px; display: flex; align-items: baseline; gap: 12px;
     font-family: var(--font-mono); font-size: 10px; letter-spacing: 1.6px; color: var(--text-dim); pointer-events: none; }
 .pulse-rate { color: var(--pulse); letter-spacing: 0.5px; }
 @media (prefers-reduced-motion: reduce) { .hero-live-dot { animation: none; } }
@@ -224,7 +266,13 @@ main {
 /* Grids */
 .grid-2 { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
 .grid-3 { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
-.grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+/* auto-fit, not a hard repeat(4). At 1024px a fixed four-up left each card
+   173px, of which 115px reached the description — still clipping "Environment
+   observer" after the two-row fix. Dropping to three columns below ~1150px
+   gives ~237px cards and ends the clipping at every width, instead of tuning
+   the text until it fits one window. Mirrors .grid-2 directly above, which was
+   already responsive; .grid-4 was the outlier. */
+.grid-4 { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; }
 .grid-5 { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; }
 .section + .section { margin-top: 28px; }
 
@@ -238,22 +286,65 @@ main {
 .stagger > *:nth-child(6) { animation-delay: 0.2s; }
 
 /* Health cards */
-.health-card { display: flex; align-items: center; gap: 14px; padding: 16px 18px; position: relative; overflow: hidden; }
+/* Two-row grid, not a flex row. As a single row the description shared its
+   width with the latency column and lost: at a 1251px viewport each card is
+   230px, and 230 - 36 padding - 10 dot - 28 gaps - 64 latency left 92px for a
+   label needing 114-120px, so every one of the four was clipped mid-word.
+   Trimming the text would only have hidden that until the next narrow window.
+   Now the description spans both content columns on its own row. */
+.health-card { display: grid; grid-template-columns: auto 1fr auto;
+    column-gap: 12px; row-gap: 3px; align-items: center;
+    padding: 14px 18px; position: relative; overflow: hidden; }
+.health-card > .health-dot { grid-row: 1 / span 2; }
+.health-card > .health-name { grid-column: 2; }
+.health-card > .health-latency { grid-column: 3; }
+.health-card > .health-url { grid-column: 2 / span 2; }
 .health-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: var(--border); transition: background var(--transition); }
 .health-card.is-up::before { background: var(--green); }
 .health-card.is-down::before { background: var(--red); }
-.health-card.is-loading::before { background: var(--amber); }
+.health-card.is-degraded::before { background: var(--amber); }
+.health-card.is-loading::before { background: var(--border); }
 
 .health-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
-.health-dot.up { background: var(--green); box-shadow: 0 0 10px rgba(52, 211, 153, 0.5); }
-.health-dot.down { background: var(--red); box-shadow: 0 0 10px rgba(248, 113, 113, 0.5); }
-.health-dot.loading { background: var(--amber); animation: pulse 1.4s ease-in-out infinite; }
+/* Glows were hard-coded rgba() left over from an older palette — literally
+   different greens and reds than --green/--red, so the dot and its own halo
+   disagreed. Now derived from the tokens, which is what makes a palette change
+   a palette change. */
+.health-dot.up { background: var(--green); box-shadow: 0 0 10px var(--green-muted); }
+.health-dot.down { background: var(--red); box-shadow: 0 0 10px var(--red-muted); }
+.health-dot.degraded { background: var(--amber); box-shadow: 0 0 10px var(--amber-muted); }
+.health-dot.loading { background: var(--text-dim); animation: pulse 1.4s ease-in-out infinite; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 
 .health-info { flex: 1; min-width: 0; }
 .health-name { font-weight: 600; font-size: 13px; color: var(--text); line-height: 1.3; }
 .health-url { font-family: var(--font-mono); font-size: 10px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.health-latency { font-family: var(--font-mono); font-size: 12px; font-weight: 500; color: var(--text-secondary); flex-shrink: 0; text-align: right; min-width: 52px; }
+/* min-width fits the longest state word ('degraded'), not just a latency —
+   the column is fixed, so anything wider overflows into the name. */
+.health-latency { font-family: var(--font-mono); font-size: 11px; font-weight: 500; color: var(--text-secondary); text-align: right; white-space: nowrap; }
+
+/* Presence chips. Previously ~200 characters of inline style per agent, built in
+   JS and invisible to the design system — the ember palette change could not
+   reach them, and nothing here could be restyled without editing a string
+   literal. Two bugs rode along:
+     - `margin-right:6px` with no row gap, so a wrapped second row touched the
+       first;
+     - the goal was separated by a literal ' (' space, but the chip is
+       display:inline-flex and a flex container STRIPS a flex item's leading
+       whitespace — which is why the id and goal ran together as
+       `agent-x(Choose a new…)`. Spacing now comes from `gap`, which cannot be
+       collapsed away. */
+.presence-row { display: flex; flex-wrap: wrap; gap: 8px; min-height: 24px; align-items: center; }
+.presence-chip { display: inline-flex; align-items: center; gap: 7px; max-width: 100%;
+    padding: 4px 11px; background: var(--surface); border: 1px solid var(--border);
+    border-radius: 14px; font-size: 12px; font-family: var(--font-mono); }
+.presence-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.presence-dot.active { background: var(--green); box-shadow: 0 0 6px var(--green-muted); }
+.presence-dot.idle { background: var(--amber); box-shadow: 0 0 6px var(--amber-muted); }
+.presence-goal { color: var(--text-dim); font-weight: 400; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.presence-empty { color: var(--text-dim); font-size: 12px; }
+.health-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Stat cards */
 .stat-card { padding: 20px; position: relative; overflow: hidden; cursor: pointer; transition: all var(--transition); }
@@ -598,11 +689,48 @@ button.btn-outline:hover { border-color: var(--accent); color: var(--accent); ba
 </style>
 </head>
 <body>
+<!-- Icon sprite. AUTHORED HERE, not imported: these are trivial geometric
+     shapes, and drawing them avoids carrying an icon-set licence file into a
+     commercial product for fourteen glyphs.
+
+     Replaces a mix of eight monochrome Unicode glyphs and SIX EMOJI-presentation
+     codepoints (U+26A1 lightning, U+2753 question, U+1F31F star, U+1F4DA books,
+     U+1F512 lock, U+1F6E1 shield). Those rendered as full-colour OS emoji, so
+     the sidebar looked different on every operating system and dropped colour
+     into a deliberately monochrome console.
+
+     Inline rather than an external file so `currentColor` resolves — the same
+     constraint documented in dashboard/brand/README.md. Stroke-based at a
+     single width so every icon carries the same visual weight. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><defs>
+  <symbol id="i-overview" viewBox="0 0 24 24"><rect x="3" y="3" width="7.5" height="7.5" rx="1.6"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.6"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.6"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.6"/></symbol>
+  <symbol id="i-sessions" viewBox="0 0 24 24"><path d="M4 8.5h13M14 5.5l3 3-3 3M20 15.5H7M10 12.5l-3 3 3 3"/></symbol>
+  <symbol id="i-events" viewBox="0 0 24 24"><path d="M3 12h4l3 7.5 4-15 3 7.5h4"/></symbol>
+  <symbol id="i-relay" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.1"/><path d="M7.9 7.9a5.8 5.8 0 0 0 0 8.2M16.1 16.1a5.8 5.8 0 0 0 0-8.2M5 5a9.9 9.9 0 0 0 0 14M19 19a9.9 9.9 0 0 0 0-14"/></symbol>
+  <symbol id="i-scope" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.3"/><path d="M12 1.6v3M12 19.4v3M1.6 12h3M19.4 12h3"/></symbol>
+  <symbol id="i-memory" viewBox="0 0 24 24"><ellipse cx="12" cy="5.8" rx="7.4" ry="2.9"/><path d="M4.6 5.8v6c0 1.6 3.3 2.9 7.4 2.9s7.4-1.3 7.4-2.9v-6"/><path d="M4.6 11.8v6c0 1.6 3.3 2.9 7.4 2.9s7.4-1.3 7.4-2.9v-6"/></symbol>
+  <symbol id="i-skills" viewBox="0 0 24 24"><path d="M12 3.2l2.65 5.37 5.93.86-4.29 4.18 1.01 5.9L12 16.71l-5.3 2.79 1.01-5.9-4.29-4.18 5.93-.86z"/></symbol>
+  <symbol id="i-knowledge" viewBox="0 0 24 24"><path d="M5 4.6A1.6 1.6 0 0 1 6.6 3H19.2v14.6H6.6A1.6 1.6 0 0 0 5 19.2z"/><path d="M5 19.2a1.6 1.6 0 0 0 1.6 1.6h12.6"/><path d="M9 7.2h6.4"/></symbol>
+  <symbol id="i-patterns" viewBox="0 0 24 24"><circle cx="6" cy="6.4" r="2.2"/><circle cx="18" cy="8.4" r="2.2"/><circle cx="9.4" cy="18" r="2.2"/><path d="M8.2 6.7l7.6 1.3M7 8.5l1.9 7.4M11.4 16.9l5.3-6.7"/></symbol>
+  <symbol id="i-replay" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.4"/><path d="M10.3 8.9v6.2l5.1-3.1z"/></symbol>
+  <symbol id="i-evals" viewBox="0 0 24 24"><path d="M5 20.4V11.6M12 20.4V3.6M19 20.4v-6.2"/></symbol>
+  <symbol id="i-vault" viewBox="0 0 24 24"><rect x="4.4" y="10.2" width="15.2" height="10.4" rx="2.2"/><path d="M8 10.2V7.6a4 4 0 0 1 8 0v2.6"/><path d="M12 14.3v2.2"/></symbol>
+  <symbol id="i-policy" viewBox="0 0 24 24"><path d="M12 3l7 2.9v5.5c0 4.2-2.9 8-7 9.4-4.1-1.4-7-5.2-7-9.4V5.9z"/></symbol>
+  <symbol id="i-ops" viewBox="0 0 24 24"><path d="M3.6 7.4h9.2M18.4 7.4h2M3.6 16.6h3.2M12.8 16.6h7.6"/><circle cx="15.6" cy="7.4" r="2.3"/><circle cx="9.6" cy="16.6" r="2.3"/></symbol>
+</defs></svg>
+
 <div class="app">
     <div class="topbar">
         <div class="logo">
-            <div class="logo-mark">N</div>
-            <div class="logo-text">Firekeep<span>Stack</span></div>
+            <!-- Inlined (not <img>) so currentColor takes the accent. Geometry is
+                 identical to dashboard/brand/mark.svg — keep the two in sync.
+                 One path, fill-rule="evenodd", three subpaths: keep -> filled,
+                 flame -> knocked out, ember -> stands again inside it. No <mask>,
+                 because a mask needs an id and ids collide when inlined twice. -->
+            <svg class="logo-mark" viewBox="0 0 32 32" width="28" height="28" role="img" aria-label="Firekeep">
+                <path fill="currentColor" fill-rule="evenodd" d="M10.5 2H21.5A8.5 8.5 0 0 1 30 10.5V21.5A8.5 8.5 0 0 1 21.5 30H10.5A8.5 8.5 0 0 1 2 21.5V10.5A8.5 8.5 0 0 1 10.5 2Z M17.61 5.58C18.13 9.84 21.87 11.75 21.87 16.62C21.87 21.06 19.00 24.28 15.35 24.28C11.61 24.28 9.00 21.58 9.00 17.84C9.00 14.62 11.34 12.71 12.39 10.01C12.82 12.62 13.95 13.75 15.00 14.28C14.39 10.88 15.43 8.10 17.61 5.58Z M16.30 14.54C16.65 16.71 18.48 17.76 18.48 19.67C18.48 21.41 17.17 22.63 15.43 22.63C13.69 22.63 12.39 21.50 12.39 19.93C12.39 18.63 13.26 17.84 13.95 16.62C14.13 17.76 14.56 18.28 15.09 18.54C14.82 17.15 15.26 15.93 16.30 14.54Z"/>
+            </svg>
+            <div class="logo-text">Firekeep</div>
         </div>
         <div class="topbar-search">
             <input type="search" id="globalSearchInput" placeholder="Search memories, docs, sessions…" autocomplete="off" aria-label="Global search">
@@ -616,23 +744,23 @@ button.btn-outline:hover { border-color: var(--accent); color: var(--accent); ba
 
     <nav class="sidebar" role="tablist">
         <div class="sidebar-label">Navigation</div>
-        <button class="nav-btn active" data-tab="overview"><span class="nav-icon">&#9673;</span> Overview <span class="kbd-hint">1</span></button>
-        <button class="nav-btn" data-tab="sessions"><span class="nav-icon">&#8644;</span> Sessions <span class="kbd-hint">3</span></button>
-        <button class="nav-btn" data-tab="events"><span class="nav-icon">&#9889;</span> Events <span class="kbd-hint">4</span></button>
-        <button class="nav-btn" data-tab="relay"><span class="nav-icon">&#8962;</span> Relay <span class="kbd-hint">5</span></button>
-        <button class="nav-btn" data-tab="scope"><span class="nav-icon">&#10067;</span> Scope</button>
+        <button class="nav-btn active" data-tab="overview"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-overview"/></svg> Overview <span class="kbd-hint">1</span></button>
+        <button class="nav-btn" data-tab="sessions"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-sessions"/></svg> Sessions <span class="kbd-hint">3</span></button>
+        <button class="nav-btn" data-tab="events"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-events"/></svg> Events <span class="kbd-hint">4</span></button>
+        <button class="nav-btn" data-tab="relay"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-relay"/></svg> Relay <span class="kbd-hint">5</span></button>
+        <button class="nav-btn" data-tab="scope"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-scope"/></svg> Scope</button>
         <div class="sidebar-label" style="margin-top:16px">Intelligence</div>
-        <button class="nav-btn" data-tab="memory"><span class="nav-icon">&#9883;</span> Memory <span class="kbd-hint">2</span></button>
-        <button class="nav-btn" data-tab="skills"><span class="nav-icon">&#127775;</span> Skills <span class="kbd-hint">6</span></button>
-        <button class="nav-btn" data-tab="knowledge"><span class="nav-icon">&#128218;</span> Knowledge</button>
+        <button class="nav-btn" data-tab="memory"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-memory"/></svg> Memory <span class="kbd-hint">2</span></button>
+        <button class="nav-btn" data-tab="skills"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-skills"/></svg> Skills <span class="kbd-hint">6</span></button>
+        <button class="nav-btn" data-tab="knowledge"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-knowledge"/></svg> Knowledge</button>
         <div class="sidebar-label" style="margin-top:16px">Quality</div>
-        <button class="nav-btn" data-tab="patterns"><span class="nav-icon">&#9672;</span> Patterns <span class="kbd-hint">8</span></button>
-        <button class="nav-btn" data-tab="replay"><span class="nav-icon">&#9654;</span> Replay <span class="kbd-hint">7</span></button>
-        <button class="nav-btn" data-tab="evals"><span class="nav-icon">&#9733;</span> Evals <span class="kbd-hint">9</span></button>
+        <button class="nav-btn" data-tab="patterns"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-patterns"/></svg> Patterns <span class="kbd-hint">8</span></button>
+        <button class="nav-btn" data-tab="replay"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-replay"/></svg> Replay <span class="kbd-hint">7</span></button>
+        <button class="nav-btn" data-tab="evals"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-evals"/></svg> Evals <span class="kbd-hint">9</span></button>
         <div class="sidebar-label" style="margin-top:16px">System</div>
-        <button class="nav-btn" data-tab="vault"><span class="nav-icon">&#128272;</span> Vault</button>
-        <button class="nav-btn" data-tab="policy"><span class="nav-icon">&#128737;</span> Policy</button>
-        <button class="nav-btn" data-tab="ops"><span class="nav-icon">&#9881;</span> Ops</button>
+        <button class="nav-btn" data-tab="vault"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-vault"/></svg> Vault</button>
+        <button class="nav-btn" data-tab="policy"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-policy"/></svg> Policy</button>
+        <button class="nav-btn" data-tab="ops"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-ops"/></svg> Ops</button>
     </nav>
 
     <main>
@@ -640,11 +768,16 @@ button.btn-outline:hover { border-color: var(--accent); color: var(--accent); ba
         <section class="tab-panel active" id="panel-overview">
             <div class="hero">
                 <div class="hero-top">
-                    <div class="hero-eyebrow"><span class="hero-live-dot"></span> OBSERVATORY <span class="hero-sep">·</span> <span id="heroClock">live</span></div>
+                    <div class="hero-eyebrow"><span class="hero-live-dot"></span> SYSTEM STATUS <span class="hero-sep">·</span> <span id="heroClock">live</span></div>
                     <button class="btn btn-sm btn-outline" id="btnRefreshOverview">Refresh</button>
                 </div>
-                <h1 class="hero-headline">The stack is&nbsp;listening.</h1>
-                <p class="hero-summary" id="heroSummary">Reading the collective state of your agents…</p>
+                <!-- The 40px headline that stood here read "The stack is
+                     listening." Mystical voice in an operator console, and
+                     "the stack" was rename residue besides. It cost ~110px
+                     above the fold to say nothing. The line below was always
+                     the one carrying real numbers, so it is promoted to be
+                     the readout rather than a caption under a slogan. -->
+                <p class="hero-summary" id="heroSummary">Loading…</p>
                 <div class="pulse-wrap">
                     <canvas id="firekeepPulse" class="pulse-canvas" aria-hidden="true"></canvas>
                     <div class="pulse-legend"><span class="pulse-legend-label">FIREKEEP&nbsp;PULSE</span><span class="pulse-rate" id="pulseRate">—</span></div>
@@ -660,7 +793,7 @@ button.btn-outline:hover { border-color: var(--accent); color: var(--accent); ba
                     <div class="card stat-card" data-goto="memory"><div class="stat-value" id="statMemories">--</div><div class="stat-label">Memories Stored</div></div>
                 </div>
             </div>
-            <div class="section"><div id="overviewPresence" style="font-size:13px;min-height:24px"></div></div>
+            <div class="section"><div id="overviewPresence" class="presence-row"></div></div>
             <div class="section">
                 <div class="two-col">
                     <div><div class="card-header">Signal Stream</div><div class="card" id="overviewEvents" style="max-height:360px;overflow-y:auto"><div class="spinner">Loading...</div></div></div>
@@ -2051,11 +2184,11 @@ function updateHeroSummary() {
     var mems = v('statMemories'), events = v('statEvents'), sessions = v('statSessions');
     var online = (window._onlineAgents != null) ? window._onlineAgents : null;
     var parts = [];
-    if (online != null) parts.push('<b>' + online + '</b> ' + (online === 1 ? 'mind' : 'minds') + ' online');
+    if (online != null) parts.push('<b>' + online + '</b> ' + (online === 1 ? 'agent' : 'agents') + ' online');
     else if (sessions) parts.push('<b>' + sessions + '</b> active ' + (sessions === '1' ? 'session' : 'sessions'));
     if (mems) parts.push('<span class="hs-accent">' + _commafy(mems) + '</span> memories held');
     if (events) parts.push('<b>' + _commafy(events) + '</b> signals observed');
-    elm.innerHTML = parts.length ? (parts.join('&nbsp;&nbsp;·&nbsp;&nbsp;') + '.') : 'Reading the collective state of your agents…';
+    elm.innerHTML = parts.length ? parts.join('&nbsp;&nbsp;·&nbsp;&nbsp;') : 'No data yet — start an agent session to populate this.';
 }
 
 function startHeroClock() {
@@ -2073,13 +2206,13 @@ function initFirekeepPulse() {
         if (!canvas || !canvas.getContext) return;
         var ctx = canvas.getContext('2d');
         var css = getComputedStyle(document.documentElement);
-        var pulseColor = (css.getPropertyValue('--pulse') || '#58B0FF').trim();
+        var pulseColor = (css.getPropertyValue('--pulse') || '#FF9147').trim();
         var reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
         function size() {
             var dpr = window.devicePixelRatio || 1;
             var w = canvas.clientWidth || (canvas.parentNode && canvas.parentNode.clientWidth) || 800;
-            var h = canvas.clientHeight || 98;
+            var h = canvas.clientHeight || 78;
             canvas.width = Math.max(1, Math.floor(w * dpr));
             canvas.height = Math.max(1, Math.floor(h * dpr));
             ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -2131,49 +2264,126 @@ function loadOverviewPresence() {
         var agents = (d && d.agents) ? d.agents : [];
         window._onlineAgents = agents.length; updateHeroSummary();  // feed the hero readout
         var c = $('overviewPresence');
-        if (!agents.length) { c.innerHTML = '<span style="color:var(--text-dim);font-size:12px">No agents online</span>'; return; }
+        if (!agents.length) { c.innerHTML = '<span class="presence-empty">No agents online</span>'; return; }
         var pills = agents.map(function(a) {
-            var color = a.status === 'active' ? 'var(--green)' : 'var(--amber)';
-            var dot = '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + color + ';box-shadow:0 0 6px ' + color + ';margin-right:5px"></span>';
-            var goal = a.goal ? ' (' + esc(a.goal).substring(0, 40) + ')' : '';
-            return '<span style="display:inline-flex;align-items:center;padding:3px 10px;background:var(--surface);border:1px solid var(--border);border-radius:14px;font-size:12px;font-family:var(--font-mono);margin-right:6px">' + dot + esc(a.agent_id || '?') + '<span style="color:var(--text-dim);font-weight:400">' + goal + '</span></span>';
+            // Truncate BEFORE escaping. substring() on already-escaped text can cut
+            // an entity in half ("&amp;" -> "&am"), which renders as literal garbage;
+            // the old order did exactly that on any goal containing an ampersand.
+            var goalText = a.goal ? String(a.goal).substring(0, 40) : '';
+            // Parenthesised, not bare. The CSS `gap` separates them visually, but a gap
+    // is not text: textContent (and therefore copy-paste and a screen reader)
+    // would read "agent-x-5a60Choose a new product name" as one word. The
+    // brackets restore the separation in the channels CSS cannot reach.
+    var goal = goalText ? '<span class="presence-goal">(' + esc(goalText) + ')</span>' : '';
+            return '<span class="presence-chip"><span class="presence-dot '
+                + (a.status === 'active' ? 'active' : 'idle') + '"></span>'
+                + esc(a.agent_id || '?') + goal + '</span>';
         });
-        c.innerHTML = pills.join(' ');
+        c.innerHTML = pills.join('');
     }).catch(function() {
         $('overviewPresence').innerHTML = '';
     });
 }
 
+/* >>> healthVerdict — extracted and executed by tests/test_dashboard_health.py.
+   Keep this block self-contained and free of DOM/browser references: the test
+   pulls the text between these sentinels straight into node.
+
+   WHY THIS IS A PURE FUNCTION AT ALL: the previous implementation decided
+   health inline inside a fetch callback, tangled with DOM writes, so its
+   behaviour could not be asserted without a browser. It was wrong for months
+   and nothing could have caught it.
+
+   THE BUG IT REPLACES: `if (r.ok || r.status === 405 || r.status === 404)`
+   painted the card GREEN. That is not a health check, it is a port-liveness
+   check wearing one — a misrouted proxy, a container that boots but cannot
+   reach Qdrant, or a half-finished install all answered 404 and read as
+   healthy. Verified: a render against a server with no API showed all four
+   services green at 31-34ms while every single request 404'd. */
+var HEALTHY_WORDS = ['ok', 'healthy', 'connected', 'up', 'ready', 'available', 'enabled'];
+function _healthyWord(v) {
+    return typeof v === 'string' && HEALTHY_WORDS.indexOf(v.toLowerCase()) !== -1;
+}
+function healthVerdict(httpStatus, bodyText) {
+    if (!(httpStatus >= 200 && httpStatus < 300)) return { state: 'down', detail: 'HTTP ' + httpStatus };
+    var body;
+    try { body = JSON.parse(bodyText); } catch (e) { return { state: 'down', detail: 'unparseable response' }; }
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return { state: 'down', detail: 'unexpected response' };
+    if (body.status !== undefined && !_healthyWord(body.status)) {
+        return { state: 'degraded', detail: 'status: ' + body.status };
+    }
+    var bad = [];
+    Object.keys(body).forEach(function (k) {
+        var v = body[k];
+        // Nested {dep: {status: ...}} — cortex's `services` block.
+        if (v && typeof v === 'object' && !Array.isArray(v)) {
+            Object.keys(v).forEach(function (dk) {
+                var dv = v[dk];
+                if (dv && typeof dv === 'object' && dv.status !== undefined && !_healthyWord(dv.status)) bad.push(dk);
+            });
+            return;
+        }
+        // Top-level connection strings — sentinel's `redis: "connected"`.
+        // Deliberately narrow: only strings that READ as a failed state count.
+        // A bare `"service": "sentinel"` is an identifier, not a verdict, and
+        // treating every non-healthy string as a fault would report a false
+        // DEGRADED — the same defect as the false green, pointing the other way.
+        if (k !== 'status' && k !== 'service' && typeof v === 'string' && !_healthyWord(v)) {
+            if (/^(dis)?connect|error|down|fail|unavailable|degrad|timeout/i.test(v)) bad.push(k);
+        }
+        // Booleans are NOT health. sentinel's `collectors: {docker: true, git: false}`
+        // are feature switches; a disabled collector is not a sick service.
+    });
+    if (bad.length) return { state: 'degraded', detail: bad.join(', ') + ' unhealthy' };
+    return { state: 'up', detail: '' };
+}
+/* <<< healthVerdict */
+
 function renderHealthGrid() {
     var grid = $('healthGrid'); clear(grid);
     SERVICES.forEach(function(svc) {
         var dot = el('div', { className: 'health-dot loading' });
-        var lat = el('span', { className: 'health-latency', textContent: '...' });
+        var lat = el('span', { className: 'health-latency', textContent: 'checking' });
+        var desc = el('div', { className: 'health-url', textContent: svc.desc || CONFIG[svc.key] });
+        // Flat children, positioned by grid: the description gets its OWN row so
+        // it no longer competes with the latency column for horizontal space.
         var card = el('div', { className: 'card health-card is-loading' }, [
-            dot, el('div', { className: 'health-info' }, [ el('div', { className: 'health-name', textContent: svc.name }), el('div', { className: 'health-url', textContent: svc.desc || CONFIG[svc.key] }) ]), lat
+            dot, el('div', { className: 'health-name', textContent: svc.name }), lat, desc
         ]);
         grid.appendChild(card);
         var t0 = performance.now();
-        function up(r) {
-            var ms = Math.round(performance.now() - t0);
-            if (r.ok || r.status === 405 || r.status === 404) {
-                dot.className = 'health-dot up'; card.className = 'card health-card is-up'; lat.textContent = ms + 'ms';
-                if (prevHealth[svc.key] === false) toast(svc.name + ' is back online', 'success');
-                prevHealth[svc.key] = true;
-            } else {
-                dot.className = 'health-dot down'; card.className = 'card health-card is-down'; lat.textContent = r.status;
-                if (prevHealth[svc.key] === true) toast(svc.name + ' returned ' + r.status, 'error');
-                prevHealth[svc.key] = false;
-            }
+
+        function paint(v, ms) {
+            // State is never colour-alone: the dot carries a hue, the label
+            // carries a WORD. Required for greyscale, for screenshots, and for
+            // the ~8% of male operators who cannot separate red from green.
+            //
+            // The word goes in the fixed right column and the REASON goes on
+            // the description line. Putting both on the right overflowed the
+            // fixed-width column and collided with the service name — "down ·
+            // HTTP 404" is four times the width of "34ms", which the old
+            // layout never had to accommodate.
+            dot.className = 'health-dot ' + v.state;
+            card.className = 'card health-card is-' + v.state;
+            lat.textContent = v.state === 'up' ? (ms + 'ms') : v.state;
+            lat.title = v.detail || '';
+            desc.textContent = v.detail || svc.desc || CONFIG[svc.key];
+            var wasUp = prevHealth[svc.key];
+            if (v.state === 'up' && wasUp === false) toast(svc.name + ' is back online', 'success');
+            if (v.state !== 'up' && wasUp === true) toast(svc.name + ' is ' + v.state + (v.detail ? ': ' + v.detail : ''), 'error');
+            prevHealth[svc.key] = (v.state === 'up');
         }
-        function dn() {
-            dot.className = 'health-dot down'; card.className = 'card health-card is-down'; lat.textContent = 'offline';
-            if (prevHealth[svc.key] === true) toast(svc.name + ' is offline', 'error');
-            prevHealth[svc.key] = false;
-        }
-        safeFetch(CONFIG[svc.key] + '/health', {}, 5000).then(up).catch(function() {
-            safeFetch(CONFIG[svc.key] + '/', {}, 3000).then(up).catch(dn);
-        });
+
+        // No `/` fallback. It returns 401 on an auth-enabled deployment, so once
+        // a 2xx is required it could only ever produce `down` — the same answer
+        // the primary call already gave. A branch that cannot change an outcome
+        // is not a safety net, it is noise.
+        safeFetch(CONFIG[svc.key] + '/health', {}, 5000)
+            .then(function (r) {
+                var ms = Math.round(performance.now() - t0);
+                return r.text().then(function (t) { paint(healthVerdict(r.status, t), ms); });
+            })
+            .catch(function () { paint({ state: 'down', detail: 'unreachable' }, 0); });
     });
 }
 

@@ -15,10 +15,14 @@ set -euo pipefail
 # — "*" passes require_scope("admin"), which would let every teammate read
 # vault secrets and mint keys (spec §3). Only holds because cortex-mcp
 # forwards the CALLER's key (§4.2 confused-deputy fix).
+# vault:read included: without it an agent asked to "deploy to my vps" 403s on
+# the credential it needs, and the only workaround was issuing an admin key --
+# which also grants key-minting and every other secret. WRITE/DELETE on the
+# vault remain admin-only.
 # MUST stay in sync with SCOPES in auth/middleware.py minus {"admin"}
 # (post-SP1a table: eval:write added, twin:read removed) — the test
 # deploy/tests/test_firekeep_admin.sh enforces this.
-NON_ADMIN_SCOPES='["memory:read","memory:write","session:read","session:write","replay:read","relay:read","relay:write","eval:read","eval:write"]'
+NON_ADMIN_SCOPES='["memory:read","memory:write","session:read","session:write","replay:read","relay:read","relay:write","eval:read","eval:write","vault:read"]'
 
 API_URL="${FIREKEEP_API_URL:-http://localhost:8100}"
 
