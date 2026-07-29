@@ -81,6 +81,29 @@ jobs:
         # published URLs, the manifest builder, and the bootstrap contracts.
         run: python -m pytest -q tests/test_release_urls.py client/tests/test_make_release.py
 
+      # THE GATE THAT EXISTS BECAUSE 0.1.2 SHIPPED A BOOTSTRAP THAT WIPED ITS OWN
+      # VENV AT THE WIZARD STEP. docs/RELEASE-GITHUB.md mandates running it before
+      # every tag, and until now that was the only place it ran: no workflow
+      # invoked it, and the default suite excludes it via `-m 'not e2e'`.
+      #
+      # Worse, it is unrunnable where it was documented to be run by hand. The
+      # suite skips wholesale on os.name == "nt" (test_e2e_bootstrap.py:23), so on
+      # the author's Windows machine all five tests skip even with uv installed --
+      # and a skipped gate is not a passed gate. Only a POSIX runner can execute
+      # it, which makes CI the only honest home for it.
+      #
+      # It drives the REAL install.sh against a locally built wheel, including the
+      # wizard hand-off, so it is the only thing that exercises venv provisioning
+      # end to end.
+      - name: Install uv (required by the e2e bootstrap gate)
+        run: curl -fsSL https://astral.sh/uv/install.sh | sh
+
+      - name: E2E bootstrap gate
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          uv --version
+          cd client && python -m pytest tests/test_e2e_bootstrap.py -m e2e -q
+
   release:
     needs: test
     runs-on: ubuntu-latest

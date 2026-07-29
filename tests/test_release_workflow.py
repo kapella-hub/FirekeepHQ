@@ -166,3 +166,52 @@ class TestFetchIsNotUnbounded:
             "unbounded fetch clones that entire history on every run just to add one "
             "directory. Unbounded fetch(es): " + "; ".join(bad)
         )
+
+
+class TestTheE2EBootstrapGateRuns:
+    """The gate that exists because 0.1.2 shipped a bootstrap that wiped its own
+    venv at the wizard step.
+
+    docs/RELEASE-GITHUB.md mandated running it by hand before every tag. It was
+    invoked by NO workflow, excluded from the default suite (`-m 'not e2e'`), and
+    skips wholesale on os.name == "nt" (test_e2e_bootstrap.py:23) -- so on the
+    author's Windows machine all five tests skip even with uv installed. A gate
+    that is manual-only, documented on a platform that cannot run it, and absent
+    from CI is not a gate.
+    """
+
+    def _test_job_runs(self, wf) -> str:
+        return " ".join(s.get("run", "") for s in wf["jobs"]["test"]["steps"])
+
+    def test_the_release_runs_the_e2e_suite(self, wf):
+        runs = self._test_job_runs(wf)
+        assert "test_e2e_bootstrap.py" in runs, (
+            "no release step runs the e2e bootstrap suite -- the only thing that "
+            "drives the real install.sh through venv provisioning and the wizard"
+        )
+
+    def test_it_selects_the_e2e_marker(self, wf):
+        """Without `-m e2e` the suite's own markers exclude every test in it."""
+        runs = self._test_job_runs(wf)
+        assert "-m e2e" in runs, (
+            "the e2e suite is invoked without `-m e2e`, so pytest deselects all of "
+            "it and the step passes having run nothing"
+        )
+
+    def test_uv_is_installed_first(self, wf):
+        """The suite skips itself when uv is absent (test_e2e_bootstrap.py:102).
+        Installing it is what turns 5 skips into 5 results."""
+        runs = self._test_job_runs(wf)
+        assert "astral.sh/uv/install.sh" in runs or "uv --version" in runs, (
+            "uv is never installed, so the e2e suite skips itself and the gate "
+            "reports success having verified nothing"
+        )
+
+    def test_the_gate_runs_on_a_posix_runner(self, wf):
+        """It skips entirely on os.name == 'nt', so a windows runner would make the
+        whole step a no-op."""
+        runner = str(wf["jobs"]["test"].get("runs-on", ""))
+        assert "windows" not in runner.lower(), (
+            f"the test job runs on {runner!r}; the e2e bootstrap suite skips on "
+            f"Windows, so the gate would verify nothing"
+        )
