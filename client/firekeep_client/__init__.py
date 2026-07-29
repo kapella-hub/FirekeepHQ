@@ -9,4 +9,4 @@ versions without a verdict (`_check_versions`) and judges staleness against the
 release manifest instead (`_check_client_version`).
 """
 
-__version__ = "0.1.26"
+__version__ = "0.1.27"

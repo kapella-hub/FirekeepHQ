@@ -153,42 +153,49 @@ chmod +x "${BIN}/uv"
 echo "firekeep: fetching ${wheel_name}"
 fetch "${VBASE}/${wheel_name}" "${BIN}/${wheel_name}"
 verify_against_sums "${BIN}/${wheel_name}" "${wheel_name}"
-
 # --- 6. standalone CPython + venv, only now that uv is verified --------------
 #
-# BUILD BESIDE, THEN SWAP. The whole kit is provisioned into a STAGING directory
-# and moved into place with a single rename, so ~/.firekeep/venv is either the old
-# tree or the new one and never a partially-built one.
+# `--clear` recreates the venv IN PLACE, which is required, and the honest reason
+# is narrower than it used to be documented as.
 #
-# This replaces `uv venv "${VENV}" --clear`, which deleted the live venv and then
-# spent 30-120s repopulating it. The rationale for that was "POSIX unlink is safe,
-# so a running session keeps working" — and that is only half true. unlink()
-# protects processes whose files are ALREADY MAPPED. It does nothing for a NEW
-# exec, and every lifecycle hook spawns a fresh "${VENV}/bin/python":
-#   PreToolUse (blocking, gates every Edit), PostToolUse, UserPromptSubmit,
-#   SessionStart, Stop, plus the three stdio MCP servers on reconnect.
-# So for the whole reinstall window, every hook on every live macOS/Linux session
-# failed with "No such file or directory" — and background auto-update is ON by
-# default, so nobody asked for that window to open.
+# WHAT WAS TRIED AND FAILED: provisioning into "${VENV}.new" and renaming it over
+# the live tree, to avoid deleting a venv a running session execs from. It looked
+# strictly better and it does not work -- A VENV IS NOT RELOCATABLE. `uv venv`
+# bakes its own absolute path into pyvenv.cfg and into every console script's
+# interpreter line, so after `mv ${VENV}.new ${VENV}` the scripts still point at
+# ${VENV}.new/bin/python, which no longer exists. The e2e bootstrap gate caught it
+# exactly there:
+#     install.sh: 267: .../venv/bin/firekeep: not found   (exit 127)
+# A staged venv would need `uv venv --relocatable` or a post-swap rewrite of every
+# script; both are more machinery than the problem justifies here.
 #
-# Windows needed a live-holder guard (install.ps1) because it cannot delete files
-# an running process holds at all. Staging retires the ASYMMETRY rather than
-# copying the guard: neither platform has to delete a venv that is in use.
+# SO THE REAL EXPOSURE STANDS, and is worth stating rather than hiding: for the
+# 30-120s of provisioning, ${VENV} does not exist, and every lifecycle hook execs
+# ${VENV}/bin/python -- PreToolUse (blocking, gates every Edit), PostToolUse,
+# UserPromptSubmit, SessionStart, Stop, plus three stdio MCP servers on reconnect.
+# Those fail with "No such file or directory" for the duration. The hook cores all
+# fail OPEN (a missing interpreter blocks nothing), so the cost is lost telemetry
+# and a skipped lease check, not a broken session.
+#
+# WHAT MITIGATES IT, and why background auto-update is still acceptable:
+#   * Windows refuses outright when live processes hold the venv (install.ps1),
+#     so it is exposed for zero seconds.
+#   * On POSIX the window is bounded by one uv provision + two wheel installs.
+#   * `firekeep update` run by hand has always had this behaviour; the background
+#     path automates the same operation, it does not add a new hazard.
+# Narrowing it further belongs with a proper relocatable-venv change, tracked
+# rather than half-done here.
 #
 # --python-preference only-managed is load-bearing on Windows (default discovery
 # walks PATH into the dangling Store python3.exe alias) and keeps the contract
 # honest here: a "standalone CPython" must never silently bind to whatever pyenv
 # shim discovery finds first.
-STAGE="${VENV}.new"
-rm -rf "${STAGE}" 2>/dev/null || true
 echo "firekeep: provisioning Python ${PYTHON_VERSION}"
-"${BIN}/uv" venv "${STAGE}" --python "${PYTHON_VERSION}" --python-preference only-managed \
-    || die "could not provision Python ${PYTHON_VERSION}"
+"${BIN}/uv" venv "${VENV}" --python "${PYTHON_VERSION}" --python-preference only-managed --clear     || die "could not provision Python ${PYTHON_VERSION}"
 
 # --- 7. install the wheel BY LOCAL FILE PATH, never a URL --------------------
 echo "firekeep: installing ${wheel_name}"
-"${BIN}/uv" pip install --python "${STAGE}" --reinstall "${BIN}/${wheel_name}" \
-    || die "wheel install failed"
+"${BIN}/uv" pip install --python "${VENV}" --reinstall "${BIN}/${wheel_name}"     || die "wheel install failed"
 
 # --- 7b. symdex wheel: ALWAYS installed, same fetch -> verify -> local-path dance ---
 # Symdex is an always-on client MCP server (like firekeep-decision). SHA256SUMS lists the
@@ -200,48 +207,17 @@ echo "firekeep: fetching ${symdex_wheel}"
 fetch "${VBASE}/${symdex_wheel}" "${BIN}/${symdex_wheel}"
 verify_against_sums "${BIN}/${symdex_wheel}" "${symdex_wheel}"
 echo "firekeep: installing ${symdex_wheel}"
-"${BIN}/uv" pip install --python "${STAGE}" --reinstall "${BIN}/${symdex_wheel}" \
-    || die "symdex wheel install failed"
+"${BIN}/uv" pip install --python "${VENV}" --reinstall "${BIN}/${symdex_wheel}"     || die "symdex wheel install failed"
 
-# --- 7c. SWAP: the staged tree becomes the live one ---------------------------
-# Verify the staged kit is USABLE before anything is swapped. Provisioning can
-# succeed while producing something unusable (a wheel for the wrong platform, a
-# truncated interpreter), and the point of staging is that such a failure leaves
-# the working install untouched.
-#
-# The check is that `firekeep` is EXECUTABLE, not that `firekeep_client` imports.
-# That is deliberate and was learned from a red CI run: the import form failed the
-# POSIX bootstrap suite because the harness's stub uv creates bin/firekeep and
-# deliberately no-ops `pip install`, so nothing was importable and the guard
-# aborted every install. The guard was right; the CHECK asserted a property the
-# next step does not need.
-#
-# What the bootstrap does next is run "${VENV}/bin/firekeep install", so a runnable
-# firekeep IS the precondition. A staged tree that cannot produce one is exactly
-# the failure worth refusing.
-if [ ! -x "${STAGE}/bin/firekeep" ]; then
-    rm -rf "${STAGE}"
-    die "the staged kit has no runnable firekeep - leaving the existing install in place"
+# --- 7c. the install must have produced a runnable firekeep -------------------
+# Provisioning can succeed while producing something unusable (a wheel for the
+# wrong platform, a truncated interpreter). Running "${FIREKEEP_BIN}" install is
+# the very next act, so checking it now converts a confusing exit 127 from the
+# wizard hand-off into a diagnosis at the point of failure.
+if [ ! -x "${FIREKEEP_BIN}" ]; then
+    die "install completed but ${FIREKEEP_BIN} is not executable — the wheel did not provide it"
 fi
 
-# Two renames, not one: POSIX rename(2) is atomic per call, so the window in which
-# neither tree is at ${VENV} is the duration of a directory rename — microseconds,
-# versus the 30-120s the old --clear left it missing. A hook that lands in that
-# window sees ENOENT exactly as before; one that lands anywhere else sees a
-# complete venv, which was previously not true for the whole install.
-OLD="${VENV}.old.$$"
-if [ -d "${VENV}" ]; then
-    mv "${VENV}" "${OLD}" || die "could not move the existing venv aside"
-fi
-if ! mv "${STAGE}" "${VENV}"; then
-    # Put the working install back rather than leaving the machine with none.
-    [ -d "${OLD}" ] && mv "${OLD}" "${VENV}"
-    die "could not move the new venv into place"
-fi
-# Deleting the old tree AFTER the swap is what makes the window short. Running
-# processes still hold their mapped files here (this is where POSIX unlink
-# semantics genuinely do apply), so an in-flight session is unaffected.
-rm -rf "${OLD}" 2>/dev/null || true
 
 # --- 8. hand off to the wizard ----------------------------------------------
 # THE curl|sh TRAP: piping this script to `sh` makes the SCRIPT stdin, so the wizard's

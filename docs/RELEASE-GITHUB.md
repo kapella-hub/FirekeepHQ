@@ -120,7 +120,15 @@ cd client && python -m pytest tests/test_e2e_bootstrap.py -m e2e -q
 ```
 
 
-- **0.1.26** — FIRST PUBLISHED RELEASE. 0.1.24 and 0.1.25 were tagged and never
+- **0.1.27** — FIRST PUBLISHED RELEASE. Four version numbers were tagged before
+  one published; every one was stopped by its own gate on a release path that had
+  never executed before. 0.1.24: no pytest in the release job, then a malformed
+  workflow file. 0.1.25: a staged-venv guard unsatisfiable under the test
+  harness's stubbed uv. 0.1.26: the staged venv itself — a venv is not
+  relocatable, so renaming it left every console script pointing at a directory
+  that no longer existed. Provisioning is in place again, with the exposure it
+  carries documented rather than wished away.
+- **0.1.26** — tagged, never published. Superseded by 0.1.27. Original notes: 0.1.24 and 0.1.25 were tagged and never
   published; each was stopped by its own test gate, which is the gate working.
   0.1.24: no pytest in the release job, then a malformed workflow file. 0.1.25: the
   new staged-venv guard aborted every install under the test harness's stubbed uv.
