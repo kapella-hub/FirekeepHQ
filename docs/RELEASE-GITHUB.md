@@ -26,10 +26,23 @@ and served from **GitHub Pages**.
    `gh-pages` branch — **accumulatively**, so old `<version>/` dirs survive for
    `firekeep update --to`.
 
-## One-time repo setup (GitHub Pages)
+## One-time setup — DONE (2026-07-29)
 
-Settings → Pages → **Deploy from a branch** → Branch: **`gh-pages`** / `(root)` → Save.
-(The first release creates the `gh-pages` branch; enable Pages once it exists.)
+Recorded because none of it is discoverable from the code, and the previous
+instruction here ("enable Pages once the first release creates `gh-pages`") had the
+dependency backwards: Pages cannot be enabled for a branch that does not exist, so
+the branch has to be seeded first. It is:
+
+| | State |
+|---|---|
+| `kapella-hub/firekeep-dist` | created, **public**, artifacts only |
+| `gh-pages` branch | seeded with `.nojekyll` + a landing page |
+| GitHub Pages | enabled, serving `gh-pages` `/`, HTTPS enforced |
+| Deploy key on `firekeep-dist` | installed, **write-enabled** |
+| `FIREKEEP_DIST_DEPLOY_KEY` secret here | set |
+
+`.nojekyll` is load-bearing: without it Jekyll drops files and directories starting
+with `_` or `.` and can rewrite others, which would silently corrupt a release.
 
 ## What teammates use
 
@@ -37,41 +50,55 @@ Settings → Pages → **Deploy from a branch** → Branch: **`gh-pages`** / `(r
 path segments exactly as the bootstrap expects (no bootstrap changes needed):
 
 ```
-FIREKEEP_DIST_BASE = https://kapella-hub.github.io/FirekeepHQ
+FIREKEEP_DIST_BASE = https://kapella-hub.github.io/firekeep-dist
 ```
 
 Install (macOS / Linux):
 ```bash
-curl -fsSL https://kapella-hub.github.io/FirekeepHQ/latest/install.sh | FIREKEEP_DIST_BASE=https://kapella-hub.github.io/FirekeepHQ sh
+curl -fsSL https://kapella-hub.github.io/firekeep-dist/latest/install.sh | FIREKEEP_DIST_BASE=https://kapella-hub.github.io/firekeep-dist sh
 ```
 Windows (PowerShell):
 ```powershell
-$env:FIREKEEP_DIST_BASE='https://kapella-hub.github.io/FirekeepHQ'; irm https://kapella-hub.github.io/FirekeepHQ/latest/install.ps1 | iex
+$env:FIREKEEP_DIST_BASE='https://kapella-hub.github.io/firekeep-dist'; irm https://kapella-hub.github.io/firekeep-dist/latest/install.ps1 | iex
 ```
 
 The bootstrap fetches `latest/latest.json` → resolves the version → fetches
 `<version>/SHA256SUMS`, then the checksum-verified `uv` and both wheels, exactly as with
 the GitLab registry.
 
-> **UNRESOLVED — this channel does not work yet, and the sentence that used to sit
-> here was false.** It read *"Artifacts carry no secrets; the repo is public."*
-> `kapella-hub/FirekeepHQ` is **private**, and that claim was the stated
-> justification for publishing unauthenticated. Three facts have to be reconciled
-> before the first `client-v*` tag:
->
-> 1. **GitHub Pages cannot serve from a private repository** on a non-Enterprise
->    plan. The Pages API returns 404 for this repo — Pages has never been enabled.
-> 2. **Making the repo public publishes the entire client kit** of a commercial,
->    closed-source product. That is a licensing decision, not a deployment detail.
-> 3. **The bootstraps fetch unauthenticated.** `install.sh:47` and `install.ps1:70`
->    send no `Authorization` header, so an SSO-gated or token-gated origin returns
->    login HTML and `updater.py` fails with `malformed manifest` — not a usable
->    private channel without new client code.
->
-> The realistic options are a **small public artifacts-only repo** (Pages works,
-> the product source stays private), **object storage** (R2/S3 + CDN), or
-> **self-hosting** the artifacts. Whichever is chosen, replace this block with the
-> real arrangement — do not restore a security rationale that is not true.
+### Why artifacts live in a second, public repo
+
+`kapella-hub/firekeep-dist` is **public** and holds nothing but a `gh-pages`
+branch of release artifacts. This repo — the product source — stays **private**.
+
+A previous version of this document justified publishing with *"Artifacts carry no
+secrets; the repo is public."* That was false: this repo is private, and Pages
+cannot serve from a private repo on a non-Enterprise plan, so the release path was
+pointed at a channel that could never have worked. The three constraints that
+forced the split:
+
+1. **Pages needs a public repo.** Not available for a private one below Enterprise.
+2. **Making *this* repo public was the wrong fix.** It would publish the server —
+   Cortex's memory pipeline, the pattern engine, the eval machinery — which is the
+   actual product. The client wheel is `py3-none-any` and packages only
+   `firekeep_client*`, no server code, and the Free Tier is deliberately gratis, so
+   its source is readable by anyone who installs it either way. **Gating the
+   download protects nothing.** The property that matters for artifacts is
+   integrity, not secrecy, and `SHA256SUMS` already provides it.
+3. **The bootstraps fetch unauthenticated** — no `Authorization` header in either
+   script — so a token- or SSO-gated origin returns login HTML and `updater.py`
+   fails with `malformed manifest`. Any private channel needs new client code on
+   the security-critical path.
+
+**Cross-repo publishing** uses an SSH deploy key scoped to `firekeep-dist` alone,
+stored here as the `FIREKEEP_DIST_DEPLOY_KEY` secret. The built-in `GITHUB_TOKEN`
+cannot do this: its write access stops at the repo running the workflow. The key
+is write-enabled on exactly one repo and has no expiry; if it leaks, the blast
+radius is overwriting artifacts that are public and checksum-verified anyway.
+
+Rotating it: generate a new `ed25519` pair, replace the deploy key on
+`firekeep-dist`, and overwrite the secret here. No client change is needed —
+clients never see it.
 
 ## Release notes
 

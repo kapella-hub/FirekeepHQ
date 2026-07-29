@@ -39,11 +39,23 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 
-#: The repository these artifacts are actually published from.
+#: The product source repository (private).
 OWNER = "kapella-hub"
 REPO = "FirekeepHQ"
 
-PAGES_BASE = f"https://{OWNER}.github.io/{REPO}"
+#: The PUBLIC artifacts repository. Separate on purpose: Pages cannot serve from a
+#: private repo on a non-Enterprise plan, and making the source public would
+#: publish the server -- which is the actual product. The client wheel is
+#: py3-none-any and contains only firekeep_client*, and the Free Tier is gratis,
+#: so gating its download protects nothing. Integrity, not secrecy, is the
+#: property that matters there, and SHA256SUMS provides it.
+DIST_REPO = "firekeep-dist"
+
+#: Where the bootstrap and updater actually fetch from.
+PAGES_BASE = f"https://{OWNER}.github.io/{DIST_REPO}"
+
+#: Every repo name that may legitimately appear after this owner.
+VALID_REPOS = (REPO, DIST_REPO)
 
 #: Directories with no bearing on what gets published.
 SKIP_DIRS = {
@@ -51,11 +63,13 @@ SKIP_DIRS = {
     "dist", "build", ".mypy_cache", ".ruff_cache", "htmlcov",
 }
 
-#: Any URL naming this owner must name the right repo after it. The negative
-#: lookahead is what makes this a real assertion: it matches only the WRONG
-#: spellings, so a correct repo never trips it.
-WRONG_PAGES = re.compile(rf"{re.escape(OWNER)}\.github\.io/(?!{re.escape(REPO)}\b)([A-Za-z0-9._-]+)")
-WRONG_CLONE = re.compile(rf"github\.com/{re.escape(OWNER)}/(?!{re.escape(REPO)}\b)([A-Za-z0-9._-]+)")
+#: Any URL naming this owner must name one of the VALID repos after it. The
+#: negative lookahead is what makes this a real assertion: it matches only the
+#: WRONG spellings, so a correct repo never trips it. Listing both repos rather
+#: than loosening the pattern keeps a typo'd third name a failure.
+_ALT = "|".join(re.escape(r) for r in VALID_REPOS)
+WRONG_PAGES = re.compile(rf"{re.escape(OWNER)}\.github\.io/(?!(?:{_ALT})\b)([A-Za-z0-9._-]+)")
+WRONG_CLONE = re.compile(rf"github\.com/{re.escape(OWNER)}/(?!(?:{_ALT})\b)([A-Za-z0-9._-]+)")
 
 TEXT_SUFFIXES = {".py", ".sh", ".ps1", ".yml", ".yaml", ".md", ".toml", ".json", ".cfg", ".txt"}
 

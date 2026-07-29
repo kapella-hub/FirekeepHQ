@@ -5,10 +5,26 @@
 # publishes to the `gh-pages` branch in the exact layout the bootstrap fetches:
 #   <version>/  -> firekeep_client-*.whl, firekeep_symdex-*.whl, uv-*, SHA256SUMS
 #   latest/     -> install.sh, install.ps1, latest.json
-# GitHub Pages then serves these at FIREKEEP_DIST_BASE = https://<owner>.github.io/<repo>.
 # Publishing is ACCUMULATIVE — old <version>/ dirs are preserved so `firekeep update --to`
 # keeps resolving them. (Interim GitHub host; the GitLab package-registry pipeline
 # in .gitlab-ci.yml remains the office path.)
+#
+# ARTIFACTS GO TO A SEPARATE PUBLIC REPO: kapella-hub/firekeep-dist, served at
+# https://kapella-hub.github.io/firekeep-dist. This repo is PRIVATE, and GitHub
+# Pages cannot serve from a private repo on a non-Enterprise plan — the release
+# path had been pointed at Pages on THIS repo, which could never have worked.
+#
+# Making this repo public was the alternative and is the wrong trade: it would
+# publish the server source (Cortex's memory pipeline, the pattern engine, the
+# eval machinery), which is the actual product. The client wheel is `py3-none-any`
+# and contains only `firekeep_client*` — no server code — and the Free Tier is
+# deliberately gratis, so its source is readable by anyone who installs it either
+# way. Nothing is protected by gating the download; integrity is what matters
+# there, and SHA256SUMS already provides it.
+#
+# Cross-repo write uses a deploy key scoped to firekeep-dist alone
+# (FIREKEEP_DIST_DEPLOY_KEY). The built-in GITHUB_TOKEN cannot do this: its write
+# access stops at the repo running the workflow.
 name: client-release
 
 on:
@@ -115,16 +131,40 @@ jobs:
       - name: Assemble release (SHA256SUMS + latest.json)
         run: |
           cp client/bootstrap/install.sh client/bootstrap/install.ps1 dist/
-          python client/scripts/make_release.py "${VERSION}" dist --dist-base "https://kapella-hub.github.io/FirekeepHQ"
+          python client/scripts/make_release.py "${VERSION}" dist --dist-base "https://kapella-hub.github.io/firekeep-dist"
 
-      - name: Publish to gh-pages (accumulative)
+      # The deploy key is written to disk and used via GIT_SSH_COMMAND rather than
+      # ssh-agent: an agent is per-process and the several git invocations below
+      # would each need it inherited, which is more moving parts than a scoped
+      # env var. StrictHostKeyChecking=accept-new pins github.com on first use
+      # without prompting; `no` would accept ANY host key, which is the actual
+      # hazard here since this credential can write to the published channel.
+      - name: Authorise publishing to firekeep-dist
+        env:
+          DEPLOY_KEY: ${{ secrets.FIREKEEP_DIST_DEPLOY_KEY }}
+        run: |
+          [ -n "${DEPLOY_KEY}" ] || { echo "::error::FIREKEEP_DIST_DEPLOY_KEY is not set — cannot publish"; exit 1; }
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          # `echo`, not `printf '%s\n'`: a literal \n inside a YAML block scalar is
+          # a real newline and breaks the block. An SSH private key must also end
+          # with a trailing newline or ssh rejects it as malformed, which echo gives.
+          echo "${DEPLOY_KEY}" > ~/.ssh/firekeep_dist
+          chmod 600 ~/.ssh/firekeep_dist
+          echo "GIT_SSH_COMMAND=ssh -i ~/.ssh/firekeep_dist -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new" >> "$GITHUB_ENV"
+          echo "DIST_REMOTE=git@github.com:kapella-hub/firekeep-dist.git" >> "$GITHUB_ENV"
+
+      - name: Publish to firekeep-dist gh-pages (accumulative)
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
+          # A DIFFERENT repo than the one this workflow runs in, so `origin` is
+          # wrong here — origin is FirekeepHQ, whose gh-pages could never serve.
+          git remote remove dist 2>/dev/null || true
+          git remote add dist "${DIST_REMOTE}"
+          if git ls-remote --exit-code --heads dist gh-pages >/dev/null 2>&1; then
             # --depth=1: without it every run clones the FULL accumulated binary
             # history of every prior release just to add one directory.
-            git fetch --depth=1 origin gh-pages
+            git fetch --depth=1 dist gh-pages
             git worktree add gh FETCH_HEAD
             git -C gh checkout -B gh-pages
           else
@@ -173,11 +213,11 @@ jobs:
           # Retry the push: the concurrency group serialises this workflow, but a
           # manual gh-pages edit between fetch and push would still reject it.
           for attempt in 1 2 3; do
-            if git -C gh push origin gh-pages; then
+            if git -C gh push dist gh-pages; then
               exit 0
             fi
             echo "push rejected (attempt ${attempt}); re-fetching and retrying"
-            git -C gh fetch --depth=1 origin gh-pages && git -C gh rebase FETCH_HEAD || true
+            git -C gh fetch --depth=1 dist gh-pages && git -C gh rebase FETCH_HEAD || true
           done
           echo "::error::could not push to gh-pages after 3 attempts"
           exit 1
@@ -192,7 +232,7 @@ jobs:
       # it is EXPECTED to fail on run #1 until Pages is genuinely serving.
       - name: Verify the release is actually served
         run: |
-          BASE="https://kapella-hub.github.io/FirekeepHQ"
+          BASE="https://kapella-hub.github.io/firekeep-dist"
           for i in $(seq 1 24); do
             got="$(curl -fsS "${BASE}/latest/latest.json" 2>/dev/null \
                    | python -c "import json,sys;print(json.load(sys.stdin).get('version',''))" 2>/dev/null || echo '')"
