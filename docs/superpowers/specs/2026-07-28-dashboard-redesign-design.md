@@ -84,6 +84,14 @@ The mark is not redrawn inline in `index.html`.
 | `lockup.svg` | `currentColor` | Mark + wordmark. Needs DM Sans. |
 | `README.md` | — | Usage rules, clearspace, colour roles. |
 
+**Shipping them is a separate act from creating them.**
+`docker/Dockerfile.dashboard` copies `dashboard/index.html` — a *file*, not the
+directory — so anything added under `dashboard/` is invisible to the image
+without its own `COPY`. A local `python -m http.server` in the source tree
+serves the assets perfectly, which is exactly why the omission is easy to miss:
+they work everywhere except in production. `COPY dashboard/brand/` is added
+alongside the assets.
+
 Three implementation decisions, all verified by rendering:
 
 1. **`currentColor` does not survive `<img>`.** An SVG loaded via `<img src>`,
@@ -101,7 +109,25 @@ Three implementation decisions, all verified by rendering:
    keep → 1 → filled; keep + flame → 2 → knocked out; all three → 3 → the ember
    stands again.
 
-### 3.3 Wordmark
+### 3.3 Head tags
+
+The dashboard currently wires **no favicon at all** — the console shows
+`/favicon.ico → 404`. The brand commit adds:
+
+```html
+<link rel="icon" type="image/svg+xml" href="brand/favicon.svg">
+<link rel="apple-touch-icon" href="brand/mark-ember.svg">
+<meta name="theme-color" content="#0A0B0E">
+<meta property="og:image" content="brand/mark-ember.svg">
+```
+
+`theme-color` is the deep background, not the accent — it tints browser chrome
+to match the app, and an ember chrome bar would read as a warning. `og:image`
+uses the baked-colour file for the reason in §3.2: link unfurlers render the SVG
+standalone, where `currentColor` is black. `og:image` is also what makes the
+mark work on the marketing site.
+
+### 3.4 Wordmark
 
 **Firekeep.** One word, capital F, no camel case. `FirekeepStack` is a bug
 wherever it appears.
@@ -137,19 +163,44 @@ in its hue band.
 ## 5. Health honesty *(separate commit)*
 
 `renderHealthGrid` (`index.html:2147`) is rewritten to require **`2xx` and a
-parseable body**. The `404`/`405` tolerance is deleted: all four services
-register `/health` and `/version`, and the function already falls back to `/`
-on failure, so the tolerance protects against nothing while destroying the
-signal.
+parseable JSON body**. The `404`/`405` tolerance is deleted.
+
+**Observed before specifying** — all four endpoints were probed through the
+tunnel rather than assumed:
+
+| Service | `/health` | Body |
+|---|---|---|
+| cortex | `200 application/json` | `{"status":"ok","services":{"redis":{...},"graph":{...}}}` |
+| bridge | `200 application/json` | `{"status":"ok","service":"bridge"}` |
+| sentinel | `200 application/json` | `{"status":"ok","service":"sentinel","redis":"connected","collectors":{...}}` |
+| relay | `200 application/json` | `{"status":"ok","service":"relay"}` |
+
+This matters: had any returned `200` with an empty or non-JSON body, the new
+rule would turn a *healthy* service red — replacing a false green with a false
+red, the same defect pointing the other way. All four are JSON with a
+`status` field, so the rule is safe as written.
+
+It also makes `degraded` real rather than aspirational: cortex and sentinel
+report **per-dependency** status inside a `200`, so a service can be reachable
+and answering while its Redis or graph backend is down. That is precisely the
+case the current binary up/down cannot express.
 
 Four real states replace the current two:
 
 | State | Condition | Presentation |
 |---|---|---|
 | `loading` | in flight | skeleton, amber dot |
-| `up` | `2xx` + parseable body | green dot, `up · NNms` |
-| `degraded` | `2xx` but body reports a failing dependency | yellow dot, `degraded`, reason on hover |
+| `up` | `2xx`, JSON parses, `status == "ok"`, no failing dependency | green dot, `up · NNms` |
+| `degraded` | `2xx` and parses, but a nested dependency is not healthy | yellow dot, `degraded`, failing dependency named on hover |
 | `down` | non-`2xx`, unparseable, or network failure | red dot, `down · <reason>` |
+
+**Delete the `/` fallback** (`index.html:2175`). Probing showed `/` returns
+**`401`** on an auth-enabled deployment, not `404` — so once `2xx` is required
+that branch can only ever produce `down`, which the primary call already
+produced. Keeping it would leave a branch that cannot change any outcome.
+Note this corrects the original rationale for deleting the `404` tolerance:
+the tolerance was not redundant *because* of the fallback, it was the only
+reason a fallback response could ever be painted green.
 
 **This ships as its own commit**, ahead of the restyle. It will make things go
 red that currently look green — possibly on the author's own VPS. That is a
@@ -199,6 +250,13 @@ Self-host DM Sans and JetBrains Mono as subset `woff2` under
 `dashboard/brand/fonts/`, drop all three Google `<link>`s. Air-gapped installs
 render correctly and "nothing leaves your infrastructure" becomes literally
 true rather than nearly true.
+
+**Ship `OFL.txt` per family.** Both fonts are SIL Open Font License 1.1.
+Self-hosting is permitted, but the OFL requires the licence text to travel with
+the font binaries — a redistribution obligation, and these binaries are
+redistributed inside the customer's image. CI will not catch this: the
+`Dependency licences` job covers Python only. Same category as the
+GPL `html2text` → `markdownify` swap that was a commercial-readiness blocker.
 
 ## 11. Explicitly out of scope
 
