@@ -55,9 +55,28 @@ def _request(identity: dict | None = None) -> Request:
 # ---------------------------------------------------------------------------
 
 
+#: Scopes that must NEVER be granted to a caller who presented no key. "admin"
+#: is the original (key minting + every vault route). "vault:read" joined it on
+#: 2026-07-29 when the vault read routes were split off admin: the whole point of
+#: that split is that reading a decrypted secret needs A KEY, and the derived
+#: ANONYMOUS_SCOPES would otherwise have granted the new scope automatically --
+#: reopening precisely the hole this file exists to guard.
+WITHHELD_FROM_ANONYMOUS = {"admin", "vault:read"}
+
+
 class TestAnonymousScopeSet:
-    def test_is_every_scope_except_admin(self):
-        assert set(ANONYMOUS_SCOPES) == SCOPES - {"admin"}
+    def test_is_every_scope_except_the_withheld_ones(self):
+        assert set(ANONYMOUS_SCOPES) == SCOPES - WITHHELD_FROM_ANONYMOUS
+
+    def test_secret_reading_is_never_anonymous(self):
+        """The regression that matters. ANONYMOUS_SCOPES is DERIVED from SCOPES,
+        and its own comment promises a newly added scope is granted
+        automatically. For a scope that decrypts secrets that promise is the
+        vulnerability, so the subtraction is asserted explicitly."""
+        assert "vault:read" not in ANONYMOUS_SCOPES, (
+            "an unauthenticated caller on a default AUTH_ENABLED=false box could "
+            "read decrypted secrets -- this is audit blocker 7 reopened"
+        )
 
     def test_never_admin_and_never_wildcard(self):
         assert "admin" not in ANONYMOUS_SCOPES
@@ -72,12 +91,13 @@ class TestAnonymousScopeSet:
         to use memory, sessions, replay and evals without minting a key."""
         assert "memory:read" in ANONYMOUS_SCOPES
         assert "session:write" in ANONYMOUS_SCOPES
-        assert len(ANONYMOUS_SCOPES) == len(SCOPES) - 1
+        assert len(ANONYMOUS_SCOPES) == len(SCOPES) - len(WITHHELD_FROM_ANONYMOUS)
 
     def test_derived_not_hardcoded(self):
-        """A scope added to SCOPES later must be granted automatically, so the
-        set cannot silently drift into withholding new non-admin scopes."""
-        assert ANONYMOUS_SCOPES == tuple(sorted(SCOPES - {"admin", "*"}))
+        """A scope added to SCOPES later must be granted automatically, so the set
+        cannot silently drift into withholding new ordinary scopes -- EXCEPT the
+        explicitly withheld ones, which are subtracted by name."""
+        assert ANONYMOUS_SCOPES == tuple(sorted(SCOPES - {"*"} - WITHHELD_FROM_ANONYMOUS))
 
 
 class TestScopesAllow:

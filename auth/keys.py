@@ -36,6 +36,18 @@ SCOPES = {
     "relay:write",
     "eval:read",
     "eval:write",  # POST /agent/action/after (cortex/app/agent_gateway/api.py:43)
+    # Vault READ, split out from "admin" 2026-07-29. Every vault route required
+    # admin, and teammate keys deliberately carry no admin scope, so an agent
+    # asking "deploy to my vps" got 403 on the credential it needed. Reproduced
+    # with a properly minted key:
+    #   GET /vault/secrets -> 403 "Insufficient scope: requires 'admin'"
+    # The only workaround was handing teammates an admin key, which also grants
+    # key-minting and every other secret — strictly worse than a read scope.
+    #
+    # WRITE and DELETE stay admin-only. Reading a secret you were given is
+    # ordinary work; creating or destroying one is administration, and the blast
+    # radius is not symmetric.
+    "vault:read",
     "admin",
 }
 # NOTE: memory:*/session:*/relay:* are not yet demanded by any route —
@@ -71,7 +83,14 @@ _KEY_INDEX = "auth:key_index"  # sorted set of key IDs
 # minting (auth/api.py), and granting it to every anonymous caller is what put
 # 12 real secrets from the author's VPS on the public internet. Everything
 # except the keys to the kingdom is the line.
-ANONYMOUS_SCOPES: tuple[str, ...] = tuple(sorted(SCOPES - {"admin", "*"}))
+#
+# "vault:read" IS SUBTRACTED TOO, and the derive-automatically property above is
+# exactly why it has to be stated. That comment promises a newly added scope is
+# granted to anonymous callers automatically — which for a scope that decrypts
+# secrets would re-open the hole audit blocker 7 closed, on any default
+# AUTH_ENABLED=false box. Reading a secret requires presenting a key, always.
+# Guarded by tests/test_auth_scopes.py.
+ANONYMOUS_SCOPES: tuple[str, ...] = tuple(sorted(SCOPES - {"admin", "*", "vault:read"}))
 
 _ANONYMOUS_IDENTITY = {
     "agent_id": "anonymous",
