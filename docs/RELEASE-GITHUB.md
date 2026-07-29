@@ -6,16 +6,16 @@ and served from **GitHub Pages**.
 
 ## How a release is cut
 
-1. Bump the version in **all four** markers:
+1. Bump the version in **three** markers:
    - `client/pyproject.toml` → `version = "X.Y.Z"`
    - `client/firekeep_client/__init__.py` → `__version__ = "X.Y.Z"`
    - `client/tests/test_package.py` → `assert firekeep_client.__version__ == "X.Y.Z"`
-   - `client/tests/test_e2e_bootstrap.py` → `VERSION = "X.Y.Z"`
-   The `client-release` CI workflow guards only the first two against the tag (mismatch
-   fails the workflow); the test suite (`test_package.py`) and the e2e bootstrap test
-   (`test_e2e_bootstrap.py`) enforce the other two instead — a mismatch there fails a local
-   or CI test run, not the release workflow itself. (Skip for the very first release if the
-   code is already at the target version.)
+   The `client-release` workflow guards the first two against the tag (a mismatch fails
+   the workflow); `test_package.py` enforces the third, so a mismatch there fails the
+   test run rather than the release.
+   `client/tests/test_e2e_bootstrap.py` used to be a fourth marker and no longer is — it
+   now DERIVES the version from `pyproject.toml`, so listing it here was an instruction to
+   edit a line that does not exist.
 2. Tag and push:
    ```bash
    git tag client-vX.Y.Z
@@ -102,13 +102,38 @@ clients never see it.
 
 ## Release notes
 
-**Pre-tag gate (added after the 0.1.2 self-destruct bug):** before pushing the tag, run the
-e2e bootstrap suite with a real uv on PATH — `cd client && PATH="$HOME/.firekeep/bin:$PATH" 
-python -m pytest tests/test_e2e_bootstrap.py -m e2e -q`. It executes the real `install.sh`
-against the locally built wheel including the wizard hand-off — the default suite excludes
-it (`-m 'not e2e'`) and no connected CI runs it, which is how 0.1.2 shipped a bootstrap
-that wiped its own venv at the wizard step.
+**Pre-tag gate (added after the 0.1.2 self-destruct bug) — NOW RUNS IN CI.** The e2e
+bootstrap suite executes the real `install.sh` against the locally built wheel including
+the wizard hand-off, which is how 0.1.2 shipped a bootstrap that wiped its own venv at
+that step. It is a step in `release.yml`'s `test` job, which the `release` job needs, so
+a tag cannot publish without it.
 
+It used to be documented here as a MANUAL pre-tag step, and that instruction could not be
+followed on the machine reading it: the suite skips wholesale on `os.name == "nt"`
+(`test_e2e_bootstrap.py:23`), so on Windows all five tests skip even with `uv` installed —
+and it skips itself again when `uv` is absent (`:102`). Attempting it before 0.1.24
+produced "5 skipped", which is not a pass. CI runs it on ubuntu with `uv` installed first.
+
+To run it by hand on macOS/Linux:
+```bash
+cd client && python -m pytest tests/test_e2e_bootstrap.py -m e2e -q
+```
+
+
+- **0.1.24** — FIRST PUBLISHED RELEASE. Nothing before this was ever built or
+  served by the release workflow, so there is no upgrade path to describe; every
+  earlier version number exists only in the source history.
+  - Agents now recall memory when they should. The rendered instruction layer had
+    no memory protocol at all, so an agent asked "deploy to my vps" answered that
+    it did not know while the answer sat in memory at 100% confidence.
+  - Codex gets `~/.codex/AGENTS.md`. It has no hook surface, so it previously
+    received the MCP tools and nothing about when to use them.
+  - Vault reads no longer require `admin`: new `vault:read` scope, minted into
+    teammate keys. Writes and deletes stay admin-only.
+  - The bootstrap builds beside and swaps instead of clearing the live venv, so a
+    background auto-update no longer breaks the hooks of running POSIX sessions.
+  - Dashboard: Firekeep mark, ember palette, and a health check that stops
+    reporting HTTP 404 as a healthy service.
 
 - **0.1.2** — corporate-network users on ≤0.1.1: re-run the curl|sh bootstrap — pre-0.1.2
   updaters cannot reach the release manifest through an intercepting proxy.
