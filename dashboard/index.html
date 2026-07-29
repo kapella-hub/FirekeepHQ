@@ -203,7 +203,7 @@ main {
 /* ===== Overview hero + Firekeep Pulse (the signature) ===== */
 .hero {
     position: relative; border: 1px solid var(--border); border-radius: 12px;
-    padding: 22px 28px 0; overflow: hidden; margin-bottom: 22px;
+    padding: 22px 28px 0; overflow: hidden; margin-bottom: 28px;
     background: linear-gradient(180deg, var(--surface), var(--bg));
 }
 .hero-top { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
@@ -260,7 +260,13 @@ main {
 /* Grids */
 .grid-2 { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
 .grid-3 { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
-.grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+/* auto-fit, not a hard repeat(4). At 1024px a fixed four-up left each card
+   173px, of which 115px reached the description — still clipping "Environment
+   observer" after the two-row fix. Dropping to three columns below ~1150px
+   gives ~237px cards and ends the clipping at every width, instead of tuning
+   the text until it fits one window. Mirrors .grid-2 directly above, which was
+   already responsive; .grid-4 was the outlier. */
+.grid-4 { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; }
 .grid-5 { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; }
 .section + .section { margin-top: 28px; }
 
@@ -274,7 +280,19 @@ main {
 .stagger > *:nth-child(6) { animation-delay: 0.2s; }
 
 /* Health cards */
-.health-card { display: flex; align-items: center; gap: 14px; padding: 16px 18px; position: relative; overflow: hidden; }
+/* Two-row grid, not a flex row. As a single row the description shared its
+   width with the latency column and lost: at a 1251px viewport each card is
+   230px, and 230 - 36 padding - 10 dot - 28 gaps - 64 latency left 92px for a
+   label needing 114-120px, so every one of the four was clipped mid-word.
+   Trimming the text would only have hidden that until the next narrow window.
+   Now the description spans both content columns on its own row. */
+.health-card { display: grid; grid-template-columns: auto 1fr auto;
+    column-gap: 12px; row-gap: 3px; align-items: center;
+    padding: 14px 18px; position: relative; overflow: hidden; }
+.health-card > .health-dot { grid-row: 1 / span 2; }
+.health-card > .health-name { grid-column: 2; }
+.health-card > .health-latency { grid-column: 3; }
+.health-card > .health-url { grid-column: 2 / span 2; }
 .health-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: var(--border); transition: background var(--transition); }
 .health-card.is-up::before { background: var(--green); }
 .health-card.is-down::before { background: var(--red); }
@@ -297,7 +315,29 @@ main {
 .health-url { font-family: var(--font-mono); font-size: 10px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* min-width fits the longest state word ('degraded'), not just a latency —
    the column is fixed, so anything wider overflows into the name. */
-.health-latency { font-family: var(--font-mono); font-size: 11px; font-weight: 500; color: var(--text-secondary); flex-shrink: 0; text-align: right; min-width: 64px; }
+.health-latency { font-family: var(--font-mono); font-size: 11px; font-weight: 500; color: var(--text-secondary); text-align: right; white-space: nowrap; }
+
+/* Presence chips. Previously ~200 characters of inline style per agent, built in
+   JS and invisible to the design system — the ember palette change could not
+   reach them, and nothing here could be restyled without editing a string
+   literal. Two bugs rode along:
+     - `margin-right:6px` with no row gap, so a wrapped second row touched the
+       first;
+     - the goal was separated by a literal ' (' space, but the chip is
+       display:inline-flex and a flex container STRIPS a flex item's leading
+       whitespace — which is why the id and goal ran together as
+       `agent-x(Choose a new…)`. Spacing now comes from `gap`, which cannot be
+       collapsed away. */
+.presence-row { display: flex; flex-wrap: wrap; gap: 8px; min-height: 24px; align-items: center; }
+.presence-chip { display: inline-flex; align-items: center; gap: 7px; max-width: 100%;
+    padding: 4px 11px; background: var(--surface); border: 1px solid var(--border);
+    border-radius: 14px; font-size: 12px; font-family: var(--font-mono); }
+.presence-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.presence-dot.active { background: var(--green); box-shadow: 0 0 6px var(--green-muted); }
+.presence-dot.idle { background: var(--amber); box-shadow: 0 0 6px var(--amber-muted); }
+.presence-goal { color: var(--text-dim); font-weight: 400; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.presence-empty { color: var(--text-dim); font-size: 12px; }
 .health-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Stat cards */
@@ -747,7 +787,7 @@ button.btn-outline:hover { border-color: var(--accent); color: var(--accent); ba
                     <div class="card stat-card" data-goto="memory"><div class="stat-value" id="statMemories">--</div><div class="stat-label">Memories Stored</div></div>
                 </div>
             </div>
-            <div class="section"><div id="overviewPresence" style="font-size:13px;min-height:24px"></div></div>
+            <div class="section"><div id="overviewPresence" class="presence-row"></div></div>
             <div class="section">
                 <div class="two-col">
                     <div><div class="card-header">Signal Stream</div><div class="card" id="overviewEvents" style="max-height:360px;overflow-y:auto"><div class="spinner">Loading...</div></div></div>
@@ -2218,14 +2258,22 @@ function loadOverviewPresence() {
         var agents = (d && d.agents) ? d.agents : [];
         window._onlineAgents = agents.length; updateHeroSummary();  // feed the hero readout
         var c = $('overviewPresence');
-        if (!agents.length) { c.innerHTML = '<span style="color:var(--text-dim);font-size:12px">No agents online</span>'; return; }
+        if (!agents.length) { c.innerHTML = '<span class="presence-empty">No agents online</span>'; return; }
         var pills = agents.map(function(a) {
-            var color = a.status === 'active' ? 'var(--green)' : 'var(--amber)';
-            var dot = '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + color + ';box-shadow:0 0 6px ' + color + ';margin-right:5px"></span>';
-            var goal = a.goal ? ' (' + esc(a.goal).substring(0, 40) + ')' : '';
-            return '<span style="display:inline-flex;align-items:center;padding:3px 10px;background:var(--surface);border:1px solid var(--border);border-radius:14px;font-size:12px;font-family:var(--font-mono);margin-right:6px">' + dot + esc(a.agent_id || '?') + '<span style="color:var(--text-dim);font-weight:400">' + goal + '</span></span>';
+            // Truncate BEFORE escaping. substring() on already-escaped text can cut
+            // an entity in half ("&amp;" -> "&am"), which renders as literal garbage;
+            // the old order did exactly that on any goal containing an ampersand.
+            var goalText = a.goal ? String(a.goal).substring(0, 40) : '';
+            // Parenthesised, not bare. The CSS `gap` separates them visually, but a gap
+    // is not text: textContent (and therefore copy-paste and a screen reader)
+    // would read "agent-x-5a60Choose a new product name" as one word. The
+    // brackets restore the separation in the channels CSS cannot reach.
+    var goal = goalText ? '<span class="presence-goal">(' + esc(goalText) + ')</span>' : '';
+            return '<span class="presence-chip"><span class="presence-dot '
+                + (a.status === 'active' ? 'active' : 'idle') + '"></span>'
+                + esc(a.agent_id || '?') + goal + '</span>';
         });
-        c.innerHTML = pills.join(' ');
+        c.innerHTML = pills.join('');
     }).catch(function() {
         $('overviewPresence').innerHTML = '';
     });
@@ -2291,8 +2339,10 @@ function renderHealthGrid() {
         var dot = el('div', { className: 'health-dot loading' });
         var lat = el('span', { className: 'health-latency', textContent: 'checking' });
         var desc = el('div', { className: 'health-url', textContent: svc.desc || CONFIG[svc.key] });
+        // Flat children, positioned by grid: the description gets its OWN row so
+        // it no longer competes with the latency column for horizontal space.
         var card = el('div', { className: 'card health-card is-loading' }, [
-            dot, el('div', { className: 'health-info' }, [ el('div', { className: 'health-name', textContent: svc.name }), desc ]), lat
+            dot, el('div', { className: 'health-name', textContent: svc.name }), lat, desc
         ]);
         grid.appendChild(card);
         var t0 = performance.now();
