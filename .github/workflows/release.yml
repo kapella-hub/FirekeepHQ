@@ -72,7 +72,7 @@ jobs:
       - name: Assemble release (SHA256SUMS + latest.json)
         run: |
           cp client/bootstrap/install.sh client/bootstrap/install.ps1 dist/
-          python client/scripts/make_release.py "${VERSION}" dist --dist-base "https://kapella-hub.github.io/Firekeep"
+          python client/scripts/make_release.py "${VERSION}" dist --dist-base "https://kapella-hub.github.io/FirekeepHQ"
 
       - name: Publish to gh-pages (accumulative)
         run: |

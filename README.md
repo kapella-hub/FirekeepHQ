@@ -71,7 +71,7 @@ bash install.sh --pull
 **If you have source access** — build it:
 
 ```bash
-git clone https://github.com/kapella-hub/Firekeep.git   # private
+git clone https://github.com/kapella-hub/FirekeepHQ.git   # private
 cd Firekeep
 bash install.sh
 ```

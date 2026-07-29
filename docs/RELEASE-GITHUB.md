@@ -37,16 +37,16 @@ Settings → Pages → **Deploy from a branch** → Branch: **`gh-pages`** / `(r
 path segments exactly as the bootstrap expects (no bootstrap changes needed):
 
 ```
-FIREKEEP_DIST_BASE = https://kapella-hub.github.io/Firekeep
+FIREKEEP_DIST_BASE = https://kapella-hub.github.io/FirekeepHQ
 ```
 
 Install (macOS / Linux):
 ```bash
-curl -fsSL https://kapella-hub.github.io/Firekeep/latest/install.sh | FIREKEEP_DIST_BASE=https://kapella-hub.github.io/Firekeep sh
+curl -fsSL https://kapella-hub.github.io/FirekeepHQ/latest/install.sh | FIREKEEP_DIST_BASE=https://kapella-hub.github.io/FirekeepHQ sh
 ```
 Windows (PowerShell):
 ```powershell
-$env:FIREKEEP_DIST_BASE='https://kapella-hub.github.io/Firekeep'; irm https://kapella-hub.github.io/Firekeep/latest/install.ps1 | iex
+$env:FIREKEEP_DIST_BASE='https://kapella-hub.github.io/FirekeepHQ'; irm https://kapella-hub.github.io/FirekeepHQ/latest/install.ps1 | iex
 ```
 
 The bootstrap fetches `latest/latest.json` → resolves the version → fetches

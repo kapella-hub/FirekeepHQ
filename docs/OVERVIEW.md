@@ -70,8 +70,8 @@ Every session makes the next one better:
 git clone <repo> && cd Firekeep && bash install.sh
 
 # Your machine (teammate bootstrap — fetches a checksum-verified wheel):
-curl -fsSL https://kapella-hub.github.io/Firekeep/latest/install.sh \
-  | FIREKEEP_DIST_BASE=https://kapella-hub.github.io/Firekeep sh
+curl -fsSL https://kapella-hub.github.io/FirekeepHQ/latest/install.sh \
+  | FIREKEEP_DIST_BASE=https://kapella-hub.github.io/FirekeepHQ sh
 
 # ...or from a checkout:
 cd client && ./install     # or: firekeep install --runtime claude

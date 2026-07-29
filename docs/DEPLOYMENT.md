@@ -51,7 +51,7 @@ Firekeep never redistributes them (see
 ### As a developer — build from source
 
 ```bash
-git clone https://github.com/kapella-hub/Firekeep.git   # private; requires access
+git clone https://github.com/kapella-hub/FirekeepHQ.git   # private; requires access
 cd Firekeep
 bash install.sh
 ```

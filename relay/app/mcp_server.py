@@ -911,7 +911,7 @@ def _build_agent_card(base_url: str) -> dict:
         "protocolVersion": _AGENT_CARD_PROTOCOL_VERSION,
         "provider": {
             "organization": "Firekeep",
-            "url": "https://github.com/kapella-hub/Firekeep",
+            "url": "https://github.com/kapella-hub/FirekeepHQ",
         },
         "capabilities": {
             "streaming": False,

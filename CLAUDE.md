@@ -84,7 +84,7 @@ it's newer, background-auto-updates the client by default (client 0.1.20; opt ou
 back to a one-line "client update available" nudge when opted out.
 `<release-base>` is **version-agnostic**. Interim client releases are cut via GitHub Actions
 (`.github/workflows/release.yml`) and served from GitHub Pages —
-`FIREKEEP_DIST_BASE=https://kapella-hub.github.io/Firekeep` (see `docs/RELEASE-GITHUB.md`); the
+`FIREKEEP_DIST_BASE=https://kapella-hub.github.io/FirekeepHQ` (see `docs/RELEASE-GITHUB.md`); the
 GitLab generic package registry root (`.../packages/generic/firekeep-client`, via `.gitlab-ci.yml`)
 remains the office path. Either way `latest/` is the stable entry point
 (`install.sh`, `install.ps1`, `latest.json`), while every version keeps its own directory
