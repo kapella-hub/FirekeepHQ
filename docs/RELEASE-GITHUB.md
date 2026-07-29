@@ -120,7 +120,11 @@ cd client && python -m pytest tests/test_e2e_bootstrap.py -m e2e -q
 ```
 
 
-- **0.1.24** — FIRST PUBLISHED RELEASE. Nothing before this was ever built or
+- **0.1.25** — FIRST PUBLISHED RELEASE. 0.1.24 was tagged and never published: its
+  own test gate caught a missing pytest install, then a malformed workflow file
+  (an empty `with:` GitHub rejects and PyYAML accepts). Both fixed here, both
+  guarded. The gate working is why nothing broken shipped.
+- **0.1.24** — tagged, never published. Superseded by 0.1.25. Original notes: Nothing before this was ever built or
   served by the release workflow, so there is no upgrade path to describe; every
   earlier version number exists only in the source history.
   - Agents now recall memory when they should. The rendered instruction layer had
