@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="Firekeep">
+  <title>Firekeep</title>
+  <!--
+    OPTICALLY SIZED variant, with a BAKED colour. Both of those are deliberate.
+
+    Optical sizing: this is not a scaled copy of mark.svg, it is a different
+    drawing of the same mark. At 16px the keep (rounded square) contributes
+    nothing but bulk — it eats the margin the flame needs, and the ember cutout
+    closes to sub-pixel and fills in, turning the mark back into the solid blob
+    the design exists to avoid. So the container is dropped, the flame fills the
+    box, and the flame/ember gap is widened relative to mark.svg.
+
+    Baked colour: a favicon is ALWAYS loaded standalone via <link rel="icon">.
+    There is no parent element, so there is no inherited `color`, so
+    `currentColor` resolves to BLACK — an invisible mark on a dark tab strip.
+    Verified, not assumed. This file therefore hard-codes the ember accent.
+    Use mark.svg (currentColor) for anything inlined into the DOM instead.
+  -->
+  <path fill="#FF7A2F" fill-rule="evenodd" d="
+    M19.25 2.02C20.03 8.39 25.62 11.25 25.62 18.53C25.62 25.16 21.33 29.97 15.87 29.97C10.28 29.97 6.38 25.94 6.38 20.35C6.38 15.54 9.89 12.68 11.45 8.65C12.10 12.55 13.79 14.24 15.35 15.02C14.44 9.95 16.00 5.79 19.25 2.02Z
+    M17.30 15.41C17.82 18.66 20.55 20.22 20.55 23.08C20.55 25.68 18.60 27.50 16.00 27.50C13.40 27.50 11.45 25.81 11.45 23.47C11.45 21.52 12.75 20.35 13.79 18.53C14.05 20.22 14.70 21.00 15.48 21.39C15.09 19.31 15.74 17.49 17.30 15.41Z"/>
+</svg>
