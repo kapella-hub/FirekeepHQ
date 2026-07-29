@@ -120,7 +120,12 @@ cd client && python -m pytest tests/test_e2e_bootstrap.py -m e2e -q
 ```
 
 
-- **0.1.25** — FIRST PUBLISHED RELEASE. 0.1.24 was tagged and never published: its
+- **0.1.26** — FIRST PUBLISHED RELEASE. 0.1.24 and 0.1.25 were tagged and never
+  published; each was stopped by its own test gate, which is the gate working.
+  0.1.24: no pytest in the release job, then a malformed workflow file. 0.1.25: the
+  new staged-venv guard aborted every install under the test harness's stubbed uv.
+  All fixed and guarded here.
+- **0.1.25** — tagged, never published. Superseded by 0.1.26. Original notes: 0.1.24 was tagged and never published: its
   own test gate caught a missing pytest install, then a malformed workflow file
   (an empty `with:` GitHub rejects and PyYAML accepts). Both fixed here, both
   guarded. The gate working is why nothing broken shipped.

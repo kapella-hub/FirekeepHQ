@@ -4,7 +4,7 @@
 def test_package_imports_and_exposes_frozen_version():
     import firekeep_client
 
-    assert firekeep_client.__version__ == "0.1.25"
+    assert firekeep_client.__version__ == "0.1.26"
 
 
 def test_frozen_module_layout_is_present():
