@@ -150,11 +150,20 @@ body::after {
 }
 .topbar-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-glow); }
 
+/* These are KEYBOARD SHORTCUTS, not counts. As a bordered pill sitting right
+   of a nav label they were indistinguishable from an unread badge, so every
+   item in the sidebar appeared to be reporting a quantity — nine small lies.
+   Demoted to a bare monospace character, pushed to the far right, and surfaced
+   on hover/focus or when the item is active. Still discoverable, no longer
+   claiming to be data. */
 .kbd-hint {
-    font-family: var(--font-mono); font-size: 9px; color: var(--text-dim);
-    background: var(--bg-deep); border: 1px solid var(--border); border-radius: 3px;
-    padding: 1px 5px; margin-left: 4px; line-height: 1.4;
+    font-family: var(--font-mono); font-size: 10px; color: var(--text-dim);
+    margin-left: auto; padding-left: 8px; line-height: 1.4;
+    opacity: 0; transition: opacity var(--transition);
 }
+.nav-btn:hover .kbd-hint,
+.nav-btn:focus-visible .kbd-hint,
+.nav-btn.active .kbd-hint { opacity: 0.55; }
 
 /* Sidebar */
 .sidebar {
@@ -176,7 +185,10 @@ body::after {
 }
 .nav-btn:hover { color: var(--text); background: var(--accent-glow); }
 .nav-btn.active { color: var(--accent); background: var(--accent-glow); border-left-color: var(--accent); }
-.nav-icon { width: 18px; height: 18px; display: flex; align-items: center; justify-content: center; font-size: 14px; opacity: 0.7; flex-shrink: 0; }
+.nav-icon { width: 18px; height: 18px; flex-shrink: 0; opacity: 0.62;
+            fill: none; stroke: currentColor; stroke-width: 1.7;
+            stroke-linecap: round; stroke-linejoin: round;
+            transition: opacity var(--transition); }
 .nav-btn.active .nav-icon { opacity: 1; }
 
 /* Main */
@@ -283,7 +295,10 @@ main {
 .health-info { flex: 1; min-width: 0; }
 .health-name { font-weight: 600; font-size: 13px; color: var(--text); line-height: 1.3; }
 .health-url { font-family: var(--font-mono); font-size: 10px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.health-latency { font-family: var(--font-mono); font-size: 12px; font-weight: 500; color: var(--text-secondary); flex-shrink: 0; text-align: right; min-width: 52px; }
+/* min-width fits the longest state word ('degraded'), not just a latency —
+   the column is fixed, so anything wider overflows into the name. */
+.health-latency { font-family: var(--font-mono); font-size: 11px; font-weight: 500; color: var(--text-secondary); flex-shrink: 0; text-align: right; min-width: 64px; }
+.health-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Stat cards */
 .stat-card { padding: 20px; position: relative; overflow: hidden; cursor: pointer; transition: all var(--transition); }
@@ -628,6 +643,36 @@ button.btn-outline:hover { border-color: var(--accent); color: var(--accent); ba
 </style>
 </head>
 <body>
+<!-- Icon sprite. AUTHORED HERE, not imported: these are trivial geometric
+     shapes, and drawing them avoids carrying an icon-set licence file into a
+     commercial product for fourteen glyphs.
+
+     Replaces a mix of eight monochrome Unicode glyphs and SIX EMOJI-presentation
+     codepoints (U+26A1 lightning, U+2753 question, U+1F31F star, U+1F4DA books,
+     U+1F512 lock, U+1F6E1 shield). Those rendered as full-colour OS emoji, so
+     the sidebar looked different on every operating system and dropped colour
+     into a deliberately monochrome console.
+
+     Inline rather than an external file so `currentColor` resolves — the same
+     constraint documented in dashboard/brand/README.md. Stroke-based at a
+     single width so every icon carries the same visual weight. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><defs>
+  <symbol id="i-overview" viewBox="0 0 24 24"><rect x="3" y="3" width="7.5" height="7.5" rx="1.6"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.6"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.6"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.6"/></symbol>
+  <symbol id="i-sessions" viewBox="0 0 24 24"><path d="M4 8.5h13M14 5.5l3 3-3 3M20 15.5H7M10 12.5l-3 3 3 3"/></symbol>
+  <symbol id="i-events" viewBox="0 0 24 24"><path d="M3 12h4l3 7.5 4-15 3 7.5h4"/></symbol>
+  <symbol id="i-relay" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.1"/><path d="M7.9 7.9a5.8 5.8 0 0 0 0 8.2M16.1 16.1a5.8 5.8 0 0 0 0-8.2M5 5a9.9 9.9 0 0 0 0 14M19 19a9.9 9.9 0 0 0 0-14"/></symbol>
+  <symbol id="i-scope" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.3"/><path d="M12 1.6v3M12 19.4v3M1.6 12h3M19.4 12h3"/></symbol>
+  <symbol id="i-memory" viewBox="0 0 24 24"><ellipse cx="12" cy="5.8" rx="7.4" ry="2.9"/><path d="M4.6 5.8v6c0 1.6 3.3 2.9 7.4 2.9s7.4-1.3 7.4-2.9v-6"/><path d="M4.6 11.8v6c0 1.6 3.3 2.9 7.4 2.9s7.4-1.3 7.4-2.9v-6"/></symbol>
+  <symbol id="i-skills" viewBox="0 0 24 24"><path d="M12 3.2l2.65 5.37 5.93.86-4.29 4.18 1.01 5.9L12 16.71l-5.3 2.79 1.01-5.9-4.29-4.18 5.93-.86z"/></symbol>
+  <symbol id="i-knowledge" viewBox="0 0 24 24"><path d="M5 4.6A1.6 1.6 0 0 1 6.6 3H19.2v14.6H6.6A1.6 1.6 0 0 0 5 19.2z"/><path d="M5 19.2a1.6 1.6 0 0 0 1.6 1.6h12.6"/><path d="M9 7.2h6.4"/></symbol>
+  <symbol id="i-patterns" viewBox="0 0 24 24"><circle cx="6" cy="6.4" r="2.2"/><circle cx="18" cy="8.4" r="2.2"/><circle cx="9.4" cy="18" r="2.2"/><path d="M8.2 6.7l7.6 1.3M7 8.5l1.9 7.4M11.4 16.9l5.3-6.7"/></symbol>
+  <symbol id="i-replay" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.4"/><path d="M10.3 8.9v6.2l5.1-3.1z"/></symbol>
+  <symbol id="i-evals" viewBox="0 0 24 24"><path d="M5 20.4V11.6M12 20.4V3.6M19 20.4v-6.2"/></symbol>
+  <symbol id="i-vault" viewBox="0 0 24 24"><rect x="4.4" y="10.2" width="15.2" height="10.4" rx="2.2"/><path d="M8 10.2V7.6a4 4 0 0 1 8 0v2.6"/><path d="M12 14.3v2.2"/></symbol>
+  <symbol id="i-policy" viewBox="0 0 24 24"><path d="M12 3l7 2.9v5.5c0 4.2-2.9 8-7 9.4-4.1-1.4-7-5.2-7-9.4V5.9z"/></symbol>
+  <symbol id="i-ops" viewBox="0 0 24 24"><path d="M3.6 7.4h9.2M18.4 7.4h2M3.6 16.6h3.2M12.8 16.6h7.6"/><circle cx="15.6" cy="7.4" r="2.3"/><circle cx="9.6" cy="16.6" r="2.3"/></symbol>
+</defs></svg>
+
 <div class="app">
     <div class="topbar">
         <div class="logo">
@@ -653,23 +698,23 @@ button.btn-outline:hover { border-color: var(--accent); color: var(--accent); ba
 
     <nav class="sidebar" role="tablist">
         <div class="sidebar-label">Navigation</div>
-        <button class="nav-btn active" data-tab="overview"><span class="nav-icon">&#9673;</span> Overview <span class="kbd-hint">1</span></button>
-        <button class="nav-btn" data-tab="sessions"><span class="nav-icon">&#8644;</span> Sessions <span class="kbd-hint">3</span></button>
-        <button class="nav-btn" data-tab="events"><span class="nav-icon">&#9889;</span> Events <span class="kbd-hint">4</span></button>
-        <button class="nav-btn" data-tab="relay"><span class="nav-icon">&#8962;</span> Relay <span class="kbd-hint">5</span></button>
-        <button class="nav-btn" data-tab="scope"><span class="nav-icon">&#10067;</span> Scope</button>
+        <button class="nav-btn active" data-tab="overview"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-overview"/></svg> Overview <span class="kbd-hint">1</span></button>
+        <button class="nav-btn" data-tab="sessions"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-sessions"/></svg> Sessions <span class="kbd-hint">3</span></button>
+        <button class="nav-btn" data-tab="events"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-events"/></svg> Events <span class="kbd-hint">4</span></button>
+        <button class="nav-btn" data-tab="relay"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-relay"/></svg> Relay <span class="kbd-hint">5</span></button>
+        <button class="nav-btn" data-tab="scope"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-scope"/></svg> Scope</button>
         <div class="sidebar-label" style="margin-top:16px">Intelligence</div>
-        <button class="nav-btn" data-tab="memory"><span class="nav-icon">&#9883;</span> Memory <span class="kbd-hint">2</span></button>
-        <button class="nav-btn" data-tab="skills"><span class="nav-icon">&#127775;</span> Skills <span class="kbd-hint">6</span></button>
-        <button class="nav-btn" data-tab="knowledge"><span class="nav-icon">&#128218;</span> Knowledge</button>
+        <button class="nav-btn" data-tab="memory"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-memory"/></svg> Memory <span class="kbd-hint">2</span></button>
+        <button class="nav-btn" data-tab="skills"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-skills"/></svg> Skills <span class="kbd-hint">6</span></button>
+        <button class="nav-btn" data-tab="knowledge"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-knowledge"/></svg> Knowledge</button>
         <div class="sidebar-label" style="margin-top:16px">Quality</div>
-        <button class="nav-btn" data-tab="patterns"><span class="nav-icon">&#9672;</span> Patterns <span class="kbd-hint">8</span></button>
-        <button class="nav-btn" data-tab="replay"><span class="nav-icon">&#9654;</span> Replay <span class="kbd-hint">7</span></button>
-        <button class="nav-btn" data-tab="evals"><span class="nav-icon">&#9733;</span> Evals <span class="kbd-hint">9</span></button>
+        <button class="nav-btn" data-tab="patterns"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-patterns"/></svg> Patterns <span class="kbd-hint">8</span></button>
+        <button class="nav-btn" data-tab="replay"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-replay"/></svg> Replay <span class="kbd-hint">7</span></button>
+        <button class="nav-btn" data-tab="evals"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-evals"/></svg> Evals <span class="kbd-hint">9</span></button>
         <div class="sidebar-label" style="margin-top:16px">System</div>
-        <button class="nav-btn" data-tab="vault"><span class="nav-icon">&#128272;</span> Vault</button>
-        <button class="nav-btn" data-tab="policy"><span class="nav-icon">&#128737;</span> Policy</button>
-        <button class="nav-btn" data-tab="ops"><span class="nav-icon">&#9881;</span> Ops</button>
+        <button class="nav-btn" data-tab="vault"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-vault"/></svg> Vault</button>
+        <button class="nav-btn" data-tab="policy"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-policy"/></svg> Policy</button>
+        <button class="nav-btn" data-tab="ops"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-ops"/></svg> Ops</button>
     </nav>
 
     <main>
@@ -2240,8 +2285,9 @@ function renderHealthGrid() {
     SERVICES.forEach(function(svc) {
         var dot = el('div', { className: 'health-dot loading' });
         var lat = el('span', { className: 'health-latency', textContent: 'checking' });
+        var desc = el('div', { className: 'health-url', textContent: svc.desc || CONFIG[svc.key] });
         var card = el('div', { className: 'card health-card is-loading' }, [
-            dot, el('div', { className: 'health-info' }, [ el('div', { className: 'health-name', textContent: svc.name }), el('div', { className: 'health-url', textContent: svc.desc || CONFIG[svc.key] }) ]), lat
+            dot, el('div', { className: 'health-info' }, [ el('div', { className: 'health-name', textContent: svc.name }), desc ]), lat
         ]);
         grid.appendChild(card);
         var t0 = performance.now();
@@ -2250,10 +2296,17 @@ function renderHealthGrid() {
             // State is never colour-alone: the dot carries a hue, the label
             // carries a WORD. Required for greyscale, for screenshots, and for
             // the ~8% of male operators who cannot separate red from green.
+            //
+            // The word goes in the fixed right column and the REASON goes on
+            // the description line. Putting both on the right overflowed the
+            // fixed-width column and collided with the service name — "down ·
+            // HTTP 404" is four times the width of "34ms", which the old
+            // layout never had to accommodate.
             dot.className = 'health-dot ' + v.state;
             card.className = 'card health-card is-' + v.state;
-            lat.textContent = v.state === 'up' ? ('up · ' + ms + 'ms') : (v.state + (v.detail ? ' · ' + v.detail : ''));
+            lat.textContent = v.state === 'up' ? (ms + 'ms') : v.state;
             lat.title = v.detail || '';
+            desc.textContent = v.detail || svc.desc || CONFIG[svc.key];
             var wasUp = prevHealth[svc.key];
             if (v.state === 'up' && wasUp === false) toast(svc.name + ' is back online', 'success');
             if (v.state !== 'up' && wasUp === true) toast(svc.name + ' is ' + v.state + (v.detail ? ': ' + v.detail : ''), 'error');
