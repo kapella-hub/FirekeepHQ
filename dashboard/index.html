@@ -203,7 +203,7 @@ main {
 /* ===== Overview hero + Firekeep Pulse (the signature) ===== */
 .hero {
     position: relative; border: 1px solid var(--border); border-radius: 12px;
-    padding: 26px 28px 0; overflow: hidden; margin-bottom: 30px;
+    padding: 22px 28px 0; overflow: hidden; margin-bottom: 22px;
     background: linear-gradient(180deg, var(--surface), var(--bg));
 }
 .hero-top { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
@@ -215,11 +215,11 @@ main {
 @keyframes liveDot { 0% { box-shadow: 0 0 0 0 var(--pulse-glow); } 70%, 100% { box-shadow: 0 0 0 8px transparent; } }
 .hero-headline { font-family: var(--font-display); font-weight: 700; font-size: clamp(28px, 3.0vw, 40px);
     line-height: 1.05; letter-spacing: -1.0px; color: var(--text); margin: 16px 0 10px; }
-.hero-summary { font-size: 14px; color: var(--text-secondary); max-width: 64ch; line-height: 1.6; }
+.hero-summary { font-size: 19px; color: var(--text-secondary); max-width: 72ch; line-height: 1.5; margin-top: 14px; }
 .hero-summary b { color: var(--text); font-weight: 600; }
 .hero-summary .hs-accent { color: var(--accent-bright); font-weight: 600; }
-.pulse-wrap { position: relative; margin: 34px -28px 0; height: 150px; }
-.pulse-canvas { display: block; width: 100%; height: 150px; }
+.pulse-wrap { position: relative; margin: 20px -28px 0; height: 104px; }
+.pulse-canvas { display: block; width: 100%; height: 104px; }
 .pulse-legend { position: absolute; left: 28px; bottom: 12px; display: flex; align-items: baseline; gap: 12px;
     font-family: var(--font-mono); font-size: 10px; letter-spacing: 1.6px; color: var(--text-dim); pointer-events: none; }
 .pulse-rate { color: var(--pulse); letter-spacing: 0.5px; }
@@ -722,11 +722,16 @@ button.btn-outline:hover { border-color: var(--accent); color: var(--accent); ba
         <section class="tab-panel active" id="panel-overview">
             <div class="hero">
                 <div class="hero-top">
-                    <div class="hero-eyebrow"><span class="hero-live-dot"></span> OBSERVATORY <span class="hero-sep">·</span> <span id="heroClock">live</span></div>
+                    <div class="hero-eyebrow"><span class="hero-live-dot"></span> SYSTEM STATUS <span class="hero-sep">·</span> <span id="heroClock">live</span></div>
                     <button class="btn btn-sm btn-outline" id="btnRefreshOverview">Refresh</button>
                 </div>
-                <h1 class="hero-headline">The stack is&nbsp;listening.</h1>
-                <p class="hero-summary" id="heroSummary">Reading the collective state of your agents…</p>
+                <!-- The 40px headline that stood here read "The stack is
+                     listening." Mystical voice in an operator console, and
+                     "the stack" was rename residue besides. It cost ~110px
+                     above the fold to say nothing. The line below was always
+                     the one carrying real numbers, so it is promoted to be
+                     the readout rather than a caption under a slogan. -->
+                <p class="hero-summary" id="heroSummary">Loading…</p>
                 <div class="pulse-wrap">
                     <canvas id="firekeepPulse" class="pulse-canvas" aria-hidden="true"></canvas>
                     <div class="pulse-legend"><span class="pulse-legend-label">FIREKEEP&nbsp;PULSE</span><span class="pulse-rate" id="pulseRate">—</span></div>
@@ -2133,11 +2138,11 @@ function updateHeroSummary() {
     var mems = v('statMemories'), events = v('statEvents'), sessions = v('statSessions');
     var online = (window._onlineAgents != null) ? window._onlineAgents : null;
     var parts = [];
-    if (online != null) parts.push('<b>' + online + '</b> ' + (online === 1 ? 'mind' : 'minds') + ' online');
+    if (online != null) parts.push('<b>' + online + '</b> ' + (online === 1 ? 'agent' : 'agents') + ' online');
     else if (sessions) parts.push('<b>' + sessions + '</b> active ' + (sessions === '1' ? 'session' : 'sessions'));
     if (mems) parts.push('<span class="hs-accent">' + _commafy(mems) + '</span> memories held');
     if (events) parts.push('<b>' + _commafy(events) + '</b> signals observed');
-    elm.innerHTML = parts.length ? (parts.join('&nbsp;&nbsp;·&nbsp;&nbsp;') + '.') : 'Reading the collective state of your agents…';
+    elm.innerHTML = parts.length ? parts.join('&nbsp;&nbsp;·&nbsp;&nbsp;') : 'No data yet — start an agent session to populate this.';
 }
 
 function startHeroClock() {

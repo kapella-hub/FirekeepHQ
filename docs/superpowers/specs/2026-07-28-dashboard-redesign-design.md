@@ -276,8 +276,23 @@ Delete `OBSERVATORY`, *"The stack is listening."* and *"Reading the collective
 state of your agents…"*. Replace with a compact status ribbon: four service
 chips with live state plus the at-a-glance counts, on one row.
 
-Reclaims roughly 300px so real data sits above the fold. The `FIREKEEP PULSE`
-sparkline is retained — it is the one piece of the hero that shows something.
+**Measured, not estimated.** An earlier draft of this section claimed "reclaims
+roughly 300px". The actual figure, from `getBoundingClientRect()` before and
+after at a 1011px viewport:
+
+| | before | after | delta |
+|---|---|---|---|
+| `.hero` height | 328px | 219px | −109px |
+| Vital Signs top | y=472 | y=354 | −118px |
+
+118px, not 300. The estimate was invented and roughly 2.5× the truth — worth
+recording, because a spec that quotes unmeasured numbers trains its readers to
+trust the next one.
+
+The `FIREKEEP PULSE` sparkline is retained (150px → 104px) — it is the one part
+of the hero that showed something. The `hero-summary` line was already
+assembling real counts and is promoted from caption to primary readout, so the
+band now carries data at the size the slogan used to occupy.
 
 ## 9. States — PENDING
 
