@@ -69,13 +69,24 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-      - name: Install client + test deps
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e "client[dev]" 2>/dev/null || { pip install -e client; pip install pytest; }
+      # `pip install pytest` and NOTHING ELSE -- deliberately, copied from ci.yml's
+      # client job. The client kit is stdlib-only by design (SP1b import boundary)
+      # and tests/test_import_boundary.py enforces it, so a job that installs the
+      # client would smuggle in mcp and httpx and defeat the guard it is running.
+      # `cd client` puts firekeep_client on sys.path without an install.
+      #
+      # The first version of this step was
+      #   pip install -e "client[dev]" 2>/dev/null || { pip install -e client; pip install pytest; }
+      # and it failed the first real release with "No module named pytest": the
+      # client declares NO optional-dependencies, so `client[dev]` resolved to a
+      # plain SUCCESSFUL install and the || fallback that installed pytest never
+      # ran. A fallback behind a command that succeeds is not a fallback.
+      - name: Install pytest
+        run: python -m pip install --upgrade pip pytest
+
       - name: Client test suite
-        run: cd client && python -m pytest -q
+        run: cd client && python -m pytest tests -q
+
       - name: Release-path guards
         # These specifically cover what a release depends on being correct:
         # published URLs, the manifest builder, and the bootstrap contracts.
@@ -95,8 +106,14 @@ jobs:
       # It drives the REAL install.sh against a locally built wheel, including the
       # wizard hand-off, so it is the only thing that exercises venv provisioning
       # end to end.
-      - name: Install uv (required by the e2e bootstrap gate)
-        run: curl -fsSL https://astral.sh/uv/install.sh | sh
+      - name: Install the e2e gate's prerequisites (uv + build)
+        run: |
+          # `python3 -m build` -- test_e2e_bootstrap.py:91,100 shell out to it to
+          # produce the client and symdex wheels the bootstrap then installs. Not
+          # implied by `pip install pytest`, so the suite would fail at fixture
+          # setup rather than skip.
+          python -m pip install build
+          curl -fsSL https://astral.sh/uv/install.sh | sh
 
       - name: E2E bootstrap gate
         run: |
