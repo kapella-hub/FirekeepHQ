@@ -18,8 +18,14 @@ import pytest_asyncio
 
 
 class _FakeFastMCP:
-    def __init__(self, name: str):
+    # **kwargs, not a fixed signature: the real FastMCP takes `instructions=` (the
+    # MCP initialize handshake text) and `lifespan=`, and a double that enumerates
+    # only the args it happens to know about turns every future constructor kwarg
+    # into a collection ERROR rather than a test failure. That is what happened
+    # when instructions= was added -- three test modules failed to import.
+    def __init__(self, name: str, **_kwargs):
         self.name = name
+        self.instructions = _kwargs.get("instructions")
 
     def tool(self, *args, **kwargs):
         def decorator(fn):

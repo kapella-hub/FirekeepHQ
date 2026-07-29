@@ -85,15 +85,46 @@ def _fake_headers(key: str | None):
 
 class TestConfusedDeputyClosure:
     @pytest.mark.asyncio
-    async def test_non_admin_caller_gets_403_from_vault_retrieve(
+    async def test_a_callers_own_scopes_are_what_the_vault_sees(
         self, monkeypatch, proxy_client, auth_env, redis
     ):
-        """THE load-bearing SP1a test (spec §7)."""
+        """THE load-bearing SP1a test (spec §7): the proxy forwards the CALLER's
+        key, so the vault applies the caller's authority and not the proxy's.
+
+        Rewritten 2026-07-29. It used to send a full teammate key and assert 403,
+        but the vault:read split means a teammate key legitimately passes the READ
+        gate now -- so that assertion would have started failing for a reason
+        having nothing to do with confused deputies, and "fixing" it by loosening
+        the assertion would have quietly deleted the guard.
+
+        The property under test is unchanged, so it is now demonstrated with a key
+        that genuinely lacks vault access: if the proxy substituted its own
+        authority, this read would succeed."""
+        # create_key returns a dict; the raw secret is under "api_key" (see the
+        # auth_env fixture above). Passing the dict straight through produced an
+        # httpx AttributeError, not a 403 -- which would have looked like a pass
+        # if the assertion had been "403 not in result".
+        no_vault = (await keys.create_key("no-vault", ["memory:read"]))["api_key"]
+        monkeypatch.setattr(mcp_mod, "get_http_headers", _fake_headers(no_vault))
+        result = await vault_retrieve(key="prod-db-password")
+        assert "403" in result, (
+            "a key without vault:read reached the vault -- the proxy is presenting "
+            "an authority that is not the caller's"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_teammate_key_now_passes_the_read_gate(
+        self, monkeypatch, proxy_client, auth_env, redis
+    ):
+        """The other side of the same coin: forwarding the caller's key must also
+        let a legitimately-scoped caller THROUGH, or the fix is useless."""
         monkeypatch.setattr(
             mcp_mod, "get_http_headers", _fake_headers(auth_env["teammate"])
         )
         result = await vault_retrieve(key="prod-db-password")
-        assert "403" in result  # _format_error: "Error: API returned 403."
+        assert "403" not in result, (
+            "a teammate key carries vault:read and must pass the read gate"
+        )
 
     @pytest.mark.asyncio
     async def test_admin_caller_key_reaches_vault(

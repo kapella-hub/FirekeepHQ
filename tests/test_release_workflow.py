@@ -215,3 +215,53 @@ class TestTheE2EBootstrapGateRuns:
             f"the test job runs on {runner!r}; the e2e bootstrap suite skips on "
             f"Windows, so the gate would verify nothing"
         )
+
+
+class TestTheWorkflowIsValidToGitHub:
+    """PyYAML is more permissive than GitHub's parser, and the gap is not academic.
+
+    A line-range edit deleted `python-version: "3.12"` and left a bare `with:`
+    under actions/setup-python. yaml.safe_load parsed it happily as None, every
+    local check passed, and GitHub then refused the file outright: two runs with
+    ZERO jobs, "This run likely failed because of a workflow file issue", and the
+    workflow's own name reported as its path because GitHub could not read the
+    `name:` key.
+
+    It also triggered on pushes to main, which the `on:` block does not permit --
+    an unparseable workflow does not honour its own triggers.
+    """
+
+    def test_no_step_has_an_empty_with(self, wf):
+        empty = []
+        for job_name, job in wf["jobs"].items():
+            for step in job.get("steps", []):
+                if "with" in step and not step["with"]:
+                    empty.append(f"{job_name}: {step.get('uses') or step.get('name')}")
+        assert not empty, (
+            "step(s) declare `with:` and provide nothing. GitHub rejects the whole "
+            "workflow file for this; PyYAML does not: " + "; ".join(empty)
+        )
+
+    def test_every_setup_python_pins_a_version(self, wf):
+        """The specific instance that broke, named so a regression is obvious."""
+        missing = []
+        for job_name, job in wf["jobs"].items():
+            for step in job.get("steps", []):
+                if "setup-python" in str(step.get("uses", "")):
+                    if not (step.get("with") or {}).get("python-version"):
+                        missing.append(job_name)
+        assert not missing, (
+            f"setup-python without python-version in: {missing}. An unpinned "
+            f"interpreter is a silent behaviour change; an EMPTY with: is a hard "
+            f"workflow-file error."
+        )
+
+    def test_no_job_is_empty(self, wf):
+        """A job with no steps is the shape GitHub reports as a file issue."""
+        for job_name, job in wf["jobs"].items():
+            assert job.get("steps"), f"job {job_name!r} has no steps"
+
+    def test_the_workflow_declares_a_name(self, wf):
+        """GitHub falls back to the file PATH as the display name when it cannot
+        read `name:` -- which is how the breakage was spotted."""
+        assert wf.get("name"), "release.yml declares no name:"

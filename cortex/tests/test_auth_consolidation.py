@@ -105,12 +105,42 @@ class TestConsolidation:
         assert resp.status_code == 401
 
     @pytest.mark.asyncio
-    async def test_non_admin_key_403_on_vault(self, redis, auth_env):
+    async def test_non_admin_key_can_READ_the_vault(self, redis, auth_env):
+        """Changed 2026-07-29 with the vault:read split, and the change is the point.
+
+        This asserted 403 while every vault route required admin. A teammate's
+        agent asked to "deploy to my vps" therefore could not read the credential
+        it needed, and the only workaround was issuing admin keys -- which also
+        grant key minting. Reading a secret you were meant to have is ordinary
+        work, so the teammate scope set now carries vault:read.
+
+        Asserting NOT-403 rather than 200: the vault backend is unconfigured in
+        this mini app, so a permitted read reaches it and returns 503. Passing the
+        GATE is what this test is about; test_non_admin_key_403_on_vault_WRITE
+        below covers the half that stayed admin-only."""
         async with _client(_mini_cortex(redis)) as c:
             resp = await c.get(
                 "/vault/secrets/db-pass", headers={"X-API-Key": auth_env["non_admin"]}
             )
-        assert resp.status_code == 403
+        assert resp.status_code != 403, (
+            "a teammate key must pass the vault READ gate; it carries vault:read"
+        )
+
+    @pytest.mark.asyncio
+    async def test_non_admin_key_403_on_vault_WRITE(self, redis, auth_env):
+        """The asymmetry. Creating or destroying a shared credential is
+        administration; a read scope must not confer it."""
+        async with _client(_mini_cortex(redis)) as c:
+            store = await c.post(
+                "/vault/secrets",
+                headers={"X-API-Key": auth_env["non_admin"]},
+                json={"key": "k", "value": "v"},
+            )
+            delete = await c.delete(
+                "/vault/secrets/db-pass", headers={"X-API-Key": auth_env["non_admin"]}
+            )
+        assert store.status_code == 403, "a teammate must not be able to STORE a secret"
+        assert delete.status_code == 403, "a teammate must not be able to DELETE a secret"
 
     @pytest.mark.asyncio
     async def test_non_admin_key_403_on_auth_keys(self, redis, auth_env):

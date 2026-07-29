@@ -240,9 +240,13 @@ class TestVaultRouter:
         # require_scope left those two routes on the real gate, which correctly
         # 403'd the anonymous caller -- so these router tests failed for an auth
         # reason while claiming to test router behaviour.
-        _ident = lambda *a, **k: (lambda: {"agent_id": "test-admin",
-                                           "scopes": ["*"], "authenticated": True})
-        with patch("vault.api.require_scope", _ident),              patch("vault.api.require_any_scope", _ident):
+        def _ident(*_a, **_k):
+            # A dependency FACTORY: returns the callable FastAPI will depend on.
+            return lambda: {"agent_id": "test-admin", "scopes": ["*"],
+                            "authenticated": True}
+
+        with patch("vault.api.require_scope", _ident), \
+             patch("vault.api.require_any_scope", _ident):
             router = create_vault_router()
         app.include_router(router)
         self.app = app

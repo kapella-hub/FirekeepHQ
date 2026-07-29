@@ -96,7 +96,11 @@ class TestImportFallbackFailsLoudly:
         }
 
         class _StubFastMCP:
-            def __init__(self, name):
+            # **kwargs: the real FastMCP takes instructions= (the MCP initialize
+            # handshake text). A stub with a fixed signature turns any future
+            # constructor kwarg into a TypeError at import time, which reads as
+            # this test failing rather than as the stub being out of date.
+            def __init__(self, name, **_kwargs):
                 self.name = name
 
             def tool(self, *args, **kwargs):
