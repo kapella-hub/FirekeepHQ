@@ -234,6 +234,15 @@ def test_unrender_strips_the_combined_block(fake_home, tmp_path):
     assert "corpus_ingest" not in text and "decision_board" not in text
 
 
+# --- memory protocol: ctx_get_shadow residency contract ----------------------
+
+def test_instructions_state_that_omitting_since_is_always_correct():
+    from firekeep_client.adapters.base import FIREKEEP_INSTRUCTIONS
+    assert "ctx_get_shadow" in FIREKEEP_INSTRUCTIONS
+    assert "still visible" in FIREKEEP_INSTRUCTIONS
+    assert "omit" in FIREKEEP_INSTRUCTIONS.lower()
+
+
 def test_command_render_failure_does_not_skip_instruction_block(fake_home, tmp_path, monkeypatch):
     """ROOT CAUSE of decision_board never triggering (2026-07): claude render()
     called the UNGUARDED _render_command right before _render_instructions, so a

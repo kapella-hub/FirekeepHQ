@@ -372,7 +372,9 @@ the session.
   session-start briefing only ever matched your ORIGINAL goal, never what the user
   asked on turn 7.
 - Your own earlier plan or decisions missing from context (after compaction) →
-  `ctx_get_shadow` before asking the user to repeat themselves.
+  `ctx_get_shadow` before asking the user to repeat themselves. Pass
+  `since=<shadow_cursor>` ONLY if the earlier shadow is still visible in your
+  context; if you are unsure, omit it — omitting it is always correct.
 
 **Write as you go, not at the end.**
 - `ctx_update` after each meaningful step: category `plan` | `decision` |
