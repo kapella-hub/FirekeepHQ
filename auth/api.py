@@ -81,8 +81,9 @@ def create_auth_router() -> APIRouter:
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    f"Key {key_id} matches {len(exc.matches)} stored records. "
-                    "Nothing was revoked — resolve the ambiguity in Redis before retrying."
+                    f"Key {key_id} matches {len(exc.matches)} stored records "
+                    f"({', '.join(exc.matches)}). Nothing was revoked — resolve "
+                    "the ambiguity in Redis before retrying."
                 ),
             ) from exc
         if not success:

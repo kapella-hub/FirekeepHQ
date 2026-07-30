@@ -21,6 +21,7 @@ from auth import keys as _keys
 from auth.keys import (  # noqa: F401 — re-exports (same objects as auth.keys)
     ANONYMOUS_SCOPES,
     SCOPES,
+    AmbiguousKeyIdError,
     _ANONYMOUS_IDENTITY,
     _KEY_INDEX,
     _KEY_PREFIX,
@@ -33,6 +34,7 @@ from auth.keys import (  # noqa: F401 — re-exports (same objects as auth.keys)
     revoke_key,
     scopes_allow,
     validate_key,
+    validate_key_by_hash,
 )
 
 logger = logging.getLogger(__name__)

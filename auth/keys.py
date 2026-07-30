@@ -289,7 +289,7 @@ async def list_keys(limit: int = 50) -> list[dict[str, Any]]:
             )
         for _redis_key, data in matches:
             rows.append({
-                "key_id": data.get("key_id", kid),
+                "key_id": data["key_id"],
                 "agent_id": data.get("agent_id", "unknown"),
                 "scopes": json.loads(data.get("scopes", "[]")),
                 "created_at": data.get("created_at"),
@@ -342,42 +342,21 @@ async def validate_key(api_key: str, redis_client=None) -> dict[str, Any] | None
 
     Redis errors PROPAGATE — the caller decides the fail mode (the ASGI
     middleware fails closed with 503 per the Reliability Principle).
+
+    Delegates to validate_key_by_hash after hashing the plaintext — that
+    function is the single implementation of the lookup, so this and any
+    other caller keying by hash can never drift apart.
     """
-    client = redis_client if redis_client is not None else _redis
-    if client is None:
-        return None
-
-    key_hash = _hash_key(api_key)
-    redis_key = f"{_KEY_PREFIX}{key_hash}"
-    data = await client.hgetall(redis_key)
-
-    if not data:
-        return None
-
-    # Check expiry
-    expires_at = data.get("expires_at")
-    if expires_at:
-        try:
-            exp = datetime.fromisoformat(expires_at)
-            if datetime.now(timezone.utc) > exp:
-                return None
-        except (ValueError, TypeError):
-            pass
-
-    return {
-        "agent_id": data.get("agent_id", "unknown"),
-        "scopes": json.loads(data.get("scopes", "[]")),
-        "authenticated": True,
-        "key_id": data.get("key_id", key_hash[:16]),
-    }
+    return await validate_key_by_hash(_hash_key(api_key), redis_client)
 
 
 async def validate_key_by_hash(key_hash: str, redis_client=None) -> dict[str, Any] | None:
-    """validate_key's lookup half, keyed by an already-computed hash.
+    """Look up a stored key record by its already-computed SHA-256 hash.
 
-    Exists so tests and the enrollment design can ask "does this stored record
-    still authenticate?" without possessing the plaintext. validate_key itself
-    is unchanged and simply hashes first.
+    This is THE validation implementation — validate_key is a thin wrapper
+    that hashes the plaintext and calls straight through. Exists as its own
+    function so tests and the enrollment design can ask "does this stored
+    record still authenticate?" without possessing the plaintext.
     """
     client = redis_client if redis_client is not None else _redis
     if client is None:
