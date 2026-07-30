@@ -206,7 +206,9 @@ Expected: FAIL — `ModuleNotFoundError: firekeep_client.hooks.precompact` (and,
 
 - [ ] **Step 3: Add the cursor stash accessors to `state.py`**
 
-Uses the session-stash pattern (self-enforced embedded-ts TTL) — deliberately **not** bare `write_scratch`, per the spec's §5.2.
+**Correction (2026-07-30, caught in Task 1 review):** the spec's §5.2 says the cursor must not live in "bare `write_scratch`", and this plan originally repeated that as "use the session-stash pattern (self-enforced embedded-ts TTL)". That mischaracterizes the code below, which passes `write_scratch(..., ttl_seconds=...)` — the *declared-expiry* mechanism, not the stash's embedded-`ts` one.
+
+The code is correct and the prose was wrong. §5.2's actual requirement is "must have a TTL", and `write_scratch` gained one after the spec was written (Phase A). Both mechanisms fail the same safe way — `_scratch_expired`'s docstring already names this exact consumer: *"a lapsed cursor forces a full restore (lossless)"*. Declared-expiry is the better fit here because the cursor is an opaque string with no JSON envelope to embed a timestamp in. Do not "fix" this toward the stash pattern.
 
 ```python
 # client/firekeep_client/state.py — append near the session-stash helpers
