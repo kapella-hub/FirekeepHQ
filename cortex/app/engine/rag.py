@@ -46,6 +46,42 @@ def _jaccard_similarity(a: set[str], b: set[str]) -> float:
     return len(a & b) / len(a | b)
 
 
+# Attribution values that carry no information. "unknown" is what `upsert`
+# stores when no X-Agent-Id header reached /memory/learn; the legacy sentinel
+# tags the ~3.9K records written before the field existed. Rendering either on
+# every line trains a reader to skip the suffix, which costs the lines that do
+# name someone.
+_UNATTRIBUTED = {"unknown", "legacy-pre-team-continuity"}
+
+_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def _provenance_suffix(metadata: Any) -> str:
+    """Render "who wrote this, and when" for one recall line.
+
+    An agent reading a memory cannot otherwise tell a teammate's hard-won note
+    from a CI bot's noise — or from its own output written minutes ago, which is
+    the case that makes recall look like it is working when it is not.
+
+    Only the date is kept, not the clock: staleness is what a reader acts on, and
+    a per-line timestamp is pure cost against `token_budget`. session_id is
+    deliberately NOT rendered — 32 hex chars an LLM cannot use — but it does reach
+    `sources[].metadata`, where an auditor can join on it.
+    """
+    if not isinstance(metadata, dict):
+        return ""
+
+    agent = str(metadata.get("agent_id") or "").strip()
+    if agent.lower() in _UNATTRIBUTED:
+        agent = ""
+
+    stamp = str(metadata.get("timestamp") or "")[:10]
+    date = stamp if _ISO_DATE.fullmatch(stamp) else ""
+
+    parts = [p for p in (agent, date) if p]
+    return f" — {', '.join(parts)}" if parts else ""
+
+
 def _min_max_normalize(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Normalize entry scores to [0, 1] via min-max normalization.
 
@@ -961,7 +997,11 @@ class RAGEngine:
             if superseded_by:
                 status_label += f" (superseded by {superseded_by})"
 
-            lines.append(f"{i}. [{score:.0%}] ({source_label}) {content}{status_label}")
+            provenance = _provenance_suffix(md)
+
+            lines.append(
+                f"{i}. [{score:.0%}] ({source_label}) {content}{status_label}{provenance}"
+            )
 
         lines.append("")
         lines.append(f'> Query: "{task}" | Top {top_k}')

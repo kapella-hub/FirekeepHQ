@@ -65,6 +65,47 @@ _EXCLUDED_FROM_NESTED_METADATA = (
 )
 
 
+def _projected_metadata(payload: dict | None, point_id: str) -> dict[str, Any]:
+    """Flatten a Qdrant payload into the ``metadata`` dict recall consumers read.
+
+    This projection is the read half of ``upsert``'s payload shape, and the two
+    drifted: ``upsert`` promotes ``_PROMOTED_PAYLOAD_KEYS`` to the top level AND
+    strips them from the nested ``metadata`` sub-dict, while this list named only
+    source/tags/domain/timestamp. Promoting a key therefore moved it OUT of the
+    one place the reader looked, and every memory written since reported no
+    author at recall. Deriving the keys from the same constant is what stops the
+    next promotion from silently doing it again.
+
+    Promoted keys are emitted only when actually present, so a record written
+    before the promotion keeps whatever its nested metadata held instead of being
+    overwritten with None.
+    """
+    if not payload:
+        return {}
+    return {
+        # "id" was added by Task 8 (access-count HINCRBY reads it) — this
+        # replacement MUST keep it.
+        "id": point_id,
+        "source": payload.get("source", ""),
+        "tags": payload.get("tags", []),
+        "domain": payload.get("domain", ""),
+        "timestamp": payload.get("timestamp", ""),
+        **(payload.get("metadata", {})),
+        # Team continuity: who wrote this, in what session, for what project.
+        **{k: payload[k] for k in _PROMOTED_PAYLOAD_KEYS if k in payload},
+        # Lifecycle fields last so the top-level payload is authoritative —
+        # recall scoring reads these (SP0 C2).
+        "status": payload.get("status", "active"),
+        "confirmed_count": payload.get("confirmed_count", 0),
+        "contradicted_count": payload.get("contradicted_count", 0),
+        "superseded_by": payload.get("superseded_by"),
+        # OWM (app/owm.py): outcome-weighted efficacy, read by the RAG
+        # lifecycle scorer. Absent -> neutral.
+        "owm_efficacy": payload.get("owm_efficacy"),
+        "owm_n": payload.get("owm_n"),
+    }
+
+
 def _merge_lifecycle(existing: dict | None, fresh: dict) -> dict:
     """Merge lifecycle fields from an existing point payload into a fresh one.
 
@@ -598,28 +639,7 @@ class VectorClient:
                     "id": str(point.id),
                     "score": point.score,
                     "text": point.payload.get("text", "") if point.payload else "",
-                    "metadata": {
-                        # "id" was added by Task 8 (access-count HINCRBY reads
-                        # it) — this replacement MUST keep it.
-                        "id": str(point.id),
-                        "source": point.payload.get("source", ""),
-                        "tags": point.payload.get("tags", []),
-                        "domain": point.payload.get("domain", ""),
-                        "timestamp": point.payload.get("timestamp", ""),
-                        **(point.payload.get("metadata", {})),
-                        # Lifecycle fields last so the top-level payload is
-                        # authoritative — recall scoring reads these (SP0 C2).
-                        "status": point.payload.get("status", "active"),
-                        "confirmed_count": point.payload.get("confirmed_count", 0),
-                        "contradicted_count": point.payload.get("contradicted_count", 0),
-                        "superseded_by": point.payload.get("superseded_by"),
-                        # OWM (app/owm.py): outcome-weighted efficacy, read by
-                        # the RAG lifecycle scorer. Absent -> neutral.
-                        "owm_efficacy": point.payload.get("owm_efficacy"),
-                        "owm_n": point.payload.get("owm_n"),
-                    }
-                    if point.payload
-                    else {},
+                    "metadata": _projected_metadata(point.payload, str(point.id)),
                 }
                 for point in results.points
             ]
