@@ -1072,7 +1072,7 @@ git commit -m "feat(bridge): a session can say which epoch its shadow belongs to
 
 **Interfaces:**
 - Consumes: `residency.filter_since`, `residency.encode_cursor`, `residency.high_water_of`, `residency.plan_sha_of`, `residency.omission_notice`, `SessionManager.get_shadow_epoch`.
-- Produces: `ctx_get_shadow(session_id=None, agent_id="default", since=None) -> dict` with an added `shadow_cursor` key on every response, and `delta: bool`.
+- Produces: `ctx_get_shadow(session_id=None, agent_id="default", since=None) -> dict` with an added `shadow_cursor` key on every response **except when the epoch read failed** (`get_shadow_epoch` returned `None`), where it is deliberately omitted — a response carrying a cursor could seed a later delta on a session whose epoch was never readable. Plus `delta: bool`.
 
 **`assemble_shadow` is not touched.** Its four consumers are unaffected because filtering happens on the `data` dict before it is handed over.
 
