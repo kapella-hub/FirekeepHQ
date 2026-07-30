@@ -235,13 +235,32 @@ def test_claude_render_adds_its_precompact_group_beside_the_legacy_echo(fake_hom
     """
     (fake_home / ".claude").mkdir()
     (fake_home / ".claude" / "settings.json").write_text(json.dumps(_legacy_settings()))
+    settings_path = fake_home / ".claude" / "settings.json"
 
-    get_adapter("claude").render(venv_bin=tmp_path / "venv" / "bin")
-    groups = _read(fake_home / ".claude" / "settings.json")["hooks"]["PreCompact"]
+    adapter = get_adapter("claude")
+    adapter.render(venv_bin=tmp_path / "venv" / "bin")
+    groups = _read(settings_path)["hooks"]["PreCompact"]
 
     commands = [h["command"] for g in groups for h in g["hooks"]]
     assert any("systemMessage" in c for c in commands), "legacy echo hook was clobbered"
     assert any(c.endswith("-m firekeep_client.hooks precompact") for c in commands)
+
+    # Re-render with the foreign group still present: upsert_hook_group must collapse
+    # to exactly one firekeep group beside the untouched legacy one, not accumulate a
+    # second firekeep group. This is the specific combination neither the plain
+    # idempotency test (clean home, no foreign group) nor the check above (foreign
+    # group present, rendered once) exercises.
+    before = settings_path.read_text(encoding="utf-8")
+    adapter.render(venv_bin=tmp_path / "venv" / "bin")
+    after = settings_path.read_text(encoding="utf-8")
+    assert after == before, "re-render with a foreign sibling present must not rewrite the file"
+
+    groups = _read(settings_path)["hooks"]["PreCompact"]
+    assert len(groups) == 2
+    commands = [h["command"] for g in groups for h in g["hooks"]]
+    assert any("systemMessage" in c for c in commands), "legacy echo hook was clobbered on re-render"
+    firekeep_cmds = [c for c in commands if "firekeep_client.hooks" in c]
+    assert len(firekeep_cmds) == 1, f"expected exactly one firekeep PreCompact command, got {firekeep_cmds}"
 
 
 def test_claude_unrender_removes_only_our_precompact_group(fake_home, tmp_path):
