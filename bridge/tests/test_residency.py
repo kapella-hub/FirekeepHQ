@@ -103,6 +103,18 @@ def test_cursor_with_whitespace_only_high_water_is_a_full_restore():
     assert omitted is None
 
 
+def test_epoch_none_is_a_full_restore():
+    """C2 defence-in-depth (fix round 2): the primary fix is Task 7 never calling
+    filter_since when get_shadow_epoch's read failed, but this signature alone
+    doesn't enforce that. None must not collapse into "" -- "" is a real,
+    legitimate epoch (every pre-first-compaction cursor carries it) -- or a read
+    FAILURE would silently match a stale cursor, which is the C2 failure itself."""
+    c = encode_cursor(SID, "", "2026-07-30T12:00:00.000001+00:00", "x")
+    out, omitted = filter_since(_data(), c, session_id=SID, epoch=None)
+    assert out == _data()
+    assert omitted is None
+
+
 # --- the delta itself ------------------------------------------------------
 
 def test_delta_keeps_entries_at_or_after_the_high_water_mark():
@@ -139,6 +151,19 @@ def test_delta_omits_the_plan_only_when_its_hash_matches():
     out2, omitted2 = filter_since(changed, c, session_id=SID, epoch=EPOCH)
     assert out2["plan"] == "- [x] step one"
     assert omitted2["plan"] is False
+
+
+def test_a_session_that_never_had_a_plan_is_not_told_its_plan_is_unchanged():
+    """Minor #6 (fix round 2): an empty plan matches its own plan_sha of "" trivially
+    -- "unchanged" is technically true but there was never anything to omit, and
+    telling the reader "your plan is unchanged" about a plan that never existed is a
+    false claim (the direction was still safe: pure over-disclosure, never a hidden
+    loss). Suppress the omission flag whenever there is currently no plan at all."""
+    d = _data(plan="")
+    c = encode_cursor(SID, EPOCH, "2026-07-30T23:00:00.000001+00:00", plan_sha_of(d))
+    out, omitted = filter_since(d, c, session_id=SID, epoch=EPOCH)
+    assert omitted["plan"] is False
+    assert out["plan"] == ""
 
 
 def test_delta_always_sends_proactive_memories_in_full():
@@ -243,11 +268,14 @@ def test_high_water_of_skips_non_dict_entries_without_raising():
 
 
 def test_naive_stamp_at_the_boundary_is_kept():
-    """M3 + M7: a naive stamp is a PREFIX of the same instant with an offset, so raw
-    string comparison sorts it LESS despite being newer-or-equal -- it would be
-    dropped under `>=` string comparison. Parsing with datetime fixes it. This is
-    also the second inclusivity-at-the-boundary test M7 asked for."""
-    hw = "2026-07-30T11:00:00.000001+00:00"
+    """M3 + M7 (fix round 2): a naive stamp is a PREFIX of the same instant with an
+    offset, so raw STRING comparison sorts it LESS despite being newer-or-equal.
+    Proving this needs a BOTH-NAIVE pair: an aware-hw/naive-stamp mismatch (as this
+    test originally used) keeps via the separate naive-vs-aware TypeError branch
+    below WITHOUT ever reaching `a >= b`, so it never exercised the bug it claimed
+    to. A both-naive pair, exactly at the boundary, reaches the real comparison and
+    also serves as the second inclusivity-at-the-boundary test M7 asked for."""
+    hw = "2026-07-30T11:00:00.000001"          # naive, exactly at the boundary
     d = _data()
     d["decisions"].append(
         {"timestamp": "2026-07-30T11:00:00.000001", "content": "naive at boundary"})
@@ -266,6 +294,19 @@ def test_naive_vs_aware_stamp_is_incomparable_and_kept():
     c = encode_cursor(SID, EPOCH, hw, plan_sha_of(_data()))
     out, _ = filter_since(d, c, session_id=SID, epoch=EPOCH)
     assert any(x["content"] == "aware stamp" for x in out["decisions"])
+
+
+def test_z_suffixed_stamp_is_kept():
+    """Addendum C3 obligation, distinct from the naive-vs-aware case above: Z is a
+    valid ISO-8601 UTC designator that datetime.fromisoformat (3.11+) parses
+    natively, so a Z-suffixed stamp compared against a Z-suffixed hw is an ordinary
+    comparable `a >= b` case, not a fallback -- it must still be kept, not raise."""
+    hw = "2026-07-30T11:00:00.000001Z"
+    d = _data()
+    d["decisions"].append({"timestamp": "2026-07-30T12:00:00.000001Z", "content": "z stamp"})
+    c = encode_cursor(SID, EPOCH, hw, plan_sha_of(_data()))
+    out, _ = filter_since(d, c, session_id=SID, epoch=EPOCH)
+    assert any(x["content"] == "z stamp" for x in out["decisions"])
 
 
 # --- I2: decode_cursor's guards beyond base64/JSON parsing -----------------
@@ -330,3 +371,30 @@ def test_omission_notice_never_renders_the_plan_bool_as_a_count():
     notice = omission_notice({"decisions": 0, "progress": 0, "files": 0, "plan": True})
     assert "True" not in notice
     assert "your unchanged plan" in notice
+
+
+def test_omission_notice_uses_singular_wording_for_a_single_omitted_entry():
+    """Minor #5 (fix round 2): the addendum's decision(s)/file(s)/entry(s) wording
+    settled assemble_shadow's rendering, but omission_notice was never touched and
+    still emitted "1 decisions" / "1 progress entries"."""
+    notice = omission_notice({"decisions": 1, "progress": 0, "files": 0, "plan": False})
+    assert "1 decision that was delivered" in notice
+    assert "1 decisions" not in notice
+
+
+def test_omission_notice_uses_plural_wording_for_more_than_one():
+    notice = omission_notice({"decisions": 2, "progress": 0, "files": 0, "plan": False})
+    assert "2 decisions that were delivered" in notice
+
+
+def test_omission_notice_plan_only_uses_singular_grammar():
+    """"your unchanged plan that were delivered" reads wrong when the plan is the
+    ONLY thing omitted -- grammatical number follows the whole list, not any one
+    category, so a single-item list (even the plan alone) takes "was"."""
+    notice = omission_notice({"decisions": 0, "progress": 0, "files": 0, "plan": True})
+    assert "your unchanged plan that was delivered" in notice
+
+
+def test_omission_notice_uses_plural_grammar_when_plan_joins_other_omissions():
+    notice = omission_notice({"decisions": 1, "progress": 0, "files": 0, "plan": True})
+    assert "that were delivered" in notice

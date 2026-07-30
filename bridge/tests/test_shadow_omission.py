@@ -83,3 +83,41 @@ def test_non_empty_sections_are_unaffected_by_an_omitted_report():
     assert "chose A" in out
     assert "No decisions recorded" not in out
     assert "earlier decision(s) omitted" not in out
+
+
+# --- fix round 2, Important #1: PARTIAL omission (kept entries + withheld entries) --
+#
+# The round-1 fix used `elif`, which only fires when a section is entirely empty. A
+# delta that KEPT some entries and withheld others rendered the kept ones and said
+# NOTHING about what was withheld -- and this is the *common* shape: a fully-empty
+# section only happens when nothing changed at all since the cursor. Four states,
+# four renderings (entries x omitted): the dominant case (both yes) must show both.
+
+def test_partially_omitted_decisions_show_both_the_kept_entries_and_the_omission_line():
+    out = assemble_shadow(
+        _data(decisions=[{"timestamp": "2026-07-30T12:00:00Z", "content": "chose B"}]),
+        omitted={"decisions": 3, "progress": 0, "files": 0, "plan": False},
+    )
+    assert "chose B" in out
+    assert "3 earlier decision(s) omitted" in out
+    assert "No decisions recorded" not in out
+
+
+def test_partially_omitted_progress_shows_both_the_kept_entries_and_the_omission_line():
+    out = assemble_shadow(
+        _data(progress=[{"timestamp": "2026-07-30T12:00:00Z", "content": "did X"}]),
+        omitted={"decisions": 0, "progress": 2, "files": 0, "plan": False},
+    )
+    assert "did X" in out
+    assert "2 earlier progress entry(s) omitted" in out
+    assert "No progress logged" not in out
+
+
+def test_partially_omitted_files_show_both_the_kept_entries_and_the_omission_line():
+    out = assemble_shadow(
+        _data(files={"b.py": {"summary": "new", "last_action": "2026-07-30T12:00:00Z"}}),
+        omitted={"decisions": 0, "progress": 0, "files": 1, "plan": False},
+    )
+    assert "b.py" in out
+    assert "1 earlier file(s) omitted" in out
+    assert "No files tracked" not in out

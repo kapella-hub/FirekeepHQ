@@ -97,20 +97,28 @@ def filter_since(
     cursor: str | None,
     *,
     session_id: str,
-    epoch: str,
+    epoch: str | None,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     """Return (data_to_render, omission_report).
 
     `omission_report is None` means no filtering happened — the caller must treat
     the result as a full restore and mint a fresh cursor. Any of these yields a
     full restore: no cursor, unparsable cursor, cursor minted for a different
-    session, cursor carrying a stale epoch (precompact bumped it), or a cursor
-    with no high-water mark.
+    session, cursor carrying a stale epoch (precompact bumped it), an unreadable
+    epoch (`epoch is None`), or a cursor with no high-water mark.
     """
     parsed = decode_cursor(cursor) if cursor else None
     if parsed is None:
         return data, None
     if parsed.get("sid") != session_id:
+        return data, None
+    # Defence-in-depth for C2: the primary fix is Task 7 never calling filter_since at
+    # all when get_shadow_epoch's read failed (None), but this signature alone doesn't
+    # enforce that. None must NOT collapse into "" below -- "" is a real, matchable
+    # epoch (every pre-first-compaction cursor legitimately carries it), so folding a
+    # read FAILURE into it would silently match a stale cursor to a failed read, which
+    # is the exact C2 failure this guards against even if a future caller forgets.
+    if epoch is None:
         return data, None
     if str(parsed.get("epoch") or "") != str(epoch or ""):
         return data, None
@@ -140,8 +148,13 @@ def filter_since(
     out["scratch"] = data.get("scratch") or {}
 
     plan_unchanged = plan_sha_of(data) == parsed.get("plan_sha")
-    out["plan"] = "" if plan_unchanged else (data.get("plan") or "")
-    omitted["plan"] = plan_unchanged
+    current_plan = data.get("plan") or ""
+    out["plan"] = "" if plan_unchanged else current_plan
+    # A session that never had a plan matches its own plan_sha of "" trivially --
+    # "unchanged" is technically true but there is nothing to have omitted, and telling
+    # the reader "your plan is unchanged" about a plan that never existed is a false
+    # claim (the direction is still safe: it only ever over-discloses, never hides).
+    omitted["plan"] = plan_unchanged and bool(current_plan)
 
     return out, omitted
 
@@ -154,17 +167,27 @@ def omission_notice(omitted: dict[str, Any]) -> str:
     delta names what it withheld and how to get it.
     """
     parts: list[str] = []
-    for label, key in (("decisions", "decisions"), ("progress entries", "progress"),
-                       ("files", "files")):
+    total = 0
+    for singular, plural, key in (
+        ("decision", "decisions", "decisions"),
+        ("progress entry", "progress entries", "progress"),
+        ("file", "files", "files"),
+    ):
         n = omitted.get(key) or 0
         if n:
-            parts.append(f"{n} {label}")
+            parts.append(f"{n} {singular if n == 1 else plural}")
+            total += n
     if omitted.get("plan"):
         parts.append("your unchanged plan")
+        total += 1
     if not parts:
         return ""
+    # Grammatical number of the SENTENCE, not of the string list: "2 decisions" is one
+    # PART but two things (were); a lone "1 decision" or the plan alone is one thing
+    # (was); "1 decision" + "1 file" is two parts and two things (were) either way.
+    was_were = "was" if total == 1 else "were"
     return (
-        "DELTA RESTORE — omitted " + ", ".join(parts) + " that were delivered to you "
-        "earlier in this conversation. They still exist. If they are no longer "
+        "DELTA RESTORE — omitted " + ", ".join(parts) + f" that {was_were} delivered to "
+        "you earlier in this conversation. They still exist. If they are no longer "
         "visible to you, call ctx_get_shadow() with no arguments for the full document."
     )
