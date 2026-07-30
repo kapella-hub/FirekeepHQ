@@ -5,10 +5,15 @@ from __future__ import annotations
 from typing import Any
 
 
-def assemble_shadow(data: dict[str, Any]) -> str:
+def assemble_shadow(data: dict[str, Any], *, omitted: dict[str, Any] | None = None) -> str:
     """Assemble a shadow context Markdown document from session data.
 
     Section order is fixed: Plan, Decisions, Files Known, Progress, Scratchpad.
+
+    `omitted` is filter_since's omission report. When present, a section whose entries
+    were withheld renders a line SAYING SO instead of the "none recorded" placeholder.
+    A delta must never let a reader conclude the omitted content does not exist — that
+    inference is the degradation, not the omission.
     """
     lines: list[str] = []
 
@@ -24,7 +29,15 @@ def assemble_shadow(data: dict[str, Any]) -> str:
     # Plan
     lines.append("### Plan")
     plan = data.get("plan", "")
-    lines.append(plan if plan else "*No plan set*")
+    if plan:
+        lines.append(plan)
+    elif omitted and omitted.get("plan"):
+        lines.append(
+            "*Plan unchanged - delivered earlier in this conversation. "
+            "Call ctx_get_shadow() with no arguments for the full document.*"
+        )
+    else:
+        lines.append("*No plan set*")
     lines.append("")
 
     # Decisions
@@ -35,6 +48,11 @@ def assemble_shadow(data: dict[str, Any]) -> str:
             ts = d.get("timestamp", "")
             time_part = ts[11:16] if len(ts) > 16 else ts
             lines.append(f"- [{time_part}] {d.get('content', '')}")
+    elif omitted and omitted.get("decisions"):
+        lines.append(
+            f"*{omitted['decisions']} earlier decision(s) omitted - delivered earlier in "
+            "this conversation. Call ctx_get_shadow() with no arguments for the full document.*"
+        )
     else:
         lines.append("*No decisions recorded*")
     lines.append("")
@@ -46,6 +64,11 @@ def assemble_shadow(data: dict[str, Any]) -> str:
         for path, info in sorted(files.items()):
             summary = info.get("summary", "") if isinstance(info, dict) else str(info)
             lines.append(f"- **{path}** — {summary}")
+    elif omitted and omitted.get("files"):
+        lines.append(
+            f"*{omitted['files']} earlier file(s) omitted - delivered earlier in "
+            "this conversation. Call ctx_get_shadow() with no arguments for the full document.*"
+        )
     else:
         lines.append("*No files tracked*")
     lines.append("")
@@ -58,6 +81,11 @@ def assemble_shadow(data: dict[str, Any]) -> str:
             ts = p.get("timestamp", "")
             time_part = ts[11:16] if len(ts) > 16 else ts
             lines.append(f"- [{time_part}] {p.get('content', '')}")
+    elif omitted and omitted.get("progress"):
+        lines.append(
+            f"*{omitted['progress']} earlier progress entry(s) omitted - delivered earlier "
+            "in this conversation. Call ctx_get_shadow() with no arguments for the full document.*"
+        )
     else:
         lines.append("*No progress logged*")
     lines.append("")

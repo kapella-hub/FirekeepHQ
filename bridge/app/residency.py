@@ -21,6 +21,7 @@ import base64
 import binascii
 import hashlib
 import json
+from datetime import datetime
 from typing import Any
 
 _CURSOR_VERSION = 1
@@ -29,7 +30,7 @@ _LIST_SECTIONS = ("decisions", "progress")
 
 
 def plan_sha_of(data: dict[str, Any]) -> str:
-    return hashlib.sha256((data.get("plan") or "").encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(str(data.get("plan") or "").encode("utf-8")).hexdigest()[:16]
 
 
 def high_water_of(data: dict[str, Any]) -> str:
@@ -38,13 +39,11 @@ def high_water_of(data: dict[str, Any]) -> str:
     stamps: list[str] = []
     for section in _LIST_SECTIONS:
         for entry in data.get(section) or []:
-            ts = entry.get("timestamp") or ""
-            if ts:
-                stamps.append(ts)
+            if isinstance(entry, dict) and (entry.get("timestamp") or ""):
+                stamps.append(entry["timestamp"])
     for entry in (data.get("files") or {}).values():
-        ts = (entry or {}).get("last_action") or ""
-        if ts:
-            stamps.append(ts)
+        if isinstance(entry, dict) and (entry.get("last_action") or ""):
+            stamps.append(entry["last_action"])
     return max(stamps) if stamps else ""
 
 
@@ -72,6 +71,27 @@ def decode_cursor(cursor: str) -> dict[str, Any] | None:
     return obj
 
 
+def _keep_entry(stamp: object, hw: str) -> bool:
+    """True if this entry must be KEPT.
+
+    Unknown or unparseable age means we cannot PROVE the agent already has this entry, so
+    it is kept: duplication beats omission. Parsing rather than comparing strings also
+    removes a class of silent drop that raw comparison invites - a naive stamp
+    ('2026-07-30T10:00:00') is a PREFIX of the same instant with an offset, so it sorts
+    lexicographically LESS and would be dropped despite being newer-or-equal.
+    """
+    if not isinstance(stamp, str) or not stamp:
+        return True                      # unknown -> keep
+    try:
+        a, b = datetime.fromisoformat(stamp), datetime.fromisoformat(hw)
+    except (TypeError, ValueError):
+        return True                      # unparseable -> keep
+    try:
+        return a >= b                    # INCLUSIVE: the boundary entry is re-sent
+    except TypeError:
+        return True                      # naive vs aware -> keep
+
+
 def filter_since(
     data: dict[str, Any],
     cursor: str | None,
@@ -95,7 +115,7 @@ def filter_since(
     if str(parsed.get("epoch") or "") != str(epoch or ""):
         return data, None
     hw = parsed.get("hw") or ""
-    if not hw:
+    if not hw.strip():
         return data, None
 
     out = dict(data)
@@ -104,13 +124,14 @@ def filter_since(
     # INCLUSIVE (>=): a boundary entry may be re-sent. Duplication beats omission.
     for section in _LIST_SECTIONS:
         entries = data.get(section) or []
-        kept = [e for e in entries if (e.get("timestamp") or "") >= hw]
+        kept = [e for e in entries
+                if not isinstance(e, dict) or _keep_entry(e.get("timestamp"), hw)]
         out[section] = kept
         omitted[section] = len(entries) - len(kept)
 
     files = data.get("files") or {}
     kept_files = {k: v for k, v in files.items()
-                  if ((v or {}).get("last_action") or "") >= hw}
+                  if not isinstance(v, dict) or _keep_entry(v.get("last_action"), hw)}
     out["files"] = kept_files
     omitted["files"] = len(files) - len(kept_files)
 
