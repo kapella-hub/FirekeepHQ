@@ -249,14 +249,25 @@ async def create_key(
     redis_key = f"{_KEY_PREFIX}{key_hash}"
     ttl = expires_days * 86400 if expires_days else None
 
-    if ttl:
-        await _redis.hset(redis_key, mapping=metadata)
-        await _redis.expire(redis_key, ttl)
-    else:
-        await _redis.hset(redis_key, mapping=metadata)
-
-    # Add to index for listing
-    await _redis.zadd(_KEY_INDEX, {key_hash[:16]: now.timestamp()})
+    # One transaction, not three sequential round trips. MULTI/EXEC does NOT roll
+    # back on a command error -- it guarantees every command is queued before any
+    # of them applies, so a process death between them applies NONE of them. That
+    # is exactly the window that mattered here, and there were two of them:
+    #   HSET without ZADD  -> a credential validate_key accepts (full-hash lookup)
+    #                         that list_keys can never show (walks the index).
+    #                         Invisible to every enumeration path, unrevocable by
+    #                         key_id -- the same invariant test_key_id_resolution's
+    #                         TestSubsystemInvariant pins for revoke sequences,
+    #                         entered through the write path instead.
+    #   HSET without EXPIRE -> a credential that was meant to expire and never
+    #                         will. Permanent when it was meant to be temporary.
+    async with _redis.pipeline(transaction=True) as pipe:
+        pipe.hset(redis_key, mapping=metadata)
+        if ttl:
+            pipe.expire(redis_key, ttl)
+        # Index membership is part of the credential's existence, not a follow-up.
+        pipe.zadd(_KEY_INDEX, {key_hash[:16]: now.timestamp()})
+        await pipe.execute()
 
     return {
         "api_key": api_key,  # Only returned at creation time
