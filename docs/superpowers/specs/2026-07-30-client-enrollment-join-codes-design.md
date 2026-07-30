@@ -1,6 +1,9 @@
 # Client Enrollment — Join Codes
 
-**Status:** design, approved 2026-07-30
+**Status:** design, approved 2026-07-30 (revised same day: dashboard issuance, zero prompts)
+**Depends on:** `2026-07-30-single-connection-config-design.md`, which must land first.
+There is no `[personal]`/`[office]` profile; a join code writes the one `[server]`
+section.
 **Supersedes:** nothing. Extends `firekeep connect` (`client/firekeep_client/connect.py`).
 
 ## Problem
@@ -32,12 +35,22 @@ needed.**
 
 ## Goal
 
-One opaque join code replaces every free-text field. Three issuers, one
-redemption path. A field the user cannot type is a field the user cannot typo.
+One opaque join code replaces every free-text field, and **the client install asks
+nothing at all**. A field the user cannot type is a field the user cannot typo.
 
-Non-goals: a hosted control plane, OIDC/device-code enrollment, and a dashboard
-issuance UI. Each is an additive front door onto the redemption path defined here;
-none changes it.
+Two human actions, total:
+
+1. An admin clicks **Add device** in the dashboard and copies one ready-made command.
+2. The teammate pastes it.
+
+Everything else is derived: the host and connection shape from the code, the key from
+the redemption response, the identity from the invite plus the machine's hostname.
+
+Non-goals: a hosted control plane and OIDC/device-code enrollment. Both are additive
+front doors onto the redemption path defined here and neither changes it. Stated
+plainly: **this design covers the solo and small-team cases, not SaaS.** SaaS needs
+the control plane in §7, and until it exists a customer running their own server is
+the only supported shape.
 
 ---
 
@@ -132,6 +145,12 @@ For `t=tls`, redemption is two hops:
 `f = "os"` is first-class: no anchor fetch, verify against the OS trust store via
 `transport._build_ssl_context("os")` (`resolver.py:256-261`). That covers both the
 MDM-managed corporate CA and any publicly-trusted certificate.
+
+`t=tunnel` carries no `f` and needs none: **SSH's host key authenticates the server**,
+and the ticket travels inside that tunnel to `127.0.0.1`. `t=http` authenticates
+nothing, which is why it requires `--insecure-http` at issue time and prints the
+exposure at redemption. Every transport therefore has a stated server-authentication
+story, and exactly one of them is "none, and we say so out loud".
 
 Cortex never reads the caddy_data volume. `invite` provisions `ca_pem` into the
 ticket record at issue time from the export step `docs/DEPLOYMENT-OFFICE.md:94-109`
@@ -248,6 +267,20 @@ key would be permanent and untraceable.
 - **Decision (2026-07-30):** `ENROLL_KEY_EXPIRES_DAYS=90` by default, overridable via
   `invite --expires-days N`; `0` means never and prints a warning. A lost machine
   expires itself, and the re-join path stays exercised rather than rotting.
+- **Expiry must be visible before it bites, or this feature recreates the original
+  bug on a 90-day timer.** `validate_key` returns `None` for an expired key
+  (`keys.py:295-303`), the middleware 401s, and the client renders that as "cannot
+  connect" — the exact ambiguity this design exists to kill. Three parts, all
+  required:
+  1. `join` writes `key_expires_at` into `[server]` from the enrollment response;
+  2. `doctor` gains `_check_key_expiry`, warning inside 14 days and failing after —
+     mirroring `_check_ca_expiry` (`cli.py:696`), which already does exactly this for
+     CA certificates and is the precedent that should have been followed;
+  3. the auth middleware's 401 `detail` distinguishes *expired* from *unknown key*.
+     Safe to disclose: a caller seeing it already holds the key. Without this a
+     re-join and a typo are indistinguishable at the client.
+  The `session_start` briefing surfaces the doctor warning, so a teammate is told
+  their key expires before the morning it stops working.
 - `auth:enroll:index` has no TTL, so the ticket→key link outlives the ticket record.
 
 Existing auditing is adequate and unchanged: `ZRANGE auth:key_index 0 -1` enumerates
@@ -286,23 +319,32 @@ paths, contradicting this design's central claim.
   to the **shared join core**.
 - `_mint_key` is deleted. Its "server predates local minting" branch (`:127-133`)
   becomes "server predates enrollment — `git pull && bash update.sh` on the server".
-- `_write_profile` becomes `config_write.upsert_profile()`, shared by `join`,
-  `connect` and `install`, with three fixes: it does not flip `[active]` unless there
-  is no `[active]` or `--activate` was passed; it prints one line per key it
-  overwrote; and it refuses to change an existing section's `kind` without `--force`.
+- `_write_profile` becomes `config_write.upsert_server()`, shared by `join`,
+  `connect` and `install`, with two fixes: it prints one line per key it overwrote,
+  and it refuses to change `[server]`'s `kind` without `--force`. (Its third original
+  fix — never flip `[active]` — is moot: the single-connection collapse deletes
+  `[active]` entirely.)
 
 Two review claims are deliberately **not** carried into this design, having been
 refuted on inspection: `%`-interpolation corruption does not occur (`configparser`
 raises loudly on `%` and every Firekeep-minted secret is hex), and an `agent_id`
 cannot inject an `api_key` option (`configparser.write()` escapes embedded newlines).
 
-### 1.12 Per-machine `agent_id`
+### 1.12 Per-machine `agent_id` — derived, never prompted
 
 The client **proposes** `f"{agent_label}-{socket.gethostname().split('.')[0].lower()}"`
-(label from the ticket record, so the admin's naming wins); the server **normalizes**
-against `^[A-Za-z0-9_-]{1,64}$` (`auth/api.py:23` validates length only), rejects
+(label from the ticket record, so the admin's naming wins; when `invite` was run with
+no `--agent`, the hostname alone). The server **normalizes** against
+`^[A-Za-z0-9_-]{1,64}$` (`auth/api.py:23` validates length only), rejects
 out-of-charset values, de-collides against existing non-revoked keys by appending
-`-2`, and returns the authoritative value, which the client writes verbatim.
+`-2`, then `-3`, up to `-99` before failing loudly, and returns the authoritative
+value, which the client writes verbatim.
+
+**There is no identity prompt.** An earlier draft kept one, on the reasoning that the
+machine discriminator is the one thing the code cannot know — but the ticket carries
+the person and the OS carries the machine, so it is derivable and a prompt for a
+derivable value is exactly the habit that produced the three-prompt wizard.
+`--agent-id` overrides for the rare case where the derived name is unwanted.
 
 Rationale: Bridge keeps one active session per `agent_id` and `START_SESSION_LUA`
 pauses the prior active one (`bridge/app/session.py:167-177`), so two machines sharing
@@ -378,7 +420,7 @@ call, and `q` never leaves the process on any failure path.
 
 ## 3. Client commands
 
-### `firekeep join <code> [--profile NAME] [--activate] [--force] [--no-print-key]`
+### `firekeep join <code> [--agent-id NAME] [--force] [--no-print-key]`
 
 Every step before 5 may fail freely; the ticket is spent only at 5.
 
@@ -391,7 +433,7 @@ Every step before 5 may fail freely; the ticket is spent only at 5.
 | 5 | `POST /enroll {ticket, agent_id_proposal, hostname}` | the single redemption path |
 | 6 | **print the key to stdout** unless `--no-print-key` | plaintext exists for exactly one response (`keys.py:195-216` stores only the sha256). Printing before any filesystem write is what makes an unwritable `~/.firekeep` recoverable |
 | 7 | write `ca_pem` → `~/.firekeep/<host-slug>-ca.crt`, 0600 | only when an anchor was fetched |
-| 8 | `config_write.upsert_profile(...)` | writes `kind`/`scheme`/`host`\|`base_url`/`verify_tls`/`ca_path`/`agent_id`/`api_key`; 0600; `[active]` untouched unless absent or `--activate`; reports every overwritten key; refuses a `kind` change without `--force` |
+| 8 | `config_write.upsert_server(...)` | writes `[server]` (`kind`/`scheme`/`host`\|`base_url`/`verify_tls`/`ca_path`/`api_key`/`key_expires_at`) and `[identity] agent_id`; 0600; `[dist]` untouched; reports every overwritten key; refuses a `kind` change without `--force` |
 | 9 | `run_doctor()` | exit 0 only if no row is `fail` |
 
 ### `firekeep connect <user@host>`
@@ -400,17 +442,20 @@ Every step before 5 may fail freely; the ticket is spent only at 5.
 the same join core. One redemption path; the SSH-holding operator keeps their
 one-command experience.
 
-### Retired prompts
+### Retired prompts — all of them
 
-Retired **only on the code path**, never globally:
+`firekeep install --join <code>` is **fully non-interactive**. Every prompt is either
+carried by the code or derived:
 
-- `firekeep install --join <code>` skips **host** (`wizard.py:122-124`), **API key**
-  (`wizard.py:128-133`, `:217-218`), and **"configure which profile?"**
-  (`wizard.py:107-118`). The code carries the shape; the response carries the key;
-  the profile name comes from `--profile` or the kind's default (`ports`→`personal`,
-  `paths`→`office`).
-- The **identity** prompt survives: it is the one thing the code cannot know, and
-  `invite --agent bob` only half-specifies it (the machine discriminator is local).
+| Prompt | Today | Replaced by |
+|---|---|---|
+| `Configure which profile? [1][2][3]` | `wizard.py:107-118` | deleted outright by the single-connection collapse |
+| `service host (IP or hostname…)` | `wizard.py:122-124` | the code's `h`/`u` |
+| `API key (blank if AUTH_ENABLED=false)` | `wizard.py:128-133`, `:217-218` | the enrollment response |
+| `Agent identity` | `wizard.py:242-244` | ticket label + hostname (§1.12) |
+
+- `firekeep install` with no `--join` is unchanged — a dev checkout has no server to
+  issue a code, and `_CONFIG_SKELETON` (`cli.py:201-222`) must keep working.
 - `firekeep install` with no `--join` is unchanged — a dev checkout has no server to
   issue a code, and `_CONFIG_SKELETON` (`cli.py:201-222`) must keep working.
 - **Both bootstraps must thread the code** or `join` runs after the prompts it exists
@@ -419,6 +464,47 @@ Retired **only on the code path**, never globally:
   (`client/bootstrap/install.sh:114`, `install.ps1:99`) and the main path
   (`install.sh:240`, `install.ps1:233`), which today hand off interactively via
   `< /dev/tty`.
+
+### Dashboard — Devices tab (the primary issuing surface)
+
+`deploy/firekeep-admin` is a shell script run over SSH. Requiring a server shell to
+onboard a teammate is the remaining unintuitive step, so **the dashboard is the
+primary front door and the script becomes the fallback.**
+
+This adds **no new trust boundary.** The dashboard already renders a **Reveal** button
+on every vault secret (`dashboard/index.html:4155`) and nginx injects an
+admin-scoped `DASHBOARD_API_KEY` on every `/api/*` proxy (`nginx.conf.template:35`).
+Anyone past its basic auth can already read every stored secret; minting a single-use
+ticket is strictly less powerful. An earlier draft objected that this would put
+credential issuance behind a second auth system needing its own hardening — that
+objection was wrong, and it is recorded here so it is not re-raised.
+
+New tab, alongside the existing fourteen:
+
+- **Device list** — `agent_id`, enrolled date, last seen (from Relay presence), key id,
+  key expiry with a warning inside 14 days, and a **Revoke** button per row.
+- **`[+ Add device]`** — optional name, optional expiry override; on submit shows a
+  **complete, ready-to-paste install command**, not a bare code:
+
+  ```
+  curl -fsSL <dist-base>/latest/install.sh | FIREKEEP_JOIN=fk_join_… sh
+  ```
+
+  with a copy button, the platform toggle (sh / PowerShell), a TTL countdown, and the
+  bare code shown separately for a machine that already has the client
+  (`firekeep join …`). **Emitting a command rather than a code removes a decision, not
+  just a step** — a bare code makes the recipient ask "where does this go?", which is
+  the question that put a teammate's key in the wrong section on 2026-07-29.
+- **Outstanding invites** — unredeemed tickets with time remaining and a **Cancel**
+  button (deletes the ticket record; the `tid` stays in `auth:enroll:index`).
+
+Backing routes on Cortex, all `require_scope("admin")` and reached through the existing
+dashboard proxy: `POST /enroll/invite` (mint a ticket, return the code and the rendered
+commands), `GET /enroll/invites` (outstanding), `DELETE /enroll/invites/{tid}`, and
+`GET /auth/keys` + `DELETE /auth/keys/{key_id}` for the device list, which already
+exist (`auth/api.py:63, 69-78`). These are admin-scoped and therefore **not** on the
+auth skip list — only `POST /enroll` and `GET /enroll/anchor`, which are redeemed by a
+machine that has no key yet, are.
 
 ### `deploy/firekeep-admin` restructuring
 
@@ -475,8 +561,8 @@ exists to kill.
 | 6 | rate-limited (429) | `the server is refusing enrollment attempts right now (rate limit). Your code was NOT used. Retry in a minute; if this persists, someone may be probing the endpoint — check the server.` |
 | 7 | no `ssh` for a tunnel code | `this join code needs an SSH tunnel (the server binds to loopback) but 'ssh' is not on PATH. Install OpenSSH, or ask <issuer> to expose the stack over TLS and reissue.` |
 | 7 | tunnel start failed | `started an SSH tunnel to <s> but ports <list> never came up. Something else may be bound locally, or your ssh key is not authorised there. The code was not used.` |
-| 0 | re-join, same kind | proceeds, printing `[personal] updating: host 10.0.0.4 -> 10.0.0.9, api_key <replaced>, agent_id bob -> bob-mbp`; when `[active]` is left alone, adds `note: [active] profile is still 'office' — run 'firekeep profile use personal' or re-run with --activate.` |
-| 8 | re-join, different kind | `[office] is currently kind=paths and this code is kind=ports. Refusing to rewrite it — that would break every rendered MCP entry. Use --profile <newname>, or --force to overwrite.` |
+| 0 | re-join, same kind | proceeds, printing `[server] updating: host srv1143982 -> fk.corp, api_key <replaced>, agent_id bob-mbp unchanged` |
+| 8 | re-join, different kind | `[server] is currently kind=paths (https://fk.corp) and this code is kind=ports. Refusing to repoint this machine at a different server shape — re-run with --force if that is what you want, or use FIREKEEP_CONFIG=<path> to keep both.` |
 | 1 | config write failed after redemption | `THE KEY WAS ISSUED but <path> could not be written (<errno>). Your key is above — save it now, then run: firekeep install --host <h> and paste it at the API key prompt.` (the key was printed at step 6) |
 | 1 | personal mode active | `personal mode is ON, so Firekeep is dormant and join would be a no-op. Run: firekeep personal off` |
 | 0 | `t=http` (warning) | `WARNING: this code redeems over plain http to <host>. The join code and the API key it returns cross the network unencrypted, and the key is then sent on every request. Continue only on a trusted network.` |
@@ -535,16 +621,19 @@ codes into prose and must not invent prose the server did not send.
   the ticket; a failed probe makes no `POST /enroll` and no config change; the key is
   printed before the first filesystem write; `t=http` emits the warning;
   `is_bypassed()` refuses before anything else.
-- `test_join_config_write.py` — no `[active]` flip without `--activate`; an existing
-  `office` section survives a `personal` join byte-for-byte outside its own keys; `kind`
-  change refused without `--force`; 0600 with the Windows `OSError` tolerance
-  `connect.py:189-192` already has.
+- `test_join_config_write.py` — `[dist]` survives a join byte-for-byte; `kind` change
+  refused without `--force` and accepted with it; `key_expires_at` is written from the
+  response; 0600 with the Windows `OSError` tolerance `connect.py:189-192` already has.
+- `test_doctor_key_expiry.py` — warns inside 14 days, fails after, and is silent when
+  `key_expires_at` is absent (a key minted before this feature). Guards the §1.8
+  requirement that expiry is visible before it bites.
 - `test_connect.py` (extend) — `connect` issues then redeems through the join core;
   `_mint_key` no longer exists; a running tunnel is reused, not stacked.
 - `test_import_boundary.py` (existing, `.github/workflows/ci.yml:50-55`) — join and
   joincode stay stdlib-only.
-- `test_cli_install.py` (extend) — `--join` suppresses exactly the host, api_key and
-  profile-choice prompts and keeps the identity prompt.
+- `test_cli_install.py` (extend) — `--join` is **fully non-interactive**: assert zero
+  calls to the `ask` callable, with no tty attached. `firekeep install` without
+  `--join` still prompts.
 - `test_bootstrap_sh.py` / `test_bootstrap_ps1.py` (existing) — `--join` /
   `FIREKEEP_JOIN` threaded on **both** the fast path and the main path in both
   bootstraps.
@@ -581,8 +670,16 @@ fixture, so the bash issuer and the Python redeemer cannot drift.
 2. **Verified identity on the cortex hot path.** `main.py:1129` and `:1205` read the
    self-asserted `X-Agent-Id` while `auth/asgi.py:112-117` already attaches a verified
    identity nothing reads (§1.12).
-3. **Dashboard and hosted-control-plane issuance.** Additive front doors onto the same
-   redemption path.
+3. **Hosted control plane (SaaS).** The third issuer. Accounts, billing, device
+   management, `firekeep login`. Its only contract with this design is
+   `issue_ticket(agent, ttl) -> code`; redemption is unchanged, which is what makes it
+   an extension rather than a rewrite. Dashboard issuance is **no longer a follow-up**
+   — it is in scope (§3).
+4. **Reusable codes.** The remaining per-device admin click exists *because* codes are
+   single-use (§1.10). `invite --uses N` would remove it — one code in a team wiki,
+   nobody clicks anything — at the cost of making "was this code shared?" unanswerable
+   and turning one leak into N enrolled machines. Deferred, not rejected; revisit if
+   per-device issuance proves to be the friction people complain about.
 4. **Discoverability debt this design does not itself fix:** `CLAUDE.md`'s Local setup
    section, both bootstraps' output, and `cli.py:475-481`'s `NEXT STEPS` must all name
    the enrollment path. The original failure was never that the good path was missing.
