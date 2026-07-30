@@ -974,7 +974,7 @@ git commit -m "feat(bridge): a cursor that fails safe in five directions"
 - Test: `bridge/tests/test_shadow_delta.py` (create)
 
 **Interfaces:**
-- Produces: `SessionManager.get_shadow_epoch(session_id: str) -> str` — reads the `shadow_epoch` scratch field, `""` when absent.
+- Produces: `SessionManager.get_shadow_epoch(session_id: str) -> str | None` — reads the `shadow_epoch` scratch field. `""` = never bumped (a real, MATCHABLE state carried by every cursor minted before the first compaction); `None` = the read FAILED and is unmatchable by construction. Collapsing the two is the C2 fail-open.
 
 The epoch is written by `precompact` through the ordinary `ctx_update(category="scratch", key="shadow_epoch")` path, so **no write method is needed** — only a reader.
 
