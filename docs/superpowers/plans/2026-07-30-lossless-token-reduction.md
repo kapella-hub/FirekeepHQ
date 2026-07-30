@@ -1292,7 +1292,24 @@ Expected: FAIL — `AttributeError: module 'firekeep_client.state' has no attrib
 
 - [ ] **Step 3: Implement in `on_response`**
 
-Extend the tap's existing pending-request map so `ctx_get_shadow` is tracked alongside `ctx_start_session`/`ctx_resume_session`, and in `on_response`, when the payload carries `shadow_cursor`, call `state.write_shadow_cursor(self._agent, self._profile, cursor)`. Add `ctx_complete_session`/`ctx_abandon_session` to the existing clear path so it also calls `state.clear_shadow_cursor`.
+**Verified wiring — the tap's real structure (`shim.py:163-226`).** It keeps three frozensets and a `_pending` request-id map:
+
+```python
+    _INJECT_TOOLS  = frozenset({"ctx_start_session"})
+    _CAPTURE_TOOLS = frozenset({"ctx_start_session", "ctx_resume_session"})
+    _END_TOOLS     = frozenset({"ctx_complete_session", "ctx_abandon_session"})
+```
+
+`on_request` records `self._pending[rid] = name` for capture/end tools and injects only for `_INJECT_TOOLS`. `on_response` pops the name, clears the stash for an END tool, else runs `_extract_session_id(result)` (`shim.py:142`, which reads `structuredContent` first then falls back to parsing `content[0].text`) and writes the stash.
+
+Make four changes, and no others:
+
+1. Add a FOURTH, dedicated set: `_CURSOR_TOOLS = frozenset({"ctx_get_shadow"})`. Do **not** add `ctx_get_shadow` to `_CAPTURE_TOOLS` — that set's response handler extracts `session_id`, which is a different field. A separate set also makes it structurally impossible for `ctx_get_shadow` to drift into `_INJECT_TOOLS`, which is the property that matters most here (see below).
+2. In `on_request`, include `_CURSOR_TOOLS` in the condition that records `self._pending[rid] = name`. Add **nothing** to the injection branch.
+3. In `on_response`, before the session_id path: if the popped name is in `_CURSOR_TOOLS`, pull `shadow_cursor` out of the result and call `state.write_shadow_cursor(self._agent, self._profile, cursor)`. Write a sibling helper `_extract_shadow_cursor(result)` mirroring `_extract_session_id` exactly — same `structuredContent`-then-`content[0].text` order, same never-raises/return-None-on-mismatch contract. `ctx_get_shadow` is a `-> dict` tool so `structuredContent` will normally be populated, but the text fallback must exist for the same reason it does for session_id.
+4. In the `_END_TOOLS` branch of `on_response`, add `state.clear_shadow_cursor(self._agent, self._profile)` beside the existing `clear_session_stash`. A cursor outliving its session could only ever be wrong.
+
+**Why the injection boundary is load-bearing, not stylistic.** The client cannot observe what is in the model's context. `since` is an assertion *about the model's context* — "the earlier shadow is still visible to me" — so only the agent may make it. If the shim ever injected `since` on the agent's behalf, a process with no visibility into the context would be vouching for it, and the entire losslessness argument collapses: Bridge would withhold content the agent never received. Keeping `_CURSOR_TOOLS` disjoint from `_INJECT_TOOLS` is what makes that a structural property rather than a convention someone could later 'optimize' away. The test asserting no `since` is injected is the guard.
 
 Follow the existing pattern exactly: synchronous transform, never raises, forwards the frame byte-identical on any error, and no `await` between the pending-map check and set (GIL-safe). Add **nothing** to the request side.
 
