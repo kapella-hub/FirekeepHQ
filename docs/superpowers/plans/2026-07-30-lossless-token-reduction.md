@@ -377,15 +377,6 @@ Mirror the existing `test_session_start_degrades_gracefully_and_prints_systemmes
         whose systemMessage mentions ctx_get_shadow."""
 
 
-def test_precompact_is_registered_and_treated_as_a_dict_core():
-    """`_DICT_CORES` is INERT — the dispatcher only ever consults `_INT_CORES`
-    (lines 195, 215). What actually makes a dict core is membership in
-    `_CORE_MODULES` plus absence from `_INT_CORES`. Assert the real mechanism,
-    not the decorative set."""
-    from firekeep_client.hooks import __main__ as dispatcher
-    assert "precompact" in dispatcher._CORE_MODULES      # load-bearing
-    assert "precompact" not in dispatcher._INT_CORES     # load-bearing
-    assert "precompact" not in dispatcher._BYPASS_EXEMPT
 
 def test_precompact_is_registered_and_treated_as_a_dict_core():
     """`_DICT_CORES` is INERT — verified: the dispatcher only ever consults
