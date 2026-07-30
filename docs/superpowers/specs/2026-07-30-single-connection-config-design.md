@@ -105,11 +105,11 @@ message is wrong for every `FIREKEEP_CONFIG` user, including the ones §3 sends 
 | `firekeep profile use\|show\|pin\|unpin` | `cli.py:1032-1046` |
 | `--profile` on `install` and `connect` | `cli.py:1062, 1087` |
 | `FIREKEEP_PROFILE` handling | `cli.py:95-111`, `resolver.py:181-183`, `hooklog.py:26`, `shim.py:441` |
-| `FIREKEEP_PROFILE` injection into rendered MCP entries | `adapters/claude.py:133`, `codex.py:47`, `kiro.py:228`, `opencode.py:194` |
+| `FIREKEEP_PROFILE` injection into rendered MCP entries | `adapters/claude.py:183`, `codex.py:47`, `kiro.py:228`, `opencode.py:194` |
 | `@{profile}` qualifier on cache keys | `state.py:60-71` and the session-stash keys |
 | doctor's pin-hygiene checks and per-pinned-profile api-key/CA checks | `cli.py:728-756` |
 | `_write_profile()` and the `[personal]`/`[active]` writes it performs | `connect.py:171-192, 224, 231-232` — the second writer of `~/.firekeep/config` |
-| `read_pin()` (render's only config dependency) | `adapters/base.py:123-139` |
+| `read_pin()` (render's only config dependency) | `adapters/base.py:137-153` |
 | `active_profile()` call sites in every hook core and the sidecar | `session_start.py:74`, `stop.py:48`, `session_end.py:73`, `prompt.py:60`, `pre_tool.py:64`, `precompact.py:41`, `sidecar.py:142, 162, 186, 218, 238, 255` |
 | `_shadow_cursor_key`'s `@{profile}` qualifier | `state.py:408-409` — a third `@{profile}` key beyond the two §5 names |
 | `--profile` parsing and `FIREKEEP_PROFILE` export in the hook dispatcher | `hooks/__main__.py:95-100, 205, 210` |
@@ -123,6 +123,13 @@ non-test hits across 17 modules; the table above names the ones that are structu
 rather than mechanical. `connect.py`'s `--profile` flag (`cli.py:1087`) was already
 listed — what was missing is the module that *writes* the config.
 
+**One carve-out from the table above.** The one-shot migration (§4.3) is the last reader
+of `[active]` and `[pins]`. `active_profile()`'s section resolution, `pinned_profile()`,
+and `_check_pins`' dangling-pin taxonomy move into `migrate.py` as private helpers —
+stripped of the `FIREKEEP_PROFILE` branch (`resolver.py:181-183`), which §4.1 requires be
+neutralized — and are deleted from `resolver.py`/`cli.py`. Nothing outside `migrate.py`
+may call them, and they retire with the §2.1 stubs.
+
 `_fetch_org_defaults` (`wizard.py:136-160`) and `_probe_os_trust`
 (`wizard.py:163-184`) **survive** — they prefill and probe a connection, and neither
 depends on there being two of them. `_probe_os_trust` in particular should now run for
@@ -135,13 +142,18 @@ reason the surviving profile was the unvalidated one.
 
 ```
 `firekeep profile` was removed — there is now exactly one server connection.
-Your config was migrated to [server]; see ~/.firekeep/config.
-To point this machine at a different server: firekeep join <code>, or set
+Your config was migrated to [server]; see <resolved config path>.
+To point this machine at a different server: re-run the installer, or set
 FIREKEEP_CONFIG=<path> to use a separate config file.
 ```
 
 An unrecognised subcommand printing bare argparse usage would tell a user their
 muscle memory is wrong without telling them what replaced it.
+
+The "re-run the installer" sentence carries the same cross-spec obligation as §4.4's: it
+becomes `firekeep join <code>` when
+`2026-07-30-client-enrollment-join-codes-design.md` lands, and
+`test_migration_message_handoff.py` covers both messages.
 
 ---
 
@@ -176,7 +188,7 @@ To bind a runtime to it, add `FIREKEEP_CONFIG` to that runtime's rendered MCP en
 exactly where `FIREKEEP_PROFILE` used to go.
 
 **A re-render clobbers it, and that is the same property §5 relies on.** `merge_owned`
-replaces each firekeep-owned MCP entry dict whole (`adapters/base.py:179-182`), which is
+replaces each firekeep-owned MCP entry dict whole (`adapters/base.py:193-196`), which is
 what makes a stale `FIREKEEP_PROFILE` self-clean and what makes a hand-added
 `FIREKEEP_CONFIG` disappear on the next `firekeep install`. This is the one sharp edge of
 the escape hatch and it must be documented rather than discovered: nothing in the
@@ -251,10 +263,12 @@ does not resolve by dropping.
 ### 4.3 The algorithm
 
 1. `[server]` exists → nothing to do.
-2. Candidates = the `[active]` profile (`resolver.py:172-197`) plus every `[pins]` value
-   (`resolver.py:200-210`). A pin naming a section that does not exist is recorded as a
-   dangling pin, reusing `_check_pins`' existing taxonomy (`cli.py:728-755`) — it is
-   never silently ignored.
+2. Candidates = the `[active]` profile plus every `[pins]` value, read through
+   `migrate.py`'s private copies of that resolution (§2 carve-out) — never through
+   `resolver`, which no longer has it. A pin naming a section that does not exist is
+   recorded as a dangling pin, reusing the dangling-pin taxonomy relocated from
+   `_check_pins`; it is never silently ignored. An `[active]` naming a missing section is
+   likewise recorded, and fails per §4.4 naming the section (§6 matrix).
 3. Compute each candidate's fingerprint (§4.1). Drop non-live candidates. Drop
    unconfigured candidates only under §4.2's restriction.
 4. **Exactly one distinct fingerprint survives** → migrate it: copy its keys into
@@ -303,6 +317,16 @@ its own file:
   FIREKEEP_CONFIG=~/.firekeep/office.conf firekeep doctor
 ```
 
+Step 5's zero-candidate case renders a second message under the same exception, since
+the sentence above asserts a plurality that is not true there:
+
+```
+firekeep config migration refused: <resolved config path> has no [server] section and
+no configured connection to migrate from.
+  [active] names 'office', which the file does not define
+Nothing was changed. Run: firekeep install --host <h>   (or: firekeep join <code>)
+```
+
 Only cortex's `mcp_url` is shown. The `api_key` is never printed and never hashed into
 the message; each line is labelled with **where the candidate came from**, so the user
 can tell which of their own settings is which. The path shown is the resolved one, not a
@@ -319,7 +343,7 @@ this spec ships first and `join` does not exist yet.
 load into a concurrent writer, and the concurrency is immediate: four `firekeep-shim`
 processes spawn simultaneously at session start (`shim.py:475`), alongside the hook
 dispatcher and all six hook cores, the sidecar's per-cycle reload (`sidecar.py:141, 161,
-185, 217, 237, 254`), every adapter render via `read_pin` (`adapters/base.py:132`),
+185, 217, 237, 254`), every adapter render via `read_pin` (`adapters/base.py:137`),
 `nightshift`, `cli` and `connect`. (`firekeep-decision` reaches it only when a board is
 opened, `decision/server.py:608`; `firekeep-symdex` ships as a separate package and never
 reads this config.)
@@ -330,12 +354,18 @@ reads this config.)
   crash into a permanent outage: a process killed between create and unlink leaves a lock
   no one owns, and every shim, hook core and sidecar cycle then blocks on config load
   forever — the client bricks itself on the next session start. The lock file records the
-  owner pid and an ISO timestamp; a waiter that observes a lock older than
+  owner pid and an ISO timestamp, written and `fsync`ed immediately after creation; a
+  waiter that observes a lock older than
   `MIGRATION_LOCK_STALE_SECONDS` (default 30 — migration is a few file operations, so any
   longer means the owner is gone) and whose pid is not alive breaks it and retries once,
-  logging that it did. Breaking is safe precisely because the write itself is atomic: the
-  worst case is two processes racing `os.replace`, and both write byte-identical content
-  derived from the same source file.
+  logging that it did. **A lock file that is empty or unparseable is treated as stale on
+  the same age threshold**, because `O_CREAT|O_EXCL` yields an empty file and an owner
+  killed between the create and the pid write leaves exactly that — on which "is the pid
+  alive" is unevaluable. That is precisely the crash class this recovery exists to close,
+  so the recovery must not depend on the very field the crash prevents being written.
+  Breaking is safe precisely because the write itself is atomic: the worst case is two
+  processes racing `os.replace`, and both write byte-identical content derived from the
+  same source file.
 - Write via a temp file plus `os.replace`, so no reader ever sees a half-written INI.
 - Derive the backup name from the source **content**, not the clock, so four simultaneous
   migrations produce one backup rather than four.
@@ -357,11 +387,11 @@ them.
 
   | Surface | Mechanism |
   |---|---|
-  | MCP entries, all four adapters | `merge_owned` replaces each firekeep entry dict whole (`adapters/base.py:179-182`), called from `claude.py:145`, `kiro.py:231`, `opencode.py:197` |
-  | Claude hook groups | `upsert_hook_group` collapses **all** firekeep groups for an event into the one rendered group (`base.py:202-219`) |
-  | kiro inline hooks | `upsert_flat_hook` replaces in place (`base.py:231-238`) |
-  | opencode plugin JS | `upsert_block` replaces the marker region (`base.py:250-261`) |
-  | `~/.claude/settings.json` `env` | never carried it — `claude.py:148-155` writes only `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` and drops `LEGACY_ENV_KEYS` |
+  | MCP entries, all four adapters | `merge_owned` replaces each firekeep entry dict whole (`adapters/base.py:193-196`), called from `claude.py:195`, `kiro.py:231`, `opencode.py:197` |
+  | Claude hook groups | `upsert_hook_group` collapses **all** firekeep groups for an event into the one rendered group (`base.py:216-232`) |
+  | kiro inline hooks | `upsert_flat_hook` replaces in place (`base.py:245-252`) |
+  | opencode plugin JS | `upsert_block` replaces the marker region (`base.py:264-275`) |
+  | `~/.claude/settings.json` `env` | never carried it — `claude.py:198-205` writes only `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` and drops `LEGACY_ENV_KEYS` |
 
   Until a runtime is re-rendered its entries keep exporting a variable nothing reads,
   which is harmless: the dispatcher scans for `--profile` without validating it
@@ -376,8 +406,8 @@ them.
 - **The shim keeps `--profile` as an accepted-and-ignored stub for two releases.**
   `shim.run()` uses `parser.parse_args` (`shim.py:52-67`), which exits 2 on an
   unrecognised argument. No adapter renders `--profile` into a shim entry today — the MCP
-  carrier is the env dict (`claude.py:133`, `kiro.py:228`, `opencode.py:194`,
-  `codex.py:47`) and `--profile` goes only onto hook commands (`claude.py:163`,
+  carrier is the env dict (`claude.py:183`, `kiro.py:228`, `opencode.py:194`,
+  `codex.py:47`) and `--profile` goes only onto hook commands (`claude.py:213`,
   `kiro.py:263`, `opencode.py:77, 241`) — but `docs/KIRO-VALIDATION.md:23` documents the
   shim's `--profile` fallback as implemented, so hand-written and third-party entries may
   pass it. The failure mode is a dead MCP server; two releases of accept-and-ignore is
@@ -389,7 +419,9 @@ them.
   limitation — the stash is one slot per identity per machine either way, and the
   supported partition for genuinely concurrent work remains a distinct
   `FIREKEEP_AGENT_ID`.
-- **`firekeep doctor`** loses its pin rows and gains nothing; its health, versions,
+- **`firekeep doctor`** loses its pin rows and gains exactly one — the
+  `FIREKEEP_PROFILE`-is-set warning converted from `_env_profile_notice` in the bullet
+  above. Its health, versions,
   agent-id, api-key, CA-expiry, config-perms and personal-mode checks all operate on
   the single connection unchanged.
 - **`cortex/` and `dashboard/` are untouched** — 11 and 1 references respectively, none
@@ -414,6 +446,9 @@ them.
   | fresh `_CONFIG_SKELETON`, nothing configured | migrate the skeleton — must not brick a dev checkout |
   | `[active]` names a missing section | fail loudly, naming the section |
   | two spellings resolving to one endpoint (`ca_path` relative vs absolute) | migrate |
+  | pin names a missing section, `[active]` configured | migrate `[active]`; report the dangling pin by name |
+  | pin names a missing section, no other candidate | fail loudly, naming the pin |
+  | `FIREKEEP_PROFILE` set to either section | identical outcome to unset, for every row above — it must not change the candidate set |
   | `FIREKEEP_AGENT_ID` set | identical outcome to unset, for every row above |
   `[dist]` survives byte-for-byte in every migrating row; migration is idempotent and a
   second run is a no-op.
@@ -425,7 +460,8 @@ them.
   produce one migration, one backup, and a config that is valid INI at every observable
   moment; the backup is 0600. **Plus stale-owner recovery**: a lock file left by a dead
   pid older than the threshold is broken and migration proceeds; a lock held by a *live*
-  pid is waited on, never broken.
+  pid is waited on, never broken; an empty or truncated lock file older than the
+  threshold is also broken.
 - `test_migration_active_unconfigured_pin_configured.py` — **new**, called out because it
   is the one case whose outcome §4 deliberately inverts: an unconfigured `[active]` with a
   configured pin migrates **the pin**. The previous rule would have discarded the only
@@ -438,14 +474,13 @@ them.
   no `FIREKEEP_PROFILE` passes trivially once the injection is deleted; the regression
   that matters is a machine carrying pre-collapse artifacts. Seed each of the four
   runtimes' config with `FIREKEEP_PROFILE` and a `--profile` argument at every render
-  site (`claude.py:163`, `kiro.py:263`, `opencode.py:77` and `:241`'s `PROFILE_ARGS`,
+  site (`claude.py:213`, `kiro.py:263`, `opencode.py:77` and `:241`'s `PROFILE_ARGS`,
   `codex.py:46-47`), re-render, and assert both are gone and foreign entries are
   untouched.
 
-- `test_profile_stub.py` — `firekeep profile use x` exits 2 and names both `join` and
-  `FIREKEEP_CONFIG`.
-- `test_adapters_no_profile_env.py` — no rendered MCP entry contains
-  `FIREKEEP_PROFILE`, across all four adapters.
+- `test_profile_stub.py` — `firekeep profile use x` exits 2, names the **resolved** config
+  path and `FIREKEEP_CONFIG`, and its "point at a different server" sentence matches the
+  shipped command set (shared fixture with `test_migration_message_handoff.py`).
 - `test_bypass_unchanged.py` — **guard**: `resolver.is_bypassed()`, the marker path, the
   TTL backstop and `FIREKEEP_BYPASS` behave identically after the collapse. Dormancy
   shares a word with the deleted section and must not be collateral damage.
@@ -470,7 +505,8 @@ Checklist exists to prevent.
 
 | Surface | Files |
 |---|---|
-| Resolver, config, state | `resolver.py`, `state.py`, `connect.py`, `contract/matrix.py` |
+| Resolver, config, state | `resolver.py`, `state.py`, `connect.py`, `contract/matrix.py`, `migrate.py` (new — §4.3) |
+| Tests | ~738 `profile` references across 46 files, replaced by the shared `single_connection_config()` fixture (§6) |
 | Wizard, CLI, runtime entry points | `wizard.py`, `cli.py`, `hooks/__main__.py`, all six hook cores, `hooklog.py`, `shim.py`, `sidecar.py`, `nightshift.py` |
 | Adapters | `adapters/base.py`, `claude.py`, `codex.py`, `kiro.py`, `opencode.py` |
 | Docs | `CLAUDE.md:185, 187`; `docs/MULTI-AGENT.md:33, 97, 174, 176, 182, 183, 188, 190`; `docs/SETUP-CLAUDE-CODE.md:29, 46, 104, 146, 152`; `docs/DEPLOYMENT-OFFICE.md:91, 148, 151, 153-154, 157`; `docs/SETUP-CODEX.md:31, 136, 138`; `docs/DEPLOYMENT.md:205, 213, 216, 311`; `docs/INTEGRATIONS.md:104`; `README.md:116, 142-143`; `docs/DESIGN.md:318` |
