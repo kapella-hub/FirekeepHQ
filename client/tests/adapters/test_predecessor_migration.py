@@ -171,6 +171,30 @@ class TestPredecessorInstructionBlockMigration:
         get_adapter("claude").render(venv_bin=tmp_path / "venv" / "bin")
         assert not list(md.parent.glob("CLAUDE.md*.bak"))
 
+    def test_pre_existing_bak_is_not_destroyed(self, fake_home, tmp_path):
+        """A `.bak` that already exists at the archive path -- the user's own
+        file, or another tool's -- must survive untouched. This is the same
+        collision class that made kiro.py drop its own .bak archiving entirely
+        (see the comment above KiroAdapter in adapters/kiro.py): overwriting a
+        path we do not own is destruction, not migration. The live file must
+        still be migrated -- archive-skip is not migration-skip."""
+        md = fake_home / ".claude" / "CLAUDE.md"
+        md.parent.mkdir(parents=True, exist_ok=True)
+        begin_prefix, end_marker = LEGACY_INSTRUCTION_MARKERS[0]
+        md.write_text(
+            f"# My notes\n\n{begin_prefix} -->\nold block\n{end_marker}\n",
+            encoding="utf-8",
+        )
+        bak = md.with_name(md.name + ".bak")
+        bak.write_text("someone else's backup -- not ours", encoding="utf-8")
+
+        get_adapter("claude").render(venv_bin=tmp_path / "venv" / "bin")
+
+        assert bak.read_text(encoding="utf-8") == "someone else's backup -- not ours"
+        body = md.read_text(encoding="utf-8")
+        assert "old block" not in body, "migration must still strip the block from the live file"
+        assert "# My notes" in body
+
     def test_second_render_does_not_re_archive(self, fake_home, tmp_path):
         """render() must be idempotent: once the predecessor block is stripped, a
         second render sees no marker and must not write a second .bak."""

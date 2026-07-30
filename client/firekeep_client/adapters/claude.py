@@ -138,8 +138,16 @@ class ClaudeAdapter(Adapter):
                 return
             # Archive the file AS IT WAS (with the legacy block) before rewriting it --
             # this is what preserves the block's content, since we are removing it from
-            # the live file, not just formatting it.
-            write_text_if_changed(path.with_name(path.name + ".bak"), original)
+            # the live file, not just formatting it. Never overwrite a .bak that is
+            # already there -- it may be the user's own file, or another tool's, and
+            # this module's whole premise is archive-never-delete; the same collision
+            # class made kiro.py drop its own .bak path entirely (see the comment on
+            # the removed loop above KiroAdapter). Migration still proceeds -- the
+            # block is stripped from the live file either way -- we just skip writing
+            # a second archive over an existing one.
+            bak_path = path.with_name(path.name + ".bak")
+            if not bak_path.exists():
+                write_text_if_changed(bak_path, original)
             path.write_text(stripped, encoding="utf-8")
         except OSError:
             pass

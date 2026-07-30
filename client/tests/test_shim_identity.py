@@ -240,7 +240,14 @@ def test_tap_never_injects_since_into_an_agent_call(tmp_path, monkeypatch):
 
     out = tap.on_request(_tools_call(4, "ctx_get_shadow", {}))
 
+    # Behavioural: catches someone writing args["since"] = cursor directly.
     assert "since" not in out.message.root.params["arguments"]
+    # Structural: catches set-membership drift, e.g. re-adding ctx_get_shadow
+    # to _INJECT_TOOLS. Neither assertion implies the other — the injection
+    # branch only ever writes briefing_id, so widening _INJECT_TOOLS would
+    # leave the assertion above green while still asserting residency the
+    # client cannot observe.
+    assert "ctx_get_shadow" not in shim._BridgeSessionTap._INJECT_TOOLS
 
 
 def test_tap_clears_the_cursor_when_the_session_ends(tmp_path, monkeypatch):
