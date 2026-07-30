@@ -603,7 +603,7 @@ async def relay_register(
 ) -> dict:
     """Register this agent as online in the presence registry.
 
-    Call this at session start (briefing hook). The presence entry
+    Call this at session start (briefing hook).
     Status is computed as 'active' (heartbeat within 10 minutes) or 'idle' (older).
     Presence persists until deregistered — there is no auto-expiry.
 

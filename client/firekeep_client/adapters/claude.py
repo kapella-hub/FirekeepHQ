@@ -27,6 +27,7 @@ from firekeep_client.adapters.base import (
     upsert_hook_group,
     upsert_marked_block,
     write_json,
+    write_text_if_changed,
 )
 
 # Stable marker embedded in the rendered /personal command file so unrender only ever
@@ -87,9 +88,7 @@ class ClaudeAdapter(Adapter):
             "briefing, memory, presence, or logging — and you should not call firekeep_* "
             "tools. It auto-clears when the session ends.\n"
         )
-        path = self._command_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(body, encoding="utf-8")
+        write_text_if_changed(self._command_path(), body)
 
     def _unrender_command(self) -> None:
         path = self._command_path()
@@ -110,9 +109,7 @@ class ClaudeAdapter(Adapter):
         path = self._instructions_path()
         try:
             existing = path.read_text(encoding="utf-8") if path.exists() else ""
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(upsert_marked_block(existing, FIREKEEP_INSTRUCTIONS),
-                            encoding="utf-8")
+            write_text_if_changed(path, upsert_marked_block(existing, FIREKEEP_INSTRUCTIONS))
         except OSError:
             pass
 

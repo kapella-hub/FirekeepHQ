@@ -28,6 +28,7 @@ from firekeep_client.adapters.base import (
     strip_marked_block,
     upsert_block,
     upsert_marked_block,
+    write_text_if_changed,
 )
 
 CODEX_START = "# >>> firekeep-client (managed — do not edit below) >>>"
@@ -67,9 +68,7 @@ class CodexAdapter(Adapter):
         path = self._instructions_path()
         try:
             existing = path.read_text(encoding="utf-8") if path.exists() else ""
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(upsert_marked_block(existing, FIREKEEP_INSTRUCTIONS),
-                            encoding="utf-8")
+            write_text_if_changed(path, upsert_marked_block(existing, FIREKEEP_INSTRUCTIONS))
         except OSError:
             pass
 
@@ -89,8 +88,7 @@ class CodexAdapter(Adapter):
         path = self._path()
         text = path.read_text(encoding="utf-8") if path.exists() else ""
         updated = upsert_block(text, _toml_block(venv_bin, read_pin(self.name)), CODEX_START, CODEX_END)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(updated, encoding="utf-8")
+        write_text_if_changed(path, updated)
         self._render_instructions()
 
     def unrender(self) -> None:
@@ -99,4 +97,4 @@ class CodexAdapter(Adapter):
         if not path.exists():
             return
         stripped = strip_block(path.read_text(encoding="utf-8"), CODEX_START, CODEX_END)
-        path.write_text(stripped, encoding="utf-8")
+        write_text_if_changed(path, stripped)

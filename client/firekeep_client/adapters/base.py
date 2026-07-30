@@ -144,9 +144,35 @@ def read_json(path: Path) -> dict:
     return {}
 
 
-def write_json(path: Path, data: dict) -> None:
+def write_text_if_changed(path: Path, body: str) -> bool:
+    """Write `body` to `path` only if it differs from what is already there.
+    Returns True if a write happened.
+
+    Rewriting byte-identical content still moves mtime, and that is not free.
+    `firekeep update` re-execs `firekeep install`, which re-renders
+    `~/.claude/CLAUDE.md` and `~/.claude/settings.json` — and background
+    auto-update is on by default, so this happens MID-SESSION on a customer's
+    machine. Those files sit in the prompt prefix; a host that re-reads a
+    rendered instruction file because its mtime moved rebuilds that prefix and
+    invalidates the prompt cache, re-billing the conversation at full rate for a
+    zero-byte change. Whether a given host does that cannot be determined from
+    this repo, which is exactly why touching mtime for nothing is indefensible.
+
+    Fails toward writing: if the existing file cannot be read or decoded we
+    cannot prove it matches, so we write. Never skips a real change.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    try:
+        if path.exists() and path.read_text(encoding="utf-8") == body:
+            return False
+    except (OSError, UnicodeDecodeError):
+        pass
+    path.write_text(body, encoding="utf-8")
+    return True
+
+
+def write_json(path: Path, data: dict) -> None:
+    write_text_if_changed(path, json.dumps(data, indent=2) + "\n")
 
 
 def merge_owned(existing: dict, owned: dict) -> dict:
