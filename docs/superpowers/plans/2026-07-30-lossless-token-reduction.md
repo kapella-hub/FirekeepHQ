@@ -361,20 +361,31 @@ git commit -m "feat(hooks): a compaction is a checkpoint, not a surprise"
 
 - [ ] **Step 1: Write the failing tests**
 
+**Read `client/tests/hooks/test_dispatcher.py` before writing anything.** Two corrections to how this must be tested — both were wrong in an earlier draft of this plan:
+
+1. **`main(argv: list[str] | None = None) -> int` RETURNS an int.** It does not raise `SystemExit` — `sys.exit(main())` sits at module scope under `if __name__ == "__main__"`. A test wrapping `main()` in `pytest.raises(SystemExit)` asserts a thing that cannot happen.
+2. **The load-bearing test here is a SUBPROCESS test.** That file's own docstring says why: this module exists because rendered hook commands were silently dead, and "an in-process call to `main()` cannot prove the rendered command line is alive end-to-end." A core missing from `_CORE_MODULES` fails *silently at exit 0* — exactly the bug class a subprocess test catches and an in-process one does not.
+
+Mirror the existing `test_session_start_degrades_gracefully_and_prints_systemmessage` and its `_write_subprocess_config(tmp_path)` helper (which points at a reserved port, so the core degrades against a real connection-refused rather than a mock). Reuse those helpers — do not write new ones.
+
 ```python
-def test_precompact_is_a_dict_core_and_prints_its_systemmessage(monkeypatch, capsys):
-    """A dict core's return value reaches model context only via stdout JSON."""
-    import json, sys
-    from firekeep_client.hooks import __main__ as dispatcher, precompact
+    def test_precompact_command_line_is_alive_and_prints_its_systemmessage(self, tmp_path):
+        """The bug this file exists for: a core absent from _CORE_MODULES exits 0
+        silently and the rendered hook is dead. Only the real command line proves
+        otherwise. Mirror _write_subprocess_config + the subprocess invocation the
+        session_start test above uses; assert exit 0, and that stdout parses as JSON
+        whose systemMessage mentions ctx_get_shadow."""
 
-    monkeypatch.setattr(precompact, "run", lambda payload: {"systemMessage": "hi"})
-    monkeypatch.setattr(sys, "argv", ["hooks", "precompact"])
-    monkeypatch.setattr(sys, "stdin", __import__("io").StringIO("{}"))
-    with __import__("pytest").raises(SystemExit) as exc:
-        dispatcher.main()
-    assert exc.value.code == 0
-    assert json.loads(capsys.readouterr().out)["systemMessage"] == "hi"
 
+def test_precompact_is_registered_and_treated_as_a_dict_core():
+    """`_DICT_CORES` is INERT — the dispatcher only ever consults `_INT_CORES`
+    (lines 195, 215). What actually makes a dict core is membership in
+    `_CORE_MODULES` plus absence from `_INT_CORES`. Assert the real mechanism,
+    not the decorative set."""
+    from firekeep_client.hooks import __main__ as dispatcher
+    assert "precompact" in dispatcher._CORE_MODULES      # load-bearing
+    assert "precompact" not in dispatcher._INT_CORES     # load-bearing
+    assert "precompact" not in dispatcher._BYPASS_EXEMPT
 
 def test_precompact_is_registered_and_treated_as_a_dict_core():
     """`_DICT_CORES` is INERT — verified: the dispatcher only ever consults
