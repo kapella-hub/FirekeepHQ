@@ -26,6 +26,7 @@ from app.proactive_recall import fetch_relevant_memories
 from app.redis_client import get_redis, close_redis
 from app.session import SessionManager
 from app.shadow import assemble_shadow
+from app import residency
 
 logger = logging.getLogger(__name__)
 
@@ -332,7 +333,8 @@ async def ctx_update(
 
 
 @mcp.tool()
-async def ctx_get_shadow(session_id: str | None = None, agent_id: str = "default") -> dict:
+async def ctx_get_shadow(session_id: str | None = None, agent_id: str = "default",
+                         since: str | None = None) -> dict:
     """Retrieve your full working context as a Markdown document.
 
     Call this after context compression or when starting a new conversation to restore
@@ -342,9 +344,16 @@ async def ctx_get_shadow(session_id: str | None = None, agent_id: str = "default
     Args:
         session_id: Specific session to retrieve (defaults to your active session).
         agent_id: Your agent identifier.
+        since: OPTIONAL. The `shadow_cursor` from an earlier response in THIS
+            conversation. Pass it ONLY if that earlier shadow is still visible in
+            your context — it returns just what has changed since. If you are
+            unsure, or your context was compacted, OMIT it and receive the full
+            document. Omitting it is always correct.
     """
     agent_id = _default_agent_id(agent_id)
     mgr = await _get_manager()
+    # NOTE: get_active_session_ID — verified name (session.py:332). Guard shape
+    # copied from the current implementation, which uses `is None`, not falsiness.
     if session_id is None:
         session_id = await mgr.get_active_session_id(agent_id)
     if not session_id:
@@ -354,13 +363,44 @@ async def ctx_get_shadow(session_id: str | None = None, agent_id: str = "default
     if not data:
         return {"error": f"Session {session_id} not found."}
 
-    shadow = assemble_shadow(data)
-    return {
+    # AMENDED 2026-07-30 (C1 + C2).
+    epoch = await mgr.get_shadow_epoch(session_id)
+    if epoch is None:
+        # C2: the epoch read FAILED, so we cannot tell whether a cursor is stale.
+        # Force a full restore AND mint no cursor — a response carrying no cursor
+        # cannot produce a later delta, which is the safe outcome. Never coerce a
+        # failed read to "", which would match every pre-compaction cursor.
+        return {
+            "session_id": session_id,
+            "goal": data.get("goal", ""),
+            "status": data.get("status", ""),
+            "shadow": assemble_shadow(data),
+            "delta": False,
+        }
+
+    rendered, omitted = residency.filter_since(
+        data, since, session_id=session_id, epoch=epoch)
+    # C1: the omission report goes INTO the rendered document, not just beside it.
+    # Without this, an omitted section renders as '*No decisions recorded*' — an
+    # affirmative denial that the agent's own work exists.
+    shadow = assemble_shadow(rendered, omitted=omitted)
+
+    result = {
         "session_id": session_id,
         "goal": data.get("goal", ""),
         "status": data.get("status", ""),
         "shadow": shadow,
+        # Always minted from the FULL data, never the filtered copy: the cursor
+        # describes what the caller now holds in total, not what this response carried.
+        "shadow_cursor": residency.encode_cursor(
+            session_id, epoch, residency.high_water_of(data), residency.plan_sha_of(data)),
+        "delta": omitted is not None,
     }
+    if omitted is not None:
+        note = residency.omission_notice(omitted)
+        if note:
+            result["note"] = note   # belt and braces; the markdown now says it too
+    return result
 
 
 @mcp.tool()
@@ -480,12 +520,22 @@ async def ctx_resume_session(session_id: str, agent_id: str = "default") -> dict
         return {"error": f"Session {session_id} not found after resume."}
 
     shadow = assemble_shadow(data)
-    return {
+    result = {
         "session_id": session_id,
         "goal": data.get("goal", ""),
         "status": "active",
         "shadow": shadow,
     }
+    # A resume always delivers the COMPLETE document (never a delta — a resumed
+    # session is by definition one the agent cannot vouch for), so minting a cursor
+    # here is exactly as safe as on a full ctx_get_shadow. Deliberately no `delta`
+    # key: it would always be False, and an always-false flag invites a caller to
+    # start passing `since` to a tool that must never accept it.
+    epoch = await mgr.get_shadow_epoch(session_id)
+    if epoch is not None:
+        result["shadow_cursor"] = residency.encode_cursor(
+            session_id, epoch, residency.high_water_of(data), residency.plan_sha_of(data))
+    return result
 
 
 from starlette.requests import Request as StarletteRequest

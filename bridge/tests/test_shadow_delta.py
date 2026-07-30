@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 
 from app.config import Settings
 from app.session import SessionManager
+from app import residency
 
 
 class TestShadowEpoch:
@@ -36,3 +37,165 @@ class TestShadowEpoch:
         mock_redis.hget = AsyncMock(side_effect=RuntimeError("redis down"))
         mgr = SessionManager(mock_redis, Settings())
         assert await mgr.get_shadow_epoch("sess-1") is None
+
+
+# --- ctx_get_shadow(since=...) wiring (Task 7) ---------------------------------
+#
+# HARNESS: there is no `bridge_tools` fixture. Every bridge MCP-tool test patches
+# app.mcp_server._get_manager with an AsyncMock manager and awaits the tool
+# function directly — see bridge/tests/test_mcp_tools.py:44-51. Copy that shape.
+from unittest.mock import patch
+
+
+def _session_data():
+    return {"goal": "g", "status": "active", "plan": "- [ ] one",
+            "decisions": [{"timestamp": "2026-07-30T10:00:00.000001+00:00",
+                           "content": "chose A"}],
+            "progress": [], "files": {}, "scratch": {}, "proactive_memories": []}
+
+
+def _mgr(epoch=""):
+    mgr = AsyncMock()
+    mgr.get_active_session_id = AsyncMock(return_value="sess-1")
+    mgr.get_session_data = AsyncMock(return_value=_session_data())
+    mgr.get_shadow_epoch = AsyncMock(return_value=epoch)
+    return mgr
+
+
+class TestShadowDelta:
+    @pytest.mark.asyncio
+    async def test_full_restore_returns_a_cursor_and_is_not_a_delta(self):
+        from app.mcp_server import ctx_get_shadow
+        with patch("app.mcp_server._get_manager", return_value=_mgr()):
+            out = await ctx_get_shadow(agent_id="a")
+        assert out["delta"] is False
+        assert out["shadow_cursor"]
+        assert "### Decisions" in out["shadow"]
+
+    @pytest.mark.asyncio
+    async def test_a_fresh_cursor_yields_a_delta_that_names_what_it_withheld(self):
+        from app.mcp_server import ctx_get_shadow
+        with patch("app.mcp_server._get_manager", return_value=_mgr()):
+            first = await ctx_get_shadow(agent_id="a")
+            second = await ctx_get_shadow(agent_id="a", since=first["shadow_cursor"])
+        assert second["delta"] is True
+        assert "still exist" in second["note"]
+        assert "ctx_get_shadow()" in second["note"]
+
+    @pytest.mark.asyncio
+    async def test_every_bad_cursor_yields_a_full_restore(self):
+        """The tool-level half of the fail-safe matrix. The pure-function half lives
+        in tests/test_residency.py; both must hold."""
+        from app.mcp_server import ctx_get_shadow
+        for bad in (None, "", "garbage", "eyJ2IjoxfQ"):
+            with patch("app.mcp_server._get_manager", return_value=_mgr()):
+                out = await ctx_get_shadow(agent_id="a", since=bad)
+            assert out["delta"] is False, f"cursor {bad!r} produced a delta"
+
+    @pytest.mark.asyncio
+    async def test_a_cursor_is_refused_after_the_epoch_is_bumped(self):
+        """precompact's server-side belt: the agent wrongly passes a stale cursor
+        after a compaction, and Bridge answers with everything anyway."""
+        from app.mcp_server import ctx_get_shadow
+        with patch("app.mcp_server._get_manager", return_value=_mgr(epoch="1000")):
+            first = await ctx_get_shadow(agent_id="a")
+        with patch("app.mcp_server._get_manager", return_value=_mgr(epoch="9999")):
+            out = await ctx_get_shadow(agent_id="a", since=first["shadow_cursor"])
+        assert out["delta"] is False
+
+    @pytest.mark.asyncio
+    async def test_ctx_resume_session_never_returns_a_delta(self):
+        """A resume is by definition a context the agent cannot vouch for. It takes
+        no `since` and must always be full — the signature is also load-bearing:
+        ctx_resume_session has no such parameter and FastMCP would reject the kwarg."""
+        import inspect
+        from app.mcp_server import ctx_resume_session
+        assert "since" not in inspect.signature(ctx_resume_session).parameters
+
+    @pytest.mark.asyncio
+    async def test_a_delta_document_never_denies_that_withheld_content_exists(self):
+        """The C1 regression test, at the layer C1 actually lived in.
+
+        AMENDED 2026-07-30: the original version of this test asserted a blanket
+        "none of these four placeholder strings may ever appear in a delta document".
+        That is over-broad — C1 is "never say *No files tracked* WHEN FILES WERE
+        WITHHELD", not "never say it at all". The shared `_session_data()` fixture
+        has empty `files`/`progress` from the start, so those placeholders were
+        simply TRUE there (nothing was ever omitted from an already-empty section),
+        and asserting their absence was asserting the wrong thing. This local
+        fixture instead gives every filterable section (decisions, progress, files,
+        plan) a genuinely older entry that the high-water filter actually withholds,
+        so the assertion below is exercised against a real omission in all four —
+        not against a section that was never populated to begin with.
+        """
+        from app.mcp_server import ctx_get_shadow
+
+        def _rich_session_data():
+            return {
+                "goal": "g", "status": "active", "plan": "- [ ] one",
+                "decisions": [
+                    {"timestamp": "2026-07-30T09:00:00.000001+00:00", "content": "old decision"},
+                    {"timestamp": "2026-07-30T10:00:00.000001+00:00", "content": "new decision"},
+                ],
+                "progress": [
+                    {"timestamp": "2026-07-30T09:00:00.000001+00:00", "content": "old progress"},
+                    {"timestamp": "2026-07-30T10:00:00.000001+00:00", "content": "new progress"},
+                ],
+                "files": {
+                    "old.py": {"summary": "stale", "last_action": "2026-07-30T09:00:00.000001+00:00"},
+                    "new.py": {"summary": "fresh", "last_action": "2026-07-30T10:00:00.000001+00:00"},
+                },
+                "scratch": {}, "proactive_memories": [],
+            }
+
+        def _rich_mgr():
+            mgr = AsyncMock()
+            mgr.get_active_session_id = AsyncMock(return_value="sess-1")
+            mgr.get_session_data = AsyncMock(return_value=_rich_session_data())
+            mgr.get_shadow_epoch = AsyncMock(return_value="")
+            return mgr
+
+        with patch("app.mcp_server._get_manager", return_value=_rich_mgr()):
+            first = await ctx_get_shadow(agent_id="a")
+            second = await ctx_get_shadow(agent_id="a", since=first["shadow_cursor"])
+        doc = second["shadow"]
+
+        # The pure function's own omission report is the ground truth for which
+        # sections actually withheld something in THIS fixture — asserting against
+        # it (rather than all four unconditionally) is what keeps this test honest
+        # about what C1 claims versus what it doesn't.
+        _, omitted_report = residency.filter_since(
+            _rich_session_data(), first["shadow_cursor"], session_id="sess-1", epoch="")
+        assert omitted_report["decisions"] and omitted_report["progress"] and omitted_report["files"]
+        assert omitted_report["plan"]
+
+        for key, denial in (("decisions", "No decisions recorded"),
+                            ("progress", "No progress logged"),
+                            ("files", "No files tracked")):
+            assert omitted_report[key], f"fixture bug: {key} was not actually omitted"
+            assert denial not in doc, f"{key}: denied withheld content exists"
+        assert "No plan set" not in doc, "plan: denied withheld content exists"
+        assert "omitted" in doc.lower(), "document does not disclose that content was withheld"
+        assert "ctx_get_shadow()" in doc, "document does not say how to recover the full set"
+
+    @pytest.mark.asyncio
+    async def test_a_full_restore_document_is_byte_identical_to_the_pre_change_output(self):
+        """The no-regression half: with no cursor, the document must be exactly what
+        callers got before this task existed. assemble_shadow(data) with omitted=None
+        is the reference."""
+        from app.mcp_server import ctx_get_shadow
+        from app.shadow import assemble_shadow
+        with patch("app.mcp_server._get_manager", return_value=_mgr()):
+            out = await ctx_get_shadow(agent_id="a")
+        assert out["shadow"] == assemble_shadow(_session_data())
+
+    @pytest.mark.asyncio
+    async def test_a_failed_epoch_read_mints_no_cursor(self):
+        """A response carrying a cursor could seed a later delta on a session whose
+        epoch was never readable — so on a failed epoch read there must be no
+        shadow_cursor key at all, not even an empty one."""
+        from app.mcp_server import ctx_get_shadow
+        with patch("app.mcp_server._get_manager", return_value=_mgr(epoch=None)):
+            out = await ctx_get_shadow(agent_id="a")
+        assert "shadow_cursor" not in out
+        assert out["delta"] is False
