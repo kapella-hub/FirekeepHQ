@@ -1653,14 +1653,14 @@ There are **two** predecessor blocks in `~/.claude/CLAUDE.md`, and only one of t
 | Block | Markers | Size | Similarity to the firekeep block | Verdict |
 |---|---|---|---|---|
 | Decision Board + Knowledge Ingest | `<!-- nexus:instructions:begin …` / `<!-- nexus:instructions:end -->` | 3,214 chars, 53 lines | **0.75** | **archive** |
-| Agent Personality + Change Consistency Checklist + tool notes | `<!-- NexusStack Agent Guidelines -->` / `<!-- /NexusStack Agent Guidelines -->` | 2,441 chars, 28 lines | **0.03** | **LEAVE ALONE** |
+| Agent Personality + Change Consistency Checklist + tool notes | `<!-- … Agent Guidelines -->` / `<!-- … Agent Guidelines -->` | 2,441 chars, 28 lines | **0.03** | **LEAVE ALONE** |
 
 Two corrections that matter:
 
 1. **The spec's 0.998 similarity figure is wrong — it is 0.75.** The firekeep block is 5,238 chars against the nexus block's 3,214, because firekeep's carries a memory-protocol section the predecessor's lacks. The nexus block is a near-duplicate of a *subset*, not of the whole. Still worth ~800 tokens of rent per prompt for content that is three-quarters redundant, so it still goes — but do not repeat "0.998" anywhere.
 2. **The second block is not a duplicate at all** (0.03 similar) and contains content the user still has and may still want. Stripping it would be a straight deletion of the user's information, which the zero-degradation constraint forbids. `LEGACY_INSTRUCTION_MARKERS` must contain **only** the `nexus:instructions:begin`/`end` pair.
 
-Note the live file also contains a literal `\n` (backslash-n as text, not a newline) immediately before `<!-- NexusStack Agent Guidelines -->` — a cosmetic bug in the predecessor's writer. Do not try to clean it up; it sits outside the block you are removing.
+Note the live file also contains a literal `\n` (backslash-n as text, not a newline) immediately before `<!-- … Agent Guidelines -->` — a cosmetic bug in the predecessor's writer. Do not try to clean it up; it sits outside the block you are removing.
 
 The mechanism must **archive to `.bak`** in the manner of `adapters/kiro.py::_migrate_legacy`, never delete content-blind from a user-owned prose file — and the archive is what preserves the nexus block's unique 25%.
 
@@ -1700,7 +1700,7 @@ Add the tuple beside the three existing legacy tuples, respecting the `DO NOT RE
 # under the predecessor product's markers. Measured on a live machine 2026-07-30:
 # 3,214 chars, 0.75-similar to FIREKEEP_INSTRUCTIONS (a near-duplicate of a
 # SUBSET — firekeep's block carries a memory-protocol section this one lacks).
-# The sibling `<!-- NexusStack Agent Guidelines -->` block is deliberately NOT
+# The sibling `<!-- … Agent Guidelines -->` block is deliberately NOT
 # listed: at 0.03 similarity it is not a duplicate, it is content the user still
 # has, and removing it would be a plain deletion of their information.
 # DO NOT RENAME (see the warning above): renaming these disarms the migration on
