@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from auth.keys import AmbiguousKeyIdError
 from auth.middleware import (
     create_key,
     list_keys,
@@ -72,7 +73,18 @@ def create_auth_router() -> APIRouter:
         identity: dict = Depends(require_scope("admin")),
     ) -> RevokeKeyResponse:
         """Revoke an API key by its short ID."""
-        success = await revoke_key(key_id)
+        try:
+            success = await revoke_key(key_id)
+        except AmbiguousKeyIdError as exc:
+            # 409, not 500: the request is well-formed and the server state is
+            # the problem. Nothing was deleted.
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Key {key_id} matches {len(exc.matches)} stored records. "
+                    "Nothing was revoked — resolve the ambiguity in Redis before retrying."
+                ),
+            ) from exc
         if not success:
             raise HTTPException(status_code=404, detail=f"Key {key_id} not found")
         return RevokeKeyResponse(status="revoked", key_id=key_id)

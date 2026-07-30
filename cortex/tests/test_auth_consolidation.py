@@ -164,6 +164,35 @@ class TestConsolidation:
         assert resp.json()["api_key"].startswith("nxs_")
 
     @pytest.mark.asyncio
+    async def test_ambiguous_key_id_is_409_and_deletes_nothing(self, redis, auth_env):
+        """A well-formed request against ambiguous server state is a 409, not a
+        500 (which reads as the caller's fault) and not a 200 (which is the bug
+        this whole change removes: deleting one of two and reporting success)."""
+        import json as _json
+
+        shared = "a" * 16
+        hash_a, hash_b = shared + "1" * 48, shared + "2" * 48
+        for h, who in ((hash_a, "alice"), (hash_b, "bob")):
+            await redis.hset(f"auth:key:{h}", mapping={
+                "agent_id": who,
+                "scopes": _json.dumps(["memory:read"]),
+                "created_at": "2026-07-30T00:00:00+00:00",
+                "key_id": shared,
+            })
+        await redis.zadd("auth:key_index", {shared: 1.0})
+
+        async with _client(_mini_cortex(redis)) as c:
+            resp = await c.delete(
+                f"/auth/keys/{shared}",
+                headers={"X-API-Key": auth_env["admin"]},
+            )
+
+        assert resp.status_code == 409
+        assert shared in resp.json()["detail"]
+        assert await redis.exists(f"auth:key:{hash_a}") == 1
+        assert await redis.exists(f"auth:key:{hash_b}") == 1
+
+    @pytest.mark.asyncio
     async def test_health_skipped(self, redis, auth_env):
         async with _client(_mini_cortex(redis)) as c:
             resp = await c.get("/health")
