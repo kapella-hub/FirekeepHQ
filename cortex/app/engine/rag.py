@@ -558,6 +558,11 @@ class RAGEngine:
                         "name": name,
                         "label": label,
                         "distance": distance,
+                        # The real relevance, preserved before _min_max_normalize
+                        # rescales `score` into a within-set RANK. Vector entries
+                        # already did this (_normalize_vector); graph ones did not,
+                        # so a graph hit had no honest number to display.
+                        "raw_score": round(float(score), 4),
                     },
                 }
             )
@@ -901,8 +906,24 @@ class RAGEngine:
         if not entries:
             return "## Memory Recall (0 results, confidence: low)\n\nNo relevant memories found."
 
-        # Determine confidence band from aggregate (max) score.
-        max_score = max(e["score"] for e in entries)
+        # Confidence comes from the best REAL relevance, not from `score`.
+        #
+        # `score` has been through _min_max_normalize, which sets the best entry
+        # in the set to exactly 1.0 by construction. Reading the band off it made
+        # `confidence: high` unconditional — a recall whose weakest result showed
+        # [0%] still announced high confidence, because 0% means "lowest of these
+        # three", not "irrelevant". A band that cannot come out low is not a band.
+        #
+        # raw_score is the pre-normalization value: cosine for vector entries,
+        # the weighted jaccard/distance blend for graph ones. Entries without it
+        # (resolution bonuses, which carry a sentinel 1.2) are skipped rather than
+        # counted, so they cannot prop the band up.
+        real = [
+            e["metadata"]["raw_score"]
+            for e in entries
+            if isinstance(e.get("metadata"), dict) and e["metadata"].get("raw_score") is not None
+        ]
+        max_score = max(real) if real else max(e["score"] for e in entries)
         if max_score > 0.7:
             confidence = "high"
         elif max_score >= 0.4:
@@ -920,7 +941,11 @@ class RAGEngine:
         for i, entry in enumerate(entries, 1):
             store = entry["store"]
             content = entry["content"]
-            score = entry["score"]
+            # Show real relevance where we have it; fall back to the normalized
+            # rank only for entries that never had a raw score.
+            md = entry.get("metadata") or {}
+            raw = md.get("raw_score") if isinstance(md, dict) else None
+            score = float(raw) if raw is not None else entry["score"]
 
             # Map internal store names to display labels.
             source_label = store
