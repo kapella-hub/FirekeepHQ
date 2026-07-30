@@ -1755,7 +1755,8 @@ async def test_get_single_session_requires_session_read_scope(monkeypatch):
 
 ```python
         session_id = request.path_params["session_id"]
-        await require_scope_asgi(request, "session:read")
+        require_scope_asgi(request, "session:read")   # NOT awaited — it is a plain
+        # `def` (auth/asgi.py:158), and its two siblings in this file call it the same way.
 ```
 
 Match the exact call form used at `:588` — read it rather than copying this snippet.
