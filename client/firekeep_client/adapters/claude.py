@@ -46,6 +46,7 @@ CLAUDE_HOOKS = (
     ("Stop", "stop", None, 5),
     ("SessionEnd", "session_end", None, 5),
     ("UserPromptSubmit", "prompt", None, 8),
+    ("PreCompact", "precompact", None, 15),
     ("PreToolUse", "pre_tool", "^(Edit|Write)$", 5),
     ("PostToolUse", "post_tool", "^(Edit|Write|MultiEdit|Bash)$", 10),
 )

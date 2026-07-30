@@ -38,7 +38,9 @@ MATRIX: dict[str, dict[str, str]] = {
     # a hard gate. See firekeep_client/adapters/kiro.py + docs/KIRO-VALIDATION.md.
     "pre_edit_block": {"claude": "guaranteed", "kiro": "advisory (fires, non-blocking on 2.12.1)", "codex": "none",
                        "opencode": "guaranteed (plugin throw, validated 1.14.22)"},
-    "precompact": {"claude": "none", "kiro": "none", "codex": "none", "opencode": "none"},
+    # Only Claude exposes a compaction event; the other three runtimes have no
+    # such lifecycle hook to wire, so this degrades honestly rather than silently.
+    "precompact": {"claude": "hook", "kiro": "none", "codex": "none", "opencode": "none"},
     "reconcile": {"claude": "hooks", "kiro": "kiro pre/post hooks", "codex": "self-reported",
                   "opencode": "plugin pre/post hooks"},
     # Per-runtime profile pin (firekeep profile pin <runtime> <profile>): carrier per surface.

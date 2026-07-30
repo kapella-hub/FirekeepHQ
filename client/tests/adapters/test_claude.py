@@ -228,18 +228,33 @@ def test_claude_render_drops_retired_url_env_but_keeps_agent_id(fake_home, tmp_p
     assert env["FOO"] == "bar"
 
 
-def test_claude_render_leaves_precompact_hook_alone(fake_home, tmp_path):
-    """The legacy PreCompact echo still works and the kit renders no PreCompact hook of its
-    own. Deliberately treated as foreign: migration removes what is BROKEN, not everything
-    the old installer happened to write."""
+def test_claude_render_adds_its_precompact_group_beside_the_legacy_echo(fake_home, tmp_path):
+    """The kit now renders a PreCompact hook of its own. The legacy echo hook is
+    still deliberately treated as foreign-but-working: migration removes what is
+    BROKEN, not everything the old installer happened to write. Both must survive.
+    """
     (fake_home / ".claude").mkdir()
     (fake_home / ".claude" / "settings.json").write_text(json.dumps(_legacy_settings()))
 
     get_adapter("claude").render(venv_bin=tmp_path / "venv" / "bin")
-    hooks = _read(fake_home / ".claude" / "settings.json")["hooks"]
+    groups = _read(fake_home / ".claude" / "settings.json")["hooks"]["PreCompact"]
 
-    assert len(hooks["PreCompact"]) == 1
-    assert "systemMessage" in hooks["PreCompact"][0]["hooks"][0]["command"]
+    commands = [h["command"] for g in groups for h in g["hooks"]]
+    assert any("systemMessage" in c for c in commands), "legacy echo hook was clobbered"
+    assert any(c.endswith("-m firekeep_client.hooks precompact") for c in commands)
+
+
+def test_claude_unrender_removes_only_our_precompact_group(fake_home, tmp_path):
+    (fake_home / ".claude").mkdir()
+    (fake_home / ".claude" / "settings.json").write_text(json.dumps(_legacy_settings()))
+    adapter = get_adapter("claude")
+    adapter.render(venv_bin=tmp_path / "venv" / "bin")
+    adapter.unrender()
+
+    groups = _read(fake_home / ".claude" / "settings.json")["hooks"].get("PreCompact", [])
+    commands = [h["command"] for g in groups for h in g["hooks"]]
+    assert any("systemMessage" in c for c in commands)      # legacy survives unrender
+    assert not any("firekeep_client.hooks" in c for c in commands)
 
 
 def test_claude_unrender_removes_legacy_bash_hooks(fake_home, tmp_path):

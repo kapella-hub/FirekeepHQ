@@ -28,9 +28,10 @@ HOOK_MARKER = "firekeep_client.hooks"
 # repo, so a machine upgraded from that installer opens every session with a "No such file
 # or directory" hook error while the real hook core ALSO fires — two layers, one broken.
 # They are firekeep-owned, not foreign: render() replaces them, unrender() removes them.
-# Deliberately NOT listed: the legacy PreCompact `echo` hook. It still works, the kit
-# renders no PreCompact hook of its own, and silently deleting a working behavior is worse
-# than leaving one tidy artifact behind.
+# Deliberately NOT listed: the legacy PreCompact `echo` hook. It still works, and
+# the kit's own PreCompact group (rendered since the precompact core landed) is a
+# SEPARATE, marker-identified group that coexists with it — so silently deleting a
+# working behavior is still worse than leaving one tidy artifact behind.
 # DO NOT RENAME THE STRINGS IN THIS BLOCK. They name artifacts left by PREVIOUS
 # generations of the kit, so they must keep spelling the OLD thing forever. A
 # repo-wide find-and-replace is exactly how this cleanup breaks: the predecessor
