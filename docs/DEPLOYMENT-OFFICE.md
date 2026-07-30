@@ -248,6 +248,14 @@ re-issued via `deploy/firekeep-admin keys create`.
    echo "rescue admin key: $KEY"
    ```
 
+**`DELETE /auth/keys/{key_id}` returns 409 (ambiguous key_id):** the short id
+matches more than one verified record and nothing was revoked. The colliding
+`auth:key:<hash>` records are named in both the 409 response detail and the
+CRITICAL log line. Inspect each with `redis-cli -n 7 hgetall auth:key:<hash>`,
+decide which is unwanted, and delete that one directly:
+`redis-cli -n 7 del auth:key:<hash>`. The remaining credential's short id is
+then unambiguous again and `DELETE /auth/keys/{key_id}` revokes it normally.
+
 **"Healthy" containers serving 503s:** compose healthchecks are TCP-only, so a
 container stays green while the auth middleware fails closed (Redis DB 7 down
 while `AUTH_ENABLED=true` → every request 503s loudly). "Healthy" ≠ "serving".
