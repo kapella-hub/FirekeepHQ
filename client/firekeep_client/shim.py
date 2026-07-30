@@ -160,14 +160,45 @@ def _extract_session_id(result) -> str | None:
     return None
 
 
+def _extract_shadow_cursor(result) -> str | None:
+    """Pull shadow_cursor out of a ctx_get_shadow result (structuredContent or
+    the text content[0] JSON blob). Mirrors `_extract_session_id` exactly —
+    same fallback order, same never-raises/return-None-on-mismatch contract."""
+    try:
+        if not isinstance(result, dict):
+            return None
+        structured = result.get("structuredContent")
+        if isinstance(structured, dict) and structured.get("shadow_cursor"):
+            return str(structured["shadow_cursor"])
+        content = result.get("content")
+        if isinstance(content, list) and content and isinstance(content[0], dict):
+            text = content[0].get("text")
+            if text:
+                parsed = json.loads(text)
+                if isinstance(parsed, dict) and parsed.get("shadow_cursor"):
+                    return str(parsed["shadow_cursor"])
+    except Exception:
+        pass
+    return None
+
+
 class _BridgeSessionTap:
     """Bridge-shim frame interceptor (bridge service only): inject the stashed
-    briefing_id into a ctx_start_session/resume the agent sends without one, and
+    briefing_id into a ctx_start_session/resume the agent sends without one,
     capture the returned session_id into the stash so the per-request Auth can
-    attribute subsequent memory calls. Both hooks NEVER raise and ALWAYS return
-    the (possibly-mutated-in-place) frame, so the pump forwards byte-identical on
-    any error. The `_pending` request-id map is read/written synchronously (no
-    await between check and set), so it is GIL-safe across the two pump directions.
+    attribute subsequent memory calls, and capture the shadow_cursor returned by
+    ctx_get_shadow so a future precompact hook has something to invalidate. All
+    hooks NEVER raise and ALWAYS return the (possibly-mutated-in-place) frame, so
+    the pump forwards byte-identical on any error. The `_pending` request-id map
+    is read/written synchronously (no await between check and set), so it is
+    GIL-safe across the two pump directions.
+
+    `_CURSOR_TOOLS` is deliberately its own set, disjoint from `_INJECT_TOOLS`:
+    the client cannot observe what is in the model's context, so `since` — an
+    assertion that the earlier shadow is still resident there — may only ever
+    be supplied by the agent itself. Keeping the sets disjoint makes it
+    structurally impossible for `ctx_get_shadow` to be injected into, rather
+    than merely a convention someone could later "optimize" away.
     """
 
     # briefing_id is injected ONLY into ctx_start_session — bridge's
@@ -177,6 +208,7 @@ class _BridgeSessionTap:
     _INJECT_TOOLS = frozenset({"ctx_start_session"})
     _CAPTURE_TOOLS = frozenset({"ctx_start_session", "ctx_resume_session"})
     _END_TOOLS = frozenset({"ctx_complete_session", "ctx_abandon_session"})
+    _CURSOR_TOOLS = frozenset({"ctx_get_shadow"})
 
     def __init__(self, agent: str, profile: str) -> None:
         self._agent = agent
@@ -194,7 +226,11 @@ class _BridgeSessionTap:
                 return item
             name = params.get("name")
             rid = getattr(root, "id", None)
-            if rid is not None and (name in self._CAPTURE_TOOLS or name in self._END_TOOLS):
+            if rid is not None and (
+                name in self._CAPTURE_TOOLS
+                or name in self._END_TOOLS
+                or name in self._CURSOR_TOOLS
+            ):
                 self._pending[rid] = name
             if name in self._INJECT_TOOLS:
                 args = params.get("arguments")
@@ -208,7 +244,8 @@ class _BridgeSessionTap:
         return item
 
     def on_response(self, item):
-        """upstream->runtime: capture session_id (start/resume) or clear (end)."""
+        """upstream->runtime: capture session_id (start/resume), capture the
+        shadow_cursor (ctx_get_shadow), or clear both (end)."""
         try:
             root = item.message.root
             rid = getattr(root, "id", None)
@@ -217,6 +254,12 @@ class _BridgeSessionTap:
             name = self._pending.pop(rid)
             if name in self._END_TOOLS:
                 state.clear_session_stash(self._agent, self._profile)
+                state.clear_shadow_cursor(self._agent, self._profile)
+                return item
+            if name in self._CURSOR_TOOLS:
+                cursor = _extract_shadow_cursor(getattr(root, "result", None))
+                if cursor:
+                    state.write_shadow_cursor(self._agent, self._profile, cursor)
                 return item
             sid = _extract_session_id(getattr(root, "result", None))
             if sid:

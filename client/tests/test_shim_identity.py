@@ -220,6 +220,42 @@ def test_tap_never_raises_on_garbage_frame(tmp_path, monkeypatch):
     assert tap.on_response(g) is g
 
 
+def test_tap_captures_the_shadow_cursor_from_a_get_shadow_response(tmp_path, monkeypatch):
+    monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
+    tap = shim._BridgeSessionTap("tester", "personal")
+
+    tap.on_request(_tools_call(3, "ctx_get_shadow", {}))
+    tap.on_response(_tool_result(3, {"shadow": "## Session: g",
+                                     "shadow_cursor": "cursor-abc", "delta": False}))
+
+    assert state.read_shadow_cursor("tester", "personal") == "cursor-abc"
+
+
+def test_tap_never_injects_since_into_an_agent_call(tmp_path, monkeypatch):
+    """The client cannot observe the model's context, so it must never assert
+    residency on the agent's behalf. Only the agent may pass `since`."""
+    monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
+    state.write_shadow_cursor("tester", "personal", "cursor-abc")
+    tap = shim._BridgeSessionTap("tester", "personal")
+
+    out = tap.on_request(_tools_call(4, "ctx_get_shadow", {}))
+
+    assert "since" not in out.message.root.params["arguments"]
+
+
+def test_tap_clears_the_cursor_when_the_session_ends(tmp_path, monkeypatch):
+    """Server-authoritative session end, same trigger that clears the session
+    stash today. A cursor outliving its session could only ever be wrong."""
+    monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
+    state.write_shadow_cursor("tester", "personal", "cursor-abc")
+    tap = shim._BridgeSessionTap("tester", "personal")
+
+    tap.on_request(_tools_call(5, "ctx_complete_session", {"outcome": "done"}))
+    tap.on_response(_tool_result(5, {"status": "completed"}))
+
+    assert state.read_shadow_cursor("tester", "personal") is None
+
+
 # --- pump-integration: tap must not perturb forwarding or dead-conn detection ---
 
 
