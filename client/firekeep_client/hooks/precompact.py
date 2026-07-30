@@ -15,7 +15,7 @@ from __future__ import annotations
 import time
 from datetime import datetime, timezone
 
-from firekeep_client import hooklog, resolver, state
+from firekeep_client import hooklog, resolver
 from firekeep_client.hooks import _git, _mcp, never_raise
 
 _HOOK = "precompact"
@@ -52,11 +52,11 @@ def run(payload: dict) -> dict:
     except Exception as e:  # noqa: BLE001
         hooklog.log_failure(_HOOK, f"workspace checkpoint failed: {e}")
 
-    # 3. Invalidate the shadow cursor, locally AND server-side. Load-bearing for
-    #    the residency contract: after compaction the agent can no longer vouch
-    #    for what is still in its context, so any cursor it holds is a lie.
-    #    The server-side half rides on ordinary ctx_update — no new MCP tool.
-    state.clear_shadow_cursor(agent, profile)
+    # 3. Invalidate the shadow cursor server-side. Load-bearing for the
+    #    residency contract: after compaction the agent can no longer vouch
+    #    for what is still in its context, so any cursor it holds is stale —
+    #    bumping shadow_epoch makes Bridge's filter_since refuse it on the next
+    #    ctx_get_shadow. Rides on ordinary ctx_update — no new MCP tool.
     try:
         _mcp.call_tool("bridge", "ctx_update", {
             "category": "scratch", "key": "shadow_epoch",

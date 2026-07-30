@@ -45,15 +45,6 @@ class TestPrecompact:
         assert len(epochs) == 1
         assert epochs[0]["category"] == "scratch"
 
-    def test_clears_the_local_shadow_cursor(self, client_env, monkeypatch):
-        from firekeep_client import state
-        from firekeep_client.hooks import precompact
-        _record_mcp(monkeypatch)
-        state.write_session_stash("tester", "personal", session_id="s1")
-        state.write_shadow_cursor("tester", "personal", "cursor-abc")
-        precompact.run({})
-        assert state.read_shadow_cursor("tester", "personal") is None
-
     def test_emits_one_short_line_telling_the_agent_where_state_is(self, client_env, monkeypatch):
         from firekeep_client.hooks import precompact
         _record_mcp(monkeypatch)

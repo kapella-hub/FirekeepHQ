@@ -405,38 +405,6 @@ def clear_session_stash(agent_id: str, profile: str) -> None:
         pass
 
 
-def _shadow_cursor_key(agent_id: str, profile: str) -> str:
-    return f"shadow_cursor_{agent_id}@{profile}"
-
-
-def write_shadow_cursor(agent_id: str, profile: str, cursor: str) -> None:
-    """Stash the opaque shadow cursor. TTL'd like the session stash: a cursor
-    that outlives its session must expire rather than be replayed. Never raises."""
-    try:
-        write_scratch(_shadow_cursor_key(agent_id, profile), cursor,
-                      ttl_seconds=_session_stash_ttl_seconds())
-    except Exception:
-        pass
-
-
-def read_shadow_cursor(agent_id: str, profile: str) -> str | None:
-    """The stashed cursor, or None if absent/expired. None means 'ask for a full
-    restore' — the safe default."""
-    try:
-        return read_scratch(_shadow_cursor_key(agent_id, profile))
-    except Exception:
-        return None
-
-
-def clear_shadow_cursor(agent_id: str, profile: str) -> None:
-    """Idempotent, never raises. Called by precompact: after a compaction the
-    agent can no longer vouch for what is still in its context."""
-    try:
-        delete_scratch(_shadow_cursor_key(agent_id, profile))
-    except Exception:
-        pass
-
-
 def resolve_session_id(payload: dict, cfg=None) -> str:
     """IDENTICAL in pre_tool & post_tool (design SS6.2 half #2): payload['session_id']
     if present, else fetch the active session from Bridge GET {rest_base}/sessions,
