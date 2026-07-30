@@ -467,7 +467,16 @@ Expected: FAIL — status 500, because `AmbiguousKeyIdError` propagates unhandle
 
 - [ ] **Step 3: Handle the exception in the route**
 
-In `auth/api.py`, add `AmbiguousKeyIdError` to the existing `from auth.keys import (...)` block, then replace `revoke_api_key`:
+In `auth/api.py`, add a new import line `from auth.keys import AmbiguousKeyIdError`, then
+replace `revoke_api_key`.
+
+There is **no** `from auth.keys import (...)` block in `api.py` to extend: it imports
+`create_key`, `list_keys`, `require_scope` and `revoke_key` from `auth.middleware`, which
+re-exports them and does not re-export `AmbiguousKeyIdError`. Import it from `auth.keys`
+directly rather than widening `middleware.py`'s re-export list — that would drag a second
+file into a task scoped to `api.py`, for no benefit. The dependency direction is what
+matters and is unchanged: `keys.py` defines the exception, `api.py` imports it, never the
+reverse.
 
 ```python
     @router.delete("/keys/{key_id}")
