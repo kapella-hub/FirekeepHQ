@@ -115,6 +115,21 @@ def test_epoch_none_is_a_full_restore():
     assert omitted is None
 
 
+def test_epoch_empty_string_still_deltas_against_a_cursor_minted_with_it():
+    """The pair to the test above: epoch="" is a real, matchable state -- every
+    cursor minted before the first compaction legitimately carries it. If
+    `filter_since` (or a caller upstream) ever collapsed `if epoch is None` into
+    `if not epoch`, this is what would silently break: a pre-first-compaction
+    cursor would stop producing deltas at all, with every test above still green
+    (None is falsy too, so those tests can't tell the two branches apart)."""
+    d = _data()
+    hw = "2026-07-30T11:00:00.000001+00:00"
+    c = encode_cursor(SID, "", hw, plan_sha_of(d))
+    out, omitted = filter_since(d, c, session_id=SID, epoch="")
+    assert omitted is not None
+    assert [x["content"] for x in out["decisions"]] == ["chose B"]
+
+
 # --- the delta itself ------------------------------------------------------
 
 def test_delta_keeps_entries_at_or_after_the_high_water_mark():
