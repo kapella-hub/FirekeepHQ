@@ -88,6 +88,21 @@ def test_rendered_truncates_long_goal():
     assert "x" * 81 not in header
 
 
+def test_resumable_sessions_header_rendered_once():
+    """The section label is a header, not a per-item prefix: N resumable
+    sessions must produce ONE 'RESUMABLE SESSIONS:' line and N session lines.
+    (Contrast the sibling bulletin label, which IS a per-item prefix.)"""
+    secs = _base_sections(resumable_sessions=_sec("ok", {"sessions": [
+        {"session_id": "s1", "goal": "finish X", "age_hours": 3.0, "reason": "paused"},
+        {"session_id": "s2", "goal": "finish Y", "age_hours": 9.0, "reason": "crashed"},
+    ]}))
+    text = render_briefing(agent_id="a", goal="g", sections=secs, instructions="i")
+    assert text.count("RESUMABLE SESSIONS:") == 1
+    # No session is lost by hoisting the header.
+    assert "s1" in text and "s2" in text
+    assert "finish X" in text and "finish Y" in text
+
+
 def test_rendered_error_summary_truncated_to_60():
     secs = _base_sections(environment=_sec("ok", {
         "summary": "S", "collectors": {}, "event_count": 1,

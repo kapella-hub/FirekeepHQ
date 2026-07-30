@@ -61,6 +61,7 @@ from firekeep_client.adapters.base import (
     strip_marked_block,
     upsert_marked_block,
     write_json,
+    write_text_if_changed,
 )
 
 PLUGIN_MARKER = "firekeep-owned: opencode hook bridge"
@@ -213,9 +214,7 @@ class OpencodeAdapter(Adapter):
         path = self._instructions_path()
         try:
             existing = path.read_text(encoding="utf-8") if path.exists() else ""
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(upsert_marked_block(existing, FIREKEEP_INSTRUCTIONS),
-                            encoding="utf-8")
+            write_text_if_changed(path, upsert_marked_block(existing, FIREKEEP_INSTRUCTIONS))
         except OSError:
             pass
 
@@ -246,8 +245,7 @@ class OpencodeAdapter(Adapter):
                 return  # foreign file at our path — never clobber
         except OSError:
             return  # unreadable existing file: leave it alone rather than guess
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(body, encoding="utf-8")
+        write_text_if_changed(path, body)
 
     def unrender(self) -> None:
         config = read_json(self._config_path())

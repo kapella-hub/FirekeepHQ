@@ -86,6 +86,16 @@ class TestSubprocessAlive:
         assert "systemMessage" in out
         assert "Firekeep MCP servers are available" in out["systemMessage"]
 
+    def test_precompact_command_line_is_alive_and_prints_its_systemmessage(self, tmp_path):
+        """The bug this file exists for: a core absent from _CORE_MODULES exits 0
+        silently and the rendered hook is dead. Only the real command line proves
+        otherwise."""
+        proc = _run_dispatcher(tmp_path, ["precompact"], json.dumps({"session_id": "s1"}))
+        assert proc.returncode == 0, proc.stderr
+        out = json.loads(proc.stdout)
+        assert "systemMessage" in out
+        assert "ctx_get_shadow" in out["systemMessage"]
+
     def test_unknown_core_exits_0_with_usage_on_stderr(self, tmp_path):
         proc = _run_dispatcher(tmp_path, ["bogus"], "")
         assert proc.returncode == 0
@@ -322,3 +332,15 @@ class TestPersonalTextCommand:
         proc = _run_dispatcher(tmp_path, ["prompt"], '{"prompt": "tell me about /personal later"}')
         assert "PERSONAL MODE" not in proc.stdout
         assert not self._marker(tmp_path).exists()
+
+
+def test_precompact_is_registered_and_treated_as_a_dict_core():
+    """`_DICT_CORES` is INERT -- verified: the dispatcher only ever consults
+    `_INT_CORES` (lines 195, 215). What actually makes a dict core is membership
+    in `_CORE_MODULES` plus absence from `_INT_CORES`. A core missing from
+    `_CORE_MODULES` fails SILENTLY at exit 0, which is why this asserts the real
+    mechanism and not the decorative set."""
+    from firekeep_client.hooks import __main__ as dispatcher
+    assert "precompact" in dispatcher._CORE_MODULES      # load-bearing
+    assert "precompact" not in dispatcher._INT_CORES     # load-bearing
+    assert "precompact" not in dispatcher._BYPASS_EXEMPT

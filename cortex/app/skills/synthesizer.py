@@ -285,14 +285,20 @@ class SkillSynthesizer:
             )
             resp.raise_for_status()
             data = resp.json()
-        shadow = data.get("shadow") or {}
-        texts: list[str] = []
-        for v in shadow.get("scratch", {}).values():
-            texts.append(str(v))
-        for entry in shadow.get("decision", []):
-            texts.append(str(entry.get("value", "")))
-        for entry in shadow.get("progress", []):
-            texts.append(str(entry.get("value", "")))
+        shadow = data.get("shadow")
+        # GET /sessions/{id} returns `shadow` as the assembled MARKDOWN STRING
+        # (bridge/app/mcp_server.py: assemble_shadow(data)), same defect as
+        # app/skills/scorer.py::_score_resolution_language. Dict is still
+        # accepted so a future shape change degrades instead of regressing.
+        if isinstance(shadow, dict):
+            # Real key names if this ever becomes a dict again: `decisions`/
+            # `progress` (plural) with entries shaped {timestamp, content},
+            # not `decision` with {value}.
+            texts = [str(v) for v in (shadow.get("scratch") or {}).values()]
+            for section in ("decisions", "progress"):
+                texts += [str(e.get("content", "")) for e in (shadow.get(section) or [])]
+        else:
+            texts = [str(shadow or "")]
         shadow_text = " | ".join(texts)[:2000]
         goal = data.get("goal", "")
         outcome = data.get("outcome", "")

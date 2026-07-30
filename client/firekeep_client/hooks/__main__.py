@@ -8,13 +8,13 @@ no briefing systemMessage, and the pre_tool safety gate could never block.
 This dispatcher closes that gap.
 
 Contract:
-  - argv[0] is the core name, one of {session_start, stop, prompt, pre_tool,
-    post_tool}. Unknown/missing -> usage line to stderr, exit 0, hooklogged.
-    A misconfigured hook must NEVER break the user's session — availability
-    over enforcement.
+  - argv[0] is the core name, one of {session_start, stop, session_end, prompt,
+    precompact, pre_tool, post_tool}. Unknown/missing -> usage line to stderr,
+    exit 0, hooklogged. A misconfigured hook must NEVER break the user's
+    session — availability over enforcement.
   - stdin is read fully and parsed as JSON. Empty or malformed stdin ->
     payload defaults to `{}` (hooklogged) and the core still runs.
-  - dict cores (session_start/stop/prompt): if `run(payload)` returns a
+  - dict cores (session_start/stop/session_end/prompt/precompact): if `run(payload)` returns a
     truthy dict, it is printed as `json.dumps(result)` on stdout — Claude
     Code reads the hook's `systemMessage` from that stdout JSON. Always
     exits 0 (these cores never block).
@@ -44,6 +44,7 @@ from firekeep_client import hooklog, resolver
 from firekeep_client.hooks import (
     post_tool,
     pre_tool,
+    precompact,
     prompt,
     session_end,
     session_start,
@@ -63,11 +64,12 @@ _CORE_MODULES = {
     "stop": stop,
     "session_end": session_end,
     "prompt": prompt,
+    "precompact": precompact,
     "pre_tool": pre_tool,
     "post_tool": post_tool,
 }
 _INT_CORES = frozenset({"pre_tool", "post_tool"})
-_DICT_CORES = frozenset({"session_start", "stop", "session_end", "prompt"})
+_DICT_CORES = frozenset({"session_start", "stop", "session_end", "prompt", "precompact"})
 
 # Cores that must run even while personal mode is ON, because they self-handle
 # bypass and own end-of-session cleanup: `stop` clears the personal marker

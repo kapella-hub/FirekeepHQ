@@ -66,7 +66,11 @@ async def test_synthesize_calls_llm_and_stores():
 
     mock_session = {
         "session_id": "s1", "goal": "fix neo4j",
-        "shadow": {"scratch": {"k": "finally fixed by binding port"}, "decision": []},
+        # NOTE: real key is `decisions` (plural), not `decision` -- see
+        # test_fetch_session_data_reads_a_markdown_shadow below for the
+        # dedicated coverage of that defect. Written with the correct key here
+        # so this fixture doesn't itself read as (false) coverage of the bug.
+        "shadow": {"scratch": {"k": "finally fixed by binding port"}, "decisions": []},
     }
     llm_response = MagicMock()
     llm_response.status_code = 200
@@ -170,6 +174,62 @@ async def test_fetch_session_data_omits_header_when_internal_key_unset():
         await synth._fetch_session_data("s1")
 
     assert mock_http.get.await_args.kwargs["headers"] == {}
+
+
+@pytest.mark.asyncio
+async def test_fetch_session_data_reads_a_markdown_shadow():
+    """Regression-binding: GET /sessions/{id} returns `shadow` as the assembled
+    MARKDOWN STRING (bridge/app/shadow.py::assemble_shadow), not a dict. The
+    pre-fix code called `shadow.get("scratch", {})` on it -- calling .get() on
+    a str raises AttributeError, uncaught inside _fetch_session_data itself
+    (the try/except lives one level up, in synthesize()) -- so reverting the
+    fix makes this test fail with an AttributeError, not just a wrong value.
+
+    Fixture is hand-written Markdown matching assemble_shadow's real output
+    format, same discipline as test_skill_scorer_shadow.py -- a dict fixture
+    would reproduce the exact blindness that let this defect ship."""
+    settings = MagicMock()
+    settings.BRIDGE_URL = "http://bridge:8070"
+    settings.FIREKEEP_INTERNAL_KEY = None
+
+    markdown_shadow = (
+        "## Session: fix the collector\n"
+        "**Status**: completed | **Started**: 2026-07-29T10:00:00 | **Updated**: 2026-07-29T11:00:00\n"
+        "\n"
+        "### Plan\n"
+        "*No plan set*\n"
+        "\n"
+        "### Decisions\n"
+        "- [10:15] root cause was a stale lock; the fix was to release it on timeout\n"
+        "\n"
+        "### Files Known\n"
+        "*No files tracked*\n"
+        "\n"
+        "### Progress\n"
+        "*No progress logged*\n"
+        "\n"
+        "### Scratchpad\n"
+        "- outcome: finally resolved after restarting the worker\n"
+    )
+
+    mock_http = AsyncMock()
+    mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+    mock_http.__aexit__ = AsyncMock(return_value=False)
+    mock_http.get = AsyncMock(
+        return_value=MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={"goal": "fix the collector", "outcome": "resolved", "shadow": markdown_shadow}),
+        )
+    )
+
+    with patch("app.skills.synthesizer.httpx.AsyncClient") as mock_client_cls:
+        mock_client_cls.return_value = mock_http
+        synth = SkillSynthesizer(settings)
+        shadow_text, goal, outcome = await synth._fetch_session_data("s1")
+
+    assert "root cause" in shadow_text
+    assert "finally resolved" in shadow_text
+    assert goal == "fix the collector"
 
 
 # ---------------------------------------------------------------------------

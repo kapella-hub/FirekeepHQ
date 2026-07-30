@@ -21,6 +21,15 @@ from firekeep_client.hooks import _git, _mcp, never_raise
 
 _HOOK = "prompt"
 
+# The pending-task suppression digest is keyed {agent}@{profile} with no session
+# component, so without an expiry an UNCHANGED task set stays suppressed across
+# every future session on the machine — the customer silently stops being told
+# about their own tasks, and only a change to the set can break the silence.
+# Twelve hours matches the session-stash and personal-mode backstops: long enough
+# that a working session is never re-nagged, short enough that the suppression
+# cannot outlive the session that earned it.
+_TASKS_DIGEST_TTL_SECONDS = 12 * 3600
+
 
 def _dedup_lines(items: list[str]) -> list[str]:
     """Collapse consecutive-or-not duplicate lines into 'line (xN)'."""
@@ -69,7 +78,8 @@ def run(payload: dict) -> dict:
             ).hexdigest()[:16]
             digest_key = f"tasks_digest_{agent}@{profile}"
             if state.read_scratch(digest_key) != digest:
-                state.write_scratch(digest_key, digest)
+                state.write_scratch(digest_key, digest,
+                                    ttl_seconds=_TASKS_DIGEST_TTL_SECONDS)
                 lines = _dedup_lines([_task_line(t) for t in rows])
                 inbox.append(f"pending tasks ({len(rows)}):\n" + "\n".join(lines))
     except Exception as e:  # noqa: BLE001

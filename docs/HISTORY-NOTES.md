@@ -38,3 +38,44 @@ payloads, but the bridge turning those into training rows and calling `train()`
 was never built, so the model was never created and `rerank()` always fell back
 to score-sort. Removed along with its scikit-learn dependency. LLM re-ranking
 (`RERANK_ENABLED`) and `/memory/feedback` capture (used by GC) are unaffected.
+
+## Shadow delta measurement (2026-07-30) — the Phase C go/no-go gate
+
+The lossless-token-reduction plan made Phase C (the shadow "residency contract",
+i.e. `ctx_get_shadow(since=cursor)` returning a delta) conditional on a real
+measurement, because a lossless delta must resend `scratch` in full (no per-entry
+timestamp exists) and `proactive_memories` in full (replaced wholesale, not
+appended) — so it was plausible that the delta could only omit the smaller half of
+the document and would not be worth its blast radius.
+
+Measured against 26 real sessions on a live Bridge with `tiktoken` (cl100k_base),
+not `chars/4`. A delta was simulated at a cursor taken 75% of the way through each
+session: decisions/progress/files filtered to entries at-or-after the high-water
+mark, scratch and Relevant Past Experience resent in full, an unchanged plan
+omitted, header always kept.
+
+    total shadow tokens, 26 sessions      16,725
+    delta                                 10,075
+    saved                                  6,650   = 39.8%
+    sessions >= 1000 tokens (7 of 26)              = 50.7%
+
+Decomposition of the saving: **80% comes from filtering decision/progress/file
+entries, only 20% from omitting an unchanged plan.** Scratchpad — the section that
+cannot be filtered — is just **14.1%** of all shadow tokens, so the concern that it
+would dominate and erase the saving is not borne out on this data. Verdict:
+PROCEED.
+
+Two caveats. This is one operator's 26 sessions on one machine, so like the symdex
+12% figure it is an in-sample number, not a prediction for another team's usage
+pattern. And the saving is worst exactly where an agent has dumped a large report
+into a scratch value: the session with 33% of its shadow in Scratchpad saved only
+12.2%.
+
+**A first pass measured 0.4% and would have cancelled Phase C.** That was a bug in
+the measurement, not in the design: it split sections on every `### ` line, but
+agent-authored scratch content contains its own markdown headings, so ~2,000 tokens
+of one session's scratch value were mis-attributed to phantom top-level sections
+and counted as unfilterable. `assemble_shadow` emits a FIXED set of section names
+(Plan, Decisions, Files Known, Progress, Scratchpad, Relevant Past Experience) —
+anything else that looks like a heading is content. Recorded because the wrong
+number is easy to reproduce and would have killed a feature that measures 39.8%.

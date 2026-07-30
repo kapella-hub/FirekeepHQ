@@ -161,11 +161,15 @@ def render_briefing(*, agent_id: str, goal: str, sections: dict[str, Section],
 
     # 10. resumable sessions
     def _resume(d):
-        for s in d.get("sessions") or []:
+        sessions = d.get("sessions") or []
+        if sessions:
+            # Section header, emitted once. (The sibling _bull label above is a
+            # per-item prefix by design — do not "fix" that one to match.)
+            lines.append("RESUMABLE SESSIONS:")
+        for s in sessions:
             goal_t = (s.get("goal") or "")[:80]
             age = s.get("age_hours")
             age_s = f"{age}h ago" if age is not None else "unknown age"
-            lines.append("RESUMABLE SESSIONS:")
             lines.append(f"- [{s.get('session_id')}] \"{goal_t}\" ({s.get('reason')} {age_s})")
     emit("resumable_sessions", _resume)
 

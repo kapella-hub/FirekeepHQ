@@ -57,6 +57,7 @@ from firekeep_client.adapters.base import (
     shim_servers,
     upsert_flat_hook,
     write_json,
+    write_text_if_changed,
 )
 
 # Whole-file firekeep-owned steering doc (kiro's instruction surface). The marker
@@ -109,7 +110,7 @@ def _migrate_legacy(home: Path) -> None:
                 if stale:
                     for k in stale:
                         del servers[k]
-                    mcp_json.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+                    write_text_if_changed(mcp_json, json.dumps(data, indent=2) + "\n")
     except Exception:  # noqa: BLE001 — total backstop: a legacy artifact must never fail an install
         # Missing, unparsable, shape-hostile, or anything else (e.g. RecursionError from
         # pathologically deep JSON — a RuntimeError subclass no enumerated tuple covers).
@@ -126,7 +127,7 @@ def _migrate_legacy(home: Path) -> None:
             # machine (2026-07-13). Same ownership logic as the archival: the value names
             # the pre-kit artifact, so pointing it at the kit's agent preserves intent.
             settings["chat.defaultAgent"] = "firekeep"
-            cli_json.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+            write_text_if_changed(cli_json, json.dumps(settings, indent=2) + "\n")
     except Exception:  # noqa: BLE001 — total backstop, same contract as the mcp.json block
         pass
     # NO LEGACY-ARTIFACT ARCHIVING HERE. This loop used to move
@@ -202,8 +203,7 @@ class KiroAdapter(Adapter):
             f"{FIREKEEP_INSTRUCTIONS}"
         )
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(body, encoding="utf-8")
+            write_text_if_changed(path, body)
         except OSError:
             pass
 

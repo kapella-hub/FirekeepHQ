@@ -22,20 +22,18 @@ def test_pre_edit_block_degrades_per_runtime():
     assert capabilities("opencode")["pre_edit_block"] == "guaranteed (plugin throw, validated 1.14.22)"
 
 
-def test_precompact_is_wired_nowhere():
-    """Corrected 2026-07-29: the matrix claimed claude="yes" and this test enforced
-    it, but the claude adapter renders NO PreCompact hook and no precompact hook
-    core exists anywhere in the kit — verified by grep, zero matches in both.
-
-    A capability matrix that overstates coverage is worse than one with a gap:
-    `firekeep doctor` and the docs both read from it, so it told users a
-    context-compaction save was happening when nothing ran. The retired legacy
-    bash PreCompact echo hook (documented as deliberately left in place on
-    upgraded machines) is not the kit wiring it."""
-    for runtime in ("claude", "kiro", "codex", "opencode"):
+def test_precompact_is_claimed_only_where_the_kit_renders_it():
+    """Corrected twice, for the same reason each time: the matrix must never
+    overstate coverage, because `firekeep doctor` and the docs read from it.
+    2026-07-29 it claimed claude="yes" while nothing rendered a PreCompact hook.
+    It is now "hook" for claude because the claude adapter renders one and a
+    precompact core exists — and still "none" everywhere else, because no other
+    runtime exposes a compaction event at all."""
+    assert capabilities("claude")["precompact"] == "hook"
+    for runtime in ("kiro", "codex", "opencode"):
         assert capabilities(runtime)["precompact"] == "none", (
-            f"{runtime} claims a precompact capability; nothing in the kit renders "
-            f"a PreCompact hook, so the claim is false"
+            f"{runtime} claims a precompact capability; that runtime exposes no "
+            f"compaction event, so the claim would be false"
         )
 
 

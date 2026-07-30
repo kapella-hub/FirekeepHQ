@@ -18,12 +18,27 @@ _ACTIONS_SUBDIR = "actions"
 _PRESTATE_SUBDIR = "prestate"
 _SCRATCH_SUBDIR = "scratch"
 
+# Per-key expiry for scratch markers, declared at the WRITE site and stored in a
+# sidecar file under scratch/.ttl/ (a subdir, so it can never collide with a
+# marker literally named "<key>.ttl").
+#
+# Opt-in per key, deliberately. Scratch markers have wildly different intended
+# lifetimes — the sidecar pid guard lives as long as its process, the
+# update-check stamp for a calendar day, the session stash enforces its own 12h
+# via an embedded timestamp — so a blanket age sweep of scratch/ would break
+# session attribution, the sidecar singleton, and the once-a-day auto-update
+# guard. A key that passes no ttl_seconds behaves exactly as it did before this
+# existed.
+_SCRATCH_TTL_SUBDIR = ".ttl"
+
 # Session stash: the current Bridge session_id + briefing_id for {agent}@{profile},
 # written by the session_start hook (briefing_id) and the bridge shim's
 # ctx_start_session response tap (session_id), read by the shim's per-request
 # X-Session-Id Auth so agent memory calls are attributed WITHOUT the agent
-# passing session_id. TTL is self-enforced via an embedded timestamp — reap_stale
-# does not sweep scratch/, so a crashed session's stale id must age out on its own.
+# passing session_id. TTL is self-enforced via an embedded timestamp rather than
+# via write_scratch's ttl_seconds: reap_stale only ever removes markers whose own
+# declared expiry has lapsed, and the stash declares none, so a crashed session's
+# stale id ages out on its own read path.
 _SESSION_STASH_TTL_HOURS_DEFAULT = 12.0
 
 # --- presence registration-race guard (SP1b Task 19 seam reconciliation) ----
@@ -190,12 +205,62 @@ def read_prestate(action_id: str) -> str | None:
     return f.read_text(encoding="utf-8").strip() if f.exists() else None
 
 
+def _scratch_ttl_path(name: str) -> Path:
+    """Where this marker's expiry lives. Pure — creates nothing, so a marker
+    written with no TTL leaves no .ttl/ dir behind (an empty subdir inside
+    scratch/ is a side effect for nothing, and it trips the path-traversal
+    guard that asserts scratch/ holds only files)."""
+    return cache_dir() / _SCRATCH_SUBDIR / _SCRATCH_TTL_SUBDIR / _safe_name(name)
+
+
+def _scratch_ttl_file(name: str) -> Path:
+    """As _scratch_ttl_path, but ensures the directory exists — write path only."""
+    p = _scratch_ttl_path(name)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _scratch_expired(name: str) -> bool:
+    """True if this marker declared an expiry and that expiry has passed.
+
+    No sidecar file means no TTL was ever requested -> never expires (today's
+    behaviour, preserved exactly). A sidecar that is present but unreadable or
+    non-numeric counts as EXPIRED: failing to read an expiry is not evidence the
+    marker is still fresh, and both consumers want that fallback — a lapsed
+    suppression digest re-announces the customer's tasks (accuracy-positive) and
+    a lapsed cursor forces a full restore (lossless).
+    """
+    f = _scratch_ttl_path(name)
+    try:
+        if not f.exists():
+            return False
+        return time.time() >= float(f.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return True
+
+
 def read_scratch(name: str) -> str | None:
+    if _scratch_expired(name):
+        return None
     f = _scratch_file(name)
     return f.read_text(encoding="utf-8") if f.exists() else None
 
 
-def write_scratch(name: str, value: str) -> None:
+def write_scratch(name: str, value: str, *, ttl_seconds: float | None = None) -> None:
+    """Write a scratch marker. With ttl_seconds, the marker reads as absent once
+    that many seconds have passed; without it, the marker never expires.
+
+    Writes the expiry BEFORE the value: a crash between the two can then only
+    leave a marker that expires (safe), never one that has silently become
+    permanent.
+    """
+    if ttl_seconds is None:
+        # A key that is being made permanent must not stay on an older clock.
+        _scratch_ttl_path(name).unlink(missing_ok=True)
+    else:
+        ttl_file = _scratch_ttl_file(name)
+        ttl_file.write_text(str(time.time() + ttl_seconds), encoding="utf-8")
+        _private(ttl_file)
     f = _scratch_file(name)
     f.write_text(value, encoding="utf-8")
     _private(f)
@@ -203,6 +268,9 @@ def write_scratch(name: str, value: str) -> None:
 
 def delete_scratch(name: str) -> None:
     _scratch_file(name).unlink(missing_ok=True)
+    # Drop the expiry too, or a re-created key inherits the dead key's clock and
+    # reads as absent the instant it is written.
+    _scratch_ttl_path(name).unlink(missing_ok=True)
 
 
 def delete_prestate(action_id: str) -> None:
@@ -215,8 +283,13 @@ def reap_stale(max_age_seconds: float = 3600) -> None:
     """Best-effort cleanup of orphaned action-queue/prestate files older than
     max_age_seconds (bash parity: precheck reaped /tmp snapshots >60min).
     Orphans accumulate when a pre_tool fires without a matching post_tool
-    (crash, killed session). Never raises."""
-    import time
+    (crash, killed session). Never raises.
+
+    Scratch markers are swept too, but by their OWN declared expiry — never by
+    file age. max_age_seconds does not apply to them: a marker that asked for no
+    TTL must survive here, or this sweep would silently break the session stash,
+    the sidecar singleton and the daily auto-update guard.
+    """
     now = time.time()
     for sub in (_ACTIONS_SUBDIR, _PRESTATE_SUBDIR):
         try:
@@ -231,6 +304,33 @@ def reap_stale(max_age_seconds: float = 3600) -> None:
                     continue
         except Exception:
             continue
+    _reap_expired_scratch()
+
+
+def _reap_expired_scratch() -> None:
+    """Delete scratch markers whose declared expiry has lapsed, plus any orphan
+    expiry sidecar. Never raises."""
+    try:
+        d = cache_dir() / _SCRATCH_SUBDIR
+        if not d.is_dir():
+            return
+        for entry in d.iterdir():                  # .ttl/ is a dir -> skipped
+            try:
+                if entry.is_file() and _scratch_expired(entry.name):
+                    entry.unlink(missing_ok=True)
+                    _scratch_ttl_path(entry.name).unlink(missing_ok=True)
+            except OSError:
+                continue
+        ttl_dir = d / _SCRATCH_TTL_SUBDIR
+        if ttl_dir.is_dir():
+            for entry in ttl_dir.iterdir():
+                try:
+                    if entry.is_file() and not (d / entry.name).exists():
+                        entry.unlink(missing_ok=True)   # orphan: value already gone
+                except OSError:
+                    continue
+    except Exception:
+        return
 
 
 def _session_stash_key(agent_id: str, profile: str) -> str:
@@ -301,6 +401,38 @@ def clear_session_stash(agent_id: str, profile: str) -> None:
     """Delete the session stash for {agent}@{profile}. Idempotent, never raises."""
     try:
         delete_scratch(_session_stash_key(agent_id, profile))
+    except Exception:
+        pass
+
+
+def _shadow_cursor_key(agent_id: str, profile: str) -> str:
+    return f"shadow_cursor_{agent_id}@{profile}"
+
+
+def write_shadow_cursor(agent_id: str, profile: str, cursor: str) -> None:
+    """Stash the opaque shadow cursor. TTL'd like the session stash: a cursor
+    that outlives its session must expire rather than be replayed. Never raises."""
+    try:
+        write_scratch(_shadow_cursor_key(agent_id, profile), cursor,
+                      ttl_seconds=_session_stash_ttl_seconds())
+    except Exception:
+        pass
+
+
+def read_shadow_cursor(agent_id: str, profile: str) -> str | None:
+    """The stashed cursor, or None if absent/expired. None means 'ask for a full
+    restore' — the safe default."""
+    try:
+        return read_scratch(_shadow_cursor_key(agent_id, profile))
+    except Exception:
+        return None
+
+
+def clear_shadow_cursor(agent_id: str, profile: str) -> None:
+    """Idempotent, never raises. Called by precompact: after a compaction the
+    agent can no longer vouch for what is still in its context."""
+    try:
+        delete_scratch(_shadow_cursor_key(agent_id, profile))
     except Exception:
         pass
 

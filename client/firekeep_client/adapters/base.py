@@ -28,9 +28,10 @@ HOOK_MARKER = "firekeep_client.hooks"
 # repo, so a machine upgraded from that installer opens every session with a "No such file
 # or directory" hook error while the real hook core ALSO fires — two layers, one broken.
 # They are firekeep-owned, not foreign: render() replaces them, unrender() removes them.
-# Deliberately NOT listed: the legacy PreCompact `echo` hook. It still works, the kit
-# renders no PreCompact hook of its own, and silently deleting a working behavior is worse
-# than leaving one tidy artifact behind.
+# Deliberately NOT listed: the legacy PreCompact `echo` hook. It still works, and
+# the kit's own PreCompact group (rendered since the precompact core landed) is a
+# SEPARATE, marker-identified group that coexists with it — so silently deleting a
+# working behavior is still worse than leaving one tidy artifact behind.
 # DO NOT RENAME THE STRINGS IN THIS BLOCK. They name artifacts left by PREVIOUS
 # generations of the kit, so they must keep spelling the OLD thing forever. A
 # repo-wide find-and-replace is exactly how this cleanup breaks: the predecessor
@@ -65,6 +66,20 @@ LEGACY_ENV_KEYS = (
 LEGACY_MCP_KEYS = (
     "nexus-cortex", "nexus-bridge", "nexus-sentinel", "nexus-relay",
     "nexus-symdex", "nexus-decision",
+)
+
+# Generation 2's instruction block, upserted into the user's global CLAUDE.md
+# under the predecessor product's markers. Measured on a live machine 2026-07-30:
+# 3,214 chars, 0.75-similar to FIREKEEP_INSTRUCTIONS (a near-duplicate of a
+# SUBSET — firekeep's block carries a memory-protocol section this one lacks).
+# The sibling `Agent Guidelines` block -- a distinct marker pair the predecessor
+# also wrote to the same file -- is deliberately NOT listed here: at 0.03
+# similarity it is not a duplicate, it is content the user still has, and
+# removing it would be a plain deletion of their information.
+# DO NOT RENAME (see the warning above): renaming these disarms the migration on
+# every machine that actually has the block.
+LEGACY_INSTRUCTION_MARKERS = (
+    ("<!-- nexus:instructions:begin", "<!-- nexus:instructions:end -->"),
 )
 
 
@@ -144,9 +159,35 @@ def read_json(path: Path) -> dict:
     return {}
 
 
-def write_json(path: Path, data: dict) -> None:
+def write_text_if_changed(path: Path, body: str) -> bool:
+    """Write `body` to `path` only if it differs from what is already there.
+    Returns True if a write happened.
+
+    Rewriting byte-identical content still moves mtime, and that is not free.
+    `firekeep update` re-execs `firekeep install`, which re-renders
+    `~/.claude/CLAUDE.md` and `~/.claude/settings.json` — and background
+    auto-update is on by default, so this happens MID-SESSION on a customer's
+    machine. Those files sit in the prompt prefix; a host that re-reads a
+    rendered instruction file because its mtime moved rebuilds that prefix and
+    invalidates the prompt cache, re-billing the conversation at full rate for a
+    zero-byte change. Whether a given host does that cannot be determined from
+    this repo, which is exactly why touching mtime for nothing is indefensible.
+
+    Fails toward writing: if the existing file cannot be read or decoded we
+    cannot prove it matches, so we write. Never skips a real change.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    try:
+        if path.exists() and path.read_text(encoding="utf-8") == body:
+            return False
+    except (OSError, UnicodeDecodeError):
+        pass
+    path.write_text(body, encoding="utf-8")
+    return True
+
+
+def write_json(path: Path, data: dict) -> None:
+    write_text_if_changed(path, json.dumps(data, indent=2) + "\n")
 
 
 def merge_owned(existing: dict, owned: dict) -> dict:
@@ -345,7 +386,9 @@ the session.
   session-start briefing only ever matched your ORIGINAL goal, never what the user
   asked on turn 7.
 - Your own earlier plan or decisions missing from context (after compaction) →
-  `ctx_get_shadow` before asking the user to repeat themselves.
+  `ctx_get_shadow` before asking the user to repeat themselves. Pass
+  `since=<shadow_cursor>` ONLY if the earlier shadow is still visible in your
+  context; if you are unsure, omit it — omitting it is always correct.
 
 **Write as you go, not at the end.**
 - `ctx_update` after each meaningful step: category `plan` | `decision` |
@@ -450,3 +493,26 @@ def strip_marked_block(existing: str) -> str:
         return existing
     after = existing[end + len(INSTRUCTIONS_END):]
     return existing[:begin].rstrip("\n") + ("\n" if existing[:begin].strip() else "") + after.lstrip("\n")
+
+
+def find_legacy_block_bounds(text: str, begin_prefix: str, end_marker: str) -> tuple[int, int] | None:
+    """Locate a marker-delimited block whose BEGIN marker is matched by PREFIX (the
+    live begin line carries a variable prose tail a later generation could reword —
+    e.g. `<!-- nexus:instructions:begin — nexus-owned block, do not edit; ... -->`)
+    and whose END marker is matched in full. Returns (start, stop) spanning the
+    whole block including both markers, or None if the pair isn't present/ordered."""
+    begin = text.find(begin_prefix)
+    if begin == -1:
+        return None
+    end = text.find(end_marker, begin)
+    if end == -1:
+        return None
+    return begin, end + len(end_marker)
+
+
+def strip_span(text: str, begin: int, end: int) -> str:
+    """Remove text[begin:end] and normalize surrounding blank lines the same way
+    strip_marked_block does, so archiving a legacy block leaves the remaining
+    prose looking hand-written rather than gapped."""
+    before, after = text[:begin], text[end:]
+    return before.rstrip("\n") + ("\n" if before.strip() else "") + after.lstrip("\n")
