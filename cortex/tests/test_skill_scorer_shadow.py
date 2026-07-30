@@ -85,6 +85,12 @@ async def test_resolution_score_reads_a_markdown_shadow():
 
 @pytest.mark.asyncio
 async def test_resolution_score_is_zero_for_a_shadow_with_no_resolution_language():
+    """Behavioural-only, NOT regression-binding: the pre-fix code also returns
+    0.0 here (the swallowed AttributeError's `except: return 0.0` path is
+    indistinguishable from a real "no resolution language" 0.0), so this test
+    passes identically before and after the fix. It exists to pair with
+    test_resolution_score_reads_a_markdown_shadow and demonstrate the score
+    actually varies across inputs post-fix, rather than always returning 0."""
     mock_http = _mock_http_get({"shadow": NO_RESOLUTION_SHADOW_MARKDOWN})
     with patch("app.skills.scorer.httpx.AsyncClient", return_value=mock_http):
         score = await _score_resolution_language("sess-1", "http://bridge:8070")
