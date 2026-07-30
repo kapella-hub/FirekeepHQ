@@ -335,11 +335,11 @@ async def ctx_update(
 @mcp.tool()
 async def ctx_get_shadow(session_id: str | None = None, agent_id: str = "default",
                          since: str | None = None) -> dict:
-    """Retrieve your full working context as a Markdown document.
+    """Retrieve your working context as a Markdown document.
 
     Call this after context compression or when starting a new conversation to restore
-    your working state. Returns everything: your plan, decisions, file knowledge,
-    progress, and scratchpad.
+    your working state. Returns everything by default: your plan, decisions, file
+    knowledge, progress, and scratchpad.
 
     Args:
         session_id: Specific session to retrieve (defaults to your active session).
@@ -357,11 +357,11 @@ async def ctx_get_shadow(session_id: str | None = None, agent_id: str = "default
     if session_id is None:
         session_id = await mgr.get_active_session_id(agent_id)
     if not session_id:
-        return {"error": "No active session. Start one with ctx_start_session."}
+        return {"error": "No active session. Start one with ctx_start_session.", "delta": False}
 
     data = await mgr.get_session_data(session_id)
     if not data:
-        return {"error": f"Session {session_id} not found."}
+        return {"error": f"Session {session_id} not found.", "delta": False}
 
     # AMENDED 2026-07-30 (C1 + C2).
     epoch = await mgr.get_shadow_epoch(session_id)
@@ -390,12 +390,19 @@ async def ctx_get_shadow(session_id: str | None = None, agent_id: str = "default
         "goal": data.get("goal", ""),
         "status": data.get("status", ""),
         "shadow": shadow,
-        # Always minted from the FULL data, never the filtered copy: the cursor
-        # describes what the caller now holds in total, not what this response carried.
-        "shadow_cursor": residency.encode_cursor(
-            session_id, epoch, residency.high_water_of(data), residency.plan_sha_of(data)),
         "delta": omitted is not None,
     }
+    try:
+        # Always minted from the FULL data, never the filtered copy: the cursor
+        # describes what the caller now holds in total, not what this response
+        # carried. Guarded: a malformed timestamp anywhere in the session (e.g. a
+        # non-string truthy stamp reaching high_water_of's max()) must not crash
+        # the post-compaction lifeline — a response with no cursor is a safe dead
+        # end, the same principle C2 already established for a failed epoch read.
+        result["shadow_cursor"] = residency.encode_cursor(
+            session_id, epoch, residency.high_water_of(data), residency.plan_sha_of(data))
+    except Exception as exc:
+        logger.warning("shadow_cursor mint failed for session %s: %s", session_id, exc)
     if omitted is not None:
         note = residency.omission_notice(omitted)
         if note:
@@ -533,8 +540,14 @@ async def ctx_resume_session(session_id: str, agent_id: str = "default") -> dict
     # start passing `since` to a tool that must never accept it.
     epoch = await mgr.get_shadow_epoch(session_id)
     if epoch is not None:
-        result["shadow_cursor"] = residency.encode_cursor(
-            session_id, epoch, residency.high_water_of(data), residency.plan_sha_of(data))
+        try:
+            # Guarded for the same reason as ctx_get_shadow's mint: a malformed
+            # timestamp must not crash a resume, which is the crash-recovery path
+            # itself. No cursor is a safe dead end here too.
+            result["shadow_cursor"] = residency.encode_cursor(
+                session_id, epoch, residency.high_water_of(data), residency.plan_sha_of(data))
+        except Exception as exc:
+            logger.warning("shadow_cursor mint failed for session %s: %s", session_id, exc)
     return result
 
 

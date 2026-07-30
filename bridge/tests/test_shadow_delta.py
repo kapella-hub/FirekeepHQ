@@ -87,10 +87,16 @@ class TestShadowDelta:
         """The tool-level half of the fail-safe matrix. The pure-function half lives
         in tests/test_residency.py; both must hold."""
         from app.mcp_server import ctx_get_shadow
+        from app.shadow import assemble_shadow
         for bad in (None, "", "garbage", "eyJ2IjoxfQ"):
             with patch("app.mcp_server._get_manager", return_value=_mgr()):
                 out = await ctx_get_shadow(agent_id="a", since=bad)
             assert out["delta"] is False, f"cursor {bad!r} produced a delta"
+            # AMENDED 2026-07-30 (review round 1, Minor): delta=False alone doesn't
+            # prove the DOCUMENT is actually complete — assert it's the same
+            # reference output a full restore always produces.
+            assert out["shadow"] == assemble_shadow(_session_data()), \
+                f"cursor {bad!r} produced a non-full document"
 
     @pytest.mark.asyncio
     async def test_a_cursor_is_refused_after_the_epoch_is_bumped(self):
@@ -113,6 +119,23 @@ class TestShadowDelta:
         assert "since" not in inspect.signature(ctx_resume_session).parameters
 
     @pytest.mark.asyncio
+    async def test_ctx_resume_session_mints_a_cursor_but_never_a_delta_key(self):
+        """AMENDED 2026-07-30 (review round 1): the signature-only test above cannot
+        catch a regression in the resume BODY — deleting the cursor-minting lines
+        entirely, or adding an always-false `"delta": False` (the exact anti-pattern
+        the brief called out: "an always-false flag invites someone to start passing
+        `since`"), both leave the suite green without this test."""
+        from app.mcp_server import ctx_resume_session
+        mgr = AsyncMock()
+        mgr.resume_session = AsyncMock(return_value=None)
+        mgr.get_session_data = AsyncMock(return_value=_session_data())
+        mgr.get_shadow_epoch = AsyncMock(return_value="")
+        with patch("app.mcp_server._get_manager", return_value=mgr):
+            out = await ctx_resume_session("sess-1", agent_id="a")
+        assert out["shadow_cursor"]
+        assert "delta" not in out
+
+    @pytest.mark.asyncio
     async def test_a_delta_document_never_denies_that_withheld_content_exists(self):
         """The C1 regression test, at the layer C1 actually lived in.
 
@@ -124,19 +147,33 @@ class TestShadowDelta:
         simply TRUE there (nothing was ever omitted from an already-empty section),
         and asserting their absence was asserting the wrong thing. This local
         fixture instead gives every filterable section (decisions, progress, files,
-        plan) a genuinely older entry that the high-water filter actually withholds,
-        so the assertion below is exercised against a real omission in all four —
-        not against a section that was never populated to begin with.
+        plan) a genuinely older entry that the high-water filter actually withholds.
+
+        AMENDED again 2026-07-30 (review round 1): with every section retaining its
+        newest entry, `out["decisions"]`/`["progress"]`/`["files"]` were never fully
+        empty — only PARTIALLY filtered — so the three per-section denial assertions
+        below could not actually fail: `assemble_shadow` only ever prints the "*No
+        X*" placeholder for a section that has NOTHING left after filtering (see
+        shadow.py's `elif not decisions` / `elif not files` / `elif not progress`
+        branches), and a partially-filtered section always has something left. Only
+        the plan branch (which zeroes to `""` on an unchanged plan) was actually
+        exercising the C1 path. `decisions` here is trimmed to ONE entry older than
+        the high-water mark set by `files`' newest entry — so the whole section is
+        dropped (`out["decisions"] == []`), which is the shape that actually reaches
+        the placeholder branch and makes the assertion load-bearing again.
         """
         from app.mcp_server import ctx_get_shadow
 
         def _rich_session_data():
             return {
                 "goal": "g", "status": "active", "plan": "- [ ] one",
+                # Fully withheld: its only entry predates the high-water mark set
+                # below by files' newest entry, so the whole section is dropped.
                 "decisions": [
                     {"timestamp": "2026-07-30T09:00:00.000001+00:00", "content": "old decision"},
-                    {"timestamp": "2026-07-30T10:00:00.000001+00:00", "content": "new decision"},
                 ],
+                # Partially withheld: one entry survives — covers the "some kept,
+                # some omitted" shape the fully-withheld decisions case does not.
                 "progress": [
                     {"timestamp": "2026-07-30T09:00:00.000001+00:00", "content": "old progress"},
                     {"timestamp": "2026-07-30T10:00:00.000001+00:00", "content": "new progress"},
@@ -164,10 +201,15 @@ class TestShadowDelta:
         # sections actually withheld something in THIS fixture — asserting against
         # it (rather than all four unconditionally) is what keeps this test honest
         # about what C1 claims versus what it doesn't.
-        _, omitted_report = residency.filter_since(
+        rendered, omitted_report = residency.filter_since(
             _rich_session_data(), first["shadow_cursor"], session_id="sess-1", epoch="")
         assert omitted_report["decisions"] and omitted_report["progress"] and omitted_report["files"]
         assert omitted_report["plan"]
+        # The load-bearing shape: decisions is FULLY withheld (nothing survives the
+        # filter), which is what actually reaches assemble_shadow's placeholder
+        # branch. Without this, the denial assertions below could not fail even if
+        # `omitted=omitted` were dropped from the ctx_get_shadow implementation.
+        assert rendered["decisions"] == []
 
         for key, denial in (("decisions", "No decisions recorded"),
                             ("progress", "No progress logged"),
