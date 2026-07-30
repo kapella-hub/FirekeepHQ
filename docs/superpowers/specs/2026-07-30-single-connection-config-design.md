@@ -60,7 +60,7 @@ agent_id = bob-thinkpad
 [server]
 kind = ports              ; ports | paths — derived, never prompted
 scheme = http
-host = srv1143982         ; kind=ports
+host = fk.internal        ; kind=ports
 ; base_url = https://…    ; kind=paths
 verify_tls = false
 ; ca_path = …             ; required when scheme=https
