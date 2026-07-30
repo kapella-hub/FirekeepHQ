@@ -283,7 +283,7 @@ Add `validate_key_by_hash` from Step 1 next to `validate_key`.
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `cd auth && python -m pytest tests/test_key_id_resolution.py -v`
-Expected: PASS (13 tests).
+Expected: PASS (10 tests).
 
 - [ ] **Step 6: Run the whole auth suite for regressions**
 
@@ -384,7 +384,7 @@ async def list_keys(limit: int = 50) -> list[dict[str, Any]]:
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `cd auth && python -m pytest tests/test_key_id_resolution.py -v`
-Expected: PASS (16 tests).
+Expected: PASS (13 tests — the 10 from Task 1 plus 3 new).
 
 - [ ] **Step 5: Run the whole auth suite**
 
