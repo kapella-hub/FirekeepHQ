@@ -1238,6 +1238,48 @@ Preserve the existing keys in that return dict exactly. `ctx_get_shadow` returns
 
 **Also mint a cursor on `ctx_resume_session`.** It stays full-only — it takes no `since`, ever, because a resumed session is by definition one the agent cannot vouch for — but it should still return a `shadow_cursor` in its response dict, built the same way from the same full `data`. A resume delivers the *complete* document, so minting a cursor there is exactly as safe as minting one on a full `ctx_get_shadow`; omitting it merely forfeits the entire saving for every subsequent restore in a resumed session, which is the common case after a crash. Its return shape is `{session_id, goal, status, shadow}` with `status` hardcoded to `"active"` (`mcp_server.py:483-488`) — add `shadow_cursor` and leave the rest untouched. Do NOT add a `delta` key there: it is never a delta, and an always-false flag invites someone to start passing `since`.
 
+- [ ] **Step 3b: Assert on the RENDERED DOCUMENT, not only the returned data**
+
+This obligation exists because of how Task 5's worst defect survived review. Fifteen tests,
+five redundant fail-safes, an adversarial critique and three reviews all passed while the
+delta rendered `*No decisions recorded*` over withheld content — an affirmative denial that
+the agent's own work existed. Every one of those tests asserted on the filtered **data**.
+Nobody rendered the result and read it. The data was correct at every step; the document
+built from it was false.
+
+So `ctx_get_shadow`'s tests must assert on `out["shadow"]` — the markdown string the agent
+actually reads — not merely on `out["delta"]` and the omission counts:
+
+```python
+    @pytest.mark.asyncio
+    async def test_a_delta_document_never_denies_that_withheld_content_exists(self):
+        """The C1 regression test, at the layer C1 actually lived in."""
+        from app.mcp_server import ctx_get_shadow
+        with patch("app.mcp_server._get_manager", return_value=_mgr()):
+            first = await ctx_get_shadow(agent_id="a")
+            second = await ctx_get_shadow(agent_id="a", since=first["shadow_cursor"])
+        doc = second["shadow"]
+        for denial in ("No plan set", "No decisions recorded",
+                       "No files tracked", "No progress logged"):
+            assert denial not in doc, f"delta document denies content exists: {denial!r}"
+        assert "ctx_get_shadow()" in doc, "document does not say how to recover the full set"
+
+    @pytest.mark.asyncio
+    async def test_a_full_restore_document_is_byte_identical_to_the_pre_change_output(self):
+        """The no-regression half: with no cursor, the document must be exactly what
+        callers got before this task existed. assemble_shadow(data) with omitted=None
+        is the reference."""
+        from app.mcp_server import ctx_get_shadow
+        from app.shadow import assemble_shadow
+        with patch("app.mcp_server._get_manager", return_value=_mgr()):
+            out = await ctx_get_shadow(agent_id="a")
+        assert out["shadow"] == assemble_shadow(_session_data())
+```
+
+Also assert that when the epoch read fails (`get_shadow_epoch` returns `None`), the response
+contains **no** `shadow_cursor` key at all — a response carrying a cursor could seed a later
+delta on a session whose epoch was never readable.
+
 - [ ] **Step 4: Run to verify pass**
 
 Run: `cd bridge && python -m pytest tests/ -q`
