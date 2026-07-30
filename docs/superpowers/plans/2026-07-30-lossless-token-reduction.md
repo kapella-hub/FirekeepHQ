@@ -1259,11 +1259,27 @@ actually reads — not merely on `out["delta"]` and the omission counts:
             first = await ctx_get_shadow(agent_id="a")
             second = await ctx_get_shadow(agent_id="a", since=first["shadow_cursor"])
         doc = second["shadow"]
-        for denial in ("No plan set", "No decisions recorded",
-                       "No files tracked", "No progress logged"):
-            assert denial not in doc, f"delta document denies content exists: {denial!r}"
+        # CORRECTED 2026-07-30 (plan defect, caught before commit). An earlier
+        # version asserted a BLANKET "none of the four denial strings may appear".
+        # That is not what C1 says. C1 is "never deny content that WAS withheld" —
+        # a section that genuinely never had content renders a placeholder that is
+        # simply TRUE, and asserting its absence asserts the wrong thing. Worse, a
+        # blanket assertion fails on CORRECT code, and the natural way to make it
+        # pass is to suppress the placeholders entirely — turning a true statement
+        # into silence, which is the same defect class C1 was about.
+        #
+        # Use a LOCAL fixture with past-dated entries in every section, so all four
+        # genuinely withhold something. Do NOT extend the shared _session_data():
+        # that would silently change what every other delta test exercises.
+        for key, denial in (("decisions", "No decisions recorded"),
+                            ("progress", "No progress logged"),
+                            ("files", "No files tracked")):
+            if report.get(key):
+                assert denial not in doc, f"{key}: denied content it withheld"
+                assert "omitted" in doc, f"{key}: withheld content silently"
+        if report.get("plan"):
+            assert "No plan set" not in doc
         assert "ctx_get_shadow()" in doc, "document does not say how to recover the full set"
-
     @pytest.mark.asyncio
     async def test_a_full_restore_document_is_byte_identical_to_the_pre_change_output(self):
         """The no-regression half: with no cursor, the document must be exactly what
