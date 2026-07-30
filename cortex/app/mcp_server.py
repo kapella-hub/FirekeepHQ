@@ -171,7 +171,7 @@ def _connection_error(exc: httpx.RequestError) -> str:
     )
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 async def memory_recall(
     task: str,
     tags: list[str] | None = None,
@@ -910,7 +910,7 @@ async def vault_retrieve(key: str) -> str:
         return _connection_error(exc)
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 async def vault_list(category: str | None = None) -> str:
     """List vault secrets (metadata only — names, categories, tags; never values).
 
@@ -1148,7 +1148,7 @@ async def knowledge_ingest_url(
         return _connection_error(exc)
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 async def skill_recall(
     task: str,
     project: str | None = None,
@@ -1170,8 +1170,12 @@ async def skill_recall(
         params: dict = {"status": "active", "limit": top_k}
         if project:
             params["project"] = project
-        keywords = " ".join(task.split()[:5])
-        params["q"] = keywords
+        # Send the FULL task. The old five-word truncation existed only to make a
+        # literal substring match against a trigger plausible — and it still almost
+        # never matched. `q` is now a semantic query, where more of the task is
+        # strictly more signal; `_embed` already caps input at EMBED_MAX_CHARS, so a
+        # long task cannot 400 the embeddings endpoint.
+        params["q"] = task
         resp = await client.get("/skills", params=params)
         resp.raise_for_status()
         skills = resp.json()
@@ -1248,7 +1252,7 @@ async def skill_create(
         return _connection_error(exc)
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 async def skill_list(
     status: str = "active",
     project: str | None = None,
