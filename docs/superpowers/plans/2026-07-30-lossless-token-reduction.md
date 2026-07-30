@@ -1211,7 +1211,9 @@ async def ctx_get_shadow(session_id: str | None = None, agent_id: str = "default
 
 Add `from app import residency` to the imports beside `from app.shadow import assemble_shadow`.
 
-Preserve the existing keys in that return dict exactly — read `mcp_server.py:358-365` and keep every one. Adding keys is safe; renaming or dropping one is not.
+Preserve the existing keys in that return dict exactly. `ctx_get_shadow` returns precisely four today — `session_id`, `goal`, `status`, `shadow` (`mcp_server.py:358-363`, verified) — and every one must survive. Adding keys is safe; renaming or dropping one is not.
+
+**Also mint a cursor on `ctx_resume_session`.** It stays full-only — it takes no `since`, ever, because a resumed session is by definition one the agent cannot vouch for — but it should still return a `shadow_cursor` in its response dict, built the same way from the same full `data`. A resume delivers the *complete* document, so minting a cursor there is exactly as safe as minting one on a full `ctx_get_shadow`; omitting it merely forfeits the entire saving for every subsequent restore in a resumed session, which is the common case after a crash. Its return shape is `{session_id, goal, status, shadow}` with `status` hardcoded to `"active"` (`mcp_server.py:483-488`) — add `shadow_cursor` and leave the rest untouched. Do NOT add a `delta` key there: it is never a delta, and an always-false flag invites someone to start passing `since`.
 
 - [ ] **Step 4: Run to verify pass**
 
