@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -63,6 +64,46 @@ _redis = None          # Redis DB 7 client, set via init_auth()
 
 _KEY_PREFIX = "auth:key:"
 _KEY_INDEX = "auth:key_index"  # sorted set of key IDs
+
+# A key_id reaches us from a URL path parameter and is interpolated into a
+# Redis glob. Anything outside lowercase hex would either match nothing or --
+# for '*', '?', '[' -- widen the scan to the whole keyspace, where "first
+# match wins" becomes "delete an arbitrary credential and report success".
+_KEY_ID_RE = re.compile(r"^[0-9a-f]{1,64}$")
+
+
+class AmbiguousKeyIdError(Exception):
+    """More than one stored record claims this key_id.
+
+    Raised instead of acting on a guess. Under server-minted keys this is
+    unreachable (it needs a 64-bit prefix collision); once a client supplies
+    its own credential hash it becomes a choice, which is why resolution
+    verifies rather than assumes.
+    """
+
+    def __init__(self, key_id: str, matches: list[str]) -> None:
+        super().__init__(
+            f"key_id {key_id!r} matches {len(matches)} stored records; refusing to guess"
+        )
+        self.key_id = key_id
+        self.matches = matches
+
+
+async def _resolve_key_id(key_id: str) -> list[tuple[str, dict[str, Any]]]:
+    """Every record whose STORED key_id equals `key_id`.
+
+    A prefix match is not an identity: the glob is only a way to narrow the
+    scan, and each candidate is confirmed against its own key_id field.
+    """
+    if _redis is None or not _KEY_ID_RE.match(key_id):
+        return []
+    found: list[tuple[str, dict[str, Any]]] = []
+    async for redis_key in _redis.scan_iter(f"{_KEY_PREFIX}{key_id}*", count=100):
+        data = await _redis.hgetall(redis_key)
+        if data and data.get("key_id") == key_id:
+            found.append((redis_key, data))
+    return found
+
 
 # ---------------------------------------------------------------------------
 # Anonymous identity (the AUTH_ENABLED=false path)
@@ -251,16 +292,29 @@ async def list_keys(limit: int = 50) -> list[dict[str, Any]]:
 
 
 async def revoke_key(key_id: str) -> bool:
-    """Revoke an API key by its short ID."""
+    """Revoke an API key by its short ID.
+
+    Returns True if exactly one record verified and was deleted, False if none
+    did. Raises AmbiguousKeyIdError when more than one verified: deleting one
+    of two while reporting success is the defect this function used to have.
+    """
     if _redis is None:
         return False
 
-    # Find and delete the key
-    async for full_key in _redis.scan_iter(f"{_KEY_PREFIX}{key_id}*", count=10):
-        await _redis.delete(full_key)
-        await _redis.zrem(_KEY_INDEX, key_id)
-        return True
-    return False
+    matches = await _resolve_key_id(key_id)
+    if not matches:
+        return False
+    if len(matches) > 1:
+        logger.critical(
+            "AMBIGUOUS key_id %s matches %d stored records (%s); refusing to revoke",
+            key_id, len(matches), ", ".join(k for k, _ in matches),
+        )
+        raise AmbiguousKeyIdError(key_id, [k for k, _ in matches])
+
+    redis_key, _ = matches[0]
+    await _redis.delete(redis_key)
+    await _redis.zrem(_KEY_INDEX, key_id)
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -302,6 +356,34 @@ async def validate_key(api_key: str, redis_client=None) -> dict[str, Any] | None
         except (ValueError, TypeError):
             pass
 
+    return {
+        "agent_id": data.get("agent_id", "unknown"),
+        "scopes": json.loads(data.get("scopes", "[]")),
+        "authenticated": True,
+        "key_id": data.get("key_id", key_hash[:16]),
+    }
+
+
+async def validate_key_by_hash(key_hash: str, redis_client=None) -> dict[str, Any] | None:
+    """validate_key's lookup half, keyed by an already-computed hash.
+
+    Exists so tests and the enrollment design can ask "does this stored record
+    still authenticate?" without possessing the plaintext. validate_key itself
+    is unchanged and simply hashes first.
+    """
+    client = redis_client if redis_client is not None else _redis
+    if client is None:
+        return None
+    data = await client.hgetall(f"{_KEY_PREFIX}{key_hash}")
+    if not data:
+        return None
+    expires_at = data.get("expires_at")
+    if expires_at:
+        try:
+            if datetime.now(timezone.utc) > datetime.fromisoformat(expires_at):
+                return None
+        except (ValueError, TypeError):
+            pass
     return {
         "agent_id": data.get("agent_id", "unknown"),
         "scopes": json.loads(data.get("scopes", "[]")),
