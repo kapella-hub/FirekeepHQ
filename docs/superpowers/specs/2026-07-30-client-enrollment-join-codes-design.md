@@ -99,14 +99,23 @@ Therefore:
 - New package `cortex/app/enroll/` (`api.py`, `store.py`, `lua.py`, `mint.py`),
   registered in `_register_feature_routers` **unconditionally** — never inside
   `_register_admin_surface_routers`.
-- The router builds its own `redis.asyncio` client from `AuthSettings.REDIS_URL`
-  and never reads the `auth.keys` module global. This needs one auth-layer change:
-  `create_key(..., redis_client=None)` gains an explicit-client seam **exactly
-  mirroring** the one `validate_key` already has (`keys.py:271-284`), whose
-  docstring documents the same motivation (callers that never run `init_auth()`).
-  No other `auth/` restructuring — the enroll route lives in cortex so the shared
-  `auth/` package never imports `app.config`, preserving the layering `keys.py:1-12`
-  protects.
+- The router builds its own `redis.asyncio` client from `AuthSettings.REDIS_URL` and
+  never reads the `auth.keys` module global. It calls **no** `auth/` write function:
+  the only auth-layer addition is `build_credential_record(credential_id, device_id,
+  scopes, now, expires_days) -> dict[str, str]`, a pure function extracted from
+  `create_key`'s metadata block (`keys.py:199-206`) that returns the DB-7 field map and
+  performs no I/O. `create_key` calls it too, so the layout has one definition and the
+  Lua script carries no field-level schema knowledge. Two operations the field map
+  cannot express stay explicit and documented in the script: the
+  `ZADD auth:key_index` (`keys.py:218`) and the `EXPIRE`.
+
+  The previously proposed `create_key(..., redis_client=None)` seam is **not added**.
+  It existed only to route around the `RuntimeError` at `keys.py:187-188` on the enroll
+  path; with enrollment no longer calling `create_key`, nothing needs it. `invite` mints
+  tickets, `firekeep-admin keys create` mints locally via `redis-cli`
+  (`deploy/firekeep-admin:85-100`), and `POST /auth/keys` runs in cortex-api, which does
+  call `init_auth()`. `validate_key`'s own explicit-client seam (`keys.py:271-284`) is
+  untouched and still required by `auth/asgi.py:91`.
 - Auth-off behaviour is **defined, not inherited**: `POST /enroll` returns **409**
   with the enrollment-specific truth (§4), and `invite` refuses to mint on an
   auth-off server with the same sentence.
@@ -184,34 +193,109 @@ teammate with no server account, because reachability requires SSH. Adding a Cad
 front to the personal stack — mirroring `docker-compose.office.yml` — is the
 follow-up that makes `t=tls` the single default and `t=tunnel` a fallback (§7).
 
-### 1.4 Mint, then burn
+### 1.4 One atomic consume
 
-Burn-then-mint permanently spends a ticket on any `create_key` failure
-(`keys.py:187-188`, `191-193`, three un-pipelined awaits at `211-218`), and there is
-no plaintext to replay and no un-burn primitive (`keys.py:253-263`). Handler order:
+The client generates its own credential secret before it sends anything, so the server
+never mints on this path and there is no fallible generation step to sequence around a
+burn. `_hash_key` is unkeyed, unsalted SHA-256 (`keys.py:165-167`) and `validate_key`
+re-hashes whatever the caller presents (`keys.py:288-290`), so a stored record built
+from a client-supplied hash validates identically to one built from a server-minted
+key. Registration collapses to an `HSET` in the same DB 7 that holds the ticket
+(`docker-compose.yml:252, 256`), which makes the whole redemption one Redis script.
 
-1. global rate counter → 429 if over cap;
-2. `PEEK` Lua (read-only) → 404 unknown / 409 used / 410 expired, **before** minting;
-3. ticket scopes ⊆ `ENROLLABLE_SCOPES`, else 500 + `CRITICAL`;
-4. normalize and de-collide `agent_id`;
-5. `create_key(...)`;
-6. `CLAIM` Lua — one round trip that `HSETNX`es `used_at` and writes
-   `issued_key_id` / `issued_key_hash` together. Lost race → `revoke_key(new_key_id)`,
-   then 409/410/404. Revoke failure → `CRITICAL` naming the `key_id`, never the
-   plaintext.
+**Client, before the first request.** Generate
+`secret = "nxs_" + secrets.token_bytes(32).hex()` and a device nonce
+`device_id_proposal = secrets.token_hex(8)`. Persist both to
+`~/.firekeep/pending-join.json` at 0600 (the write `connect.py:189-192` already does,
+Windows `OSError` tolerated), then send `credential_hash = sha256(secret)` — never
+`secret`. Persisting before the request is what makes the retry in §1.10a idempotent:
+a crash between send and response must find the same secret, or the retry burns the
+ticket on a credential nobody holds.
 
-A mint failure leaves the ticket unburned. Recovery from a genuinely burned ticket
-is a second `invite`, which needs no admin credential
-(`deploy/firekeep-admin:102-109`).
+**Server, on `POST /enroll`.** Two steps, in this order:
 
-### 1.5 `HSETNX` must never create the hash
+1. Shape check in Python: `credential_hash` matches `^[0-9a-f]{64}$`, else `400`. This
+   runs before the value ever becomes part of a Redis key name, and it is what keeps
+   glob metacharacters out of the `scan_iter` patterns at `keys.py:239, 259`.
+2. One `EVAL` of `ENROLL_CONSUME` against DB 7. Redis executes it serially, so
+   validate / expire-check / rate-limit / register / claim are one indivisible
+   operation.
 
-Redis `HSETNX` creates the key on a miss. On a deliberately unauthenticated
-endpoint at the default `RATE_LIMIT=60/minute` (`cortex/app/config.py:12`) that is
-~86k permanent, TTL-less `auth:enroll:*` keys per day, written into the same DB 7
-that holds `auth:key:*` (`keys.py:64-65`) and `vault:secret:*` (`vault/store.py:17-18`)
-per `docker-compose.yml:252, 256`. **Both Lua scripts begin with `EXISTS KEYS[1]`
-and return `{'unknown'}` without writing.** Pinned by test (§5).
+`ENROLL_CONSUME` operates in this order, and the order is load-bearing:
+
+| # | operation | on failure |
+|---|---|---|
+| 1 | `INCR auth:enroll:rate:<YYYYMMDDHH>`; `EXPIRE 7200` when the counter is 1 | over `ENROLL_MAX_ATTEMPTS_PER_HOUR` → `{'rate'}` |
+| 2 | `EXISTS auth:enroll:<tid>` | false → `{'unknown'}`, **writing nothing else** |
+| 3 | **replay match**: `used_at` present **and** `issued_key_hash == ARGV.hash` **and** `issued_device_id == ARGV.device_id` | → `{'replay', …}` with the original metadata |
+| 4 | `used_at` present, either field differing | → `{'used', used_at, credential_id}` |
+| 5 | `expires_at_epoch < now` | → `{'expired', expires_at}` |
+| 6 | ticket `scopes` ⊆ `ENROLLABLE_SCOPES` (passed in `ARGV`, membership-tested in Lua) | → `{'scope_violation', scopes}` → 500 + `CRITICAL` |
+| 7 | `EXISTS auth:key:<hash>` | true → `{'cred_exists'}` |
+| 8 | `HSET auth:key:<hash>` ← the field map from `build_credential_record()`; `EXPIRE` it when the ticket carries a key lifetime; `SET auth:cred:<credential_id>` ← hash (same `EXPIRE`); `ZADD auth:key_index`; `HSET` the ticket's `used_at`, `issued_credential_id`, `issued_device_id`, `issued_key_hash` | → `{'ok', …}` |
+
+**Step 3 must precede step 7.** A retry after a lost response carries a hash that is
+already registered; evaluated in the other order it would answer `cred_exists` instead
+of `replay`, and the caller would conclude its own credential belongs to someone else.
+
+**Step 1 must precede step 2.** A miss has to be counted, or the rate ceiling protects
+nothing. This is the one write the script performs before it knows the ticket exists,
+and §1.5 states the carve-out.
+
+**The `EXPIRE` at step 8 is not optional.** `create_key` calls
+`expire(redis_key, ttl)` whenever `expires_days` is set (`keys.py:209-213`); a Lua
+script that omits it silently drops the credential's Redis TTL. Expiry is still
+enforced through `validate_key`'s `expires_at` field read (`keys.py:295-303`), so the
+omission would be invisible until an audit — which is exactly the class of drift the
+single-implementation rule below exists to prevent.
+
+**What each outcome leaves behind.** There is no compensating write anywhere:
+
+| outcome | ticket | `auth:key:*` | `auth:cred:*` | rate key |
+|---|---|---|---|---|
+| `rate` | untouched | none | none | incremented, TTL |
+| `unknown` / `expired` | untouched | none | none | incremented, TTL |
+| `used` | unchanged (still spent) | unchanged | unchanged | incremented, TTL |
+| `replay` | unchanged | unchanged | unchanged | incremented, TTL |
+| `scope_violation` / `cred_exists` | untouched | none | none | incremented, TTL |
+| `ok` | claimed | created | created | incremented, TTL |
+
+A mid-script Redis failure cannot be observed as a partial state: Redis either runs the
+script to completion or does not run it. That is a property of the design, not something
+a test can assert with mocks.
+
+**Duplicate hash (`cred_exists`).** The server returns a generic 409 that never
+distinguishes "your hash" from "somebody's hash" — the ticket gate bounds this to one
+probe per single-use ticket, and stating the invariant now keeps a future reusable-code
+change (§7.4) from turning it into an oracle. Nothing was written, so the client
+regenerates `secret` and `device_id_proposal`, rewrites `pending-join.json`, and
+retries **once** before failing. In practice this fires only if a client reused a
+secret; at 256 bits it is not a collision.
+
+**Deleted outright** from the previous design: the `PEEK`/`CLAIM` split, the separate
+`create_key` call, the lost-claim-race branch, the `revoke_key(new_key_id)`
+compensation, and the `CRITICAL`-on-revoke-failure path. All of them existed to
+sequence a mint that no longer happens.
+
+Recovery from a genuinely burned ticket is a second `invite`, which needs no admin
+credential (`deploy/firekeep-admin:102-109`).
+
+### 1.5 The consume script writes nothing on a miss — with one named exception
+
+Redis `HSETNX` creates the key on a miss. On a deliberately unauthenticated endpoint at
+the default `RATE_LIMIT=60/minute` (`cortex/app/config.py:12`) that is ~86k permanent,
+TTL-less `auth:enroll:*` keys per day, written into the same DB 7 that holds
+`auth:key:*` (`keys.py:64-65`) and `vault:secret:*` (`vault/store.py:17-18`) per
+`docker-compose.yml:252, 256`.
+
+`ENROLL_CONSUME` performs exactly two writes before it knows the ticket exists:
+`INCR auth:enroll:rate:<YYYYMMDDHH>` and, when that counter is 1, `EXPIRE` on it. If
+`EXISTS auth:enroll:<tid>` is then false it returns `{'unknown'}` without touching
+`auth:enroll:<tid>`, `auth:key:*`, `auth:cred:*` or `auth:key_index`.
+
+The prohibition is on creating an `auth:enroll:<tid>` record — one unbounded, TTL-less
+key per probe. The rate key is one bounded key per hour carrying a two-hour TTL, and
+counting a miss is the entire point of a rate ceiling. Pinned by test (§5).
 
 ### 1.6 Rate limiting
 
@@ -227,8 +311,10 @@ inherits nothing.
   (`main.py:1094, 1163, 1338, 1378`);
 - **plus** a Redis global ceiling `auth:enroll:rate:<YYYYMMDDHH>`,
   `ENROLL_MAX_ATTEMPTS_PER_HOUR=60`, `EXPIRE 2h` — the only control that survives the
-  proxy collapse. Shared-fate by design: a flooded enrollment surface is a denial of
-  onboarding, not a breach;
+  proxy collapse. It is the **first two operations inside `ENROLL_CONSUME`**, not a
+  separate round trip: counting and claiming in one script removes the window in which
+  a crash between them either loses a count or spends a ticket uncounted. Shared-fate
+  by design: a flooded enrollment surface is a denial of onboarding, not a breach;
 - ticket entropy is `secrets.token_bytes(32)` = 256 bits, above the house precedent's
   192 (`keys.py:170-175`). Brute force is not a threat at that width; the counters
   bound noise and cost.
@@ -258,35 +344,57 @@ credential it needs. `ENROLLABLE_SCOPES` is exactly the `NON_ADMIN_SCOPES` liter
 `expires_at` is written only `if expires_days:` (`keys.py:199-206`), so an enrolled
 key would be permanent and untraceable.
 
-- `create_key(..., extra: dict | None = None)` merges caller fields into the hash.
-  The four canonical keys are reserved: an `extra` naming `agent_id`, `scopes`,
-  `key_id` or `created_at` raises `ValueError`.
-- Enrollment writes `enrolled_via=<tid>`, `enrolled_at`, and
-  `issuer=<invite@shell | admin:<key_id> | dashboard:<user>>`. `list_keys`'
-  projection (`keys.py:242-248`) gains `enrolled_via`.
+- Provenance lives on the **ticket**, not in a generic `create_key` passthrough. The
+  ticket record already carries `issuer`, and redemption stamps `used_at`,
+  `issued_credential_id`, `issued_device_id` and `issued_key_hash` (§1.4). The
+  credential record carries `credential_id`, `device_id`, `enrolled_via=<tid>` and
+  `enrolled_at`, all written by `build_credential_record`. The previously proposed
+  `create_key(..., extra=…)` merge with four reserved keys is **not added** — nothing
+  outside enrollment needed it, and a generic field-merge into the credential hash is a
+  wider seam than the one field-set this design writes. `list_keys`' projection
+  (`keys.py:242-248`) gains `credential_id`, `device_id` and `enrolled_via`.
+
+- **`credential_id` is minted by the server and is not derived from the credential
+  hash.** `create_key` sets `key_id = key_hash[:16]` (`keys.py:203`), and both
+  `list_keys` (`keys.py:239`) and `revoke_key` (`keys.py:259`) resolve a short id back
+  to a record by `scan_iter(f"auth:key:{kid}*")`, taking the **first** match and
+  returning `True` either way. Under server minting a 64-bit prefix collision is
+  theoretical; once the client chooses the hash it also chooses the prefix, and a
+  teammate legitimately enrolling a second device (§1.10) can submit a hash sharing
+  device 1's prefix. `revoke_key` would then delete whichever record SCAN returned
+  first and report success while the other credential kept authenticating. Two changes,
+  both required:
+  1. `credential_id = secrets.token_hex(8)`, minted inside `ENROLL_CONSUME`'s writing
+     branch, unrelated to the hash. The client cannot influence it, which matters
+     because it is the provenance handle the workspace design persists onto memory
+     writes.
+  2. `ENROLL_CONSUME` writes `auth:cred:<credential_id> -> <key_hash>`, and
+     `revoke_key`/`list_keys` resolve through that mapping instead of the glob. For a
+     record predating the mapping they fall back to `scan_iter`, but collect **all**
+     matches and refuse rather than acting on the first — a prefix ambiguity must fail
+     loudly, not delete the wrong credential. `deploy/bootstrap-keys.sh` backfills the
+     mapping for existing records from `auth:key_index`.
+
+  This **supersedes** the earlier claim that existing auditing is adequate and
+  unchanged. `ZRANGE auth:key_index 0 -1` still enumerates the inventory from the shell
+  `invite` runs in, and the API's `le=200` (`auth/api.py:63`) is still a request ceiling
+  rather than a storage limit — but the id→record lookup changes on both read and
+  revoke paths.
+
 - **Decision (2026-07-30):** `ENROLL_KEY_EXPIRES_DAYS=90` by default, overridable via
   `invite --expires-days N`; `0` means never and prints a warning. A lost machine
   expires itself, and the re-join path stays exercised rather than rotting.
-- **Expiry must be visible before it bites, or this feature recreates the original
-  bug on a 90-day timer.** `validate_key` returns `None` for an expired key
+- **Expiry must be visible before it bites**, or this feature recreates the original bug
+  on a 90-day timer. `validate_key` returns `None` for an expired key
   (`keys.py:295-303`), the middleware 401s, and the client renders that as "cannot
-  connect" — the exact ambiguity this design exists to kill. Three parts, all
-  required:
-  1. `join` writes `key_expires_at` into `[server]` from the enrollment response;
-  2. `doctor` gains `_check_key_expiry`, warning inside 14 days and failing after —
-     mirroring `_check_ca_expiry` (`cli.py:696`), which already does exactly this for
-     CA certificates and is the precedent that should have been followed;
-  3. the auth middleware's 401 `detail` distinguishes *expired* from *unknown key*.
-     Safe to disclose: a caller seeing it already holds the key. Without this a
-     re-join and a typo are indistinguishable at the client.
-  The `session_start` briefing surfaces the doctor warning, so a teammate is told
-  their key expires before the morning it stops working.
-- `auth:enroll:index` has no TTL, so the ticket→key link outlives the ticket record.
-
-Existing auditing is adequate and unchanged: `ZRANGE auth:key_index 0 -1` enumerates
-the inventory from the shell `invite` already runs in, and `revoke_key` takes any
-short id from it (`keys.py:218, 253-263`). The API's `le=200` (`auth/api.py:63`) is a
-request ceiling, not a storage limit.
+  connect". Three parts, all required:
+  1. `join` writes `credential_expires_at` into `[server]` from the enrollment response;
+  2. `doctor` gains `_check_credential_expiry`, warning inside 14 days and failing
+     after — mirroring `_check_ca_expiry` (`cli.py:696`);
+  3. the auth middleware's 401 `detail` distinguishes *expired* from *unknown
+     credential*. Safe to disclose: a caller seeing it already holds the credential.
+- `auth:enroll:index` has no TTL, so the ticket→credential link outlives the ticket
+  record.
 
 ### 1.9 Validity is a stored field, not the Redis TTL
 
@@ -305,6 +413,37 @@ distinguishable for the full window via `used_at`.
 laptop and a desktop runs `invite` twice, which is the better outcome — each machine
 gets its own `agent_id` and its own independently revocable key, and "was this code
 shared?" stays answerable from the record.
+
+### 1.10a Idempotent retry
+
+Single-use bounds how many devices a code enrolls; it does not say what happens when
+the response is lost. Under server minting that was unrecoverable: the ticket burned,
+a credential existed, and the client had never seen the plaintext, so nobody could
+present it and nothing could identify it. Client-generated secrets make redemption
+naturally idempotent, and §1.4 step 3 defines it precisely:
+
+- Retry carrying the **same** `credential_hash` **and** the same `device_id` → `200`
+  with the original metadata. Both must match. A matching hash alone would let a stolen
+  ticket-plus-hash re-enroll a second machine; a matching device alone would let a
+  regenerated secret overwrite the first credential.
+- Retry carrying a different hash or a different device against a claimed ticket →
+  `409` naming `used_at` and the `credential_id`. **The code cannot enroll a second
+  device.**
+- Ticket claimed, hash and device match, but `auth:key:<hash>` is no longer present →
+  `409`: *"this join code was redeemed and the credential it issued is no longer
+  present on the server — it was revoked, or it expired and was reaped. Ask <issuer>
+  for a new code."* The server cannot distinguish those two causes and does not
+  pretend to; the client cannot distinguish them at all, because `validate_key` returns
+  `None` for an absent record exactly as it does for an unknown one
+  (`keys.py:288-293`), which is why this has to be an explicit server answer.
+
+`used_at` is now the idempotency key as well as the audit field, which is the second
+reason the tombstone window (`ENROLL_TOMBSTONE_DAYS=7`, §1.9) matters: a retry after the
+tombstone expires is indistinguishable from an unknown ticket.
+
+**Regenerating a device's join code** (§3, Devices tab) issues a fresh ticket for the
+**prior `device_id`** with a fresh nonce and no `issued_key_hash`. It is a new
+redemption, not a replay, and the comparison above treats it as such.
 
 ### 1.11 `connect` is refactored to issue-then-redeem
 
@@ -330,36 +469,107 @@ refuted on inspection: `%`-interpolation corruption does not occur (`configparse
 raises loudly on `%` and every Firekeep-minted secret is hex), and an `agent_id`
 cannot inject an `api_key` option (`configparser.write()` escapes embedded newlines).
 
-### 1.12 Per-machine `agent_id` — derived, never prompted
+### 1.12 The credential is bound to the device, not to a name
 
-The client **proposes** `f"{agent_label}-{socket.gethostname().split('.')[0].lower()}"`
-(label from the ticket record, so the admin's naming wins; when `invite` was run with
-no `--agent`, the hostname alone). The server **normalizes** against
-`^[A-Za-z0-9_-]{1,64}$` (`auth/api.py:23` validates length only), rejects
-out-of-charset values, de-collides against existing non-revoked keys by appending
-`-2`, then `-3`, up to `-99` before failing loudly, and returns the authoritative
-value, which the client writes verbatim.
+Enrollment mints a **device credential**. Two identifiers come out of it, both
+server-owned, and neither is a person:
 
-**There is no identity prompt.** An earlier draft kept one, on the reasoning that the
-machine discriminator is the one thing the code cannot know — but the ticket carries
-the person and the OS carries the machine, so it is derivable and a prompt for a
-derivable value is exactly the habit that produced the three-prompt wizard.
-`--agent-id` overrides for the rare case where the derived name is unwanted.
+- **`device_id`** — the enrolled machine. Minted as `secrets.token_hex(8)` on first
+  redemption and returned to the client, which persists it. It is the idempotency key
+  for a retry (§1.10a) and the row key in the Devices tab (§3).
+- **`credential_id`** — the credential itself, minted independently of the credential
+  hash (§1.8).
 
-Rationale: Bridge keeps one active session per `agent_id` and `START_SESSION_LUA`
-pauses the prior active one (`bridge/app/session.py:167-177`), so two machines sharing
-`bob` would pause each other's sessions; replay and eval joins also key on `agent_id`.
-This is **not** justified by the session stash — `state.py:236-239` keys
-`session_current_{agent}@{profile}` under the local platform cache dir, so two machines
-never contend for it.
+**The credential record carries no agent identity.** `create_key` writes `agent_id`
+today (`keys.py:200`) and `validate_key` projects it out (`keys.py:306`) into the
+identity `auth/asgi.py:113-117` attaches. Enrollment writes `agent_id = <device_id>` as
+a compatibility value, so `list_keys`' projection (`keys.py:244`) and the ASGI identity
+dict keep a non-empty field — strictly better than today's `"unknown"` default. The
+field is replaced outright by `{workspace_id, member_id, credential_id, scopes}` in
+`2026-07-30-workspace-entitlements-and-onboarding-design.md` §2, which already defines
+`X-Agent-Id` as an untrusted runtime label.
 
-Honest limitation: `cortex/app/main.py:1129` and `:1205` read the self-asserted
-`X-Agent-Id`, and no cortex handler reads the verified `scope["state"]["identity"]`
-that `auth/asgi.py:112-117` attaches. Until recall/learn prefer the verified identity,
-per-machine enrollment improves inventory and revocation granularity but does not
-harden attribution. Named follow-up, out of scope here.
+Consequently **the server does not normalize or de-collide an agent name.** An earlier
+draft had it validate `^[A-Za-z0-9_-]{1,64}$` and append `-2`, `-3`, up to `-99`
+against existing non-revoked keys. That ladder is a scan of the key store for a human
+name, and a key store that holds no human name cannot run it. What survives is
+advisory: the response carries
+`suggested_agent_id = f"{agent_label}-{socket.gethostname().split('.')[0].lower()}"`
+(label from the ticket record, so the admin's naming wins; hostname alone when `invite`
+ran with no `--agent`), which the client writes verbatim into `[identity] agent_id`
+unless `--agent-id` overrides. It is a label the runtime asserts, checked nowhere.
 
----
+**There is no identity prompt.** The ticket carries the person and the OS carries the
+machine, so the name is derivable, and a prompt for a derivable value is exactly the
+habit that produced the three-prompt wizard.
+
+One name per machine is still the right default: Bridge keeps one active session per
+`agent_id` and `START_SESSION_LUA` pauses the prior active one
+(`bridge/app/session.py:167-177`), so two machines sharing `bob` would pause each
+other's sessions. This is **not** justified by the session stash — `state.py:236-239`
+keys under the local platform cache dir, so two machines never contend for it.
+
+**Stated boundary, not a defect.** `cortex/app/main.py:1128-1129` and `:1204-1205` read
+the self-asserted `X-Agent-Id` for replay attribution and memory provenance, and no
+cortex handler reads the verified identity. This design makes the credential
+device-owned and therefore *attributable*; making cortex prefer the verified principal
+is milestone 1 of the workspace design, and it is purely additive on top of what lands
+here.
+
+### 1.13 Request and response
+
+Request body:
+
+    {ticket, credential_hash, device_id?, hostname}
+
+- `credential_hash` = `sha256(secret)`, 64 lowercase hex. The **client** generates
+  `secret`; see §1.4 and the invariants below.
+- `device_id` is absent on a first attempt and present on every retry, echoed from the
+  first response.
+- `agent_id_proposal` is **removed**. The name is advisory and flows the other way.
+
+Response `200`:
+
+    {device_id, credential_id, suggested_agent_id, scopes, kind,
+     host|base_url, ca_pem?, credential_expires_at, server_version}
+
+**There is no `api_key` field.** The credential never crosses the wire in either
+direction; only its hash does, on the request, and an intercepted hash is not a bearer
+token (`validate_key` re-hashes what the caller presents, `keys.py:288-290`). This
+removes the credential from proxy access logs, response buffers and tracebacks. It does
+**not** remove the need to authenticate the server: the ticket `q` is still a bearer
+secret in the request body, so §1.2's CA pinning stays load-bearing and `t=http`
+remains a named exposure.
+
+The client writes to `[server]`: `kind`, `scheme`, `host`|`base_url`, `verify_tls`,
+`ca_path`, `api_key` (its own generated secret — the config key name is unchanged
+because `resolver.py:294-295` reads the literal option `api_key`), `credential_id`,
+`device_id`, `credential_expires_at`; and to `[identity]`: `agent_id`. `credential_id`
+and `device_id` are non-secret support handles — they are what a user reads out to an
+admin who needs to revoke something.
+
+### Invariants
+
+- **I-1 · Client entropy.** `secret = "nxs_" + secrets.token_bytes(32).hex()` — 256
+  bits from the OS CSPRNG, above the 192-bit house precedent (`keys.py:170-175`) and
+  matching the ticket's width. Forbidden: `random.*`, `uuid`, any seeded or reused PRNG
+  object, any derivation from hostname, time, pid or agent name, and any reuse of an
+  existing local secret. On Linux `getrandom()` blocks until the pool is initialised, so
+  a first-boot container needs no warm-up step. **Named limitation:** the server can
+  enforce the hash's shape but can never verify the secret's entropy —
+  `sha256(4 random bytes)` and `sha256(32 random bytes)` are indistinguishable at the
+  endpoint. This is acceptable only because Firekeep ships the client, and the blast
+  radius is confined to the enrollee's own non-admin credential (`ENROLLABLE_SCOPES`,
+  §1.7).
+- **I-2 · The `nxs_` prefix is mandatory** even though the server cannot check it: a
+  human pasting a credential can identify it, and the CI `secrets` gitleaks gate can
+  pattern-match it. `fk_` now belongs exclusively to the join code.
+- **I-3 · No server mint on the enrollment path, and no request-shape fallback.** A
+  server that minted when `credential_hash` was omitted would be one stripped field away
+  from a downgrade on the `t=http` path. `create_key`'s plaintext-returning behaviour is
+  retained unchanged for `deploy/bootstrap-keys.sh` and `firekeep-admin keys create`,
+  which are not enrollment. If a mint mode is ever needed it is server-policy-gated and
+  default-off, never inferred from the request.
 
 ## 2. Join code format
 
@@ -377,7 +587,7 @@ fk_join_<BODY>.<CHK>
 |---|---|---|---|
 | `v` | int | always | format version, `1` |
 | `t` | enum | always | transport: `tls` \| `tunnel` \| `http` |
-| `k` | enum | always | profile kind: `ports` \| `paths` |
+| `k` | enum | always | connection kind: `ports` \| `paths` |
 | `h` | str | iff `k=ports` | host |
 | `u` | str | iff `k=paths` | `base_url` |
 | `f` | str | iff `t=tls` | CA commitment: `base64url(sha256(ca_pem)[:16])` (22 chars) or literal `os` |
@@ -388,6 +598,15 @@ fk_join_<BODY>.<CHK>
 `scheme` is deliberately **not** carried — it is derived (`t=tls` → `https`,
 otherwise `http`). Two fields that can disagree about TLS is exactly the hazard
 `resolver.py:313-318` refuses at resolve time.
+
+`k` names a deployment topology, not a profile. There is no profile to name — the
+single-connection design collapses `[personal]`/`[office]` into one `[server]` whose
+`kind` is derived and never prompted.
+
+**Client-side credential generation changes nothing in this section.** The code still
+carries only the ticket: the field table, the checksum, the decode steps and the `tid`
+derivation are unchanged. Putting a credential into a pasteable, mail-forwardable string
+would be strictly worse than the design it replaces.
 
 `x` is advisory by contract. `join` never refuses on it; it is used only to word a
 message *after* the server has answered 404/410, and if the local clock differs from
@@ -420,21 +639,32 @@ call, and `q` never leaves the process on any failure path.
 
 ## 3. Client commands
 
-### `firekeep join <code> [--agent-id NAME] [--force] [--no-print-key]`
+### `firekeep join <code> [--agent-id NAME] [--force] [--print-key] [--resume]`
 
-Every step before 5 may fail freely; the ticket is spent only at 5.
+Every step before 6 may fail freely; the ticket is spent only at 6.
 
 | # | step | notes |
 |---|---|---|
+| 0 | prepare local state | generate `secret` (I-1) and `device_id_proposal`; write `~/.firekeep/pending-join.json` at 0600. **An unwritable config dir fails here, before the ticket is spent** — the previous design could not detect this at all until after redemption. `--resume` reuses an existing pending file instead of generating |
 | 1 | parse + validate locally (§2) | cheapest failure first; no network, no secret sent |
 | 2 | `resolver.is_bypassed()` → refuse | personal mode is a hard no-op everywhere else; be consistent |
 | 3 | establish transport | `tunnel`: require `ssh`, reuse `connect._tunnel_running()` before `_start_tunnel(s)` so re-running never stacks forwarders → `http://127.0.0.1:8100`. `tls` + `f != "os"`: anchor fetch → fingerprint compare → abort on mismatch → verified context from `cadata`. `tls` + `f == "os"`: `transport._build_ssl_context("os")`. `http`: print exposure, proceed |
-| 4 | **probe** `GET <rest_base>/health` | keyless (`AUTH_SKIP_PREFIXES`, `main.py:857`). Unreachable fails here — before the ticket burns and before any file is touched |
-| 5 | `POST /enroll {ticket, agent_id_proposal, hostname}` | the single redemption path |
-| 6 | **print the key to stdout** unless `--no-print-key` | plaintext exists for exactly one response (`keys.py:195-216` stores only the sha256). Printing before any filesystem write is what makes an unwritable `~/.firekeep` recoverable |
-| 7 | write `ca_pem` → `~/.firekeep/<host-slug>-ca.crt`, 0600 | only when an anchor was fetched |
-| 8 | `config_write.upsert_server(...)` | writes `[server]` (`kind`/`scheme`/`host`\|`base_url`/`verify_tls`/`ca_path`/`api_key`/`key_expires_at`) and `[identity] agent_id`; 0600; `[dist]` untouched; reports every overwritten key; refuses a `kind` change without `--force` |
-| 9 | `run_doctor()` | exit 0 only if no row is `fail` |
+| 4 | **probe** `GET <rest_base>/health` | keyless (`AUTH_SKIP_PREFIXES`, `main.py:857`). Unreachable fails here — before the ticket burns |
+| 5 | write `ca_pem` → `~/.firekeep/<host-slug>-ca.crt`, 0600 | only when an anchor was fetched |
+| 6 | `POST /enroll {ticket, credential_hash, device_id?, hostname}` | the single redemption path; idempotent per §1.10a |
+| 7 | `config_write.upsert_server(...)` | writes `[server]` (`kind`/`scheme`/`host`\|`base_url`/`verify_tls`/`ca_path`/`api_key`/`credential_id`/`device_id`/`credential_expires_at`) and `[identity] agent_id`; 0600; `[dist]` untouched; reports every overwritten key; refuses a `kind` change without `--force` |
+| 8 | delete `pending-join.json`; `run_doctor()` | exit 0 only if no row is `fail` |
+
+**The credential is not printed by default.** Under server minting it had to be —
+plaintext existed for exactly one response — and `--no-print-key` was the opt-out. The
+client now holds the secret for as long as it likes, so the default inverts:
+`--print-key` opts *in*, for a user who wants a copy. Scrollback, tmux buffers and CI
+logs stop receiving a long-lived credential by default, and the on-disk cost is one
+extra 0600 file that is reaped at step 8.
+
+`pending-join.json` is reaped on success and swept on any `join`/`doctor` run older
+than `ENROLL_TICKET_TTL_HOURS`. Reaping is mandatory, not advisory: a 0600 file holding
+a live credential must not outlive the join it belongs to.
 
 ### `firekeep connect <user@host>`
 
@@ -481,8 +711,18 @@ objection was wrong, and it is recorded here so it is not re-raised.
 
 New tab, alongside the existing fourteen:
 
-- **Device list** — `agent_id`, enrolled date, last seen (from Relay presence), key id,
-  key expiry with a warning inside 14 days, and a **Revoke** button per row.
+- **Device list** — one row per device, keyed on `device_id`: device name, enrolled
+  date, last seen (Relay presence, telemetry only), `credential_id`, credential expiry
+  with a warning inside 14 days. Actions per row: **Rename**, **Revoke**, **Regenerate
+  join code**. The row is **not** keyed on `agent_id` — the credential is bound to a
+  device, not a name (§1.12), and after the compatibility shim `agent_id` on a
+  credential record *is* the `device_id`, so the column would be both wrong and
+  misleading.
+- **Rename** edits the device label only. It never touches the credential, and there is
+  no reissue.
+- **Regenerate join code** issues a fresh ticket for the existing `device_id` — new
+  nonce, no `issued_key_hash` — so the replay comparison in §1.10a correctly treats the
+  redemption as new rather than as a retry. Used when a machine is rebuilt.
 - **`[+ Add device]`** — optional name, optional expiry override; on submit shows a
   **complete, ready-to-paste install command**, not a bare code:
 
@@ -493,10 +733,15 @@ New tab, alongside the existing fourteen:
   with a copy button, the platform toggle (sh / PowerShell), a TTL countdown, and the
   bare code shown separately for a machine that already has the client
   (`firekeep join …`). **Emitting a command rather than a code removes a decision, not
-  just a step** — a bare code makes the recipient ask "where does this go?", which is
-  the question that put a teammate's key in the wrong section on 2026-07-29.
+  just a step.**
 - **Outstanding invites** — unredeemed tickets with time remaining and a **Cancel**
   button (deletes the ticket record; the `tid` stays in `auth:enroll:index`).
+
+This tab manages **device credentials only**. It carries no plan, tier, seat, quota or
+billing language, and it never gates on one. Member management and seat accounting are
+a different surface entirely, defined in
+`2026-07-30-workspace-entitlements-and-onboarding-design.md` §3.2 — which places the
+seat check on member invite issue and accept, never on `POST /enroll`.
 
 Backing routes on Cortex, all `require_scope("admin")` and reached through the existing
 dashboard proxy: `POST /enroll/invite` (mint a ticket, return the code and the rendered
@@ -545,13 +790,15 @@ exists to kill.
 
 | exit | failure | message |
 |---|---|---|
-| 0 | success | `joined as <agent_id> [<profile>] — key expires <date>`, then doctor rows |
+| 0 | success | `joined as <agent_id> on device <device_id> — credential <credential_id> expires <date>`, then doctor rows |
 | 2 | not a join code | `that does not look like a Firekeep join code (expected it to start with 'fk_join_'). If you were given a host and an API key instead, use: firekeep install --host <h>` |
 | 2 | checksum mismatch | `this join code is damaged (checksum mismatch) — it was probably truncated or line-wrapped in transit. Nothing was sent to the server. Ask <issuer> to resend it, ideally in a code block.` |
 | 2 | shape invalid | `malformed join code: <field> is missing or invalid (t=tls requires a CA fingerprint 'f')` — never echoes `q` |
 | 2 | future version | `this code was issued by a newer Firekeep server (format v<N>, this client understands v1). Run: firekeep update` |
 | 3 | unknown ticket (404) | `the server does not recognise this join code (ticket <tid>). Either it was used more than 7 days ago, or it was mistyped. Ask <issuer> for a new one.` |
-| 3 | already redeemed (409) | `this join code was already redeemed at <used_at>, issuing key <key_id>. Join codes are single-use. If that was not you, tell <issuer> — that key should be revoked: deploy/firekeep-admin keys revoke <key_id>` |
+| 3 | already redeemed (409) | `this join code was already redeemed at <used_at> by a different device, issuing credential <credential_id>. Join codes are single-use. If that was not you, tell <issuer> — that credential should be revoked: deploy/firekeep-admin keys revoke <credential_id>` |
+| 0 | idempotent retry (200, replay) | `this join code was already redeemed by this device — reusing the existing credential <credential_id>. Nothing changed on the server.` |
+| 3 | credential gone (409) | `this join code was redeemed and the credential it issued is no longer present on the server (revoked, or expired and reaped). Ask <issuer> for a new code.` |
 | 3 | expired (410) | `this join code expired at <expires_at> (<N>h ago). Join codes are valid for 24h. Ask <issuer> for a new one.` plus, if the local clock is >5 min from the response `Date`: `note: your machine's clock is <N>m off the server's.` |
 | 4 | unreachable (step 4) | `<host:port> did not answer within 10s, so the code was NOT redeemed and is still valid. Retry when you can reach it. If the server binds to loopback, the code should have been issued with a tunnel — ask <issuer> to reissue.` |
 | 5 | **CA fingerprint mismatch** | `SERVER IDENTITY MISMATCH — <host> presented a CA that does not match the fingerprint in your join code. Nothing was sent. This is either a man-in-the-middle or a CA rotation on the server. Do not retry; confirm the code out of band with <issuer>.` |
@@ -563,9 +810,8 @@ exists to kill.
 | 7 | tunnel start failed | `started an SSH tunnel to <s> but ports <list> never came up. Something else may be bound locally, or your ssh key is not authorised there. The code was not used.` |
 | 0 | re-join, same kind | proceeds, printing `[server] updating: host srv1143982 -> fk.corp, api_key <replaced>, agent_id bob-mbp unchanged` |
 | 8 | re-join, different kind | `[server] is currently kind=paths (https://fk.corp) and this code is kind=ports. Refusing to repoint this machine at a different server shape — re-run with --force if that is what you want, or use FIREKEEP_CONFIG=<path> to keep both.` |
-| 1 | config write failed after redemption | `THE KEY WAS ISSUED but <path> could not be written (<errno>). Your key is above — save it now, then run: firekeep install --host <h> and paste it at the API key prompt.` (the key was printed at step 6) |
 | 1 | personal mode active | `personal mode is ON, so Firekeep is dormant and join would be a no-op. Run: firekeep personal off` |
-| 0 | `t=http` (warning) | `WARNING: this code redeems over plain http to <host>. The join code and the API key it returns cross the network unencrypted, and the key is then sent on every request. Continue only on a trusted network.` |
+| 0 | `t=http` (warning) | `WARNING: this code redeems over plain http to <host>. Your credential is generated locally and never crosses the network, but the join code itself does — anyone on this path can redeem it before you, and the credential you end up using is then sent as X-API-Key in cleartext on every request. Continue only on a trusted network.` |
 
 `transport.py:97-100` surfaces up to 500 bytes of a server's `detail` verbatim, so each
 4xx above carries its full sentence server-side. The client does not translate status
@@ -576,8 +822,14 @@ codes into prose and must not invent prose the server did not send.
 ## 5. Testing
 
 ### `auth/tests/`
-- `test_keys_explicit_client.py` — `create_key(..., redis_client=c)` mints with the
-  module global still `None`; with neither, still raises `RuntimeError`.
+- `test_build_credential_record.py` — `build_credential_record` is pure (no I/O), and
+  `create_key`'s stored field map is byte-identical to it, so the DB-7 layout has one
+  definition.
+- `test_credential_id_integrity.py` — **the revocation-bypass guard**: `credential_id` is
+  not derivable from `credential_hash`; `revoke_key` and `list_keys` resolve through
+  `auth:cred:<credential_id>` rather than `scan_iter(f"auth:key:{kid}*")`; and a legacy
+  record with no mapping and two prefix matches makes `revoke_key` **refuse** rather than
+  delete the first match and return `True` (`keys.py:239, 259`).
 - `test_enrollable_scopes.py` — **guard**: `ENROLLABLE_SCOPES == SCOPES - {"admin","*"}`;
   `"vault:read" in` it (a future PR must not tidy it out — `keys.py:39-50`); and it
   equals `deploy/firekeep-admin`'s `NON_ADMIN_SCOPES` literal (`:25`).
@@ -590,9 +842,12 @@ codes into prose and must not invent prose the server did not send.
 - `test_enroll_never_creates_keys.py` — **DB-7 pollution guard**: 1000 misses against
   `POST /enroll` and `GET /enroll/anchor` leave `dbsize()` unchanged and zero
   `auth:enroll:*` keys. Pins §1.5 against a refactor that reaches for `HSETNX` again.
-- `test_enroll_atomicity.py` — a raising `create_key` leaves `used_at` absent (ticket
-  still redeemable); a lost claim race revokes the orphan and returns 409; the
-  plaintext never appears in a log record.
+- `test_enroll_idempotent_retry.py` — **new**: same ticket + same hash + same `device_id`
+  → 200 replay with identical metadata; a different hash → 409; a different `device_id` →
+  409; a claimed ticket whose `auth:key:<hash>` was deleted → 409 naming the credential as
+  no longer present. Pins §1.10a and requirement 2.3.
+- `test_enroll_consume_ordering.py` — **new**: the replay comparison is evaluated before
+  the `cred_exists` guard.
 - `test_enroll_auth_off.py` — with `AUTH_ENABLED=false`, `POST /enroll` resolves to the
   enroll router rather than `_admin_surface_disabled_router`'s catch-all
   (`main.py:162-168`) and returns 409 with the enrollment sentence; `POST /auth/enroll`
@@ -607,8 +862,6 @@ codes into prose and must not invent prose the server did not send.
   `get_remote_address`.
 - `test_enroll_scope_ceiling.py` — a hand-written ticket with `scopes=["admin"]` or
   `["*"]` is refused and mints nothing.
-- `test_enroll_agent_id.py` — charset rejection; collision → `-2`; the server's value
-  wins over the client proposal.
 - `test_enroll_anchor.py` — returns `ca_pem` for a known `tid`, 404 for unknown
   (creating nothing), and never returns the ticket, `used_at`, or `scopes`.
 
@@ -622,9 +875,9 @@ codes into prose and must not invent prose the server did not send.
   printed before the first filesystem write; `t=http` emits the warning;
   `is_bypassed()` refuses before anything else.
 - `test_join_config_write.py` — `[dist]` survives a join byte-for-byte; `kind` change
-  refused without `--force` and accepted with it; `key_expires_at` is written from the
+  refused without `--force` and accepted with it; `credential_id`, `device_id` and `credential_expires_at` are written from the
   response; 0600 with the Windows `OSError` tolerance `connect.py:189-192` already has.
-- `test_doctor_key_expiry.py` — warns inside 14 days, fails after, and is silent when
+- `test_doctor_credential_expiry.py` — warns inside 14 days, fails after, and is silent when
   `key_expires_at` is absent (a key minted before this feature). Guards the §1.8
   requirement that expiry is visible before it bites.
 - `test_connect.py` (extend) — `connect` issues then redeems through the join core;
@@ -667,7 +920,7 @@ fixture, so the bash issuer and the Python redeemer cannot drift.
    Caddy + internal CA so `t=tls` becomes the single default and `t=tunnel` a fallback.
    Until then a join code cannot onboard a teammate who has no server account on the
    shipped default (§1.3).
-2. **Verified identity on the cortex hot path.** `main.py:1129` and `:1205` read the
+2. **Verified principal on the cortex hot path.** `main.py:1129` and `:1205` read the
    self-asserted `X-Agent-Id` while `auth/asgi.py:112-117` already attaches a verified
    identity nothing reads (§1.12).
 3. **Hosted control plane (SaaS).** The third issuer. Accounts, billing, device
