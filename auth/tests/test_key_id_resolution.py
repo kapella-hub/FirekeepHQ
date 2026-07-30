@@ -120,3 +120,29 @@ class TestRevokeKey:
         await _put(redis, HASH_A, SHARED, "alice")
         assert await keys.revoke_key("*") is False
         assert await redis.exists(f"auth:key:{HASH_A}") == 1
+
+
+class TestListKeys:
+    @pytest.mark.asyncio
+    async def test_lists_single_record(self, redis):
+        await _put(redis, HASH_A, SHARED, "alice")
+        rows = await keys.list_keys()
+        assert len(rows) == 1
+        assert rows[0]["agent_id"] == "alice"
+        assert rows[0]["ambiguous"] is False
+
+    @pytest.mark.asyncio
+    async def test_collision_emits_every_record(self, redis):
+        """A listing that hides a live credential is how one goes unnoticed."""
+        await _put(redis, HASH_A, SHARED, "alice")
+        await _put(redis, HASH_B, SHARED, "bob")
+        rows = await keys.list_keys()
+        assert len(rows) == 2
+        assert {r["agent_id"] for r in rows} == {"alice", "bob"}
+        assert all(r["ambiguous"] is True for r in rows)
+
+    @pytest.mark.asyncio
+    async def test_index_member_with_no_verified_record_is_skipped(self, redis):
+        # Index entry whose record was deleted out from under it.
+        await redis.zadd("auth:key_index", {"bbbbbbbbbbbbbbbb": 1.0})
+        assert await keys.list_keys() == []

@@ -269,26 +269,34 @@ async def create_key(
 
 
 async def list_keys(limit: int = 50) -> list[dict[str, Any]]:
-    """List all API keys (metadata only, never plaintext)."""
+    """List all API keys (metadata only, never plaintext).
+
+    Where one index member resolves to more than one record, EVERY record is
+    emitted and each is marked ambiguous. Under-reporting is the failure mode
+    here: a credential hidden behind another's prefix still authenticates.
+    """
     if _redis is None:
         return []
 
     key_ids = await _redis.zrevrange(_KEY_INDEX, 0, limit - 1)
-    keys = []
+    rows: list[dict[str, Any]] = []
     for kid in key_ids:
-        # Find the full hash — scan for keys matching this prefix
-        async for full_key in _redis.scan_iter(f"{_KEY_PREFIX}{kid}*", count=10):
-            data = await _redis.hgetall(full_key)
-            if data:
-                keys.append({
-                    "key_id": data.get("key_id", kid),
-                    "agent_id": data.get("agent_id", "unknown"),
-                    "scopes": json.loads(data.get("scopes", "[]")),
-                    "created_at": data.get("created_at"),
-                    "expires_at": data.get("expires_at"),
-                })
-            break
-    return keys
+        matches = await _resolve_key_id(kid)
+        if len(matches) > 1:
+            logger.critical(
+                "AMBIGUOUS key_id %s matches %d stored records (%s); listing all",
+                kid, len(matches), ", ".join(k for k, _ in matches),
+            )
+        for _redis_key, data in matches:
+            rows.append({
+                "key_id": data.get("key_id", kid),
+                "agent_id": data.get("agent_id", "unknown"),
+                "scopes": json.loads(data.get("scopes", "[]")),
+                "created_at": data.get("created_at"),
+                "expires_at": data.get("expires_at"),
+                "ambiguous": len(matches) > 1,
+            })
+    return rows
 
 
 async def revoke_key(key_id: str) -> bool:
