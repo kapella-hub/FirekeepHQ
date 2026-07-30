@@ -586,6 +586,7 @@ async def _list_sessions(request: StarletteRequest) -> StarletteJSONResponse:
     GET /briefing aggregator (resumable-sessions source) and the
     session-resumption flow."""
     try:
+        require_scope_asgi(request, "session:read")
         status_filter = request.query_params.get("status")
         agent_filter = request.query_params.get("agent_id")
         try:
@@ -607,6 +608,8 @@ async def _list_sessions(request: StarletteRequest) -> StarletteJSONResponse:
                     sess["files"] = data.get("files", {})
 
         return StarletteJSONResponse({"sessions": sessions})
+    except ScopeError as e:
+        return StarletteJSONResponse({"error": e.detail}, status_code=e.status_code)
     except Exception as e:
         logger.error("GET /sessions failed: %s", e)
         return StarletteJSONResponse({"error": str(e)}, status_code=500)
