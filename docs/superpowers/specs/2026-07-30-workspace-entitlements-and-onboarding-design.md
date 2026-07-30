@@ -35,9 +35,12 @@ inventory (`2026-07-30-client-enrollment-join-codes-design.md` §1.12), while
 later implementer folding the machine into the security principal — one member may hold
 several devices, and a rebuilt machine gets a new credential under the same `device_id`.
 
-`credential_id` maps 1:1 onto today's `key_id` (`auth/keys.py:203`, surfaced at
-`auth/asgi.py:116`), which is already server-computed. It is a rename on the read path,
-not a migration.
+`credential_id` is minted by the server independently of the credential hash
+(`2026-07-30-client-enrollment-join-codes-design.md` §1.8) and is resolved through
+`auth:cred:<credential_id>`. It is **not** today's `key_id`, which is `key_hash[:16]`
+(`auth/keys.py:203`) and becomes client-influenceable the moment the client supplies the
+hash. This spec consumes `credential_id` as enrollment defines it; backfilling the
+mapping for pre-enrollment records is enrollment's job (`deploy/bootstrap-keys.sh`).
 
 A free member may run any number of terminals, machines, `FIREKEEP_AGENT_ID`s and coding
 clients simultaneously. **Team is unlocked when a second member is invited or approved**,
@@ -101,11 +104,15 @@ on them.
 6. The credential record carries **no `agent_id`**. Enrollment binds credentials to
    devices, not names (`2026-07-30-client-enrollment-join-codes-design.md` §1.12), so
    `auth/asgi.py:113-117` attaches `{workspace_id, member_id, credential_id, scopes}`
-   instead of `{agent_id, scopes, key_id}`. Verified repo-wide, no application handler
-   reads `identity["agent_id"]`: the only readers of the identity dict are
-   `auth/middleware.py:95`, `auth/middleware.py:148`, `auth/asgi.py:197` and
-   `cortex/app/briefing/api.py:66`, and all four read `scopes` only. The field can be
-   dropped without touching a handler. `require_scope`'s docstring example
+   instead of `{agent_id, scopes, key_id}`. Verified repo-wide, the identity dict has nine reader sites. Four read
+   `scopes` only and are unaffected: `auth/middleware.py:95`, `auth/middleware.py:148`,
+   `auth/asgi.py:197`, `cortex/app/briefing/api.py:66`. One reads `agent_id` and **must
+   be changed in this milestone**: `vault/api.py:74` sets
+   `created_by=identity.get("agent_id", "admin")` on `POST /vault/secrets`. Because it
+   supplies a literal default, dropping the field does not raise — it silently attributes
+   every stored secret to `"admin"`. It is repointed at the principal's `member_id`. The
+   remaining sites are non-consumers: `middleware.py:59` is a docstring, `asgi.py:114` is
+   the attach site this step rewrites. `require_scope`'s docstring example
    (`auth/middleware.py:59`) must be updated so it stops documenting a field that no
    longer exists.
 Then the same context is carried into Bridge, Relay, replay and the dashboard APIs.
@@ -113,12 +120,11 @@ Then the same context is carried into Bridge, Relay, replay and the dashboard AP
 operations §3.2 names: issuing and accepting a member invite.
 
 This is the follow-up the enrollment design defers by name (§7 item 2, restated at its
-§1.12: "Until recall/learn prefer the verified identity, per-machine enrollment improves
-inventory and revocation granularity but does not harden attribution"). Milestone 1
-discharges it. It has no hard dependency on either earlier spec — `key_id` is already
-server-computed (`auth/keys.py:203`, attached at `auth/asgi.py:116`) and the config
-collapse is entirely client-side — so it may land in parallel with, or ahead of, the rest
-of this sequence.
+§1.12: enrollment makes the credential device-owned and therefore *attributable*, and
+"making cortex prefer the verified principal is milestone 1 of the workspace design"). Milestone 1
+discharges it. It depends on the enrollment design, which lands first and mints the
+`device_id`/`credential_id` this spec's principal carries (see §2.2 and the sequencing
+header); it has no dependency on the client-side config collapse.
 
 ### 2.1 Milestone 1 is single-workspace-per-deployment
 
@@ -188,7 +194,7 @@ A signed document the server holds. The client never evaluates it.
 ```json
 {
   "workspace_id": "…", "customer": "…", "plan": "solo|team",
-  "max_members": 1, "capabilities": ["…"],
+  "max_members": 1,
   "issued_at": "…", "expires_at": "…"
 }
 ```
