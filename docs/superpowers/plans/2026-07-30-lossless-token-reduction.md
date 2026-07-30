@@ -1341,9 +1341,20 @@ async def test_memory_recall_markdown_is_not_json_escaped(monkeypatch):
 `symdex/src/firekeep_symdex/tools/recall_with_code.py:122` runs `_extract_keywords(context_block)` over the whole recall block and `:153` builds cross-references from it. Read both, then run: `cd symdex && python -m pytest tests/ -q`.
 If that consumer receives the tool result through an MCP client that unwraps `{"result": ...}` itself, the change is transparent; if it string-matches on the escaped form, **it must be fixed in the same commit**.
 
-- [ ] **Step 4: Apply, run every suite, and verify live**
+- [ ] **Step 4: Apply and run every suite**
 
-Add `output_schema=None` to the four decorators. Then verify on a real session on **Claude and one other runtime** that the rendered tool output is identical in content. Record the result in `docs/HISTORY-NOTES.md`. A tests-only pass is not sufficient evidence for this item.
+Add `output_schema=None` to the four decorators. Run the cortex, symdex and shared suites.
+
+- [ ] **Step 5: Record the live check as a PRE-MERGE GATE, not a completed step**
+
+**Decided 2026-07-30:** cortex-mcp runs in Docker on the VPS, so the cross-runtime render check cannot be performed from this branch — it needs a deploy. The implementer's job ends at code plus test evidence. Append this to the ledger verbatim, and do **not** describe this task as verified:
+
+```
+Task 10: PRE-MERGE GATE OPEN — output_schema=None applied and unit-verified, but the
+cross-runtime render check requires a deploy of cortex-mcp. Before merging: confirm on a
+real session on Claude AND one other runtime that recall/skill output renders identically,
+then record the result in docs/HISTORY-NOTES.md. Tests alone are not evidence for this item.
+```
 
 - [ ] **Step 5: Commit**
 
@@ -1351,7 +1362,20 @@ Add `output_schema=None` to the four decorators. Then verify on a real session o
 git commit -m "perf(mcp): stop shipping markdown twice, once escaped"
 ```
 
-### Task 11: Strip auto-generated Pydantic `title` keys from the decision server's schemas
+### Task 11: ~~Strip auto-generated Pydantic `title` keys~~ — CANCELLED 2026-07-30, measured
+
+**Do not implement. This task was cancelled by its own measurement, under the same standard Task 4.5 applies.**
+
+Measured empirically against the pinned stack: the decision server uses the **mcp SDK's** bundled FastMCP (`from mcp.server.fastmcp import FastMCP`, `decision/server.py:680`), not the standalone `fastmcp` 3.x package. A representative tool's generated schema is **411 bytes and carries 4 `title` keys** — the three per-property titles plus a useless root `"title": "decision_boardArguments"` — totalling roughly **70 bytes per tool**. With two tools on a local stdio server that is **~140 bytes, about 35 tokens, once per session.**
+
+Against that: the `FastMCP` instance is constructed **inside `main()`** (deliberately, so importing the module does not spin up a server), so there is no module-level object to post-process and no `tool_schemas()` seam. Making it testable means restructuring how the decision server registers its tools.
+
+Restructuring tool registration to save 35 tokens per session fails the standard this plan sets in Task 4.5: if the saving does not justify the mechanism, do not build it. Recorded here rather than deleted so the measurement is not re-derived by the next person reading the spec's free-win list.
+
+<details>
+<summary>Original task text, retained for the record</summary>
+
+### Task 11 (cancelled): Strip auto-generated Pydantic `title` keys from the decision server's schemas
 
 **Files:**
 - Modify: `client/firekeep_client/decision/server.py`
@@ -1391,6 +1415,8 @@ Read how `decision/server.py` currently builds schemas before writing the walk �
 ```bash
 git commit -m "perf(decision): drop schema titles no model reads"
 ```
+
+</details>
 
 ### Task 12: The dead resolution-language signal
 
@@ -1483,7 +1509,23 @@ git commit -m "fix(skills): the heaviest scoring signal has always been zero"
 - Modify: `client/firekeep_client/adapters/base.py` (add `LEGACY_INSTRUCTION_MARKERS`), `client/firekeep_client/adapters/claude.py`
 - Test: `client/tests/adapters/test_predecessor_migration.py` (extend)
 
-Measured on a live machine: 3,213 chars, 0.998-similar to the current block — it is a duplicate paying rent in every prompt. The mechanism must **archive to `.bak`** in the manner of `adapters/kiro.py::_migrate_legacy`, never delete content-blind from a user-owned prose file.
+**Re-measured on the live machine 2026-07-30; the spec's figures and the marker strings were both wrong. Use these.**
+
+There are **two** predecessor blocks in `~/.claude/CLAUDE.md`, and only one of them may be touched:
+
+| Block | Markers | Size | Similarity to the firekeep block | Verdict |
+|---|---|---|---|---|
+| Decision Board + Knowledge Ingest | `<!-- nexus:instructions:begin …` / `<!-- nexus:instructions:end -->` | 3,214 chars, 53 lines | **0.75** | **archive** |
+| Agent Personality + Change Consistency Checklist + tool notes | `<!-- NexusStack Agent Guidelines -->` / `<!-- /NexusStack Agent Guidelines -->` | 2,441 chars, 28 lines | **0.03** | **LEAVE ALONE** |
+
+Two corrections that matter:
+
+1. **The spec's 0.998 similarity figure is wrong — it is 0.75.** The firekeep block is 5,238 chars against the nexus block's 3,214, because firekeep's carries a memory-protocol section the predecessor's lacks. The nexus block is a near-duplicate of a *subset*, not of the whole. Still worth ~800 tokens of rent per prompt for content that is three-quarters redundant, so it still goes — but do not repeat "0.998" anywhere.
+2. **The second block is not a duplicate at all** (0.03 similar) and contains content the user still has and may still want. Stripping it would be a straight deletion of the user's information, which the zero-degradation constraint forbids. `LEGACY_INSTRUCTION_MARKERS` must contain **only** the `nexus:instructions:begin`/`end` pair.
+
+Note the live file also contains a literal `\n` (backslash-n as text, not a newline) immediately before `<!-- NexusStack Agent Guidelines -->` — a cosmetic bug in the predecessor's writer. Do not try to clean it up; it sits outside the block you are removing.
+
+The mechanism must **archive to `.bak`** in the manner of `adapters/kiro.py::_migrate_legacy`, never delete content-blind from a user-owned prose file — and the archive is what preserves the nexus block's unique 25%.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1518,16 +1560,24 @@ Add the tuple beside the three existing legacy tuples, respecting the `DO NOT RE
 
 ```python
 # Generation 2's instruction block, upserted into the user's global CLAUDE.md
-# under the predecessor product's markers. Measured on a live machine at 3,213
-# chars and 0.998-similar to FIREKEEP_INSTRUCTIONS — a duplicate paying rent in
-# every prompt. DO NOT RENAME (see the warning above): renaming these disarms the
-# migration on every machine that actually has the block.
+# under the predecessor product's markers. Measured on a live machine 2026-07-30:
+# 3,214 chars, 0.75-similar to FIREKEEP_INSTRUCTIONS (a near-duplicate of a
+# SUBSET — firekeep's block carries a memory-protocol section this one lacks).
+# The sibling `<!-- NexusStack Agent Guidelines -->` block is deliberately NOT
+# listed: at 0.03 similarity it is not a duplicate, it is content the user still
+# has, and removing it would be a plain deletion of their information.
+# DO NOT RENAME (see the warning above): renaming these disarms the migration on
+# every machine that actually has the block.
 LEGACY_INSTRUCTION_MARKERS = (
-    ("<!-- nexus:instructions -->", "<!-- /nexus:instructions -->"),
+    ("<!-- nexus:instructions:begin", "<!-- nexus:instructions:end -->"),
 )
 ```
 
-Confirm the real marker strings by reading a live `~/.claude/CLAUDE.md` or the predecessor kit's source before committing. **A guessed marker is a no-op migration that keeps every test green** — exactly the failure mode the `DO NOT RENAME` comment describes.
+The begin marker is matched by **prefix**, not in full. The live line reads
+``<!-- nexus:instructions:begin — nexus-owned block, do not edit; re-rendered by `nexus install` -->``
+and pinning that whole sentence would break the migration on any generation that reworded the comment. This mirrors how `INSTRUCTIONS_BEGIN`/`INSTRUCTIONS_END` are already used in this file (`base.py:293-294`, matched with `.find()`).
+
+These strings were read off the live machine on 2026-07-30, not guessed — **a guessed marker is a no-op migration that keeps every test green**, exactly the failure mode the `DO NOT RENAME` comment describes. If you change them, re-read the live file first.
 
 - [ ] **Step 3: Verify against the forbidden-token gate**
 
