@@ -996,35 +996,38 @@ Also: bridge has **no pytest config**, so pytest-asyncio runs in strict mode —
 ```python
 # bridge/tests/test_shadow_delta.py
 import pytest
+from unittest.mock import AsyncMock
+
+from app.config import Settings
+from app.session import SessionManager
 
 
-@pytest.mark.asyncio
-async def test_shadow_epoch_is_empty_when_never_bumped(session_mgr, mock_redis):
-    mock_redis.hget = __import__("unittest.mock", fromlist=["AsyncMock"]).AsyncMock(
-        return_value=None)
-    assert await session_mgr.get_shadow_epoch("sess-1") == ""
+class TestShadowEpoch:
+    @pytest.mark.asyncio
+    async def test_shadow_epoch_is_empty_when_never_bumped(self, mock_redis):
+        mock_redis.hget = AsyncMock(return_value=None)
+        mgr = SessionManager(mock_redis, Settings())
+        assert await mgr.get_shadow_epoch("sess-1") == ""
 
+    @pytest.mark.asyncio
+    async def test_shadow_epoch_reads_the_scratch_field_precompact_wrote(self, mock_redis):
+        """precompact bumps the epoch through the ordinary ctx_update scratch path —
+        no new MCP tool, and no new Redis key."""
+        mock_redis.hget = AsyncMock(return_value="1700000000000")
+        mgr = SessionManager(mock_redis, Settings())
+        assert await mgr.get_shadow_epoch("sess-1") == "1700000000000"
+        mock_redis.hget.assert_awaited_once_with("nb:session:sess-1:scratch", "shadow_epoch")
 
-@pytest.mark.asyncio
-async def test_shadow_epoch_reads_the_scratch_field_precompact_wrote(session_mgr, mock_redis):
-    """precompact bumps the epoch through the ordinary ctx_update scratch path —
-    no new MCP tool, and no new Redis key."""
-    from unittest.mock import AsyncMock
-    mock_redis.hget = AsyncMock(return_value="1700000000000")
-    assert await session_mgr.get_shadow_epoch("sess-1") == "1700000000000"
-    mock_redis.hget.assert_awaited_once_with("nb:session:sess-1:scratch", "shadow_epoch")
-
-
-@pytest.mark.asyncio
-async def test_shadow_epoch_is_empty_when_redis_errors(session_mgr, mock_redis):
-    """An unreadable epoch must read as "" — which mismatches every cursor and so
-    yields a full restore. Failing to read the epoch is not evidence a cursor is valid."""
-    from unittest.mock import AsyncMock
-    mock_redis.hget = AsyncMock(side_effect=RuntimeError("redis down"))
-    assert await session_mgr.get_shadow_epoch("sess-1") == ""
+    @pytest.mark.asyncio
+    async def test_shadow_epoch_is_empty_when_redis_errors(self, mock_redis):
+        """An unreadable epoch must read as "" — which mismatches every cursor and so
+        yields a full restore. Failing to read the epoch is not evidence a cursor is valid."""
+        mock_redis.hget = AsyncMock(side_effect=RuntimeError("redis down"))
+        mgr = SessionManager(mock_redis, Settings())
+        assert await mgr.get_shadow_epoch("sess-1") == ""
 ```
 
-Use the exact `SessionManager` fixture name already in `bridge/tests/conftest.py` (read it — it may be `session_mgr`, `manager`, or built inline per test) rather than the placeholder name above.
+**Verified fixture facts — do not deviate.** `bridge/tests/conftest.py` defines exactly ONE fixture, `mock_redis`. There is **no** `session_mgr` / `session_manager` fixture; every existing test builds the manager inline as `SessionManager(mock_redis, Settings())` (see `bridge/tests/test_briefing_id_field.py:21`). `_scratch_key` is a `@staticmethod` returning `f"nb:session:{sid}:scratch"` (`session.py:120-122`), which is where the asserted key string comes from.
 
 **Critically: do not add this read inside `get_session_data`.** `bridge/tests/test_sessions_route.py:98-121` encodes that function's exact Redis *call order* via positional `side_effect` lists (`hgetall` → [meta, files, scratch], `get` → [plan, proactive]). One extra read there shifts the lists and either raises `StopAsyncIteration` or — far worse — silently assigns the files hash to scratch while some assertions still pass. A separate method has none of that blast radius.
 
@@ -1079,50 +1082,78 @@ git commit -m "feat(bridge): a session can say which epoch its shadow belongs to
 - [ ] **Step 1: Write the failing tests**
 
 ```python
-@pytest.mark.asyncio
-async def test_full_restore_returns_a_cursor_and_is_not_a_delta(bridge_tools):
-    out = await bridge_tools.ctx_get_shadow(agent_id="a")
-    assert out["delta"] is False
-    assert out["shadow_cursor"]
-    assert "### Decisions" in out["shadow"]
+# bridge/tests/test_shadow_delta.py — appended to the epoch tests above
+#
+# HARNESS: there is no `bridge_tools` fixture. Every bridge MCP-tool test patches
+# app.mcp_server._get_manager with an AsyncMock manager and awaits the tool
+# function directly — see bridge/tests/test_mcp_tools.py:44-51. Copy that shape.
+from unittest.mock import AsyncMock, patch
 
 
-@pytest.mark.asyncio
-async def test_a_fresh_cursor_yields_a_delta_that_names_what_it_withheld(bridge_tools):
-    first = await bridge_tools.ctx_get_shadow(agent_id="a")
-    second = await bridge_tools.ctx_get_shadow(agent_id="a", since=first["shadow_cursor"])
-    assert second["delta"] is True
-    assert "still exist" in second["note"]
-    assert "ctx_get_shadow()" in second["note"]
+def _session_data():
+    return {"goal": "g", "status": "active", "plan": "- [ ] one",
+            "decisions": [{"timestamp": "2026-07-30T10:00:00.000001+00:00",
+                           "content": "chose A"}],
+            "progress": [], "files": {}, "scratch": {}, "proactive_memories": []}
 
 
-@pytest.mark.asyncio
-async def test_every_bad_cursor_yields_a_full_restore(bridge_tools):
-    """The tool-level half of the fail-safe matrix. The pure-function half lives
-    in tests/test_residency.py; both must hold."""
-    for bad in (None, "", "garbage", "eyJ2IjoxfQ"):
-        out = await bridge_tools.ctx_get_shadow(agent_id="a", since=bad)
-        assert out["delta"] is False, f"cursor {bad!r} produced a delta"
+def _mgr(epoch=""):
+    mgr = AsyncMock()
+    mgr.get_active_session_id = AsyncMock(return_value="sess-1")
+    mgr.get_session_data = AsyncMock(return_value=_session_data())
+    mgr.get_shadow_epoch = AsyncMock(return_value=epoch)
+    return mgr
 
 
-@pytest.mark.asyncio
-async def test_a_cursor_is_refused_after_the_epoch_is_bumped(bridge_tools, session_manager):
-    """This is precompact's server-side belt: the agent wrongly passes a stale
-    cursor after a compaction, and Bridge answers with everything anyway."""
-    first = await bridge_tools.ctx_get_shadow(agent_id="a")
-    await session_manager.update_context(
-        agent_id="a", category="scratch", key="shadow_epoch", content="9999")
-    out = await bridge_tools.ctx_get_shadow(agent_id="a", since=first["shadow_cursor"])
-    assert out["delta"] is False
+class TestShadowDelta:
+    @pytest.mark.asyncio
+    async def test_full_restore_returns_a_cursor_and_is_not_a_delta(self):
+        from app.mcp_server import ctx_get_shadow
+        with patch("app.mcp_server._get_manager", return_value=_mgr()):
+            out = await ctx_get_shadow(agent_id="a")
+        assert out["delta"] is False
+        assert out["shadow_cursor"]
+        assert "### Decisions" in out["shadow"]
 
+    @pytest.mark.asyncio
+    async def test_a_fresh_cursor_yields_a_delta_that_names_what_it_withheld(self):
+        from app.mcp_server import ctx_get_shadow
+        with patch("app.mcp_server._get_manager", return_value=_mgr()):
+            first = await ctx_get_shadow(agent_id="a")
+            second = await ctx_get_shadow(agent_id="a", since=first["shadow_cursor"])
+        assert second["delta"] is True
+        assert "still exist" in second["note"]
+        assert "ctx_get_shadow()" in second["note"]
 
-@pytest.mark.asyncio
-async def test_ctx_resume_session_never_returns_a_delta(bridge_tools):
-    """A resume is by definition a context the agent cannot vouch for. It takes
-    no `since` and must always be full — the signature is also load-bearing:
-    ctx_resume_session has no such parameter and FastMCP would reject the kwarg."""
-    out = await bridge_tools.ctx_resume_session(session_id="sess-1", agent_id="a")
-    assert out.get("delta", False) is False
+    @pytest.mark.asyncio
+    async def test_every_bad_cursor_yields_a_full_restore(self):
+        """The tool-level half of the fail-safe matrix. The pure-function half lives
+        in tests/test_residency.py; both must hold."""
+        from app.mcp_server import ctx_get_shadow
+        for bad in (None, "", "garbage", "eyJ2IjoxfQ"):
+            with patch("app.mcp_server._get_manager", return_value=_mgr()):
+                out = await ctx_get_shadow(agent_id="a", since=bad)
+            assert out["delta"] is False, f"cursor {bad!r} produced a delta"
+
+    @pytest.mark.asyncio
+    async def test_a_cursor_is_refused_after_the_epoch_is_bumped(self):
+        """precompact's server-side belt: the agent wrongly passes a stale cursor
+        after a compaction, and Bridge answers with everything anyway."""
+        from app.mcp_server import ctx_get_shadow
+        with patch("app.mcp_server._get_manager", return_value=_mgr(epoch="1000")):
+            first = await ctx_get_shadow(agent_id="a")
+        with patch("app.mcp_server._get_manager", return_value=_mgr(epoch="9999")):
+            out = await ctx_get_shadow(agent_id="a", since=first["shadow_cursor"])
+        assert out["delta"] is False
+
+    @pytest.mark.asyncio
+    async def test_ctx_resume_session_never_returns_a_delta(self):
+        """A resume is by definition a context the agent cannot vouch for. It takes
+        no `since` and must always be full — the signature is also load-bearing:
+        ctx_resume_session has no such parameter and FastMCP would reject the kwarg."""
+        import inspect
+        from app.mcp_server import ctx_resume_session
+        assert "since" not in inspect.signature(ctx_resume_session).parameters
 ```
 
 - [ ] **Step 2: Run to verify failure**
@@ -1153,8 +1184,10 @@ async def ctx_get_shadow(session_id: str | None = None, agent_id: str = "default
     """
     agent_id = _default_agent_id(agent_id)
     mgr = await _get_manager()
-    if not session_id:
-        session_id = await mgr.get_active_session(agent_id)
+    # NOTE: get_active_session_ID — verified name (session.py:332). Guard shape
+    # copied from the current implementation, which uses `is None`, not falsiness.
+    if session_id is None:
+        session_id = await mgr.get_active_session_id(agent_id)
     if not session_id:
         return {"error": "No active session. Start one with ctx_start_session."}
 
