@@ -1,7 +1,11 @@
 # Client Enrollment — Join Codes
 
 **Status:** design, approved 2026-07-30 (revised same day: dashboard issuance, zero prompts)
-**Depends on:** `2026-07-30-single-connection-config-design.md`, which must land first.
+**Depends on:** `2026-07-30-single-connection-config-design.md` and
+`2026-07-30-key-id-resolution-hardening-design.md`, both of which must land first. The
+hardening patch is a prerequisite rather than a nicety: this design lets the client choose
+its credential hash, which turns that patch's 64-bit-collision precondition into a free
+choice.
 There is no `[personal]`/`[office]` profile; a join code writes the one `[server]`
 section.
 **Supersedes:** nothing. Extends `firekeep connect` (`client/firekeep_client/connect.py`).
@@ -533,13 +537,26 @@ Response `200`:
     {device_id, credential_id, suggested_agent_id, scopes, kind,
      host|base_url, ca_pem?, credential_expires_at, server_version}
 
-**There is no `api_key` field.** The credential never crosses the wire in either
-direction; only its hash does, on the request, and an intercepted hash is not a bearer
-token (`validate_key` re-hashes what the caller presents, `keys.py:288-290`). This
-removes the credential from proxy access logs, response buffers and tracebacks. It does
-**not** remove the need to authenticate the server: the ticket `q` is still a bearer
-secret in the request body, so §1.2's CA pinning stays load-bearing and `t=http`
-remains a named exposure.
+**There is no `api_key` field.** The claim this supports is bounded, and the bound is
+part of the claim: **the credential never crosses the wire during enrollment** — not in
+the request, not in the response. Only `sha256(secret)` does, on the request, and an
+intercepted hash is not a bearer token (`validate_key` re-hashes what the caller
+presents, `keys.py:288-290`). What that buys is narrow and real: the credential is absent
+from the enrollment request body, the response body, proxy access logs, response buffers
+and tracebacks on the one exchange that would otherwise have carried a brand-new
+long-lived secret in plaintext.
+
+It buys nothing after that. **Every subsequent authenticated call sends the secret itself
+as the `X-API-Key` bearer credential** (`resolver.py:294-298`), because that is the only
+way the server can authenticate it — `validate_key` hashes what is presented and looks the
+result up, so it must receive the plaintext. Those calls therefore depend entirely on the
+transport: TLS on `t=tls`, the SSH tunnel on `t=tunnel`, and **nothing at all on `t=http`**,
+which is why that transport requires `--insecure-http` at issue time and prints its
+exposure at redemption (§1.3, §4).
+
+This also does **not** remove the need to authenticate the server during enrollment: the
+ticket `q` is still a bearer secret in the request body, so §1.2's CA pinning stays
+load-bearing.
 
 The client writes to `[server]`: `kind`, `scheme`, `host`|`base_url`, `verify_tls`,
 `ca_path`, `api_key` (its own generated secret — the config key name is unchanged
@@ -811,7 +828,7 @@ exists to kill.
 | 0 | re-join, same kind | proceeds, printing `[server] updating: host srv1143982 -> fk.corp, api_key <replaced>, agent_id bob-mbp unchanged` |
 | 8 | re-join, different kind | `[server] is currently kind=paths (https://fk.corp) and this code is kind=ports. Refusing to repoint this machine at a different server shape — re-run with --force if that is what you want, or use FIREKEEP_CONFIG=<path> to keep both.` |
 | 1 | personal mode active | `personal mode is ON, so Firekeep is dormant and join would be a no-op. Run: firekeep personal off` |
-| 0 | `t=http` (warning) | `WARNING: this code redeems over plain http to <host>. Your credential is generated locally and never crosses the network, but the join code itself does — anyone on this path can redeem it before you, and the credential you end up using is then sent as X-API-Key in cleartext on every request. Continue only on a trusted network.` |
+| 0 | `t=http` (warning) | `WARNING: this code redeems over plain http to <host>. Your credential is generated locally and is not sent during enrollment, but it IS sent as X-API-Key on every request afterwards, in cleartext on this transport — and the join code itself crosses the network now — anyone on this path can redeem it before you, and the credential you end up using is then sent as X-API-Key in cleartext on every request. Continue only on a trusted network.` |
 
 `transport.py:97-100` surfaces up to 500 bytes of a server's `detail` verbatim, so each
 4xx above carries its full sentence server-side. The client does not translate status

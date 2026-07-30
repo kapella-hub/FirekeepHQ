@@ -326,6 +326,16 @@ reads this config.)
 
 - Serialize on an `O_CREAT|O_EXCL` lock file beside the config. A process that loses the
   lock waits for the winner and re-reads; it does not migrate.
+- **The lock needs stale-owner recovery**, because `O_CREAT|O_EXCL` alone converts a
+  crash into a permanent outage: a process killed between create and unlink leaves a lock
+  no one owns, and every shim, hook core and sidecar cycle then blocks on config load
+  forever — the client bricks itself on the next session start. The lock file records the
+  owner pid and an ISO timestamp; a waiter that observes a lock older than
+  `MIGRATION_LOCK_STALE_SECONDS` (default 30 — migration is a few file operations, so any
+  longer means the owner is gone) and whose pid is not alive breaks it and retries once,
+  logging that it did. Breaking is safe precisely because the write itself is atomic: the
+  worst case is two processes racing `os.replace`, and both write byte-identical content
+  derived from the same source file.
 - Write via a temp file plus `os.replace`, so no reader ever sees a half-written INI.
 - Derive the backup name from the source **content**, not the clock, so four simultaneous
   migrations produce one backup rather than four.
@@ -413,7 +423,17 @@ them.
   backup leaves ambiguous state for the next run.
 - `test_migration_concurrent.py` — **new**: four simultaneous `load_config()` calls
   produce one migration, one backup, and a config that is valid INI at every observable
-  moment; the backup is 0600.
+  moment; the backup is 0600. **Plus stale-owner recovery**: a lock file left by a dead
+  pid older than the threshold is broken and migration proceeds; a lock held by a *live*
+  pid is waited on, never broken.
+- `test_migration_active_unconfigured_pin_configured.py` — **new**, called out because it
+  is the one case whose outcome §4 deliberately inverts: an unconfigured `[active]` with a
+  configured pin migrates **the pin**. The previous rule would have discarded the only
+  working connection.
+- `test_migration_message_handoff.py` — **new**: §4.4's conflict message says "re-run the
+  installer" while `join` does not exist, and must say `firekeep join <code>` once it
+  does. The test asserts whichever sentence is correct for the shipped command set, so the
+  cross-spec swap cannot be silently forgotten.
 - `test_adapters_no_profile_env.py` → an **upgrade-path** test. A fresh render containing
   no `FIREKEEP_PROFILE` passes trivially once the injection is deleted; the regression
   that matters is a machine carrying pre-collapse artifacts. Seed each of the four
