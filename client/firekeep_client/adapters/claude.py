@@ -11,12 +11,14 @@ from pathlib import Path
 from firekeep_client.adapters.base import (
     FIREKEEP_INSTRUCTIONS,
     LEGACY_ENV_KEYS,
+    LEGACY_INSTRUCTION_MARKERS,
     LEGACY_MCP_KEYS,
     FIREKEEP_ENV_KEYS,
     FIREKEEP_MCP_KEYS,
     Adapter,
     console_script_path,
     drop_owned,
+    find_legacy_block_bounds,
     hook_command,
     merge_owned,
     prune_hook_groups,
@@ -24,6 +26,7 @@ from firekeep_client.adapters.base import (
     read_pin,
     shim_servers,
     strip_marked_block,
+    strip_span,
     upsert_hook_group,
     upsert_marked_block,
     write_json,
@@ -102,6 +105,45 @@ class ClaudeAdapter(Adapter):
     def _instructions_path(self) -> Path:
         return Path.home() / ".claude" / "CLAUDE.md"
 
+    def _migrate_legacy_instructions(self) -> None:
+        """Archive the PREDECESSOR's own instruction block out of the user's global
+        ~/.claude/CLAUDE.md -- never delete: this file is user-owned prose that we
+        only ever partially own (one marked region), so removing content out of it
+        without a backup is a straight data-loss bug, not a cleanup.
+
+        Only the `nexus:instructions` pair (LEGACY_INSTRUCTION_MARKERS) is touched.
+        The sibling `Agent Guidelines` block -- a distinct marker pair the
+        predecessor also wrote to this file -- is 0.03-similar to
+        FIREKEEP_INSTRUCTIONS -- not a duplicate, it is content the user still has
+        -- and is deliberately left alone; see the tuple's comment in base.py.
+
+        Idempotent by construction: once the block is stripped from the live file,
+        a later render finds no marker here and this is a no-op (no re-archive, no
+        rewrite) -- what keeps `firekeep update`'s mid-session re-render byte-stable.
+        """
+        path = self._instructions_path()
+        try:
+            if not path.exists():
+                return
+            original = path.read_text(encoding="utf-8")
+            stripped = original
+            found = False
+            for begin_prefix, end_marker in LEGACY_INSTRUCTION_MARKERS:
+                bounds = find_legacy_block_bounds(stripped, begin_prefix, end_marker)
+                if bounds is None:
+                    continue
+                found = True
+                stripped = strip_span(stripped, *bounds)
+            if not found:
+                return
+            # Archive the file AS IT WAS (with the legacy block) before rewriting it --
+            # this is what preserves the block's content, since we are removing it from
+            # the live file, not just formatting it.
+            write_text_if_changed(path.with_name(path.name + ".bak"), original)
+            path.write_text(stripped, encoding="utf-8")
+        except OSError:
+            pass
+
     def _render_instructions(self) -> None:
         """Upsert the firekeep-owned instruction block (decision-board trigger) into the
         user's global ~/.claude/CLAUDE.md. Only the marker-delimited block is ever
@@ -176,6 +218,10 @@ class ClaudeAdapter(Adapter):
         # never reached ~/.claude/CLAUDE.md and never fired.)
         try:
             self._render_command(venv_bin)  # /personal slash command
+        except Exception:  # noqa: BLE001 — best-effort; must not skip the blocks below
+            pass
+        try:
+            self._migrate_legacy_instructions()  # archive the predecessor's own block
         except Exception:  # noqa: BLE001 — best-effort; must not skip the block below
             pass
         try:

@@ -68,6 +68,20 @@ LEGACY_MCP_KEYS = (
     "nexus-symdex", "nexus-decision",
 )
 
+# Generation 2's instruction block, upserted into the user's global CLAUDE.md
+# under the predecessor product's markers. Measured on a live machine 2026-07-30:
+# 3,214 chars, 0.75-similar to FIREKEEP_INSTRUCTIONS (a near-duplicate of a
+# SUBSET — firekeep's block carries a memory-protocol section this one lacks).
+# The sibling `Agent Guidelines` block -- a distinct marker pair the predecessor
+# also wrote to the same file -- is deliberately NOT listed here: at 0.03
+# similarity it is not a duplicate, it is content the user still has, and
+# removing it would be a plain deletion of their information.
+# DO NOT RENAME (see the warning above): renaming these disarms the migration on
+# every machine that actually has the block.
+LEGACY_INSTRUCTION_MARKERS = (
+    ("<!-- nexus:instructions:begin", "<!-- nexus:instructions:end -->"),
+)
+
 
 def console_script_path(path: Path) -> str:
     """Absolute path to a venv console-script/interpreter, platform-aware: pip installs
@@ -479,3 +493,26 @@ def strip_marked_block(existing: str) -> str:
         return existing
     after = existing[end + len(INSTRUCTIONS_END):]
     return existing[:begin].rstrip("\n") + ("\n" if existing[:begin].strip() else "") + after.lstrip("\n")
+
+
+def find_legacy_block_bounds(text: str, begin_prefix: str, end_marker: str) -> tuple[int, int] | None:
+    """Locate a marker-delimited block whose BEGIN marker is matched by PREFIX (the
+    live begin line carries a variable prose tail a later generation could reword —
+    e.g. `<!-- nexus:instructions:begin — nexus-owned block, do not edit; ... -->`)
+    and whose END marker is matched in full. Returns (start, stop) spanning the
+    whole block including both markers, or None if the pair isn't present/ordered."""
+    begin = text.find(begin_prefix)
+    if begin == -1:
+        return None
+    end = text.find(end_marker, begin)
+    if end == -1:
+        return None
+    return begin, end + len(end_marker)
+
+
+def strip_span(text: str, begin: int, end: int) -> str:
+    """Remove text[begin:end] and normalize surrounding blank lines the same way
+    strip_marked_block does, so archiving a legacy block leaves the remaining
+    prose looking hand-written rather than gapped."""
+    before, after = text[:begin], text[end:]
+    return before.rstrip("\n") + ("\n" if before.strip() else "") + after.lstrip("\n")

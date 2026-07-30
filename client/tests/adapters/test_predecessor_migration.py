@@ -31,6 +31,7 @@ from firekeep_client.adapters import get_adapter
 from firekeep_client.adapters.base import (
     LEGACY_ENV_KEYS,
     LEGACY_HOOK_MARKERS,
+    LEGACY_INSTRUCTION_MARKERS,
     LEGACY_MCP_KEYS,
 )
 
@@ -54,6 +55,20 @@ class TestLegacyTokensStillNameTheOldThing:
             "the predecessor kit invoked `-m nexus_client.hooks`; without a marker for it "
             "an upgraded machine keeps both hook layers and fires every event twice"
         )
+
+    def test_instruction_markers_name_the_predecessor_and_only_the_duplicate_block(self):
+        assert LEGACY_INSTRUCTION_MARKERS
+        for begin, end in LEGACY_INSTRUCTION_MARKERS:
+            assert begin.startswith("<!-- nexus:instructions:begin"), (
+                f"{begin!r} must be the predecessor's begin marker, prefix-matched "
+                f"(the live line carries a variable prose tail)"
+            )
+            assert end == "<!-- nexus:instructions:end -->"
+        # The sibling `Agent Guidelines` block (the predecessor's other, distinct
+        # marker pair) is 0.03-similar to the firekeep block -- not a duplicate,
+        # the user's own content -- and must never be listed here (removing it
+        # would be a plain deletion).
+        assert not any("Agent Guidelines" in begin for begin, _ in LEGACY_INSTRUCTION_MARKERS)
 
 
 @pytest.fixture
@@ -116,3 +131,59 @@ class TestClaudeUpgrade:
         env = json.loads((fake_home / ".claude" / "settings.json").read_text(encoding="utf-8"))["env"]
         assert "NEXUS_CORTEX_URL" not in env
         assert env.get("FOO") == "bar"
+
+
+class TestPredecessorInstructionBlockMigration:
+    """The predecessor's OWN instruction block (Decision Board + Knowledge Ingest,
+    upserted under `nexus:instructions` markers) is 0.75-similar to firekeep's --
+    a near-duplicate of a subset, still worth removing. But ~/.claude/CLAUDE.md is
+    user-owned prose, not a firekeep artifact: it must be archived to .bak, never
+    deleted outright, and the user's own surrounding text must survive untouched.
+    """
+
+    def test_predecessor_instruction_block_is_archived_not_deleted(self, fake_home, tmp_path):
+        md = fake_home / ".claude" / "CLAUDE.md"
+        md.parent.mkdir(parents=True, exist_ok=True)
+        begin_prefix, end_marker = LEGACY_INSTRUCTION_MARKERS[0]
+        # The live begin line carries a variable prose tail after the prefix --
+        # exercising that the migration matches by prefix, not in full.
+        md.write_text(
+            "# My notes\nkeep me\n\n"
+            f"{begin_prefix} — nexus-owned block, do not edit; "
+            "re-rendered by `nexus install` -->\n"
+            f"old block\n{end_marker}\n\n# more of my notes\n",
+            encoding="utf-8",
+        )
+
+        get_adapter("claude").render(venv_bin=tmp_path / "venv" / "bin")
+
+        body = md.read_text(encoding="utf-8")
+        assert "old block" not in body                    # predecessor block gone
+        assert "keep me" in body and "# more of my notes" in body   # user prose intact
+        backups = list(md.parent.glob("CLAUDE.md*.bak"))
+        assert backups, "a user-owned prose file must never be edited without a .bak"
+        assert "old block" in backups[0].read_text(encoding="utf-8")
+
+    def test_render_writes_no_backup_when_there_is_no_predecessor_block(self, fake_home, tmp_path):
+        md = fake_home / ".claude" / "CLAUDE.md"
+        md.parent.mkdir(parents=True, exist_ok=True)
+        md.write_text("# Just my notes\n", encoding="utf-8")
+        get_adapter("claude").render(venv_bin=tmp_path / "venv" / "bin")
+        assert not list(md.parent.glob("CLAUDE.md*.bak"))
+
+    def test_second_render_does_not_re_archive(self, fake_home, tmp_path):
+        """render() must be idempotent: once the predecessor block is stripped, a
+        second render sees no marker and must not write a second .bak."""
+        md = fake_home / ".claude" / "CLAUDE.md"
+        md.parent.mkdir(parents=True, exist_ok=True)
+        begin_prefix, end_marker = LEGACY_INSTRUCTION_MARKERS[0]
+        md.write_text(
+            f"# My notes\n\n{begin_prefix} -->\nold block\n{end_marker}\n",
+            encoding="utf-8",
+        )
+        venv_bin = tmp_path / "venv" / "bin"
+        get_adapter("claude").render(venv_bin=venv_bin)
+        get_adapter("claude").render(venv_bin=venv_bin)
+
+        backups = list(md.parent.glob("CLAUDE.md*.bak"))
+        assert len(backups) == 1, "a second render must not re-archive"
