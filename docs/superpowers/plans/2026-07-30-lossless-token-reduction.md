@@ -1716,3 +1716,227 @@ git commit -m "fix(bridge): the route that returns a whole session had no scope 
 - **Cursor TTL semantics are indistinguishable from failure.** `read_shadow_cursor` returns `None` for "no cursor", "read failed", and "expired" alike. That is the correct fail direction (all three mean full restore) and must stay an asserted invariant rather than an assumption. Do not add a `raise` anywhere on that path.
 - **Measurement.** Every token figure in the design is `chars/4`, which under-counts JSON tool schemas (they tokenize nearer 3.2–3.7 chars/token). Before any customer-facing savings claim, instrument a real session with a real tokenizer and real cache hit/miss accounting.
 - **What this delivers is not "fewer tokens per turn."** That claim is worth about 1% and sits in the cached region. It is *more turns before compaction, and no lost working state when it happens.*
+
+---
+
+# ADDENDUM — Fix round 1 (2026-07-30). Supersedes the text above where they conflict.
+
+Task 5's review returned **three Critical findings, all plan-mandated** — defects in this
+document, faithfully transcribed. This addendum is the authoritative spec for the fix.
+Where it contradicts anything earlier in this plan, the addendum governs.
+
+## Global Constraint, amended
+
+> ~~`assemble_shadow`'s signature does not change.~~
+
+**Relaxed deliberately, with the user's approval (2026-07-30).** It becomes
+`assemble_shadow(data, *, omitted=None)`. All four existing call sites pass exactly one
+positional argument (`bridge/app/mcp_server.py:300, 357, 482, 561` — verified), so a
+keyword-only parameter with a default has provably **zero** effect on them. The
+constraint's purpose — no blast radius on four production consumers — is fully preserved;
+only its letter is relaxed. This is not licence for any other signature change.
+
+## C1 (Critical) — the delta asserted that omitted content does not exist
+
+`assemble_shadow` renders an empty section as an affirmative denial: `*No plan set*`,
+`*No decisions recorded*`, `*No files tracked*`, `*No progress logged*`. This plan made
+"empty" the omission signal and put the corrective notice in a **sibling JSON field**
+(`result["note"]`), outside the markdown the agent actually reads. A quiet delta therefore
+rendered four confident denials with nothing in the document to contradict them — exactly
+the inference this design forbids, pre-drawn and handed over as fact.
+
+`""` was never a usable signal anyway: it collides with a legitimately empty plan.
+
+**The fix.** The signal is the **omission report** that `filter_since` already returns, not
+the emptiness of a section. `assemble_shadow` consumes it:
+
+```python
+def assemble_shadow(data: dict[str, Any], *, omitted: dict[str, Any] | None = None) -> str:
+    """...
+
+    `omitted` is filter_since's omission report. When present, a section whose entries
+    were withheld renders a line SAYING SO instead of the "none recorded" placeholder.
+    A delta must never let a reader conclude the omitted content does not exist — that
+    inference is the degradation, not the omission.
+    """
+```
+
+Per section, replace the bare `else` placeholder branch:
+
+```python
+    elif omitted and omitted.get("decisions"):
+        lines.append(
+            f"*{omitted['decisions']} earlier decision(s) omitted - delivered earlier in "
+            "this conversation. Call ctx_get_shadow() with no arguments for the full document.*"
+        )
+    else:
+        lines.append("*No decisions recorded*")
+```
+
+Same shape for `progress` and `files`. The plan's report value is a **bool**, not a count:
+
+```python
+    elif omitted and omitted.get("plan"):
+        lines.append(
+            "*Plan unchanged - delivered earlier in this conversation. "
+            "Call ctx_get_shadow() with no arguments for the full document.*"
+        )
+```
+
+Use `decision(s)` / `file(s)` / `entry(s)` rather than bare plurals — that also settles
+I3's "1 decisions" cosmetic. Task 7 passes `omitted=omitted` through. `result["note"]`
+stays as well, belt and braces, but it is no longer the only mitigation.
+
+**Test obligations:** for each section, a delta with omissions renders neither
+`No decisions recorded`, `No files tracked`, `No progress logged` nor `No plan set`, and the
+rendered text contains `ctx_get_shadow()`. A FULL restore of a genuinely empty session must
+still render the original placeholders — that path must not regress.
+
+## C2 (Critical) — the epoch guard failed OPEN on a read error
+
+`str(parsed.get("epoch") or "") != str(epoch or "")` coerces both sides, so `""` matches
+every cursor minted before the first compaction — which is every cursor, normally. And Task
+6 specified `get_shadow_epoch` to return `""` when the Redis read *fails*. Combined:
+
+1. Cursor minted, epoch `""` (never compacted).
+2. Compaction. `precompact` bumps `shadow_epoch`.
+3. Agent presents the stale cursor; the `hget` errors and returns `""`.
+4. `"" == ""` → **a delta is served to an agent that just lost its context.**
+
+A Redis read error silently converted a stale cursor into a valid one.
+
+**The fix, in Task 6.** `get_shadow_epoch(session_id) -> str | None`:
+
+```python
+    async def get_shadow_epoch(self, session_id: str) -> str | None:
+        """The session's shadow epoch. "" means never bumped; None means the read FAILED.
+
+        The distinction is load-bearing. "" is a real, matchable state - every cursor
+        minted before the first compaction carries it. If a read failure also returned "",
+        an errored read would silently match a stale cursor and serve a delta to an agent
+        that had just lost its context. None is unmatchable by construction.
+        """
+        try:
+            value = await self._r.hget(self._scratch_key(session_id), "shadow_epoch")
+        except Exception:
+            return None
+        return value or ""
+```
+
+**In Task 7:** when `epoch is None`, force a full restore and mint **no** cursor —
+`filter_since` is not consulted at all, and `shadow_cursor` is omitted from the response. A
+response carrying no cursor cannot produce a later delta, which is the safe outcome. Do
+**not** fix this by rejecting empty epochs inside `filter_since`: that would kill every
+pre-first-compaction delta, i.e. the feature.
+
+Task 6's brief contains a test docstring asserting an unreadable epoch "mismatches every
+cursor". That claim was **false** and must be replaced by a test asserting `None`.
+
+## C3 + I1 + M3 — one predicate replaces three fragile clauses
+
+Three findings share a root cause, so they get one fix rather than three patches:
+
+- **C3 (Critical)**: `(e.get("timestamp") or "") >= hw` turns a missing stamp into `""`, and
+  `"" >= hw` is False, so the entry is **dropped** — directly beneath a comment reading
+  "Duplication beats omission".
+- **I1 (Important)**: `e.get(...)` assumes every entry is a dict; a bare string raises
+  `AttributeError`. Not hypothetical — `shadow.py` already guards `files` values with
+  `isinstance(info, dict)`. Task 7 makes it worse by calling `high_water_of` and
+  `plan_sha_of` unconditionally on **every** `ctx_get_shadow`, so a malformed entry would
+  turn a degraded-but-readable full restore into a hard failure.
+- **M3 (Minor)**: raw ISO string comparison is sound only for today's exact writer. A naive
+  stamp (`2026-07-30T10:00:00`) is a **prefix** of the same instant with an offset, so it
+  sorts LESS and would be dropped despite being newer-or-equal.
+
+**The fix** — add to `bridge/app/residency.py`:
+
+```python
+from datetime import datetime
+
+
+def _keep_entry(stamp: object, hw: str) -> bool:
+    """True if this entry must be KEPT.
+
+    Unknown or unparseable age means we cannot PROVE the agent already has this entry, so
+    it is kept: duplication beats omission. Parsing rather than comparing strings also
+    removes a class of silent drop that raw comparison invites - a naive stamp
+    ('2026-07-30T10:00:00') is a PREFIX of the same instant with an offset, so it sorts
+    lexicographically LESS and would be dropped despite being newer-or-equal.
+    """
+    if not isinstance(stamp, str) or not stamp:
+        return True                      # unknown -> keep
+    try:
+        a, b = datetime.fromisoformat(stamp), datetime.fromisoformat(hw)
+    except (TypeError, ValueError):
+        return True                      # unparseable -> keep
+    try:
+        return a >= b                    # INCLUSIVE: the boundary entry is re-sent
+    except TypeError:
+        return True                      # naive vs aware -> keep
+```
+
+Guard the container type at the call site so a non-dict entry survives into the output
+rather than raising:
+
+```python
+    for section in _LIST_SECTIONS:
+        entries = data.get(section) or []
+        kept = [e for e in entries
+                if not isinstance(e, dict) or _keep_entry(e.get("timestamp"), hw)]
+        out[section] = kept
+        omitted[section] = len(entries) - len(kept)
+
+    files = data.get("files") or {}
+    kept_files = {k: v for k, v in files.items()
+                  if not isinstance(v, dict) or _keep_entry(v.get("last_action"), hw)}
+```
+
+`high_water_of` must skip non-dict entries too — Task 7 calls it on every request,
+including full restores:
+
+```python
+    for section in _LIST_SECTIONS:
+        for entry in data.get(section) or []:
+            if isinstance(entry, dict) and (entry.get("timestamp") or ""):
+                stamps.append(entry["timestamp"])
+    for entry in (data.get("files") or {}).values():
+        if isinstance(entry, dict) and (entry.get("last_action") or ""):
+            stamps.append(entry["last_action"])
+```
+
+`plan_sha_of` must tolerate a non-str plan: `str(data.get("plan") or "")`.
+
+**Test obligations:** an entry with no `timestamp` key is KEPT; `timestamp=""` is KEPT; a
+bare-string entry is KEPT and does not raise; a bare-string `files` value is KEPT and does
+not raise; a naive-stamp entry at the boundary is KEPT; a `Z`-suffixed stamp is KEPT;
+`high_water_of` returns a value rather than raising when a section holds a non-dict.
+
+## I2 (Important) — four of `decode_cursor`'s five guards are untested
+
+`test_garbage_cursor_decodes_to_none` feeds only inputs that die in base64 or JSON, so
+deleting `isinstance(obj, dict)`, the `v != _CURSOR_VERSION` check, or the
+`isinstance(sid/hw, str)` checks leaves all 15 tests green. The version check is the
+feature's **field kill switch** — bumping `_CURSOR_VERSION` is how every outstanding cursor
+gets invalidated — and nothing proves it works.
+
+Add a test that each of these decodes to `None`, each built as real base64 JSON:
+`{"v": 2, ...}`, `{"v": 1, "sid": None, "hw": "x", "plan_sha": "y"}`,
+`{"v": 1, "sid": "s", "hw": 12345, "plan_sha": "y"}`, a JSON array, and a JSON string.
+
+## I3 (Important) — `omission_notice` has zero tests
+
+It is the function whose exact wording carries the losslessness claim. Add tests: it names
+every omitted section; it states the content still exists; it tells the reader how to get
+the full document; it returns `""` when nothing was omitted; the plan bool never renders as
+a count.
+
+## Minors — fix the two that guard the invariant, log the rest
+
+- **M2**: `hw="   "` passes the no-high-water gate because whitespace is truthy. The
+  direction is safe (everything is kept) but the gate does not do what it reads as. Use
+  `hw.strip()`.
+- **M5/M7**: comment the `hw`-empty fail-safe test to say its `assert omitted is None` is
+  the load-bearing assertion — with the guard deleted, `out == _data()` still passes. And
+  add a decision entry exactly at the boundary so inclusivity is proven by more than one
+  test.
+- **M1, M4, M6** — deferred minors for the final review; not in this round.
