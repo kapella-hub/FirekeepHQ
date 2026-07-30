@@ -616,6 +616,7 @@ async def _list_sessions(request: StarletteRequest) -> StarletteJSONResponse:
 async def _get_session(request: StarletteRequest) -> StarletteJSONResponse:
     """REST endpoint: get a single session by ID including its shadow data."""
     try:
+        require_scope_asgi(request, "session:read")
         session_id = request.path_params["session_id"]
         mgr = await _get_manager()
         data = await mgr.get_session_data(session_id)
@@ -629,6 +630,8 @@ async def _get_session(request: StarletteRequest) -> StarletteJSONResponse:
             "duration_seconds": data.get("duration_seconds"),
             "shadow": shadow,
         })
+    except ScopeError as e:
+        return StarletteJSONResponse({"error": e.detail}, status_code=e.status_code)
     except Exception as e:
         logger.error("GET /sessions/%s failed: %s", request.path_params.get("session_id", ""), e)
         return StarletteJSONResponse({"error": str(e)}, status_code=500)
