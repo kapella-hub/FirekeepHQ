@@ -1010,12 +1010,16 @@ class TestShadowEpoch:
         mock_redis.hget.assert_awaited_once_with("nb:session:sess-1:scratch", "shadow_epoch")
 
     @pytest.mark.asyncio
-    async def test_shadow_epoch_is_empty_when_redis_errors(self, mock_redis):
-        """An unreadable epoch must read as "" — which mismatches every cursor and so
-        yields a full restore. Failing to read the epoch is not evidence a cursor is valid."""
+    async def test_epoch_is_NONE_not_empty_when_the_read_fails(self, mock_redis):
+        """AMENDED 2026-07-30 (C2, Critical). An earlier version of this task returned
+        "" on a read error and claimed that "mismatches every cursor". That was FALSE:
+        "" is a real, matchable state carried by every cursor minted before the first
+        compaction, so an errored read matched a STALE post-compaction cursor and served
+        a delta to an agent that had just lost its context — a guard that failed OPEN.
+        None is unmatchable by construction, so a failure cannot pass for a state."""
         mock_redis.hget = AsyncMock(side_effect=RuntimeError("redis down"))
         mgr = SessionManager(mock_redis, Settings())
-        assert await mgr.get_shadow_epoch("sess-1") == ""
+        assert await mgr.get_shadow_epoch("sess-1") is None
 ```
 
 **Verified fixture facts — do not deviate.** `bridge/tests/conftest.py` defines exactly ONE fixture, `mock_redis`. There is **no** `session_mgr` / `session_manager` fixture; every existing test builds the manager inline as `SessionManager(mock_redis, Settings())` (see `bridge/tests/test_briefing_id_field.py:21`). `_scratch_key` is a `@staticmethod` returning `f"nb:session:{sid}:scratch"` (`session.py:120-122`), which is where the asserted key string comes from.
@@ -1030,19 +1034,21 @@ Expected: FAIL — `AttributeError: 'SessionManager' object has no attribute 'ge
 - [ ] **Step 3: Implement the reader**
 
 ```python
-    async def get_shadow_epoch(self, session_id: str) -> str:
-        """The session's shadow epoch, or "" when never bumped.
+    async def get_shadow_epoch(self, session_id: str) -> str | None:
+        """The session's shadow epoch. "" means never bumped; None means the read FAILED.
 
-        precompact writes this through ctx_update(category="scratch",
-        key="shadow_epoch"), so there is no dedicated writer and no new MCP tool.
-        A cursor carrying a different epoch is refused and answered with a full
-        restore: the epoch changing means the agent's context was compacted, so
-        any cursor it still holds no longer describes what it can see.
+        The distinction is load-bearing (C2). "" is a real, matchable state — every
+        cursor minted before the first compaction carries it. If a read failure also
+        returned "", an errored read would silently match a stale cursor and serve a
+        delta to an agent that had just lost its context. None is unmatchable.
+
+        precompact writes this via ctx_update(category="scratch", key="shadow_epoch"),
+        so there is no dedicated writer and no new MCP tool.
         """
         try:
             value = await self._r.hget(self._scratch_key(session_id), "shadow_epoch")
         except Exception:
-            return ""          # unreadable epoch -> "" -> mismatch -> full restore
+            return None          # could not read -> unmatchable -> full restore
         return value or ""
 ```
 
@@ -1186,10 +1192,27 @@ async def ctx_get_shadow(session_id: str | None = None, agent_id: str = "default
     if not data:
         return {"error": f"Session {session_id} not found."}
 
+    # AMENDED 2026-07-30 (C1 + C2).
     epoch = await mgr.get_shadow_epoch(session_id)
+    if epoch is None:
+        # C2: the epoch read FAILED, so we cannot tell whether a cursor is stale.
+        # Force a full restore AND mint no cursor — a response carrying no cursor
+        # cannot produce a later delta, which is the safe outcome. Never coerce a
+        # failed read to "", which would match every pre-compaction cursor.
+        return {
+            "session_id": session_id,
+            "goal": data.get("goal", ""),
+            "status": data.get("status", ""),
+            "shadow": assemble_shadow(data),
+            "delta": False,
+        }
+
     rendered, omitted = residency.filter_since(
         data, since, session_id=session_id, epoch=epoch)
-    shadow = assemble_shadow(rendered)
+    # C1: the omission report goes INTO the rendered document, not just beside it.
+    # Without this, an omitted section renders as '*No decisions recorded*' — an
+    # affirmative denial that the agent's own work exists.
+    shadow = assemble_shadow(rendered, omitted=omitted)
 
     result = {
         "session_id": session_id,
@@ -1205,7 +1228,7 @@ async def ctx_get_shadow(session_id: str | None = None, agent_id: str = "default
     if omitted is not None:
         note = residency.omission_notice(omitted)
         if note:
-            result["note"] = note
+            result["note"] = note   # belt and braces; the markdown now says it too
     return result
 ```
 
