@@ -226,9 +226,9 @@ def _scratch_expired(name: str) -> bool:
     No sidecar file means no TTL was ever requested -> never expires (today's
     behaviour, preserved exactly). A sidecar that is present but unreadable or
     non-numeric counts as EXPIRED: failing to read an expiry is not evidence the
-    marker is still fresh, and both consumers want that fallback — a lapsed
-    suppression digest re-announces the customer's tasks (accuracy-positive) and
-    a lapsed cursor forces a full restore (lossless).
+    marker is still fresh, and the one TTL'd consumer wants that fallback — a
+    lapsed suppression digest re-announces the customer's tasks, which is
+    accuracy-positive.
     """
     f = _scratch_ttl_path(name)
     try:

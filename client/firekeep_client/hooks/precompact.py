@@ -4,8 +4,9 @@ Claude is the only runtime that exposes a compaction event. Scope is deliberatel
 narrow: this hook fires BEFORE compaction but cannot read the agent's unstated
 reasoning, so it CANNOT recover decisions the agent never wrote via ctx_update.
 It does four cheap, certain things: checkpoint the workspace, invalidate the
-shadow cursor (locally and server-side), stamp that a compaction happened, and
-tell the agent in one line where its working state lives.
+shadow cursor server-side (bumping shadow_epoch so Bridge's filter_since
+refuses any stale cursor on the next restore), stamp that a compaction
+happened, and tell the agent in one line where its working state lives.
 
 Budgeted like session_start (~15s) and best-effort throughout: a slow hook
 stalls the customer mid-compaction, which is worse than a missed checkpoint.
