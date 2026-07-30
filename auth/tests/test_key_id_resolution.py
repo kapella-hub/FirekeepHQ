@@ -146,3 +146,37 @@ class TestListKeys:
         # Index entry whose record was deleted out from under it.
         await redis.zadd("auth:key_index", {"bbbbbbbbbbbbbbbb": 1.0})
         assert await keys.list_keys() == []
+
+
+class TestSubsystemInvariant:
+    """No reachable sequence of revoke_key calls may leave a credential that
+    validate_key accepts but list_keys does not show.
+
+    This is the property the whole patch exists to establish. On the pre-patch
+    code it fails: revoke_key deletes one of two colliding records, zrem's the
+    single shared index member, and the survivor becomes invisible to
+    list_keys forever while still authenticating.
+    """
+
+    @pytest.mark.asyncio
+    async def test_no_revoke_sequence_orphans_a_live_credential(self, redis):
+        await _put(redis, HASH_A, SHARED, "alice")
+        await _put(redis, HASH_B, SHARED, "bob")
+        await _put(redis, "c" * 64, "cccccccccccccccc", "carol")
+
+        # Attempt every revocation an operator could reach from a listing.
+        for kid in {r["key_id"] for r in await keys.list_keys()}:
+            try:
+                await keys.revoke_key(kid)
+            except keys.AmbiguousKeyIdError:
+                pass  # refusing is the correct outcome, not a failure
+
+        listed = {r["key_id"] for r in await keys.list_keys()}
+        for key_hash in (HASH_A, HASH_B, "c" * 64):
+            still_valid = await keys.validate_key_by_hash(key_hash) is not None
+            if still_valid:
+                stored_id = (await redis.hgetall(f"auth:key:{key_hash}"))["key_id"]
+                assert stored_id in listed, (
+                    f"{key_hash[:16]} authenticates but is not listed — "
+                    "it can never be revoked by key_id"
+                )
