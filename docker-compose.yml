@@ -250,6 +250,16 @@ services:
       # so this changes the default for NEW installs, not existing ones.
       AUTH_ENABLED: ${AUTH_ENABLED:-true}
       AUTH_REDIS_URL: redis://redis:6379/7
+      # Enrollment invite defaults. The public endpoint never trusts these for
+      # identity; they only let the admin dashboard render a reachable code.
+      BIND_ADDR: ${BIND_ADDR:-127.0.0.1}
+      VPS_IP: ${VPS_IP:-}
+      FIREKEEP_SSH_USER: ${FIREKEEP_SSH_USER:-root}
+      ENROLL_TICKET_TTL_HOURS: ${ENROLL_TICKET_TTL_HOURS:-24}
+      ENROLL_TOMBSTONE_DAYS: ${ENROLL_TOMBSTONE_DAYS:-7}
+      ENROLL_KEY_EXPIRES_DAYS: ${ENROLL_KEY_EXPIRES_DAYS:-90}
+      ENROLL_RATE_LIMIT: ${ENROLL_RATE_LIMIT:-10/minute}
+      ENROLL_MAX_ATTEMPTS_PER_HOUR: ${ENROLL_MAX_ATTEMPTS_PER_HOUR:-60}
       # Vault (encrypted secret storage, shares Redis DB 7 with auth)
       VAULT_ENABLED: ${VAULT_ENABLED:-true}
       VAULT_KEY: ${VAULT_KEY:-}

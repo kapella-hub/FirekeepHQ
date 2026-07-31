@@ -19,7 +19,7 @@ assert lines[0] == "POST http://localhost:8100/auth/keys", lines[0]
 body = json.loads(lines[1])
 assert body["agent_id"] == "alice", body
 
-from auth.middleware import SCOPES
+from auth.keys import SCOPES
 expected = SCOPES - {"admin"}
 got = set(body["scopes"])
 assert "admin" not in got, "teammate key must never carry admin"
@@ -53,11 +53,37 @@ if BOOTSTRAP_REDIS_CMD=false bash deploy/firekeep-admin keys create --agent caro
     echo "FAIL: unusable path should exit nonzero"; exit 1
 fi
 
-# The local-mint path must be reachable WITHOUT an admin key. The admin key is
-# printed once by bootstrap-keys.sh and never stored, so on any server that has
-# been running a while it is gone - and with it, teammate onboarding. Assert the
-# code path exists; the live mint is covered by install-smoke's environment.
-grep -q "mint_local" deploy/firekeep-admin || { echo "FAIL: local mint path missing"; exit 1; }
+# All three subcommands must reach their own dispatch branch.
+REVOKE_OUT="$(FIREKEEP_ADMIN_DRY_RUN=1 bash deploy/firekeep-admin keys revoke 0123456789abcdef)"
+echo "$REVOKE_OUT" | grep -q "REVOKE 0123456789abcdef" || {
+    echo "FAIL: keys revoke dispatch missing"; exit 1;
+}
+TMP_ENV="$(mktemp)"
+printf 'AUTH_ENABLED=true\nBIND_ADDR=127.0.0.1\nVPS_IP=203.0.113.9\n' > "$TMP_ENV"
+INVITE_OUT="$(ENV_FILE="$TMP_ENV" FIREKEEP_ADMIN_DRY_RUN=1 USER=root bash deploy/firekeep-admin invite --agent alice --json)"
+rm -f "$TMP_ENV"
+echo "$INVITE_OUT" | grep -q "app.enroll.mint" || { echo "FAIL: invite does not use Python schema"; exit 1; }
+echo "$INVITE_OUT" | grep -q -- "--transport tunnel" || { echo "FAIL: loopback invite not tunnel"; exit 1; }
+echo "$INVITE_OUT" | grep -q -- "--ssh-target root@203.0.113.9" || { echo "FAIL: tunnel target wrong"; exit 1; }
+
+# An explicit tunnel target must work without VPS_IP, and a host CA file must
+# be carried into the cortex-api container rather than passed as an unmounted path.
+TMP_ENV="$(mktemp)"; TMP_CA="$(mktemp)"
+printf 'AUTH_ENABLED=true\nBIND_ADDR=127.0.0.1\n' > "$TMP_ENV"
+printf '%s\n' '-----BEGIN CERTIFICATE-----' 'test' '-----END CERTIFICATE-----' > "$TMP_CA"
+EXPLICIT_OUT="$(ENV_FILE="$TMP_ENV" FIREKEEP_ADMIN_DRY_RUN=1 bash deploy/firekeep-admin invite --ssh-target alice@example --json)"
+echo "$EXPLICIT_OUT" | grep -q -- "--ssh-target alice@example" || { echo "FAIL: explicit tunnel target rejected"; exit 1; }
+printf 'AUTH_ENABLED=true\nBIND_ADDR=127.0.0.1\nVPS_IP=203.0.113.9\n' > "$TMP_ENV"
+CA_OUT="$(ENV_FILE="$TMP_ENV" FIREKEEP_ADMIN_DRY_RUN=1 bash deploy/firekeep-admin invite --host firekeep.example --ca-file "$TMP_CA" --json)"
+rm -f "$TMP_ENV" "$TMP_CA"
+echo "$CA_OUT" | grep -q -- "--ca-pem-b64" || { echo "FAIL: CA bytes not carried into container"; exit 1; }
+echo "$CA_OUT" | grep -q -- "--transport tls" || { echo "FAIL: explicit CA did not select TLS"; exit 1; }
+if echo "$CA_OUT" | grep -q -- "--ca-file"; then
+    echo "FAIL: host CA path leaked into container command"; exit 1
+fi
+
+# The local create path must remain reachable without the printed-once admin key.
+grep -q "nxs_" deploy/firekeep-admin || { echo "FAIL: local nxs_ mint path missing"; exit 1; }
 grep -q "BOOTSTRAP_REDIS_CMD" deploy/firekeep-admin || { echo "FAIL: redis override missing"; exit 1; }
 
-echo "PASS: firekeep-admin dry-run + scope sync + fail-fast + local-mint path"
+echo "PASS: firekeep-admin create/revoke/invite dispatch + scope sync + fail-fast"

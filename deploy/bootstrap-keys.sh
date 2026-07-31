@@ -24,10 +24,12 @@ set -euo pipefail
 #   4. Admin key — the owner's key. Scopes: ["*"]. Plaintext printed ONCE,
 #      never written to disk.
 #
-# Redis layout replicates auth/middleware.py create_key() EXACTLY:
+# Redis layout replicates auth/keys.py create_key() EXACTLY:
 #   auth:key:{sha256hex}  hash: agent_id, scopes (JSON array string),
-#                               created_at (ISO-8601 UTC), key_id (hash[:16])
-#   auth:key_index        zset: member = hash[:16], score = unix timestamp
+#                               created_at (ISO-8601 UTC), key_id,
+#                               credential_id, device_id
+#   auth:cred:{credential_id} -> sha256hex exact-resolution mapping
+#   auth:key_index        zset: member = credential_id, score = unix timestamp
 # (no expires_at — bootstrap keys do not expire)
 #
 # Idempotency:
@@ -66,13 +68,46 @@ env_set() {
 key_registered() { [ "$("${REDIS[@]}" EXISTS "auth:key:$1")" = "1" ]; }
 
 register_hash() {  # $1=hash  $2=agent_id  $3=scopes-json
-    local hash="$1"
+    local hash="$1" credential_id="${1:0:16}"
     "${REDIS[@]}" HSET "auth:key:${hash}" \
         agent_id "$2" \
+        device_id "$2" \
+        credential_id "$credential_id" \
         scopes "$3" \
         created_at "$(now_iso)" \
-        key_id "${hash:0:16}" > /dev/null
-    "${REDIS[@]}" ZADD auth:key_index "$(date -u +%s)" "${hash:0:16}" > /dev/null
+        key_id "$credential_id" > /dev/null
+    "${REDIS[@]}" SET "auth:cred:${credential_id}" "$hash" > /dev/null
+    "${REDIS[@]}" ZADD auth:key_index "$(date -u +%s)" "$credential_id" > /dev/null
+}
+
+backfill_credential_mappings() {
+    local credential_id mapped candidate stored_id count match hash ttl
+    while IFS= read -r credential_id; do
+        [ -n "$credential_id" ] || continue
+        mapped="$("${REDIS[@]}" GET "auth:cred:${credential_id}")"
+        [ -z "$mapped" ] || continue
+        count=0; match=""
+        while IFS= read -r candidate; do
+            [ -n "$candidate" ] || continue
+            stored_id="$("${REDIS[@]}" HGET "$candidate" credential_id)"
+            [ -n "$stored_id" ] || stored_id="$("${REDIS[@]}" HGET "$candidate" key_id)"
+            if [ "$stored_id" = "$credential_id" ]; then
+                match="$candidate"
+                count=$((count + 1))
+            fi
+        done < <("${REDIS[@]}" --scan --pattern "auth:key:${credential_id}*")
+        if [ "$count" -eq 1 ]; then
+            hash="${match#auth:key:}"
+            "${REDIS[@]}" SET "auth:cred:${credential_id}" "$hash" > /dev/null
+            ttl="$("${REDIS[@]}" TTL "$match")"
+            [ "$ttl" -gt 0 ] && "${REDIS[@]}" EXPIRE "auth:cred:${credential_id}" "$ttl" > /dev/null
+            "${REDIS[@]}" HSET "$match" credential_id "$credential_id" \
+                device_id "$("${REDIS[@]}" HGET "$match" agent_id)" > /dev/null
+            echo "[BACKFILLED] auth:cred:${credential_id}"
+        elif [ "$count" -gt 1 ]; then
+            echo "[REFUSED] auth:cred:${credential_id}: ${count} legacy records are ambiguous" >&2
+        fi
+    done < <("${REDIS[@]}" ZRANGE auth:key_index 0 -1)
 }
 
 MINTED=0
@@ -149,6 +184,11 @@ else
     echo "  Use it with deploy/firekeep-admin to issue teammate keys."
     echo "============================================================"
 fi
+
+# Upgrade path for credentials created before independent ID mappings existed.
+# Ambiguity is refused rather than guessed; every new record above already has
+# the mapping, so idempotent runs add nothing.
+backfill_credential_mappings
 
 echo ""
 echo "bootstrap-keys: done ($MINTED key(s) minted)"

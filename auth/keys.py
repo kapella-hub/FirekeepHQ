@@ -7,8 +7,10 @@ re-exports everything here and adds the FastAPI-only require_scope dependency
 on top. Both layers read the same Redis DB 7 store.
 
 API keys are stored as SHA-256 hashes (plaintext never stored):
-  auth:key:{sha256hex} -> hash {agent_id, scopes (JSON), created_at, key_id, expires_at?}
-  auth:key_index       -> zset of key_id (first 16 hash chars) scored by creation ts
+  auth:key:{sha256hex}       -> hash {agent_id, scopes (JSON), created_at,
+                                     key_id, credential_id, device_id, expires_at?}
+  auth:cred:{credential_id}  -> sha256hex (new credentials; legacy records may omit it)
+  auth:key_index             -> zset of credential IDs scored by creation ts
 """
 
 from __future__ import annotations
@@ -51,6 +53,7 @@ SCOPES = {
     "vault:read",
     "admin",
 }
+ENROLLABLE_SCOPES: frozenset[str] = frozenset(SCOPES - {"admin", "*"})
 # NOTE: memory:*/session:*/relay:* are not yet demanded by any route —
 # reserved for SP4 per-route enforcement. Do not delete (SP1a §4.2).
 # twin:read was removed 2026-07: the twin module is deleted; the scope dangled.
@@ -64,6 +67,7 @@ _redis = None          # Redis DB 7 client, set via init_auth()
 
 _KEY_PREFIX = "auth:key:"
 _KEY_INDEX = "auth:key_index"  # sorted set of key IDs
+_CRED_PREFIX = "auth:cred:"
 
 # A key_id reaches us from a URL path parameter and is interpolated into a
 # Redis glob. Anything outside lowercase hex would either match nothing or --
@@ -95,12 +99,32 @@ async def _resolve_key_id(key_id: str) -> list[tuple[str, dict[str, Any]]]:
     A prefix match is not an identity: the glob is only a way to narrow the
     scan, and each candidate is confirmed against its own key_id field.
     """
-    if _redis is None or not _KEY_ID_RE.match(key_id):
+    if _redis is None or not _KEY_ID_RE.fullmatch(key_id):
         return []
+
+    # New records have an exact, independently-minted identifier mapping. Do
+    # not turn that identifier back into a hash prefix: a client controls its
+    # credential hash, so a prefix is not an identity boundary.
+    mapped_hash = await _redis.get(f"{_CRED_PREFIX}{key_id}")
+    if mapped_hash:
+        redis_key = f"{_KEY_PREFIX}{mapped_hash}"
+        data = await _redis.hgetall(redis_key)
+        stored_id = data.get("credential_id") or data.get("key_id") if data else None
+        if data and stored_id == key_id:
+            return [(redis_key, data)]
+        logger.critical(
+            "Credential mapping %s points to a missing or mismatched record; "
+            "falling back to verified legacy resolution",
+            key_id,
+        )
+
+    # Legacy records predate auth:cred mappings. A prefix scan is acceptable
+    # only as a candidate finder; every candidate must verify its own ID.
     found: list[tuple[str, dict[str, Any]]] = []
     async for redis_key in _redis.scan_iter(f"{_KEY_PREFIX}{key_id}*", count=100):
         data = await _redis.hgetall(redis_key)
-        if data and data.get("key_id") == key_id:
+        stored_id = data.get("credential_id") or data.get("key_id") if data else None
+        if data and stored_id == key_id:
             found.append((redis_key, data))
     return found
 
@@ -216,6 +240,42 @@ def generate_api_key() -> str:
     return f"nxs_{secrets.token_hex(24)}"
 
 
+def build_credential_record(
+    credential_id: str,
+    device_id: str,
+    scopes: list[str],
+    now: datetime,
+    expires_days: int | None,
+    *,
+    enrolled_via: str | None = None,
+    device_label: str | None = None,
+) -> dict[str, str]:
+    """Build the Redis field map for a credential without performing I/O.
+
+    Enrollment and ordinary key creation share this definition so validation,
+    listing, and revocation see one DB-7 schema.  ``enrolled_via`` is kept
+    narrow and keyword-only; create_key deliberately has no generic metadata
+    passthrough.
+    """
+    metadata = {
+        # Compatibility identity until the workspace principal model lands.
+        "agent_id": device_id,
+        "device_id": device_id,
+        "credential_id": credential_id,
+        "key_id": credential_id,
+        "scopes": json.dumps(scopes),
+        "created_at": now.isoformat(),
+    }
+    if expires_days:
+        metadata["expires_at"] = (now + timedelta(days=expires_days)).isoformat()
+    if enrolled_via is not None:
+        metadata["enrolled_via"] = enrolled_via
+        metadata["enrolled_at"] = now.isoformat()
+    if device_label:
+        metadata["device_label"] = device_label
+    return metadata
+
+
 async def create_key(
     agent_id: str,
     scopes: list[str],
@@ -237,14 +297,16 @@ async def create_key(
     key_hash = _hash_key(api_key)
     now = datetime.now(timezone.utc)
 
-    metadata = {
-        "agent_id": agent_id,
-        "scopes": json.dumps(scopes),
-        "created_at": now.isoformat(),
-        "key_id": key_hash[:16],  # Short ID for listing/revocation
-    }
-    if expires_days:
-        metadata["expires_at"] = (now + timedelta(days=expires_days)).isoformat()
+    # Manual/server-minted keys retain their historical short hash ID. Client
+    # enrollment supplies an independently-minted ID to the same pure helper.
+    credential_id = key_hash[:16]
+    metadata = build_credential_record(
+        credential_id,
+        agent_id,
+        scopes,
+        now,
+        expires_days,
+    )
 
     redis_key = f"{_KEY_PREFIX}{key_hash}"
     ttl = expires_days * 86400 if expires_days else None
@@ -263,15 +325,19 @@ async def create_key(
     #                         will. Permanent when it was meant to be temporary.
     async with _redis.pipeline(transaction=True) as pipe:
         pipe.hset(redis_key, mapping=metadata)
+        pipe.set(f"{_CRED_PREFIX}{credential_id}", key_hash)
         if ttl:
             pipe.expire(redis_key, ttl)
+            pipe.expire(f"{_CRED_PREFIX}{credential_id}", ttl)
         # Index membership is part of the credential's existence, not a follow-up.
-        pipe.zadd(_KEY_INDEX, {key_hash[:16]: now.timestamp()})
+        pipe.zadd(_KEY_INDEX, {credential_id: now.timestamp()})
         await pipe.execute()
 
     return {
         "api_key": api_key,  # Only returned at creation time
-        "key_id": key_hash[:16],
+        "key_id": credential_id,
+        "credential_id": credential_id,
+        "device_id": agent_id,
         "agent_id": agent_id,
         "scopes": scopes,
         "created_at": now.isoformat(),
@@ -301,10 +367,14 @@ async def list_keys(limit: int = 50) -> list[dict[str, Any]]:
         for _redis_key, data in matches:
             rows.append({
                 "key_id": data["key_id"],
+                "credential_id": data.get("credential_id", data["key_id"]),
+                "device_id": data.get("device_id", data.get("agent_id", "unknown")),
+                "device_label": data.get("device_label"),
                 "agent_id": data.get("agent_id", "unknown"),
                 "scopes": json.loads(data.get("scopes", "[]")),
                 "created_at": data.get("created_at"),
                 "expires_at": data.get("expires_at"),
+                "enrolled_via": data.get("enrolled_via"),
                 "ambiguous": len(matches) > 1,
             })
     return rows
@@ -330,9 +400,26 @@ async def revoke_key(key_id: str) -> bool:
         )
         raise AmbiguousKeyIdError(key_id, [k for k, _ in matches])
 
-    redis_key, _ = matches[0]
-    await _redis.delete(redis_key)
-    await _redis.zrem(_KEY_INDEX, key_id)
+    redis_key, data = matches[0]
+    credential_id = data.get("credential_id") or data.get("key_id") or key_id
+    async with _redis.pipeline(transaction=True) as pipe:
+        pipe.delete(redis_key)
+        pipe.delete(f"{_CRED_PREFIX}{credential_id}")
+        pipe.zrem(_KEY_INDEX, key_id)
+        await pipe.execute()
+    return True
+
+
+async def rename_device(credential_id: str, label: str) -> bool:
+    """Change display metadata only; never rotate or rewrite the credential."""
+    if _redis is None:
+        return False
+    matches = await _resolve_key_id(credential_id)
+    if not matches:
+        return False
+    if len(matches) > 1:
+        raise AmbiguousKeyIdError(credential_id, [key for key, _ in matches])
+    await _redis.hset(matches[0][0], mapping={"device_label": label})
     return True
 
 
@@ -388,3 +475,19 @@ async def validate_key_by_hash(key_hash: str, redis_client=None) -> dict[str, An
         "authenticated": True,
         "key_id": data.get("key_id", key_hash[:16]),
     }
+
+
+async def invalid_credential_detail(api_key: str, redis_client=None) -> str:
+    """Explain a failed credential without conflating expiry with absence."""
+    client = redis_client if redis_client is not None else _redis
+    if client is None:
+        return "Unknown API key"
+    data = await client.hgetall(f"{_KEY_PREFIX}{_hash_key(api_key)}")
+    expires_at = data.get("expires_at") if data else None
+    if expires_at:
+        try:
+            if datetime.now(timezone.utc) > datetime.fromisoformat(expires_at):
+                return f"API key expired at {expires_at}"
+        except (ValueError, TypeError):
+            pass
+    return "Unknown API key"

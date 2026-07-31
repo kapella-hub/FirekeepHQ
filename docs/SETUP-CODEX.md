@@ -18,17 +18,25 @@ OpenAI documents both behaviors:
 
 - Codex CLI or Codex IDE extension installed and authenticated
 - Firekeep already deployed on a VPS
-- Your VPS IP (or office hostname) — set as the `host`/`base_url` in `~/.firekeep/config` after install
+- A single-use install command from Dashboard → Devices (or
+  `deploy/firekeep-admin invite --json` on the server)
 
-## Recommended: Project-Scoped MCP Config
+## Recommended: Join once, render every adapter
 
-Unpack the `firekeep-client` tarball and run the installer, targeting the Codex runtime (both platforms — the venv console scripts are cross-platform):
+Paste the complete install command issued for this device. It installs the kit,
+redeems the code without prompts, and renders Claude Code, Codex, Kiro, and
+OpenCode together. If the kit is already present, run:
 
 ```bash
-firekeep install --runtime codex
+firekeep join fk_join_...
 ```
 
-This creates `~/.firekeep/venv`, bootstraps `~/.firekeep/config`, and renders `.codex/config.toml` with the Firekeep MCP servers as stdio commands through `firekeep-shim` (the stdio↔Streamable-HTTP bridge that injects TLS + auth headers from `[server]` and `[identity]`). Stdio-local code intelligence (`firekeep-symdex`) is installed automatically — always-on, no flag needed.
+This writes `~/.firekeep/config` and renders `.codex/config.toml` with the
+Firekeep MCP servers as stdio commands through `firekeep-shim` (the
+stdio↔Streamable-HTTP bridge that injects TLS + auth headers from `[server]` and
+`[identity]`). Stdio-local code intelligence (`firekeep-symdex`) is installed
+automatically. Use `firekeep install --runtime codex` only to repair or re-render
+the Codex adapter afterward.
 
 If you prefer to configure it manually (or want to see what the installer renders), the entries look like:
 

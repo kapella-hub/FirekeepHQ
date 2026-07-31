@@ -238,7 +238,7 @@ def _zero_message(path: Path, details: list[str]) -> str:
     ]
     lines.extend(f"  {detail}" for detail in details)
     lines.extend([
-        "Nothing was changed. Run: firekeep install --host <h>",
+        "Nothing was changed. Run: firekeep join <code> (or: firekeep install --host <h>)",
     ])
     return "\n".join(lines)
 
@@ -257,7 +257,8 @@ def _conflict_message(path: Path, candidates: list[_Candidate]) -> str:
     alternate = path.with_name("office.conf")
     lines.extend([
         "",
-        "Nothing was changed. Pick one and re-run the installer, or keep both by "
+        "Nothing was changed. Join the intended server with `firekeep join <code>`, "
+        "or keep both by "
         "giving each its own file:",
         f"  cp {path} {alternate}   # then edit it to the [server] shape",
         f"  FIREKEEP_CONFIG={alternate} firekeep doctor",

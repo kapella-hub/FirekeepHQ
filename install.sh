@@ -509,10 +509,11 @@ if auth_enforced .env; then
         echo "    curl -H \"X-API-Key: ${ADMIN_KEY}\" \\"
         echo "      http://localhost:8100/auth/keys"
         echo ""
-        echo "  Issue a key for each teammate (never share the admin key):"
+        echo "  Add each client device (never share the admin key):"
         echo ""
-        echo "    FIREKEEP_ADMIN_KEY='${ADMIN_KEY}' \\"
-        echo "      deploy/firekeep-admin keys create --agent <name>"
+        echo "    Open Dashboard -> Devices -> Add device"
+        echo "    # server-shell fallback:"
+        echo "    deploy/firekeep-admin invite --agent <device-name> --json"
     else
         # Idempotent re-run: bootstrap-keys.sh found the admin key already
         # registered and minted nothing, so there is no plaintext to reprint.

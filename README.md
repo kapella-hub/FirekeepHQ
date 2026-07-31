@@ -110,38 +110,40 @@ Docker's published-port rules are evaluated *before* ufw's, so a host firewall
 does not contain a published port. Do not send `X-API-Key` over untrusted plain
 HTTP; use an SSH tunnel, private network, or HTTPS termination.
 
-### Connect Codex
+### Connect a client
 
-Add Firekeep's MCP servers to Codex and start Codex from this repository so it picks up the root `AGENTS.md`.
+The normal onboarding path is the same for Claude Code, Codex, Kiro, and
+OpenCode:
 
-```bash
-firekeep install --runtime codex
-```
+1. Open the dashboard and choose **Devices → Add device**.
+2. Copy the generated macOS/Linux or PowerShell install command to the new
+   machine and run it. There are no profile, host, API-key, or runtime prompts.
+3. Restart the agent client after installation so it loads the new MCP entries.
 
-See **[docs/SETUP-CODEX.md](docs/SETUP-CODEX.md)** for the full Codex setup. As
-with every runtime, `[server]` needs an API key and a reachable host — see the
-note under Connect Claude Code below.
+The command contains a single-use, 24-hour join code. The client generates its
+own credential locally, redeems the code once, writes the one `[server]`
+connection, installs every shipped adapter, and runs `firekeep doctor`. The
+plaintext credential is never returned by the server or printed by default.
 
-### Connect Claude Code
-
-If the server is reachable over ssh, one command does everything:
-
-```bash
-firekeep connect root@<server>
-```
-
-It probes the server, mints an API key for you, starts an SSH tunnel if the
-server binds to loopback (the shipped default), writes `~/.firekeep/config`, and
-runs `firekeep doctor` to prove it worked. Re-running it is safe — an existing
-tunnel is reused, not duplicated.
-
-The manual path, if you would rather do it yourself or have no ssh access:
+If the kit is already installed, use the bare code shown in the dashboard:
 
 ```bash
-./install            # or: firekeep install --runtime claude
+firekeep join fk_join_...
 ```
 
-This installs the `firekeep-client` kit into `~/.firekeep/venv`, bootstraps `~/.firekeep/config`, and prepares every shipped adapter: Claude Code, Codex, Kiro, and OpenCode. Claude gets user-scoped `~/.claude.json` + `~/.claude/settings.json` (MCP servers via `firekeep-shim`, five hook cores); the other clients receive their native MCP and instruction files. Two stdio-local servers — code intelligence (`firekeep-symdex`) and the Decision Board (`firekeep-decision`) — are installed automatically, always-on, no flag needed. Use `firekeep install --runtime <name>` only for a targeted re-render or repair.
+From a server shell, `deploy/firekeep-admin invite --agent laptop --json` is the
+dashboard-independent fallback. An operator who already has SSH access can use
+`firekeep connect root@<server>`; it issues the same single-use code remotely
+and then calls the same join path. A working tunnel is reused, not duplicated.
+
+The kit lives in `~/.firekeep/venv` and prepares every shipped adapter by
+default: Claude Code, Codex, Kiro, and OpenCode. Claude gets user-scoped
+`~/.claude.json` + `~/.claude/settings.json`; the other clients receive their
+native MCP and instruction files. The stdio-local code-intelligence
+(`firekeep-symdex`) and Decision Board (`firekeep-decision`) servers are also
+installed automatically. Use `firekeep install --runtime <name>` only for a
+targeted re-render or repair. See [Codex setup](docs/SETUP-CODEX.md) and
+[Claude Code setup](docs/SETUP-CLAUDE-CODE.md) for client-specific details.
 
 Every runtime reads the same connection; there is no client-specific profile:
 
@@ -157,14 +159,11 @@ verify_tls = false
 api_key = nxs_...
 ```
 
-The installer prompts for the one `[server]` connection **and an API key**. Mint one on the
-server with `deploy/firekeep-admin keys create --agent <you>`; `firekeep-shim`
-then injects it on every request. A connection with no key against a keyed server
-fails every protected tool call. `firekeep doctor` catches this for both HTTP
-and HTTPS connections: it asks the server
-whether it enforces auth rather than inferring from the scheme, because the
-standard self-hosted shape is plain http to 127.0.0.1 over a tunnel against a
-keyed server — which the old scheme-based check skipped silently.
+`firekeep join` writes this connection without prompting; `firekeep-shim` then
+injects the credential on every request. A manual `firekeep install --host ...`
+path remains for development and legacy servers, but join codes are the
+customer path. `firekeep doctor` verifies connectivity, authentication,
+credential expiry, TLS trust, and all installed runtime adapters.
 
 ### Verify
 

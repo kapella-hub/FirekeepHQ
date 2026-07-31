@@ -4,12 +4,16 @@
 
 - Claude Code installed and authenticated
 - Firekeep deployed on VPS (run `bash install.sh` first)
-- Your VPS IP address
-- Python 3.10+ installed locally (the installer creates its own `~/.firekeep/venv`)
+- A single-use install command from Dashboard → Devices (or
+  `deploy/firekeep-admin invite --json` on the server)
 
 ## Automated Setup (Recommended)
 
-Unpack the `firekeep-client` tarball and run the installer from wherever you extracted it:
+Paste the complete install command issued for this device. It carries the join
+code into the bootstrap and asks no profile, host, API-key, identity, or runtime
+questions. On an already-installed client, use `firekeep join <code>`.
+
+For a checkout/development install without a join code:
 
 ```bash
 # Linux / macOS
@@ -19,14 +23,17 @@ Unpack the `firekeep-client` tarball and run the installer from wherever you ext
 .\install.ps1        # or: firekeep install --runtime claude
 ```
 
-This is non-interactive — no prompts. It:
+With a join code, the customer path is fully non-interactive. It:
 
 1. **Creates `~/.firekeep/venv`** and pip-installs `firekeep-client` (pulling `mcp`+`httpx`)
 2. **Bootstraps `~/.firekeep/`** — config skeleton (`0600`), hook-core files, contract fragment, CA slot
 3. **Writes `~/.claude.json`** — all 4 HTTP-backed MCP servers as stdio entries through `firekeep-shim` (user-scoped), plus the always-on stdio-local `firekeep-symdex` and `firekeep-decision`
 4. **Writes `~/.claude/settings.json`** — 5 hook cores + env vars (user-scoped), merging non-destructively with any existing foreign hooks/servers
 
-Afterward, edit `~/.firekeep/config`: set `[identity] agent_id` (it ships as `CHANGEME`) and complete the one `[server]` connection (`host`/`api_key` for ports, or `base_url`/`ca_path`/`api_key` for path routing). Then run `firekeep doctor` to verify. Config changes take effect on the next Claude Code session start.
+Enrollment writes the one `[server]` connection and `[identity]`, then runs
+`firekeep doctor`. The client-generated credential is stored at 0600 and is not
+printed by default. Configuration takes effect on the next Claude Code session
+start.
 
 The Firekeep Claude integration is user-scoped and venv-relocation-proof: the hook commands are absolute paths into `~/.firekeep/venv`, not into this repository.
 

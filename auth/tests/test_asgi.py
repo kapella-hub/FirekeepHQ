@@ -96,7 +96,7 @@ class TestEnabled:
         async with _client(app) as c:
             resp = await c.get("/protected", headers={"X-API-Key": "nxs_" + "0" * 48})
         assert resp.status_code == 401
-        assert resp.json() == {"detail": "Invalid or expired API key"}
+        assert resp.json() == {"detail": "Unknown API key"}
 
     @pytest.mark.asyncio
     async def test_expired_key_401(self, redis):

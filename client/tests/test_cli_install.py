@@ -320,6 +320,22 @@ def test_install_non_interactive_flag_beats_a_tty(install_env, monkeypatch):
     assert cli.main(["install", "--runtime", "claude", "--non-interactive"]) == 0
 
 
+def test_install_join_is_zero_prompt_even_with_a_tty(install_env, monkeypatch):
+    def boom(*args, **kwargs):
+        raise AssertionError("install --join prompted despite carrying every answer")
+
+    calls = []
+    monkeypatch.setattr(cli.wizard, "is_interactive", lambda *a: True)
+    monkeypatch.setattr("builtins.input", boom)
+    monkeypatch.setattr(
+        "firekeep_client.join.join",
+        lambda code, **kwargs: calls.append((code, kwargs)) or 0,
+    )
+    assert cli.main(["install", "--join", "fk_join_test", "--runtime", "all"]) == 0
+    assert calls == [("fk_join_test", {"agent_id": None})]
+    assert len(install_env[2].calls) == 4
+
+
 def test_install_failure_is_fail_loud_not_traceback(install_env, monkeypatch, capsys):
     """A failing step prints a firekeep:-prefixed message naming the step and
     returns nonzero — never a raw traceback at a teammate."""

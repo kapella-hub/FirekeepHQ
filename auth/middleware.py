@@ -20,6 +20,7 @@ from fastapi import HTTPException, Request
 from auth import keys as _keys
 from auth.keys import (  # noqa: F401 — re-exports (same objects as auth.keys)
     ANONYMOUS_SCOPES,
+    ENROLLABLE_SCOPES,
     SCOPES,
     AmbiguousKeyIdError,
     _ANONYMOUS_IDENTITY,
@@ -30,7 +31,9 @@ from auth.keys import (  # noqa: F401 — re-exports (same objects as auth.keys)
     create_key,
     generate_api_key,
     init_auth,
+    invalid_credential_detail,
     list_keys,
+    rename_device,
     revoke_key,
     scopes_allow,
     validate_key,
@@ -89,7 +92,7 @@ def require_scope(scope: str):
         if identity is None:
             raise HTTPException(
                 status_code=401,
-                detail="Invalid or expired API key",
+                detail=await invalid_credential_detail(api_key),
             )
 
         # Check scope. Wildcard IS honoured here: bootstrap-keys.sh mints the
@@ -145,7 +148,10 @@ def require_any_scope(*scopes: str):
 
         identity = await validate_key(api_key)
         if identity is None:
-            raise HTTPException(status_code=401, detail="Invalid or expired API key")
+            raise HTTPException(
+                status_code=401,
+                detail=await invalid_credential_detail(api_key),
+            )
 
         key_scopes = identity.get("scopes", [])
         if not any(_keys.scopes_allow(key_scopes, s) for s in scopes):

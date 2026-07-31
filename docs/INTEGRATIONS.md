@@ -28,9 +28,11 @@ For any MCP-capable client, register these HTTP endpoints:
 > ports to `127.0.0.1` and requires an `X-API-Key` on every call. So from the Firekeep
 > host use `127.0.0.1`; from another machine either tunnel
 > (`ssh -L 8080:127.0.0.1:8080 …`) or set `BIND_ADDR=0.0.0.0` deliberately, and in both
-> cases supply a key — mint one with
-> `deploy/firekeep-admin keys create --agent <you>`. Substitute `<HOST>` below
-> accordingly. See [DEPLOYMENT.md](DEPLOYMENT.md#access-and-authentication).
+> cases supply a key. The shipped kit gets one through Dashboard → Devices or
+> `deploy/firekeep-admin invite`; `deploy/firekeep-admin keys create --agent
+> <you>` is the manual fallback for a generic client that cannot run
+> `firekeep join`. Substitute `<HOST>` below accordingly. See
+> [DEPLOYMENT.md](DEPLOYMENT.md#access-and-authentication).
 
 | Service | URL |
 |---|---|

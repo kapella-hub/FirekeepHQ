@@ -33,8 +33,8 @@ def cmd_profile_removed(args) -> int:
         "firekeep: `firekeep profile` was removed — there is now exactly one "
         "server connection.\n"
         f"Your config was migrated to [server]; see {path}.\n"
-        "To point this machine at a different server: re-run the installer, or "
-        "set FIREKEEP_CONFIG=<path> to use a separate config file.",
+        "To point this machine at a different server: run `firekeep join <code>`, "
+        "or set FIREKEEP_CONFIG=<path> to use a separate config file.",
         file=sys.stderr,
     )
     return 2
@@ -224,6 +224,8 @@ def cmd_install(args) -> int:
     # Fail-loud per step: a teammate's FIRST command must never dump a raw
     # traceback or hang unbounded (the <5 min onboarding promise).
     step = "bootstrap ~/.firekeep"
+    join_code = getattr(args, "join", None) or os.environ.get("FIREKEEP_JOIN", "").strip()
+    join_result = 0
     try:
         home = _firekeep_home()
         _bootstrap_home(home)
@@ -231,6 +233,9 @@ def cmd_install(args) -> int:
         # Ask BEFORE the venv/pip work: a teammate should not sit through a multi-minute
         # pip install only to then be asked who they are.
         step = "configure ~/.firekeep/config"
+        if join_code:
+            # The code carries every answer. A TTY must not re-enable prompts.
+            args.non_interactive = True
         needs_edit = _configure(args)
 
         step = "create venv"
@@ -301,6 +306,12 @@ def cmd_install(args) -> int:
             except Exception as exc:  # noqa: BLE001 — best-effort; never fail the install
                 path_msgs = [f"could not modify PATH ({exc}); add "
                              f"{home / pathenv.SHIM_DIR_NAME} to PATH manually"]
+
+        if join_code:
+            step = "join Firekeep server"
+            from firekeep_client.join import join
+            join_result = join(join_code, agent_id=getattr(args, "agent_id", None))
+            needs_edit = False
     except resolver.ConfigMigrationConflict as exc:
         print(f"firekeep: install stopped: {exc}", file=sys.stderr)
         return 3
@@ -322,6 +333,8 @@ def cmd_install(args) -> int:
           "auto-clears at session end.")
     for msg in path_msgs:
         print(f"firekeep: {msg}")
+    if join_result:
+        return join_result
     if needs_edit:
         print("firekeep: NEXT STEPS — edit ~/.firekeep/config: set agent_id (currently "
               "CHANGEME) and complete the [server] connection values. "
@@ -458,9 +471,9 @@ def _check_api_key(cfg, label: str = "api-key") -> tuple[str, str, str] | None:
                     label, "fail",
                     f"[server] has no api_key but {ep.rest_base} enforces auth "
                     "-- health/version are auth-exempt, so the checks above pass while "
-                    "every real MCP call 401s. Mint one on the server: "
-                    "`deploy/firekeep-admin keys create --agent <you>`, or run "
-                    "`firekeep connect <user@host>` to do it for you",
+                    "every real MCP call 401s. Enroll with `firekeep join <code>` "
+                    "from Dashboard -> Devices, or run `firekeep connect "
+                    "<user@host>` to issue one over SSH",
                 )
         except OSError:
             pass          # unreachable is _check_health's row to report, not ours
@@ -471,7 +484,7 @@ def _check_api_key(cfg, label: str = "api-key") -> tuple[str, str, str] | None:
             label, "warn",
             "[server] uses https (auth expected) but api_key is "
             "empty -- health/version are auth-exempt so the checks above can "
-            "pass while every real MCP call 401s; set api_key",
+            "pass while every real MCP call 401s; run `firekeep join <code>`",
         )
     return (label, "ok", "api_key configured (redacted)")
 
@@ -561,6 +574,32 @@ def _check_ca_expiry(cfg, label: str = "ca-expiry") -> tuple[str, str, str] | No
     return (label, "ok", f"CA valid {remaining}d ({path})")
 
 
+def _check_credential_expiry(cfg) -> tuple[str, str, str] | None:
+    if not cfg.has_section("server"):
+        return None
+    value = cfg.get("server", "credential_expires_at", fallback="").strip()
+    if not value:
+        return None
+    try:
+        expires = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return ("credential-expiry", "fail", f"invalid credential_expires_at: {value}")
+    seconds = (expires - datetime.now(timezone.utc)).total_seconds()
+    if seconds < 0:
+        days = max(0, int(abs(seconds) // 86400))
+        return ("credential-expiry", "fail", f"credential expired {days}d ago — rejoin this device")
+    days = int(seconds // 86400)
+    if seconds < 14 * 86400:
+        return (
+            "credential-expiry",
+            "warn",
+            f"credential expires in {days}d — ask an admin for a regenerated join code",
+        )
+    return ("credential-expiry", "ok", f"credential valid for {days}d")
+
+
 def _check_retired_profile_env() -> tuple[str, str, str] | None:
     value = os.environ.get("FIREKEEP_PROFILE", "").strip()
     if not value:
@@ -606,6 +645,8 @@ def _check_client_version(cfg) -> tuple[str, str, str] | None:
 
 
 def run_doctor(cfg=None) -> list[tuple[str, str, str]]:
+    from firekeep_client.join import sweep_pending
+    sweep_pending(_config_path())
     if cfg is None:
         cfg = resolver.load_config(_config_path())
     results: list[tuple[str, str, str]] = []
@@ -629,6 +670,9 @@ def run_doctor(cfg=None) -> list[tuple[str, str, str]]:
     ca = _check_ca_expiry(cfg)
     if ca is not None:
         results.append(ca)
+    credential_expiry = _check_credential_expiry(cfg)
+    if credential_expiry is not None:
+        results.append(credential_expiry)
     results.append(_check_personal_mode())
     retired_env = _check_retired_profile_env()
     if retired_env is not None:
@@ -717,6 +761,21 @@ def cmd_connect(args) -> int:
     except ConnectError as exc:
         print(f"connect failed: {exc}", file=sys.stderr)
         return 1
+
+
+def cmd_join(args) -> int:
+    from firekeep_client.join import JoinError, join
+    try:
+        return join(
+            args.code,
+            agent_id=args.agent_id,
+            force=args.force,
+            print_key=args.print_key,
+            resume=args.resume,
+        )
+    except JoinError as exc:
+        print(f"join failed: {exc}", file=sys.stderr)
+        return exc.exit_code
 
 
 def cmd_doctor(args) -> int:
@@ -866,6 +925,8 @@ def _build_parser() -> argparse.ArgumentParser:
                            "enables `firekeep update`)")
     inst.add_argument("--non-interactive", action="store_true",
                       help="never prompt (implied when stdin is not a TTY)")
+    inst.add_argument("--join", metavar="CODE",
+                      help="enroll from a single-use join code (also via FIREKEEP_JOIN)")
     inst.add_argument("--no-modify-path", action="store_true",
                       help="do not put a `firekeep` launcher on PATH (also via "
                            "FIREKEEP_NO_MODIFY_PATH)")
@@ -889,6 +950,16 @@ def _build_parser() -> argparse.ArgumentParser:
     conn.add_argument("--no-tunnel", action="store_true",
                       help="do not manage an SSH tunnel (needs a non-loopback server)")
     conn.set_defaults(func=cmd_connect)
+
+    join_parser = sub.add_parser(
+        "join", help="enroll this machine with a single-use Firekeep join code"
+    )
+    join_parser.add_argument("code")
+    join_parser.add_argument("--agent-id", default=None)
+    join_parser.add_argument("--force", action="store_true")
+    join_parser.add_argument("--print-key", action="store_true")
+    join_parser.add_argument("--resume", action="store_true")
+    join_parser.set_defaults(func=cmd_join)
 
     doc = sub.add_parser("doctor", help="preflight health / skew / perm checks")
     doc.set_defaults(func=cmd_doctor)

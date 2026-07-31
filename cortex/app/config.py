@@ -10,6 +10,11 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:8080"]
     RATE_LIMIT: str = "60/minute"
+    ENROLL_TICKET_TTL_HOURS: int = 24
+    ENROLL_TOMBSTONE_DAYS: int = 7
+    ENROLL_KEY_EXPIRES_DAYS: int = 90
+    ENROLL_RATE_LIMIT: str = "10/minute"
+    ENROLL_MAX_ATTEMPTS_PER_HOUR: int = 60
 
     # Neo4j
     NEO4J_URI: str = "bolt://localhost:7687"

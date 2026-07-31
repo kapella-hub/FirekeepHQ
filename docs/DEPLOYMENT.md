@@ -198,23 +198,27 @@ request.
 
 ### Connecting an agent from another machine
 
-The client kit talks to the stack over HTTP, so it needs a reachable address and
-a key. Two options:
+Open the dashboard, choose **Devices → Add device**, and paste its complete
+install command on the new machine. The join code tells the client whether to
+use an SSH tunnel, direct TLS, or explicitly insecure HTTP; the installer does
+not ask the customer to choose a network shape, profile, server, or API key.
 
-1. **Tunnel** (nothing exposed). Forward the ports you need, then point the
-   client's `[server]` connection at `127.0.0.1`:
-   ```bash
-   ssh -L 8100:127.0.0.1:8100 -L 8080:127.0.0.1:8080 \
-       -L 8070:127.0.0.1:8070 -L 8060:127.0.0.1:8060 -L 8050:127.0.0.1:8050 user@vps-host
-   firekeep install --host 127.0.0.1
-   ```
-2. **Expose deliberately** (below), then `firekeep install --host <VPS_IP>`.
+On the shipped loopback configuration the code carries
+`FIREKEEP_SSH_USER@VPS_IP`, starts the required six-port SSH tunnel, and redeems
+over `http://127.0.0.1:8100`. Set those two values correctly in `.env` before
+issuing the code. The server-shell fallback is:
 
-Either way, put the key in `[server]` — `firekeep install` prompts for
-`api_key`, or edit `~/.firekeep/config` directly. `firekeep-shim` injects it as
-`X-API-Key` on every request. `firekeep doctor` verifies connectivity and auth
-end to end; an unkeyed connection against a keyed server shows up there as a failed
-check rather than as mysterious tool errors mid-session.
+```bash
+deploy/firekeep-admin invite --agent laptop --json
+```
+
+An already-installed client can redeem the returned bare code with
+`firekeep join <code>`. `firekeep connect user@vps-host` remains an SSH shortcut:
+it issues an invite on the server and hands it to the same join implementation.
+The client generates the plaintext credential locally; only its SHA-256 hash is
+sent during enrollment. Every authenticated call afterward sends the plaintext
+as `X-API-Key`, so direct plain HTTP is safe only on a trusted network. Firekeep
+does not require Tailscale or any other VPN vendor.
 
 ### Exposing the stack deliberately
 

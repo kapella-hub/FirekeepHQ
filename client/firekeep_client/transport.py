@@ -2,12 +2,11 @@
 needs mcp+httpx). All calls here are one-shot request/response -- no SSE or
 other streaming.
 
-verify=False builds an unverified SSL context and is legal ONLY when the
-target URL is plain http (no TLS handshake occurs in that case, so the
-unverified context is never actually used to validate a peer certificate).
-The resolver's Task-5 TLS guard (firekeep_client.resolver._verify_for) is what
-guarantees verify=False never reaches an https URL in practice -- this
-module does not independently re-check the URL scheme against verify.
+verify=False builds an unverified SSL context. It is used for plain HTTP and
+for exactly one HTTPS bootstrap: GET /enroll/anchor, whose returned CA bytes
+are accepted only after their fingerprint matches the commitment inside the
+out-of-band join code. Ordinary configured requests reach this module through
+the resolver's TLS guard and never weaken verification.
 """
 from __future__ import annotations
 
@@ -21,9 +20,19 @@ DEFAULT_TIMEOUT = 10.0
 
 
 class TransportError(Exception):
-    def __init__(self, msg, *, status: int | None = None) -> None:
+    def __init__(
+        self,
+        msg,
+        *,
+        status: int | None = None,
+        response_is_json: bool = False,
+    ) -> None:
         super().__init__(msg)
         self.status = status
+        # Enrollment must distinguish an old server's HTML/plain-text 404 from
+        # the current route's structured "unknown ticket" 404.  Keep the body
+        # in the human-readable message as before; expose only its format here.
+        self.response_is_json = response_is_json
 
 
 def _build_ssl_context(verify: bool | str | ssl.SSLContext) -> ssl.SSLContext | None:
@@ -97,7 +106,18 @@ def _request(url, *, method, headers, body=None, timeout=DEFAULT_TIMEOUT, verify
     except urllib.error.HTTPError as e:
         raw = e.read() or b""
         detail = raw.decode("utf-8", "replace")[:500] if raw else e.reason
-        raise TransportError(f"{method} {url} failed: {e.code} {detail}", status=e.code) from e
+        response_is_json = False
+        if raw:
+            try:
+                json.loads(raw.decode("utf-8"))
+                response_is_json = True
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                pass
+        raise TransportError(
+            f"{method} {url} failed: {e.code} {detail}",
+            status=e.code,
+            response_is_json=response_is_json,
+        ) from e
     except TimeoutError as e:
         raise TransportError(f"{method} {url} timed out after {timeout}s") from e
     except urllib.error.URLError as e:

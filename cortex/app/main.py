@@ -259,6 +259,12 @@ def _register_admin_surface_routers(app: FastAPI) -> None:
 
 def _register_feature_routers(app: FastAPI) -> None:
     """Register all feature routers with the app. Called during lifespan startup."""
+    # Enrollment must exist even when AUTH_ENABLED=false so it can explain why
+    # no credential can be issued. Only its exact public redeem/anchor paths
+    # bypass the global key middleware; invite management remains admin-scoped.
+    from app.enroll.api import create_enroll_router
+    app.include_router(create_enroll_router(limiter=limiter))
+
     app.include_router(create_dashboard_router(
         graph=app.state.graph_client,
         vector=app.state.vector_client,
@@ -855,7 +861,12 @@ app.add_middleware(RequestBodySizeLimitMiddleware)
 AUTH_SKIP_PREFIXES: tuple[str, ...] = (
     "/health", "/version", "/docs", "/redoc", "/openapi.json",
 )
-AUTH_SKIP_EXACT_PATHS: tuple[str, ...] = ("/dashboard", "/dashboard/")
+AUTH_SKIP_EXACT_PATHS: tuple[str, ...] = (
+    "/dashboard",
+    "/dashboard/",
+    "/enroll",
+    "/enroll/anchor",
+)
 
 _auth_settings = _get_auth_settings()
 app.add_middleware(

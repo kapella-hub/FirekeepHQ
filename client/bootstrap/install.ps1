@@ -81,6 +81,7 @@ $FirekeepExe  = Join-Path $Venv 'Scripts\firekeep.exe'
 # When UNSET we pass nothing, so the client installs every shipped adapter.
 # An explicit environment override still wins.
 $RuntimeArgs = if ($env:FIREKEEP_RUNTIME) { @('--runtime', $env:FIREKEEP_RUNTIME) } else { @() }
+$JoinArgs = if ($env:FIREKEEP_JOIN) { @('--join', $env:FIREKEEP_JOIN) } else { @() }
 
 # --- idempotent fast path: already at $V -> re-render only, NO venv rebuild -------
 # Re-running the bootstrap when already current (e.g. to re-target a runtime via
@@ -96,7 +97,7 @@ if ((Test-Path $FirekeepExe) -and -not $env:FIREKEEP_FORCE_REINSTALL) {
     } catch { $Installed = '' }
     if ($Installed -eq $V) {
         Write-Host "firekeep: already at $V - re-rendering adapters, no venv rebuild. Set FIREKEEP_FORCE_REINSTALL=1 to force a full reinstall."
-        & $FirekeepExe install --dist-base $Base @RuntimeArgs
+        & $FirekeepExe install --dist-base $Base @RuntimeArgs @JoinArgs
         $FirekeepExit = $LASTEXITCODE
         if (-not $HadUvNativeTls) { Remove-Item Env:UV_NATIVE_TLS -ErrorAction SilentlyContinue }
         if ($RemovedSslCertFile) { $env:SSL_CERT_FILE = $OrigSslCertFile }
@@ -230,7 +231,7 @@ if ($LASTEXITCODE -ne 0) { Die "symdex wheel install failed" }
 # --- 7. hand off to the wizard -------------------------------------------------
 # See the file-header note: no stdin trap and no /dev/tty equivalent needed on this path.
 # @RuntimeArgs = --runtime <FIREKEEP_RUNTIME> when set, else empty for all adapters.
-& $FirekeepExe install --dist-base $Base @RuntimeArgs
+& $FirekeepExe install --dist-base $Base @RuntimeArgs @JoinArgs
 $FirekeepExit = $LASTEXITCODE
 
 # --- restore the caller's TLS env (see the TLS block above) -------------------
