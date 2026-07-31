@@ -7,7 +7,7 @@ name = "firekeep-client"
 version = "0.1.27"
 description = "Firekeep portable client kit: stdio-proxy shim, hook cores, sidecar, and runtime adapters."
 requires-python = ">=3.10"
-license = "LicenseRef-Firekeep-Proprietary"
+license = "LicenseRef-Firekeep-BUSL-1.1"
 license-files = ["LICENSE", "NOTICE"]
 dependencies = [
     "mcp>=1.28",
