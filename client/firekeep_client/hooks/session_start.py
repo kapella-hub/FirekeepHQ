@@ -18,7 +18,9 @@ import os
 import platform
 import urllib.parse
 
-from firekeep_client import autoupdate, hooklog, resolver, state, transport, updater
+from firekeep_client import (
+    autoupdate, hooklog, resolver, state, symdexindex, transport, updater,
+)
 from firekeep_client.hooks import _mcp, never_raise
 
 _HOOK = "session_start"
@@ -131,4 +133,8 @@ def run(payload: dict) -> dict:
     except Exception as e:  # noqa: BLE001
         hooklog.log_failure(_HOOK, f"scratch write failed: {e}")
 
-    return {"systemMessage": rendered + _update_nudge(cfg)}
+    # 4. Auto-index this workspace for symdex (detached; see symdexindex module
+    #    docstring for why this can't be inline and why it replaces the old
+    #    plugin hook's ACTION-REQUIRED nag).
+    return {"systemMessage": rendered + _update_nudge(cfg)
+            + symdexindex.index_nudge(cfg, payload)}
