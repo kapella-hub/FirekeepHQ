@@ -1,8 +1,7 @@
-"""`firekeep` CLI — profile switching, install, doctor, version.
+"""`firekeep` CLI — install, connect, doctor, update, and dormancy controls.
 
 Stdlib-only (plus firekeep_client submodules). Never imports mcp/httpx.
-Native config is written once at install; `profile use` is a pointer flip
-(D-switch) that the shim reads at next agent spawn.
+Native runtime config is written once at install and refreshed idempotently.
 """
 from __future__ import annotations
 
@@ -23,163 +22,22 @@ from firekeep_client.transport import get_json, TransportError
 def _config_path() -> Path:
     """Path to ~/.firekeep/config, overridable via env FIREKEEP_CONFIG (tests)."""
     env = os.environ.get("FIREKEEP_CONFIG")
-    return Path(env) if env else resolver.CONFIG_PATH
+    return (Path(env) if env else resolver.CONFIG_PATH).expanduser().resolve()
 
 
-# --- profile -----------------------------------------------------------------
+# --- retired profile command -------------------------------------------------
 
-def cmd_profile_use(args) -> int:
-    path = _config_path()
-    try:
-        cfg = resolver.load_config(path)
-    except resolver.ConfigError as exc:
-        print(f"firekeep: {exc}", file=sys.stderr)
-        return 1
-    if not cfg.has_section(args.name):
-        print(
-            f"firekeep: unknown profile '{args.name}' "
-            f"(define [{args.name}] in {path})",
-            file=sys.stderr,
-        )
-        return 1
-    if not cfg.has_section("active"):
-        cfg.add_section("active")
-    cfg.set("active", "profile", args.name)
-    with open(path, "w", encoding="utf-8") as handle:
-        cfg.write(handle)
-    state._private(path)  # config carries the office key — keep it locked down
-    print(f"firekeep: active profile -> {args.name}")
-    _env_profile_notice()
-    return 0
-
-
-def cmd_profile_show(args) -> int:
-    _env_profile_notice()
-    path = _config_path()
-    try:
-        cfg = resolver.load_config(path)
-        active = resolver.active_profile(cfg)
-    except resolver.ConfigError as exc:
-        print(f"firekeep: {exc}", file=sys.stderr)
-        return 1
-    print(f"active profile: {active}")
-    for svc in resolver.SERVICES:
-        try:
-            ep = resolver.resolve(svc, cfg=cfg)
-        except resolver.ConfigError as exc:
-            print(f"  {svc}: config error: {exc}")
-            continue
-        headers = dict(ep.headers)
-        if "X-API-Key" in headers:
-            headers["X-API-Key"] = "REDACTED"
-        print(
-            f"  {svc}: mcp={ep.mcp_url} rest={ep.rest_base} "
-            f"verify={ep.verify} headers={headers}"
-        )
-    if cfg.has_section("pins"):
-        for runtime, prof in cfg.items("pins"):
-            print(f"  pin: {runtime} -> {prof}")
-    return 0
-
-
-_PIN_RUNTIMES = ("claude", "codex", "kiro", "opencode")
-
-# Structural config sections that are NOT profiles. Pinning a runtime to one of these
-# passes the charset check and (for [active]/[pins]/[dist] on a real config) even the
-# has_section check, but resolves to nonsense at render time — reject at write time,
-# warn in doctor.
-_RESERVED_SECTIONS = ("active", "pins", "dist")
-
-
-def _env_profile_notice() -> None:
-    env = os.environ.get("FIREKEEP_PROFILE", "").strip()
-    if not env:
-        return
-    # Best-effort enrichment: naming WHICH [active] profile is being overridden helps a
-    # user who forgot the export. Any config trouble (missing file, malformed INI, no
-    # [active] section) falls back to the generic text — this is a notice, it must
-    # never fail or noisy-up the command that triggered it.
-    try:
-        cfg = resolver.load_config(_config_path())
-        name = cfg.get("active", "profile", fallback="").strip()
-    except Exception:  # noqa: BLE001 — informational only, degrade to the generic notice
-        name = ""
-    if name:
-        print(f"note: FIREKEEP_PROFILE={env} overrides [active] profile '{name}' "
-              "for this shell")
-    else:
-        print(f"note: FIREKEEP_PROFILE={env} overrides the [active] profile for this shell")
-
-
-def _rerender_runtime(runtime: str) -> None:
-    """A recorded pin that isn't rendered is a silent lie — re-render immediately.
-    Best-effort: a render failure must not strand the config write (the pin IS saved;
-    `firekeep install --runtime <rt>` re-renders later)."""
-    try:
-        get_adapter(runtime).render(venv_bin=_venv_bin(_firekeep_home() / "venv"))
-        print(f"firekeep: {runtime} adapter re-rendered (applies on next agent start)")
-    except Exception as exc:  # noqa: BLE001 — installer-adjacent surface, fail loud not raw
-        print(f"firekeep: WARNING — pin saved but re-render failed: {exc}; "
-              f"run `firekeep install --runtime {runtime}`", file=sys.stderr)
-
-
-def cmd_profile_pin(args) -> int:
-    path = _config_path()
-    try:
-        cfg = resolver.load_config(path)
-    except resolver.ConfigError as exc:
-        print(f"firekeep: {exc}", file=sys.stderr)
-        return 1
-    if not resolver.PIN_NAME_RE.match(args.profile):
-        print("firekeep: pin profile names must match ^[A-Za-z0-9_-]+$ "
-              "(they are rendered into hook command strings)", file=sys.stderr)
-        return 1
-    if args.profile in _RESERVED_SECTIONS:
-        # Must run BEFORE has_section: [active]/[pins]/[dist] usually EXIST as sections,
-        # so the unknown-profile check below would wave them through.
-        print(f"firekeep: '{args.profile}' is a reserved config section, not a profile "
-              f"(reserved: {', '.join(_RESERVED_SECTIONS)})", file=sys.stderr)
-        return 1
-    if not cfg.has_section(args.profile):
-        print(f"firekeep: unknown profile '{args.profile}' "
-              f"(define [{args.profile}] in {path})", file=sys.stderr)
-        return 1
-    if not cfg.has_section("pins"):
-        cfg.add_section("pins")
-    cfg.set("pins", args.runtime, args.profile)
-    with open(path, "w", encoding="utf-8") as handle:
-        cfg.write(handle)
-    state._private(path)
-    print(f"firekeep: {args.runtime} pinned to profile '{args.profile}'")
-    _rerender_runtime(args.runtime)
-    return 0
-
-
-def cmd_profile_unpin(args) -> int:
-    path = _config_path()
-    try:
-        cfg = resolver.load_config(path)
-    except resolver.ConfigError as exc:
-        print(f"firekeep: {exc}", file=sys.stderr)
-        return 1
-    if not (cfg.has_section("pins") and cfg.has_option("pins", args.runtime)):
-        print(f"firekeep: {args.runtime} is not pinned")
-        return 0
-    cfg.remove_option("pins", args.runtime)
-    if not cfg.options("pins"):
-        cfg.remove_section("pins")
-    with open(path, "w", encoding="utf-8") as handle:
-        cfg.write(handle)
-    state._private(path)
-    print(f"firekeep: {args.runtime} unpinned (follows the active profile again)")
-    _rerender_runtime(args.runtime)
-    return 0
-
-
-def cmd_profile_help(args) -> int:
-    print("usage: firekeep profile {use <name>|show|pin <runtime> <profile>|unpin <runtime>}",
-          file=sys.stderr)
-    return 1
+def cmd_profile_removed(args) -> int:
+    path = _config_path().expanduser().resolve()
+    print(
+        "firekeep: `firekeep profile` was removed — there is now exactly one "
+        "server connection.\n"
+        f"Your config was migrated to [server]; see {path}.\n"
+        "To point this machine at a different server: re-run the installer, or "
+        "set FIREKEEP_CONFIG=<path> to use a separate config file.",
+        file=sys.stderr,
+    )
+    return 2
 
 
 # --- version (skew status added in Task 28) ----------------------------------
@@ -188,6 +46,9 @@ def cmd_version(args) -> int:
     print(f"firekeep-client {__version__}")
     try:
         cfg = resolver.load_config(_config_path())
+    except resolver.ConfigMigrationConflict as exc:
+        print(f"firekeep: {exc}", file=sys.stderr)
+        return 3
     except resolver.ConfigError:
         print("skew: no config (run firekeep install)")
         return 0
@@ -199,26 +60,15 @@ def cmd_version(args) -> int:
 # --- install: venv, pip, ~/.firekeep bootstrap, adapter render -----------------
 
 _CONFIG_SKELETON = """\
-[active]
-profile = personal
+[identity]
+agent_id = CHANGEME
 
-[personal]
+[server]
 kind = ports
 scheme = http
 host = 127.0.0.1
 verify_tls = false
-agent_id = CHANGEME
-
-[office]
-kind = paths
-scheme = https
-base_url = https://firekeep.office.example
-verify_tls = true
-# ca_path may be a PEM file, or the literal `os` to verify against the
-# operating-system trust store (corporate CA in the OS keychain — no file).
-ca_path = ~/.firekeep/firekeep-root-ca.crt
 api_key =
-agent_id = CHANGEME
 """
 
 
@@ -310,23 +160,23 @@ def _bootstrap_home(home: Path) -> None:
 
 
 def _apply_flags(cfg, args) -> bool:
-    """Non-interactive path: land --agent-id / --host / --profile in the config directly.
+    """Non-interactive path: land --agent-id / --host in the config directly.
     Returns True if anything was set (so the caller knows to write)."""
-    profile = getattr(args, "profile", None) or cfg.get(
-        "active", "profile", fallback="personal")
-    if not cfg.has_section(profile):
-        cfg.add_section(profile)
+    if not cfg.has_section("identity"):
+        cfg.add_section("identity")
+    if not cfg.has_section("server"):
+        cfg.add_section("server")
     touched = False
-    if getattr(args, "profile", None):
-        if not cfg.has_section("active"):
-            cfg.add_section("active")
-        cfg.set("active", "profile", profile)
-        touched = True
     if getattr(args, "agent_id", None):
-        cfg.set(profile, "agent_id", args.agent_id)
+        cfg.set("identity", "agent_id", args.agent_id)
         touched = True
     if getattr(args, "host", None):
-        cfg.set(profile, "host", args.host)
+        cfg.set("server", "kind", "ports")
+        cfg.set("server", "scheme", "http")
+        cfg.set("server", "verify_tls", "false")
+        cfg.set("server", "host", args.host)
+        cfg.remove_option("server", "base_url")
+        cfg.remove_option("server", "ca_path")
         touched = True
     if getattr(args, "dist_base", None):
         wizard.set_dist_base(cfg, args.dist_base)
@@ -356,7 +206,6 @@ def _configure(args) -> bool:
             cfg,
             agent_id=getattr(args, "agent_id", None),
             host=getattr(args, "host", None),
-            profile=getattr(args, "profile", None),
         )
         if getattr(args, "dist_base", None):
             wizard.set_dist_base(cfg, args.dist_base)
@@ -368,8 +217,7 @@ def _configure(args) -> bool:
         with open(path, "w", encoding="utf-8") as handle:
             cfg.write(handle)
 
-    active = cfg.get("active", "profile", fallback="personal")
-    return cfg.get(active, "agent_id", fallback="").strip() == wizard.PLACEHOLDER_AGENT_ID
+    return cfg.get("identity", "agent_id", fallback="").strip() == wizard.PLACEHOLDER_AGENT_ID
 
 
 def cmd_install(args) -> int:
@@ -453,6 +301,9 @@ def cmd_install(args) -> int:
             except Exception as exc:  # noqa: BLE001 — best-effort; never fail the install
                 path_msgs = [f"could not modify PATH ({exc}); add "
                              f"{home / pathenv.SHIM_DIR_NAME} to PATH manually"]
+    except resolver.ConfigMigrationConflict as exc:
+        print(f"firekeep: install stopped: {exc}", file=sys.stderr)
+        return 3
     except subprocess.TimeoutExpired:
         print(f"firekeep: install failed at '{step}': timed out after "
               f"{_INSTALL_TIMEOUT:.0f}s (override with FIREKEEP_INSTALL_TIMEOUT)",
@@ -473,9 +324,9 @@ def cmd_install(args) -> int:
         print(f"firekeep: {msg}")
     if needs_edit:
         print("firekeep: NEXT STEPS — edit ~/.firekeep/config: set agent_id (currently "
-              "CHANGEME) and, for the office profile, api_key + base_url + ca_path. "
+              "CHANGEME) and complete the [server] connection values. "
               "Open a new terminal (or `source` your shell rc), then run `firekeep doctor`. "
-              "Profile changes apply on next agent start.")
+              "Config changes apply on next agent start.")
     else:
         print("firekeep: NEXT STEPS — open a new terminal (or `source` your shell rc), "
               "then run `firekeep doctor`. Config changes apply on next agent start.")
@@ -551,61 +402,52 @@ def _check_versions(cfg) -> tuple[str, str, str]:
 
 def _check_agent_id(cfg) -> tuple[str, str, str] | None:
     # The installer skeleton (_CONFIG_SKELETON above) writes agent_id =
-    # CHANGEME for both profiles. If a teammate never edits it, every memory
+    # CHANGEME. If a teammate never edits it, every memory
     # write / session / replay event silently attributes to "CHANGEME" —
     # cheap to catch here, expensive to untangle after the fact. Report the
     # EFFECTIVE identity (resolver.agent_id() applies the FIREKEEP_AGENT_ID env
     # override), not the raw config text, so an env-based override that
     # already fixes a stale CHANGEME doesn't get flagged.
     try:
-        profile = resolver.active_profile(cfg)
-        value = resolver.agent_id(cfg, profile)
+        value = resolver.agent_id(cfg)
     except resolver.ConfigError as exc:
         return ("agent-id", "warn", str(exc))
     if value == "CHANGEME":
         return (
             "agent-id", "warn",
-            f"profile '{profile}' agent_id is still the installer default "
-            "'CHANGEME' -- set a real identity in ~/.firekeep/config (or export "
+            "[identity] agent_id is still the installer default 'CHANGEME' -- "
+            "set a real identity in ~/.firekeep/config (or export "
             "FIREKEEP_AGENT_ID) or your work will be attributed to 'CHANGEME'",
         )
     return ("agent-id", "ok", f"agent_id={value}")
 
 
-def _check_api_key(cfg, profile: str | None = None,
-                   label: str = "api-key") -> tuple[str, str, str] | None:
-    """Warn on an https (office-style) profile with a missing/empty api_key.
+def _check_api_key(cfg, label: str = "api-key") -> tuple[str, str, str] | None:
+    """Warn when the configured server requires a missing API key.
 
     THE FALSE-GREEN TRAP this closes: /health and Cortex /version are on the
-    auth middleware's skip list, so under AUTH_ENABLED=true a keyless profile
+    auth middleware's skip list, so under AUTH_ENABLED=true a keyless connection
     passes every health/skew check above while EVERY real MCP/REST call 401s.
-    Doctor must not report a broken office config as healthy. Returns None for
-    plain-http profiles (personal — no auth expected).
-
-    `profile`/`label` let run_doctor reuse this check for pinned profiles
-    other than the active one (see _check_pins) — default behavior (active
-    profile, "api-key" label) is unchanged.
+    Doctor must not report a broken config as healthy.
     """
     try:
-        if profile is None:
-            profile = resolver.active_profile(cfg)
-        scheme = cfg.get(profile, "scheme", fallback="http").strip().lower()
+        scheme = cfg.get("server", "scheme", fallback="http").strip().lower()
     except resolver.ConfigError as exc:
         return (label, "warn", str(exc))
     if scheme != "https":
-        # `http` USED to imply "personal, no auth expected". That is false for the
-        # standard personal-VPS shape: the server binds to loopback, the client
+        # `http` does not imply "no auth expected". A common self-hosted shape binds
+        # the server to loopback and lets the client
         # reaches it over an SSH tunnel as http://127.0.0.1, and AUTH_ENABLED is
-        # true. A keyless profile then passes every check above (health/version are
+        # true. A keyless connection then passes every check above (health/version are
         # auth-exempt) while every real call 401s -- the same FALSE-GREEN TRAP this
         # function was written to close, just reached over http instead of https.
         #
         # So don't infer auth-expectation from the scheme. If there is no key, ASK
         # the server whether it enforces auth, using a gated read-only route.
-        if cfg.get(profile, "api_key", fallback="").strip():
+        if cfg.get("server", "api_key", fallback="").strip():
             return None
         try:
-            ep = resolver.resolve("cortex", cfg=cfg, profile=profile)
+            ep = resolver.resolve("cortex", cfg=cfg)
         except resolver.ConfigError:
             return None
         try:
@@ -614,7 +456,7 @@ def _check_api_key(cfg, profile: str | None = None,
             if getattr(exc, "status", None) in (401, 403):
                 return (
                     label, "fail",
-                    f"profile '{profile}' has no api_key but {ep.rest_base} enforces auth "
+                    f"[server] has no api_key but {ep.rest_base} enforces auth "
                     "-- health/version are auth-exempt, so the checks above pass while "
                     "every real MCP call 401s. Mint one on the server: "
                     "`deploy/firekeep-admin keys create --agent <you>`, or run "
@@ -623,11 +465,11 @@ def _check_api_key(cfg, profile: str | None = None,
         except OSError:
             pass          # unreachable is _check_health's row to report, not ours
         return None
-    key = cfg.get(profile, "api_key", fallback="").strip()
+    key = cfg.get("server", "api_key", fallback="").strip()
     if not key:
         return (
             label, "warn",
-            f"profile '{profile}' is https (auth expected) but api_key is "
+            "[server] uses https (auth expected) but api_key is "
             "empty -- health/version are auth-exempt so the checks above can "
             "pass while every real MCP call 401s; set api_key",
         )
@@ -693,20 +535,14 @@ def _cert_not_after(path: Path) -> datetime:
     return datetime.fromtimestamp(seconds, tz=timezone.utc)
 
 
-def _check_ca_expiry(cfg, profile: str | None = None,
-                     label: str = "ca-expiry") -> tuple[str, str, str] | None:
-    if profile is None:
-        try:
-            profile = resolver.active_profile(cfg)
-        except resolver.ConfigError:
-            return None
-    if not cfg.has_section(profile):
+def _check_ca_expiry(cfg, label: str = "ca-expiry") -> tuple[str, str, str] | None:
+    if not cfg.has_section("server"):
         return None
-    section = cfg[profile]
+    section = cfg["server"]
     ca_path = section.get("ca_path")
     verify_tls = section.get("verify_tls", "false").strip().lower() == "true"
     if not ca_path or not verify_tls:
-        return None  # personal / plaintext: no CA to check
+        return None  # plaintext: no CA to check
     if ca_path.strip().lower() == resolver.OS_TRUST:
         # OS trust store: the operating system owns rotation/expiry; no file to parse.
         return (label, "ok", "OS trust store (ca_path = os; no CA file to expire)")
@@ -725,34 +561,16 @@ def _check_ca_expiry(cfg, profile: str | None = None,
     return (label, "ok", f"CA valid {remaining}d ({path})")
 
 
-def _check_pins(cfg) -> list[tuple[str, str, str]]:
-    """[pins] hygiene: unknown runtimes, charset-unsafe names (ignored at render),
-    and pins referencing deleted profiles. Existence-level only — the per-profile
-    api-key/CA checks for pinned profiles are appended by run_doctor."""
-    if not cfg.has_section("pins"):
-        return []
-    out: list[tuple[str, str, str]] = []
-    for runtime, profile in cfg.items("pins"):
-        if runtime not in _PIN_RUNTIMES:
-            out.append(("pins", "warn", f"[pins] names unknown runtime '{runtime}'"))
-        elif not resolver.PIN_NAME_RE.match((profile or "").strip()):
-            out.append(("pins", "warn",
-                        f"pin {runtime} -> '{profile}' has an unsafe name "
-                        "(must match ^[A-Za-z0-9_-]+$) and is IGNORED at render"))
-        elif (profile or "").strip() in _RESERVED_SECTIONS:
-            # Before has_section: reserved sections usually EXIST, so the fall-through
-            # below would report a hand-edited `kiro = active` pin as ok.
-            out.append(("pins", "warn",
-                        f"pin {runtime} -> '{profile}' references the reserved section "
-                        f"[{profile}], not a profile "
-                        f"(reserved: {', '.join(_RESERVED_SECTIONS)})"))
-        elif not cfg.has_section(profile):
-            out.append(("pins", "warn",
-                        f"pin {runtime} -> '{profile}' references a profile with no "
-                        f"[{profile}] section"))
-        else:
-            out.append(("pins", "ok", f"{runtime} -> {profile}"))
-    return out
+def _check_retired_profile_env() -> tuple[str, str, str] | None:
+    value = os.environ.get("FIREKEEP_PROFILE", "").strip()
+    if not value:
+        return None
+    return (
+        "retired-profile-env",
+        "warn",
+        f"FIREKEEP_PROFILE={value} is ignored; remove it from this shell and your "
+        f"shell startup files. The connection comes from {_config_path().expanduser().resolve()}.",
+    )
 
 
 def _check_client_version(cfg) -> tuple[str, str, str] | None:
@@ -812,20 +630,9 @@ def run_doctor(cfg=None) -> list[tuple[str, str, str]]:
     if ca is not None:
         results.append(ca)
     results.append(_check_personal_mode())
-    results.extend(_check_pins(cfg))
-    if cfg.has_section("pins"):
-        seen: set[str] = set()
-        for runtime, profile in cfg.items("pins"):
-            profile = (profile or "").strip()
-            if profile in seen or not cfg.has_section(profile):
-                continue
-            seen.add(profile)
-            for check in (_check_api_key, _check_ca_expiry):
-                row = check(cfg, profile=profile,
-                            label=f"{'api-key' if check is _check_api_key else 'ca-expiry'}"
-                                  f"[pin:{runtime}->{profile}]")
-                if row is not None:
-                    results.append(row)
+    retired_env = _check_retired_profile_env()
+    if retired_env is not None:
+        results.append(retired_env)
     return results
 
 
@@ -905,7 +712,7 @@ def cmd_connect(args) -> int:
     docstring for why this command exists at all)."""
     from firekeep_client.connect import ConnectError, connect
     try:
-        return connect(args.target, profile=args.profile, agent_id=args.agent_id,
+        return connect(args.target, agent_id=args.agent_id,
                        remote_dir=args.remote_dir, use_tunnel=not args.no_tunnel)
     except ConnectError as exc:
         print(f"connect failed: {exc}", file=sys.stderr)
@@ -914,8 +721,10 @@ def cmd_connect(args) -> int:
 
 def cmd_doctor(args) -> int:
     try:
-        _env_profile_notice()
         results = run_doctor()
+    except resolver.ConfigMigrationConflict as exc:
+        print(f"firekeep: {exc}", file=sys.stderr)
+        return 3
     except resolver.ConfigError as exc:
         print(f"firekeep: {exc}", file=sys.stderr)
         return 1
@@ -963,6 +772,9 @@ def _set_auto_update(enabled: bool) -> int:
     path = _config_path()
     try:
         cfg = resolver.load_config(path)
+    except resolver.ConfigMigrationConflict as exc:
+        print(f"firekeep: {exc}", file=sys.stderr)
+        return 3
     except resolver.ConfigError as exc:
         print(f"firekeep: {exc}", file=sys.stderr)
         return 1
@@ -1014,6 +826,9 @@ def cmd_update(args) -> int:
             _firekeep_home() / "bootstrap" / ("install.ps1" if windows else "install.sh"),
             sha256=manifest.bootstrap_hash_for(windows=windows),
         )
+    except resolver.ConfigMigrationConflict as exc:
+        print(f"firekeep: {exc}", file=sys.stderr)
+        return 3
     except (resolver.ConfigError, updater.UpdateError) as exc:
         print(f"firekeep: {exc}", file=sys.stderr)
         return 1
@@ -1029,21 +844,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="firekeep", description="Firekeep client")
     sub = parser.add_subparsers(dest="command")
 
-    prof = sub.add_parser("profile", help="manage the active profile")
-    prof.set_defaults(func=cmd_profile_help)
-    prof_sub = prof.add_subparsers(dest="profile_command")
-    use = prof_sub.add_parser("use", help="switch the active profile")
-    use.add_argument("name")
-    use.set_defaults(func=cmd_profile_use)
-    show = prof_sub.add_parser("show", help="print active profile + resolved endpoints")
-    show.set_defaults(func=cmd_profile_show)
-    pin = prof_sub.add_parser("pin", help="pin a runtime to a profile (survives re-renders)")
-    pin.add_argument("runtime", choices=list(_PIN_RUNTIMES))
-    pin.add_argument("profile")
-    pin.set_defaults(func=cmd_profile_pin)
-    unpin = prof_sub.add_parser("unpin", help="remove a runtime's profile pin")
-    unpin.add_argument("runtime", choices=list(_PIN_RUNTIMES))
-    unpin.set_defaults(func=cmd_profile_unpin)
+    prof = sub.add_parser("profile", help=argparse.SUPPRESS)
+    prof.add_argument("retired_args", nargs=argparse.REMAINDER)
+    prof.set_defaults(func=cmd_profile_removed)
 
     ver = sub.add_parser("version", help="print client version + skew status")
     ver.set_defaults(func=cmd_version)
@@ -1057,9 +860,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # Config answers. Interactively each SEEDS its prompt's default; with
     # --non-interactive (or no TTY) each is written straight to the config.
     inst.add_argument("--agent-id", help="identity attributed to memories/sessions")
-    inst.add_argument("--host", help="service host for a ports-style profile")
-    inst.add_argument("--profile", choices=["personal", "office"],
-                      help="profile to configure and make active")
+    inst.add_argument("--host", help="service host for a ports-style connection")
     inst.add_argument("--dist-base", metavar="URL",
                       help="release base URL this kit came from (set by the bootstrap; "
                            "enables `firekeep update`)")
@@ -1083,7 +884,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "connect",
         help="point this machine at a Firekeep server over ssh (mint key, tunnel, verify)")
     conn.add_argument("target", help="ssh target for the server, e.g. root@203.0.113.10")
-    conn.add_argument("--profile", default="personal", help="profile to write (default: personal)")
     conn.add_argument("--agent-id", default=None, help="identity to mint the key for")
     conn.add_argument("--remote-dir", default=None, help="server install dir if not auto-detected")
     conn.add_argument("--no-tunnel", action="store_true",
@@ -1122,7 +922,11 @@ def main(argv=None) -> int:
     if func is None:
         parser.print_help()
         return 1
-    return func(args)
+    try:
+        return func(args)
+    except resolver.ConfigMigrationConflict as exc:
+        print(f"firekeep: {exc}", file=sys.stderr)
+        return 3
 
 
 if __name__ == "__main__":  # pragma: no cover

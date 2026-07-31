@@ -307,19 +307,19 @@ def _write_cfg(tmp_path, monkeypatch, text):
     return cfg
 
 
-def test_pinned_claude_renders_env_and_hook_profile(tmp_path, monkeypatch, fake_home):
+def test_legacy_pinned_claude_renders_no_profile_artifacts(tmp_path, monkeypatch, fake_home):
     _write_cfg(tmp_path, monkeypatch, _PINNED_CFG)
     get_adapter("claude").render(venv_bin=tmp_path / "vbin")
 
     claude_json = _read(fake_home / ".claude.json")
     for name in ("firekeep-cortex", "firekeep-symdex", "firekeep-decision"):
-        assert claude_json["mcpServers"][name]["env"] == {"FIREKEEP_PROFILE": "office"}
+        assert "env" not in claude_json["mcpServers"][name]
     settings = _read(fake_home / ".claude" / "settings.json")
     for groups in settings["hooks"].values():
         for g in groups:
             for h in g["hooks"]:
                 if "firekeep_client.hooks" in h["command"]:
-                    assert "--profile office" in h["command"]
+                    assert "--profile" not in h["command"]
 
 
 def test_unpinned_render_has_no_env_or_profile(tmp_path, monkeypatch, fake_home):
@@ -333,9 +333,8 @@ def test_unpinned_render_has_no_env_or_profile(tmp_path, monkeypatch, fake_home)
     assert "--profile" not in text
 
 
-def test_unpin_rerender_removes_pin_artifacts(tmp_path, monkeypatch, fake_home):
-    """Pin -> render -> unpin -> render: env + --profile must disappear (merge_owned
-    replaces whole entries; upsert replaces hook groups)."""
+def test_rerender_removes_legacy_pin_artifacts(tmp_path, monkeypatch, fake_home):
+    """A re-render removes legacy env/argument carriers from owned entries."""
     cfg = _write_cfg(tmp_path, monkeypatch, _PINNED_CFG)
     adapter = get_adapter("claude")
     adapter.render(venv_bin=tmp_path / "vbin")

@@ -55,15 +55,15 @@ def _write_cfg(tmp_path, monkeypatch, text):
     return cfg
 
 
-def test_pinned_codex_renders_env_inline_table(tmp_path, monkeypatch, fake_home):
+def test_legacy_pinned_codex_renders_no_profile_env(tmp_path, monkeypatch, fake_home):
     _write_cfg(tmp_path, monkeypatch, _PINNED_CFG)
     get_adapter("codex").render(venv_bin=tmp_path / "vbin")
 
     text = (fake_home / ".codex" / "config.toml").read_text()
     parsed = tomllib.loads(text)
     for name in ("firekeep-cortex", "firekeep-symdex", "firekeep-decision"):
-        assert parsed["mcp_servers"][name]["env"] == {"FIREKEEP_PROFILE": "office"}
-    assert 'env = { FIREKEEP_PROFILE = "office" }' in text
+        assert "env" not in parsed["mcp_servers"][name]
+    assert "FIREKEEP_PROFILE" not in text
 
 
 def test_unpinned_codex_render_has_no_env(tmp_path, monkeypatch, fake_home):

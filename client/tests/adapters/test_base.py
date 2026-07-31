@@ -159,37 +159,3 @@ def test_hook_command_unquoted_when_no_spaces(tmp_path):
     venv_bin = tmp_path / "venv" / "bin"
     cmd = base.hook_command(venv_bin, "stop")
     assert not cmd.startswith('"')
-
-
-# --- read_pin: render's ONLY config dependency must never fail an install ----
-
-
-def test_read_pin_missing_config_returns_none(tmp_path, monkeypatch):
-    from firekeep_client.adapters import base
-
-    monkeypatch.setenv("FIREKEEP_CONFIG", str(tmp_path / "no-such-config"))
-    assert base.read_pin("kiro") is None
-
-
-def test_read_pin_returns_pinned_profile(tmp_path, monkeypatch):
-    from firekeep_client.adapters import base
-
-    cfg = tmp_path / "config"
-    cfg.write_text("[office]\nagent_id = tester\n\n[pins]\nkiro = office\n",
-                   encoding="utf-8")
-    monkeypatch.setenv("FIREKEEP_CONFIG", str(cfg))
-    assert base.read_pin("kiro") == "office"
-    assert base.read_pin("claude") is None  # unpinned runtime, same config
-
-
-def test_read_pin_malformed_ini_returns_none(tmp_path, monkeypatch):
-    """A present-but-MALFORMED config raises raw configparser.Error out of
-    load_config (not ConfigError). Per the docstring that must render UNPINNED —
-    escaping here would fail `firekeep install` on a botched hand-edit."""
-    from firekeep_client.adapters import base
-
-    cfg = tmp_path / "config"
-    cfg.write_text("not an ini file\n= dangling value before any section\n",
-                   encoding="utf-8")
-    monkeypatch.setenv("FIREKEEP_CONFIG", str(cfg))
-    assert base.read_pin("kiro") is None  # must not raise

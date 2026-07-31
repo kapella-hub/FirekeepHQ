@@ -45,8 +45,7 @@ def run(payload: dict) -> dict:
         return {}
 
     cfg = resolver.load_config()
-    profile = resolver.active_profile(cfg)
-    agent = resolver.agent_id(cfg, profile)
+    agent = resolver.agent_id(cfg)
 
     # NB: the session stash is deliberately NOT cleared here — Stop fires every
     # turn, so clearing would drop X-Session-Id attribution after turn 1. The
@@ -85,7 +84,7 @@ def run(payload: dict) -> dict:
                 "context": _git.workspace_snapshot()}
         sid = ""
         try:
-            stash = state.read_session_stash(agent, profile)
+            stash = state.read_session_stash(agent)
             if stash and stash.get("session_id"):
                 sid = str(stash["session_id"])
                 task["description"] = f"session_id={sid}"
@@ -97,7 +96,7 @@ def run(payload: dict) -> dict:
         # scratch marker rides the same TTL'd cache the stash uses. Sessions
         # with no stamped id can't be deduped (nothing to key on) and are
         # cleared by the worker as legacy anyway.
-        marker = f"distill_enqueued_{sid}@{profile}" if sid else ""
+        marker = f"distill_enqueued_{sid}" if sid else ""
         if marker and state.read_scratch(marker):
             return {"systemMessage": _MSG}
         _mcp.call_tool("relay", "relay_task_post", task, cfg=cfg)

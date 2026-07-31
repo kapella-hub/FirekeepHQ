@@ -26,7 +26,7 @@ This is non-interactive — no prompts. It:
 3. **Writes `~/.claude.json`** — all 4 HTTP-backed MCP servers as stdio entries through `firekeep-shim` (user-scoped), plus the always-on stdio-local `firekeep-symdex` and `firekeep-decision`
 4. **Writes `~/.claude/settings.json`** — 5 hook cores + env vars (user-scoped), merging non-destructively with any existing foreign hooks/servers
 
-Afterward, edit `~/.firekeep/config`: set `agent_id` (it ships as the placeholder `CHANGEME`) and, for the office profile, `api_key`/`base_url`/`ca_path`. Then run `firekeep doctor` to verify. Profile changes (`firekeep profile use personal|office`) take effect on the next Claude Code session start. Per-runtime pins: `firekeep profile pin kiro office` points kiro at the office profile while other runtimes follow `[active]`.
+Afterward, edit `~/.firekeep/config`: set `[identity] agent_id` (it ships as `CHANGEME`) and complete the one `[server]` connection (`host`/`api_key` for ports, or `base_url`/`ca_path`/`api_key` for path routing). Then run `firekeep doctor` to verify. Config changes take effect on the next Claude Code session start.
 
 The Firekeep Claude integration is user-scoped and venv-relocation-proof: the hook commands are absolute paths into `~/.firekeep/venv`, not into this repository.
 
@@ -43,7 +43,7 @@ The Firekeep Claude integration is user-scoped and venv-relocation-proof: the ho
 | firekeep-symdex | stdio (local, always-on) | Code intelligence |
 | firekeep-decision | stdio (local, always-on) | Decision Board — clarification via `decision_board`/`decision_board_check` |
 
-Every HTTP service is reached through `firekeep-shim` — a stdio↔Streamable-HTTP bridge that terminates TLS and injects `X-API-Key`/`X-Agent-Id` from the active `~/.firekeep/config` profile. `firekeep-symdex` and `firekeep-decision` are never routed through the shim; they stay stdio-local. Both are always installed — no flag needed.
+Every HTTP service is reached through `firekeep-shim` — a stdio↔Streamable-HTTP bridge that terminates TLS and injects `X-API-Key`/`X-Agent-Id` from `[server]` and `[identity]` in `~/.firekeep/config`. `firekeep-symdex` and `firekeep-decision` are never routed through the shim; they stay stdio-local. Both are always installed — no flag needed.
 
 ### Hooks (`.claude/settings.json`)
 
@@ -101,7 +101,7 @@ FIREKEEP_AGENT_ID=agent-alpha claude
 FIREKEEP_AGENT_ID=agent-beta claude
 ```
 
-`FIREKEEP_AGENT_ID` overrides the active profile's `agent_id` for that process only — useful for running differently-identified agents from one machine without editing `~/.firekeep/config`.
+`FIREKEEP_AGENT_ID` overrides `[identity] agent_id` for that process only — useful for running differently-identified agents from one machine without editing `~/.firekeep/config`.
 
 See [docs/MULTI-AGENT.md](MULTI-AGENT.md) for the full workflow guide.
 
@@ -143,13 +143,13 @@ The installer is the supported path; there is no manual alternative that reaches
 - Check firewall: ports 8050-8100 must be accessible from your machine
 
 ### Briefing shows "Service unreachable"
-- The host/base_url in your active `~/.firekeep/config` profile must be reachable from your machine
+- The `host` or `base_url` in `~/.firekeep/config` `[server]` must be reachable from your machine
 - Run `firekeep doctor` — it checks connectivity and auth for every service in one pass, reports the client and cortex versions, and flags a stale client against the release manifest
 - Try `curl http://127.0.0.1:8100/health` **on the Firekeep host** — `/health` is pre-auth,
   so it answers without a key and tells you the service is up. From another machine that
   call only works if you set `BIND_ADDR=0.0.0.0`; on a default install, tunnel instead.
 - A `401` from any other path is not a fault — it means the stack is up and enforcing auth.
-  Put your key in the profile rather than turning auth off.
+  Put your key in `[server]` rather than turning auth off.
 
 ### Hooks not firing
 - Hooks are user-scoped — check `~/.claude/settings.json` exists and has the `hooks` key

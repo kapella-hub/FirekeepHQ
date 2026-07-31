@@ -70,8 +70,7 @@ def run(payload: dict) -> dict:
         return {}
 
     cfg = resolver.load_config()
-    profile = resolver.active_profile(cfg)
-    agent = resolver.agent_id(cfg, profile)
+    agent = resolver.agent_id(cfg)
 
     # Race guard, moved verbatim from stop.py: skip the deregister if a NEWER
     # session registered under this agent_id within the window, else a
@@ -80,8 +79,8 @@ def run(payload: dict) -> dict:
     # Shared keying authority: state.should_deregister/clear_registered, the
     # SAME scratch key session_start.py's mark_registered writes and the
     # sidecar's independent registration guard reads.
-    do_dereg = state.should_deregister(agent, profile=profile)
-    state.clear_registered(agent, profile=profile)  # consume the mark either way
+    do_dereg = state.should_deregister(agent)
+    state.clear_registered(agent)  # consume the mark either way
 
     if do_dereg:
         try:

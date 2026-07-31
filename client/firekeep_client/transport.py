@@ -29,8 +29,8 @@ class TransportError(Exception):
 def _build_ssl_context(verify: bool | str | ssl.SSLContext) -> ssl.SSLContext | None:
     if isinstance(verify, ssl.SSLContext):
         # Caller-built context (updater's scoped OS-trust context for release-host
-        # fetches). Used verbatim: profile-derived bool/str verify below stays stock
-        # stdlib, so office ca_path pinning is never widened.
+        # fetches). Used verbatim: config-derived bool/str verify below stays stock
+        # stdlib, so [server] ca_path verification is never widened.
         return verify
     if verify is False:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)

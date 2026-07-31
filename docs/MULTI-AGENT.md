@@ -30,7 +30,7 @@ QUALITY: From 3 recent sessions: tool success rate is 87%
 - **Discipline** — untagged-call visibility
 - **DLQ** — dead-letter queue depth (backfill/distill)
 
-Connection details come from the active `~/.firekeep/config` profile (via the resolver); the briefing itself is fetched server-side from Cortex `GET /briefing`. Adapts to single-agent or multi-agent mode. No configuration needed.
+Connection details come from the single `[server]` section in `~/.firekeep/config` (via the resolver); the briefing itself is fetched server-side from Cortex `GET /briefing`. Adapts to single-agent or multi-agent mode. No extra hook configuration is needed.
 
 ## Session Debrief
 
@@ -94,7 +94,7 @@ relay_lease(resource_id="auth/tests/test_middleware.py", agent_id="agent-beta")
 
 The hook also sends the active Bridge session ID into the Cortex policy engine when available, so `session_health` policy checks can actually evaluate the current session.
 
-If Cortex auth is enabled, the hook reads the API key from the active `~/.firekeep/config` profile (via the resolver) before calling `POST /agent/action/before`.
+If Cortex auth is enabled, the hook reads the API key from `[server]` in `~/.firekeep/config` (via the resolver) before calling `POST /agent/action/before`.
 
 ### Status Updates
 
@@ -171,23 +171,36 @@ The five bash hooks are retired. The adapter wires stdlib Python hook cores at i
 | `multi-agent-poll.sh` | `firekeep_client.hooks.prompt` (UserPromptSubmit) |
 | `multi-agent-precheck.sh` | `firekeep_client.hooks.pre_tool` (PreToolUse — blocking) |
 | `multi-agent-postaction.sh` | `firekeep_client.hooks.post_tool` (PostToolUse) |
-| `start-agent.sh` | retired — set `FIREKEEP_AGENT_ID` in the environment (overrides the profile `agent_id`) and start your runtime |
+| `start-agent.sh` | retired — set `FIREKEEP_AGENT_ID` in the environment (overrides `[identity] agent_id`) and start your runtime |
 
-Presence registration (`session_start`), heartbeat (`prompt`), and clean exit deregistration (`stop`) are owned directly by the hook cores above for both Claude Code and kiro — kiro wires the same five hook cores to its `agentSpawn`/`userPromptSubmit`/`preToolUse`/`postToolUse`/`stop` events (see the table above), so its presence lifecycle works the same way. The **sidecar** (`firekeep-sidecar`) is the *intended* presence owner only for MCP-only runtimes with no hook lifecycle at all — Codex today — but nothing currently spawns it automatically; a Codex user has no presence path unless they run `firekeep-sidecar` by hand. Running `firekeep-sidecar` for a pinned runtime requires exporting `FIREKEEP_PROFILE=<pinned>` — the sidecar has no rendered entry to carry it. The four HTTP services are reached through `firekeep-shim --service <svc>` (stdio↔Streamable-HTTP bridge, TLS + header injection); symdex and `firekeep-decision` (see Decision Board below) stay stdio-local — both are always-on (installed unconditionally, no opt-in flag).
+Presence registration (`session_start`), heartbeat (`prompt`), and clean exit deregistration (`stop`) are owned directly by the hook cores above for both Claude Code and kiro — kiro wires the same five hook cores to its `agentSpawn`/`userPromptSubmit`/`preToolUse`/`postToolUse`/`stop` events (see the table above), so its presence lifecycle works the same way. The **sidecar** (`firekeep-sidecar`) is the *intended* presence owner only for MCP-only runtimes with no hook lifecycle at all — Codex today — but nothing currently spawns it automatically; a Codex user has no presence path unless they run `firekeep-sidecar` by hand. The sidecar and every adapter use the same `[server]` connection. The four HTTP services are reached through `firekeep-shim --service <svc>` (stdio↔Streamable-HTTP bridge, TLS + header injection); symdex and `firekeep-decision` (see Decision Board below) stay stdio-local — both are always-on (installed unconditionally, no opt-in flag).
 
 ## Environment Variables
 
 | Variable | Example | Set by |
 |----------|---------|--------|
-| `FIREKEEP_AGENT_ID` | `agent-alpha` | exported manually per-process; overrides the active profile's `agent_id` |
-| `FIREKEEP_PROFILE` | `office` | per-process profile override (mirrors `FIREKEEP_AGENT_ID`); set automatically in a pinned runtime's rendered MCP/hook entries via `firekeep profile pin <runtime> <profile>` |
+| `FIREKEEP_AGENT_ID` | `agent-alpha` | exported manually per-process; overrides `[identity] agent_id` |
 | `FIREKEEP_AGENT_GOAL` | `"fix auth bugs"` | exported manually per-process; read directly by the `session_start`/sidecar cores |
 | `FIREKEEP_BYPASS` | `1` | set before launch for a hard whole-session bypass (personal mode) — hooks no-op, shim serves 0 tools, sidecar/decision go inert. See Personal / Bypass Mode above |
 | `FIREKEEP_PERSONAL_TTL_HOURS` | `12` | staleness backstop for the `~/.firekeep/personal` marker: an un-cleared marker (crash) is treated as off past this horizon |
 
-`FIREKEEP_RELAY_URL`, `FIREKEEP_BRIDGE_URL`, `FIREKEEP_CORTEX_URL`, and `FIREKEEP_SENTINEL_URL` are retired — no client-kit code reads them. URL/auth/TLS now come from the active `~/.firekeep/config` profile via the resolver (`firekeep profile show` prints the resolved endpoints). `firekeep install` deletes any copy of these four keys it finds in `~/.claude/settings.json`, so an upgraded machine is left with one source of truth rather than a stale second one; `FIREKEEP_AGENT_ID` is untouched, since it is a live per-process override.
+`FIREKEEP_PROFILE`, `FIREKEEP_RELAY_URL`, `FIREKEEP_BRIDGE_URL`, `FIREKEEP_CORTEX_URL`, and `FIREKEEP_SENTINEL_URL` are retired — no client-kit code reads them. URL/auth/TLS now come from the one `[server]` section in `~/.firekeep/config`. `firekeep install` removes stale managed copies from rendered runtime entries, so an upgraded machine is left with one source of truth rather than a stale second one; `FIREKEEP_AGENT_ID` is untouched, since it is a live per-process override. If `FIREKEEP_PROFILE` remains in a shell startup file, `firekeep doctor` warns that it is ignored.
 
-`agent_id` **is** prompted at install: an interactive `firekeep install` asks for the agent identity (defaulting to the configured value, else your OS username), which profile to configure, and that profile's connection details, writing them to `~/.firekeep/config`. It does **not** ask which client to prepare: without `--runtime`, every shipped adapter (Claude Code, Codex, Kiro, OpenCode) is rendered; `--runtime <name>` is the targeted re-render/repair path. Hitting Enter through every prompt keeps the current values, so re-running the installer after a kit upgrade is safe. With no TTY (CI, `./install < /dev/null`) or with `--non-interactive`, nothing is prompted and the config skeleton is written as before; `--agent-id`, `--host`, and `--profile` supply the answers for scripted/fleet installs.
+One server per machine is the supported setup. If a machine genuinely needs a
+second server, use a separate config file as an explicit escape hatch:
+
+```bash
+cp ~/.firekeep/config ~/.firekeep/client-b.conf
+# edit client-b.conf so [server] points at the second server
+FIREKEEP_CONFIG=~/.firekeep/client-b.conf firekeep doctor
+```
+
+To bind only one runtime to that file, add `FIREKEEP_CONFIG` to that runtime's
+managed MCP entry. This is intentionally not a managed pin mechanism: a later
+`firekeep install` re-render replaces Firekeep-owned entries and removes the
+hand-added environment value, so reapply it after each re-render.
+
+`agent_id` **is** prompted at install: an interactive `firekeep install` asks for the agent identity (defaulting to the configured value, else your OS username) and the one server connection, writing `[identity]` and `[server]` in `~/.firekeep/config`. It does **not** ask for a product tier, profile, or which client to prepare: without `--runtime`, every shipped adapter (Claude Code, Codex, Kiro, OpenCode) is rendered; `--runtime <name>` is the targeted re-render/repair path. Hitting Enter through every prompt keeps the current values, so re-running the installer after a kit upgrade is safe. With no TTY (CI, `./install < /dev/null`) or with `--non-interactive`, nothing is prompted and the config skeleton is written as before; `--agent-id` and `--host` supply the answers for scripted installs.
 
 The client kit installs from a release, not a repo checkout: `curl -fsSL <base>/install.sh |
 FIREKEEP_DIST_BASE=<base> sh`. It brings its own Python. `firekeep update` keeps it current;

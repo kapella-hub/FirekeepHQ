@@ -6,7 +6,6 @@ settings["hooks"] = {...} wholesale-overwrite bug in local-setup.*).
 """
 from __future__ import annotations
 
-import configparser
 import json
 import re
 import sys
@@ -48,11 +47,11 @@ LEGACY_HOOK_MARKERS = (
     # Generation 2 — the predecessor Python kit. Same hazard as generation 1 and
     # the same remedy: without this, an upgraded machine keeps BOTH hook layers
     # and fires every lifecycle event twice (doubled presence registration,
-    # doubled distill enqueues), while the predecessor half points at a profile
+    # doubled distill enqueues), while the predecessor half points at a config
     # that no longer resolves.
     "nexus_client.hooks",
 )
-# Retired by the resolver: URL/auth/TLS come from the active ~/.firekeep/config profile now.
+# Retired by the resolver: URL/auth/TLS come from ~/.firekeep/config now.
 # No client-kit code reads these; left in place they only mislead whoever reads the file next.
 LEGACY_ENV_KEYS = (
     "NEXUS_CORTEX_URL",
@@ -132,25 +131,6 @@ def hook_command(venv_bin: Path, core: str, *, extra_args: str = "") -> str:
     if extra_args:
         cmd = f"{cmd} {extra_args}"
     return cmd
-
-
-def read_pin(runtime: str) -> str | None:
-    """The profile pinned for `runtime` ([pins] in ~/.firekeep/config), or None. This is
-    render()'s ONLY config dependency — introduced for per-runtime pins (2026-07-13).
-    A missing/unreadable/malformed config (fresh machine, unrender-after-wipe, botched
-    hand-edit) renders UNPINNED rather than failing the install. Charset guarantee: pinned_profile() only returns
-    ^[A-Za-z0-9_-]+$ names, so rendered hook strings need no shell quoting."""
-    from firekeep_client import resolver  # local import: keeps base import-light
-
-    try:
-        cfg = resolver.load_config()
-    except (resolver.ConfigError, configparser.Error):
-        # ConfigError covers a missing/unreadable file, but a present-and-MALFORMED INI
-        # escapes load_config as a raw configparser.Error (ParsingError,
-        # MissingSectionHeaderError, ...) — per the docstring that must render unpinned,
-        # not fail the install.
-        return None
-    return resolver.pinned_profile(cfg, runtime)
 
 
 def read_json(path: Path) -> dict:

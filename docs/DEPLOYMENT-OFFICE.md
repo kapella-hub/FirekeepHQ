@@ -87,8 +87,8 @@ deploy/firekeep-admin keys create --agent alice
 # -> POST /auth/keys with the full NON-admin scope set; prints alice's nxs_ key once
 ```
 Send the key out-of-band. The client kit's `firekeep-shim` injects `X-API-Key`
-+ `X-Agent-Id` on every request from the active `~/.firekeep/config` office
-profile; run `firekeep install` (office profile) + `firekeep doctor` on the teammate's
++ `X-Agent-Id` on every request from `[server]` and `[identity]` in
+`~/.firekeep/config`; run `firekeep install` + `firekeep doctor` on the teammate's
 machine to verify auth and CA trust.
 
 ## 2. CA export + trust installation (per teammate machine)
@@ -145,16 +145,15 @@ wiring required:
 - Mint yourself a key: `deploy/firekeep-admin keys create --agent <you>`.
 - On the agent's machine: unpack the `firekeep-client` tarball, run `./install`
   / `.\install.ps1` (or `firekeep install --runtime claude|codex|kiro|opencode|all`), then
-  edit `~/.firekeep/config` — set the office profile's `base_url` to
+  edit `~/.firekeep/config` — set `[server] base_url` to
   `https://<host>`, `api_key` to the minted `nxs_...` key, and `ca_path` to
   the exported root CA (section 2).
-- `firekeep profile use office` switches the active profile (effective on the
-  next agent start); `firekeep doctor` verifies connectivity, auth, and CA trust
-  end-to-end. Per-runtime pins: `firekeep profile pin kiro office` points kiro at
-  the office profile while other runtimes follow `[active]`.
+- `firekeep doctor` verifies connectivity, auth, and CA trust end-to-end. Every
+  installed runtime uses the same `[server]` connection; re-run `firekeep install`
+  after changing it to refresh any stale managed adapter entries.
 - `firekeep-shim` (the stdio↔Streamable-HTTP bridge every runtime's MCP config
   points at) injects `X-API-Key` + `X-Agent-Id` on every request from the
-  active profile — no per-tool header configuration needed.
+  configured server — no per-tool header configuration needed.
 - curl trust (for manual smoke checks): on Linux/macOS the OS trust install
   (section 2) covers curl. Git Bash on Windows ships its own CA bundle —
   either run against an SSH tunnel, or set

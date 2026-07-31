@@ -10,14 +10,13 @@ import pytest
 def client_env(tmp_path, monkeypatch):
     cfg = tmp_path / "config"
     cfg.write_text(textwrap.dedent("""\
-        [active]
-        profile = personal
-        [personal]
+        [identity]
+        agent_id = tester
+        [server]
         kind = ports
         scheme = http
         host = 127.0.0.1
         verify_tls = false
-        agent_id = tester
     """))
     cache = tmp_path / "cache"
     cache.mkdir()

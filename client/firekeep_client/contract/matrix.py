@@ -43,17 +43,6 @@ MATRIX: dict[str, dict[str, str]] = {
     "precompact": {"claude": "hook", "kiro": "none", "codex": "none", "opencode": "none"},
     "reconcile": {"claude": "hooks", "kiro": "kiro pre/post hooks", "codex": "self-reported",
                   "opencode": "plugin pre/post hooks"},
-    # Per-runtime profile pin (firekeep profile pin <runtime> <profile>): carrier per surface.
-    # kiro env-dict pass-through VALIDATED on kiro-cli 2.12.1 (2026-07-13 live spawn probe,
-    # docs/KIRO-VALIDATION.md row 6). The shim's --profile args carrier remains implemented
-    # as the fallback for future kiro versions. Codex's sidecar has no rendered entry:
-    # export FIREKEEP_PROFILE when launching firekeep-sidecar for a pinned codex.
-    "profile_pin": {
-        "claude": "MCP env + hook --profile",
-        "kiro": "MCP env + hook --profile",
-        "codex": "MCP env (sidecar: export FIREKEEP_PROFILE manually)",
-        "opencode": "MCP environment + plugin --profile",
-    },
     # Personal / bypass mode: the is_bypassed() gate (marker + FIREKEEP_BYPASS) works on
     # every runtime; only the /personal slash command is claude-specific. kiro/codex
     # toggle via the `firekeep personal` CLI (or `! firekeep personal`), or FIREKEEP_BYPASS at launch.
@@ -71,7 +60,6 @@ LABELS = {
     "pre_edit_block": "Guaranteed pre-edit blocking",
     "precompact": "PreCompact save",
     "reconcile": "Action reconcile (before/after)",
-    "profile_pin": "Per-runtime profile pin delivery",
     "bypass": "Personal / bypass mode",
 }
 

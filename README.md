@@ -119,7 +119,7 @@ firekeep install --runtime codex
 ```
 
 See **[docs/SETUP-CODEX.md](docs/SETUP-CODEX.md)** for the full Codex setup. As
-with every runtime, the profile needs an API key and a reachable host — see the
+with every runtime, `[server]` needs an API key and a reachable host — see the
 note under Connect Claude Code below.
 
 ### Connect Claude Code
@@ -143,13 +143,27 @@ The manual path, if you would rather do it yourself or have no ssh access:
 
 This installs the `firekeep-client` kit into `~/.firekeep/venv`, bootstraps `~/.firekeep/config`, and prepares every shipped adapter: Claude Code, Codex, Kiro, and OpenCode. Claude gets user-scoped `~/.claude.json` + `~/.claude/settings.json` (MCP servers via `firekeep-shim`, five hook cores); the other clients receive their native MCP and instruction files. Two stdio-local servers — code intelligence (`firekeep-symdex`) and the Decision Board (`firekeep-decision`) — are installed automatically, always-on, no flag needed. Use `firekeep install --runtime <name>` only for a targeted re-render or repair.
 
-The installer prompts for the connection **and an API key**. Mint one on the
+Every runtime reads the same connection; there is no client-specific profile:
+
+```ini
+[identity]
+agent_id = alice
+
+[server]
+kind = ports
+scheme = http
+host = 127.0.0.1
+verify_tls = false
+api_key = nxs_...
+```
+
+The installer prompts for the one `[server]` connection **and an API key**. Mint one on the
 server with `deploy/firekeep-admin keys create --agent <you>`; `firekeep-shim`
-then injects it on every request. A profile with no key against a keyed server
+then injects it on every request. A connection with no key against a keyed server
 fails every protected tool call. `firekeep doctor` catches this for both HTTP
-and HTTPS profiles: it asks the server
+and HTTPS connections: it asks the server
 whether it enforces auth rather than inferring from the scheme, because the
-standard personal-VPS shape is plain http to 127.0.0.1 over a tunnel against a
+standard self-hosted shape is plain http to 127.0.0.1 over a tunnel against a
 keyed server — which the old scheme-based check skipped silently.
 
 ### Verify

@@ -58,9 +58,9 @@ class TestTunnelDecision:
         monkeypatch.setattr(C, "_start_tunnel", lambda t: started.append(t))
         monkeypatch.setattr("firekeep_client.cli.run_doctor", lambda: [("x", "ok", "")])
 
-        assert C.connect("root@h", profile="personal", agent_id="alex") == 0
+        assert C.connect("root@h", agent_id="alex") == 0
         assert started == [], "started a second tunnel over a working one"
-        assert _read_cfg(home)["personal"]["host"] == "127.0.0.1"
+        assert _read_cfg(home)["server"]["host"] == "127.0.0.1"
 
     def test_loopback_server_starts_a_tunnel_when_none_is_running(self, home, monkeypatch):
         monkeypatch.setattr(C, "_ssh", _fake_ssh())
@@ -69,7 +69,7 @@ class TestTunnelDecision:
         monkeypatch.setattr(C, "_start_tunnel", lambda t: started.append(t))
         monkeypatch.setattr("firekeep_client.cli.run_doctor", lambda: [("x", "ok", "")])
 
-        C.connect("root@h", profile="personal", agent_id="alex")
+        C.connect("root@h", agent_id="alex")
         assert started == ["root@h"]
 
     def test_public_server_needs_no_tunnel_and_uses_the_real_host(self, home, monkeypatch):
@@ -80,9 +80,9 @@ class TestTunnelDecision:
         monkeypatch.setattr(C, "_start_tunnel", lambda t: started.append(t))
         monkeypatch.setattr("firekeep_client.cli.run_doctor", lambda: [("x", "ok", "")])
 
-        C.connect("root@203.0.113.9", profile="personal", agent_id="alex")
+        C.connect("root@203.0.113.9", agent_id="alex")
         assert started == []
-        assert _read_cfg(home)["personal"]["host"] == "203.0.113.9"
+        assert _read_cfg(home)["server"]["host"] == "203.0.113.9"
 
     def test_no_tunnel_against_a_loopback_server_fails_with_the_reason(self, home, monkeypatch):
         monkeypatch.setattr(C, "_ssh", _fake_ssh())
@@ -91,17 +91,19 @@ class TestTunnelDecision:
 
 
 class TestKeyProvisioning:
-    def test_the_minted_key_lands_in_the_profile(self, home, monkeypatch):
+    def test_the_minted_key_lands_in_server_and_identity(self, home, monkeypatch):
         """`install` used to finish 'successfully' with no api_key, so every call
         401'd. The whole point of connect is that this cannot happen."""
         monkeypatch.setattr(C, "_ssh", _fake_ssh(key="fk_theminted"))
         monkeypatch.setattr(C, "_tunnel_running", lambda: True)
         monkeypatch.setattr("firekeep_client.cli.run_doctor", lambda: [("x", "ok", "")])
 
-        C.connect("root@h", profile="personal", agent_id="alex")
-        cfg = _read_cfg(home)["personal"]
-        assert cfg["api_key"] == "fk_theminted"
-        assert cfg["agent_id"] == "alex"
+        C.connect("root@h", agent_id="alex")
+        cfg = _read_cfg(home)
+        assert cfg["server"]["api_key"] == "fk_theminted"
+        assert cfg["identity"]["agent_id"] == "alex"
+        assert not cfg.has_section("active")
+        assert not cfg.has_section("pins")
 
     def test_a_server_too_old_to_mint_says_so_and_says_how_to_fix_it(self, home, monkeypatch):
         """The failure that actually happened on the live server. An empty error

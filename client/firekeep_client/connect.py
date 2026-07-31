@@ -168,7 +168,7 @@ def _start_tunnel(target: str) -> None:
         f"bound to one of {', '.join(map(str, TUNNEL_PORTS))}, or the server is not serving them.")
 
 
-def _write_profile(profile: str, host: str, api_key: str, agent_id: str) -> Path:
+def _write_server(host: str, api_key: str, agent_id: str) -> Path:
     import configparser
     from firekeep_client.cli import _config_path
     path = _config_path()
@@ -176,13 +176,12 @@ def _write_profile(profile: str, host: str, api_key: str, agent_id: str) -> Path
     cp.optionxform = str
     if path.exists():
         cp.read(path, encoding="utf-8")
-    if profile not in cp:
-        cp[profile] = {}
-    cp[profile].update({"kind": "ports", "scheme": "http", "host": host,
-                        "verify_tls": "false", "agent_id": agent_id, "api_key": api_key})
-    if "active" not in cp:
-        cp["active"] = {}
-    cp["active"]["profile"] = profile
+    for section in list(cp.sections()):
+        if section != "dist":
+            cp.remove_section(section)
+    cp["identity"] = {"agent_id": agent_id}
+    cp["server"] = {"kind": "ports", "scheme": "http", "host": host,
+                    "verify_tls": "false", "api_key": api_key}
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as fh:
         cp.write(fh)
@@ -193,9 +192,22 @@ def _write_profile(profile: str, host: str, api_key: str, agent_id: str) -> Path
     return path
 
 
-def connect(target: str, *, profile: str = "personal", agent_id: str | None = None,
+def connect(target: str, *, agent_id: str | None = None,
             remote_dir: str | None = None, use_tunnel: bool = True) -> int:
-    """Probe the server, mint a key, set up access, write the profile, verify."""
+    """Probe the server, mint a key, set up access, write [server], verify."""
+    existing_agent = ""
+    try:
+        cfg = resolver.load_config()
+        existing_agent = resolver.agent_id(cfg)
+    except resolver.ConfigMigrationConflict:
+        # Connecting is a destructive repoint of the one config. Never let it
+        # silently choose over an ambiguous legacy migration.
+        raise
+    except resolver.ConfigError as exc:
+        if resolver._config_path().exists():
+            raise ConnectError(f"cannot read existing Firekeep config: {exc}") from exc
+        # First install: connect will create the config below.
+
     info = _probe_server(target, remote_dir)
 
     host_only = target.split("@", 1)[-1]
@@ -214,22 +226,18 @@ def connect(target: str, *, profile: str = "personal", agent_id: str | None = No
         raise ConnectError(
             "the server binds to loopback, so a remote client cannot reach it without a "
             "tunnel, and --no-tunnel was given. Either drop --no-tunnel, or put a TLS "
-            "reverse proxy in front of the stack and use a `paths` profile.")
+            "reverse proxy in front of the stack and use a paths-style [server] connection.")
     else:
         client_host = host_only
 
     if not agent_id:
-        try:
-            cfg = resolver.load_config()
-            agent_id = resolver.agent_id(cfg, resolver.active_profile(cfg))
-        except Exception:                      # noqa: BLE001 — first run, no config yet
-            agent_id = ""
+        agent_id = existing_agent
     if not agent_id or agent_id == "CHANGEME":
         agent_id = f"agent-{socket.gethostname().lower()}"
 
     api_key = _mint_key(target, info["dir"], agent_id)
-    path = _write_profile(profile, client_host, api_key, agent_id)
-    _say("config", f"{path} [{profile}]")
+    path = _write_server(client_host, api_key, agent_id)
+    _say("config", f"{path} [server]")
 
     from firekeep_client.cli import run_doctor
     print()

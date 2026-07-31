@@ -7,26 +7,24 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from firekeep_client import cli, resolver, transport, __version__
 
-PERSONAL = textwrap.dedent("""\
-    [active]
-    profile = personal
-    [personal]
+SERVER = textwrap.dedent("""\
+    [identity]
+    agent_id = tester
+    [server]
     kind = ports
     scheme = http
     host = 10.0.0.5
     verify_tls = false
-    agent_id = tester
 """)
 
-PERSONAL_CHANGEME = textwrap.dedent("""\
-    [active]
-    profile = personal
-    [personal]
+SERVER_CHANGEME = textwrap.dedent("""\
+    [identity]
+    agent_id = CHANGEME
+    [server]
     kind = ports
     scheme = http
     host = 10.0.0.5
     verify_tls = false
-    agent_id = CHANGEME
 """)
 
 
@@ -35,7 +33,7 @@ def _cfg(tmp_path, monkeypatch, text):
     cfg.parent.mkdir(parents=True, exist_ok=True)
     cfg.write_text(text, encoding="utf-8")
     monkeypatch.setenv("FIREKEEP_CONFIG", str(cfg))
-    # Profile agent_id is authoritative unless a test opts into the env
+    # Config agent_id is authoritative unless a test opts into the env
     # override (matches the convention in tests/conftest.py::firekeep_env) --
     # otherwise a real FIREKEEP_AGENT_ID in the ambient shell leaks in here.
     monkeypatch.delenv("FIREKEEP_AGENT_ID", raising=False)
@@ -43,7 +41,7 @@ def _cfg(tmp_path, monkeypatch, text):
 
 
 def test_check_health_all_ok(tmp_path, monkeypatch):
-    cfg = _cfg(tmp_path, monkeypatch, PERSONAL)
+    cfg = _cfg(tmp_path, monkeypatch, SERVER)
     monkeypatch.setattr(cli, "get_json", lambda url, **kw: {"status": "ok"})
     results = cli._check_health(cfg)
     assert {svc for svc, _, _ in results} == set(resolver.SERVICES)
@@ -51,7 +49,7 @@ def test_check_health_all_ok(tmp_path, monkeypatch):
 
 
 def test_check_health_reports_fail_on_transport_error(tmp_path, monkeypatch):
-    cfg = _cfg(tmp_path, monkeypatch, PERSONAL)
+    cfg = _cfg(tmp_path, monkeypatch, SERVER)
 
     def boom(url, **kw):
         raise transport.TransportError("refused", status=None)
@@ -72,7 +70,7 @@ def test_versions_row_is_ok_for_a_REALISTIC_server_version(tmp_path, monkeypatch
 
     So this stubs a REAL server version and requires ok.
     """
-    cfg = _cfg(tmp_path, monkeypatch, PERSONAL)
+    cfg = _cfg(tmp_path, monkeypatch, SERVER)
     monkeypatch.setattr(cli, "get_json", lambda url, **kw: {"version": "0.6.0"})
     name, status, detail = cli._check_versions(cfg)
     assert name == "versions"
@@ -83,7 +81,7 @@ def test_versions_row_is_ok_for_a_REALISTIC_server_version(tmp_path, monkeypatch
 def test_versions_row_never_warns_merely_because_they_differ(tmp_path, monkeypatch):
     """Differing versions are the NORMAL state, not a finding. Any version the
     server reports must produce ok — the row has no verdict to render."""
-    cfg = _cfg(tmp_path, monkeypatch, PERSONAL)
+    cfg = _cfg(tmp_path, monkeypatch, SERVER)
     for server_version in ("0.6.0", "9.9.9", "1.0.0-rc1", __version__):
         monkeypatch.setattr(cli, "get_json", lambda url, _v=server_version, **kw: {"version": _v})
         _, status, _ = cli._check_versions(cfg)
@@ -93,14 +91,14 @@ def test_versions_row_never_warns_merely_because_they_differ(tmp_path, monkeypat
 def test_versions_row_warns_when_server_reports_no_version(tmp_path, monkeypatch):
     """A reachable /version that yields nothing IS a real, checkable defect —
     unlike skew, which is not."""
-    cfg = _cfg(tmp_path, monkeypatch, PERSONAL)
+    cfg = _cfg(tmp_path, monkeypatch, SERVER)
     monkeypatch.setattr(cli, "get_json", lambda url, **kw: {})
     _, status, _ = cli._check_versions(cfg)
     assert status == "warn"
 
 
 def test_versions_row_warns_when_unreachable(tmp_path, monkeypatch):
-    cfg = _cfg(tmp_path, monkeypatch, PERSONAL)
+    cfg = _cfg(tmp_path, monkeypatch, SERVER)
 
     def boom(url, **kw):
         raise transport.TransportError("down")
@@ -117,7 +115,7 @@ def test_check_health_survives_ssl_errors_not_wrapped_by_transport(tmp_path, mon
     # must fail loud on ITS OWN row, never crash the whole preflight before
     # later checks (skew, agent-id, venv, perms, ca-expiry) get to run.
     import ssl as _ssl
-    cfg = _cfg(tmp_path, monkeypatch, PERSONAL)
+    cfg = _cfg(tmp_path, monkeypatch, SERVER)
 
     def boom(url, **kw):
         raise _ssl.SSLError("no certificate or crl found")
@@ -130,7 +128,7 @@ def test_check_health_survives_ssl_errors_not_wrapped_by_transport(tmp_path, mon
 
 def test_check_versions_survives_ssl_errors_not_wrapped_by_transport(tmp_path, monkeypatch):
     import ssl as _ssl
-    cfg = _cfg(tmp_path, monkeypatch, PERSONAL)
+    cfg = _cfg(tmp_path, monkeypatch, SERVER)
 
     def boom(url, **kw):
         raise _ssl.SSLError("no certificate or crl found")
@@ -181,18 +179,17 @@ def test_check_config_perms_windows(tmp_path, monkeypatch):
     assert cli._check_config_perms(cfg, is_windows=True)[1] == "ok"
 
 
-def _office(tmp_path, monkeypatch, ca_path):
+def _tls_server(tmp_path, monkeypatch, ca_path):
     text = textwrap.dedent(f"""\
-        [active]
-        profile = office
-        [office]
+        [identity]
+        agent_id = tester
+        [server]
         kind = paths
         scheme = https
-        base_url = https://firekeep.office.example
+        base_url = https://firekeep.example
         verify_tls = true
         ca_path = {ca_path.as_posix()}
         api_key = nxs_k
-        agent_id = tester
     """)
     return _cfg(tmp_path, monkeypatch, text)
 
@@ -200,7 +197,7 @@ def _office(tmp_path, monkeypatch, ca_path):
 def test_check_ca_expiry_ok_warn_fail(tmp_path, monkeypatch):
     ca = tmp_path / "ca.crt"
     ca.write_text("dummy", encoding="utf-8")
-    cfg = _office(tmp_path, monkeypatch, ca)
+    cfg = _tls_server(tmp_path, monkeypatch, ca)
     now = datetime.now(timezone.utc)
     monkeypatch.setattr(cli, "_cert_not_after", lambda p: now + timedelta(days=400))
     assert cli._check_ca_expiry(cfg)[1] == "ok"
@@ -210,13 +207,13 @@ def test_check_ca_expiry_ok_warn_fail(tmp_path, monkeypatch):
     assert cli._check_ca_expiry(cfg)[1] == "fail"
 
 
-def test_check_ca_expiry_skipped_on_personal(tmp_path, monkeypatch):
-    cfg = _cfg(tmp_path, monkeypatch, PERSONAL)
+def test_check_ca_expiry_skipped_on_plain_http(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path, monkeypatch, SERVER)
     assert cli._check_ca_expiry(cfg) is None
 
 
 def test_cmd_doctor_exit_code(tmp_path, monkeypatch, capsys):
-    _cfg(tmp_path, monkeypatch, PERSONAL)
+    _cfg(tmp_path, monkeypatch, SERVER)
     monkeypatch.setattr(cli, "run_doctor", lambda cfg=None: [("x", "fail", "boom")])
     assert cli.cmd_doctor(types.SimpleNamespace()) == 1
     monkeypatch.setattr(cli, "run_doctor", lambda cfg=None: [("x", "ok", "fine")])
@@ -235,13 +232,13 @@ def test_cmd_doctor_exit_code(tmp_path, monkeypatch, capsys):
 #    dir and reinstall rather than just re-running install.
 
 def test_check_agent_id_ok_when_set(tmp_path, monkeypatch):
-    cfg = _cfg(tmp_path, monkeypatch, PERSONAL)
+    cfg = _cfg(tmp_path, monkeypatch, SERVER)
     name, status, detail = cli._check_agent_id(cfg)
     assert name == "agent-id" and status == "ok" and "tester" in detail
 
 
 def test_check_agent_id_warns_on_changeme(tmp_path, monkeypatch):
-    cfg = _cfg(tmp_path, monkeypatch, PERSONAL_CHANGEME)
+    cfg = _cfg(tmp_path, monkeypatch, SERVER_CHANGEME)
     name, status, detail = cli._check_agent_id(cfg)
     assert name == "agent-id" and status == "warn" and "CHANGEME" in detail
 
@@ -249,7 +246,7 @@ def test_check_agent_id_warns_on_changeme(tmp_path, monkeypatch):
 def test_check_agent_id_env_override_beats_changeme(tmp_path, monkeypatch):
     # resolver.agent_id() lets FIREKEEP_AGENT_ID override the config value —
     # doctor must report the EFFECTIVE identity, not the stale config text.
-    cfg = _cfg(tmp_path, monkeypatch, PERSONAL_CHANGEME)
+    cfg = _cfg(tmp_path, monkeypatch, SERVER_CHANGEME)
     monkeypatch.setenv("FIREKEEP_AGENT_ID", "real-agent")
     name, status, detail = cli._check_agent_id(cfg)
     assert status == "ok" and "real-agent" in detail
@@ -281,7 +278,7 @@ def test_check_venv_scripts_missing_entirely_is_not_labeled_partial(tmp_path):
 
 
 def test_run_doctor_includes_agent_id_check(tmp_path, monkeypatch):
-    cfg = _cfg(tmp_path, monkeypatch, PERSONAL_CHANGEME)
+    cfg = _cfg(tmp_path, monkeypatch, SERVER_CHANGEME)
     monkeypatch.setattr(cli, "_check_health", lambda cfg: [])
     monkeypatch.setattr(cli, "_check_versions", lambda cfg: ("versions", "ok", ""))
     monkeypatch.setattr(cli, "_check_venv_scripts", lambda venv, is_windows=None: ("venv-scripts", "ok", ""))
@@ -296,47 +293,46 @@ def test_run_doctor_includes_agent_id_check(tmp_path, monkeypatch):
 
 # --- api-key false-green trap (T27 review Critical) --------------------------
 
-OFFICE_NO_KEY = textwrap.dedent("""\
-    [active]
-    profile = office
+HTTPS_NO_KEY = textwrap.dedent("""\
+    [identity]
+    agent_id = mogan
 
-    [office]
+    [server]
     kind = paths
     scheme = https
-    base_url = https://firekeep.office.example
+    base_url = https://firekeep.example
     verify_tls = true
     ca_path = ~/.firekeep/firekeep-root-ca.crt
     api_key =
-    agent_id = mogan
 """)
 
-OFFICE_WITH_KEY = OFFICE_NO_KEY.replace("api_key =", "api_key = nxs_doctorsecret")
+HTTPS_WITH_KEY = HTTPS_NO_KEY.replace("api_key =", "api_key = nxs_doctorsecret")
 
 
 def test_check_api_key_warns_on_empty_key_https(tmp_path, monkeypatch):
-    """/health + /version are auth-exempt: a keyless office profile must not
+    """/health + /version are auth-exempt: a keyless https server must not
     false-green the preflight."""
-    cfg = _cfg(tmp_path, monkeypatch, OFFICE_NO_KEY)
+    cfg = _cfg(tmp_path, monkeypatch, HTTPS_NO_KEY)
     name, status, detail = cli._check_api_key(cfg)
     assert (name, status) == ("api-key", "warn")
     assert "401" in detail
 
 
 def test_check_api_key_ok_when_key_set_and_never_printed(tmp_path, monkeypatch):
-    cfg = _cfg(tmp_path, monkeypatch, OFFICE_WITH_KEY)
+    cfg = _cfg(tmp_path, monkeypatch, HTTPS_WITH_KEY)
     name, status, detail = cli._check_api_key(cfg)
     assert (name, status) == ("api-key", "ok")
     assert "nxs_doctorsecret" not in detail  # redacted
 
 
 def test_check_api_key_skipped_for_plain_http(tmp_path, monkeypatch):
-    cfg = _cfg(tmp_path, monkeypatch, PERSONAL)
+    cfg = _cfg(tmp_path, monkeypatch, SERVER)
     assert cli._check_api_key(cfg) is None
 
 
 def test_doctor_output_never_contains_api_key(tmp_path, monkeypatch, capsys):
     """Regression pin: the configured key appears NOWHERE in doctor output."""
-    cfg = _cfg(tmp_path, monkeypatch, OFFICE_WITH_KEY)
+    cfg = _cfg(tmp_path, monkeypatch, HTTPS_WITH_KEY)
     monkeypatch.setattr(cli, "get_json", lambda url, **kw: {"status": "ok",
                                                             "version": cli.__version__})
     results = cli.run_doctor(cfg)
@@ -373,7 +369,7 @@ def test_check_client_version_is_absent_without_dist_base(monkeypatch):
     from firekeep_client import cli
 
     cfg = configparser.ConfigParser(interpolation=None)
-    cfg.read_string("[active]\nprofile = personal\n")
+    cfg.read_string("[identity]\nagent_id = tester\n")
     assert cli._check_client_version(cfg) is None
 
 
@@ -413,71 +409,25 @@ def test_doctor_survives_a_malformed_manifest_version(monkeypatch, capsys):
     assert "unparseable version" in detail
 
 
-# --- pin hygiene + per-pinned-profile checks (Task 8) ------------------------
-
-
-def _doctor_cfg(extra=""):
-    cfg = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=(";", "#"))
-    cfg.read_string("""
-[active]
-profile = personal
-[personal]
-agent_id = tester
-scheme = http
-[office]
-agent_id = tester
-scheme = https
-""" + extra)
-    return cfg
-
-
-def test_check_pins_ok_and_warnings():
-    from firekeep_client import cli
-    rows = cli._check_pins(_doctor_cfg("[pins]\nkiro = office\n"))
-    assert ("pins", "ok", "kiro -> office") in rows
-    rows = cli._check_pins(_doctor_cfg("[pins]\nkiro = ghost\n"))
-    assert any(s == "warn" and "ghost" in d for _, s, d in rows)
-    rows = cli._check_pins(_doctor_cfg("[pins]\nvscode = office\n"))
-    assert any(s == "warn" and "vscode" in d for _, s, d in rows)
-    assert cli._check_pins(_doctor_cfg()) == []
-
-
-def test_check_pins_warns_on_reserved_section_pin():
-    """A hand-edited `kiro = active` pin passes the charset check AND has_section (the
-    [active] section EXISTS — as does [pins] itself for a `kiro = pins` pin), so without
-    a reserved-name branch _check_pins reports it ok. It must warn instead, for all
-    three reserved sections."""
-    from firekeep_client import cli
-    for name in ("active", "pins", "dist"):
-        rows = cli._check_pins(_doctor_cfg(f"[pins]\nkiro = {name}\n"))
-        assert any(s == "warn" and "reserved" in d for _, s, d in rows), rows
-        assert not any(s == "ok" for _, s, _ in rows), rows
-
-
-def test_doctor_checks_pinned_profile_api_key():
-    """kiro pinned to an https office profile with an empty api_key must WARN even while
-    active=personal is all-ok — the false-green trap, per-pin edition."""
-    from firekeep_client import cli
-    cfg = _doctor_cfg("[pins]\nkiro = office\n")
-    row = cli._check_api_key(cfg, profile="office", label="api-key[pin:kiro->office]")
-    assert row is not None
-    name, status, detail = row
-    assert name == "api-key[pin:kiro->office]" and status == "warn"
+def test_retired_profile_env_is_reported(monkeypatch):
+    monkeypatch.setenv("FIREKEEP_PROFILE", "office")
+    name, status, detail = cli._check_retired_profile_env()
+    assert (name, status) == ("retired-profile-env", "warn")
+    assert "ignored" in detail
 
 
 def test_check_ca_expiry_os_trust_reports_ok(tmp_path, monkeypatch):
     """ca_path = os: the OS owns rotation — no file to stat, parse, or expire."""
     text = textwrap.dedent("""\
-        [active]
-        profile = office
-        [office]
+        [identity]
+        agent_id = tester
+        [server]
         kind = paths
         scheme = https
-        base_url = https://firekeep.office.example
+        base_url = https://firekeep.example
         verify_tls = true
         ca_path = os
         api_key = nxs_k
-        agent_id = tester
     """)
     cfg = _cfg(tmp_path, monkeypatch, text)
     label, status, detail = cli._check_ca_expiry(cfg)

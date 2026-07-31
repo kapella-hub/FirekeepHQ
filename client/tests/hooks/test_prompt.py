@@ -144,7 +144,7 @@ class TestPrompt:
     def test_snapshot_on_fifth_prompt(self, client_env, monkeypatch):
         from firekeep_client import state
         from firekeep_client.hooks import prompt
-        state.write_scratch("poll_count_tester@personal", "4")  # this call -> 5
+        state.write_scratch("poll_count_tester", "4")  # this call -> 5
         _patch_transport(monkeypatch, sessions=[{"session_id": "s1", "goal": "g"}])
         calls = _record_mcp(monkeypatch)
         prompt.run({})
@@ -153,7 +153,7 @@ class TestPrompt:
     def test_no_snapshot_off_cycle(self, client_env, monkeypatch):
         from firekeep_client import state
         from firekeep_client.hooks import prompt
-        state.write_scratch("poll_count_tester@personal", "1")  # this call -> 2
+        state.write_scratch("poll_count_tester", "1")  # this call -> 2
         _patch_transport(monkeypatch, sessions=[{"session_id": "s1", "goal": "g"}])
         calls = _record_mcp(monkeypatch)
         prompt.run({})

@@ -101,15 +101,15 @@ def _write_cfg(tmp_path, monkeypatch, text):
     return cfg
 
 
-def test_pinned_opencode_renders_environment_and_profile(tmp_path, monkeypatch, fake_home):
+def test_legacy_pinned_opencode_renders_no_profile_artifacts(tmp_path, monkeypatch, fake_home):
     _write_cfg(tmp_path, monkeypatch, _PINNED_CFG)
     get_adapter("opencode").render(venv_bin=tmp_path / "vbin")
 
     data = _read(_config(fake_home))
     for name in ("firekeep-cortex", "firekeep-symdex", "firekeep-decision"):
-        assert data["mcp"][name]["environment"] == {"FIREKEEP_PROFILE": "office"}
+        assert "environment" not in data["mcp"][name]
     text = _plugin(fake_home).read_text(encoding="utf-8")
-    assert "--profile" in text and '"office"' in text
+    assert "--profile" not in text
 
 
 def test_unpinned_opencode_render_has_no_environment_or_profile(tmp_path, monkeypatch, fake_home):

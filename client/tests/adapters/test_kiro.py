@@ -72,17 +72,17 @@ def _write_cfg(tmp_path, monkeypatch, text):
     return cfg
 
 
-def test_pinned_kiro_renders_env_and_hook_profile(tmp_path, monkeypatch, fake_home):
+def test_legacy_pinned_kiro_renders_no_profile_artifacts(tmp_path, monkeypatch, fake_home):
     _write_cfg(tmp_path, monkeypatch, _PINNED_CFG)
     get_adapter("kiro").render(venv_bin=tmp_path / "vbin")
 
     data = _read(fake_home / ".kiro" / "agents" / "firekeep.json")
     for name in ("firekeep-cortex", "firekeep-symdex", "firekeep-decision"):
-        assert data["mcpServers"][name]["env"] == {"FIREKEEP_PROFILE": "office"}
+        assert "env" not in data["mcpServers"][name]
     for hooks in data["hooks"].values():
         for h in hooks:
             if "firekeep_client.hooks" in h["command"]:
-                assert "--profile office" in h["command"]
+                assert "--profile" not in h["command"]
 
 
 def test_unpinned_kiro_render_has_no_env_or_profile(tmp_path, monkeypatch, fake_home):

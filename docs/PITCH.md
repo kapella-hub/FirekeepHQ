@@ -234,7 +234,7 @@ release tag has been cut, so nothing is published for `--pull` to fetch yet.
 | **Containers** | 13 (Cortex API/MCP/worker/beat, Bridge, Sentinel, Relay, dashboard, four data stores, + one init) |
 | **Deployment** | Single VPS, `docker compose up -d`; helper scripts for VPS provisioning and updates |
 | **Data stores** | Neo4j (graph), Qdrant (vectors), Redis (cache / streams / queues), Ollama (LLM inference) — all self-hosted |
-| **Local dev story** | `./install` / `firekeep install` installs the portable `firekeep-client` kit (`~/.firekeep/config` profiles, `firekeep-shim` transport, hook cores, sidecar); agents connect to the VPS/office over HTTP(S) with keyed, attributed identity |
+| **Local dev story** | `./install` / `firekeep install` installs the portable `firekeep-client` kit (one `[identity]` + `[server]` connection in `~/.firekeep/config`, `firekeep-shim` transport, hook cores, sidecar); agents connect to the Firekeep server over HTTP(S) with keyed, attributed identity |
 | **Security posture** | Closed by default: app ports bind to localhost (`BIND_ADDR`, opt-in to widen); the datastores are loopback-only unconditionally and no setting exposes them; per-key scoped API auth is **on** (`AUTH_ENABLED=true`) with keys minted by the installer. Plus: Fernet-encrypted vault, pre-edit policy engine, deny-list for sensitive paths (`.env`, `*.key`, `*.pem`) |
 | **Symdex languages** | Python, JavaScript, TypeScript, Go, Rust, Java, PHP, C, C#, Ruby, Kotlin, Swift |
 | **Delivery** | Four service images published to a private registry on a `vX.Y.Z` tag; `install.sh --pull` needs no source access. Developers build from a checkout with the same compose file |

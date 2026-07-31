@@ -2,7 +2,7 @@
 
 This is the ONLY module in firekeep_client permitted to import `mcp` and `httpx`.
 The runtime spawns one `firekeep-shim --service <svc>` process per HTTP MCP server.
-At spawn it resolves the ACTIVE profile, terminates internal-CA TLS itself, and
+At spawn it resolves the configured server, terminates internal-CA TLS itself, and
 injects X-API-Key / X-Agent-Id on every request. Fail-loud on every error path;
 NEVER logs the api_key.
 """
@@ -24,9 +24,9 @@ from mcp.server.stdio import stdio_server
 from .resolver import (
     CONFIG_PATH,
     ConfigError,
+    ConfigMigrationConflict,
     Endpoint,
     SERVICES,
-    active_profile,
     is_bypassed,
     load_config,
     resolve,
@@ -62,8 +62,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--profile",
         default=None,
-        help="resolve against this profile instead of [active] "
-             "(adapters render this for pinned runtimes)",
+        help=argparse.SUPPRESS,
     )
     return parser.parse_args(argv)
 
@@ -81,14 +80,13 @@ class _StashSessionAuth(httpx.Auth):
     proxied call.
     """
 
-    def __init__(self, agent: str, profile: str) -> None:
+    def __init__(self, agent: str) -> None:
         self._agent = agent
-        self._profile = profile
 
     def auth_flow(self, request):
         try:
             if not is_bypassed():
-                stash = state.read_session_stash(self._agent, self._profile)
+                stash = state.read_session_stash(self._agent)
                 sid = (stash or {}).get("session_id")
                 if sid:
                     request.headers["X-Session-Id"] = sid
@@ -97,9 +95,7 @@ class _StashSessionAuth(httpx.Auth):
         yield request
 
 
-def build_client(
-    endpoint: Endpoint, *, agent: str | None = None, profile: str | None = None
-) -> httpx.AsyncClient:
+def build_client(endpoint: Endpoint, *, agent: str | None = None) -> httpx.AsyncClient:
     """httpx client with resolver-supplied auth headers + CA/verify policy.
 
     endpoint.verify is False (personal http) or a ca_path string (office https).
@@ -122,9 +118,9 @@ def build_client(
     else:
         verify = endpoint.verify
     # Per-request X-Session-Id injection only when the caller identity is known
-    # (agent + resolved profile). Static X-Agent-Id/X-API-Key stay as header
+    # (resolved agent). Static X-Agent-Id/X-API-Key stay as header
     # defaults; the session id is dynamic (set post-spawn) so it rides httpx.Auth.
-    auth = _StashSessionAuth(agent, profile) if (agent and profile) else None
+    auth = _StashSessionAuth(agent) if agent else None
     return httpx.AsyncClient(
         headers=endpoint.headers,
         verify=verify,
@@ -186,9 +182,8 @@ class _BridgeSessionTap:
     _CAPTURE_TOOLS = frozenset({"ctx_start_session", "ctx_resume_session"})
     _END_TOOLS = frozenset({"ctx_complete_session", "ctx_abandon_session"})
 
-    def __init__(self, agent: str, profile: str) -> None:
+    def __init__(self, agent: str) -> None:
         self._agent = agent
-        self._profile = profile
         self._pending: dict = {}
 
     def on_request(self, item):
@@ -210,7 +205,7 @@ class _BridgeSessionTap:
             if name in self._INJECT_TOOLS:
                 args = params.get("arguments")
                 if isinstance(args, dict) and not args.get("briefing_id"):
-                    stash = state.read_session_stash(self._agent, self._profile) or {}
+                    stash = state.read_session_stash(self._agent) or {}
                     bid = stash.get("briefing_id")
                     if bid:
                         args["briefing_id"] = bid
@@ -228,11 +223,11 @@ class _BridgeSessionTap:
                 return item
             name = self._pending.pop(rid)
             if name in self._END_TOOLS:
-                state.clear_session_stash(self._agent, self._profile)
+                state.clear_session_stash(self._agent)
                 return item
             sid = _extract_session_id(getattr(root, "result", None))
             if sid:
-                state.write_session_stash(self._agent, self._profile, session_id=sid)
+                state.write_session_stash(self._agent, session_id=sid)
         except Exception:
             pass
         return item
@@ -352,25 +347,25 @@ async def _bridge(stdio_read, stdio_write, http_read, http_write,
 
 
 async def serve(service, endpoint, http_client=None, stdio_streams=None,
-                *, agent=None, profile=None) -> None:
+                *, agent=None) -> None:
     """Open the stdio server and the Streamable-HTTP client, then pump between them.
 
     Transport errors (connection refused / 401 / TLS) surface out of the
     `streamable_http_client` context manager as an ExceptionGroup at __aexit__;
     they propagate to the caller (run()), which classifies and exits non-zero.
 
-    agent/profile (when given) wire per-request X-Session-Id injection via
+    agent (when given) wires per-request X-Session-Id injection via
     build_client's httpx.Auth.
     """
     client = (http_client if http_client is not None
-              else build_client(endpoint, agent=agent, profile=profile))
+              else build_client(endpoint, agent=agent))
     owns_client = http_client is None
     # Bridge-only frame tap: inject briefing_id into ctx_start_session and
     # capture the returned session_id into the stash (the source of the
     # X-Session-Id header for every other shim). Other services get no tap.
     req_transform = resp_transform = None
-    if service == "bridge" and agent and profile:
-        tap = _BridgeSessionTap(agent, profile)
+    if service == "bridge" and agent:
+        tap = _BridgeSessionTap(agent)
         req_transform, resp_transform = tap.on_request, tap.on_response
     try:
         async with _open_stdio(stdio_streams) as (stdio_read, stdio_write):
@@ -402,7 +397,7 @@ def _iter_causes(exc):
             stack.append(cur.__context__)
 
 
-def _classify(exc, *, service: str, url: str, profile: str) -> str:
+def _classify(exc, *, service: str, url: str) -> str:
     """Map a transport failure to a named fail-loud message (spec §5.2). Never includes the key."""
     causes = list(_iter_causes(exc))
 
@@ -413,46 +408,42 @@ def _classify(exc, *, service: str, url: str, profile: str) -> str:
             and c.response.status_code == 401
         ):
             return (
-                f"{PROG}: 401 from {service} at {url} (profile {profile}) — "
-                f"check [{profile}] api_key"
+                f"{PROG}: 401 from {service} at {url} — "
+                f"check [server] api_key in {_config_location()}"
             )
 
     for c in causes:
         if isinstance(c, ssl.SSLError):  # TLS must be checked before generic ConnectError
             return (
-                f"{PROG}: TLS verify failed for {url} (profile {profile}) — "
+                f"{PROG}: TLS verify failed for {url} — "
                 f"is ca_path installed/current?"
             )
 
     for c in causes:
         if isinstance(c, (httpx.ConnectError, httpx.ConnectTimeout, ConnectionError)):
             return (
-                f"{PROG}: {service} unreachable at {url} (profile {profile}) — "
+                f"{PROG}: {service} unreachable at {url} — "
                 f"is the server up / VPN connected?"
             )
 
     # Unknown transport error: name the type only — never str(exc) (may carry request/headers).
     return (
-        f"{PROG}: {service} bridge failed via {url} (profile {profile}): "
+        f"{PROG}: {service} bridge failed via {url}: "
         f"{type(exc).__name__}"
     )
 
 
-def resolve_active(service: str, override: str | None = None) -> tuple[Endpoint, str]:
-    """Resolve `service` against the ACTIVE profile (or the explicit pin override).
-    Raises ConfigError on bad config."""
-    cfg = load_config()
-    profile = active_profile(cfg, override)
-    endpoint = resolve(service, cfg=cfg, profile=profile)
-    return endpoint, profile
+def resolve_connection(service: str) -> Endpoint:
+    """Resolve ``service`` against the one configured server."""
+    return resolve(service, cfg=load_config())
 
 
 def run(service: str, *, profile: str | None = None, http_client=None, stdio_streams=None) -> int:
-    """Validate service, resolve the active (or pinned) profile, then run the bridge.
+    """Validate service, resolve the configured server, then run the bridge.
 
-    Returns a process exit code. `profile` overrides [active]/FIREKEEP_PROFILE for this
-    call (pinned runtimes). `http_client` / `stdio_streams` are injection seams for
-    tests (Tasks 10-11); production passes neither.
+    ``profile`` is a two-release compatibility stub and is intentionally ignored.
+    ``http_client`` / ``stdio_streams`` are injection seams for tests; production
+    passes neither.
     """
     if service == "symdex":
         _stderr(
@@ -475,11 +466,14 @@ def run(service: str, *, profile: str | None = None, http_client=None, stdio_str
         return _serve_inert(service)
 
     try:
-        endpoint, profile = resolve_active(service, profile)
+        endpoint = resolve_connection(service)
+    except ConfigMigrationConflict as exc:
+        _stderr(f"{PROG}: config migration blocked — {exc}")
+        return 3
     except ConfigError as exc:
         _stderr(
             f"{PROG}: config error for '{service}' — {exc}. "
-            f"Check {_config_location()} for an [active] profile and its section."
+            f"Check {_config_location()} for [identity] and [server]."
         )
         return 1
 
@@ -489,7 +483,7 @@ def run(service: str, *, profile: str | None = None, http_client=None, stdio_str
     agent: str | None = None
     try:
         from .resolver import agent_id, load_config
-        agent = agent_id(load_config(), profile)
+        agent = agent_id(load_config())
     except Exception:  # noqa: BLE001
         agent = None
 
@@ -497,11 +491,11 @@ def run(service: str, *, profile: str | None = None, http_client=None, stdio_str
         import functools
         anyio.run(functools.partial(
             serve, service, endpoint, http_client, stdio_streams,
-            agent=agent, profile=profile,
+            agent=agent,
         ))
         return 0
     except Exception as exc:  # noqa: BLE001 - top-level fail-loud
-        _stderr(_classify(exc, service=service, url=endpoint.mcp_url, profile=profile))
+        _stderr(_classify(exc, service=service, url=endpoint.mcp_url))
         return 1
 
 

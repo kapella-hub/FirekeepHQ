@@ -28,7 +28,7 @@ Unpack the `firekeep-client` tarball and run the installer, targeting the Codex 
 firekeep install --runtime codex
 ```
 
-This creates `~/.firekeep/venv`, bootstraps `~/.firekeep/config`, and renders `.codex/config.toml` with the Firekeep MCP servers as stdio commands through `firekeep-shim` (the stdio↔Streamable-HTTP bridge that injects TLS + auth headers from the active `~/.firekeep/config` profile). Stdio-local code intelligence (`firekeep-symdex`) is installed automatically — always-on, no flag needed.
+This creates `~/.firekeep/venv`, bootstraps `~/.firekeep/config`, and renders `.codex/config.toml` with the Firekeep MCP servers as stdio commands through `firekeep-shim` (the stdio↔Streamable-HTTP bridge that injects TLS + auth headers from `[server]` and `[identity]`). Stdio-local code intelligence (`firekeep-symdex`) is installed automatically — always-on, no flag needed.
 
 If you prefer to configure it manually (or want to see what the installer renders), the entries look like:
 
@@ -133,9 +133,9 @@ Presence/heartbeat/snapshot/exit lifecycle is *intended* to be owned by the `fir
 
 ### Codex cannot see the servers
 
-- Run `firekeep doctor` — it verifies the rendered `firekeep-shim` paths exist, checks connectivity and auth for the active profile, reports client and cortex versions, and flags a lingering `CHANGEME` agent_id
+- Run `firekeep doctor` — it verifies the rendered `firekeep-shim` paths exist, checks connectivity and auth for `[server]`, reports client and cortex versions, and flags a lingering `CHANGEME` agent_id
 - Run `codex mcp list` and confirm the entries exist
-- Check that the host in `~/.firekeep/config`'s active profile is reachable from your machine
+- Check that the `host` or `base_url` in `~/.firekeep/config` `[server]` is reachable from your machine
 - Verify `docker compose ps` on the VPS shows services healthy
 - Confirm ports `8050`, `8060`, `8070`, `8080`, and `8100` are reachable as intended (`8090` is not used by the client kit — Symdex is always stdio-local here, never routed through `firekeep-shim`)
 

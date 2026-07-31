@@ -2,7 +2,7 @@ import pytest
 
 from firekeep_client.contract.matrix import RUNTIMES, capabilities, render_matrix
 
-CAPS = {"briefing", "presence", "pre_edit_block", "precompact", "reconcile", "profile_pin", "bypass"}
+CAPS = {"briefing", "presence", "pre_edit_block", "precompact", "reconcile", "bypass"}
 
 
 def test_all_runtimes_have_full_capability_set():
@@ -72,9 +72,9 @@ def test_unknown_runtime_raises():
         render_matrix("emacs")
 
 
-def test_matrix_documents_profile_pin_for_every_runtime():
-    from firekeep_client.contract.matrix import MATRIX, RUNTIMES
-    assert set(MATRIX["profile_pin"]) == set(RUNTIMES)
+def test_matrix_contains_no_retired_profile_pin_capability():
+    for runtime in RUNTIMES:
+        assert "profile_pin" not in capabilities(runtime)
 
 
 def test_bypass_is_claude_only_slash_command():

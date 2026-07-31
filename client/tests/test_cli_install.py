@@ -74,8 +74,8 @@ def test_install_bootstraps_home_and_config(install_env):
     assert (home / "logs").is_dir()
     cfg = configparser.ConfigParser()
     cfg.read(home / "config")
-    assert cfg["active"]["profile"] == "personal"
-    assert cfg.has_section("personal")
+    assert cfg["identity"]["agent_id"] == "CHANGEME"
+    assert cfg["server"]["kind"] == "ports"
     gi = (home / ".gitignore").read_text(encoding="utf-8")
     assert gi.strip() == "*"
 
@@ -257,12 +257,14 @@ def test_install_does_not_clobber_existing_config(install_env):
     home, runs, rec = install_env
     home.mkdir(parents=True)
     (home / "config").write_text(
-        "[active]\nprofile = office\n[office]\nkind = paths\n", encoding="utf-8"
+        "[identity]\nagent_id = Alex\n[server]\nkind = paths\nscheme = https\n"
+        "base_url = https://already.example\nverify_tls = true\nca_path = os\n",
+        encoding="utf-8",
     )
     cli.main(["install", "--runtime", "claude"])
     cfg = configparser.ConfigParser()
     cfg.read(home / "config")
-    assert cfg["active"]["profile"] == "office"  # preserved, not overwritten
+    assert cfg["server"]["base_url"] == "https://already.example"
 
 
 def test_install_without_tty_prompts_nothing(install_env, monkeypatch, capsys):
@@ -289,15 +291,15 @@ def test_install_flags_write_config_without_a_tty(install_env, monkeypatch, caps
     home, _, _ = install_env
     cfg = configparser.ConfigParser()
     cfg.read(home / "config")
-    assert cfg["personal"]["agent_id"] == "ci-bot"
-    assert cfg["personal"]["host"] == "10.0.0.4"
+    assert cfg["identity"]["agent_id"] == "ci-bot"
+    assert cfg["server"]["host"] == "10.0.0.4"
     # Identity is set, so don't tell the user to go edit the file they just configured.
     assert "CHANGEME" not in capsys.readouterr().out
 
 
 def test_install_prompts_when_interactive(install_env, monkeypatch):
     monkeypatch.setattr(cli.wizard, "is_interactive", lambda *a: True)
-    answers = iter(["Alex", "1", "203.0.113.10", ""])
+    answers = iter(["Alex", "203.0.113.10", ""])
     monkeypatch.setattr("builtins.input", lambda _p: next(answers))
 
     rc = cli.main(["install", "--runtime", "claude"])
@@ -305,8 +307,8 @@ def test_install_prompts_when_interactive(install_env, monkeypatch):
     home, _, _ = install_env
     cfg = configparser.ConfigParser()
     cfg.read(home / "config")
-    assert cfg["personal"]["agent_id"] == "Alex"
-    assert cfg["personal"]["host"] == "203.0.113.10"
+    assert cfg["identity"]["agent_id"] == "Alex"
+    assert cfg["server"]["host"] == "203.0.113.10"
 
 
 def test_install_non_interactive_flag_beats_a_tty(install_env, monkeypatch):
@@ -379,7 +381,7 @@ def test_install_dist_base_is_written_on_the_interactive_path(install_env, monke
     """The interactive path is the one the bootstrap installer actually uses, so a silent
     regression there would break `firekeep update` for every real teammate while the non-interactive test stayed green."""
     monkeypatch.setattr(cli.wizard, "is_interactive", lambda *a: True)
-    answers = iter(["Alex", "1", "203.0.113.10", ""])
+    answers = iter(["Alex", "203.0.113.10", ""])
     monkeypatch.setattr("builtins.input", lambda _p: next(answers))
 
     rc = cli.main(["install", "--runtime", "claude", "--dist-base", "http://gl/rel/v1"])
@@ -390,8 +392,8 @@ def test_install_dist_base_is_written_on_the_interactive_path(install_env, monke
     # Assert dist base_url was written
     assert cfg["dist"]["base_url"] == "http://gl/rel/v1"
     # Also assert the prompted values still land (proving --dist-base doesn't disturb the wizard)
-    assert cfg["personal"]["agent_id"] == "Alex"
-    assert cfg["personal"]["host"] == "203.0.113.10"
+    assert cfg["identity"]["agent_id"] == "Alex"
+    assert cfg["server"]["host"] == "203.0.113.10"
 
 
 def test_create_venv_recreates_a_pipless_venv(tmp_path, monkeypatch):

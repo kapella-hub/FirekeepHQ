@@ -1,4 +1,4 @@
-"""Task 11 — fail-loud modes: each names service/url/profile, exits non-zero, never echoes the key.
+"""Fail-loud modes name service/URL, exit non-zero, and never echo the key.
 
 Also carries forward two items from the Task 10 review:
 1. Dead-connection detection: the mcp SDK's `post_writer` swallows a failed POST for the
@@ -27,21 +27,20 @@ from firekeep_client.resolver import Endpoint
 OFFICE_KEY = "nxs_secret_office_key"
 
 
-def _write_office_config(tmp_path):
+def _write_server_config(tmp_path):
     ca = tmp_path / "firekeep-root-ca.crt"  # ca_path need only be a present key for resolve()
     cfg = tmp_path / "config"
     cfg.write_text(
-        "[active]\n"
-        "profile = office\n"
+        "[identity]\n"
+        "agent_id = mogan\n"
         "\n"
-        "[office]\n"
+        "[server]\n"
         "kind = paths\n"
         "scheme = https\n"
-        "base_url = https://firekeep.office.example\n"
+        "base_url = https://firekeep.example\n"
         "verify_tls = true\n"
         f"ca_path = {ca}\n"
-        f"api_key = {OFFICE_KEY}\n"
-        "agent_id = mogan\n",
+        f"api_key = {OFFICE_KEY}\n",
         encoding="utf-8",
     )
     return cfg
@@ -85,17 +84,17 @@ def _initialized_notification():
 def _run_with_mock(monkeypatch, tmp_path, handler, extra_messages=()):
     """Drive run() for 'cortex' against a MockTransport whose handler simulates a failure.
 
-    The injected client carries the REAL office headers (incl. the key) so the
+    The injected client carries the real configured headers (incl. the key) so the
     never-log-key assertion is meaningful. A pre-loaded initialize REQUEST forces
     a POST, so the mock's failure fires inside a request task and surfaces to run().
     `extra_messages` are queued right after initialize (e.g. a notification, to drive
     the dead-connection-after-initialize scenario).
     """
     logging.disable(logging.CRITICAL)  # keep SDK logging off stderr for a clean assertion
-    monkeypatch.setenv("FIREKEEP_CONFIG", str(_write_office_config(tmp_path)))
+    monkeypatch.setenv("FIREKEEP_CONFIG", str(_write_server_config(tmp_path)))
     monkeypatch.delenv("FIREKEEP_AGENT_ID", raising=False)
 
-    endpoint, _profile = shim.resolve_active("cortex")
+    endpoint = shim.resolve_connection("cortex")
     client = httpx.AsyncClient(
         transport=httpx.MockTransport(handler),
         headers=endpoint.headers,
@@ -169,8 +168,8 @@ def test_connection_refused_is_named(capsys, monkeypatch, tmp_path):
     err = capsys.readouterr().err
     assert rc == 1
     assert "cortex unreachable" in err
-    assert "https://firekeep.office.example/mcp/cortex" in err
-    assert "profile office" in err
+    assert "https://firekeep.example/mcp/cortex" in err
+    assert "profile" not in err
     assert OFFICE_KEY not in err
 
 
@@ -183,7 +182,7 @@ def test_connect_timeout_is_named_unreachable(capsys, monkeypatch, tmp_path):
     err = capsys.readouterr().err
     assert rc == 1
     assert "cortex unreachable" in err
-    assert "profile office" in err
+    assert "profile" not in err
     assert OFFICE_KEY not in err
 
 
@@ -205,7 +204,7 @@ def test_tls_failure_is_named(capsys, monkeypatch, tmp_path):
     assert OFFICE_KEY not in err
 
 
-def test_unknown_or_missing_profile_is_named(capsys, monkeypatch, tmp_path):
+def test_missing_config_is_named(capsys, monkeypatch, tmp_path):
     missing = tmp_path / "does-not-exist" / "config"
     monkeypatch.setenv("FIREKEEP_CONFIG", str(missing))
     rc = shim.run("cortex")
@@ -239,8 +238,8 @@ def test_dead_connection_after_initialize_is_not_silently_swallowed(capsys, monk
     err = capsys.readouterr().err
     assert rc == 1
     assert "cortex unreachable" in err
-    assert "https://firekeep.office.example/mcp/cortex" in err
-    assert "profile office" in err
+    assert "https://firekeep.example/mcp/cortex" in err
+    assert "profile" not in err
     assert OFFICE_KEY not in err
 
 

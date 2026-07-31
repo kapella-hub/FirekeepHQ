@@ -3,8 +3,8 @@
 Owns the universal session-lifecycle concerns that must work on EVERY runtime,
 including MCP-only ones (Codex): presence register on start, heartbeat loop,
 periodic workspace snapshot, clean deregister on exit. Separate from the shim
-(which the runtime spawns). Reads the active profile LIVE via the resolver on
-each cycle, so a `firekeep profile use` flip is picked up without a restart.
+(which the runtime spawns). Reads the single server config LIVE via the resolver
+on each cycle, so a connection edit is picked up without a restart.
 
 All server calls are JSON-RPC `tools/call` POSTs to the resolved `mcp_url` via
 `transport.post_json` — the same surface the retired bash hooks used
@@ -34,6 +34,7 @@ import json
 import os
 import socket
 import subprocess
+import sys
 import threading
 
 from firekeep_client import hooklog, resolver, state, transport
@@ -132,16 +133,15 @@ class Sidecar:
         except (TypeError, ValueError):
             return True
 
-    # -- lifecycle operations (profile read LIVE each call) -------------------
+    # -- lifecycle operations (connection read LIVE each call) ----------------
 
     def register(self) -> None:
         if resolver.is_bypassed():
             return  # personal mode: no presence reaches Relay
         try:
             cfg = resolver.load_config()
-            profile = resolver.active_profile(cfg)
-            aid = resolver.agent_id(cfg, profile)
-            ep = resolver.resolve("relay", cfg=cfg, profile=profile)
+            aid = resolver.agent_id(cfg)
+            ep = resolver.resolve("relay", cfg=cfg)
             parsed = self._tool_call(ep, "relay_register", {
                 "agent_id": aid, "goal": self.goal, "hostname": self.hostname,
             })
@@ -149,7 +149,7 @@ class Sidecar:
                 hooklog.log_failure(
                     HOOK, f"relay_register in-band error: {json.dumps(parsed)[:300]}")
             else:
-                mark_registered(aid, profile=profile)
+                mark_registered(aid)
         except (transport.TransportError, OSError) as e:  # OSError incl. ssl.SSLError: a malformed office ca_path raises RAW SSLError
         # from _build_ssl_context (outside transport's own try) — must degrade, not crash
             hooklog.log_failure(HOOK, f"relay_register failed: {e}")
@@ -159,11 +159,10 @@ class Sidecar:
             return  # personal mode: no presence heartbeat reaches Relay
         try:
             cfg = resolver.load_config()
-            profile = resolver.active_profile(cfg)
-            aid = resolver.agent_id(cfg, profile)
+            aid = resolver.agent_id(cfg)
             sid = state.resolve_session_id({}, cfg)
             ep = resolver.resolve(
-                "relay", cfg=cfg, profile=profile,
+                "relay", cfg=cfg,
                 session_id=None if sid == "unknown" else sid,
             )
             args = {"agent_id": aid, "goal": self.goal}
@@ -183,12 +182,11 @@ class Sidecar:
             return  # personal mode: no workspace snapshot reaches Bridge
         try:
             cfg = resolver.load_config()
-            profile = resolver.active_profile(cfg)
-            aid = resolver.agent_id(cfg, profile)
+            aid = resolver.agent_id(cfg)
             sid = state.resolve_session_id({}, cfg)
             if sid == "unknown":
                 return  # no active Bridge session to attach the snapshot to
-            ep = resolver.resolve("bridge", cfg=cfg, profile=profile, session_id=sid)
+            ep = resolver.resolve("bridge", cfg=cfg, session_id=sid)
             parsed = self._tool_call(ep, "ctx_update", {
                 "category": "scratch",
                 "key": "workspace_snapshot",
@@ -215,16 +213,15 @@ class Sidecar:
             return  # personal mode: skip the deregister comm (mirrors stop.py)
         try:
             cfg = resolver.load_config()
-            profile = resolver.active_profile(cfg)
-            aid = resolver.agent_id(cfg, profile)
-            if not should_deregister(aid, profile=profile):
+            aid = resolver.agent_id(cfg)
+            if not should_deregister(aid):
                 return  # newer session took over — race guard
-            ep = resolver.resolve("relay", cfg=cfg, profile=profile)
+            ep = resolver.resolve("relay", cfg=cfg)
             parsed = self._tool_call(ep, "relay_deregister", {"agent_id": aid})
             if self._errored(parsed):
                 hooklog.log_failure(
                     HOOK, f"relay_deregister in-band error: {json.dumps(parsed)[:300]}")
-            state.clear_registered(aid, profile=profile)
+            state.clear_registered(aid)
         except (transport.TransportError, OSError) as e:  # OSError incl. ssl.SSLError: a malformed office ca_path raises RAW SSLError
         # from _build_ssl_context (outside transport's own try) — must degrade, not crash
             hooklog.log_failure(HOOK, f"relay_deregister failed: {e}")
@@ -235,7 +232,7 @@ class Sidecar:
         """Best-effort single-instance-per-agent lock via state scratch PID.
         Returns False if a live sidecar already owns this agent identity."""
         cfg = resolver.load_config()
-        aid = resolver.agent_id(cfg, resolver.active_profile(cfg))
+        aid = resolver.agent_id(cfg)
         existing = state.read_scratch(_pid_scratch(aid))
         if existing is not None:
             try:
@@ -252,7 +249,7 @@ class Sidecar:
     def _release_singleton(self) -> None:
         try:
             cfg = resolver.load_config()
-            aid = resolver.agent_id(cfg, resolver.active_profile(cfg))
+            aid = resolver.agent_id(cfg)
             if state.read_scratch(_pid_scratch(aid)) == str(os.getpid()):
                 state.delete_scratch(_pid_scratch(aid))
         except Exception:
@@ -313,7 +310,11 @@ def main(argv: list[str] | None = None) -> int:
     interval = float(os.environ.get("FIREKEEP_SIDECAR_INTERVAL", DEFAULT_INTERVAL))
     sc = Sidecar(interval=interval)
     _install_signal_handlers(sc)
-    sc.run()
+    try:
+        sc.run()
+    except resolver.ConfigMigrationConflict as exc:
+        print(f"firekeep-sidecar: config migration blocked — {exc}", file=sys.stderr)
+        return 3
     return 0
 
 

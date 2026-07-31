@@ -454,20 +454,19 @@ def test_reap_stale_removes_old_keeps_fresh():
     assert state.pop_action("sess-old") is None         # queue reaped
 
 
-# --- profile-qualified registration keys (SP1b/pins reconciliation) ---------
+# --- registration keys -------------------------------------------------------
 
 
-def test_registration_keys_are_profile_qualified(tmp_path, monkeypatch):
+def test_registration_keys_are_agent_qualified(tmp_path, monkeypatch):
     monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
     from firekeep_client import state
-    state.mark_registered("agent-a", profile="office")
-    # A different profile's stop must NOT see (or consume) the office mark.
-    assert state.should_deregister("agent-a", profile="personal") is True
-    assert state.should_deregister("agent-a", profile="office") is False
-    state.clear_registered("agent-a", profile="personal")   # no-op on the office mark
-    assert state.should_deregister("agent-a", profile="office") is False
-    state.clear_registered("agent-a", profile="office")
-    assert state.should_deregister("agent-a", profile="office") is True
+    state.mark_registered("agent-a")
+    assert state.should_deregister("agent-b") is True
+    assert state.should_deregister("agent-a") is False
+    state.clear_registered("agent-b")
+    assert state.should_deregister("agent-a") is False
+    state.clear_registered("agent-a")
+    assert state.should_deregister("agent-a") is True
 
 
 def test_unqualified_keys_unchanged(tmp_path, monkeypatch):
@@ -485,21 +484,20 @@ def test_unqualified_keys_unchanged(tmp_path, monkeypatch):
 def test_session_stash_write_read_roundtrip(tmp_path, monkeypatch):
     monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
     from firekeep_client import state
-    state.write_session_stash("agent-a", "office", briefing_id="brf-1")
-    state.write_session_stash("agent-a", "office", session_id="sess-9")
-    got = state.read_session_stash("agent-a", "office")
+    state.write_session_stash("agent-a", briefing_id="brf-1")
+    state.write_session_stash("agent-a", session_id="sess-9")
+    got = state.read_session_stash("agent-a")
     # merge-write: both fields survive across two calls
     assert got["session_id"] == "sess-9"
     assert got["briefing_id"] == "brf-1"
 
 
-def test_session_stash_is_profile_and_agent_qualified(tmp_path, monkeypatch):
+def test_session_stash_is_agent_qualified(tmp_path, monkeypatch):
     monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
     from firekeep_client import state
-    state.write_session_stash("agent-a", "office", session_id="sess-office")
-    assert state.read_session_stash("agent-a", "personal") is None
-    assert state.read_session_stash("agent-b", "office") is None
-    assert state.read_session_stash("agent-a", "office")["session_id"] == "sess-office"
+    state.write_session_stash("agent-a", session_id="sess-a")
+    assert state.read_session_stash("agent-b") is None
+    assert state.read_session_stash("agent-a")["session_id"] == "sess-a"
 
 
 def test_session_stash_ttl_expiry_self_enforced(tmp_path, monkeypatch):
@@ -507,14 +505,14 @@ def test_session_stash_ttl_expiry_self_enforced(tmp_path, monkeypatch):
     from firekeep_client import state
     now = [1000.0]
     monkeypatch.setattr(state.time, "time", lambda: now[0])
-    state.write_session_stash("agent-a", "office", session_id="sess-9")
+    state.write_session_stash("agent-a", session_id="sess-9")
     now[0] = 1000.0 + 13 * 3600  # 13h later, past the 12h default
-    assert state.read_session_stash("agent-a", "office") is None
+    assert state.read_session_stash("agent-a") is None
     # within TTL it is returned
     now[0] = 1000.0 + 1 * 3600
-    state.write_session_stash("agent-a", "office", session_id="sess-fresh")
+    state.write_session_stash("agent-a", session_id="sess-fresh")
     now[0] = 1000.0 + 1.5 * 3600
-    assert state.read_session_stash("agent-a", "office")["session_id"] == "sess-fresh"
+    assert state.read_session_stash("agent-a")["session_id"] == "sess-fresh"
 
 
 def test_session_stash_ttl_env_override(tmp_path, monkeypatch):
@@ -523,22 +521,22 @@ def test_session_stash_ttl_env_override(tmp_path, monkeypatch):
     from firekeep_client import state
     now = [500.0]
     monkeypatch.setattr(state.time, "time", lambda: now[0])
-    state.write_session_stash("agent-a", "office", session_id="sess-9")
+    state.write_session_stash("agent-a", session_id="sess-9")
     now[0] = 500.0 + 90 * 60  # 90min later, past the 1h override
-    assert state.read_session_stash("agent-a", "office") is None
+    assert state.read_session_stash("agent-a") is None
 
 
 def test_session_stash_clear(tmp_path, monkeypatch):
     monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
     from firekeep_client import state
-    state.write_session_stash("agent-a", "office", session_id="sess-9")
-    state.clear_session_stash("agent-a", "office")
-    assert state.read_session_stash("agent-a", "office") is None
-    state.clear_session_stash("agent-a", "office")  # idempotent, no raise
+    state.write_session_stash("agent-a", session_id="sess-9")
+    state.clear_session_stash("agent-a")
+    assert state.read_session_stash("agent-a") is None
+    state.clear_session_stash("agent-a")  # idempotent, no raise
 
 
 def test_session_stash_read_never_raises_on_garbage(tmp_path, monkeypatch):
     monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
     from firekeep_client import state
-    state.write_scratch(state._session_stash_key("agent-a", "office"), "not json {{{")
-    assert state.read_session_stash("agent-a", "office") is None
+    state.write_scratch(state._session_stash_key("agent-a"), "not json {{{")
+    assert state.read_session_stash("agent-a") is None

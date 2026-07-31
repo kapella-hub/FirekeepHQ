@@ -202,7 +202,7 @@ The client kit talks to the stack over HTTP, so it needs a reachable address and
 a key. Two options:
 
 1. **Tunnel** (nothing exposed). Forward the ports you need, then point the
-   client's profile at `127.0.0.1`:
+   client's `[server]` connection at `127.0.0.1`:
    ```bash
    ssh -L 8100:127.0.0.1:8100 -L 8080:127.0.0.1:8080 \
        -L 8070:127.0.0.1:8070 -L 8060:127.0.0.1:8060 -L 8050:127.0.0.1:8050 user@vps-host
@@ -210,10 +210,10 @@ a key. Two options:
    ```
 2. **Expose deliberately** (below), then `firekeep install --host <VPS_IP>`.
 
-Either way, put the key in the profile — `firekeep install` prompts for
+Either way, put the key in `[server]` — `firekeep install` prompts for
 `api_key`, or edit `~/.firekeep/config` directly. `firekeep-shim` injects it as
 `X-API-Key` on every request. `firekeep doctor` verifies connectivity and auth
-end to end; an unkeyed profile against a keyed server shows up there as a failed
+end to end; an unkeyed connection against a keyed server shows up there as a failed
 check rather than as mysterious tool errors mid-session.
 
 ### Exposing the stack deliberately
@@ -308,7 +308,7 @@ bash update.sh
   calling the API directly needs a key.
 
 Either way, turning auth on is a breaking change for anything already talking to
-the stack: client-kit profiles need `api_key` set, and hand-rolled scripts need an
+the stack: client-kit `[server]` needs `api_key` set, and hand-rolled scripts need an
 `X-API-Key` header. Nothing degrades gracefully — an unkeyed caller gets a 401,
 by design.
 

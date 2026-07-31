@@ -101,7 +101,7 @@ Codex is MCP-only (no hook surface), so use the client kit's stdio shim rather t
 command = '/absolute/path/to/.firekeep/venv/bin/firekeep-shim'
 args = ["--service", "cortex"]
 ```
-(plus `firekeep-bridge`/`firekeep-sentinel`/`firekeep-relay`, each through the same `firekeep-shim` bridge, which injects TLS + auth headers from the active `~/.firekeep/config` profile.) Then the `action_before` and `action_after` tools appear as `mcp__firekeep-cortex__action_before` etc. Restart Codex after installing.
+(plus `firekeep-bridge`/`firekeep-sentinel`/`firekeep-relay`, each through the same `firekeep-shim` bridge, which injects TLS + auth headers from `[server]` and `[identity]` in `~/.firekeep/config`.) Then the `action_before` and `action_after` tools appear as `mcp__firekeep-cortex__action_before` etc. Restart Codex after installing.
 
 ### Kiro
 Run `firekeep install --runtime kiro`, which renders `~/.kiro/agents/firekeep.json` with the Firekeep services as stdio commands through the same `firekeep-shim` bridge (kiro also gets inline hooks wired to the same lifecycle events Claude uses):
