@@ -223,15 +223,13 @@ def test_render_does_not_archive_its_own_agent_file(fake_home, tmp_path):
     assert _read(agent)["mcpServers"]["mine"] == {"command": "keepme"}
 
 
-def test_render_migrates_default_agent_off_the_archived_firekeep(fake_home, tmp_path):
-    """Found live (2026-07-13): archiving firekeep.json left cli.json's
-    chat.defaultAgent pointing at it — kiro errored on every chat start and fell back
-    to the in-memory default. The migration flips exactly that value to the kit's
-    agent; every other setting survives untouched."""
+def test_render_migrates_predecessor_default_agent(fake_home, tmp_path):
+    """A predecessor install left plain kiro sessions on the `nexus` agent even after
+    Firekeep rendered successfully. Migrate that owned value and preserve other settings."""
     cli_json = fake_home / ".kiro" / "settings" / "cli.json"
     cli_json.parent.mkdir(parents=True, exist_ok=True)
     cli_json.write_text(json.dumps(
-        {"chat.defaultAgent": "firekeep", "app.beta": True}), encoding="utf-8")
+        {"chat.defaultAgent": "nexus", "app.beta": True}), encoding="utf-8")
     get_adapter("kiro").render(venv_bin=tmp_path / "vbin")
     data = _read(cli_json)
     assert data["chat.defaultAgent"] == "firekeep"

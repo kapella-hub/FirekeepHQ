@@ -61,28 +61,6 @@ def console_ask(prompt: str, default: str = "") -> str:
     return answer or default
 
 
-_RUNTIME_BY_NUM = {"1": "claude", "2": "codex", "3": "kiro", "4": "opencode", "5": "all"}
-_NUM_BY_RUNTIME = {"claude": "1", "codex": "2", "kiro": "3", "opencode": "4", "all": "5"}
-
-
-def ask_runtime(ask=console_ask, default: str = "all") -> str:
-    """Which agent(s) to install/render for. Returns a --runtime value
-    (claude|codex|kiro|opencode|all). Accepts the menu number OR the name; Enter takes
-    the default. Injected `ask` keeps it testable without a TTY (mirrors prompt_config)."""
-    default_num = _NUM_BY_RUNTIME.get(default, "5")
-    while True:
-        choice = ask(
-            "Install for which agent? [1] Claude Code  [2] Codex  [3] kiro  "
-            "[4] OpenCode  [5] all",
-            default_num,
-        ).strip().lower()
-        if choice in _RUNTIME_BY_NUM:
-            return _RUNTIME_BY_NUM[choice]
-        if choice in _NUM_BY_RUNTIME:  # a runtime name typed directly
-            return choice
-        print("  please answer 1-5 (or claude/codex/kiro/opencode/all)")
-
-
 def _default_agent_id(cfg: configparser.ConfigParser, profile: str) -> str:
     """Best guess at who this is, in descending order of how much the user meant it:
     an already-configured agent_id, then the OS username. CHANGEME never wins — it is the
