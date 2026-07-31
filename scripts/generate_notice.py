@@ -160,7 +160,7 @@ def render_notice(component_records: list[tuple[str, list[dict]]]) -> str:
         "Firekeep — Third-Party Software Notices",
         "=" * 60,
         "",
-        "Firekeep is proprietary software (see LICENSE). It incorporates the",
+        "Firekeep is source-available under BUSL-1.1 (see LICENSE). It incorporates the",
         "third-party open-source components listed below, each governed by",
         "its own licence, independent of the Firekeep licence terms.",
         "",

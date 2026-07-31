@@ -105,3 +105,12 @@ def test_root_licence_file_is_busl() -> None:
     assert "Business Source License 1.1" in head
     assert "Additional Use Grant:" in head
     assert "Change License: Apache License, Version 2.0" in head
+
+
+def test_generated_notices_match_the_source_available_licence() -> None:
+    paths = (REPO / "NOTICE", REPO / "client/NOTICE", REPO / "symdex/NOTICE")
+    notices = [path.read_text(encoding="utf-8") for path in paths]
+    assert len(set(notices)) == 1, "the three generated NOTICE copies drifted"
+    header = "\n".join(notices[0].splitlines()[:8])
+    assert "source-available under BUSL-1.1" in header
+    assert "proprietary software" not in header.lower()

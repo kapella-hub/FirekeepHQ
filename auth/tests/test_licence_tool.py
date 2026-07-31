@@ -16,13 +16,12 @@ def test_offline_tool_generates_key_and_mints_verifiable_team_licence(tmp_path):
     generated = subprocess.run(
         [
             sys.executable,
-            "-m",
-            "deploy.licence_tool",
+            str(ROOT / "deploy" / "licence_tool.py"),
             "keygen",
             "--private-key",
             str(private),
         ],
-        cwd=ROOT,
+        cwd=tmp_path,
         capture_output=True,
         text=True,
         check=True,
@@ -31,8 +30,7 @@ def test_offline_tool_generates_key_and_mints_verifiable_team_licence(tmp_path):
     minted = subprocess.run(
         [
             sys.executable,
-            "-m",
-            "deploy.licence_tool",
+            str(ROOT / "deploy" / "licence_tool.py"),
             "mint",
             "--private-key",
             str(private),
@@ -45,7 +43,7 @@ def test_offline_tool_generates_key_and_mints_verifiable_team_licence(tmp_path):
             "--max-members",
             "5",
         ],
-        cwd=ROOT,
+        cwd=tmp_path,
         capture_output=True,
         text=True,
         check=True,

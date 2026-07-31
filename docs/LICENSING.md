@@ -17,7 +17,7 @@ background workers. Production use for more than one member requires a
 commercial license. This is not an OSI Open Source licence; each version changes
 to Apache-2.0 four years after its first public distribution.
 
-| | Free tier | Team tier |
+| | Solo plan (free) | Team plan (paid) |
 |---|---|---|
 | Client kit and server | Source-available; production use for one member | Source-available; commercial license for additional members |
 | Agent identities, devices, terminals, background workers | Unlimited when controlled by the one member | Unlimited |
@@ -29,6 +29,39 @@ Entitlements do not gate memory, sessions, coordination, code intelligence,
 presence, night-shift, device enrollment, or agent concurrency. An absent,
 malformed, unsigned, or expired document degrades to Solo; existing data and
 members remain usable. The server performs no entitlement phone-home.
+
+## Production signing key and Team issuance
+
+This is a one-time operator setup, performed before the first Team sale. Run the
+tool on a trusted machine and write the private key **outside this repository**:
+
+```bash
+python /path/to/Firekeep/deploy/licence_tool.py keygen \
+  --private-key /offline/path/firekeep-licence-signing.key
+```
+
+The command prints `FIREKEEP_LICENCE_PUBLIC_KEY=...`. The public value is not a
+secret: put it in `.env.example` before building the first public server bundle,
+so every Solo installation is already capable of validating a later Team
+upgrade. Never copy the private key into the repository, GitHub Actions, a
+customer server, the Firekeep vault, or a support bundle. Keep at least one
+encrypted offline backup; losing it prevents renewal of existing customers.
+
+To issue a Team entitlement after the customer supplies the `workspace_id`
+shown on their Licence dashboard:
+
+```bash
+python /path/to/Firekeep/deploy/licence_tool.py mint \
+  --private-key /offline/path/firekeep-licence-signing.key \
+  --workspace-id workspace-... \
+  --customer "Customer name" \
+  --plan team --max-members 5 --days 365 \
+  --output customer.firekeep-licence
+```
+
+The customer applies that file in Dashboard → Licence or with
+`deploy/firekeep-admin licence apply customer.firekeep-licence`. The signing
+key stays offline throughout issuance and application.
 
 Pricing, seat counts, and trial duration are deliberately **not** decided and
 are not in the licence — they are referred to "the applicable commercial

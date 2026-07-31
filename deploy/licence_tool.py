@@ -16,8 +16,8 @@ from pathlib import Path
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from auth.entitlements import sign_licence
 
+LICENCE_PREFIX = "fk_lic_v1"
 
 def _b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
@@ -25,6 +25,13 @@ def _b64url(data: bytes) -> str:
 
 def _decode(value: str) -> bytes:
     return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+
+
+def _sign_licence(payload: dict, private_key: Ed25519PrivateKey) -> str:
+    """Canonical entitlement wire format, kept standalone for offline use."""
+    body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    signature = private_key.sign(body)
+    return f"{LICENCE_PREFIX}.{_b64url(body)}.{_b64url(signature)}"
 
 
 def _write_private(path: Path, value: str) -> None:
@@ -73,7 +80,7 @@ def mint(args: argparse.Namespace) -> int:
         raise SystemExit("Solo requires --max-members 1")
     if args.plan == "team" and args.max_members < 2:
         raise SystemExit("Team requires --max-members 2 or greater")
-    document = sign_licence(payload, private)
+    document = _sign_licence(payload, private)
     if args.output:
         output = Path(args.output).expanduser().resolve()
         output.write_text(document + "\n", encoding="utf-8")

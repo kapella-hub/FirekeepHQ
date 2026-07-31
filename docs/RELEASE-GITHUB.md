@@ -1,8 +1,10 @@
-# Client releases on GitHub (interim)
+# Firekeep releases on GitHub
 
-The office path is the GitLab pipeline (`.gitlab-ci.yml` → GitLab package registry).
-Until that exists, client releases are cut on GitHub via `.github/workflows/release.yml`
-and served from **GitHub Pages**.
+GitHub is the public distribution path for both current plans. Client releases
+are cut via `.github/workflows/release.yml`; server images and the source-free
+deployment bundle are cut via `.github/workflows/server-release.yml`. Release
+manifests and client/bundle artifacts are served from **GitHub Pages**. There is
+no separate enterprise or corporate edition/channel.
 
 ## How a release is cut
 
