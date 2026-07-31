@@ -209,10 +209,7 @@ def test_fresh_install_renders_every_native_adapter(tmp_path, monkeypatch):
 
     assert cli.main(["install", "--non-interactive", "--no-modify-path"]) == 0
 
-    expected = {
-        "firekeep-cortex", "firekeep-bridge", "firekeep-sentinel", "firekeep-relay",
-        "firekeep-symdex", "firekeep-decision",
-    }
+    expected = {"firekeep"}
     claude = json.loads((user_home / ".claude.json").read_text(encoding="utf-8"))
     codex = tomllib.loads(
         (user_home / ".codex" / "config.toml").read_text(encoding="utf-8")
@@ -223,10 +220,10 @@ def test_fresh_install_renders_every_native_adapter(tmp_path, monkeypatch):
     opencode = json.loads(
         (user_home / ".config" / "opencode" / "opencode.json").read_text(encoding="utf-8")
     )
-    assert expected <= claude["mcpServers"].keys()
-    assert expected <= codex["mcp_servers"].keys()
-    assert expected <= kiro["mcpServers"].keys()
-    assert expected <= opencode["mcp"].keys()
+    assert set(claude["mcpServers"]) == expected
+    assert set(codex["mcp_servers"]) == expected
+    assert set(kiro["mcpServers"]) == expected
+    assert set(opencode["mcp"]) == expected
 
 
 def test_install_from_installed_venv_skips_pip_and_still_renders(install_env, monkeypatch, capsys):

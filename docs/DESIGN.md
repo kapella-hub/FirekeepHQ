@@ -285,9 +285,9 @@ Renamed from CortexBridge. All `CB_` prefixed env vars become `NB_`.
 
 ## FirekeepSymdex — Local (stdio) only
 
-Code intelligence is **client-side only**. The server-side HTTP container was removed from both `docker-compose.yml` and `docker-compose.office.yml` — a VPS/K8s box has no developer working tree to index, so it was vestigial. Symdex ships solely as the standalone `firekeep-symdex` stdio MCP server, installed automatically by the client kit (no opt-in flag — the `--with-symdex` flag was removed).
+Code intelligence is **client-side only**. The server-side HTTP container was removed from both `docker-compose.yml` and `docker-compose.office.yml` — a VPS/K8s box has no developer working tree to index, so it was vestigial. Symdex ships as a local process behind the one `firekeep` stdio gateway, installed automatically by the client kit (no opt-in flag — the `--with-symdex` flag was removed).
 
-- Runs as `firekeep-symdex` from the client-kit venv console script, registered in the runtime's native config as a stdio MCP server
+- Runs as `firekeep-symdex` from the client-kit venv console script; the gateway starts and fronts it
 - Direct local file access, near-zero latency; must be local to the working tree it indexes
 - 38 tools total: 30 visible by default, plus 8 analytics tools hidden behind `SYMDEX_ANALYTICS_ENABLED` — across 12 languages
 - Per-index file ceiling via `FIREKEEP_SYMDEX_MAX_FILES` (default 1500)
@@ -314,7 +314,7 @@ Code intelligence is **client-side only**. The server-side HTTP container was re
 ### `firekeep install` (client kit)
 1. Create `~/.firekeep/venv` and install the client kit — a checksum-verified wheel handed to `uv pip install` by local path (teammate bootstrap), or the local checkout (`cd client && ./install`). Never `pip install firekeep-client` by name (`firekeep-client` on PyPI is a third party's package). Interim teammate releases are served from GitHub Pages (`FIREKEEP_DIST_BASE=https://kapella-hub.github.io/firekeep-dist`, see `docs/RELEASE-GITHUB.md`); the GitLab generic package registry remains the office path.
 2. Bootstrap `~/.firekeep/` (config skeleton `0600`, hook cores, contract fragment, CA slot)
-3. Render each runtime's native config to absolute venv script paths (`firekeep-shim --service <svc>`, hook cores) plus 6 always-on MCP servers: `firekeep-cortex`, `firekeep-bridge`, `firekeep-sentinel`, `firekeep-relay`, `firekeep-symdex`, `firekeep-decision`
+3. Render each runtime's native config with one absolute-path `firekeep gateway` MCP entry plus its supported hook/instruction surfaces. Re-rendering removes the six retired Firekeep entries but preserves foreign config.
 4. An interactive install runs a wizard (`firekeep_client/wizard.py`) prompting for agent identity and the one server connection (`host`/`api_key`, or `base_url`/`ca_path`/`api_key` for an existing path-routed connection), each prompt prefilled with the current value so Enter-through is a no-op. It never asks for a profile or product tier. A non-interactive/CI install (no TTY or `--non-interactive`) writes `[identity]` + `[server]` (`agent_id = CHANGEME` when no `--agent-id` is passed); run `firekeep doctor` to verify
 
 ## Docker Compose Dependency Chain

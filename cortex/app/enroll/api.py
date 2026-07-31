@@ -253,7 +253,7 @@ def create_enroll_router(
             ca_pem=req.ca_pem,
             ca_mode=req.ca_mode,
             ssh_target=ssh_target,
-            issuer=f"credential:{identity.get('key_id', 'admin')}",
+            issuer=f"credential:{identity.get('credential_id', 'admin')}",
             key_expires_days=req.expires_days,
             device_id=req.device_id,
             dist_base=req.dist_base,

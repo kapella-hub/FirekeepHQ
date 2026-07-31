@@ -9,13 +9,14 @@ from __future__ import annotations
 import json
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
 from app.db.graph import Neo4jClient
 from app.db.vector import VectorClient
 from app.engine.rag import RAGEngine
 from app.models import ContextQuery
+from auth.principal import request_principal
 
 logger = logging.getLogger(__name__)
 
@@ -29,11 +30,14 @@ def create_streaming_router(
     router = APIRouter(tags=["streaming"])
 
     @router.post("/memory/recall/stream")
-    async def recall_stream(query: ContextQuery) -> StreamingResponse:
+    async def recall_stream(request: Request, query: ContextQuery) -> StreamingResponse:
         """Stream recall results as Server-Sent Events."""
+        principal = request_principal(request)
 
         async def event_generator():
-            async for event in rag_engine.recall_streaming(query):
+            async for event in rag_engine.recall_streaming(
+                query, workspace_id=principal["workspace_id"]
+            ):
                 event_type = event["type"]
                 data = json.dumps(event["data"], default=str)
 

@@ -50,7 +50,7 @@ class EnrollmentStore:
         self.redis = redis_client
         self.settings = settings or EnrollmentSettings()
 
-    async def issue(
+    def prepare_issue(
         self,
         *,
         agent_label: str = "",
@@ -63,12 +63,14 @@ class EnrollmentStore:
         issuer: str = "dashboard",
         key_expires_days: int | None = None,
         device_id: str = "",
+        member_id: str | None = None,
+        ticket: str | None = None,
         now: datetime | None = None,
     ) -> tuple[str, str, dict[str, str]]:
-        """Mint and persist one ticket, returning (secret, tid, record)."""
+        """Build one enrollment ticket without writing it."""
         now = now or datetime.now(timezone.utc)
         expires = now + timedelta(hours=self.settings.ticket_ttl_hours)
-        ticket = _b64url(secrets.token_bytes(32))
+        ticket = ticket or _b64url(secrets.token_bytes(32))
         tid = ticket_id(ticket)
         expires_days = (
             self.settings.key_expires_days
@@ -97,13 +99,52 @@ class EnrollmentStore:
         if device_id:
             record["device_id"] = device_id
 
+        if member_id:
+            record["member_id"] = member_id
+        return ticket, tid, record
+
+    async def issue(
+        self,
+        *,
+        agent_label: str = "",
+        transport: str,
+        kind: str,
+        host: str = "",
+        base_url: str = "",
+        ca_pem: str = "",
+        ssh_target: str = "",
+        issuer: str = "dashboard",
+        key_expires_days: int | None = None,
+        device_id: str = "",
+        member_id: str | None = None,
+        ticket: str | None = None,
+        now: datetime | None = None,
+    ) -> tuple[str, str, dict[str, str]]:
+        """Mint and persist one ticket, returning (secret, tid, record)."""
+        ticket, tid, record = self.prepare_issue(
+            agent_label=agent_label,
+            transport=transport,
+            kind=kind,
+            host=host,
+            base_url=base_url,
+            ca_pem=ca_pem,
+            ssh_target=ssh_target,
+            issuer=issuer,
+            key_expires_days=key_expires_days,
+            device_id=device_id,
+            member_id=member_id,
+            ticket=ticket,
+            now=now,
+        )
+
         async with self.redis.pipeline(transaction=True) as pipe:
             pipe.hset(f"{TICKET_PREFIX}{tid}", mapping=record)
             pipe.expire(
                 f"{TICKET_PREFIX}{tid}",
                 self.settings.tombstone_days * 86400,
             )
-            pipe.zadd(TICKET_INDEX, {tid: now.timestamp()})
+            created_epoch = datetime.fromisoformat(record["created_at"]).timestamp()
+            pipe.zadd(TICKET_INDEX, {tid: created_epoch})
             await pipe.execute()
         return ticket, tid, record
 
@@ -158,6 +199,7 @@ class EnrollmentStore:
             key_expires_days or None,
             enrolled_via=tid,
             device_label=(snapshot.get("agent_label") or None) if snapshot else None,
+            member_id=(snapshot.get("member_id") or None) if snapshot else None,
         )
         key_ttl = key_expires_days * 86400 if key_expires_days else 0
         rate_key = f"{RATE_PREFIX}{now.strftime('%Y%m%d%H')}"

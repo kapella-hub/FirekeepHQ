@@ -151,7 +151,7 @@ fi
 # Chosen explicitly rather than guessed. Auto-detecting "is there source here"
 # would make the mode depend on which files happen to exist, and a partial
 # checkout would silently build something different from what was released.
-#   --pull   fetch the published images (needs IMAGE_TAG and a registry login)
+#   --pull   fetch the published images (needs IMAGE_TAG; no registry login)
 #   default  build from this checkout, as before
 PULL_MODE=0
 for arg in "$@"; do
@@ -171,11 +171,11 @@ if [ "$PULL_MODE" -eq 1 ]; then
     fi
     if ! docker manifest inspect "ghcr.io/kapella-hub/firekeep-cortex:${IMAGE_TAG_VALUE}" >/dev/null 2>&1; then
         echo "ERROR: cannot read ghcr.io/kapella-hub/firekeep-cortex:${IMAGE_TAG_VALUE}" >&2
-        echo "       The packages are private. Log in with the token you were" >&2
-        echo "       issued, then re-run:" >&2
-        echo "         echo <token> | docker login ghcr.io -u <your-username> --password-stdin" >&2
-        echo "       Checked BEFORE building anything so a missing credential" >&2
-        echo "       fails here rather than half-way through the install." >&2
+        echo "       Release images are public and require no registry login." >&2
+        echo "       Check the tag and network connection. If both are correct," >&2
+        echo "       this release was not published with Public visibility." >&2
+        echo "       Checked before starting anything so the install cannot" >&2
+        echo "       fail half-way through." >&2
         exit 1
     fi
     echo ""

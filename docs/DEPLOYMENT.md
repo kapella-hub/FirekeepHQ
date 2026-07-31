@@ -9,7 +9,6 @@
   `EMBEDDING_DIM=384`). Below that, containers are OOM-killed while HTTP health
   checks still pass — a failure mode that is easy to misdiagnose. (See
   "Resource Limits" below for the full breakdown.)
-- Git installed
 - **No open ports required.** A default install binds its app ports (8040-8100)
   to `127.0.0.1` and is reachable only from the host. Serving a laptop or a
   teammate is an explicit opt-in — see
@@ -21,27 +20,29 @@ There are two paths, and they are not interchangeable.
 
 ### As a customer — pull the published images
 
-You need three things: the deployment files, a registry token, and the version
-you were sold. The server images are private packages on `ghcr.io`; the token is
-issued with your licence.
+The Firekeep client downloads a small, checksummed deployment bundle and pulls
+the public release images from `ghcr.io`. No source checkout, registry account,
+registry token, or plan choice is required. The server reads its Solo or Team
+entitlement after it starts; download access is not the licensing boundary.
 
 ```bash
-# 1. Authenticate to the registry (token issued with your licence)
-echo <your-token> | docker login ghcr.io -u <your-username> --password-stdin
+# Latest public server release (prompts only for deployment settings):
+firekeep init
 
-# 2. Set the version you were given
-#    IMAGE_TAG=dev is the default and is NEVER published — install.sh --pull
-#    stops and tells you so rather than failing later with 'manifest unknown'.
-cp .env.example .env
-$EDITOR .env            # set IMAGE_TAG=v0.1.0
-
-# 3. Install (interactive — prompts for VPS IP and Neo4j password)
-bash install.sh --pull
+# Or pin a release explicitly:
+firekeep init --version v0.1.0
 ```
 
-`--pull` verifies the registry is readable **before** it writes anything or
-starts a container, so a missing credential fails at the top instead of half-way
-through.
+`firekeep init` verifies the bundle checksum before extracting it, then invokes
+`install.sh --pull`. The installer verifies the image is publicly readable
+**before** it starts a container, so a bad tag, network problem, or incorrectly
+private package fails at the top instead of half-way through.
+
+If you already have an unpacked release bundle, the direct equivalent is:
+
+```bash
+bash install.sh --pull
+```
 
 Only the four Firekeep service images are published. Neo4j, Redis, Qdrant and
 Ollama are pulled by your own Docker daemon from their upstream registries —
@@ -60,6 +61,10 @@ Without `--pull`, `install.sh` builds all seven services from this checkout,
 which is what you want when you are changing them. The mode is chosen by the
 flag, never guessed from which files happen to be present — a partial checkout
 would otherwise silently build something different from what was released.
+
+From a source checkout, `firekeep init --server-dir .` runs the same installer
+in build mode; add `--pull` to exercise published images. From a release bundle,
+pull mode is automatic. No path asks the customer whether they are Solo or Team.
 
 `bash install.sh` performs a standard install. Pass `--office` **only** on the
 internal office cluster — it pins the Caddy TLS front and the 127.0.0.1 port
@@ -256,12 +261,30 @@ publish a passwordless Redis and a plaintext vector store.
 
 ## Updating
 
+For a published, source-free install, choose the target release explicitly:
+
+```bash
+cd ~/.firekeep/server
+bash update.sh --to v0.2.0
+```
+
+This takes a volume backup, downloads and verifies the requested deployment
+bundle, preserves `.env`, dashboard credentials, and local backup archives,
+updates `IMAGE_TAG`, then pulls and starts the new images. The previous
+deployment files remain beside the active directory as
+`.server.previous-<old-version>` until you have verified the update. Archive or
+remove that directory before the next server upgrade. Use `--no-backup` only
+when you deliberately accept having no data rollback.
+
+For a developer source checkout:
+
 ```bash
 cd /path/to/Firekeep
 bash update.sh
 ```
 
-This runs `git pull`, rebuilds only changed images, restarts services, and verifies health.
+This runs `git pull`, rebuilds only changed images, restarts services, and
+verifies health.
 
 ### Upgrading across the 2026-07-26 security defaults
 

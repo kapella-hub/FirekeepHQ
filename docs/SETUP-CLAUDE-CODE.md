@@ -27,7 +27,7 @@ With a join code, the customer path is fully non-interactive. It:
 
 1. **Creates `~/.firekeep/venv`** and pip-installs `firekeep-client` (pulling `mcp`+`httpx`)
 2. **Bootstraps `~/.firekeep/`** — config skeleton (`0600`), hook-core files, contract fragment, CA slot
-3. **Writes `~/.claude.json`** — all 4 HTTP-backed MCP servers as stdio entries through `firekeep-shim` (user-scoped), plus the always-on stdio-local `firekeep-symdex` and `firekeep-decision`
+3. **Writes `~/.claude.json`** — one user-scoped `firekeep` stdio gateway entry aggregating all four remote and two local backends
 4. **Writes `~/.claude/settings.json`** — 5 hook cores + env vars (user-scoped), merging non-destructively with any existing foreign hooks/servers
 
 Enrollment writes the one `[server]` connection and `[identity]`, then runs
@@ -43,14 +43,12 @@ The Firekeep Claude integration is user-scoped and venv-relocation-proof: the ho
 
 | Server | Transport | Purpose |
 |--------|-----------|---------|
-| firekeep-cortex | stdio (`firekeep-shim --service cortex`) | Long-term memory (semantic + graph RAG) |
-| firekeep-bridge | stdio (`firekeep-shim --service bridge`) | Session context persistence |
-| firekeep-sentinel | stdio (`firekeep-shim --service sentinel`) | Environment observer |
-| firekeep-relay | stdio (`firekeep-shim --service relay`) | Agent coordination |
-| firekeep-symdex | stdio (local, always-on) | Code intelligence |
-| firekeep-decision | stdio (local, always-on) | Decision Board — clarification via `decision_board`/`decision_board_check` |
+| firekeep | stdio (`firekeep gateway`) | Memory, sessions, monitoring, coordination, code intelligence, and Decision Board |
 
-Every HTTP service is reached through `firekeep-shim` — a stdio↔Streamable-HTTP bridge that terminates TLS and injects `X-API-Key`/`X-Agent-Id` from `[server]` and `[identity]` in `~/.firekeep/config`. `firekeep-symdex` and `firekeep-decision` are never routed through the shim; they stay stdio-local. Both are always installed — no flag needed.
+The gateway starts parameterized shims for the four remote Streamable-HTTP
+services, injecting TLS and auth from `[server]`, plus the local Symdex and
+Decision Board processes. A failed backend removes only its tools; use
+`firekeep_gateway_status` to see which one failed.
 
 ### Hooks (`.claude/settings.json`)
 
@@ -90,7 +88,7 @@ After setup, restart Claude Code in the project directory. You should see:
    === END BRIEFING ===
    ```
 
-2. Run `/mcp` to confirm all 6 servers show connected (`firekeep-symdex` is always installed)
+2. Run `/mcp` to confirm the single `firekeep` server is connected
 
 3. Open the dashboard to verify it loads. A default install binds it to `127.0.0.1`, so
    from the machine running Firekeep that is `http://localhost:8040`; from anywhere else,
@@ -119,17 +117,12 @@ The installer is the supported path; there is no manual alternative that reaches
 ```json
 {
   "mcpServers": {
-    "firekeep-cortex": {"type": "stdio", "command": "/absolute/path/to/.firekeep/venv/bin/firekeep-shim", "args": ["--service", "cortex"]},
-    "firekeep-bridge": {"type": "stdio", "command": "/absolute/path/to/.firekeep/venv/bin/firekeep-shim", "args": ["--service", "bridge"]},
-    "firekeep-sentinel": {"type": "stdio", "command": "/absolute/path/to/.firekeep/venv/bin/firekeep-shim", "args": ["--service", "sentinel"]},
-    "firekeep-relay": {"type": "stdio", "command": "/absolute/path/to/.firekeep/venv/bin/firekeep-shim", "args": ["--service", "relay"]},
-    "firekeep-symdex": {"type": "stdio", "command": "/absolute/path/to/.firekeep/venv/bin/firekeep-symdex", "args": []},
-    "firekeep-decision": {"type": "stdio", "command": "/absolute/path/to/.firekeep/venv/bin/firekeep-decision", "args": []}
+    "firekeep": {"type": "stdio", "command": "/absolute/path/to/.firekeep/venv/bin/firekeep", "args": ["gateway"]}
   }
 }
 ```
 
-(On Windows the paths point at `.firekeep\venv\Scripts\firekeep-shim.exe` etc.) Re-running `firekeep install --runtime claude` is idempotent and non-clobbering — it merges only Firekeep-owned keys, so any other MCP servers or hooks you've added by hand survive.
+(On Windows the path points at `.firekeep\venv\Scripts\firekeep.exe`.) Re-running `firekeep install --runtime claude` is idempotent and non-clobbering — it removes the six retired Firekeep entries, writes the one gateway entry, and leaves foreign MCP servers and hooks untouched.
 
 ## Troubleshooting
 
@@ -145,7 +138,7 @@ The installer is the supported path; there is no manual alternative that reaches
 - Clear browser localStorage: `localStorage.removeItem('firekeep_config')`
 
 ### Claude doesn't use the MCP tools
-- Run `/mcp` — are servers connected?
+- Run `/mcp` — is the `firekeep` gateway connected? If so, call `firekeep_gateway_status` to inspect individual backends.
 - Check VPS: `docker compose ps` should show all services healthy
 - Check firewall: ports 8050-8100 must be accessible from your machine
 

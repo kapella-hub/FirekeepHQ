@@ -2,12 +2,12 @@
 
 ## What Codex Needs
 
-Codex does not use the Claude-specific hook wiring; the client kit's Codex adapter renders `.codex/config.toml` MCP servers + AGENTS.md guidance only. Session-lifecycle automation (presence, heartbeat, snapshots) is not wired up for Codex at all today — `firekeep-sidecar` is the *intended* mechanism for MCP-only runtimes like Codex, but nothing starts it automatically; you have no presence path unless you run it by hand. Attribution is self-reported.
+Codex does not use the Claude-specific hook wiring; the client kit's Codex adapter renders one `.codex/config.toml` MCP gateway entry plus AGENTS.md guidance. Session-lifecycle automation (presence, heartbeat, snapshots) is not wired up for Codex at all today — `firekeep-sidecar` is the intended mechanism for MCP-only runtimes like Codex, but nothing starts it automatically; you have no presence path unless you run it by hand. Workspace/member attribution comes from the verified credential; only the runtime `agent_id` label is self-reported.
 
 For Firekeep, the Codex path is:
 
 1. `AGENTS.md` in the repo root for project instructions
-2. MCP server entries in Codex config so Codex can talk to the Firekeep services
+2. One MCP gateway entry in Codex config so Codex can use every Firekeep backend
 
 OpenAI documents both behaviors:
 
@@ -31,42 +31,21 @@ OpenCode together. If the kit is already present, run:
 firekeep join fk_join_...
 ```
 
-This writes `~/.firekeep/config` and renders `.codex/config.toml` with the
-Firekeep MCP servers as stdio commands through `firekeep-shim` (the
-stdio↔Streamable-HTTP bridge that injects TLS + auth headers from `[server]` and
-`[identity]`). Stdio-local code intelligence (`firekeep-symdex`) is installed
-automatically. Use `firekeep install --runtime codex` only to repair or re-render
-the Codex adapter afterward.
+This writes `~/.firekeep/config` and renders `.codex/config.toml` with one local
+stdio gateway. The gateway connects to the four Streamable-HTTP services with
+TLS/auth from `[server]`, and fronts local Symdex and Decision Board processes.
+Use `firekeep install --runtime codex` only to repair or re-render the Codex
+adapter afterward.
 
 If you prefer to configure it manually (or want to see what the installer renders), the entries look like:
 
 ```toml
-[mcp_servers.firekeep-cortex]
-command = '/absolute/path/to/.firekeep/venv/bin/firekeep-shim'
-args = ["--service", "cortex"]
-
-[mcp_servers.firekeep-bridge]
-command = '/absolute/path/to/.firekeep/venv/bin/firekeep-shim'
-args = ["--service", "bridge"]
-
-[mcp_servers.firekeep-sentinel]
-command = '/absolute/path/to/.firekeep/venv/bin/firekeep-shim'
-args = ["--service", "sentinel"]
-
-[mcp_servers.firekeep-relay]
-command = '/absolute/path/to/.firekeep/venv/bin/firekeep-shim'
-args = ["--service", "relay"]
-
-[mcp_servers.firekeep-symdex]
-command = '/absolute/path/to/.firekeep/venv/bin/firekeep-symdex'
-args = []
-
-[mcp_servers.firekeep-decision]
-command = '/absolute/path/to/.firekeep/venv/bin/firekeep-decision'
-args = []
+[mcp_servers.firekeep]
+command = '/absolute/path/to/.firekeep/venv/bin/firekeep'
+args = ["gateway"]
 ```
 
-(On Windows, paths point at `.firekeep\venv\Scripts\firekeep-shim.exe` etc.) `firekeep-symdex` and `firekeep-decision` are stdio-local — neither is ever routed through the shim, and both are always rendered.
+(On Windows, the command points at `.firekeep\venv\Scripts\firekeep.exe`.)
 
 Notes:
 
@@ -86,14 +65,7 @@ From the repo root:
 codex mcp list
 ```
 
-You should see:
-
-- `firekeep-cortex`
-- `firekeep-bridge`
-- `firekeep-sentinel`
-- `firekeep-relay`
-- `firekeep-symdex`
-- `firekeep-decision`
+You should see one entry: `firekeep`.
 
 Then start Codex in this repository and check:
 
@@ -115,7 +87,7 @@ With the MCP config above, Codex can use:
 
 > When a clarification needs more than a couple of questions, call `decision_board(context, draft_questions)` instead of asking the questions inline.
 
-`firekeep-decision` is a second stdio-local server (like Symdex, never routed through `firekeep-shim`); both are always installed — no flag needed. Two tools:
+`firekeep-decision` is a local backend behind the gateway, like Symdex; both are always installed. Two tools:
 
 - `decision_board(context, draft_questions=[])` — asks Cortex to synthesize a board (retrieved evidence + suggested answers per question), opens it in the browser, and waits for the human's answers. Returns the answers (markdown) if submitted in time, else `{status: "pending", board_id, next}`.
 - `decision_board_check(board_id)` — call with the `board_id` from a pending response to collect the answers once submitted; `{status: "pending", ...}` if still waiting, `{status: "unknown"}` if the id isn't recognized.
@@ -142,10 +114,10 @@ Presence/heartbeat/snapshot/exit lifecycle is *intended* to be owned by the `fir
 ### Codex cannot see the servers
 
 - Run `firekeep doctor` — it verifies the rendered `firekeep-shim` paths exist, checks connectivity and auth for `[server]`, reports client and cortex versions, and flags a lingering `CHANGEME` agent_id
-- Run `codex mcp list` and confirm the entries exist
+- Run `codex mcp list` and confirm the `firekeep` entry exists
 - Check that the `host` or `base_url` in `~/.firekeep/config` `[server]` is reachable from your machine
 - Verify `docker compose ps` on the VPS shows services healthy
-- Confirm ports `8050`, `8060`, `8070`, `8080`, and `8100` are reachable as intended (`8090` is not used by the client kit — Symdex is always stdio-local here, never routed through `firekeep-shim`)
+- Confirm ports `8050`, `8060`, `8070`, `8080`, and `8100` are reachable as intended (`8090` is not used; Symdex stays local behind the gateway)
 
 ### Codex starts without repo guidance
 
@@ -155,4 +127,4 @@ Presence/heartbeat/snapshot/exit lifecycle is *intended* to be owned by the `fir
 ### Symdex tools fail in Codex
 
 - Confirm you ran `firekeep install --runtime codex` (Symdex is always installed and stdio-local — it is not routed through `firekeep-shim` or exposed over HTTP)
-- Verify the rendered `firekeep-symdex` command path in `.codex/config.toml` exists (`firekeep doctor` checks this)
+- Run the `firekeep_gateway_status` MCP tool; it reports Symdex separately if that backend failed

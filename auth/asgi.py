@@ -34,7 +34,8 @@ class FirekeepKeyAuthMiddleware:
     """Whole-app X-API-Key gate backed by Redis DB 7 (auth:key:{sha256}).
 
     On success the verified identity is attached to
-    scope["state"]["identity"] = {"agent_id", "scopes", "key_id"} so
+    scope["state"]["identity"] = {"workspace_id", "member_id",
+    "credential_id", "scopes"} so
     downstream handlers can trust it over self-declared X-Agent-Id.
     """
 
@@ -117,9 +118,10 @@ class FirekeepKeyAuthMiddleware:
 
         state: dict[str, Any] = scope.setdefault("state", {})
         state["identity"] = {
-            "agent_id": identity["agent_id"],
+            "workspace_id": identity["workspace_id"],
+            "member_id": identity["member_id"],
+            "credential_id": identity["credential_id"],
             "scopes": identity["scopes"],
-            "key_id": identity["key_id"],
         }
         await self.app(scope, receive, send)
 

@@ -108,6 +108,60 @@ def test_versions_row_warns_when_unreachable(tmp_path, monkeypatch):
     assert status == "warn"  # unreachable is real; not a hard fail
 
 
+def test_entitlement_row_reports_team_and_expiry_warning(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path, monkeypatch, SERVER)
+    monkeypatch.setattr(
+        cli,
+        "get_json",
+        lambda url, **kw: {
+            "entitlement": {
+                "plan": "team",
+                "max_members": 5,
+                "verified": True,
+                "source": "redis",
+                "warning": "licence expires in 12 day(s)",
+            }
+        },
+    )
+    name, status, detail = cli._check_entitlement(cfg)
+    assert (name, status) == ("licence", "warn")
+    assert "Team" in detail and "12 day" in detail
+
+
+def test_entitlement_row_reports_built_in_solo_without_warning(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path, monkeypatch, SERVER)
+    monkeypatch.setattr(
+        cli,
+        "get_json",
+        lambda url, **kw: {
+            "entitlement": {
+                "plan": "solo",
+                "max_members": 1,
+                "verified": False,
+                "source": "built-in",
+                "warning": None,
+            }
+        },
+    )
+    assert cli._check_entitlement(cfg) == (
+        "licence",
+        "ok",
+        "Solo, up to 1 member(s)",
+    )
+
+
+def test_entitlement_row_is_absent_on_old_or_unreachable_server(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path, monkeypatch, SERVER)
+    monkeypatch.setattr(cli, "get_json", lambda url, **kw: {"version": "0.6.0"})
+    assert cli._check_entitlement(cfg) is None
+
+    def down(url, **kw):
+        raise transport.TransportError("down")
+
+    monkeypatch.setattr(cli, "get_json", down)
+    assert cli._check_entitlement(cfg) is None
+
+
 def test_check_health_survives_ssl_errors_not_wrapped_by_transport(tmp_path, monkeypatch):
     # transport._build_ssl_context() runs OUTSIDE transport._request()'s own
     # try/except, so a malformed/unverifiable ca_path raises a raw

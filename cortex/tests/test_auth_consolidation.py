@@ -284,7 +284,8 @@ class TestMainWiring:
             if m.cls.__name__ == "FirekeepKeyAuthMiddleware"
         )
         assert mw.kwargs["skip_exact_paths"] == (
-            "/dashboard", "/dashboard/", "/enroll", "/enroll/anchor"
+            "/dashboard", "/dashboard/", "/enroll", "/enroll/anchor",
+            "/members/invites/accept", "/members/invites/anchor",
         )
         assert "/dashboard" not in mw.kwargs["skip_paths"]
 

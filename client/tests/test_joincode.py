@@ -9,12 +9,12 @@ import pytest
 from firekeep_client.joincode import JoinCodeError, decode_join_code
 
 
-def encode(payload):
+def encode(payload, prefix="fk_join_"):
     body = base64.urlsafe_b64encode(
         json.dumps(payload, separators=(",", ":")).encode()
     ).decode().rstrip("=")
     check = base64.urlsafe_b64encode(hashlib.sha256(body.encode()).digest()[:3]).decode().rstrip("=")
-    return f"fk_join_{body}.{check}"
+    return f"{prefix}{body}.{check}"
 
 
 def payload(**changes):
@@ -34,6 +34,15 @@ def test_round_trip_and_tid():
     code = decode_join_code(encode(payload()))
     assert code.host == "firekeep.example"
     assert code.tid == hashlib.sha256(bytes(range(32))).hexdigest()[:16]
+    assert code.purpose == "device"
+
+
+def test_member_invite_uses_same_validated_transport_envelope():
+    value = payload()
+    value["m"] = value.pop("q")
+    code = decode_join_code(encode(value, prefix="fk_member_"))
+    assert code.purpose == "member"
+    assert code.host == "firekeep.example"
 
 
 def test_whitespace_and_whole_command_are_tolerated():

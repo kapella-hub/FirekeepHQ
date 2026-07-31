@@ -31,6 +31,31 @@ def ca_fingerprint(ca_pem: str) -> str:
     return _b64url(hashlib.sha256(ca_pem.encode("utf-8")).digest()[:16])
 
 
+def encode_prepared_join(
+    ticket: str,
+    record: dict[str, str],
+    *,
+    ca_mode: str = "",
+) -> str:
+    """Encode connection metadata for an already prepared enrollment ticket."""
+    payload: dict[str, Any] = {
+        "v": 1,
+        "t": record["transport"],
+        "k": record["kind"],
+        "x": datetime.fromisoformat(record["expires_at"]).strftime("%Y%m%dT%H%M%SZ"),
+        "q": ticket,
+    }
+    if record["kind"] == "ports":
+        payload["h"] = record["host"]
+    else:
+        payload["u"] = record["base_url"]
+    if record["transport"] == "tls":
+        payload["f"] = "os" if ca_mode == "os" else ca_fingerprint(record["ca_pem"])
+    if record["transport"] == "tunnel":
+        payload["s"] = record["ssh_target"]
+    return encode_join_code(payload)
+
+
 async def mint_invite(
     store: EnrollmentStore,
     *,
@@ -73,23 +98,7 @@ async def mint_invite(
         key_expires_days=key_expires_days,
         device_id=device_id,
     )
-    payload: dict[str, Any] = {
-        "v": 1,
-        "t": transport,
-        "k": kind,
-        "x": datetime.fromisoformat(record["expires_at"]).strftime("%Y%m%dT%H%M%SZ"),
-        "q": ticket,
-    }
-    if kind == "ports":
-        payload["h"] = host
-    else:
-        payload["u"] = base_url
-    if transport == "tls":
-        payload["f"] = "os" if ca_mode == "os" else ca_fingerprint(ca_pem)
-    if transport == "tunnel":
-        payload["s"] = ssh_target
-
-    code = encode_join_code(payload)
+    code = encode_prepared_join(ticket, record, ca_mode=ca_mode)
     dist = dist_base.rstrip("/")
     sh_command = f"curl -fsSL {dist}/latest/install.sh | FIREKEEP_JOIN={code} sh"
     ps_command = (

@@ -53,6 +53,31 @@ def test_pending_exists_before_network_and_is_deleted_after_config(home, monkeyp
         assert stat.S_IMODE(home.stat().st_mode) == 0o600
 
 
+def test_member_code_accepts_membership_then_runs_shared_device_join(home, monkeypatch, capsys):
+    member_payload = payload()
+    member_payload["m"] = member_payload.pop("q")
+    member_code = encode(member_payload, prefix="fk_member_")
+    calls = []
+
+    monkeypatch.setattr(J, "get_json", lambda *a, **k: {"ok": True})
+
+    def post(url, body, **kwargs):
+        calls.append(url)
+        if url.endswith("/members/invites/accept"):
+            return {
+                "membership": {"label": "Ada"},
+                "entitlement": {"plan": "team"},
+                "join_code": encode(payload()),
+            }
+        return response()
+
+    monkeypatch.setattr(J, "post_json", post)
+    assert J.join(member_code) == 0
+    assert calls[0].endswith("/members/invites/accept")
+    assert calls[1].endswith("/enroll")
+    assert "member invite accepted for Ada — Team workspace" in capsys.readouterr().out
+
+
 def test_failed_probe_sends_no_ticket_and_changes_no_config(home, monkeypatch):
     posts = []
     monkeypatch.setattr(J, "get_json", lambda *a, **k: (_ for _ in ()).throw(

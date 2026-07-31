@@ -27,6 +27,7 @@ class JoinCode:
     fingerprint: str | None = None
     ssh_target: str | None = None
     ticket: str = field(default="", repr=False)
+    purpose: str = "device"
 
 
 def _b64url(data: bytes) -> str:
@@ -52,13 +53,21 @@ def decode_join_code(pasted: str) -> JoinCode:
     value = pasted.strip()
     value = re.sub(r"^firekeep\s+join\s+", "", value, flags=re.IGNORECASE)
     value = re.sub(r"\s+", "", value)
-    if not value.startswith("fk_join_"):
+    if value.startswith("fk_join_"):
+        prefix = "fk_join_"
+        purpose = "device"
+        ticket_field = "q"
+    elif value.startswith("fk_member_"):
+        prefix = "fk_member_"
+        purpose = "member"
+        ticket_field = "m"
+    else:
         raise JoinCodeError(
             "E_NOT_A_CODE",
             "that does not look like a Firekeep join code (expected it to start "
-            "with 'fk_join_')",
+            "with 'fk_join_' or 'fk_member_')",
         )
-    rest = value[len("fk_join_"):]
+    rest = value[len(prefix):]
     if rest.count(".") != 1:
         raise _malformed("separator")
     body, checksum = rest.split(".", 1)
@@ -112,12 +121,12 @@ def decode_join_code(pasted: str) -> JoinCode:
     expires_at = payload.get("x")
     if not isinstance(expires_at, str) or not re.fullmatch(r"\d{8}T\d{6}Z", expires_at):
         raise _malformed("x")
-    ticket = payload.get("q")
+    ticket = payload.get(ticket_field)
     if not isinstance(ticket, str):
-        raise _malformed("q")
-    ticket_bytes = _decode_b64(ticket, "q")
+        raise _malformed(ticket_field)
+    ticket_bytes = _decode_b64(ticket, ticket_field)
     if len(ticket_bytes) != 32:
-        raise _malformed("q", "not a 32-byte ticket")
+        raise _malformed(ticket_field, "not a 32-byte ticket")
     tid = hashlib.sha256(ticket_bytes).hexdigest()[:16]
     return JoinCode(
         transport=transport,
@@ -129,4 +138,5 @@ def decode_join_code(pasted: str) -> JoinCode:
         fingerprint=fingerprint,
         ssh_target=ssh_target,
         ticket=ticket,
+        purpose=purpose,
     )

@@ -1,6 +1,6 @@
 # Licensing — source-available release policy
 
-_Last updated 2026-07-26._
+_Last updated 2026-07-31._
 
 **This file and the `LICENSE` it describes were written by an engineer, not a
 lawyer. Have a lawyer review the licence text before the first paid sale** —
@@ -23,7 +23,12 @@ to Apache-2.0 four years after its first public distribution.
 | Agent identities, devices, terminals, background workers | Unlimited when controlled by the one member | Unlimited |
 | Group use | Not granted | Commercial license |
 | Source | Available under BUSL-1.1; Apache-2.0 after the Change Date | Same |
-| Enforcement | Contract terms + server-side signed entitlements | Same |
+| Enforcement | Built-in Solo fallback; no licence document needed | Signed offline entitlement; seat checks only when member invites are issued or accepted |
+
+Entitlements do not gate memory, sessions, coordination, code intelligence,
+presence, night-shift, device enrollment, or agent concurrency. An absent,
+malformed, unsigned, or expired document degrades to Solo; existing data and
+members remain usable. The server performs no entitlement phone-home.
 
 Pricing, seat counts, and trial duration are deliberately **not** decided and
 are not in the licence — they are referred to "the applicable commercial

@@ -19,31 +19,25 @@ def test_adapter_abc_cannot_instantiate():
         Adapter()
 
 
-def test_shim_servers_always_includes_symdex_and_decision(tmp_path):
+def test_shim_servers_renders_one_gateway(tmp_path):
     venv_bin = tmp_path / "venv" / "bin"
-    servers = shim_servers(venv_bin)                       # no symdex kwarg
-    # Both stdio-local servers are ALWAYS present (never through the shim, no --service)
-    assert servers["firekeep-symdex"] == (_exe(venv_bin / "firekeep-symdex"), [])
-    assert servers["firekeep-decision"] == (_exe(venv_bin / "firekeep-decision"), [])
-    # HTTP services still go through the shim
-    assert servers["firekeep-cortex"] == (_exe(venv_bin / "firekeep-shim"), ["--service", "cortex"])
-    assert set(servers) == set(FIREKEEP_MCP_KEYS)             # full always-on set
+    servers = shim_servers(venv_bin)
+    assert servers == {"firekeep": (_exe(venv_bin / "firekeep"), ["gateway"])}
+    assert set(servers) == set(FIREKEEP_MCP_KEYS)
 
 
 def test_shim_servers_appends_exe_on_win32(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     venv_bin = tmp_path / "Scripts"
     servers = shim_servers(venv_bin)
-    assert servers["firekeep-cortex"][0] == str(venv_bin / "firekeep-shim") + ".exe"
-    assert servers["firekeep-symdex"][0] == str(venv_bin / "firekeep-symdex") + ".exe"
+    assert servers["firekeep"][0] == str(venv_bin / "firekeep") + ".exe"
 
 
 def test_shim_servers_no_exe_on_posix(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "platform", "linux")
     venv_bin = tmp_path / "bin"
     servers = shim_servers(venv_bin)
-    assert servers["firekeep-cortex"][0] == str(venv_bin / "firekeep-shim")
-    assert servers["firekeep-symdex"][0] == str(venv_bin / "firekeep-symdex")
+    assert servers["firekeep"][0] == str(venv_bin / "firekeep")
 
 
 def test_hook_command_appends_exe_on_win32(tmp_path, monkeypatch):
@@ -129,9 +123,7 @@ def test_merge_owned_preserves_foreign():
 
 
 def test_firekeep_mcp_keys_frozen():
-    assert FIREKEEP_MCP_KEYS == (
-        "firekeep-cortex", "firekeep-bridge", "firekeep-sentinel", "firekeep-relay",
-        "firekeep-symdex", "firekeep-decision")
+    assert FIREKEEP_MCP_KEYS == ("firekeep",)
 
 
 def test_get_adapter_unknown_raises():

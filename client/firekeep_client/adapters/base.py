@@ -13,10 +13,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 
 SERVICES = ("cortex", "bridge", "sentinel", "relay")
-FIREKEEP_MCP_KEYS = (
-    "firekeep-cortex", "firekeep-bridge", "firekeep-sentinel", "firekeep-relay",
-    "firekeep-symdex", "firekeep-decision",
-)
+FIREKEEP_MCP_KEYS = ("firekeep",)
 FIREKEEP_ENV_KEYS = ("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS",)
 # Stable, venv-independent substring identifying a firekeep-owned hook command (used at unrender).
 # No trailing dot: the rendered command is the dispatcher form `-m firekeep_client.hooks <core>`
@@ -63,6 +60,8 @@ LEGACY_ENV_KEYS = (
 # without this an upgraded machine carries TWELVE servers — six of them pointing at
 # a config path that no longer exists, failing to connect on every session start.
 LEGACY_MCP_KEYS = (
+    "firekeep-cortex", "firekeep-bridge", "firekeep-sentinel", "firekeep-relay",
+    "firekeep-symdex", "firekeep-decision",
     "nexus-cortex", "nexus-bridge", "nexus-sentinel", "nexus-relay",
     "nexus-symdex", "nexus-decision",
 )
@@ -95,18 +94,8 @@ def console_script_path(path: Path) -> str:
 
 
 def shim_servers(venv_bin: Path) -> dict[str, tuple[str, list[str]]]:
-    """Canonical firekeep MCP servers as (command, args) with ABSOLUTE venv script paths.
-    Every HTTP service is reached via `firekeep-shim --service <svc>`. Two servers are
-    stdio-local (their own console-scripts, NEVER through the shim, no --service) and
-    ALWAYS included — firekeep-symdex (code intelligence) and firekeep-decision (clarification
-    board): both are always-on client capabilities, not opt-in."""
-    shim = console_script_path(venv_bin / "firekeep-shim")
-    servers: dict[str, tuple[str, list[str]]] = {}
-    for svc in SERVICES:
-        servers[f"firekeep-{svc}"] = (shim, ["--service", svc])
-    servers["firekeep-symdex"] = (console_script_path(venv_bin / "firekeep-symdex"), [])
-    servers["firekeep-decision"] = (console_script_path(venv_bin / "firekeep-decision"), [])
-    return servers
+    """The one local Firekeep MCP gateway entry rendered into every runtime."""
+    return {"firekeep": (console_script_path(venv_bin / "firekeep"), ["gateway"])}
 
 
 def hook_command(venv_bin: Path, core: str, *, extra_args: str = "") -> str:
@@ -268,9 +257,7 @@ class Adapter(ABC):
 
     @abstractmethod
     def render(self, *, venv_bin: Path) -> None:
-        """Write this runtime's native config: MCP servers wired to
-        `{venv_bin}/firekeep-shim --service <svc>` plus the always-on stdio-local
-        firekeep-symdex and firekeep-decision, and (where supported) lifecycle hooks."""
+        """Write this runtime's native config with one local Firekeep gateway."""
         raise NotImplementedError
 
     @abstractmethod

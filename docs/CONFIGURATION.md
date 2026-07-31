@@ -157,7 +157,7 @@ baked into the collection at creation.
 | 6379 | Redis | Redis (localhost) |
 | 11434 | Ollama | HTTP (localhost) |
 
-Two MCP servers ship in the client kit as **stdio-local** processes and bind no port: `firekeep-symdex` (code intelligence, always installed) and `firekeep-decision` (the Decision Board, always installed — backed by Cortex `POST /decision/synthesize`).
+Two local MCP backends ship in the client kit and bind no port: `firekeep-symdex` (code intelligence) and `firekeep-decision` (the Decision Board, backed by Cortex `POST /decision/synthesize`). Both are always installed and started behind the single `firekeep` stdio gateway.
 
 ### Binding and exposure
 

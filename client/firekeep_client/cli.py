@@ -7,14 +7,16 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import ssl
 import stat
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
-from firekeep_client import __version__, pathenv, resolver, state, updater, wizard
+from firekeep_client import __version__, pathenv, resolver, serverinit, state, updater, wizard
 from firekeep_client.adapters import get_adapter
 from firekeep_client.transport import get_json, TransportError
 
@@ -325,8 +327,7 @@ def cmd_install(args) -> int:
         return 1
 
     print(f"firekeep: installed into {home}")
-    registered = ("firekeep-cortex, firekeep-bridge, firekeep-sentinel, firekeep-relay, "
-                  "firekeep-decision, firekeep-symdex")
+    registered = "firekeep (gateway: memory, sessions, relay, monitoring, code, decisions)"
     print(f"firekeep: registered MCP servers: {registered}")
     print("firekeep: tip — `/personal` (Claude) or `firekeep personal` toggles a private "
           "session where Firekeep is fully bypassed (nothing logged/recalled); it "
@@ -411,6 +412,27 @@ def _check_versions(cfg) -> tuple[str, str, str]:
         # OSError: see _check_health's comment -- an unverifiable ca_path
         # raises ssl.SSLError, not TransportError. Unreachable, not fatal.
         return ("versions", "warn", f"cortex /version unreachable: {exc}")
+
+
+def _check_entitlement(cfg) -> tuple[str, str, str] | None:
+    """Report the server-authoritative plan and any licence expiry warning."""
+    try:
+        ep = resolver.resolve("cortex", cfg=cfg)
+        data = get_json(f"{ep.rest_base}/workspace", headers=ep.headers, verify=ep.verify)
+    except (TransportError, resolver.ConfigError, OSError):
+        return None  # reachability/auth already have dedicated doctor rows
+    entitlement = data.get("entitlement") if isinstance(data, dict) else None
+    if not isinstance(entitlement, dict):
+        return None  # pre-workspace server; version/update rows provide the action
+    plan = str(entitlement.get("plan", "solo")).title()
+    maximum = entitlement.get("max_members", 1)
+    warning = entitlement.get("warning")
+    if warning:
+        return ("licence", "warn", f"{plan}, {maximum} member(s) — {warning}")
+    if not entitlement.get("verified") and entitlement.get("source") != "built-in":
+        reason = entitlement.get("reason", "licence is not valid")
+        return ("licence", "warn", f"{plan}, {maximum} member(s) — {reason}")
+    return ("licence", "ok", f"{plan}, up to {maximum} member(s)")
 
 
 def _check_agent_id(cfg) -> tuple[str, str, str] | None:
@@ -656,6 +678,9 @@ def run_doctor(cfg=None) -> list[tuple[str, str, str]]:
     # rest -- doctor always runs the full suite and reports everything.
     results.extend(_check_health(cfg))
     results.append(_check_versions(cfg))
+    entitlement = _check_entitlement(cfg)
+    if entitlement is not None:
+        results.append(entitlement)
     client_version = _check_client_version(cfg)
     if client_version is not None:
         results.append(client_version)
@@ -776,6 +801,192 @@ def cmd_join(args) -> int:
     except JoinError as exc:
         print(f"join failed: {exc}", file=sys.stderr)
         return exc.exit_code
+
+
+def _server_source_dir(explicit: str | None) -> Path | None:
+    """Find a source checkout or an already-downloaded server bundle."""
+    candidates: list[Path] = []
+    if explicit:
+        candidates.append(Path(explicit).expanduser())
+    else:
+        candidates.append(Path.cwd())
+        candidates.append(_firekeep_home() / "server")
+        kit = _kit_dir()
+        if kit is not None:
+            candidates.append(kit.parent)
+
+    for candidate in candidates:
+        root = candidate.resolve()
+        if all((root / name).is_file() for name in (
+            "install.sh", "docker-compose.yml", ".env.example",
+        )):
+            return root
+    return None
+
+
+def _server_dist_base(explicit: str | None) -> str:
+    if explicit:
+        return explicit.rstrip("/")
+    configured = os.environ.get("FIREKEEP_SERVER_DIST_BASE", "").strip()
+    if configured:
+        return configured.rstrip("/")
+    path = _config_path()
+    if path.is_file():
+        try:
+            cfg = resolver.load_config(path)
+            if cfg.has_section("dist"):
+                configured = cfg.get("dist", "base_url", fallback="").strip()
+                if configured:
+                    return configured.rstrip("/")
+        except resolver.ConfigError:
+            pass
+    return serverinit.DEFAULT_DIST_BASE
+
+
+def cmd_init(args) -> int:
+    """Provision a server from a local checkout or the verified public bundle."""
+    root = _server_source_dir(args.server_dir)
+    downloaded = False
+    if root is not None and args.version and (root / "SERVER_BUNDLE.json").is_file():
+        previous = serverinit.previous_bundle_path(root)
+        try:
+            root = serverinit.download_bundle(
+                _server_dist_base(args.dist_base),
+                root,
+                version=args.version,
+                timeout=_INSTALL_TIMEOUT,
+            )
+        except (serverinit.ServerInitError, updater.UpdateError) as exc:
+            print(f"firekeep init: {exc}. Existing server bundle was preserved.", file=sys.stderr)
+            return 2
+        downloaded = True
+        print(f"firekeep: verified server bundle {args.version} prepared at {root}")
+        if previous.is_dir():
+            print(f"firekeep: previous deployment files retained at {previous}")
+    elif root is not None and args.version:
+        print(
+            "firekeep init: --version updates a published server bundle, not a "
+            "source checkout. Omit --server-dir to use ~/.firekeep/server.",
+            file=sys.stderr,
+        )
+        return 2
+    if root is None:
+        destination = (
+            Path(args.server_dir).expanduser()
+            if args.server_dir
+            else _firekeep_home() / "server"
+        )
+        try:
+            root = serverinit.download_bundle(
+                _server_dist_base(args.dist_base),
+                destination,
+                version=args.version,
+                timeout=_INSTALL_TIMEOUT,
+            )
+        except (serverinit.ServerInitError, updater.UpdateError) as exc:
+            print(f"firekeep init: {exc}. Nothing was changed.", file=sys.stderr)
+            return 2
+        downloaded = True
+        print(f"firekeep: verified server bundle downloaded to {root}")
+    bash = shutil.which("bash")
+    if not bash:
+        print(
+            "firekeep init needs bash to run the server installer. Install bash "
+            "(or use WSL on Windows), then retry the same command.",
+            file=sys.stderr,
+        )
+        return 2
+
+    command = [bash, str(root / "install.sh")]
+    if args.pull or downloaded or (root / "SERVER_BUNDLE.json").is_file():
+        command.append("--pull")
+    if args.office:
+        command.append("--office")
+    try:
+        subprocess.run(command, cwd=root, check=True, timeout=_INSTALL_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        print(
+            f"firekeep init timed out after {_INSTALL_TIMEOUT:.0f}s "
+            "(override with FIREKEEP_INSTALL_TIMEOUT).",
+            file=sys.stderr,
+        )
+        return 1
+    except subprocess.CalledProcessError as exc:
+        print(
+            f"firekeep init: server installer exited with status {exc.returncode}; "
+            "its output above names the failed step.",
+            file=sys.stderr,
+        )
+        return exc.returncode or 1
+    except OSError as exc:
+        print(f"firekeep init could not start the server installer: {exc}", file=sys.stderr)
+        return 1
+    print(
+        "firekeep: server provisioned. Use Dashboard -> Devices -> Add device, "
+        "then run `firekeep join <code>` on each client machine."
+    )
+    return 0
+
+
+def _oauth_metadata_url(server_url: str) -> str:
+    parsed = urlparse(server_url.strip())
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("server URL must be an http(s) origin or path without credentials, query, or fragment")
+    return f"{parsed.scheme}://{parsed.netloc}/.well-known/oauth-protected-resource"
+
+
+def cmd_login(args) -> int:
+    """Discover hosted OAuth, or explain the self-hosted join-code path."""
+    try:
+        metadata_url = _oauth_metadata_url(args.server_url)
+    except ValueError as exc:
+        print(f"firekeep login: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        metadata = get_json(metadata_url, headers={}, timeout=10, verify=True)
+    except TransportError as exc:
+        if exc.status == 404:
+            print(
+                "this server issues join codes — ask an admin for one, then run: "
+                "`firekeep join <code>`"
+            )
+            return 2
+        print(f"firekeep login: could not discover sign-in at {metadata_url}: {exc}", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print(f"firekeep login: TLS setup failed for {metadata_url}: {exc}", file=sys.stderr)
+        return 1
+
+    authorization_servers = (
+        metadata.get("authorization_servers", []) if isinstance(metadata, dict) else []
+    )
+    if authorization_servers:
+        print(
+            "firekeep login: this server advertises hosted OAuth, but the hosted "
+            "control-plane sign-in flow is not included in this self-hosted client "
+            "build yet.",
+            file=sys.stderr,
+        )
+        return 2
+    print(
+        "this server issues join codes — ask an admin for one, then run: "
+        "`firekeep join <code>`"
+    )
+    return 2
+
+
+def cmd_gateway(args) -> int:
+    from firekeep_client.gateway import run
+
+    return run()
 
 
 def cmd_doctor(args) -> int:
@@ -960,6 +1171,35 @@ def _build_parser() -> argparse.ArgumentParser:
     join_parser.add_argument("--print-key", action="store_true")
     join_parser.add_argument("--resume", action="store_true")
     join_parser.set_defaults(func=cmd_join)
+
+    init_parser = sub.add_parser(
+        "init", help="provision a new local or self-hosted Firekeep server"
+    )
+    init_parser.add_argument(
+        "--server-dir", metavar="PATH", help="server bundle destination or source directory"
+    )
+    init_parser.add_argument(
+        "--pull", action="store_true", help="pull published images even from a source checkout"
+    )
+    init_parser.add_argument(
+        "--version", metavar="vX.Y.Z", help="install a specific published server version"
+    )
+    init_parser.add_argument(
+        "--dist-base", metavar="URL", help="override the public release distribution URL"
+    )
+    init_parser.add_argument(
+        "--office", action="store_true", help="enable the TLS reverse-proxy deployment"
+    )
+    init_parser.set_defaults(func=cmd_init)
+
+    login_parser = sub.add_parser(
+        "login", help="attach through hosted sign-in, when the server supports it"
+    )
+    login_parser.add_argument("server_url")
+    login_parser.set_defaults(func=cmd_login)
+
+    gateway = sub.add_parser("gateway", help="run the local Firekeep MCP gateway")
+    gateway.set_defaults(func=cmd_gateway)
 
     doc = sub.add_parser("doctor", help="preflight health / skew / perm checks")
     doc.set_defaults(func=cmd_doctor)

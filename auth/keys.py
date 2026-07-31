@@ -7,8 +7,9 @@ re-exports everything here and adds the FastAPI-only require_scope dependency
 on top. Both layers read the same Redis DB 7 store.
 
 API keys are stored as SHA-256 hashes (plaintext never stored):
-  auth:key:{sha256hex}       -> hash {agent_id, scopes (JSON), created_at,
-                                     key_id, credential_id, device_id, expires_at?}
+  auth:key:{sha256hex}       -> hash {workspace_id, member_id, scopes (JSON),
+                                     created_at, key_id, credential_id,
+                                     device_id, expires_at?}
   auth:cred:{credential_id}  -> sha256hex (new credentials; legacy records may omit it)
   auth:key_index             -> zset of credential IDs scored by creation ts
 """
@@ -22,6 +23,12 @@ import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
+
+from auth.principal import (
+    anonymous_principal,
+    deployment_owner_member_id,
+    deployment_workspace_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -157,11 +164,7 @@ async def _resolve_key_id(key_id: str) -> list[tuple[str, dict[str, Any]]]:
 # Guarded by tests/test_auth_scopes.py.
 ANONYMOUS_SCOPES: tuple[str, ...] = tuple(sorted(SCOPES - {"admin", "*", "vault:read"}))
 
-_ANONYMOUS_IDENTITY = {
-    "agent_id": "anonymous",
-    "scopes": list(ANONYMOUS_SCOPES),
-    "authenticated": False,
-}
+_ANONYMOUS_IDENTITY = anonymous_principal()
 
 
 def scopes_allow(scopes, required: str, *, allow_wildcard: bool = True) -> bool:
@@ -249,6 +252,8 @@ def build_credential_record(
     *,
     enrolled_via: str | None = None,
     device_label: str | None = None,
+    workspace_id: str | None = None,
+    member_id: str | None = None,
 ) -> dict[str, str]:
     """Build the Redis field map for a credential without performing I/O.
 
@@ -258,8 +263,8 @@ def build_credential_record(
     passthrough.
     """
     metadata = {
-        # Compatibility identity until the workspace principal model lands.
-        "agent_id": device_id,
+        "workspace_id": workspace_id or deployment_workspace_id(),
+        "member_id": member_id or deployment_owner_member_id(),
         "device_id": device_id,
         "credential_id": credential_id,
         "key_id": credential_id,
@@ -297,9 +302,10 @@ async def create_key(
     key_hash = _hash_key(api_key)
     now = datetime.now(timezone.utc)
 
-    # Manual/server-minted keys retain their historical short hash ID. Client
-    # enrollment supplies an independently-minted ID to the same pure helper.
-    credential_id = key_hash[:16]
+    # Credential identity is independent of the client-presented key hash.
+    # Resolution goes through auth:cred:<credential_id>; the legacy hash-prefix
+    # scan remains read-only compatibility for records created before that map.
+    credential_id = secrets.token_hex(8)
     metadata = build_credential_record(
         credential_id,
         agent_id,
@@ -370,7 +376,6 @@ async def list_keys(limit: int = 50) -> list[dict[str, Any]]:
                 "credential_id": data.get("credential_id", data["key_id"]),
                 "device_id": data.get("device_id", data.get("agent_id", "unknown")),
                 "device_label": data.get("device_label"),
-                "agent_id": data.get("agent_id", "unknown"),
                 "scopes": json.loads(data.get("scopes", "[]")),
                 "created_at": data.get("created_at"),
                 "expires_at": data.get("expires_at"),
@@ -470,10 +475,11 @@ async def validate_key_by_hash(key_hash: str, redis_client=None) -> dict[str, An
         except (ValueError, TypeError):
             pass
     return {
-        "agent_id": data.get("agent_id", "unknown"),
+        "workspace_id": data.get("workspace_id") or deployment_workspace_id(),
+        "member_id": data.get("member_id") or deployment_owner_member_id(),
+        "credential_id": data.get("credential_id") or data.get("key_id", key_hash[:16]),
         "scopes": json.loads(data.get("scopes", "[]")),
         "authenticated": True,
-        "key_id": data.get("key_id", key_hash[:16]),
     }
 
 

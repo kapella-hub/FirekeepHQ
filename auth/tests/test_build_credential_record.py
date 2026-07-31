@@ -23,7 +23,8 @@ def test_build_credential_record_is_pure_and_complete():
     )
 
     assert record == {
-        "agent_id": "fedcba9876543210",
+        "workspace_id": "workspace-local",
+        "member_id": "member-owner",
         "device_id": "fedcba9876543210",
         "credential_id": "0123456789abcdef",
         "key_id": "0123456789abcdef",
@@ -82,7 +83,6 @@ async def test_enrollment_provenance_is_listed():
             "credential_id": credential_id,
             "device_id": "fedcba9876543210",
             "device_label": "Bob laptop",
-            "agent_id": "fedcba9876543210",
             "scopes": ["memory:read"],
             "created_at": "2026-07-31T00:00:00+00:00",
             "expires_at": "2026-10-29T00:00:00+00:00",

@@ -204,4 +204,13 @@ def test_docs_tell_a_customer_how_to_install_without_source() -> None:
     for name in ("README.md", "docs/DEPLOYMENT.md"):
         text = (REPO / name).read_text(encoding="utf-8")
         assert "install.sh --pull" in text, f"{name} does not document the customer path"
-        assert "docker login ghcr.io" in text, f"{name} does not say how to authenticate"
+        assert "docker login ghcr.io" not in text, f"{name} still requires registry credentials"
+
+
+def test_release_verifies_anonymous_image_pull() -> None:
+    """Download access cannot become a hidden second entitlement system."""
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    logout = workflow.index("docker logout ghcr.io")
+    pull = workflow.index('docker pull "${{ steps.meta.outputs.image }}', logout)
+    assert logout < pull
+    assert "public package" in _install_sh().lower() or "public visibility" in _install_sh().lower()

@@ -25,12 +25,12 @@ async def redis():
     await r.aclose()
 
 
-async def _put(redis, key_hash: str, key_id: str, agent_id: str) -> None:
+async def _put(redis, key_hash: str, key_id: str, device_id: str) -> None:
     """Write a credential record directly, bypassing create_key."""
     await redis.hset(
         f"auth:key:{key_hash}",
         mapping={
-            "agent_id": agent_id,
+            "device_id": device_id,
             "scopes": json.dumps(["memory:read"]),
             "created_at": "2026-07-30T00:00:00+00:00",
             "key_id": key_id,
@@ -55,7 +55,7 @@ class TestResolveKeyId:
         found = await keys._resolve_key_id(SHARED)
         assert len(found) == 1
         assert found[0][0] == f"auth:key:{HASH_A}"
-        assert found[0][1]["agent_id"] == "alice"
+        assert found[0][1]["device_id"] == "alice"
 
     @pytest.mark.asyncio
     async def test_prefix_match_with_different_stored_id_is_not_a_match(self, redis):
@@ -128,7 +128,7 @@ class TestListKeys:
         await _put(redis, HASH_A, SHARED, "alice")
         rows = await keys.list_keys()
         assert len(rows) == 1
-        assert rows[0]["agent_id"] == "alice"
+        assert rows[0]["device_id"] == "alice"
         assert rows[0]["ambiguous"] is False
 
     @pytest.mark.asyncio
@@ -138,7 +138,7 @@ class TestListKeys:
         await _put(redis, HASH_B, SHARED, "bob")
         rows = await keys.list_keys()
         assert len(rows) == 2
-        assert {r["agent_id"] for r in rows} == {"alice", "bob"}
+        assert {r["device_id"] for r in rows} == {"alice", "bob"}
         assert all(r["ambiguous"] is True for r in rows)
 
     @pytest.mark.asyncio

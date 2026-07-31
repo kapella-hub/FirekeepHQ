@@ -6,6 +6,8 @@ set -euo pipefail
 #   firekeep-admin invite [--agent NAME] [--expires-days N] [--json]
 #   firekeep-admin keys create --agent NAME [--expires-days N]
 #   firekeep-admin keys revoke CREDENTIAL_ID
+#   firekeep-admin licence status
+#   firekeep-admin licence apply FILE
 
 NON_ADMIN_SCOPES='["memory:read","memory:write","session:read","session:write","replay:read","relay:read","relay:write","eval:read","eval:write","vault:read"]'
 API_URL="${FIREKEEP_API_URL:-http://localhost:8100}"
@@ -20,6 +22,8 @@ Usage:
       [--ca-file PATH | --ca os] [--insecure-http] [--dist-base URL]
   firekeep-admin keys create --agent NAME [--expires-days N]
   firekeep-admin keys revoke CREDENTIAL_ID
+  firekeep-admin licence status
+  firekeep-admin licence apply FILE   (use - to read stdin)
 EOF
     exit 1
 }
@@ -60,13 +64,20 @@ keys_create() {
     fi
 
     if [ -z "${FIREKEEP_ADMIN_KEY:-}" ] && redis_available; then
-        local key hash now credential_id expires_at="" ttl=""
+        local key hash now credential_id workspace_id member_id expires_at="" ttl=""
         key="nxs_$(openssl rand -hex 24)"
         hash="$(printf '%s' "$key" | sha256sum | awk '{print $1}')"
-        credential_id="${hash:0:16}"
+        credential_id="$(openssl rand -hex 8)"
+        workspace_id="$(env_get FIREKEEP_WORKSPACE_ID)"
+        member_id="$(env_get FIREKEEP_OWNER_MEMBER_ID)"
+        if [ -z "$workspace_id" ] || [ -z "$member_id" ]; then
+            echo "ERROR: FIREKEEP_WORKSPACE_ID and FIREKEEP_OWNER_MEMBER_ID are missing; run deploy/bootstrap-keys.sh" >&2
+            exit 1
+        fi
         now="$(date -u +"%Y-%m-%dT%H:%M:%S+00:00")"
         "${REDIS[@]}" HSET "auth:key:${hash}" \
-            agent_id "$agent" device_id "$agent" credential_id "$credential_id" \
+            workspace_id "$workspace_id" member_id "$member_id" \
+            device_id "$agent" credential_id "$credential_id" \
             key_id "$credential_id" scopes "$NON_ADMIN_SCOPES" created_at "$now" >/dev/null
         if [ -n "$expires_days" ]; then
             expires_at="$(date -u -d "+${expires_days} days" +"%Y-%m-%dT%H:%M:%S+00:00")"
@@ -215,6 +226,54 @@ invite() {
     "${cmd[@]}"
 }
 
+admin_api_key() {
+    local key="${FIREKEEP_ADMIN_KEY:-}"
+    [ -n "$key" ] || key="$(env_get DASHBOARD_API_KEY)"
+    if [ -z "$key" ]; then
+        echo "ERROR: no FIREKEEP_ADMIN_KEY or DASHBOARD_API_KEY is available" >&2
+        exit 1
+    fi
+    printf '%s' "$key"
+}
+
+licence_status() {
+    [ $# -eq 0 ] || usage
+    if [ "${FIREKEEP_ADMIN_DRY_RUN:-0}" = "1" ]; then
+        echo "GET ${API_URL}/licence"
+        return
+    fi
+    curl -sf "${API_URL}/licence" -H "X-API-Key: $(admin_api_key)" || {
+        echo "ERROR: licence status failed" >&2; exit 1;
+    }
+    echo
+}
+
+licence_apply() {
+    [ $# -eq 1 ] || usage
+    local source="$1" document
+    if [ "$source" = "-" ]; then
+        document="$(tr -d '\r\n')"
+    else
+        [ -r "$source" ] || { echo "ERROR: cannot read licence file: $source" >&2; exit 1; }
+        document="$(tr -d '\r\n' < "$source")"
+    fi
+    [[ "$document" =~ ^fk_lic_v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$ ]] || {
+        echo "ERROR: file is not a Firekeep signed licence document" >&2; exit 1;
+    }
+    if [ "${FIREKEEP_ADMIN_DRY_RUN:-0}" = "1" ]; then
+        echo "POST ${API_URL}/licence"
+        return
+    fi
+    curl -sf -X POST "${API_URL}/licence" \
+        -H "Content-Type: application/json" \
+        -H "X-API-Key: $(admin_api_key)" \
+        --data-binary "{\"document\":\"${document}\"}" || {
+            echo "ERROR: licence apply failed; run 'firekeep-admin licence status' and check cortex-api logs" >&2
+            exit 1
+        }
+    echo
+}
+
 case "${1:-}" in
     keys)
         case "${2:-}" in
@@ -224,5 +283,12 @@ case "${1:-}" in
         esac
         ;;
     invite) shift; invite "$@" ;;
+    licence)
+        case "${2:-}" in
+            status) shift 2; licence_status "$@" ;;
+            apply) shift 2; licence_apply "$@" ;;
+            *) usage ;;
+        esac
+        ;;
     *) usage ;;
 esac

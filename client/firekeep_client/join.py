@@ -161,8 +161,11 @@ def _transport(code: JoinCode, rest_base: str):
     if code.fingerprint == "os":
         return _build_ssl_context("os"), ""
 
+    anchor_path = (
+        "/members/invites/anchor" if code.purpose == "member" else "/enroll/anchor"
+    )
     anchor = get_json(
-        f"{rest_base}/enroll/anchor?tid={quote(code.tid)}",
+        f"{rest_base}{anchor_path}?tid={quote(code.tid)}",
         headers={},
         timeout=10,
         verify=False,
@@ -257,7 +260,11 @@ def join(
         raise JoinError(str(exc), exit_code=2) from exc
 
     config_path = resolver._config_path()
-    pending = _prepare_pending(code, resume=resume, config_path=config_path)
+    pending = (
+        _prepare_pending(code, resume=resume, config_path=config_path)
+        if code.purpose == "device"
+        else None
+    )
     rest_base = _rest_base(code)
     try:
         verify, ca_pem = _transport(code, rest_base)
@@ -271,6 +278,40 @@ def join(
             f"redeemed and is still valid: {exc}",
             exit_code=4,
         ) from exc
+
+    if code.purpose == "member":
+        try:
+            accepted = post_json(
+                f"{rest_base}/members/invites/accept",
+                {"ticket": code.ticket},
+                headers={},
+                timeout=10,
+                verify=verify,
+            )
+        except TransportError as exc:
+            # Seat refusals already name plan, counts, and upgrade path. Preserve
+            # that server text instead of reducing it to a generic join error.
+            raise JoinError(str(exc), exit_code=3) from exc
+        if not isinstance(accepted, dict) or not isinstance(
+            accepted.get("join_code"), str
+        ):
+            raise JoinError("server returned an invalid member-accept response", exit_code=6)
+        membership = accepted.get("membership") or {}
+        entitlement = accepted.get("entitlement") or {}
+        print(
+            f"member invite accepted for {membership.get('label') or membership.get('email') or 'member'} "
+            f"— {str(entitlement.get('plan', 'solo')).title()} workspace"
+        )
+        return join(
+            accepted["join_code"],
+            agent_id=agent_id,
+            force=force,
+            print_key=print_key,
+            resume=resume,
+        )
+
+    if pending is None:  # defensive: the member branch above always returns
+        raise JoinError("device enrollment state was not prepared", exit_code=3)
 
     ca_path = _write_ca(config_path, code, ca_pem) if ca_pem else None
 

@@ -61,7 +61,7 @@ def require_scope(scope: str):
     Usage:
         @router.get("/endpoint")
         async def my_endpoint(identity: dict = Depends(require_scope("replay:read"))):
-            agent_id = identity["agent_id"]
+            member_id = identity["member_id"]
     """
     async def _check_scope(request: Request) -> dict[str, Any]:
         if not _keys._AUTH_ENABLED:

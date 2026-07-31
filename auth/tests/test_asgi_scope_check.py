@@ -61,7 +61,7 @@ def test_enforces_scopes_from_env_settings_without_init_auth(monkeypatch):
     )
     with pytest.raises(ScopeError) as exc_info:
         require_scope_asgi(
-            _request({"agent_id": "a", "scopes": ["session:write"], "key_id": "k1"}),
+            _request({"member_id": "a", "scopes": ["session:write"], "credential_id": "k1"}),
             "admin",
         )
     assert exc_info.value.status_code == 403
@@ -69,23 +69,23 @@ def test_enforces_scopes_from_env_settings_without_init_auth(monkeypatch):
 
 class TestRequireScopeAsgi:
     def test_allows_when_scope_present(self, auth_enabled):
-        identity = require_scope_asgi(_request({"agent_id": "a", "scopes": ["relay:write"], "key_id": "k1"}), "relay:write")
-        assert identity["agent_id"] == "a"
+        identity = require_scope_asgi(_request({"member_id": "a", "scopes": ["relay:write"], "credential_id": "k1"}), "relay:write")
+        assert identity["member_id"] == "a"
 
     def test_allows_wildcard_scope(self, auth_enabled):
-        identity = require_scope_asgi(_request({"agent_id": "admin", "scopes": ["*"], "key_id": "k1"}), "relay:write")
-        assert identity["agent_id"] == "admin"
+        identity = require_scope_asgi(_request({"member_id": "admin", "scopes": ["*"], "credential_id": "k1"}), "relay:write")
+        assert identity["member_id"] == "admin"
 
     def test_raises_scope_error_when_missing_scope(self, auth_enabled):
         with pytest.raises(ScopeError) as exc_info:
-            require_scope_asgi(_request({"agent_id": "a", "scopes": ["relay:read"], "key_id": "k1"}), "relay:write")
+            require_scope_asgi(_request({"member_id": "a", "scopes": ["relay:read"], "credential_id": "k1"}), "relay:write")
         assert exc_info.value.status_code == 403
 
     def test_passes_through_anonymous_when_auth_disabled(self, auth_disabled):
         # No identity attached to scope['state'] — mirrors FirekeepKeyAuthMiddleware
         # never having run because auth is disabled.
         identity = require_scope_asgi(_request(None), "relay:write")
-        assert identity["agent_id"] == "anonymous"
+        assert identity["member_id"] == "member-owner"
         assert "admin" not in identity["scopes"]
         assert "*" not in identity["scopes"]
 
@@ -111,4 +111,4 @@ class TestRequireScopeAsgi:
         # identity dict with no "scopes" key at all — identity.get("scopes", [])
         # should default to [] and deny.
         with pytest.raises(ScopeError):
-            require_scope_asgi(_request({"agent_id": "a", "key_id": "k1"}), "relay:write")
+            require_scope_asgi(_request({"member_id": "a", "credential_id": "k1"}), "relay:write")

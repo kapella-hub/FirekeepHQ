@@ -1,4 +1,5 @@
-# Server release — publishes the four Firekeep service images.
+# Server release — publishes the four Firekeep service images and the small
+# source-free deployment bundle consumed by `firekeep init`.
 #
 # WHY THIS EXISTS: until now there was no way to deliver the server at all.
 # docs/DEPLOYMENT.md and README told a customer to `git clone` a PRIVATE repo,
@@ -6,10 +7,11 @@
 # from source. There was no tarball, no vX.Y.Z tag, and no registry — the
 # product was not deliverable in the literal sense.
 #
-# WHY IMAGES AND NOT A SOURCE TARBALL: the licence model is free-core, closed
-# source. A tarball ships the source it does not grant rights to. A Python image
-# does contain the .py files, which is why these packages are PRIVATE — the
-# access control is the registry, not obscurity.
+# DISTRIBUTION IS NOT ENTITLEMENT: the repository and images use the BUSL/FSL
+# source-available model.  Solo/Team rights are enforced by the signed offline
+# entitlement, not by a registry credential.  All four GHCR packages must be
+# set Public once in the organisation package settings; the anonymous-pull gate
+# below prevents a private package from becoming a customer release.
 #
 # WHAT IS DELIBERATELY NOT PUBLISHED: neo4j, redis, qdrant and ollama. The
 # customer's own daemon pulls those from their upstream registries, exactly as
@@ -111,12 +113,109 @@ jobs:
           echo "| firekeep-${{ matrix.name }} | \`$DIGEST\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "$DIGEST"
 
-      - name: Verify the published image runs
-        # A push is not a release. Pull the pushed artifact back and start the
-        # service's own entrypoint far enough to prove the image is not broken —
-        # `docker push` succeeding says only that bytes moved.
+      - name: Verify an anonymous customer can pull and run the image
+        # A push through the logged-in Actions session proves neither public
+        # readability nor runtime health.  Log out, remove the local copy, then
+        # exercise exactly the registry path a Solo customer uses.
         run: |
+          docker logout ghcr.io
           docker rmi "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}" || true
           docker pull "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}"
           docker run --rm "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}" \
             python -c "import provenance; print('version:', provenance.get_version_info('${{ matrix.name }}'))"
+
+  bundle:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    concurrency:
+      # Shared with client-release: both jobs update the same mutable gh-pages
+      # branch in firekeep-dist and therefore must serialize across workflows.
+      group: gh-pages-publish
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Resolve the tag and build the source-free bundle
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          case "$TAG" in
+            v*) ;;
+            *) echo "::error::tag must start with v (got '$TAG')"; exit 1 ;;
+          esac
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          python deploy/build_server_bundle.py "$TAG" dist-server
+
+      - name: Authorise publishing to firekeep-dist
+        env:
+          DEPLOY_KEY: ${{ secrets.FIREKEEP_DIST_DEPLOY_KEY }}
+        run: |
+          [ -n "${DEPLOY_KEY}" ] || { echo "::error::FIREKEEP_DIST_DEPLOY_KEY is not set"; exit 1; }
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          echo "${DEPLOY_KEY}" > ~/.ssh/firekeep_dist
+          chmod 600 ~/.ssh/firekeep_dist
+          echo "GIT_SSH_COMMAND=ssh -i ~/.ssh/firekeep_dist -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new" >> "$GITHUB_ENV"
+          echo "DIST_REMOTE=git@github.com:kapella-hub/firekeep-dist.git" >> "$GITHUB_ENV"
+
+      - name: Publish the versioned bundle and latest pointer
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote remove dist 2>/dev/null || true
+          git remote add dist "${DIST_REMOTE}"
+          if git ls-remote --exit-code --heads dist gh-pages >/dev/null 2>&1; then
+            git fetch --depth=1 dist gh-pages
+            git worktree add gh FETCH_HEAD
+            git -C gh checkout -B gh-pages
+          else
+            git worktree add --orphan -b gh-pages gh
+          fi
+          mkdir -p "gh/server/${TAG}" gh/server/latest
+          cp "dist-server/firekeep-server-${TAG}.tar.gz" dist-server/server.json "gh/server/${TAG}/"
+          publish_latest=1
+          if [ -f gh/server/latest/server.json ]; then
+            previous="$(python -c 'import json,sys;print(json.load(open(sys.argv[1])).get("version",""))' gh/server/latest/server.json)"
+            if [ "$previous" != "$TAG" ] \
+               && ! PYTHONPATH=. python -c 'import sys;from deploy.build_server_bundle import is_newer_release;sys.exit(0 if is_newer_release(sys.argv[1],sys.argv[2]) else 1)' "$TAG" "$previous"; then
+              publish_latest=0
+              echo "::warning::publishing ${TAG} without moving latest backwards from ${previous}"
+            fi
+          fi
+          if [ "$publish_latest" = "1" ]; then
+            cp dist-server/server.json gh/server/latest/server.json
+          fi
+          touch gh/.nojekyll
+          git -C gh add -A
+          git -C gh commit -m "server release ${TAG}" || { echo "nothing to publish"; exit 0; }
+          for attempt in 1 2 3; do
+            if git -C gh push dist gh-pages; then exit 0; fi
+            echo "push rejected (attempt ${attempt}); re-fetching and retrying"
+            git -C gh fetch --depth=1 dist gh-pages && git -C gh rebase FETCH_HEAD || true
+          done
+          echo "::error::could not publish server bundle after 3 attempts"
+          exit 1
+
+      - name: Verify the public bundle is served
+        run: |
+          BASE="https://kapella-hub.github.io/firekeep-dist"
+          for i in $(seq 1 24); do
+            got="$(curl -fsS "${BASE}/server/latest/server.json" 2>/dev/null \
+                   | python -c "import json,sys;print(json.load(sys.stdin).get('version',''))" 2>/dev/null || echo '')"
+            versioned="$(curl -fsS "${BASE}/server/${TAG}/server.json" 2>/dev/null \
+                       | python -c "import json,sys;print(json.load(sys.stdin).get('version',''))" 2>/dev/null || echo '')"
+            if [ "$versioned" = "$TAG" ]; then
+              curl -fsS "${BASE}/server/${TAG}/firekeep-server-${TAG}.tar.gz" -o /dev/null
+              echo "verified: public versioned server bundle ${TAG} (latest=${got})"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::public server bundle ${TAG} was not served within 2 minutes"
+          exit 1
