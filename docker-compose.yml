@@ -297,6 +297,11 @@ services:
       SKILL_SYNTHESIS_ENABLED: ${SKILL_SYNTHESIS_ENABLED:-false}
       SKILL_SCORE_THRESHOLD: ${SKILL_SCORE_THRESHOLD:-0.6}
       SKILL_STALE_AFTER_DAYS: ${SKILL_STALE_AFTER_DAYS:-90}
+      # Raw-cosine floor for semantic skill matching (GET /skills?q=, briefing skills
+      # section). NOT RECALL_SCORE_FLOOR — skills embed a terse composite, and the
+      # office deploy uses a different embedding model/dim. Most likely knob to tune.
+      SKILL_MATCH_SCORE_FLOOR: ${SKILL_MATCH_SCORE_FLOOR:-0.30}
+      SKILL_MATCH_EMBED_TIMEOUT_SECONDS: ${SKILL_MATCH_EMBED_TIMEOUT_SECONDS:-1.2}
       SKILL_ERROR_DENSITY_WEIGHT: ${SKILL_ERROR_DENSITY_WEIGHT:-0.30}
       SKILL_ANOMALY_WEIGHT: ${SKILL_ANOMALY_WEIGHT:-0.20}
       SKILL_RESOLUTION_WEIGHT: ${SKILL_RESOLUTION_WEIGHT:-0.35}
@@ -436,6 +441,11 @@ services:
       SKILL_SYNTHESIS_ENABLED: ${SKILL_SYNTHESIS_ENABLED:-false}
       SKILL_SCORE_THRESHOLD: ${SKILL_SCORE_THRESHOLD:-0.6}
       SKILL_STALE_AFTER_DAYS: ${SKILL_STALE_AFTER_DAYS:-90}
+      # Raw-cosine floor for semantic skill matching (GET /skills?q=, briefing skills
+      # section). NOT RECALL_SCORE_FLOOR — skills embed a terse composite, and the
+      # office deploy uses a different embedding model/dim. Most likely knob to tune.
+      SKILL_MATCH_SCORE_FLOOR: ${SKILL_MATCH_SCORE_FLOOR:-0.30}
+      SKILL_MATCH_EMBED_TIMEOUT_SECONDS: ${SKILL_MATCH_EMBED_TIMEOUT_SECONDS:-1.2}
       SKILL_ERROR_DENSITY_WEIGHT: ${SKILL_ERROR_DENSITY_WEIGHT:-0.30}
       SKILL_ANOMALY_WEIGHT: ${SKILL_ANOMALY_WEIGHT:-0.20}
       SKILL_RESOLUTION_WEIGHT: ${SKILL_RESOLUTION_WEIGHT:-0.35}

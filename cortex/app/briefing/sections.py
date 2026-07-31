@@ -17,11 +17,12 @@ from app.evals.store import get_eval_summary
 from app.patterns.store import get_relevant_patterns, get_observed_patterns, record_tip_shown
 from app.ops import collect_queue_depths
 from app.skills import internal_key_headers
+from app.skills.search import search_skill_points
 from vault.store import list_secrets
 
 from datetime import datetime, timedelta, timezone
 
-from qdrant_client.models import FieldCondition, Filter, MatchValue
+from qdrant_client.models import FieldCondition, MatchValue
 
 Section = dict[str, Any]
 
@@ -223,22 +224,39 @@ async def cross_agent_section(replay_redis, goal: str, agent_id: str) -> Section
 
 
 async def skills_section(vector, settings, goal: str, project: str | None) -> Section:
-    """Active skills matching the goal (Qdrant scroll; mirrors skills/api list_skills)."""
+    """Active skills for the session goal.
+
+    Semantic cosine match (floored at SKILL_MATCH_SCORE_FLOOR) when a goal is present;
+    an ID-ordered scroll when the goal is empty — the production-NORMAL case, since a
+    standard Claude Code SessionStart supplies no goal — or when the embed fails or
+    nothing clears the floor.
+
+    This was previously an inline copy of `list_skills`' scroll-then-substring shape,
+    which is how one bug came to live in two files. Both now share
+    `search_skill_points`. Note this section must never RAISE on an embedding failure:
+    `_run_section` converts any raise or timeout into status='unavailable', which sets
+    degraded=true on the whole envelope and prints '[SKILLS unavailable: ...]' into
+    every session's briefing. The helper's internal fallback is what guarantees that.
+    """
     must = [FieldCondition(key="memory_type", match=MatchValue(value="skill")),
             FieldCondition(key="skill_status", match=MatchValue(value="active"))]
     if project:
         must.append(FieldCondition(key="project", match=MatchValue(value=project.lower())))
-    points, _ = await vector._client.scroll(
-        collection_name=settings.QDRANT_COLLECTION,
-        scroll_filter=Filter(must=must),
-        limit=3, with_payload=True, with_vectors=False,
+    points, semantic = await search_skill_points(
+        vector, settings, must=must, query=goal, limit=3,
     )
     skills = []
     ql = (goal or "").lower()
     for p in points:
         payload = p.payload or {}
         trigger = payload.get("trigger", "")
-        if ql and ql not in trigger.lower() and ql not in payload.get("domain", "").lower():
+        # Ranked-and-floored points must not be re-narrowed by substring (see
+        # search_skill_points' two-path contract); the legacy filter still guards the
+        # degraded scroll path, where it is the only thing preventing three arbitrary
+        # ID-ordered skills being presented as "relevant".
+        if (ql and not semantic
+                and ql not in trigger.lower()
+                and ql not in payload.get("domain", "").lower()):
             continue
         skills.append({"id": str(p.id), "trigger": trigger,
                        "symptoms": payload.get("symptoms", "")})
