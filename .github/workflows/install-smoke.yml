@@ -253,9 +253,9 @@ jobs:
           exit $rc
 
       - name: Assert the installer told the operator how to authenticate
-        # With auth on by default, an operator who finishes the install without
-        # the admin key cannot mint teammate keys or read the vault -- and the
-        # key is printed once and deliberately never stored. bootstrap-keys.sh
+        # With auth on by default, an operator needs the one-time admin key for
+        # direct admin/vault calls, while each client gets its own credential.
+        # The key is printed once and deliberately never stored. bootstrap-keys.sh
         # prints it near the START of the run, before a container build and a
         # ~3.3GB model pull, so by the time the summary appears it is thousands
         # of lines up the scrollback. install.sh re-surfaces it in the closing
@@ -267,8 +267,10 @@ jobs:
             || { echo "::error::summary did not report auth as ENFORCED"; rc=1; }
           grep -q 'ADMIN API KEY' install.log \
             || { echo "::error::summary did not surface the admin API key"; rc=1; }
-          grep -q 'firekeep-admin keys create' install.log \
-            || { echo "::error::summary did not show how to issue a teammate key"; rc=1; }
+          grep -q 'Open Dashboard -> Devices -> Add device' install.log \
+            || { echo "::error::summary did not show Dashboard device enrollment"; rc=1; }
+          grep -q 'firekeep-admin invite --agent' install.log \
+            || { echo "::error::summary did not show server-shell device enrollment"; rc=1; }
           # The admin key block must appear AFTER the health checks, not only
           # in bootstrap-keys.sh's output at the top -- that is the entire
           # point of re-surfacing it.
