@@ -18,7 +18,9 @@ import os
 import platform
 import urllib.parse
 
-from firekeep_client import autoupdate, hooklog, resolver, state, transport, updater
+from firekeep_client import (
+    autoupdate, hooklog, resolver, state, symdexindex, transport, updater,
+)
 from firekeep_client.hooks import _mcp, never_raise
 
 _HOOK = "session_start"
@@ -69,8 +71,7 @@ def _update_nudge(cfg) -> str:
 @never_raise({})
 def run(payload: dict) -> dict:
     cfg = resolver.load_config()
-    profile = resolver.active_profile(cfg)
-    agent = resolver.agent_id(cfg, profile)
+    agent = resolver.agent_id(cfg)
     goal = payload.get("goal") or os.environ.get("FIREKEEP_AGENT_GOAL", "")
 
     # A NEW session must never inherit a previous (possibly crashed) session's
@@ -78,7 +79,7 @@ def run(payload: dict) -> dict:
     # briefing failure or a version-skewed server (no briefing_id) can't leave a
     # stale id riding this session's proxied calls.
     try:
-        state.clear_session_stash(agent, profile)
+        state.clear_session_stash(agent)
     except Exception as e:  # noqa: BLE001
         hooklog.log_failure(_HOOK, f"session stash clear failed: {e}")
 
@@ -104,7 +105,7 @@ def run(payload: dict) -> dict:
             # already ran unconditionally above.)
             if isinstance(data, dict) and data.get("briefing_id"):
                 try:
-                    state.write_session_stash(agent, profile, briefing_id=data["briefing_id"])
+                    state.write_session_stash(agent, briefing_id=data["briefing_id"])
                 except Exception as e:  # noqa: BLE001
                     hooklog.log_failure(_HOOK, f"session stash write failed: {e}")
         except Exception as e:  # noqa: BLE001 — availability over enforcement
@@ -127,8 +128,12 @@ def run(payload: dict) -> dict:
     #    sidecar's independent registration guard reads, so a mixed
     #    hooks+sidecar composition for one agent_id can't clobber each other.
     try:
-        state.mark_registered(agent, profile=profile)
+        state.mark_registered(agent)
     except Exception as e:  # noqa: BLE001
         hooklog.log_failure(_HOOK, f"scratch write failed: {e}")
 
-    return {"systemMessage": rendered + _update_nudge(cfg)}
+    # 4. Auto-index this workspace for symdex (detached; see symdexindex module
+    #    docstring for why this can't be inline and why it replaces the old
+    #    plugin hook's ACTION-REQUIRED nag).
+    return {"systemMessage": rendered + _update_nudge(cfg)
+            + symdexindex.index_nudge(cfg, payload)}

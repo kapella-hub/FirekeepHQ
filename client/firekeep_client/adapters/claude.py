@@ -24,7 +24,6 @@ from firekeep_client.adapters.base import (
     merge_owned,
     prune_hook_groups,
     read_json,
-    read_pin,
     shim_servers,
     strip_marked_block,
     strip_span,
@@ -216,9 +215,6 @@ class ClaudeAdapter(Adapter):
     def render(self, *, venv_bin: Path) -> None:
         claude_json, settings_json = self._paths()
 
-        pin = read_pin(self.name)
-        pin_env = {"env": {"FIREKEEP_PROFILE": pin}} if pin else {}
-
         config = read_json(claude_json)
         servers = config.setdefault("mcpServers", {})
         # Migration: drop the PREDECESSOR kit's server entries. Firekeep registers its
@@ -226,7 +222,7 @@ class ClaudeAdapter(Adapter):
         # that no longer exists and failing to connect on every session start.
         drop_owned(servers, LEGACY_MCP_KEYS)
         entries = {
-            name: {"type": "stdio", "command": cmd, "args": args, **pin_env}
+            name: {"type": "stdio", "command": cmd, "args": args}
             for name, (cmd, args) in shim_servers(venv_bin).items()
         }
         merge_owned(servers, entries)
@@ -246,8 +242,6 @@ class ClaudeAdapter(Adapter):
             # returns 1 for an agent-gateway block/rethink and 2 for a lease conflict. Without
             # this remap, a gateway 'block' (rc=1) would silently fall through as non-blocking.
             extra_args = "--block-exit 2" if core == "pre_tool" else ""
-            if pin:
-                extra_args = f"{extra_args} --profile {pin}".strip()
             group = {"hooks": [{"type": "command",
                                 "command": hook_command(venv_bin, core, extra_args=extra_args),
                                 "timeout": timeout}]}

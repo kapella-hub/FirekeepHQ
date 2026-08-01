@@ -46,6 +46,7 @@ def test_write_sums_format_matches_what_the_bootstrap_greps(tmp_path):
     dest = make_release.write_sums([a], tmp_path / "SHA256SUMS")
     line = dest.read_text().strip()
     assert line == f"{hashlib.sha256(b'uv').hexdigest()}  uv-x86_64-unknown-linux-gnu"
+    assert b"\r\n" not in dest.read_bytes()
 
 
 def _populate_dist_dir(tmp_path, version="1.2.3", wheel_content=b"xyz",
@@ -80,6 +81,7 @@ def test_main_happy_path_writes_a_complete_manifest_and_sums(tmp_path):
     # --- latest.json: exactly the three fields with a consumer, correct values ---
     manifest_path = tmp_path / "latest.json"
     assert manifest_path.is_file()
+    assert b"\r\n" not in manifest_path.read_bytes()
     manifest = json.loads(manifest_path.read_text())
     assert set(manifest.keys()) == {"version", "bootstrap_sha256", "bootstrap_ps1_sha256"}
     assert manifest["version"] == "1.2.3"
@@ -237,6 +239,31 @@ def test_dist_base_is_baked_before_hashing(tmp_path):
     manifest = json.loads((tmp_path / "latest.json").read_text())
     assert manifest["bootstrap_sha256"] == hashlib.sha256(sh.read_bytes()).hexdigest()
     assert manifest["bootstrap_ps1_sha256"] == hashlib.sha256(ps1.read_bytes()).hexdigest()
+
+
+def test_dist_base_normalizes_bootstraps_to_lf_on_windows(tmp_path):
+    """A locally assembled Windows release must still be installable by POSIX sh.
+
+    Windows text-mode writes previously put CRLF into both the baked install.sh
+    and SHA256SUMS. Debian then parsed ``set -eu\r`` as an illegal option and,
+    independently, the checksum grep could not match an artifact before ``\r``.
+    """
+    _populate_dist_dir(tmp_path)
+    for p in (tmp_path / "install.sh", tmp_path / "install.ps1"):
+        p.unlink()
+    sh = tmp_path / "install.sh"
+    sh.write_bytes(b'#!/bin/sh\r\nDIST_BASE_DEFAULT="__FIREKEEP_DIST_BASE_DEFAULT__"\r\n')
+    ps1 = tmp_path / "install.ps1"
+    ps1.write_bytes(b"# ps\r\n$DistBaseDefault = '__FIREKEEP_DIST_BASE_DEFAULT__'\r\n")
+    (tmp_path / "firekeep_symdex-0.2.13-py3-none-any.whl").write_bytes(b"symdex")
+
+    make_release.main([
+        "make_release.py", "1.2.3", str(tmp_path),
+        "--dist-base", "https://reg.example/firekeep-client",
+    ])
+
+    for path in (sh, ps1, tmp_path / "latest.json", tmp_path / "SHA256SUMS"):
+        assert b"\r\n" not in path.read_bytes(), path.name
 
 
 def test_dist_base_requires_the_placeholder(tmp_path):

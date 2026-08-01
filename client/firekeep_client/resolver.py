@@ -1,7 +1,7 @@
-"""Profile resolver: reads ~/.firekeep/config and produces per-service endpoints.
+"""Connection resolver: reads ~/.firekeep/config and produces service endpoints.
 
-The one place that knows profile shapes — the shim, hook cores, sidecar, and
-`firekeep` CLI all call into here; no URL/auth string-building lives anywhere else.
+The one place that knows the two server shapes — the shim, hook cores, sidecar,
+and `firekeep` CLI all call into here; no URL/auth string-building lives elsewhere.
 Stdlib-only (SP1b import boundary).
 """
 from __future__ import annotations
@@ -9,7 +9,6 @@ from __future__ import annotations
 import configparser
 import math
 import os
-import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,16 +45,28 @@ class Endpoint:
 
 
 class ConfigError(Exception):
-    """Missing file / unknown profile / missing required key."""
+    """Missing file or invalid single-connection configuration."""
+
+
+class ConfigMigrationConflict(ConfigError):
+    """A legacy profile config cannot be collapsed without choosing for the user."""
 
 
 def _config_path(path: Path | None = None) -> Path:
     if path is not None:
-        return path
+        return Path(path).expanduser().resolve()
     env = os.environ.get("FIREKEEP_CONFIG")
     if env:
-        return Path(env)
-    return CONFIG_PATH
+        return Path(env).expanduser().resolve()
+    return CONFIG_PATH.expanduser().resolve()
+
+
+def _path_for(cfg: configparser.ConfigParser, path: Path | None = None) -> Path:
+    """Return the source path attached by load_config, or the current resolved path."""
+    if path is not None:
+        return Path(path)
+    attached = getattr(cfg, "_firekeep_path", None)
+    return Path(attached) if attached is not None else _config_path()
 
 
 def _env_truthy(value: str | None) -> bool:
@@ -161,96 +172,78 @@ def load_config(path: Path | None = None) -> configparser.ConfigParser:
     # Safe: nxs_ keys/URLs/agent ids never legitimately contain ' ;' or ' #'
     # (configparser only strips when the prefix follows whitespace).
     cfg = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=(";", "#"))
-    if not cfg.read(p, encoding="utf-8"):
+    try:
+        loaded = cfg.read(p, encoding="utf-8")
+    except (configparser.Error, OSError, UnicodeError) as exc:
+        raise ConfigError(
+            f"firekeep config at {p} is not valid INI ({type(exc).__name__})"
+        ) from exc
+    if not loaded:
         raise ConfigError(f"firekeep config could not be read at {p}")
+    cfg._firekeep_path = p
+    if not cfg.has_section("server"):
+        # Lazy import avoids a module cycle: migrate reuses the resolver's exact
+        # TLS and endpoint-shape validation while resolver owns ConfigError.
+        from firekeep_client import migrate
+        cfg = migrate.migrate_config(p)
+        cfg._firekeep_path = p
     return cfg
 
 
-PIN_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
-
-
-def active_profile(cfg, override: str | None = None) -> str:
-    # Precedence: explicit override > FIREKEEP_PROFILE env > [active] profile. The env
-    # override mirrors FIREKEEP_AGENT_ID (agent_id() below); a pinned runtime's rendered
-    # MCP entries set it, and the hooks dispatcher exports it for --profile. Section
-    # existence is a UX/typo guard, not a security control — the environment is already
-    # a full trust boundary via FIREKEEP_CONFIG (_config_path).
-    source = "override"
-    profile = (override or "").strip()
-    if not profile:
-        env = os.environ.get("FIREKEEP_PROFILE", "").strip()
-        if env:
-            profile, source = env, "FIREKEEP_PROFILE"
-    if profile:
-        if not cfg.has_section(profile):
-            raise ConfigError(f"{source} profile '{profile}' has no [{profile}] section")
-        return profile
-    if not cfg.has_section("active"):
-        raise ConfigError("config missing [active] section")
-    if not cfg.has_option("active", "profile"):
-        raise ConfigError("config [active] missing 'profile' key")
-    profile = cfg.get("active", "profile").strip()
-    if not profile:
-        raise ConfigError("config [active] 'profile' is empty")
-    if not cfg.has_section(profile):
-        raise ConfigError(f"active profile '{profile}' has no [{profile}] section")
-    return profile
-
-
-def pinned_profile(cfg, runtime: str) -> str | None:
-    """The profile pinned for `runtime` via [pins], or None. Malformed values (empty,
-    charset-unsafe — they get rendered into bash hook command strings) are treated as
-    ABSENT here; the pin CLI rejects them at write time and doctor warns on what it
-    finds, so render never emits an unsafe token."""
-    if not cfg.has_section("pins") or not cfg.has_option("pins", runtime):
-        return None
-    value = cfg.get("pins", runtime).strip()
-    if not value or not PIN_NAME_RE.match(value):
-        return None
-    return value
-
-
-def agent_id(cfg, profile: str) -> str:
-    # FIREKEEP_AGENT_ID overrides the profile value (multi-agent workflow, start-agent.sh).
+def agent_id(cfg: configparser.ConfigParser) -> str:
+    # FIREKEEP_AGENT_ID overrides the machine identity (multi-agent workflow).
     env = os.environ.get("FIREKEEP_AGENT_ID")
     if env:
         return env
-    if not cfg.has_section(profile):
-        raise ConfigError(f"unknown profile '{profile}'")
-    if not cfg.has_option(profile, "agent_id"):
-        raise ConfigError(f"profile '{profile}' missing required key 'agent_id'")
-    value = cfg.get(profile, "agent_id").strip()
+    path = _path_for(cfg)
+    if not cfg.has_section("identity"):
+        raise ConfigError(f"firekeep config {path} missing [identity] section")
+    if not cfg.has_option("identity", "agent_id"):
+        raise ConfigError(f"firekeep config {path} [identity] missing required key 'agent_id'")
+    value = cfg.get("identity", "agent_id").strip()
     if not value:
-        raise ConfigError(f"profile '{profile}' has empty 'agent_id'")
+        raise ConfigError(f"firekeep config {path} [identity] has empty 'agent_id'")
     return value
 
 
-def _require(cfg, profile: str, key: str) -> str:
-    if not cfg.has_option(profile, key):
-        raise ConfigError(f"profile '{profile}' missing required key '{key}'")
-    value = cfg.get(profile, key).strip()
+def _require(cfg: configparser.ConfigParser, key: str, *, section: str = "server",
+             path: Path | None = None) -> str:
+    source = _path_for(cfg, path)
+    if not cfg.has_section(section):
+        raise ConfigError(f"firekeep config {source} missing [{section}] section")
+    if not cfg.has_option(section, key):
+        raise ConfigError(
+            f"firekeep config {source} [{section}] missing required key '{key}'"
+        )
+    value = cfg.get(section, key).strip()
     if not value:
-        raise ConfigError(f"profile '{profile}' has empty '{key}'")
+        raise ConfigError(f"firekeep config {source} [{section}] has empty '{key}'")
     return value
 
 
-def _verify_for(cfg, profile: str, scheme: str) -> bool | str:
+def _verify_for(cfg: configparser.ConfigParser, scheme: str, *, section: str = "server",
+                path: Path | None = None) -> bool | str:
+    source = _path_for(cfg, path)
     try:
-        verify_tls = cfg.getboolean(profile, "verify_tls", fallback=False)
+        verify_tls = cfg.getboolean(section, "verify_tls", fallback=False)
     except ValueError:
-        raise ConfigError(f"profile '{profile}' has non-boolean 'verify_tls'")
+        raise ConfigError(
+            f"firekeep config {source} [{section}] has non-boolean 'verify_tls'"
+        )
 
     if scheme == "https":
         # MITM protection: never speak https without verifying the peer.
         if not verify_tls:
             raise ConfigError(
-                f"profile '{profile}': scheme=https with verify_tls=false is refused "
+                f"firekeep config {source} [{section}]: scheme=https with "
+                f"verify_tls=false is refused "
                 f"(unverified TLS is a MITM hole — set verify_tls=true with a ca_path)"
             )
-        ca_path = cfg.get(profile, "ca_path", fallback="").strip()
+        ca_path = cfg.get(section, "ca_path", fallback="").strip()
         if not ca_path:
             raise ConfigError(
-                f"profile '{profile}': scheme=https requires 'ca_path' (internal CA cert, "
+                f"firekeep config {source} [{section}]: scheme=https requires 'ca_path' "
+                f"(internal CA cert, "
                 f"or 'os' to verify against the operating-system trust store)"
             )
         if ca_path.lower() == OS_TRUST:
@@ -259,16 +252,15 @@ def _verify_for(cfg, profile: str, scheme: str) -> bool | str:
             # MDM-managed-corporate-CA case — the CA lives in the OS keychain and
             # there is no PEM file to point at. Still verified TLS, never a bypass.
             return OS_TRUST
-        return str(Path(ca_path).expanduser())
+        return str(Path(ca_path).expanduser().resolve())
 
-    # http: no TLS to verify. verify=False is ONLY legal here (personal plaintext).
+    # http: no TLS to verify. verify=False is ONLY legal for plain HTTP.
     return False
 
 
 def resolve(
     service: str,
     cfg=None,
-    profile: str | None = None,
     session_id: str | None = None,
 ) -> Endpoint:
     # symdex is stdio-local and must NEVER be constructed as an HTTP endpoint.
@@ -279,32 +271,31 @@ def resolve(
 
     if cfg is None:
         cfg = load_config()
-    if profile is None:
-        profile = active_profile(cfg)
-    if not cfg.has_section(profile):
-        raise ConfigError(f"unknown profile '{profile}'")
+    path = _path_for(cfg)
+    if not cfg.has_section("server"):
+        raise ConfigError(f"firekeep config {path} missing [server] section")
 
-    kind = _require(cfg, profile, "kind").strip().lower()
+    kind = _require(cfg, "kind").strip().lower()
     # Normalize scheme so the https TLS guard (_verify_for) can't be bypassed by
     # a case/whitespace typo (e.g. "HTTPS") that an HTTP client would still treat
     # as TLS. RFC 3986 schemes are case-insensitive.
-    scheme = _require(cfg, profile, "scheme").strip().lower()
-    verify = _verify_for(cfg, profile, scheme)
+    scheme = _require(cfg, "scheme").strip().lower()
+    verify = _verify_for(cfg, scheme)
 
-    headers = {"X-Agent-Id": agent_id(cfg, profile)}
-    if cfg.has_option(profile, "api_key"):
-        key = cfg.get(profile, "api_key").strip()
+    headers = {"X-Agent-Id": agent_id(cfg)}
+    if cfg.has_option("server", "api_key"):
+        key = cfg.get("server", "api_key").strip()
         if key:
             headers["X-API-Key"] = key
     if session_id:
         headers["X-Session-Id"] = session_id
 
     if kind == "ports":
-        host = _require(cfg, profile, "host")
+        host = _require(cfg, "host")
         mcp_url = f"{scheme}://{host}:{MCP_PORTS[service]}/mcp"
         rest_base = f"{scheme}://{host}:{REST_PORTS[service]}"
     elif kind == "paths":
-        base_url = _require(cfg, profile, "base_url").rstrip("/")
+        base_url = _require(cfg, "base_url").rstrip("/")
         # MITM guard: `verify` above was computed from `scheme`, but the actual
         # URL is built from `base_url`. If they disagree (e.g. scheme=http with
         # a base_url that is actually https://...), verify would be False on a
@@ -312,7 +303,7 @@ def resolve(
         # rather than silently trusting whichever of the two is more permissive.
         if not base_url.lower().startswith(f"{scheme}://"):
             raise ConfigError(
-                f"profile '{profile}': scheme='{scheme}' does not match base_url "
+                f"firekeep config {path} [server]: scheme='{scheme}' does not match base_url "
                 f"'{base_url}' (base_url must start with '{scheme}://') — refusing "
                 f"a scheme/base_url mismatch that could bypass TLS verification"
             )
@@ -320,7 +311,8 @@ def resolve(
         rest_base = f"{base_url}/api/{service}"
     else:
         raise ConfigError(
-            f"profile '{profile}' has unknown kind '{kind}' (expected 'ports' or 'paths')"
+            f"firekeep config {path} [server] has unknown kind '{kind}' "
+            f"(expected 'ports' or 'paths')"
         )
 
     return Endpoint(mcp_url=mcp_url, rest_base=rest_base, headers=headers, verify=verify)

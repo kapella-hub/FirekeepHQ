@@ -62,10 +62,11 @@ class TestValidateKeyExplicitClient:
 
         identity = await keys.validate_key(created["api_key"], redis_client=redis)
         assert identity == {
-            "agent_id": "morgan",
+            "workspace_id": "workspace-local",
+            "member_id": "member-owner",
+            "credential_id": created["key_id"],
             "scopes": ["replay:read"],
             "authenticated": True,
-            "key_id": created["key_id"],
         }
 
     @pytest.mark.asyncio
@@ -101,7 +102,8 @@ class TestValidateKeyExplicitClient:
             created = await keys.create_key("global-path", ["admin"])
             identity = await keys.validate_key(created["api_key"])
             assert identity is not None
-            assert identity["agent_id"] == "global-path"
+            assert identity["member_id"] == "member-owner"
+            assert "agent_id" not in identity
         finally:
             await keys.init_auth(redis_client=None, enabled=False)
 

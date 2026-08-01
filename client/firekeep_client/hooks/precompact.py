@@ -39,8 +39,7 @@ def run(payload: dict) -> dict:
     # Called UNGUARDED on purpose: a malformed config raises ConfigError, which
     # @never_raise degrades to {} rather than crashing the caller.
     cfg = resolver.load_config()
-    profile = resolver.active_profile(cfg)
-    agent = resolver.agent_id(cfg, profile)
+    agent = resolver.agent_id(cfg)
 
     # 2. Workspace checkpoint — cheap, real, already implemented.
     try:

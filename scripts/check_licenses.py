@@ -121,16 +121,18 @@ def _truncate_for_print(detail: str) -> str:
     return detail[:DETAIL_PRINT_MAX_CHARS] + f"... [{len(detail)} chars total, truncated]"
 
 
+# This repo's own distributions appear alongside their dependencies after
+# `pip install ./client` or `pip install ./symdex`. They are governed by the
+# repository's licence checks, not the third-party dependency policy below.
+FIRST_PARTY_DISTRIBUTIONS = frozenset({"firekeep-client", "firekeep-symdex"})
+
 # Packages excluded from attribution output: venv bootstrap tooling that is
 # never imported by shipped application code (present in every venv
 # regardless of what was actually requested), plus this repo's own
-# first-party distributions, which install their own name into whatever
-# venv installs them (`pip install ./client` -> "firekeep-client" shows up
-# in distributions() alongside its real third-party dependencies) and carry
-# the proprietary licence, not a third-party one.
+# first-party distributions.
 ATTRIBUTION_EXCLUDE = frozenset(
-    {"pip", "setuptools", "wheel", "firekeep-client", "firekeep-symdex"}
-)
+    {"pip", "setuptools", "wheel"}
+) | FIRST_PARTY_DISTRIBUTIONS
 
 
 def collect_attribution(dist) -> dict[str, str]:
@@ -333,6 +335,8 @@ def main() -> int:
 
     for dist in distributions():
         name = dist.metadata["Name"] or "<unnamed>"
+        if name.lower() in FIRST_PARTY_DISTRIBUTIONS:
+            continue
         meta: dict[str, list[str]] = {f: dist.metadata.get_all(f) or [] for f in FIELDS}
         verdict, detail = classify(meta)
         detail = _truncate_for_print(detail)

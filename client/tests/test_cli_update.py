@@ -156,7 +156,11 @@ def test_update_on_a_malformed_manifest_version_fails_loud(update_env, monkeypat
 
 def test_update_without_dist_base_is_fail_loud(tmp_path, monkeypatch, capsys):
     cfg = tmp_path / "config"
-    cfg.write_text("[active]\nprofile = personal\n[personal]\nagent_id = t\n", encoding="utf-8")
+    cfg.write_text(
+        "[identity]\nagent_id = t\n[server]\nkind = ports\nscheme = http\n"
+        "host = 127.0.0.1\nverify_tls = false\n",
+        encoding="utf-8",
+    )
     monkeypatch.setenv("FIREKEEP_CONFIG", str(cfg))
     rc = cli.main(["update"])
     assert rc == 1

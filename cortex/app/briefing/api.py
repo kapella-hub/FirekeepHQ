@@ -18,6 +18,7 @@ from typing import Any, Awaitable
 from fastapi import APIRouter, Depends, Query, Request
 
 from auth.middleware import require_scope
+from auth.entitlements import load_entitlement, solo_entitlement
 
 from app.config import get_settings
 from app.version import get_version_info
@@ -96,6 +97,26 @@ def create_briefing_router(section_timeout: float = 2.0) -> APIRouter:
             agent_id=agent_id, goal=goal, sections=sections, instructions=instructions,
         )
 
+        # Entitlements never affect which sections run. This is display-only:
+        # warn near expiry (or explain an invalid/expired installed document)
+        # while every memory and coordination capability stays available.
+        entitlement = solo_entitlement(identity["workspace_id"])
+        if getattr(st, "auth_redis", None) is not None:
+            entitlement = await load_entitlement(st.auth_redis, identity["workspace_id"])
+        licence_notice = entitlement.warning
+        if (
+            not licence_notice
+            and not entitlement.verified
+            and entitlement.source != "built-in"
+        ):
+            licence_notice = entitlement.reason
+        if licence_notice:
+            rendered = rendered.replace(
+                "=== PRE-FLIGHT BRIEFING ===",
+                f"=== PRE-FLIGHT BRIEFING ===\nLICENCE: {licence_notice}",
+                1,
+            )
+
         return {
             "generated_at": _now_iso(),
             "server_version": get_version_info()["version"],
@@ -107,6 +128,7 @@ def create_briefing_router(section_timeout: float = 2.0) -> APIRouter:
             "sections": sections,
             "instructions": instructions,
             "rendered": rendered,
+            "entitlement": entitlement.as_dict(),
         }
 
     return router

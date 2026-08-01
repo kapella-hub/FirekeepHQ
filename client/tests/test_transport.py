@@ -167,12 +167,14 @@ def test_connection_refused_raises_transport_error():
 def test_transport_error_default_status_is_none():
     err = TransportError("boom")
     assert err.status is None
+    assert err.response_is_json is False
     assert str(err) == "boom"
 
 
 def test_transport_error_carries_status():
-    err = TransportError("boom", status=500)
+    err = TransportError("boom", status=500, response_is_json=True)
     assert err.status == 500
+    assert err.response_is_json is True
 
 
 # --- timeout propagation (monkeypatched urlopen) -------------------------------

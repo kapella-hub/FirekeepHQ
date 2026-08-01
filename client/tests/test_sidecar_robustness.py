@@ -47,7 +47,7 @@ class _Recorder:
 
 def test_heartbeat_transport_failure_logged_not_fatal(tmp_path, monkeypatch):
     _write_config(tmp_path, monkeypatch)
-    monkeypatch.setattr(sidecar, "should_deregister", lambda aid, profile="": True)
+    monkeypatch.setattr(sidecar, "should_deregister", lambda aid: True)
     monkeypatch.setattr(state, "resolve_session_id", lambda payload, cfg=None: "unknown")
     rec = _Recorder(fail_on={"relay_heartbeat_presence"})
 
@@ -62,7 +62,7 @@ def test_heartbeat_transport_failure_logged_not_fatal(tmp_path, monkeypatch):
 
 def test_unexpected_cycle_exception_isolated(tmp_path, monkeypatch):
     _write_config(tmp_path, monkeypatch)
-    monkeypatch.setattr(sidecar, "should_deregister", lambda aid, profile="": True)
+    monkeypatch.setattr(sidecar, "should_deregister", lambda aid: True)
 
     def _boom(self):
         raise ValueError("kaboom")
@@ -95,7 +95,7 @@ def test_signal_handler_sets_stop(tmp_path, monkeypatch):
 
 def test_stop_triggers_clean_deregister(tmp_path, monkeypatch):
     _write_config(tmp_path, monkeypatch)
-    monkeypatch.setattr(sidecar, "should_deregister", lambda aid, profile="": True)
+    monkeypatch.setattr(sidecar, "should_deregister", lambda aid: True)
     rec = _Recorder()
     ev = threading.Event()
     ev.set()  # already stopped before the loop body runs
@@ -110,17 +110,16 @@ def test_stop_triggers_clean_deregister(tmp_path, monkeypatch):
 def test_should_deregister_race_guard(tmp_path, monkeypatch):
     _write_config(tmp_path, monkeypatch)
     # no record -> safe to deregister
-    assert sidecar.should_deregister("tester", profile="personal") is True
+    assert sidecar.should_deregister("tester") is True
     # fresh registration inside the window -> skip (a newer session likely took over)
-    sidecar.mark_registered("tester", profile="personal")
-    assert sidecar.should_deregister("tester", profile="personal") is False
+    sidecar.mark_registered("tester")
+    assert sidecar.should_deregister("tester") is False
     # an old registration (older than the window) -> deregister. Canonical key
-    # (SP1b Task 19 Part B, profile-qualified since the pins work):
-    # "presence_registered_{agent_id}@{profile}" -- the SAME key
+    # (SP1b Task 19 Part B): "presence_registered_{agent_id}" -- the SAME key
     # firekeep_client.state.mark_registered / hooks/session_start.py write to.
     old = int(time.time()) - (sidecar.REGISTRATION_RACE_WINDOW + 5)
-    state.write_scratch("presence_registered_tester@personal", str(old))
-    assert sidecar.should_deregister("tester", profile="personal") is True
+    state.write_scratch("presence_registered_tester", str(old))
+    assert sidecar.should_deregister("tester") is True
 
 
 # --- Part B: controller-mandated seam reconciliation cross-composition test --
@@ -138,8 +137,8 @@ def test_hook_style_registration_guards_sidecar_deregister(tmp_path, monkeypatch
     rec = _Recorder()
 
     # Simulate a hook-style fresh registration (session_start.py's real call,
-    # which passes the resolved profile -- "personal" for this fixture).
-    state.mark_registered("tester", profile="personal")
+    # using the same agent-only key as the sidecar).
+    state.mark_registered("tester")
 
     sc = sidecar.Sidecar(post_json=rec)
     sc.deregister()

@@ -11,7 +11,7 @@ from firekeep_client.contract.matrix import (
     render_matrix,
 )
 
-CAPS = {"briefing", "presence", "pre_edit_block", "precompact", "reconcile", "profile_pin", "bypass"}
+CAPS = {"briefing", "presence", "pre_edit_block", "precompact", "reconcile", "bypass"}
 
 # Captured at import, before any test swaps the adapter's table out from under it.
 REAL_CLAUDE_HOOKS = claude.CLAUDE_HOOKS
@@ -164,9 +164,9 @@ def test_unknown_runtime_raises():
         render_matrix("emacs")
 
 
-def test_matrix_documents_profile_pin_for_every_runtime():
-    from firekeep_client.contract.matrix import MATRIX, RUNTIMES
-    assert set(MATRIX["profile_pin"]) == set(RUNTIMES)
+def test_matrix_contains_no_retired_profile_pin_capability():
+    for runtime in RUNTIMES:
+        assert "profile_pin" not in capabilities(runtime)
 
 
 def test_bypass_is_claude_only_slash_command():

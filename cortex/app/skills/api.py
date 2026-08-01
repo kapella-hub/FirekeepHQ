@@ -8,11 +8,12 @@ from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from qdrant_client.models import (
-    FieldCondition, Filter, MatchValue, PointIdsList, PointStruct
+    FieldCondition, MatchValue, PointIdsList, PointStruct
 )
 
 from app.config import get_settings, Settings
 from app.db.vector import VectorClient
+from app.skills.search import search_skill_points
 from app.models import (
     SkillRequest, SkillResponse, SkillPatchRequest, SkillEvaluateRequest
 )
@@ -73,16 +74,21 @@ def create_skills_router(
         if stale is not None:
             must.append(FieldCondition(key="stale", match=MatchValue(value=stale)))
 
-        points, _ = await vector._client.scroll(
-            collection_name=settings.QDRANT_COLLECTION,
-            scroll_filter=Filter(must=must),
-            limit=limit,
-            with_payload=True,
-            with_vectors=False,
+        # Two paths, one filter. `must` above is handed over VERBATIM: dropping
+        # memory_type=skill would return plain memories as empty-trigger skills
+        # (silently, since _point_to_response defaults trigger to ""), and rebuilding
+        # the stale condition would break its three-state append-only semantics.
+        points, semantic = await search_skill_points(
+            vector, settings, must=must, query=q, limit=limit,
         )
         results = [_point_to_response(p) for p in points]
 
-        if q:
+        # THE FIX. On the semantic path the points are already cosine-ranked and
+        # floored, so the legacy substring narrowing must NOT run — re-applying it
+        # would reinstate the original bug on top of a working matcher. On every
+        # degraded path (no query, embed failure, nothing above the floor) `semantic`
+        # is False and behaviour is byte-identical to before.
+        if q and not semantic:
             ql = q.lower()
             results = [
                 r for r in results

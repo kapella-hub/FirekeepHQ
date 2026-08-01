@@ -325,7 +325,14 @@ class Neo4jClient:
     # Write operations
     # ------------------------------------------------------------------
 
-    async def merge_action_log(self, log: ActionLog, namespace: str = "default") -> str:
+    async def merge_action_log(
+        self,
+        log: ActionLog,
+        namespace: str = "default",
+        *,
+        workspace_id: str | None = None,
+        member_id: str | None = None,
+    ) -> str:
         """Persist an action log as a Domain->Action->Outcome->Resolution chain.
 
         Creates Concept nodes for each tag and links them to the Action.
@@ -345,7 +352,9 @@ class Neo4jClient:
         MERGE (d:Domain {name: $domain})
         MERGE (ns)-[:CONTAINS]->(d)
         MERGE (a:Action {id: $action_id})
-        SET a.description = $action
+        SET a.description = $action,
+            a.workspace_id = $workspace_id,
+            a.member_id = $member_id
         MERGE (o:Outcome {id: $outcome_id})
         SET o.description = $outcome
         MERGE (a)-[:RELATES_TO]->(d)
@@ -384,6 +393,8 @@ class Neo4jClient:
                         resolution=log.resolution,
                         resolution_id=resolution_id,
                         tags=tags,
+                        workspace_id=workspace_id,
+                        member_id=member_id,
                     )
                     record = await result.single()
                     if record is None:

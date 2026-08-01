@@ -6,7 +6,6 @@ settings["hooks"] = {...} wholesale-overwrite bug in local-setup.*).
 """
 from __future__ import annotations
 
-import configparser
 import json
 import re
 import sys
@@ -14,10 +13,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 
 SERVICES = ("cortex", "bridge", "sentinel", "relay")
-FIREKEEP_MCP_KEYS = (
-    "firekeep-cortex", "firekeep-bridge", "firekeep-sentinel", "firekeep-relay",
-    "firekeep-symdex", "firekeep-decision",
-)
+FIREKEEP_MCP_KEYS = ("firekeep",)
 FIREKEEP_ENV_KEYS = ("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS",)
 # Stable, venv-independent substring identifying a firekeep-owned hook command (used at unrender).
 # No trailing dot: the rendered command is the dispatcher form `-m firekeep_client.hooks <core>`
@@ -48,11 +44,11 @@ LEGACY_HOOK_MARKERS = (
     # Generation 2 — the predecessor Python kit. Same hazard as generation 1 and
     # the same remedy: without this, an upgraded machine keeps BOTH hook layers
     # and fires every lifecycle event twice (doubled presence registration,
-    # doubled distill enqueues), while the predecessor half points at a profile
+    # doubled distill enqueues), while the predecessor half points at a config
     # that no longer resolves.
     "nexus_client.hooks",
 )
-# Retired by the resolver: URL/auth/TLS come from the active ~/.firekeep/config profile now.
+# Retired by the resolver: URL/auth/TLS come from ~/.firekeep/config now.
 # No client-kit code reads these; left in place they only mislead whoever reads the file next.
 LEGACY_ENV_KEYS = (
     "NEXUS_CORTEX_URL",
@@ -64,6 +60,8 @@ LEGACY_ENV_KEYS = (
 # without this an upgraded machine carries TWELVE servers — six of them pointing at
 # a config path that no longer exists, failing to connect on every session start.
 LEGACY_MCP_KEYS = (
+    "firekeep-cortex", "firekeep-bridge", "firekeep-sentinel", "firekeep-relay",
+    "firekeep-symdex", "firekeep-decision",
     "nexus-cortex", "nexus-bridge", "nexus-sentinel", "nexus-relay",
     "nexus-symdex", "nexus-decision",
 )
@@ -96,18 +94,8 @@ def console_script_path(path: Path) -> str:
 
 
 def shim_servers(venv_bin: Path) -> dict[str, tuple[str, list[str]]]:
-    """Canonical firekeep MCP servers as (command, args) with ABSOLUTE venv script paths.
-    Every HTTP service is reached via `firekeep-shim --service <svc>`. Two servers are
-    stdio-local (their own console-scripts, NEVER through the shim, no --service) and
-    ALWAYS included — firekeep-symdex (code intelligence) and firekeep-decision (clarification
-    board): both are always-on client capabilities, not opt-in."""
-    shim = console_script_path(venv_bin / "firekeep-shim")
-    servers: dict[str, tuple[str, list[str]]] = {}
-    for svc in SERVICES:
-        servers[f"firekeep-{svc}"] = (shim, ["--service", svc])
-    servers["firekeep-symdex"] = (console_script_path(venv_bin / "firekeep-symdex"), [])
-    servers["firekeep-decision"] = (console_script_path(venv_bin / "firekeep-decision"), [])
-    return servers
+    """The one local Firekeep MCP gateway entry rendered into every runtime."""
+    return {"firekeep": (console_script_path(venv_bin / "firekeep"), ["gateway"])}
 
 
 def hook_command(venv_bin: Path, core: str, *, extra_args: str = "") -> str:
@@ -132,25 +120,6 @@ def hook_command(venv_bin: Path, core: str, *, extra_args: str = "") -> str:
     if extra_args:
         cmd = f"{cmd} {extra_args}"
     return cmd
-
-
-def read_pin(runtime: str) -> str | None:
-    """The profile pinned for `runtime` ([pins] in ~/.firekeep/config), or None. This is
-    render()'s ONLY config dependency — introduced for per-runtime pins (2026-07-13).
-    A missing/unreadable/malformed config (fresh machine, unrender-after-wipe, botched
-    hand-edit) renders UNPINNED rather than failing the install. Charset guarantee: pinned_profile() only returns
-    ^[A-Za-z0-9_-]+$ names, so rendered hook strings need no shell quoting."""
-    from firekeep_client import resolver  # local import: keeps base import-light
-
-    try:
-        cfg = resolver.load_config()
-    except (resolver.ConfigError, configparser.Error):
-        # ConfigError covers a missing/unreadable file, but a present-and-MALFORMED INI
-        # escapes load_config as a raw configparser.Error (ParsingError,
-        # MissingSectionHeaderError, ...) — per the docstring that must render unpinned,
-        # not fail the install.
-        return None
-    return resolver.pinned_profile(cfg, runtime)
 
 
 def read_json(path: Path) -> dict:
@@ -288,9 +257,7 @@ class Adapter(ABC):
 
     @abstractmethod
     def render(self, *, venv_bin: Path) -> None:
-        """Write this runtime's native config: MCP servers wired to
-        `{venv_bin}/firekeep-shim --service <svc>` plus the always-on stdio-local
-        firekeep-symdex and firekeep-decision, and (where supported) lifecycle hooks."""
+        """Write this runtime's native config with one local Firekeep gateway."""
         raise NotImplementedError
 
     @abstractmethod

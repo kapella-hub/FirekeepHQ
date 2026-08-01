@@ -60,7 +60,7 @@ agent_id = bob-thinkpad
 [server]
 kind = ports              ; ports | paths — derived, never prompted
 scheme = http
-host = fk.internal        ; kind=ports
+host = firekeep-host.example ; kind=ports
 ; base_url = https://…    ; kind=paths
 verify_tls = false
 ; ca_path = …             ; required when scheme=https

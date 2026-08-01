@@ -64,6 +64,14 @@ REPO = Path(__file__).resolve().parents[1]
 SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__",
              ".pytest_cache", ".ruff_cache", ".mypy_cache", "site-packages"}
 
+
+def _is_skipped_path(path: Path) -> bool:
+    parts = path.parts
+    return (
+        any(part in SKIP_DIRS for part in parts)
+        or any(parts[i:i + 2] == (".claude", "worktrees") for i in range(len(parts) - 1))
+    )
+
 # The files that must be covered. Discovery is a walk, so a NEW compose file or
 # Dockerfile is picked up automatically; this set is the floor, asserted as a
 # subset so that deleting or renaming one of these fails loudly rather than
@@ -163,7 +171,7 @@ def _walk(root: Path):
     for path in root.rglob("*"):
         if not path.is_file():
             continue
-        if any(part in SKIP_DIRS for part in path.parts):
+        if _is_skipped_path(path.relative_to(root)):
             continue
         yield path
 
@@ -262,10 +270,11 @@ def split_ref(raw: str) -> tuple[str, str | None, str | None]:
 # when the compose file is written. Demanding one is not "stricter", it is
 # impossible.
 #
-# The compensating control is real, not a promise: `image:` resolves
-# `${IMAGE_TAG}`, and a digest-bearing ref is valid there — a customer who wants
-# immutability sets IMAGE_TAG to `v1.2.3@sha256:...`, and server-release.yml
-# prints each pushed digest into the job summary so there is something to copy.
+# The compensating control is enforced in server-release.yml: each release tag
+# is published once, and a rerun reuses rather than overwrites the existing
+# images. `IMAGE_TAG` is shared across four repositories, whose digests differ,
+# so it must identify the exact version rather than pretending one digest can
+# pin the whole stack.
 FIRST_PARTY_PREFIX = "ghcr.io/kapella-hub/firekeep-"
 
 
@@ -836,6 +845,12 @@ def test_venv_dockerfiles_are_not_discovered(tmp_path):
     """`dockerfile.pyd` under symdex/.venv is a compiled tree-sitter grammar; a
     case-insensitive filesystem matches it against a Dockerfile glob."""
     _write(tmp_path, "symdex/.venv/Lib/site-packages/bindings/dockerfile.pyd", "FROM nope\n")
+    _write(tmp_path, "Dockerfile", "FROM scratch\n")
+    assert [p.name for p in find_dockerfiles(tmp_path)] == ["Dockerfile"]
+
+
+def test_nested_agent_worktree_dockerfiles_are_not_discovered(tmp_path):
+    _write(tmp_path, ".claude/worktrees/feature/Dockerfile", "FROM scratch\n")
     _write(tmp_path, "Dockerfile", "FROM scratch\n")
     assert [p.name for p in find_dockerfiles(tmp_path)] == ["Dockerfile"]
 

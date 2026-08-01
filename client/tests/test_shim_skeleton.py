@@ -1,4 +1,4 @@
-"""Task 9 — shim skeleton: service validation, active-profile resolution, client headers.
+"""Shim skeleton: service validation, single-server resolution, client headers.
 
 Also carries forward three items flagged in the Task 9 review that were never
 exercised by a test: the deprecated `verify=<str>` httpx passthrough, the
@@ -14,21 +14,20 @@ from firekeep_client.resolver import Endpoint
 OFFICE_KEY = "nxs_secret_office_key"
 
 
-def _write_office_config(tmp_path):
+def _write_server_config(tmp_path):
     ca = tmp_path / "firekeep-root-ca.crt"          # path only needs to exist as a string for resolve()
     cfg = tmp_path / "config"
     cfg.write_text(
-        "[active]\n"
-        "profile = office\n"
+        "[identity]\n"
+        "agent_id = mogan\n"
         "\n"
-        "[office]\n"
+        "[server]\n"
         "kind = paths\n"
         "scheme = https\n"
-        "base_url = https://firekeep.office.example\n"
+        "base_url = https://firekeep.example\n"
         "verify_tls = true\n"
         f"ca_path = {ca}\n"
-        f"api_key = {OFFICE_KEY}\n"
-        "agent_id = mogan\n",
+        f"api_key = {OFFICE_KEY}\n",
         encoding="utf-8",
     )
     return cfg
@@ -37,7 +36,7 @@ def _write_office_config(tmp_path):
 def test_symdex_is_refused_before_any_resolution(capsys, monkeypatch, tmp_path):
     # Point config somewhere valid so we prove the refusal happens on the service
     # name, NOT because config is missing.
-    monkeypatch.setenv("FIREKEEP_CONFIG", str(_write_office_config(tmp_path)))
+    monkeypatch.setenv("FIREKEEP_CONFIG", str(_write_server_config(tmp_path)))
     rc = shim.run("symdex")
     err = capsys.readouterr().err
     assert rc == 2
@@ -53,14 +52,13 @@ def test_unknown_service_is_refused(capsys):
     assert "bogus" in err
 
 
-def test_office_profile_resolves_headers_with_key(monkeypatch, tmp_path):
-    monkeypatch.setenv("FIREKEEP_CONFIG", str(_write_office_config(tmp_path)))
+def test_server_resolves_headers_with_key(monkeypatch, tmp_path):
+    monkeypatch.setenv("FIREKEEP_CONFIG", str(_write_server_config(tmp_path)))
     monkeypatch.delenv("FIREKEEP_AGENT_ID", raising=False)
-    endpoint, profile = shim.resolve_active("cortex")
-    assert profile == "office"
+    endpoint = shim.resolve_connection("cortex")
     assert endpoint.headers["X-API-Key"] == OFFICE_KEY
     assert endpoint.headers["X-Agent-Id"] == "mogan"
-    assert endpoint.mcp_url == "https://firekeep.office.example/mcp/cortex"
+    assert endpoint.mcp_url == "https://firekeep.example/mcp/cortex"
     # verify must carry the ca_path string through for build_client's ssl handoff
     # (https scheme => verify is the ca_path string, never True/False — resolver's
     # MITM guard already forbids https with verify_tls=false at load time).
@@ -113,8 +111,8 @@ def test_build_client_str_verify_builds_explicit_ssl_context(monkeypatch):
     monkeypatch.setattr(shim.httpx, "AsyncClient", _FakeAsyncClient)
 
     endpoint = Endpoint(
-        mcp_url="https://firekeep.office.example/mcp/cortex",
-        rest_base="https://firekeep.office.example/api/cortex",
+        mcp_url="https://firekeep.example/mcp/cortex",
+        rest_base="https://firekeep.example/api/cortex",
         headers={"X-Agent-Id": "mogan"},
         verify="/path/to/firekeep-root-ca.crt",
     )
@@ -125,7 +123,7 @@ def test_build_client_str_verify_builds_explicit_ssl_context(monkeypatch):
 
 
 def test_build_client_verify_false_is_not_turned_into_a_context(monkeypatch):
-    # The personal plain-http profile's verify=False must pass straight
+    # A plain-http server's verify=False must pass straight
     # through — synthesizing a context for it would be a behavior change to
     # a path with no TLS handshake to verify.
     def _boom(**kwargs):
@@ -180,7 +178,7 @@ def test_parse_args_missing_service_exits_2(capsys):
 
 
 def test_run_success_path_delegates_to_serve_and_returns_0(monkeypatch, tmp_path):
-    monkeypatch.setenv("FIREKEEP_CONFIG", str(_write_office_config(tmp_path)))
+    monkeypatch.setenv("FIREKEEP_CONFIG", str(_write_server_config(tmp_path)))
     monkeypatch.delenv("FIREKEEP_AGENT_ID", raising=False)
     fake_serve = AsyncMock()
     monkeypatch.setattr(shim, "serve", fake_serve)
@@ -191,25 +189,24 @@ def test_run_success_path_delegates_to_serve_and_returns_0(monkeypatch, tmp_path
     fake_serve.assert_awaited_once()
     args = fake_serve.await_args.args
     assert args[0] == "cortex"
-    assert args[1].mcp_url == "https://firekeep.office.example/mcp/cortex"
+    assert args[1].mcp_url == "https://firekeep.example/mcp/cortex"
     assert args[2] is None  # http_client injection seam, unset in production
     assert args[3] is None  # stdio_streams injection seam, unset in production
 
 
 def test_run_config_error_returns_1_without_leaking_api_key(capsys, monkeypatch, tmp_path):
-    # A profile with a bad 'kind' fails resolution AFTER headers (incl.
+    # A server with a bad 'kind' fails resolution AFTER headers (incl.
     # api_key) are built internally by resolve() — pin that the key never
     # reaches the exception message or the fail-loud stderr line.
     cfg = tmp_path / "config"
     cfg.write_text(
-        "[active]\n"
-        "profile = office\n"
+        "[identity]\n"
+        "agent_id = mogan\n"
         "\n"
-        "[office]\n"
+        "[server]\n"
         "kind = bogus-kind\n"
         "scheme = http\n"
-        f"api_key = {OFFICE_KEY}\n"
-        "agent_id = mogan\n",
+        f"api_key = {OFFICE_KEY}\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("FIREKEEP_CONFIG", str(cfg))
@@ -224,9 +221,7 @@ def test_run_config_error_returns_1_without_leaking_api_key(capsys, monkeypatch,
 
 
 def test_parse_args_accepts_profile():
-    # Task 5: --profile lets a pinned runtime override [active]/FIREKEEP_PROFILE
-    # for this one shim invocation; absent by default so unpinned callers are
-    # unaffected.
+    # Two-release compatibility: stale rendered args parse but are ignored by run().
     args = shim.parse_args(["--service", "cortex", "--profile", "office"])
     assert args.profile == "office"
     assert shim.parse_args(["--service", "cortex"]).profile is None

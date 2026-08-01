@@ -54,7 +54,9 @@ _MIN_EMBED_CHARS = 256
 # top-level Qdrant payload, so endpoints like /memory/contributors can read
 # ``payload.agent_id`` / ``payload.project`` directly without descending into
 # the nested ``metadata`` sub-dict.
-_PROMOTED_PAYLOAD_KEYS = {"agent_id", "session_id", "project"}
+_PROMOTED_PAYLOAD_KEYS = {
+    "agent_id", "session_id", "project", "workspace_id", "member_id",
+}
 
 # Keys excluded from the nested ``metadata`` sub-dict in the Qdrant payload —
 # either because they already live at the top level (source/tags/domain/timestamp)
@@ -544,6 +546,7 @@ class VectorClient:
         namespace: str = "default",
         include_archived: bool = False,
         project: str | None = None,
+        workspace_id: str | None = None,
         score_threshold: float | None = None,
     ) -> list[dict[str, Any]]:
         """Embed query and search Qdrant for similar vectors.
@@ -577,6 +580,13 @@ class VectorClient:
                     FieldCondition(
                         key="project",
                         match=MatchValue(value=project),
+                    )
+                )
+            if workspace_id:
+                filter_conditions.append(
+                    FieldCondition(
+                        key="workspace_id",
+                        match=MatchValue(value=workspace_id),
                     )
                 )
             if namespace != "default":

@@ -42,19 +42,12 @@ def test_opencode_render_writes_local_mcp_servers(fake_home, tmp_path):
     data = _read(_config(fake_home))
 
     # opencode's `mcp` shape: type=local, command is ONE array (cmd + args), enabled flag.
-    assert data["mcp"]["firekeep-relay"] == {
+    assert data["mcp"]["firekeep"] == {
         "type": "local",
-        "command": [_exe(venv_bin / "firekeep-shim"), "--service", "relay"],
+        "command": [_exe(venv_bin / "firekeep"), "gateway"],
         "enabled": True,
     }
-    # symdex is always-on: stdio-local console script, no args
-    assert data["mcp"]["firekeep-symdex"] == {
-        "type": "local",
-        "command": [_exe(venv_bin / "firekeep-symdex")],
-        "enabled": True,
-    }
-    assert "firekeep-decision" in data["mcp"]
-    assert len([k for k in data["mcp"] if k.startswith("firekeep-")]) == 6
+    assert list(data["mcp"]) == ["firekeep"]
 
 
 def test_opencode_render_writes_plugin_bridge(fake_home, tmp_path):
@@ -101,15 +94,14 @@ def _write_cfg(tmp_path, monkeypatch, text):
     return cfg
 
 
-def test_pinned_opencode_renders_environment_and_profile(tmp_path, monkeypatch, fake_home):
+def test_legacy_pinned_opencode_renders_no_profile_artifacts(tmp_path, monkeypatch, fake_home):
     _write_cfg(tmp_path, monkeypatch, _PINNED_CFG)
     get_adapter("opencode").render(venv_bin=tmp_path / "vbin")
 
     data = _read(_config(fake_home))
-    for name in ("firekeep-cortex", "firekeep-symdex", "firekeep-decision"):
-        assert data["mcp"][name]["environment"] == {"FIREKEEP_PROFILE": "office"}
+    assert "environment" not in data["mcp"]["firekeep"]
     text = _plugin(fake_home).read_text(encoding="utf-8")
-    assert "--profile" in text and '"office"' in text
+    assert "--profile" not in text
 
 
 def test_unpinned_opencode_render_has_no_environment_or_profile(tmp_path, monkeypatch, fake_home):
@@ -117,7 +109,7 @@ def test_unpinned_opencode_render_has_no_environment_or_profile(tmp_path, monkey
     get_adapter("opencode").render(venv_bin=tmp_path / "vbin")
 
     data = _read(_config(fake_home))
-    assert "environment" not in data["mcp"]["firekeep-cortex"]
+    assert "environment" not in data["mcp"]["firekeep"]
     assert "--profile" not in _plugin(fake_home).read_text(encoding="utf-8")
 
 
@@ -136,7 +128,7 @@ def test_opencode_non_clobbering(fake_home, tmp_path):
     assert data["model"] == "anthropic/claude-sonnet-5"          # foreign top-level key
     assert data["mcp"]["custom"] == {"type": "local", "command": ["x"]}
     assert data["plugin"] == ["some-npm-plugin"]
-    assert "firekeep-cortex" in data["mcp"]
+    assert "firekeep" in data["mcp"]
 
     adapter.unrender()
     data2 = _read(cfg)

@@ -221,6 +221,12 @@ def test_docs_to_skills_end_to_end_ingest_classify_approve_recall():
     shared_store = FakeQdrantStore()
     mock_vector = MagicMock()
     mock_vector._client = shared_store
+    # Skill recall now embeds the query and goes through query_points. Without an
+    # awaitable _embed this test would silently fall back to scroll and stop proving
+    # the draft-approval gate on the path production actually uses. (FakeQdrantStore
+    # already evaluates must/must_not, so no store change is needed — but note it
+    # ignores score_threshold, so this proves the GATE, not ranking or flooring.)
+    mock_vector._embed = AsyncMock(return_value=[0.1] * 768)
     mock_redis = AsyncMock()
 
     skills_settings = MagicMock()

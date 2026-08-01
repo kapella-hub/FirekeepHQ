@@ -74,15 +74,25 @@ WRONG_CLONE = re.compile(rf"github\.com/{re.escape(OWNER)}/(?!(?:{_ALT})\b)([A-Z
 TEXT_SUFFIXES = {".py", ".sh", ".ps1", ".yml", ".yaml", ".md", ".toml", ".json", ".cfg", ".txt"}
 
 
-def _tracked_text_files() -> list[Path]:
+def _tracked_text_files(root: Path = ROOT) -> list[Path]:
     out: list[Path] = []
-    for p in ROOT.rglob("*"):
+    for p in root.rglob("*"):
         if not p.is_file() or p.suffix not in TEXT_SUFFIXES:
             continue
-        if any(part in SKIP_DIRS for part in p.parts):
+        parts = p.relative_to(root).parts
+        if any(part in SKIP_DIRS for part in parts):
+            continue
+        if any(parts[i:i + 2] == (".claude", "worktrees") for i in range(len(parts) - 1)):
             continue
         out.append(p)
     return out
+
+
+def test_nested_agent_worktrees_are_not_release_material(tmp_path):
+    worktree = tmp_path / ".claude" / "worktrees" / "feature" / "README.md"
+    worktree.parent.mkdir(parents=True)
+    worktree.write_text("https://kapella-hub.github.io/Firekeep\n", encoding="utf-8")
+    assert _tracked_text_files(tmp_path) == []
 
 
 class TestPublishedUrlsNameARealRepo:

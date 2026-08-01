@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import time
 
-_MARK = "presence_registered_tester@personal"
+_MARK = "presence_registered_tester"
 
 
 def _record_calls(monkeypatch):

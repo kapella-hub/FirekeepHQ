@@ -1,5 +1,7 @@
 import configparser
+import json
 import os
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -72,8 +74,8 @@ def test_install_bootstraps_home_and_config(install_env):
     assert (home / "logs").is_dir()
     cfg = configparser.ConfigParser()
     cfg.read(home / "config")
-    assert cfg["active"]["profile"] == "personal"
-    assert cfg.has_section("personal")
+    assert cfg["identity"]["agent_id"] == "CHANGEME"
+    assert cfg["server"]["kind"] == "ports"
     gi = (home / ".gitignore").read_text(encoding="utf-8")
     assert gi.strip() == "*"
 
@@ -167,27 +169,62 @@ def test_no_runtime_headless_defaults_to_all(install_env):
     assert len(rec.calls) == 4
 
 
-def test_interactive_prompts_for_runtime(install_env, monkeypatch):
-    # interactive + no --runtime -> the wizard is asked which agent; only that one renders.
+def test_interactive_without_runtime_renders_all_adapters(install_env, monkeypatch):
+    # The client is agent-agnostic: a normal first install must prepare every shipped
+    # runtime without asking the customer to predict which client they will use later.
     home, runs, rec = install_env
     monkeypatch.setattr("firekeep_client.wizard.is_interactive", lambda *a, **k: True)
-    monkeypatch.setattr("firekeep_client.wizard.ask_runtime", lambda *a, **k: "kiro")
     monkeypatch.setattr("firekeep_client.wizard.prompt_config", lambda cfg, **k: cfg)
     cli.main(["install"])
-    assert len(rec.calls) == 1  # only kiro, not all four
+    assert len(rec.calls) == 4
 
 
-def test_explicit_runtime_skips_the_prompt(install_env, monkeypatch):
-    # explicit --runtime wins: ask_runtime must NOT be called.
+def test_explicit_runtime_renders_only_that_adapter(install_env, monkeypatch):
+    # Explicit --runtime remains the targeted re-render/repair path.
     home, runs, rec = install_env
     monkeypatch.setattr("firekeep_client.wizard.is_interactive", lambda *a, **k: True)
-    called = []
-    monkeypatch.setattr("firekeep_client.wizard.ask_runtime",
-                        lambda *a, **k: called.append(1) or "all")
     monkeypatch.setattr("firekeep_client.wizard.prompt_config", lambda cfg, **k: cfg)
     cli.main(["install", "--runtime", "claude"])
-    assert called == []
     assert len(rec.calls) == 1  # only claude
+
+
+def test_fresh_install_renders_every_native_adapter(tmp_path, monkeypatch):
+    """Exercise the real adapters from an empty user home through the real CLI.
+
+    Unit tests for each adapter can pass while the install command never selects it;
+    this is the customer-facing invariant that caught Codex and Kiro being absent after
+    an interactive install that selected Claude.
+    """
+    user_home = tmp_path / "user"
+    firekeep_home = user_home / ".firekeep"
+    monkeypatch.setenv("USERPROFILE", str(user_home))
+    monkeypatch.setenv("HOME", str(user_home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(user_home / ".config"))
+    monkeypatch.setenv("FIREKEEP_CONFIG", str(firekeep_home / "config"))
+    monkeypatch.setattr(cli, "_kit_dir", lambda: None)
+    monkeypatch.setattr(cli.state, "_private", lambda _p: None)
+    monkeypatch.setattr(cli.pathenv, "ensure_on_path", lambda *a, **k: [])
+    # Native kiro activation is covered in test_kiro.py; do not launch a real client
+    # process from this installer topology test.
+    monkeypatch.setattr("firekeep_client.adapters.kiro.shutil.which", lambda _name: None)
+
+    assert cli.main(["install", "--non-interactive", "--no-modify-path"]) == 0
+
+    expected = {"firekeep"}
+    claude = json.loads((user_home / ".claude.json").read_text(encoding="utf-8"))
+    codex = tomllib.loads(
+        (user_home / ".codex" / "config.toml").read_text(encoding="utf-8")
+    )
+    kiro = json.loads(
+        (user_home / ".kiro" / "agents" / "firekeep.json").read_text(encoding="utf-8")
+    )
+    opencode = json.loads(
+        (user_home / ".config" / "opencode" / "opencode.json").read_text(encoding="utf-8")
+    )
+    assert set(claude["mcpServers"]) == expected
+    assert set(codex["mcp_servers"]) == expected
+    assert set(kiro["mcpServers"]) == expected
+    assert set(opencode["mcp"]) == expected
 
 
 def test_install_from_installed_venv_skips_pip_and_still_renders(install_env, monkeypatch, capsys):
@@ -218,12 +255,14 @@ def test_install_does_not_clobber_existing_config(install_env):
     home, runs, rec = install_env
     home.mkdir(parents=True)
     (home / "config").write_text(
-        "[active]\nprofile = office\n[office]\nkind = paths\n", encoding="utf-8"
+        "[identity]\nagent_id = Alex\n[server]\nkind = paths\nscheme = https\n"
+        "base_url = https://already.example\nverify_tls = true\nca_path = os\n",
+        encoding="utf-8",
     )
     cli.main(["install", "--runtime", "claude"])
     cfg = configparser.ConfigParser()
     cfg.read(home / "config")
-    assert cfg["active"]["profile"] == "office"  # preserved, not overwritten
+    assert cfg["server"]["base_url"] == "https://already.example"
 
 
 def test_install_without_tty_prompts_nothing(install_env, monkeypatch, capsys):
@@ -250,15 +289,15 @@ def test_install_flags_write_config_without_a_tty(install_env, monkeypatch, caps
     home, _, _ = install_env
     cfg = configparser.ConfigParser()
     cfg.read(home / "config")
-    assert cfg["personal"]["agent_id"] == "ci-bot"
-    assert cfg["personal"]["host"] == "10.0.0.4"
+    assert cfg["identity"]["agent_id"] == "ci-bot"
+    assert cfg["server"]["host"] == "10.0.0.4"
     # Identity is set, so don't tell the user to go edit the file they just configured.
     assert "CHANGEME" not in capsys.readouterr().out
 
 
 def test_install_prompts_when_interactive(install_env, monkeypatch):
     monkeypatch.setattr(cli.wizard, "is_interactive", lambda *a: True)
-    answers = iter(["Alex", "1", "203.0.113.10", ""])
+    answers = iter(["Alex", "203.0.113.10", ""])
     monkeypatch.setattr("builtins.input", lambda _p: next(answers))
 
     rc = cli.main(["install", "--runtime", "claude"])
@@ -266,8 +305,8 @@ def test_install_prompts_when_interactive(install_env, monkeypatch):
     home, _, _ = install_env
     cfg = configparser.ConfigParser()
     cfg.read(home / "config")
-    assert cfg["personal"]["agent_id"] == "Alex"
-    assert cfg["personal"]["host"] == "203.0.113.10"
+    assert cfg["identity"]["agent_id"] == "Alex"
+    assert cfg["server"]["host"] == "203.0.113.10"
 
 
 def test_install_non_interactive_flag_beats_a_tty(install_env, monkeypatch):
@@ -277,6 +316,22 @@ def test_install_non_interactive_flag_beats_a_tty(install_env, monkeypatch):
     monkeypatch.setattr(cli.wizard, "is_interactive", lambda *a: True)
     monkeypatch.setattr("builtins.input", boom)
     assert cli.main(["install", "--runtime", "claude", "--non-interactive"]) == 0
+
+
+def test_install_join_is_zero_prompt_even_with_a_tty(install_env, monkeypatch):
+    def boom(*args, **kwargs):
+        raise AssertionError("install --join prompted despite carrying every answer")
+
+    calls = []
+    monkeypatch.setattr(cli.wizard, "is_interactive", lambda *a: True)
+    monkeypatch.setattr("builtins.input", boom)
+    monkeypatch.setattr(
+        "firekeep_client.join.join",
+        lambda code, **kwargs: calls.append((code, kwargs)) or 0,
+    )
+    assert cli.main(["install", "--join", "fk_join_test", "--runtime", "all"]) == 0
+    assert calls == [("fk_join_test", {"agent_id": None})]
+    assert len(install_env[2].calls) == 4
 
 
 def test_install_failure_is_fail_loud_not_traceback(install_env, monkeypatch, capsys):
@@ -340,7 +395,7 @@ def test_install_dist_base_is_written_on_the_interactive_path(install_env, monke
     """The interactive path is the one the bootstrap installer actually uses, so a silent
     regression there would break `firekeep update` for every real teammate while the non-interactive test stayed green."""
     monkeypatch.setattr(cli.wizard, "is_interactive", lambda *a: True)
-    answers = iter(["Alex", "1", "203.0.113.10", ""])
+    answers = iter(["Alex", "203.0.113.10", ""])
     monkeypatch.setattr("builtins.input", lambda _p: next(answers))
 
     rc = cli.main(["install", "--runtime", "claude", "--dist-base", "http://gl/rel/v1"])
@@ -351,8 +406,8 @@ def test_install_dist_base_is_written_on_the_interactive_path(install_env, monke
     # Assert dist base_url was written
     assert cfg["dist"]["base_url"] == "http://gl/rel/v1"
     # Also assert the prompted values still land (proving --dist-base doesn't disturb the wizard)
-    assert cfg["personal"]["agent_id"] == "Alex"
-    assert cfg["personal"]["host"] == "203.0.113.10"
+    assert cfg["identity"]["agent_id"] == "Alex"
+    assert cfg["server"]["host"] == "203.0.113.10"
 
 
 def test_create_venv_recreates_a_pipless_venv(tmp_path, monkeypatch):

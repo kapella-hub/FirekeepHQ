@@ -22,7 +22,7 @@ from starlette.middleware import Middleware
 from starlette.responses import JSONResponse
 
 from auth.config import get_auth_settings
-from auth.keys import validate_key
+from auth.keys import invalid_credential_detail, validate_key
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,8 @@ class FirekeepKeyAuthMiddleware:
     """Whole-app X-API-Key gate backed by Redis DB 7 (auth:key:{sha256}).
 
     On success the verified identity is attached to
-    scope["state"]["identity"] = {"agent_id", "scopes", "key_id"} so
+    scope["state"]["identity"] = {"workspace_id", "member_id",
+    "credential_id", "scopes"} so
     downstream handlers can trust it over self-declared X-Agent-Id.
     """
 
@@ -88,7 +89,13 @@ class FirekeepKeyAuthMiddleware:
             return
 
         try:
-            identity = await validate_key(api_key, redis_client=self._get_redis())
+            redis_client = self._get_redis()
+            identity = await validate_key(api_key, redis_client=redis_client)
+            invalid_detail = (
+                await invalid_credential_detail(api_key, redis_client=redis_client)
+                if identity is None
+                else None
+            )
         except Exception as exc:
             # Fail CLOSED and loud: auth store down while enforcement is on.
             logger.error(
@@ -106,14 +113,15 @@ class FirekeepKeyAuthMiddleware:
             return
 
         if identity is None:
-            await self._reject(scope, receive, send, 401, "Invalid or expired API key")
+            await self._reject(scope, receive, send, 401, invalid_detail or "Unknown API key")
             return
 
         state: dict[str, Any] = scope.setdefault("state", {})
         state["identity"] = {
-            "agent_id": identity["agent_id"],
+            "workspace_id": identity["workspace_id"],
+            "member_id": identity["member_id"],
+            "credential_id": identity["credential_id"],
             "scopes": identity["scopes"],
-            "key_id": identity["key_id"],
         }
         await self.app(scope, receive, send)
 

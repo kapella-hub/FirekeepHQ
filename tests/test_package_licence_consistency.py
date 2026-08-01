@@ -1,11 +1,11 @@
 """A shipped wheel must not state two different licences.
 
-`symdex/pyproject.toml` sets `license = "LicenseRef-Firekeep-Proprietary"` AND
+`symdex/pyproject.toml` sets `license = "LicenseRef-Firekeep-BUSL-1.1"` AND
 `readme = "README.md"`. That README's License section said `MIT` — inherited from the
 standalone tool the package grew out of. Both statements travel inside the built
 wheel's METADATA: `License-Expression` from the first, the long description from the
 second. Every developer machine got a package asserting it was simultaneously
-proprietary and MIT, and the bootstrap installs this package unconditionally.
+source-available and MIT, and the bootstrap installs this package unconditionally.
 
 The metadata field was audited and corrected. The README was not, because nothing
 connected the two — `docs/LICENSING.md` does not mention the README at all.
@@ -28,7 +28,7 @@ REPO = Path(__file__).resolve().parents[1]
 # Every directory that builds a wheel handed to a customer.
 SHIPPED_PACKAGES = ("client", "symdex")
 
-EXPECTED_LICENCE = "LicenseRef-Firekeep-Proprietary"
+EXPECTED_LICENCE = "LicenseRef-Firekeep-BUSL-1.1"
 
 # Bare OSI identifiers. A packaged README may DISCUSS these (the symdex README explains
 # which licence it used to claim, and points at NOTICE for dependency licences) — what
@@ -65,7 +65,7 @@ def _licence_section(text: str) -> str | None:
 
 
 @pytest.mark.parametrize("pkg", SHIPPED_PACKAGES)
-def test_pyproject_declares_the_proprietary_licence(pkg: str) -> None:
+def test_pyproject_declares_the_source_available_licence(pkg: str) -> None:
     proj = _pyproject(pkg).get("project", {})
     assert proj.get("license") == EXPECTED_LICENCE, (
         f"{pkg}/pyproject.toml declares license={proj.get('license')!r}; "
@@ -91,18 +91,26 @@ def test_readme_licence_section_does_not_contradict_metadata(pkg: str) -> None:
         f"{pkg}/pyproject.toml declares {EXPECTED_LICENCE}. This README is that wheel's "
         f"long description, so both statements ship in one METADATA."
     )
-    assert re.search(r"proprietar", first, re.I), (
+    assert re.search(r"source.available|business source", first, re.I), (
         f"{path.relative_to(REPO)}: License section opens with {first.strip()!r}; it "
-        f"should state the software is proprietary. Discussion may follow, but the "
+        f"should state the software is source-available. Discussion may follow, but the "
         f"first line is the declaration."
     )
 
 
-def test_root_licence_file_is_not_an_osi_licence() -> None:
+def test_root_licence_file_is_busl() -> None:
     """/LICENSE is the document both wheels point at via `license-files`."""
     text = (REPO / "LICENSE").read_text(encoding="utf-8")
     head = "\n".join(text.splitlines()[:40])
-    for marker in ("MIT License", "Apache License", "GNU GENERAL PUBLIC LICENSE",
-                   "BSD 3-Clause", "Mozilla Public License"):
-        assert marker not in head, f"/LICENSE opens as an OSI licence ({marker})"
-    assert re.search(r"proprietar", head, re.I), "/LICENSE does not state it is proprietary"
+    assert "Business Source License 1.1" in head
+    assert "Additional Use Grant:" in head
+    assert "Change License: Apache License, Version 2.0" in head
+
+
+def test_generated_notices_match_the_source_available_licence() -> None:
+    paths = (REPO / "NOTICE", REPO / "client/NOTICE", REPO / "symdex/NOTICE")
+    notices = [path.read_text(encoding="utf-8") for path in paths]
+    assert len(set(notices)) == 1, "the three generated NOTICE copies drifted"
+    header = "\n".join(notices[0].splitlines()[:8])
+    assert "source-available under BUSL-1.1" in header
+    assert "proprietary software" not in header.lower()

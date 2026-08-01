@@ -65,6 +65,13 @@ def test_binary_files_do_not_crash_the_scan(tmp_path):
     assert scan(tmp_path) == []
 
 
+def test_nested_agent_worktrees_are_not_release_material(tmp_path):
+    worktree = tmp_path / ".claude" / "worktrees" / "feature" / "legacy.md"
+    worktree.parent.mkdir(parents=True)
+    worktree.write_text("nexusstack\n", encoding="utf-8")
+    assert scan(tmp_path) == []
+
+
 def test_the_scanner_source_itself_is_skipped(tmp_path):
     """It names every token by definition; scanning it would always fail."""
     from check_forbidden_tokens import SKIP_FILES

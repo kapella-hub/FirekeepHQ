@@ -49,7 +49,10 @@ class TestLegacyTokensStillNameTheOldThing:
     def test_mcp_keys_name_the_predecessor(self):
         assert LEGACY_MCP_KEYS
         for key in LEGACY_MCP_KEYS:
-            assert key.startswith("nexus-"), f"{key!r} must name the predecessor"
+            assert key.startswith(("nexus-", "firekeep-")), (
+                f"{key!r} must name a retired multi-entry generation"
+            )
+            assert key != "firekeep"
 
     def test_hook_markers_cover_the_predecessor_python_kit(self):
         assert any("nexus_client" in m for m in LEGACY_HOOK_MARKERS), (
@@ -109,7 +112,7 @@ class TestClaudeUpgrade:
         for k in LEGACY_MCP_KEYS:
             assert k not in servers, f"{k} survived the upgrade -- the machine now has two kits"
         assert "someone-elses-server" in servers, "a foreign server must never be touched"
-        assert any(k.startswith("firekeep-") for k in servers)
+        assert "firekeep" in servers
 
     def test_no_lifecycle_event_fires_twice(self, fake_home, tmp_path):
         """THE failure this migration exists to prevent."""

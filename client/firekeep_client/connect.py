@@ -26,11 +26,11 @@ rather than raised.
 from __future__ import annotations
 
 import os
-import re
+import json
+import shlex
 import socket
 import subprocess
 import time
-from pathlib import Path
 
 from firekeep_client import resolver
 
@@ -106,33 +106,41 @@ def _probe_server(target: str, remote_dir: str | None) -> dict:
     return info
 
 
-def _mint_key(target: str, remote_dir: str, agent_id: str) -> str:
-    """Mint through firekeep-admin's LOCAL path — no admin key needed on the server
-    (deploy/firekeep-admin). stdin is closed so it can never sit on a prompt."""
+def _issue_invite(target: str, remote_dir: str, agent_id: str) -> str:
+    """Issue a one-time code over SSH; redemption still goes through POST /enroll."""
     rc, out = _ssh(
         target,
-        f"cd {remote_dir} && bash deploy/firekeep-admin keys create --agent {agent_id} < /dev/null",
+        f"cd {shlex.quote(remote_dir)} && deploy/firekeep-admin invite "
+        f"--agent {shlex.quote(agent_id)} --json < /dev/null",
         timeout=90,
     )
-    m = re.search(r'"api_key"\s*:\s*"([^"]+)"', out)
-    if m:
-        _say("key", f"minted for {agent_id}")
-        return m.group(1)
+    for line in reversed(out.splitlines()):
+        try:
+            result = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        code = result.get("code") if isinstance(result, dict) else None
+        if isinstance(code, str) and code.startswith("fk_join_"):
+            _say("invite", f"issued for {agent_id}")
+            return code
 
     # Distinguish "server is too old" from a genuine failure. The local-mint path
     # is what makes this work without an admin key; a server predating it either
     # prompts (and gets EOF from our closed stdin, producing NOTHING) or curls its
     # own API with a credential that no longer exists. Reporting the empty output
     # verbatim would be the same undiagnosable dead end this command exists to end.
-    rc2, probe = _ssh(target, f"grep -c mint_local {remote_dir}/deploy/firekeep-admin 2>/dev/null || echo 0")
+    rc2, probe = _ssh(
+        target,
+        f"grep -c 'invite)' {shlex.quote(remote_dir)}/deploy/firekeep-admin 2>/dev/null || echo 0",
+    )
     if probe.strip().startswith("0"):
         raise ConnectError(
-            f"the server's deploy/firekeep-admin predates local key minting, so it cannot "
-            f"issue a key without an admin credential that is printed once and never stored.\n"
+            f"the server's deploy/firekeep-admin predates client enrollment, so it cannot "
+            f"issue a join code.\n"
             f"  Fix on the server:  cd {remote_dir} && git pull\n"
             f"  Then re-run this command.")
     raise ConnectError(
-        "could not mint an API key on the server (exit "
+        "could not issue a join code on the server (exit "
         f"{rc}).\n{(out.strip() or '<no output>')[:500]}")
 
 
@@ -157,89 +165,59 @@ def _start_tunnel(target: str) -> None:
         kwargs["creationflags"] = 0x00000008 | 0x00000200   # DETACHED_PROCESS | NEW_PROCESS_GROUP
     else:
         kwargs["start_new_session"] = True
-    subprocess.Popen(cmd, **kwargs)  # noqa: S603
+    try:
+        subprocess.Popen(cmd, **kwargs)  # noqa: S603
+    except FileNotFoundError as exc:
+        raise ConnectError(
+            "this join code needs an SSH tunnel (the server binds to loopback) "
+            "but 'ssh' is not on PATH. Install OpenSSH, or ask the issuer to "
+            "expose the stack over TLS and reissue the code."
+        ) from exc
 
     for _ in range(20):
         time.sleep(0.5)
         if _tunnel_running():
             return
     raise ConnectError(
-        "started an SSH tunnel but the ports never came up. Something else may be "
+        f"started an SSH tunnel to {target} but the ports never came up. Something else may be "
         f"bound to one of {', '.join(map(str, TUNNEL_PORTS))}, or the server is not serving them.")
 
 
-def _write_profile(profile: str, host: str, api_key: str, agent_id: str) -> Path:
-    import configparser
-    from firekeep_client.cli import _config_path
-    path = _config_path()
-    cp = configparser.ConfigParser()
-    cp.optionxform = str
-    if path.exists():
-        cp.read(path, encoding="utf-8")
-    if profile not in cp:
-        cp[profile] = {}
-    cp[profile].update({"kind": "ports", "scheme": "http", "host": host,
-                        "verify_tls": "false", "agent_id": agent_id, "api_key": api_key})
-    if "active" not in cp:
-        cp["active"] = {}
-    cp["active"]["profile"] = profile
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as fh:
-        cp.write(fh)
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass          # Windows ACLs — `doctor`'s config-perms row reports on this
-    return path
-
-
-def connect(target: str, *, profile: str = "personal", agent_id: str | None = None,
+def connect(target: str, *, agent_id: str | None = None,
             remote_dir: str | None = None, use_tunnel: bool = True) -> int:
-    """Probe the server, mint a key, set up access, write the profile, verify."""
+    """Probe, issue a join code over SSH, then use the one enrollment path."""
+    existing_agent = ""
+    try:
+        cfg = resolver.load_config()
+        existing_agent = resolver.agent_id(cfg)
+    except resolver.ConfigMigrationConflict:
+        # Connecting is a destructive repoint of the one config. Never let it
+        # silently choose over an ambiguous legacy migration.
+        raise
+    except resolver.ConfigError as exc:
+        if resolver._config_path().exists():
+            raise ConnectError(f"cannot read existing Firekeep config: {exc}") from exc
+        # First install: connect will create the config below.
+
     info = _probe_server(target, remote_dir)
 
-    host_only = target.split("@", 1)[-1]
     loopback = info["bind_addr"] in ("127.0.0.1", "localhost", "::1")
     _say("bind addr", f"{info['bind_addr'] or 'unknown'}"
                       f"{' (loopback -> tunnel required)' if loopback else ''}")
 
-    if loopback and use_tunnel:
-        if _tunnel_running():
-            _say("tunnel", "already running, reused")
-        else:
-            _start_tunnel(target)
-            _say("tunnel", "started (" + ", ".join(map(str, TUNNEL_PORTS)) + ")")
-        client_host = "127.0.0.1"
-    elif loopback:
+    if loopback and not use_tunnel:
         raise ConnectError(
             "the server binds to loopback, so a remote client cannot reach it without a "
             "tunnel, and --no-tunnel was given. Either drop --no-tunnel, or put a TLS "
-            "reverse proxy in front of the stack and use a `paths` profile.")
-    else:
-        client_host = host_only
-
+            "reverse proxy in front of the stack and use a paths-style [server] connection.")
     if not agent_id:
-        try:
-            cfg = resolver.load_config()
-            agent_id = resolver.agent_id(cfg, resolver.active_profile(cfg))
-        except Exception:                      # noqa: BLE001 — first run, no config yet
-            agent_id = ""
+        agent_id = existing_agent
     if not agent_id or agent_id == "CHANGEME":
         agent_id = f"agent-{socket.gethostname().lower()}"
 
-    api_key = _mint_key(target, info["dir"], agent_id)
-    path = _write_profile(profile, client_host, api_key, agent_id)
-    _say("config", f"{path} [{profile}]")
-
-    from firekeep_client.cli import run_doctor
-    print()
-    rows = run_doctor()
-    bad = [r for r in rows if r[1] != "ok"]
-    print()
-    if bad:
-        print("  Some checks did not pass:")
-        for name, status, detail in bad:
-            print(f"    [{status.upper()}] {name}: {detail}")
-        return 1
-    print("  All checks passed. Restart your agent session to pick up the new servers.")
-    return 0
+    code = _issue_invite(target, info["dir"], agent_id)
+    from firekeep_client.join import JoinError, join
+    try:
+        return join(code, agent_id=agent_id, force=True)
+    except JoinError as exc:
+        raise ConnectError(str(exc)) from exc

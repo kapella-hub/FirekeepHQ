@@ -103,6 +103,6 @@ def test_reap_does_not_expire_the_session_stash_by_age():
     Reaping it on file age would drop a live session's id and mis-attribute
     every subsequent memory call — the exact degradation a blanket sweep of
     scratch/ would have caused."""
-    state.write_session_stash("agent-a", "personal", session_id="sess-123")
+    state.write_session_stash("agent-a", session_id="sess-123")
     state.reap_stale(max_age_seconds=0)
-    assert (state.read_session_stash("agent-a", "personal") or {}).get("session_id") == "sess-123"
+    assert (state.read_session_stash("agent-a") or {}).get("session_id") == "sess-123"
