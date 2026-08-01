@@ -4,6 +4,7 @@ import os
 import time
 from typing import Optional
 
+from ..parser.languages import LANGUAGE_REGISTRY
 from ..storage import IndexStore, record_savings, estimate_savings, cost_avoided, score_symbol
 from ._utils import resolve_repo
 
@@ -142,16 +143,8 @@ TOOL_DEF = {
                     },
                     "language": {
                             "type": "string",
-                            "description": "Optional filter by language",
-                            "enum": [
-                                    "python",
-                                    "javascript",
-                                    "typescript",
-                                    "go",
-                                    "rust",
-                                    "java",
-                                    "php"
-                            ]
+                            "description": "Optional filter by built-in language",
+                            "enum": list(LANGUAGE_REGISTRY)
                     },
                     "max_results": {
                             "type": "integer",

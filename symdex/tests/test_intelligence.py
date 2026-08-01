@@ -322,3 +322,43 @@ class UserService:
     # Total tokens should be reasonable (no double-counting)
     total_tokens = result["_meta"]["tokens_used"]
     assert total_tokens < 200  # Class is ~200 bytes = ~50 tokens
+
+
+def test_get_context_keeps_child_when_parent_replacement_exceeds_budget(tmp_path):
+    """A rejected parent candidate must not evict an admitted child symbol."""
+    from firekeep_symdex.tools.get_context import get_context
+
+    source = f'''class OversizedService:
+    """target operations"""
+
+    def target(self):
+        return 1
+
+    def unrelated(self):
+        return "{'x' * 4000}"
+'''
+    symbols = parse_file(source, "lib/service.py", "python")
+
+    store = IndexStore(base_path=str(tmp_path))
+    store.save_index(
+        owner="test",
+        name="replacement-repo",
+        source_files=["lib/service.py"],
+        symbols=symbols,
+        raw_files={"lib/service.py": source},
+        languages={"python": 1},
+        references=[],
+    )
+
+    result = get_context(
+        repo="test/replacement-repo",
+        budget_tokens=100,
+        focus="target",
+        storage_path=str(tmp_path),
+    )
+
+    assert "error" not in result
+    included_names = {symbol["name"] for symbol in result["symbols"]}
+    assert "target" in included_names
+    assert "OversizedService" not in included_names
+    assert result["_meta"]["tokens_used"] > 0

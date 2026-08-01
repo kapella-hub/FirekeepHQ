@@ -130,21 +130,24 @@ def get_context(
                 return True
         return False
 
-    def _evict_contained(file_path: str, start: int, end: int):
-        """Remove already-included symbols whose byte ranges are contained within [start, end)."""
-        nonlocal tokens_used, raw_bytes_total
-        to_remove = []
+    def _contained_indices(file_path: str, start: int, end: int) -> list[int]:
+        """Find included symbols whose byte ranges are contained within [start, end)."""
+        contained = []
         for i, entry in enumerate(symbols_out):
             if entry["file"] != file_path:
                 continue
-            sym_id = entry["id"]
-            sym_data = index.get_symbol(sym_id)
+            sym_data = index.get_symbol(entry["id"])
             if not sym_data:
                 continue
             s_offset = sym_data.get("byte_offset", 0)
             s_length = sym_data.get("byte_length", 0)
             if s_length > 0 and start <= s_offset and s_offset + s_length <= end:
-                to_remove.append(i)
+                contained.append(i)
+        return contained
+
+    def _evict_contained(file_path: str, to_remove: list[int]):
+        """Remove already-included symbols identified as contained."""
+        nonlocal tokens_used, raw_bytes_total
         # Remove in reverse order to preserve indices
         for i in reversed(to_remove):
             evicted = symbols_out.pop(i)
@@ -176,16 +179,28 @@ def get_context(
         if byte_length > 0 and _is_contained(file_path, byte_offset, byte_offset + byte_length):
             return False
 
-        # Evict already-included symbols that are contained within this one
+        # Check parent replacement transactionally. A containing symbol may fit
+        # only after evicting selected children, but those children must remain
+        # when the parent itself cannot be admitted.
+        to_evict = []
+        evictable_tokens = 0
         if byte_length > 0:
-            _evict_contained(file_path, byte_offset, byte_offset + byte_length)
+            to_evict = _contained_indices(
+                file_path, byte_offset, byte_offset + byte_length
+            )
+            evictable_tokens = sum(
+                symbols_out[i]["estimated_tokens"] for i in to_evict
+            )
 
-        if tokens_used + estimated_tokens > budget_tokens:
+        if tokens_used - evictable_tokens + estimated_tokens > budget_tokens:
             return False
 
         source = store.get_symbol_content(owner, name, sym["id"])
         if source is None:
             return False
+
+        if to_evict:
+            _evict_contained(file_path, to_evict)
 
         tokens_used += estimated_tokens
         raw_bytes_total += byte_length

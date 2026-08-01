@@ -79,11 +79,26 @@ async def test_search_symbols_tool_schema():
     assert "query" in props
     assert "kind" in props
     assert "file_pattern" in props
+    assert "language" in props
     assert "max_results" in props
 
     # kind should have enum
     assert "enum" in props["kind"]
     assert set(props["kind"]["enum"]) == {"function", "class", "method", "constant", "type"}
+    assert props["language"]["enum"] == [
+        "python",
+        "javascript",
+        "typescript",
+        "go",
+        "rust",
+        "java",
+        "php",
+        "c",
+        "csharp",
+        "ruby",
+        "kotlin",
+        "swift",
+    ]
 
 
 @pytest.mark.asyncio
