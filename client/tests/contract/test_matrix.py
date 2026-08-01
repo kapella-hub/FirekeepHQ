@@ -1,6 +1,12 @@
 import pytest
 
-from firekeep_client.contract.matrix import RUNTIMES, capabilities, render_matrix
+from firekeep_client.adapters.claude import CLAUDE_HOOKS
+from firekeep_client.contract.matrix import (
+    RUNTIMES,
+    _precompact_claude,
+    capabilities,
+    render_matrix,
+)
 
 CAPS = {"briefing", "presence", "pre_edit_block", "precompact", "reconcile", "profile_pin", "bypass"}
 
@@ -35,6 +41,44 @@ def test_precompact_is_claimed_only_where_the_kit_renders_it():
             f"{runtime} claims a precompact capability; that runtime exposes no "
             f"compaction event, so the claim would be false"
         )
+
+
+def test_precompact_claim_is_derived_from_the_adapter_not_asserted():
+    """The structural fix for the failure the test above records twice.
+
+    Both earlier corrections were humans re-typing a constant to match reality.
+    `MATRIX["precompact"]["claude"]` is now COMPUTED from claude.py's
+    `CLAUDE_HOOKS`, so deleting the `("PreCompact", "precompact", None, 15)` row
+    from the adapter degrades the matrix cell to "none" on its own -- with
+    matrix.py untouched -- and the first assertion below goes red. Verified by
+    doing exactly that on 2026-08-01: with the row commented out this test failed
+    `assert 'none' == 'hook'`, and the row was restored.
+
+    The second half is what proves the cell is genuinely derived rather than a
+    constant that happens to read "hook": handed a hook table with the PreCompact
+    row removed, the same function that built the cell returns "none".
+    """
+    assert capabilities("claude")["precompact"] == "hook", (
+        "the claude adapter no longer renders a PreCompact hook, so the matrix "
+        "correctly degraded itself to 'none'. If that removal was deliberate, "
+        "retire the precompact hook core and its CLAUDE.md prose with it and then "
+        "update this test -- do NOT re-assert 'hook' by hand in matrix.py, which "
+        "is exactly the lie this derivation exists to make impossible."
+    )
+    assert any(event == "PreCompact" for event, *_rest in CLAUDE_HOOKS)
+
+    without_precompact = tuple(h for h in CLAUDE_HOOKS if h[0] != "PreCompact")
+    assert _precompact_claude(without_precompact) == "none"
+    assert _precompact_claude(CLAUDE_HOOKS) == "hook"
+
+
+def test_precompact_claim_for_other_runtimes_is_not_derived_from_anything():
+    """The other three stay hand-authored "none" ON PURPOSE. Their value is a fact
+    about the RUNTIMES -- kiro/codex/opencode expose no compaction event at all --
+    not a fact about our code, so there is nothing in this repo to derive it from
+    and deriving it would only invent a false dependency."""
+    for runtime in ("kiro", "codex", "opencode"):
+        assert capabilities(runtime)["precompact"] == "none"
 
 
 def test_presence_hook_for_hook_capable_sidecar_for_mcp_only():

@@ -14,10 +14,44 @@ Only codex is truly MCP-only: its presence path is the SIDECAR, which nothing au
 yet — a codex user must run `firekeep-sidecar` manually until autostart lands (tracked).
 Convention per row = delivery mechanism per runtime: claude/kiro="hook",
 codex="sidecar (manual today)".
+
+MOSTLY hand-authored, which is a known hazard: a cell that describes the kit can drift
+away from the kit and nothing notices (it did -- see `_precompact_claude`). Where a cell's
+truth is mechanically checkable against the code it describes, DERIVE it instead of typing
+it. Today exactly one cell qualifies; the pattern generalises to any row whose value is a
+statement about something this repo renders (e.g. the pre_edit_block matchers, which live
+in each adapter's hook table) and deliberately does NOT generalise to rows stating facts
+about the runtimes themselves, which have no in-repo source of truth.
 """
 from __future__ import annotations
 
+# Import direction: contract -> adapters, and it must stay that way. `adapters.claude`
+# imports only `adapters.base`, which is stdlib-only at module level, so this costs one
+# small package init and keeps this module import-light. NOTHING under `adapters/` may
+# import `contract.matrix` -- that would close the loop into a cycle. If an adapter ever
+# needs to render the fragment, move the fact (not the import) rather than adding a lazy
+# import here to paper over it.
+from firekeep_client.adapters.claude import CLAUDE_HOOKS
+
 RUNTIMES = ("claude", "kiro", "codex", "opencode")
+
+
+def _precompact_claude(hooks: tuple[tuple[str, str, str | None, int], ...]) -> str:
+    """Derive the precompact/claude cell from the claude adapter's OWN hook table.
+
+    This row is computed, not typed, because a hand-authored one lied: on
+    2026-07-29 the matrix claimed `precompact: {"claude": "yes"}` while nothing in
+    the kit rendered a PreCompact hook, and the test of the day enforced the false
+    claim rather than catching it. Nothing tied the claim to the thing it described,
+    so it could drift silently and it did. Now it cannot: delete the
+    `("PreCompact", "precompact", None, 15)` row from `CLAUDE_HOOKS` and this cell
+    degrades to "none" by itself, with this file untouched.
+
+    Deliberately narrow. The other three runtimes' "none" stays hand-authored,
+    because no compaction event exists for them to render -- that is a fact about
+    those runtimes, not about our code, and there is nothing here to derive it from.
+    """
+    return "hook" if any(event == "PreCompact" for event, *_rest in hooks) else "none"
 
 # capability -> {runtime: level}
 # opencode rows: hook-capable via the rendered JS plugin bridge
@@ -40,7 +74,11 @@ MATRIX: dict[str, dict[str, str]] = {
                        "opencode": "guaranteed (plugin throw, validated 1.14.22)"},
     # Only Claude exposes a compaction event; the other three runtimes have no
     # such lifecycle hook to wire, so this degrades honestly rather than silently.
-    "precompact": {"claude": "hook", "kiro": "none", "codex": "none", "opencode": "none"},
+    # The claude cell is DERIVED from the adapter that renders the hook (see
+    # _precompact_claude) so it cannot claim a hook the kit does not render; the
+    # other three are hand-authored because there is nothing to derive them from.
+    "precompact": {"claude": _precompact_claude(CLAUDE_HOOKS), "kiro": "none",
+                   "codex": "none", "opencode": "none"},
     "reconcile": {"claude": "hooks", "kiro": "kiro pre/post hooks", "codex": "self-reported",
                   "opencode": "plugin pre/post hooks"},
     # Per-runtime profile pin (firekeep profile pin <runtime> <profile>): carrier per surface.
