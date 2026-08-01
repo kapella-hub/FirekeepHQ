@@ -4,12 +4,14 @@ Token-efficient MCP server for source code exploration via tree-sitter AST parsi
 
 Instead of dumping entire files into context, firekeep-symdex parses your codebase into symbols (functions, classes, methods, types, constants, routes, variables) and serves only what you need.
 
-**On a single targeted lookup** — fetch one function instead of reading its file — that
-saves 80-96% of tokens (see the table below). **Across a whole task**, where an agent needs
-several symbols and their callers, the measured figure is 12% on a mixed workload and 46% on
-comprehension questions, at equal answer quality — and modification tasks deliberately cost
-more. `benchmarks/benchmark_runner.py` produces those numbers; do not quote the per-lookup
-figure as a per-task one.
+**On direct known-symbol retrieval**, a deterministic benchmark across all 12 built-in languages
+measured a **54.8% lower estimated context-token count on average** than sending the entire
+containing file, with exact pinned-Git source verified in 360/360 checks. This is a retrieval
+result, not a whole-task claim. In a
+separate mixed-task Click benchmark, Symdex used 23.31% fewer total context tokens; its judged
+accuracy point estimate was 4.42 versus 4.45 for raw-file context, which does not establish
+statistical equivalence. See [`benchmarks/README.md`](benchmarks/README.md) for both scopes and
+their limitations.
 
 > **Inside Firekeep**, firekeep-symdex is installed and registered automatically by `firekeep install` as one of six always-on client MCP servers (`firekeep-cortex`, `firekeep-bridge`, `firekeep-sentinel`, `firekeep-relay`, `firekeep-decision`, `firekeep-symdex`). It runs as a **local stdio server** against your working tree — there is no server-side container and no `--with-symdex` opt-in flag. The standalone install steps below are for running firekeep-symdex on its own, outside Firekeep.
 
@@ -157,29 +159,34 @@ All four FirekeepTime tools are analytics-gated (†) -- hidden unless `SYMDEX_A
 
 ## Benchmarks
 
-### LLM Answer Quality: FirekeepSymdex vs Raw File Context
+### Polyglot targeted-symbol retrieval
 
-Benchmark comparing LLM answer quality when given FirekeepSymdex-assembled context vs raw file dumps. Tested on the [Click](https://github.com/pallets/click) library (Python CLI framework): 20 questions across comprehension, navigation, and modification categories, scored by an LLM judge on accuracy, completeness, and relevance (1-5 scale). Each question run 3 times (60 total evaluations).
+The model-free benchmark pins one public repository for each built-in language and selects 30
+production functions, methods, classes or types per language using stable, file-balanced hash
+ordering. It compares the complete stable `get_symbol` response with the complete file containing
+the symbol. Test, fixture, example and benchmark paths are excluded.
 
-**FirekeepSymdex uses a hybrid strategy**: selective symbol extraction for comprehension/navigation questions (extracting only relevant symbols with relationships), and raw files + structural analysis for modification questions (where full implementation context is needed).
+- **360 lookups across 12 languages**
+- **54.83% lower estimated token count on average** (`cl100k_base`)
+- **285 production source files sampled**
+- **360/360 exact pinned-Git source checks passed**
 
-| Metric | FirekeepSymdex | Raw Files | Delta |
-|--------|:-----------:|:---------:|:-----:|
-| Accuracy | 4.33 | 4.32 | **+0.01** |
-| Completeness | 4.77 | 4.62 | **+0.15** |
-| Relevance | 4.97 | 4.95 | **+0.02** |
-| Avg context tokens | 13,112 | 16,850 | **22% fewer** |
-| Win/Loss/Tie | 14 | 13 | 33 ties |
+The median reduction was 78.42%, while 58 of 360 individual lookups used more tokens because the
+serialized tool response can exceed an already small source file. The result measures direct
+known-symbol retrieval against a whole-file baseline. It does not measure symbol discovery,
+ordinary range reads, generated answer quality, a complete coding task or whole-session token use.
 
-**By category:**
+### Mixed-task Click benchmark
 
-| Category | FirekeepSymdex Accuracy | Raw Accuracy | Token Savings |
-|----------|:--------------------:|:------------:|:-------------:|
-| Comprehension | 4.67 | 4.62 | **47%** |
-| Navigation | 4.19 | 4.19 | — |
-| Modification | 4.11 | 4.11 | — |
+The final archived Click run contains 20 unique context comparisons and three generated-answer
+repetitions per question. Symdex used 775,275 context tokens versus 1,010,973 for raw files:
+**23.31% fewer total context tokens**. Judged accuracy was **4.42 versus 4.45**. The difference
+was small, but this sample was not designed to prove equal quality or non-inferiority.
 
-**Key finding**: FirekeepSymdex matches or beats raw file context on all quality metrics while using 22% fewer tokens on average. For comprehension questions, selective symbol extraction saves 47% of tokens with no accuracy loss — the model focuses on relevant symbols instead of scanning thousands of lines of irrelevant code.
+Modification questions used 25.30% more total context because the tested builder combined raw
+files with structural analysis. Results vary with repository and task mix. Full methods,
+per-language results, pinned revisions and reproduction commands are in
+[`benchmarks/README.md`](benchmarks/README.md).
 
 ---
 
