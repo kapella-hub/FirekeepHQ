@@ -199,6 +199,7 @@ def test_fresh_install_renders_every_native_adapter(tmp_path, monkeypatch):
     firekeep_home = user_home / ".firekeep"
     monkeypatch.setenv("USERPROFILE", str(user_home))
     monkeypatch.setenv("HOME", str(user_home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(user_home / ".config"))
     monkeypatch.setenv("FIREKEEP_CONFIG", str(firekeep_home / "config"))
     monkeypatch.setattr(cli, "_kit_dir", lambda: None)
     monkeypatch.setattr(cli.state, "_private", lambda _p: None)
