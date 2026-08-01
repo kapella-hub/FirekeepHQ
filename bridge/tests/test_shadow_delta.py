@@ -261,8 +261,13 @@ class TestShadowDelta:
 
     @pytest.mark.asyncio
     async def test_a_list_shaped_files_container_yields_a_full_restore(self):
-        """`files` as a list raises on `.items()` inside filter_since — and the
-        unfiltered document is the correct answer, not a traceback."""
+        """`files` as a list is refused by filter_since's seventh fail-safe, which
+        short-circuits to the full document before any filtering runs.
+
+        Describing the CURRENT path, not the one this guard replaced: pre-guard,
+        `files.items()` raised and the traceback reached the agent. The shape check
+        now returns `(data, None)` ahead of that line, so `.items()` is never called
+        and the unfiltered document — the correct answer — is what comes back."""
         from app.mcp_server import ctx_get_shadow
         from app.shadow import assemble_shadow
         data = {"goal": "g", "status": "active", "plan": "- [ ] one",

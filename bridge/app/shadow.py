@@ -20,13 +20,31 @@ def _rows(value: Any) -> list[Any]:
     return [value]
 
 
+def _is_recognised(entry: dict[Any, Any], *keys: str) -> bool:
+    """Whether a dict carries ANY of the keys the calling branch reads.
+
+    A dict carrying none of them is not that branch's shape at all, and projecting it
+    through `.get(key, "")` is a second way to discard every value — quieter than
+    iterating a dict for its keys, and identical in effect: `{'d1': {...}}` renders as
+    `- [] `, a row that exists and says nothing. `_rows` refuses to iterate an
+    unrecognised CONTAINER for exactly this reason; the same refusal has to hold one
+    level down, or the container survives only to be emptied by the entry renderer.
+
+    Carrying at least one recognised key IS the shape, and rendering only the subset
+    this document defines is the intended projection — a well-formed file entry's
+    `last_action` is dropped by design, not by accident.
+    """
+    return any(k in entry for k in keys)
+
+
 def _stamped_line(entry: Any) -> str:
     """One `- [HH:MM] content` row for a decisions/progress entry.
 
     An entry that is not the `{timestamp, content}` shape is rendered literally
-    instead of being dropped or crashed on.
+    instead of being dropped or crashed on — including a dict carrying NEITHER key,
+    which would otherwise render as the empty row `- [] `.
     """
-    if not isinstance(entry, dict):
+    if not isinstance(entry, dict) or not _is_recognised(entry, "timestamp", "content"):
         return f"- {entry!r}"
     ts = entry.get("timestamp") or ""
     if not isinstance(ts, str):
@@ -65,6 +83,14 @@ def assemble_shadow(data: dict[str, Any], *, omitted: dict[str, Any] | None = No
     or entry is rendered literally, never skipped, because rendering nothing is the
     affirmative denial ("*No decisions recorded*") the omission machinery below
     exists to avoid.
+
+    "Unrecognised" is decided by `_is_recognised`, and that is load-bearing rather
+    than incidental. There are two ways to discard a value here, not one: iterating a
+    dict-shaped CONTAINER for its keys (which `_rows` refuses), and projecting an
+    unrecognised ENTRY dict through `.get(key, "")`, which emits a row like `- [] ` or
+    `- **a.py** — `. The second is quieter and just as total — a document that neither
+    denies the content nor contains it is the same loss as a denial, only harder to
+    see — so both refusals are needed for the guarantee above to be true.
     """
     lines: list[str] = []
 
@@ -116,7 +142,14 @@ def assemble_shadow(data: dict[str, Any], *, omitted: dict[str, Any] | None = No
     files = data.get("files", {})
     if isinstance(files, dict):
         for path, info in _sorted_pairs(files):
-            summary = info.get("summary", "") if isinstance(info, dict) else str(info)
+            if not isinstance(info, dict):
+                summary = str(info)
+            elif _is_recognised(info, "summary"):
+                summary = info.get("summary", "")
+            else:
+                # A dict is not caught by the `str(info)` branch, so without this an
+                # info dict carrying anything BUT `summary` renders as `- **a.py** — `.
+                summary = repr(info)
             lines.append(f"- **{path}** — {summary}")
     elif files:
         lines.append(f"- {files!r}")
@@ -161,7 +194,7 @@ def assemble_shadow(data: dict[str, Any], *, omitted: dict[str, Any] | None = No
         lines.append("")
         lines.append("### Relevant Past Experience")
         for m in proactive:
-            if not isinstance(m, dict):
+            if not isinstance(m, dict) or not _is_recognised(m, "score", "content"):
                 lines.append(f"- {m!r}")
                 continue
             score = m.get("score", 0)

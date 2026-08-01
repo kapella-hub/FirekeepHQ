@@ -82,29 +82,55 @@ class TestAssembleShadowIsTotal:
     # Every container and every entry position, each given a shape the well-formed
     # renderer would have crashed on: `.items()` on a list, `.get()` on a string,
     # `len()` on an int, `format(..., '.2f')` on a string, `join()` on a dict.
+    #
+    # Each case pairs the hostile override with a UNIQUE fragment of the content it
+    # carries. The fragment is what makes the sibling test below discriminating: an
+    # absent denial only proves a row was emitted, and a row emitted from a shape the
+    # renderer half-recognised (`- [] `, `- [0.00] `, `- **a.py** — `) is an empty row
+    # that satisfies "not denied" while having discarded every value. Assert the value
+    # is THERE, not merely that nothing claimed it was absent.
     HOSTILE = [
-        {"files": [{"path": "a.py"}]},
-        {"files": "not-a-mapping"},
-        {"files": {"a.py": "summary-as-string"}},
-        {"files": {1: {"summary": "s"}, "a": {"summary": "s"}}},   # unorderable keys
-        {"decisions": {"d1": {"content": "x"}}},
-        {"decisions": ["bare string"]},
-        {"decisions": [{"timestamp": 1700000000, "content": "x"}]},
-        {"decisions": [{"timestamp": None, "content": "x"}]},
-        {"decisions": 7},
-        {"progress": {"p1": {"content": "x"}}},
-        {"progress": ["bare string"]},
-        {"progress": [{"timestamp": 1700000000, "content": "x"}]},
-        {"scratch": ["not-a-mapping"]},
-        {"scratch": {1: "a", "b": "c"}},                            # unorderable keys
-        {"plan": {"not": "a string"}},
-        {"proactive_memories": {"m1": {"score": 0.5}}},
-        {"proactive_memories": [{"score": "high", "content": "x"}]},
-        {"proactive_memories": ["bare string"]},
+        ({"files": [{"path": "list-shaped-files"}]}, "list-shaped-files"),
+        ({"files": "files-not-a-mapping"}, "files-not-a-mapping"),
+        # Retained deliberately: the pre-existing `str(info)` branch already preserved
+        # this, so it guards no NEW behaviour on the revert path -- but under the
+        # presence assertion below it is no longer inert, because it now pins that
+        # branch's content preservation against a future change that drops it.
+        ({"files": {"a.py": "summary-as-string"}}, "summary-as-string"),
+        # The fourth emptying site, alongside the two `_stamped_line` sections and
+        # proactive_memories: `info` IS a dict, so the `str(info)` branch above is
+        # skipped, and `info.get("summary", "")` then renders `- **a.py** — `.
+        ({"files": {"a.py": {"note": "info-carrying-no-summary"}}},
+         "info-carrying-no-summary"),
+        ({"files": {1: {"summary": "unorderable-file-key"},                # unorderable
+                    "a": {"summary": "str-file-key"}}}, "unorderable-file-key"),
+        ({"decisions": {"d1": {"content": "dict-shaped-decision"}}},
+         "dict-shaped-decision"),
+        ({"decisions": ["bare-decision-string"]}, "bare-decision-string"),
+        ({"decisions": [{"timestamp": 1700000000, "content": "int-stamped-decision"}]},
+         "int-stamped-decision"),
+        ({"decisions": [{"timestamp": None, "content": "none-stamped-decision"}]},
+         "none-stamped-decision"),
+        ({"decisions": 1234567}, "1234567"),
+        ({"progress": {"p1": {"content": "dict-shaped-progress"}}},
+         "dict-shaped-progress"),
+        ({"progress": ["bare-progress-string"]}, "bare-progress-string"),
+        ({"progress": [{"timestamp": 1700000000, "content": "int-stamped-progress"}]},
+         "int-stamped-progress"),
+        ({"scratch": ["scratch-not-a-mapping"]}, "scratch-not-a-mapping"),
+        ({"scratch": {1: "unorderable-scratch-value", "b": "c"}},          # unorderable
+         "unorderable-scratch-value"),
+        ({"plan": {"not": "plan-as-a-dict"}}, "plan-as-a-dict"),
+        ({"proactive_memories": {"m1": {"score": 0.5,
+                                        "content": "dict-shaped-memory"}}},
+         "dict-shaped-memory"),
+        ({"proactive_memories": [{"score": "high", "content": "unformattable-score"}]},
+         "unformattable-score"),
+        ({"proactive_memories": ["bare-memory-string"]}, "bare-memory-string"),
     ]
 
-    @pytest.mark.parametrize("override", HOSTILE)
-    def test_no_session_shape_can_make_the_renderer_raise(self, override):
+    @pytest.mark.parametrize("override,fragment", HOSTILE)
+    def test_no_session_shape_can_make_the_renderer_raise(self, override, fragment):
         data = {"goal": "g", "status": "active", "plan": "p",
                 "decisions": [], "files": {}, "progress": [], "scratch": {},
                 "proactive_memories": [], **override}
@@ -112,12 +138,19 @@ class TestAssembleShadowIsTotal:
         assert isinstance(result, str)
         assert "## Session: g" in result
 
-    @pytest.mark.parametrize("override", HOSTILE)
-    def test_a_malformed_container_is_shown_rather_than_silently_dropped(self, override):
+    @pytest.mark.parametrize("override,fragment", HOSTILE)
+    def test_a_malformed_container_is_shown_rather_than_silently_dropped(
+            self, override, fragment):
         """Totality must not be bought with silence. Iterating a dict-shaped section
         would yield its KEYS and discard every value; rendering nothing at all would
         be the affirmative denial ('*No decisions recorded*') this module exists to
-        prevent. The unrecognised value is rendered literally instead."""
+        prevent. The unrecognised value is rendered literally instead.
+
+        Both halves are asserted, and the second is the load-bearing one. Asserting
+        only that the denial is absent passes on a row like `- [] ` -- emitted, and
+        empty. `ctx_get_shadow` is the post-compaction lifeline; a document that
+        neither denies the content nor contains it is the same loss as a denial, just
+        harder to see."""
         (key, value), = override.items()
         data = {"goal": "g", "status": "active", "plan": "p",
                 "decisions": [], "files": {}, "progress": [], "scratch": {},
@@ -128,6 +161,10 @@ class TestAssembleShadowIsTotal:
                   "plan": "*No plan set*"}.get(key)
         if denial:
             assert denial not in result, f"{key}: denied that its content exists"
+        assert fragment in result, (
+            f"{key}: rendered a row but discarded the content {fragment!r} -- "
+            f"got {[ln for ln in result.splitlines() if ln.startswith('- ')]}"
+        )
 
     def test_well_formed_data_renders_byte_identically(self):
         """The no-regression half: defensiveness may not change one byte of the
