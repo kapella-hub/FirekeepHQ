@@ -329,6 +329,23 @@ class SessionManager:
             "proactive_memories": proactive_memories,
         }
 
+    async def get_shadow_epoch(self, session_id: str) -> str | None:
+        """The session's shadow epoch. "" means never bumped; None means the read FAILED.
+
+        The distinction is load-bearing (C2). "" is a real, matchable state — every
+        cursor minted before the first compaction carries it. If a read failure also
+        returned "", an errored read would silently match a stale cursor and serve a
+        delta to an agent that had just lost its context. None is unmatchable.
+
+        precompact writes this via ctx_update(category="scratch", key="shadow_epoch"),
+        so there is no dedicated writer and no new MCP tool.
+        """
+        try:
+            value = await self._r.hget(self._scratch_key(session_id), "shadow_epoch")
+        except Exception:
+            return None          # could not read -> unmatchable -> full restore
+        return value or ""
+
     async def get_active_session_id(self, agent_id: str | None = None) -> str | None:
         agent_id = agent_id or self._s.DEFAULT_AGENT_ID
         return await self._r.get(self._active_key(agent_id))

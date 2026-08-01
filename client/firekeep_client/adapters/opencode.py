@@ -43,7 +43,6 @@ marker, and unrender deletes only a marker-bearing file.
 """
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 
@@ -56,11 +55,11 @@ from firekeep_client.adapters.base import (
     drop_owned,
     merge_owned,
     read_json,
-    read_pin,
     shim_servers,
     strip_marked_block,
     upsert_marked_block,
     write_json,
+    write_text_if_changed,
 )
 
 PLUGIN_MARKER = "firekeep-owned: opencode hook bridge"
@@ -73,13 +72,12 @@ _JS_TEMPLATE = """\
 import { spawnSync } from "node:child_process"
 
 const PYTHON = "@PYTHON@"
-const PROFILE_ARGS = @PROFILE_ARGS@
 // opencode tool names -> the Claude-shaped names the firekeep hook cores expect.
 const TOOL_NAMES = { edit: "Edit", write: "Write", bash: "Bash" }
 
 function runCore(core, payload, timeoutMs, extra = []) {
   try {
-    return spawnSync(PYTHON, ["-m", "firekeep_client.hooks", core, ...extra, ...PROFILE_ARGS], {
+    return spawnSync(PYTHON, ["-m", "firekeep_client.hooks", core, ...extra], {
       input: JSON.stringify(payload || {}),
       timeout: timeoutMs,
       encoding: "utf8",
@@ -180,8 +178,6 @@ class OpencodeAdapter(Adapter):
         return _config_dir() / "AGENTS.md"
 
     def render(self, *, venv_bin: Path) -> None:
-        pin = read_pin(self.name)
-
         config = read_json(self._config_path())
         servers = config.setdefault("mcp", {})
         # Migration: drop the PREDECESSOR kit's server entries. Firekeep registers its
@@ -189,8 +185,7 @@ class OpencodeAdapter(Adapter):
         # that no longer exists and failing to connect on every session start.
         drop_owned(servers, LEGACY_MCP_KEYS)
         entries = {
-            name: {"type": "local", "command": [cmd, *args], "enabled": True,
-                   **({"environment": {"FIREKEEP_PROFILE": pin}} if pin else {})}
+            name: {"type": "local", "command": [cmd, *args], "enabled": True}
             for name, (cmd, args) in shim_servers(venv_bin).items()
         }
         merge_owned(servers, entries)
@@ -201,7 +196,7 @@ class OpencodeAdapter(Adapter):
         # (the claude adapter's decision-board regression, applied here from day
         # one).
         try:
-            self._render_plugin(venv_bin, pin)
+            self._render_plugin(venv_bin)
         except Exception:  # noqa: BLE001 — best-effort; must not skip the block below
             pass
         try:
@@ -213,9 +208,7 @@ class OpencodeAdapter(Adapter):
         path = self._instructions_path()
         try:
             existing = path.read_text(encoding="utf-8") if path.exists() else ""
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(upsert_marked_block(existing, FIREKEEP_INSTRUCTIONS),
-                            encoding="utf-8")
+            write_text_if_changed(path, upsert_marked_block(existing, FIREKEEP_INSTRUCTIONS))
         except OSError:
             pass
 
@@ -231,23 +224,21 @@ class OpencodeAdapter(Adapter):
         except OSError:
             pass
 
-    def _render_plugin(self, venv_bin: Path, pin: str | None) -> None:
+    def _render_plugin(self, venv_bin: Path) -> None:
         # spawnSync takes an argv ARRAY, so unlike hook_command's shell strings the
         # python path needs no whitespace quoting — only forward slashes (JS string
         # literal safety; also valid for Windows CreateProcess).
         python = console_script_path(venv_bin / "python").replace("\\", "/")
         body = (_JS_TEMPLATE
                 .replace("@MARKER@", PLUGIN_MARKER)
-                .replace("@PYTHON@", python)
-                .replace("@PROFILE_ARGS@", json.dumps(["--profile", pin] if pin else [])))
+                .replace("@PYTHON@", python))
         path = self._plugin_path()
         try:
             if path.exists() and PLUGIN_MARKER not in path.read_text(encoding="utf-8"):
                 return  # foreign file at our path — never clobber
         except OSError:
             return  # unreadable existing file: leave it alone rather than guess
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(body, encoding="utf-8")
+        write_text_if_changed(path, body)
 
     def unrender(self) -> None:
         config = read_json(self._config_path())

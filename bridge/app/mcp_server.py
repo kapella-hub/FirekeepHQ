@@ -26,6 +26,7 @@ from app.proactive_recall import fetch_relevant_memories
 from app.redis_client import get_redis, close_redis
 from app.session import SessionManager
 from app.shadow import assemble_shadow
+from app import residency
 
 logger = logging.getLogger(__name__)
 
@@ -332,35 +333,81 @@ async def ctx_update(
 
 
 @mcp.tool()
-async def ctx_get_shadow(session_id: str | None = None, agent_id: str = "default") -> dict:
-    """Retrieve your full working context as a Markdown document.
+async def ctx_get_shadow(session_id: str | None = None, agent_id: str = "default",
+                         since: str | None = None) -> dict:
+    """Retrieve your working context as a Markdown document.
 
     Call this after context compression or when starting a new conversation to restore
-    your working state. Returns everything: your plan, decisions, file knowledge,
-    progress, and scratchpad.
+    your working state. Returns everything by default: your plan, decisions, file
+    knowledge, progress, and scratchpad.
 
     Args:
         session_id: Specific session to retrieve (defaults to your active session).
         agent_id: Your agent identifier.
+        since: OPTIONAL. The `shadow_cursor` from an earlier response in THIS
+            conversation. Pass it ONLY if that earlier shadow is still visible in
+            your context — it returns just what has changed since. If you are
+            unsure, or your context was compacted, OMIT it and receive the full
+            document. Omitting it is always correct.
     """
     agent_id = _default_agent_id(agent_id)
     mgr = await _get_manager()
+    # NOTE: get_active_session_ID — verified name (session.py:332). Guard shape
+    # copied from the current implementation, which uses `is None`, not falsiness.
     if session_id is None:
         session_id = await mgr.get_active_session_id(agent_id)
     if not session_id:
-        return {"error": "No active session. Start one with ctx_start_session."}
+        return {"error": "No active session. Start one with ctx_start_session.", "delta": False}
 
     data = await mgr.get_session_data(session_id)
     if not data:
-        return {"error": f"Session {session_id} not found."}
+        return {"error": f"Session {session_id} not found.", "delta": False}
 
-    shadow = assemble_shadow(data)
-    return {
+    # AMENDED 2026-07-30 (C1 + C2).
+    epoch = await mgr.get_shadow_epoch(session_id)
+    if epoch is None:
+        # C2: the epoch read FAILED, so we cannot tell whether a cursor is stale.
+        # Force a full restore AND mint no cursor — a response carrying no cursor
+        # cannot produce a later delta, which is the safe outcome. Never coerce a
+        # failed read to "", which would match every pre-compaction cursor.
+        return {
+            "session_id": session_id,
+            "goal": data.get("goal", ""),
+            "status": data.get("status", ""),
+            "shadow": assemble_shadow(data),
+            "delta": False,
+        }
+
+    rendered, omitted = residency.filter_since(
+        data, since, session_id=session_id, epoch=epoch)
+    # C1: the omission report goes INTO the rendered document, not just beside it.
+    # Without this, an omitted section renders as '*No decisions recorded*' — an
+    # affirmative denial that the agent's own work exists.
+    shadow = assemble_shadow(rendered, omitted=omitted)
+
+    result = {
         "session_id": session_id,
         "goal": data.get("goal", ""),
         "status": data.get("status", ""),
         "shadow": shadow,
+        "delta": omitted is not None,
     }
+    try:
+        # Always minted from the FULL data, never the filtered copy: the cursor
+        # describes what the caller now holds in total, not what this response
+        # carried. Guarded: a malformed timestamp anywhere in the session (e.g. a
+        # non-string truthy stamp reaching high_water_of's max()) must not crash
+        # the post-compaction lifeline — a response with no cursor is a safe dead
+        # end, the same principle C2 already established for a failed epoch read.
+        result["shadow_cursor"] = residency.encode_cursor(
+            session_id, epoch, residency.high_water_of(data), residency.plan_sha_of(data))
+    except Exception as exc:
+        logger.warning("shadow_cursor mint failed for session %s: %s", session_id, exc)
+    if omitted is not None:
+        note = residency.omission_notice(omitted)
+        if note:
+            result["note"] = note   # belt and braces; the markdown now says it too
+    return result
 
 
 @mcp.tool()
@@ -480,12 +527,28 @@ async def ctx_resume_session(session_id: str, agent_id: str = "default") -> dict
         return {"error": f"Session {session_id} not found after resume."}
 
     shadow = assemble_shadow(data)
-    return {
+    result = {
         "session_id": session_id,
         "goal": data.get("goal", ""),
         "status": "active",
         "shadow": shadow,
     }
+    # A resume always delivers the COMPLETE document (never a delta — a resumed
+    # session is by definition one the agent cannot vouch for), so minting a cursor
+    # here is exactly as safe as on a full ctx_get_shadow. Deliberately no `delta`
+    # key: it would always be False, and an always-false flag invites a caller to
+    # start passing `since` to a tool that must never accept it.
+    epoch = await mgr.get_shadow_epoch(session_id)
+    if epoch is not None:
+        try:
+            # Guarded for the same reason as ctx_get_shadow's mint: a malformed
+            # timestamp must not crash a resume, which is the crash-recovery path
+            # itself. No cursor is a safe dead end here too.
+            result["shadow_cursor"] = residency.encode_cursor(
+                session_id, epoch, residency.high_water_of(data), residency.plan_sha_of(data))
+        except Exception as exc:
+            logger.warning("shadow_cursor mint failed for session %s: %s", session_id, exc)
+    return result
 
 
 from starlette.requests import Request as StarletteRequest
@@ -523,6 +586,7 @@ async def _list_sessions(request: StarletteRequest) -> StarletteJSONResponse:
     GET /briefing aggregator (resumable-sessions source) and the
     session-resumption flow."""
     try:
+        require_scope_asgi(request, "session:read")
         status_filter = request.query_params.get("status")
         agent_filter = request.query_params.get("agent_id")
         try:
@@ -544,6 +608,8 @@ async def _list_sessions(request: StarletteRequest) -> StarletteJSONResponse:
                     sess["files"] = data.get("files", {})
 
         return StarletteJSONResponse({"sessions": sessions})
+    except ScopeError as e:
+        return StarletteJSONResponse({"error": e.detail}, status_code=e.status_code)
     except Exception as e:
         logger.error("GET /sessions failed: %s", e)
         return StarletteJSONResponse({"error": str(e)}, status_code=500)
@@ -553,6 +619,7 @@ async def _list_sessions(request: StarletteRequest) -> StarletteJSONResponse:
 async def _get_session(request: StarletteRequest) -> StarletteJSONResponse:
     """REST endpoint: get a single session by ID including its shadow data."""
     try:
+        require_scope_asgi(request, "session:read")
         session_id = request.path_params["session_id"]
         mgr = await _get_manager()
         data = await mgr.get_session_data(session_id)
@@ -566,6 +633,8 @@ async def _get_session(request: StarletteRequest) -> StarletteJSONResponse:
             "duration_seconds": data.get("duration_seconds"),
             "shadow": shadow,
         })
+    except ScopeError as e:
+        return StarletteJSONResponse({"error": e.detail}, status_code=e.status_code)
     except Exception as e:
         logger.error("GET /sessions/%s failed: %s", request.path_params.get("session_id", ""), e)
         return StarletteJSONResponse({"error": str(e)}, status_code=500)

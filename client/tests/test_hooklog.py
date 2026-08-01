@@ -98,13 +98,14 @@ def test_log_path_default_is_under_home_dot_firekeep_logs():
     assert hooklog.LOG_PATH.parent.parent.name == ".firekeep"
 
 
-def test_log_failure_tags_pinned_profile(tmp_path, monkeypatch):
+def test_log_failure_ignores_retired_profile_env(tmp_path, monkeypatch):
     monkeypatch.setenv("FIREKEEP_LOG_DIR", str(tmp_path))
     monkeypatch.setenv("FIREKEEP_PROFILE", "office")
     from firekeep_client import hooklog
     hooklog.log_failure("prompt", "boom")
     line = (tmp_path / "hooks.log").read_text().strip()
-    assert line.endswith("| profile=office")
+    assert line.endswith("| prompt | boom")
+    assert "profile=" not in line
 
 
 def test_log_failure_untagged_without_env(tmp_path, monkeypatch):
@@ -113,14 +114,3 @@ def test_log_failure_untagged_without_env(tmp_path, monkeypatch):
     from firekeep_client import hooklog
     hooklog.log_failure("prompt", "boom")
     assert "profile=" not in (tmp_path / "hooks.log").read_text()
-
-
-def test_log_failure_strips_carriage_returns_from_profile(tmp_path, monkeypatch):
-    # prof gets the same \r scrub as hook/message: a bare \r in a one-line log
-    # format corrupts the line for naive readers just like \n does.
-    monkeypatch.setenv("FIREKEEP_LOG_DIR", str(tmp_path))
-    monkeypatch.setenv("FIREKEEP_PROFILE", "off\rice")
-    hooklog.log_failure("prompt", "boom")
-    line = (tmp_path / "hooks.log").read_text(encoding="utf-8").strip()
-    assert "\r" not in line
-    assert "profile=off ice" in line

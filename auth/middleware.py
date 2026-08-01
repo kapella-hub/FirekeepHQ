@@ -20,7 +20,9 @@ from fastapi import HTTPException, Request
 from auth import keys as _keys
 from auth.keys import (  # noqa: F401 — re-exports (same objects as auth.keys)
     ANONYMOUS_SCOPES,
+    ENROLLABLE_SCOPES,
     SCOPES,
+    AmbiguousKeyIdError,
     _ANONYMOUS_IDENTITY,
     _KEY_INDEX,
     _KEY_PREFIX,
@@ -29,10 +31,13 @@ from auth.keys import (  # noqa: F401 — re-exports (same objects as auth.keys)
     create_key,
     generate_api_key,
     init_auth,
+    invalid_credential_detail,
     list_keys,
+    rename_device,
     revoke_key,
     scopes_allow,
     validate_key,
+    validate_key_by_hash,
 )
 
 logger = logging.getLogger(__name__)
@@ -56,7 +61,7 @@ def require_scope(scope: str):
     Usage:
         @router.get("/endpoint")
         async def my_endpoint(identity: dict = Depends(require_scope("replay:read"))):
-            agent_id = identity["agent_id"]
+            member_id = identity["member_id"]
     """
     async def _check_scope(request: Request) -> dict[str, Any]:
         if not _keys._AUTH_ENABLED:
@@ -87,7 +92,7 @@ def require_scope(scope: str):
         if identity is None:
             raise HTTPException(
                 status_code=401,
-                detail="Invalid or expired API key",
+                detail=await invalid_credential_detail(api_key),
             )
 
         # Check scope. Wildcard IS honoured here: bootstrap-keys.sh mints the
@@ -143,7 +148,10 @@ def require_any_scope(*scopes: str):
 
         identity = await validate_key(api_key)
         if identity is None:
-            raise HTTPException(status_code=401, detail="Invalid or expired API key")
+            raise HTTPException(
+                status_code=401,
+                detail=await invalid_credential_detail(api_key),
+            )
 
         key_scopes = identity.get("scopes", [])
         if not any(_keys.scopes_allow(key_scopes, s) for s in scopes):

@@ -61,6 +61,16 @@ def test_ps1_exists_and_declares_the_same_contract():
     assert "uv pip install" in text or "pip" in text
 
 
+def test_both_bootstraps_forward_join_on_fast_and_main_paths():
+    ps = BOOTSTRAP.read_text(encoding="utf-8")
+    sh = BOOTSTRAP_SH.read_text(encoding="utf-8")
+    assert "$JoinArgs" in ps
+    assert ps.count("@JoinArgs") == 2
+    assert "FIREKEEP_JOIN" in sh
+    # Two branches (fast/main), each with TTY and headless handoffs.
+    assert sh.count('--join "${FIREKEEP_JOIN}"') == 4
+
+
 def test_ps1_verifies_the_uv_checksum_before_executing_it():
     """Same reasoning as the POSIX side: uv is downloaded over unauthenticated HTTP and then
     run. Windows must not be the soft target."""

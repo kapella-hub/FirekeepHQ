@@ -1,4 +1,5 @@
-# Server release — publishes the four Firekeep service images.
+# Server release — publishes the four Firekeep service images and the small
+# source-free deployment bundle consumed by `firekeep init`.
 #
 # WHY THIS EXISTS: until now there was no way to deliver the server at all.
 # docs/DEPLOYMENT.md and README told a customer to `git clone` a PRIVATE repo,
@@ -6,10 +7,11 @@
 # from source. There was no tarball, no vX.Y.Z tag, and no registry — the
 # product was not deliverable in the literal sense.
 #
-# WHY IMAGES AND NOT A SOURCE TARBALL: the licence model is free-core, closed
-# source. A tarball ships the source it does not grant rights to. A Python image
-# does contain the .py files, which is why these packages are PRIVATE — the
-# access control is the registry, not obscurity.
+# DISTRIBUTION IS NOT ENTITLEMENT: the repository and images use the BUSL/FSL
+# source-available model.  Solo/Team rights are enforced by the signed offline
+# entitlement, not by a registry credential.  All four GHCR packages must be
+# set Public once in the organisation package settings; the anonymous-pull gate
+# below prevents a private package from becoming a customer release.
 #
 # WHAT IS DELIBERATELY NOT PUBLISHED: neo4j, redis, qdrant and ollama. The
 # customer's own daemon pulls those from their upstream registries, exactly as
@@ -23,11 +25,6 @@ on:
   push:
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+'
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: 'Image tag to publish (e.g. v0.1.0-rc1)'
-        required: true
 
 concurrency:
   group: server-release-${{ github.ref }}
@@ -36,6 +33,7 @@ concurrency:
 env:
   REGISTRY: ghcr.io
   OWNER: kapella-hub
+  FIRST_SERVER_RELEASE: v0.1.0
 
 jobs:
   publish:
@@ -73,7 +71,7 @@ jobs:
       - name: Resolve the tag
         id: meta
         run: |
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          TAG="${{ github.ref_name }}"
           case "$TAG" in
             v*) ;;
             *) echo "::error::tag must start with v (got '$TAG')"; exit 1 ;;
@@ -87,36 +85,214 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push
+      - name: Build and publish once
         # Provenance args match what install.sh/update.sh pass locally, so a
         # published image answers GET /version with the same shape a
-        # locally-built one does. APP_VERSION is the release tag itself.
+        # locally-built one does. APP_VERSION is the release tag itself. A
+        # rerun reuses the existing image: a version tag is never overwritten.
+        env:
+          GHCR_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          docker build \
-            -f "${{ matrix.dockerfile }}" \
-            --build-arg GIT_SHA="$(git rev-parse --short HEAD)" \
-            --build-arg BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            --build-arg APP_VERSION="${{ steps.meta.outputs.tag }}" \
-            -t "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}" \
-            .
-          docker push "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}"
+          REF="${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}"
+          EXPECTED_SHA="$(git rev-parse --short HEAD)"
+          PUBLISH=0
+          set +e
+          LOOKUP="$(docker manifest inspect "$REF" 2>&1)"
+          LOOKUP_STATUS=$?
+          set -e
+          if [ "$LOOKUP_STATUS" -eq 0 ]; then
+            echo "Reusing immutable release image $REF"
+            docker pull "$REF"
+            ENVIRONMENT="$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$REF")"
+            grep -Fxq "GIT_SHA=$EXPECTED_SHA" <<<"$ENVIRONMENT"
+            grep -Fxq "APP_VERSION=${{ steps.meta.outputs.tag }}" <<<"$ENVIRONMENT"
+          elif grep -Eqi 'manifest unknown|name unknown|no such manifest|manifest[^ ]* not found' <<<"$LOOKUP"; then
+            PUBLISH=1
+          elif grep -Eqi 'denied' <<<"$LOOKUP"; then
+            # GHCR hides a never-created package as `denied`, even after login.
+            # Ask the Packages API whether the package itself exists; only a
+            # confirmed 404 may bootstrap the documented first server release.
+            API_BODY="$(mktemp)"
+            set +e
+            API_STATUS="$(curl --silent --show-error --output "$API_BODY" --write-out '%{http_code}' \
+              --header 'Accept: application/vnd.github+json' \
+              --header "Authorization: Bearer $GHCR_API_TOKEN" \
+              --header 'X-GitHub-Api-Version: 2026-03-10' \
+              'https://api.github.com/user/packages/container/firekeep-${{ matrix.name }}')"
+            API_CURL_STATUS=$?
+            set -e
+            if [ "$API_CURL_STATUS" -ne 0 ]; then
+              echo "::error::package lookup failed; refusing to publish $REF"
+              exit "$API_CURL_STATUS"
+            elif [ "$API_STATUS" = "404" ] \
+                 && [ "${{ steps.meta.outputs.tag }}" = "$FIRST_SERVER_RELEASE" ]; then
+              echo "Bootstrapping new package for $FIRST_SERVER_RELEASE"
+              PUBLISH=1
+            elif [ "$API_STATUS" = "200" ]; then
+              echo "::error::package exists but registry lookup was denied; refusing to overwrite $REF"
+              exit 1
+            else
+              echo "::error::package lookup returned HTTP $API_STATUS; refusing to publish $REF"
+              exit 1
+            fi
+          else
+            echo "::error::registry lookup failed; refusing to overwrite $REF"
+            printf '%s\n' "$LOOKUP"
+            exit "$LOOKUP_STATUS"
+          fi
 
-      - name: Record the pushed digest
-        # The digest, not the tag, is what a customer should pin. Printed into
-        # the job summary so a release has a copyable record rather than
-        # requiring someone to go and inspect the registry.
+          if [ "$PUBLISH" = "1" ]; then
+            docker build \
+              -f "${{ matrix.dockerfile }}" \
+              --build-arg GIT_SHA="$EXPECTED_SHA" \
+              --build-arg BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              --build-arg APP_VERSION="${{ steps.meta.outputs.tag }}" \
+              -t "$REF" \
+              .
+            docker push "$REF"
+          fi
+
+      - name: Record the release digest
+        # Keep a content-addressed audit record for each repository in the job
+        # summary. The customer bundle uses one shared version tag across the
+        # four repositories, so these distinct digests are operator evidence.
         run: |
           DIGEST="$(docker inspect --format='{{index .RepoDigests 0}}' \
             "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}" 2>/dev/null || echo unknown)"
           echo "| firekeep-${{ matrix.name }} | \`$DIGEST\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "$DIGEST"
 
-      - name: Verify the published image runs
-        # A push is not a release. Pull the pushed artifact back and start the
-        # service's own entrypoint far enough to prove the image is not broken —
-        # `docker push` succeeding says only that bytes moved.
+      - name: Verify an anonymous customer can pull and run the image
+        # A push through the logged-in Actions session proves neither public
+        # readability nor runtime health.  Log out, remove the local copy, then
+        # exercise exactly the registry path a Solo customer uses.
         run: |
+          docker logout ghcr.io
           docker rmi "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}" || true
           docker pull "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}"
           docker run --rm "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}" \
-            python -c "import provenance; print('version:', provenance.get_version_info('${{ matrix.name }}'))"
+            python -c "from pathlib import Path; assert Path('/app/LICENSE').stat().st_size; assert Path('/app/NOTICE').stat().st_size; import provenance; print('version:', provenance.get_version_info('${{ matrix.name }}'))"
+
+  bundle:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    concurrency:
+      # Shared with client-release: both jobs update the same mutable gh-pages
+      # branch in firekeep-dist and therefore must serialize across workflows.
+      group: gh-pages-publish
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Resolve the tag and build the source-free bundle
+        run: |
+          TAG="${{ github.ref_name }}"
+          case "$TAG" in
+            v*) ;;
+            *) echo "::error::tag must start with v (got '$TAG')"; exit 1 ;;
+          esac
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          python deploy/build_server_bundle.py "$TAG" dist-server
+
+      - name: Authorise publishing to firekeep-dist
+        env:
+          DEPLOY_KEY: ${{ secrets.FIREKEEP_DIST_DEPLOY_KEY }}
+        run: |
+          [ -n "${DEPLOY_KEY}" ] || { echo "::error::FIREKEEP_DIST_DEPLOY_KEY is not set"; exit 1; }
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          echo "${DEPLOY_KEY}" > ~/.ssh/firekeep_dist
+          chmod 600 ~/.ssh/firekeep_dist
+          echo "GIT_SSH_COMMAND=ssh -i ~/.ssh/firekeep_dist -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new" >> "$GITHUB_ENV"
+          echo "DIST_REMOTE=git@github.com:kapella-hub/firekeep-dist.git" >> "$GITHUB_ENV"
+
+      - name: Publish the versioned bundle and latest pointer
+        id: publish_bundle
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote remove dist 2>/dev/null || true
+          git remote add dist "${DIST_REMOTE}"
+          if git ls-remote --exit-code --heads dist gh-pages >/dev/null 2>&1; then
+            git fetch --depth=1 dist gh-pages
+            git worktree add gh FETCH_HEAD
+            git -C gh checkout -B gh-pages
+          else
+            git worktree add --orphan -b gh-pages gh
+          fi
+          VERSIONED="gh/server/${TAG}"
+          EXPECTED_ARCHIVE="firekeep-server-${TAG}.tar.gz"
+          mkdir -p gh/server gh/server/latest
+          if [ -e "$VERSIONED" ]; then
+            [ -d "$VERSIONED" ] || { echo "::error::$VERSIONED is not a directory"; exit 1; }
+            [ -f "$VERSIONED/server.json" ] || { echo "::error::$VERSIONED/server.json is missing"; exit 1; }
+            read -r existing_version existing_file existing_sha < <(
+              python -c 'import json,sys;m=json.load(open(sys.argv[1]));print(m.get("version",""),m.get("file",""),m.get("sha256",""))' \
+                "$VERSIONED/server.json"
+            )
+            [ "$existing_version" = "$TAG" ] || { echo "::error::$VERSIONED has version $existing_version"; exit 1; }
+            [ "$existing_file" = "$EXPECTED_ARCHIVE" ] || { echo "::error::$VERSIONED names unexpected file $existing_file"; exit 1; }
+            [ -f "$VERSIONED/$existing_file" ] || { echo "::error::$VERSIONED/$existing_file is missing"; exit 1; }
+            printf '%s  %s\n' "$existing_sha" "$VERSIONED/$existing_file" | sha256sum -c -
+            echo "Reusing immutable versioned bundle $VERSIONED"
+          else
+            mkdir "$VERSIONED"
+            cp "dist-server/$EXPECTED_ARCHIVE" dist-server/server.json "$VERSIONED/"
+          fi
+          publish_latest=1
+          if [ -f gh/server/latest/server.json ]; then
+            previous="$(python -c 'import json,sys;print(json.load(open(sys.argv[1])).get("version",""))' gh/server/latest/server.json)"
+            if [ "$previous" != "$TAG" ] \
+               && ! PYTHONPATH=. python -c 'import sys;from deploy.build_server_bundle import is_newer_release;sys.exit(0 if is_newer_release(sys.argv[1],sys.argv[2]) else 1)' "$TAG" "$previous"; then
+              publish_latest=0
+              echo "::warning::publishing ${TAG} without moving latest backwards from ${previous}"
+            fi
+          fi
+          if [ "$publish_latest" = "1" ]; then
+            cp "$VERSIONED/server.json" gh/server/latest/server.json
+          fi
+          echo "expect_latest=$publish_latest" >> "$GITHUB_OUTPUT"
+          touch gh/.nojekyll
+          git -C gh add -A
+          git -C gh commit -m "server release ${TAG}" || { echo "nothing to publish"; exit 0; }
+          for attempt in 1 2 3; do
+            if git -C gh push dist gh-pages; then exit 0; fi
+            echo "push rejected (attempt ${attempt}); re-fetching and retrying"
+            git -C gh fetch --depth=1 dist gh-pages && git -C gh rebase FETCH_HEAD || true
+          done
+          echo "::error::could not publish server bundle after 3 attempts"
+          exit 1
+
+      - name: Verify the public bundle is served
+        run: |
+          BASE="https://kapella-hub.github.io/firekeep-dist"
+          EXPECT_LATEST="${{ steps.publish_bundle.outputs.expect_latest }}"
+          for i in $(seq 1 24); do
+            got="$(curl -fsS "${BASE}/server/latest/server.json" 2>/dev/null \
+                   | python -c "import json,sys;print(json.load(sys.stdin).get('version',''))" 2>/dev/null || echo '')"
+            versioned="$(curl -fsS "${BASE}/server/${TAG}/server.json" 2>/dev/null \
+                       | python -c "import json,sys;print(json.load(sys.stdin).get('version',''))" 2>/dev/null || echo '')"
+            if [ "$versioned" = "$TAG" ] \
+               && { [ "$EXPECT_LATEST" != "1" ] || [ "$got" = "$TAG" ]; }; then
+              curl -fsS "${BASE}/server/${TAG}/server.json" -o public-server.json
+              curl -fsS "${BASE}/server/${TAG}/firekeep-server-${TAG}.tar.gz" -o "firekeep-server-${TAG}.tar.gz"
+              expected="$(python -c 'import json;print(json.load(open("public-server.json"))["sha256"])')"
+              printf '%s  %s\n' "$expected" "firekeep-server-${TAG}.tar.gz" | sha256sum -c -
+              if [ "$EXPECT_LATEST" = "1" ]; then
+                curl -fsS "${BASE}/server/latest/server.json" -o public-latest-server.json
+                cmp public-server.json public-latest-server.json
+              fi
+              echo "verified: public versioned server bundle ${TAG} (latest=${got})"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::public server bundle ${TAG} was not fully served within 2 minutes (latest=${got}, expected_latest=${EXPECT_LATEST})"
+          exit 1

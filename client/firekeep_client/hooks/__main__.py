@@ -8,13 +8,13 @@ no briefing systemMessage, and the pre_tool safety gate could never block.
 This dispatcher closes that gap.
 
 Contract:
-  - argv[0] is the core name, one of {session_start, stop, prompt, pre_tool,
-    post_tool}. Unknown/missing -> usage line to stderr, exit 0, hooklogged.
-    A misconfigured hook must NEVER break the user's session — availability
-    over enforcement.
+  - argv[0] is the core name, one of {session_start, stop, session_end, prompt,
+    precompact, pre_tool, post_tool}. Unknown/missing -> usage line to stderr,
+    exit 0, hooklogged. A misconfigured hook must NEVER break the user's
+    session — availability over enforcement.
   - stdin is read fully and parsed as JSON. Empty or malformed stdin ->
     payload defaults to `{}` (hooklogged) and the core still runs.
-  - dict cores (session_start/stop/prompt): if `run(payload)` returns a
+  - dict cores (session_start/stop/session_end/prompt/precompact): if `run(payload)` returns a
     truthy dict, it is printed as `json.dumps(result)` on stdout — Claude
     Code reads the hook's `systemMessage` from that stdout JSON. Always
     exits 0 (these cores never block).
@@ -29,21 +29,19 @@ Contract:
     (it always returns 0, so the remap would be a no-op).
   - The dispatcher itself never raises — any unexpected failure is caught,
     hooklogged, and swallowed to exit 0. stdlib only (SP1b import boundary).
-  - --profile NAME (rendered by adapters for PINNED runtimes) is parsed HERE and
-    exported as FIREKEEP_PROFILE before the core runs, so every resolver call in
-    the core — including nested profile-less resolve() in _mcp.py and state.py —
-    follows the pin. Cores never see argv.
+  - Retired ``--profile NAME`` arguments from a pre-collapse rendered hook are
+    accepted and ignored until the next adapter render removes them.
 """
 from __future__ import annotations
 
 import json
-import os
 import sys
 
 from firekeep_client import hooklog, resolver
 from firekeep_client.hooks import (
     post_tool,
     pre_tool,
+    precompact,
     prompt,
     session_end,
     session_start,
@@ -63,11 +61,12 @@ _CORE_MODULES = {
     "stop": stop,
     "session_end": session_end,
     "prompt": prompt,
+    "precompact": precompact,
     "pre_tool": pre_tool,
     "post_tool": post_tool,
 }
 _INT_CORES = frozenset({"pre_tool", "post_tool"})
-_DICT_CORES = frozenset({"session_start", "stop", "session_end", "prompt"})
+_DICT_CORES = frozenset({"session_start", "stop", "session_end", "prompt", "precompact"})
 
 # Cores that must run even while personal mode is ON, because they self-handle
 # bypass and own end-of-session cleanup: `stop` clears the personal marker
@@ -78,7 +77,7 @@ _BYPASS_EXEMPT = frozenset({"stop", "session_end"})
 
 def _usage() -> None:
     names = "|".join(_CORE_MODULES)
-    print(f"usage: python -m firekeep_client.hooks <{names}> [--block-exit N] [--profile NAME]", file=sys.stderr)
+    print(f"usage: python -m firekeep_client.hooks <{names}> [--block-exit N]", file=sys.stderr)
 
 
 def _parse_block_exit(rest: list[str]) -> int | None:
@@ -88,14 +87,6 @@ def _parse_block_exit(rest: list[str]) -> int | None:
                 return int(rest[i + 1])
             except ValueError:
                 return None
-    return None
-
-
-def _parse_profile(rest: list[str]) -> str | None:
-    for i, tok in enumerate(rest):
-        if tok == "--profile" and i + 1 < len(rest):
-            value = rest[i + 1].strip()
-            return value or None
     return None
 
 
@@ -200,13 +191,6 @@ def main(argv: list[str] | None = None) -> int:
         hooklog.log_failure(core_name, f"bypass check failed: {e!r}")
 
     try:
-        profile = _parse_profile(argv[1:])
-        if profile:
-            # Pin handoff: export so EVERY resolver call in the core follows the pin —
-            # cores receive run(payload) with no argv channel, and parameter-threading
-            # would touch ~7 nested resolve() sites (_mcp, state, post_tool).
-            os.environ["FIREKEEP_PROFILE"] = profile
-
         block_exit = _parse_block_exit(argv[1:])
         if payload is None:
             payload = _read_payload(core_name)
@@ -221,6 +205,10 @@ def main(argv: list[str] | None = None) -> int:
         # dict core (session_start/stop/prompt).
         if result:
             print(json.dumps(result))
+        return 0
+    except resolver.ConfigMigrationConflict as e:
+        hooklog.log_failure(core_name, f"config migration refused: {e}")
+        print(json.dumps({"systemMessage": str(e)}))
         return 0
     except Exception as e:  # noqa: BLE001 — the dispatcher itself must never raise.
         hooklog.log_failure(core_name, f"dispatcher crashed: {e!r}")

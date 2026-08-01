@@ -94,8 +94,8 @@ else
 fi
 VBASE="${BASE}/${V}"
 wheel_name="firekeep_client-${V}-py3-none-any.whl"
-# FIREKEEP_RUNTIME targets ONE agent (claude|codex|kiro), forwarded as --runtime. UNSET -> pass
-# nothing so the wizard prompts "Install for which agent?" (defaults to all when headless).
+# FIREKEEP_RUNTIME targets ONE agent (claude|codex|kiro|opencode), forwarded as --runtime.
+# UNSET -> pass nothing; the client installs every shipped adapter by default.
 RUNTIME_ARG=""
 [ -n "${FIREKEEP_RUNTIME:-}" ] && RUNTIME_ARG="--runtime ${FIREKEEP_RUNTIME}"
 FIREKEEP_BIN="${VENV}/bin/firekeep"
@@ -111,9 +111,17 @@ if [ -x "${FIREKEEP_BIN}" ] && [ -z "${FIREKEEP_FORCE_REINSTALL:-}" ]; then
         echo "firekeep: already at ${V} — re-rendering adapters, no venv rebuild. Set \
 FIREKEEP_FORCE_REINSTALL=1 to force a full reinstall." >&2
         if ( : < /dev/tty ) 2>/dev/null; then
-            "${FIREKEEP_BIN}" install --dist-base "${BASE}" ${RUNTIME_ARG} < /dev/tty
+            if [ -n "${FIREKEEP_JOIN:-}" ]; then
+                "${FIREKEEP_BIN}" install --dist-base "${BASE}" ${RUNTIME_ARG} --join "${FIREKEEP_JOIN}" < /dev/tty
+            else
+                "${FIREKEEP_BIN}" install --dist-base "${BASE}" ${RUNTIME_ARG} < /dev/tty
+            fi
         else
-            "${FIREKEEP_BIN}" install --dist-base "${BASE}" ${RUNTIME_ARG} --non-interactive
+            if [ -n "${FIREKEEP_JOIN:-}" ]; then
+                "${FIREKEEP_BIN}" install --dist-base "${BASE}" ${RUNTIME_ARG} --join "${FIREKEEP_JOIN}" --non-interactive
+            else
+                "${FIREKEEP_BIN}" install --dist-base "${BASE}" ${RUNTIME_ARG} --non-interactive
+            fi
         fi
         exit $?
     fi
@@ -237,8 +245,16 @@ fi
 # 2>/dev/null. Bash-as-sh (macOS) shrugs it off, which is how the brace form survived
 # local testing. In a subshell only the subshell dies, so the probe just returns false.
 if ( : < /dev/tty ) 2>/dev/null; then
-    "${FIREKEEP_BIN}" install --dist-base "${BASE}" ${RUNTIME_ARG} < /dev/tty
+    if [ -n "${FIREKEEP_JOIN:-}" ]; then
+        "${FIREKEEP_BIN}" install --dist-base "${BASE}" ${RUNTIME_ARG} --join "${FIREKEEP_JOIN}" < /dev/tty
+    else
+        "${FIREKEEP_BIN}" install --dist-base "${BASE}" ${RUNTIME_ARG} < /dev/tty
+    fi
 else
     echo "firekeep: no terminal available — writing a default config (not prompting)" >&2
-    "${FIREKEEP_BIN}" install --dist-base "${BASE}" ${RUNTIME_ARG} --non-interactive
+    if [ -n "${FIREKEEP_JOIN:-}" ]; then
+        "${FIREKEEP_BIN}" install --dist-base "${BASE}" ${RUNTIME_ARG} --join "${FIREKEEP_JOIN}" --non-interactive
+    else
+        "${FIREKEEP_BIN}" install --dist-base "${BASE}" ${RUNTIME_ARG} --non-interactive
+    fi
 fi

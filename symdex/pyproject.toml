@@ -1,10 +1,10 @@
 [project]
 name = "firekeep-symdex"
-version = "0.2.13"
+version = "0.2.14"
 description = "Token-efficient MCP server for source code exploration via tree-sitter AST parsing"
 readme = "README.md"
 requires-python = ">=3.10"
-license = "LicenseRef-Firekeep-Proprietary"
+license = "LicenseRef-Firekeep-BUSL-1.1"
 license-files = ["LICENSE", "NOTICE"]
 dependencies = [
     "mcp>=1.0.0,<2.0.0",

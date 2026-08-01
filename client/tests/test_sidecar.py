@@ -40,7 +40,7 @@ class _Recorder:
 def test_lifecycle_register_heartbeat_deregister(tmp_path, monkeypatch):
     _write_config(tmp_path, monkeypatch)
     # Race guard is exercised in the robustness task; isolate the sequence here.
-    monkeypatch.setattr(sidecar, "should_deregister", lambda aid, profile="": True)
+    monkeypatch.setattr(sidecar, "should_deregister", lambda aid: True)
     monkeypatch.setattr(state, "resolve_session_id", lambda payload, cfg=None: "unknown")
     rec = _Recorder()
 
@@ -59,7 +59,7 @@ def test_lifecycle_register_heartbeat_deregister(tmp_path, monkeypatch):
 
 def test_snapshot_posts_ctx_update_to_bridge(tmp_path, monkeypatch):
     _write_config(tmp_path, monkeypatch)
-    monkeypatch.setattr(sidecar, "should_deregister", lambda aid, profile="": True)
+    monkeypatch.setattr(sidecar, "should_deregister", lambda aid: True)
     monkeypatch.setattr(state, "resolve_session_id", lambda payload, cfg=None: "sess-1")
     monkeypatch.setattr(sidecar.Sidecar, "_collect_snapshot", lambda self: "SNAP")
     rec = _Recorder()
@@ -99,7 +99,7 @@ def test_bypassed_sidecar_makes_zero_server_calls(tmp_path, monkeypatch):
     relay_register / heartbeat / snapshot / deregister reaches Relay or Bridge."""
     _write_config(tmp_path, monkeypatch)
     monkeypatch.setenv("FIREKEEP_BYPASS", "1")
-    monkeypatch.setattr(sidecar, "should_deregister", lambda aid, profile="": True)
+    monkeypatch.setattr(sidecar, "should_deregister", lambda aid: True)
     monkeypatch.setattr(state, "resolve_session_id", lambda payload, cfg=None: "sess-1")
     monkeypatch.setattr(sidecar.Sidecar, "_collect_snapshot", lambda self: "SNAP")
     rec = _Recorder()
@@ -114,7 +114,7 @@ def test_sidecar_resumes_calls_when_not_bypassed(tmp_path, monkeypatch):
     """Sanity: without bypass the daemon still registers/heartbeats (no regression)."""
     _write_config(tmp_path, monkeypatch)
     monkeypatch.delenv("FIREKEEP_BYPASS", raising=False)
-    monkeypatch.setattr(sidecar, "should_deregister", lambda aid, profile="": True)
+    monkeypatch.setattr(sidecar, "should_deregister", lambda aid: True)
     monkeypatch.setattr(state, "resolve_session_id", lambda payload, cfg=None: "unknown")
     rec = _Recorder()
 

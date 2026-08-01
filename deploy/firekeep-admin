@@ -1,136 +1,294 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# firekeep-admin — thin curl wrapper for Firekeep admin operations (SP1a §4.3).
+# Server-local device enrollment and key administration.
 #
-# Usage:
-#   firekeep-admin keys create --agent <name> [--expires-days N]
-#
-# Environment:
-#   FIREKEEP_ADMIN_KEY        admin API key (from bootstrap-keys.sh; prompted if unset)
-#   FIREKEEP_API_URL          Cortex REST base URL (default: http://localhost:8100)
-#   FIREKEEP_ADMIN_DRY_RUN=1  print the request instead of sending it (tests)
+#   firekeep-admin invite [--agent NAME] [--expires-days N] [--json]
+#   firekeep-admin keys create --agent NAME [--expires-days N]
+#   firekeep-admin keys revoke CREDENTIAL_ID
+#   firekeep-admin licence status
+#   firekeep-admin licence apply FILE
 
-# The teammate scope set: every scope EXCEPT "admin". Deliberately NOT ["*"]
-# — "*" passes require_scope("admin"), which would let every teammate read
-# vault secrets and mint keys (spec §3). Only holds because cortex-mcp
-# forwards the CALLER's key (§4.2 confused-deputy fix).
-# vault:read included: without it an agent asked to "deploy to my vps" 403s on
-# the credential it needs, and the only workaround was issuing an admin key --
-# which also grants key-minting and every other secret. WRITE/DELETE on the
-# vault remain admin-only.
-# MUST stay in sync with SCOPES in auth/middleware.py minus {"admin"}
-# (post-SP1a table: eval:write added, twin:read removed) — the test
-# deploy/tests/test_firekeep_admin.sh enforces this.
 NON_ADMIN_SCOPES='["memory:read","memory:write","session:read","session:write","replay:read","relay:read","relay:write","eval:read","eval:write","vault:read"]'
-
 API_URL="${FIREKEEP_API_URL:-http://localhost:8100}"
+ENV_FILE="${ENV_FILE:-.env}"
+IFS=' ' read -r -a REDIS <<< "${BOOTSTRAP_REDIS_CMD:-docker compose exec -T redis redis-cli -n 7}"
 
 usage() {
     cat >&2 <<'EOF'
-Usage: firekeep-admin keys create --agent <name> [--expires-days N]
-
-Issues a teammate API key with the full non-admin scope set.
-Requires FIREKEEP_ADMIN_KEY (or interactive prompt) and a reachable Cortex API
-(FIREKEEP_API_URL, default http://localhost:8100).
+Usage:
+  firekeep-admin invite [--agent NAME] [--expires-days N] [--json]
+      [--host HOST | --base-url URL] [--ssh-target USER@HOST]
+      [--ca-file PATH | --ca os] [--insecure-http] [--dist-base URL]
+  firekeep-admin keys create --agent NAME [--expires-days N]
+  firekeep-admin keys revoke CREDENTIAL_ID
+  firekeep-admin licence status
+  firekeep-admin licence apply FILE   (use - to read stdin)
 EOF
     exit 1
 }
 
-[ "${1:-}" = "keys" ] && [ "${2:-}" = "create" ] || usage
-shift 2
-
-AGENT=""
-EXPIRES_DAYS=""
-while [ $# -gt 0 ]; do
-    case "$1" in
-        --agent)        AGENT="${2:?--agent requires a value}"; shift 2 ;;
-        --expires-days) EXPIRES_DAYS="${2:?--expires-days requires a value}"; shift 2 ;;
-        *) echo "Unknown argument: $1" >&2; usage ;;
-    esac
-done
-[ -n "$AGENT" ] || usage
-
-BODY="{\"agent_id\": \"${AGENT}\", \"scopes\": ${NON_ADMIN_SCOPES}"
-if [ -n "$EXPIRES_DAYS" ]; then
-    BODY="${BODY}, \"expires_days\": ${EXPIRES_DAYS}"
-fi
-BODY="${BODY}}"
-
-if [ "${FIREKEEP_ADMIN_DRY_RUN:-0}" = "1" ]; then
-    echo "POST ${API_URL}/auth/keys"
-    echo "$BODY"
-    exit 0
-fi
-
-# --- LOCAL path: on the server, with no admin key ---------------------------
-#
-# The admin key is printed exactly once by bootstrap-keys.sh and deliberately
-# never stored, so on any server that has been running a while it is simply gone
-# -- and with it, the ability to onboard a teammate. That made this command
-# unusable in the one situation it exists for. (Found live: onboarding the
-# author's own second machine required writing the key into Redis by hand.)
-#
-# Resolution: when no admin key is available AND Redis DB 7 is reachable, mint
-# directly, exactly as deploy/bootstrap-keys.sh already does. This is not a
-# weakening. Reaching Redis here means a shell on the server, which already
-# implies total control -- `docker exec redis-cli` can mint a key with or
-# without this script. Requiring an unrecoverable HTTP credential on top bought
-# no security, only an onboarding dead end.
-#
-# The HTTP path below remains for genuine REMOTE administration, where the admin
-# key IS the authorization.
-IFS=' ' read -r -a REDIS <<< "${BOOTSTRAP_REDIS_CMD:-docker compose exec -T redis redis-cli -n 7}"
-
-mint_local() {
-    local key hash now
-    key="fk_$(openssl rand -hex 24)"
-    hash="$(printf '%s' "$key" | sha256sum | awk '{print $1}')"
-    now="$(date -u +"%Y-%m-%dT%H:%M:%S+00:00")"
-    "${REDIS[@]}" HSET "auth:key:${hash}" \
-        agent_id "$AGENT" scopes "$NON_ADMIN_SCOPES" created_at "$now" \
-        key_id "${hash:0:16}" >/dev/null
-    if [ -n "$EXPIRES_DAYS" ]; then
-        "${REDIS[@]}" HSET "auth:key:${hash}" \
-            expires_at "$(date -u -d "+${EXPIRES_DAYS} days" +"%Y-%m-%dT%H:%M:%S+00:00")" >/dev/null
-    fi
-    "${REDIS[@]}" ZADD auth:key_index "$(date -u +%s)" "${hash:0:16}" >/dev/null
-    printf '{"agent_id": "%s", "key_id": "%s", "api_key": "%s"}\n' \
-        "$AGENT" "${hash:0:16}" "$key"
+env_get() {
+    { grep -E "^$1=" "$ENV_FILE" 2>/dev/null || true; } | head -n1 | cut -d= -f2-
 }
 
-if [ -z "${FIREKEEP_ADMIN_KEY:-}" ]; then
-    if "${REDIS[@]}" PING 2>/dev/null | grep -q PONG; then
-        mint_local
-        echo "" >&2
-        echo "Minted locally against Redis DB 7 (no admin key needed on the server)." >&2
-        echo "Send the api_key above to ${AGENT} out-of-band -- it is shown only once." >&2
-        exit 0
-    fi
-    # Only prompt when a human can actually answer. Previously this called
-    # `read` unconditionally, so under BatchMode/CI it blocked until the caller
-    # timed out with no diagnosis at all.
-    if [ ! -t 0 ]; then
-        echo "ERROR: no FIREKEEP_ADMIN_KEY, no TTY to prompt, and Redis DB 7 is unreachable." >&2
-        echo "  On the server: run this from the compose project dir (it mints locally)." >&2
-        echo "  Remotely:      set FIREKEEP_ADMIN_KEY, or override BOOTSTRAP_REDIS_CMD." >&2
+redis_available() {
+    "${REDIS[@]}" PING 2>/dev/null | grep -q PONG
+}
+
+valid_id() { [[ "$1" =~ ^[0-9a-f]{1,64}$ ]]; }
+valid_agent() { [[ "$1" =~ ^[A-Za-z0-9_.-]{1,64}$ ]]; }
+
+keys_create() {
+    local agent="" expires_days=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --agent) agent="${2:?--agent requires a value}"; shift 2 ;;
+            --expires-days) expires_days="${2:?--expires-days requires a value}"; shift 2 ;;
+            *) echo "Unknown argument: $1" >&2; usage ;;
+        esac
+    done
+    [ -n "$agent" ] && valid_agent "$agent" || usage
+    if [ -n "$expires_days" ] && ! [[ "$expires_days" =~ ^([0-9]|[1-9][0-9]{1,2})$ ]]; then
+        echo "ERROR: --expires-days must be an integer from 0 to 999" >&2
         exit 1
     fi
-    read -rsp "Admin API key: " FIREKEEP_ADMIN_KEY
-    echo
-fi
 
-# --- REMOTE path: admin key supplied ----------------------------------------
-RESPONSE="$(curl -sf -X POST "${API_URL}/auth/keys" \
-    -H "Content-Type: application/json" \
-    -H "X-API-Key: ${FIREKEEP_ADMIN_KEY}" \
-    -d "$BODY")" || {
-    echo "ERROR: key creation failed." >&2
-    echo "  Check: FIREKEEP_ADMIN_KEY is the bootstrap admin key, AUTH_ENABLED" >&2
-    echo "  is consistent on the server, and ${API_URL} is reachable." >&2
-    exit 1
+    local body="{\"agent_id\": \"${agent}\", \"scopes\": ${NON_ADMIN_SCOPES}"
+    [ -n "$expires_days" ] && body="${body}, \"expires_days\": ${expires_days}"
+    body="${body}}"
+    if [ "${FIREKEEP_ADMIN_DRY_RUN:-0}" = "1" ]; then
+        echo "POST ${API_URL}/auth/keys"
+        echo "$body"
+        return
+    fi
+
+    if [ -z "${FIREKEEP_ADMIN_KEY:-}" ] && redis_available; then
+        local key hash now credential_id workspace_id member_id expires_at="" ttl=""
+        key="nxs_$(openssl rand -hex 24)"
+        hash="$(printf '%s' "$key" | sha256sum | awk '{print $1}')"
+        credential_id="$(openssl rand -hex 8)"
+        workspace_id="$(env_get FIREKEEP_WORKSPACE_ID)"
+        member_id="$(env_get FIREKEEP_OWNER_MEMBER_ID)"
+        if [ -z "$workspace_id" ] || [ -z "$member_id" ]; then
+            echo "ERROR: FIREKEEP_WORKSPACE_ID and FIREKEEP_OWNER_MEMBER_ID are missing; run deploy/bootstrap-keys.sh" >&2
+            exit 1
+        fi
+        now="$(date -u +"%Y-%m-%dT%H:%M:%S+00:00")"
+        "${REDIS[@]}" HSET "auth:key:${hash}" \
+            workspace_id "$workspace_id" member_id "$member_id" \
+            device_id "$agent" credential_id "$credential_id" \
+            key_id "$credential_id" scopes "$NON_ADMIN_SCOPES" created_at "$now" >/dev/null
+        if [ -n "$expires_days" ]; then
+            expires_at="$(date -u -d "+${expires_days} days" +"%Y-%m-%dT%H:%M:%S+00:00")"
+            ttl="$((expires_days * 86400))"
+            "${REDIS[@]}" HSET "auth:key:${hash}" expires_at "$expires_at" >/dev/null
+            "${REDIS[@]}" EXPIRE "auth:key:${hash}" "$ttl" >/dev/null
+        fi
+        "${REDIS[@]}" SET "auth:cred:${credential_id}" "$hash" >/dev/null
+        [ -n "$ttl" ] && "${REDIS[@]}" EXPIRE "auth:cred:${credential_id}" "$ttl" >/dev/null
+        "${REDIS[@]}" ZADD auth:key_index "$(date -u +%s)" "$credential_id" >/dev/null
+        printf '{"agent_id":"%s","credential_id":"%s","key_id":"%s","api_key":"%s"}\n' \
+            "$agent" "$credential_id" "$credential_id" "$key"
+        echo "Minted locally against Redis DB 7; the api_key is shown only once." >&2
+        return
+    fi
+
+    if [ -z "${FIREKEEP_ADMIN_KEY:-}" ]; then
+        if [ ! -t 0 ]; then
+            echo "ERROR: no FIREKEEP_ADMIN_KEY, no TTY to prompt, and Redis DB 7 is unreachable." >&2
+            exit 1
+        fi
+        read -rsp "Admin API key: " FIREKEEP_ADMIN_KEY
+        echo
+    fi
+    curl -sf -X POST "${API_URL}/auth/keys" \
+        -H "Content-Type: application/json" \
+        -H "X-API-Key: ${FIREKEEP_ADMIN_KEY}" \
+        -d "$body" || { echo "ERROR: key creation failed." >&2; exit 1; }
+    echo
 }
 
-echo "$RESPONSE"
-echo ""
-echo "Send the api_key above to ${AGENT} out-of-band (it is shown only once)." >&2
+keys_revoke() {
+    [ $# -eq 1 ] || usage
+    local credential_id="$1" hash="" redis_key="" stored_id="" count=0 match=""
+    valid_id "$credential_id" || { echo "ERROR: invalid credential id" >&2; exit 1; }
+    if [ "${FIREKEEP_ADMIN_DRY_RUN:-0}" = "1" ]; then
+        echo "REVOKE ${credential_id} (local Redis DB 7)"
+        return
+    fi
+    redis_available || { echo "ERROR: Redis DB 7 is unreachable" >&2; exit 1; }
+
+    hash="$("${REDIS[@]}" GET "auth:cred:${credential_id}")"
+    if [ -n "$hash" ]; then
+        redis_key="auth:key:${hash}"
+        stored_id="$("${REDIS[@]}" HGET "$redis_key" credential_id)"
+        [ -n "$stored_id" ] || stored_id="$("${REDIS[@]}" HGET "$redis_key" key_id)"
+        if [ "$stored_id" != "$credential_id" ]; then
+            echo "ERROR: auth:cred:${credential_id} points to a mismatched record; refusing" >&2
+            exit 1
+        fi
+        match="$redis_key"
+        count=1
+    else
+        while IFS= read -r candidate; do
+            [ -n "$candidate" ] || continue
+            stored_id="$("${REDIS[@]}" HGET "$candidate" credential_id)"
+            [ -n "$stored_id" ] || stored_id="$("${REDIS[@]}" HGET "$candidate" key_id)"
+            if [ "$stored_id" = "$credential_id" ]; then
+                match="$candidate"
+                count=$((count + 1))
+            fi
+        done < <("${REDIS[@]}" --scan --pattern "auth:key:${credential_id}*")
+    fi
+    if [ "$count" -gt 1 ]; then
+        echo "ERROR: credential id is ambiguous across ${count} legacy records; nothing revoked" >&2
+        exit 1
+    fi
+    if [ "$count" -eq 0 ]; then
+        printf '{"status":"not_found","credential_id":"%s"}\n' "$credential_id"
+        return
+    fi
+    "${REDIS[@]}" DEL "$match" "auth:cred:${credential_id}" >/dev/null
+    "${REDIS[@]}" ZREM auth:key_index "$credential_id" >/dev/null
+    printf '{"status":"revoked","credential_id":"%s"}\n' "$credential_id"
+}
+
+invite() {
+    local agent="" expires_days="" output_json=0 host="" base_url="" ssh_target=""
+    local ca_file="" ca_mode="" insecure=0 dist_base="${FIREKEEP_DIST_BASE:-https://firekeep.ai}"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --agent) agent="${2:?--agent requires a value}"; shift 2 ;;
+            --expires-days) expires_days="${2:?--expires-days requires a value}"; shift 2 ;;
+            --host) host="${2:?--host requires a value}"; shift 2 ;;
+            --base-url) base_url="${2:?--base-url requires a value}"; shift 2 ;;
+            --ssh-target) ssh_target="${2:?--ssh-target requires a value}"; shift 2 ;;
+            --ca-file) ca_file="${2:?--ca-file requires a value}"; shift 2 ;;
+            --ca) ca_mode="${2:?--ca requires a value}"; shift 2 ;;
+            --dist-base) dist_base="${2:?--dist-base requires a value}"; shift 2 ;;
+            --insecure-http) insecure=1; shift ;;
+            --json) output_json=1; shift ;;
+            *) echo "Unknown argument: $1" >&2; usage ;;
+        esac
+    done
+    [ -z "$agent" ] || valid_agent "$agent" || usage
+    if [ "$(env_get AUTH_ENABLED)" = "false" ]; then
+        echo "ERROR: this server enforces no authentication (AUTH_ENABLED=false), so there is no key to issue." >&2
+        exit 1
+    fi
+
+    local bind_addr vps_ip transport kind server_user ca_pem_b64=""
+    bind_addr="$(env_get BIND_ADDR)"; bind_addr="${bind_addr:-127.0.0.1}"
+    vps_ip="$(env_get VPS_IP)"
+    server_user="$(env_get FIREKEEP_SSH_USER)"
+    server_user="${server_user:-${SUDO_USER:-${USER:-root}}}"
+    if [ -n "$ca_file" ] || [ "$ca_mode" = "os" ]; then
+        transport="tls"; kind="$([ -n "$base_url" ] && echo paths || echo ports)"
+        [ -n "$host" ] || host="$vps_ip"
+    elif [[ "$bind_addr" = "127.0.0.1" || "$bind_addr" = "localhost" || "$bind_addr" = "::1" ]]; then
+        transport="tunnel"; kind="ports"; host="127.0.0.1"
+        if [ -z "$ssh_target" ]; then
+            [ -n "$vps_ip" ] || { echo "ERROR: VPS_IP or --ssh-target is required for a tunnel join code" >&2; exit 1; }
+            ssh_target="${server_user}@${vps_ip}"
+        fi
+    else
+        [ "$insecure" -eq 1 ] || {
+            echo "ERROR: network-reachable plain HTTP requires --insecure-http" >&2; exit 1;
+        }
+        transport="http"; kind="$([ -n "$base_url" ] && echo paths || echo ports)"
+        [ -n "$host" ] || host="$vps_ip"
+        echo "WARNING: join code and later X-API-Key requests use cleartext HTTP." >&2
+    fi
+
+    if [ -n "$ca_file" ]; then
+        [ -r "$ca_file" ] || { echo "ERROR: cannot read CA file: $ca_file" >&2; exit 1; }
+        # The mint helper runs inside cortex-api, where a host path is not
+        # necessarily mounted.  Carry the public certificate bytes explicitly.
+        ca_pem_b64="$(base64 < "$ca_file" | tr -d '\r\n')"
+    fi
+
+    local cmd=(docker compose exec -T cortex-api python -m app.enroll.mint
+        --transport "$transport" --kind "$kind" --issuer firekeep-admin --dist-base "$dist_base")
+    [ -n "$agent" ] && cmd+=(--agent "$agent")
+    [ -n "$expires_days" ] && cmd+=(--expires-days "$expires_days")
+    [ -n "$host" ] && cmd+=(--host "$host")
+    [ -n "$base_url" ] && cmd+=(--base-url "$base_url")
+    [ -n "$ssh_target" ] && cmd+=(--ssh-target "$ssh_target")
+    [ -n "$ca_pem_b64" ] && cmd+=(--ca-pem-b64 "$ca_pem_b64")
+    [ -n "$ca_mode" ] && cmd+=(--ca "$ca_mode")
+    [ "$insecure" -eq 1 ] && cmd+=(--insecure-http)
+    [ "$output_json" -eq 1 ] && cmd+=(--json)
+    if [ "${FIREKEEP_ADMIN_DRY_RUN:-0}" = "1" ]; then
+        printf '%q ' "${cmd[@]}"; echo
+        return
+    fi
+    "${cmd[@]}"
+}
+
+admin_api_key() {
+    local key="${FIREKEEP_ADMIN_KEY:-}"
+    [ -n "$key" ] || key="$(env_get DASHBOARD_API_KEY)"
+    if [ -z "$key" ]; then
+        echo "ERROR: no FIREKEEP_ADMIN_KEY or DASHBOARD_API_KEY is available" >&2
+        exit 1
+    fi
+    printf '%s' "$key"
+}
+
+licence_status() {
+    [ $# -eq 0 ] || usage
+    if [ "${FIREKEEP_ADMIN_DRY_RUN:-0}" = "1" ]; then
+        echo "GET ${API_URL}/licence"
+        return
+    fi
+    curl -sf "${API_URL}/licence" -H "X-API-Key: $(admin_api_key)" || {
+        echo "ERROR: licence status failed" >&2; exit 1;
+    }
+    echo
+}
+
+licence_apply() {
+    [ $# -eq 1 ] || usage
+    local source="$1" document
+    if [ "$source" = "-" ]; then
+        document="$(tr -d '\r\n')"
+    else
+        [ -r "$source" ] || { echo "ERROR: cannot read licence file: $source" >&2; exit 1; }
+        document="$(tr -d '\r\n' < "$source")"
+    fi
+    [[ "$document" =~ ^fk_lic_v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$ ]] || {
+        echo "ERROR: file is not a Firekeep signed licence document" >&2; exit 1;
+    }
+    if [ "${FIREKEEP_ADMIN_DRY_RUN:-0}" = "1" ]; then
+        echo "POST ${API_URL}/licence"
+        return
+    fi
+    curl -sf -X POST "${API_URL}/licence" \
+        -H "Content-Type: application/json" \
+        -H "X-API-Key: $(admin_api_key)" \
+        --data-binary "{\"document\":\"${document}\"}" || {
+            echo "ERROR: licence apply failed; run 'firekeep-admin licence status' and check cortex-api logs" >&2
+            exit 1
+        }
+    echo
+}
+
+case "${1:-}" in
+    keys)
+        case "${2:-}" in
+            create) shift 2; keys_create "$@" ;;
+            revoke) shift 2; keys_revoke "$@" ;;
+            *) usage ;;
+        esac
+        ;;
+    invite) shift; invite "$@" ;;
+    licence)
+        case "${2:-}" in
+            status) shift 2; licence_status "$@" ;;
+            apply) shift 2; licence_apply "$@" ;;
+            *) usage ;;
+        esac
+        ;;
+    *) usage ;;
+esac

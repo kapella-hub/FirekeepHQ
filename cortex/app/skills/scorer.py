@@ -151,13 +151,26 @@ async def _score_resolution_language(
             )
             if resp.status_code != 200:
                 return 0.0
-            shadow = resp.json().get("shadow") or {}
-            texts: list[str] = []
-            for v in shadow.get("scratch", {}).values():
-                texts.append(str(v))
-            for entry in shadow.get("decision", []):
-                texts.append(str(entry.get("value", "")))
-            full_text = " ".join(texts).lower()
+            shadow = resp.json().get("shadow")
+            # GET /sessions/{id} returns `shadow` as the assembled MARKDOWN
+            # STRING (bridge/app/mcp_server.py: assemble_shadow(data)). This used
+            # to call .get("scratch") on it, raising AttributeError into the bare
+            # except below and permanently zeroing this 0.35-weighted signal.
+            # Dict is still accepted so a future shape change degrades instead of
+            # silently regressing.
+            if isinstance(shadow, dict):
+                # If this ever becomes a dict, these are the REAL key names:
+                # `decisions`/`progress` (plural -- session.py:325) with entries
+                # shaped {timestamp, content}, NOT `decision` with {value}. The
+                # old code had both wrong on top of the type error, so "fix the
+                # AttributeError" alone yields an empty list and empty strings --
+                # signal still zero, every test still green.
+                texts = [str(v) for v in (shadow.get("scratch") or {}).values()]
+                for section in ("decisions", "progress"):
+                    texts += [str(e.get("content", "")) for e in (shadow.get(section) or [])]
+                full_text = " ".join(texts).lower()
+            else:
+                full_text = str(shadow or "").lower()
             if not full_text:
                 return 0.0
             hits = sum(1 for phrase in RESOLUTION_PHRASES if phrase in full_text)

@@ -30,12 +30,9 @@ def test_claude_render_writes_shim_servers_and_hooks(fake_home, tmp_path):
     get_adapter("claude").render(venv_bin=venv_bin)
 
     cfg = _read(fake_home / ".claude.json")
-    assert cfg["mcpServers"]["firekeep-cortex"] == {
-        "type": "stdio", "command": _exe(venv_bin / "firekeep-shim"),
-        "args": ["--service", "cortex"]}
-    # symdex is always-on: present unconditionally with its stdio-local command, no args
-    assert cfg["mcpServers"]["firekeep-symdex"] == {
-        "type": "stdio", "command": _exe(venv_bin / "firekeep-symdex"), "args": []}
+    assert cfg["mcpServers"] == {"firekeep": {
+        "type": "stdio", "command": _exe(venv_bin / "firekeep"),
+        "args": ["gateway"]}}
 
     settings = _read(fake_home / ".claude" / "settings.json")
     assert settings["env"]["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"] == "1"
@@ -71,7 +68,7 @@ def test_claude_render_is_non_clobbering(fake_home, tmp_path):
 
     cfg = _read(fake_home / ".claude.json")
     assert cfg["mcpServers"]["other-mcp"] == {"type": "http", "url": "http://x"}  # foreign survived
-    assert "firekeep-cortex" in cfg["mcpServers"]
+    assert "firekeep" in cfg["mcpServers"]
 
     settings = _read(fake_home / ".claude" / "settings.json")
     assert settings["env"]["FOO"] == "bar"                                       # foreign env survived
@@ -110,8 +107,7 @@ def test_claude_render_appends_exe_on_win32(fake_home, tmp_path, monkeypatch):
     get_adapter("claude").render(venv_bin=venv_bin)
 
     cfg = _read(fake_home / ".claude.json")
-    assert cfg["mcpServers"]["firekeep-cortex"]["command"] == str(venv_bin / "firekeep-shim") + ".exe"
-    assert cfg["mcpServers"]["firekeep-symdex"]["command"] == str(venv_bin / "firekeep-symdex") + ".exe"
+    assert cfg["mcpServers"]["firekeep"]["command"] == str(venv_bin / "firekeep") + ".exe"
 
     settings = _read(fake_home / ".claude" / "settings.json")
     ss_cmd = settings["hooks"]["SessionStart"][0]["hooks"][0]["command"]
@@ -130,8 +126,7 @@ def test_claude_render_no_exe_on_posix(fake_home, tmp_path, monkeypatch):
     get_adapter("claude").render(venv_bin=venv_bin)
 
     cfg = _read(fake_home / ".claude.json")
-    assert cfg["mcpServers"]["firekeep-cortex"]["command"] == str(venv_bin / "firekeep-shim")
-    assert cfg["mcpServers"]["firekeep-symdex"]["command"] == str(venv_bin / "firekeep-symdex")
+    assert cfg["mcpServers"]["firekeep"]["command"] == str(venv_bin / "firekeep")
 
     settings = _read(fake_home / ".claude" / "settings.json")
     ss_cmd = settings["hooks"]["SessionStart"][0]["hooks"][0]["command"]
@@ -146,9 +141,7 @@ def test_claude_render_is_idempotent(fake_home, tmp_path):
     adapter.render(venv_bin=venv_bin)
 
     cfg = _read(fake_home / ".claude.json")
-    assert set(cfg["mcpServers"]) == {
-        "firekeep-cortex", "firekeep-bridge", "firekeep-sentinel", "firekeep-relay",
-        "firekeep-symdex", "firekeep-decision"}
+    assert set(cfg["mcpServers"]) == {"firekeep"}
 
     settings = _read(fake_home / ".claude" / "settings.json")
     for event in ("SessionStart", "Stop", "UserPromptSubmit", "PreToolUse", "PostToolUse"):
@@ -228,18 +221,52 @@ def test_claude_render_drops_retired_url_env_but_keeps_agent_id(fake_home, tmp_p
     assert env["FOO"] == "bar"
 
 
-def test_claude_render_leaves_precompact_hook_alone(fake_home, tmp_path):
-    """The legacy PreCompact echo still works and the kit renders no PreCompact hook of its
-    own. Deliberately treated as foreign: migration removes what is BROKEN, not everything
-    the old installer happened to write."""
+def test_claude_render_adds_its_precompact_group_beside_the_legacy_echo(fake_home, tmp_path):
+    """The kit now renders a PreCompact hook of its own. The legacy echo hook is
+    still deliberately treated as foreign-but-working: migration removes what is
+    BROKEN, not everything the old installer happened to write. Both must survive.
+    """
     (fake_home / ".claude").mkdir()
     (fake_home / ".claude" / "settings.json").write_text(json.dumps(_legacy_settings()))
+    settings_path = fake_home / ".claude" / "settings.json"
 
-    get_adapter("claude").render(venv_bin=tmp_path / "venv" / "bin")
-    hooks = _read(fake_home / ".claude" / "settings.json")["hooks"]
+    adapter = get_adapter("claude")
+    adapter.render(venv_bin=tmp_path / "venv" / "bin")
+    groups = _read(settings_path)["hooks"]["PreCompact"]
 
-    assert len(hooks["PreCompact"]) == 1
-    assert "systemMessage" in hooks["PreCompact"][0]["hooks"][0]["command"]
+    commands = [h["command"] for g in groups for h in g["hooks"]]
+    assert any("systemMessage" in c for c in commands), "legacy echo hook was clobbered"
+    assert any(c.endswith("-m firekeep_client.hooks precompact") for c in commands)
+
+    # Re-render with the foreign group still present: upsert_hook_group must collapse
+    # to exactly one firekeep group beside the untouched legacy one, not accumulate a
+    # second firekeep group. This is the specific combination neither the plain
+    # idempotency test (clean home, no foreign group) nor the check above (foreign
+    # group present, rendered once) exercises.
+    before = settings_path.read_text(encoding="utf-8")
+    adapter.render(venv_bin=tmp_path / "venv" / "bin")
+    after = settings_path.read_text(encoding="utf-8")
+    assert after == before, "re-render with a foreign sibling present must not rewrite the file"
+
+    groups = _read(settings_path)["hooks"]["PreCompact"]
+    assert len(groups) == 2
+    commands = [h["command"] for g in groups for h in g["hooks"]]
+    assert any("systemMessage" in c for c in commands), "legacy echo hook was clobbered on re-render"
+    firekeep_cmds = [c for c in commands if "firekeep_client.hooks" in c]
+    assert len(firekeep_cmds) == 1, f"expected exactly one firekeep PreCompact command, got {firekeep_cmds}"
+
+
+def test_claude_unrender_removes_only_our_precompact_group(fake_home, tmp_path):
+    (fake_home / ".claude").mkdir()
+    (fake_home / ".claude" / "settings.json").write_text(json.dumps(_legacy_settings()))
+    adapter = get_adapter("claude")
+    adapter.render(venv_bin=tmp_path / "venv" / "bin")
+    adapter.unrender()
+
+    groups = _read(fake_home / ".claude" / "settings.json")["hooks"].get("PreCompact", [])
+    commands = [h["command"] for g in groups for h in g["hooks"]]
+    assert any("systemMessage" in c for c in commands)      # legacy survives unrender
+    assert not any("firekeep_client.hooks" in c for c in commands)
 
 
 def test_claude_unrender_removes_legacy_bash_hooks(fake_home, tmp_path):
@@ -273,19 +300,18 @@ def _write_cfg(tmp_path, monkeypatch, text):
     return cfg
 
 
-def test_pinned_claude_renders_env_and_hook_profile(tmp_path, monkeypatch, fake_home):
+def test_legacy_pinned_claude_renders_no_profile_artifacts(tmp_path, monkeypatch, fake_home):
     _write_cfg(tmp_path, monkeypatch, _PINNED_CFG)
     get_adapter("claude").render(venv_bin=tmp_path / "vbin")
 
     claude_json = _read(fake_home / ".claude.json")
-    for name in ("firekeep-cortex", "firekeep-symdex", "firekeep-decision"):
-        assert claude_json["mcpServers"][name]["env"] == {"FIREKEEP_PROFILE": "office"}
+    assert "env" not in claude_json["mcpServers"]["firekeep"]
     settings = _read(fake_home / ".claude" / "settings.json")
     for groups in settings["hooks"].values():
         for g in groups:
             for h in g["hooks"]:
                 if "firekeep_client.hooks" in h["command"]:
-                    assert "--profile office" in h["command"]
+                    assert "--profile" not in h["command"]
 
 
 def test_unpinned_render_has_no_env_or_profile(tmp_path, monkeypatch, fake_home):
@@ -293,15 +319,14 @@ def test_unpinned_render_has_no_env_or_profile(tmp_path, monkeypatch, fake_home)
     get_adapter("claude").render(venv_bin=tmp_path / "vbin")
 
     claude_json = _read(fake_home / ".claude.json")
-    assert "env" not in claude_json["mcpServers"]["firekeep-cortex"]
+    assert "env" not in claude_json["mcpServers"]["firekeep"]
     settings = _read(fake_home / ".claude" / "settings.json")
     text = json.dumps(settings)
     assert "--profile" not in text
 
 
-def test_unpin_rerender_removes_pin_artifacts(tmp_path, monkeypatch, fake_home):
-    """Pin -> render -> unpin -> render: env + --profile must disappear (merge_owned
-    replaces whole entries; upsert replaces hook groups)."""
+def test_rerender_removes_legacy_pin_artifacts(tmp_path, monkeypatch, fake_home):
+    """A re-render removes legacy env/argument carriers from owned entries."""
     cfg = _write_cfg(tmp_path, monkeypatch, _PINNED_CFG)
     adapter = get_adapter("claude")
     adapter.render(venv_bin=tmp_path / "vbin")
@@ -309,7 +334,7 @@ def test_unpin_rerender_removes_pin_artifacts(tmp_path, monkeypatch, fake_home):
     adapter.render(venv_bin=tmp_path / "vbin")
 
     claude_json = _read(fake_home / ".claude.json")
-    assert "env" not in claude_json["mcpServers"]["firekeep-cortex"]
+    assert "env" not in claude_json["mcpServers"]["firekeep"]
 
 
 def test_render_without_config_is_unpinned(tmp_path, monkeypatch, fake_home):

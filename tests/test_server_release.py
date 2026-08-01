@@ -144,6 +144,59 @@ def test_release_is_tag_triggered_not_push_triggered() -> None:
     )
 
 
+def test_release_cannot_publish_an_arbitrary_ref_by_manual_dispatch() -> None:
+    """A version tag must identify the commit whose images it names."""
+    on = _workflow()[True] if True in _workflow() else _workflow()["on"]
+    assert "workflow_dispatch" not in on, (
+        "manual dispatch can publish a version name from an unrelated checkout ref"
+    )
+
+
+def test_every_published_image_contains_licence_and_notice() -> None:
+    """Public BUSL images must carry Firekeep's licence and dependency notices."""
+    entries = _workflow()["jobs"]["publish"]["strategy"]["matrix"]["include"]
+    for entry in entries:
+        dockerfile = REPO / entry["dockerfile"]
+        text = dockerfile.read_text(encoding="utf-8")
+        assert "COPY LICENSE NOTICE ./" in text, (
+            f"{entry['dockerfile']} omits LICENSE or NOTICE from the published image"
+        )
+        assert (
+            'LABEL org.opencontainers.image.source="https://github.com/kapella-hub/FirekeepHQ"'
+            in text
+        ), f"{entry['dockerfile']} will not link its GHCR package to this repository"
+
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert "Path('/app/LICENSE').stat().st_size" in workflow
+    assert "Path('/app/NOTICE').stat().st_size" in workflow
+
+
+def test_release_tags_are_not_overwritten_on_rerun() -> None:
+    """Visibility retries must verify the first artifact, not replace it."""
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert 'docker manifest inspect "$REF"' in workflow
+    assert "LOOKUP_STATUS=$?" in workflow
+    assert "manifest unknown|name unknown|no such manifest" in workflow
+    assert "registry lookup failed; refusing to overwrite" in workflow
+    assert "FIRST_SERVER_RELEASE: v0.1.0" in workflow
+    assert "api.github.com/user/packages/container/firekeep-" in workflow
+    assert "api.github.com/users/${OWNER}/packages" not in workflow
+    assert 'API_STATUS" = "404"' in workflow
+    assert 'steps.meta.outputs.tag }}" = "$FIRST_SERVER_RELEASE"' in workflow
+    assert "package exists but registry lookup was denied; refusing to overwrite" in workflow
+    assert 'docker pull "$REF"' in workflow
+    assert 'docker push "$REF"' in workflow
+    assert workflow.index('docker manifest inspect "$REF"') < workflow.index('docker push "$REF"')
+
+    assert 'if [ -e "$VERSIONED" ]' in workflow
+    assert 'Reusing immutable versioned bundle $VERSIONED' in workflow
+    assert 'sha256sum -c -' in workflow
+    assert 'cp "$VERSIONED/server.json" gh/server/latest/server.json' in workflow
+    assert 'echo "expect_latest=$publish_latest" >> "$GITHUB_OUTPUT"' in workflow
+    assert '[ "$EXPECT_LATEST" != "1" ] || [ "$got" = "$TAG" ]' in workflow
+    assert "cmp public-server.json public-latest-server.json" in workflow
+
+
 # --- the customer install path ------------------------------------------------
 
 def _install_sh() -> str:
@@ -204,4 +257,13 @@ def test_docs_tell_a_customer_how_to_install_without_source() -> None:
     for name in ("README.md", "docs/DEPLOYMENT.md"):
         text = (REPO / name).read_text(encoding="utf-8")
         assert "install.sh --pull" in text, f"{name} does not document the customer path"
-        assert "docker login ghcr.io" in text, f"{name} does not say how to authenticate"
+        assert "docker login ghcr.io" not in text, f"{name} still requires registry credentials"
+
+
+def test_release_verifies_anonymous_image_pull() -> None:
+    """Download access cannot become a hidden second entitlement system."""
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    logout = workflow.index("docker logout ghcr.io")
+    pull = workflow.index('docker pull "${{ steps.meta.outputs.image }}', logout)
+    assert logout < pull
+    assert "public package" in _install_sh().lower() or "public visibility" in _install_sh().lower()

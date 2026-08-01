@@ -17,8 +17,8 @@ def test_run_bypassed_serves_inert_without_resolving(monkeypatch):
     monkeypatch.setattr(shim, "_serve_inert", fake_inert)
 
     def _boom(*a, **k):
-        raise AssertionError("resolve_active must NOT run under bypass")
-    monkeypatch.setattr(shim, "resolve_active", _boom)
+        raise AssertionError("resolve_connection must NOT run under bypass")
+    monkeypatch.setattr(shim, "resolve_connection", _boom)
 
     rc = shim.run("cortex")
 
@@ -53,8 +53,8 @@ def test_serve_inert_builds_zero_tool_server(monkeypatch):
 def test_run_not_bypassed_reaches_resolve(tmp_path, monkeypatch):
     cfg = tmp_path / "config"
     cfg.write_text(
-        "[active]\nprofile = personal\n[personal]\nkind = ports\nscheme = http\n"
-        "host = 127.0.0.1\nverify_tls = false\nagent_id = t\n",
+        "[identity]\nagent_id = t\n[server]\nkind = ports\nscheme = http\n"
+        "host = 127.0.0.1\nverify_tls = false\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("FIREKEEP_CONFIG", str(cfg))
@@ -66,10 +66,10 @@ def test_run_not_bypassed_reaches_resolve(tmp_path, monkeypatch):
     )
     reached = {}
 
-    def fake_resolve(service, profile):
+    def fake_resolve(service):
         reached["svc"] = service
         raise shim.ConfigError("stop here")  # short-circuit before any real serve
-    monkeypatch.setattr(shim, "resolve_active", fake_resolve)
+    monkeypatch.setattr(shim, "resolve_connection", fake_resolve)
 
     rc = shim.run("cortex")
 

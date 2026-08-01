@@ -28,9 +28,16 @@ class _FakeFastMCP:
     def __init__(self, name: str, **_kwargs):
         self.name = name
         self.instructions = _kwargs.get("instructions")
+        # Records the decorator kwargs per tool name (e.g. {"output_schema": None}),
+        # since this double discards them otherwise -- a real FastMCP.get_tool()
+        # is not available here, and a test asserting output_schema=None survived
+        # on a `-> str` tool needs some way to see what the decorator was called
+        # with.
+        self.registered_tools: dict[str, dict] = {}
 
     def tool(self, *args, **kwargs):
         def decorator(fn):
+            self.registered_tools[fn.__name__] = kwargs
             return fn
         return decorator
 

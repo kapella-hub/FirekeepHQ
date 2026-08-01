@@ -22,10 +22,9 @@ def test_sh_idempotent_fast_path():
     assert "FIREKEEP_FORCE_REINSTALL" in sh
 
 
-def test_runtime_is_conditional_never_hardcoded_all():
-    """FIREKEEP_RUNTIME is forwarded as --runtime ONLY when set; an UNSET runtime must reach the
-    wizard so it can prompt "Install for which agent?". So neither script may hardcode
-    `--runtime all` or default the env to 'all'."""
+def test_runtime_override_is_conditional():
+    """FIREKEEP_RUNTIME targets a repair/re-render; unset lets the CLI's all-adapter
+    default apply. Keep both bootstraps in lock-step without duplicating that default."""
     for name in ("install.sh", "install.ps1"):
         text = (BOOT / name).read_text()
         assert "FIREKEEP_RUNTIME" in text

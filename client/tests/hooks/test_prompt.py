@@ -74,6 +74,38 @@ class TestPrompt:
         assert "pending tasks" in prompt.run({})["systemMessage"]
         assert prompt.run({}) == {}  # same set -> no re-injection
 
+    def test_unchanged_pending_tasks_are_re_announced_once_the_digest_ttl_lapses(
+            self, client_env, monkeypatch):
+        """The suppression digest key carries no session component, so before it
+        declared a TTL an unchanged pending-task set was suppressed FOREVER —
+        across every future session on that machine. The customer silently
+        stopped being told about their own tasks, and only a CHANGE to the task
+        set could break the silence."""
+        import time
+
+        from firekeep_client import state
+        from firekeep_client.hooks import prompt
+
+        _patch_transport(
+            monkeypatch,
+            tasks=[{"id": "task-1", "title": "fix ingress"}],
+            sessions=[{"session_id": "s1", "goal": "g"}],
+        )
+        _record_mcp(monkeypatch)
+        assert "pending tasks" in prompt.run({})["systemMessage"]
+        assert prompt.run({}) == {}          # suppressed while fresh
+
+        digests = list((state.cache_dir() / "scratch").glob("tasks_digest_*"))
+        assert len(digests) == 1, f"expected one digest marker, found {digests}"
+        key = digests[0].name
+        assert state._scratch_ttl_file(key).exists(), (
+            "the digest declared no expiry — it would suppress the customer's "
+            "tasks forever"
+        )
+        state._scratch_ttl_file(key).write_text(str(time.time() - 1), encoding="utf-8")
+
+        assert "pending tasks" in prompt.run({})["systemMessage"]
+
     def test_channel_shows_only_new_messages_and_never_self(self, client_env, monkeypatch):
         from firekeep_client.hooks import prompt
         _patch_transport(monkeypatch, sessions=[{"session_id": "s1", "goal": "g"}])
@@ -112,7 +144,7 @@ class TestPrompt:
     def test_snapshot_on_fifth_prompt(self, client_env, monkeypatch):
         from firekeep_client import state
         from firekeep_client.hooks import prompt
-        state.write_scratch("poll_count_tester@personal", "4")  # this call -> 5
+        state.write_scratch("poll_count_tester", "4")  # this call -> 5
         _patch_transport(monkeypatch, sessions=[{"session_id": "s1", "goal": "g"}])
         calls = _record_mcp(monkeypatch)
         prompt.run({})
@@ -121,7 +153,7 @@ class TestPrompt:
     def test_no_snapshot_off_cycle(self, client_env, monkeypatch):
         from firekeep_client import state
         from firekeep_client.hooks import prompt
-        state.write_scratch("poll_count_tester@personal", "1")  # this call -> 2
+        state.write_scratch("poll_count_tester", "1")  # this call -> 2
         _patch_transport(monkeypatch, sessions=[{"session_id": "s1", "goal": "g"}])
         calls = _record_mcp(monkeypatch)
         prompt.run({})

@@ -28,7 +28,11 @@ _SKIP_DIRS = {
 
 def _iter_scope_strings():
     for py in REPO_ROOT.rglob("*.py"):
-        if any(part in _SKIP_DIRS for part in py.parts):
+        # Relative to REPO_ROOT, never absolute: the checkout's own path may contain a
+        # skip-dir name. A git worktree under <repo>/.claude/worktrees/ matched ".claude"
+        # on every file, so the scan found nothing and this guard's own
+        # "search pattern is broken" assertion fired on a correct tree.
+        if any(part in _SKIP_DIRS for part in py.relative_to(REPO_ROOT).parts):
             continue
         try:
             text = py.read_text(encoding="utf-8", errors="ignore")

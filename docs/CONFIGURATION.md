@@ -20,6 +20,12 @@ cp .env.example .env
 | `RP_RETENTION_DAYS` | `30` | How long replay events are retained |
 | `BIND_ADDR` | `127.0.0.1` | Host interface the six published app ports (8040-8100) bind to. Loopback by default — a fresh install is reachable only from the machine it runs on. See [Binding and exposure](#binding-and-exposure). |
 | `AUTH_ENABLED` | `True` | Enforce per-key `X-API-Key` authentication on every MCP and REST surface. **Changed from `False` on 2026-07-26** — see [Authentication](#authentication). |
+| `FIREKEEP_SSH_USER` | `root` | SSH account carried by loopback-server join codes; combine with `VPS_IP` to start the client tunnel. |
+| `ENROLL_TICKET_TTL_HOURS` | `24` | Single-use join-code validity. |
+| `ENROLL_TOMBSTONE_DAYS` | `7` | Retain used/expired ticket metadata so retries get a precise explanation. |
+| `ENROLL_KEY_EXPIRES_DAYS` | `90` | Default enrolled device credential lifetime; `0` means never. |
+| `ENROLL_RATE_LIMIT` | `10/minute` | Enrollment route limiter. |
+| `ENROLL_MAX_ATTEMPTS_PER_HOUR` | `60` | Redis-global enrollment ceiling, independent of proxy source IP. |
 | `SECRET_SCAN_ENABLED` | `True` | Scan memory writes for secrets |
 | `SECRET_SCAN_MODE` | `warn` | `warn` (log) or `block` (reject) when secrets found |
 | `EVAL_LLM_ENABLED` | `False` | Enable Tier 2 LLM-judged eval metrics |
@@ -90,8 +96,10 @@ Keys minted by `deploy/bootstrap-keys.sh`:
 | admin key | printed once to the terminal, never written to disk | `*` |
 
 `DASHBOARD_API_KEY` is load-bearing now, not optional: empty means nginx sends no
-header and every dashboard data tab 401s. Teammate keys come from
-`deploy/firekeep-admin keys create --agent <name>` (full non-admin scope set).
+header and every dashboard data tab 401s. Customer devices get credentials from
+Dashboard → Devices or `deploy/firekeep-admin invite --json`; the client creates
+the plaintext secret and sends only its hash during the single-use enrollment.
+`deploy/firekeep-admin keys create` remains available for manual/generic clients.
 
 See [DEPLOYMENT.md → Access and authentication](DEPLOYMENT.md#access-and-authentication)
 for the first-call walkthrough and [DEPLOYMENT-OFFICE.md](DEPLOYMENT-OFFICE.md)
@@ -131,6 +139,7 @@ baked into the collection at creation.
 | `NR_` | FirekeepRelay |
 | `RP_` | Replay Engine |
 | `AUTH_` | Auth |
+| `ENROLL_` | Single-use client enrollment |
 | `FIREKEEP_SYMDEX_` | FirekeepSymdex (client-side stdio server only — not a server `.env` prefix; e.g. `FIREKEEP_SYMDEX_MAX_FILES`) |
 
 ## Service Ports
@@ -148,7 +157,7 @@ baked into the collection at creation.
 | 6379 | Redis | Redis (localhost) |
 | 11434 | Ollama | HTTP (localhost) |
 
-Two MCP servers ship in the client kit as **stdio-local** processes and bind no port: `firekeep-symdex` (code intelligence, always installed) and `firekeep-decision` (the Decision Board, always installed — backed by Cortex `POST /decision/synthesize`).
+Two local MCP backends ship in the client kit and bind no port: `firekeep-symdex` (code intelligence) and `firekeep-decision` (the Decision Board, backed by Cortex `POST /decision/synthesize`). Both are always installed and started behind the single `firekeep` stdio gateway.
 
 ### Binding and exposure
 

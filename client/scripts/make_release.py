@@ -13,6 +13,17 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _write_text_lf(path: Path, text: str) -> None:
+    """Write release metadata/scripts with Unix newlines on every build host.
+
+    ``install.sh`` and ``SHA256SUMS`` are consumed by POSIX tools that treat a
+    trailing carriage return as part of the shell option or artifact name.  A
+    Windows release build must therefore produce the same bytes as CI on Linux.
+    """
+    with path.open("w", encoding="utf-8", newline="\n") as fh:
+        fh.write(text)
+
+
 def build_manifest(version: str, install_sh: Path, install_ps1: Path) -> dict:
     # No base_url, no wheel: latest.json shrinks to exactly what has a consumer. The wheel's
     # integrity comes from SHA256SUMS (versioned, alongside the wheel itself), which the
@@ -32,7 +43,7 @@ def write_sums(paths: list[Path], dest: Path) -> Path:
     # Format is a CONTRACT with install.sh, which greps ' <name>$' and cuts field 1:
     #   "<hex><space><space><basename>"
     lines = [f"{_sha256(p)}  {p.name}" for p in paths]
-    dest.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    _write_text_lf(dest, "\n".join(lines) + "\n")
     return dest
 
 
@@ -53,7 +64,7 @@ def bake_dist_base(out_dir: Path, dist_base: str) -> None:
         text = path.read_text(encoding="utf-8")
         if DIST_BASE_PLACEHOLDER not in text:
             raise SystemExit(f"{path} has no {DIST_BASE_PLACEHOLDER} placeholder to bake")
-        path.write_text(text.replace(DIST_BASE_PLACEHOLDER, base), encoding="utf-8")
+        _write_text_lf(path, text.replace(DIST_BASE_PLACEHOLDER, base))
 
 
 def main(argv: list[str]) -> int:
@@ -96,7 +107,7 @@ def main(argv: list[str]) -> int:
             f"expected exactly one firekeep_symdex-*.whl in {out_dir}, found {len(symdex_wheels)}"
         )
     manifest = build_manifest(version, install_sh, install_ps1)
-    (out_dir / "latest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    _write_text_lf(out_dir / "latest.json", json.dumps(manifest, indent=2) + "\n")
     # This SHA256SUMS is now the wheel's ONLY integrity check (latest.json carries no
     # per-wheel hash) — every bootstrap verifies the wheel against this file before install.
     sums = sorted(p for p in out_dir.iterdir() if p.name.startswith("uv-") or p.suffix == ".whl")

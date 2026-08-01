@@ -14,7 +14,7 @@ def never_raise(default: Any) -> Callable[[F], F]:
     hooklog the failure, and return `default` instead of propagating.
 
     Design §6.3 "availability over enforcement": every core calls
-    resolver.load_config()/active_profile()/agent_id() UNGUARDED at the top
+    resolver.load_config()/agent_id() UNGUARDED at the top
     of run() -- a missing or malformed ~/.firekeep config raises ConfigError,
     which must degrade the hook (return the safe default), not crash the
     caller's process. pre_tool/post_tool's safe default is 0 (allow --
@@ -39,6 +39,12 @@ def never_raise(default: Any) -> Callable[[F], F]:
             try:
                 return fn(*args, **kwargs)
             except Exception as e:  # noqa: BLE001 — last-resort guard, by design
+                # A migration conflict must reach the dispatcher, which has the
+                # only universal hook output channel (systemMessage). Ordinary
+                # config failures keep the availability-first fallback below.
+                from firekeep_client import resolver
+                if isinstance(e, resolver.ConfigMigrationConflict):
+                    raise
                 hooklog.log_failure(hook_name, f"run() crashed: {e!r}")
                 if isinstance(default, dict):
                     return dict(default)

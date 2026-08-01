@@ -164,6 +164,56 @@ class TestConsolidation:
         assert resp.json()["api_key"].startswith("nxs_")
 
     @pytest.mark.asyncio
+    async def test_admin_can_rename_device_metadata_but_blank_is_rejected(
+        self, redis, auth_env
+    ):
+        created = await keys.create_key("device-a", ["memory:read"])
+        credential_id = created["credential_id"]
+        async with _client(_mini_cortex(redis)) as c:
+            renamed = await c.patch(
+                f"/auth/keys/{credential_id}",
+                headers={"X-API-Key": auth_env["admin"]},
+                json={"label": "Alice's laptop"},
+            )
+            blank = await c.patch(
+                f"/auth/keys/{credential_id}",
+                headers={"X-API-Key": auth_env["admin"]},
+                json={"label": "   "},
+            )
+        assert renamed.status_code == 200
+        assert renamed.json()["label"] == "Alice's laptop"
+        assert blank.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_key_id_is_409_and_deletes_nothing(self, redis, auth_env):
+        """A well-formed request against ambiguous server state is a 409, not a
+        500 (which reads as the caller's fault) and not a 200 (which is the bug
+        this whole change removes: deleting one of two and reporting success)."""
+        import json as _json
+
+        shared = "a" * 16
+        hash_a, hash_b = shared + "1" * 48, shared + "2" * 48
+        for h, who in ((hash_a, "alice"), (hash_b, "bob")):
+            await redis.hset(f"auth:key:{h}", mapping={
+                "agent_id": who,
+                "scopes": _json.dumps(["memory:read"]),
+                "created_at": "2026-07-30T00:00:00+00:00",
+                "key_id": shared,
+            })
+        await redis.zadd("auth:key_index", {shared: 1.0})
+
+        async with _client(_mini_cortex(redis)) as c:
+            resp = await c.delete(
+                f"/auth/keys/{shared}",
+                headers={"X-API-Key": auth_env["admin"]},
+            )
+
+        assert resp.status_code == 409
+        assert shared in resp.json()["detail"]
+        assert await redis.exists(f"auth:key:{hash_a}") == 1
+        assert await redis.exists(f"auth:key:{hash_b}") == 1
+
+    @pytest.mark.asyncio
     async def test_health_skipped(self, redis, auth_env):
         async with _client(_mini_cortex(redis)) as c:
             resp = await c.get("/health")
@@ -233,7 +283,10 @@ class TestMainWiring:
             m for m in main_mod.app.user_middleware
             if m.cls.__name__ == "FirekeepKeyAuthMiddleware"
         )
-        assert mw.kwargs["skip_exact_paths"] == ("/dashboard", "/dashboard/")
+        assert mw.kwargs["skip_exact_paths"] == (
+            "/dashboard", "/dashboard/", "/enroll", "/enroll/anchor",
+            "/members/invites/accept", "/members/invites/anchor",
+        )
         assert "/dashboard" not in mw.kwargs["skip_paths"]
 
     def test_cors_is_outermost_of_auth(self):

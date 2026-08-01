@@ -250,6 +250,16 @@ services:
       # so this changes the default for NEW installs, not existing ones.
       AUTH_ENABLED: ${AUTH_ENABLED:-true}
       AUTH_REDIS_URL: redis://redis:6379/7
+      # Enrollment invite defaults. The public endpoint never trusts these for
+      # identity; they only let the admin dashboard render a reachable code.
+      BIND_ADDR: ${BIND_ADDR:-127.0.0.1}
+      VPS_IP: ${VPS_IP:-}
+      FIREKEEP_SSH_USER: ${FIREKEEP_SSH_USER:-root}
+      ENROLL_TICKET_TTL_HOURS: ${ENROLL_TICKET_TTL_HOURS:-24}
+      ENROLL_TOMBSTONE_DAYS: ${ENROLL_TOMBSTONE_DAYS:-7}
+      ENROLL_KEY_EXPIRES_DAYS: ${ENROLL_KEY_EXPIRES_DAYS:-90}
+      ENROLL_RATE_LIMIT: ${ENROLL_RATE_LIMIT:-10/minute}
+      ENROLL_MAX_ATTEMPTS_PER_HOUR: ${ENROLL_MAX_ATTEMPTS_PER_HOUR:-60}
       # Vault (encrypted secret storage, shares Redis DB 7 with auth)
       VAULT_ENABLED: ${VAULT_ENABLED:-true}
       VAULT_KEY: ${VAULT_KEY:-}
@@ -297,6 +307,11 @@ services:
       SKILL_SYNTHESIS_ENABLED: ${SKILL_SYNTHESIS_ENABLED:-false}
       SKILL_SCORE_THRESHOLD: ${SKILL_SCORE_THRESHOLD:-0.6}
       SKILL_STALE_AFTER_DAYS: ${SKILL_STALE_AFTER_DAYS:-90}
+      # Raw-cosine floor for semantic skill matching (GET /skills?q=, briefing skills
+      # section). NOT RECALL_SCORE_FLOOR — skills embed a terse composite, and the
+      # office deploy uses a different embedding model/dim. Most likely knob to tune.
+      SKILL_MATCH_SCORE_FLOOR: ${SKILL_MATCH_SCORE_FLOOR:-0.30}
+      SKILL_MATCH_EMBED_TIMEOUT_SECONDS: ${SKILL_MATCH_EMBED_TIMEOUT_SECONDS:-1.2}
       SKILL_ERROR_DENSITY_WEIGHT: ${SKILL_ERROR_DENSITY_WEIGHT:-0.30}
       SKILL_ANOMALY_WEIGHT: ${SKILL_ANOMALY_WEIGHT:-0.20}
       SKILL_RESOLUTION_WEIGHT: ${SKILL_RESOLUTION_WEIGHT:-0.35}
@@ -436,6 +451,11 @@ services:
       SKILL_SYNTHESIS_ENABLED: ${SKILL_SYNTHESIS_ENABLED:-false}
       SKILL_SCORE_THRESHOLD: ${SKILL_SCORE_THRESHOLD:-0.6}
       SKILL_STALE_AFTER_DAYS: ${SKILL_STALE_AFTER_DAYS:-90}
+      # Raw-cosine floor for semantic skill matching (GET /skills?q=, briefing skills
+      # section). NOT RECALL_SCORE_FLOOR — skills embed a terse composite, and the
+      # office deploy uses a different embedding model/dim. Most likely knob to tune.
+      SKILL_MATCH_SCORE_FLOOR: ${SKILL_MATCH_SCORE_FLOOR:-0.30}
+      SKILL_MATCH_EMBED_TIMEOUT_SECONDS: ${SKILL_MATCH_EMBED_TIMEOUT_SECONDS:-1.2}
       SKILL_ERROR_DENSITY_WEIGHT: ${SKILL_ERROR_DENSITY_WEIGHT:-0.30}
       SKILL_ANOMALY_WEIGHT: ${SKILL_ANOMALY_WEIGHT:-0.20}
       SKILL_RESOLUTION_WEIGHT: ${SKILL_RESOLUTION_WEIGHT:-0.35}

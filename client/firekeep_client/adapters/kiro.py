@@ -53,10 +53,10 @@ from firekeep_client.adapters.base import (
     merge_owned,
     prune_flat_hooks,
     read_json,
-    read_pin,
     shim_servers,
     upsert_flat_hook,
     write_json,
+    write_text_if_changed,
 )
 
 # Whole-file firekeep-owned steering doc (kiro's instruction surface). The marker
@@ -109,7 +109,7 @@ def _migrate_legacy(home: Path) -> None:
                 if stale:
                     for k in stale:
                         del servers[k]
-                    mcp_json.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+                    write_text_if_changed(mcp_json, json.dumps(data, indent=2) + "\n")
     except Exception:  # noqa: BLE001 — total backstop: a legacy artifact must never fail an install
         # Missing, unparsable, shape-hostile, or anything else (e.g. RecursionError from
         # pathologically deep JSON — a RuntimeError subclass no enumerated tuple covers).
@@ -119,14 +119,13 @@ def _migrate_legacy(home: Path) -> None:
     cli_json = home / ".kiro" / "settings" / "cli.json"
     try:
         settings = json.loads(cli_json.read_text(encoding="utf-8"))
-        if isinstance(settings, dict) and settings.get("chat.defaultAgent") == "firekeep":
-            # The pre-kit setup made its agent the chat default; after the archival below
-            # kiro errors on every chat start ("user defined default firekeep not found")
-            # and falls back to the in-memory default — found live on the first migrated
-            # machine (2026-07-13). Same ownership logic as the archival: the value names
-            # the pre-kit artifact, so pointing it at the kit's agent preserves intent.
+        if isinstance(settings, dict) and settings.get("chat.defaultAgent") == "nexus":
+            # The predecessor setup made its `nexus` agent the chat default. Firekeep writes
+            # a distinct named agent, so leaving this value behind makes plain `kiro-cli chat`
+            # keep launching the old adapter and makes a successful Firekeep install look
+            # inert. This is a predecessor-owned value, so migrating it preserves intent.
             settings["chat.defaultAgent"] = "firekeep"
-            cli_json.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+            write_text_if_changed(cli_json, json.dumps(settings, indent=2) + "\n")
     except Exception:  # noqa: BLE001 — total backstop, same contract as the mcp.json block
         pass
     # NO LEGACY-ARTIFACT ARCHIVING HERE. This loop used to move
@@ -202,8 +201,7 @@ class KiroAdapter(Adapter):
             f"{FIREKEEP_INSTRUCTIONS}"
         )
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(body, encoding="utf-8")
+            write_text_if_changed(path, body)
         except OSError:
             pass
 
@@ -218,14 +216,12 @@ class KiroAdapter(Adapter):
     def render(self, *, venv_bin: Path) -> None:
         _migrate_legacy(Path.home())
         path = self._path()
-        pin = read_pin(self.name)
         data = read_json(path)
         data.setdefault("name", "firekeep")
 
         servers = data.setdefault("mcpServers", {})
         entries = {
-            name: {"command": cmd, "args": args,
-                   **({"env": {"FIREKEEP_PROFILE": pin}} if pin else {})}
+            name: {"command": cmd, "args": args}
             for name, (cmd, args) in shim_servers(venv_bin).items()
         }
         merge_owned(servers, entries)
@@ -259,8 +255,6 @@ class KiroAdapter(Adapter):
             # kiro-cli 2.12.1 the block is not actually enforced (see docstring) — the remap
             # is still rendered so it works the moment kiro honors its own contract.
             extra_args = "--block-exit 2" if core == "pre_tool" else ""
-            if pin:
-                extra_args = f"{extra_args} --profile {pin}".strip()
             entry = {"command": hook_command(venv_bin, core, extra_args=extra_args)}
             if matcher:
                 entry["matcher"] = matcher

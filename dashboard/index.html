@@ -715,6 +715,9 @@ button.btn-outline:hover { border-color: var(--accent); color: var(--accent); ba
   <symbol id="i-replay" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.4"/><path d="M10.3 8.9v6.2l5.1-3.1z"/></symbol>
   <symbol id="i-evals" viewBox="0 0 24 24"><path d="M5 20.4V11.6M12 20.4V3.6M19 20.4v-6.2"/></symbol>
   <symbol id="i-vault" viewBox="0 0 24 24"><rect x="4.4" y="10.2" width="15.2" height="10.4" rx="2.2"/><path d="M8 10.2V7.6a4 4 0 0 1 8 0v2.6"/><path d="M12 14.3v2.2"/></symbol>
+  <symbol id="i-devices" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="12" rx="2"/><path d="M8 21h8M12 15v6"/></symbol>
+  <symbol id="i-members" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><circle cx="17" cy="9" r="2"/><path d="M3.5 20c.4-4 2.3-6 5.5-6s5.1 2 5.5 6M14.5 14.5c3.6-.5 5.6 1.3 6 4.5"/></symbol>
+  <symbol id="i-licence" viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6zM15 3v5h4"/><path d="M9 13h7M9 17h5"/></symbol>
   <symbol id="i-policy" viewBox="0 0 24 24"><path d="M12 3l7 2.9v5.5c0 4.2-2.9 8-7 9.4-4.1-1.4-7-5.2-7-9.4V5.9z"/></symbol>
   <symbol id="i-ops" viewBox="0 0 24 24"><path d="M3.6 7.4h9.2M18.4 7.4h2M3.6 16.6h3.2M12.8 16.6h7.6"/><circle cx="15.6" cy="7.4" r="2.3"/><circle cx="9.6" cy="16.6" r="2.3"/></symbol>
 </defs></svg>
@@ -758,6 +761,9 @@ button.btn-outline:hover { border-color: var(--accent); color: var(--accent); ba
         <button class="nav-btn" data-tab="replay"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-replay"/></svg> Replay <span class="kbd-hint">7</span></button>
         <button class="nav-btn" data-tab="evals"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-evals"/></svg> Evals <span class="kbd-hint">9</span></button>
         <div class="sidebar-label" style="margin-top:16px">System</div>
+        <button class="nav-btn" data-tab="devices"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-devices"/></svg> Devices</button>
+        <button class="nav-btn" data-tab="members"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-members"/></svg> Members</button>
+        <button class="nav-btn" data-tab="licence"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-licence"/></svg> Licence</button>
         <button class="nav-btn" data-tab="vault"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-vault"/></svg> Vault</button>
         <button class="nav-btn" data-tab="policy"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-policy"/></svg> Policy</button>
         <button class="nav-btn" data-tab="ops"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-ops"/></svg> Ops</button>
@@ -1181,6 +1187,103 @@ button.btn-outline:hover { border-color: var(--accent); color: var(--accent); ba
             </div>
         </section>
 
+        <!-- DEVICES -->
+        <section class="tab-panel" id="panel-devices">
+            <div class="flex-between mb-24">
+                <div><h1 class="page-title">Devices</h1><p class="page-subtitle">Enroll and revoke machines independently</p></div>
+                <button class="btn btn-sm btn-outline" id="btnRefreshDevices">Refresh</button>
+            </div>
+            <div class="two-col section">
+                <div>
+                    <div class="card-header">Enrolled devices</div>
+                    <div class="card card-padded" id="devicesList"><div class="spinner">Loading...</div></div>
+                </div>
+                <div>
+                    <div class="card-header">Add device</div>
+                    <div class="card card-padded">
+                        <form id="deviceInviteForm">
+                            <div class="form-row">
+                                <div class="form-group"><label>Device name (optional)</label><input id="deviceInviteName" type="text" placeholder="Morgan laptop"></div>
+                                <div class="form-group"><label>Credential lifetime</label><input id="deviceInviteExpiry" type="number" min="0" max="365" value="90"><div style="font-size:11px;color:var(--text-dim);margin-top:4px">days · 0 means never</div></div>
+                            </div>
+                            <div class="form-actions"><button type="submit" class="btn btn-sm">+ Add device</button></div>
+                        </form>
+                        <div id="deviceInviteResult" style="display:none;margin-top:18px">
+                            <div class="flex-between" style="margin-bottom:8px">
+                                <strong>Ready-to-paste install command</strong>
+                                <select id="deviceInvitePlatform" style="padding:5px 8px;background:var(--surface-2);color:var(--text);border:1px solid var(--border);border-radius:6px"><option value="sh">macOS / Linux</option><option value="powershell">Windows PowerShell</option></select>
+                            </div>
+                            <pre id="deviceInviteCommand" style="white-space:pre-wrap;word-break:break-all;padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:12px"></pre>
+                            <div class="flex-between"><span id="deviceInviteCountdown" style="color:var(--text-dim);font-size:12px"></span><button type="button" class="btn btn-sm btn-outline" id="btnCopyDeviceInvite">Copy</button></div>
+                            <details style="margin-top:10px"><summary style="cursor:pointer;color:var(--text-dim)">Already installed?</summary><pre id="deviceInviteBare" style="white-space:pre-wrap;word-break:break-all;font-size:11px"></pre></details>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="section">
+                <div class="card-header">Outstanding invites</div>
+                <div class="card card-padded" id="deviceInvitesList"><div class="spinner">Loading...</div></div>
+            </div>
+        </section>
+
+        <!-- MEMBERS -->
+        <section class="tab-panel" id="panel-members">
+            <div class="flex-between mb-24">
+                <div><h1 class="page-title">Members</h1><p class="page-subtitle">People consume seats. Their devices, terminals and agent runtimes do not.</p></div>
+                <button class="btn btn-sm btn-outline" id="btnRefreshMembers">Refresh</button>
+            </div>
+            <div class="section" id="memberPlanSummary"><div class="spinner">Loading workspace...</div></div>
+            <div class="two-col section">
+                <div>
+                    <div class="card-header">Workspace members</div>
+                    <div class="card card-padded" id="membersList"><div class="spinner">Loading members...</div></div>
+                </div>
+                <div>
+                    <div class="card-header">Invite a person</div>
+                    <div class="card card-padded">
+                        <form id="memberInviteForm">
+                            <div class="form-row">
+                                <div class="form-group"><label>Name</label><input id="memberInviteName" type="text" placeholder="Ada Lovelace" required></div>
+                                <div class="form-group"><label>Email (optional)</label><input id="memberInviteEmail" type="email" placeholder="ada@example.com"></div>
+                            </div>
+                            <p style="font-size:12px;color:var(--text-dim);line-height:1.6;margin:0 0 14px">The invite claims one member seat, then enrolls this person's first device. Additional devices remain free.</p>
+                            <div class="form-actions"><button type="submit" class="btn btn-sm">+ Invite member</button></div>
+                        </form>
+                        <div id="memberInviteResult" style="display:none;margin-top:18px">
+                            <div class="flex-between" style="margin-bottom:8px"><strong>Private install command</strong><select id="memberInvitePlatform" style="padding:5px 8px;background:var(--surface-2);color:var(--text);border:1px solid var(--border);border-radius:6px"><option value="sh">macOS / Linux</option><option value="powershell">Windows PowerShell</option></select></div>
+                            <pre id="memberInviteCommand" style="white-space:pre-wrap;word-break:break-all;padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:12px"></pre>
+                            <div class="flex-between"><span style="color:var(--text-dim);font-size:12px">Single use · expires in 7 days</span><button type="button" class="btn btn-sm btn-outline" id="btnCopyMemberInvite">Copy</button></div>
+                            <details style="margin-top:10px"><summary style="cursor:pointer;color:var(--text-dim)">Already installed?</summary><pre id="memberInviteBare" style="white-space:pre-wrap;word-break:break-all;font-size:11px"></pre></details>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="section"><div class="card-header">Pending member invites</div><div class="card card-padded" id="memberInvitesList"><div class="spinner">Loading invites...</div></div></div>
+        </section>
+
+        <!-- LICENCE -->
+        <section class="tab-panel" id="panel-licence">
+            <div class="flex-between mb-24">
+                <div><h1 class="page-title">Licence</h1><p class="page-subtitle">Offline, server-authoritative workspace entitlement</p></div>
+                <button class="btn btn-sm btn-outline" id="btnRefreshLicence">Refresh</button>
+            </div>
+            <div class="two-col section">
+                <div>
+                    <div class="card-header">Current plan</div>
+                    <div class="card card-padded" id="licenceStatus"><div class="spinner">Loading licence...</div></div>
+                </div>
+                <div>
+                    <div class="card-header">Apply signed licence</div>
+                    <div class="card card-padded">
+                        <p style="font-size:13px;color:var(--text-secondary);line-height:1.6;margin-top:0">Paste the signed document supplied with your Team purchase. Verification is local; Firekeep does not phone home.</p>
+                        <form id="licenceApplyForm">
+                            <div class="form-group"><label>Signed document</label><textarea id="licenceDocument" rows="6" placeholder="fk_lic_v1.…" required style="width:100%;resize:vertical;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:10px;font-family:var(--font-mono);font-size:12px"></textarea></div>
+                            <div class="form-actions" style="justify-content:space-between"><button type="button" class="btn btn-sm btn-outline" id="btnRemoveLicence">Return to Solo</button><button type="submit" class="btn btn-sm">Verify &amp; apply</button></div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </section>
 
         <!-- VAULT -->
         <section class="tab-panel" id="panel-vault">
@@ -2117,6 +2220,9 @@ function switchTab(name) {
     else if (name === 'replay') { loadReplaySessions(); }
     else if (name === 'evals') { loadEvals(); }
     else if (name === 'patterns') { loadPatterns(); loadDatasets(); loadExperiments(); }
+    else if (name === 'devices') { loadDevices(); }
+    else if (name === 'members') { loadMembers(); }
+    else if (name === 'licence') { loadLicence(); }
     else if (name === 'vault') { loadVaultSecrets(); }
     else if (name === 'ops') { loadOps(); }
     else if (name === 'policy') { loadPolicy(); }
@@ -4121,6 +4227,260 @@ if ($('btnTestPolicy')) $('btnTestPolicy').addEventListener('click', function() 
             clear(resultDiv);
             resultDiv.appendChild(errMsg('Policy evaluation failed: ' + e.message));
         });
+});
+
+// ===================== Devices =====================
+
+var _lastDeviceInvite = null;
+var _deviceCountdownTimer = null;
+
+function deviceExpiryCell(row) {
+    if (!row.expires_at) return '<span style="color:var(--text-dim)">Never</span>';
+    var ms = new Date(row.expires_at).getTime() - Date.now();
+    var days = Math.ceil(ms / 86400000);
+    var color = days < 0 ? 'var(--red)' : days < 14 ? 'var(--amber)' : 'var(--text-secondary)';
+    return '<span style="color:' + color + '">' + (days < 0 ? 'Expired' : days + 'd') + '</span>';
+}
+
+function groupDeviceCredentials(rows) {
+    var grouped = {};
+    rows.forEach(function(row) {
+        var deviceId = row.device_id || row.agent_id || row.credential_id;
+        if (!grouped[deviceId]) grouped[deviceId] = [];
+        grouped[deviceId].push(row);
+    });
+    return Object.keys(grouped).map(function(deviceId) {
+        var credentials = grouped[deviceId].sort(function(a, b) {
+            return new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime();
+        });
+        var latest = credentials[0];
+        var enrolled = credentials.reduce(function(oldest, row) {
+            var value = new Date(row.created_at || 0).getTime();
+            return value && (!oldest || value < oldest) ? value : oldest;
+        }, 0);
+        return Object.assign({}, latest, {
+            device_id: deviceId,
+            created_at: enrolled ? new Date(enrolled).toISOString() : latest.created_at,
+            credentials: credentials
+        });
+    });
+}
+
+function loadDevices() {
+    var devices = $('devicesList'), invites = $('deviceInvitesList');
+    devices.innerHTML = '<div class="spinner">Loading devices...</div>';
+    invites.innerHTML = '<div class="spinner">Loading invites...</div>';
+    Promise.all([
+        fetchJSON(CONFIG.CORTEX_API + '/auth/keys'),
+        fetchJSON(CONFIG.CORTEX_API + '/enroll/invites')
+    ]).then(function(results) {
+        var rows = groupDeviceCredentials(
+            (results[0].keys || []).filter(function(row) { return !!row.enrolled_via; })
+        );
+        if (!rows.length) {
+            devices.innerHTML = '<div class="empty-state">No enrolled devices yet. Add one to get a ready-to-paste installer.</div>';
+        } else {
+            devices.innerHTML = renderTable([
+                { label: 'Device', render: function(r) { return '<strong>' + esc(r.device_label || r.device_id) + '</strong><div style="font-size:11px;color:var(--text-dim);font-family:var(--font-mono)">' + esc(r.device_id) + '</div>'; } },
+                { label: 'Enrolled', render: function(r) { return esc(r.created_at ? new Date(r.created_at).toLocaleDateString() : '—'); } },
+                { label: 'Last seen', render: function() { return '<span style="color:var(--text-dim)" title="Available after verified member attribution lands">Not reported</span>'; } },
+                { label: 'Credential', render: function(r) { return r.credentials.map(function(c) { return '<div><code>' + esc(c.credential_id) + '</code></div>'; }).join(''); } },
+                { label: 'Expires', render: function(r) { return r.credentials.map(function(c) { return '<div>' + deviceExpiryCell(c) + '</div>'; }).join(''); } },
+                { label: '', align: 'right', render: function(r) {
+                    var ids = esc(JSON.stringify(r.credentials.map(function(c) { return c.credential_id; })));
+                    var device = esc(JSON.stringify(r.device_id));
+                    var label = esc(JSON.stringify(r.device_label || ''));
+                    return '<button class="btn btn-sm btn-outline" onclick="renameDevice(' + ids + ',' + label + ')">Rename</button> '
+                        + '<button class="btn btn-sm btn-outline" onclick="regenerateDevice(' + device + ',' + label + ')">Regenerate code</button> '
+                        + '<button class="btn btn-sm btn-outline" style="border-color:var(--red);color:var(--red)" onclick="revokeDevice(' + ids + ')">Revoke</button>';
+                }}
+            ], rows, { empty: 'No devices' });
+        }
+        var pending = results[1].invites || [];
+        if (!pending.length) {
+            invites.innerHTML = '<div class="empty-state">No outstanding invites.</div>';
+        } else {
+            invites.innerHTML = renderTable([
+                { label: 'Name', render: function(r) { return esc(r.agent_label || 'Unnamed device'); } },
+                { label: 'Ticket', render: function(r) { return '<code>' + esc(r.tid) + '</code>'; } },
+                { label: 'Transport', render: function(r) { return esc(r.transport); } },
+                { label: 'Time left', render: function(r) { var m = Math.max(0, Math.ceil((new Date(r.expires_at).getTime() - Date.now()) / 60000)); return esc(Math.floor(m / 60) + 'h ' + (m % 60) + 'm'); } },
+                { label: '', align: 'right', render: function(r) { return '<button class="btn btn-sm btn-outline" style="border-color:var(--red);color:var(--red)" onclick="cancelDeviceInvite(\'' + esc(r.tid) + '\')">Cancel</button>'; } }
+            ], pending, { empty: 'No invites' });
+        }
+    }).catch(function(e) {
+        devices.innerHTML = '<div class="error-msg">Could not load devices: ' + esc(e.message) + '</div>';
+        invites.innerHTML = '<div class="error-msg">Could not load invites.</div>';
+    });
+}
+
+function showDeviceInvite(data) {
+    _lastDeviceInvite = data;
+    $('deviceInviteResult').style.display = 'block';
+    $('deviceInviteBare').textContent = 'firekeep join ' + data.code;
+    updateDeviceInviteCommand();
+    if (_deviceCountdownTimer) clearInterval(_deviceCountdownTimer);
+    function tick() {
+        var seconds = Math.max(0, Math.floor((new Date(data.expires_at).getTime() - Date.now()) / 1000));
+        $('deviceInviteCountdown').textContent = seconds ? 'Expires in ' + Math.floor(seconds / 3600) + 'h ' + Math.floor((seconds % 3600) / 60) + 'm' : 'Expired';
+    }
+    tick(); _deviceCountdownTimer = setInterval(tick, 30000);
+}
+
+function updateDeviceInviteCommand() {
+    if (!_lastDeviceInvite) return;
+    $('deviceInviteCommand').textContent = $('deviceInvitePlatform').value === 'powershell'
+        ? _lastDeviceInvite.install_command_powershell : _lastDeviceInvite.install_command_sh;
+}
+
+function issueDeviceInvite(body) {
+    body.transport = 'tunnel'; body.kind = 'ports'; body.host = '127.0.0.1';
+    return fetchJSON(CONFIG.CORTEX_API + '/enroll/invite', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+    }).then(function(data) { showDeviceInvite(data); loadDevices(); return data; });
+}
+
+function renameDevice(ids, current) {
+    var label = prompt('Device name', current || ''); if (!label) return;
+    Promise.all(ids.map(function(id) {
+        return fetchJSON(CONFIG.CORTEX_API + '/auth/keys/' + encodeURIComponent(id), {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ label: label })
+        });
+    })).then(function() { toast('Device renamed', 'success'); loadDevices(); })
+      .catch(function(e) { toast('Rename failed: ' + e.message, 'error'); });
+}
+function revokeDevice(ids) {
+    if (!confirm('Revoke all ' + ids.length + ' credential(s) for this device? It will stop authenticating immediately.')) return;
+    Promise.all(ids.map(function(id) {
+        return fetchJSON(CONFIG.CORTEX_API + '/auth/keys/' + encodeURIComponent(id), { method: 'DELETE' });
+    })).then(function() { toast('Device revoked', 'success'); loadDevices(); })
+      .catch(function(e) { toast('Revoke failed: ' + e.message, 'error'); });
+}
+function regenerateDevice(deviceId, label) {
+    issueDeviceInvite({ agent: label || '', device_id: deviceId }).catch(function(e) { toast('Could not issue code: ' + e.message, 'error'); });
+}
+function cancelDeviceInvite(tid) {
+    fetchJSON(CONFIG.CORTEX_API + '/enroll/invites/' + encodeURIComponent(tid), { method: 'DELETE' })
+      .then(function() { toast('Invite cancelled', 'success'); loadDevices(); })
+      .catch(function(e) { toast('Cancel failed: ' + e.message, 'error'); });
+}
+window.renameDevice = renameDevice; window.revokeDevice = revokeDevice;
+window.regenerateDevice = regenerateDevice; window.cancelDeviceInvite = cancelDeviceInvite;
+
+$('btnRefreshDevices').addEventListener('click', loadDevices);
+$('deviceInvitePlatform').addEventListener('change', updateDeviceInviteCommand);
+$('btnCopyDeviceInvite').addEventListener('click', function() {
+    navigator.clipboard.writeText($('deviceInviteCommand').textContent).then(function() { toast('Install command copied', 'success'); });
+});
+$('deviceInviteForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+    var expiry = parseInt($('deviceInviteExpiry').value, 10);
+    issueDeviceInvite({ agent: $('deviceInviteName').value.trim(), expires_days: isNaN(expiry) ? 90 : expiry })
+      .catch(function(err) { toast('Could not issue code: ' + err.message, 'error'); });
+});
+
+// ===================== Members & Licence =====================
+
+var _lastMemberInvite = null;
+
+function loadMembers() {
+    var summary = $('memberPlanSummary'), members = $('membersList'), invites = $('memberInvitesList');
+    summary.innerHTML = '<div class="spinner">Loading workspace...</div>';
+    members.innerHTML = '<div class="spinner">Loading members...</div>';
+    invites.innerHTML = '<div class="spinner">Loading invites...</div>';
+    fetchJSON(CONFIG.CORTEX_API + '/members').then(function(data) {
+        var ent = data.entitlement || {};
+        var plan = (ent.plan || 'solo').replace(/^./, function(c) { return c.toUpperCase(); });
+        var active = data.active_count || 0, pending = data.outstanding_invite_count || 0;
+        var maximum = ent.max_members || 1;
+        var warning = ent.warning || ((ent.source !== 'built-in' && !ent.verified) ? ent.reason : '');
+        summary.innerHTML = '<div class="card card-padded"><div class="flex-between"><div><span class="badge ' + (plan === 'Team' ? 'badge-green' : 'badge-blue') + '">' + esc(plan) + '</span><strong style="margin-left:10px">' + esc(active) + ' active · ' + esc(pending) + ' pending · ' + esc(maximum) + ' seats</strong></div><button class="btn btn-sm btn-outline" onclick="switchTab(\'licence\')">Manage licence</button></div>' + (warning ? '<div class="error-msg" style="margin-top:12px">' + esc(warning) + '</div>' : '') + '</div>';
+        var rows = data.members || [];
+        members.innerHTML = renderTable([
+            { label: 'Member', render: function(r) { return '<strong>' + esc(r.label || (r.role === 'owner' ? 'Workspace owner' : r.member_id)) + '</strong><div style="font-size:11px;color:var(--text-dim)">' + esc(r.email || r.member_id) + '</div>'; } },
+            { label: 'Role', key: 'role' },
+            { label: 'Status', render: function(r) { return '<span class="badge badge-green">' + esc(r.status || 'active') + '</span>'; } },
+            { label: 'Joined', render: function(r) { return esc(r.created_at ? new Date(r.created_at).toLocaleDateString() : '—'); } }
+        ], rows, { empty: 'No workspace members' });
+        var pendingRows = data.invites || [];
+        invites.innerHTML = renderTable([
+            { label: 'Person', render: function(r) { return '<strong>' + esc(r.label || 'Invited member') + '</strong><div style="font-size:11px;color:var(--text-dim)">' + esc(r.email || '') + '</div>'; } },
+            { label: 'Member ID', render: function(r) { return '<code>' + esc(r.member_id) + '</code>'; } },
+            { label: 'Expires', render: function(r) { return esc(r.expires_at ? new Date(r.expires_at).toLocaleString() : '—'); } },
+            { label: '', align: 'right', render: function(r) { return '<button class="btn btn-sm btn-outline" style="border-color:var(--red);color:var(--red)" onclick="cancelMemberInvite(\'' + esc(r.tid) + '\')">Cancel</button>'; } }
+        ], pendingRows, { empty: 'No pending member invites' });
+    }).catch(function(e) {
+        summary.innerHTML = '<div class="error-msg">Could not load workspace: ' + esc(e.message) + '</div>';
+        members.innerHTML = '<div class="empty-state">Members unavailable.</div>';
+        invites.innerHTML = '<div class="empty-state">Invites unavailable.</div>';
+    });
+}
+
+function showMemberInvite(data) {
+    _lastMemberInvite = data;
+    $('memberInviteResult').style.display = 'block';
+    $('memberInviteBare').textContent = 'firekeep join ' + data.code;
+    updateMemberInviteCommand();
+}
+
+function updateMemberInviteCommand() {
+    if (!_lastMemberInvite) return;
+    $('memberInviteCommand').textContent = $('memberInvitePlatform').value === 'powershell'
+        ? _lastMemberInvite.install_command_powershell : _lastMemberInvite.install_command_sh;
+}
+
+function cancelMemberInvite(tid) {
+    fetchJSON(CONFIG.CORTEX_API + '/members/invites/' + encodeURIComponent(tid), { method: 'DELETE' })
+      .then(function() { toast('Member invite cancelled', 'success'); loadMembers(); })
+      .catch(function(e) { toast('Cancel failed: ' + e.message, 'error'); });
+}
+window.cancelMemberInvite = cancelMemberInvite;
+
+$('btnRefreshMembers').addEventListener('click', loadMembers);
+$('memberInvitePlatform').addEventListener('change', updateMemberInviteCommand);
+$('btnCopyMemberInvite').addEventListener('click', function() {
+    navigator.clipboard.writeText($('memberInviteCommand').textContent).then(function() { toast('Member invite copied', 'success'); });
+});
+$('memberInviteForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+    fetchJSON(CONFIG.CORTEX_API + '/members/invites', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            label: $('memberInviteName').value.trim(),
+            email: $('memberInviteEmail').value.trim(),
+            transport: 'tunnel', kind: 'ports', host: '127.0.0.1'
+        })
+    }).then(function(data) {
+        showMemberInvite(data); loadMembers(); toast('Member invite issued', 'success');
+    }).catch(function(err) { toast(err.message, 'error'); });
+});
+
+function loadLicence() {
+    var container = $('licenceStatus');
+    container.innerHTML = '<div class="spinner">Loading licence...</div>';
+    fetchJSON(CONFIG.CORTEX_API + '/licence').then(function(ent) {
+        var plan = (ent.plan || 'solo').replace(/^./, function(c) { return c.toUpperCase(); });
+        var statusClass = ent.verified ? 'badge-green' : 'badge-blue';
+        var expires = ent.expires_at ? new Date(ent.expires_at).toLocaleString() : 'No expiry — built-in free plan';
+        var warning = ent.warning || ((ent.source !== 'built-in' && !ent.verified) ? ent.reason : '');
+        container.innerHTML = '<div class="flex-between"><div><span class="badge ' + statusClass + '">' + esc(plan) + '</span><strong style="margin-left:10px">Up to ' + esc(ent.max_members || 1) + ' member(s)</strong></div><span style="font-size:12px;color:var(--text-dim)">' + esc(ent.source || 'built-in') + '</span></div><div style="margin-top:18px;display:grid;gap:9px;font-size:13px"><div><span style="color:var(--text-dim)">Customer</span><br>' + esc(ent.customer || 'Free workspace') + '</div><div><span style="color:var(--text-dim)">Expires</span><br>' + esc(expires) + '</div><div><span style="color:var(--text-dim)">Privacy</span><br>Verified locally with Ed25519 · no usage reporting</div></div>' + (warning ? '<div class="error-msg" style="margin-top:14px">' + esc(warning) + '</div>' : '');
+    }).catch(function(e) { container.innerHTML = '<div class="error-msg">Could not load licence: ' + esc(e.message) + '</div>'; });
+}
+
+$('btnRefreshLicence').addEventListener('click', loadLicence);
+$('licenceApplyForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+    fetchJSON(CONFIG.CORTEX_API + '/licence', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ document: $('licenceDocument').value.trim() })
+    }).then(function() { $('licenceDocument').value = ''; toast('Licence verified and applied', 'success'); loadLicence(); })
+      .catch(function(err) { toast('Licence rejected: ' + err.message, 'error'); });
+});
+$('btnRemoveLicence').addEventListener('click', function() {
+    if (!confirm('Remove the signed licence and return the workspace to Solo? Existing members and data stay active; new member invites will be limited.')) return;
+    fetchJSON(CONFIG.CORTEX_API + '/licence', { method: 'DELETE' })
+      .then(function() { toast('Licence removed; workspace is now Solo', 'success'); loadLicence(); loadMembers(); })
+      .catch(function(err) { toast('Could not remove licence: ' + err.message, 'error'); });
 });
 
 // ===================== Vault =====================

@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import check_licenses
 from check_licenses import (
     ATTRIBUTION_EXCLUDE,
+    FIRST_PARTY_DISTRIBUTIONS,
     classify,
     collect_attribution,
     collect_license_text,
@@ -173,6 +174,9 @@ class _FakeMetadata:
         values = self._fields.get(key)
         return values[0] if values else default
 
+    def __getitem__(self, key):
+        return self.get(key)
+
     def get_all(self, key):
         return self._fields.get(key)
 
@@ -241,6 +245,47 @@ def test_attribution_exclude_covers_bootstrap_and_first_party_names():
     attribution material."""
     for name in ("pip", "setuptools", "wheel", "firekeep-client", "firekeep-symdex"):
         assert name in ATTRIBUTION_EXCLUDE
+
+
+def test_dependency_gate_excludes_first_party_busl_packages(monkeypatch, capsys):
+    fake_dists = [
+        _FakeDist(
+            {
+                "Name": [name],
+                "License-Expression": ["LicenseRef-Firekeep-BUSL-1.1"],
+            }
+        )
+        for name in sorted(FIRST_PARTY_DISTRIBUTIONS)
+    ]
+    fake_dists.append(
+        _FakeDist(
+            {
+                "Name": ["httpx"],
+                "License-Expression": ["BSD-3-Clause"],
+            }
+        )
+    )
+    monkeypatch.setattr(check_licenses, "distributions", lambda: fake_dists)
+
+    assert check_licenses.main() == 0
+    output = capsys.readouterr().out
+    assert "firekeep-client" not in output
+    assert "firekeep-symdex" not in output
+
+
+def test_dependency_gate_still_denies_third_party_busl(monkeypatch, capsys):
+    fake_dists = [
+        _FakeDist(
+            {
+                "Name": ["third-party-source-available"],
+                "License-Expression": ["BUSL-1.1"],
+            }
+        )
+    ]
+    monkeypatch.setattr(check_licenses, "distributions", lambda: fake_dists)
+
+    assert check_licenses.main() == 1
+    assert "third-party-source-available" in capsys.readouterr().out
 
 
 def test_print_attributions_excludes_bootstrap_and_first_party_but_keeps_real_deps(

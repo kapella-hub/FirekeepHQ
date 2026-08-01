@@ -8,9 +8,11 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from auth.keys import AmbiguousKeyIdError
 from auth.middleware import (
     create_key,
     list_keys,
+    rename_device,
     require_scope,
     revoke_key,
     SCOPES,
@@ -28,6 +30,10 @@ class CreateKeyRequest(BaseModel):
 class RevokeKeyResponse(BaseModel):
     status: str
     key_id: str
+
+
+class RenameDeviceRequest(BaseModel):
+    label: str = Field(..., min_length=1, max_length=80)
 
 
 def create_auth_router() -> APIRouter:
@@ -72,10 +78,44 @@ def create_auth_router() -> APIRouter:
         identity: dict = Depends(require_scope("admin")),
     ) -> RevokeKeyResponse:
         """Revoke an API key by its short ID."""
-        success = await revoke_key(key_id)
+        try:
+            success = await revoke_key(key_id)
+        except AmbiguousKeyIdError as exc:
+            # 409, not 500: the request is well-formed and the server state is
+            # the problem. Nothing was deleted.
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Key {key_id} matches {len(exc.matches)} stored records "
+                    f"({', '.join(exc.matches)}). Nothing was revoked — resolve "
+                    "the ambiguity in Redis before retrying."
+                ),
+            ) from exc
         if not success:
             raise HTTPException(status_code=404, detail=f"Key {key_id} not found")
         return RevokeKeyResponse(status="revoked", key_id=key_id)
+
+    @router.patch("/keys/{key_id}")
+    async def rename_api_key_device(
+        key_id: str,
+        req: RenameDeviceRequest,
+        identity: dict = Depends(require_scope("admin")),
+    ) -> dict[str, str]:
+        """Rename an enrolled device without rotating its credential."""
+        label = req.label.strip()
+        if not label:
+            raise HTTPException(status_code=400, detail="Device label cannot be blank")
+        try:
+            success = await rename_device(key_id, label)
+        except AmbiguousKeyIdError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if not success:
+            raise HTTPException(status_code=404, detail=f"Key {key_id} not found")
+        return {
+            "status": "renamed",
+            "credential_id": key_id,
+            "label": label,
+        }
 
     @router.get("/scopes")
     async def list_scopes(

@@ -21,6 +21,15 @@ from firekeep_client.hooks import _git, _mcp, never_raise
 
 _HOOK = "prompt"
 
+# The pending-task suppression digest is keyed by agent with no session
+# component, so without an expiry an UNCHANGED task set stays suppressed across
+# every future session on the machine — the customer silently stops being told
+# about their own tasks, and only a change to the set can break the silence.
+# Twelve hours matches the session-stash and personal-mode backstops: long enough
+# that a working session is never re-nagged, short enough that the suppression
+# cannot outlive the session that earned it.
+_TASKS_DIGEST_TTL_SECONDS = 12 * 3600
+
 
 def _dedup_lines(items: list[str]) -> list[str]:
     """Collapse consecutive-or-not duplicate lines into 'line (xN)'."""
@@ -48,8 +57,7 @@ def _task_line(task: dict) -> str:
 @never_raise({})
 def run(payload: dict) -> dict:
     cfg = resolver.load_config()
-    profile = resolver.active_profile(cfg)
-    agent = resolver.agent_id(cfg, profile)
+    agent = resolver.agent_id(cfg)
 
     inbox = []
 
@@ -67,9 +75,10 @@ def run(payload: dict) -> dict:
             digest = hashlib.sha256(
                 "|".join(sorted(str(t.get("id", t)) for t in rows)).encode()
             ).hexdigest()[:16]
-            digest_key = f"tasks_digest_{agent}@{profile}"
+            digest_key = f"tasks_digest_{agent}"
             if state.read_scratch(digest_key) != digest:
-                state.write_scratch(digest_key, digest)
+                state.write_scratch(digest_key, digest,
+                                    ttl_seconds=_TASKS_DIGEST_TTL_SECONDS)
                 lines = _dedup_lines([_task_line(t) for t in rows])
                 inbox.append(f"pending tasks ({len(rows)}):\n" + "\n".join(lines))
     except Exception as e:  # noqa: BLE001
@@ -82,7 +91,7 @@ def run(payload: dict) -> dict:
         msgs = _mcp.call_tool("relay", "relay_get_messages",
                               {"channel": "tasks", "limit": 5}, cfg=cfg)
         rows = msgs.get("messages", []) if isinstance(msgs, dict) else []
-        seen_key = f"channel_seen_{agent}@{profile}"
+        seen_key = f"channel_seen_{agent}"
         raw_seen = state.read_scratch(seen_key)
         try:
             last_seen = float(raw_seen) if raw_seen else 0.0
@@ -137,7 +146,7 @@ def run(payload: dict) -> dict:
 
     # 5. Every 5th prompt: workspace snapshot -> Bridge scratch.
     try:
-        key = f"poll_count_{agent}@{profile}"
+        key = f"poll_count_{agent}"
         raw = state.read_scratch(key)
         count = (int(raw) if raw and raw.isdigit() else 0) + 1
         state.write_scratch(key, str(count))

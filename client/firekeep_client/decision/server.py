@@ -620,6 +620,10 @@ async def _run_decision_board(
         )
         if isinstance(result, dict):
             spec = result
+    except resolver.ConfigMigrationConflict:
+        # Ambiguous legacy connections are an operator decision, not a reason
+        # to quietly synthesize against no server.
+        raise
     except Exception:
         # ANY failure (config error, transport error, bad response) -> degraded.
         spec = None
@@ -674,7 +678,18 @@ async def _run_decision_board_check(board_id: str):
 # --------------------------------------------------------------------------- #
 
 
-def main() -> None:
+def main() -> int:
+    # Resolve once before the MCP handshake so an ambiguous legacy config fails
+    # this stdio server loudly instead of appearing as an ordinary degraded board.
+    if not resolver.is_bypassed():
+        try:
+            resolver.load_config()
+        except resolver.ConfigMigrationConflict as exc:
+            print(f"firekeep-decision: config migration blocked — {exc}", file=sys.stderr)
+            return 3
+        except resolver.ConfigError:
+            pass  # the board's established local-degraded path handles this
+
     # Imported lazily so the tool cores stay importable without mcp installed
     # and so the FastMCP server only spins up when actually run as a server.
     from mcp.server.fastmcp import FastMCP
@@ -736,6 +751,7 @@ def main() -> None:
         return await _run_decision_board_check(board_id)
 
     mcp.run()
+    return 0
 
 
 if __name__ == "__main__":

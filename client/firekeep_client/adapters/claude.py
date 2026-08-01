@@ -11,29 +11,32 @@ from pathlib import Path
 from firekeep_client.adapters.base import (
     FIREKEEP_INSTRUCTIONS,
     LEGACY_ENV_KEYS,
+    LEGACY_INSTRUCTION_MARKERS,
     LEGACY_MCP_KEYS,
     FIREKEEP_ENV_KEYS,
     FIREKEEP_MCP_KEYS,
     Adapter,
     console_script_path,
     drop_owned,
+    find_legacy_block_bounds,
     hook_command,
     merge_owned,
     prune_hook_groups,
     read_json,
-    read_pin,
     shim_servers,
     strip_marked_block,
+    strip_span,
     upsert_hook_group,
     upsert_marked_block,
     write_json,
+    write_text_if_changed,
 )
 
 # Stable marker embedded in the rendered /personal command file so unrender only ever
 # deletes OUR file, never a hand-written ~/.claude/commands/personal.md a user owns.
 COMMAND_MARKER = "firekeep-owned: personal-mode toggle"
 
-# (Claude event, hook core, matcher | None, timeout) — 6 lifecycle hooks -> hook-core entry points.
+# (Claude event, hook core, matcher | None, timeout) — 7 lifecycle hooks -> hook-core entry points.
 #
 # SessionEnd is what makes the presence lifecycle correct: Stop fires at EVERY
 # assistant turn end, so the deregister that used to ride it deleted presence
@@ -45,6 +48,7 @@ CLAUDE_HOOKS = (
     ("Stop", "stop", None, 5),
     ("SessionEnd", "session_end", None, 5),
     ("UserPromptSubmit", "prompt", None, 8),
+    ("PreCompact", "precompact", None, 15),
     ("PreToolUse", "pre_tool", "^(Edit|Write)$", 5),
     ("PostToolUse", "post_tool", "^(Edit|Write|MultiEdit|Bash)$", 10),
 )
@@ -87,9 +91,7 @@ class ClaudeAdapter(Adapter):
             "briefing, memory, presence, or logging — and you should not call firekeep_* "
             "tools. It auto-clears when the session ends.\n"
         )
-        path = self._command_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(body, encoding="utf-8")
+        write_text_if_changed(self._command_path(), body)
 
     def _unrender_command(self) -> None:
         path = self._command_path()
@@ -102,6 +104,53 @@ class ClaudeAdapter(Adapter):
     def _instructions_path(self) -> Path:
         return Path.home() / ".claude" / "CLAUDE.md"
 
+    def _migrate_legacy_instructions(self) -> None:
+        """Archive the PREDECESSOR's own instruction block out of the user's global
+        ~/.claude/CLAUDE.md -- never delete: this file is user-owned prose that we
+        only ever partially own (one marked region), so removing content out of it
+        without a backup is a straight data-loss bug, not a cleanup.
+
+        Only the `nexus:instructions` pair (LEGACY_INSTRUCTION_MARKERS) is touched.
+        The sibling `Agent Guidelines` block -- a distinct marker pair the
+        predecessor also wrote to this file -- is 0.03-similar to
+        FIREKEEP_INSTRUCTIONS -- not a duplicate, it is content the user still has
+        -- and is deliberately left alone; see the tuple's comment in base.py.
+
+        Idempotent by construction: once the block is stripped from the live file,
+        a later render finds no marker here and this is a no-op (no re-archive, no
+        rewrite) -- what keeps `firekeep update`'s mid-session re-render byte-stable.
+        """
+        path = self._instructions_path()
+        try:
+            if not path.exists():
+                return
+            original = path.read_text(encoding="utf-8")
+            stripped = original
+            found = False
+            for begin_prefix, end_marker in LEGACY_INSTRUCTION_MARKERS:
+                bounds = find_legacy_block_bounds(stripped, begin_prefix, end_marker)
+                if bounds is None:
+                    continue
+                found = True
+                stripped = strip_span(stripped, *bounds)
+            if not found:
+                return
+            # Archive the file AS IT WAS (with the legacy block) before rewriting it --
+            # this is what preserves the block's content, since we are removing it from
+            # the live file, not just formatting it. Never overwrite a .bak that is
+            # already there -- it may be the user's own file, or another tool's, and
+            # this module's whole premise is archive-never-delete; the same collision
+            # class made kiro.py drop its own .bak path entirely (see the comment on
+            # the removed loop above KiroAdapter). Migration still proceeds -- the
+            # block is stripped from the live file either way -- we just skip writing
+            # a second archive over an existing one.
+            bak_path = path.with_name(path.name + ".bak")
+            if not bak_path.exists():
+                write_text_if_changed(bak_path, original)
+            path.write_text(stripped, encoding="utf-8")
+        except OSError:
+            pass
+
     def _render_instructions(self) -> None:
         """Upsert the firekeep-owned instruction block (decision-board trigger) into the
         user's global ~/.claude/CLAUDE.md. Only the marker-delimited block is ever
@@ -110,9 +159,7 @@ class ClaudeAdapter(Adapter):
         path = self._instructions_path()
         try:
             existing = path.read_text(encoding="utf-8") if path.exists() else ""
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(upsert_marked_block(existing, FIREKEEP_INSTRUCTIONS),
-                            encoding="utf-8")
+            write_text_if_changed(path, upsert_marked_block(existing, FIREKEEP_INSTRUCTIONS))
         except OSError:
             pass
 
@@ -131,9 +178,6 @@ class ClaudeAdapter(Adapter):
     def render(self, *, venv_bin: Path) -> None:
         claude_json, settings_json = self._paths()
 
-        pin = read_pin(self.name)
-        pin_env = {"env": {"FIREKEEP_PROFILE": pin}} if pin else {}
-
         config = read_json(claude_json)
         servers = config.setdefault("mcpServers", {})
         # Migration: drop the PREDECESSOR kit's server entries. Firekeep registers its
@@ -141,7 +185,7 @@ class ClaudeAdapter(Adapter):
         # that no longer exists and failing to connect on every session start.
         drop_owned(servers, LEGACY_MCP_KEYS)
         entries = {
-            name: {"type": "stdio", "command": cmd, "args": args, **pin_env}
+            name: {"type": "stdio", "command": cmd, "args": args}
             for name, (cmd, args) in shim_servers(venv_bin).items()
         }
         merge_owned(servers, entries)
@@ -161,8 +205,6 @@ class ClaudeAdapter(Adapter):
             # returns 1 for an agent-gateway block/rethink and 2 for a lease conflict. Without
             # this remap, a gateway 'block' (rc=1) would silently fall through as non-blocking.
             extra_args = "--block-exit 2" if core == "pre_tool" else ""
-            if pin:
-                extra_args = f"{extra_args} --profile {pin}".strip()
             group = {"hooks": [{"type": "command",
                                 "command": hook_command(venv_bin, core, extra_args=extra_args),
                                 "timeout": timeout}]}
@@ -178,6 +220,10 @@ class ClaudeAdapter(Adapter):
         # never reached ~/.claude/CLAUDE.md and never fired.)
         try:
             self._render_command(venv_bin)  # /personal slash command
+        except Exception:  # noqa: BLE001 — best-effort; must not skip the blocks below
+            pass
+        try:
+            self._migrate_legacy_instructions()  # archive the predecessor's own block
         except Exception:  # noqa: BLE001 — best-effort; must not skip the block below
             pass
         try:

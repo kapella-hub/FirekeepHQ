@@ -20,6 +20,7 @@ import sys
 
 from firekeep_client.adapters import get_adapter
 from firekeep_client.adapters.base import FIREKEEP_MCP_KEYS, shim_servers
+from firekeep_client.gateway import LOCAL_SERVERS
 
 from tests.test_import_boundary import CLIENT_PKG, find_violations
 
@@ -36,20 +37,16 @@ def _exe(path):
 # --------------------------------------------------------------------------- #
 
 
-def test_firekeep_decision_in_mcp_keys():
-    assert "firekeep-decision" in FIREKEEP_MCP_KEYS
+def test_decision_is_behind_the_one_gateway_key():
+    assert FIREKEEP_MCP_KEYS == ("firekeep",)
+    assert "decision" in LOCAL_SERVERS
 
 
-def test_shim_servers_includes_decision_and_symdex_always_on(tmp_path):
-    """Both stdio-local servers are unconditional now: firekeep-decision AND
-    firekeep-symdex are always registered (symdex is no longer opt-in)."""
+def test_adapters_register_one_gateway_for_decision_and_symdex(tmp_path):
     venv_bin = tmp_path / "Scripts"
     servers = shim_servers(venv_bin)
-    assert "firekeep-decision" in servers
-    assert "firekeep-symdex" in servers  # always-on alongside firekeep-decision
-    cmd, args = servers["firekeep-decision"]
-    assert cmd == _exe(venv_bin / "firekeep-decision")  # its OWN console-script path
-    assert args == []
+    assert LOCAL_SERVERS == ("symdex", "decision")
+    assert servers == {"firekeep": (_exe(venv_bin / "firekeep"), ["gateway"])}
 
 
 # --------------------------------------------------------------------------- #
@@ -57,7 +54,7 @@ def test_shim_servers_includes_decision_and_symdex_always_on(tmp_path):
 # --------------------------------------------------------------------------- #
 
 
-def test_claude_adapter_round_trip_removes_firekeep_decision(tmp_path, monkeypatch):
+def test_claude_adapter_round_trip_removes_firekeep_gateway(tmp_path, monkeypatch):
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("HOME", str(tmp_path))
     venv_bin = tmp_path / "venv" / "Scripts"
@@ -65,12 +62,12 @@ def test_claude_adapter_round_trip_removes_firekeep_decision(tmp_path, monkeypat
 
     adapter.render(venv_bin=venv_bin)
     cfg = json.loads((tmp_path / ".claude.json").read_text(encoding="utf-8"))
-    assert cfg["mcpServers"]["firekeep-decision"] == {
-        "type": "stdio", "command": _exe(venv_bin / "firekeep-decision"), "args": []}
+    assert cfg["mcpServers"]["firekeep"] == {
+        "type": "stdio", "command": _exe(venv_bin / "firekeep"), "args": ["gateway"]}
 
     adapter.unrender()
     cfg2 = json.loads((tmp_path / ".claude.json").read_text(encoding="utf-8"))
-    assert "firekeep-decision" not in cfg2["mcpServers"]
+    assert "firekeep" not in cfg2["mcpServers"]
 
 
 # --------------------------------------------------------------------------- #

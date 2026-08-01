@@ -171,7 +171,7 @@ def _connection_error(exc: httpx.RequestError) -> str:
     )
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 async def memory_recall(
     task: str,
     tags: list[str] | None = None,
@@ -910,7 +910,7 @@ async def vault_retrieve(key: str) -> str:
         return _connection_error(exc)
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 async def vault_list(category: str | None = None) -> str:
     """List vault secrets (metadata only — names, categories, tags; never values).
 
@@ -972,9 +972,9 @@ async def corpus_ingest(
     source_name: str = "Untitled",
     source_type: str = "text",
 ) -> str:
-    """Ingest a business document (wiki, Jira, API docs, SOP) into the knowledge graph.
+    """Ingest a business document (wiki, Jira, API docs, SOP) into the team corpus.
 
-    Chunks + LLM-extracted entities. Chunks are searchable via memory_recall.
+    Chunked and embedded; every chunk is searchable via memory_recall.
     For your own action/outcome notes use memory_learn instead — not for code
     or git history.
 
@@ -1013,7 +1013,7 @@ async def corpus_ingest(
 
 @mcp.tool()
 async def corpus_sources() -> str:
-    """List ingested business documents with entity/chunk counts."""
+    """List ingested business documents with their chunk counts."""
     try:
         client = await _get_client()
         resp = await client.get("/corpus/sources")
@@ -1040,7 +1040,7 @@ async def corpus_sources() -> str:
 
 @mcp.tool()
 async def corpus_delete(source_name: str) -> str:
-    """Delete an ingested source (chunks, entities, relationships). Irreversible.
+    """Delete an ingested source and every chunk of it. Irreversible.
 
     Args:
         source_name: Source name as shown by corpus_sources.
@@ -1075,7 +1075,7 @@ async def knowledge_ingest(
     """Ingest a document through the docs->skills front door: corpus-ingests it
     synchronously (immediately searchable via memory_recall) and returns right
     away (202), while classification + per-procedure skill drafting run in the
-    background. Track progress via knowledge_sources / the dashboard Knowledge tab.
+    background. Track progress on the dashboard Knowledge tab.
 
     Distinct from corpus_ingest — use this when you want procedural content
     auto-drafted into reviewable skills; use corpus_ingest for plain
@@ -1100,7 +1100,7 @@ async def knowledge_ingest(
         lines = [
             f"Ingested **{data['corpus_source']}** to the corpus (searchable now).",
             f"- Status: {data.get('status', 'queued')} — classification + skill drafting are running in the background.",
-            "- Check `knowledge_sources` (or the dashboard Knowledge tab) for progress.",
+            "- Check the dashboard Knowledge tab (or GET /knowledge/sources) for progress.",
         ]
         if data.get("note"):
             lines.append(f"- Note: {data['note']}")
@@ -1137,7 +1137,7 @@ async def knowledge_ingest_url(
         lines = [
             f"Crawl queued for **{data.get('url', url)}**.",
             f"- Status: {data.get('status', 'queued')} — crawling + ingest are running in the background.",
-            "- Check `knowledge_sources` (or the dashboard Knowledge tab) for progress.",
+            "- Check the dashboard Knowledge tab (or GET /knowledge/sources) for progress.",
         ]
         if data.get("note"):
             lines.append(f"- Note: {data['note']}")
@@ -1148,7 +1148,7 @@ async def knowledge_ingest_url(
         return _connection_error(exc)
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 async def skill_recall(
     task: str,
     project: str | None = None,
@@ -1170,8 +1170,12 @@ async def skill_recall(
         params: dict = {"status": "active", "limit": top_k}
         if project:
             params["project"] = project
-        keywords = " ".join(task.split()[:5])
-        params["q"] = keywords
+        # Send the FULL task. The old five-word truncation existed only to make a
+        # literal substring match against a trigger plausible — and it still almost
+        # never matched. `q` is now a semantic query, where more of the task is
+        # strictly more signal; `_embed` already caps input at EMBED_MAX_CHARS, so a
+        # long task cannot 400 the embeddings endpoint.
+        params["q"] = task
         resp = await client.get("/skills", params=params)
         resp.raise_for_status()
         skills = resp.json()
@@ -1248,7 +1252,7 @@ async def skill_create(
         return _connection_error(exc)
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 async def skill_list(
     status: str = "active",
     project: str | None = None,

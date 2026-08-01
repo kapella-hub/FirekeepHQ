@@ -381,8 +381,15 @@ def index_folder(
         if warnings:
             result["warnings"] = warnings
 
-        if len(source_files) >= 500:
-            result["note"] = "Folder has many files; indexed first 500"
+        # Threshold AND message must both come from the real cap. A hardcoded 500 here
+        # (while discover_local_files caps at DEFAULT_MAX_FILES=1500, env-overridable
+        # via FIREKEEP_SYMDEX_MAX_FILES) reported truncation on any repo over 500 files
+        # that had NOT been truncated — telling the reader their index was silently
+        # incomplete when it was whole. Mirrors index_repo.py's correct version.
+        if len(source_files) >= DEFAULT_MAX_FILES:
+            result["note"] = (
+                f"Folder has many files; indexed first {DEFAULT_MAX_FILES}"
+            )
 
         return result
 

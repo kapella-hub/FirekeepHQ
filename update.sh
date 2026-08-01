@@ -11,6 +11,50 @@ if [ ! -f .env ]; then
     exit 1
 fi
 
+# Published installs are source-free and therefore have nothing for `git pull`
+# to update.  Require an explicit release tag, take the same pre-update volume
+# backup as the source path, then let the verified client replace the deployment
+# bundle and run its installer in pull mode.  The old bundle is retained beside
+# the active directory for rollback.
+if [ -f SERVER_BUNDLE.json ]; then
+    TO_VERSION=""
+    SKIP_RELEASE_BACKUP=0
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --to)
+                [ "$#" -ge 2 ] || { echo "ERROR: --to requires vMAJOR.MINOR.PATCH" >&2; exit 2; }
+                TO_VERSION="$2"
+                shift 2
+                ;;
+            --no-backup)
+                SKIP_RELEASE_BACKUP=1
+                shift
+                ;;
+            *)
+                echo "ERROR: unknown release-bundle update argument: $1" >&2
+                echo "Usage: bash update.sh --to vMAJOR.MINOR.PATCH [--no-backup]" >&2
+                exit 2
+                ;;
+        esac
+    done
+    [ -n "$TO_VERSION" ] || {
+        echo "ERROR: a published install needs an explicit target version." >&2
+        echo "       Usage: bash update.sh --to vMAJOR.MINOR.PATCH" >&2
+        exit 2
+    }
+    command -v firekeep >/dev/null 2>&1 || {
+        echo "ERROR: the Firekeep client is not on PATH; reinstall the client first." >&2
+        exit 2
+    }
+    if [ "$SKIP_RELEASE_BACKUP" -eq 0 ]; then
+        echo "Backing up volumes before the release update..."
+        bash deploy/backup.sh
+    else
+        echo "Skipping backup (--no-backup)."
+    fi
+    exec firekeep init --server-dir "$(pwd)" --version "$TO_VERSION"
+fi
+
 # --- Office-front safety guard ---
 # Bare `docker compose` only loads docker-compose.yml unless COMPOSE_FILE
 # is set (shell env or .env — docker compose v2 reads COMPOSE_FILE from
@@ -154,8 +198,8 @@ if auth_enforced .env; then
         echo "#"
         echo "# What breaks until you give it a key:"
         echo "#   - any script, agent or client calling these APIs directly."
-        echo "#     Mint one per teammate:"
-        echo "#       deploy/firekeep-admin keys create --agent <name>"
+        echo "#     Enroll each client device from Dashboard -> Devices, or:"
+        echo "#       deploy/firekeep-admin invite --agent <device-name> --json"
         echo "#"
         echo "# To stay unauthenticated (NOT recommended — this is the"
         echo "# configuration that leaked 12 secrets), add to .env:"

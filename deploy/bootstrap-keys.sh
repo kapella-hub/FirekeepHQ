@@ -24,10 +24,12 @@ set -euo pipefail
 #   4. Admin key — the owner's key. Scopes: ["*"]. Plaintext printed ONCE,
 #      never written to disk.
 #
-# Redis layout replicates auth/middleware.py create_key() EXACTLY:
-#   auth:key:{sha256hex}  hash: agent_id, scopes (JSON array string),
-#                               created_at (ISO-8601 UTC), key_id (hash[:16])
-#   auth:key_index        zset: member = hash[:16], score = unix timestamp
+# Redis layout replicates auth/keys.py create_key() EXACTLY:
+#   auth:key:{sha256hex}  hash: workspace_id, member_id, device_id,
+#                               scopes (JSON array string), created_at,
+#                               key_id, credential_id
+#   auth:cred:{credential_id} -> sha256hex exact-resolution mapping
+#   auth:key_index        zset: member = credential_id, score = unix timestamp
 # (no expires_at — bootstrap keys do not expire)
 #
 # Idempotency:
@@ -63,35 +65,84 @@ env_set() {
     fi
 }
 
+ensure_deployment_id() {  # $1=env var  $2=prefix
+    local var="$1" prefix="$2" value
+    value="$(env_get "$var")"
+    if [ -z "$value" ]; then
+        value="${prefix}-$(openssl rand -hex 16)"
+        env_set "$var" "$value"
+        echo "[GENERATED] $var" >&2
+    elif [[ ! "$value" =~ ^[A-Za-z0-9._-]+$ ]] || [ "${#value}" -gt 128 ]; then
+        echo "ERROR: $var must contain only letters, digits, dot, underscore or hyphen (max 128 chars)" >&2
+        exit 1
+    fi
+    printf '%s' "$value"
+}
+
 key_registered() { [ "$("${REDIS[@]}" EXISTS "auth:key:$1")" = "1" ]; }
 
-register_hash() {  # $1=hash  $2=agent_id  $3=scopes-json
-    local hash="$1"
+register_hash() {  # $1=hash  $2=device_id  $3=scopes-json
+    local hash="$1" credential_id
+    credential_id="$(openssl rand -hex 8)"
     "${REDIS[@]}" HSET "auth:key:${hash}" \
-        agent_id "$2" \
+        workspace_id "$WORKSPACE_ID" \
+        member_id "$OWNER_MEMBER_ID" \
+        device_id "$2" \
+        credential_id "$credential_id" \
         scopes "$3" \
         created_at "$(now_iso)" \
-        key_id "${hash:0:16}" > /dev/null
-    "${REDIS[@]}" ZADD auth:key_index "$(date -u +%s)" "${hash:0:16}" > /dev/null
+        key_id "$credential_id" > /dev/null
+    "${REDIS[@]}" SET "auth:cred:${credential_id}" "$hash" > /dev/null
+    "${REDIS[@]}" ZADD auth:key_index "$(date -u +%s)" "$credential_id" > /dev/null
+}
+
+backfill_credential_mappings() {
+    local credential_id mapped candidate stored_id count match hash ttl
+    while IFS= read -r credential_id; do
+        [ -n "$credential_id" ] || continue
+        mapped="$("${REDIS[@]}" GET "auth:cred:${credential_id}")"
+        [ -z "$mapped" ] || continue
+        count=0; match=""
+        while IFS= read -r candidate; do
+            [ -n "$candidate" ] || continue
+            stored_id="$("${REDIS[@]}" HGET "$candidate" credential_id)"
+            [ -n "$stored_id" ] || stored_id="$("${REDIS[@]}" HGET "$candidate" key_id)"
+            if [ "$stored_id" = "$credential_id" ]; then
+                match="$candidate"
+                count=$((count + 1))
+            fi
+        done < <("${REDIS[@]}" --scan --pattern "auth:key:${credential_id}*")
+        if [ "$count" -eq 1 ]; then
+            hash="${match#auth:key:}"
+            "${REDIS[@]}" SET "auth:cred:${credential_id}" "$hash" > /dev/null
+            ttl="$("${REDIS[@]}" TTL "$match")"
+            [ "$ttl" -gt 0 ] && "${REDIS[@]}" EXPIRE "auth:cred:${credential_id}" "$ttl" > /dev/null
+            "${REDIS[@]}" HSET "$match" credential_id "$credential_id" \
+                device_id "$("${REDIS[@]}" HGET "$match" agent_id)" > /dev/null
+            echo "[BACKFILLED] auth:cred:${credential_id}"
+        elif [ "$count" -gt 1 ]; then
+            echo "[REFUSED] auth:cred:${credential_id}: ${count} legacy records are ambiguous" >&2
+        fi
+    done < <("${REDIS[@]}" ZRANGE auth:key_index 0 -1)
 }
 
 MINTED=0
 
-ensure_env_key() {  # $1=env var  $2=agent_id  $3=scopes-json
-    local var="$1" agent_id="$2" scopes="$3" key hash
+ensure_env_key() {  # $1=env var  $2=device_id  $3=scopes-json
+    local var="$1" device_id="$2" scopes="$3" key hash
     key="$(env_get "$var")"
     if [ -z "$key" ]; then
         key="$(mint_key)"
         env_set "$var" "$key"
-        register_hash "$(sha256 "$key")" "$agent_id" "$scopes"
+        register_hash "$(sha256 "$key")" "$device_id" "$scopes"
         MINTED=$((MINTED + 1))
-        echo "[MINTED] $var  (agent_id=$agent_id scopes=$scopes)"
+        echo "[MINTED] $var  (device_id=$device_id scopes=$scopes)"
     else
         hash="$(sha256 "$key")"
         if key_registered "$hash"; then
             echo "[OK] $var already provisioned"
         else
-            register_hash "$hash" "$agent_id" "$scopes"
+            register_hash "$hash" "$device_id" "$scopes"
             echo "[RE-REGISTERED] $var hash (Redis had lost it; plaintext unchanged)"
         fi
     fi
@@ -104,13 +155,15 @@ if ! command -v openssl > /dev/null; then
     exit 1
 fi
 
+touch "$ENV_FILE"
+WORKSPACE_ID="$(ensure_deployment_id FIREKEEP_WORKSPACE_ID workspace)"
+OWNER_MEMBER_ID="$(ensure_deployment_id FIREKEEP_OWNER_MEMBER_ID member)"
+
 if ! "${REDIS[@]}" PING 2>/dev/null | grep -q PONG; then
     echo "ERROR: cannot reach Redis DB 7 via: ${REDIS[*]}" >&2
     echo "       (is the stack up? try: docker compose up -d redis)" >&2
     exit 1
 fi
-
-touch "$ENV_FILE"
 
 # --- 1+2: env-backed service keys -------------------------------------------
 
@@ -121,7 +174,7 @@ ensure_env_key RELAY_INTERNAL_API_KEY firekeep-relay '["session:write"]'
 # --- 4: owner admin key (printed once, never stored) -------------------------
 #
 # NOTE for anyone adding a key above: mint it through ensure_env_key, never a
-# hand-rolled echo. ensure_env_key prints only the VAR NAME, agent_id and
+# hand-rolled echo. ensure_env_key prints only the VAR NAME, device_id and
 # scopes — never the plaintext — which is what makes the admin key below the
 # only `nxs_...` literal in this script's output. install.sh relies on exactly
 # that to re-surface the admin key in its closing summary (it greps its
@@ -132,7 +185,8 @@ ensure_env_key RELAY_INTERNAL_API_KEY firekeep-relay '["session:write"]'
 ADMIN_MARKER="auth:bootstrap:admin_hash"
 ADMIN_HASH="$("${REDIS[@]}" GET "$ADMIN_MARKER")"
 if [ -n "$ADMIN_HASH" ] && key_registered "$ADMIN_HASH"; then
-    echo "[OK] admin key already provisioned (key_id ${ADMIN_HASH:0:16})"
+    ADMIN_CREDENTIAL_ID="$("${REDIS[@]}" HGET "auth:key:${ADMIN_HASH}" credential_id)"
+    echo "[OK] admin key already provisioned (credential_id ${ADMIN_CREDENTIAL_ID})"
 else
     ADMIN_KEY="$(mint_key)"
     ADMIN_HASH="$(sha256 "$ADMIN_KEY")"
@@ -149,6 +203,11 @@ else
     echo "  Use it with deploy/firekeep-admin to issue teammate keys."
     echo "============================================================"
 fi
+
+# Upgrade path for credentials created before independent ID mappings existed.
+# Ambiguity is refused rather than guessed; every new record above already has
+# the mapping, so idempotent runs add nothing.
+backfill_credential_mappings
 
 echo ""
 echo "bootstrap-keys: done ($MINTED key(s) minted)"
