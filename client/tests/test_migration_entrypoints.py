@@ -5,8 +5,7 @@ import sys
 
 import pytest
 
-from firekeep_client import cli, connect as connect_module, resolver, shim, sidecar
-from firekeep_client.decision import server as decision_server
+from firekeep_client import cli, connect as connect_module, resolver, sidecar
 from firekeep_client.hooks import __main__ as dispatcher
 
 
@@ -53,6 +52,10 @@ def test_cli_surfaces_migration_conflict_as_exit_3(tmp_path, monkeypatch, capsys
 
 
 def test_shim_surfaces_migration_conflict_as_startup_failure(tmp_path, monkeypatch, capsys):
+    for dependency in ("anyio", "httpx", "mcp"):
+        pytest.importorskip(dependency)
+    from firekeep_client import shim
+
     path = _write_conflict(tmp_path, monkeypatch)
 
     assert shim.run("cortex") == 3
@@ -111,6 +114,9 @@ def test_connect_does_not_overwrite_a_malformed_existing_config(
 
 
 def test_decision_server_refuses_conflict_before_mcp_start(tmp_path, monkeypatch, capsys):
+    pytest.importorskip("anyio")
+    from firekeep_client.decision import server as decision_server
+
     path = _write_conflict(tmp_path, monkeypatch)
 
     assert decision_server.main() == 3
@@ -121,6 +127,9 @@ def test_decision_server_refuses_conflict_before_mcp_start(tmp_path, monkeypatch
 
 
 def test_decision_tool_does_not_degrade_a_migration_conflict(monkeypatch):
+    pytest.importorskip("anyio")
+    from firekeep_client.decision import server as decision_server
+
     message = "ambiguous config"
     monkeypatch.setattr(decision_server, "_is_headless", lambda: False)
 
