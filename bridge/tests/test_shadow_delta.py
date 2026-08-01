@@ -231,6 +231,91 @@ class TestShadowDelta:
             out = await ctx_get_shadow(agent_id="a")
         assert out["shadow"] == assemble_shadow(_session_data())
 
+    # --- M1: a malformed CONTAINER is a doubtful path like any other ---------
+    #
+    # residency.py's element-level guards (`not isinstance(e, dict)`) protect against a
+    # bad ENTRY, not a bad CONTAINER. A list-shaped `files` raises on `.items()`; a
+    # dict-shaped `decisions` iterates its KEYS, silently discarding every value while
+    # reporting 0 omitted — a delta that LOOKS correct, which is worse than a crash.
+    # Neither is reachable from today's writers (get_session_data builds both by
+    # construction), so this is a floor, not a live fix. It is worth having because
+    # ctx_get_shadow is the post-compaction lifeline: an agent calls it precisely when
+    # it has lost its working state, and a malformed session turning that into an
+    # exception is strictly worse than any token cost.
+
+    @staticmethod
+    def _cursor_for(data, *, sid="sess-1", epoch="",
+                    hw="2026-07-30T10:00:00.000001+00:00"):
+        """A cursor this session would ACCEPT — same sid, same epoch, non-empty
+        high-water. Without all three, filter_since short-circuits to a full restore
+        before it ever touches a container, and the test would pass vacuously."""
+        return residency.encode_cursor(sid, epoch, hw, residency.plan_sha_of(data))
+
+    @staticmethod
+    def _mgr_for(data, epoch=""):
+        mgr = AsyncMock()
+        mgr.get_active_session_id = AsyncMock(return_value="sess-1")
+        mgr.get_session_data = AsyncMock(return_value=data)
+        mgr.get_shadow_epoch = AsyncMock(return_value=epoch)
+        return mgr
+
+    @pytest.mark.asyncio
+    async def test_a_list_shaped_files_container_yields_a_full_restore(self):
+        """`files` as a list raises on `.items()` inside filter_since — and the
+        unfiltered document is the correct answer, not a traceback."""
+        from app.mcp_server import ctx_get_shadow
+        from app.shadow import assemble_shadow
+        data = {"goal": "g", "status": "active", "plan": "- [ ] one",
+                "decisions": [{"timestamp": "2026-07-30T11:00:00.000001+00:00",
+                               "content": "chose A"}],
+                "progress": [], "files": [{"path": "a.py"}], "scratch": {},
+                "proactive_memories": []}
+        with patch("app.mcp_server._get_manager", return_value=self._mgr_for(data)):
+            out = await ctx_get_shadow(agent_id="a", since=self._cursor_for(data))
+        assert out["delta"] is False
+        # delta=False alone does not prove the DOCUMENT is complete — assert it is
+        # byte-identical to the reference full restore.
+        assert out["shadow"] == assemble_shadow(data)
+        # high_water_of walks the same broken container, so no cursor can be minted
+        # either — and a response carrying none cannot seed a later delta (the C2
+        # principle).
+        assert "shadow_cursor" not in out
+
+    @pytest.mark.asyncio
+    async def test_a_dict_shaped_decisions_container_yields_a_full_restore(self):
+        """The quiet half: a dict-shaped `decisions` raises NOTHING. filter_since
+        iterates its keys, keeps the bare strings, and reports 0 omitted — so a
+        try/except alone can never catch this. Only refusing to filter a container
+        it does not understand turns it back into the documented full restore."""
+        from app.mcp_server import ctx_get_shadow
+        from app.shadow import assemble_shadow
+        data = {"goal": "g", "status": "active", "plan": "- [ ] one",
+                "decisions": {"d1": {"timestamp": "2026-07-30T11:00:00.000001+00:00",
+                                     "content": "chose A"}},
+                "progress": [], "files": {}, "scratch": {}, "proactive_memories": []}
+        with patch("app.mcp_server._get_manager", return_value=self._mgr_for(data)):
+            out = await ctx_get_shadow(agent_id="a", since=self._cursor_for(data))
+        assert out["delta"] is False
+        assert out["shadow"] == assemble_shadow(data)
+
+    @pytest.mark.asyncio
+    async def test_a_render_failure_still_returns_the_full_document(self):
+        """The unconditional belt. The two cases above are shapes we ENUMERATED; this
+        one proves the guarantee holds for a shape nobody thought of, by making the
+        delta render raise outright. Mirrors C2: full document, delta=False, and no
+        cursor — a cursor handed back could seed a later delta on a session whose
+        state was never filterable."""
+        from app.mcp_server import ctx_get_shadow
+        from app.shadow import assemble_shadow
+        data = _session_data()
+        boom = RuntimeError("unenumerated shape")
+        with patch("app.mcp_server._get_manager", return_value=self._mgr_for(data)), \
+                patch("app.residency.filter_since", side_effect=boom):
+            out = await ctx_get_shadow(agent_id="a", since=self._cursor_for(data))
+        assert out["delta"] is False
+        assert out["shadow"] == assemble_shadow(data)
+        assert "shadow_cursor" not in out
+
     @pytest.mark.asyncio
     async def test_a_failed_epoch_read_mints_no_cursor(self):
         """A response carrying a cursor could seed a later delta on a session whose

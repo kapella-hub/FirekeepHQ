@@ -378,12 +378,38 @@ async def ctx_get_shadow(session_id: str | None = None, agent_id: str = "default
             "delta": False,
         }
 
-    rendered, omitted = residency.filter_since(
-        data, since, session_id=session_id, epoch=epoch)
-    # C1: the omission report goes INTO the rendered document, not just beside it.
-    # Without this, an omitted section renders as '*No decisions recorded*' — an
-    # affirmative denial that the agent's own work exists.
-    shadow = assemble_shadow(rendered, omitted=omitted)
+    try:
+        rendered, omitted = residency.filter_since(
+            data, since, session_id=session_id, epoch=epoch)
+        # C1: the omission report goes INTO the rendered document, not just beside it.
+        # Without this, an omitted section renders as '*No decisions recorded*' — an
+        # affirmative denial that the agent's own work exists.
+        shadow = assemble_shadow(rendered, omitted=omitted)
+    except Exception as exc:
+        # M1: the filter-and-render pair is guarded for exactly the reason the cursor
+        # mint below already is. This is the post-compaction lifeline — an agent calls
+        # it precisely when it has lost its working state — so a malformed session
+        # turning it into an exception is strictly worse than any token cost, and the
+        # module's stated contract is that every doubtful path returns the full
+        # document. Same shape as C2: the FULL, unfiltered document, delta=False, and
+        # NO cursor minted (a cursor handed back could seed a later delta on a session
+        # whose state was never filterable). A degraded full restore is always correct;
+        # a raised exception never is.
+        #
+        # residency.filter_since refuses the malformed container shapes we ENUMERATED,
+        # so this catches the ones nobody thought of; assemble_shadow is total (see its
+        # docstring), so the fallback below is a floor rather than a second cliff.
+        logger.warning(
+            "shadow delta failed for session %s; serving a full restore: %s",
+            session_id, exc,
+        )
+        return {
+            "session_id": session_id,
+            "goal": data.get("goal", ""),
+            "status": data.get("status", ""),
+            "shadow": assemble_shadow(data),
+            "delta": False,
+        }
 
     result = {
         "session_id": session_id,
