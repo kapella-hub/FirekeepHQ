@@ -1,8 +1,15 @@
 """Per-runtime graceful-degradation matrix (spec §6.5).
 
 Honestly documents, per runtime, what is UNIVERSAL (via sidecar + MCP tools) vs
-DEGRADED/DROPPED — no silent pretense that a runtime enforces what it can't. Each adapter
-references the rendered fragment so a teammate sees exactly what their runtime guarantees.
+DEGRADED/DROPPED — no silent pretense that a runtime enforces what it can't.
+
+WHO READS THIS: humans, and only humans. Nothing in the kit imports this module at
+runtime — `render_matrix` has no caller outside `client/tests/contract/test_matrix.py`,
+no adapter reads the fragment, and `firekeep doctor` does not consult it. That is worth
+stating plainly, because it is the whole hazard: a false cell here reaches a teammate
+through the file itself and nothing else can contradict it, so the tests are the only
+thing standing between a wrong cell and a wrong belief. (Whether a module with no
+runtime caller should keep shipping is a separate question, not settled here.)
 
 DEVIATION FROM SPEC §6.5 (documented, not accidental): the spec's literal table lists
 "sidecar" for the presence/heartbeat/snapshots/exit row across all three runtimes. Per the
