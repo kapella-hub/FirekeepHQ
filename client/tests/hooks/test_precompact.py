@@ -52,13 +52,22 @@ class TestPrecompact:
         assert "ctx_get_shadow" in out["systemMessage"]
 
     def test_never_raises_when_bridge_is_unreachable(self, client_env, monkeypatch):
+        """PROVES: with every Bridge call raising, `run()` returns a dict instead
+        of propagating. A hook core that raises breaks the customer's session, so
+        not-propagating is the whole property under test — and it binds both
+        floors at once, the per-step `except` blocks and the `@never_raise({})`
+        wrapper behind them (removing either alone still yields a dict).
+
+        DOES NOT prove anything about the CONTENT of that dict. `run()` catches
+        each write individually and still returns its `systemMessage`, so
+        asserting `== {}` would fail on correct code."""
         from firekeep_client.hooks import _mcp, precompact
 
         def boom(*a, **k):
             raise RuntimeError("bridge down")
 
         monkeypatch.setattr(_mcp, "call_tool", boom)
-        assert precompact.run({}) == {} or isinstance(precompact.run({}), dict)
+        assert isinstance(precompact.run({}), dict)
 
     def test_does_not_read_the_transcript_path(self, client_env, monkeypatch):
         """Pushing a raw transcript tail to the server is a privacy decision for a

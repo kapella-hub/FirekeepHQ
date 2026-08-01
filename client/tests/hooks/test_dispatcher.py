@@ -335,11 +335,18 @@ class TestPersonalTextCommand:
 
 
 def test_precompact_is_registered_and_treated_as_a_dict_core():
-    """`_DICT_CORES` is INERT -- verified: the dispatcher only ever consults
-    `_INT_CORES` (lines 195, 215). What actually makes a dict core is membership
-    in `_CORE_MODULES` plus absence from `_INT_CORES`. A core missing from
-    `_CORE_MODULES` fails SILENTLY at exit 0, which is why this asserts the real
-    mechanism and not the decorative set."""
+    """`_DICT_CORES` is INERT -- verified: `main()` reads `_CORE_MODULES`,
+    `_INT_CORES` and `_BYPASS_EXEMPT` and never `_DICT_CORES`, which no code
+    outside tests references at all. What actually makes a dict core is
+    membership in `_CORE_MODULES` plus absence from `_INT_CORES` (the two
+    branches that consult it -- the bypass short-circuit and the exit-code
+    remap -- both treat "not an int core" as "print JSON, exit 0"). A core
+    missing from `_CORE_MODULES` fails SILENTLY at exit 0, which is why this
+    asserts the real mechanism and not the decorative set.
+
+    No line-number citations: they are facts with no test, and the ones this
+    docstring used to carry were already stale within the commit that wrote
+    them."""
     from firekeep_client.hooks import __main__ as dispatcher
     assert "precompact" in dispatcher._CORE_MODULES      # load-bearing
     assert "precompact" not in dispatcher._INT_CORES     # load-bearing
