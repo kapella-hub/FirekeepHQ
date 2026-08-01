@@ -270,10 +270,11 @@ def split_ref(raw: str) -> tuple[str, str | None, str | None]:
 # when the compose file is written. Demanding one is not "stricter", it is
 # impossible.
 #
-# The compensating control is real, not a promise: `image:` resolves
-# `${IMAGE_TAG}`, and a digest-bearing ref is valid there — a customer who wants
-# immutability sets IMAGE_TAG to `v1.2.3@sha256:...`, and server-release.yml
-# prints each pushed digest into the job summary so there is something to copy.
+# The compensating control is enforced in server-release.yml: each release tag
+# is published once, and a rerun reuses rather than overwrites the existing
+# images. `IMAGE_TAG` is shared across four repositories, whose digests differ,
+# so it must identify the exact version rather than pretending one digest can
+# pin the whole stack.
 FIRST_PARTY_PREFIX = "ghcr.io/kapella-hub/firekeep-"
 
 

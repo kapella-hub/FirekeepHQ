@@ -9,8 +9,6 @@ import json
 import subprocess
 import sys
 
-import pytest
-
 from firekeep_symdex import reindex
 
 

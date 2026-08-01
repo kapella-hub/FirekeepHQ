@@ -36,7 +36,6 @@ def test_entitlement_imports_are_confined_to_membership_and_read_only_surfaces()
         if "auth.entitlements" in source:
             consumers.append(path.relative_to(ROOT).as_posix())
     assert set(consumers) == {
-        "deploy/licence_tool.py",
         "cortex/app/briefing/api.py",
         "cortex/app/members/api.py",
         "cortex/app/members/store.py",

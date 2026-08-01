@@ -23,6 +23,8 @@
 ARG REGISTRY=docker.io/library
 FROM ${REGISTRY}/python:3.11.15-slim@sha256:db3ff2e1800a8581e2c48a27c3995339d47bdf046da21c7627accd3d51053a93
 
+LABEL org.opencontainers.image.source="https://github.com/kapella-hub/FirekeepHQ"
+
 RUN groupadd --gid 1000 appuser && \
     useradd --uid 1000 --gid 1000 --create-home appuser
 
@@ -54,6 +56,9 @@ COPY auth/ ./auth/
 COPY vault/ ./vault/
 COPY corpus/ ./corpus/
 COPY provenance/ ./provenance/
+
+# Firekeep licence and third-party notices ship with every public image.
+COPY LICENSE NOTICE ./
 
 RUN chown -R appuser:appuser /app
 

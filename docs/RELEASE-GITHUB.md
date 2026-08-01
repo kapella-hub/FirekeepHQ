@@ -119,6 +119,15 @@ strict `server.json` manifest are then published to both
 `firekeep-dist`. A release is incomplete until both the anonymous image pulls
 and the live Pages fetch pass.
 
+The server workflow is tag-only: it cannot be manually dispatched from an
+unrelated branch. Each repository's version tag is also write-once. A rerun
+pulls the existing image, verifies its Git SHA and application version, and
+continues the public-access check without rebuilding or replacing the artifact.
+For the documented first server tag (`v0.1.0`) only, a GHCR `denied` response is
+cross-checked against GitHub's package API; the workflow creates a package only
+when that API confirms it does not exist. Every image carries the source-repository
+label GitHub uses to link the new package back to this workflow repository.
+
 GHCR creates a new package private by default. On the first server release, the
 four pushes can succeed and the anonymous-pull steps will intentionally fail.
 In the `kapella-hub` package settings, change each package visibility to

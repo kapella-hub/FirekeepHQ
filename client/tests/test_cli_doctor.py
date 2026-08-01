@@ -5,7 +5,7 @@ import types
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from firekeep_client import cli, resolver, transport, __version__
+from firekeep_client import __version__, cli, resolver, transport, updater
 
 SERVER = textwrap.dedent("""\
     [identity]
@@ -400,9 +400,6 @@ def test_doctor_output_never_contains_api_key(tmp_path, monkeypatch, capsys):
 # --- client-version staleness check (Task 3) ---------------------------------
 
 def test_check_client_version_nudges_when_stale(monkeypatch):
-    import configparser
-    from firekeep_client import cli, updater
-
     cfg = configparser.ConfigParser(interpolation=None)
     cfg.read_string("[dist]\nbase_url = http://gl/rel\n")
     monkeypatch.setattr(
@@ -419,18 +416,12 @@ def test_check_client_version_nudges_when_stale(monkeypatch):
 def test_check_client_version_is_absent_without_dist_base(monkeypatch):
     """A checkout install has no [dist] section. That is not a fault — doctor must not
     invent a warning for a developer who never used the bootstrap."""
-    import configparser
-    from firekeep_client import cli
-
     cfg = configparser.ConfigParser(interpolation=None)
     cfg.read_string("[identity]\nagent_id = tester\n")
     assert cli._check_client_version(cfg) is None
 
 
 def test_check_client_version_degrades_when_manifest_unreachable(monkeypatch):
-    import configparser
-    from firekeep_client import cli, updater
-
     cfg = configparser.ConfigParser(interpolation=None)
     cfg.read_string("[dist]\nbase_url = http://gl/rel\n")
 
@@ -447,9 +438,6 @@ def test_doctor_survives_a_malformed_manifest_version(monkeypatch, capsys):
     run. run_doctor's contract is that each check is self-contained — one check's failure can
     never mask the rest — so a bad release deploy must NOT hide the agent-id, api-key, venv
     and CA results a teammate is running doctor to see."""
-    import configparser
-    from firekeep_client import cli, updater
-
     cfg = configparser.ConfigParser(interpolation=None)
     cfg.read_string("[dist]\nbase_url = http://gl/rel\n")
     monkeypatch.setattr(

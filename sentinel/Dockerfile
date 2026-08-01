@@ -23,6 +23,8 @@
 ARG REGISTRY=docker.io/library
 FROM ${REGISTRY}/python:3.11.15-slim@sha256:db3ff2e1800a8581e2c48a27c3995339d47bdf046da21c7627accd3d51053a93
 
+LABEL org.opencontainers.image.source="https://github.com/kapella-hub/FirekeepHQ"
+
 # Create appuser and add to docker group (gid 999 matches typical host docker socket)
 # The docker group gid must match the gid of /var/run/docker.sock on the host
 ARG DOCKER_GID=999
@@ -60,6 +62,9 @@ COPY replay/ ./replay/
 COPY auth/ ./auth/
 # Shared build-identity module (GET /version)
 COPY provenance/ ./provenance/
+
+# Firekeep licence and third-party notices ship with every public image.
+COPY LICENSE NOTICE ./
 
 RUN chown -R appuser:appuser /app
 

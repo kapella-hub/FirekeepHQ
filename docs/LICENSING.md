@@ -135,9 +135,10 @@ nothing false today.
    (`python scripts/generate_notice.py`) after any dependency change; do
    not hand-edit the package list or the appendix — the generator writes
    the identical result to all three of `NOTICE`, `client/NOTICE`, and
-   `symdex/NOTICE`, and `COPY NOTICE .` in the root `Dockerfile` puts the
-   root copy into the shipped server image (verified: built the image and
-   confirmed `/app/NOTICE` is present, 181-distribution content intact).
+   `symdex/NOTICE`. Each of the four service Dockerfiles used by the public
+   server-release workflow copies the root `LICENSE` and `NOTICE` into `/app`;
+   the workflow's anonymous image smoke test refuses a release unless both
+   files are present and non-empty at runtime.
    One package (`caio`, a transitive dependency in the cortex set) declares
    no scannable licence *name* metadata at all — its licence was confirmed
    by hand (Apache-2.0, read directly from the installed package's bundled

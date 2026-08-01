@@ -3,7 +3,7 @@ ctx_update(category="scratch", key="shadow_epoch") writes through.
 """
 
 import pytest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from app.config import Settings
 from app.session import SessionManager
@@ -44,7 +44,6 @@ class TestShadowEpoch:
 # HARNESS: there is no `bridge_tools` fixture. Every bridge MCP-tool test patches
 # app.mcp_server._get_manager with an AsyncMock manager and awaits the tool
 # function directly — see bridge/tests/test_mcp_tools.py:44-51. Copy that shape.
-from unittest.mock import patch
 
 
 def _session_data():
