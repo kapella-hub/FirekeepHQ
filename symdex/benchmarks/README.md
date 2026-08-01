@@ -85,7 +85,7 @@ protocol. Rerun without network or indexing work after the first successful run:
 ```
 
 Canonical artifact SHA-256:
-`E5BF30CCF48A4F250AB7648B9CEF8A7E8BEA0193C161E435D11D8EDED1EC1580`.
+`B414C892A4B1843B6CCA7BF9B81149EE3C1181247B59FF03F17C249071D0935A`.
 
 ## Mixed-task Click benchmark
 
