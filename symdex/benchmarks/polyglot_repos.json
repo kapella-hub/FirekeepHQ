@@ -1,0 +1,98 @@
+[
+  {
+    "id": "click",
+    "language": "python",
+    "url": "https://github.com/pallets/click.git",
+    "commit": "00e592cea702e0b2caa0dee42489fdb1c22cd845",
+    "source_prefix": "src/click/",
+    "extensions": [".py"]
+  },
+  {
+    "id": "express",
+    "language": "javascript",
+    "url": "https://github.com/expressjs/express.git",
+    "commit": "a3714473feb3d2908add734d340e7755fd85e0a3",
+    "source_prefix": "lib/",
+    "extensions": [".js", ".jsx"]
+  },
+  {
+    "id": "p-queue",
+    "language": "typescript",
+    "url": "https://github.com/sindresorhus/p-queue.git",
+    "commit": "180ab9e25cd10b6f548767d7176076b50d25e188",
+    "source_prefix": "source/",
+    "extensions": [".ts", ".tsx"]
+  },
+  {
+    "id": "cobra",
+    "language": "go",
+    "url": "https://github.com/spf13/cobra.git",
+    "commit": "adbc8813901bba65827259daa8e22ff94ec1f30e",
+    "source_prefix": "",
+    "extensions": [".go"]
+  },
+  {
+    "id": "clap",
+    "language": "rust",
+    "url": "https://github.com/clap-rs/clap.git",
+    "commit": "ccc92c3b1171c00a6ef610bfa0018fa59c8510f9",
+    "source_prefix": "clap_builder/src/",
+    "extensions": [".rs"]
+  },
+  {
+    "id": "gson",
+    "language": "java",
+    "url": "https://github.com/google/gson.git",
+    "commit": "ff521d70b2ecf2ed85dd1012081493ad7d8c0ba6",
+    "source_prefix": "gson/src/main/java/",
+    "extensions": [".java"]
+  },
+  {
+    "id": "guzzle",
+    "language": "php",
+    "url": "https://github.com/guzzle/guzzle.git",
+    "commit": "9b200fc5805036b331d6031199880dadecae0275",
+    "source_prefix": "src/",
+    "extensions": [".php"]
+  },
+  {
+    "id": "jq",
+    "language": "c",
+    "url": "https://github.com/jqlang/jq.git",
+    "commit": "603db3f57741d217ba651e61086b550a72148b83",
+    "source_prefix": "src/",
+    "extensions": [".c", ".h"]
+  },
+  {
+    "id": "humanizer",
+    "language": "csharp",
+    "url": "https://github.com/Humanizr/Humanizer.git",
+    "commit": "146d74c025b80fa615bd8660f3c4c4949f61ac56",
+    "source_prefix": "src/Humanizer/",
+    "extensions": [".cs"]
+  },
+  {
+    "id": "rack",
+    "language": "ruby",
+    "url": "https://github.com/rack/rack.git",
+    "commit": "b48e0303a6468eb96e8fc01dfeda6284870e562f",
+    "source_prefix": "lib/",
+    "extensions": [".rb"]
+  },
+  {
+    "id": "moshi",
+    "language": "kotlin",
+    "url": "https://github.com/square/moshi.git",
+    "commit": "889013ec2edb8d8034902662a1dc8c4f3b3f8111",
+    "source_prefix": "moshi/src/main/java/",
+    "extensions": [".kt", ".kts"]
+  },
+  {
+    "id": "swift-argument-parser",
+    "language": "swift",
+    "url": "https://github.com/apple/swift-argument-parser.git",
+    "commit": "2f77f2fccb6e84fecff338c37b199e33e7dfd119",
+    "source_prefix": "Sources/ArgumentParser/",
+    "extensions": [".swift"]
+  }
+]

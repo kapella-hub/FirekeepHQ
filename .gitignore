@@ -45,8 +45,9 @@ htmlcov/
 # Lock files (Symdex uses pyproject.toml)
 symdex/uv.lock
 
-# Benchmark results (large JSON files)
-symdex/benchmarks/results/
+# Benchmark results (timestamped runs stay local; the audited canonical artifact is tracked)
+symdex/benchmarks/results/*
+!symdex/benchmarks/results/polyglot_symbol_v2.json
 
 # Serena
 .serena/

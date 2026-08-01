@@ -127,40 +127,38 @@ Two always-on stdio MCP servers run next to the agent, not on the VPS:
 
 ### Symdex token savings (measured)
 
-Measured by `symdex/benchmarks/benchmark_runner.py` against `pallets/click` (17 files,
-767 symbols): 20 questions × 3 runs = **60 paired samples**. Each question is answered twice
-— once from a Symdex-built context, once from raw file reads — and an LLM judge scores both
-for accuracy, completeness and relevance on a 5-point rubric. Savings without a quality
-control mean nothing, since returning less always saves tokens.
+The primary public proof is a deterministic, model-free targeted-symbol benchmark. It pins one
+public repository for every built-in language, selects 30 eligible symbols per language by a
+stable hash ordering and compares the complete verified `get_symbol` response with reading the
+symbol's complete containing file.
 
-| Task type | Context tokens saved | Symdex accuracy | Raw accuracy | n |
-|---|---|---|---|---|
-| **Comprehension** ("how does X work") | **−45.8%** | 4.62 | 4.67 | 21 |
-| **Navigation** ("where is X") | **−20.8%** | 4.43 | 4.43 | 21 |
-| **Modification** ("add X") | **+37.8% (more)** | 4.17 | 4.22 | 18 |
-| **Mixed workload, all 60** | **−12.0%** | **4.42** | **4.45** | 60 |
+| Scope | Result | Fidelity / quality control |
+|---|---:|---|
+| **Direct known-symbol retrieval vs containing file** | **54.83% lower estimated token count on average** | Pinned-Git source matched in **360/360** checks |
+| Sample breadth | 360 lookups across 285 production files | 30 lookups × 12 languages |
+| Alternate `o200k_base` encoding | 54.54% lower on average | Similar tokenizer result |
 
-Overall: **12% fewer context tokens at accuracy that is statistically indistinguishable**
-(4.42 vs 4.45; 37 of 60 comparisons were exact ties). Completeness and relevance came out
-marginally *higher* for Symdex (4.62 vs 4.52, 4.98 vs 4.93).
+The median reduction was 78.42%, but 58 of 360 lookups used more tokens where the serialized tool
+response exceeded an already small file. This is a direct-retrieval result against a whole-file
+baseline, not a whole-task claim. It does not measure symbol discovery, ordinary range reads,
+generated-answer quality, complete coding tasks or whole-session token use.
 
-**Modification tasks deliberately cost more.** `build_symdex_context` routes them to raw files
-*plus* structural intelligence, on the theory that extending code needs full context. The
-measurement does not support a quality gain from that (4.17 vs 4.22) — it is 38% more tokens
-for the same answer. Stated because a prospect running a modification-heavy workload will
-measure a negative number, and should hear it here first.
+A separate archived Click benchmark covers a mixed workload. Its three answer repetitions reused
+the same deterministic contexts, so the token result has 20 unique comparisons rather than 60
+independent samples.
 
-**Single targeted lookups are a different scope entirely.** Fetching one function costs ~280
-tokens against ~6,755 to read its file — **96%** (`symdex/README.md`). That is the number this
-document used to quote as a flat product claim. It is real, but it describes one lookup, not
-one task, and a customer's bill is per task. Both scopes are given above so neither can be
-mistaken for the other.
+| Task type | Total context-token result | Symdex accuracy | Raw accuracy | Unique contexts |
+|---|---:|---:|---:|---:|
+| **Comprehension** | **47.67% fewer** | 4.62 | 4.67 | 7 |
+| **Navigation** | **39.75% fewer** | 4.43 | 4.43 | 7 |
+| **Modification** | **25.30% more** | 4.17 | 4.22 | 6 |
+| **Mixed workload** | **23.31% fewer** | **4.42** | **4.45** | 20 |
 
-**Two limits worth knowing.** `stdev` on per-question savings is 40 points — the mean hides a
-range from −63% to +79%. And 24 context-construction strategies were evaluated against these
-same 20 questions on this same repository, so 12% is an **in-sample** figure: it is the
-honest ceiling on what can be claimed today, not a prediction for another codebase. A
-held-out repository is the next measurement.
+The accuracy point estimates are close, but the benchmark was not designed to establish
+statistical equivalence or non-inferiority. Modification used more context because the tested
+builder combined raw files with structural analysis. Treat it as an in-sample observation whose
+result depends on repository and task mix. Full protocol, per-language results, pinned revisions
+and reproduction commands are in `symdex/benchmarks/README.md`.
 
 Cost surface is bounded by what you choose to spend on the LLM tier; the cognitive infrastructure itself runs on commodity hardware.
 

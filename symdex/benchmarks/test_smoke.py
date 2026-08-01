@@ -1,8 +1,11 @@
 """Smoke test: run 1 question through the full pipeline."""
 
 import json
+import os
 import sys
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -30,6 +33,9 @@ def test_smoke():
     assert symdex_tokens < raw_tokens, f"Symdex ({symdex_tokens}) should be smaller than raw ({raw_tokens})"
 
     # Get answers (requires ANTHROPIC_API_KEY)
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        pytest.skip("ANTHROPIC_API_KEY is required for answer and judge smoke checks")
+
     symdex_answer, symdex_resp_tokens, symdex_latency = get_answer(symdex_ctx, q["question"])
     raw_answer, raw_resp_tokens, raw_latency = get_answer(raw_ctx, q["question"])
 
