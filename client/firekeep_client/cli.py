@@ -829,6 +829,52 @@ def run_doctor(cfg=None) -> list[tuple[str, str, str]]:
     return results
 
 
+def cmd_restore(args) -> int:
+    """Browse or restore local snapshots of uncommitted work.
+
+    The READ side of worktree_snapshot, and not optional polish: a snapshot store nobody
+    can read from is write-only machinery, which this repo has deleted features for
+    before (the corpus entity graph after "0 entities ever extracted"; ~161K BACKLINK
+    edges never traversed). Snapshots are local-only and never leave the machine.
+    """
+    from pathlib import Path as _Path
+
+    from firekeep_client import worktree_snapshot as ws
+
+    root = ws.repo_root()
+    if root is None:
+        print("firekeep restore: not inside a git repository", file=sys.stderr)
+        return 1
+
+    snaps = ws.list_snapshots(root)
+    if args.apply:
+        if not any(s.get("id") == args.apply for s in snaps):
+            print(f"firekeep restore: no snapshot '{args.apply}' for {root.name}",
+                  file=sys.stderr)
+            return 1
+        res = ws.apply_snapshot(ws.snapshot_path(root, args.apply), root)
+        for err in res["errors"]:
+            print(f"  ! {err}", file=sys.stderr)
+        print(f"firekeep restore: {res['restored']} file(s) restored from {args.apply}")
+        if res.get("backup"):
+            print(f"  current state snapshotted first: {_Path(res['backup']).name}")
+        if res.get("deleted_not_restored"):
+            print("  reported, NOT re-deleted: "
+                  f"{', '.join(res['deleted_not_restored'])}")
+        return 1 if res["errors"] else 0
+
+    if not snaps:
+        print(f"firekeep restore: no snapshots for {root.name}")
+        return 0
+    print(f"snapshots for {root.name} (newest last):")
+    for s in snaps:
+        print(f"  {s.get('id')}  {s.get('created_at', '')}  "
+              f"{s.get('files_copied', 0)} file(s)  {s.get('reason', '')}")
+        if s.get("truncated"):
+            print(f"      TRUNCATED: {s['truncated']}")
+    return 0
+
+
 def cmd_night_shift(args) -> int:
     """Drain distill_session Relay tasks with a LOCAL model (LM Studio or Ollama).
 
@@ -1103,6 +1149,16 @@ def _build_parser() -> argparse.ArgumentParser:
     shift.add_argument("--dry-run", action="store_true",
                        help="synthesize but write nothing (no leases either)")
     shift.set_defaults(func=cmd_night_shift)
+
+    rest = sub.add_parser(
+        "restore",
+        help="browse or restore local snapshots of uncommitted work",
+    )
+    rest.add_argument("--list", action="store_true",
+                      help="list snapshots for this repo (the default)")
+    rest.add_argument("--apply", metavar="ID",
+                      help="restore this snapshot into the working tree")
+    rest.set_defaults(func=cmd_restore)
 
     upd = sub.add_parser("update", help="update the client kit to the latest release")
     upd.add_argument("--check", action="store_true", help="report only; change nothing")

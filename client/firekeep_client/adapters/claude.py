@@ -50,7 +50,12 @@ CLAUDE_HOOKS = (
     ("SessionEnd", "session_end", None, 5),
     ("UserPromptSubmit", "prompt", None, 8),
     ("PreCompact", "precompact", None, 15),
-    ("PreToolUse", "pre_tool", "^(Edit|Write)$", 5),
+    # Bash is included since 2026-08-02: pre_tool has always mapped it to "run_command",
+    # but this matcher excluded it, so the BLOCKING gate never saw a shell command while
+    # PostToolUse below watched them execute. `git checkout -- cortex/app/` destroyed
+    # nine files of uncommitted work through that gap. Bash takes the snapshot-then-allow
+    # path in pre_tool and never reaches the network.
+    ("PreToolUse", "pre_tool", "^(Edit|Write|Bash)$", 5),
     ("PostToolUse", "post_tool", "^(Edit|Write|MultiEdit|Bash)$", 10),
 )
 

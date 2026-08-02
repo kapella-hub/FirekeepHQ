@@ -189,3 +189,59 @@ def test_night_shift_error_exits_nonzero(monkeypatch):
                         lambda **kw: {"distilled": 0, "legacy": 0, "skipped": 0,
                                       "failed": 0, "error": "LM Studio unreachable"})
     assert cli.main(["night-shift"]) == 1
+
+
+# --- firekeep restore (2026-08-02) ------------------------------------------
+# Snapshots without a recovery path are write-only machinery, and this repo has
+# deleted features for exactly that (the corpus entity graph, "0 entities ever
+# extracted"; ~161K BACKLINK edges never traversed). The CLI is what makes the
+# snapshot store readable, so it is part of the feature, not polish on top.
+def _mkrepo(tmp_path):
+    import subprocess
+    r = tmp_path / "proj"
+    r.mkdir()
+    def g(*a):
+        subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", *a],
+                       cwd=str(r), capture_output=True, text=True, check=False)
+    g("init", "-q")
+    (r / "a.py").write_text("committed\n", encoding="utf-8")
+    g("add", "-A"); g("commit", "-qm", "base")
+    return r
+
+
+def test_restore_list_shows_captured_snapshots(tmp_path, monkeypatch, capsys):
+    from firekeep_client import cli, worktree_snapshot as ws
+    monkeypatch.setenv("FIREKEEP_SNAPSHOT_DIR", str(tmp_path / "snaps"))
+    repo = _mkrepo(tmp_path)
+    (repo / "a.py").write_text("work in progress\n", encoding="utf-8")
+    snap = ws.capture(repo, reason="unit")
+    monkeypatch.chdir(repo)
+
+    assert cli.main(["restore", "--list"]) == 0
+    out = capsys.readouterr().out
+    assert snap.name in out
+    assert "unit" in out
+
+
+def test_restore_apply_brings_the_work_back(tmp_path, monkeypatch, capsys):
+    """End-to-end through the CLI: the incident's command, then recovery."""
+    import subprocess
+    from firekeep_client import cli, worktree_snapshot as ws
+    monkeypatch.setenv("FIREKEEP_SNAPSHOT_DIR", str(tmp_path / "snaps"))
+    repo = _mkrepo(tmp_path)
+    (repo / "a.py").write_text("MY WORK\n", encoding="utf-8")
+    snap = ws.capture(repo, reason="unit")
+    subprocess.run(["git", "checkout", "--", "."], cwd=str(repo), capture_output=True)
+    assert (repo / "a.py").read_text(encoding="utf-8") == "committed\n"
+    monkeypatch.chdir(repo)
+
+    assert cli.main(["restore", "--apply", snap.name]) == 0
+    assert (repo / "a.py").read_text(encoding="utf-8") == "MY WORK\n"
+
+
+def test_restore_list_is_calm_when_there_is_nothing(tmp_path, monkeypatch, capsys):
+    from firekeep_client import cli
+    monkeypatch.setenv("FIREKEEP_SNAPSHOT_DIR", str(tmp_path / "snaps"))
+    monkeypatch.chdir(_mkrepo(tmp_path))
+    assert cli.main(["restore", "--list"]) == 0
+    assert "no snapshots" in capsys.readouterr().out.lower()

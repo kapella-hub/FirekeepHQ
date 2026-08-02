@@ -18,7 +18,7 @@ import os
 import sys
 
 from firekeep_client import hooklog, resolver, state, transport
-from firekeep_client.hooks import _mcp, never_raise
+from firekeep_client.hooks import _mcp, destructive, never_raise
 
 _HOOK = "pre_tool"
 _EDIT_TOOLS = {"Edit", "Write", "MultiEdit"}
@@ -80,6 +80,19 @@ def run(payload: dict) -> int:
 
     if action_type == "edit_file" and not target:
         return 0  # nothing resolvable to guard
+
+    # Shell commands: snapshot-then-allow, and return here so Bash never reaches the
+    # gateway below. Routing every Bash call through a 5s network gate that fails open
+    # would put latency on the hottest tool and still wave through the one command that
+    # matters whenever Cortex is slow. `_action_type` has mapped Bash -> run_command
+    # since this file was written; only the adapter's ^(Edit|Write)$ matcher kept the
+    # branch unreachable, which is why `git checkout -- cortex/app/` was never seen.
+    if action_type == "run_command":
+        if target:
+            note = destructive.guard(target)
+            if note:
+                print(note, file=sys.stderr)
+        return 0
 
     session_id = state.resolve_session_id(payload, cfg)
 

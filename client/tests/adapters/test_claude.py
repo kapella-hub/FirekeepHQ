@@ -46,7 +46,10 @@ def test_claude_render_writes_shim_servers_and_hooks(fake_home, tmp_path):
     assert settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"].endswith(
         "-m firekeep_client.hooks prompt")
     pre = settings["hooks"]["PreToolUse"][0]
-    assert pre["matcher"] == "^(Edit|Write)$"
+    assert pre["matcher"] == "^(Edit|Write|Bash)$", (
+        "Bash must reach the BLOCKING gate: pre_tool has always mapped it to "
+        "run_command, but this matcher excluded it, so `git checkout -- <dir>` "
+        "destroyed uncommitted work while PostToolUse only watched it run.")
     # exit-code remap: rendered WITH --block-exit 2 so pre_tool's rc=1 (gateway
     # block/rethink) AND rc=2 (lease conflict) both actually block Claude's PreToolUse
     # gate, which otherwise blocks ONLY on exit 2.
@@ -179,7 +182,7 @@ def _legacy_settings():
                             "command": "bash /repo/scripts/debrief.sh", "timeout": 5}]},
             ],
             "PreToolUse": [
-                {"matcher": "^(Edit|Write)$",
+                {"matcher": "^(Edit|Write|Bash)$",
                  "hooks": [{"type": "command",
                             "command": "bash /repo/scripts/multi-agent-precheck.sh"}]},
             ],

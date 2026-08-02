@@ -16,7 +16,7 @@ from __future__ import annotations
 import hashlib
 import urllib.parse
 
-from firekeep_client import hooklog, resolver, state, transport
+from firekeep_client import hooklog, resolver, state, transport, worktree_snapshot
 from firekeep_client.hooks import _git, _mcp, never_raise
 
 _HOOK = "prompt"
@@ -151,13 +151,23 @@ def run(payload: dict) -> dict:
         raw = state.read_scratch(key)
         count = (int(raw) if raw and raw.isdigit() else 0) + 1
         state.write_scratch(key, str(count))
-        if count % 5 == 0 and session_id:
-            _mcp.call_tool(
-                "bridge", "ctx_update",
-                {"category": "scratch", "key": "workspace_snapshot",
-                 "content": _git.workspace_snapshot(), "agent_id": agent},
-                cfg=cfg,
-            )
+        if count % 5 == 0:
+            # LOCAL, first and unconditionally: content, not `--stat`. The Bridge
+            # payload below is `git diff --stat` — it records that work exists and its
+            # exact size and none of its content, which is why 2026-08-02's loss was
+            # unrecoverable. This one is a real copy, stays on the machine (a raw diff
+            # holds whatever was being edited), and is not gated on session_id: work is
+            # worth preserving whether or not the agent ever called ctx_start_session.
+            root = worktree_snapshot.repo_root()
+            if root is not None:
+                worktree_snapshot.capture(root, reason="periodic (every 5th prompt)")
+            if session_id:
+                _mcp.call_tool(
+                    "bridge", "ctx_update",
+                    {"category": "scratch", "key": "workspace_snapshot",
+                     "content": _git.workspace_snapshot(), "agent_id": agent},
+                    cfg=cfg,
+                )
     except Exception as e:  # noqa: BLE001
         hooklog.log_failure(_HOOK, f"snapshot failed: {e}")
 
