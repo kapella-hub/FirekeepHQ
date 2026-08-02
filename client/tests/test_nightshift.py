@@ -231,6 +231,25 @@ def test_empty_model_list_does_not_block_the_shift(cfg_env, monkeypatch):
     assert not out.get("error")
 
 
+def test_explicit_base_is_probed_alone_and_never_falls_through(cfg_env, monkeypatch):
+    """The behaviour 95300b2 documented most emphatically had NO coverage: an explicit
+    FIREKEEP_NIGHTSHIFT_LLM_BASE must be probed alone, so a typo fails loudly instead of
+    silently landing on a different engine than the operator named. Deleting that branch
+    left the whole file green, because every autodetect test runs with no base
+    configured and so never exercises it. Verified to catch that mutation."""
+    monkeypatch.setenv("FIREKEEP_NIGHTSHIFT_LLM_BASE", "http://127.0.0.1:9999/v1")
+    rec = _Recorder({"relay_task_list": {"tasks": [_task()], "count": 1}})
+
+    def get_json(url, **kw):
+        if ":9999" in url:
+            raise nightshift.transport.TransportError("connection refused")
+        return {"data": [{"id": "m"}]}      # a healthy backend on a default port
+
+    out = nightshift.run(call_tool=rec, post_json=_llm_ok(_SYNTH), get_json=get_json)
+    assert out["error"], "a typo'd explicit base must abort, not silently use another engine"
+    assert not rec.named("relay_lease")
+
+
 def test_untagged_model_matches_ollamas_tagged_id(cfg_env, monkeypatch):
     """Ollama's /v1/models reports fully-tagged ids ("llama3:latest") while its chat API
     accepts and resolves the BARE name ("llama3"). Exact-equality matching therefore
