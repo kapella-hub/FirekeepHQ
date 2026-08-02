@@ -6,10 +6,11 @@ import json
 import logging
 from typing import TYPE_CHECKING, AsyncIterator
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from app.models import ImportResponse
+from auth.middleware import require_scope
 
 if TYPE_CHECKING:
     from app.db.graph import Neo4jClient
@@ -28,8 +29,11 @@ def create_transfer_router(graph: Neo4jClient, vector: VectorClient) -> APIRoute
     async def memory_export(
         namespace: str | None = Query(default=None, description="Filter by namespace"),
         format: str = Query(default="jsonl", description="Export format (jsonl)"),
+        identity: dict = Depends(require_scope("admin")),
     ) -> StreamingResponse:
-        """Export all memories as JSONL stream."""
+        """Export all memories as JSONL stream. Admin-scoped: this streams every
+        memory in the deployment, so `memory:read` — which every agent key holds —
+        is not a sufficient gate for it."""
 
         async def _generate() -> AsyncIterator[str]:
             # Export vector memories
@@ -72,8 +76,14 @@ def create_transfer_router(graph: Neo4jClient, vector: VectorClient) -> APIRoute
         )
 
     @router.post("/import", response_model=ImportResponse)
-    async def memory_import(request: Request) -> ImportResponse:
-        """Import memories from JSONL or JSON array."""
+    async def memory_import(
+        request: Request,
+        identity: dict = Depends(require_scope("admin")),
+    ) -> ImportResponse:
+        """Import memories from JSONL or JSON array. Admin-scoped: this bulk-writes
+        memories AND arbitrary Neo4j labels and relationship types — `label` and
+        `rel_type` are passed through to `merge_knowledge_nodes` verbatim — so it can
+        author graph structure no other route exposes."""
         content_type = request.headers.get("content-type", "")
         body = await request.body()
 

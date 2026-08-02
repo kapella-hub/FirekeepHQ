@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -63,7 +63,18 @@ def transfer_app():
     mock_vector.upsert = AsyncMock(return_value="vec-uuid-imported")
 
     app = FastAPI()
-    router = create_transfer_router(graph=mock_graph, vector=mock_vector)
+    # Both routes are Depends(require_scope("admin")), which bites even on the
+    # AUTH_ENABLED=false path. These tests assert the routes' OWN logic (streaming
+    # shape, parse errors, round-trip), so they build the router with the gate
+    # stubbed out — patching `app.transfer.require_scope`, not the source module,
+    # because transfer.py holds its own reference from an import-time `from ...`,
+    # and patching while the router is CONSTRUCTED because the dependency is
+    # captured at decoration time. Bypassing a check in a unit test is only safe
+    # when another test proves the check is there: see
+    # test_transfer_routes_refuse_anonymous_when_auth_disabled below.
+    _admin = {"agent_id": "test-admin", "scopes": ["*"], "authenticated": True}
+    with patch("app.transfer.require_scope", lambda scope: (lambda: _admin)):
+        router = create_transfer_router(graph=mock_graph, vector=mock_vector)
     app.include_router(router)
 
     return app, mock_graph, mock_vector
@@ -216,3 +227,36 @@ class TestImportEndpoint:
         assert body["imported_nodes"] == 2
         assert body["imported_edges"] == 1
         assert body["errors"] == []
+
+
+def test_transfer_routes_refuse_anonymous_when_auth_disabled():
+    """The transfer router shipped with NO scope gate at all — `create_transfer_router`
+    declared no dependency and `main.py` registered it without `dependencies=`. That is
+    the same exposure as audit blocker 7, on a wider surface: GET /memory/export streams
+    every memory in the deployment, and POST /memory/import bulk-writes memories AND
+    arbitrary Neo4j labels and relationship types (`item.get("label", "Entity")` and
+    `rel_type` are passed through verbatim).
+
+    Both are operator backup/migration functions with no production caller — only tests
+    and docs reference them — so admin is the right gate and nothing in the running
+    system depends on them being open.
+    """
+    from unittest.mock import AsyncMock
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from auth import keys as _keys
+
+    assert _keys._AUTH_ENABLED is False, "this test is about the auth-DISABLED path"
+    assert "admin" not in _keys.ANONYMOUS_SCOPES
+
+    test_app = FastAPI()
+    test_app.include_router(create_transfer_router(  # the REAL gate, not the stub
+        AsyncMock(spec=Neo4jClient), AsyncMock(spec=VectorClient)))
+    client = TestClient(test_app)
+
+    for method, path in (("get", "/memory/export"), ("post", "/memory/import")):
+        resp = getattr(client, method)(path)
+        assert resp.status_code == 403, f"{method.upper()} {path} -> {resp.status_code}"
+        assert "admin" in resp.json()["detail"]
