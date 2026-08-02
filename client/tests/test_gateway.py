@@ -42,6 +42,19 @@ def _gateway():
     return gateway
 
 
+def test_gateway_initialize_carries_memory_and_decision_instructions():
+    reply = _gateway().handle({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {"protocolVersion": "2025-03-26"},
+    })
+    instructions = reply["result"]["instructions"]
+    assert "memory_recall" in instructions
+    assert "decision_board" in instructions
+    assert "decision_board_check" in instructions
+
+
 def test_gateway_advertises_reachable_tools_and_diagnostic_status_only():
     gateway = _gateway()
     reply = gateway.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})

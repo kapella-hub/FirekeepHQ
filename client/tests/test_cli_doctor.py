@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from firekeep_client import __version__, cli, resolver, transport, updater
+from firekeep_client.adapters import get_adapter
 
 SERVER = textwrap.dedent("""\
     [identity]
@@ -199,7 +200,10 @@ def test_check_venv_scripts_present_and_missing(tmp_path):
         ext = ".exe" if is_win else ""
         bindir = venv / binname
         bindir.mkdir(parents=True, exist_ok=True)
-        for n in ("firekeep", "firekeep-shim", "firekeep-sidecar"):
+        for n in (
+            "firekeep", "firekeep-shim", "firekeep-sidecar",
+            "firekeep-decision", "firekeep-symdex",
+        ):
             (bindir / f"{n}{ext}").write_text("x", encoding="utf-8")
         assert cli._check_venv_scripts(venv, is_windows=is_win)[1] == "ok"
         (bindir / f"firekeep-shim{ext}").unlink()
@@ -331,6 +335,99 @@ def test_check_venv_scripts_missing_entirely_is_not_labeled_partial(tmp_path):
     assert "partial venv" not in detail.lower()
 
 
+def test_check_venv_scripts_requires_local_gateway_backends(tmp_path):
+    venv = tmp_path / "venv"
+    bindir = venv / "bin"
+    bindir.mkdir(parents=True)
+    for name in ("python", "firekeep", "firekeep-shim", "firekeep-sidecar"):
+        (bindir / name).touch()
+
+    _, status, detail = cli._check_venv_scripts(venv, is_windows=False)
+    assert status == "fail"
+    assert "firekeep-decision" in detail
+    assert "firekeep-symdex" in detail
+
+
+def _render_codex(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("HOME", str(home))
+    venv = tmp_path / "venv"
+    bindir = venv / ("Scripts" if os.name == "nt" else "bin")
+    get_adapter("codex").render(venv_bin=bindir)
+    return home, venv
+
+
+def test_check_codex_adapter_reports_healthy_generated_files(tmp_path, monkeypatch):
+    _, venv = _render_codex(tmp_path, monkeypatch)
+    rows = cli._check_codex_adapter(venv)
+    assert {name: status for name, status, _ in rows} == {
+        "codex-mcp": "ok",
+        "codex-instructions": "ok",
+    }
+
+
+def test_check_codex_adapter_warns_when_instructions_are_missing(tmp_path, monkeypatch):
+    home, venv = _render_codex(tmp_path, monkeypatch)
+    (home / ".codex" / "AGENTS.md").unlink()
+
+    rows = cli._check_codex_adapter(venv)
+    statuses = {name: status for name, status, _ in rows}
+    assert statuses["codex-mcp"] == "ok"
+    assert statuses["codex-instructions"] == "warn"
+    detail = {name: detail for name, _, detail in rows}["codex-instructions"]
+    assert "install --runtime codex" in detail
+
+
+def test_check_codex_adapter_fails_when_gateway_config_is_missing(tmp_path, monkeypatch):
+    home, venv = _render_codex(tmp_path, monkeypatch)
+    (home / ".codex" / "config.toml").unlink()
+
+    rows = cli._check_codex_adapter(venv)
+    statuses = {name: status for name, status, _ in rows}
+    assert statuses == {
+        "codex-mcp": "fail",
+        "codex-instructions": "ok",
+    }
+
+
+def test_check_codex_adapter_warns_on_stale_instruction_block(tmp_path, monkeypatch):
+    home, venv = _render_codex(tmp_path, monkeypatch)
+    instructions = home / ".codex" / "AGENTS.md"
+    instructions.write_text(
+        instructions.read_text(encoding="utf-8").replace(
+            "decision_board_check", "old_decision_board_check", 1,
+        ),
+        encoding="utf-8",
+    )
+
+    rows = cli._check_codex_adapter(venv)
+    statuses = {name: status for name, status, _ in rows}
+    assert statuses["codex-mcp"] == "ok"
+    assert statuses["codex-instructions"] == "warn"
+
+
+def test_check_codex_adapter_fails_on_stale_gateway_command(tmp_path, monkeypatch):
+    home, venv = _render_codex(tmp_path, monkeypatch)
+    config = home / ".codex" / "config.toml"
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            "command = '", "command = 'stale-", 1,
+        ),
+        encoding="utf-8",
+    )
+
+    rows = cli._check_codex_adapter(venv)
+    status = {name: status for name, status, _ in rows}["codex-mcp"]
+    assert status == "fail"
+
+
+def test_check_codex_adapter_skips_an_unconfigured_runtime(tmp_path, monkeypatch):
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    assert cli._check_codex_adapter(tmp_path / "venv") == []
+
+
 def test_run_doctor_includes_agent_id_check(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path, monkeypatch, SERVER_CHANGEME)
     monkeypatch.setattr(cli, "_check_health", lambda cfg: [])
@@ -338,11 +435,16 @@ def test_run_doctor_includes_agent_id_check(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_check_venv_scripts", lambda venv, is_windows=None: ("venv-scripts", "ok", ""))
     monkeypatch.setattr(cli, "_check_config_perms", lambda config, is_windows=None: ("config-perms", "ok", ""))
     monkeypatch.setattr(cli, "_check_ca_expiry", lambda cfg: None)
+    monkeypatch.setattr(cli, "_check_codex_adapter", lambda venv: [
+        ("codex-mcp", "ok", ""),
+        ("codex-instructions", "warn", ""),
+    ])
     results = cli.run_doctor(cfg)
     names = {n for n, _, _ in results}
     assert "agent-id" in names
     status = {n: s for n, s, _ in results}["agent-id"]
     assert status == "warn"
+    assert {"codex-mcp", "codex-instructions"} <= names
 
 
 # --- api-key false-green trap (T27 review Critical) --------------------------

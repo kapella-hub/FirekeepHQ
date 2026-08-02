@@ -3,14 +3,14 @@
 Firekeep is MCP-native. The client-specific setup varies, but the integration model is the same:
 
 - register the one local `firekeep` stdio gateway (shipped adapters), or connect remote HTTP endpoints manually in clients that cannot run it
-- keep repository-specific agent instructions in the repo (`AGENTS.md`, `CLAUDE.md`)
+- keep repository-specific agent instructions in the repo (`AGENTS.md`, `CLAUDE.md`) while shipped adapters may add user-scoped Firekeep guidance
 - use client-native hooks or startup flows only where they add value
 
 ## Supported Today
 
 ### Codex
 
-- Project instructions: root `AGENTS.md`
+- Instructions: root `AGENTS.md` for project rules plus a Firekeep-owned block in `~/.codex/AGENTS.md`
 - Setup: [docs/SETUP-CODEX.md](docs/SETUP-CODEX.md)
 - Install: `firekeep install --runtime codex`
 
@@ -63,9 +63,9 @@ Full platform experience:
 
 Any client that can call MCP tools over HTTP can use Firekeep immediately.
 
-### Tier 2: MCP + Repo Instructions
+### Tier 2: MCP + Agent Instructions
 
-Recommended for coding agents. Keep client-specific guidance in repo-root files so setup stays project-scoped.
+Recommended for coding agents. Keep project rules in repo-root files; shipped adapters may also render user-scoped guidance that explains when to use Firekeep tools.
 
 ### Tier 3: MCP + Hooks
 
@@ -76,7 +76,7 @@ Best experience for clients that support:
 - inbox polling
 - completion/debrief flows
 
-Today, Claude has the strongest hook integration. Codex now has repo-scoped setup and MCP connectivity, but hook parity is still a future improvement area.
+Today, Claude has the strongest hook integration. Codex has user-scoped MCP connectivity and Firekeep guidance plus repo-scoped project instructions, but hook parity is still a future improvement area.
 
 ## Recommended Next Integrations
 
@@ -100,14 +100,17 @@ For genuine predict-then-act reflection, call the MCP tools `action_before` / `a
 Re-run `firekeep install` for your runtime; it is idempotent and non-clobbering. Hook changes take effect on the next session start.
 
 ### Codex CLI
-Codex is MCP-only (no hook surface), so use the client kit's stdio shim rather than raw HTTP — Codex's `~/.codex/config.toml` speaks stdio, not `type: "http"`. Run `firekeep install --runtime codex` (see [docs/SETUP-CODEX.md](docs/SETUP-CODEX.md)), which renders:
+Codex is MCP-only (no hook surface), so use the client kit's local gateway rather than raw HTTP — Codex's `~/.codex/config.toml` speaks stdio, not `type: "http"`. Run `firekeep install --runtime codex` (see [docs/SETUP-CODEX.md](docs/SETUP-CODEX.md)), which renders:
 ```toml
 [mcp_servers.firekeep]
 command = '/absolute/path/to/.firekeep/venv/bin/firekeep'
 args = ["gateway"]
 ```
 The gateway injects TLS + auth headers from `[server]` and `[identity]` in
-`~/.firekeep/config`. Restart Codex after installing.
+`~/.firekeep/config`. The adapter also upserts Firekeep guidance in
+`~/.codex/AGENTS.md`, and the gateway repeats the compact recall/Decision Board
+trigger in its MCP initialization response. These are model instructions, not a
+deterministic hook. Restart Codex after installing.
 
 ### Kiro
 Run `firekeep install --runtime kiro`, which renders `~/.kiro/agents/firekeep.json` with one gateway entry (Kiro also gets inline hooks wired to the same lifecycle events Claude uses):
