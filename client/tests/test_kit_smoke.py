@@ -70,7 +70,10 @@ def test_kit_hangs_together(firekeep_env, write_config, monkeypatch):
     bindir_name = "Scripts" if sys.platform == "win32" else "bin"
     venv_bin = firekeep_env["home"] / "venv" / bindir_name
     venv_bin.mkdir(parents=True, exist_ok=True)
-    for name in ("firekeep", "firekeep-shim", "firekeep-sidecar"):
+    for name in (
+        "python", "firekeep", "firekeep-shim", "firekeep-sidecar",
+        "firekeep-decision", "firekeep-symdex",
+    ):
         (venv_bin / f"{name}{ext}").write_text("x", encoding="utf-8")
 
     expected_gateway = console_script_path(venv_bin / "firekeep")

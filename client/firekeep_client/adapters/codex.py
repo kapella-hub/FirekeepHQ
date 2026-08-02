@@ -17,6 +17,7 @@ memory at 100% confidence.
 """
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from firekeep_client.adapters.base import (
@@ -46,6 +47,16 @@ def _toml_block(venv_bin: Path) -> str:
     return "\n".join(lines).rstrip()
 
 
+def mcp_block_is_current(text: str, venv_bin: Path) -> bool:
+    """Whether `text` contains the exact Codex block this adapter would render."""
+    start = text.find(CODEX_START)
+    end = text.find(CODEX_END, start + len(CODEX_START))
+    if start == -1 or end == -1:
+        return False
+    managed = text[start + len(CODEX_START):end].strip()
+    return managed == _toml_block(venv_bin)
+
+
 class CodexAdapter(Adapter):
     name = "codex"
 
@@ -66,8 +77,14 @@ class CodexAdapter(Adapter):
         try:
             existing = path.read_text(encoding="utf-8") if path.exists() else ""
             write_text_if_changed(path, upsert_marked_block(existing, FIREKEEP_INSTRUCTIONS))
-        except OSError:
-            pass
+        except OSError as exc:
+            print(
+                f"firekeep: WARNING — could not update Codex instructions at "
+                f"{path}: {exc}; MCP registration succeeded, but proactive memory "
+                "and Decision Board use may be reduced. Fix the file permissions "
+                "and run `firekeep install --runtime codex`.",
+                file=sys.stderr,
+            )
 
     def _unrender_instructions(self) -> None:
         path = self._instructions_path()
