@@ -162,14 +162,15 @@ cd client && python -m pytest tests/test_e2e_bootstrap.py -m e2e -q
 ```
 
 
-- **0.1.29** — HTTP-backed MCP shims survive transient service restarts after
-  initialization. Interrupted requests return a bounded, sanitized MCP error and
-  are never replayed; the next request can reconnect on the same stdio session.
-  Recovery also covers fragmented/terminated SSE bodies and interrupted
-  initialization. The package now stays on the supported MCP/httpx majors, and
-  the release job installs the built wheel in a clean environment before publish.
-  A runtime whose stdio child was already closed before this version is installed
-  still needs one restart.
+- **0.1.29** — HTTP-backed MCP shims survive transient service restarts without
+  replaying ambiguous requests; recovery covers POST failures, fragmented or
+  terminated SSE bodies, and interrupted initialization. Reliable Codex Decision
+  Board wiring carries compact recall/Decision Board guidance, installer failures
+  to update `~/.codex/AGENTS.md` warn visibly, and `firekeep doctor` validates the
+  local backends plus exact Codex MCP/instruction blocks. The package stays on
+  supported MCP/httpx majors, and the release job installs the built wheel in a
+  clean environment before publish. A runtime whose stdio child was already
+  closed before this version is installed still needs one restart.
 - **0.1.28** — Single-entry `firekeep gateway` adapters for Claude Code, Codex,
   Kiro, and OpenCode; single-use device/member join codes; Solo/Team entitlement
   status; and verified `firekeep init` download/update of the public source-free

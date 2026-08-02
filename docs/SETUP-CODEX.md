@@ -2,12 +2,13 @@
 
 ## What Codex Needs
 
-Codex does not use the Claude-specific hook wiring; the client kit's Codex adapter renders one `.codex/config.toml` MCP gateway entry plus AGENTS.md guidance. Session-lifecycle automation (presence, heartbeat, snapshots) is not wired up for Codex at all today — `firekeep-sidecar` is the intended mechanism for MCP-only runtimes like Codex, but nothing starts it automatically; you have no presence path unless you run it by hand. Workspace/member attribution comes from the verified credential; only the runtime `agent_id` label is self-reported.
+Codex does not use the Claude-specific hook wiring; the client kit's Codex adapter renders one user-scoped `~/.codex/config.toml` MCP gateway entry plus Firekeep guidance in `~/.codex/AGENTS.md`. Session-lifecycle automation (presence, heartbeat, snapshots) is not wired up for Codex at all today — `firekeep-sidecar` is the intended mechanism for MCP-only runtimes like Codex, but nothing starts it automatically; you have no presence path unless you run it by hand. Workspace/member attribution comes from the verified credential; only the runtime `agent_id` label is self-reported.
 
 For Firekeep, the Codex path is:
 
 1. `AGENTS.md` in the repo root for project instructions
-2. One MCP gateway entry in Codex config so Codex can use every Firekeep backend
+2. A Firekeep-owned block in `~/.codex/AGENTS.md` for user-scoped tool-use guidance
+3. One MCP gateway entry in `~/.codex/config.toml` so Codex can use every Firekeep backend
 
 OpenAI documents both behaviors:
 
@@ -31,11 +32,12 @@ OpenCode together. If the kit is already present, run:
 firekeep join fk_join_...
 ```
 
-This writes `~/.firekeep/config` and renders `.codex/config.toml` with one local
-stdio gateway. The gateway connects to the four Streamable-HTTP services with
-TLS/auth from `[server]`, and fronts local Symdex and Decision Board processes.
-Use `firekeep install --runtime codex` only to repair or re-render the Codex
-adapter afterward.
+This writes `~/.firekeep/config`, renders `~/.codex/config.toml` with one local
+stdio gateway, and upserts a Firekeep-owned guidance block in
+`~/.codex/AGENTS.md`. The gateway connects to the four Streamable-HTTP services
+with TLS/auth from `[server]`, and fronts local Symdex and Decision Board
+processes. Use `firekeep install --runtime codex` only to repair or re-render the
+Codex adapter afterward.
 
 If you prefer to configure it manually (or want to see what the installer renders), the entries look like:
 
@@ -49,17 +51,17 @@ args = ["gateway"]
 
 Notes:
 
-- `.codex` is ignored by git in this repo because it is machine-local config.
 - If `.codex` already exists as a file on your machine, remove or rename it first, then create the directory.
 - Re-running `firekeep install --runtime codex` is idempotent and non-clobbering — it merges only Firekeep-owned keys, so any other `[mcp_servers.*]` entries you've added by hand survive.
+- The same non-clobbering rule applies to `~/.codex/AGENTS.md`: only the Firekeep-owned marker block is replaced.
 
-## Alternative: User-Scoped MCP Config
+## Alternative: Project-Scoped MCP Config
 
-If you want Firekeep available in every repo, add the same entries to `~/.codex/config.toml` instead.
+The installer deliberately uses Codex's user-scoped config so Firekeep is available in every repository. If you need a project-only manual setup instead, put the same gateway entry in that repository's `.codex/config.toml`; the installer does not manage that file.
 
 ## Verify
 
-From the repo root:
+From any repository:
 
 ```bash
 codex mcp list
@@ -67,10 +69,11 @@ codex mcp list
 
 You should see one entry: `firekeep`.
 
-Then start Codex in this repository and check:
+Then restart Codex and check:
 
-- `AGENTS.md` is being applied for repository guidance
-- `/mcp` shows the Firekeep servers as available
+- `~/.codex/AGENTS.md` contains the Firekeep-owned instruction block
+- the repository's `AGENTS.md` is being applied for project guidance, when present
+- `/mcp` shows the `firekeep` gateway as available
 
 ## What Works Today
 
@@ -92,7 +95,7 @@ With the MCP config above, Codex can use:
 - `decision_board(context, draft_questions=[])` — asks Cortex to synthesize a board (retrieved evidence + suggested answers per question), opens it in the browser, and waits for the human's answers. Returns the answers (markdown) if submitted in time, else `{status: "pending", board_id, next}`.
 - `decision_board_check(board_id)` — call with the `board_id` from a pending response to collect the answers once submitted; `{status: "pending", ...}` if still waiting, `{status: "unknown"}` if the id isn't recognized.
 
-Codex has no hook surface (see below), so this trigger is doc-instruction only — there is no hook that injects it into the conversation. Codex has to know the convention (from this doc, or repo guidance) and decide to call `decision_board` on its own.
+The installer writes this trigger into `~/.codex/AGENTS.md`, and the gateway also returns a compact version in its MCP `initialize` response. Codex still has no deterministic hook that can force the call, so launching the board remains model-directed rather than guaranteed.
 
 ## Personal / Bypass Mode
 
@@ -113,16 +116,18 @@ Presence/heartbeat/snapshot/exit lifecycle is *intended* to be owned by the `fir
 
 ### Codex cannot see the servers
 
-- Run `firekeep doctor` — it verifies the rendered `firekeep-shim` paths exist, checks connectivity and auth for `[server]`, reports client and cortex versions, and flags a lingering `CHANGEME` agent_id
+- Run `firekeep doctor` — it checks the gateway, Decision Board and Symdex executables; validates the exact Codex MCP and instruction blocks as `codex-mcp` / `codex-instructions`; checks connectivity and auth for `[server]`; reports client and cortex versions; and flags a lingering `CHANGEME` agent_id
 - Run `codex mcp list` and confirm the `firekeep` entry exists
 - Check that the `host` or `base_url` in `~/.firekeep/config` `[server]` is reachable from your machine
 - Verify `docker compose ps` on the VPS shows services healthy
 - Confirm ports `8050`, `8060`, `8070`, `8080`, and `8100` are reachable as intended (`8090` is not used; Symdex stays local behind the gateway)
 
-### Codex starts without repo guidance
+### Codex does not use Firekeep proactively
 
-- Confirm you started Codex from the Firekeep repo root or a subdirectory of it
-- Confirm `AGENTS.md` exists in the repo root
+- Run `firekeep doctor` and check the `codex-mcp` and `codex-instructions` rows
+- Confirm `~/.codex/AGENTS.md` contains the Firekeep-owned instruction block
+- Re-run `firekeep install --runtime codex`, then restart Codex so it reloads both MCP registration and guidance
+- Repository-specific guidance is separate: confirm that repository has its own `AGENTS.md` when the task depends on project rules
 
 ### Symdex tools fail in Codex
 

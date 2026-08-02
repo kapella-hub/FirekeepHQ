@@ -18,6 +18,8 @@ from urllib.parse import urlparse
 
 from firekeep_client import __version__, pathenv, resolver, serverinit, state, updater, wizard
 from firekeep_client.adapters import get_adapter
+from firekeep_client.adapters.base import FIREKEEP_INSTRUCTIONS, INSTRUCTIONS_BEGIN, INSTRUCTIONS_END
+from firekeep_client.adapters.codex import mcp_block_is_current
 from firekeep_client.transport import get_json, TransportError
 
 
@@ -516,7 +518,10 @@ def _check_venv_scripts(venv: Path, is_windows: bool | None = None) -> tuple[str
         is_windows = os.name == "nt"
     bindir = venv / ("Scripts" if is_windows else "bin")
     ext = ".exe" if is_windows else ""
-    wanted = ("firekeep", "firekeep-shim", "firekeep-sidecar")
+    wanted = (
+        "firekeep", "firekeep-shim", "firekeep-sidecar",
+        "firekeep-decision", "firekeep-symdex",
+    )
     missing = [n for n in wanted if not (bindir / f"{n}{ext}").exists()]
     if missing:
         # Partial-venv detection: `firekeep install` only creates the venv when
@@ -536,6 +541,73 @@ def _check_venv_scripts(venv: Path, is_windows: bool | None = None) -> tuple[str
             )
         return ("venv-scripts", "fail", f"missing in {bindir}: {', '.join(missing)}")
     return ("venv-scripts", "ok", str(bindir))
+
+
+def _check_codex_adapter(venv: Path) -> list[tuple[str, str, str]]:
+    config = Path.home() / ".codex" / "config.toml"
+    instructions = Path.home() / ".codex" / "AGENTS.md"
+    repair = "run `firekeep install --runtime codex`"
+
+    instruction_text = ""
+    instruction_error: OSError | None = None
+    try:
+        if instructions.exists():
+            instruction_text = instructions.read_text(encoding="utf-8")
+    except OSError as exc:
+        instruction_error = exc
+    has_instruction_block = INSTRUCTIONS_BEGIN in instruction_text
+    expected_instructions = f"{INSTRUCTIONS_BEGIN}\n{FIREKEEP_INSTRUCTIONS}{INSTRUCTIONS_END}"
+    instructions_current = expected_instructions in instruction_text
+
+    if not config.exists():
+        if not has_instruction_block:
+            return []
+        rows = [
+            ("codex-mcp", "fail", f"{config} missing while Firekeep instructions exist; {repair}"),
+        ]
+        if instructions_current:
+            rows.append(("codex-instructions", "ok", str(instructions)))
+        else:
+            rows.append((
+                "codex-instructions", "warn",
+                f"Firekeep instruction block missing or stale in {instructions}; {repair}",
+            ))
+        return rows
+
+    try:
+        config_text = config.read_text(encoding="utf-8")
+    except OSError as exc:
+        if not has_instruction_block:
+            return []
+        return [("codex-mcp", "fail", f"cannot read {config}: {exc}; {repair}")]
+
+    is_managed = (
+        "[mcp_servers.firekeep]" in config_text
+        or "firekeep-client (managed" in config_text
+        or has_instruction_block
+    )
+    if not is_managed:
+        return []
+
+    rows: list[tuple[str, str, str]] = []
+    if not mcp_block_is_current(config_text, _venv_bin(venv)):
+        rows.append(("codex-mcp", "fail", f"stale or missing Firekeep gateway in {config}; {repair}"))
+    else:
+        rows.append(("codex-mcp", "ok", str(config)))
+
+    if instruction_error is not None:
+        rows.append((
+            "codex-instructions", "warn",
+            f"cannot read {instructions}: {instruction_error}; {repair}",
+        ))
+    elif not instructions_current:
+        rows.append((
+            "codex-instructions", "warn",
+            f"Firekeep instruction block missing or stale in {instructions}; {repair}",
+        ))
+    else:
+        rows.append(("codex-instructions", "ok", str(instructions)))
+    return rows
 
 
 _WIN_BROAD_PRINCIPALS = ("Everyone", "BUILTIN\\Users", "Authenticated Users", "Users:")
@@ -691,6 +763,7 @@ def run_doctor(cfg=None) -> list[tuple[str, str, str]]:
     if api_key_result is not None:
         results.append(api_key_result)
     results.append(_check_venv_scripts(_firekeep_home() / "venv"))
+    results.extend(_check_codex_adapter(_firekeep_home() / "venv"))
     results.append(_check_config_perms(_config_path()))
     ca = _check_ca_expiry(cfg)
     if ca is not None:
