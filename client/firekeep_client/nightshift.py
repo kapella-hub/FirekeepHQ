@@ -107,6 +107,24 @@ def _detect_llm_base(get_json: Callable[..., Any]) -> tuple[str, list[str]] | No
     return None
 
 
+def _model_available(model: str, models: list[str]) -> bool:
+    """Whether `model` names something in `models`, tolerating Ollama's tag forms.
+
+    Ollama's /v1/models reports fully-tagged ids (`llama3:latest`) while its chat API
+    accepts and resolves the bare name (`llama3`). Exact equality therefore rejects a
+    model that works — and because the check runs before leasing, that false veto is
+    silent: the shift aborts and distillation simply stops. Compared both directions so
+    neither spelling is penalised.
+    """
+    if model in models:
+        return True
+    if ":" not in model and f"{model}:latest" in models:
+        return True
+    if model.endswith(":latest") and model[: -len(":latest")] in models:
+        return True
+    return False
+
+
 def _remote_model_refusal() -> str | None:
     """Night Shift's premise is that session content never leaves the machine. Ollama
     exposes `<name>:cloud` models that transparently route to a third party, which
@@ -114,7 +132,13 @@ def _remote_model_refusal() -> str | None:
     bootstrap's SSL_CERT_FILE / FIREKEEP_KEEP_SSL_CERT_FILE opt-out.
     """
     model = _llm_model()
-    if model.endswith(":cloud") and not os.environ.get("FIREKEEP_NIGHTSHIFT_ALLOW_REMOTE"):
+    # Match the TAG, not a literal ":cloud" suffix. Ollama's cloud models are commonly
+    # tagged `<name>:<size>-cloud` (gpt-oss:120b-cloud, qwen3-coder:480b-cloud) — the
+    # form its own cloud docs lead with — so a suffix test on ":cloud" alone lets the
+    # documented spelling straight through.
+    tag = model.rsplit(":", 1)[-1] if ":" in model else ""
+    if (tag == "cloud" or tag.endswith("-cloud")) and not os.environ.get(
+            "FIREKEEP_NIGHTSHIFT_ALLOW_REMOTE"):
         return (f"model '{model}' is a CLOUD model — Night Shift distills session "
                 f"content, which would leave this machine. Pick a local model, or set "
                 f"FIREKEEP_NIGHTSHIFT_ALLOW_REMOTE=1 if that is genuinely intended")
@@ -249,7 +273,7 @@ def run(max_tasks: int = _DEFAULT_MAX_TASKS, dry_run: bool = False, *,
     # would fail deep in the run with a bare 404. Lenient by design: an empty list
     # means the backend told us nothing readable, not that it has no models.
     base, models = detected
-    if models and _llm_model() not in models:
+    if models and not _model_available(_llm_model(), models):
         out["error"] = (f"model '{_llm_model()}' is not loaded at {base}; available: "
                         f"{', '.join(sorted(models))} — set FIREKEEP_NIGHTSHIFT_LLM_MODEL")
         return out

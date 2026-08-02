@@ -226,6 +226,26 @@ class TestStop:
                    and a.get("title") == "distill_session"]
         assert len(distill) == 1
 
+    def test_marker_not_written_when_relay_rejects_the_task(self, client_env, monkeypatch):
+        """Relay tools report failure IN-BAND as {"error": ...} at HTTP 200 — _mcp.call_tool
+        raises only on JSON-RPC-level errors (see its docstring), which is why nightshift
+        carries a _relay_ok() helper. So a rejected enqueue returns normally, and writing
+        the dedup marker regardless would dedup away a task that was never created,
+        losing that session's distillation for the marker's whole lifetime. Mark only
+        what actually landed."""
+        from firekeep_client.hooks import _mcp, stop
+        calls = []
+
+        def fake(service, tool, args, **k):
+            calls.append((tool, args))
+            return {"error": "validation failed"} if tool == "relay_task_post" else {}
+
+        monkeypatch.setattr(_mcp, "call_tool", fake)
+        stop.run({"session_id": "runtime-fail"})
+        stop.run({"session_id": "runtime-fail"})
+        posts = [a for t, a in calls if t == "relay_task_post"]
+        assert len(posts) == 2, "a rejected enqueue must be retried, not deduped away"
+
     def test_runtime_session_marker_declares_an_expiry(self, client_env, monkeypatch):
         """state.reap_stale sweeps scratch ONLY by each marker's declared expiry, never
         by file age. A permanent marker per runtime session would therefore leave one

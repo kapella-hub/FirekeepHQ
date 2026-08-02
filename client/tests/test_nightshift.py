@@ -231,6 +231,37 @@ def test_empty_model_list_does_not_block_the_shift(cfg_env, monkeypatch):
     assert not out.get("error")
 
 
+def test_untagged_model_matches_ollamas_tagged_id(cfg_env, monkeypatch):
+    """Ollama's /v1/models reports fully-tagged ids ("llama3:latest") while its chat API
+    accepts and resolves the BARE name ("llama3"). Exact-equality matching therefore
+    false-vetoes a model that works perfectly — and the veto is silent in the worst way:
+    the shift aborts before leasing, so distillation simply never happens and the queue
+    grows. A guard against a bare 404 must not itself become the thing that stops the
+    feature."""
+    monkeypatch.delenv("FIREKEEP_NIGHTSHIFT_LLM_BASE", raising=False)
+    monkeypatch.setenv("FIREKEEP_NIGHTSHIFT_LLM_MODEL", "llama3")
+    rec = _Recorder({"relay_task_list": {"tasks": [_task()], "count": 1}})
+    models = {"data": [{"id": "llama3:latest"}, {"id": "qwen3:30b"}]}
+    out = nightshift.run(call_tool=rec, post_json=_llm_ok(_SYNTH),
+                         get_json=lambda *a, **k: models)
+    assert not out.get("error")
+    assert rec.named("relay_lease")
+
+
+def test_size_tagged_cloud_model_is_also_refused(cfg_env, monkeypatch):
+    """Ollama's cloud tags are commonly `<size>-cloud` — `gpt-oss:120b-cloud` is the
+    spelling its own cloud documentation leads with. A guard matching only a literal
+    ":cloud" suffix lets the documented form straight through, which is precisely the
+    egress it exists to prevent."""
+    monkeypatch.setenv("FIREKEEP_NIGHTSHIFT_LLM_MODEL", "gpt-oss:120b-cloud")
+    rec = _Recorder({"relay_task_list": {"tasks": [_task()], "count": 1}})
+    out = nightshift.run(call_tool=rec, post_json=_llm_ok(_SYNTH),
+                         get_json=lambda *a, **k: {"data": []})
+    assert "cloud" in out["error"].lower()
+    assert "FIREKEEP_NIGHTSHIFT_ALLOW_REMOTE" in out["error"]
+    assert not rec.named("relay_lease")
+
+
 def test_cloud_model_is_refused_before_touching_anything(cfg_env, monkeypatch):
     """Night Shift's whole premise is that session content never leaves the machine.
     An Ollama `:cloud` model silently routes it to a third party, inverting that — so

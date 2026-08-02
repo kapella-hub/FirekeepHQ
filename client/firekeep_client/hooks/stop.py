@@ -122,11 +122,17 @@ def run(payload: dict) -> dict:
         marker_ttl = None if sid else _FALLBACK_DEDUPE_TTL_SECONDS
         if state.read_scratch(marker):
             return {"systemMessage": _MSG}
-        _mcp.call_tool("relay", "relay_task_post", task, cfg=cfg)
-        try:
-            state.write_scratch(marker, "1", ttl_seconds=marker_ttl)
-        except Exception:  # noqa: BLE001
-            pass
+        resp = _mcp.call_tool("relay", "relay_task_post", task, cfg=cfg)
+        # Mark only what actually landed. Relay tools report failure IN-BAND as
+        # {"error": ...} at HTTP 200 — call_tool raises on JSON-RPC-level errors but
+        # returns a tool-level error normally, which is why nightshift carries its own
+        # _relay_ok(). Writing the marker regardless would dedup away a task that was
+        # never created, losing that session's distillation for the marker's lifetime.
+        if not (isinstance(resp, dict) and resp.get("error")):
+            try:
+                state.write_scratch(marker, "1", ttl_seconds=marker_ttl)
+            except Exception:  # noqa: BLE001
+                pass
     except Exception as e:  # noqa: BLE001
         hooklog.log_failure(_HOOK, f"distill enqueue failed: {e}")
 
