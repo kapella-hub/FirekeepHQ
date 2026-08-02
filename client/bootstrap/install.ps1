@@ -92,7 +92,10 @@ if (Test-Path $FirekeepExe) {
         $Installed = (& (Join-Path $Venv 'Scripts\python.exe') -c "import firekeep_client; print(firekeep_client.__version__)" 2>$null | Out-String).Trim()
     } catch { $Installed = '' }
 }
-$NonInteractiveArgs = if ($Installed -or $env:FIREKEEP_JOIN) { @('--non-interactive') } else { @() }
+[string[]]$NonInteractiveArgs = @()
+if ($Installed -or $env:FIREKEEP_JOIN) {
+    $NonInteractiveArgs = @('--non-interactive')
+}
 
 # --- idempotent fast path: already at $V -> re-render only, NO venv rebuild -------
 # Re-running the bootstrap when already current (e.g. to re-target a runtime via

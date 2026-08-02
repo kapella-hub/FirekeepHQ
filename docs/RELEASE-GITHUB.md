@@ -162,6 +162,9 @@ cd client && python -m pytest tests/test_e2e_bootstrap.py -m e2e -q
 ```
 
 
+- **0.1.32** — Windows updates preserve the optional `--non-interactive`
+  handoff as a one-element argument array, so PowerShell does not splat it into
+  individual characters before adapter re-rendering.
 - **0.1.31** — Existing installs and forced reinstalls reuse their connection
   without prompting, and stored API keys are never rendered as prompt defaults.
   Kiro upgrades now remove the retired per-service MCP entries and grants from
