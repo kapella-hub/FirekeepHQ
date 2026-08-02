@@ -1,4 +1,7 @@
-"""Smoke test: the package imports and exposes the frozen version anchor."""
+"""Smoke test: package identity, layout, and dependency compatibility bounds."""
+
+import tomllib
+from pathlib import Path
 
 
 def test_package_imports_and_exposes_frozen_version():
@@ -43,3 +46,12 @@ def test_frozen_module_layout_is_present():
     # exists in the layout without running it; its import-time health is covered
     # by the shim test suite wherever the deps are installed.
     assert importlib.util.find_spec("firekeep_client.shim") is not None
+
+
+def test_mcp_dependency_stays_on_the_supported_major():
+    """A bare ``mcp>=1.28`` selected incompatible mcp 2.0 on fresh installs."""
+    project = tomllib.loads(
+        (Path(__file__).parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+    )["project"]
+    assert "mcp>=1.28,<2" in project["dependencies"]
+    assert "httpx>=0.27,<1" in project["dependencies"]

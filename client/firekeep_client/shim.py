@@ -3,8 +3,10 @@
 This is the ONLY module in firekeep_client permitted to import `mcp` and `httpx`.
 The runtime spawns one `firekeep-shim --service <svc>` process per HTTP MCP server.
 At spawn it resolves the configured server, terminates internal-CA TLS itself, and
-injects X-API-Key / X-Agent-Id on every request. Fail-loud on every error path;
-NEVER logs the api_key.
+injects X-API-Key / X-Agent-Id on every request. Startup/configuration failures
+surface a named diagnostic, while transient post-initialize upstream failures
+become ordinary MCP errors so the runtime's stdio connection survives. NEVER logs
+the api_key.
 """
 from __future__ import annotations
 
@@ -13,6 +15,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import ssl
 import sys
 
@@ -38,6 +41,30 @@ PROG = "firekeep-shim"
 # Bounded timeouts — a dead upstream must surface, never wedge the runtime (spec §5.2).
 CONNECT_TIMEOUT = 10.0
 SSE_READ_TIMEOUT = 300.0
+
+_NO_REQUEST_ID = object()
+_UPSTREAM_UNAVAILABLE = (
+    "Firekeep upstream is temporarily unavailable. For write tools, check whether "
+    "the operation completed before retrying."
+)
+_AUTH_REJECTED = (
+    "Firekeep authentication was rejected. Run `firekeep doctor`; if the credential "
+    "was revoked, re-enroll this client and restart the agent."
+)
+_TLS_FAILED = (
+    "Firekeep TLS verification failed. Run `firekeep doctor` and check the configured "
+    "server CA before restarting the agent."
+)
+_INITIALIZATION_INTERRUPTED = (
+    "Firekeep service initialization was interrupted. Run `firekeep doctor` and "
+    "restart the agent."
+)
+# Two SSE line endings delimit an event.  The lookarounds make CRLF indivisible:
+# without them, regex backtracking can reinterpret one ``\r\n`` as the two tokens
+# ``\r`` + ``\n`` and expose a partial event to the downstream SSE decoder.
+_SSE_EVENT_BOUNDARY = re.compile(
+    br"(?:\r\n|\r(?!\n)|(?<!\r)\n)(?:\r\n|\r(?!\n)|(?<!\r)\n)"
+)
 
 
 def _stderr(message: str) -> None:
@@ -95,6 +122,222 @@ class _StashSessionAuth(httpx.Auth):
         yield request
 
 
+class _RecoveringSSEStream(httpx.AsyncByteStream):
+    """Turn a terminal MCP SSE read failure into a final JSON-RPC error event.
+
+    httpx returns after receiving response headers, so an upstream reset while the
+    body is being read happens outside ``AsyncClient.send``.  MCP 1.x swallows that
+    exception and leaves the matching runtime request pending forever.  Buffer one
+    SSE event at a time: complete progress events are forwarded immediately, while
+    a partial event can be discarded safely if the connection ends.  If a complete
+    final response was forwarded, the MCP consumer closes this stream without
+    requesting another item, so no synthetic error is appended.
+    """
+
+    def __init__(
+        self,
+        stream: httpx.AsyncByteStream,
+        request_id,
+        message: str = _UPSTREAM_UNAVAILABLE,
+    ) -> None:
+        self._stream = stream
+        self._request_id = request_id
+        self._message = message
+
+    @staticmethod
+    def _error_event(request_id, message: str) -> bytes:
+        payload = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {"code": -32000, "message": message},
+            },
+            separators=(",", ":"),
+        )
+        return f"event: message\ndata: {payload}\n\n".encode()
+
+    async def __aiter__(self):
+        pending = bytearray()
+        try:
+            async for chunk in self._stream:
+                pending.extend(chunk)
+                while match := _SSE_EVENT_BOUNDARY.search(pending):
+                    end = match.end()
+                    if end == len(pending) and pending[-1] == ord("\r"):
+                        # A chunk boundary may split CRLF.  Forwarding the CR now
+                        # makes httpx-sse hold it while our buffer later holds the
+                        # LF, so neither layer ever sees the complete delimiter.
+                        # Wait for one more byte; true EOF is handled below.
+                        break
+                    yield bytes(pending[:end])
+                    del pending[:end]
+        except httpx.TransportError:
+            # The diagnostic may contain network or credential details.  The
+            # stable error below is the only text exposed to the runtime.
+            pass
+
+        # At actual EOF/error, a trailing CR is unambiguously a legal SSE line
+        # ending.  Flush every now-complete event before replacing any remaining
+        # partial tail.  A terminal JSON-RPC response makes the consumer close
+        # this generator at the yield, so the synthetic error is never requested.
+        while match := _SSE_EVENT_BOUNDARY.search(pending):
+            end = match.end()
+            yield bytes(pending[:end])
+            del pending[:end]
+
+        # Reaching this point means the consumer requested another event but the
+        # upstream ended before supplying a final JSON-RPC response.  Do not emit
+        # ``pending``: it may be half a JSON document and would corrupt our event.
+        yield self._error_event(self._request_id, self._message)
+
+    async def aclose(self) -> None:
+        await self._stream.aclose()
+
+
+class RecoveringMCPClient(httpx.AsyncClient):
+    """Keep the runtime's stdio MCP session alive across an upstream outage.
+
+    The Python MCP SDK lets a POST transport exception escape its request task;
+    that cancels the SDK task group and closes both streams.  Agent runtimes such
+    as Codex do not necessarily respawn a dead stdio child, so one server deploy
+    otherwise turns every later tool call into ``Transport closed``.
+
+    After a successful initialize exchange (confirmed by the runtime's ordered
+    ``notifications/initialized``), convert a failed JSON-RPC request into a
+    same-id JSON-RPC error and a failed notification into the required empty 202
+    response.  The failed request is deliberately *not* replayed: a
+    read failure can be ambiguous and the upstream may already have committed a
+    mutating tool call.  A later runtime request gets a fresh HTTP exchange and
+    can recover naturally once the server is back.
+
+    Failures before initialization response headers still propagate to ``run()``
+    for the existing fail-loud startup diagnostics.  An interrupted initialize
+    SSE body becomes an initialization-specific JSON-RPC error instead of hanging.
+    A 404 is left to the MCP SDK, which has explicit session-terminated handling.
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._mcp_initialized = False
+
+    @staticmethod
+    def _message_info(request: httpx.Request):
+        if request.method != "POST":
+            return None
+        try:
+            body = json.loads(request.content)
+        except (ValueError, TypeError, httpx.RequestNotRead):
+            return None
+        if not isinstance(body, dict):
+            return None
+        if isinstance(body.get("method"), str):
+            return body["method"], body.get("id", _NO_REQUEST_ID)
+        if "id" in body and ("result" in body or "error" in body):
+            # Client responses to server sampling/elicitation/roots requests do
+            # not have a method and never receive their own JSON-RPC response.
+            return None, _NO_REQUEST_ID
+        return None
+
+    @staticmethod
+    def _transport_failure_message(exc: httpx.TransportError) -> str:
+        current: BaseException | None = exc
+        seen: set[int] = set()
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            if isinstance(current, ssl.SSLError) or "CERTIFICATE_VERIFY_FAILED" in str(
+                current
+            ).upper():
+                return _TLS_FAILED
+            current = current.__cause__ or current.__context__
+        return _UPSTREAM_UNAVAILABLE
+
+    @staticmethod
+    def _failure_response(
+        request: httpx.Request,
+        request_id,
+        message: str = _UPSTREAM_UNAVAILABLE,
+    ) -> httpx.Response:
+        if request_id is _NO_REQUEST_ID:
+            # MCP notifications never receive a JSON-RPC response.
+            return httpx.Response(202, request=request)
+        return httpx.Response(
+            200,
+            json={
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {"code": -32000, "message": message},
+            },
+            headers={"content-type": "application/json"},
+            request=request,
+        )
+
+    async def send(
+        self,
+        request: httpx.Request,
+        *,
+        stream: bool = False,
+        auth=httpx.USE_CLIENT_DEFAULT,
+        follow_redirects=httpx.USE_CLIENT_DEFAULT,
+    ) -> httpx.Response:
+        info = self._message_info(request)
+        if info is not None and info[0] == "notifications/initialized":
+            # This notification is emitted only after ClientSession has parsed
+            # and accepted the complete initialize result.  Headers alone are
+            # not a successful exchange: an SSE body can still reset or end.
+            self._mcp_initialized = True
+        try:
+            response = await super().send(
+                request,
+                stream=stream,
+                auth=auth,
+                follow_redirects=follow_redirects,
+            )
+        except httpx.TransportError as exc:
+            if not self._mcp_initialized or info is None or info[0] == "initialize":
+                raise
+            return self._failure_response(
+                request, info[1], self._transport_failure_message(exc)
+            )
+
+        if (
+            self._mcp_initialized
+            and info is not None
+            and info[0] != "initialize"
+            and not response.is_success
+            and response.status_code != 404
+        ):
+            # ``stream=True`` leaves the real error response open; close it before
+            # replacing it with the bounded in-memory JSON-RPC response.
+            await response.aclose()
+            message = (
+                _AUTH_REJECTED
+                if response.status_code in (401, 403)
+                else _UPSTREAM_UNAVAILABLE
+            )
+            return self._failure_response(request, info[1], message)
+
+        if (
+            stream
+            and info is not None
+            and (self._mcp_initialized or info[0] == "initialize")
+            and info[1] is not _NO_REQUEST_ID
+            and response.is_success
+            and response.headers.get("content-type", "")
+            .partition(";")[0]
+            .strip()
+            .lower()
+            == "text/event-stream"
+        ):
+            message = (
+                _INITIALIZATION_INTERRUPTED
+                if info[0] == "initialize"
+                else _UPSTREAM_UNAVAILABLE
+            )
+            response.stream = _RecoveringSSEStream(response.stream, info[1], message)
+
+        return response
+
+
 def build_client(endpoint: Endpoint, *, agent: str | None = None) -> httpx.AsyncClient:
     """httpx client with resolver-supplied auth headers + CA/verify policy.
 
@@ -121,7 +364,7 @@ def build_client(endpoint: Endpoint, *, agent: str | None = None) -> httpx.Async
     # (resolved agent). Static X-Agent-Id/X-API-Key stay as header
     # defaults; the session id is dynamic (set post-spawn) so it rides httpx.Auth.
     auth = _StashSessionAuth(agent) if agent else None
-    return httpx.AsyncClient(
+    return RecoveringMCPClient(
         headers=endpoint.headers,
         verify=verify,
         auth=auth,

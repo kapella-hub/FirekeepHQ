@@ -108,7 +108,7 @@ def test_build_client_str_verify_builds_explicit_ssl_context(monkeypatch):
         def __init__(self, **kwargs):
             seen_kwargs.update(kwargs)
 
-    monkeypatch.setattr(shim.httpx, "AsyncClient", _FakeAsyncClient)
+    monkeypatch.setattr(shim, "RecoveringMCPClient", _FakeAsyncClient)
 
     endpoint = Endpoint(
         mcp_url="https://firekeep.example/mcp/cortex",
@@ -137,7 +137,7 @@ def test_build_client_verify_false_is_not_turned_into_a_context(monkeypatch):
         def __init__(self, **kwargs):
             seen_kwargs.update(kwargs)
 
-    monkeypatch.setattr(shim.httpx, "AsyncClient", _FakeAsyncClient)
+    monkeypatch.setattr(shim, "RecoveringMCPClient", _FakeAsyncClient)
 
     endpoint = Endpoint(
         mcp_url="http://198.51.100.7:8080/mcp",

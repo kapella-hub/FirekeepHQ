@@ -29,6 +29,7 @@ _DEP_BEARING_TESTS = (
     "test_shim_bypass.py",
     "test_shim_fail_loud.py",
     "test_shim_identity.py",
+    "test_shim_recovery.py",
     "test_shim_skeleton.py",
 )
 if any(importlib.util.find_spec(dep) is None for dep in _SHIM_DEPS):
