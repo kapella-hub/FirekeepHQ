@@ -68,6 +68,73 @@ def test_blank_ports_key_stays_absent():
     assert cfg["dist"]["base_url"] == "https://releases.example"
 
 
+def test_blank_paths_key_stays_absent():
+    cfg = _cfg(PATHS)
+    wizard.prompt_config(
+        cfg,
+        ask=_scripted([]),
+        probe=lambda *_: False,
+        fetch_defaults=lambda _cfg: {},
+    )
+    assert "api_key" not in cfg["server"]
+
+
+@pytest.mark.parametrize(
+    "config_text",
+    [
+        SKELETON + "\napi_key = nxs_existing_secret\n",
+        PATHS.replace("api_key =", "api_key = nxs_existing_secret"),
+    ],
+)
+def test_existing_api_key_is_not_a_prompt_default_and_blank_keeps_it(config_text):
+    cfg = _cfg(config_text)
+    ask = _scripted([])
+
+    wizard.prompt_config(
+        cfg,
+        ask=ask,
+        probe=lambda *_: False,
+        fetch_defaults=lambda _cfg: {},
+    )
+
+    api_prompt = next(item for item in ask.seen if item[0].startswith("API key"))
+    assert api_prompt[1] == ""
+    assert all("nxs_existing_secret" not in part for item in ask.seen for part in item)
+    assert cfg["server"]["api_key"] == "nxs_existing_secret"
+
+
+def test_typed_api_key_replaces_existing_without_exposing_it_as_default():
+    cfg = _cfg(SKELETON + "\napi_key = nxs_existing_secret\n")
+
+    def ask(prompt, default=""):
+        if prompt.startswith("API key"):
+            assert default == ""
+            return "nxs_replacement"
+        return default
+
+    wizard.prompt_config(cfg, ask=ask)
+    assert cfg["server"]["api_key"] == "nxs_replacement"
+
+
+def test_console_prompt_never_contains_existing_api_key(monkeypatch):
+    cfg = _cfg(
+        SKELETON.replace("CHANGEME", "Alex")
+        + "\napi_key = nxs_existing_secret\n"
+    )
+    rendered = []
+
+    def answer_blank(prompt):
+        rendered.append(prompt)
+        return ""
+
+    monkeypatch.setattr("builtins.input", answer_blank)
+    wizard.prompt_config(cfg)
+
+    assert all("nxs_existing_secret" not in prompt for prompt in rendered)
+    assert any("Enter keeps existing" in prompt for prompt in rendered)
+    assert cfg["server"]["api_key"] == "nxs_existing_secret"
+
+
 def test_enter_through_everything_keeps_current_values():
     cfg = _cfg(SKELETON.replace("CHANGEME", "Alex").replace("127.0.0.1", "10.0.0.4"))
     wizard.prompt_config(cfg, ask=_scripted([]))

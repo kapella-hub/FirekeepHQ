@@ -115,6 +115,45 @@ def test_kiro_non_clobbering(fake_home, tmp_path):
     assert data2["hooks"]["agentSpawn"] == [{"command": "echo foreign"}]  # firekeep pruned
 
 
+def test_render_migrates_legacy_entries_from_named_agent(fake_home, tmp_path):
+    from firekeep_client.adapters.base import LEGACY_MCP_KEYS
+
+    path = fake_home / ".kiro" / "agents" / "firekeep.json"
+    path.parent.mkdir(parents=True)
+    legacy_grants = [f"@{key}" for key in LEGACY_MCP_KEYS]
+    path.write_text(json.dumps({
+        "mcpServers": {
+            **{key: {"command": "retired"} for key in LEGACY_MCP_KEYS},
+            "firekeep-cortex-custom": {"command": "keep-prefix-match"},
+            "user-server": {"command": "keep-user-server"},
+        },
+        "tools": [
+            "fs_read", *legacy_grants, "@nexus-cortex/custom", "@user-server",
+            {"future-structured-grant": True},
+        ],
+        "allowedTools": [
+            "fs_read", *legacy_grants, "@nexus-cortex/custom", "@user-server",
+            {"future-structured-grant": True},
+        ],
+    }), encoding="utf-8")
+
+    get_adapter("kiro").render(venv_bin=tmp_path / "venv" / "Scripts")
+    data = _read(path)
+
+    assert not set(LEGACY_MCP_KEYS) & set(data["mcpServers"])
+    assert data["mcpServers"]["firekeep-cortex-custom"] == {"command": "keep-prefix-match"}
+    assert data["mcpServers"]["user-server"] == {"command": "keep-user-server"}
+    assert "firekeep" in data["mcpServers"]
+    for field in ("tools", "allowedTools"):
+        string_grants = {entry for entry in data[field] if isinstance(entry, str)}
+        assert not set(legacy_grants) & string_grants
+        assert "fs_read" in data[field]
+        assert "@nexus-cortex/custom" in data[field]
+        assert "@user-server" in data[field]
+        assert {"future-structured-grant": True} in data[field]
+        assert "@firekeep" in data[field]
+
+
 def _legacy_mcp_json(fake_home, payload):
     p = fake_home / ".kiro" / "settings" / "mcp.json"
     p.parent.mkdir(parents=True, exist_ok=True)

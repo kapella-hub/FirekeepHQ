@@ -100,31 +100,41 @@ RUNTIME_ARG=""
 [ -n "${FIREKEEP_RUNTIME:-}" ] && RUNTIME_ARG="--runtime ${FIREKEEP_RUNTIME}"
 FIREKEEP_BIN="${VENV}/bin/firekeep"
 
+# Detect an existing install independently of the fast path. Version-changing updates and
+# FIREKEEP_FORCE_REINSTALL both rebuild below, but their final hand-off must reuse the
+# existing connection instead of prompting for it again. Join codes are zero-prompt too.
+installed=""
+if [ -x "${FIREKEEP_BIN}" ]; then
+    installed="$("${VENV}/bin/python" -c 'import firekeep_client; print(firekeep_client.__version__)' 2>/dev/null || true)"
+fi
+NON_INTERACTIVE_ARG=""
+if [ -n "${installed}" ] || [ -n "${FIREKEEP_JOIN:-}" ]; then
+    NON_INTERACTIVE_ARG="--non-interactive"
+fi
+
 # --- idempotent fast path: already at ${V} -> re-render only, skip the rebuild ----
 # Mirrors install.ps1. On POSIX the rebuild is not lock-blocked (unlink of a running exe
 # works), but skipping a needless reprovision is faster and lets FIREKEEP_RUNTIME re-target a
 # runtime without rebuilding. The wizard hand-off only RE-RENDERS adapters (never touches the
-# venv). FIREKEEP_FORCE_REINSTALL forces the full reinstall path.
-if [ -x "${FIREKEEP_BIN}" ] && [ -z "${FIREKEEP_FORCE_REINSTALL:-}" ]; then
-    installed="$("${VENV}/bin/python" -c 'import firekeep_client; print(firekeep_client.__version__)' 2>/dev/null || true)"
-    if [ "${installed}" = "${V}" ]; then
-        echo "firekeep: already at ${V} — re-rendering adapters, no venv rebuild. Set \
+# venv). FIREKEEP_FORCE_REINSTALL forces the full reinstall path without changing the
+# non-interactive update hand-off.
+if [ "${installed}" = "${V}" ] && [ -z "${FIREKEEP_FORCE_REINSTALL:-}" ]; then
+    echo "firekeep: already at ${V} — re-rendering adapters, no venv rebuild. Set \
 FIREKEEP_FORCE_REINSTALL=1 to force a full reinstall." >&2
-        if ( : < /dev/tty ) 2>/dev/null; then
-            if [ -n "${FIREKEEP_JOIN:-}" ]; then
-                "${FIREKEEP_BIN}" install --dist-base "${BASE}" ${RUNTIME_ARG} --join "${FIREKEEP_JOIN}" < /dev/tty
-            else
-                "${FIREKEEP_BIN}" install --dist-base "${BASE}" ${RUNTIME_ARG} < /dev/tty
-            fi
+    if ( : < /dev/tty ) 2>/dev/null; then
+        if [ -n "${FIREKEEP_JOIN:-}" ]; then
+            "${FIREKEEP_BIN}" install --dist-base "${BASE}" ${RUNTIME_ARG} --join "${FIREKEEP_JOIN}" ${NON_INTERACTIVE_ARG} < /dev/tty
         else
-            if [ -n "${FIREKEEP_JOIN:-}" ]; then
-                "${FIREKEEP_BIN}" install --dist-base "${BASE}" ${RUNTIME_ARG} --join "${FIREKEEP_JOIN}" --non-interactive
-            else
-                "${FIREKEEP_BIN}" install --dist-base "${BASE}" ${RUNTIME_ARG} --non-interactive
-            fi
+            "${FIREKEEP_BIN}" install --dist-base "${BASE}" ${RUNTIME_ARG} ${NON_INTERACTIVE_ARG} < /dev/tty
         fi
-        exit $?
+    else
+        if [ -n "${FIREKEEP_JOIN:-}" ]; then
+            "${FIREKEEP_BIN}" install --dist-base "${BASE}" ${RUNTIME_ARG} --join "${FIREKEEP_JOIN}" --non-interactive
+        else
+            "${FIREKEEP_BIN}" install --dist-base "${BASE}" ${RUNTIME_ARG} --non-interactive
+        fi
     fi
+    exit $?
 fi
 
 # --- 3. this version's SHA256SUMS, fetched once ------------------------------
@@ -246,9 +256,9 @@ fi
 # local testing. In a subshell only the subshell dies, so the probe just returns false.
 if ( : < /dev/tty ) 2>/dev/null; then
     if [ -n "${FIREKEEP_JOIN:-}" ]; then
-        "${FIREKEEP_BIN}" install --dist-base "${BASE}" ${RUNTIME_ARG} --join "${FIREKEEP_JOIN}" < /dev/tty
+        "${FIREKEEP_BIN}" install --dist-base "${BASE}" ${RUNTIME_ARG} --join "${FIREKEEP_JOIN}" ${NON_INTERACTIVE_ARG} < /dev/tty
     else
-        "${FIREKEEP_BIN}" install --dist-base "${BASE}" ${RUNTIME_ARG} < /dev/tty
+        "${FIREKEEP_BIN}" install --dist-base "${BASE}" ${RUNTIME_ARG} ${NON_INTERACTIVE_ARG} < /dev/tty
     fi
 else
     echo "firekeep: no terminal available — writing a default config (not prompting)" >&2

@@ -83,6 +83,17 @@ $FirekeepExe  = Join-Path $Venv 'Scripts\firekeep.exe'
 $RuntimeArgs = if ($env:FIREKEEP_RUNTIME) { @('--runtime', $env:FIREKEEP_RUNTIME) } else { @() }
 $JoinArgs = if ($env:FIREKEEP_JOIN) { @('--join', $env:FIREKEEP_JOIN) } else { @() }
 
+# Detect an existing install independently of the fast path. Version-changing updates and
+# FIREKEEP_FORCE_REINSTALL both rebuild below, but their final hand-off must reuse the
+# existing connection instead of prompting for it again. Join codes are zero-prompt too.
+$Installed = ''
+if (Test-Path $FirekeepExe) {
+    try {
+        $Installed = (& (Join-Path $Venv 'Scripts\python.exe') -c "import firekeep_client; print(firekeep_client.__version__)" 2>$null | Out-String).Trim()
+    } catch { $Installed = '' }
+}
+$NonInteractiveArgs = if ($Installed -or $env:FIREKEEP_JOIN) { @('--non-interactive') } else { @() }
+
 # --- idempotent fast path: already at $V -> re-render only, NO venv rebuild -------
 # Re-running the bootstrap when already current (e.g. to re-target a runtime via
 # FIREKEEP_RUNTIME) must NOT rebuild the venv: `uv venv --clear` below fails on Windows against
@@ -90,19 +101,14 @@ $JoinArgs = if ($env:FIREKEEP_JOIN) { @('--join', $env:FIREKEEP_JOIN) } else { @
 # it, correctly). If the installed version already equals $V, skip fetch+provision+install and
 # hand straight to the wizard, which only RE-RENDERS adapters (never touches the venv — see the
 # 0.1.3 fix). This makes a re-run while agents are live succeed. FIREKEEP_FORCE_REINSTALL=1 forces
-# the full reinstall path.
-if ((Test-Path $FirekeepExe) -and -not $env:FIREKEEP_FORCE_REINSTALL) {
-    try {
-        $Installed = (& (Join-Path $Venv 'Scripts\python.exe') -c "import firekeep_client; print(firekeep_client.__version__)" 2>$null | Out-String).Trim()
-    } catch { $Installed = '' }
-    if ($Installed -eq $V) {
-        Write-Host "firekeep: already at $V - re-rendering adapters, no venv rebuild. Set FIREKEEP_FORCE_REINSTALL=1 to force a full reinstall."
-        & $FirekeepExe install --dist-base $Base @RuntimeArgs @JoinArgs
-        $FirekeepExit = $LASTEXITCODE
-        if (-not $HadUvNativeTls) { Remove-Item Env:UV_NATIVE_TLS -ErrorAction SilentlyContinue }
-        if ($RemovedSslCertFile) { $env:SSL_CERT_FILE = $OrigSslCertFile }
-        exit $FirekeepExit
-    }
+# the full reinstall path without changing the non-interactive update hand-off.
+if (($Installed -eq $V) -and -not $env:FIREKEEP_FORCE_REINSTALL) {
+    Write-Host "firekeep: already at $V - re-rendering adapters, no venv rebuild. Set FIREKEEP_FORCE_REINSTALL=1 to force a full reinstall."
+    & $FirekeepExe install --dist-base $Base @RuntimeArgs @JoinArgs @NonInteractiveArgs
+    $FirekeepExit = $LASTEXITCODE
+    if (-not $HadUvNativeTls) { Remove-Item Env:UV_NATIVE_TLS -ErrorAction SilentlyContinue }
+    if ($RemovedSslCertFile) { $env:SSL_CERT_FILE = $OrigSslCertFile }
+    exit $FirekeepExit
 }
 
 # --- 2. this version's SHA256SUMS, fetched once ------------------------------
@@ -231,7 +237,7 @@ if ($LASTEXITCODE -ne 0) { Die "symdex wheel install failed" }
 # --- 7. hand off to the wizard -------------------------------------------------
 # See the file-header note: no stdin trap and no /dev/tty equivalent needed on this path.
 # @RuntimeArgs = --runtime <FIREKEEP_RUNTIME> when set, else empty for all adapters.
-& $FirekeepExe install --dist-base $Base @RuntimeArgs @JoinArgs
+& $FirekeepExe install --dist-base $Base @RuntimeArgs @JoinArgs @NonInteractiveArgs
 $FirekeepExit = $LASTEXITCODE
 
 # --- restore the caller's TLS env (see the TLS block above) -------------------
