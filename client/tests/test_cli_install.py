@@ -215,6 +215,9 @@ def test_fresh_install_renders_every_native_adapter(tmp_path, monkeypatch):
     codex = tomllib.loads(
         (user_home / ".codex" / "config.toml").read_text(encoding="utf-8")
     )
+    codex_instructions = (
+        user_home / ".codex" / "AGENTS.md"
+    ).read_text(encoding="utf-8")
     kiro = json.loads(
         (user_home / ".kiro" / "agents" / "firekeep.json").read_text(encoding="utf-8")
     )
@@ -223,6 +226,8 @@ def test_fresh_install_renders_every_native_adapter(tmp_path, monkeypatch):
     )
     assert set(claude["mcpServers"]) == expected
     assert set(codex["mcp_servers"]) == expected
+    assert "decision_board" in codex_instructions
+    assert "memory_recall" in codex_instructions
     assert set(kiro["mcpServers"]) == expected
     assert set(opencode["mcp"]) == expected
 

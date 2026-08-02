@@ -162,6 +162,10 @@ cd client && python -m pytest tests/test_e2e_bootstrap.py -m e2e -q
 ```
 
 
+- **0.1.29** — Reliable Codex Decision Board wiring: the gateway initialization
+  carries compact recall/Decision Board guidance, installer failures to update
+  `~/.codex/AGENTS.md` warn visibly, and `firekeep doctor` validates the local
+  backends plus exact Codex MCP/instruction blocks.
 - **0.1.28** — Single-entry `firekeep gateway` adapters for Claude Code, Codex,
   Kiro, and OpenCode; single-use device/member join codes; Solo/Team entitlement
   status; and verified `firekeep init` download/update of the public source-free
