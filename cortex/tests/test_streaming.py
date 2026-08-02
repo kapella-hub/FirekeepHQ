@@ -78,11 +78,15 @@ class TestRecallStreaming:
         assert vector_sources[0]["data"]["score"] == 0.85
 
     @pytest.mark.asyncio
-    async def test_graph_results_streamed_as_sources(self, mock_graph, engine):
+    async def test_graph_results_streamed_as_sources(self, mock_graph, mock_vector, engine):
         """Graph search results should produce source events."""
         mock_graph.query_related.return_value = [
-            {"name": "auth", "description": "Authentication module", "label": "Concept", "distance": 1},
+            {"name": "auth", "description": "Authentication module", "label": "Concept",
+             "distance": 1, "memory_ids": ["m-auth"]},
         ]
+        mock_vector.get_lifecycle_states.return_value = {
+            "m-auth": {"id": "m-auth", "status": "active"}
+        }
 
         query = ContextQuery(task="fix auth", top_k=5)
         events = []
@@ -95,7 +99,7 @@ class TestRecallStreaming:
         assert graph_sources[0]["data"]["content"] == "Authentication module"
 
     @pytest.mark.asyncio
-    async def test_description_less_graph_node_is_skipped(self, mock_graph, engine):
+    async def test_description_less_graph_node_is_skipped(self, mock_graph, mock_vector, engine):
         """A bare node (name but no description) must not stream as a source.
 
         Mirrors _format_graph_entries' `if not description: continue` guard —
@@ -104,8 +108,12 @@ class TestRecallStreaming:
         """
         mock_graph.query_related.return_value = [
             {"name": "bare-node", "description": "", "label": "Concept", "distance": 1},
-            {"name": "auth", "description": "Authentication module", "label": "Concept", "distance": 1},
+            {"name": "auth", "description": "Authentication module", "label": "Concept",
+             "distance": 1, "memory_ids": ["m-auth"]},
         ]
+        mock_vector.get_lifecycle_states.return_value = {
+            "m-auth": {"id": "m-auth", "status": "active"}
+        }
 
         query = ContextQuery(task="fix auth", top_k=5)
         events = []
@@ -166,8 +174,12 @@ class TestRecallStreaming:
         """If one store fails, the other should still yield source events."""
         mock_vector.search.side_effect = RuntimeError("vector down")
         mock_graph.query_related.return_value = [
-            {"name": "concept", "description": "A graph node", "label": "Concept", "distance": 1},
+            {"name": "concept", "description": "A graph node", "label": "Concept",
+             "distance": 1, "memory_ids": ["g1"]},
         ]
+        mock_vector.get_lifecycle_states.return_value = {
+            "g1": {"id": "g1", "status": "active"}
+        }
 
         query = ContextQuery(task="test", top_k=5)
         events = []

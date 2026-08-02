@@ -116,8 +116,7 @@ class TestDashboardShellStaysKeyless:
 
 class TestDashboardApiRequiresKey:
     """Every /dashboard/api/* route: keyless -> 401, keyed -> 200 (or the
-    route's own 2xx/DELETE semantics), covering all seven routes the real
-    router exposes."""
+    route's own 2xx/DELETE semantics), including memory-maintenance routes."""
 
     @pytest.mark.asyncio
     async def test_memories_keyless_401(self, redis, auth_env):
@@ -173,6 +172,55 @@ class TestDashboardApiRequiresKey:
         async with _client(_app(redis)) as c:
             resp = await c.get("/dashboard/api/dlq", headers={"X-API-Key": auth_env})
         assert resp.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_memory_gc_keyless_401(self, redis, auth_env):
+        async with _client(_app(redis)) as c:
+            resp = await c.get("/dashboard/api/memory-gc")
+        assert resp.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_memory_gc_keyed_parses_new_and_legacy_audit(
+        self, redis, auth_env
+    ):
+        await redis.rpush(
+            "gc:eviction:log",
+            '{"id":"new","action":"archived","occurred_at":"2026-08-02T00:00:00Z"}',
+            '{"id":"old","evicted_at":"2026-01-01T00:00:00Z"}',
+        )
+        async with _client(_app(redis)) as c:
+            resp = await c.get(
+                "/dashboard/api/memory-gc", headers={"X-API-Key": auth_env}
+            )
+        assert resp.status_code == 200
+        events = resp.json()["events"]
+        assert events[0]["action"] == "archived"
+        assert events[1]["action"] == "legacy_purge"
+        assert events[1]["legacy"] is True
+
+    @pytest.mark.asyncio
+    async def test_memory_gc_preview_is_scope_gated_and_returns_preview(
+        self, redis, auth_env, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "app.workers.gc.preview_memories",
+            lambda _settings, limit: {
+                "status": "preview",
+                "would_archive_vector": 2,
+                "would_purge_vector": 0,
+                "candidates": [],
+                "truncated": False,
+            },
+        )
+        async with _client(_app(redis)) as c:
+            keyless = await c.post("/dashboard/api/memory-gc/preview")
+            keyed = await c.post(
+                "/dashboard/api/memory-gc/preview",
+                headers={"X-API-Key": auth_env},
+            )
+        assert keyless.status_code == 401
+        assert keyed.status_code == 200
+        assert keyed.json()["would_archive_vector"] == 2
 
     @pytest.mark.asyncio
     async def test_dlq_retry_keyless_401(self, redis, auth_env):

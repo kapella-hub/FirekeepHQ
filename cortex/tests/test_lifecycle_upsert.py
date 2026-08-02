@@ -100,6 +100,23 @@ class TestMergeLifecyclePure:
         merged = _merge_lifecycle(_existing(), _fresh())
         assert merged["last_confirmed_at"] == "2026-06-01T00:00:00+00:00"
 
+    def test_archive_provenance_survives_identical_text_relearn(self):
+        existing = _existing(
+            status="archived",
+            archived_at="2026-04-01T00:00:00+00:00",
+            archive_source="gc",
+            archive_reason="low_value",
+            archived_from_status="active",
+            purge_eligible_at="2026-06-30T00:00:00+00:00",
+        )
+
+        merged = _merge_lifecycle(existing, _fresh())
+
+        assert merged["status"] == "archived"
+        assert merged["archived_at"] == existing["archived_at"]
+        assert merged["archive_source"] == "gc"
+        assert merged["purge_eligible_at"] == existing["purge_eligible_at"]
+
     def test_unknown_existing_agent_id_yields_to_fresh(self):
         """A previously-unattributed point may gain real attribution."""
         merged = _merge_lifecycle(_existing(agent_id="unknown"), _fresh())

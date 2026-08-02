@@ -17,11 +17,12 @@ from app.evals.store import get_eval_summary
 from app.patterns.store import get_relevant_patterns, get_observed_patterns, record_tip_shown
 from app.ops import collect_queue_depths
 from app.skills import internal_key_headers
+from app.skills.search import search_skill_points
 from vault.store import list_secrets
 
 from datetime import datetime, timedelta, timezone
 
-from qdrant_client.models import FieldCondition, Filter, MatchValue
+from qdrant_client.models import FieldCondition, MatchValue
 
 Section = dict[str, Any]
 
@@ -223,22 +224,30 @@ async def cross_agent_section(replay_redis, goal: str, agent_id: str) -> Section
 
 
 async def skills_section(vector, settings, goal: str, project: str | None) -> Section:
-    """Active skills matching the goal (Qdrant scroll; mirrors skills/api list_skills)."""
+    """Active skills matching the goal.
+
+    Uses the shared matcher (`app.skills.search.search_skill_points`) rather than the
+    inline scroll-then-substring copy that used to live here — one implementation, so
+    one bug cannot live in two files. Deliberately NOT wrapped in try/except: the embed
+    is already fail-soft inside the primitive (degrading to the legacy scroll), which is
+    what keeps an embeddings outage from flipping the briefing envelope to degraded,
+    while a genuine Qdrant failure still propagates to `_run_section` as before.
+    """
     must = [FieldCondition(key="memory_type", match=MatchValue(value="skill")),
             FieldCondition(key="skill_status", match=MatchValue(value="active"))]
     if project:
         must.append(FieldCondition(key="project", match=MatchValue(value=project.lower())))
-    points, _ = await vector._client.scroll(
-        collection_name=settings.QDRANT_COLLECTION,
-        scroll_filter=Filter(must=must),
-        limit=3, with_payload=True, with_vectors=False,
+    points, semantic = await search_skill_points(
+        vector, settings, must=must, query=goal, limit=3,
     )
     skills = []
     ql = (goal or "").lower()
     for p in points:
         payload = p.payload or {}
         trigger = payload.get("trigger", "")
-        if ql and ql not in trigger.lower() and ql not in payload.get("domain", "").lower():
+        # Only narrow the LEGACY scroll page; semantic results are already ranked and
+        # floored, and re-applying the substring test would reinstate the old bug.
+        if not semantic and ql and ql not in trigger.lower() and ql not in payload.get("domain", "").lower():
             continue
         skills.append({"id": str(p.id), "trigger": trigger,
                        "symptoms": payload.get("symptoms", "")})

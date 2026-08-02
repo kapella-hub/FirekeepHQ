@@ -8,7 +8,7 @@ from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from qdrant_client.models import (
-    FieldCondition, Filter, MatchValue, PointIdsList, PointStruct
+    FieldCondition, MatchValue, PointIdsList, PointStruct
 )
 
 from app.config import get_settings, Settings
@@ -16,8 +16,18 @@ from app.db.vector import VectorClient
 from app.models import (
     SkillRequest, SkillResponse, SkillPatchRequest, SkillEvaluateRequest
 )
+from app.skills.search import search_skill_points
 
 logger = logging.getLogger(__name__)
+
+ACCESS_COUNTS_KEY = "memory:access_counts"
+LAST_RECALLED_KEY = "memory:last_recalled"
+
+# PATCHing any of these changes what the skill MEANS, so the stored vector stops
+# describing the stored text and the point silently drops out of semantic
+# matching. Everything else (skill_status, stale, needs_rereview) is lifecycle
+# bookkeeping the embedding never encoded, and stays a cheap payload-only write.
+SEMANTIC_PATCH_FIELDS = ("content", "trigger", "symptoms")
 
 
 def create_skills_router(
@@ -44,12 +54,14 @@ def create_skills_router(
 
     @router.get("/skills", response_model=list[SkillResponse])
     async def list_skills(
+        request: Request,
         status: str = "active",
         project: str | None = None,
         domain: str | None = None,
         q: str | None = None,
         stale: bool | None = None,
         limit: int = 50,
+        record_recall: bool = False,
         vector: VectorClient = Depends(get_vector),
     ):
         settings = settings_fn()
@@ -73,21 +85,31 @@ def create_skills_router(
         if stale is not None:
             must.append(FieldCondition(key="stale", match=MatchValue(value=stale)))
 
-        points, _ = await vector._client.scroll(
-            collection_name=settings.QDRANT_COLLECTION,
-            scroll_filter=Filter(must=must),
-            limit=limit,
-            with_payload=True,
-            with_vectors=False,
+        # Two paths behind one endpoint (see app/skills/search.py): a cosine query
+        # when `q` is supplied — this endpoint is what `skill_recall` and the
+        # briefing use as a MATCHER — and the legacy ID-ordered scroll otherwise,
+        # which is what the dashboard needs as a LISTER. `semantic` says which one
+        # ran; the substring narrowing below belongs ONLY to the scroll page, since
+        # re-applying it to ranked results would restore the bug on top of the fix.
+        points, semantic = await search_skill_points(
+            vector, settings, must=must, query=q, limit=limit,
         )
         results = [_point_to_response(p) for p in points]
 
-        if q:
+        if q and not semantic:
             ql = q.lower()
             results = [
                 r for r in results
                 if ql in r.trigger.lower() or ql in r.domain.lower()
             ]
+
+        # Usage is recorded only for an EXPLICIT recall (`record_recall=true`, sent
+        # by the MCP skill_recall tool) and only for the FINAL response — dashboard
+        # browsing, `skill_list` and automatic briefing impressions must not look
+        # like a human reaching for the skill, or the staleness sweep measures
+        # traffic instead of usefulness.
+        if record_recall and results:
+            await _record_skill_usage(request, [r.id for r in results])
         return results
 
     @router.get("/skills/{skill_id}", response_model=SkillResponse)
@@ -204,7 +226,33 @@ def create_skills_router(
                 updates["stale_reviewed_at"] = datetime.datetime.now(
                     datetime.timezone.utc
                 ).isoformat()
-        if updates:
+        if any(field in updates for field in SEMANTIC_PATCH_FIELDS):
+            # The text changed, so the stored vector no longer describes it. Merge
+            # onto the CURRENT payload rather than writing `updates` alone — an
+            # upsert replaces the whole point, so anything not carried forward
+            # (provenance, staleness stamps, fields added by a later migration)
+            # would be silently dropped.
+            merged = dict(points[0].payload or {})
+            merged.update(updates)
+            try:
+                embedding = await vector._embed(_skill_embed_text(merged))
+            except Exception as exc:
+                # Deliberately fail-loud and write NOTHING. A payload-only write
+                # here would leave the point readable but semantically stale — the
+                # worst outcome, because it looks successful and is undetectable
+                # afterwards. The caller can retry once embeddings are back.
+                logger.warning(
+                    "Skill %s re-embedding failed; no changes written: %s", skill_id, exc
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail="Skill re-embedding failed; no changes were written",
+                ) from exc
+            await vector._client.upsert(
+                collection_name=settings.QDRANT_COLLECTION,
+                points=[PointStruct(id=skill_id, vector=embedding, payload=merged)],
+            )
+        elif updates:
             await vector._client.set_payload(
                 collection_name=settings.QDRANT_COLLECTION,
                 payload=updates,
@@ -229,6 +277,54 @@ def create_skills_router(
         )
 
     return router
+
+
+def _skill_embed_text(payload: dict[str, Any]) -> str:
+    """The text a skill point's vector must describe.
+
+    A composite, not just `content`: a PATCH may change only `trigger` or only
+    `symptoms`, and embedding `content` alone would then produce a vector that
+    ignores the edit entirely. Mirrors the field order the create path bakes into
+    its `full_content`, so a re-embedded skill stays comparable with skills that
+    were never patched.
+    """
+    return (
+        f"trigger: {payload.get('trigger', '')}\n"
+        f"symptoms: {payload.get('symptoms', '')}\n"
+        f"domain: {payload.get('domain', '')}\n"
+        "---\n"
+        f"{payload.get('content', '')}"
+    )
+
+
+async def _record_skill_usage(request: Request, skill_ids: list[str]) -> None:
+    """Stamp access count + last-recall time for explicitly recalled skills.
+
+    Best-effort by design and mirrors the `/memory/recall` accumulator in
+    `app/main.py`: a Redis hash the memory agent later flushes to Qdrant, so the
+    read path never does a write-on-read into the vector store. Feeds
+    `skill_staleness_pass`, which would otherwise keep flagging genuinely-used
+    skills as stale.
+
+    Reads the client off `app.state` instead of taking `Depends(get_redis)`
+    because the skills router is mounted in test apps (and any host app) that
+    never set one — a hard dependency would turn "no usage stamp" into "endpoint
+    500s". No Redis, or a failing Redis, simply means no stamp.
+    """
+    if not skill_ids:
+        return
+    redis_client = getattr(request.app.state, "redis_client", None)
+    if redis_client is None:
+        return
+    try:
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        pipe = redis_client.pipeline()
+        for skill_id in skill_ids:
+            pipe.hincrby(ACCESS_COUNTS_KEY, skill_id, 1)
+            pipe.hset(LAST_RECALLED_KEY, skill_id, now_iso)
+        await pipe.execute()
+    except Exception as exc:  # noqa: BLE001 — never fail a recall over bookkeeping
+        logger.warning("Failed to record skill recall usage: %s", exc)
 
 
 def _point_to_response(point: Any) -> SkillResponse:

@@ -316,6 +316,24 @@ class ConfirmResponse(BaseModel):
     confirmed: int
 
 
+class RestoreRequest(BaseModel):
+    """Request to bring archived memories back into circulation."""
+
+    memory_ids: list[str] = Field(..., min_length=1, max_length=50)
+
+
+class RestoreResponse(BaseModel):
+    """Response from /memory/restore.
+
+    ``restored`` counts only records that actually changed — a memory that was
+    never archived is a no-op, not a failure, so the dashboard can tell the
+    difference between "brought back" and "was already live".
+    """
+
+    status: str
+    restored: int
+
+
 class BacklinksResponse(BaseModel):
     """Response from /memory/{id}/backlinks."""
 

@@ -6,9 +6,12 @@ of memories stored in the vector and graph databases.
 
 from __future__ import annotations
 
+import json
 import logging
+from datetime import datetime, timezone
+from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
@@ -22,15 +25,49 @@ from app.models import (
     DeprecateRequest,
     DeprecateResponse,
     MemoryHistoryResponse,
+    RestoreRequest,
+    RestoreResponse,
 )
+from auth.middleware import require_scope
 
 logger = logging.getLogger(__name__)
 
+# Same audit list the maintenance task writes (app.workers.gc.GC_EVICTION_LOG_KEY).
+# Restoring is the inverse of archiving, so it belongs in the same trail the
+# dashboard reads -- an archive with no matching restore entry would read as
+# still-archived to anyone auditing the log.
+GC_EVICTION_LOG_KEY = "gc:eviction:log"
 
-def create_lifecycle_router(graph: Neo4jClient, vector: VectorClient) -> APIRouter:
-    """Factory that returns an APIRouter wired to the given graph/vector clients."""
+
+def create_lifecycle_router(
+    graph: Neo4jClient,
+    vector: VectorClient,
+    redis_client: Any | None = None,
+) -> APIRouter:
+    """Factory that returns an APIRouter wired to the given graph/vector clients.
+
+    ``redis_client`` is optional: without it the restore endpoint still restores,
+    it just records no audit entry. Restoring is a recovery action, so a Redis
+    outage must not be the thing that stops a human getting their memory back.
+    """
     router = APIRouter(tags=["lifecycle"])
     limiter = Limiter(key_func=get_remote_address)
+
+    async def _append_audit(entries: list[dict[str, Any]]) -> None:
+        """Best-effort append to the shared maintenance audit trail."""
+        if not entries or redis_client is None:
+            return
+        try:
+            pipe = redis_client.pipeline()
+            for entry in entries:
+                pipe.lpush(GC_EVICTION_LOG_KEY, json.dumps(entry))
+            pipe.ltrim(GC_EVICTION_LOG_KEY, 0, 999)
+            await pipe.execute()
+        except Exception:
+            logger.exception(
+                "Restored %d memories but FAILED to write %s audit entries: %s",
+                len(entries), GC_EVICTION_LOG_KEY, [e.get("id") for e in entries],
+            )
 
     @router.post("/memory/deprecate")
     @limiter.limit(lambda: get_settings().RATE_LIMIT)
@@ -43,6 +80,7 @@ def create_lifecycle_router(graph: Neo4jClient, vector: VectorClient) -> APIRout
                     memory_id=memory_id,
                     status=body.status,
                     superseded_by=body.superseded_by,
+                    reason=body.reason,
                 )
                 # If superseding, create graph edge
                 if body.status == "superseded" and body.superseded_by:
@@ -73,6 +111,42 @@ def create_lifecycle_router(graph: Neo4jClient, vector: VectorClient) -> APIRout
             except Exception:
                 logger.warning("Failed to confirm memory %s", memory_id)
         return ConfirmResponse(status="confirmed", confirmed=confirmed)
+
+    @router.post("/memory/restore")
+    @limiter.limit(lambda: get_settings().RATE_LIMIT)
+    async def restore_memories(
+        request: Request,
+        body: RestoreRequest,
+        identity: dict = Depends(require_scope("memory:write")),
+    ) -> RestoreResponse:
+        """Bring archived memories back to their pre-archive status.
+
+        The inverse of the archive tier: the vector store returns each memory to
+        the status it held before archiving (or "active" for legacy archives with
+        no recorded origin) and clears the archive provenance, so a memory that
+        is later re-archived starts a fresh recovery window rather than
+        inheriting an already-elapsed ``purge_eligible_at``.
+        """
+        restored_ids: list[str] = []
+        for memory_id in body.memory_ids:
+            try:
+                if await vector.restore_memory(memory_id):
+                    restored_ids.append(memory_id)
+            except Exception:
+                logger.warning("Failed to restore memory %s", memory_id)
+
+        occurred_at = datetime.now(timezone.utc).isoformat()
+        await _append_audit([
+            {
+                "id": memory_id,
+                "action": "restored",
+                "occurred_at": occurred_at,
+                "agent_id": identity.get("agent_id") if identity else None,
+            }
+            for memory_id in restored_ids
+        ])
+
+        return RestoreResponse(status="restored", restored=len(restored_ids))
 
     @router.get("/memory/{memory_id}/history")
     async def memory_history(memory_id: str) -> MemoryHistoryResponse:

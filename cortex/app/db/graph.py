@@ -325,12 +325,25 @@ class Neo4jClient:
     # Write operations
     # ------------------------------------------------------------------
 
-    async def merge_action_log(self, log: ActionLog, namespace: str = "default") -> str:
+    async def merge_action_log(
+        self,
+        log: ActionLog,
+        namespace: str = "default",
+        memory_id: str | None = None,
+    ) -> str:
         """Persist an action log as a Domain->Action->Outcome->Resolution chain.
 
         Creates Concept nodes for each tag and links them to the Action.
         Creates a Namespace node and links Domain to it via CONTAINS.
         Returns the element ID of the Action node.
+
+        When ``memory_id`` is supplied (the Qdrant point written by the same
+        ``/memory/learn`` call), it is appended to each chain node's
+        ``memory_ids`` list. That back-link is what lets recall verify a graph
+        row against the authoritative vector lifecycle instead of guessing:
+        without it an archived memory keeps resurfacing through the graph leg.
+        The append is idempotent — these nodes are MERGEd by content hash, so
+        the same chain is rewritten on every repeat of a known action.
 
         All writes are wrapped in a single explicit transaction so that
         a failure partway through does not leave partial data.
@@ -351,11 +364,26 @@ class Neo4jClient:
         MERGE (a)-[:RELATES_TO]->(d)
         MERGE (a)-[:CAUSED]->(o)
         WITH a, o, d
+        FOREACH (_ IN CASE WHEN $memory_id IS NOT NULL
+                            AND NOT ($memory_id IN coalesce(a.memory_ids, []))
+                       THEN [1] ELSE [] END |
+            SET a.memory_ids = coalesce(a.memory_ids, []) + [$memory_id]
+        )
+        FOREACH (_ IN CASE WHEN $memory_id IS NOT NULL
+                            AND NOT ($memory_id IN coalesce(o.memory_ids, []))
+                       THEN [1] ELSE [] END |
+            SET o.memory_ids = coalesce(o.memory_ids, []) + [$memory_id]
+        )
         FOREACH (_ IN CASE WHEN $resolution_id IS NOT NULL THEN [1] ELSE [] END |
             MERGE (r:Resolution {id: $resolution_id})
             SET r.description = $resolution
             MERGE (o)-[:RESOLVED_BY]->(r)
             MERGE (r)-[:UTILIZES]->(d)
+            FOREACH (__ IN CASE WHEN $memory_id IS NOT NULL
+                                 AND NOT ($memory_id IN coalesce(r.memory_ids, []))
+                            THEN [1] ELSE [] END |
+                SET r.memory_ids = coalesce(r.memory_ids, []) + [$memory_id]
+            )
         )
         FOREACH (tag IN $tags |
             MERGE (c:Concept {name: tag})
@@ -384,6 +412,7 @@ class Neo4jClient:
                         resolution=log.resolution,
                         resolution_id=resolution_id,
                         tags=tags,
+                        memory_id=memory_id,
                     )
                     record = await result.single()
                     if record is None:
@@ -630,6 +659,7 @@ class Neo4jClient:
         RETURN result.name AS name,
                result.description AS description,
                labels(result)[0] AS label,
+               coalesce(result.memory_ids, []) AS memory_ids,
                distance,
                score
         ORDER BY score DESC, distance ASC
@@ -754,6 +784,7 @@ class Neo4jClient:
         RETURN result.name AS name,
                result.description AS description,
                labels(result)[0] AS label,
+               coalesce(result.memory_ids, []) AS memory_ids,
                distance,
                weighted_score AS score
         ORDER BY weighted_score DESC, distance ASC
@@ -812,6 +843,7 @@ class Neo4jClient:
         RETURN DISTINCT related.name AS name,
                related.description AS description,
                labels(related)[0] AS label,
+               coalesce(related.memory_ids, []) AS memory_ids,
                size(r) AS distance
         ORDER BY distance ASC
         LIMIT $limit
@@ -1224,7 +1256,8 @@ class Neo4jClient:
         {ns_filter}
         RETURN r.description AS resolution,
                o.description AS error,
-               elementId(r) AS id
+               elementId(r) AS id,
+               coalesce(r.memory_ids, []) + coalesce(o.memory_ids, []) AS memory_ids
         LIMIT $limit
         """
         driver = self._ensure_driver()

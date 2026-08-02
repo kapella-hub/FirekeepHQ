@@ -64,6 +64,25 @@ _EXCLUDED_FROM_NESTED_METADATA = (
     {"source", "tags", "domain", "timestamp"} | _PROMOTED_PAYLOAD_KEYS
 )
 
+# Views ``list_memories`` accepts. "available" is everything recall can still
+# reach, "archived" is the dashboard's recovery view, "all" is the pre-lifecycle
+# behaviour and stays the default so existing callers are unaffected.
+_MEMORY_VIEWS = ("all", "available", "archived")
+
+# Recovery provenance written when a memory is archived. These answer "who
+# archived this, why, from what state, and until when can it be recovered" —
+# the archived view renders them and restore_memory unwinds them. They must
+# also survive a re-learn of identical text (see _merge_lifecycle), otherwise
+# an archived memory silently loses its purge deadline and its pre-archive
+# status while keeping status="archived".
+_ARCHIVE_PROVENANCE_KEYS = (
+    "archived_at",
+    "archived_from_status",
+    "archive_source",
+    "archive_reason",
+    "purge_eligible_at",
+)
+
 
 def _projected_metadata(payload: dict | None, point_id: str) -> dict[str, Any]:
     """Flatten a Qdrant payload into the ``metadata`` dict recall consumers read.
@@ -114,7 +133,10 @@ def _merge_lifecycle(existing: dict | None, fresh: dict) -> dict:
     the original attribution is the "unknown" sentinel); confirmed_count and
     contradicted_count take the max; status is preserved — re-learning
     identical text does NOT resurrect a superseded/deprecated memory;
-    timestamp refreshes as last-seen. Pure function, no I/O.
+    archive provenance (_ARCHIVE_PROVENANCE_KEYS) rides along with that
+    preserved status, so an archived memory keeps its recovery window and its
+    pre-archive status instead of becoming an un-restorable, un-purgeable
+    orphan; timestamp refreshes as last-seen. Pure function, no I/O.
     """
     if not existing:
         return fresh
@@ -135,6 +157,9 @@ def _merge_lifecycle(existing: dict | None, fresh: dict) -> dict:
         int(fresh.get("contradicted_count") or 0),
     )
     merged["status"] = existing.get("status") or fresh.get("status", "active")
+    for key in _ARCHIVE_PROVENANCE_KEYS:
+        if existing.get(key) is not None:
+            merged[key] = existing[key]
     if existing.get("superseded_by"):
         merged["superseded_by"] = existing["superseded_by"]
     if existing.get("last_confirmed_at"):
@@ -340,33 +365,100 @@ class VectorClient:
                 break
             offset = next_offset
 
+    def _list_filter(self, view: str, namespace: str | None) -> Filter | None:
+        """Build the lifecycle/namespace filter shared by both list_memories legs.
+
+        ``view="all"`` with no namespace yields None — byte-identical to the
+        pre-lifecycle behaviour, so the default listing is untouched.
+        """
+        must: list[FieldCondition] = []
+        must_not: list[FieldCondition] = []
+        if view == "archived":
+            must.append(
+                FieldCondition(key="status", match=MatchValue(value="archived"))
+            )
+        elif view == "available":
+            must_not.append(
+                FieldCondition(key="status", match=MatchValue(value="archived"))
+            )
+        if namespace:
+            must.append(
+                FieldCondition(key="namespace", match=MatchAny(any=[namespace]))
+            )
+        if not must and not must_not:
+            return None
+        return Filter(must=must or None, must_not=must_not or None)
+
+    @staticmethod
+    def _list_row(point: Any, score: float | None, view: str) -> dict:
+        """Project one point into a listing row.
+
+        The archived view additionally carries the recovery metadata a human
+        needs to decide whether to restore: where the archive came from, why,
+        and how long is left before it becomes purge-eligible. Ordinary views
+        keep the original seven-key shape.
+        """
+        payload = point.payload or {}
+        row = {
+            "id": str(point.id),
+            "score": score,
+            "text": payload.get("text", ""),
+            "domain": payload.get("domain", ""),
+            "tags": payload.get("tags", []),
+            "timestamp": payload.get("timestamp", ""),
+            "source": payload.get("source", ""),
+        }
+        if view != "archived":
+            return row
+        row.update(
+            {
+                "memory_type": payload.get("memory_type", "episodic"),
+                "status": payload.get("status", "active"),
+                "archived_at": payload.get("archived_at"),
+                "archive_source": payload.get("archive_source"),
+                "archive_reason": payload.get("archive_reason"),
+                "purge_eligible_at": payload.get("purge_eligible_at"),
+                "confirmed_count": payload.get("confirmed_count", 0),
+                "access_count": payload.get("access_count", 0),
+                "agent_id": payload.get("agent_id"),
+                "project": payload.get("project"),
+                "metadata": payload.get("metadata", {}),
+            }
+        )
+        return row
+
     async def list_memories(
         self,
         limit: int = 20,
         offset: int = 0,
         query: str | None = None,
         namespace: str | None = None,
+        view: str = "all",
     ) -> list[dict]:
         """List memories with optional search.
 
         If query is provided, do semantic search. Otherwise scroll through points.
         If namespace is provided, filter by domain.
+
+        ``view`` selects the lifecycle slice: "all" (default, unfiltered),
+        "available" (everything recall can still reach) or "archived" (the
+        dashboard's recovery view, which also projects archive provenance).
+        An unknown view raises ValueError *before* the store is touched — a
+        typo'd view must not silently degrade to listing everything, which is
+        exactly how archived memories would leak back into a caller expecting
+        only live ones.
         """
+        if view not in _MEMORY_VIEWS:
+            raise ValueError(
+                f"view must be one of {', '.join(_MEMORY_VIEWS)}; got {view!r}"
+            )
+
         effective_limit = min(limit, 100)
+        query_filter = self._list_filter(view, namespace)
 
         try:
             if query:
                 # Semantic search
-                query_filter = None
-                if namespace:
-                    query_filter = Filter(
-                        must=[
-                            FieldCondition(
-                                key="namespace",
-                                match=MatchAny(any=[namespace]),
-                            )
-                        ]
-                    )
                 vector = await self._embed(query)
                 results = await self._client.query_points(
                     collection_name=self._collection,
@@ -376,50 +468,18 @@ class VectorClient:
                     with_payload=True,
                 )
                 points = results.points[offset:]
-                return [
-                    {
-                        "id": str(p.id),
-                        "score": p.score,
-                        "text": p.payload.get("text", "") if p.payload else "",
-                        "domain": p.payload.get("domain", "") if p.payload else "",
-                        "tags": p.payload.get("tags", []) if p.payload else [],
-                        "timestamp": p.payload.get("timestamp", "") if p.payload else "",
-                        "source": p.payload.get("source", "") if p.payload else "",
-                    }
-                    for p in points
-                ]
+                return [self._list_row(p, p.score, view) for p in points]
             else:
                 # Scroll through points
-                scroll_filter = None
-                if namespace:
-                    scroll_filter = Filter(
-                        must=[
-                            FieldCondition(
-                                key="namespace",
-                                match=MatchAny(any=[namespace]),
-                            )
-                        ]
-                    )
                 records, _next_offset = await self._client.scroll(
                     collection_name=self._collection,
-                    scroll_filter=scroll_filter,
+                    scroll_filter=query_filter,
                     limit=effective_limit + offset,
                     with_payload=True,
                     with_vectors=False,
                 )
                 points = records[offset:]
-                return [
-                    {
-                        "id": str(p.id),
-                        "score": None,
-                        "text": p.payload.get("text", "") if p.payload else "",
-                        "domain": p.payload.get("domain", "") if p.payload else "",
-                        "tags": p.payload.get("tags", []) if p.payload else [],
-                        "timestamp": p.payload.get("timestamp", "") if p.payload else "",
-                        "source": p.payload.get("source", "") if p.payload else "",
-                    }
-                    for p in points
-                ]
+                return [self._list_row(p, None, view) for p in points]
         except Exception as exc:
             logger.error("Failed to list memories: %s", exc)
             return []
@@ -878,15 +938,50 @@ class VectorClient:
     # Knowledge lifecycle methods
     # ------------------------------------------------------------------
 
-    async def update_status(self, memory_id: str, status: str, superseded_by: str | None = None) -> None:
+    async def update_status(
+        self,
+        memory_id: str,
+        status: str,
+        superseded_by: str | None = None,
+        reason: str | None = None,
+    ) -> None:
         """Update memory lifecycle status and optionally set superseded_by.
 
         SP0 B2: contradiction also persists a recomputed `confidence` so GC's
         composite eviction score reads reality instead of the 0.5 default.
+
+        Archiving through this path is a HUMAN act, so it records
+        ``archive_source="manual"`` and no ``purge_eligible_at``: GC's purge
+        pass only ever deletes archives it created itself, and a manual archive
+        must not acquire a deletion deadline as a side effect of being
+        archived. ``archived_from_status`` is what lets restore_memory put the
+        memory back where it was rather than guessing "active".
         """
         payload: dict[str, Any] = {"status": status}
         if superseded_by:
             payload["superseded_by"] = superseded_by
+        if reason:
+            payload["status_reason"] = reason
+        if status == "archived":
+            points = await self._client.retrieve(
+                self._collection, [memory_id], with_payload=True
+            )
+            previous = (
+                (points[0].payload or {}).get("status", "active")
+                if points
+                else "active"
+            )
+            payload.update(
+                {
+                    "archived_at": datetime.now(timezone.utc).isoformat(),
+                    "archived_from_status": (
+                        previous if previous != "archived" else "active"
+                    ),
+                    "archive_source": "manual",
+                    "archive_reason": reason,
+                    "purge_eligible_at": None,
+                }
+            )
         if status == "superseded":
             # Increment contradicted_count and persist recomputed confidence
             points = await self._client.retrieve(self._collection, [memory_id], with_payload=True)
@@ -909,18 +1004,25 @@ class VectorClient:
         """Confirm a memory is still valid — bump confirmed_count, update last_confirmed_at.
 
         SP0 B2: also persists a recomputed `confidence` payload field.
+
+        Confirming also refreshes `timestamp` to the confirmation instant. Age
+        is what the archive scorer measures, and a memory a human has just
+        vouched for is not old evidence — leaving the original timestamp would
+        keep re-nominating it for archival on every pass.
         """
         points = await self._client.retrieve(self._collection, [memory_id], with_payload=True)
         if not points:
             return False
         current_count = points[0].payload.get("confirmed_count", 0)
         contradicted = points[0].payload.get("contradicted_count", 0)
+        confirmed_at = datetime.now(timezone.utc).isoformat()
         from app.confidence import compute_confidence
         await self._client.set_payload(
             collection_name=self._collection,
             payload={
                 "confirmed_count": current_count + 1,
-                "last_confirmed_at": datetime.now(timezone.utc).isoformat(),
+                "last_confirmed_at": confirmed_at,
+                "timestamp": confirmed_at,
                 "confidence": compute_confidence(
                     confirmed_count=current_count + 1,
                     contradicted_count=contradicted,
@@ -929,6 +1031,80 @@ class VectorClient:
             points=[memory_id],
         )
         return True
+
+    async def restore_memory(self, memory_id: str) -> bool:
+        """Bring an archived memory back, clearing its archive provenance.
+
+        The memory returns to the status it held before it was archived
+        (``archived_from_status``); legacy archives written before that field
+        existed fall back to "active" rather than being guessed at. Returns
+        False — with no write at all — for a missing point or one that is not
+        archived, so a restore of something already live is a no-op rather than
+        a status rewrite.
+
+        `timestamp` is reset to the restore instant, mirroring confirm_memory:
+        a memory a human has just pulled back out of the archive would
+        otherwise still carry the age that got it archived and be re-archived
+        on the very next GC pass.
+        """
+        points = await self._client.retrieve(
+            self._collection, [memory_id], with_payload=True
+        )
+        if not points:
+            return False
+        payload = points[0].payload or {}
+        if payload.get("status") != "archived":
+            return False
+
+        previous = payload.get("archived_from_status") or "active"
+        if previous == "archived":
+            previous = "active"
+        restored_at = datetime.now(timezone.utc).isoformat()
+        await self._client.set_payload(
+            collection_name=self._collection,
+            payload={
+                "status": previous,
+                "restored_at": restored_at,
+                "timestamp": restored_at,
+                **{k: None for k in _ARCHIVE_PROVENANCE_KEYS},
+            },
+            points=[memory_id],
+        )
+        return True
+
+    async def get_lifecycle_states(
+        self, memory_ids: list[str]
+    ) -> dict[str, dict[str, Any]]:
+        """Return lifecycle state for each id that still exists in the store.
+
+        Missing ids are simply absent from the result — the caller distinguishes
+        "archived" from "no longer there", and both are reasons to drop a graph
+        row that claims to be backed by this vector. Qdrant is authoritative for
+        lifecycle, so this is the read the graph retrieval leg admits rows
+        against; a store failure degrades to an empty map (fail closed: nothing
+        is admitted) rather than propagating and taking recall down with it.
+        """
+        if not memory_ids:
+            return {}
+        try:
+            points = await self._client.retrieve(
+                self._collection, list(memory_ids), with_payload=True
+            )
+        except Exception as exc:
+            logger.warning("Lifecycle state lookup failed: %s", exc)
+            return {}
+        states: dict[str, dict[str, Any]] = {}
+        for point in points or []:
+            payload = point.payload or {}
+            states[str(point.id)] = {
+                "id": str(point.id),
+                "status": payload.get("status", "active"),
+                "timestamp": payload.get("timestamp", ""),
+                "memory_type": payload.get("memory_type", "episodic"),
+                "confirmed_count": payload.get("confirmed_count", 0),
+                "contradicted_count": payload.get("contradicted_count", 0),
+            }
+        return states
 
     async def get_memory(self, memory_id: str) -> dict | None:
         """Retrieve a single memory point with its payload."""

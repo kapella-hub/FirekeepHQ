@@ -70,10 +70,20 @@ class Settings(BaseSettings):
     DECAY_EPISODIC_DAYS: int = 90
     DECAY_TRANSIENT_DAYS: int = 14
 
-    # Garbage Collection
+    # Garbage Collection — ARCHIVE-FIRST. Defaults per docs/CONFIGURATION.md, which
+    # survived the 2026-08-02 loss of app/ and is the authority for these values.
     MAX_MEMORY_AGE_DAYS: int = 180
     PRUNE_SCORE_THRESHOLD: float = 0.3
     GC_SCHEDULE_HOURS: int = 24
+    GC_ENABLED: bool = True
+    # Evaluate and audit without changing Qdrant or Neo4j.
+    GC_DRY_RUN: bool = False
+    # Recovery window recorded on GC-origin archives before they become purge-eligible.
+    GC_ARCHIVE_GRACE_DAYS: int = 90
+    # Hard deletion is OFF by default: it permits deleting only records the task
+    # archived ITSELF whose grace window has elapsed — manual and legacy archives are
+    # never guessed at. Also gates destructive Neo4j orphan cleanup.
+    GC_PURGE_ENABLED: bool = False
 
     # Namespace
     DEFAULT_NAMESPACE: str = "default"

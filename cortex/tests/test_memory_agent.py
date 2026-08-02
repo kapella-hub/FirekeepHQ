@@ -41,8 +41,8 @@ def _make_settings(**overrides):
         "DEDUP_SIMILARITY_THRESHOLD": 0.78,
         "DEDUP_ENABLED": True,
         "EMBEDDING_MODEL": "test-embed",
-        "AGENT_CONFIDENCE_DECAY_DAYS": 180,
         "AGENT_BATCH_LIMIT": 100,
+        "GC_PURGE_ENABLED": False,
     }
     defaults.update(overrides)
     return MagicMock(**defaults)
@@ -349,7 +349,7 @@ class TestOrphanCleanup:
     @patch("app.workers.memory_agent.get_settings")
     def test_orphan_cleanup(self, mock_settings, mock_neo4j, mock_webhook):
         """Orphan nodes (degree-0) are deleted and webhook fired."""
-        settings = _make_settings()
+        settings = _make_settings(GC_PURGE_ENABLED=True)
         mock_settings.return_value = settings
 
         # Neo4j returns orphan nodes
@@ -382,6 +382,18 @@ class TestOrphanCleanup:
             "agent.orphan_cleaned",
             {"nodes_removed": result["nodes_removed"]},
         )
+
+    @patch("app.workers.memory_agent._get_neo4j_driver")
+    @patch("app.workers.memory_agent.get_settings")
+    def test_orphan_cleanup_requires_explicit_purge_opt_in(
+        self, mock_settings, mock_neo4j
+    ):
+        mock_settings.return_value = _make_settings(GC_PURGE_ENABLED=False)
+
+        result = orphan_cleanup_pass()
+
+        assert result == {"status": "disabled", "nodes_removed": []}
+        mock_neo4j.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

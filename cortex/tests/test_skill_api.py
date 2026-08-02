@@ -43,8 +43,10 @@ def mock_vector(mock_settings):
     return v
 
 
-def _make_app(mock_vector, mock_settings):
+def _make_app(mock_vector, mock_settings, redis_client=None):
     app = FastAPI()
+    if redis_client is not None:
+        app.state.redis_client = redis_client
     router = create_skills_router(lambda: mock_settings)
     app.include_router(router)
     from app.main import get_vector
@@ -71,6 +73,60 @@ def test_list_skills_returns_active(mock_vector, mock_settings):
     assert data[0]["trigger"] == "Fix X"
 
 
+def test_explicit_skill_recall_records_final_result_ids(
+    mock_vector, mock_settings, mock_redis, monkeypatch
+):
+    kept = _make_mock_point(skill_id="kept", trigger="Fix X")
+    discarded = _make_mock_point(skill_id="discarded", trigger="Other")
+
+    async def _legacy_results(*_args, **_kwargs):
+        # The non-semantic branch is narrowed by the endpoint after this helper
+        # returns. Usage must be recorded from that FINAL response, not from the
+        # wider candidate page.
+        return [kept, discarded], False
+
+    monkeypatch.setattr("app.skills.api.search_skill_points", _legacy_results)
+    client = TestClient(_make_app(mock_vector, mock_settings, mock_redis))
+    resp = client.get("/skills", params={"q": "fix x", "record_recall": True})
+
+    assert resp.status_code == 200
+    assert [item["id"] for item in resp.json()] == ["kept"]
+    mock_redis._pipeline.hincrby.assert_called_once_with(
+        "memory:access_counts", "kept", 1
+    )
+    hsets = mock_redis._pipeline.hset.call_args_list
+    assert len(hsets) == 1
+    assert hsets[0].args[:2] == ("memory:last_recalled", "kept")
+    mock_redis._pipeline.execute.assert_awaited_once()
+
+
+def test_skill_listing_does_not_record_recall_usage(
+    mock_vector, mock_settings, mock_redis
+):
+    point = _make_mock_point()
+    mock_vector._client.scroll = AsyncMock(return_value=([point], None))
+    client = TestClient(_make_app(mock_vector, mock_settings, mock_redis))
+
+    resp = client.get("/skills?status=active")
+
+    assert resp.status_code == 200
+    mock_redis.pipeline.assert_not_called()
+
+
+def test_skill_recall_usage_failure_is_best_effort(
+    mock_vector, mock_settings, mock_redis
+):
+    point = _make_mock_point()
+    mock_vector._client.scroll = AsyncMock(return_value=([point], None))
+    mock_redis._pipeline.execute = AsyncMock(side_effect=RuntimeError("redis down"))
+    client = TestClient(_make_app(mock_vector, mock_settings, mock_redis))
+
+    resp = client.get("/skills", params={"record_recall": True})
+
+    assert resp.status_code == 200
+    assert [item["id"] for item in resp.json()] == ["abc"]
+
+
 def test_get_skill_not_found(mock_vector, mock_settings):
     mock_vector._client.retrieve = AsyncMock(return_value=[])
     client = TestClient(_make_app(mock_vector, mock_settings))
@@ -86,6 +142,65 @@ def test_patch_skill_status(mock_vector, mock_settings):
     resp = client.patch("/skills/abc", json={"skill_status": "deprecated"})
     assert resp.status_code == 200
     mock_vector._client.set_payload.assert_called_once()
+    mock_vector._embed.assert_not_awaited()
+    mock_vector._client.upsert.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("content", "A newly verified repair procedure"),
+        ("trigger", "Use when the repaired service stalls"),
+        ("symptoms", "Repeated timeout and health-check failures"),
+    ],
+)
+def test_patch_semantic_fields_reembed_full_point_atomically(
+    mock_vector, mock_settings, field, value
+):
+    point = _make_mock_point()
+    point.payload["future_payload_field"] = {"must": "survive"}
+
+    async def _upsert(*, collection_name, points):
+        assert collection_name == "firekeep_memory"
+        point.payload = dict(points[0].payload)
+
+    mock_vector._client.retrieve = AsyncMock(return_value=[point])
+    mock_vector._client.upsert = AsyncMock(side_effect=_upsert)
+    mock_vector._client.set_payload = AsyncMock()
+    client = TestClient(_make_app(mock_vector, mock_settings))
+
+    resp = client.patch("/skills/abc", json={field: value})
+
+    assert resp.status_code == 200
+    assert resp.json()[field] == value
+    mock_vector._embed.assert_awaited_once()
+    embedded_text = mock_vector._embed.await_args.args[0]
+    assert value in embedded_text
+    mock_vector._client.upsert.assert_awaited_once()
+    written = mock_vector._client.upsert.await_args.kwargs["points"][0]
+    assert str(written.id) == "abc"
+    assert written.payload[field] == value
+    assert written.payload["future_payload_field"] == {"must": "survive"}
+    assert written.payload["source_session_id"] == "s1"
+    assert written.vector == [0.1] * 768
+    mock_vector._client.set_payload.assert_not_awaited()
+
+
+def test_patch_semantic_embed_failure_makes_no_write(mock_vector, mock_settings):
+    point = _make_mock_point()
+    mock_vector._client.retrieve = AsyncMock(return_value=[point])
+    mock_vector._embed = AsyncMock(side_effect=RuntimeError("embeddings down"))
+    mock_vector._client.set_payload = AsyncMock()
+    mock_vector._client.upsert = AsyncMock()
+    client = TestClient(
+        _make_app(mock_vector, mock_settings), raise_server_exceptions=False
+    )
+
+    resp = client.patch("/skills/abc", json={"trigger": "New trigger"})
+
+    assert resp.status_code == 500
+    mock_vector._client.set_payload.assert_not_awaited()
+    mock_vector._client.upsert.assert_not_awaited()
 
 
 def test_patch_clears_needs_rereview(mock_vector, mock_settings):

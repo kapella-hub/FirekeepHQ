@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock
 
 import pytest
@@ -23,6 +24,7 @@ def mock_vector() -> AsyncMock:
     vector = AsyncMock()
     vector.update_status = AsyncMock()
     vector.confirm_memory = AsyncMock(return_value=True)
+    vector.restore_memory = AsyncMock(return_value=True)
     vector.get_memory = AsyncMock(return_value=None)
     return vector
 
@@ -53,7 +55,8 @@ class TestDeprecateEndpoint:
         assert data["status"] == "updated"
         assert data["updated"] == 1
         mock_vector.update_status.assert_called_once_with(
-            memory_id="mem-1", status="deprecated", superseded_by=None
+            memory_id="mem-1", status="deprecated", superseded_by=None,
+            reason="Outdated information",
         )
 
     def test_deprecate_superseded_creates_graph_edge(
@@ -168,6 +171,58 @@ class TestConfirmEndpoint:
     def test_confirm_empty_memory_ids_rejected(self, lifecycle_client: TestClient):
         resp = lifecycle_client.post("/memory/confirm", json={"memory_ids": []})
         assert resp.status_code == 422
+
+
+class TestRestoreEndpoint:
+    def test_restore_archived_memories(
+        self, lifecycle_client: TestClient, mock_vector: AsyncMock
+    ):
+        resp = lifecycle_client.post(
+            "/memory/restore", json={"memory_ids": ["mem-1", "mem-2"]}
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "restored", "restored": 2}
+        assert mock_vector.restore_memory.await_count == 2
+
+    def test_restore_counts_only_changed_records(
+        self, lifecycle_client: TestClient, mock_vector: AsyncMock
+    ):
+        mock_vector.restore_memory = AsyncMock(
+            side_effect=[True, False, RuntimeError("store unavailable")]
+        )
+
+        resp = lifecycle_client.post(
+            "/memory/restore", json={"memory_ids": ["a", "b", "c"]}
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["restored"] == 1
+
+    def test_restore_empty_memory_ids_rejected(self, lifecycle_client: TestClient):
+        resp = lifecycle_client.post("/memory/restore", json={"memory_ids": []})
+        assert resp.status_code == 422
+
+    def test_successful_restore_appends_lifecycle_audit(
+        self, mock_graph: AsyncMock, mock_vector: AsyncMock, mock_redis: AsyncMock
+    ):
+        app = FastAPI()
+        app.include_router(
+            create_lifecycle_router(mock_graph, mock_vector, redis_client=mock_redis)
+        )
+
+        resp = TestClient(app).post(
+            "/memory/restore", json={"memory_ids": ["archived-1"]}
+        )
+
+        assert resp.status_code == 200
+        key, raw = mock_redis._pipeline.lpush.call_args.args
+        assert key == "gc:eviction:log"
+        assert json.loads(raw)["action"] == "restored"
+        mock_redis._pipeline.ltrim.assert_called_once_with(
+            "gc:eviction:log", 0, 999
+        )
+        mock_redis._pipeline.execute.assert_awaited_once()
 
 
 class TestMemoryHistory:

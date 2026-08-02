@@ -166,7 +166,9 @@ class TestMergeActionLog:
             tags=["db", "perf"],
             domain="infra",
         )
-        result_id = await client_with_driver.merge_action_log(log)
+        result_id = await client_with_driver.merge_action_log(
+            log, memory_id="qdrant-memory-1"
+        )
 
         assert result_id == "elem-id-123"
         tx.run.assert_called_once()
@@ -182,6 +184,15 @@ class TestMergeActionLog:
         assert call_kwargs["action_id"] == client_with_driver._content_hash("Increased pool")
         assert call_kwargs["outcome_id"] == client_with_driver._content_hash("Timeout fixed")
         assert call_kwargs["resolution_id"] == client_with_driver._content_hash("Changed config")
+        assert call_kwargs["memory_id"] == "qdrant-memory-1"
+
+        query = tx.run.call_args.args[0]
+        assert query.count("coalesce(a.memory_ids, []) + [$memory_id]") == 1
+        assert query.count("coalesce(o.memory_ids, []) + [$memory_id]") == 1
+        assert query.count("coalesce(r.memory_ids, []) + [$memory_id]") == 1
+        assert "$memory_id IN coalesce(a.memory_ids, [])" in query
+        assert "$memory_id IN coalesce(o.memory_ids, [])" in query
+        assert "$memory_id IN coalesce(r.memory_ids, [])" in query
 
     @pytest.mark.asyncio
     async def test_merge_action_log_without_resolution(self, client_with_driver):
@@ -197,6 +208,7 @@ class TestMergeActionLog:
         call_kwargs = tx.run.call_args.kwargs
         assert call_kwargs["resolution"] is None
         assert call_kwargs["resolution_id"] is None
+        assert call_kwargs["memory_id"] is None
 
     @pytest.mark.asyncio
     async def test_merge_action_log_no_result_raises(self, client_with_driver):
@@ -384,6 +396,7 @@ class TestQueryRelated:
         # Should have search_terms parameter
         call_kwargs = call_args.kwargs
         assert "search_terms" in call_kwargs
+        assert "coalesce(result.memory_ids, []) AS memory_ids" in query
 
 
     @pytest.mark.asyncio
@@ -412,6 +425,42 @@ class TestQueryRelated:
                     f"Bigram not quoted: {part}"
                 )
 
+    @pytest.mark.asyncio
+    async def test_contains_fallback_projects_memory_ids(self, client_with_driver):
+        session = client_with_driver._mock_session
+        mock_result = MagicMock()
+
+        async def _aiter():
+            return
+            yield
+
+        mock_result.__aiter__ = lambda self: _aiter()
+        session.run = AsyncMock(return_value=mock_result)
+
+        await client_with_driver._query_related_contains(["authentication"], 5)
+
+        query = session.run.call_args.args[0]
+        assert "coalesce(related.memory_ids, []) AS memory_ids" in query
+
+    @pytest.mark.asyncio
+    async def test_multihop_fulltext_projects_memory_ids(self, client_with_driver):
+        session = client_with_driver._mock_session
+        mock_result = MagicMock()
+
+        async def _aiter():
+            return
+            yield
+
+        mock_result.__aiter__ = lambda self: _aiter()
+        session.run = AsyncMock(return_value=mock_result)
+
+        await client_with_driver._query_related_multihop_fulltext(
+            ["authentication"], 5, "default", 3, 0.5
+        )
+
+        query = session.run.call_args.args[0]
+        assert "coalesce(result.memory_ids, []) AS memory_ids" in query
+
 
 # ---------------------------------------------------------------------------
 # query_resolutions
@@ -439,6 +488,11 @@ class TestQueryResolutions:
         results = await client_with_driver.query_resolutions("OOM")
         assert len(results) == 1
         assert results[0]["resolution"] == "Restart service"
+
+        query = session.run.call_args.args[0]
+        assert "coalesce(r.memory_ids, [])" in query
+        assert "coalesce(o.memory_ids, [])" in query
+        assert "AS memory_ids" in query
 
     @pytest.mark.asyncio
     async def test_error_propagation(self, client_with_driver):

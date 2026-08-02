@@ -815,6 +815,7 @@ class TestConfirmMemory:
         assert call_kwargs["payload"]["confirmed_count"] == 3
         assert "last_confirmed_at" in call_kwargs["payload"]
         assert call_kwargs["payload"]["last_confirmed_at"] is not None
+        assert call_kwargs["payload"]["timestamp"] == call_kwargs["payload"]["last_confirmed_at"]
 
     @pytest.mark.asyncio
     async def test_confirm_memory_returns_false_for_missing(self, vector_client, mock_qdrant_client):
@@ -825,6 +826,141 @@ class TestConfirmMemory:
 
         assert result is False
         mock_qdrant_client.set_payload.assert_not_called()
+
+
+class TestListMemoriesLifecycleViews:
+    @pytest.mark.asyncio
+    async def test_available_view_excludes_archived_status(
+        self, vector_client, mock_qdrant_client
+    ):
+        mock_qdrant_client.scroll = AsyncMock(return_value=([], None))
+
+        await vector_client.list_memories(view="available")
+
+        query_filter = mock_qdrant_client.scroll.await_args.kwargs["scroll_filter"]
+        assert query_filter.must_not[0].key == "status"
+        assert query_filter.must_not[0].match.value == "archived"
+
+    @pytest.mark.asyncio
+    async def test_archived_view_filters_and_projects_recovery_metadata(
+        self, vector_client, mock_qdrant_client
+    ):
+        point = MagicMock()
+        point.id = "archive-1"
+        point.payload = {
+            "text": "Old workaround",
+            "status": "archived",
+            "archived_at": "2026-01-01T00:00:00+00:00",
+            "archive_source": "gc",
+            "archive_reason": "composite_eviction_score",
+            "purge_eligible_at": "2026-04-01T00:00:00+00:00",
+        }
+        mock_qdrant_client.scroll = AsyncMock(return_value=([point], None))
+
+        memories = await vector_client.list_memories(view="archived")
+
+        query_filter = mock_qdrant_client.scroll.await_args.kwargs["scroll_filter"]
+        assert query_filter.must[0].key == "status"
+        assert query_filter.must[0].match.value == "archived"
+        assert memories == [
+            {
+                "id": "archive-1",
+                "score": None,
+                "text": "Old workaround",
+                "domain": "",
+                "tags": [],
+                "timestamp": "",
+                "source": "",
+                "memory_type": "episodic",
+                "status": "archived",
+                "archived_at": "2026-01-01T00:00:00+00:00",
+                "archive_source": "gc",
+                "archive_reason": "composite_eviction_score",
+                "purge_eligible_at": "2026-04-01T00:00:00+00:00",
+                "confirmed_count": 0,
+                "access_count": 0,
+                "agent_id": None,
+                "project": None,
+                "metadata": {},
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_invalid_view_is_rejected_before_store_access(
+        self, vector_client, mock_qdrant_client
+    ):
+        with pytest.raises(ValueError, match="view must be one of"):
+            await vector_client.list_memories(view="deleted")
+        mock_qdrant_client.scroll.assert_not_awaited()
+
+
+class TestRestoreMemory:
+    @pytest.mark.asyncio
+    async def test_restores_archived_memory_and_resets_age(
+        self, vector_client, mock_qdrant_client
+    ):
+        point = MagicMock()
+        point.payload = {
+            "status": "archived",
+            "archived_from_status": "active",
+            "archived_at": "2026-01-01T00:00:00+00:00",
+            "archive_source": "gc",
+        }
+        mock_qdrant_client.retrieve = AsyncMock(return_value=[point])
+
+        assert await vector_client.restore_memory("point-1") is True
+
+        payload = mock_qdrant_client.set_payload.await_args.kwargs["payload"]
+        assert payload["status"] == "active"
+        assert payload["timestamp"] == payload["restored_at"]
+        assert payload["archived_at"] is None
+        assert payload["archive_source"] is None
+        assert payload["purge_eligible_at"] is None
+
+    @pytest.mark.asyncio
+    async def test_restore_preserves_previous_deprecated_status(
+        self, vector_client, mock_qdrant_client
+    ):
+        point = MagicMock()
+        point.payload = {
+            "status": "archived",
+            "archived_from_status": "deprecated",
+        }
+        mock_qdrant_client.retrieve = AsyncMock(return_value=[point])
+
+        assert await vector_client.restore_memory("point-1") is True
+        payload = mock_qdrant_client.set_payload.await_args.kwargs["payload"]
+        assert payload["status"] == "deprecated"
+
+    @pytest.mark.asyncio
+    async def test_non_archived_memory_is_not_changed(
+        self, vector_client, mock_qdrant_client
+    ):
+        point = MagicMock()
+        point.payload = {"status": "active"}
+        mock_qdrant_client.retrieve = AsyncMock(return_value=[point])
+
+        assert await vector_client.restore_memory("point-1") is False
+        mock_qdrant_client.set_payload.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_get_lifecycle_states_returns_only_existing_ids(
+        self, vector_client, mock_qdrant_client
+    ):
+        point = MagicMock()
+        point.id = "point-1"
+        point.payload = {
+            "status": "archived",
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "memory_type": "episodic",
+        }
+        mock_qdrant_client.retrieve = AsyncMock(return_value=[point])
+
+        states = await vector_client.get_lifecycle_states(["point-1", "missing"])
+
+        assert set(states) == {"point-1"}
+        assert states["point-1"]["status"] == "archived"
+        assert states["point-1"]["timestamp"] == "2026-01-01T00:00:00+00:00"
 
 
 # ---------------------------------------------------------------------------

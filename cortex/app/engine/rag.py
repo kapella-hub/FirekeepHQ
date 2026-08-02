@@ -33,6 +33,19 @@ _ERROR_PATTERN = re.compile(
 # Minimum Jaccard similarity to consider two text entries as matching.
 _JACCARD_MATCH_THRESHOLD = 0.3
 
+# Composite score below which a graph hit is traversal noise rather than
+# knowledge. A node reached at distance 10 with no token overlap scores
+# 0.6 * (1/10) = 0.06 purely because it was reachable — it then occupies a
+# top_k slot and, worse, props up the recall's own confidence band. The floor
+# sits above that and below a plain distance-3 hit (0.2), so nothing a
+# MULTIHOP_MAX_HOPS traversal can legitimately return is affected.
+_GRAPH_MIN_SCORE = 0.1
+
+# Lifecycle statuses in descending order of how usable the memory is. A graph
+# row may back onto several vector memories; it is admitted on the best of
+# them, so one archived sibling cannot suppress live knowledge.
+_LIFECYCLE_PRECEDENCE = ("active", "superseded", "deprecated", "archived")
+
 
 def _tokenize(text: str) -> set[str]:
     """Split text into lowercase word tokens."""
@@ -80,6 +93,21 @@ def _provenance_suffix(metadata: Any) -> str:
 
     parts = [p for p in (agent, date) if p]
     return f" — {', '.join(parts)}" if parts else ""
+
+
+def _memory_ids_of(row: Any) -> list[str]:
+    """Read the Qdrant memory IDs a graph row is linked to.
+
+    Neo4j projects the property as an empty list when absent, but rows also
+    arrive from older queries and from tests that predate the back-link, so
+    a missing or malformed value degrades to "unlinked" rather than raising.
+    """
+    if not isinstance(row, dict):
+        return []
+    raw = row.get("memory_ids")
+    if not isinstance(raw, (list, tuple)):
+        return []
+    return [str(m) for m in raw if m]
 
 
 def _min_max_normalize(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -182,6 +210,11 @@ class RAGEngine:
         "archived": 0.0,
     }
 
+    # Rank for an archived memory the caller explicitly asked to see. Low
+    # enough that a live result always outranks it, non-zero so it is not
+    # confused with the ordinary "archived is gone" path.
+    ARCHIVED_INCLUDED_MULTIPLIER = 0.1
+
     def __init__(
         self,
         graph: Neo4jClient,
@@ -200,6 +233,7 @@ class RAGEngine:
         Steps:
             1. Concurrent dual-retrieval from Qdrant and Neo4j.
             2. Optionally query resolutions for error-related tasks.
+            2b. Verify linked graph rows against the vector lifecycle.
             3. Apply memory decay based on age.
             4. Normalize scores to [0, 1] per source via min-max.
             5. Fuzzy-match entries across stores; boost cross-referenced items.
@@ -208,6 +242,8 @@ class RAGEngine:
             7. Optionally re-rank via LLM.
             8. Format as structured Markdown.
         """
+        include_archived = bool(getattr(query, "include_archived", False))
+
         vector_results, graph_results, vector_degraded = await self._dual_retrieve(query)
 
         vector_entries = self._normalize_vector(vector_results)
@@ -217,6 +253,13 @@ class RAGEngine:
         if _ERROR_PATTERN.search(query.task):
             resolution_entries = await self._fetch_resolutions(query.task)
             graph_entries.extend(resolution_entries)
+
+        # Qdrant owns lifecycle state; a graph row that names a vector memory
+        # is only as recallable as that memory is. Done before scoring so a
+        # dropped row cannot influence min-max normalization.
+        graph_entries = await self._verify_graph_lifecycle(
+            graph_entries, include_archived=include_archived
+        )
 
         # Apply memory decay BEFORE min-max normalization so an aged entry
         # cannot be re-pinned to 1.0 by rescaling, and undated graph entries
@@ -231,7 +274,9 @@ class RAGEngine:
         merged = self._merge_and_boost(vector_entries, graph_entries)
 
         # Apply lifecycle scoring (status + confidence multipliers).
-        merged = self._apply_lifecycle_scoring(merged)
+        merged = self._apply_lifecycle_scoring(
+            merged, include_archived=include_archived
+        )
 
         # Sort descending by score, take top_k (or more for re-ranking).
         merged.sort(key=lambda e: e["score"], reverse=True)
@@ -336,10 +381,16 @@ class RAGEngine:
                     query.task, limit=query.top_k,
                     namespace=getattr(query, "namespace", "default"),
                 )
-                return "graph", results
             except Exception:
                 logger.exception("Graph query failed in streaming recall")
                 return "graph", []
+            # Same lifecycle gate as the non-streaming path: an archived
+            # memory must not resurface through the graph leg just because
+            # this caller asked for SSE. (The streaming path still applies no
+            # lifecycle/OWM score multipliers — a pre-existing divergence.)
+            return "graph", await self._filter_graph_rows(
+                results, include_archived=bool(getattr(query, "include_archived", False))
+            )
 
         vector_task = asyncio.create_task(_vector_search())
         graph_task = asyncio.create_task(_graph_search())
@@ -493,16 +544,20 @@ class RAGEngine:
                     content = f"Resolution: {resolution}"
                     if error:
                         content = f"[Error: {error}] {content}"
+                    metadata: dict[str, Any] = {
+                        "name": "resolution",
+                        "label": "Resolution",
+                        "source_type": "resolution",
+                    }
+                    memory_ids = _memory_ids_of(r)
+                    if memory_ids:
+                        metadata["memory_ids"] = memory_ids
                     entries.append(
                         {
                             "content": content,
                             "score": 1.2,  # bonus score (will be normalized)
                             "store": "graph",
-                            "metadata": {
-                                "name": "resolution",
-                                "label": "Resolution",
-                                "source_type": "resolution",
-                            },
+                            "metadata": metadata,
                         }
                     )
             except Exception:
@@ -585,24 +640,146 @@ class RAGEngine:
 
             score = weight * text_sim + (1 - weight) * dist_score
 
+            # Reachable is not relevant: a far, non-overlapping node scores
+            # near zero and is dropped rather than padding the result set.
+            if score < _GRAPH_MIN_SCORE:
+                continue
+
+            metadata: dict[str, Any] = {
+                "name": name,
+                "label": label,
+                "distance": distance,
+                # The real relevance, preserved before _min_max_normalize
+                # rescales `score` into a within-set RANK. Vector entries
+                # already did this (_normalize_vector); graph ones did not,
+                # so a graph hit had no honest number to display.
+                "raw_score": round(float(score), 4),
+            }
+            memory_ids = _memory_ids_of(r)
+            if memory_ids:
+                metadata["memory_ids"] = memory_ids
+
             entries.append(
                 {
                     "content": content,
                     "score": score,
                     "store": "graph",
-                    "metadata": {
-                        "name": name,
-                        "label": label,
-                        "distance": distance,
-                        # The real relevance, preserved before _min_max_normalize
-                        # rescales `score` into a within-set RANK. Vector entries
-                        # already did this (_normalize_vector); graph ones did not,
-                        # so a graph hit had no honest number to display.
-                        "raw_score": round(float(score), 4),
-                    },
+                    "metadata": metadata,
                 }
             )
         return entries
+
+    # ------------------------------------------------------------------
+    # Lifecycle verification of graph results
+    # ------------------------------------------------------------------
+
+    async def _resolve_lifecycle(
+        self, memory_ids: list[str]
+    ) -> dict[str, dict[str, Any]] | None:
+        """Fetch vector lifecycle state for graph-linked memory IDs.
+
+        Returns the id→state map, or None when the vector store could not
+        answer. None is a distinct outcome from an empty map: an empty map
+        means those memories are genuinely gone (fail closed), whereas an
+        unreachable store must not silently erase the graph leg — which is
+        the one leg that still works when Qdrant is down.
+        """
+        if not memory_ids:
+            return {}
+        try:
+            states = await self._vector.get_lifecycle_states(memory_ids)
+        except Exception:
+            logger.warning(
+                "Lifecycle verification unavailable — graph results returned unverified",
+                exc_info=True,
+            )
+            return None
+        return states if isinstance(states, dict) else None
+
+    @staticmethod
+    def _lifecycle_verdict(
+        states: dict[str, dict[str, Any]] | None,
+        memory_ids: list[str],
+        include_archived: bool,
+    ) -> tuple[bool, str | None]:
+        """Decide one graph row: ``(admit, verified_status)``.
+
+        A ``None`` status means "not verified" — either the row is unlinked
+        (sleep-cycle and legacy knowledge that never had a vector record, and
+        which must stay recallable) or the lookup was unavailable. A linked
+        row whose memories have all vanished is refused: Qdrant is
+        authoritative, and a dangling link is not evidence of a live memory.
+        """
+        if not memory_ids or states is None:
+            return True, None
+
+        resolved = [states[m] for m in memory_ids if m in states]
+        if not resolved:
+            return False, None
+
+        status = min(
+            (str(s.get("status") or "active") for s in resolved),
+            key=lambda s: _LIFECYCLE_PRECEDENCE.index(s)
+            if s in _LIFECYCLE_PRECEDENCE
+            else 0,
+        )
+        if status == "archived" and not include_archived:
+            return False, status
+        return True, status
+
+    async def _verify_graph_lifecycle(
+        self, entries: list[dict[str, Any]], include_archived: bool = False
+    ) -> list[dict[str, Any]]:
+        """Drop graph entries whose backing vector memory forbids recall.
+
+        Survivors are annotated with ``lifecycle_verified`` so a caller can
+        tell a checked row from graph-owned knowledge, rather than having a
+        vector lifecycle invented for it.
+        """
+        ids: list[str] = []
+        seen: set[str] = set()
+        for entry in entries:
+            for mid in (entry.get("metadata") or {}).get("memory_ids") or []:
+                if mid not in seen:
+                    seen.add(mid)
+                    ids.append(mid)
+
+        states = await self._resolve_lifecycle(ids)
+
+        kept: list[dict[str, Any]] = []
+        for entry in entries:
+            metadata = entry.setdefault("metadata", {})
+            admit, status = self._lifecycle_verdict(
+                states, metadata.get("memory_ids") or [], include_archived
+            )
+            if not admit:
+                continue
+            metadata["lifecycle_verified"] = status is not None
+            if status is not None:
+                metadata["status"] = status
+            kept.append(entry)
+        return kept
+
+    async def _filter_graph_rows(
+        self, rows: list[dict[str, Any]], include_archived: bool = False
+    ) -> list[dict[str, Any]]:
+        """Lifecycle gate for raw graph rows (the streaming path)."""
+        ids: list[str] = []
+        seen: set[str] = set()
+        for row in rows:
+            for mid in _memory_ids_of(row):
+                if mid not in seen:
+                    seen.add(mid)
+                    ids.append(mid)
+
+        states = await self._resolve_lifecycle(ids)
+        return [
+            row
+            for row in rows
+            if self._lifecycle_verdict(
+                states, _memory_ids_of(row), include_archived
+            )[0]
+        ]
 
     # ------------------------------------------------------------------
     # Merge, boost, and deduplicate
@@ -769,7 +946,11 @@ class RAGEngine:
     # Lifecycle scoring
     # ------------------------------------------------------------------
 
-    def _apply_lifecycle_scoring(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _apply_lifecycle_scoring(
+        self,
+        items: list[dict[str, Any]],
+        include_archived: bool = False,
+    ) -> list[dict[str, Any]]:
         """Apply lifecycle status and confidence multipliers to scored items.
 
         Each item's score is adjusted by:
@@ -777,7 +958,11 @@ class RAGEngine:
 
         Where confidence_factor = (1 + confirmed_count) / (1 + contradicted_count)
 
-        Items with status="archived" are removed entirely (score=0).
+        Items with status="archived" are removed entirely (score=0), unless
+        the caller explicitly asked for them — a recovery/audit read, where
+        dropping the very rows that were requested would be a silent lie.
+        Those are ranked at ARCHIVED_INCLUDED_MULTIPLIER so they sort below
+        anything live rather than being reinstated at full strength.
         Items are annotated with lifecycle metadata for the context block.
         """
         result = []
@@ -788,7 +973,9 @@ class RAGEngine:
             # Status multiplier
             multiplier = self.STATUS_MULTIPLIERS.get(status, 1.0)
             if multiplier == 0.0:
-                continue  # Skip archived
+                if not include_archived:
+                    continue  # Skip archived
+                multiplier = self.ARCHIVED_INCLUDED_MULTIPLIER
 
             # Confidence factor
             confirmed = metadata.get("confirmed_count", 0)

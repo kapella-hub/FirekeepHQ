@@ -177,25 +177,52 @@ def _skill_point():
     return p
 
 
+def _semantic_vector(points):
+    """A vector fake wired for the SEMANTIC path.
+
+    Without an awaitable `_embed`, `search_skill_points` catches the resulting
+    TypeError and degrades to scroll — so the test would pass while exercising the OLD
+    code. That is precisely how the substring bug stayed invisible, so these fixtures
+    assert the semantic branch was actually reached.
+    """
+    v = MagicMock()
+    v._client = AsyncMock()
+    v._embed = AsyncMock(return_value=[1.0, 0.0, 0.0])
+    res = MagicMock()
+    res.points = points
+    v._client.query_points = AsyncMock(return_value=res)
+    v._client.scroll = AsyncMock(return_value=([], None))
+    return v
+
+
 @pytest.mark.asyncio
 async def test_skills_ok():
-    vector = MagicMock()
-    vector._client = AsyncMock()
-    vector._client.scroll = AsyncMock(return_value=([_skill_point()], None))
+    """The goal shares NO literal substring with the trigger.
+
+    Previously this passed only because goal='collector' happens to sit inside
+    trigger='collector down' — it would have passed against the broken substring
+    filter too, and therefore proved nothing about matching.
+    """
+    vector = _semantic_vector([_skill_point()])
     settings = MagicMock(QDRANT_COLLECTION="firekeep_memory")
-    sec = await S.skills_section(vector, settings, goal="collector", project=None)
+    sec = await S.skills_section(
+        vector, settings, goal="events stopped arriving from the wiki sync", project=None
+    )
     assert sec["status"] == "ok"
     assert sec["data"]["skills"][0]["trigger"] == "collector down"
+    vector._client.query_points.assert_awaited()
+    vector._client.scroll.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_skills_empty():
-    vector = MagicMock()
-    vector._client = AsyncMock()
-    vector._client.scroll = AsyncMock(return_value=([], None))
+    vector = _semantic_vector([])
     settings = MagicMock(QDRANT_COLLECTION="firekeep_memory")
     sec = await S.skills_section(vector, settings, goal="x", project=None)
     assert sec["status"] == "empty"
+    # Nothing cleared the floor -> the empty-result fallback consults scroll, which is
+    # also empty. Both paths ran; the section stays 'empty' rather than erroring.
+    vector._client.query_points.assert_awaited()
 
 
 def _document_draft_skill_point():

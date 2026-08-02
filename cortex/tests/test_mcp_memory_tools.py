@@ -263,6 +263,35 @@ async def test_skill_recall_returns_string():
 
 
 @pytest.mark.asyncio
+async def test_skill_recall_sends_the_full_task_as_the_query():
+    """`q` must carry the WHOLE task, not a five-word prefix.
+
+    The old `" ".join(task.split()[:5])` existed to make a literal substring match
+    against a trigger plausible; against a semantic query it just discards signal.
+    Note `test_skill_recall_returns_string` above asserts only `isinstance(result, str)`
+    — structurally incapable of catching this class of bug, which is why it shipped.
+    """
+    task = "the vector database keeps dropping writes after a rebuild"
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json = MagicMock(return_value=[])
+    with patch("app.mcp_server._get_client") as mock_get:
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        mock_get.return_value = mock_client
+        from app.mcp_server import skill_recall
+        await skill_recall(task=task, top_k=3)
+
+    path, kwargs = mock_client.get.call_args[0], mock_client.get.call_args[1]
+    assert path[0] == "/skills"
+    params = kwargs["params"]
+    assert params["q"] == task, "the full task must be sent, not a truncated prefix"
+    assert params["status"] == "active"
+    assert params["limit"] == 3
+    assert params["record_recall"] is True
+
+
+@pytest.mark.asyncio
 async def test_skill_create_returns_id():
     mock_resp = MagicMock()
     mock_resp.status_code = 201

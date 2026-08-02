@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 import json as _json
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 
-from app.workers.gc import prune_memories, _prune, _prune_qdrant, _prune_neo4j_orphans
+from app.workers.gc import (
+    prune_memories,
+    preview_memories,
+    _prune,
+    _prune_qdrant,
+    _prune_neo4j_orphans,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -44,7 +51,7 @@ class TestPruneMemories:
 class TestPruneQdrant:
     @patch("app.workers.gc._get_redis_client")
     @patch("app.workers.gc._get_qdrant_client")
-    def test_prunes_high_score_unconfirmed_memories(self, mock_get_client, mock_get_redis):
+    def test_archives_high_score_unconfirmed_memories(self, mock_get_client, mock_get_redis):
         mock_client = MagicMock()
         mock_get_client.return_value = mock_client
         mock_get_redis.return_value = MagicMock()
@@ -79,11 +86,19 @@ class TestPruneQdrant:
         mock_settings.QDRANT_COLLECTION = "test_collection"
         mock_settings.EVICTION_THRESHOLD = 1.5
 
-        result = _prune_qdrant(mock_settings)
+        result = _prune_qdrant(mock_settings, return_stats=True)
 
-        # Only the unconfirmed old memory should be pruned
-        assert result == 1
-        mock_client.delete.assert_called_once()
+        # Only the unconfirmed old memory is archived; first-pass GC never deletes it.
+        assert result["archived_vector"] == 1
+        assert result["pruned_vector"] == 0
+        mock_client.set_payload.assert_called_once()
+        assert mock_client.set_payload.call_args.kwargs["points"] == ["point-1"]
+        archive_payload = mock_client.set_payload.call_args.kwargs["payload"]
+        assert archive_payload["status"] == "archived"
+        assert datetime.fromisoformat(archive_payload["purge_eligible_at"]) > datetime.now(
+            timezone.utc
+        ) + timedelta(days=89)
+        mock_client.delete.assert_not_called()
         mock_client.close.assert_called_once()
 
     @patch("app.workers.gc._get_redis_client")
@@ -190,7 +205,11 @@ class TestPrune:
     @patch("app.workers.gc._prune_qdrant")
     @patch("app.workers.gc.get_settings")
     def test_combines_both_stores(self, mock_settings, mock_prune_qdrant, mock_prune_neo4j):
-        mock_settings.return_value = MagicMock(MAX_MEMORY_AGE_DAYS=180)
+        mock_settings.return_value = MagicMock(
+            GC_ENABLED=True,
+            GC_DRY_RUN=False,
+            GC_PURGE_ENABLED=True,
+        )
         mock_prune_qdrant.return_value = 10
         mock_prune_neo4j.return_value = 5
 
@@ -273,8 +292,8 @@ class TestGcReadsReality:
 
     @patch("app.workers.gc._get_redis_client")
     @patch("app.workers.gc._get_qdrant_client")
-    def test_eviction_writes_audit_log(self, mock_get_client, mock_get_redis):
-        """Every eviction appends to gc:eviction:log, trimmed to 1000."""
+    def test_archive_writes_action_audit_log(self, mock_get_client, mock_get_redis):
+        """Every archive appends an action event to the retained audit key."""
         mock_client = MagicMock()
         mock_get_client.return_value = mock_client
         mock_redis = MagicMock()
@@ -290,7 +309,9 @@ class TestGcReadsReality:
         mock_settings.QDRANT_COLLECTION = "test_collection"
         mock_settings.EVICTION_THRESHOLD = 1.5
 
-        assert _prune_qdrant(mock_settings) == 1
+        result = _prune_qdrant(mock_settings, return_stats=True)
+        assert result["archived_vector"] == 1
+        assert result["pruned_vector"] == 0
 
         from app.workers.gc import GC_EVICTION_LOG_KEY
         assert GC_EVICTION_LOG_KEY == "gc:eviction:log"
@@ -300,7 +321,316 @@ class TestGcReadsReality:
         assert key == "gc:eviction:log"
         entry = _json.loads(entry_json)
         assert entry["id"] == "old-1"
+        assert entry["action"] == "archived"
         assert entry["memory_type"] == "episodic"
-        assert "eviction_score" in entry and "evicted_at" in entry
+        assert "eviction_score" in entry and "occurred_at" in entry
+        assert entry["archived_at"] == entry["occurred_at"]
         mock_pipe.ltrim.assert_called_once_with("gc:eviction:log", 0, 999)
         mock_pipe.execute.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Archive-first GC, explicit purge, preview, and kill switches
+# ---------------------------------------------------------------------------
+
+
+def _gc_settings(**overrides):
+    settings = MagicMock()
+    settings.QDRANT_COLLECTION = "test_collection"
+    settings.EVICTION_THRESHOLD = 1.5
+    for name, value in overrides.items():
+        setattr(settings, name, value)
+    return settings
+
+
+class TestArchiveFirstGc:
+    @patch("app.workers.gc._get_redis_client")
+    @patch("app.workers.gc._get_qdrant_client")
+    def test_gc_origin_archive_purges_only_after_grace(
+        self, mock_get_client, mock_get_redis
+    ):
+        client = MagicMock()
+        mock_get_client.return_value = client
+        redis = MagicMock()
+        redis.hgetall.return_value = {}
+        mock_get_redis.return_value = redis
+        archived_at = (datetime.now(timezone.utc) - timedelta(days=91)).isoformat()
+        point = _old_point("archive-1", {
+            "status": "archived",
+            "archive_source": "gc",
+            "archived_at": archived_at,
+            "memory_type": "episodic",
+        })
+        client.scroll.return_value = ([point], None)
+
+        result = _prune_qdrant(
+            _gc_settings(GC_PURGE_ENABLED=True, GC_ARCHIVE_GRACE_DAYS=90),
+            return_stats=True,
+        )
+
+        assert result["pruned_vector"] == 1
+        assert result["archived_vector"] == 0
+        client.delete.assert_called_once()
+        client.set_payload.assert_not_called()
+        entry = _json.loads(redis.pipeline.return_value.lpush.call_args.args[1])
+        assert entry["action"] == "purged"
+        assert entry["evicted_at"] == entry["occurred_at"]
+
+    @patch("app.workers.gc._get_redis_client")
+    @patch("app.workers.gc._get_qdrant_client")
+    def test_gc_archive_inside_grace_is_retained(self, mock_get_client, mock_get_redis):
+        client = MagicMock()
+        mock_get_client.return_value = client
+        mock_get_redis.return_value = MagicMock()
+        point = _old_point("archive-1", {
+            "status": "archived",
+            "archive_source": "gc",
+            "archived_at": (datetime.now(timezone.utc) - timedelta(days=89)).isoformat(),
+        })
+        client.scroll.return_value = ([point], None)
+
+        result = _prune_qdrant(
+            _gc_settings(GC_PURGE_ENABLED=True, GC_ARCHIVE_GRACE_DAYS=90),
+            return_stats=True,
+        )
+
+        assert result["pruned_vector"] == 0
+        client.delete.assert_not_called()
+
+    @patch("app.workers.gc._get_redis_client")
+    @patch("app.workers.gc._get_qdrant_client")
+    def test_recorded_recovery_boundary_survives_later_config_change(
+        self, mock_get_client, mock_get_redis
+    ):
+        client = MagicMock()
+        mock_get_client.return_value = client
+        mock_get_redis.return_value = MagicMock()
+        point = _old_point("archive-1", {
+            "status": "archived",
+            "archive_source": "gc",
+            "archived_at": "2020-01-01T00:00:00+00:00",
+            "purge_eligible_at": (
+                datetime.now(timezone.utc) + timedelta(days=30)
+            ).isoformat(),
+        })
+        client.scroll.return_value = ([point], None)
+
+        result = _prune_qdrant(
+            _gc_settings(GC_PURGE_ENABLED=True, GC_ARCHIVE_GRACE_DAYS=1),
+            return_stats=True,
+        )
+
+        assert result["pruned_vector"] == 0
+        client.delete.assert_not_called()
+
+    @patch("app.workers.gc._get_redis_client")
+    @patch("app.workers.gc._get_qdrant_client")
+    def test_purge_requires_explicit_real_bool(self, mock_get_client, mock_get_redis):
+        """An absent MagicMock attribute must not accidentally enable deletion."""
+        client = MagicMock()
+        mock_get_client.return_value = client
+        mock_get_redis.return_value = MagicMock()
+        point = _old_point("archive-1", {
+            "status": "archived",
+            "archive_source": "gc",
+            "archived_at": "2020-01-01T00:00:00+00:00",
+        })
+        client.scroll.return_value = ([point], None)
+
+        assert _prune_qdrant(_gc_settings()) == 0
+        client.delete.assert_not_called()
+
+    @patch("app.workers.gc._get_redis_client")
+    @patch("app.workers.gc._get_qdrant_client")
+    def test_manual_legacy_and_malformed_archives_never_purge(
+        self, mock_get_client, mock_get_redis
+    ):
+        client = MagicMock()
+        mock_get_client.return_value = client
+        mock_get_redis.return_value = MagicMock()
+        points = [
+            _old_point("manual", {
+                "status": "archived", "archive_source": "manual",
+                "archived_at": "2020-01-01T00:00:00+00:00",
+            }),
+            _old_point("legacy", {"status": "archived"}),
+            _old_point("malformed", {
+                "status": "archived", "archive_source": "gc",
+                "archived_at": "not-a-date",
+            }),
+            _old_point("malformed-boundary", {
+                "status": "archived", "archive_source": "gc",
+                "archived_at": "2020-01-01T00:00:00+00:00",
+                "purge_eligible_at": "not-a-date",
+            }),
+            _old_point("future", {
+                "status": "archived", "archive_source": "gc",
+                "archived_at": "2999-01-01T00:00:00+00:00",
+            }),
+        ]
+        client.scroll.return_value = (points, None)
+
+        result = _prune_qdrant(
+            _gc_settings(GC_PURGE_ENABLED=True, GC_ARCHIVE_GRACE_DAYS=90),
+            return_stats=True,
+        )
+
+        assert result["pruned_vector"] == 0
+        client.delete.assert_not_called()
+
+    @patch("app.workers.gc._get_redis_client")
+    @patch("app.workers.gc._get_qdrant_client")
+    def test_only_active_memories_are_automatically_archived(
+        self, mock_get_client, mock_get_redis
+    ):
+        client = MagicMock()
+        mock_get_client.return_value = client
+        mock_get_redis.return_value = MagicMock()
+        client.scroll.return_value = ([
+            _old_point("active", {"status": "active", "confidence": 0.3}),
+            _old_point("deprecated", {"status": "deprecated", "confidence": 0.3}),
+            _old_point("superseded", {"status": "superseded", "confidence": 0.3}),
+        ], None)
+
+        result = _prune_qdrant(_gc_settings(), return_stats=True)
+
+        assert result["archived_vector"] == 1
+        assert client.set_payload.call_args.kwargs["points"] == ["active"]
+
+    @patch("app.workers.gc._get_redis_client")
+    @patch("app.workers.gc._get_qdrant_client")
+    def test_decay_settings_drive_archive_score(self, mock_get_client, mock_get_redis):
+        client = MagicMock()
+        mock_get_client.return_value = client
+        mock_get_redis.return_value = MagicMock()
+        client.scroll.return_value = ([
+            _old_point("episodic", {"memory_type": "episodic", "confidence": 0.3}),
+        ], None)
+
+        long_lived = _prune_qdrant(
+            _gc_settings(DECAY_EPISODIC_DAYS=10000), return_stats=True
+        )
+        assert long_lived["archived_vector"] == 0
+
+        short_lived = _prune_qdrant(
+            _gc_settings(DECAY_EPISODIC_DAYS=1), return_stats=True
+        )
+        assert short_lived["archived_vector"] == 1
+
+
+class TestGcSafetyModes:
+    def test_gc_enabled_false_stops_vector_and_graph_work(self):
+        settings = _gc_settings(GC_ENABLED=False)
+        with (
+            patch("app.workers.gc.get_settings", return_value=settings),
+            patch("app.workers.gc._prune_qdrant") as qdrant,
+            patch("app.workers.gc._prune_neo4j_orphans") as graph,
+        ):
+            result = _prune()
+
+        assert result["status"] == "disabled"
+        assert result["pruned_vector"] == 0
+        qdrant.assert_not_called()
+        graph.assert_not_called()
+
+    def test_scheduled_dry_run_skips_graph_mutation(self):
+        settings = _gc_settings(GC_ENABLED=True, GC_DRY_RUN=True)
+        vector_stats = {
+            "archived_vector": 0,
+            "pruned_vector": 0,
+            "would_archive_vector": 2,
+            "would_purge_vector": 1,
+        }
+        with (
+            patch("app.workers.gc.get_settings", return_value=settings),
+            patch("app.workers.gc._prune_qdrant", return_value=vector_stats),
+            patch("app.workers.gc._prune_neo4j_orphans") as graph,
+        ):
+            result = _prune()
+
+        assert result["dry_run"] is True
+        assert result["would_archive_vector"] == 2
+        assert result["would_purge_vector"] == 1
+        graph.assert_not_called()
+
+    def test_archive_only_mode_skips_graph_mutation(self):
+        settings = _gc_settings(
+            GC_ENABLED=True,
+            GC_DRY_RUN=False,
+            GC_PURGE_ENABLED=False,
+        )
+        vector_stats = {
+            "archived_vector": 2,
+            "pruned_vector": 0,
+            "would_archive_vector": 0,
+            "would_purge_vector": 0,
+        }
+        with (
+            patch("app.workers.gc.get_settings", return_value=settings),
+            patch("app.workers.gc._prune_qdrant", return_value=vector_stats),
+            patch("app.workers.gc._prune_neo4j_orphans") as graph,
+        ):
+            result = _prune()
+
+        assert result["archived_vector"] == 2
+        assert result["pruned_graph"] == 0
+        graph.assert_not_called()
+
+    def test_explicit_purge_mode_allows_graph_cleanup(self):
+        settings = _gc_settings(
+            GC_ENABLED=True,
+            GC_DRY_RUN=False,
+            GC_PURGE_ENABLED=True,
+        )
+        vector_stats = {
+            "archived_vector": 0,
+            "pruned_vector": 1,
+            "would_archive_vector": 0,
+            "would_purge_vector": 0,
+        }
+        with (
+            patch("app.workers.gc.get_settings", return_value=settings),
+            patch("app.workers.gc._prune_qdrant", return_value=vector_stats),
+            patch("app.workers.gc._prune_neo4j_orphans", return_value=3) as graph,
+        ):
+            result = _prune()
+
+        assert result["pruned_graph"] == 3
+        graph.assert_called_once_with()
+
+    @patch("app.workers.gc._get_redis_client")
+    @patch("app.workers.gc._get_qdrant_client")
+    def test_preview_reports_candidates_without_mutation_or_audit(
+        self, mock_get_client, mock_get_redis
+    ):
+        client = MagicMock()
+        mock_get_client.return_value = client
+        redis = MagicMock()
+        redis.hgetall.return_value = {}
+        mock_get_redis.return_value = redis
+        client.scroll.return_value = ([
+            _old_point("active", {"status": "active", "confidence": 0.3}),
+            _old_point("archive", {
+                "status": "archived", "archive_source": "gc",
+                "archived_at": "2020-01-01T00:00:00+00:00",
+            }),
+        ], None)
+
+        result = preview_memories(
+            _gc_settings(
+                GC_ENABLED=True,
+                GC_PURGE_ENABLED=True,
+                GC_ARCHIVE_GRACE_DAYS=90,
+            ),
+            limit=10,
+        )
+
+        assert result["status"] == "preview"
+        assert result["would_archive_vector"] == 1
+        assert result["would_purge_vector"] == 1
+        assert {item["action"] for item in result["candidates"]} == {
+            "would_archive", "would_purge",
+        }
+        client.set_payload.assert_not_called()
+        client.delete.assert_not_called()
+        redis.pipeline.assert_not_called()

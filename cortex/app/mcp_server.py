@@ -1176,6 +1176,10 @@ async def skill_recall(
         # strictly more signal; `_embed` already caps input at EMBED_MAX_CHARS, so a
         # long task cannot 400 the embeddings endpoint.
         params["q"] = task
+        # Opt into usage recording: a skill surfaced through this tool must advance
+        # last_recalled_at, otherwise skill_staleness_pass keeps flagging
+        # genuinely-used skills stale.
+        params["record_recall"] = True
         resp = await client.get("/skills", params=params)
         resp.raise_for_status()
         skills = resp.json()

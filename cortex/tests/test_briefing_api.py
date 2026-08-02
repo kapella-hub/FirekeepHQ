@@ -1,7 +1,7 @@
 """SP1b-server: Cortex GET /briefing aggregator endpoint tests."""
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import fakeredis.aioredis
 from fastapi import FastAPI
@@ -64,8 +64,19 @@ def _make_app(monkeypatch, section_timeout: float = 2.0) -> FastAPI:
     async def _scroll(**_kwargs):
         return ([], None)
 
+    async def _query_points(**_kwargs):
+        res = MagicMock()
+        res.points = []
+        return res
+
     vector._client = MagicMock()
     vector._client.scroll = _scroll
+    # The skills section takes the SEMANTIC path whenever a goal is present (tests at
+    # :81 and :89 do send one). Without an awaitable _embed those requests silently
+    # degrade to scroll and assert nothing about the real path — and since those tests
+    # check only section keys and envelope shape, nothing would fail.
+    vector._embed = AsyncMock(return_value=[1.0, 0.0, 0.0])
+    vector._client.query_points = _query_points
     app.state.vector_client = vector
 
     class _NoopClient:

@@ -379,8 +379,17 @@ def _merge_cluster(
 
 
 def orphan_cleanup_pass() -> dict[str, Any]:
-    """Delete orphaned nodes (degree 0) from Neo4j."""
+    """Delete orphaned nodes (degree 0) from Neo4j.
+
+    Gated behind GC_PURGE_ENABLED (default False) alongside every other
+    hard-delete path: this pass destroys graph rows irreversibly, so it runs
+    only where the operator has explicitly opted into purging.
+    """
     settings = get_settings()
+    if not settings.GC_PURGE_ENABLED:
+        logger.info("Orphan cleanup disabled via GC_PURGE_ENABLED=false")
+        return {"status": "disabled", "nodes_removed": []}
+
     batch_limit = settings.AGENT_BATCH_LIMIT
     nodes_removed: list[dict] = []
 

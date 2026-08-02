@@ -128,6 +128,18 @@ class TestFormatGraphEntries:
         entries = engine._format_graph_entries(results, "test")
         assert entries[0]["store"] == "graph"
 
+    def test_filters_near_zero_deep_unrelated_result(self, engine):
+        results = [
+            {
+                "name": "x",
+                "description": "Distant unrelated entity",
+                "label": "Concept",
+                "distance": 10,
+            }
+        ]
+
+        assert engine._format_graph_entries(results, "obscure") == []
+
     def test_metadata_includes_label(self, engine):
         results = [{"name": "n", "description": "d", "label": "CustomLabel", "distance": 1}]
         entries = engine._format_graph_entries(results, "test")
@@ -452,7 +464,10 @@ class TestRecall:
         assert response.sources[0].store == "vector"
 
     @pytest.mark.asyncio
-    async def test_only_graph_results(self, mock_graph, mock_vector, engine):
+    async def test_unlinked_graph_owned_result_remains_recallable(
+        self, mock_graph, mock_vector, engine
+    ):
+        """Sleep-cycle and legacy graph-only knowledge has no vector lifecycle."""
         mock_vector.search.return_value = []
         mock_graph.query_related_multihop.return_value = [
             {"name": "concept", "description": "A graph concept", "label": "Concept", "distance": 1},
@@ -463,6 +478,7 @@ class TestRecall:
 
         assert len(response.sources) == 1
         assert response.sources[0].store == "graph"
+        assert response.sources[0].metadata["lifecycle_verified"] is False
 
     @pytest.mark.asyncio
     async def test_top_k_limits_results(self, mock_graph, mock_vector, engine):
@@ -492,7 +508,7 @@ class TestRecall:
         query = ContextQuery(task="obscure", top_k=5)
         response = await engine.recall(query)
 
-        assert len(response.sources) == 2
+        assert len(response.sources) == 1
         # All scores should be low
         for src in response.sources:
             assert src.score <= 0.2
@@ -516,9 +532,13 @@ class TestRecall:
             call_order.append("graph_start")
             await asyncio.sleep(0.01)
             call_order.append("graph_end")
-            return [{"name": "g", "description": "g", "label": "C", "distance": 1}]
+            return [{"name": "g", "description": "g", "label": "C", "distance": 1,
+                     "memory_ids": ["v1"]}]
 
         mock_vector.search.side_effect = slow_vector
+        mock_vector.get_lifecycle_states.return_value = {
+            "v1": {"id": "v1", "status": "active"}
+        }
         mock_graph.query_related_multihop.side_effect = slow_graph
 
         query = ContextQuery(task="test", top_k=5)
@@ -534,8 +554,12 @@ class TestRecall:
         """If one store raises, the other should still return results."""
         mock_vector.search.side_effect = RuntimeError("vector down")
         mock_graph.query_related_multihop.return_value = [
-            {"name": "n", "description": "d", "label": "C", "distance": 1},
+            {"name": "n", "description": "d", "label": "C", "distance": 1,
+             "memory_ids": ["g1"]},
         ]
+        mock_vector.get_lifecycle_states.return_value = {
+            "g1": {"id": "g1", "status": "active"}
+        }
 
         query = ContextQuery(task="test", top_k=5)
         response = await engine.recall(query)
@@ -543,6 +567,50 @@ class TestRecall:
         # Should have graph result despite vector failure
         assert len(response.sources) == 1
         assert response.sources[0].store == "graph"
+
+    @pytest.mark.asyncio
+    async def test_archived_linked_graph_result_is_filtered(
+        self, mock_graph, mock_vector, engine
+    ):
+        mock_vector.search.return_value = []
+        mock_graph.query_related_multihop.return_value = [
+            {"name": "old", "description": "Old workaround", "label": "Resolution",
+             "distance": 1, "memory_ids": ["archived-1"]},
+        ]
+        mock_vector.get_lifecycle_states.return_value = {
+            "archived-1": {"id": "archived-1", "status": "archived"}
+        }
+
+        response = await engine.recall(ContextQuery(task="workaround", top_k=5))
+
+        assert response.sources == []
+
+    @pytest.mark.asyncio
+    async def test_archived_linked_graph_result_can_be_requested_explicitly(
+        self, mock_graph, mock_vector, engine
+    ):
+        mock_vector.search.return_value = []
+        mock_graph.query_related_multihop.return_value = [
+            {
+                "name": "old",
+                "description": "Old workaround",
+                "label": "Resolution",
+                "distance": 1,
+                "memory_ids": ["archived-1"],
+            },
+        ]
+        mock_vector.get_lifecycle_states.return_value = {
+            "archived-1": {"id": "archived-1", "status": "archived"}
+        }
+
+        response = await engine.recall(
+            ContextQuery(task="workaround", top_k=5, include_archived=True)
+        )
+
+        assert len(response.sources) == 1
+        assert response.sources[0].store == "graph"
+        assert response.sources[0].metadata["status"] == "archived"
+        assert 0 < response.sources[0].score <= 0.1
 
     @pytest.mark.asyncio
     async def test_aggregate_score_calculation(self, mock_graph, mock_vector, engine):

@@ -283,6 +283,7 @@ def _register_feature_routers(app: FastAPI) -> None:
     app.include_router(create_lifecycle_router(
         graph=app.state.graph_client,
         vector=app.state.vector_client,
+        redis_client=app.state.redis_client,
     ))
     app.include_router(create_ops_router())
 
@@ -1204,8 +1205,16 @@ async def memory_learn(
     sid = request.headers.get("X-Session-Id", "unknown")
     aid = request.headers.get("X-Agent-Id", "unknown")
 
+    # The Qdrant point id is derived from the text, so it is knowable BEFORE the
+    # write and can be handed to the graph in the same gather. Without it the
+    # Neo4j row carries no back-link and recall cannot verify its lifecycle
+    # against the authoritative vector record.
+    from app.db.vector import FIREKEEP_UUID_NAMESPACE as _VECTOR_NS
+
+    memory_id = str(uuid.uuid5(_VECTOR_NS, text))
+
     graph_result, vector_result = await asyncio.gather(
-        graph.merge_action_log(log, namespace=log.namespace),
+        graph.merge_action_log(log, namespace=log.namespace, memory_id=memory_id),
         vector.upsert(
             text=text,
             metadata={

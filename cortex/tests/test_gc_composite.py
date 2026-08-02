@@ -36,6 +36,23 @@ def test_high_confidence_reduces_score():
     assert low_conf > high_conf
 
 
+def test_optional_half_life_overrides_legacy_type_default():
+    legacy_reference = compute_eviction_score(
+        100, "reference", 0, 0.0
+    )
+    configured_reference = compute_eviction_score(
+        100, "reference", 0, 0.0, half_life_days=10
+    )
+    assert legacy_reference == 0.0
+    assert configured_reference > 1.5
+
+
+def test_nonpositive_configured_half_life_means_no_decay():
+    assert compute_eviction_score(
+        99999, "transient", 0, 0.0, half_life_days=0
+    ) == 0.0
+
+
 def test_efficacy_factor_neutral_at_half():
     """OWM: neutral efficacy (0.5, incl. never-scored memories) must leave the
     eviction score bit-identical to the pre-OWM formula."""

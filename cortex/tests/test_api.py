@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import uuid
 from unittest.mock import AsyncMock, patch
 
-
+from app.db.vector import FIREKEEP_UUID_NAMESPACE
 from app.exceptions import (
     GraphConnectionError,
     VectorStoreError,
@@ -255,6 +256,8 @@ class TestMemoryLearn:
         assert "Rebuild index" in text_arg
         assert "Search speed improved" in text_arg
         assert "Resolution: Ran REINDEX" in text_arg
+        expected_id = str(uuid.uuid5(FIREKEEP_UUID_NAMESPACE, text_arg))
+        assert mock_graph.merge_action_log.call_args.kwargs["memory_id"] == expected_id
 
     def test_learn_missing_required_fields(self, test_client):
         resp = test_client.post("/memory/learn", json={"action": "only action"})
