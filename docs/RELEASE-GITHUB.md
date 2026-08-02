@@ -162,6 +162,11 @@ cd client && python -m pytest tests/test_e2e_bootstrap.py -m e2e -q
 ```
 
 
+- **0.1.31** — Existing installs and forced reinstalls reuse their connection
+  without prompting, and stored API keys are never rendered as prompt defaults.
+  Kiro upgrades now remove the retired per-service MCP entries and grants from
+  its named agent, leaving the single Firekeep gateway while preserving foreign
+  servers and user grants.
 - **0.1.30** — HTTP-backed MCP shims survive transient service restarts without
   replaying ambiguous requests; recovery covers POST failures, fragmented or
   terminated SSE bodies, and interrupted initialization. The package stays on

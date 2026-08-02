@@ -71,6 +71,25 @@ def test_both_bootstraps_forward_join_on_fast_and_main_paths():
     assert sh.count('--join "${FIREKEEP_JOIN}"') == 4
 
 
+def test_ps1_existing_install_handoff_is_non_interactive_even_when_forced():
+    """Detect an installed client independently of the no-rebuild fast path.
+
+    A version-changing update and ``FIREKEEP_FORCE_REINSTALL=1`` both take the full
+    provisioning path, but neither may turn the final adapter re-render back into a
+    credential prompt. A fresh install remains interactive because the argument array
+    stays empty when there is no installed version or join code.
+    """
+    text = BOOTSTRAP.read_text(encoding="utf-8")
+    detection = "if (Test-Path $FirekeepExe) {"
+    fast_path = "if (($Installed -eq $V) -and -not $env:FIREKEEP_FORCE_REINSTALL) {"
+
+    assert detection in text
+    assert fast_path in text
+    assert text.index(detection) < text.index(fast_path)
+    assert "$Installed -or $env:FIREKEEP_JOIN" in text
+    assert text.count("@NonInteractiveArgs") == 2
+
+
 def test_ps1_verifies_the_uv_checksum_before_executing_it():
     """Same reasoning as the POSIX side: uv is downloaded over unauthenticated HTTP and then
     run. Windows must not be the soft target."""

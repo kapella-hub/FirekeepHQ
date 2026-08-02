@@ -220,6 +220,9 @@ class KiroAdapter(Adapter):
         data.setdefault("name", "firekeep")
 
         servers = data.setdefault("mcpServers", {})
+        # An upgraded named agent can still carry the retired per-service entries.
+        # Drop only the exact owned keys; similarly prefixed user servers survive.
+        drop_owned(servers, LEGACY_MCP_KEYS)
         entries = {
             name: {"command": cmd, "args": args}
             for name, (cmd, args) in shim_servers(venv_bin).items()
@@ -233,16 +236,28 @@ class KiroAdapter(Adapter):
         # hand-made agent carried tools=["*"] + @firekeep-* in allowedTools; the
         # kit render dropped both. Union, never clobber: user-added entries
         # survive, and an existing "*" already grants everything.
+        legacy_grants = {f"@{key}" for key in LEGACY_MCP_KEYS}
         tools = data.setdefault("tools", ["*"])
-        if isinstance(tools, list) and "*" not in tools:
-            for key in FIREKEEP_MCP_KEYS:
-                if f"@{key}" not in tools:
-                    tools.append(f"@{key}")
+        if isinstance(tools, list):
+            tools[:] = [
+                entry
+                for entry in tools
+                if not isinstance(entry, str) or entry not in legacy_grants
+            ]
+            if "*" not in tools:
+                for key in FIREKEEP_MCP_KEYS:
+                    if f"@{key}" not in tools:
+                        tools.append(f"@{key}")
         # allowedTools = pre-trusted (no per-call permission prompt). The hooks
         # call memory/relay tools on every prompt — a permission dialog per
         # recall would make the kit unusable, so kit servers are trusted.
         allowed = data.setdefault("allowedTools", [])
         if isinstance(allowed, list):
+            allowed[:] = [
+                entry
+                for entry in allowed
+                if not isinstance(entry, str) or entry not in legacy_grants
+            ]
             for key in FIREKEEP_MCP_KEYS:
                 if f"@{key}" not in allowed:
                     allowed.append(f"@{key}")

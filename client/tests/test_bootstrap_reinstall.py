@@ -22,6 +22,22 @@ def test_sh_idempotent_fast_path():
     assert "FIREKEEP_FORCE_REINSTALL" in sh
 
 
+def test_sh_existing_install_handoff_is_non_interactive_even_when_forced():
+    """Force reinstall controls rebuilding, not whether existing config is reused."""
+    sh = (BOOT / "install.sh").read_text()
+    detection = 'if [ -x "${FIREKEEP_BIN}" ]; then'
+    fast_path = ('if [ "${installed}" = "${V}" ] && '
+                 '[ -z "${FIREKEEP_FORCE_REINSTALL:-}" ]; then')
+
+    assert detection in sh
+    assert fast_path in sh
+    assert sh.index(detection) < sh.index(fast_path)
+    assert '[ -n "${installed}" ] || [ -n "${FIREKEEP_JOIN:-}" ]' in sh
+    assert 'NON_INTERACTIVE_ARG=""' in sh
+    # Both join/non-join TTY handoffs on the fast and full-install paths.
+    assert sh.count("${NON_INTERACTIVE_ARG}") == 4
+
+
 def test_runtime_override_is_conditional():
     """FIREKEEP_RUNTIME targets a repair/re-render; unset lets the CLI's all-adapter
     default apply. Keep both bootstraps in lock-step without duplicating that default."""
