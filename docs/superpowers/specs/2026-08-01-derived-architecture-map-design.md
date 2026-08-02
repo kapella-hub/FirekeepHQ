@@ -18,7 +18,13 @@ by every agent, on every machine — and it has drifted.
 
 Measured drift (spike, 2026-08-02 — see §14 for method):
 
-- **40 of 114** real routes are undocumented — **35%**.
+- **24 of 113** real routes are undocumented — **21%**. Counting basis, since it changes
+  the number: unique `(method, path)` pairs after AST extraction; there are 102 distinct
+  *paths*, so a path-based basis gives a different denominator. A further **19** routes
+  score as undocumented only under a raw substring test because `CLAUDE.md` documents
+  them with a different path-parameter placeholder (`{id}` vs `{memory_id}`). Those are
+  a much weaker finding class — cosmetic mismatch, not a gap — and the generator must
+  normalise placeholders before the coverage test or it will over-report by ~79%.
 - **13 of 62** MCP tools are never mentioned, including `ctx_get_shadow`,
   `ctx_list_sessions`, `memory_health`, `memory_stream`, `audit_memory`, and every one of
   the three `sentinel_*` tools.
@@ -89,7 +95,7 @@ rather than adding to them — aligned with the branch it lands on.
 |---|---|---|
 | Service topology | `depends_on`, `environment:`, `nginx.conf.template` proxy_pass, code call sites | ~28 config edges + code-only edges |
 | Redis DB allocation | `redis://redis:6379/N` across compose + `.env.example` | 8 rows |
-| REST route census | FastAPI decorator + `@mcp.custom_route` AST per service | 114 unique routes (measured) |
+| REST route census | FastAPI decorator + `@mcp.custom_route` AST per service | 113 unique `(method, path)` (measured) |
 | MCP tool census | `@mcp.tool()` AST; proxy target where resolvable | 62 tools (measured); 27/27 pairs on cortex |
 | Port / bind map | compose `ports:` + `BIND_ADDR` | complete |
 | Env var surface | compose + `.env.example` + each `config.py`, declared-vs-consumed | extends `test_no_dead_config.py` |
@@ -200,7 +206,11 @@ that abstains and says so.
    resolves to one of those settings attributes. Capture the literal remainder as `route`.
 
 This is demonstrated, not hoped-for: it is how the briefing's seven route-level calls were
-recovered — `cortex/app/briefing/sections.py:339` `{SENTINEL_URL}/environment`, `:343`
+recovered. **Line numbers below (and §14's `CLAUDE.md` baseline) were taken from the
+working tree during the spike, not from a committed revision, so they will not resolve at
+this spec's own commit** — re-derive them rather than trusting them; §8.5's known-truth
+test is what pins the facts, not these citations. —
+`cortex/app/briefing/sections.py:339` `{SENTINEL_URL}/environment`, `:343`
 `{SENTINEL_URL}/events`, `:360` `{RELAY_URL}/tasks`, `:371` `{RELAY_URL}/bulletin`, `:393`
 and `:395` `{BRIDGE_URL}/sessions`, `:401` `{RELAY_URL}/presence/{agent_id}`.
 
@@ -215,8 +225,14 @@ does not publish its own yield is indistinguishable from a broken one.
 
 Output is a single marker-delimited block in `CLAUDE.md`, written with
 `upsert_marked_block` / `strip_marked_block` — the primitive already proven in
-`client/firekeep_client/adapters/base.py` (`INSTRUCTIONS_BEGIN`/`END`), where only text
-between markers is ever touched and user content survives byte-for-byte.
+`client/firekeep_client/adapters/base.py` (`INSTRUCTIONS_BEGIN`/`END`): idempotent, and
+only the block's *interior* is replaced. Precise about the guarantee, since an earlier
+draft of this spec overstated it — surrounding content is **not** byte-for-byte, because
+the functions `lstrip`/`rstrip` around the block and therefore normalise blank lines on
+both sides. When extracting to `textblock/`, either drop those two calls or make the
+surrounding-whitespace policy an explicit parameter; a generator that silently reflows
+blank lines in `CLAUDE.md` on every run would churn the prompt prefix and fight §7's
+idempotency requirement.
 
 **Decision (approved): extract that primitive to a small shared root module —
 `textblock/`, sized like `provenance/` — which both `client` and `archmap` import, along
@@ -258,7 +274,7 @@ so every degradation is loud or counted.
    alongside `tests/test_image_pins.py`, and is **blocking, not advisory**: this is the
    anti-rot mechanism, and a non-blocking version of it is the same feature without the
    property that justifies it. The drift count is also the feature's own metric, baselined
-   by the §14 spike at **40 routes + 13 tools**.
+   by the §14 spike at **24 routes + 13 tools** (placeholder-normalised; see §14).
 5. **Known-truth test** — assert the generator finds facts verified by hand:
    `sentinel→cortex-api` as `kind=code`; `sentinel→symdex` as a dangling target;
    `cortex-beat`'s `RELAY_URL` as unused config; 12 briefing sections. Hand-verified
@@ -358,24 +374,36 @@ tested by literal substring against `CLAUDE.md`; tokens counted with `tiktoken`
 | Measure | Value |
 |---|---|
 | `CLAUDE.md` | 30,102 tokens / 120,718 chars |
-| Unique routes | **114** — 40 undocumented (35%) |
+| Unique routes | **113** `(method, path)` — **24** undocumented (21%), plus 19 placeholder-only mismatches |
 | MCP tools | **62** — 13 undocumented |
 | Rendered census block | 1,854 tokens (routes 1,418 + tools 420) |
 | Rendered topology block | ~764 tokens |
 | **Generated total** | **~2,618 tokens** |
-| Replaceable: endpoint/tool enumeration lines | 2,709 tokens / 36 lines |
+| Replaceable: endpoint/tool enumeration, **backticked literals only** | 652 tokens / 111 literals |
+| Replaceable: endpoint/tool enumeration, **whole lines** | 2,709 tokens / 36 lines |
 | Replaceable: service, Redis and scope table rows | 349 tokens / 28 lines |
-| **Replaced total** | **~3,058 tokens** |
-| **Net** | **≈ −440 tokens**, with routes 74→114 and tools 49→62 |
+| **Replaced total** | **1,001 tokens** (literals) to **3,058** (whole lines) |
+| **Net** | **+1,617 to −440 tokens** — sign is not established |
 
 Config-var tables (31 rows, 1,501 tokens) are deliberately excluded from "replaceable":
 their `Purpose` column is hand-written explanation and is not derivable. §9's
 tables-versus-reasoning boundary applies.
 
-**Honest reading of the net:** this is approximately token-neutral, not a token win. The
-saving is ~1.5% of the file, well inside estimate error. The real return is **+54% route
-coverage and +27% tool coverage at no prompt cost**, plus the drift alarm. Do not sell
-this as a token-reduction feature.
+**Honest reading of the net — corrected 2026-08-02 after adversarial review.** The
+original figure (−440) compared the generated block against *whole lines* of replaced
+prose, while the sibling row counted only literals. Those are incompatible rules, and the
+whole-line side counts ~2,000 tokens of hand-written explanation that §9 explicitly says
+the generator never owns. Measured consistently — literals against literals — the block
+*costs* ~1,617 tokens. The true figure lies between the two, because the generator can
+own some of the connecting prose but not all of it, and nothing here establishes how
+much.
+
+So: **the sign of the token effect is unknown, and the earlier "approximately
+token-neutral" claim was not supported by its own measurement.** Treat this as a
+correctness feature that plausibly costs prompt tokens. The return is +21% route
+coverage, +27% tool coverage, and a drift alarm — bought with tokens, not for free.
+Settle the sign by generating the block once and diffing real token counts before
+landing it; that is cheap and it is what §8.4's metric will measure anyway.
 
 **Amendment considered and rejected.** Before this spike, a per-row estimate put the
 census at ~5,700 tokens and concluded it had to live outside `CLAUDE.md` with the drift
