@@ -22,6 +22,10 @@ def cfg_env(write_config, monkeypatch):
     write_config(active="personal", personal=DEFAULT_PERSONAL)
     monkeypatch.delenv("FIREKEEP_NIGHTSHIFT_AGENT_ID", raising=False)
     monkeypatch.delenv("FIREKEEP_BYPASS", raising=False)
+    # Match the model id the get_json fakes report from /models, so the suite's world
+    # is self-consistent now that a configured-but-absent model aborts the run. Also
+    # insulates these tests from the real default model name changing.
+    monkeypatch.setenv("FIREKEEP_NIGHTSHIFT_LLM_MODEL", "m")
 
 
 def _task(task_id="task-1", description="session_id=sess-42", assigner="mogan"):
@@ -154,9 +158,91 @@ def test_llm_unreachable_aborts_cleanly_before_touching_tasks(cfg_env):
         raise nightshift.transport.TransportError("connection refused")
 
     out = nightshift.run(call_tool=rec, post_json=_llm_ok(_SYNTH), get_json=down)
-    assert out["error"].startswith("LM Studio")
+    # This test owns ONE behaviour: abort before anything is leased or updated. The
+    # message's content is asserted by test_unreachable_error_names_both_supported_
+    # backends — it used to be checked here as startswith("LM Studio"), which broke
+    # when the abort stopped naming a single hardcoded backend.
+    assert out["error"]
     assert not rec.named("relay_lease")
     assert not rec.named("relay_task_update")
+
+
+def test_autodetects_ollama_when_lm_studio_is_down(cfg_env, monkeypatch):
+    """LM Studio and Ollama are both OpenAI-compatible, so supporting both is a
+    DETECTION problem, not a protocol one — nothing in the request path changes. With
+    no base configured, a down LM Studio must fall through to Ollama's :11434 rather
+    than aborting a shift the machine could actually run."""
+    monkeypatch.delenv("FIREKEEP_NIGHTSHIFT_LLM_BASE", raising=False)
+    rec = _Recorder({"relay_task_list": {"tasks": [_task()], "count": 1}})
+
+    def get_json(url, **kw):
+        if ":1234" in url:
+            raise nightshift.transport.TransportError("connection refused")
+        return {"data": []}
+
+    inner, posted = _llm_ok(_SYNTH), []
+
+    def post_json(url, *a, **kw):
+        posted.append(url)
+        return inner(url, *a, **kw)
+
+    nightshift.run(call_tool=rec, post_json=post_json, get_json=get_json)
+    assert posted and all(":11434" in u for u in posted)
+
+
+def test_unreachable_error_names_both_supported_backends(cfg_env, monkeypatch):
+    """The abort message hardcoded LM Studio, so an Ollama user who mistyped a port was
+    told to run `lms server start` — advice for software they do not have."""
+    monkeypatch.delenv("FIREKEEP_NIGHTSHIFT_LLM_BASE", raising=False)
+    rec = _Recorder({"relay_task_list": {"tasks": [_task()], "count": 1}})
+
+    def down(url, **kw):
+        raise nightshift.transport.TransportError("connection refused")
+
+    out = nightshift.run(call_tool=rec, post_json=_llm_ok(_SYNTH), get_json=down)
+    assert "LM Studio" in out["error"] and "Ollama" in out["error"]
+    assert "1234" in out["error"] and "11434" in out["error"]
+
+
+def test_missing_model_fails_early_with_the_available_list(cfg_env, monkeypatch):
+    """Detecting the BACKEND is not the same as having the MODEL. The default model is
+    an LM Studio identifier, so auto-detecting Ollama and then firing a chat call fails
+    deep in the run with a bare 404. Fail before leasing, and say what IS loaded — the
+    operator cannot guess. Deliberately lenient: an empty or unparseable model list is
+    'cannot tell', which proceeds rather than blocking a runnable shift."""
+    monkeypatch.delenv("FIREKEEP_NIGHTSHIFT_LLM_BASE", raising=False)
+    monkeypatch.setenv("FIREKEEP_NIGHTSHIFT_LLM_MODEL", "not-installed")
+    rec = _Recorder({"relay_task_list": {"tasks": [_task()], "count": 1}})
+    models = {"data": [{"id": "qwen3:30b"}, {"id": "llama3:latest"}]}
+    out = nightshift.run(call_tool=rec, post_json=_llm_ok(_SYNTH),
+                         get_json=lambda *a, **k: models)
+    assert "not-installed" in out["error"]
+    assert "qwen3:30b" in out["error"]
+    assert not rec.named("relay_lease")
+
+
+def test_empty_model_list_does_not_block_the_shift(cfg_env, monkeypatch):
+    """The lenient half of the rule above: a backend that reports no models (or a shape
+    we cannot read) must not veto a shift that would otherwise run."""
+    monkeypatch.delenv("FIREKEEP_NIGHTSHIFT_LLM_BASE", raising=False)
+    rec = _Recorder({"relay_task_list": {"tasks": [_task()], "count": 1}})
+    out = nightshift.run(call_tool=rec, post_json=_llm_ok(_SYNTH),
+                         get_json=lambda *a, **k: {"data": []})
+    assert not out.get("error")
+
+
+def test_cloud_model_is_refused_before_touching_anything(cfg_env, monkeypatch):
+    """Night Shift's whole premise is that session content never leaves the machine.
+    An Ollama `:cloud` model silently routes it to a third party, inverting that — so
+    it is refused by default with a named opt-out (the SSL_CERT_FILE /
+    FIREKEEP_KEEP_SSL_CERT_FILE precedent)."""
+    monkeypatch.setenv("FIREKEEP_NIGHTSHIFT_LLM_MODEL", "minimax-m2:cloud")
+    rec = _Recorder({"relay_task_list": {"tasks": [_task()], "count": 1}})
+    out = nightshift.run(call_tool=rec, post_json=_llm_ok(_SYNTH),
+                         get_json=lambda *a, **k: {"data": []})
+    assert "cloud" in out["error"].lower()
+    assert "FIREKEEP_NIGHTSHIFT_ALLOW_REMOTE" in out["error"]
+    assert not rec.named("relay_lease")
 
 
 def test_malformed_llm_json_twice_marks_task_failed(cfg_env):

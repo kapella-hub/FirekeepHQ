@@ -830,7 +830,7 @@ def run_doctor(cfg=None) -> list[tuple[str, str, str]]:
 
 
 def cmd_night_shift(args) -> int:
-    """Drain distill_session Relay tasks with the LOCAL model (LM Studio).
+    """Drain distill_session Relay tasks with a LOCAL model (LM Studio or Ollama).
 
     The stop hook enqueues one per session end; this worker turns each into a
     consolidated memory + (when warranted) a DRAFT skill for human review —

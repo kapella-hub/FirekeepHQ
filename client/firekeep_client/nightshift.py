@@ -3,8 +3,11 @@
 Since SP1b the `stop` hook has enqueued a `distill_session` Relay task at every
 session end — structural capture with, until now, nothing draining the queue
 (the deliberately-built Fleet-as-GPU seam). Night Shift is the drain, run where
-the free compute lives: the developer's own machine, against the LOCAL model
-served by LM Studio (OpenAI-compatible, `http://127.0.0.1:1234/v1` by default).
+the free compute lives: the developer's own machine, against a LOCAL model served
+by LM Studio (`:1234`) or Ollama (`:11434`). Both speak the OpenAI-compatible API,
+so the request path is identical and choosing between them is pure detection: with
+no `FIREKEEP_NIGHTSHIFT_LLM_BASE` set, they are probed in that order and the first
+to answer wins.
 
 Per task it:
   1. leases `distill.<task_id>` (fencing token — two workers can't double-drain);
@@ -18,8 +21,10 @@ Per task it:
      session's agent and session_id, never to the worker;
   5. completes the task and releases the lease.
 
-Posture: personal/bypass mode is a hard no-op (nothing is read or sent); an
-unreachable LM Studio aborts BEFORE any task is touched; a malformed model
+Posture: personal/bypass mode is a hard no-op (nothing is read or sent); a
+`:cloud` model is refused (session content must not leave the machine — override
+with FIREKEEP_NIGHTSHIFT_ALLOW_REMOTE=1) and no reachable backend aborts, both
+BEFORE any task is touched; a malformed model
 response is retried once and then the task is marked failed (visible in the
 dashboard, no infinite retry); tasks predating the stop hook's session_id stamp
 are completed with a note (backlog clears, nothing is invented). Import
@@ -36,7 +41,14 @@ from typing import Any, Callable
 from firekeep_client import hooklog, resolver, transport
 from firekeep_client.hooks import _mcp
 
-_DEFAULT_LLM_BASE = "http://127.0.0.1:1234/v1"
+# Supported local backends, probed in this order when no base is configured. Both
+# speak the OpenAI-compatible API, so supporting both is DETECTION only — nothing
+# in the request path differs.
+_LLM_BACKENDS = (
+    ("LM Studio", "http://127.0.0.1:1234/v1"),
+    ("Ollama", "http://127.0.0.1:11434/v1"),
+)
+_DEFAULT_LLM_BASE = _LLM_BACKENDS[0][1]
 _DEFAULT_LLM_MODEL = "qwen/qwen3.6-35b-a3b"
 _DEFAULT_MAX_TASKS = 5
 _TASK_TITLE = "distill_session"
@@ -65,6 +77,48 @@ def _llm_base() -> str:
 
 def _llm_model() -> str:
     return os.environ.get("FIREKEEP_NIGHTSHIFT_LLM_MODEL") or _DEFAULT_LLM_MODEL
+
+
+def _detect_llm_base(get_json: Callable[..., Any]) -> tuple[str, list[str]] | None:
+    """Resolve the backend to use as `(base, model_ids)`, or None if none answered.
+
+    An EXPLICIT base is probed and nothing else: a typo must fail loudly rather than
+    silently fall through to a different engine than the operator named. With no
+    config, probe the supported backends in order and take the first that answers.
+
+    The model list comes back from the same probe rather than a second round trip.
+    An unreadable shape degrades to `[]`, which callers must treat as "cannot tell"
+    — never as "no models".
+    """
+    if os.environ.get("FIREKEEP_NIGHTSHIFT_LLM_BASE"):
+        bases = [_llm_base()]
+    else:
+        bases = [b for _name, b in _LLM_BACKENDS]
+    for base in bases:
+        try:
+            resp = get_json(f"{base}/models", headers={}, timeout=10.0)
+        except Exception:  # noqa: BLE001 — any failure just means "not this one"
+            continue
+        try:
+            models = [str(m["id"]) for m in (resp or {}).get("data") or [] if m.get("id")]
+        except Exception:  # noqa: BLE001
+            models = []
+        return base, models
+    return None
+
+
+def _remote_model_refusal() -> str | None:
+    """Night Shift's premise is that session content never leaves the machine. Ollama
+    exposes `<name>:cloud` models that transparently route to a third party, which
+    silently inverts that. Refused by default, overridable — the same shape as the
+    bootstrap's SSL_CERT_FILE / FIREKEEP_KEEP_SSL_CERT_FILE opt-out.
+    """
+    model = _llm_model()
+    if model.endswith(":cloud") and not os.environ.get("FIREKEEP_NIGHTSHIFT_ALLOW_REMOTE"):
+        return (f"model '{model}' is a CLOUD model — Night Shift distills session "
+                f"content, which would leave this machine. Pick a local model, or set "
+                f"FIREKEEP_NIGHTSHIFT_ALLOW_REMOTE=1 if that is genuinely intended")
+    return None
 
 
 def _worker_id() -> str:
@@ -118,7 +172,7 @@ def _evidence(sid: str, task: dict, get_json: Callable[..., Any]) -> str:
 
 
 def _synthesize(sid: str, assigner: str, evidence: str,
-                post_json: Callable[..., Any]) -> dict:
+                post_json: Callable[..., Any], base: str) -> dict:
     """One LLM distillation with a single retry on malformed output."""
     body = {
         "model": _llm_model(),
@@ -131,7 +185,7 @@ def _synthesize(sid: str, assigner: str, evidence: str,
     }
     last_error: Exception | None = None
     for _attempt in (1, 2):
-        resp = post_json(f"{_llm_base()}/chat/completions", body,
+        resp = post_json(f"{base}/chat/completions", body,
                          headers={"Content-Type": "application/json"},
                          timeout=_LLM_TIMEOUT)
         try:
@@ -174,12 +228,30 @@ def run(max_tasks: int = _DEFAULT_MAX_TASKS, dry_run: bool = False, *,
                         "writes team memory, so it stays fully dormant")
         return out
 
-    # LM Studio reachability — abort BEFORE leasing anything.
-    try:
-        get_json(f"{_llm_base()}/models", headers={}, timeout=10.0)
-    except Exception as e:  # noqa: BLE001
-        out["error"] = (f"LM Studio unreachable at {_llm_base()} ({e}); start it "
-                        f"with `lms server start` and load {_llm_model()}")
+    # Cloud-model refusal and backend reachability — both BEFORE leasing anything.
+    refusal = _remote_model_refusal()
+    if refusal:
+        out["error"] = refusal
+        return out
+
+    detected = _detect_llm_base(get_json)
+    if detected is None:
+        configured = os.environ.get("FIREKEEP_NIGHTSHIFT_LLM_BASE")
+        where = configured or ", ".join(f"{n} {b}" for n, b in _LLM_BACKENDS)
+        out["error"] = (
+            f"no local OpenAI-compatible LLM reachable at {where}; start LM Studio "
+            f"(`lms server start`, port 1234) or Ollama (`ollama serve`, port 11434) "
+            f"and load {_llm_model()}, or point FIREKEEP_NIGHTSHIFT_LLM_BASE at it")
+        return out
+
+    # Finding the backend is not the same as having the model — the default model
+    # name is an LM Studio identifier, so autodetecting Ollama and firing a chat call
+    # would fail deep in the run with a bare 404. Lenient by design: an empty list
+    # means the backend told us nothing readable, not that it has no models.
+    base, models = detected
+    if models and _llm_model() not in models:
+        out["error"] = (f"model '{_llm_model()}' is not loaded at {base}; available: "
+                        f"{', '.join(sorted(models))} — set FIREKEEP_NIGHTSHIFT_LLM_MODEL")
         return out
 
     cfg = resolver.load_config()
@@ -219,7 +291,8 @@ def run(max_tasks: int = _DEFAULT_MAX_TASKS, dry_run: bool = False, *,
                     out["legacy"] += 1
                     continue
                 try:
-                    _synthesize(sid, assigner, _evidence(sid, task, get_json), post_json)
+                    _synthesize(sid, assigner, _evidence(sid, task, get_json),
+                                post_json, base)
                     out["distilled"] += 1
                 except transport.TransportError:
                     out["deferred"] += 1
@@ -268,7 +341,8 @@ def run(max_tasks: int = _DEFAULT_MAX_TASKS, dry_run: bool = False, *,
 
                 try:
                     synth = _synthesize(sid, assigner,
-                                        _evidence(sid, task, get_json), post_json)
+                                        _evidence(sid, task, get_json), post_json,
+                                        base)
                 except transport.TransportError as e:
                     # TRANSIENT (server restarting, model unloaded): leave the
                     # task pending for the next shift and stop this one.
