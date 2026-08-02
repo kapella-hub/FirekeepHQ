@@ -17,6 +17,11 @@ from firekeep_client.hooks import _git, _mcp, never_raise
 
 _HOOK = "stop"
 
+# Dedup window for any NON-authoritative distill marker (runtime session id, or
+# the no-id sentinel). Only the Bridge stash id earns a permanent marker; see the
+# enqueue block for why. Matches the session-stash TTL default (12h).
+_FALLBACK_DEDUPE_TTL_SECONDS = 12 * 3600
+
 _MSG = (
     "Before ending: 1. If work is DONE call ctx_complete_session with an outcome "
     "summary. If this session had a hard-won fix, a non-obvious root cause, or a "
@@ -93,19 +98,35 @@ def run(payload: dict) -> dict:
             pass
         # Stop fires at EVERY assistant turn end, not once per session — without
         # a marker an N-turn session enqueues N duplicate distill tasks (found
-        # live: a 50-task backlog of per-turn duplicates). One per session; the
-        # scratch marker rides the same TTL'd cache the stash uses. Sessions
-        # with no stamped id can't be deduped (nothing to key on) and are
-        # cleared by the worker as legacy anyway.
-        marker = f"distill_enqueued_{sid}@{profile}" if sid else ""
-        if marker and state.read_scratch(marker):
+        # live: a 50-task backlog of per-turn duplicates). One per session.
+        #
+        # Dedup must NOT key on the stash id alone. The stash exists only once the
+        # agent has called ctx_start_session, so a session that never did got
+        # marker="" and `if marker and ...` short-circuited into re-enqueuing every
+        # turn. Measured 2026-08-02: 193 of 200 queued tasks were per-turn duplicates
+        # from unstamped sessions, while all 7 stamped sessions held exactly one each.
+        # Keying dedup on a discretionary call is the hope-not-guarantee failure the
+        # shim's X-Session-Id injection already fixed once.
+        #
+        # The runtime session id rides in the payload — no Bridge session, no network
+        # call. It stays OUT of the `description` stamp deliberately: Night Shift keys
+        # evidence by the BRIDGE session, so stamping a runtime id would forge a task
+        # that looks distillable and is not. _safe_name() flattens it (untrusted).
+        #
+        # Only the authoritative stash key is permanent: reap_stale sweeps scratch by
+        # declared expiry and NEVER by file age, so a permanent marker per runtime
+        # session would leave one file per session forever. The no-id sentinel is
+        # parenthesised so it cannot collide with a real session id.
+        dedupe_id = sid or str(payload.get("session_id") or "")
+        marker = f"distill_enqueued_{dedupe_id or '(none)'}@{profile}"
+        marker_ttl = None if sid else _FALLBACK_DEDUPE_TTL_SECONDS
+        if state.read_scratch(marker):
             return {"systemMessage": _MSG}
         _mcp.call_tool("relay", "relay_task_post", task, cfg=cfg)
-        if marker:
-            try:
-                state.write_scratch(marker, "1")
-            except Exception:  # noqa: BLE001
-                pass
+        try:
+            state.write_scratch(marker, "1", ttl_seconds=marker_ttl)
+        except Exception:  # noqa: BLE001
+            pass
     except Exception as e:  # noqa: BLE001
         hooklog.log_failure(_HOOK, f"distill enqueue failed: {e}")
 

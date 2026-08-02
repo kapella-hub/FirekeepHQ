@@ -174,6 +174,82 @@ class TestStop:
                    and a.get("title") == "distill_session"]
         assert len(distill) == 2
 
+    def test_distill_deduped_by_runtime_session_id_when_stash_is_empty(
+        self, client_env, monkeypatch
+    ):
+        """The dedup marker was keyed ONLY on the stash session_id, so a session whose
+        agent never called ctx_start_session got marker="" — and `if marker and ...`
+        short-circuited, re-enqueuing every single turn. Found live 2026-08-02: 193 of
+        200 queued distill tasks were per-turn duplicates from unstamped sessions,
+        while all 7 stamped sessions held exactly one task each. The runtime session id
+        rides in the hook payload, needs no Bridge session and no network call, and is
+        enough to dedup on."""
+        from firekeep_client.hooks import stop
+        calls = _record_calls(monkeypatch)
+        payload = {"session_id": "runtime-abc"}
+        stop.run(payload)
+        stop.run(payload)
+        stop.run(payload)
+        distill = [a for t, a in calls if t == "relay_task_post"
+                   and a.get("title") == "distill_session"]
+        assert len(distill) == 1
+
+    def test_distill_reenqueued_for_a_different_runtime_session(
+        self, client_env, monkeypatch
+    ):
+        """Guard on the fix above: dedup must key on the runtime id, not collapse to
+        a constant. A constant marker would pass the dedup test and silently drop
+        every session after the first."""
+        from firekeep_client.hooks import stop
+        calls = _record_calls(monkeypatch)
+        stop.run({"session_id": "runtime-a"})
+        stop.run({"session_id": "runtime-b"})
+        distill = [a for t, a in calls if t == "relay_task_post"
+                   and a.get("title") == "distill_session"]
+        assert len(distill) == 2
+
+    def test_distill_bounded_when_no_session_id_exists_anywhere(
+        self, client_env, monkeypatch
+    ):
+        """The remaining unbounded branch. A runtime that passes no session_id (and an
+        agent that never called ctx_start_session) still left marker="" and enqueued
+        per turn. Such a task can NEVER be distilled — Night Shift can only close it as
+        legacy — so an unbounded stream of them is pure noise. Leaving one branch
+        unbounded because the tested one is fixed is exactly how the 50-task backlog
+        became 193."""
+        from firekeep_client.hooks import stop
+        calls = _record_calls(monkeypatch)
+        stop.run({})
+        stop.run({})
+        stop.run({})
+        distill = [a for t, a in calls if t == "relay_task_post"
+                   and a.get("title") == "distill_session"]
+        assert len(distill) == 1
+
+    def test_runtime_session_marker_declares_an_expiry(self, client_env, monkeypatch):
+        """state.reap_stale sweeps scratch ONLY by each marker's declared expiry, never
+        by file age. A permanent marker per runtime session would therefore leave one
+        file per session in the cache dir forever — and before the dedup fix only
+        ctx_start_session sessions wrote a marker at all, so making it permanent for
+        EVERY session is a new unbounded growth path. Permanence must follow the
+        AUTHORITATIVE key, not any key."""
+        from firekeep_client import state
+        from firekeep_client.hooks import stop
+        _record_calls(monkeypatch)
+        stop.run({"session_id": "runtime-x"})
+        assert state._scratch_ttl_file("distill_enqueued_runtime-x@personal").exists()
+
+    def test_bridge_stash_marker_stays_permanent(self, client_env, monkeypatch):
+        """Paired guard on the test above: the TTL must NOT be over-applied. The stash
+        marker is keyed on the authoritative Bridge session id and its pre-existing
+        permanence is unchanged behaviour."""
+        from firekeep_client import state
+        from firekeep_client.hooks import stop
+        state.write_session_stash("tester", "personal", session_id="sess-perm")
+        _record_calls(monkeypatch)
+        stop.run({})
+        assert not state._scratch_ttl_file("distill_enqueued_sess-perm@personal").exists()
+
     def test_stop_never_raises_when_relay_unreachable(self, client_env, monkeypatch):
         """The enqueue is best-effort: a relay outage is swallowed via try/except so
         session end still returns the completion reminder (not the @never_raise {})."""
