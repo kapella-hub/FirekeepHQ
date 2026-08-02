@@ -17,7 +17,10 @@ from typing import Any
 
 import httpx
 import redis.asyncio
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+
+from app.knowledge.crawler import is_safe_url
+from auth.middleware import require_scope
 from pydantic import BaseModel, Field, field_validator
 
 logger = logging.getLogger(__name__)
@@ -263,8 +266,17 @@ def create_webhook_router(redis_client: redis.asyncio.Redis) -> APIRouter:
     router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
     @router.post("/", response_model=WebhookResponse, status_code=201)
-    async def register_webhook(req: WebhookCreateRequest) -> WebhookResponse:
-        """Register a new webhook."""
+    async def register_webhook(
+        req: WebhookCreateRequest,
+        identity: dict = Depends(require_scope("admin")),
+    ) -> WebhookResponse:
+        """Register a new webhook.
+
+        Admin-scoped: a registration is a PERSISTENT forward of every matching event —
+        `memory.learned` carries the memory body — plus an arbitrary outbound-POST
+        primitive from inside the trust boundary. That is strictly more powerful than
+        the one-shot `GET /memory/export`, which is admin-gated.
+        """
         # Validate event types
         invalid_events = set(req.events) - VALID_EVENTS
         if invalid_events:
@@ -273,6 +285,14 @@ def create_webhook_router(redis_client: redis.asyncio.Redis) -> APIRouter:
                 detail=f"Invalid event types: {sorted(invalid_events)}. "
                 f"Valid types: {sorted(VALID_EVENTS)}",
             )
+
+        # SSRF: the model validates SCHEME only, so the cloud-metadata address and any
+        # internal host were accepted and then fed every matching event. cortex already
+        # ships this guard for the crawler; the same fail-fast-at-the-endpoint pattern
+        # is used there. DNS-rebinding TOCTOU remains accepted, as it is for the crawler.
+        ok, reason = is_safe_url(str(req.url))
+        if not ok:
+            raise HTTPException(status_code=400, detail=f"URL rejected: {reason}")
 
         webhook = WebhookRegistration(
             id=str(uuid.uuid4()),
@@ -297,7 +317,9 @@ def create_webhook_router(redis_client: redis.asyncio.Redis) -> APIRouter:
         )
 
     @router.get("/", response_model=list[WebhookResponse])
-    async def list_webhooks() -> list[WebhookResponse]:
+    async def list_webhooks(
+        identity: dict = Depends(require_scope("memory:read")),
+    ) -> list[WebhookResponse]:
         """List all registered webhooks."""
         webhooks = await _get_all_webhooks(redis_client)
         return [
@@ -314,12 +336,17 @@ def create_webhook_router(redis_client: redis.asyncio.Redis) -> APIRouter:
         ]
 
     @router.get("/events")
-    async def list_valid_events() -> dict[str, list[str]]:
+    async def list_valid_events(
+        identity: dict = Depends(require_scope("memory:read")),
+    ) -> dict[str, list[str]]:
         """List all valid webhook event types and formats."""
         return {"events": sorted(VALID_EVENTS), "formats": sorted(VALID_FORMATS)}
 
     @router.get("/{webhook_id}", response_model=WebhookResponse)
-    async def get_webhook(webhook_id: str) -> WebhookResponse:
+    async def get_webhook(
+        webhook_id: str,
+        identity: dict = Depends(require_scope("memory:read")),
+    ) -> WebhookResponse:
         """Get details of a specific webhook."""
         wh = await _get_webhook(redis_client, webhook_id)
         if wh is None:
@@ -335,15 +362,23 @@ def create_webhook_router(redis_client: redis.asyncio.Redis) -> APIRouter:
         )
 
     @router.delete("/{webhook_id}", status_code=204)
-    async def delete_webhook(webhook_id: str) -> None:
+    async def delete_webhook(
+        webhook_id: str,
+        identity: dict = Depends(require_scope("admin")),
+    ) -> None:
         """Delete a webhook."""
         deleted = await _delete_webhook(redis_client, webhook_id)
         if not deleted:
             raise HTTPException(status_code=404, detail="Webhook not found")
 
     @router.post("/{webhook_id}/test", status_code=200)
-    async def test_webhook(webhook_id: str) -> dict[str, str]:
-        """Send a test event to a specific webhook."""
+    async def test_webhook(
+        webhook_id: str,
+        identity: dict = Depends(require_scope("admin")),
+    ) -> dict[str, str]:
+        """Send a test event to a specific webhook. Admin-scoped: it fires an outbound
+        POST to an operator-supplied URL on demand, and `_send_webhook` only logs the
+        status, so the caller cannot see the response — a blind request primitive."""
         wh = await _get_webhook(redis_client, webhook_id)
         if wh is None:
             raise HTTPException(status_code=404, detail="Webhook not found")
@@ -363,6 +398,11 @@ def create_webhook_router(redis_client: redis.asyncio.Redis) -> APIRouter:
         event_type: str,
         payload: dict[str, Any] = {},
         namespace: str = "default",
+        # memory:write, not admin — this is the service-to-service route Sentinel and
+        # Bridge POST to with FIREKEEP_INTERNAL_KEY, whose scope set is
+        # memory:write,session:read,eval:read,eval:write. Ungated it let any caller
+        # fabricate an arbitrary event payload to every registered endpoint.
+        identity: dict = Depends(require_scope("memory:write")),
     ) -> dict[str, str]:
         """Internal endpoint for cross-service webhook firing.
 
