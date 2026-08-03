@@ -120,12 +120,11 @@ def _migrate_legacy(home: Path) -> None:
     cli_json = home / ".kiro" / "settings" / "cli.json"
     try:
         settings = json.loads(cli_json.read_text(encoding="utf-8"))
-        if isinstance(settings, dict) and settings.get("chat.defaultAgent") == "firekeep":
-            # The pre-kit setup made its agent the chat default; after the archival below
-            # kiro errors on every chat start ("user defined default firekeep not found")
-            # and falls back to the in-memory default — found live on the first migrated
-            # machine (2026-07-13). Same ownership logic as the archival: the value names
-            # the pre-kit artifact, so pointing it at the kit's agent preserves intent.
+        if isinstance(settings, dict) and settings.get("chat.defaultAgent") == "nexus":
+            # The predecessor setup made its `nexus` agent the chat default. Firekeep writes
+            # a distinct named agent, so leaving this value behind makes plain `kiro-cli chat`
+            # keep launching the old adapter and makes a successful Firekeep install look
+            # inert. This is a predecessor-owned value, so migrating it preserves intent.
             settings["chat.defaultAgent"] = "firekeep"
             write_text_if_changed(cli_json, json.dumps(settings, indent=2) + "\n")
     except Exception:  # noqa: BLE001 — total backstop, same contract as the mcp.json block

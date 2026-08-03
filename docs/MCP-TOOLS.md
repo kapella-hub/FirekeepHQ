@@ -103,7 +103,7 @@ Tool breakdown: Cortex 27 + Bridge 7 + Sentinel 3 + Relay 25 = 62 HTTP-service t
 | Tool | Purpose |
 |------|---------|
 | `skill_create` | Author a reusable skill (trigger, symptoms, steps, gotchas) — the primary, client-authored path |
-| `skill_recall` | Retrieve active skills matching a task |
+| `skill_recall` | Retrieve active skills matching a task and record the returned skills as explicitly used for freshness tracking |
 | `skill_list` | List skills filtered by status/project |
 
 ## Agent Gateway (predict-then-act)

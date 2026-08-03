@@ -41,6 +41,15 @@ FORBIDDEN: dict[str, str] = {
 SKIP_DIRS = {".git", "__pycache__", ".pytest_cache", ".ruff_cache", "node_modules",
              ".venv", "venv", ".superpowers", ".mypy_cache"}
 
+
+def _is_skipped_path(path: Path) -> bool:
+    """Ignore caches and nested agent worktrees, not tracked `.claude` guidance."""
+    parts = path.parts
+    return (
+        any(part in SKIP_DIRS for part in parts)
+        or any(parts[i:i + 2] == (".claude", "worktrees") for i in range(len(parts) - 1))
+    )
+
 # This file names every forbidden token by definition, as does its test.
 SKIP_FILES = {
     "scripts/check_forbidden_tokens.py",
@@ -54,7 +63,7 @@ def iter_files(root: Path):
     for p in root.rglob("*"):
         if not p.is_file():
             continue
-        if any(part in SKIP_DIRS for part in p.parts):
+        if _is_skipped_path(p.relative_to(root)):
             continue
         rel = p.relative_to(root).as_posix()
         if rel in SKIP_FILES:

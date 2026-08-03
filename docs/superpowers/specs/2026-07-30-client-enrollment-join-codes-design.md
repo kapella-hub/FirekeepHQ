@@ -848,7 +848,7 @@ exists to kill.
 | 6 | rate-limited (429) | `the server is refusing enrollment attempts right now (rate limit). Your code was NOT used. Retry in a minute; if this persists, someone may be probing the endpoint — check the server.` |
 | 7 | no `ssh` for a tunnel code | `this join code needs an SSH tunnel (the server binds to loopback) but 'ssh' is not on PATH. Install OpenSSH, or ask <issuer> to expose the stack over TLS and reissue.` |
 | 7 | tunnel start failed | `started an SSH tunnel to <s> but ports <list> never came up. Something else may be bound locally, or your ssh key is not authorised there. The code was not used.` |
-| 0 | re-join, same kind | proceeds, printing `[server] updating: host srv1143982 -> fk.corp, api_key <replaced>, agent_id bob-mbp unchanged` |
+| 0 | re-join, same kind | proceeds, printing `[server] updating: host old-host.example -> fk.corp, api_key <replaced>, agent_id bob-mbp unchanged` |
 | 8 | re-join, different kind | `[server] is currently kind=paths (https://fk.corp) and this code is kind=ports. Refusing to repoint this machine at a different server shape — re-run with --force if that is what you want, or use FIREKEEP_CONFIG=<path> to keep both.` |
 | 1 | personal mode active | `personal mode is ON, so Firekeep is dormant and join would be a no-op. Run: firekeep personal off` |
 | 0 | `t=http` (warning) | `WARNING: this code redeems over plain http to <host>. Your credential is generated locally and is not sent during enrollment, but it IS sent as X-API-Key on every request afterwards, in cleartext on this transport. The join code itself also crosses the network now, so anyone on this path can redeem it before you. Continue only on a trusted network.` |

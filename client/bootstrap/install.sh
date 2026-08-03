@@ -94,8 +94,8 @@ else
 fi
 VBASE="${BASE}/${V}"
 wheel_name="firekeep_client-${V}-py3-none-any.whl"
-# FIREKEEP_RUNTIME targets ONE agent (claude|codex|kiro), forwarded as --runtime. UNSET -> pass
-# nothing so the wizard prompts "Install for which agent?" (defaults to all when headless).
+# FIREKEEP_RUNTIME targets ONE agent (claude|codex|kiro|opencode), forwarded as --runtime.
+# UNSET -> pass nothing; the client installs every shipped adapter by default.
 RUNTIME_ARG=""
 [ -n "${FIREKEEP_RUNTIME:-}" ] && RUNTIME_ARG="--runtime ${FIREKEEP_RUNTIME}"
 FIREKEEP_BIN="${VENV}/bin/firekeep"

@@ -40,25 +40,6 @@ agent_id = CHANGEME
 """
 
 
-def test_ask_runtime_maps_numbers():
-    assert wizard.ask_runtime(ask=_scripted(["1"])) == "claude"
-    assert wizard.ask_runtime(ask=_scripted(["2"])) == "codex"
-    assert wizard.ask_runtime(ask=_scripted(["3"])) == "kiro"
-    assert wizard.ask_runtime(ask=_scripted(["4"])) == "opencode"
-    assert wizard.ask_runtime(ask=_scripted(["5"])) == "all"
-
-
-def test_ask_runtime_accepts_names_and_default():
-    assert wizard.ask_runtime(ask=_scripted(["kiro"])) == "kiro"
-    assert wizard.ask_runtime(ask=_scripted(["opencode"])) == "opencode"
-    assert wizard.ask_runtime(ask=_scripted([""])) == "all"                 # Enter -> default 5 -> all
-    assert wizard.ask_runtime(ask=_scripted([""]), default="claude") == "claude"
-
-
-def test_ask_runtime_reprompts_on_garbage():
-    assert wizard.ask_runtime(ask=_scripted(["nope", "3"])) == "kiro"       # invalid then valid
-
-
 def test_fresh_install_sets_identity_and_host():
     cfg = _cfg(SKELETON)
     ask = _scripted(["Alex", "1", "203.0.113.10", ""])

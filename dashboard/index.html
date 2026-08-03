@@ -830,9 +830,11 @@ button.btn-outline:hover { border-color: var(--accent); color: var(--accent); ba
                         <div class="inner-tabs">
                             <button class="inner-tab active" data-memtab="search">Search Results</button>
                             <button class="inner-tab" data-memtab="browse">Browse All</button>
+                            <button class="inner-tab" data-memtab="archived">Archived</button>
                         </div>
                         <div id="memoryResults"><div class="empty-state">Enter a query to search memories</div></div>
                         <div id="memoryBrowse" style="display:none"><div class="spinner">Loading...</div></div>
+                        <div id="memoryArchived" style="display:none"><div class="spinner">Loading...</div></div>
                     </div>
                 </div>
                 <div>
@@ -854,6 +856,16 @@ button.btn-outline:hover { border-color: var(--accent); color: var(--accent); ba
                         <details open>
                             <summary class="card-header" style="cursor:pointer;user-select:none">Memory Stats</summary>
                             <div class="card" id="memoryStats" style="overflow:hidden"><div class="spinner">Loading stats...</div></div>
+                        </details>
+                    </div>
+                    <div class="section">
+                        <details open>
+                            <summary class="card-header" style="cursor:pointer;user-select:none">Memory Hygiene</summary>
+                            <div class="card card-padded" style="overflow:hidden">
+                                <div id="memoryHygiene"><div class="spinner">Loading maintenance status...</div></div>
+                                <button class="btn btn-sm btn-outline" id="btnPreviewMemoryGc" style="margin-top:12px">Preview next run</button>
+                                <div id="memoryGcPreview" class="text-dim" style="font-size:12px;margin-top:8px"></div>
+                            </div>
                         </details>
                     </div>
                 </div>
@@ -2107,7 +2119,7 @@ function switchTab(name) {
     clearInterval(activeTimer);
 
     if (name === 'overview') { refreshOverview(); activeTimer = setInterval(refreshOverview, 30000); }
-    else if (name === 'memory') { loadMemoryStats(); loadBrowse(); loadProjectFilter(); }
+    else if (name === 'memory') { loadMemoryStats(); loadBrowse(); loadProjectFilter(); loadMemoryHygiene(); }
     else if (name === 'skills') { loadSkills(); }
     else if (name === 'knowledge') { loadKnowledgeSources(); loadCollectors(); }
     else if (name === 'sessions') { loadSessions(); }
@@ -2461,7 +2473,9 @@ document.querySelectorAll('.inner-tab').forEach(function(t) {
         var tab = t.dataset.memtab;
         $('memoryResults').style.display = tab === 'search' ? '' : 'none';
         $('memoryBrowse').style.display = tab === 'browse' ? '' : 'none';
+        $('memoryArchived').style.display = tab === 'archived' ? '' : 'none';
         if (tab === 'browse') loadBrowse();
+        if (tab === 'archived') loadArchivedMemories();
     });
 });
 
@@ -2499,7 +2513,7 @@ function recallMemory() {
     var q = $('memorySearch').value.trim(); if (!q) return;
     // Switch to search tab
     document.querySelectorAll('.inner-tab').forEach(function(t) { t.classList.toggle('active', t.dataset.memtab === 'search'); });
-    $('memoryResults').style.display = ''; $('memoryBrowse').style.display = 'none';
+    $('memoryResults').style.display = ''; $('memoryBrowse').style.display = 'none'; $('memoryArchived').style.display = 'none';
 
     var c = $('memoryResults'); clear(c);
     // "synthesized" runs an LLM pass over the results — on a CPU Ollama box that is ~30s,
@@ -2570,6 +2584,7 @@ function renderRecallCard(s, globalScore) {
     var topRow = el('div', { className: 'mem-domain' });
     if (s.store) topRow.appendChild(el('span', { className: 'source-badge ' + (s.store === 'graph' ? 'graph' : 'vector'), textContent: s.store }));
     if (s.domain) topRow.appendChild(document.createTextNode(s.domain));
+    if (s.status && s.status !== 'active') { var sb = statusBadge(s.status); sb.style.marginLeft = '8px'; topRow.appendChild(sb); }
     var mtype = s.memory_type || (s.metadata && s.metadata.memory_type);
     if (mtype) { var b = badge(mtype, 'badge-blue'); b.style.marginLeft = '8px'; topRow.appendChild(b); }
     kids.push(topRow);
@@ -2638,7 +2653,7 @@ function loadBrowse() {
 }
 
 function fetchBrowsePage(c, append) {
-    safeFetch(CONFIG.CORTEX_API + '/dashboard/api/memories?limit=10&offset=' + browseOffset)
+    safeFetch(CONFIG.CORTEX_API + '/dashboard/api/memories?view=available&limit=10&offset=' + browseOffset)
     .then(function(r) { return r.json(); }).then(function(data) {
         if (!append) clear(c);
         var mems = data.memories || data.results || data;
@@ -2653,6 +2668,102 @@ function fetchBrowsePage(c, append) {
         }
     }).catch(function(e) { if (!append) { clear(c); c.appendChild(errMsg('Cannot load: ' + e.message)); } });
 }
+
+function loadArchivedMemories() {
+    var c = $('memoryArchived');
+    clear(c); c.appendChild(spinner('Loading archived memories...'));
+    safeFetch(CONFIG.CORTEX_API + '/dashboard/api/memories?view=archived&limit=50&offset=0')
+    .then(function(r) { return r.json(); }).then(function(data) {
+        clear(c);
+        var memories = data.memories || [];
+        if (!memories.length) {
+            c.appendChild(empty('No archived memories. Automatic maintenance is recoverable by default.'));
+            return;
+        }
+        memories.forEach(function(m) {
+            var card = renderRecallCard(m);
+            var details = el('div', {
+                className: 'text-dim',
+                style: { fontSize: '11px', marginTop: '8px' },
+                textContent: 'Archived ' + (m.archived_at ? fmtTime(m.archived_at) : 'at an unknown time') +
+                    ' · ' + (m.archive_reason || 'no reason recorded')
+            });
+            var restore = el('button', {
+                className: 'btn btn-sm btn-outline',
+                textContent: 'Restore',
+                style: { marginTop: '10px' },
+                onclick: function() { restoreArchivedMemory(m.id, restore); }
+            });
+            card.appendChild(details); card.appendChild(restore); c.appendChild(card);
+        });
+    }).catch(function(e) { clear(c); c.appendChild(errMsg('Cannot load archives: ' + e.message)); });
+}
+
+function restoreArchivedMemory(memoryId, button) {
+    button.disabled = true; button.textContent = 'Restoring...';
+    fetchJSON(CONFIG.CORTEX_API + '/memory/restore', {
+        method: 'POST',
+        headers: Object.assign({ 'Content-Type': 'application/json' }, firekeepHeaders()),
+        body: JSON.stringify({ memory_ids: [memoryId] })
+    }).then(function(data) {
+        if (!data.restored) throw new Error('Memory is no longer archived');
+        toast('Memory restored', 'success');
+        loadArchivedMemories(); loadBrowse(); loadMemoryStats(); loadMemoryHygiene();
+    }).catch(function(e) {
+        button.disabled = false; button.textContent = 'Restore';
+        toast('Restore failed: ' + e.message, 'error');
+    });
+}
+
+function loadMemoryHygiene() {
+    var c = $('memoryHygiene'); if (!c) return;
+    clear(c); c.appendChild(spinner('Loading maintenance status...'));
+    fetchJSON(CONFIG.CORTEX_API + '/dashboard/api/memory-gc?limit=8').then(function(data) {
+        clear(c);
+        var state = data.enabled ? (data.dry_run ? 'Dry run' : 'Archive-first') : 'Disabled';
+        var stateClass = data.enabled ? 'badge-green' : 'badge-yellow';
+        var row = el('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' } });
+        row.appendChild(badge(state, stateClass));
+        row.appendChild(el('span', { className: 'text-dim', textContent:
+            data.purge_enabled
+                ? 'GC-origin archives become purgeable after ' + data.archive_grace_days + ' days.'
+                : 'Automatic purge is off; archived memories stay recoverable.'
+        }));
+        c.appendChild(row);
+
+        var events = data.events || [];
+        if (events.length) {
+            c.appendChild(el('div', { style: { marginTop: '12px', fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-dim)' }, textContent: 'Recent lifecycle events' }));
+            events.slice(0, 8).forEach(function(ev) {
+                var action = (ev.action || 'event').replace(/_/g, ' ');
+                c.appendChild(el('div', { style: { padding: '7px 0', borderBottom: '1px solid var(--border)', fontSize: '12px' } }, [
+                    el('span', { textContent: action }),
+                    el('span', { className: 'text-dim', textContent: ' · ' + shortId(ev.id) + ' · ' + relTime(ev.occurred_at || ev.evicted_at) })
+                ]));
+            });
+        } else {
+            c.appendChild(el('div', { className: 'text-dim', style: { marginTop: '10px', fontSize: '12px' }, textContent: 'No maintenance actions recorded yet.' }));
+        }
+    }).catch(function(e) { clear(c); c.appendChild(errMsg('Maintenance status unavailable: ' + e.message)); });
+}
+
+function previewMemoryGc() {
+    var btn = $('btnPreviewMemoryGc'), out = $('memoryGcPreview');
+    if (!btn || !out) return;
+    btn.disabled = true; btn.textContent = 'Scanning...'; out.textContent = '';
+    fetchJSON(CONFIG.CORTEX_API + '/dashboard/api/memory-gc/preview?limit=50', { method: 'POST' }, 30000)
+    .then(function(data) {
+        out.textContent = (data.would_archive_vector || 0) + ' would archive. ' +
+            (data.would_purge_vector
+                ? data.would_purge_vector + ' would purge under the enabled policy. '
+                : 'No hard deletions would run. ') +
+            'No data changed.';
+    }).catch(function(e) {
+        out.textContent = 'Preview failed: ' + e.message;
+    }).finally(function() { btn.disabled = false; btn.textContent = 'Preview next run'; });
+}
+
+if ($('btnPreviewMemoryGc')) $('btnPreviewMemoryGc').addEventListener('click', previewMemoryGc);
 
 function learnMemory(e) {
     e.preventDefault(); var btn = $('learnSubmit'); btn.disabled = true; btn.textContent = 'Storing...';

@@ -277,6 +277,10 @@ services:
       POLICY_DENY_PATHS: ${POLICY_DENY_PATHS:-.env,*.key,*.pem,*.secret}
       # Memory improvements — Phase 1-3
       EVICTION_THRESHOLD: ${EVICTION_THRESHOLD:-1.5}
+      GC_ENABLED: ${GC_ENABLED:-true}
+      GC_DRY_RUN: ${GC_DRY_RUN:-false}
+      GC_ARCHIVE_GRACE_DAYS: ${GC_ARCHIVE_GRACE_DAYS:-90}
+      GC_PURGE_ENABLED: ${GC_PURGE_ENABLED:-false}
       DEDUP_SIMILARITY_THRESHOLD: ${DEDUP_SIMILARITY_THRESHOLD:-0.78}
       DEDUP_ENABLED: ${DEDUP_ENABLED:-false}
       RECALL_TOKEN_BUDGET: ${RECALL_TOKEN_BUDGET:-600}
@@ -297,6 +301,11 @@ services:
       SKILL_SYNTHESIS_ENABLED: ${SKILL_SYNTHESIS_ENABLED:-false}
       SKILL_SCORE_THRESHOLD: ${SKILL_SCORE_THRESHOLD:-0.6}
       SKILL_STALE_AFTER_DAYS: ${SKILL_STALE_AFTER_DAYS:-90}
+      # Raw-cosine floor for semantic skill matching (GET /skills?q=, briefing skills
+      # section). NOT RECALL_SCORE_FLOOR — skills embed a terse composite, and the
+      # office deploy uses a different embedding model/dim. Most likely knob to tune.
+      SKILL_MATCH_SCORE_FLOOR: ${SKILL_MATCH_SCORE_FLOOR:-0.30}
+      SKILL_MATCH_EMBED_TIMEOUT_SECONDS: ${SKILL_MATCH_EMBED_TIMEOUT_SECONDS:-1.2}
       SKILL_ERROR_DENSITY_WEIGHT: ${SKILL_ERROR_DENSITY_WEIGHT:-0.30}
       SKILL_ANOMALY_WEIGHT: ${SKILL_ANOMALY_WEIGHT:-0.20}
       SKILL_RESOLUTION_WEIGHT: ${SKILL_RESOLUTION_WEIGHT:-0.35}
@@ -427,6 +436,10 @@ services:
       VAULT_REDIS_URL: redis://redis:6379/7
       # Memory improvements — GC + dedup
       EVICTION_THRESHOLD: ${EVICTION_THRESHOLD:-1.5}
+      GC_ENABLED: ${GC_ENABLED:-true}
+      GC_DRY_RUN: ${GC_DRY_RUN:-false}
+      GC_ARCHIVE_GRACE_DAYS: ${GC_ARCHIVE_GRACE_DAYS:-90}
+      GC_PURGE_ENABLED: ${GC_PURGE_ENABLED:-false}
       DEDUP_SIMILARITY_THRESHOLD: ${DEDUP_SIMILARITY_THRESHOLD:-0.78}
       DEDUP_ENABLED: ${DEDUP_ENABLED:-false}
       EMBED_RETRY_ATTEMPTS: ${EMBED_RETRY_ATTEMPTS:-3}
@@ -436,6 +449,11 @@ services:
       SKILL_SYNTHESIS_ENABLED: ${SKILL_SYNTHESIS_ENABLED:-false}
       SKILL_SCORE_THRESHOLD: ${SKILL_SCORE_THRESHOLD:-0.6}
       SKILL_STALE_AFTER_DAYS: ${SKILL_STALE_AFTER_DAYS:-90}
+      # Raw-cosine floor for semantic skill matching (GET /skills?q=, briefing skills
+      # section). NOT RECALL_SCORE_FLOOR — skills embed a terse composite, and the
+      # office deploy uses a different embedding model/dim. Most likely knob to tune.
+      SKILL_MATCH_SCORE_FLOOR: ${SKILL_MATCH_SCORE_FLOOR:-0.30}
+      SKILL_MATCH_EMBED_TIMEOUT_SECONDS: ${SKILL_MATCH_EMBED_TIMEOUT_SECONDS:-1.2}
       SKILL_ERROR_DENSITY_WEIGHT: ${SKILL_ERROR_DENSITY_WEIGHT:-0.30}
       SKILL_ANOMALY_WEIGHT: ${SKILL_ANOMALY_WEIGHT:-0.20}
       SKILL_RESOLUTION_WEIGHT: ${SKILL_RESOLUTION_WEIGHT:-0.35}

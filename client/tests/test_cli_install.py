@@ -1,5 +1,7 @@
 import configparser
+import json
 import os
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -167,27 +169,64 @@ def test_no_runtime_headless_defaults_to_all(install_env):
     assert len(rec.calls) == 4
 
 
-def test_interactive_prompts_for_runtime(install_env, monkeypatch):
-    # interactive + no --runtime -> the wizard is asked which agent; only that one renders.
+def test_interactive_without_runtime_renders_all_adapters(install_env, monkeypatch):
+    # The client is agent-agnostic: a normal first install must prepare every shipped
+    # runtime without asking the customer to predict which client they will use later.
     home, runs, rec = install_env
     monkeypatch.setattr("firekeep_client.wizard.is_interactive", lambda *a, **k: True)
-    monkeypatch.setattr("firekeep_client.wizard.ask_runtime", lambda *a, **k: "kiro")
     monkeypatch.setattr("firekeep_client.wizard.prompt_config", lambda cfg, **k: cfg)
     cli.main(["install"])
-    assert len(rec.calls) == 1  # only kiro, not all four
+    assert len(rec.calls) == 4
 
 
-def test_explicit_runtime_skips_the_prompt(install_env, monkeypatch):
-    # explicit --runtime wins: ask_runtime must NOT be called.
+def test_explicit_runtime_renders_only_that_adapter(install_env, monkeypatch):
+    # Explicit --runtime remains the targeted re-render/repair path.
     home, runs, rec = install_env
     monkeypatch.setattr("firekeep_client.wizard.is_interactive", lambda *a, **k: True)
-    called = []
-    monkeypatch.setattr("firekeep_client.wizard.ask_runtime",
-                        lambda *a, **k: called.append(1) or "all")
     monkeypatch.setattr("firekeep_client.wizard.prompt_config", lambda cfg, **k: cfg)
     cli.main(["install", "--runtime", "claude"])
-    assert called == []
     assert len(rec.calls) == 1  # only claude
+
+
+def test_fresh_install_renders_every_native_adapter(tmp_path, monkeypatch):
+    """Exercise the real adapters from an empty user home through the real CLI.
+
+    Unit tests for each adapter can pass while the install command never selects it;
+    this is the customer-facing invariant that caught Codex and Kiro being absent after
+    an interactive install that selected Claude.
+    """
+    user_home = tmp_path / "user"
+    firekeep_home = user_home / ".firekeep"
+    monkeypatch.setenv("USERPROFILE", str(user_home))
+    monkeypatch.setenv("HOME", str(user_home))
+    monkeypatch.setenv("FIREKEEP_CONFIG", str(firekeep_home / "config"))
+    monkeypatch.setattr(cli, "_kit_dir", lambda: None)
+    monkeypatch.setattr(cli.state, "_private", lambda _p: None)
+    monkeypatch.setattr(cli.pathenv, "ensure_on_path", lambda *a, **k: [])
+    # Native kiro activation is covered in test_kiro.py; do not launch a real client
+    # process from this installer topology test.
+    monkeypatch.setattr("firekeep_client.adapters.kiro.shutil.which", lambda _name: None)
+
+    assert cli.main(["install", "--non-interactive", "--no-modify-path"]) == 0
+
+    expected = {
+        "firekeep-cortex", "firekeep-bridge", "firekeep-sentinel", "firekeep-relay",
+        "firekeep-symdex", "firekeep-decision",
+    }
+    claude = json.loads((user_home / ".claude.json").read_text(encoding="utf-8"))
+    codex = tomllib.loads(
+        (user_home / ".codex" / "config.toml").read_text(encoding="utf-8")
+    )
+    kiro = json.loads(
+        (user_home / ".kiro" / "agents" / "firekeep.json").read_text(encoding="utf-8")
+    )
+    opencode = json.loads(
+        (user_home / ".config" / "opencode" / "opencode.json").read_text(encoding="utf-8")
+    )
+    assert expected <= claude["mcpServers"].keys()
+    assert expected <= codex["mcp_servers"].keys()
+    assert expected <= kiro["mcpServers"].keys()
+    assert expected <= opencode["mcp"].keys()
 
 
 def test_install_from_installed_venv_skips_pip_and_still_renders(install_env, monkeypatch, capsys):

@@ -450,15 +450,16 @@ uv run pytest
 
 ## License
 
-Proprietary — see [`LICENSE`](../LICENSE). Not open source.
+Source-available under BUSL-1.1 — see [`LICENSE`](../LICENSE). Not open source.
 
-`firekeep-symdex` is a component of Firekeep and is covered by the same licence as the
-rest of the product; it is not separately licensed. This section previously read `MIT`,
-inherited from the standalone tool this package grew out of. Because `pyproject.toml`
-sets `readme = "README.md"`, that line was the wheel's long description, so the built
-`firekeep-symdex` METADATA carried both `License-Expression:
-LicenseRef-Firekeep-Proprietary` and a contradictory `MIT` — on every developer machine,
-since the bootstrap always installs this package.
+`firekeep-symdex` is currently a component of Firekeep and is covered by the same
+licence as the rest of the product. It will receive an Apache-2.0 licence only after
+the standalone Core has been extracted from Firekeep's code-memory Fusion tools. This
+section previously read `MIT`, inherited from the standalone tool this package grew
+out of. Because `pyproject.toml` sets `readme = "README.md"`, that line was the wheel's
+long description, so the built `firekeep-symdex` METADATA carried both
+`License-Expression: LicenseRef-Firekeep-BUSL-1.1` and a contradictory `MIT` on every
+developer machine, since the bootstrap always installs this package.
 
 Third-party dependency licences (including the tree-sitter grammar bundle) are
 reproduced in [`NOTICE`](./NOTICE).

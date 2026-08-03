@@ -15,6 +15,17 @@ cp .env.example .env
 | `LLM_MODEL` | `qwen3:4b` | Ollama model for LLM inference |
 | `EMBEDDING_MODEL` | `mxbai-embed-large` | Embedding model |
 | `MULTIHOP_ENABLED` | `True` | Enable multi-hop graph traversal |
+| `DECAY_REFERENCE_DAYS` | `0` | Reference-memory recall half-life; `0` disables age decay and automatic age archival |
+| `DECAY_PROCEDURAL_DAYS` | `180` | Procedural-memory recall and maintenance half-life in days |
+| `DECAY_EPISODIC_DAYS` | `90` | Episodic-memory recall and maintenance half-life in days |
+| `DECAY_TRANSIENT_DAYS` | `14` | Transient-memory recall and maintenance half-life in days |
+| `GC_ENABLED` | `True` | Run scheduled archive-first memory maintenance |
+| `GC_DRY_RUN` | `False` | Evaluate and audit scheduled maintenance without changing Qdrant or Neo4j |
+| `GC_SCHEDULE_HOURS` | `24` | Interval between scheduled memory-maintenance runs |
+| `GC_ARCHIVE_GRACE_DAYS` | `90` | Recovery window recorded on GC-origin archives before they become purge-eligible |
+| `GC_PURGE_ENABLED` | `False` | Explicitly allow hard deletion of expired GC-origin archives and Neo4j orphan cleanup |
+| `EVICTION_THRESHOLD` | `1.5` | Composite aging score above which an active memory is archived |
+| `SKILL_STALE_AFTER_DAYS` | `90` | Mark, but never delete, active skills not explicitly recalled in this many days |
 | `NB_PROACTIVE_RECALL_ENABLED` | `True` | Auto-inject memories on ctx_update |
 | `RP_ENABLED` | `True` | Enable replay trace event recording |
 | `RP_RETENTION_DAYS` | `30` | How long replay events are retained |
@@ -190,7 +201,47 @@ docker compose up -d          # recreates the app containers with new bindings
 ## Intelligence Features
 
 ### Memory Type Classification
-Every memory is typed as `reference` (no decay), `procedural` (180-day half-life), `episodic` (90-day, default), or `transient` (14-day). The sleep cycle LLM auto-classifies new memories.
+Every memory is typed as `reference` (no age decay by default), `procedural`
+(180-day half-life), `episodic` (90-day, default), or `transient` (14-day).
+Ordinary `memory_learn` calls default to episodic unless the caller supplies a
+type. The sleep cycle classifies knowledge it extracts from raw `memory_stream`
+events; it does not retroactively classify every direct learn.
+
+The same `DECAY_*_DAYS` settings drive recall ranking and archive eligibility.
+Decay lowers the rank of older results; it does not delete them.
+
+### Memory Maintenance and Recovery
+
+The daily GC task uses age, recall count, confidence, and outcome efficacy to
+evaluate active memories. A qualifying memory is first changed to `archived`,
+with an audit event and a `purge_eligible_at` date. Archived memories disappear
+from normal recall but remain visible in the dashboard's **Memory → Archived**
+view, where they can be restored. The same tab provides a no-write preview and
+the recent maintenance audit.
+
+Hard purge is disabled by default. Setting `GC_PURGE_ENABLED=true` permits the
+task to delete only records that it archived itself and whose
+`GC_ARCHIVE_GRACE_DAYS` recovery window has elapsed; manual and legacy archives
+are never guessed at or purged. The switch also gates destructive Neo4j orphan
+cleanup. Use `GC_DRY_RUN=true` to exercise the scheduled evaluation without
+changing either knowledge store.
+
+Confirmed memories are protected from automatic aging. Reference memories with
+their default zero half-life, skills, and corpus document chunks are never
+age-archived. Skills instead use a review signal: explicit `skill_recall`
+results advance their usage/freshness timestamps, while dashboard browsing,
+`skill_list`, and automatic briefing impressions do not. After
+`SKILL_STALE_AFTER_DAYS`, an unused active skill is marked stale for human
+review, not disabled or deleted. Editing a skill's content, trigger, or symptoms
+re-embeds it before atomically replacing the vector and payload.
+
+Qdrant is authoritative for lifecycle state when a Neo4j row is linked to an
+exact vector memory ID. Those linked graph results are admitted only while the
+vector record is in an allowed state, preventing an archived memory from
+resurfacing through the graph retrieval leg. Unlinked Neo4j rows remain
+recallable because the sleep cycle intentionally creates graph-owned knowledge;
+they are returned with `lifecycle_verified=false` rather than being assigned a
+made-up vector lifecycle.
 
 ### Multi-hop Graph Reasoning
 Graph queries traverse up to 3 hops with 0.5x score decay per hop, finding indirect connections that single-hop queries miss. Enabled by default (`MULTIHOP_ENABLED=True`).

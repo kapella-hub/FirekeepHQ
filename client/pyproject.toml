@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "firekeep-client"
-version = "0.1.27"
+version = "0.1.29"
 description = "Firekeep portable client kit: stdio-proxy shim, hook cores, sidecar, and runtime adapters."
 requires-python = ">=3.10"
-license = "LicenseRef-Firekeep-Proprietary"
+license = "LicenseRef-Firekeep-BUSL-1.1"
 license-files = ["LICENSE", "NOTICE"]
 dependencies = [
-    "mcp>=1.28",
-    "httpx>=0.27",
+    "mcp>=1.28,<2",
+    "httpx>=0.27,<1",
     "truststore>=0.9.1",
 ]
 

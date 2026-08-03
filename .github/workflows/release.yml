@@ -158,6 +158,70 @@ jobs:
           (cd client && python -m build --wheel --outdir ../dist)
           (cd symdex && python -m build --wheel --outdir ../dist)
 
+      - name: Fresh-wheel MCP compatibility smoke
+        run: |
+          SMOKE_VENV="${RUNNER_TEMP}/firekeep-wheel-smoke"
+          python -m venv "${SMOKE_VENV}"
+          "${SMOKE_VENV}/bin/python" -m pip install --disable-pip-version-check dist/firekeep_client-*.whl
+          "${SMOKE_VENV}/bin/python" - <<'PY'
+          import asyncio
+          import importlib.metadata
+          import json
+
+          import httpx
+          from firekeep_client.shim import RecoveringMCPClient
+          from mcp.client.session import ClientSession
+          from mcp.client.streamable_http import streamable_http_client
+
+          mcp_version = importlib.metadata.version("mcp")
+          assert mcp_version.split(".", 1)[0] == "1", f"unsupported mcp {mcp_version}"
+
+          def handler(request: httpx.Request) -> httpx.Response:
+              message = json.loads(request.content)
+              if message.get("method") == "initialize":
+                  return httpx.Response(
+                      200,
+                      json={
+                          "jsonrpc": "2.0",
+                          "id": message["id"],
+                          "result": {
+                              "protocolVersion": "2025-06-18",
+                              "capabilities": {},
+                              "serverInfo": {"name": "wheel-smoke", "version": "0"},
+                          },
+                      },
+                      headers={"content-type": "application/json"},
+                  )
+              if message.get("method") == "tools/list":
+                  return httpx.Response(
+                      200,
+                      json={
+                          "jsonrpc": "2.0",
+                          "id": message["id"],
+                          "result": {"tools": []},
+                      },
+                      headers={"content-type": "application/json"},
+                  )
+              return httpx.Response(202)
+
+          async def smoke() -> None:
+              async with RecoveringMCPClient(
+                  transport=httpx.MockTransport(handler),
+                  base_url="http://wheel-smoke",
+              ) as client:
+                  async with streamable_http_client(
+                      "http://wheel-smoke/mcp", http_client=client
+                  ) as (read, write, _get_session_id):
+                      async with ClientSession(read, write) as session:
+                          initialized = await session.initialize()
+                          assert initialized.serverInfo.name == "wheel-smoke"
+                          tools = await session.list_tools()
+                          assert tools.tools == []
+
+          asyncio.run(smoke())
+          print(f"fresh wheel initialized with mcp {mcp_version}")
+          PY
+
       - name: Mirror uv binaries
         run: |
           for t in aarch64-apple-darwin x86_64-apple-darwin \

@@ -1,4 +1,4 @@
-# Licensing — current state and remaining work
+# Licensing — source-available release policy
 
 _Last updated 2026-07-26._
 
@@ -9,21 +9,21 @@ liability cap, the expiry/degrade term, and the trademark notice.
 
 ## Where things stand
 
-`LICENSE` at the repository root is now the real licence, not a placeholder.
-**Decided model: free core, not open source.** A single-user tier is gratis
-and closed source (no redistribution, no derivative works, no source
-disclosure); team features are unlocked by a licence key under a separate
-commercial agreement. This is **not** open-core — there is no permissively
-licensed component, no source split, and nothing about the free tier implies
-a right to the source.
+`LICENSE` at the repository root is the real licence, not a placeholder.
+**Decided model: source-available Firekeep under BUSL-1.1.** The Additional Use
+Grant permits production use by one natural person in one workspace and one
+deployment, with unlimited personal devices, agent identities, terminals, and
+background workers. Production use for more than one member requires a
+commercial license. This is not an OSI Open Source licence; each version changes
+to Apache-2.0 four years after its first public distribution.
 
 | | Free tier | Team tier |
 |---|---|---|
-| Client kit, single-user core | Gratis, closed source | — |
-| Team features (relay coordination, team memory attribution, replay/evals dashboard) | Not included | Commercial, licence-key gated |
-| Distribution | Direct install, no fee | Sold under a separate commercial agreement |
-| Source | Never disclosed, either tier | Never disclosed, either tier |
-| Enforcement | Contract (licence terms) + licence-key gating server-side for Team Features | Same |
+| Client kit and server | Source-available; production use for one member | Source-available; commercial license for additional members |
+| Agent identities, devices, terminals, background workers | Unlimited when controlled by the one member | Unlimited |
+| Group use | Not granted | Commercial license |
+| Source | Available under BUSL-1.1; Apache-2.0 after the Change Date | Same |
+| Enforcement | Contract terms + server-side signed entitlements | Same |
 
 Pricing, seat counts, and trial duration are deliberately **not** decided and
 are not in the licence — they are referred to "the applicable commercial
@@ -37,7 +37,7 @@ METADATA; the file named by `readme` becomes the long description **in that same
 METADATA**. Correcting one and not the other ships a self-contradicting artifact.
 
 That is not hypothetical: `symdex/pyproject.toml` was corrected to
-`LicenseRef-Firekeep-Proprietary` while `symdex/README.md` still said `MIT`, so
+`LicenseRef-Firekeep-BUSL-1.1` while `symdex/README.md` still said `MIT`, so
 every `firekeep-symdex` wheel — installed unconditionally by the bootstrap on
 every developer machine — asserted both. Fixed 2026-07-26 and now guarded by
 `tests/test_package_licence_consistency.py`, which fails if a packaged README's
@@ -45,7 +45,7 @@ License section opens with an OSI identifier.
 
 | Surface | Where | Guarded by |
 |---|---|---|
-| Wheel `License-Expression` | `client/pyproject.toml`, `symdex/pyproject.toml` → `license` | `test_pyproject_declares_the_proprietary_licence` |
+| Wheel `License-Expression` | `client/pyproject.toml`, `symdex/pyproject.toml` → `license` | `test_pyproject_declares_the_source_available_licence` |
 | Wheel long description | the file each `readme` field names | `test_readme_licence_section_does_not_contradict_metadata` |
 | Bundled licence text | `license-files = ["LICENSE", "NOTICE"]` | `test_root_licence_file_is_not_an_osi_licence` |
 | Third-party notices | `NOTICE`, `client/NOTICE`, `symdex/NOTICE` (identical) | `scripts/generate_notice.py` + the CI licences job |
@@ -58,30 +58,17 @@ nothing false today.
 
 ## What must happen before anything is distributed
 
-1. ~~**Pick the model.**~~ **Done.** Free core, not open source (above).
-2. ~~**Write the real licence.**~~ **Done.** `LICENSE` at the repo root covers:
-   free-tier grant (single user, one deployment, non-transferable, gratis,
-   closed source, no redistribution/derivative works), the paid team-tier
-   grant (Team Features licence-key gated, terms deferred to the commercial
-   agreement),
-   warranty disclaimer, a liability cap, third-party components governed by
-   their own terms, and the licence-lifecycle term below. **Needs a lawyer
-   read before first sale — see the note at the top of this file.**
-3. **Licence lifecycle policy.**
-   - ~~**Expiry: degrade, do not brick.**~~ **Done, as a licence term** (`LICENSE`
-     §3): on expiry, writes and Team Feature / new-feature routes may be
-     blocked; recall, export, and other read paths keep working indefinitely.
-   - ~~**Exit / data export guarantee.**~~ **Done, as a licence term**
-     (`LICENSE` §3): export works at all times, including after expiry or
-     termination, and survives termination of the licence.
-   - **Vendor continuity** (source escrow / perpetuity clause if the
-     single-maintainer vendor stops) — **not yet decided**, not in `LICENSE`.
-     Still open.
-   - **Trial** (what an evaluation licence permits, and for how long) —
-     **deliberately undecided**, not in `LICENSE`; left to the commercial
-     agreement so no number gets invented here.
+1. ~~**Pick the model.**~~ **Done.** BUSL-1.1 with a Solo-only Additional Use
+   Grant, then Apache-2.0 after four years (above).
+2. ~~**Write the real licence.**~~ **Done.** `LICENSE` contains the unmodified
+   BUSL-1.1 terms and its project-specific parameters. **Needs a lawyer read
+   before first sale — see the note at the top of this file.**
+3. **Commercial lifecycle policy.** Signed entitlements may degrade paid Group
+   functionality, but this is product behavior rather than a term added to the
+   standard BUSL text. The commercial agreement must state renewal, support,
+   data export, and any trial terms before paid sale.
 4. ~~**Package metadata.**~~ **Done.** `client/pyproject.toml` and
-   `symdex/pyproject.toml` now declare `license = "LicenseRef-Firekeep-Proprietary"`
+   `symdex/pyproject.toml` now declare `license = "LicenseRef-Firekeep-BUSL-1.1"`
    and `license-files = ["LICENSE", "NOTICE"]` (each package carries its own
    copy of both root files — PEP 639 `license-files` globs cannot point
    outside the project directory, so `client/LICENSE`/`client/NOTICE` and
@@ -201,11 +188,10 @@ nothing false today.
 
 A readiness audit found no `LICENSE` anywhere and a README that said "all
 rights reserved" — meaning a purchaser would have had no legal right to run
-the software. The root `LICENSE` now grants real rights under the decided
-free-core model. This file exists so the remaining open items (vendor
-continuity, trial terms, third-party attribution, datastore licences) are not
-lost, and so the licence text is not treated as final without the lawyer
-review noted at the top.
+the software. The root `LICENSE` now grants source-available rights under the
+decided BUSL model. This file exists so the remaining commercial terms,
+third-party attribution, and datastore licences are not lost, and so the
+licence text is not treated as final without the lawyer review noted at the top.
 
 ---
 

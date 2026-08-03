@@ -344,11 +344,11 @@ def _configure(args) -> bool:
     cfg = resolver.load_config(path)
     interactive = wizard.is_interactive() and not getattr(args, "non_interactive", False)
 
-    # Resolve which agent(s) to render. Explicit --runtime (or FIREKEEP_RUNTIME, which the
-    # bootstrap forwards as --runtime) wins; otherwise ask the human, or default to all when
-    # headless. Asked first so it frames the rest of the prompts.
+    # A normal install prepares every shipped runtime. The user should not have to predict
+    # which client they will use later, and selecting one here used to leave the others
+    # looking broken. Explicit --runtime remains the targeted re-render/repair path.
     if getattr(args, "runtime", None) is None:
-        args.runtime = wizard.ask_runtime() if interactive else "all"
+        args.runtime = "all"
 
     if interactive:
         print("firekeep: configuring ~/.firekeep/config (Enter accepts the [default])")
@@ -1095,9 +1095,8 @@ def _build_parser() -> argparse.ArgumentParser:
     ver.set_defaults(func=cmd_version)
 
     inst = sub.add_parser("install", help="install/refresh the client kit")
-    # default None (not "all"): an unset runtime means "ask interactively / default all",
-    # which is what lets the wizard prompt for the agent. Explicit --runtime (or the
-    # bootstrap's FIREKEEP_RUNTIME) still wins. Resolved in _configure.
+    # An unset runtime prepares every shipped adapter. Explicit --runtime (or the
+    # bootstrap's FIREKEEP_RUNTIME) remains available for a targeted re-render.
     inst.add_argument(
         "--runtime", choices=["claude", "codex", "kiro", "opencode", "all"], default=None
     )

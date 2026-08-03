@@ -19,7 +19,8 @@ wrong and worth recording, because it reads as reassuring:
 Unlink safety covers files a process has ALREADY MAPPED. It does not cover a new
 exec — and every lifecycle hook spawns a fresh `${VENV}/bin/python` (PreToolUse
 gates every Edit; PostToolUse, UserPromptSubmit, SessionStart and Stop all fire
-per event; the three stdio MCP servers re-exec on reconnect). The old
+per event; the four HTTP-backed stdio MCP shims are fresh execs at agent startup).
+The old
 `uv venv --clear` deleted the live venv and took 30-120s to repopulate it, so for
 that entire window every hook on every live macOS/Linux session failed with
 "No such file or directory" — with auto-update ON by default, meaning nobody had
