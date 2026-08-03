@@ -46,6 +46,11 @@ FIXTURE_ROWS = [
 
 
 @pytest.fixture
+def anyio_backend():
+    return "asyncio"
+
+
+@pytest.fixture
 def fixture_dataset(tmp_path):
     p = tmp_path / "longmemeval_s.json"
     p.write_text(json.dumps(FIXTURE_ROWS), encoding="utf-8")
