@@ -161,6 +161,54 @@ builder combined raw files with structural analysis. Treat it as an in-sample ob
 result depends on repository and task mix. Full protocol, per-language results, pinned revisions
 and reproduction commands are in `symdex/benchmarks/README.md`.
 
+### Shadow-restore token savings (measured)
+
+When an agent's context is compacted it restores its working state from Bridge.
+`ctx_get_shadow()` returns the whole session document — plan, decisions, file knowledge,
+progress, scratchpad — and still does by default. Since 2026-07-30 an agent may instead hand
+back an opaque cursor and receive only what changed since it last looked.
+
+Measured 2026-07-30 across **26 real sessions** on a live instance using `tiktoken`
+(`cl100k_base`), not a `chars/4` estimate. Each session's full shadow was compared against the
+delta a cursor taken 75% of the way through that session would produce:
+
+| Scope | Full | Delta | Saved |
+|---|---|---|---|
+| All 26 sessions | 16,725 tok | 10,075 tok | **−39.8%** |
+| The 7 sessions over 1,000 tokens | *not recorded separately* | *not recorded separately* | **−50.7%** |
+| Single largest session, verified live 2026-08-01 | 12,122 ch | 4,977 ch | **−59%** |
+
+**This is a per-restore number, not a per-request one — read that before quoting any figure
+above.** A delta is only ever returned when an agent asks to restore its working state, which
+happens after a context compaction, not on every turn. A customer's bill is per request. The
+same scope confusion is what this document previously got wrong about Symdex, and the
+correction applies identically here: 39.8% of a restore is not 39.8% of anything a customer
+pays for per turn.
+
+**The spread is wide and the mean hides it.** Per-session savings ranged from **0.8% to
+67.4%**. The weak cases are not noise — they are sessions whose content sits in the one place a
+delta cannot filter (below). A prospect whose agents work that way will measure a number near
+the bottom of that range, and should hear it here first.
+
+**One section can never be filtered, by construction.** Scratchpad entries are stored without
+per-entry timestamps, so a delta has nothing to filter on and always resends them in full; the
+same is true of proactively-recalled memories, which are replaced wholesale rather than
+appended. Scratchpad alone is **14.1%** of all shadow tokens measured. Of the saving that does
+occur, **80% comes from filtering decision/progress/file entries and only 20% from omitting an
+unchanged plan** — the opposite of what the design predicted before it was measured.
+
+**In-sample.** Twenty-six sessions, one operator, one machine. It is the honest ceiling on what
+can be claimed today, not a prediction for another team's usage pattern. A second operator's
+sessions are the next measurement.
+
+**What the feature actually promises.** Not "fewer tokens per turn" — on the tool surface that
+claim is worth about 1% and sits in the cached region of the prompt. What it delivers is **more
+turns before a compaction, and no lost working state when one happens.** The delta is opt-in:
+an agent that never passes a cursor gets byte-identical behaviour to before, and six independent
+fail-safes (absent, unparsable, wrong-session, stale-epoch, no-high-water, and unreadable-epoch
+cursors) each return the full document rather than a partial one. Where the mechanism can be
+wrong, it is wrong in the direction of sending too much.
+
 Cost surface is bounded by what you choose to spend on the LLM tier; the cognitive infrastructure itself runs on commodity hardware.
 
 ---
