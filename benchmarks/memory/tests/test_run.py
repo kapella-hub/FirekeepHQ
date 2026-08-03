@@ -98,3 +98,61 @@ def test_assemble_report_persists_ingest_errors_and_per_question(monkeypatch, tm
     assert result["ingest_errors"] == 1
     assert result["ingest_error_keys"] == ["lm_q1/s_a: boom"]
     assert result["per_question"]["bench"][0]["question_id"] == "q1"
+
+
+def test_persist_ingest_errors_writes_full_list(tmp_path, monkeypatch):
+    monkeypatch.setattr(runmod, "WORK_DIR", tmp_path)
+    runmod._persist_ingest_errors(["lm_q1/s_a: boom", "lm_q2/s_b: boom2"])
+    written = json.loads((tmp_path / "ingest_errors.json").read_text(encoding="utf-8"))
+    assert written == ["lm_q1/s_a: boom", "lm_q2/s_b: boom2"]
+
+
+def test_run_persists_ingest_errors_after_ingest_stage(monkeypatch, tmp_path):
+    # Full pipeline with every stage stubbed except the write we're testing:
+    # ingest reports one error, and by the time _assemble_report runs,
+    # work/ingest_errors.json must already reflect it (I3 — ingest failures
+    # must reach the published record, not just stdout).
+    monkeypatch.setattr(runmod, "preflight", lambda *a, **kw: [])
+    monkeypatch.setattr(runmod, "load_dataset", lambda path: [])
+    monkeypatch.setattr(runmod, "WORK_DIR", tmp_path)
+    monkeypatch.setattr(runmod, "RESULTS_DIR", tmp_path)
+    monkeypatch.setattr(runmod.report, "WORK_DIR", tmp_path)
+
+    class FakeIngestStats:
+        sessions_done = 0
+        sessions_skipped = 0
+        learn_calls = 0
+        errors = ["lm_q1/s_a: boom"]
+
+    async def fake_ingest(*a, **kw):
+        return FakeIngestStats()
+
+    monkeypatch.setattr(runmod.ingest, "ingest", fake_ingest)
+
+    class FakeRecallStats:
+        completed = 0
+        skipped = 0
+        errored = 0
+
+    async def fake_run_recall(*a, **kw):
+        return FakeRecallStats()
+
+    monkeypatch.setattr(runmod.recall, "run_recall", fake_run_recall)
+    monkeypatch.setattr(
+        runmod.score_retrieval, "score_run",
+        lambda *a, **kw: {
+            "k": 10,
+            "overall": {"n": 0, "recall_at_k": 0, "coverage_at_k": 0, "mrr": 0, "ndcg_at_k": 0},
+            "by_question_type": {}, "errored_questions": [], "missing_questions": [],
+            "abstention_excluded": 0,
+        },
+    )
+    monkeypatch.setattr(
+        runmod.report, "_load_meta",
+        lambda *a, **kw: {"dataset": {}, "cortex_version": {}, "models": {}, "configs": {}},
+    )
+
+    rc = runmod.run(["--skip-qa"])
+    assert rc == 0
+    errors = json.loads((tmp_path / "ingest_errors.json").read_text(encoding="utf-8"))
+    assert errors == ["lm_q1/s_a: boom"]

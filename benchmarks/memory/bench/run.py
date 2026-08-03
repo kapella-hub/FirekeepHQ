@@ -107,6 +107,13 @@ def preflight(cortex_url: str, ollama_url: str, reader_model: str, skip_qa: bool
     return fails
 
 
+def _persist_ingest_errors(errors: list[str]) -> None:
+    """Ingest failures must reach the published record, not just stdout (I3)
+    — report._load_ingest_errors reads this file back at report time."""
+    (WORK_DIR / "ingest_errors.json").write_text(
+        json.dumps(errors, indent=2), encoding="utf-8")
+
+
 def _assemble_report(run_label: str, cortex_url: str, ollama_url: str, reader_model: str) -> None:
     scores = {}
     for name in recall.CONFIGS:
@@ -201,6 +208,7 @@ def run(argv: list[str] | None = None) -> int:
     )
     for e in ingest_stats.errors[:20]:
         print("  ingest ERROR:", e)
+    _persist_ingest_errors(ingest_stats.errors)
 
     recall_paths: dict[str, Path] = {}
     for name in names:
