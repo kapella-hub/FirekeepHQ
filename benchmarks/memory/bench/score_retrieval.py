@@ -50,6 +50,7 @@ def score_run(dataset_rows, recall_path: Path, ledger: Ledger, k: int) -> dict:
 
     per_question, by_type = [], defaultdict(list)
     errored, abstention_excluded, missing = [], 0, []
+    ledger_gap_questions = []
     for row in dataset_rows:
         qid = row["question_id"]
         if is_abstention(qid):
@@ -66,6 +67,11 @@ def score_run(dataset_rows, recall_path: Path, ledger: Ledger, k: int) -> dict:
         evidence = set(row["answer_session_ids"])
         per_sess = ledger.memories_per_session(ns)
         n_avail = sum(per_sess.get(sid, 0) for sid in evidence)
+        if evidence and n_avail == 0:
+            # Evidence exists but the ledger has no record of it — a
+            # missing/incomplete ledger, not a genuine zero-relevant-
+            # available question. Still scored as-is; flagged for visibility.
+            ledger_gap_questions.append(qid)
         s = score_question(rec["hits"], evidence, k, n_avail)
         per_question.append(s)
         by_type[row["question_type"]].append(s)
@@ -77,6 +83,7 @@ def score_run(dataset_rows, recall_path: Path, ledger: Ledger, k: int) -> dict:
         "errored_questions": errored,
         "missing_questions": missing,
         "abstention_excluded": abstention_excluded,
+        "ledger_gap_questions": ledger_gap_questions,
     }
 
 

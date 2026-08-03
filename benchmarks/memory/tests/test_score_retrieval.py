@@ -1,8 +1,10 @@
+import json
 import math
 
 import pytest
 
 from bench import score_retrieval as sr
+from bench.ingest import Ledger
 
 
 def _hits(*session_ids):
@@ -52,3 +54,61 @@ def test_aggregate_means():
     assert agg["n"] == 2
     assert agg["recall_at_k"] == 0.5
     assert agg["mrr"] == 0.5
+
+
+def test_score_run_flags_ledger_gap_questions(tmp_path):
+    # Evidence is nonempty but the ledger has no record of any memories
+    # ingested for that evidence session — a missing/incomplete ledger,
+    # not a genuine zero-relevant-available case. The question is still
+    # scored as before; it's additionally flagged for visibility.
+    row = {
+        "question_id": "q1",
+        "question_type": "multi-session",
+        "answer_session_ids": ["s_a"],
+    }
+    recall_path = tmp_path / "recall_bench.jsonl"
+    recall_path.write_text(
+        json.dumps({"question_id": "q1", "hits": [{"session_id": "s_a"}], "error": None}) + "\n",
+        encoding="utf-8",
+    )
+    ledger = Ledger(tmp_path / "ledger.jsonl")  # empty: no memories recorded for s_a
+    result = sr.score_run([row], recall_path, ledger, k=10)
+    assert result["ledger_gap_questions"] == ["q1"]
+    # Still scored normally — the gap is additive, not a substitute.
+    assert result["overall"]["n"] == 1
+
+
+def test_score_run_no_gap_flagged_when_ledger_has_records(tmp_path):
+    row = {
+        "question_id": "q1",
+        "question_type": "multi-session",
+        "answer_session_ids": ["s_a"],
+    }
+    recall_path = tmp_path / "recall_bench.jsonl"
+    recall_path.write_text(
+        json.dumps({"question_id": "q1", "hits": [{"session_id": "s_a"}], "error": None}) + "\n",
+        encoding="utf-8",
+    )
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    ledger.mark("lm_q1/s_a", n_memories=3)
+    result = sr.score_run([row], recall_path, ledger, k=10)
+    assert result["ledger_gap_questions"] == []
+
+
+def test_score_run_no_gap_flagged_when_evidence_is_empty(tmp_path):
+    # Abstention-style rows with no evidence sessions must not be flagged —
+    # a gap only means something when evidence exists but the ledger can't
+    # account for it.
+    row = {
+        "question_id": "q1",
+        "question_type": "single-session-user",
+        "answer_session_ids": [],
+    }
+    recall_path = tmp_path / "recall_bench.jsonl"
+    recall_path.write_text(
+        json.dumps({"question_id": "q1", "hits": [], "error": None}) + "\n",
+        encoding="utf-8",
+    )
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    result = sr.score_run([row], recall_path, ledger, k=10)
+    assert result["ledger_gap_questions"] == []
