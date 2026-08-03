@@ -32,6 +32,8 @@ def test_extract_hits_preserves_rank_and_joins_tags():
     hits = recall.extract_hits(RESPONSE)
     assert [h["session_id"] for h in hits] == ["s_a", None, "s_b"]
     assert hits[0]["score"] == 0.9
+    # Verify dates are extracted and preserved
+    assert [h["date"] for h in hits] == ["2023/04/01 (Sat) 09:00", None, "2023/04/10 (Mon) 09:00"]
 
 
 @pytest.mark.anyio

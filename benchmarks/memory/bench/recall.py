@@ -11,7 +11,7 @@ from pathlib import Path
 import httpx
 from tqdm import tqdm
 
-from bench.common import DATA_DIR, WORK_DIR, load_dataset, parse_session_tag, sanitize_namespace
+from bench.common import DATA_DIR, WORK_DIR, load_dataset, parse_date_tag, parse_session_tag, sanitize_namespace
 
 CONFIGS: dict[str, dict] = {
     # What a stock install does — the honesty row.
@@ -36,6 +36,7 @@ def extract_hits(response_json: dict) -> list[dict]:
         tags = meta.get("tags") or []
         hits.append({
             "session_id": parse_session_tag(tags),
+            "date": parse_date_tag(tags),
             "score": src.get("score", 0.0),
             "content": (src.get("content") or "")[:2000],
         })

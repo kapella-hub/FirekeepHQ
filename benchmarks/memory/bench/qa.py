@@ -69,7 +69,14 @@ def score_abstention(answer: str) -> bool:
 
 
 def _context_from_hits(hits: list[dict]) -> str:
-    return "\n---\n".join(h["content"] for h in hits if h.get("content"))
+    parts = []
+    for h in hits:
+        if h.get("content"):
+            content = h["content"]
+            if h.get("date"):
+                content = f"[{h['date']}] {content}"
+            parts.append(content)
+    return "\n---\n".join(parts)
 
 
 @dataclass

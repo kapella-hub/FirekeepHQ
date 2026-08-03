@@ -43,6 +43,13 @@ def parse_session_tag(tags: list[str]) -> str | None:
     return None
 
 
+def parse_date_tag(tags: list[str]) -> str | None:
+    for tag in tags:
+        if isinstance(tag, str) and tag.startswith(_DATE_TAG_PREFIX):
+            return tag[len(_DATE_TAG_PREFIX):]
+    return None
+
+
 def is_abstention(question_id: str) -> bool:
     return question_id.endswith("_abs")
 
