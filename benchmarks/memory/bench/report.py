@@ -13,7 +13,12 @@ from datetime import datetime, timezone
 
 import httpx
 
+from bench import recall
 from bench.common import DATA_DIR, RESULTS_DIR, WORK_DIR
+
+# Single source of truth for the embedding model name in the published
+# meta — the bench compose file's EMBEDDING_MODEL must agree with this.
+EMBED_MODEL = "mxbai-embed-large"
 
 _NOT_COMPARABLE = (
     "The local-reader QA row is NOT comparable to published GPT-4o-reader "
@@ -46,6 +51,10 @@ _KNOWN_LIMITATIONS = """\
    hide it. If it materially hurts, that's a product finding worth its own line.
 5. Single run, no variance bars (deterministic retrieval; only QA has sampling
    noise — reader temperature pinned to 0).
+6. Two truncation bounds affect what the QA reader ultimately sees: turn
+   sides are truncated to 5000 characters at ingest (`bench.ingest._MAX_FIELD`),
+   and per-hit recalled content is capped at 2000 characters in recall rows
+   (`bench.recall.extract_hits`).
 """
 
 _REPRODUCTION = """\
@@ -72,12 +81,17 @@ def qa_accuracy(qa_rows: list[dict]) -> dict:
             "judge_errors": judge_errors}
 
 
-def build_result(scores: dict[str, dict], qa: dict | None, meta: dict) -> dict:
+def build_result(
+    scores: dict[str, dict], qa: dict | None, meta: dict, *,
+    ingest_errors: dict | None = None, per_question: dict | None = None,
+) -> dict:
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "meta": meta,
         "retrieval": scores,
         "qa_local": qa,
+        **(ingest_errors or {"ingest_errors": 0, "ingest_error_keys": []}),
+        "per_question": per_question if per_question is not None else {},
     }
 
 
@@ -93,6 +107,16 @@ def render_markdown(result: dict) -> str:
             f"{overall['recall_at_k']:.3f} | {overall['coverage_at_k']:.3f} | "
             f"{overall['mrr']:.3f} | {overall['ndcg_at_k']:.3f} |"
         )
+    gap_lines = [
+        f"{config_name}: {len(gaps)} question(s) with ledger gaps (evidence "
+        "session record missing/incomplete — NDCG's ideal-slot count "
+        "understates true availability for these)."
+        for config_name, scores in result["retrieval"].items()
+        if (gaps := scores.get("ledger_gap_questions") or [])
+    ]
+    if gap_lines:
+        lines.append("")
+        lines.extend(gap_lines)
     qa = result.get("qa_local")
     if qa:
         lines.append("")
@@ -109,12 +133,10 @@ def render_methodology(result: dict) -> str:
     dataset = meta.get("dataset", {})
     cortex_version = meta.get("cortex_version", {})
     models = meta.get("models", {})
-    configs = {
-        name: {k: v for k, v in scores.items()
-               if k not in ("errored_questions", "missing_questions",
-                            "by_question_type")}
-        for name, scores in result["retrieval"].items()
-    }
+    # The actual recall config rows (top_k/token_budget/format per config
+    # name) — NOT the score aggregates, which used to be mislabeled here
+    # under the same "Config rows (verbatim)" heading.
+    configs = meta.get("configs", recall.CONFIGS)
 
     sections = [
         "# LongMemEval Benchmark Methodology\n",
@@ -153,27 +175,118 @@ def _fetch_json(url: str, timeout: float = 5.0) -> dict | str:
         return "unavailable"
 
 
-def _load_meta(cortex_url: str, ollama_url: str) -> dict:
+def _load_meta(cortex_url: str, ollama_url: str, reader_model: str) -> dict:
+    """Pin what was actually run: reader model (caller-supplied — it's a CLI
+    flag, not discoverable from any service), embed model (one constant,
+    EMBED_MODEL, so it can't say something different from what the bench
+    compose file configures), and the recall config rows actually used
+    (recall.CONFIGS) — so the published run record can't silently drift from
+    the settings that produced it.
+    """
     dataset_meta_path = DATA_DIR / "dataset_meta.json"
     dataset = (
         json.loads(dataset_meta_path.read_text(encoding="utf-8"))
         if dataset_meta_path.exists() else {}
     )
     cortex_version = _fetch_json(f"{cortex_url}/version")
-    tags = _fetch_json(f"{ollama_url}/api/tags")
-    models = tags if isinstance(tags, str) else tags.get("models", tags)
-    return {"dataset": dataset, "cortex_version": cortex_version, "models": models}
+    ollama_tags = _fetch_json(f"{ollama_url}/api/tags")
+    return {
+        "dataset": dataset,
+        "cortex_version": cortex_version,
+        "models": {"reader": reader_model, "embed": EMBED_MODEL},
+        "ollama_tags": ollama_tags,
+        "configs": recall.CONFIGS,
+    }
+
+
+def _load_ingest_errors() -> dict:
+    """Best-effort read of work/ingest_errors.json (I3): absent or malformed
+    file degrades to the zero/empty shape rather than failing the report."""
+    path = WORK_DIR / "ingest_errors.json"
+    if not path.exists():
+        return {"ingest_errors": 0, "ingest_error_keys": []}
+    try:
+        errors = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"ingest_errors": 0, "ingest_error_keys": []}
+    if not isinstance(errors, list):
+        return {"ingest_errors": 0, "ingest_error_keys": []}
+    return {"ingest_errors": len(errors), "ingest_error_keys": errors}
+
+
+def _load_recall_per_question(config_name: str) -> list[dict]:
+    """Per-question audit rows from work/recall_<config>.jsonl: question_id,
+    hits' session_ids + ranks, and error. Best-effort — absent file or a
+    malformed line degrades to skipping it, never raises."""
+    path = WORK_DIR / f"recall_{config_name}.jsonl"
+    if not path.exists():
+        return []
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line)
+        except Exception:
+            continue
+        hits = rec.get("hits") or []
+        rows.append({
+            "question_id": rec.get("question_id"),
+            "hits": [
+                {"session_id": h.get("session_id"), "rank": i + 1}
+                for i, h in enumerate(hits)
+            ],
+            "error": rec.get("error"),
+        })
+    return rows
+
+
+def _load_qa_per_question() -> list[dict]:
+    """Per-question audit rows from work/qa_bench.jsonl: question_id,
+    verdict, judge_error, and the answer text (truncated to 200 chars to
+    keep the artifact lean)."""
+    path = WORK_DIR / "qa_bench.jsonl"
+    if not path.exists():
+        return []
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line)
+        except Exception:
+            continue
+        answer = rec.get("answer")
+        rows.append({
+            "question_id": rec.get("question_id"),
+            "verdict": rec.get("verdict"),
+            "judge_error": rec.get("judge_error"),
+            "answer": answer[:200] if isinstance(answer, str) else answer,
+        })
+    return rows
+
+
+def _load_per_question(config_names: list[str]) -> dict:
+    per_question = {name: _load_recall_per_question(name) for name in config_names}
+    per_question["qa"] = _load_qa_per_question()
+    return per_question
 
 
 def main() -> None:
+    # Imported lazily to avoid a hard import-time dependency of report.py's
+    # library functions on qa.py (only this CLI entry point needs the
+    # default reader model name).
+    from bench import qa as qa_module
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--run-label", required=True)
     ap.add_argument("--cortex-url", default="http://127.0.0.1:18100")
     ap.add_argument("--ollama-url", default="http://127.0.0.1:11434")
+    ap.add_argument("--reader-model", default=qa_module.READER_MODEL)
     args = ap.parse_args()
 
     scores = {}
-    for name in ("defaults", "bench"):
+    for name in recall.CONFIGS:
         path = WORK_DIR / f"scores_{name}.json"
         if path.exists():
             scores[name] = json.loads(path.read_text(encoding="utf-8"))
@@ -186,8 +299,11 @@ def main() -> None:
         if rows:
             qa = qa_accuracy(rows)
 
-    meta = _load_meta(args.cortex_url, args.ollama_url)
-    result = build_result(scores, qa, meta)
+    meta = _load_meta(args.cortex_url, args.ollama_url, args.reader_model)
+    ingest_errors = _load_ingest_errors()
+    per_question = _load_per_question(list(scores))
+    result = build_result(
+        scores, qa, meta, ingest_errors=ingest_errors, per_question=per_question)
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")

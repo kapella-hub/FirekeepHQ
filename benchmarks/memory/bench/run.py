@@ -107,7 +107,7 @@ def preflight(cortex_url: str, ollama_url: str, reader_model: str, skip_qa: bool
     return fails
 
 
-def _assemble_report(run_label: str, cortex_url: str, ollama_url: str) -> None:
+def _assemble_report(run_label: str, cortex_url: str, ollama_url: str, reader_model: str) -> None:
     scores = {}
     for name in recall.CONFIGS:
         path = WORK_DIR / f"scores_{name}.json"
@@ -124,8 +124,13 @@ def _assemble_report(run_label: str, cortex_url: str, ollama_url: str) -> None:
         if qa_rows:
             qa_result = report.qa_accuracy(qa_rows)
 
-    meta = report._load_meta(cortex_url, ollama_url)
-    result = report.build_result(scores, qa_result, meta)
+    meta = report._load_meta(cortex_url, ollama_url, reader_model)
+    ingest_errors = report._load_ingest_errors()
+    per_question = report._load_per_question(list(scores))
+    result = report.build_result(
+        scores, qa_result, meta,
+        ingest_errors=ingest_errors, per_question=per_question,
+    )
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
@@ -245,7 +250,7 @@ def run(argv: list[str] | None = None) -> int:
         )
 
     try:
-        _assemble_report(args.run_label, args.base_url, args.ollama_url)
+        _assemble_report(args.run_label, args.base_url, args.ollama_url, args.reader_model)
     except Exception as exc:
         print(f"[report] FAILED: {exc}")
         return 1
