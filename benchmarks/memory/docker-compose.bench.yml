@@ -1,0 +1,115 @@
+# Isolated LongMemEval benchmark stack. NEVER share volumes/ports/collection
+# name/Redis DBs with the dev/prod stack in the root docker-compose.yml.
+# Usage: docker compose -f benchmarks/memory/docker-compose.bench.yml -p firekeep-bench up -d --build
+name: firekeep-bench
+
+services:
+  # Image pins copied VERBATIM from the root docker-compose.yml (image pinning
+  # rules apply — do not retype or invent digests; re-copy from there if they
+  # ever move).
+  neo4j:
+    image: neo4j:5.26.28-community@sha256:362542416de6c09a971484d1893878016cc3b5cdec166e54b1c824a220ecd6b9
+    environment:
+      NEO4J_AUTH: neo4j/benchpassword
+    ports:
+      - "127.0.0.1:17474:7474"
+      - "127.0.0.1:17687:7687"
+    volumes:
+      - bench_neo4j:/data
+    healthcheck:
+      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "benchpassword", "RETURN 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  qdrant:
+    image: qdrant/qdrant:v1.13.2@sha256:81bdf0a9deedbeec68eed207145ade0b9d5db15e2f84069180711aa9698445b1
+    ports:
+      - "127.0.0.1:16333:6333"
+      - "127.0.0.1:16334:6334"
+    volumes:
+      - bench_qdrant:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/6333'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  redis:
+    image: redis:7.4.10-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2
+    command: redis-server --appendonly yes
+    ports:
+      - "127.0.0.1:16379:6379"
+    volumes:
+      - bench_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  cortex-api:
+    build:
+      context: ../..
+      dockerfile: cortex/Dockerfile
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
+        APP_VERSION: ${APP_VERSION:-0.6.0}
+    ports:
+      - "127.0.0.1:18100:8000"
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    environment:
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: benchpassword
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: "6333"
+      QDRANT_COLLECTION: longmemeval
+      REDIS_URL: redis://redis:6379/0
+      # Auth defaults to REDIS_URL=redis://localhost:6379/7 regardless of
+      # AUTH_ENABLED — main.py's lifespan always opens auth_redis (used for
+      # the startup workspace migration too), so it must point at this
+      # stack's own bench redis, not localhost.
+      AUTH_REDIS_URL: redis://redis:6379/7
+      # Host GPU Ollama for embeddings + (recall-path) LLM calls.
+      LLM_BASE_URL: http://host.docker.internal:11434/v1
+      EMBEDDING_MODEL: mxbai-embed-large
+      EMBEDDING_DIM: "1024"
+      # Benchmark posture: single-user isolated stack, no background mutation,
+      # no auth (loopback-only, disposable data).
+      AUTH_ENABLED: "false"
+      GC_ENABLED: "false"
+      AGENT_ENABLED: "false"
+      SKILL_SYNTHESIS_ENABLED: "false"
+      OWM_ENABLED: "false"
+      DEDUP_ENABLED: "false"
+      # Vault is not needed for the benchmark and its init is best-effort
+      # (main.py wraps it in try/except), but disable it explicitly so no
+      # ambient VAULT_KEY from the shell/host environment is picked up.
+      VAULT_ENABLED: "false"
+      # 60/min (the default) would strangle a ~300k-call ingest.
+      RATE_LIMIT: "100000/minute"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      neo4j:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+volumes:
+  bench_neo4j:
+  bench_qdrant:
+  bench_redis:
