@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -13,6 +14,8 @@ from tqdm import tqdm
 from bench.common import (
     DATA_DIR, WORK_DIR, date_tag, load_dataset, sanitize_namespace, session_tag,
 )
+
+_log = logging.getLogger(__name__)
 
 _MAX_FIELD = 5000  # ActionLog action/outcome max_length
 
@@ -84,10 +87,21 @@ class Ledger:
         self._path = path
         self._done: dict[str, int] = {}
         if path.exists():
-            for line in path.read_text(encoding="utf-8").splitlines():
-                if line.strip():
+            lines = [l for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
+            for i, line in enumerate(lines):
+                try:
                     rec = json.loads(line)
-                    self._done[rec["key"]] = rec["n_memories"]
+                except json.JSONDecodeError:
+                    if i == len(lines) - 1:
+                        # A process killed mid-append tears only the LAST
+                        # line; skip it and keep every entry that's intact.
+                        # A torn line anywhere else is real corruption and
+                        # must still raise.
+                        _log.warning(
+                            "Ledger: skipping torn final line in %s", path)
+                        continue
+                    raise
+                self._done[rec["key"]] = rec["n_memories"]
 
     def done(self, key: str) -> bool:
         return key in self._done

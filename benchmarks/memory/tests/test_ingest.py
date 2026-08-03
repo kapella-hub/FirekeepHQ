@@ -75,6 +75,37 @@ def test_learn_payloads_stamps_namespace_and_tags():
     assert len(payloads) == 3
 
 
+def test_ledger_tolerates_torn_final_line(tmp_path):
+    # A process killed mid-append leaves a truncated last JSONL line. That
+    # must not brick every subsequent resume of a multi-hour run.
+    path = tmp_path / "ledger.jsonl"
+    path.write_text(
+        json.dumps({"key": "a", "n_memories": 1}) + "\n"
+        + json.dumps({"key": "b", "n_memories": 2}) + "\n"
+        + '{"key": "c", "n_mem',
+        encoding="utf-8",
+    )
+    led = ingest.Ledger(path)
+    assert led.done("a") and led.done("b")
+    assert not led.done("c")
+    # The ledger keeps working normally after tolerating the torn line.
+    led.mark("d", n_memories=5)
+    assert led.done("d")
+
+
+def test_ledger_raises_on_torn_middle_line(tmp_path):
+    # Only the LAST line gets torn-line tolerance; corruption anywhere else
+    # in the file is a real problem that must not be silently swallowed.
+    path = tmp_path / "ledger.jsonl"
+    path.write_text(
+        '{"key": "a", "n_mem'
+        + "\n" + json.dumps({"key": "b", "n_memories": 2}) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(json.JSONDecodeError):
+        ingest.Ledger(path)
+
+
 def test_ledger_roundtrip(tmp_path):
     led = ingest.Ledger(tmp_path / "ledger.jsonl")
     key = "lm_q_multi_1/s_a"
