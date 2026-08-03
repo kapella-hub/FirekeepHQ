@@ -13,6 +13,7 @@ from qdrant_client.models import (
 
 from app.config import get_settings, Settings
 from app.db.vector import VectorClient
+from app.skills.search import search_skill_points
 from app.models import (
     SkillRequest, SkillResponse, SkillPatchRequest, SkillEvaluateRequest
 )
@@ -85,17 +86,20 @@ def create_skills_router(
         if stale is not None:
             must.append(FieldCondition(key="stale", match=MatchValue(value=stale)))
 
-        # Two paths behind one endpoint (see app/skills/search.py): a cosine query
-        # when `q` is supplied — this endpoint is what `skill_recall` and the
-        # briefing use as a MATCHER — and the legacy ID-ordered scroll otherwise,
-        # which is what the dashboard needs as a LISTER. `semantic` says which one
-        # ran; the substring narrowing below belongs ONLY to the scroll page, since
-        # re-applying it to ranked results would restore the bug on top of the fix.
+        # Two paths, one filter. `must` above is handed over VERBATIM: dropping
+        # memory_type=skill would return plain memories as empty-trigger skills
+        # (silently, since _point_to_response defaults trigger to ""), and rebuilding
+        # the stale condition would break its three-state append-only semantics.
         points, semantic = await search_skill_points(
             vector, settings, must=must, query=q, limit=limit,
         )
         results = [_point_to_response(p) for p in points]
 
+        # THE FIX. On the semantic path the points are already cosine-ranked and
+        # floored, so the legacy substring narrowing must NOT run — re-applying it
+        # would reinstate the original bug on top of a working matcher. On every
+        # degraded path (no query, embed failure, nothing above the floor) `semantic`
+        # is False and behaviour is byte-identical to before.
         if q and not semantic:
             ql = q.lower()
             results = [

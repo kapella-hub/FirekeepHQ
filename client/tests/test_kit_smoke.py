@@ -73,18 +73,18 @@ def test_kit_hangs_together(firekeep_env, write_config, monkeypatch):
     for name in ("firekeep", "firekeep-shim", "firekeep-sidecar"):
         (venv_bin / f"{name}{ext}").write_text("x", encoding="utf-8")
 
-    expected_shim = console_script_path(venv_bin / "firekeep-shim")
+    expected_gateway = console_script_path(venv_bin / "firekeep")
     expected_python = console_script_path(venv_bin / "python")
-    assert Path(expected_shim).is_absolute()
+    assert Path(expected_gateway).is_absolute()
 
     # -- 2 & 3. render each adapter; assert ABSOLUTE shim path + dispatcher hooks ---
     get_adapter("claude").render(venv_bin=venv_bin)
     claude_cfg = _read_json(home_root / ".claude.json")
     claude_settings = _read_json(home_root / ".claude" / "settings.json")
-    for svc in SERVICES:
-        entry = claude_cfg["mcpServers"][f"firekeep-{svc}"]
-        assert entry["command"] == expected_shim
-        assert entry["args"] == ["--service", svc]
+    assert set(claude_cfg["mcpServers"]) == {"firekeep"}
+    entry = claude_cfg["mcpServers"]["firekeep"]
+    assert entry["command"] == expected_gateway
+    assert entry["args"] == ["gateway"]
     for event, core in CLAUDE_EVENTS:
         cmd = claude_settings["hooks"][event][0]["hooks"][0]["command"]
         # hooks are bash-executed -> forward-slash interpreter path (bash eats backslashes)
@@ -93,10 +93,10 @@ def test_kit_hangs_together(firekeep_env, write_config, monkeypatch):
 
     get_adapter("kiro").render(venv_bin=venv_bin)
     kiro_data = _read_json(home_root / ".kiro" / "agents" / "firekeep.json")
-    for svc in SERVICES:
-        entry = kiro_data["mcpServers"][f"firekeep-{svc}"]
-        assert entry["command"] == expected_shim
-        assert entry["args"] == ["--service", svc]
+    assert set(kiro_data["mcpServers"]) == {"firekeep"}
+    entry = kiro_data["mcpServers"]["firekeep"]
+    assert entry["command"] == expected_gateway
+    assert entry["args"] == ["gateway"]
     for event, core in KIRO_EVENTS:
         cmd = kiro_data["hooks"][event][0]["command"]
         assert expected_python.replace("\\", "/") in cmd
@@ -105,10 +105,10 @@ def test_kit_hangs_together(firekeep_env, write_config, monkeypatch):
     get_adapter("codex").render(venv_bin=venv_bin)
     codex_text = (home_root / ".codex" / "config.toml").read_text(encoding="utf-8")
     codex_parsed = tomllib.loads(codex_text)
-    for svc in SERVICES:
-        entry = codex_parsed["mcp_servers"][f"firekeep-{svc}"]
-        assert entry["command"] == expected_shim
-        assert entry["args"] == ["--service", svc]
+    assert set(codex_parsed["mcp_servers"]) == {"firekeep"}
+    entry = codex_parsed["mcp_servers"]["firekeep"]
+    assert entry["command"] == expected_gateway
+    assert entry["args"] == ["gateway"]
     # codex renders no hooks (spec §7.1: MCP servers only) -- nothing to assert there.
 
     # -- 4. `firekeep doctor` -- mock ONLY the network transport + CA-cert decode ------

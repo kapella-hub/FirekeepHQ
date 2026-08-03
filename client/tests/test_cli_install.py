@@ -74,8 +74,8 @@ def test_install_bootstraps_home_and_config(install_env):
     assert (home / "logs").is_dir()
     cfg = configparser.ConfigParser()
     cfg.read(home / "config")
-    assert cfg["active"]["profile"] == "personal"
-    assert cfg.has_section("personal")
+    assert cfg["identity"]["agent_id"] == "CHANGEME"
+    assert cfg["server"]["kind"] == "ports"
     gi = (home / ".gitignore").read_text(encoding="utf-8")
     assert gi.strip() == "*"
 
@@ -199,6 +199,7 @@ def test_fresh_install_renders_every_native_adapter(tmp_path, monkeypatch):
     firekeep_home = user_home / ".firekeep"
     monkeypatch.setenv("USERPROFILE", str(user_home))
     monkeypatch.setenv("HOME", str(user_home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(user_home / ".config"))
     monkeypatch.setenv("FIREKEEP_CONFIG", str(firekeep_home / "config"))
     monkeypatch.setattr(cli, "_kit_dir", lambda: None)
     monkeypatch.setattr(cli.state, "_private", lambda _p: None)
@@ -209,10 +210,7 @@ def test_fresh_install_renders_every_native_adapter(tmp_path, monkeypatch):
 
     assert cli.main(["install", "--non-interactive", "--no-modify-path"]) == 0
 
-    expected = {
-        "firekeep-cortex", "firekeep-bridge", "firekeep-sentinel", "firekeep-relay",
-        "firekeep-symdex", "firekeep-decision",
-    }
+    expected = {"firekeep"}
     claude = json.loads((user_home / ".claude.json").read_text(encoding="utf-8"))
     codex = tomllib.loads(
         (user_home / ".codex" / "config.toml").read_text(encoding="utf-8")
@@ -223,10 +221,10 @@ def test_fresh_install_renders_every_native_adapter(tmp_path, monkeypatch):
     opencode = json.loads(
         (user_home / ".config" / "opencode" / "opencode.json").read_text(encoding="utf-8")
     )
-    assert expected <= claude["mcpServers"].keys()
-    assert expected <= codex["mcp_servers"].keys()
-    assert expected <= kiro["mcpServers"].keys()
-    assert expected <= opencode["mcp"].keys()
+    assert set(claude["mcpServers"]) == expected
+    assert set(codex["mcp_servers"]) == expected
+    assert set(kiro["mcpServers"]) == expected
+    assert set(opencode["mcp"]) == expected
 
 
 def test_install_from_installed_venv_skips_pip_and_still_renders(install_env, monkeypatch, capsys):
@@ -257,12 +255,14 @@ def test_install_does_not_clobber_existing_config(install_env):
     home, runs, rec = install_env
     home.mkdir(parents=True)
     (home / "config").write_text(
-        "[active]\nprofile = office\n[office]\nkind = paths\n", encoding="utf-8"
+        "[identity]\nagent_id = Alex\n[server]\nkind = paths\nscheme = https\n"
+        "base_url = https://already.example\nverify_tls = true\nca_path = os\n",
+        encoding="utf-8",
     )
     cli.main(["install", "--runtime", "claude"])
     cfg = configparser.ConfigParser()
     cfg.read(home / "config")
-    assert cfg["active"]["profile"] == "office"  # preserved, not overwritten
+    assert cfg["server"]["base_url"] == "https://already.example"
 
 
 def test_install_without_tty_prompts_nothing(install_env, monkeypatch, capsys):
@@ -289,15 +289,15 @@ def test_install_flags_write_config_without_a_tty(install_env, monkeypatch, caps
     home, _, _ = install_env
     cfg = configparser.ConfigParser()
     cfg.read(home / "config")
-    assert cfg["personal"]["agent_id"] == "ci-bot"
-    assert cfg["personal"]["host"] == "10.0.0.4"
+    assert cfg["identity"]["agent_id"] == "ci-bot"
+    assert cfg["server"]["host"] == "10.0.0.4"
     # Identity is set, so don't tell the user to go edit the file they just configured.
     assert "CHANGEME" not in capsys.readouterr().out
 
 
 def test_install_prompts_when_interactive(install_env, monkeypatch):
     monkeypatch.setattr(cli.wizard, "is_interactive", lambda *a: True)
-    answers = iter(["Alex", "1", "203.0.113.10", ""])
+    answers = iter(["Alex", "203.0.113.10", ""])
     monkeypatch.setattr("builtins.input", lambda _p: next(answers))
 
     rc = cli.main(["install", "--runtime", "claude"])
@@ -305,8 +305,8 @@ def test_install_prompts_when_interactive(install_env, monkeypatch):
     home, _, _ = install_env
     cfg = configparser.ConfigParser()
     cfg.read(home / "config")
-    assert cfg["personal"]["agent_id"] == "Alex"
-    assert cfg["personal"]["host"] == "203.0.113.10"
+    assert cfg["identity"]["agent_id"] == "Alex"
+    assert cfg["server"]["host"] == "203.0.113.10"
 
 
 def test_install_non_interactive_flag_beats_a_tty(install_env, monkeypatch):
@@ -316,6 +316,22 @@ def test_install_non_interactive_flag_beats_a_tty(install_env, monkeypatch):
     monkeypatch.setattr(cli.wizard, "is_interactive", lambda *a: True)
     monkeypatch.setattr("builtins.input", boom)
     assert cli.main(["install", "--runtime", "claude", "--non-interactive"]) == 0
+
+
+def test_install_join_is_zero_prompt_even_with_a_tty(install_env, monkeypatch):
+    def boom(*args, **kwargs):
+        raise AssertionError("install --join prompted despite carrying every answer")
+
+    calls = []
+    monkeypatch.setattr(cli.wizard, "is_interactive", lambda *a: True)
+    monkeypatch.setattr("builtins.input", boom)
+    monkeypatch.setattr(
+        "firekeep_client.join.join",
+        lambda code, **kwargs: calls.append((code, kwargs)) or 0,
+    )
+    assert cli.main(["install", "--join", "fk_join_test", "--runtime", "all"]) == 0
+    assert calls == [("fk_join_test", {"agent_id": None})]
+    assert len(install_env[2].calls) == 4
 
 
 def test_install_failure_is_fail_loud_not_traceback(install_env, monkeypatch, capsys):
@@ -379,7 +395,7 @@ def test_install_dist_base_is_written_on_the_interactive_path(install_env, monke
     """The interactive path is the one the bootstrap installer actually uses, so a silent
     regression there would break `firekeep update` for every real teammate while the non-interactive test stayed green."""
     monkeypatch.setattr(cli.wizard, "is_interactive", lambda *a: True)
-    answers = iter(["Alex", "1", "203.0.113.10", ""])
+    answers = iter(["Alex", "203.0.113.10", ""])
     monkeypatch.setattr("builtins.input", lambda _p: next(answers))
 
     rc = cli.main(["install", "--runtime", "claude", "--dist-base", "http://gl/rel/v1"])
@@ -390,8 +406,8 @@ def test_install_dist_base_is_written_on_the_interactive_path(install_env, monke
     # Assert dist base_url was written
     assert cfg["dist"]["base_url"] == "http://gl/rel/v1"
     # Also assert the prompted values still land (proving --dist-base doesn't disturb the wizard)
-    assert cfg["personal"]["agent_id"] == "Alex"
-    assert cfg["personal"]["host"] == "203.0.113.10"
+    assert cfg["identity"]["agent_id"] == "Alex"
+    assert cfg["server"]["host"] == "203.0.113.10"
 
 
 def test_create_venv_recreates_a_pipless_venv(tmp_path, monkeypatch):

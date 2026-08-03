@@ -65,7 +65,8 @@ Firekeep is not a roadmap. It is a running system.
 
 ### Client-side (stdio, installed with the kit)
 
-Two always-on stdio MCP servers run next to the agent, not on the VPS:
+Two always-on local MCP backends run next to the agent behind the single
+`firekeep` stdio gateway, not on the VPS:
 
 | Server | Purpose |
 |--------|---------|
@@ -232,10 +233,10 @@ release tag has been cut, so nothing is published for `--pull` to fetch yet.
 | **Containers** | 13 (Cortex API/MCP/worker/beat, Bridge, Sentinel, Relay, dashboard, four data stores, + one init) |
 | **Deployment** | Single VPS, `docker compose up -d`; helper scripts for VPS provisioning and updates |
 | **Data stores** | Neo4j (graph), Qdrant (vectors), Redis (cache / streams / queues), Ollama (LLM inference) — all self-hosted |
-| **Local dev story** | `./install` / `firekeep install` installs the portable `firekeep-client` kit (`~/.firekeep/config` profiles, `firekeep-shim` transport, hook cores, sidecar); agents connect to the VPS/office over HTTP(S) with keyed, attributed identity |
+| **Local dev story** | `./install` / `firekeep install` installs the portable `firekeep-client` kit (one `[identity]` + `[server]` connection in `~/.firekeep/config`, `firekeep-shim` transport, hook cores, sidecar); agents connect to the Firekeep server over HTTP(S) with keyed, attributed identity |
 | **Security posture** | Closed by default: app ports bind to localhost (`BIND_ADDR`, opt-in to widen); the datastores are loopback-only unconditionally and no setting exposes them; per-key scoped API auth is **on** (`AUTH_ENABLED=true`) with keys minted by the installer. Plus: Fernet-encrypted vault, pre-edit policy engine, deny-list for sensitive paths (`.env`, `*.key`, `*.pem`) |
 | **Symdex languages** | Python, JavaScript, TypeScript, Go, Rust, Java, PHP, C, C#, Ruby, Kotlin, Swift |
-| **Delivery** | Four service images published to a private registry on a `vX.Y.Z` tag; `install.sh --pull` needs no source access. Developers build from a checkout with the same compose file |
+| **Delivery** | Four publicly pullable service images plus a checksummed, source-free deployment bundle on each `vX.Y.Z` tag; `firekeep init` needs no source or registry credential. Developers build from a checkout with the same compose file |
 | **Reproducible builds** | Every Python dependency hash-pinned in a per-service `requirements.lock`; every base and datastore image pinned to an immutable digest. Two builds of one commit produce the same images |
 | **Supply chain** | `pip-audit --strict` gates each shipped dependency set in CI (currently zero CVEs), CycloneDX SBOM per artifact, gitleaks over the working tree and full history |
 | **Disaster recovery** | `deploy/backup.sh` quiesces Neo4j/Qdrant/Redis before snapshotting, so the archive is actually restorable, and restarts them on every exit path. `update.sh` takes a backup before it rebuilds and refuses `--no-backup` if a datastore image moved — Neo4j store upgrades are one-way |

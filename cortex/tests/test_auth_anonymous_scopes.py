@@ -46,7 +46,7 @@ def client(auth_disabled) -> TestClient:
     # stand-in: the dependency is the real one, only the handler is trivial.
     @app.get("/stand-in/eval-read")
     async def _eval_read(identity: dict = Depends(require_scope("eval:read"))) -> dict:
-        return {"agent_id": identity["agent_id"]}
+        return {"member_id": identity["member_id"]}
 
     return TestClient(app)
 
@@ -80,7 +80,7 @@ class TestAnonymousStillWorksOnNormalRoutes:
         empty anonymous scope set would have 403'd this too."""
         resp = client.get("/stand-in/eval-read")
         assert resp.status_code == 200
-        assert resp.json()["agent_id"] == "anonymous"
+        assert resp.json()["member_id"] == "member-owner"
 
     def test_ungated_route_allowed(self, client):
         """/ops/workers has no require_scope at all — unchanged by this fix."""

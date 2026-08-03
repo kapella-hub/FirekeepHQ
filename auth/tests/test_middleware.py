@@ -108,7 +108,10 @@ class TestRequireScope:
 
 class TestAnonymousIdentity:
     def test_structure(self):
-        assert "agent_id" in _ANONYMOUS_IDENTITY
+        assert "workspace_id" in _ANONYMOUS_IDENTITY
+        assert "member_id" in _ANONYMOUS_IDENTITY
+        assert "credential_id" in _ANONYMOUS_IDENTITY
+        assert "agent_id" not in _ANONYMOUS_IDENTITY
         assert "scopes" in _ANONYMOUS_IDENTITY
         assert "authenticated" in _ANONYMOUS_IDENTITY
 

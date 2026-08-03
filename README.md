@@ -17,18 +17,18 @@ Firekeep fixes this by giving agents durable memory, live operational awareness,
 | Capability | What it means |
 |---|---|
 | **Memory** | Agents remember what worked, what failed, and what matters across sessions. Semantic + graph retrieval, confidence scoring, contradiction handling, four memory types (reference / procedural / episodic / transient) with type-aware recall decay, recoverable archive-first aging, and token-conscious recall with optional LLM synthesis. |
-| **Team Continuity** | Memories carry `agent_id` and `project` attribution. Per-contributor activity reports and LLM-synthesized handoff briefs let one agent pick up where another left off. |
+| **Team Continuity** | Memories carry verified workspace/member provenance plus an untrusted runtime `agent_id` label and project. Per-contributor activity reports and LLM-synthesized handoff briefs let one agent pick up where another left off. |
 | **Session Continuity** | Plans, decisions, and progress recorded through the session tools survive context compression. Crashed sessions are auto-detected on next start and offered for resumption with a periodic workspace snapshot (git branch, recent commits, diff stats) embedded in the shadow. |
 | **Environment Awareness** | Configured Docker, git, and file collectors monitor operational state instead of relying only on prompts. Container restarts, new commits, and file changes flow into a replayable event stream. |
 | **Agent Coordination** | Shared channels, bulletin board, structured task queue, resource leases with monotonic fencing tokens, presence registry, and direct messages. Concurrent agents can assign work, track progress, and use leases to prevent overlapping edits; hook-enabled clients block an edit when another agent already holds the file lease. |
 | **Predict-then-Act Gateway** | Agents declare intent before consequential actions (`action_before` → `allow | rethink | block`), then reconcile outcomes (`action_after`). Combines a runtime policy engine (lease, file risk, path deny, session health, recent failure) with a fast-path cache for repeated low-risk actions. |
 | **Skills** | Agents author reusable "what to do when X happens" playbooks via the `skill_create` tool (client-side, with full session context); a docs→skills pipeline drafts more from wikis/runbooks under human review. Top matches are injected into the next session's briefing. (Server-side auto-synthesis exists behind `SKILL_SYNTHESIS_ENABLED` but is off by default — the CPU-only deploy can't run the generation LLM in workable time.) |
-| **Decision Board** | When a clarification needs more than a couple of questions, the agent opens a local browser board pre-populated with evidence retrieved from team memory — better questions, informed by what the team already learned. Client-stdio `firekeep-decision` server + Cortex `/decision/synthesize`. |
+| **Decision Board** | When a clarification needs more than a couple of questions, the agent opens a local browser board pre-populated with evidence retrieved from team memory — better questions, informed by what the team already learned. The local gateway fronts the Decision Board process and Cortex `/decision/synthesize`. |
 | **Auto-Evals + Pattern Discovery** | Quality metrics computed from replay traces on session completion. Pattern detection is enabled; automated promotion/validation and A/B experiment endpoints are implemented but disabled by default until a deployment has enough session volume to use them responsibly. |
 | **Replay & Explainability** | Every memory read/write, session lifecycle event, environment change, coordination action, and gateway decision is recorded as a structured trace. Inspect, narrow, and reconstruct context at any prior event. |
 | **Encrypted Secrets** | Fernet-backed vault for infrastructure credentials, API tokens, and connection strings. Distinct from memory — secrets never appear in recall. |
 | **Business Knowledge** | Ingest company documents (wiki pages, tickets, API docs) — manually, or via scheduled Confluence collectors. Chunks land in the vector store and surface naturally during memory recall alongside operational memories. |
-| **Code Intelligence** | Tree-sitter-based symbol search, caller graphs, architecture maps, and impact analysis that returns symbol slices instead of whole files — runs **client-side** (stdio-local `firekeep-symdex`, installed with the kit). 38 MCP tools (8 analytics tools hidden by default behind `SYMDEX_ANALYTICS_ENABLED`). |
+| **Code Intelligence** | Tree-sitter-based symbol search, caller graphs, architecture maps, and impact analysis that returns symbol slices instead of whole files — runs **client-side** through the local gateway (`firekeep-symdex` is installed with the kit). 38 MCP tools (8 analytics tools hidden by default behind `SYMDEX_ANALYTICS_ENABLED`). |
 
 ## Why Firekeep Is Different
 
@@ -39,7 +39,7 @@ It is a **control plane for AI coding agents** — infrastructure that sits behi
 - **Self-hosted by default.** The server, datastores, embeddings, and default generation model run on your infrastructure. Third-party egress occurs only when you opt into a connector or external Symdex AI provider.
 - **Built for coding agents.** Not general-purpose AI. Every feature is designed for the workflow of code reading, editing, testing, and deploying.
 - **Persistence + observability.** Most agent tools focus on making the agent smarter in the moment. Firekeep focuses on what happens *between* sessions and *after* things go wrong.
-- **MCP-native.** Four remote services and two client-local servers expose [Model Context Protocol](https://modelcontextprotocol.io/) tools. Shipped adapters configure Claude Code, Codex, Kiro, and OpenCode; other MCP clients can be configured manually.
+- **MCP-native.** Four remote services and two client-local backends expose [Model Context Protocol](https://modelcontextprotocol.io/) tools through one local `firekeep` stdio gateway. Shipped adapters configure Claude Code, Codex, Kiro, and OpenCode; other MCP clients can be configured manually.
 - **Agent-agnostic.** Swap the agent client without rebuilding the underlying memory and coordination layer. Cursor has a documented manual MCP path; Aider does not currently have a shipped adapter.
 - **A2A-discoverable.** Relay publishes an [Agent-to-Agent](https://github.com/google/A2A) agent card at `/.well-known/agent.json` for capability discovery. This is discovery-only, not an A2A task-execution endpoint.
 
@@ -59,21 +59,24 @@ It is a **control plane for AI coding agents** — infrastructure that sits behi
 
 ### Deploy
 
-**If you were given a licence** — the server images are published; you do not
-need the source:
+After installing the Firekeep client, provision the latest public server release:
 
 ```bash
-echo <your-token> | docker login ghcr.io -u <your-username> --password-stdin
-cp .env.example .env && $EDITOR .env      # set IMAGE_TAG to your version
-bash install.sh --pull
+firekeep init
 ```
 
-**If you have source access** — build it:
+`firekeep init` is the provisioning path; it never asks whether this is Solo or
+Team. It downloads and verifies the source-free deployment bundle, pulls public
+server images, and prompts only for deployment values. Pin a server release with
+`firekeep init --version vX.Y.Z`. No registry account or licence token is needed
+to download Solo—the signed entitlement is the plan boundary.
+
+From a source checkout, `firekeep init --server-dir .` keeps the developer build
+path. The equivalent direct commands from an unpacked bundle or checkout are:
 
 ```bash
-git clone https://github.com/kapella-hub/FirekeepHQ.git   # private
-cd Firekeep
-bash install.sh
+bash install.sh --pull  # published images
+bash install.sh         # build from source
 ```
 
 Either way the installer prompts for your VPS IP and Neo4j password, brings up the full stack (13 containers: the Cortex API / MCP / worker / beat quartet, Bridge, Sentinel, Relay, the dashboard, the Neo4j / Qdrant / Redis / Ollama backends, and a one-shot Ollama model puller), mints your API keys, and prints MCP URLs when ready.
@@ -110,36 +113,70 @@ Docker's published-port rules are evaluated *before* ufw's, so a host firewall
 does not contain a published port. Do not send `X-API-Key` over untrusted plain
 HTTP; use an SSH tunnel, private network, or HTTPS termination.
 
-### Connect Codex
+### Connect a client
 
-Add Firekeep's MCP servers to Codex and start Codex from this repository so it picks up the root `AGENTS.md`.
+The normal onboarding path is the same for Claude Code, Codex, Kiro, and
+OpenCode:
 
-```bash
-firekeep install --runtime codex
-```
+1. Open the dashboard and choose **Devices → Add device**.
+2. Copy the generated macOS/Linux or PowerShell install command to the new
+   machine and run it. There are no profile, host, API-key, or runtime prompts.
+3. Restart the agent client after installation so it loads the single `firekeep` MCP entry.
 
-See **[docs/SETUP-CODEX.md](docs/SETUP-CODEX.md)** for the full Codex setup. As
-with every runtime, the profile needs an API key and a reachable host — see the
-note under Connect Claude Code below.
+The command contains a single-use, 24-hour join code. The client generates its
+own credential locally, redeems the code once, writes the one `[server]`
+connection, installs every shipped adapter, and runs `firekeep doctor`. The
+plaintext credential is never returned by the server or printed by default.
 
-### Connect Claude Code
-
-If the server is reachable over ssh, one command does everything:
-
-```bash
-firekeep connect root@<server>
-```
-
-It probes the server, mints an API key for you, starts an SSH tunnel if the
-server binds to loopback (the shipped default), writes `~/.firekeep/config`, and
-runs `firekeep doctor` to prove it worked. Re-running it is safe — an existing
-tunnel is reused, not duplicated.
-
-The manual path, if you would rather do it yourself or have no ssh access:
+If the kit is already installed, use the bare code shown in the dashboard:
 
 ```bash
-./install            # or: firekeep install --runtime claude
+firekeep join fk_join_...
 ```
+
+From a server shell, `deploy/firekeep-admin invite --agent laptop --json` is the
+dashboard-independent fallback. An operator who already has SSH access can use
+`firekeep connect root@<server>`; it issues the same single-use code remotely
+and then calls the same join path. A working tunnel is reused, not duplicated.
+
+The kit lives in `~/.firekeep/venv` and prepares every shipped adapter by
+default: Claude Code, Codex, Kiro, and OpenCode. Claude gets user-scoped
+`~/.claude.json` + `~/.claude/settings.json`; the other clients receive their
+native MCP and instruction files. Each receives exactly one `firekeep` entry;
+the local gateway aggregates Cortex, Bridge, Sentinel, Relay, code intelligence,
+and the Decision Board, and reports a failed backend without taking down the
+others. Use `firekeep install --runtime <name>` only for a
+targeted re-render or repair. See [Codex setup](docs/SETUP-CODEX.md) and
+[Claude Code setup](docs/SETUP-CLAUDE-CODE.md) for client-specific details.
+
+Every runtime reads the same connection; there is no client-specific profile:
+
+```ini
+[identity]
+agent_id = alice
+
+[server]
+kind = ports
+scheme = http
+host = 127.0.0.1
+verify_tls = false
+api_key = nxs_...
+```
+
+`firekeep join` writes this connection without prompting; `firekeep-shim` then
+injects the credential on every request. A manual `firekeep install --host ...`
+path remains for development and legacy servers, but join codes are the
+customer path. `firekeep doctor` verifies connectivity, authentication,
+credential expiry, TLS trust, and all installed runtime adapters.
+
+To add a person, use **Members → Invite member** instead. A member invite is
+accepted once, creates that person's membership, and then hands the client the
+same device-enrollment flow above. People consume seats; their devices,
+terminals, agent identities, and background workers do not.
+
+`firekeep login <server-url>` is reserved for hosted OAuth sign-in. A self-hosted
+server has no authorization server, so the command directs the user to request
+a join code instead; it never asks them to choose a tier.
 
 This installs the `firekeep-client` kit into `~/.firekeep/venv`, bootstraps `~/.firekeep/config`, and prepares every shipped adapter: Claude Code, Codex, Kiro, and OpenCode. Claude gets user-scoped `~/.claude.json` + `~/.claude/settings.json` (MCP servers via `firekeep-shim`, five hook cores); the other clients receive their native MCP and instruction files. Two stdio-local servers — code intelligence (`firekeep-symdex`) and the Decision Board (`firekeep-decision`) — are installed automatically, always-on, no flag needed. Use `firekeep install --runtime <name>` only for a targeted re-render or repair.
 
@@ -151,6 +188,20 @@ and HTTPS profiles: it asks the server
 whether it enforces auth rather than inferring from the scheme, because the
 standard personal-VPS shape is plain http to 127.0.0.1 over a tunnel against a
 keyed server — which the old scheme-based check skipped silently.
+
+### Plans
+
+| | Solo | Team |
+|---|---|---|
+| Members | One natural person | Multiple people, up to the signed seat count |
+| Devices, terminals, agent identities, background workers | Unlimited | Unlimited |
+| Runtime features | Available | Available |
+| Entitlement | Built-in fallback; no licence file required | Signed offline licence; no phone-home |
+
+The only runtime enforcement boundary is membership creation: issuing and
+accepting a second-person invite. Device enrollment and agent concurrency are
+never paywalled. If a Team licence is absent, malformed, or expired, Firekeep
+degrades to Solo without hiding or deleting existing data.
 
 ### Verify
 
@@ -184,16 +235,15 @@ Here's what happens when an agent uses Firekeep:
 ## Architecture
 
 ```
-Local Machine                              VPS
-┌─────────────────────────┐              ┌────────────────────────────────────┐
-│  Claude Code / Codex /   │              │  FirekeepCortex    — Memory & RAG    │
-│  Kiro / OpenCode / MCP   │ ◄──── MCP ───►  FirekeepBridge    — Sessions        │
-│                          │              │  FirekeepSentinel  — Env monitoring  │
-│  firekeep-symdex   (stdio)  │              │  FirekeepRelay     — Coordination    │
-│  firekeep-decision (stdio)  │   Browser    │  Dashboard      — Web UI          │
-│                          │ ───────────► │                                   │
-└─────────────────────────┘              │  Neo4j · Qdrant · Redis · Ollama  │
-                                         └────────────────────────────────────┘
+Local Machine                               VPS
+┌──────────────────────────┐              ┌────────────────────────────────────┐
+│ Claude / Codex / Kiro /  │              │ FirekeepCortex   — Memory & RAG    │
+│ OpenCode / MCP client    │              │ FirekeepBridge   — Sessions        │
+│           │              │              │ FirekeepSentinel — Monitoring      │
+│  one `firekeep` gateway  │◄──── MCP ───►│ FirekeepRelay    — Coordination    │
+│    ├─ symdex (local)     │              │ Dashboard        — Web UI          │
+│    └─ decision (local)   │── Browser ──►│ Neo4j · Qdrant · Redis · Ollama    │
+└──────────────────────────┘              └────────────────────────────────────┘
 ```
 
 Symdex and the Decision Board run **client-side** as stdio-local MCP servers (installed with the kit) — Symdex must be local to the working tree it indexes, so it is no longer a VPS container.
@@ -209,7 +259,7 @@ front end you deliberately configure. See [Reaching it](#reaching-it).
 | **FirekeepBridge** | Session persistence. Preserves working context (plans, decisions, progress, file knowledge) through context compressions. Auto-distills to Cortex on completion. Crashed-session detection with workspace-snapshot resumption. Emits session lifecycle events to the replay stream. |
 | **FirekeepSentinel** | Environment observer. Docker health, git commits, file changes. Broadcasts alerts to Relay on errors. Container restarts, new commits, and file changes flow into a replayable event stream. |
 | **FirekeepRelay** | Agent coordination. Real-time pub/sub channels, persistent bulletin board, structured task queue, resource leases with monotonic fencing tokens, presence registry, direct messages, and an A2A agent card endpoint for external discovery. |
-| **Dashboard** | Web UI with fourteen tabs covering coordination (Overview, Sessions, Events, Relay, Scope), memory and knowledge (Memory, Skills, Knowledge, Patterns), operations (Ops, Policy, Vault), and diagnostics (Replay, Evals). |
+| **Dashboard** | Web UI covering coordination, memory, diagnostics, devices, members, offline licensing, policy, vault, and operations. |
 
 Code intelligence (**FirekeepSymdex** — 38 MCP tools, 8 analytics hidden behind a flag) and the **Decision Board** (`firekeep-decision`) run **client-side** as stdio-local MCP servers installed with the kit, not as VPS containers.
 
@@ -241,6 +291,9 @@ works against the auth-gated stack without you pasting a key into the browser.
 | **Vault** | Encrypted secret management (Fernet-backed, Redis DB 7) |
 | **Replay** | Session trace timelines, event inspector, root cause narrowing |
 | **Evals** | Aggregate quality metrics, per-session scorecards, quality trends |
+| **Devices** | Device credentials and single-use enrollment commands |
+| **Members** | People, seat usage, and single-use member invites |
+| **Licence** | Offline signed entitlement status, apply, and removal |
 
 The dashboard is a zero-dependency static SPA. No build step, no npm, no framework.
 
@@ -250,7 +303,7 @@ The dashboard is a zero-dependency static SPA. No build step, no npm, no framewo
 |----------|----------|
 | **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** | Installation, updating, backups, troubleshooting, local development |
 | **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)** | All environment variables, Redis DB allocation, intelligence features |
-| **[docs/MCP-TOOLS.md](docs/MCP-TOOLS.md)** | Complete MCP tools reference (~102 tools across 6 MCP servers — cortex 27, relay 25, sentinel 3, bridge 7 over HTTP, plus client-stdio firekeep-symdex 38 [8 hidden] and firekeep-decision 2) |
+| **[docs/MCP-TOOLS.md](docs/MCP-TOOLS.md)** | Complete MCP tools reference (~102 tools across 6 logical backends, exposed to shipped clients through one local gateway) |
 | **[docs/DESIGN.md](docs/DESIGN.md)** | Full architecture specification, service contracts, integration points |
 | **[docs/COMPARISON.md](docs/COMPARISON.md)** | Feature-by-feature comparison vs. base Claude Code |
 | **[docs/SETUP-CODEX.md](docs/SETUP-CODEX.md)** | Codex integration guide |
@@ -274,7 +327,7 @@ costs. Background auto-indexing explicitly disables AI summaries.
 - Four memory types (reference / procedural / episodic / transient) with type-aware recall decay; direct learns default to episodic while raw event consolidation classifies extracted knowledge
 - Token-conscious recall with optional LLM synthesis
 - Archive-first composite aging (age × access × confidence) with dashboard preview, audit and restore; confirmed memories, skills and corpus chunks are never age-archived, and automatic hard purge is off by default
-- Team continuity: `agent_id` + `project` on every memory, contributor reports, LLM-synthesized handoff briefs
+- Team continuity: verified workspace/member provenance plus runtime `agent_id` + `project`, contributor reports, LLM-synthesized handoff briefs
 - Session persistence through context compressions, with crash detection and workspace-snapshot resumption
 - Bridge replay emission on session lifecycle (started / updated / completed / abandoned)
 - Docker + git + file monitoring with Relay alerting; container/commit/file activity flows to the replay stream
@@ -294,13 +347,15 @@ costs. Background auto-indexing explicitly disables AI summaries.
 - Encrypted secrets vault (Fernet) with MCP tools and REST API
 - Replay traces with root-cause narrowing and per-event context reconstruction
 - Auto-evals: 10 Tier-1 quality metrics computed on session completion, trend tracking, regression detection
-- Code intelligence: client-side stdio `firekeep-symdex` (38 tools, 8 analytics hidden behind a flag), always installed with the kit
+- One degrading local MCP gateway registered by every adapter, aggregating four remote services plus client-local Symdex and Decision Board
+- Code intelligence: client-side `firekeep-symdex` behind the gateway (38 tools, 8 analytics hidden behind a flag), always installed with the kit
 - Docs→skills knowledge pipeline (`knowledge_ingest`, URL ingest) + opt-in scheduled Confluence collectors (SP3)
-- Fourteen-tab web dashboard (adds Scope + Knowledge) with webhook management, pattern visualization, and a Discipline counter for untagged memory calls
+- Web dashboard with Devices, Members, and offline Licence management alongside memory, coordination, replay, policy, and operations
 - A2A agent card endpoint (`/.well-known/agent.json`) for external discovery
 - Business knowledge ingestion: chunk documents into vector store, surface during memory recall
 - Webhook notifications (Slack, Discord, generic HTTP)
 - Authentication: per-key API scopes (memory:read/write, session:read/write, replay:read, eval:read, admin, …), **on by default**, with keys bootstrapped by the installer
+- Solo/Team offline entitlements: one member free, Team seats enforced only on member invite issue/accept; devices and agent runtimes stay unlimited
 
 ### Planned
 - Grafana metrics export

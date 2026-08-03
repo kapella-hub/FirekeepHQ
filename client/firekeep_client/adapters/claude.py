@@ -6,6 +6,7 @@ firekeep-owned env key here is the Claude agent-teams toggle; URLs are no longer
 """
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 from firekeep_client.adapters.base import (
@@ -23,7 +24,6 @@ from firekeep_client.adapters.base import (
     merge_owned,
     prune_hook_groups,
     read_json,
-    read_pin,
     shim_servers,
     strip_marked_block,
     strip_span,
@@ -110,6 +110,26 @@ class ClaudeAdapter(Adapter):
     def _instructions_path(self) -> Path:
         return Path.home() / ".claude" / "CLAUDE.md"
 
+    @staticmethod
+    def _archive_to(bak_path: Path, body: str) -> bool:
+        """Put `body` at `bak_path` WITHOUT overwriting anyone else's file.
+
+        Returns True only when `body` is archived there: written now, or already
+        sitting there byte-identical from an earlier run. A path holding
+        different content -- or one we cannot read, which is not evidence it
+        matches -- returns False so the caller can try elsewhere. This is the
+        inverse of `write_text_if_changed`'s policy on purpose: that helper
+        fails toward WRITING because it owns its file; here we own nothing, so
+        an unreadable file must be treated as occupied.
+        """
+        try:
+            if bak_path.exists():
+                return bak_path.read_text(encoding="utf-8") == body
+        except (OSError, UnicodeDecodeError):
+            return False
+        write_text_if_changed(bak_path, body)
+        return True
+
     def _migrate_legacy_instructions(self) -> None:
         """Archive the PREDECESSOR's own instruction block out of the user's global
         ~/.claude/CLAUDE.md -- never delete: this file is user-owned prose that we
@@ -147,12 +167,28 @@ class ClaudeAdapter(Adapter):
             # already there -- it may be the user's own file, or another tool's, and
             # this module's whole premise is archive-never-delete; the same collision
             # class made kiro.py drop its own .bak path entirely (see the comment on
-            # the removed loop above KiroAdapter). Migration still proceeds -- the
-            # block is stripped from the live file either way -- we just skip writing
-            # a second archive over an existing one.
+            # the removed loop above KiroAdapter).
+            #
+            # On that collision, fall back to a CONTENT-ADDRESSED name rather than
+            # stripping the block with no archive of this run (recoverable only
+            # outside this tool). The suffix is a digest of the archived bytes --
+            # deliberately not a timestamp or a `.bak.N` counter, both of which mint a
+            # fresh file every time they run and would reintroduce the .bak clutter
+            # this avoids. Deriving it from the content instead buys two properties at
+            # once: the name is deterministic (this runs inside render(), which must
+            # rewrite nothing on a re-render -- see test_write_stability.py), and
+            # re-archiving identical content is a no-op, because it lands back on the
+            # same path with the same bytes. A collision on THAT path therefore
+            # normally means the content is already archived; only a foreign file
+            # named after this exact content's digest is a real collision, and then we
+            # archive nowhere -- so we strip nothing. A surviving duplicate block is
+            # the pre-migration status quo; removing it unarchived is data loss.
             bak_path = path.with_name(path.name + ".bak")
-            if not bak_path.exists():
-                write_text_if_changed(bak_path, original)
+            if not self._archive_to(bak_path, original):
+                digest = hashlib.sha256(original.encode("utf-8")).hexdigest()[:12]
+                bak_path = path.with_name(f"{path.name}.{digest}.bak")
+                if not self._archive_to(bak_path, original):
+                    return
             path.write_text(stripped, encoding="utf-8")
         except OSError:
             pass
@@ -184,9 +220,6 @@ class ClaudeAdapter(Adapter):
     def render(self, *, venv_bin: Path) -> None:
         claude_json, settings_json = self._paths()
 
-        pin = read_pin(self.name)
-        pin_env = {"env": {"FIREKEEP_PROFILE": pin}} if pin else {}
-
         config = read_json(claude_json)
         servers = config.setdefault("mcpServers", {})
         # Migration: drop the PREDECESSOR kit's server entries. Firekeep registers its
@@ -194,7 +227,7 @@ class ClaudeAdapter(Adapter):
         # that no longer exists and failing to connect on every session start.
         drop_owned(servers, LEGACY_MCP_KEYS)
         entries = {
-            name: {"type": "stdio", "command": cmd, "args": args, **pin_env}
+            name: {"type": "stdio", "command": cmd, "args": args}
             for name, (cmd, args) in shim_servers(venv_bin).items()
         }
         merge_owned(servers, entries)
@@ -214,8 +247,6 @@ class ClaudeAdapter(Adapter):
             # returns 1 for an agent-gateway block/rethink and 2 for a lease conflict. Without
             # this remap, a gateway 'block' (rc=1) would silently fall through as non-blocking.
             extra_args = "--block-exit 2" if core == "pre_tool" else ""
-            if pin:
-                extra_args = f"{extra_args} --profile {pin}".strip()
             group = {"hooks": [{"type": "command",
                                 "command": hook_command(venv_bin, core, extra_args=extra_args),
                                 "timeout": timeout}]}

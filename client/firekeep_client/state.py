@@ -31,7 +31,7 @@ _SCRATCH_SUBDIR = "scratch"
 # existed.
 _SCRATCH_TTL_SUBDIR = ".ttl"
 
-# Session stash: the current Bridge session_id + briefing_id for {agent}@{profile},
+# Session stash: the current Bridge session_id + briefing_id for {agent},
 # written by the session_start hook (briefing_id) and the bridge shim's
 # ctx_start_session response tap (session_id), read by the shim's per-request
 # X-Session-Id Auth so agent memory calls are attributed WITHOUT the agent
@@ -57,24 +57,17 @@ _SESSION_STASH_TTL_HOURS_DEFAULT = 12.0
 REGISTRATION_RACE_WINDOW = 5  # seconds
 
 
-def _registered_key(agent_id: str, profile: str = "") -> str:
-    # Profile-qualified: two runtimes on two backends (claude -> personal, kiro ->
-    # office) must not consume each other's registration guard — presence lives
-    # server-side PER BACKEND. Production callers (hooks/session_start.py, hooks/
-    # stop.py, sidecar.py) ALWAYS pass the resolved profile, so real keys are always
-    # qualified. The empty-profile default exists only for API back-compat and tests;
-    # it falls back to the legacy unqualified key, it is not a path production takes.
-    return (f"presence_registered_{agent_id}@{profile}" if profile
-            else f"presence_registered_{agent_id}")
+def _registered_key(agent_id: str) -> str:
+    return f"presence_registered_{agent_id}"
 
 
-def mark_registered(agent_id: str, profile: str = "") -> None:
+def mark_registered(agent_id: str) -> None:
     """Record the registration epoch consulted by should_deregister()."""
-    write_scratch(_registered_key(agent_id, profile), str(int(time.time())))
+    write_scratch(_registered_key(agent_id), str(int(time.time())))
 
 
-def should_deregister(agent_id: str, window_seconds: float = REGISTRATION_RACE_WINDOW,
-                      profile: str = "") -> bool:
+def should_deregister(agent_id: str,
+                      window_seconds: float = REGISTRATION_RACE_WINDOW) -> bool:
     """True if it is safe to deregister presence for agent_id.
 
     Skip deregister if presence was (re)registered less than window_seconds
@@ -84,7 +77,7 @@ def should_deregister(agent_id: str, window_seconds: float = REGISTRATION_RACE_W
     callers that need consume-on-read semantics (stop.py) call
     clear_registered() explicitly.
     """
-    raw = read_scratch(_registered_key(agent_id, profile))
+    raw = read_scratch(_registered_key(agent_id))
     if raw is None:
         return True
     try:
@@ -94,9 +87,9 @@ def should_deregister(agent_id: str, window_seconds: float = REGISTRATION_RACE_W
     return (int(time.time()) - reg) >= window_seconds
 
 
-def clear_registered(agent_id: str, profile: str = "") -> None:
+def clear_registered(agent_id: str) -> None:
     """Consume (delete) the registration-epoch mark for agent_id. Idempotent."""
-    delete_scratch(_registered_key(agent_id, profile))
+    delete_scratch(_registered_key(agent_id))
 
 
 def cache_dir() -> Path:
@@ -226,9 +219,9 @@ def _scratch_expired(name: str) -> bool:
     No sidecar file means no TTL was ever requested -> never expires (today's
     behaviour, preserved exactly). A sidecar that is present but unreadable or
     non-numeric counts as EXPIRED: failing to read an expiry is not evidence the
-    marker is still fresh, and both consumers want that fallback — a lapsed
-    suppression digest re-announces the customer's tasks (accuracy-positive) and
-    a lapsed cursor forces a full restore (lossless).
+    marker is still fresh, and the one TTL'd consumer wants that fallback — a
+    lapsed suppression digest re-announces the customer's tasks, which is
+    accuracy-positive.
     """
     f = _scratch_ttl_path(name)
     try:
@@ -333,10 +326,8 @@ def _reap_expired_scratch() -> None:
         return
 
 
-def _session_stash_key(agent_id: str, profile: str) -> str:
-    """Profile-qualified like _registered_key: two runtimes on two backends
-    must not read each other's session id."""
-    return f"session_current_{agent_id}@{profile}"
+def _session_stash_key(agent_id: str) -> str:
+    return f"session_current_{agent_id}"
 
 
 def _session_stash_ttl_seconds() -> float:
@@ -348,26 +339,26 @@ def _session_stash_ttl_seconds() -> float:
     return hours * 3600.0
 
 
-def write_session_stash(agent_id: str, profile: str, *,
+def write_session_stash(agent_id: str, *,
                         session_id: str | None = None,
                         briefing_id: str | None = None) -> None:
-    """Merge-write the current session stash for {agent}@{profile}. Only the
+    """Merge-write the current session stash for {agent}. Only the
     provided fields are updated; the timestamp is refreshed on every write.
     Never raises — an attribution stash failure must not break the flow."""
     try:
-        current = _read_session_stash_raw(agent_id, profile) or {}
+        current = _read_session_stash_raw(agent_id) or {}
         if session_id is not None:
             current["session_id"] = session_id
         if briefing_id is not None:
             current["briefing_id"] = briefing_id
         current["ts"] = time.time()
-        write_scratch(_session_stash_key(agent_id, profile), json.dumps(current))
+        write_scratch(_session_stash_key(agent_id), json.dumps(current))
     except Exception:
         pass
 
 
-def _read_session_stash_raw(agent_id: str, profile: str) -> dict | None:
-    raw = read_scratch(_session_stash_key(agent_id, profile))
+def _read_session_stash_raw(agent_id: str) -> dict | None:
+    raw = read_scratch(_session_stash_key(agent_id))
     if not raw:
         return None
     try:
@@ -377,12 +368,12 @@ def _read_session_stash_raw(agent_id: str, profile: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def read_session_stash(agent_id: str, profile: str,
+def read_session_stash(agent_id: str,
                        max_age_seconds: float | None = None) -> dict | None:
     """Return the stash dict if present AND fresh (embedded-ts TTL), else None.
     Never raises."""
     try:
-        data = _read_session_stash_raw(agent_id, profile)
+        data = _read_session_stash_raw(agent_id)
         if data is None:
             return None
         ttl = max_age_seconds if max_age_seconds is not None else _session_stash_ttl_seconds()
@@ -397,42 +388,10 @@ def read_session_stash(agent_id: str, profile: str,
         return None
 
 
-def clear_session_stash(agent_id: str, profile: str) -> None:
-    """Delete the session stash for {agent}@{profile}. Idempotent, never raises."""
+def clear_session_stash(agent_id: str) -> None:
+    """Delete the session stash for {agent}. Idempotent, never raises."""
     try:
-        delete_scratch(_session_stash_key(agent_id, profile))
-    except Exception:
-        pass
-
-
-def _shadow_cursor_key(agent_id: str, profile: str) -> str:
-    return f"shadow_cursor_{agent_id}@{profile}"
-
-
-def write_shadow_cursor(agent_id: str, profile: str, cursor: str) -> None:
-    """Stash the opaque shadow cursor. TTL'd like the session stash: a cursor
-    that outlives its session must expire rather than be replayed. Never raises."""
-    try:
-        write_scratch(_shadow_cursor_key(agent_id, profile), cursor,
-                      ttl_seconds=_session_stash_ttl_seconds())
-    except Exception:
-        pass
-
-
-def read_shadow_cursor(agent_id: str, profile: str) -> str | None:
-    """The stashed cursor, or None if absent/expired. None means 'ask for a full
-    restore' — the safe default."""
-    try:
-        return read_scratch(_shadow_cursor_key(agent_id, profile))
-    except Exception:
-        return None
-
-
-def clear_shadow_cursor(agent_id: str, profile: str) -> None:
-    """Idempotent, never raises. Called by precompact: after a compaction the
-    agent can no longer vouch for what is still in its context."""
-    try:
-        delete_scratch(_shadow_cursor_key(agent_id, profile))
+        delete_scratch(_session_stash_key(agent_id))
     except Exception:
         pass
 

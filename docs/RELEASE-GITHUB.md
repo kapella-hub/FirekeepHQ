@@ -1,8 +1,10 @@
-# Client releases on GitHub (interim)
+# Firekeep releases on GitHub
 
-The office path is the GitLab pipeline (`.gitlab-ci.yml` → GitLab package registry).
-Until that exists, client releases are cut on GitHub via `.github/workflows/release.yml`
-and served from **GitHub Pages**.
+GitHub is the public distribution path for both current plans. Client releases
+are cut via `.github/workflows/release.yml`; server images and the source-free
+deployment bundle are cut via `.github/workflows/server-release.yml`. Release
+manifests and client/bundle artifacts are served from **GitHub Pages**. There is
+no separate enterprise or corporate edition/channel.
 
 ## How a release is cut
 
@@ -100,6 +102,46 @@ Rotating it: generate a new `ed25519` pair, replace the deploy key on
 `firekeep-dist`, and overwrite the secret here. No client change is needed —
 clients never see it.
 
+## Server releases
+
+Publish the client containing `firekeep init` first, then tag the server:
+
+```bash
+git tag vX.Y.Z
+git push origin vX.Y.Z
+```
+
+`.github/workflows/server-release.yml` builds and pushes the Cortex, Bridge,
+Sentinel, and Relay images, logs out of GHCR, and proves each image can be pulled
+anonymously before it builds the source-free deployment bundle. The bundle and
+strict `server.json` manifest are then published to both
+`server/vX.Y.Z/` and (when the tag is newer) `server/latest/` in
+`firekeep-dist`. A release is incomplete until both the anonymous image pulls
+and the live Pages fetch pass.
+
+The server workflow is tag-only: it cannot be manually dispatched from an
+unrelated branch. Each repository's version tag is also write-once. A rerun
+pulls the existing image, verifies its Git SHA and application version, and
+continues the public-access check without rebuilding or replacing the artifact.
+For the documented first server tag (`v0.1.0`) only, a GHCR `denied` response is
+cross-checked against GitHub's package API; the workflow creates a package only
+when that API confirms it does not exist. Every image carries the source-repository
+label GitHub uses to link the new package back to this workflow repository.
+
+GHCR creates a new package private by default. On the first server release, the
+four pushes can succeed and the anonymous-pull steps will intentionally fail.
+In the `kapella-hub` package settings, change each package visibility to
+**Public** once, then rerun the failed workflow:
+
+- `firekeep-cortex`
+- `firekeep-bridge`
+- `firekeep-sentinel`
+- `firekeep-relay`
+
+Do not distribute a registry token as a workaround. Public download access is
+required for Solo; the signed offline entitlement is the Solo/Team boundary.
+The bundle publishing job reuses the existing `FIREKEEP_DIST_DEPLOY_KEY`.
+
 ## Release notes
 
 **Pre-tag gate (added after the 0.1.2 self-destruct bug) — NOW RUNS IN CI.** The e2e
@@ -120,6 +162,11 @@ cd client && python -m pytest tests/test_e2e_bootstrap.py -m e2e -q
 ```
 
 
+- **0.1.28** — Single-entry `firekeep gateway` adapters for Claude Code, Codex,
+  Kiro, and OpenCode; single-use device/member join codes; Solo/Team entitlement
+  status; and verified `firekeep init` download/update of the public source-free
+  server bundle. This is the first client paired with workspace-scoped member
+  attribution and the one-member Solo product boundary.
 - **0.1.27** — FIRST PUBLISHED RELEASE. Four version numbers were tagged before
   one published; every one was stopped by its own gate on a release path that had
   never executed before. 0.1.24: no pytest in the release job, then a malformed

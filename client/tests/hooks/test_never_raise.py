@@ -1,5 +1,5 @@
 """SP1b §6.3 "availability over enforcement": every hook core's run() calls
-resolver.load_config()/active_profile()/agent_id() UNGUARDED at the top. A
+resolver.load_config()/agent_id() UNGUARDED at the top. A
 missing/malformed ~/.firekeep config must degrade the hook (return its safe
 default), never crash the caller's process with ConfigError.
 

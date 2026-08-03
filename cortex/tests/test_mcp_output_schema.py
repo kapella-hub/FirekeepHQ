@@ -6,18 +6,26 @@ ships it a second time as `structuredContent` alongside the identical
 `content[0].text`. Setting `output_schema=None` suppresses that duplicate
 payload.
 
-Verified empirically against the pinned fastmcp==3.4.4 (cortex/requirements.lock,
-bridge/requirements.lock; range fastmcp>=3.1,<4) in an isolated venv:
-- `output_schema` is accepted by `FastMCP.tool()` on 3.4.4.
-- `content[0].text` is byte-identical with and without `output_schema=None` —
-  only the duplicated `structuredContent` copy disappears.
+This suite runs against tests/conftest.py's `_FakeFastMCP` double, which is
+installed into `sys.modules` at collection time, so a real
+`FastMCP.get_tool(...).output_schema` is not observable here. The double
+records each tool's decorator kwargs in `mcp.registered_tools`, which is what
+these tests inspect instead.
 
-This suite runs against tests/conftest.py's `_FakeFastMCP` double (a real
-fastmcp is not installed at the pinned version in this dev environment, and
-even where it is, the fake is unconditionally installed at collection time),
-so a real `FastMCP.get_tool(...).output_schema` is not observable here. The
-double now records each tool's decorator kwargs in `mcp.registered_tools`,
-which is what these tests inspect instead.
+That makes this HALF the verification: these tests prove the four production
+tools DECLARE `output_schema=None`; they cannot prove the kwarg does anything.
+The other half — that declaring it actually suppresses `structuredContent` at
+the wire, against a real fastmcp — is `test_mcp_output_schema_wire.py`, which
+runs a minimal two-tool reproduction in a subprocess (the only way past this
+conftest's fake) and skips rather than false-passing when real fastmcp is
+absent. It also pins the correction below and records exact byte counts.
+
+Note on the win: an earlier design note claimed `-> str` tools ship JSON-escaped
+markdown and that this setting changes what the runtime renders. That was
+WRONG. `content[0].text` is byte-identical either way; the only saving is the
+removed duplicate, roughly half the result bytes. Neither file can speak to how
+any given runtime (Claude Code, kiro, ...) renders the result — that needs a
+deploy.
 """
 
 from __future__ import annotations

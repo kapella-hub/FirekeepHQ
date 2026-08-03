@@ -215,13 +215,28 @@ A signed document the server holds. The client never evaluates it.
 
 | Solo (free, 1 member) | Team (paid, N members) |
 |---|---|
-| Everything, without exception | `max_members > 1` |
+| Everything below, without exception | `max_members > 1` |
 | All four services; **all clients** — Claude Code, Codex, kiro, OpenCode | |
 | Unlimited devices, credentials, agent runtimes, terminals | |
 | Memory, recall, skills, corpus, knowledge ingest | |
 | Sessions, replay, evals, patterns, night-shift | |
-| Decision board, symdex, presence, leases, tasks | |
+| Decision board, presence, leases, tasks | |
 | Cross-agent patterns, DMs, bulletin, broadcast, `/memory/handoff`, `/memory/contributors`, the briefing's `cross_agent` section | |
+| **Standalone symdex** — `get_symbol`, `search_symbols`, `get_callers`, `get_impact`, `get_file_tree`, `find_dead_code`, `get_architecture_map`, `index_repo` | **Code intelligence joined to memory** — `recall_with_code`, `review_with_history`, `learn_from_changes`, `extract_conventions`, and the 8 analytics tools |
+
+**Two upgrade triggers, and they are enforced by different mechanisms.** A second member
+is an **entitlement** check, server-side, at membership creation (§3.2). The
+code-intelligence-joined-to-memory tools are an **edition** boundary — which package the
+machine installed — and are enforced by packaging alone. **No code path consults a plan to
+decide whether to answer a call**, which is what keeps §3.2's invariant and
+`test_entitlement_gates_members_only.py` true. An edition boundary is trivially
+bypassable by installing the other package; that is accepted for the same reason §6 gives
+about feature gates generally, and it is not a licence to add a runtime check later.
+
+Standalone symdex is the free half deliberately: it is a genuinely useful code-intelligence
+server for any MCP runtime with no Firekeep server behind it, which is what lets it be
+given away (§6) and become a distribution surface rather than a withheld feature. What is
+paid is the **join** — a recall that returns memory and the code it refers to together.
 
 **There is no runtime capability check anywhere.** The Team column is not a feature list;
 it is a description of what a second member makes non-empty. Every capability an earlier
@@ -313,22 +328,45 @@ one process and additionally fronts the two local stdio servers.
 - **Degrade per-backend.** Today a Cortex outage leaves the other five servers working;
   the gateway must preserve that. A backend that is down removes its tools and reports
   why — it must never fail the whole gateway.
-- **The gateway never hides or filters tools by plan.** The tool list is identical on
-  Solo and Team. A model that finds Firekeep tools missing cannot distinguish an unpaid
-  plan from dormancy — `shim.run()` already serves an inert zero-tool MCP server under
-  `is_bypassed()` (`client/firekeep_client/shim.py:501-506, 539-549`) — and one of those
-  two states is expected to be silent. Hiding a tool is also a runtime capability gate,
-  which §3.2 permits nowhere. The only thing the gateway makes legible is the **seat
-  refusal**: an invite issue or accept that fails returns the plan, the counts and the
-  upgrade path in the model's context rather than a bare 403.
+- **The gateway never hides or filters tools by plan.** Its tool list is a function of
+  which backends are installed and reachable, and of nothing else — two machines carrying
+  the same packages advertise the same tools whether their workspace is Solo or Team, and
+  no entitlement value is ever consulted to build that list. The edition boundary of §3.1
+  is upstream of the gateway: a Solo install simply does not have the joined
+  code-intelligence backend present, which is not the same act as withholding a tool that
+  is present.
+
+  The distinction is load-bearing, not pedantic. A model that finds Firekeep tools missing
+  cannot distinguish an unpaid plan from dormancy — `shim.run()` already serves an inert
+  zero-tool MCP server under `is_bypassed()` (`client/firekeep_client/shim.py:501-506,
+  539-549`) — and one of those two states is expected to be silent. Filtering by plan
+  would also be a runtime capability gate, which §3.2 permits nowhere. The only thing the
+  gateway makes legible is the **seat refusal**: an invite issue or accept that fails
+  returns the plan, the counts and the upgrade path in the model's context rather than a
+  bare 403.
 
 ---
 
 ## 6. Commercial licensing
 
-Source-available under FSL or BUSL-style terms: readable and self-hostable for your own
-use, not resaleable as a competing service, converting to an OSI licence after a fixed
-term. Paired with signed offline entitlements as above.
+Three tiers of licence, decided 2026-07-30.
+
+**The server and the client kit are proprietary.** `LICENSE` already states this —
+*Firekeep Proprietary Software Licence, Copyright (c) 2026 Omnicron, LLC* — and
+`client/pyproject.toml` declares `LicenseRef-Firekeep-Proprietary`. An earlier draft of
+this section recommended FSL/BUSL source-available terms; that recommendation was made
+without reading `LICENSE` and is superseded by the file, not by an argument.
+
+**Standalone symdex is open source under a permissive licence, in its own repository.**
+This is a distribution decision before it is a licensing one. The binding constraint on
+this product is reach, not capability: there is no inbound, no agency channel, and one
+prospective customer. Standalone symdex is the only component that is useful to someone
+who never installs Firekeep — stdio, local, no server dependency, working against any MCP
+runtime — which is exactly the property that lets a giveaway create reach. Extracting it
+is also the cheapest possible test of the client-repo split, since it has no server
+coupling to break.
+
+**Entitlements stay signed and offline-verifiable** as above.
 
 Stated honestly in the spec so it is not re-litigated: **a fully OSI-open server cannot
 prevent removal of a feature gate**, and neither can a readable Python wheel or an

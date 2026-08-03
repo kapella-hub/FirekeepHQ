@@ -71,7 +71,7 @@ def create_vault_router() -> APIRouter:
                 description=req.description,
                 category=req.category,
                 tags=req.tags,
-                created_by=identity.get("agent_id", "admin"),
+                created_by=identity.get("member_id", "admin"),
             )
             return SecretMetadata(**result)
         except ValueError as e:

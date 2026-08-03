@@ -30,11 +30,8 @@ def test_kiro_render_writes_servers_and_hooks(fake_home, tmp_path):
     get_adapter("kiro").render(venv_bin=venv_bin)
     data = _read(fake_home / ".kiro" / "agents" / "firekeep.json")
 
-    assert data["mcpServers"]["firekeep-relay"] == {
-        "command": _exe(venv_bin / "firekeep-shim"), "args": ["--service", "relay"]}
-    # symdex is always-on: present unconditionally with its stdio-local command, no args
-    assert data["mcpServers"]["firekeep-symdex"] == {
-        "command": _exe(venv_bin / "firekeep-symdex"), "args": []}
+    assert data["mcpServers"] == {"firekeep": {
+        "command": _exe(venv_bin / "firekeep"), "args": ["gateway"]}}
 
     assert data["hooks"]["agentSpawn"][0]["command"].endswith(
         "-m firekeep_client.hooks session_start")
@@ -72,17 +69,16 @@ def _write_cfg(tmp_path, monkeypatch, text):
     return cfg
 
 
-def test_pinned_kiro_renders_env_and_hook_profile(tmp_path, monkeypatch, fake_home):
+def test_legacy_pinned_kiro_renders_no_profile_artifacts(tmp_path, monkeypatch, fake_home):
     _write_cfg(tmp_path, monkeypatch, _PINNED_CFG)
     get_adapter("kiro").render(venv_bin=tmp_path / "vbin")
 
     data = _read(fake_home / ".kiro" / "agents" / "firekeep.json")
-    for name in ("firekeep-cortex", "firekeep-symdex", "firekeep-decision"):
-        assert data["mcpServers"][name]["env"] == {"FIREKEEP_PROFILE": "office"}
+    assert "env" not in data["mcpServers"]["firekeep"]
     for hooks in data["hooks"].values():
         for h in hooks:
             if "firekeep_client.hooks" in h["command"]:
-                assert "--profile office" in h["command"]
+                assert "--profile" not in h["command"]
 
 
 def test_unpinned_kiro_render_has_no_env_or_profile(tmp_path, monkeypatch, fake_home):
@@ -90,7 +86,7 @@ def test_unpinned_kiro_render_has_no_env_or_profile(tmp_path, monkeypatch, fake_
     get_adapter("kiro").render(venv_bin=tmp_path / "vbin")
 
     data = _read(fake_home / ".kiro" / "agents" / "firekeep.json")
-    assert "env" not in data["mcpServers"]["firekeep-cortex"]
+    assert "env" not in data["mcpServers"]["firekeep"]
     text = json.dumps(data)
     assert "--profile" not in text
 
@@ -108,7 +104,7 @@ def test_kiro_non_clobbering(fake_home, tmp_path):
     adapter.render(venv_bin=venv_bin)
     data = _read(agents / "firekeep.json")
     assert data["mcpServers"]["custom"] == {"command": "x"}       # foreign survived
-    assert "firekeep-cortex" in data["mcpServers"]
+    assert "firekeep" in data["mcpServers"]
     spawn_cmds = [h["command"] for h in data["hooks"]["agentSpawn"]]
     assert "echo foreign" in spawn_cmds                           # foreign hook survived
     assert any("firekeep_client.hooks session_start" in c for c in spawn_cmds)
@@ -163,7 +159,7 @@ def test_render_survives_non_object_top_level_mcp_json(fake_home, tmp_path):
     assert p.read_text(encoding="utf-8") == "[]"
     agent = fake_home / ".kiro" / "agents" / "firekeep.json"
     assert agent.exists(), "render() aborted before writing its own agent file"
-    assert "firekeep-cortex" in _read(agent)["mcpServers"]
+    assert "firekeep" in _read(agent)["mcpServers"]
 
 def test_render_survives_non_dict_mcpservers_value(fake_home, tmp_path):
     # Object top level but mcpServers itself is a list: iterating yields the legacy name,
@@ -189,7 +185,7 @@ def test_render_survives_pathologically_deep_mcp_json(fake_home, tmp_path):
     assert p.read_text(encoding="utf-8") == payload
     agent = fake_home / ".kiro" / "agents" / "firekeep.json"
     assert agent.exists(), "render() aborted before writing its own agent file"
-    assert "firekeep-cortex" in _read(agent)["mcpServers"]
+    assert "firekeep" in _read(agent)["mcpServers"]
 
 def test_render_does_not_archive_its_own_agent_file(fake_home, tmp_path):
     """render() must never move ~/.kiro/agents/firekeep.json aside.
@@ -216,7 +212,7 @@ def test_render_does_not_archive_its_own_agent_file(fake_home, tmp_path):
     assert not (agent.parent / "firekeep.json.bak").exists(), "a .bak was created"
     data = _read(agent)
     assert data["mcpServers"]["mine"] == {"command": "keepme"}, "user's own entry lost"
-    assert "firekeep-cortex" in data["mcpServers"], "kit entries not merged in"
+    assert "firekeep" in data["mcpServers"], "gateway entry not merged in"
 
     # idempotent: a second render must not raise and must still preserve it
     get_adapter("kiro").render(venv_bin=tmp_path / "vbin")

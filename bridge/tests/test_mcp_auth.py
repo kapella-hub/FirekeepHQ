@@ -156,3 +156,67 @@ class TestGetSingleSessionRouteScopeGate:
         response = await mcp_mod._get_session(request)
 
         assert response.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# GET /sessions — same gate as its sibling above. Every identifiable consumer
+# (the SP1b briefing aggregator via FIREKEEP_INTERNAL_KEY, teammate keys minted
+# by deploy/firekeep-admin, the client's own resolve_session_id/prompt.py calls)
+# already carries session:read, so gating this route costs no real caller.
+# ---------------------------------------------------------------------------
+
+
+def _make_list_sessions_request(identity: dict | None = None) -> Request:
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/sessions",
+        "headers": [],
+        "query_string": b"",
+        "path_params": {},
+        "state": {},
+    }
+    if identity is not None:
+        scope["state"]["identity"] = identity
+    return Request(scope)
+
+
+class TestListSessionsRouteScopeGate:
+    @pytest.mark.asyncio
+    async def test_list_sessions_requires_session_read_scope(self, auth_enabled, monkeypatch):
+        fake_get_manager = AsyncMock()
+        monkeypatch.setattr(mcp_mod, "_get_manager", fake_get_manager)
+
+        request = _make_list_sessions_request(
+            identity={"agent_id": "some-caller", "scopes": ["relay:read"], "key_id": "k1"},
+        )
+        response = await mcp_mod._list_sessions(request)
+
+        assert response.status_code == 403
+        fake_get_manager.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_allows_when_caller_has_session_read_scope(self, auth_enabled, monkeypatch):
+        manager = AsyncMock()
+        manager.list_sessions = AsyncMock(return_value=[])
+        monkeypatch.setattr(mcp_mod, "_get_manager", AsyncMock(return_value=manager))
+
+        request = _make_list_sessions_request(
+            identity={"agent_id": "cortex-briefing", "scopes": ["session:read"], "key_id": "k1"},
+        )
+        response = await mcp_mod._list_sessions(request)
+
+        assert response.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_auth_disabled_passes_through(self, auth_disabled, monkeypatch):
+        """Local/personal-VPS default (AUTH_ENABLED=false): no identity needed,
+        the route still works exactly as before this fix."""
+        manager = AsyncMock()
+        manager.list_sessions = AsyncMock(return_value=[])
+        monkeypatch.setattr(mcp_mod, "_get_manager", AsyncMock(return_value=manager))
+
+        request = _make_list_sessions_request(identity=None)
+        response = await mcp_mod._list_sessions(request)
+
+        assert response.status_code == 200

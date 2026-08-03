@@ -69,7 +69,7 @@ class TestSessionStart:
         assert reg["tool"] == "relay_register"
         assert reg["args"]["agent_id"] == "tester"
         # registration epoch pinned for stop.py's race guard
-        assert state.read_scratch("presence_registered_tester@personal") is not None
+        assert state.read_scratch("presence_registered_tester") is not None
 
     def test_falls_back_when_briefing_unreachable(self, client_env, monkeypatch):
         from firekeep_client import transport
@@ -88,14 +88,14 @@ class TestSessionStart:
         from firekeep_client.hooks import _mcp, session_start
 
         # A leftover stash from a previous session must be cleared, not inherited.
-        state.write_session_stash("tester", "personal", session_id="OLD-sess")
+        state.write_session_stash("tester", session_id="OLD-sess")
         monkeypatch.setattr(transport, "get_json",
                             lambda url, **k: {"rendered": "BRIEF", "briefing_id": "brf-xyz"})
         monkeypatch.setattr(_mcp, "call_tool", lambda *a, **k: {})
 
         session_start.run({})
 
-        stash = state.read_session_stash("tester", "personal")
+        stash = state.read_session_stash("tester")
         assert stash["briefing_id"] == "brf-xyz"
         assert "session_id" not in stash  # OLD-sess was cleared before the write
 
@@ -105,19 +105,19 @@ class TestSessionStart:
         from firekeep_client import state, transport
         from firekeep_client.hooks import _mcp, session_start
 
-        state.write_session_stash("tester", "personal", session_id="STALE-crashed")
+        state.write_session_stash("tester", session_id="STALE-crashed")
         monkeypatch.setattr(transport, "get_json",
                             lambda url, **k: {"rendered": "BRIEF"})  # no briefing_id
         monkeypatch.setattr(_mcp, "call_tool", lambda *a, **k: {})
         session_start.run({})
-        assert state.read_session_stash("tester", "personal") is None
+        assert state.read_session_stash("tester") is None
 
     def test_stale_stash_cleared_even_when_briefing_fetch_fails(self, client_env, monkeypatch):
         """Cortex down at start must not let a stale id ride the new session."""
         from firekeep_client import state, transport
         from firekeep_client.hooks import _mcp, session_start
 
-        state.write_session_stash("tester", "personal", session_id="STALE-crashed")
+        state.write_session_stash("tester", session_id="STALE-crashed")
 
         def boom(*a, **k):
             raise transport.TransportError("cortex down")
@@ -125,7 +125,7 @@ class TestSessionStart:
         monkeypatch.setattr(transport, "get_json", boom)
         monkeypatch.setattr(_mcp, "call_tool", lambda *a, **k: {})
         session_start.run({})
-        assert state.read_session_stash("tester", "personal") is None
+        assert state.read_session_stash("tester") is None
 
 
 class TestUpdateNudge:

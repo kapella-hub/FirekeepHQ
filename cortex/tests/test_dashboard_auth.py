@@ -30,7 +30,7 @@ from auth.asgi import FirekeepKeyAuthMiddleware
 # app/main.py happens to contain, so a future edit to one can't silently
 # make both say the same (possibly wrong) thing.
 SKIP_PREFIXES = ("/health", "/version", "/docs", "/redoc", "/openapi.json")
-SKIP_EXACT = ("/dashboard", "/dashboard/")
+SKIP_EXACT = ("/dashboard", "/dashboard/", "/enroll", "/enroll/anchor")
 
 
 class _StubVector:

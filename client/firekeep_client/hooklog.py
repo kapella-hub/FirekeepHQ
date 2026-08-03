@@ -23,10 +23,7 @@ def log_failure(hook: str, message: str) -> None:
         ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         h = str(hook).replace("\n", " ").replace("\r", " ")[:200]
         m = str(message).replace("\n", " ").replace("\r", " ")[:500]
-        prof = (os.environ.get("FIREKEEP_PROFILE", "").strip()
-                .replace("\n", " ").replace("\r", " ")[:64])
-        suffix = f" | profile={prof}" if prof else ""
         with path.open("a", encoding="utf-8") as fh:
-            fh.write(f"{ts} | {h} | {m}{suffix}\n")
+            fh.write(f"{ts} | {h} | {m}\n")
     except Exception:
         pass

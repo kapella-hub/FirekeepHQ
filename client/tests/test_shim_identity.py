@@ -33,9 +33,9 @@ def _req():
 def test_injects_x_session_id_when_stash_fresh(tmp_path, monkeypatch):
     monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
     monkeypatch.setattr(shim, "is_bypassed", lambda: False)
-    state.write_session_stash("tester", "personal", session_id="sess-42")
+    state.write_session_stash("tester", session_id="sess-42")
 
-    auth = shim._StashSessionAuth("tester", "personal")
+    auth = shim._StashSessionAuth("tester")
     out = _run_auth_flow(auth, _req())
 
     assert out.headers["X-Session-Id"] == "sess-42"
@@ -45,7 +45,7 @@ def test_no_header_when_stash_absent(tmp_path, monkeypatch):
     monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
     monkeypatch.setattr(shim, "is_bypassed", lambda: False)
 
-    auth = shim._StashSessionAuth("tester", "personal")
+    auth = shim._StashSessionAuth("tester")
     out = _run_auth_flow(auth, _req())
 
     assert "X-Session-Id" not in out.headers
@@ -54,9 +54,9 @@ def test_no_header_when_stash_absent(tmp_path, monkeypatch):
 def test_no_header_when_only_briefing_id_stashed(tmp_path, monkeypatch):
     monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
     monkeypatch.setattr(shim, "is_bypassed", lambda: False)
-    state.write_session_stash("tester", "personal", briefing_id="brf-1")  # no session_id yet
+    state.write_session_stash("tester", briefing_id="brf-1")  # no session_id yet
 
-    auth = shim._StashSessionAuth("tester", "personal")
+    auth = shim._StashSessionAuth("tester")
     out = _run_auth_flow(auth, _req())
 
     assert "X-Session-Id" not in out.headers
@@ -65,9 +65,9 @@ def test_no_header_when_only_briefing_id_stashed(tmp_path, monkeypatch):
 def test_no_header_when_bypassed(tmp_path, monkeypatch):
     monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
     monkeypatch.setattr(shim, "is_bypassed", lambda: True)  # live /personal on
-    state.write_session_stash("tester", "personal", session_id="sess-42")
+    state.write_session_stash("tester", session_id="sess-42")
 
-    auth = shim._StashSessionAuth("tester", "personal")
+    auth = shim._StashSessionAuth("tester")
     out = _run_auth_flow(auth, _req())
 
     assert "X-Session-Id" not in out.headers  # no attribution while personal
@@ -79,13 +79,13 @@ def test_auth_flow_never_raises_on_stash_error(tmp_path, monkeypatch):
     monkeypatch.setattr(shim.state, "read_session_stash",
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
 
-    auth = shim._StashSessionAuth("tester", "personal")
+    auth = shim._StashSessionAuth("tester")
     out = _run_auth_flow(auth, _req())  # must not raise
 
     assert "X-Session-Id" not in out.headers
 
 
-def test_build_client_wires_auth_when_agent_and_profile_given(tmp_path, monkeypatch):
+def test_build_client_wires_auth_when_agent_given(tmp_path, monkeypatch):
     monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
     from firekeep_client.resolver import Endpoint
 
@@ -93,7 +93,7 @@ def test_build_client_wires_auth_when_agent_and_profile_given(tmp_path, monkeypa
         mcp_url="http://127.0.0.1:8100/mcp", rest_base="http://127.0.0.1:8100",
         headers={"X-Agent-Id": "tester"}, verify=False,
     )
-    client = shim.build_client(ep, agent="tester", profile="personal")
+    client = shim.build_client(ep, agent="tester")
     try:
         assert isinstance(client.auth, shim._StashSessionAuth)
     finally:
@@ -132,8 +132,8 @@ def _tool_result(rid, payload):
 
 def test_tap_injects_briefing_id_when_absent(tmp_path, monkeypatch):
     monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
-    state.write_session_stash("tester", "personal", briefing_id="brf-9")
-    tap = shim._BridgeSessionTap("tester", "personal")
+    state.write_session_stash("tester", briefing_id="brf-9")
+    tap = shim._BridgeSessionTap("tester")
 
     frame = _tools_call(1, "ctx_start_session", {"goal": "do a thing"})
     out = tap.on_request(frame)
@@ -143,8 +143,8 @@ def test_tap_injects_briefing_id_when_absent(tmp_path, monkeypatch):
 
 def test_tap_does_not_override_explicit_briefing_id(tmp_path, monkeypatch):
     monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
-    state.write_session_stash("tester", "personal", briefing_id="brf-9")
-    tap = shim._BridgeSessionTap("tester", "personal")
+    state.write_session_stash("tester", briefing_id="brf-9")
+    tap = shim._BridgeSessionTap("tester")
 
     frame = _tools_call(1, "ctx_start_session", {"goal": "g", "briefing_id": "explicit"})
     out = tap.on_request(frame)
@@ -154,8 +154,8 @@ def test_tap_does_not_override_explicit_briefing_id(tmp_path, monkeypatch):
 
 def test_tap_ignores_non_start_tool_calls(tmp_path, monkeypatch):
     monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
-    state.write_session_stash("tester", "personal", briefing_id="brf-9")
-    tap = shim._BridgeSessionTap("tester", "personal")
+    state.write_session_stash("tester", briefing_id="brf-9")
+    tap = shim._BridgeSessionTap("tester")
 
     frame = _tools_call(1, "memory_recall", {"task": "x"})
     out = tap.on_request(frame)
@@ -165,26 +165,26 @@ def test_tap_ignores_non_start_tool_calls(tmp_path, monkeypatch):
 
 def test_tap_captures_session_id_from_start_response(tmp_path, monkeypatch):
     monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
-    tap = shim._BridgeSessionTap("tester", "personal")
+    tap = shim._BridgeSessionTap("tester")
 
     tap.on_request(_tools_call(7, "ctx_start_session", {"goal": "g"}))
     tap.on_response(_tool_result(7, {"session_id": "sess-77", "created_at": "t"}))
 
-    assert state.read_session_stash("tester", "personal")["session_id"] == "sess-77"
+    assert state.read_session_stash("tester")["session_id"] == "sess-77"
 
 
 def test_tap_response_without_matching_request_is_ignored(tmp_path, monkeypatch):
     monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
-    tap = shim._BridgeSessionTap("tester", "personal")
+    tap = shim._BridgeSessionTap("tester")
 
     # No prior on_request for id 7 → an unrelated tool's response must not stash.
     tap.on_response(_tool_result(7, {"session_id": "sess-77"}))
-    assert state.read_session_stash("tester", "personal") is None
+    assert state.read_session_stash("tester") is None
 
 
 def test_tap_malformed_response_forwards_unchanged_and_stashes_nothing(tmp_path, monkeypatch):
     monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
-    tap = shim._BridgeSessionTap("tester", "personal")
+    tap = shim._BridgeSessionTap("tester")
 
     tap.on_request(_tools_call(7, "ctx_start_session", {"goal": "g"}))
     bad = SessionMessage(JSONRPCMessage(JSONRPCResponse(
@@ -193,23 +193,23 @@ def test_tap_malformed_response_forwards_unchanged_and_stashes_nothing(tmp_path,
     out = tap.on_response(bad)
 
     assert out is bad  # forwarded byte-identical
-    assert state.read_session_stash("tester", "personal") is None
+    assert state.read_session_stash("tester") is None
 
 
 def test_tap_complete_clears_stash(tmp_path, monkeypatch):
     monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
-    state.write_session_stash("tester", "personal", session_id="sess-77")
-    tap = shim._BridgeSessionTap("tester", "personal")
+    state.write_session_stash("tester", session_id="sess-77")
+    tap = shim._BridgeSessionTap("tester")
 
     tap.on_request(_tools_call(9, "ctx_complete_session", {"outcome": "done"}))
     tap.on_response(_tool_result(9, {"status": "completed"}))
 
-    assert state.read_session_stash("tester", "personal") is None
+    assert state.read_session_stash("tester") is None
 
 
 def test_tap_never_raises_on_garbage_frame(tmp_path, monkeypatch):
     monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
-    tap = shim._BridgeSessionTap("tester", "personal")
+    tap = shim._BridgeSessionTap("tester")
 
     class _Garbage:
         pass
@@ -220,47 +220,22 @@ def test_tap_never_raises_on_garbage_frame(tmp_path, monkeypatch):
     assert tap.on_response(g) is g
 
 
-def test_tap_captures_the_shadow_cursor_from_a_get_shadow_response(tmp_path, monkeypatch):
-    monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
-    tap = shim._BridgeSessionTap("tester", "personal")
-
-    tap.on_request(_tools_call(3, "ctx_get_shadow", {}))
-    tap.on_response(_tool_result(3, {"shadow": "## Session: g",
-                                     "shadow_cursor": "cursor-abc", "delta": False}))
-
-    assert state.read_shadow_cursor("tester", "personal") == "cursor-abc"
-
-
 def test_tap_never_injects_since_into_an_agent_call(tmp_path, monkeypatch):
     """The client cannot observe the model's context, so it must never assert
     residency on the agent's behalf. Only the agent may pass `since`."""
     monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
-    state.write_shadow_cursor("tester", "personal", "cursor-abc")
-    tap = shim._BridgeSessionTap("tester", "personal")
+    tap = shim._BridgeSessionTap("tester")
 
     out = tap.on_request(_tools_call(4, "ctx_get_shadow", {}))
 
-    # Behavioural: catches someone writing args["since"] = cursor directly.
+    # Behavioural: catches someone writing args["since"] directly.
     assert "since" not in out.message.root.params["arguments"]
-    # Structural: catches set-membership drift, e.g. re-adding ctx_get_shadow
-    # to _INJECT_TOOLS. Neither assertion implies the other — the injection
+    # Structural: catches set-membership drift, e.g. adding ctx_get_shadow to
+    # _INJECT_TOOLS. Neither assertion implies the other — the injection
     # branch only ever writes briefing_id, so widening _INJECT_TOOLS would
     # leave the assertion above green while still asserting residency the
     # client cannot observe.
     assert "ctx_get_shadow" not in shim._BridgeSessionTap._INJECT_TOOLS
-
-
-def test_tap_clears_the_cursor_when_the_session_ends(tmp_path, monkeypatch):
-    """Server-authoritative session end, same trigger that clears the session
-    stash today. A cursor outliving its session could only ever be wrong."""
-    monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
-    state.write_shadow_cursor("tester", "personal", "cursor-abc")
-    tap = shim._BridgeSessionTap("tester", "personal")
-
-    tap.on_request(_tools_call(5, "ctx_complete_session", {"outcome": "done"}))
-    tap.on_response(_tool_result(5, {"status": "completed"}))
-
-    assert state.read_shadow_cursor("tester", "personal") is None
 
 
 # --- pump-integration: tap must not perturb forwarding or dead-conn detection ---
@@ -276,7 +251,7 @@ def test_pump_forwards_frame_through_live_transform_and_captures():
         with tempfile.TemporaryDirectory() as d:
             os.environ["FIREKEEP_CACHE_DIR"] = d
             try:
-                tap = shim._BridgeSessionTap("tester", "personal")
+                tap = shim._BridgeSessionTap("tester")
                 tap.on_request(_tools_call(3, "ctx_start_session", {"goal": "g"}))
 
                 src_send, src_recv = anyio.create_memory_object_stream(10)
@@ -294,7 +269,7 @@ def test_pump_forwards_frame_through_live_transform_and_captures():
                     tg.cancel_scope.cancel()
 
                 assert forwarded.message.root.result["content"][0]["text"]
-                assert state.read_session_stash("tester", "personal")["session_id"] == "sess-abc"
+                assert state.read_session_stash("tester")["session_id"] == "sess-abc"
             finally:
                 os.environ.pop("FIREKEEP_CACHE_DIR", None)
 
@@ -305,7 +280,7 @@ def test_bridge_still_detects_dead_upstream_with_transforms():
     """The identity transforms must not mask UpstreamDisconnected: the http
     source draining while the runtime is still attached still raises."""
     async def _run():
-        tap = shim._BridgeSessionTap("tester", "personal")
+        tap = shim._BridgeSessionTap("tester")
         stdio_read_send, stdio_read_recv = anyio.create_memory_object_stream(10)
         stdio_write_send, stdio_write_recv = anyio.create_memory_object_stream(10)
         http_read_send, http_read_recv = anyio.create_memory_object_stream(10)
@@ -332,8 +307,8 @@ def test_tap_does_not_inject_briefing_id_into_resume(tmp_path, monkeypatch):
     """bridge ctx_resume_session(session_id, agent_id) has NO briefing_id param;
     FastMCP rejects unexpected kwargs, so injecting it breaks every resume."""
     monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
-    state.write_session_stash("tester", "personal", briefing_id="brf-9")
-    tap = shim._BridgeSessionTap("tester", "personal")
+    state.write_session_stash("tester", briefing_id="brf-9")
+    tap = shim._BridgeSessionTap("tester")
 
     frame = _tools_call(1, "ctx_resume_session", {"session_id": "sess-old"})
     out = tap.on_request(frame)
@@ -345,9 +320,9 @@ def test_tap_still_captures_session_id_from_resume_response(tmp_path, monkeypatc
     """Resume must stay tracked for session_id capture even though it gets no
     briefing_id injection — resuming attributes subsequent calls too."""
     monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
-    tap = shim._BridgeSessionTap("tester", "personal")
+    tap = shim._BridgeSessionTap("tester")
 
     tap.on_request(_tools_call(5, "ctx_resume_session", {"session_id": "sess-r"}))
     tap.on_response(_tool_result(5, {"session_id": "sess-r", "created_at": "t"}))
 
-    assert state.read_session_stash("tester", "personal")["session_id"] == "sess-r"
+    assert state.read_session_stash("tester")["session_id"] == "sess-r"

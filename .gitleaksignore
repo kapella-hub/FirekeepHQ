@@ -13,6 +13,7 @@
 # at if you need to re-check them.
 1fa0e9fa046ad2b6ff0d420a58e5676129e34197:tests/test_deploy_lib.py:generic-api-key:224
 1fa0e9fa046ad2b6ff0d420a58e5676129e34197:client/tests/test_resolver.py:generic-api-key:128
+177002a6b7ed4de1905674a20dba47dc26652485:client/tests/test_resolver.py:generic-api-key:126
 #
 # The two entries below are this file's own earlier version. It quoted the fake
 # values while explaining them, gitleaks flagged the allowlist itself, and I
@@ -30,4 +31,5 @@
 # working-tree scan red — which is exactly what happened, and is invisible
 # until you read which of the two commands reported the finding.
 tests/test_deploy_lib.py:generic-api-key:224
-client/tests/test_resolver.py:generic-api-key:128
+client/tests/test_resolver.py:generic-api-key:39
+client/tests/test_resolver.py:generic-api-key:126

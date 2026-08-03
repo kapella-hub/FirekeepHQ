@@ -2,7 +2,7 @@
 
 Firekeep is MCP-native. The client-specific setup varies, but the integration model is the same:
 
-- connect the four Firekeep MCP HTTP endpoints
+- register the one local `firekeep` stdio gateway (shipped adapters), or connect remote HTTP endpoints manually in clients that cannot run it
 - keep repository-specific agent instructions in the repo (`AGENTS.md`, `CLAUDE.md`)
 - use client-native hooks or startup flows only where they add value
 
@@ -22,15 +22,20 @@ Firekeep is MCP-native. The client-specific setup varies, but the integration mo
 
 ## Generic MCP Clients
 
-For any MCP-capable client, register these HTTP endpoints:
+The shipped adapters register one local gateway and include all six backends.
+For a generic client that cannot run the gateway, register the remote HTTP
+endpoints below; that manual route does not include local Symdex or the Decision
+Board:
 
 > **Reachability and auth, before you register anything.** A default install binds these
 > ports to `127.0.0.1` and requires an `X-API-Key` on every call. So from the Firekeep
 > host use `127.0.0.1`; from another machine either tunnel
 > (`ssh -L 8080:127.0.0.1:8080 …`) or set `BIND_ADDR=0.0.0.0` deliberately, and in both
-> cases supply a key — mint one with
-> `deploy/firekeep-admin keys create --agent <you>`. Substitute `<HOST>` below
-> accordingly. See [DEPLOYMENT.md](DEPLOYMENT.md#access-and-authentication).
+> cases supply a key. The shipped kit gets one through Dashboard → Devices or
+> `deploy/firekeep-admin invite`; `deploy/firekeep-admin keys create --agent
+> <you>` is the manual fallback for a generic client that cannot run
+> `firekeep join`. Substitute `<HOST>` below accordingly. See
+> [DEPLOYMENT.md](DEPLOYMENT.md#access-and-authentication).
 
 | Service | URL |
 |---|---|
@@ -39,7 +44,7 @@ For any MCP-capable client, register these HTTP endpoints:
 | FirekeepSentinel | `http://<HOST>:8060/mcp` |
 | FirekeepRelay | `http://<HOST>:8050/mcp` |
 
-Code intelligence (`firekeep-symdex`) and the Decision Board (`firekeep-decision`) are **not** HTTP endpoints — they are client-installed stdio-local MCP servers, registered automatically by `firekeep install`. There is no symdex server or port 8090.
+Code intelligence (`firekeep-symdex`) and the Decision Board (`firekeep-decision`) are **not** HTTP endpoints — they are client-installed local processes started by the gateway. There is no symdex server or port 8090.
 
 Minimum useful combination:
 
@@ -97,25 +102,26 @@ Re-run `firekeep install` for your runtime; it is idempotent and non-clobbering.
 ### Codex CLI
 Codex is MCP-only (no hook surface), so use the client kit's stdio shim rather than raw HTTP — Codex's `~/.codex/config.toml` speaks stdio, not `type: "http"`. Run `firekeep install --runtime codex` (see [docs/SETUP-CODEX.md](docs/SETUP-CODEX.md)), which renders:
 ```toml
-[mcp_servers.firekeep-cortex]
-command = '/absolute/path/to/.firekeep/venv/bin/firekeep-shim'
-args = ["--service", "cortex"]
+[mcp_servers.firekeep]
+command = '/absolute/path/to/.firekeep/venv/bin/firekeep'
+args = ["gateway"]
 ```
-(plus `firekeep-bridge`/`firekeep-sentinel`/`firekeep-relay`, each through the same `firekeep-shim` bridge, which injects TLS + auth headers from the active `~/.firekeep/config` profile.) Then the `action_before` and `action_after` tools appear as `mcp__firekeep-cortex__action_before` etc. Restart Codex after installing.
+The gateway injects TLS + auth headers from `[server]` and `[identity]` in
+`~/.firekeep/config`. Restart Codex after installing.
 
 ### Kiro
-Run `firekeep install --runtime kiro`, which renders `~/.kiro/agents/firekeep.json` with the Firekeep services as stdio commands through the same `firekeep-shim` bridge (kiro also gets inline hooks wired to the same lifecycle events Claude uses):
+Run `firekeep install --runtime kiro`, which renders `~/.kiro/agents/firekeep.json` with one gateway entry (Kiro also gets inline hooks wired to the same lifecycle events Claude uses):
 ```json
 {
   "mcpServers": {
-    "firekeep-cortex": {
-      "command": "/absolute/path/to/.firekeep/venv/bin/firekeep-shim",
-      "args": ["--service", "cortex"]
+    "firekeep": {
+      "command": "/absolute/path/to/.firekeep/venv/bin/firekeep",
+      "args": ["gateway"]
     }
   }
 }
 ```
-Restart Kiro. Tools appear under the `firekeep-cortex` namespace.
+Restart Kiro. Tools appear under the `firekeep` server.
 
 ### Cursor
 Add to `~/.cursor/mcp.json`:

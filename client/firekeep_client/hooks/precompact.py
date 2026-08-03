@@ -4,8 +4,9 @@ Claude is the only runtime that exposes a compaction event. Scope is deliberatel
 narrow: this hook fires BEFORE compaction but cannot read the agent's unstated
 reasoning, so it CANNOT recover decisions the agent never wrote via ctx_update.
 It does four cheap, certain things: checkpoint the workspace, invalidate the
-shadow cursor (locally and server-side), stamp that a compaction happened, and
-tell the agent in one line where its working state lives.
+shadow cursor server-side (bumping shadow_epoch so Bridge's filter_since
+refuses any stale cursor on the next restore), stamp that a compaction
+happened, and tell the agent in one line where its working state lives.
 
 Budgeted like session_start (~15s) and best-effort throughout: a slow hook
 stalls the customer mid-compaction, which is worse than a missed checkpoint.
@@ -15,7 +16,7 @@ from __future__ import annotations
 import time
 from datetime import datetime, timezone
 
-from firekeep_client import hooklog, resolver, state
+from firekeep_client import hooklog, resolver
 from firekeep_client.hooks import _git, _mcp, never_raise
 
 _HOOK = "precompact"
@@ -38,8 +39,7 @@ def run(payload: dict) -> dict:
     # Called UNGUARDED on purpose: a malformed config raises ConfigError, which
     # @never_raise degrades to {} rather than crashing the caller.
     cfg = resolver.load_config()
-    profile = resolver.active_profile(cfg)
-    agent = resolver.agent_id(cfg, profile)
+    agent = resolver.agent_id(cfg)
 
     # 2. Workspace checkpoint — cheap, real, already implemented.
     try:
@@ -52,11 +52,11 @@ def run(payload: dict) -> dict:
     except Exception as e:  # noqa: BLE001
         hooklog.log_failure(_HOOK, f"workspace checkpoint failed: {e}")
 
-    # 3. Invalidate the shadow cursor, locally AND server-side. Load-bearing for
-    #    the residency contract: after compaction the agent can no longer vouch
-    #    for what is still in its context, so any cursor it holds is a lie.
-    #    The server-side half rides on ordinary ctx_update — no new MCP tool.
-    state.clear_shadow_cursor(agent, profile)
+    # 3. Invalidate the shadow cursor server-side. Load-bearing for the
+    #    residency contract: after compaction the agent can no longer vouch
+    #    for what is still in its context, so any cursor it holds is stale —
+    #    bumping shadow_epoch makes Bridge's filter_since refuse it on the next
+    #    ctx_get_shadow. Rides on ordinary ctx_update — no new MCP tool.
     try:
         _mcp.call_tool("bridge", "ctx_update", {
             "category": "scratch", "key": "shadow_epoch",

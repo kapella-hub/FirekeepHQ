@@ -6,8 +6,8 @@
 #   <version>/  -> firekeep_client-*.whl, firekeep_symdex-*.whl, uv-*, SHA256SUMS
 #   latest/     -> install.sh, install.ps1, latest.json
 # Publishing is ACCUMULATIVE — old <version>/ dirs are preserved so `firekeep update --to`
-# keeps resolving them. (Interim GitHub host; the GitLab package-registry pipeline
-# in .gitlab-ci.yml remains the office path.)
+# keeps resolving them. GitHub Pages is the one public distribution channel for
+# both Solo and Team; plans do not select different artifacts.
 #
 # ARTIFACTS GO TO A SEPARATE PUBLIC REPO: kapella-hub/firekeep-dist, served at
 # https://kapella-hub.github.io/firekeep-dist. This repo is PRIVATE, and GitHub

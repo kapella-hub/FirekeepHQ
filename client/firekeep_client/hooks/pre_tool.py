@@ -61,8 +61,7 @@ def run(payload: dict) -> int:
     state.reap_stale()
 
     cfg = resolver.load_config()
-    profile = resolver.active_profile(cfg)
-    agent = resolver.agent_id(cfg, profile)
+    agent = resolver.agent_id(cfg)
 
     tool_name = payload.get("tool_name", "")
     # 3-key fallback mirrors the bash original: MCP/JSON-RPC-framed callers

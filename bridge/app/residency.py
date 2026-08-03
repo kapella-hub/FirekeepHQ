@@ -125,6 +125,20 @@ def filter_since(
     hw = parsed.get("hw") or ""
     if not hw.strip():
         return data, None
+    # A container whose SHAPE this function does not understand is a doubtful path like
+    # any of the six above, and takes the same exit. The element-level `isinstance(e,
+    # dict)` guards below protect against a bad ENTRY, not a bad CONTAINER: a
+    # list-shaped `files` raises on `.items()`, and a dict-shaped `decisions` iterates
+    # its KEYS -- keeping bare strings, discarding every value, and reporting 0 omitted.
+    # That second one is why this belongs HERE and not only in an exception handler at
+    # the call site: it raises nothing, so no try/except can see it, and the result is a
+    # delta that LOOKS correct while having thrown the content away. Not reachable from
+    # today's writers (get_session_data builds both by construction) -- this is a floor,
+    # not a live fix.
+    if any(not isinstance(data.get(s) or [], list) for s in _LIST_SECTIONS):
+        return data, None
+    if not isinstance(data.get("files") or {}, dict):
+        return data, None
 
     out = dict(data)
     omitted: dict[str, Any] = {}

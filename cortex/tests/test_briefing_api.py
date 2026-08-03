@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from app.briefing import sections as S
 from app.briefing.api import create_briefing_router
 from app.version import get_version_info
+from auth.entitlements import Entitlement
 
 # The 12 sections that MUST always be present (fail-loud: never omitted).
 # `observed` is the N=1 learning surface (descriptive, unvalidated) added in the
@@ -108,12 +109,37 @@ def test_briefing_envelope_shape(monkeypatch):
     assert body["project"] is None
     # briefing_id is minted server-side (D2) and surfaced top-level.
     assert isinstance(body["briefing_id"], str) and body["briefing_id"]
+    assert body["entitlement"]["plan"] == "solo"
 
 
 def test_briefing_server_version_matches_version_module(monkeypatch):
     client = TestClient(_make_app(monkeypatch))
     resp = client.get("/briefing?agent_id=x")
     assert resp.json()["server_version"] == get_version_info()["version"]
+
+
+def test_briefing_surfaces_licence_expiry_without_gating_sections(monkeypatch):
+    app = _make_app(monkeypatch)
+    app.state.auth_redis = object()
+
+    async def expiring(*_args, **_kwargs):
+        return Entitlement(
+            workspace_id="workspace-local",
+            customer="Acme",
+            plan="team",
+            max_members=5,
+            issued_at="2026-01-01T00:00:00+00:00",
+            expires_at="2026-08-10T00:00:00+00:00",
+            verified=True,
+            source="redis",
+            reason="verified",
+            warning="licence expires in 10 day(s)",
+        )
+
+    monkeypatch.setattr("app.briefing.api.load_entitlement", expiring)
+    body = TestClient(app).get("/briefing?agent_id=a").json()
+    assert "LICENCE: licence expires in 10 day(s)" in body["rendered"]
+    assert set(body["sections"]) == ALL_SECTIONS
 
 
 def test_briefing_sections_status_and_vault_fail_loud(monkeypatch):

@@ -1,6 +1,6 @@
 # MCP Tools Reference
 
-Firekeep exposes ~102 MCP tools across 6 MCP servers. The four HTTP MCP services — Cortex :8080, Bridge :8070, Sentinel :8060, Relay :8050 — use Streamable HTTP. `firekeep-symdex` (38 code-intelligence tools; 30 visible by default, 8 analytics hidden behind `SYMDEX_ANALYTICS_ENABLED`) and `firekeep-decision` (2 tools) are client-installed stdio-local servers, not HTTP endpoints.
+Firekeep exposes ~102 MCP tools from 6 logical backends through one client-visible `firekeep` stdio gateway. The four remote services — Cortex :8080, Bridge :8070, Sentinel :8060, Relay :8050 — use Streamable HTTP behind parameterized shims. `firekeep-symdex` (38 code-intelligence tools; 30 visible by default, 8 analytics hidden behind `SYMDEX_ANALYTICS_ENABLED`) and `firekeep-decision` (2 tools) are client-local processes behind the same gateway, not HTTP endpoints. `firekeep_gateway_status` reports per-backend health; one failed backend does not remove the others.
 
 Tool breakdown: Cortex 27 + Bridge 7 + Sentinel 3 + Relay 25 = 62 HTTP-service tools; plus client-stdio `firekeep-symdex` 38 (30 visible, 8 analytics hidden) + `firekeep-decision` 2 = **102 total**.
 

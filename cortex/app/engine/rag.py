@@ -227,7 +227,9 @@ class RAGEngine:
         self._settings = settings or get_settings()
         self._http_client = http_client
 
-    async def recall(self, query: ContextQuery) -> RecallResponse:
+    async def recall(
+        self, query: ContextQuery, *, workspace_id: str | None = None
+    ) -> RecallResponse:
         """Retrieve, merge, score, and format memory context for an LLM.
 
         Steps:
@@ -244,7 +246,9 @@ class RAGEngine:
         """
         include_archived = bool(getattr(query, "include_archived", False))
 
-        vector_results, graph_results, vector_degraded = await self._dual_retrieve(query)
+        vector_results, graph_results, vector_degraded = await self._dual_retrieve(
+            query, workspace_id=workspace_id
+        )
 
         vector_entries = self._normalize_vector(vector_results)
         graph_entries = self._format_graph_entries(graph_results, query.task)
@@ -348,7 +352,9 @@ class RAGEngine:
     # Streaming recall
     # ------------------------------------------------------------------
 
-    async def recall_streaming(self, query: ContextQuery) -> AsyncGenerator[dict, None]:
+    async def recall_streaming(
+        self, query: ContextQuery, *, workspace_id: str | None = None
+    ) -> AsyncGenerator[dict, None]:
         """Yield recall results progressively.
 
         Yields:
@@ -361,15 +367,7 @@ class RAGEngine:
         # Fire both searches concurrently, yield results as each completes
         async def _vector_search() -> tuple[str, list[dict[str, Any]]]:
             try:
-                results = await self._vector.search(
-                    query.task,
-                    top_k=query.top_k,
-                    filter_tags=query.tags or None,
-                    namespace=getattr(query, "namespace", "default"),
-                    include_archived=getattr(query, "include_archived", False),
-                    project=query.project,
-                    score_threshold=self._settings.RECALL_SCORE_FLOOR,
-                )
+                results = await self._search_vector(query, workspace_id=workspace_id)
                 return "vector", results
             except Exception:
                 logger.exception("Vector search failed in streaming recall")
@@ -453,8 +451,23 @@ class RAGEngine:
     # Retrieval
     # ------------------------------------------------------------------
 
+    async def _search_vector(
+        self, query: ContextQuery, *, workspace_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """The one workspace-filtered vector path for regular and SSE recall."""
+        return await self._vector.search(
+            query.task,
+            top_k=query.top_k,
+            filter_tags=query.tags or None,
+            namespace=getattr(query, "namespace", "default"),
+            include_archived=getattr(query, "include_archived", False),
+            project=query.project,
+            workspace_id=workspace_id,
+            score_threshold=self._settings.RECALL_SCORE_FLOOR,
+        )
+
     async def _dual_retrieve(
-        self, query: ContextQuery
+        self, query: ContextQuery, *, workspace_id: str | None = None
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
         """Run vector and graph queries concurrently.
 
@@ -469,14 +482,8 @@ class RAGEngine:
             attempts = 2  # initial + one retry
             for attempt in range(1, attempts + 1):
                 try:
-                    results = await self._vector.search(
-                        query.task,
-                        top_k=query.top_k,
-                        filter_tags=query.tags or None,
-                        namespace=getattr(query, "namespace", "default"),
-                        include_archived=getattr(query, "include_archived", False),
-                        project=query.project,
-                        score_threshold=self._settings.RECALL_SCORE_FLOOR,
+                    results = await self._search_vector(
+                        query, workspace_id=workspace_id
                     )
                     return results, False
                 except Exception:

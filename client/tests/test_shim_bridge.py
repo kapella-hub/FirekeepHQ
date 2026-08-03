@@ -136,7 +136,7 @@ def test_serve_builds_and_closes_its_own_client_when_none_injected(monkeypatch):
         async def aclose(self):
             closed.append(True)
 
-    def _fake_build_client(ep, *, agent=None, profile=None):
+    def _fake_build_client(ep, *, agent=None):
         built.append(ep)
         return _FakeClient()
 

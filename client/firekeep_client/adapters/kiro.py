@@ -53,7 +53,6 @@ from firekeep_client.adapters.base import (
     merge_owned,
     prune_flat_hooks,
     read_json,
-    read_pin,
     shim_servers,
     upsert_flat_hook,
     write_json,
@@ -217,14 +216,12 @@ class KiroAdapter(Adapter):
     def render(self, *, venv_bin: Path) -> None:
         _migrate_legacy(Path.home())
         path = self._path()
-        pin = read_pin(self.name)
         data = read_json(path)
         data.setdefault("name", "firekeep")
 
         servers = data.setdefault("mcpServers", {})
         entries = {
-            name: {"command": cmd, "args": args,
-                   **({"env": {"FIREKEEP_PROFILE": pin}} if pin else {})}
+            name: {"command": cmd, "args": args}
             for name, (cmd, args) in shim_servers(venv_bin).items()
         }
         merge_owned(servers, entries)
@@ -258,8 +255,6 @@ class KiroAdapter(Adapter):
             # kiro-cli 2.12.1 the block is not actually enforced (see docstring) — the remap
             # is still rendered so it works the moment kiro honors its own contract.
             extra_args = "--block-exit 2" if core == "pre_tool" else ""
-            if pin:
-                extra_args = f"{extra_args} --profile {pin}".strip()
             entry = {"command": hook_command(venv_bin, core, extra_args=extra_args)}
             if matcher:
                 entry["matcher"] = matcher

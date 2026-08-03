@@ -25,15 +25,12 @@ def test_codex_render_writes_mcp_servers(fake_home, tmp_path):
     venv_bin = tmp_path / "venv" / "Scripts"
     get_adapter("codex").render(venv_bin=venv_bin)
     text = (fake_home / ".codex" / "config.toml").read_text()
-    assert "[mcp_servers.firekeep-cortex]" in text
+    assert "[mcp_servers.firekeep]" in text
     # TOML literal string, Windows-safe; _exe() accounts for the win32 console-script
     # `.exe` suffix that console_script_path (used inside shim_servers) appends.
-    assert f"command = '{_exe(venv_bin / 'firekeep-shim')}'" in text
-    assert 'args = ["--service", "cortex"]' in text
-    assert "[mcp_servers.firekeep-relay]" in text
-    # symdex is always-on: its stdio-local block is present unconditionally
-    assert "[mcp_servers.firekeep-symdex]" in text
-    assert f"command = '{_exe(venv_bin / 'firekeep-symdex')}'" in text
+    assert f"command = '{_exe(venv_bin / 'firekeep')}'" in text
+    assert 'args = ["gateway"]' in text
+    assert text.count("[mcp_servers.firekeep]") == 1
 
 
 _PINNED_CFG = """
@@ -55,15 +52,14 @@ def _write_cfg(tmp_path, monkeypatch, text):
     return cfg
 
 
-def test_pinned_codex_renders_env_inline_table(tmp_path, monkeypatch, fake_home):
+def test_legacy_pinned_codex_renders_no_profile_env(tmp_path, monkeypatch, fake_home):
     _write_cfg(tmp_path, monkeypatch, _PINNED_CFG)
     get_adapter("codex").render(venv_bin=tmp_path / "vbin")
 
     text = (fake_home / ".codex" / "config.toml").read_text()
     parsed = tomllib.loads(text)
-    for name in ("firekeep-cortex", "firekeep-symdex", "firekeep-decision"):
-        assert parsed["mcp_servers"][name]["env"] == {"FIREKEEP_PROFILE": "office"}
-    assert 'env = { FIREKEEP_PROFILE = "office" }' in text
+    assert "env" not in parsed["mcp_servers"]["firekeep"]
+    assert "FIREKEEP_PROFILE" not in text
 
 
 def test_unpinned_codex_render_has_no_env(tmp_path, monkeypatch, fake_home):
@@ -89,17 +85,17 @@ def test_codex_non_clobbering(fake_home, tmp_path):
     text = (cfgdir / "config.toml").read_text()
     assert "[mcp_servers.custom]" in text          # foreign survived render
     assert "# user notes: do not touch" in text    # arbitrary foreign text survived
-    assert "[mcp_servers.firekeep-cortex]" in text    # firekeep added
+    assert "[mcp_servers.firekeep]" in text    # firekeep added
 
     adapter.render(venv_bin=venv_bin)  # idempotent re-render
     text2 = (cfgdir / "config.toml").read_text()
-    assert text2.count("[mcp_servers.firekeep-cortex]") == 1
+    assert text2.count("[mcp_servers.firekeep]") == 1
 
     adapter.unrender()
     text3 = (cfgdir / "config.toml").read_text()
     assert "[mcp_servers.custom]" in text3         # foreign survived unrender
     assert "# user notes: do not touch" in text3   # arbitrary foreign text survived unrender
-    assert "firekeep-cortex" not in text3             # firekeep removed
+    assert "[mcp_servers.firekeep]" not in text3       # firekeep removed
     # Foreign content round-trips byte-for-byte modulo the known trailing-newline nit.
     assert text3.rstrip("\n") == original.rstrip("\n")
 
@@ -114,16 +110,9 @@ def test_codex_render_produces_parseable_toml(fake_home, tmp_path):
     text = (fake_home / ".codex" / "config.toml").read_text()
     parsed = tomllib.loads(text)
 
-    cortex = parsed["mcp_servers"]["firekeep-cortex"]
-    assert cortex["command"] == _exe(venv_bin / "firekeep-shim")
-    assert cortex["args"] == ["--service", "cortex"]
-
-    relay = parsed["mcp_servers"]["firekeep-relay"]
-    assert relay["args"] == ["--service", "relay"]
-
-    symdex = parsed["mcp_servers"]["firekeep-symdex"]
-    assert symdex["command"] == _exe(venv_bin / "firekeep-symdex")
-    assert symdex["args"] == []
+    gateway = parsed["mcp_servers"]["firekeep"]
+    assert gateway["command"] == _exe(venv_bin / "firekeep")
+    assert gateway["args"] == ["gateway"]
 
 
 def test_upsert_and_strip_block_treat_backslashes_literally():

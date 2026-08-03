@@ -41,14 +41,13 @@ def _write_subprocess_config(tmp_path: Path) -> dict:
     """
     cfg = tmp_path / "config"
     cfg.write_text(textwrap.dedent("""\
-        [active]
-        profile = personal
-        [personal]
+        [identity]
+        agent_id = tester
+        [server]
         kind = paths
         scheme = http
         base_url = http://127.0.0.1:1
         verify_tls = false
-        agent_id = tester
     """))
     cache = tmp_path / "cache"
     cache.mkdir(exist_ok=True)  # idempotent: multi-invocation tests reuse one tmp_path
@@ -220,16 +219,7 @@ class TestDispatcherNeverRaises:
 
 @pytest.fixture(autouse=True)
 def _restore_firekeep_profile_env():
-    """Task 5's dispatcher exports FIREKEEP_PROFILE via a raw `os.environ[...] = `
-    mutation (by design -- that's what makes the pin reach every nested
-    `resolve()` call in a core with zero core changes). `monkeypatch.delenv`
-    called at test start records nothing when the var is absent, so it can't
-    track cleanup for a mutation the SUT performs later outside of monkeypatch.
-    Snapshot/restore explicitly here so TestProfileArg can never leak
-    FIREKEEP_PROFILE into the other hook-core tests in this package (whose tmp
-    configs, via the `client_env` fixture, have no matching profile section --
-    a leaked override would break them with a ConfigError).
-    """
+    """Keep the retired env var hermetic across dispatcher tests."""
     original = os.environ.get("FIREKEEP_PROFILE")
     yield
     if original is None:
@@ -239,9 +229,7 @@ def _restore_firekeep_profile_env():
 
 
 class TestProfileArg:
-    """Task 5: --profile NAME sets FIREKEEP_PROFILE before the core runs, so every
-    nested resolve() call in the core (session_start/_mcp.py, pre_tool/state.py,
-    ...) follows the pin with zero core changes."""
+    """Two-release compatibility: stale --profile args parse and are ignored."""
 
     @staticmethod
     def _fake_core(record):
@@ -252,7 +240,7 @@ class TestProfileArg:
                 return {}
         return Core
 
-    def test_profile_arg_sets_env_before_core_runs(self, monkeypatch, capsys):
+    def test_profile_arg_is_ignored(self, monkeypatch, capsys):
         from firekeep_client.hooks import __main__ as dispatcher
 
         monkeypatch.delenv("FIREKEEP_PROFILE", raising=False)
@@ -261,7 +249,7 @@ class TestProfileArg:
         monkeypatch.setattr(sys, "stdin", io.StringIO("{}"))
         rc = dispatcher.main(["prompt", "--profile", "office"])
         assert rc == 0
-        assert record["env"] == "office"
+        assert record["env"] is None
 
     def test_profile_arg_combines_with_block_exit(self, monkeypatch):
         from firekeep_client.hooks import __main__ as dispatcher
@@ -279,7 +267,7 @@ class TestProfileArg:
         monkeypatch.setattr(sys, "stdin", io.StringIO("{}"))
         rc = dispatcher.main(["pre_tool", "--block-exit", "2", "--profile", "office"])
         assert rc == 2
-        assert record["env"] == "office"
+        assert record["env"] is None
 
     def test_missing_profile_value_is_ignored(self, monkeypatch):
         from firekeep_client.hooks import __main__ as dispatcher
@@ -335,11 +323,18 @@ class TestPersonalTextCommand:
 
 
 def test_precompact_is_registered_and_treated_as_a_dict_core():
-    """`_DICT_CORES` is INERT -- verified: the dispatcher only ever consults
-    `_INT_CORES` (lines 195, 215). What actually makes a dict core is membership
-    in `_CORE_MODULES` plus absence from `_INT_CORES`. A core missing from
-    `_CORE_MODULES` fails SILENTLY at exit 0, which is why this asserts the real
-    mechanism and not the decorative set."""
+    """`_DICT_CORES` is INERT -- verified: `main()` reads `_CORE_MODULES`,
+    `_INT_CORES` and `_BYPASS_EXEMPT` and never `_DICT_CORES`, which no code
+    outside tests references at all. What actually makes a dict core is
+    membership in `_CORE_MODULES` plus absence from `_INT_CORES` (the two
+    branches that consult it -- the bypass short-circuit and the exit-code
+    remap -- both treat "not an int core" as "print JSON, exit 0"). A core
+    missing from `_CORE_MODULES` fails SILENTLY at exit 0, which is why this
+    asserts the real mechanism and not the decorative set.
+
+    No line-number citations: they are facts with no test, and the ones this
+    docstring used to carry were already stale within the commit that wrote
+    them."""
     from firekeep_client.hooks import __main__ as dispatcher
     assert "precompact" in dispatcher._CORE_MODULES      # load-bearing
     assert "precompact" not in dispatcher._INT_CORES     # load-bearing

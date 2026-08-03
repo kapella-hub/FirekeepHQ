@@ -32,8 +32,12 @@ echo "$OUT1" | grep -q '4 key(s) minted'                || { echo "FAIL: expecte
 grep -qE '^FIREKEEP_INTERNAL_KEY=nxs_[0-9a-f]{48}$'  "$ENV_FILE" || { echo "FAIL: .env internal key malformed";  exit 1; }
 grep -qE '^DASHBOARD_API_KEY=nxs_[0-9a-f]{48}$' "$ENV_FILE" || { echo "FAIL: .env dashboard key malformed"; exit 1; }
 grep -qE '^RELAY_INTERNAL_API_KEY=nxs_[0-9a-f]{48}$' "$ENV_FILE" || { echo "FAIL: .env relay key malformed"; exit 1; }
+grep -qE '^FIREKEEP_WORKSPACE_ID=workspace-[0-9a-f]{32}$' "$ENV_FILE" || { echo "FAIL: workspace id missing/malformed"; exit 1; }
+grep -qE '^FIREKEEP_OWNER_MEMBER_ID=member-[0-9a-f]{32}$' "$ENV_FILE" || { echo "FAIL: owner member id missing/malformed"; exit 1; }
 INTERNAL_KEY_1="$(grep '^FIREKEEP_INTERNAL_KEY=' "$ENV_FILE" | cut -d= -f2-)"
 RELAY_KEY_1="$(grep '^RELAY_INTERNAL_API_KEY=' "$ENV_FILE" | cut -d= -f2-)"
+WORKSPACE_ID="$(grep '^FIREKEEP_WORKSPACE_ID=' "$ENV_FILE" | cut -d= -f2-)"
+OWNER_MEMBER_ID="$(grep '^FIREKEEP_OWNER_MEMBER_ID=' "$ENV_FILE" | cut -d= -f2-)"
 
 # --- install.sh's admin-key capture, against the REAL output ----------------
 # install.sh re-surfaces the admin key in its closing summary, because this
@@ -99,7 +103,7 @@ DBSIZE2="$(docker exec "$CONTAINER" redis-cli -n 7 DBSIZE)"
 [ "$DBSIZE1" = "$DBSIZE2" ] || { echo "FAIL: DBSIZE changed $DBSIZE1 -> $DBSIZE2"; exit 1; }
 
 # --- Layout check: the REAL validator accepts the bootstrapped key -----------
-"$PYTHON_BIN" - "$INTERNAL_KEY_1" "$RELAY_KEY_1" <<'PY'
+"$PYTHON_BIN" - "$INTERNAL_KEY_1" "$RELAY_KEY_1" "$WORKSPACE_ID" "$OWNER_MEMBER_ID" <<'PY'
 import asyncio, sys
 import redis.asyncio as aioredis
 from auth import middleware
@@ -109,7 +113,9 @@ async def main():
     await middleware.init_auth(redis_client=r, enabled=True)
     ident = await middleware.validate_key(sys.argv[1])
     assert ident is not None, "validate_key rejected the bootstrapped internal key"
-    assert ident["agent_id"] == "firekeep-internal", ident
+    assert ident["workspace_id"] == sys.argv[3], ident
+    assert ident["member_id"] == sys.argv[4], ident
+    assert "agent_id" not in ident, ident
     assert set(ident["scopes"]) == {"memory:write", "session:read", "eval:read", "eval:write"}, ident
     assert ident["authenticated"] is True
 
@@ -120,13 +126,16 @@ async def main():
     # contract, and "*" here would hand Relay vault reads and key minting.
     relay = await middleware.validate_key(sys.argv[2])
     assert relay is not None, "validate_key rejected the bootstrapped relay key"
-    assert relay["agent_id"] == "firekeep-relay", relay
+    assert relay["workspace_id"] == sys.argv[3], relay
+    assert relay["member_id"] == sys.argv[4], relay
+    assert "agent_id" not in relay, relay
     assert set(relay["scopes"]) == {"session:write"}, relay
     assert "admin" not in relay["scopes"] and "*" not in relay["scopes"], relay
 
     assert await middleware.validate_key("nxs_" + "0" * 48) is None, "bogus key accepted"
-    print(f"validate_key OK: agent_id={ident['agent_id']} scopes={sorted(ident['scopes'])}")
-    print(f"validate_key OK: agent_id={relay['agent_id']} scopes={sorted(relay['scopes'])}")
+    assert ident["credential_id"] != __import__("hashlib").sha256(sys.argv[1].encode()).hexdigest()[:16]
+    print(f"validate_key OK: member_id={ident['member_id']} scopes={sorted(ident['scopes'])}")
+    print(f"validate_key OK: member_id={relay['member_id']} scopes={sorted(relay['scopes'])}")
     await r.aclose()
 
 asyncio.run(main())

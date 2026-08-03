@@ -224,14 +224,19 @@ async def cross_agent_section(replay_redis, goal: str, agent_id: str) -> Section
 
 
 async def skills_section(vector, settings, goal: str, project: str | None) -> Section:
-    """Active skills matching the goal.
+    """Active skills for the session goal.
 
-    Uses the shared matcher (`app.skills.search.search_skill_points`) rather than the
-    inline scroll-then-substring copy that used to live here — one implementation, so
-    one bug cannot live in two files. Deliberately NOT wrapped in try/except: the embed
-    is already fail-soft inside the primitive (degrading to the legacy scroll), which is
-    what keeps an embeddings outage from flipping the briefing envelope to degraded,
-    while a genuine Qdrant failure still propagates to `_run_section` as before.
+    Semantic cosine match (floored at SKILL_MATCH_SCORE_FLOOR) when a goal is present;
+    an ID-ordered scroll when the goal is empty — the production-NORMAL case, since a
+    standard Claude Code SessionStart supplies no goal — or when the embed fails or
+    nothing clears the floor.
+
+    This was previously an inline copy of `list_skills`' scroll-then-substring shape,
+    which is how one bug came to live in two files. Both now share
+    `search_skill_points`. Note this section must never RAISE on an embedding failure:
+    `_run_section` converts any raise or timeout into status='unavailable', which sets
+    degraded=true on the whole envelope and prints '[SKILLS unavailable: ...]' into
+    every session's briefing. The helper's internal fallback is what guarantees that.
     """
     must = [FieldCondition(key="memory_type", match=MatchValue(value="skill")),
             FieldCondition(key="skill_status", match=MatchValue(value="active"))]
@@ -245,9 +250,13 @@ async def skills_section(vector, settings, goal: str, project: str | None) -> Se
     for p in points:
         payload = p.payload or {}
         trigger = payload.get("trigger", "")
-        # Only narrow the LEGACY scroll page; semantic results are already ranked and
-        # floored, and re-applying the substring test would reinstate the old bug.
-        if not semantic and ql and ql not in trigger.lower() and ql not in payload.get("domain", "").lower():
+        # Ranked-and-floored points must not be re-narrowed by substring (see
+        # search_skill_points' two-path contract); the legacy filter still guards the
+        # degraded scroll path, where it is the only thing preventing three arbitrary
+        # ID-ordered skills being presented as "relevant".
+        if (ql and not semantic
+                and ql not in trigger.lower()
+                and ql not in payload.get("domain", "").lower()):
             continue
         skills.append({"id": str(p.id), "trigger": trigger,
                        "symptoms": payload.get("symptoms", "")})

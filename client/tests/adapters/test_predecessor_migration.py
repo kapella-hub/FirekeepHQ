@@ -24,6 +24,7 @@ happens again.
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -48,7 +49,10 @@ class TestLegacyTokensStillNameTheOldThing:
     def test_mcp_keys_name_the_predecessor(self):
         assert LEGACY_MCP_KEYS
         for key in LEGACY_MCP_KEYS:
-            assert key.startswith("nexus-"), f"{key!r} must name the predecessor"
+            assert key.startswith(("nexus-", "firekeep-")), (
+                f"{key!r} must name a retired multi-entry generation"
+            )
+            assert key != "firekeep"
 
     def test_hook_markers_cover_the_predecessor_python_kit(self):
         assert any("nexus_client" in m for m in LEGACY_HOOK_MARKERS), (
@@ -108,7 +112,7 @@ class TestClaudeUpgrade:
         for k in LEGACY_MCP_KEYS:
             assert k not in servers, f"{k} survived the upgrade -- the machine now has two kits"
         assert "someone-elses-server" in servers, "a foreign server must never be touched"
-        assert any(k.startswith("firekeep-") for k in servers)
+        assert "firekeep" in servers
 
     def test_no_lifecycle_event_fires_twice(self, fake_home, tmp_path):
         """THE failure this migration exists to prevent."""
@@ -131,6 +135,31 @@ class TestClaudeUpgrade:
         env = json.loads((fake_home / ".claude" / "settings.json").read_text(encoding="utf-8"))["env"]
         assert "NEXUS_CORTEX_URL" not in env
         assert env.get("FOO") == "bar"
+
+
+_OLD = 1_600_000_000  # a fixed mtime in the past; no sleep needed
+
+
+def _age(path):
+    """Backdate a file so any rewrite is unmistakable."""
+    os.utime(path, (_OLD, _OLD))
+
+
+def _legacy_md_body():
+    begin_prefix, end_marker = LEGACY_INSTRUCTION_MARKERS[0]
+    return f"# My notes\n\n{begin_prefix} -->\nold block\n{end_marker}\n"
+
+
+def _write_legacy_md(fake_home):
+    """~/.claude/CLAUDE.md as a machine upgraded from the predecessor carries it."""
+    md = fake_home / ".claude" / "CLAUDE.md"
+    md.parent.mkdir(parents=True, exist_ok=True)
+    md.write_text(_legacy_md_body(), encoding="utf-8")
+    return md
+
+
+def _archives(md):
+    return sorted(md.parent.glob("CLAUDE.md*.bak"))
 
 
 class TestPredecessorInstructionBlockMigration:
@@ -177,14 +206,13 @@ class TestPredecessorInstructionBlockMigration:
         collision class that made kiro.py drop its own .bak archiving entirely
         (see the comment above KiroAdapter in adapters/kiro.py): overwriting a
         path we do not own is destruction, not migration. The live file must
-        still be migrated -- archive-skip is not migration-skip."""
-        md = fake_home / ".claude" / "CLAUDE.md"
-        md.parent.mkdir(parents=True, exist_ok=True)
-        begin_prefix, end_marker = LEGACY_INSTRUCTION_MARKERS[0]
-        md.write_text(
-            f"# My notes\n\n{begin_prefix} -->\nold block\n{end_marker}\n",
-            encoding="utf-8",
-        )
+        still be migrated -- archive-skip is not migration-skip.
+
+        And the removed block must still be archived SOMEWHERE. Skipping the
+        archive while stripping the block anyway left this run's content
+        recoverable only outside this tool -- narrow, but the whole premise of
+        the migration is that what it removes survives."""
+        md = _write_legacy_md(fake_home)
         bak = md.with_name(md.name + ".bak")
         bak.write_text("someone else's backup -- not ours", encoding="utf-8")
 
@@ -194,6 +222,79 @@ class TestPredecessorInstructionBlockMigration:
         body = md.read_text(encoding="utf-8")
         assert "old block" not in body, "migration must still strip the block from the live file"
         assert "# My notes" in body
+
+        fallbacks = [p for p in _archives(md) if p != bak]
+        assert len(fallbacks) == 1, (
+            f"the removed block must be archived under a fallback name, got {fallbacks}"
+        )
+        assert fallbacks[0].read_text(encoding="utf-8") == _legacy_md_body(), (
+            "the fallback archive must hold the file AS IT WAS, block included"
+        )
+
+    def test_fallback_archive_name_is_deterministic_not_timestamped(self, fake_home, tmp_path):
+        """The fallback name is derived from the archived BYTES, so archiving the
+        same content twice reuses the same file and writes nothing. A time- or
+        counter-based suffix would mint a fresh `.bak` on every render -- the
+        `.bak`-clutter defect this fallback exists to avoid, in a new costume.
+
+        Property 4 (idempotence) in the collision case: a second render creates
+        no further file and rewrites nothing."""
+        md = _write_legacy_md(fake_home)
+        bak = md.with_name(md.name + ".bak")
+        bak.write_text("someone else's backup -- not ours", encoding="utf-8")
+        venv_bin = tmp_path / "venv" / "bin"
+
+        get_adapter("claude").render(venv_bin=venv_bin)
+        after_first = _archives(md)
+        assert len(after_first) == 2
+        for p in after_first:
+            _age(p)
+
+        # (a) a plain second render finds no legacy marker at all -- no archive.
+        get_adapter("claude").render(venv_bin=venv_bin)
+        assert _archives(md) == after_first, "a second render must not mint another archive"
+        for p in after_first:
+            assert p.stat().st_mtime == _OLD, f"{p.name} was rewritten for nothing"
+
+        # (b) the same content presented again must land on the SAME path with no
+        #     write -- which is only true if the name comes from the content.
+        md.write_text(_legacy_md_body(), encoding="utf-8")
+        get_adapter("claude").render(venv_bin=venv_bin)
+        assert _archives(md) == after_first, (
+            "re-archiving identical content minted a new file -- the name is not "
+            "content-derived (a timestamp or counter crept in)"
+        )
+        for p in after_first:
+            assert p.stat().st_mtime == _OLD, f"{p.name} was rewritten with identical content"
+
+    def test_the_block_is_removed_only_if_it_was_archived(self, fake_home, tmp_path):
+        """The invariant, totalised. If BOTH the plain `.bak` and the fallback
+        path are held by content that is not ours, there is nowhere left to
+        archive -- so the live file is left ALONE. A surviving duplicate
+        instruction block is the pre-migration status quo and harmless; removing
+        it with no archive anywhere is data loss."""
+        md = _write_legacy_md(fake_home)
+        bak = md.with_name(md.name + ".bak")
+        bak.write_text("someone else's backup -- not ours", encoding="utf-8")
+        venv_bin = tmp_path / "venv" / "bin"
+
+        # Discover the fallback path the way a colliding tool would: by observation,
+        # not by recomputing the implementation's own naming rule here.
+        get_adapter("claude").render(venv_bin=venv_bin)
+        fallback = next(p for p in _archives(md) if p != bak)
+
+        # Now stage the double collision: same live file, fallback path occupied.
+        md.write_text(_legacy_md_body(), encoding="utf-8")
+        fallback.write_text("also not ours", encoding="utf-8")
+
+        get_adapter("claude").render(venv_bin=venv_bin)
+
+        assert "old block" in md.read_text(encoding="utf-8"), (
+            "with nowhere to archive, the block must NOT be stripped"
+        )
+        assert bak.read_text(encoding="utf-8") == "someone else's backup -- not ours"
+        assert fallback.read_text(encoding="utf-8") == "also not ours"
+        assert len(_archives(md)) == 2, "no third archive may be minted"
 
     def test_second_render_does_not_re_archive(self, fake_home, tmp_path):
         """render() must be idempotent: once the predecessor block is stripped, a

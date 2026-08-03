@@ -181,8 +181,9 @@ case "$OUT" in *"$FAKE_ADMIN_KEY"*) pass "auth on  -> re-surfaces the admin key 
 case "$OUT" in *"curl -H \"X-API-Key: $FAKE_ADMIN_KEY\""*)
     pass "auth on  -> gives a runnable first authenticated call" ;;
     *) fail "auth on  -> gives a runnable first authenticated call" ;; esac
-case "$OUT" in *'firekeep-admin keys create'*) pass "auth on  -> shows how to issue teammate keys" ;;
-    *) fail "auth on  -> shows how to issue teammate keys" ;; esac
+case "$OUT" in *'Open Dashboard -> Devices -> Add device'*'firekeep-admin invite --agent'*)
+    pass "auth on  -> shows the current device-enrollment paths" ;;
+    *) fail "auth on  -> shows the current device-enrollment paths" ;; esac
 # The false claim this replaces. Loopback ports are NOT exposed off-box.
 case "$OUT" in *'SECURITY: service ports'*) fail "loopback -> must NOT print the exposure warning" ;;
     *) pass "loopback -> no bogus exposure warning" ;; esac

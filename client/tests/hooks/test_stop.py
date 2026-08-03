@@ -94,7 +94,7 @@ class TestStop:
         presence of a newer session that had just taken over this agent_id."""
         from firekeep_client import state
         from firekeep_client.hooks import stop
-        key = "presence_registered_tester@personal"
+        key = "presence_registered_tester"
         state.write_scratch(key, str(int(time.time())))
         _record_calls(monkeypatch)
         stop.run({})
@@ -105,10 +105,10 @@ class TestStop:
         stash here would drop X-Session-Id attribution for turns 2..N."""
         from firekeep_client import state
         from firekeep_client.hooks import stop
-        state.write_session_stash("tester", "personal", session_id="sess-live")
+        state.write_session_stash("tester", session_id="sess-live")
         _record_calls(monkeypatch)
         stop.run({})
-        assert state.read_session_stash("tester", "personal")["session_id"] == "sess-live"
+        assert state.read_session_stash("tester")["session_id"] == "sess-live"
 
     def test_stop_enqueues_distill_job(self, client_env, monkeypatch):
         """N=1 structural capture: stop enqueues a Relay distill task carrying the
@@ -132,7 +132,7 @@ class TestStop:
         place stop can get it; the stamp rides in the task description."""
         from firekeep_client import state
         from firekeep_client.hooks import stop
-        state.write_session_stash("tester", "personal", session_id="sess-live")
+        state.write_session_stash("tester", session_id="sess-live")
         calls = _record_calls(monkeypatch)
         stop.run({})
         distill = [a for t, a in calls
@@ -153,10 +153,10 @@ class TestStop:
         (wf_02954176 review; the live backlog held 50). One task per session."""
         from firekeep_client import state
         from firekeep_client.hooks import stop
-        state.write_session_stash("tester", "personal", session_id="sess-multi")
+        state.write_session_stash("tester", session_id="sess-multi")
         calls = _record_calls(monkeypatch)
         stop.run({})
-        state.write_session_stash("tester", "personal", session_id="sess-multi")
+        state.write_session_stash("tester", session_id="sess-multi")
         stop.run({})
         distill = [a for t, a in calls if t == "relay_task_post"
                    and a.get("title") == "distill_session"]
@@ -165,10 +165,10 @@ class TestStop:
     def test_distill_reenqueued_for_a_new_session(self, client_env, monkeypatch):
         from firekeep_client import state
         from firekeep_client.hooks import stop
-        state.write_session_stash("tester", "personal", session_id="sess-a")
+        state.write_session_stash("tester", session_id="sess-a")
         calls = _record_calls(monkeypatch)
         stop.run({})
-        state.write_session_stash("tester", "personal", session_id="sess-b")
+        state.write_session_stash("tester", session_id="sess-b")
         stop.run({})
         distill = [a for t, a in calls if t == "relay_task_post"
                    and a.get("title") == "distill_session"]
@@ -257,7 +257,7 @@ class TestStop:
         from firekeep_client.hooks import stop
         _record_calls(monkeypatch)
         stop.run({"session_id": "runtime-x"})
-        assert state._scratch_ttl_file("distill_enqueued_runtime-x@personal").exists()
+        assert state._scratch_ttl_file("distill_enqueued_runtime-x").exists()
 
     def test_bridge_stash_marker_stays_permanent(self, client_env, monkeypatch):
         """Paired guard on the test above: the TTL must NOT be over-applied. The stash
@@ -265,10 +265,10 @@ class TestStop:
         permanence is unchanged behaviour."""
         from firekeep_client import state
         from firekeep_client.hooks import stop
-        state.write_session_stash("tester", "personal", session_id="sess-perm")
+        state.write_session_stash("tester", session_id="sess-perm")
         _record_calls(monkeypatch)
         stop.run({})
-        assert not state._scratch_ttl_file("distill_enqueued_sess-perm@personal").exists()
+        assert not state._scratch_ttl_file("distill_enqueued_sess-perm").exists()
 
     def test_stop_never_raises_when_relay_unreachable(self, client_env, monkeypatch):
         """The enqueue is best-effort: a relay outage is swallowed via try/except so
@@ -296,7 +296,7 @@ class TestStopPersonalMode:
         from firekeep_client.hooks import stop
 
         resolver.set_personal(True)
-        state.write_session_stash("tester", "personal", session_id="sess-live")
+        state.write_session_stash("tester", session_id="sess-live")
         calls = _record_calls(monkeypatch)
 
         out = stop.run({})
@@ -309,7 +309,7 @@ class TestStopPersonalMode:
         # Stop fires PER TURN (Claude 'Stop' event) — it must NOT clear the
         # session stash, or attribution dies after turn 1. Session-end clearing
         # is the tap's job (complete/abandon) + session_start's top-clear + TTL.
-        assert state.read_session_stash("tester", "personal") is not None
+        assert state.read_session_stash("tester") is not None
 
     def test_env_bypass_stop_skips_comms_without_a_marker(self, client_env, monkeypatch):
         from firekeep_client.hooks import stop

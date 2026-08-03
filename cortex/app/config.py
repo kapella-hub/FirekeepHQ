@@ -10,6 +10,11 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:8080"]
     RATE_LIMIT: str = "60/minute"
+    ENROLL_TICKET_TTL_HOURS: int = 24
+    ENROLL_TOMBSTONE_DAYS: int = 7
+    ENROLL_KEY_EXPIRES_DAYS: int = 90
+    ENROLL_RATE_LIMIT: str = "10/minute"
+    ENROLL_MAX_ATTEMPTS_PER_HOUR: int = 60
 
     # Neo4j
     NEO4J_URI: str = "bolt://localhost:7687"
@@ -217,6 +222,19 @@ class Settings(BaseSettings):
     # human review by the memory-agent staleness sweep (never deleted, never
     # status-changed). A re-recalled skill un-stales on the next run.
     SKILL_STALE_AFTER_DAYS: int = 90
+    # Raw-cosine floor for SEMANTIC skill matching (GET /skills?q=, briefing skills
+    # section). Deliberately NOT RECALL_SCORE_FLOOR (0.35, above): that was tuned for
+    # prose memory bodies on mxbai-embed-large/1024-dim, while a skill embeds a terse
+    # composite (trigger + symptoms + domain + steps + gotchas) and the office deploy
+    # embeds with granite-embedding:30m/384-dim. Sweep against a real corpus after ship.
+    # A too-high value cannot regress below the legacy behaviour: when nothing clears
+    # the floor the matcher falls back to the pre-existing scroll + substring path.
+    SKILL_MATCH_SCORE_FLOOR: float = 0.30
+    # Bounds the query embed on the skill-match path. Sized to fit inside the
+    # briefing's 2.0s per-section budget (briefing/api.py `_run_section`) with room for
+    # the Qdrant round trip AND the scroll fallback — without it, a hung embeddings
+    # backend costs 3 x 30s httpx timeouts plus backoff before failing.
+    SKILL_MATCH_EMBED_TIMEOUT_SECONDS: float = 1.2
     SKILL_ERROR_DENSITY_WEIGHT: float = 0.30
     SKILL_ANOMALY_WEIGHT: float = 0.20
     SKILL_RESOLUTION_WEIGHT: float = 0.35

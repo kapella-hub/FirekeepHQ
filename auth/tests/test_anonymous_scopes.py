@@ -133,7 +133,7 @@ class TestDisabledPathFastAPI:
     @pytest.mark.asyncio
     async def test_normal_scope_allowed(self, auth_disabled):
         identity = await require_scope("memory:read")(_request())
-        assert identity["agent_id"] == "anonymous"
+        assert identity["member_id"] == "member-owner"
 
     @pytest.mark.asyncio
     async def test_refusal_explains_itself(self, auth_disabled):
@@ -169,7 +169,7 @@ class TestDisabledPathAsgi:
 
     def test_normal_scope_allowed(self, auth_disabled):
         identity = require_scope_asgi(_request(), "relay:write")
-        assert identity["agent_id"] == "anonymous"
+        assert identity["member_id"] == "member-owner"
 
     def test_wildcard_regression_still_refused(self, auth_disabled, monkeypatch):
         monkeypatch.setitem(keys._ANONYMOUS_IDENTITY, "scopes", ["*"])

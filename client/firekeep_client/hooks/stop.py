@@ -50,8 +50,7 @@ def run(payload: dict) -> dict:
         return {}
 
     cfg = resolver.load_config()
-    profile = resolver.active_profile(cfg)
-    agent = resolver.agent_id(cfg, profile)
+    agent = resolver.agent_id(cfg)
 
     # NB: the session stash is deliberately NOT cleared here — Stop fires every
     # turn, so clearing would drop X-Session-Id attribution after turn 1. The
@@ -90,7 +89,7 @@ def run(payload: dict) -> dict:
                 "context": _git.workspace_snapshot()}
         sid = ""
         try:
-            stash = state.read_session_stash(agent, profile)
+            stash = state.read_session_stash(agent)
             if stash and stash.get("session_id"):
                 sid = str(stash["session_id"])
                 task["description"] = f"session_id={sid}"
@@ -118,7 +117,7 @@ def run(payload: dict) -> dict:
         # session would leave one file per session forever. The no-id sentinel is
         # parenthesised so it cannot collide with a real session id.
         dedupe_id = sid or str(payload.get("session_id") or "")
-        marker = f"distill_enqueued_{dedupe_id or '(none)'}@{profile}"
+        marker = f"distill_enqueued_{dedupe_id or '(none)'}"
         marker_ttl = None if sid else _FALLBACK_DEDUPE_TTL_SECONDS
         if state.read_scratch(marker):
             return {"systemMessage": _MSG}

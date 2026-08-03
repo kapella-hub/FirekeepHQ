@@ -259,6 +259,17 @@ def _register_admin_surface_routers(app: FastAPI) -> None:
 
 def _register_feature_routers(app: FastAPI) -> None:
     """Register all feature routers with the app. Called during lifespan startup."""
+    # Enrollment must exist even when AUTH_ENABLED=false so it can explain why
+    # no credential can be issued. Only its exact public redeem/anchor paths
+    # bypass the global key middleware; invite management remains admin-scoped.
+    from app.enroll.api import create_enroll_router
+    app.include_router(create_enroll_router(limiter=limiter))
+    from app.members.api import create_members_router
+    app.include_router(create_members_router(
+        redis_client=app.state.auth_redis,
+        workspace=app.state.workspace,
+    ))
+
     app.include_router(create_dashboard_router(
         graph=app.state.graph_client,
         vector=app.state.vector_client,
@@ -571,13 +582,6 @@ async def lifespan(app: FastAPI):
     await app.state.graph_client.ensure_indexes()
     await app.state.vector_client.initialize()
 
-    app.state.rag_engine = RAGEngine(
-        graph=app.state.graph_client,
-        vector=app.state.vector_client,
-        settings=settings,
-        http_client=app.state.http_client,
-    )
-
     # Replay Redis client (DB 6) — separate from main Cortex Redis (DB 0)
     try:
         from replay.config import get_replay_settings
@@ -598,16 +602,28 @@ async def lifespan(app: FastAPI):
     from auth.middleware import init_auth
 
     auth_settings = get_auth_settings()
-    if auth_settings.ENABLED:
-        app.state.auth_redis = redis.asyncio.from_url(
-            auth_settings.REDIS_URL, decode_responses=True,
-        )
-        await init_auth(redis_client=app.state.auth_redis, enabled=True)
-        logger.info("Auth initialized (enabled=True)")
-    else:
-        app.state.auth_redis = None
-        await init_auth(enabled=False)
-        logger.info("Auth initialized (enabled=False)")
+    app.state.auth_redis = redis.asyncio.from_url(
+        auth_settings.REDIS_URL, decode_responses=True,
+    )
+    await init_auth(
+        redis_client=app.state.auth_redis,
+        enabled=auth_settings.ENABLED,
+    )
+    logger.info("Auth initialized (enabled=%s)", auth_settings.ENABLED)
+
+    # Migration order is load-bearing: workspace/owner -> credentials ->
+    # memories -> verified counts -> only then serve filtered reads.
+    from app.workspace_migration import migrate_single_workspace
+
+    app.state.workspace = await migrate_single_workspace(
+        app.state.auth_redis, app.state.vector_client
+    )
+    app.state.rag_engine = RAGEngine(
+        graph=app.state.graph_client,
+        vector=app.state.vector_client,
+        settings=settings,
+        http_client=app.state.http_client,
+    )
 
     # Vault initialization (shares Redis DB 7 with auth)
     app.state.vault_redis = None
@@ -856,7 +872,14 @@ app.add_middleware(RequestBodySizeLimitMiddleware)
 AUTH_SKIP_PREFIXES: tuple[str, ...] = (
     "/health", "/version", "/docs", "/redoc", "/openapi.json",
 )
-AUTH_SKIP_EXACT_PATHS: tuple[str, ...] = ("/dashboard", "/dashboard/")
+AUTH_SKIP_EXACT_PATHS: tuple[str, ...] = (
+    "/dashboard",
+    "/dashboard/",
+    "/enroll",
+    "/enroll/anchor",
+    "/members/invites/accept",
+    "/members/invites/anchor",
+)
 
 _auth_settings = _get_auth_settings()
 app.add_middleware(
@@ -1100,7 +1123,10 @@ async def memory_recall(
     redis_client: Annotated[redis.asyncio.Redis, Depends(get_redis)],
 ) -> RecallResponse:
     """Dual-retrieval memory recall: graph + vector search, merged and scored."""
-    result = await engine.recall(query)
+    from auth.principal import request_principal
+
+    principal = request_principal(request)
+    result = await engine.recall(query, workspace_id=principal["workspace_id"])
     result.request_id = _get_request_id(request)
     result.namespace = query.namespace
 
@@ -1200,10 +1226,13 @@ async def memory_learn(
     if log.resolution:
         text += f" Resolution: {log.resolution}"
 
-    # Team continuity: capture identity headers so /memory/contributors can
-    # group by agent_id and project. Defaults match the recall endpoint.
+    # Runtime identity remains an untrusted observability label. Workspace and
+    # member provenance come only from the verified credential principal.
     sid = request.headers.get("X-Session-Id", "unknown")
     aid = request.headers.get("X-Agent-Id", "unknown")
+    from auth.principal import request_principal
+
+    principal = request_principal(request)
 
     # The Qdrant point id is derived from the text, so it is knowable BEFORE the
     # write and can be handed to the graph in the same gather. Without it the
@@ -1214,7 +1243,13 @@ async def memory_learn(
     memory_id = str(uuid.uuid5(_VECTOR_NS, text))
 
     graph_result, vector_result = await asyncio.gather(
-        graph.merge_action_log(log, namespace=log.namespace, memory_id=memory_id),
+        graph.merge_action_log(
+            log,
+            namespace=log.namespace,
+            memory_id=memory_id,
+            workspace_id=principal["workspace_id"],
+            member_id=principal["member_id"],
+        ),
         vector.upsert(
             text=text,
             metadata={
@@ -1225,6 +1260,8 @@ async def memory_learn(
                 "agent_id": aid,
                 "session_id": sid,
                 "project": log.project,
+                "workspace_id": principal["workspace_id"],
+                "member_id": principal["member_id"],
             },
             namespace=log.namespace,
         ),
@@ -1269,6 +1306,8 @@ async def memory_learn(
                     "agent_id": aid,
                     "session_id": sid,
                     "project": log.project,
+                    "workspace_id": principal["workspace_id"],
+                    "member_id": principal["member_id"],
                     "namespace": log.namespace,
                 },
                 redis_client=redis_client,
