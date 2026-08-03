@@ -55,6 +55,10 @@ services:
     build:
       context: ../..
       dockerfile: cortex/Dockerfile
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
+        APP_VERSION: ${APP_VERSION:-0.6.0}
     ports:
       - "127.0.0.1:18100:8000"
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
