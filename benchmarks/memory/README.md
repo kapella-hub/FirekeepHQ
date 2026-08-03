@@ -34,10 +34,15 @@ deliberately out of scope).
   ~14B-or-under text model via `--reader-model`; the one hard constraint is
   that `:cloud`-suffixed models are refused (`qa.refuse_cloud`) — this
   benchmark is local-only by design.
-- Roughly 10 GB of free disk: the LongMemEval-S dataset JSON is ~265 MB,
-  `qwen3:14b` (Q4_K_M) is ~9.3 GB and `mxbai-embed-large` is ~670 MB, plus a
-  few hundred MB for the bench stack's Neo4j/Qdrant/Redis volumes once ~500
-  questions' worth of haystacks are ingested.
+- Disk space: the harness's preflight check (`bench.run.preflight`) only
+  requires at least 5 GB free on the drive holding `work/`. Budget for it
+  separately from the model/dataset downloads and Docker's own volumes,
+  which the check does not measure and which may live on an entirely
+  different drive (e.g. Docker Desktop's WSL2 virtual disk on Windows):
+  the LongMemEval-S dataset JSON is ~265 MB, `qwen3:14b` (Q4_K_M) is ~9.3 GB,
+  `mxbai-embed-large` is ~670 MB, and the bench stack's Neo4j/Qdrant/Redis
+  volumes add a few hundred MB once ~500 questions' worth of haystacks are
+  ingested.
 
 ## Reproduction
 
@@ -55,7 +60,9 @@ docker compose -f docker-compose.bench.yml -p firekeep-bench up -d --build
 Notes on each step:
 
 1. Creates the venv and installs `requirements.txt` (`huggingface_hub`,
-   `httpx`, `tqdm`, and friends — see the file for the full pinned set).
+   `httpx`, `tqdm`, and friends — see the file for the full set of version
+   ranges; unlike the service Dockerfiles' `requirements.lock`, this harness
+   is not hash-pinned).
 2. `bench.download` fetches LongMemEval-S from HuggingFace
    (`xiaowu0162/longmemeval-cleaned`, file `longmemeval_s_cleaned.json`),
    verifies every row carries the keys the rest of the harness depends on,
