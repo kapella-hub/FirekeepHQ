@@ -12,6 +12,7 @@ import json
 import shutil
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 import httpx
 
@@ -146,6 +147,18 @@ def _build_argparser() -> argparse.ArgumentParser:
 def run(argv: list[str] | None = None) -> int:
     args = _build_argparser().parse_args(argv)
 
+    names = list(recall.CONFIGS) if args.config == "both" else [args.config]
+
+    # QA always reads the bench config's recall output (raw, untrimmed context);
+    # the report unconditionally labels that row "bench config" QA, so running
+    # QA against a different config's recall would mislabel a published
+    # artifact. Reject before preflight, before anything is touched.
+    if not args.skip_qa and "bench" not in names:
+        print(
+            "QA requires the bench config: use --config bench/both, or pass --skip-qa"
+        )
+        return 1
+
     fails = preflight(args.base_url, args.ollama_url, args.reader_model, args.skip_qa)
     if fails:
         print("PRE-FLIGHT FAILED:")
@@ -157,8 +170,6 @@ def run(argv: list[str] | None = None) -> int:
     rows = load_dataset(DATA_DIR / "longmemeval_s.json")
     if args.limit:
         rows = rows[: args.limit]
-
-    names = list(recall.CONFIGS) if args.config == "both" else [args.config]
 
     ledger = ingest.Ledger(WORK_DIR / "ingest_ledger.jsonl")
     try:
@@ -177,7 +188,7 @@ def run(argv: list[str] | None = None) -> int:
     for e in ingest_stats.errors[:20]:
         print("  ingest ERROR:", e)
 
-    recall_paths: dict[str, object] = {}
+    recall_paths: dict[str, Path] = {}
     for name in names:
         out = WORK_DIR / f"recall_{name}.jsonl"
         try:
@@ -209,11 +220,11 @@ def run(argv: list[str] | None = None) -> int:
         )
 
     if not args.skip_qa:
-        qa_config = "bench" if "bench" in recall_paths else names[0]
+        # Guarded above: skip_qa=False implies "bench" is in names/recall_paths.
         qa_out = WORK_DIR / "qa_bench.jsonl"
         try:
             qa_stats = asyncio.run(qa.run_qa(
-                rows, recall_paths[qa_config], qa_out,
+                rows, recall_paths["bench"], qa_out,
                 base_url=args.ollama_url, model=args.reader_model, progress=True,
             ))
         except Exception as exc:
