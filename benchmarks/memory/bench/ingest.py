@@ -17,6 +17,19 @@ from bench.common import (
 _MAX_FIELD = 5000  # ActionLog action/outcome max_length
 
 
+def _clip_or_fallback(text: str | None, fallback: str) -> str:
+    """Truncate to the API field limit, falling back on empty/missing content.
+
+    Real LongMemEval-S rows contain sessions with an empty-string (or absent)
+    user turn. Left as "", it flows through as `action=""`, which the server
+    rejects (ActionLog.action min_length=1) — the session fails ingest
+    permanently and every resume re-attempts (and re-fails) it. Both sides
+    (user -> "(no prompt)", assistant -> "(no reply)") get the same
+    treatment, applied at every site that can emit a final pair.
+    """
+    return (text or "")[:_MAX_FIELD] or fallback
+
+
 def turn_pairs(session: list[dict]) -> list[tuple[str, str]]:
     pairs: list[tuple[str, str]] = []
     pending_user: str | None = None
@@ -24,15 +37,33 @@ def turn_pairs(session: list[dict]) -> list[tuple[str, str]]:
         role, content = turn.get("role"), (turn.get("content") or "")
         if role == "user":
             if pending_user is not None:
-                pairs.append((pending_user[:_MAX_FIELD], "(no reply)"))
+                pairs.append((_clip_or_fallback(pending_user, "(no prompt)"), "(no reply)"))
             pending_user = content
         elif role == "assistant":
-            user = pending_user if pending_user is not None else "(no prompt)"
-            pairs.append((user[:_MAX_FIELD], content[:_MAX_FIELD] or "(no reply)"))
+            pairs.append((
+                _clip_or_fallback(pending_user, "(no prompt)"),
+                _clip_or_fallback(content, "(no reply)"),
+            ))
             pending_user = None
     if pending_user is not None:
-        pairs.append((pending_user[:_MAX_FIELD], "(no reply)"))
+        pairs.append((_clip_or_fallback(pending_user, "(no prompt)"), "(no reply)"))
     return pairs
+
+
+def _build_payload(ns: str, sid: str, date: str, user: str, assistant: str) -> dict:
+    """The one place a /memory/learn payload is assembled from a turn pair.
+
+    Shared by learn_payloads (dry-run / test inspection) and ingest()'s
+    do_unit (the actual network path) so the two can never drift apart.
+    """
+    return {
+        "action": user,
+        "outcome": assistant,
+        "tags": [session_tag(sid), date_tag(date)],
+        "namespace": ns,
+        "domain": "longmemeval",
+        "memory_type": "episodic",
+    }
 
 
 def learn_payloads(row: dict) -> list[dict]:
@@ -42,14 +73,7 @@ def learn_payloads(row: dict) -> list[dict]:
         row["haystack_session_ids"], row["haystack_dates"], row["haystack_sessions"]
     ):
         for user, assistant in turn_pairs(session):
-            payloads.append({
-                "action": user,
-                "outcome": assistant,
-                "tags": [session_tag(sid), date_tag(date)],
-                "namespace": ns,
-                "domain": "longmemeval",
-                "memory_type": "episodic",
-            })
+            payloads.append(_build_payload(ns, sid, date, user, assistant))
     return payloads
 
 
@@ -132,12 +156,7 @@ async def ingest(rows, base_url, *, concurrency=8, ledger=None,
             pairs = turn_pairs(session)
             try:
                 for user, assistant in pairs:
-                    payload = {
-                        "action": user, "outcome": assistant,
-                        "tags": [session_tag(sid), date_tag(date)],
-                        "namespace": ns, "domain": "longmemeval",
-                        "memory_type": "episodic",
-                    }
+                    payload = _build_payload(ns, sid, date, user, assistant)
                     async with sem:
                         await _post_with_retry(client, url, payload, max_retries)
                     stats.learn_calls += 1

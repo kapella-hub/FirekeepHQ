@@ -1,4 +1,5 @@
 import asyncio
+import json
 import httpx
 import pytest
 
@@ -26,6 +27,42 @@ def test_turn_pairs_truncates_to_api_limit():
     assert len(pairs[0][0]) == 5000 and len(pairs[0][1]) == 5000
 
 
+def test_turn_pairs_empty_user_content_uses_no_prompt_fallback():
+    # Real LongMemEval-S rows contain sessions with an empty-string user turn.
+    # Before the fix this flowed through as action="" -> server 422
+    # (ActionLog.action min_length=1), permanently failing the session.
+    pairs = ingest.turn_pairs([
+        {"role": "user", "content": ""},
+        {"role": "assistant", "content": "answer"},
+    ])
+    assert pairs == [("(no prompt)", "answer")]
+
+
+def test_turn_pairs_missing_user_content_key_uses_no_prompt_fallback():
+    pairs = ingest.turn_pairs([
+        {"role": "user"},
+        {"role": "assistant", "content": "answer"},
+    ])
+    assert pairs == [("(no prompt)", "answer")]
+
+
+def test_turn_pairs_dangling_empty_user_before_next_user_turn():
+    # Covers the mid-loop flush site, not just the end-of-session flush.
+    pairs = ingest.turn_pairs([
+        {"role": "user", "content": ""},
+        {"role": "user", "content": "second"},
+        {"role": "assistant", "content": "answer"},
+    ])
+    assert pairs[0] == ("(no prompt)", "(no reply)")
+    assert pairs[1] == ("second", "answer")
+
+
+def test_turn_pairs_trailing_empty_user_uses_no_prompt_fallback():
+    # Covers the end-of-session dangling flush site.
+    pairs = ingest.turn_pairs([{"role": "user", "content": ""}])
+    assert pairs == [("(no prompt)", "(no reply)")]
+
+
 def test_learn_payloads_stamps_namespace_and_tags():
     payloads = ingest.learn_payloads(FIXTURE_ROWS[0])
     assert all(p["namespace"] == "lm_q_multi_1" for p in payloads)
@@ -48,6 +85,24 @@ def test_ledger_roundtrip(tmp_path):
     led2 = ingest.Ledger(tmp_path / "ledger.jsonl")
     assert led2.done(key)
     assert led2.memories_per_session("lm_q_multi_1") == {"s_a": 2}
+
+
+@pytest.mark.anyio
+async def test_do_unit_payloads_match_learn_payloads_exactly(tmp_path):
+    # Guards against the two payload-construction copies (learn_payloads and
+    # do_unit) drifting apart now that they share `_build_payload`.
+    captured = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(json.loads(request.content))
+        return httpx.Response(200, json={"status": "ok", "vector_id": "v1"})
+
+    row = FIXTURE_ROWS[0]
+    led = ingest.Ledger(tmp_path / "ledger.jsonl")
+    transport = httpx.MockTransport(handler)
+    await ingest.ingest([row], "http://bench", ledger=led, transport=transport)
+
+    assert captured == ingest.learn_payloads(row)
 
 
 @pytest.mark.anyio
