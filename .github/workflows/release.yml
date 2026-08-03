@@ -88,6 +88,12 @@ jobs:
       - name: Client test suite
         run: cd client && python -m pytest tests -q
 
+      - name: Install client transport dependencies
+        run: python -m pip install -e client
+
+      - name: Client transport test suite
+        run: cd client && python -m pytest tests/test_shim_*.py -q
+
       - name: Release-path guards
         # These specifically cover what a release depends on being correct:
         # published URLs, the manifest builder, and the bootstrap contracts.

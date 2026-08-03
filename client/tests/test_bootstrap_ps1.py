@@ -71,6 +71,66 @@ def test_both_bootstraps_forward_join_on_fast_and_main_paths():
     assert sh.count('--join "${FIREKEEP_JOIN}"') == 4
 
 
+def test_ps1_existing_install_handoff_is_non_interactive_even_when_forced():
+    """Detect an installed client independently of the no-rebuild fast path.
+
+    A version-changing update and ``FIREKEEP_FORCE_REINSTALL=1`` both take the full
+    provisioning path, but neither may turn the final adapter re-render back into a
+    credential prompt. A fresh install remains interactive because the argument array
+    stays empty when there is no installed version or join code.
+    """
+    text = BOOTSTRAP.read_text(encoding="utf-8")
+    detection = "if (Test-Path $FirekeepExe) {"
+    fast_path = "if (($Installed -eq $V) -and -not $env:FIREKEEP_FORCE_REINSTALL) {"
+
+    assert detection in text
+    assert fast_path in text
+    assert text.index(detection) < text.index(fast_path)
+    assert "$Installed -or $env:FIREKEEP_JOIN" in text
+    assert text.count("@NonInteractiveArgs") == 2
+
+
+@pytest.mark.skipif(os.name != "nt", reason="PowerShell argument splatting is Windows-only")
+@pytest.mark.parametrize(
+    ("installed", "join_code", "expected"),
+    [
+        ("0.1.31", "", "--non-interactive"),
+        ("", "join-code", "--non-interactive"),
+        ("", "", ""),
+    ],
+)
+def test_ps1_non_interactive_handoff_splats_one_argument(
+    installed, join_code, expected
+):
+    """Execute the shipped assignment, not a Python model of PowerShell semantics.
+
+    An ``if`` expression unwraps a one-item array into a scalar; splatting that scalar
+    passes one character at a time (``- - n o ...``).  Keeping the variable typed as
+    ``string[]`` is therefore a runtime requirement, not style.
+    """
+    text = BOOTSTRAP.read_text(encoding="utf-8")
+    start = text.index("[string[]]$NonInteractiveArgs = @()")
+    end = text.index("# --- idempotent fast path", start)
+    assignment = text[start:end]
+    script = "\n".join([
+        f"$Installed = '{installed}'",
+        f"$env:FIREKEEP_JOIN = '{join_code}'",
+        assignment,
+        "function Receive-Args { param([Parameter(ValueFromRemainingArguments=$true)]"
+        "[string[]]$Rest) $Rest }",
+        "$received = @(Receive-Args @NonInteractiveArgs)",
+        "Write-Output ($received -join '|')",
+    ])
+    proc = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-Command", script],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == expected
+
+
 def test_ps1_verifies_the_uv_checksum_before_executing_it():
     """Same reasoning as the POSIX side: uv is downloaded over unauthenticated HTTP and then
     run. Windows must not be the soft target."""

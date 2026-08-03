@@ -162,6 +162,24 @@ cd client && python -m pytest tests/test_e2e_bootstrap.py -m e2e -q
 ```
 
 
+- **0.1.32** — Windows updates preserve the optional `--non-interactive`
+  handoff as a one-element argument array, so PowerShell does not splat it into
+  individual characters before adapter re-rendering.
+- **0.1.31** — Existing installs and forced reinstalls reuse their connection
+  without prompting, and stored API keys are never rendered as prompt defaults.
+  Kiro upgrades now remove the retired per-service MCP entries and grants from
+  its named agent, leaving the single Firekeep gateway while preserving foreign
+  servers and user grants.
+- **0.1.30** — HTTP-backed MCP shims survive transient service restarts without
+  replaying ambiguous requests; recovery covers POST failures, fragmented or
+  terminated SSE bodies, and interrupted initialization. The package stays on
+  supported MCP/httpx majors, and the release job installs the built wheel in a
+  clean environment before publish. A runtime whose stdio child was already
+  closed before this version is installed still needs one restart.
+- **0.1.29** — Reliable Codex Decision Board wiring: gateway initialization
+  carries compact recall/Decision Board guidance, installer failures to update
+  `~/.codex/AGENTS.md` warn visibly, and `firekeep doctor` validates the local
+  backends plus exact Codex MCP/instruction blocks.
 - **0.1.28** — Single-entry `firekeep gateway` adapters for Claude Code, Codex,
   Kiro, and OpenCode; single-use device/member join codes; Solo/Team entitlement
   status; and verified `firekeep init` download/update of the public source-free

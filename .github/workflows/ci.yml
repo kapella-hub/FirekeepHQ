@@ -53,6 +53,12 @@ jobs:
           - name: client
             install: pip install pytest
             test: cd client && python -m pytest tests -q
+          # HTTP-backed shim tests need the package's mcp/httpx/anyio dependencies.
+          # Keep them in a separate matrix entry so the stdlib-only client job
+          # above remains an honest import-boundary check.
+          - name: client-transport
+            install: pip install -e ./client pytest
+            test: cd client && python -m pytest tests/test_shim_*.py -q
           # Root tests/ — deploy scripts, provenance, backup/restore, the support
           # bundle, and the install/update health-probe guard. NOTHING RAN THESE
           # IN CI: the `licenses` and `forbidden-tokens` jobs each invoke one

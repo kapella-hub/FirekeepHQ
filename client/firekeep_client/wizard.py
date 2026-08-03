@@ -4,8 +4,8 @@ Lives outside cli.py so the whole flow is testable without a TTY: `ask` is injec
 test drives it with a scripted list of answers. The wizard never touches the filesystem —
 it takes a ConfigParser and returns it mutated; cli.py owns reading, writing, and chmod.
 
-Re-running install must be safe: every prompt is prefilled with the CURRENT value, so a
-teammate hitting Enter through the whole flow changes nothing.
+Re-running install must be safe: non-secret prompts are prefilled with the CURRENT value,
+and a blank API-key answer keeps the existing secret without printing it into the prompt.
 """
 from __future__ import annotations
 
@@ -82,6 +82,18 @@ def _ensure_section(cfg: configparser.ConfigParser, name: str, defaults: dict) -
             cfg.set(name, key, value)
 
 
+def _prompt_api_key(cfg, ask, fresh_prompt="API key") -> None:
+    """Prompt without ever rendering the existing credential as a console default."""
+    current = cfg.get("server", "api_key", fallback="")
+    has_existing = bool(current.strip())
+    prompt = "API key (Enter keeps existing)" if has_existing else fresh_prompt
+    replacement = ask(prompt, "")
+    if replacement:
+        cfg.set("server", "api_key", replacement)
+    elif not has_existing and cfg.has_option("server", "api_key"):
+        cfg.remove_option("server", "api_key")
+
+
 def _configure_ports(cfg, ask) -> None:
     _ensure_section(cfg, "server", _SERVER_DEFAULTS)
     for key in ("base_url", "ca_path"):
@@ -89,12 +101,7 @@ def _configure_ports(cfg, ask) -> None:
     host = ask("Server host (IP or hostname)",
                cfg.get("server", "host", fallback="127.0.0.1"))
     cfg.set("server", "host", host)
-    key = ask("API key (blank if AUTH_ENABLED=false)",
-              cfg.get("server", "api_key", fallback=""))
-    if key:
-        cfg.set("server", "api_key", key)
-    elif cfg.has_option("server", "api_key"):
-        cfg.remove_option("server", "api_key")
+    _prompt_api_key(cfg, ask, "API key (blank if AUTH_ENABLED=false)")
 
 
 def _fetch_org_defaults(cfg, timeout: float = 3.0) -> dict:
@@ -180,8 +187,7 @@ def _configure_paths(cfg, ask, probe=_probe_os_trust, fetch_defaults=_fetch_org_
     cfg.set("server", "ca_path",
             ask("Internal CA cert path ('os' = use the OS trust store)",
                 default_ca))
-    cfg.set("server", "api_key",
-            ask("API key", cfg.get("server", "api_key", fallback="")))
+    _prompt_api_key(cfg, ask)
 
 
 def prompt_config(

@@ -3,8 +3,10 @@
 This is the ONLY module in firekeep_client permitted to import `mcp` and `httpx`.
 The runtime spawns one `firekeep-shim --service <svc>` process per HTTP MCP server.
 At spawn it resolves the configured server, terminates internal-CA TLS itself, and
-injects X-API-Key / X-Agent-Id on every request. Fail-loud on every error path;
-NEVER logs the api_key.
+injects X-API-Key / X-Agent-Id on every request. Startup/configuration failures
+surface a named diagnostic, while transient post-initialize upstream failures
+become ordinary MCP errors so the runtime's stdio connection survives. NEVER logs
+the api_key.
 """
 from __future__ import annotations
 
@@ -14,6 +16,7 @@ import json
 import re
 import logging
 import os
+import re
 import ssl
 import sys
 
@@ -39,6 +42,30 @@ PROG = "firekeep-shim"
 # Bounded timeouts — a dead upstream must surface, never wedge the runtime (spec §5.2).
 CONNECT_TIMEOUT = 10.0
 SSE_READ_TIMEOUT = 300.0
+
+_NO_REQUEST_ID = object()
+_UPSTREAM_UNAVAILABLE = (
+    "Firekeep upstream is temporarily unavailable. For write tools, check whether "
+    "the operation completed before retrying."
+)
+_AUTH_REJECTED = (
+    "Firekeep authentication was rejected. Run `firekeep doctor`; if the credential "
+    "was revoked, re-enroll this client and restart the agent."
+)
+_TLS_FAILED = (
+    "Firekeep TLS verification failed. Run `firekeep doctor` and check the configured "
+    "server CA before restarting the agent."
+)
+_INITIALIZATION_INTERRUPTED = (
+    "Firekeep service initialization was interrupted. Run `firekeep doctor` and "
+    "restart the agent."
+)
+# Two SSE line endings delimit an event.  The lookarounds make CRLF indivisible:
+# without them, regex backtracking can reinterpret one ``\r\n`` as the two tokens
+# ``\r`` + ``\n`` and expose a partial event to the downstream SSE decoder.
+_SSE_EVENT_BOUNDARY = re.compile(
+    br"(?:\r\n|\r(?!\n)|(?<!\r)\n)(?:\r\n|\r(?!\n)|(?<!\r)\n)"
+)
 
 
 _NO_REQUEST_ID = object()

@@ -432,6 +432,14 @@ fix works (including what failed first), skill_create after a hard-won fix,
 ctx_complete_session when done. Secrets go to vault_store, never memory_learn.
 """
 
+GATEWAY_INSTRUCTIONS = f"""\
+{MCP_SERVER_INSTRUCTIONS.rstrip()}
+
+When a clarification needs more than a couple of questions, call decision_board
+instead of asking inline. If it returns pending, keep calling decision_board_check
+until the human answers.
+"""
+
 
 def upsert_marked_block(existing: str, content: str) -> str:
     """Replace the firekeep-owned marker block in `existing`, or append one.

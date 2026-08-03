@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import pytest
 
+from firekeep_client.adapters import codex as codex_adapter_module
 from firekeep_client.adapters import get_adapter
 from firekeep_client.adapters.base import (
     DECISION_INSTRUCTIONS,
@@ -142,6 +143,59 @@ def test_kiro_render_never_touches_a_preexisting_hand_written_firekeep_md(fake_h
 
     assert legacy.read_text(encoding="utf-8") == "---\nname: firekeep-steering\n---\nhand-written rules\n"
     assert _steering(fake_home).exists()  # ours landed beside it
+
+
+# --- codex: block inside the user's global AGENTS.md ---------------------------
+
+def _codex_agents_md(home):
+    return home / ".codex" / "AGENTS.md"
+
+
+def test_codex_render_upserts_block_and_keeps_user_text(fake_home, tmp_path):
+    md = _codex_agents_md(fake_home)
+    md.parent.mkdir(parents=True)
+    md.write_text("# my global rules\n\nnever delete me\n", encoding="utf-8")
+
+    get_adapter("codex").render(venv_bin=tmp_path / "venv" / "Scripts")
+
+    text = md.read_text(encoding="utf-8")
+    assert "never delete me" in text
+    assert "decision_board" in text
+    assert "memory_recall" in text
+    assert INSTRUCTIONS_BEGIN in text and INSTRUCTIONS_END in text
+
+
+def test_codex_unrender_strips_block_but_not_user_text(fake_home, tmp_path):
+    md = _codex_agents_md(fake_home)
+    md.parent.mkdir(parents=True)
+    md.write_text("keep me\n", encoding="utf-8")
+    adapter = get_adapter("codex")
+    adapter.render(venv_bin=tmp_path / "venv" / "Scripts")
+    adapter.unrender()
+
+    text = md.read_text(encoding="utf-8")
+    assert "keep me" in text
+    assert "decision_board" not in text
+
+
+def test_codex_instruction_write_failure_warns_but_keeps_mcp_config(
+        fake_home, tmp_path, monkeypatch, capsys):
+    real_write = codex_adapter_module.write_text_if_changed
+
+    def fail_agents(path, text):
+        if path.name == "AGENTS.md":
+            raise OSError("read only")
+        return real_write(path, text)
+
+    monkeypatch.setattr(codex_adapter_module, "write_text_if_changed", fail_agents)
+    get_adapter("codex").render(venv_bin=tmp_path / "venv" / "Scripts")
+
+    config = (fake_home / ".codex" / "config.toml").read_text(encoding="utf-8")
+    assert "[mcp_servers.firekeep]" in config
+    err = capsys.readouterr().err
+    assert "WARNING" in err
+    assert "AGENTS.md" in err
+    assert "proactive" in err.lower()
 
 
 # --- opencode: block inside the user's global AGENTS.md -------------------------

@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from firekeep_client.adapters.base import GATEWAY_INSTRUCTIONS
+
 
 REMOTE_SERVICES = ("cortex", "bridge", "sentinel", "relay")
 LOCAL_SERVERS = ("symdex", "decision")
@@ -212,6 +214,7 @@ class Gateway:
                     "protocolVersion": self.protocol_version,
                     "capabilities": {"tools": {"listChanged": False}},
                     "serverInfo": {"name": "firekeep", "version": "1"},
+                    "instructions": GATEWAY_INSTRUCTIONS,
                 },
             }
         if method == "ping":
