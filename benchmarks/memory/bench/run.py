@@ -55,6 +55,15 @@ def _free_gb() -> float:
     return shutil.disk_usage(WORK_DIR.anchor).free / 2**30
 
 
+def _model_available(name: str, models: list[str]) -> bool:
+    """`ollama pull <name>` with no explicit tag lists as '<name>:latest' in
+    /api/tags — a bare requested name (no ':') must also match that implicit
+    tag, or every untagged pull fails preflight despite being fully usable."""
+    if name in models:
+        return True
+    return ":" not in name and f"{name}:latest" in models
+
+
 def preflight(cortex_url: str, ollama_url: str, reader_model: str, skip_qa: bool) -> list[str]:
     """Return human-readable failures; empty list means go."""
     fails: list[str] = []
@@ -70,7 +79,7 @@ def preflight(cortex_url: str, ollama_url: str, reader_model: str, skip_qa: bool
         fails.append(str(exc))
 
     models = _ollama_models(ollama_url)
-    if "mxbai-embed-large" not in models:
+    if not _model_available("mxbai-embed-large", models):
         fails.append(
             "embedding model 'mxbai-embed-large' not found in Ollama tags "
             f"({ollama_url}/api/tags) — is Ollama running? "
@@ -78,7 +87,7 @@ def preflight(cortex_url: str, ollama_url: str, reader_model: str, skip_qa: bool
         )
 
     if not skip_qa:
-        if reader_model not in models:
+        if not _model_available(reader_model, models):
             fails.append(
                 f"reader model {reader_model!r} not found in Ollama tags "
                 f"({ollama_url}/api/tags) — is Ollama running? "
