@@ -110,17 +110,32 @@ def _scope_filter():
     )
 
 
-def _profile_done_key(group_key: tuple[str, str, str, str]) -> str:
-    """Stable dedupe key for one (member_id, workspace_id, namespace,
-    project) profile group. A round-2 review finding: a plain `"::".join(...)`
-    is ambiguous whenever a component itself contains "::" — member_id/
-    workspace_id/namespace/project are free-form strings with no such
-    guarantee, so two DIFFERENT groups could collide onto the SAME joined
-    string (e.g. ("a::b", "c", "", "") and ("a", "b::c", "", "") both join to
-    "a::b::c::::"). Hashing the tuple sidesteps the ambiguity entirely and
-    mirrors select.cluster_key's own sha256-over-joined-ids approach."""
+def _profile_done_key(group_key: tuple[str, ...]) -> str:
+    """Stable dedupe key for one profile group — today (member_id,
+    workspace_id), matching store.profile_point_id's own scope exactly (see
+    the grouping comment in run_one_unit). A round-2 review finding: a plain
+    `"::".join(...)` is ambiguous whenever a component itself contains "::" —
+    member_id/workspace_id are free-form strings with no such guarantee, so
+    two DIFFERENT groups could collide onto the SAME joined string (e.g.
+    ("a::b", "c") and ("a", "b::c") both join to "a::b::c"). Hashing the
+    tuple sidesteps the ambiguity entirely and mirrors select.cluster_key's
+    own sha256-over-joined-ids approach."""
     joined = "\x1f".join(group_key)  # ASCII unit separator, still hashed below
     return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:32]
+
+
+def _uniform_or_blank(members: list, key: str) -> str:
+    """The group's shared value for `key`, or "" when the group disagrees.
+
+    Profile groups are (member_id, workspace_id)-scoped (final-review I5), so
+    unlike a cluster they are NOT homogeneous in namespace/project — one
+    member legitimately works across several projects in one workspace. The
+    payload can only honestly carry a namespace/project the whole group
+    agrees on; "" (-> the "default"/None defaults downstream) is the correct
+    answer when it does not, not whichever value happened to be first.
+    """
+    values = {str(m.payload.get(key) or "") for m in members}
+    return values.pop() if len(values) == 1 else ""
 
 
 async def _activity_metrics(vector, settings, state) -> tuple[datetime | None, int]:
@@ -171,12 +186,21 @@ async def _activity_metrics(vector, settings, state) -> tuple[datetime | None, i
     return latest, new_count
 
 
-async def _scroll_candidates(vector, settings, *, now: datetime) -> list:
+async def _scroll_candidates(
+    vector, settings, *, now: datetime, consolidated: set[str] | None = None
+) -> list:
     """Page through the same scope WITH vectors (clustering needs them),
     keeping only points is_candidate() accepts (episodic-or-missing type,
-    unconfirmed, old enough, not OWM-excluded)."""
+    unconfirmed, old enough, not OWM-excluded, and not already covered by a
+    stored dream).
+
+    `consolidated` is DreamState.consolidated_set(), read ONCE by the caller
+    and passed straight through — is_candidate stays pure and never learns
+    what Redis is (final-review I2+I3).
+    """
     from app.dreams.select import Candidate, is_candidate
 
+    consolidated = consolidated if consolidated is not None else set()
     out: list[Candidate] = []
     scanned = 0
     offset = None
@@ -201,6 +225,8 @@ async def _scroll_candidates(vector, settings, *, now: datetime) -> list:
                 min_age_days=settings.DREAM_MIN_AGE_DAYS,
                 owm_floor=settings.DREAM_OWM_FLOOR,
                 owm_prior_n=settings.OWM_PRIOR_N,
+                memory_id=str(p.id),
+                consolidated=consolidated,
             ):
                 out.append(Candidate(
                     id=str(p.id),
@@ -344,7 +370,16 @@ async def run_one_unit() -> dict:
             state.record_run(status="unavailable", health="unavailable")
             return {"status": "unavailable"}
 
-        candidates = await _scroll_candidates(vector, settings, now=now)
+        # The durable "already consolidated" ledger, read ONCE per tick and
+        # threaded through to the pure selector (final-review I2+I3). This is
+        # what makes each tick's candidate pool genuinely smaller than the
+        # last one's, so successive selections reach clusters the earlier
+        # ones could not — the cure for the starvation the sorted-bucket
+        # prefix produced.
+        consolidated = state.consolidated_set()
+        candidates = await _scroll_candidates(
+            vector, settings, now=now, consolidated=consolidated
+        )
         clusters = select.select_clusters(
             candidates,
             threshold=settings.DREAM_CLUSTER_THRESHOLD,
@@ -357,12 +392,25 @@ async def run_one_unit() -> dict:
         # this same pattern hits the profile grouping loop below harder, but
         # applying it here too costs nothing and keeps both loops consistent).
         clusters_done = state.done_set("cluster")
+        # DREAM_MAX_CLUSTERS_PER_RUN is documented as bounding a RUN, and
+        # before the consolidated ledger it did so only by accident: the same
+        # first-N clusters were re-selected every tick, so once all N were in
+        # the per-run done-set the run ended. With the ledger those N drop out
+        # of the candidate pool entirely and the next selection returns a
+        # fresh N — nothing would stop a single "run" from draining the whole
+        # backlog, which would also make `reset_progress` (and therefore
+        # `last_completed_at`, the anchor for the new-memories gate) fire only
+        # once at the very end. The budget below restores the documented
+        # meaning explicitly instead of relying on the bug that provided it.
+        # `clusters_done` is already per-run — reset_progress clears it.
+        budget_left = settings.DREAM_MAX_CLUSTERS_PER_RUN - state.get_counter("clusters_done")
         target = None
-        for cl in clusters:
-            key = select.cluster_key(cl)
-            if key not in clusters_done:
-                target = (key, cl)
-                break
+        if budget_left > 0:
+            for cl in clusters:
+                key = select.cluster_key(cl)
+                if key not in clusters_done:
+                    target = (key, cl)
+                    break
 
         if target is not None:
             key, members = target
@@ -391,6 +439,18 @@ async def run_one_unit() -> dict:
                     vector, insight, members, cluster_key=key, run_id=run_id, index=i,
                 )
                 written.append(point_id)
+            if written:
+                # Only once a dream is actually STORED are its sources
+                # consolidated (final-review I2+I3). The whole cluster is
+                # recorded, not just the ids a particular insight happened to
+                # cite: the cluster is the unit that was consolidated, and
+                # leaving the uncited members behind would let a smaller,
+                # near-identical cluster re-form from the remainder next run.
+                # Zero insights writes NOTHING here — nothing was consolidated,
+                # so those members stay candidates and the cluster is retried
+                # on a later run (the per-run done-set below is what stops it
+                # being retried every tick within THIS one).
+                state.mark_consolidated([m.id for m in members])
             # Mark the CLUSTER done regardless of insight count (including
             # zero) — a cluster the LLM can't synthesize must not be retried
             # forever (synthesize() already logs the failure at WARNING).
@@ -414,30 +474,43 @@ async def run_one_unit() -> dict:
         # so a profile can never be built from another profile or from a
         # human-confirmed memory being re-synthesized against its will.
         #
-        # Grouping key (fix-round review C1 — CRITICAL): must be
-        # (member_id, *select.partition_key(payload)) — i.e. (member_id,
-        # workspace_id, namespace, project) — NOT member_id alone. Grouping
-        # on member_id alone let one member's memories from TWO workspaces be
-        # synthesized into ONE profile, stamped with whichever workspace
-        # happened to be first in Qdrant scroll order — content from a
-        # workspace a reader has no access to could leak into a profile that
-        # workspace's principal-scoped recall then legitimately surfaces.
-        # That same scroll-order instability also meant the SAME member could
-        # get a DIFFERENT workspace_id (and therefore a different
-        # store.profile_point_id) on different runs, leaving two live profile
-        # points for one member with no mechanism to reconcile or retire the
-        # stale one. Grouping on the full tenancy partition makes every
-        # group homogeneous by construction (mirrors how select.select_clusters
-        # itself partitions BEFORE clustering) and makes which point a given
-        # group writes to a function of real data, not scroll order.
+        # Grouping key: (member_id, workspace_id) — EXACTLY the scope
+        # store.profile_point_id encodes, and nothing more.
+        #
+        # It has been wrong in both directions. Originally it was member_id
+        # ALONE, which let one member's memories from TWO workspaces be
+        # synthesized into ONE profile stamped with whichever workspace was
+        # first in Qdrant scroll order — a cross-tenant leak into a point that
+        # workspace's principal-scoped recall then legitimately surfaces
+        # (fix-round C1). The fix over-corrected to the full tenancy partition
+        # (member_id, workspace_id, namespace, project), which restored
+        # tenancy safety but introduced a quieter defect (final-review I5):
+        # groups are processed LARGEST-FIRST while every group for a member
+        # resolves to the SAME point id, so each tick overwrote the previous
+        # one and the SMALLEST project group's profile was what survived — the
+        # systematically worst profile of the set, plus one wasted LLM call
+        # per extra group. On the live store a member with buckets of
+        # 297/140/63/25 ended up with the 25-memory profile.
+        #
+        # (member_id, workspace_id) is the only grouping that agrees with the
+        # point id: workspace_id stays in the key, so the tenancy boundary
+        # C1 established is untouched, while all of that member's evidence in
+        # that workspace forms ONE group written ONCE. namespace/project are
+        # then no longer group invariants — they are derived for the payload
+        # only when the whole group agrees (_uniform_or_blank), because a
+        # profile spanning three projects cannot honestly claim any one of
+        # them. profile_point_id's signature is deliberately unchanged; making
+        # the id carry namespace/project would spread the change across
+        # store/task/profile/briefing for no benefit the reader ever sees.
         if settings.DREAM_PROFILES_ENABLED:
             profiles_done = state.done_set("profile")  # M6: one bulk read
-            by_group: dict[tuple[str, str, str, str], list] = {}
+            by_group: dict[tuple[str, str], list] = {}
             for c in candidates:
                 member_id = str(c.payload.get("member_id") or "")
                 if not member_id:
                     continue
-                group_key = (member_id, *select.partition_key(c.payload))
+                workspace_id = str(c.payload.get("workspace_id") or "")
+                group_key = (member_id, workspace_id)
                 if _profile_done_key(group_key) in profiles_done:
                     continue
                 by_group.setdefault(group_key, []).append(c)
@@ -446,7 +519,9 @@ async def run_one_unit() -> dict:
                 group_key, members = max(
                     by_group.items(), key=lambda kv: len(kv[1])
                 )
-                member_id, workspace_id, namespace, project = group_key
+                member_id, workspace_id = group_key
+                namespace = _uniform_or_blank(members, "namespace")
+                project = _uniform_or_blank(members, "project")
                 done_key = _profile_done_key(group_key)
 
                 written = False
@@ -456,12 +531,11 @@ async def run_one_unit() -> dict:
                     # only checked workspace_id afterward, burning a full LLM
                     # call on a group that was always going to be discarded;
                     # this check is pure and free, so it must run first). A
-                    # candidate lacking workspace_id yields "" from
-                    # partition_key — writing to profile_point_id(member_id,
-                    # "") would be a permanently unreadable point (no real
-                    # workspace could ever match it). Skip synthesis AND the
-                    # write, but still mark the group done below so it isn't
-                    # retried every tick.
+                    # candidate lacking workspace_id groups under "" — writing
+                    # to profile_point_id(member_id, "") would be a
+                    # permanently unreadable point (no real workspace could
+                    # ever match it). Skip synthesis AND the write, but still
+                    # mark the group done below so it isn't retried every tick.
                     logger.warning(
                         "Dream profile group for member %s has no workspace_id "
                         "(namespace=%r project=%r) — skipping synthesis and write",

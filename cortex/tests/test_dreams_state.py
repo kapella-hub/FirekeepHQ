@@ -52,3 +52,48 @@ def test_done_set_returns_all_marked_keys_in_one_read():
     s.mark_unit_done("profile", "m2::ws1::default::")
     assert s.done_set("profile") == {"m1::ws1::default::", "m2::ws1::default::"}
     assert s.done_set("cluster") == set()
+
+
+# --- the consolidated ledger (final-review I2+I3) ---------------------------
+
+def test_consolidated_set_on_fresh_redis_is_empty_set_not_error():
+    assert _state().consolidated_set() == set()
+
+
+def test_mark_consolidated_roundtrips_and_accumulates():
+    s = _state()
+    s.mark_consolidated(["a", "b"])
+    s.mark_consolidated(["b", "c"])
+    assert s.consolidated_set() == {"a", "b", "c"}
+
+
+def test_mark_consolidated_with_no_ids_is_a_no_op():
+    """A cluster the LLM produced zero insights for calls through with an
+    empty list; redis-py's SADD raises on zero members, and a tick must not
+    die because a synthesis came back empty."""
+    s = _state()
+    s.mark_consolidated([])
+    assert s.consolidated_set() == set()
+
+
+def test_reset_progress_leaves_the_consolidated_ledger_intact():
+    """THE regression guard for the starvation fix (final-review I2+I3).
+
+    reset_progress clears per-run progress at the end of every run. If the
+    consolidated ledger were ever added to either of its lists, every run
+    would rediscover the same first-N clusters in sorted-bucket order and
+    re-synthesize them forever while later partitions were never reached —
+    which is precisely the bug the ledger exists to fix. Per-run state must
+    go; the store-level fact must not.
+    """
+    s = _state()
+    s.mark_unit_done("cluster", "ck1")
+    s.bump_counter("clusters_done", 3)
+    s.mark_consolidated(["m1", "m2", "m3"])
+
+    s.reset_progress()
+
+    assert s.done_set("cluster") == set(), "per-run done-set must be cleared"
+    assert s.get_counter("clusters_done") == 0, "per-run counter must be cleared"
+    assert s.consolidated_set() == {"m1", "m2", "m3"}, \
+        "the consolidated ledger is NOT per-run progress and must survive"

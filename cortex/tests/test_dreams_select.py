@@ -151,6 +151,32 @@ def test_is_candidate_accepts_naive_now():
     assert sel.is_candidate(p, now=naive_now, min_age_days=2, owm_floor=0.35, owm_prior_n=5)
 
 
+def test_already_consolidated_memory_is_not_a_candidate():
+    """The design spec's "not already consolidated" criterion, which had no
+    implementation anywhere until final-review I2+I3. The ledger arrives as a
+    plain set argument — is_candidate stays PURE and never learns what Redis
+    is."""
+    p = _payload()
+    assert sel.is_candidate(
+        p, now=NOW, min_age_days=2, owm_floor=0.35, owm_prior_n=5,
+        memory_id="m7", consolidated={"m1", "m2"},
+    )
+    assert not sel.is_candidate(
+        p, now=NOW, min_age_days=2, owm_floor=0.35, owm_prior_n=5,
+        memory_id="m7", consolidated={"m1", "m7"},
+    )
+
+
+def test_consolidated_ledger_defaults_leave_every_existing_caller_unchanged():
+    """Both new parameters default to "no ledger", so a caller that knows
+    nothing about consolidation (every pre-existing one, and every other test
+    in this file) keeps its exact previous meaning."""
+    p = _payload()
+    assert _ok(p)
+    assert sel.is_candidate(p, now=NOW, min_age_days=2, owm_floor=0.35, owm_prior_n=5,
+                            consolidated={"m7"})  # no memory_id -> no exclusion
+
+
 def test_dream_profile_source_is_excluded_even_if_memory_type_is_forged():
     """Fix-round review I4: a profile payload (source="dream_profile") must
     never be selectable as a dreaming candidate, even in the adversarial case

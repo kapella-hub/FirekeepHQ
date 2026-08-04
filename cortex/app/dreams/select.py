@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import math
 from dataclasses import dataclass, field
+from collections.abc import Container
 from datetime import datetime, timedelta, timezone
 
 # A missing memory_type means "written before the field existed" — on the live
@@ -50,12 +51,29 @@ def is_candidate(
     min_age_days: int,
     owm_floor: float,
     owm_prior_n: int,
+    memory_id: str = "",
+    consolidated: Container[str] = frozenset(),
 ) -> bool:
+    """`memory_id` + `consolidated` implement the design spec's "not already
+    consolidated" criterion (final-review I2+I3) while keeping this function
+    PURE: the caller reads the ledger (DreamState.consolidated_set) once per
+    tick and passes the whole set in. Nothing here touches Redis — that is
+    the property the entire module rests on, and a membership test is
+    exactly the shape that invites a lookup to creep in.
+
+    Both default to "no ledger", so every pre-existing caller and test keeps
+    its previous meaning; only the run path supplies them.
+    """
     # Normalize naive datetime to UTC to match parse_ts's tz-aware output.
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
 
     if payload.get("status", "active") != "active":
+        return False
+    # A memory a stored dream already covers is not consolidatable again.
+    # Checked early and cheaply: without it, each run re-selects the same
+    # first-N clusters forever and later partitions are never reached.
+    if memory_id and memory_id in consolidated:
         return False
     if str(payload.get("source", "")) in _EXCLUDED_SOURCES:
         return False

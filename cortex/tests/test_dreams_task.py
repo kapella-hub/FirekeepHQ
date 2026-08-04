@@ -317,6 +317,311 @@ async def test_backend_unavailable_skips_unit_without_marking_anything_done(monk
     assert not vector.upserted
 
 
+# ---------------------------------------------------------------------------
+# I2 + I3 — the persistent consolidated ledger: the spec's "not already
+# consolidated" criterion, and the cure for cluster starvation.
+# ---------------------------------------------------------------------------
+
+def _cluster_points(project, cluster_index, *, dims, member_id="mem1", workspace_id="ws1"):
+    """Four points forming exactly one cluster.
+
+    Every member of cluster `cluster_index` carries the SAME one-hot vector,
+    so within-cluster cosine is 1.0 (>= any threshold) and cross-cluster
+    cosine is 0.0 — clusters that are unambiguous rather than
+    threshold-sensitive, which is what lets these tests assert about WHICH
+    clusters get selected without also testing the clustering maths.
+    """
+    vec = [0.0] * dims
+    vec[cluster_index] = 1.0
+    return [
+        _FakePoint(
+            f"{project}-c{cluster_index}-{i}",
+            _candidate_payload(member_id, workspace_id, i, project=project),
+            vector=list(vec),
+        )
+        for i in range(4)
+    ]
+
+
+async def _fake_synth(members, **kw):
+    from app.dreams.synthesize import Insight
+
+    return [Insight(content="an insight", memory_type="procedural",
+                    source_ids=[m.id for m in members])]
+
+
+async def _drive_run(max_ticks=25):
+    """Tick until the run reports `complete`, collecting the cluster keys it
+    spent its units on. Returns that list."""
+    keys = []
+    for _ in range(max_ticks):
+        out = await dt.run_one_unit()
+        if out["status"] == "complete":
+            return keys
+        assert out["status"] == "ok", out
+        keys.append(out["cluster_key"])
+    raise AssertionError(f"run did not complete within {max_ticks} ticks: {keys}")
+
+
+def _starvation_fixture(monkeypatch, *, cap):
+    """Two project buckets, two clusters each. `select_clusters` walks buckets
+    in sorted key order, so bucket "alpha" is always reached first — with a
+    cap of 2 the "beta" bucket is never in the returned list at all. That is
+    the shape the live store has (a 297-memory project-less bucket ahead of
+    firekeep/nexusstack/timegrapher), just small enough to assert on.
+    """
+    dims = 4
+    points = (
+        _cluster_points("alpha", 0, dims=dims) + _cluster_points("alpha", 1, dims=dims)
+        + _cluster_points("beta", 2, dims=dims) + _cluster_points("beta", 3, dims=dims)
+    )
+    r = fakeredis.FakeStrictRedis()
+    vector = _FakeVector(points)
+    # DREAM_MIN_NEW_MEMORIES=0 keeps the work-available gate open across the
+    # run boundary: `new_memories` counts writes NEWER than last_completed_at,
+    # and these fixtures' memories are all 10 days old, so run 2 would
+    # otherwise be gated out by the very completion run 1 just stamped.
+    settings = _dream_settings(
+        DREAM_MAX_CLUSTERS_PER_RUN=cap, DREAM_MIN_NEW_MEMORIES=0,
+        DREAM_PROFILES_ENABLED=False,
+    )
+
+    async def fake_build_clients():
+        return r, vector, settings
+
+    monkeypatch.setattr(dt, "_build_clients", fake_build_clients)
+    monkeypatch.setattr(dt, "_generation_backend_available", AsyncMock(return_value=True))
+    monkeypatch.setattr("app.dreams.synthesize.synthesize", _fake_synth)
+    return r, vector, settings, points
+
+
+@pytest.mark.asyncio
+async def test_a_consolidated_memory_is_not_a_candidate_in_the_next_run(monkeypatch):
+    """I2+I3 (a). The spec's §Candidate selection lists a "not already
+    consolidated" criterion that had no implementation anywhere. A memory
+    covered by a STORED dream must drop out of the candidate pool."""
+    from app.dreams.state import DreamState
+
+    r, vector, settings, _ = _starvation_fixture(monkeypatch, cap=2)
+
+    out = await dt.run_one_unit()
+    assert out["status"] == "ok" and out["unit"] == "cluster"
+    consolidated = DreamState(r).consolidated_set()
+    assert len(consolidated) == 4, "the whole cluster is consolidated, not just cited ids"
+
+    still_candidates = {
+        c.id for c in await dt._scroll_candidates(
+            vector, settings, now=NOW, consolidated=consolidated,
+        )
+    }
+    assert not (still_candidates & consolidated), \
+        "a consolidated memory must never be offered as a candidate again"
+    assert still_candidates, "the rest of the store must remain selectable"
+
+
+@pytest.mark.asyncio
+async def test_a_zero_insight_cluster_consolidates_nothing(monkeypatch):
+    """The ledger records what was STORED, not what was attempted. A cluster
+    the LLM could not synthesize is marked done for the run (so it is not
+    retried every tick) but its members stay candidates — otherwise one bad
+    synthesis would permanently retire four real memories."""
+    from app.dreams.state import DreamState
+
+    r, _vector, _settings, _ = _starvation_fixture(monkeypatch, cap=2)
+
+    async def _no_insights(members, **kw):
+        return []
+
+    monkeypatch.setattr("app.dreams.synthesize.synthesize", _no_insights)
+
+    out = await dt.run_one_unit()
+    assert out["status"] == "ok" and out["insights"] == 0
+    state = DreamState(r)
+    assert state.consolidated_set() == set(), "nothing was stored, so nothing is consolidated"
+    assert len(state.done_set("cluster")) == 1, "but it is done for THIS run"
+
+
+@pytest.mark.asyncio
+async def test_run_two_selects_different_clusters_than_run_one(monkeypatch):
+    """I2+I3 (b) — THE starvation regression guard.
+
+    Before the ledger, `select_clusters` returned the first
+    DREAM_MAX_CLUSTERS_PER_RUN clusters in deterministic sorted-bucket order
+    and `reset_progress()` wiped the per-run done-set at completion, so every
+    run re-selected and re-synthesized the IDENTICAL prefix forever. Here the
+    cap is 2 and "alpha" holds exactly 2 clusters: pre-fix, "beta" is never
+    reached on ANY run, no matter how many times the pass is allowed to run.
+    """
+    from app.dreams.state import DreamState
+
+    r, vector, _settings, _ = _starvation_fixture(monkeypatch, cap=2)
+
+    run1 = await _drive_run()
+    run2 = await _drive_run()
+
+    assert len(run1) == 2, f"the cap must bound a run: {run1}"
+    assert len(run2) == 2, f"the cap must bound a run: {run2}"
+    assert not (set(run1) & set(run2)), \
+        "run 2 re-selected a cluster run 1 already consolidated — starvation is back"
+
+    # ...and the point of not starving: the second bucket, previously
+    # unreachable at this cap, is actually consolidated.
+    consolidated = DreamState(r).consolidated_set()
+    assert {i for i in consolidated if i.startswith("alpha-")}, "alpha consolidated"
+    assert {i for i in consolidated if i.startswith("beta-")}, \
+        "the beta bucket was never reached — this is the exact live-store failure"
+    assert len(consolidated) == 16, "every memory in both buckets is consolidated"
+
+    # Four clusters, one insight each, one point each — no cluster synthesized twice.
+    assert len(vector.upserted) == 4
+
+
+@pytest.mark.asyncio
+async def test_one_tick_does_at_most_one_unit_with_many_clusters_available(monkeypatch):
+    """I6 (b) — the design spec's §Testing item, previously unwritten.
+
+    The whole execution model rests on this: the worker is
+    --concurrency=1 --pool=solo, so a tick that looped over available
+    clusters would block every other periodic task (including the 60s
+    agent-gateway sweeper) for as many LLM calls as there are clusters.
+    Four clusters are available here; exactly one synthesis and one write may
+    happen.
+    """
+    from app.dreams.select import cluster_key
+
+    calls = []
+
+    async def _counting_synth(members, **kw):
+        calls.append(cluster_key(members))
+        return await _fake_synth(members, **kw)
+
+    _r, vector, _settings, _ = _starvation_fixture(monkeypatch, cap=20)
+    monkeypatch.setattr("app.dreams.synthesize.synthesize", _counting_synth)
+
+    out = await dt.run_one_unit()
+
+    assert out["status"] == "ok" and out["unit"] == "cluster"
+    assert len(calls) == 1, f"one tick synthesized {len(calls)} clusters"
+    assert len(vector.upserted) == 1
+    written = next(iter(vector.upserted.values()))
+    assert written["payload"]["dream_cluster_key"] == out["cluster_key"] == calls[0]
+
+
+# ---------------------------------------------------------------------------
+# I5 — profile grouping scope must equal store.profile_point_id's scope.
+# ---------------------------------------------------------------------------
+
+def _multi_project_points(projects, *, member_id="mem1", workspace_id="ws1",
+                          namespaces=None):
+    """Two memories per project for one member in one workspace. Two is below
+    DREAM_MIN_CLUSTER (4), so no cluster forms in any bucket and every tick
+    falls straight through to the profile branch."""
+    namespaces = namespaces or {}
+    out = []
+    for project in projects:
+        for i in range(2):
+            payload = _candidate_payload(
+                member_id, workspace_id, i,
+                project=project, namespace=namespaces.get(project, "default"),
+            )
+            # Per-project text, so "the profile was built from ALL of them"
+            # is an assertion about content rather than a count of
+            # indistinguishable strings.
+            payload["text"] = f"memory {i} in project {project}"
+            out.append(_FakePoint(f"{project}-{i}", payload))
+    return out
+
+
+def _profile_fixture(monkeypatch, points, *, synth=None):
+    r = fakeredis.FakeStrictRedis()
+    vector = _FakeVector(points)
+    settings = _dream_settings()
+
+    async def fake_build_clients():
+        return r, vector, settings
+
+    monkeypatch.setattr(dt, "_build_clients", fake_build_clients)
+    monkeypatch.setattr(dt, "_generation_backend_available", AsyncMock(return_value=True))
+
+    async def _default_synth(member_id, memories, **kw):
+        return "PROFILE " + " | ".join(sorted(m["text"] for m in memories))
+
+    monkeypatch.setattr("app.dreams.profile.synthesize_profile", synth or _default_synth)
+    return r, vector, settings
+
+
+@pytest.mark.asyncio
+async def test_one_member_in_one_workspace_gets_one_profile_from_all_projects(monkeypatch):
+    """I5. Grouping was (member_id, workspace_id, namespace, project) while
+    store.profile_point_id encodes only (member_id, workspace_id) — so each
+    of a member's project groups wrote to the SAME point, groups are
+    processed largest-first, and the LAST (smallest) one won. The surviving
+    profile was systematically the worst of the set, and every earlier group
+    was a wasted LLM call. On the live store a member with buckets of
+    297/140/63/25 ended up with the 25-memory profile.
+    """
+    calls = []
+
+    async def _counting_synth(member_id, memories, **kw):
+        calls.append(len(memories))
+        return "PROFILE " + " | ".join(sorted(m["text"] for m in memories))
+
+    points = _multi_project_points(["alpha", "beta", "gamma"])
+    _r, vector, _settings = _profile_fixture(monkeypatch, points, synth=_counting_synth)
+
+    out = await dt.run_one_unit()
+    assert out["status"] == "ok" and out["unit"] == "profile"
+    assert out["written"] is True
+
+    assert len(vector.upserted) == 1, \
+        f"one member in one workspace is ONE profile point, got {len(vector.upserted)}"
+    assert calls == [6], f"one LLM call over all 6 memories, got calls of size {calls}"
+
+    # The synthesis INPUT is what the defect corrupted: pre-fix the surviving
+    # profile was built from one project's two memories. All three projects
+    # must be represented in the text that was actually stored.
+    text = next(iter(vector.upserted.values()))["text"]
+    for project in ("alpha", "beta", "gamma"):
+        assert f"project {project}" in text, f"{project} missing from the stored profile"
+
+    # And the run is finished — no second profile group left to overwrite it.
+    assert (await dt.run_one_unit())["status"] == "complete"
+
+
+@pytest.mark.asyncio
+async def test_profile_project_is_unset_when_the_group_does_not_agree(monkeypatch):
+    """A profile spanning three projects cannot honestly claim any one of
+    them. namespace is uniform here and IS derived; project is not and is
+    left None rather than being stamped with whichever value came first."""
+    points = _multi_project_points(["alpha", "beta", "gamma"])
+    _r, vector, _settings = _profile_fixture(monkeypatch, points)
+
+    out = await dt.run_one_unit()
+    assert out["status"] == "ok" and out["unit"] == "profile"
+    payload = next(iter(vector.upserted.values()))["payload"]
+    assert payload["project"] is None, "non-uniform project must not be stamped"
+    assert payload["namespace"] == "default", "uniform namespace is still derived"
+    assert payload["workspace_id"] == "ws1"
+
+
+@pytest.mark.asyncio
+async def test_profile_namespace_is_unset_when_the_group_does_not_agree(monkeypatch):
+    """The mirror case: same project throughout, namespaces disagree. Falls
+    back to the "default" the payload builder uses, not to whichever
+    namespace happened to be scrolled first."""
+    points = _multi_project_points(
+        ["alpha", "beta"], namespaces={"alpha": "acme", "beta": "globex"})
+    for p in points:
+        p.payload["project"] = "one-project"
+    _r, vector, _settings = _profile_fixture(monkeypatch, points)
+
+    out = await dt.run_one_unit()
+    assert out["status"] == "ok" and out["unit"] == "profile"
+    payload = next(iter(vector.upserted.values()))["payload"]
+    assert payload["namespace"] == "default"
+    assert payload["project"] == "one-project", "uniform project is still derived"
+
+
 @pytest.mark.asyncio
 async def test_lock_contention_returns_locked_without_touching_data(monkeypatch):
     r = fakeredis.FakeStrictRedis()
