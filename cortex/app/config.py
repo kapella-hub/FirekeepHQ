@@ -325,24 +325,32 @@ class Settings(BaseSettings):
     SKILL_ANOMALY_WEIGHT: float = 0.20
     SKILL_RESOLUTION_WEIGHT: float = 0.35
     SKILL_AGENT_SCHEDULE_HOURS: int = 6
-    # LLM generation budget for skill synthesis (session + doc drafting), per
-    # endpoint — same two-regime split as KNOWLEDGE_CLASSIFY_* above, and for
-    # the same reason. 300 stays on /v1 (CPU qwen3:4b runs ~150-200s there, and
-    # the old hardcoded 60s timed out every draft so docs->skills never produced
-    # a skill). 120 on native: dreams measured 22.5s for a few-hundred-token
-    # JSON on the same qwen3:4b/4-vCPU box, a skill card is ~300-500 content
-    # tokens (~25-45s), and scaling the office deploy's 56s classify by output
-    # length suggests 60-90s there — so 120 holds 2.5-5x on the VPS and ~1.3-2x
-    # on office. It also caps the fan-out stall: N drafts x 300s is a 20-minute
-    # solo-worker outage for a 3-procedure document; N x 120s is under 6.
-    # This is the number with the least measurement behind it — take one real
-    # office draft before tightening it further.
+    # LLM generation budget for skill synthesis (session + doc drafting).
+    #
+    # DELIBERATELY NOT REDUCED, and deliberately WITHOUT a tighter native
+    # sibling — unlike KNOWLEDGE_CLASSIFY_* above. Skill drafting is
+    # GENERATION-bound, not reasoning-bound, so the endpoint fix does not buy a
+    # timeout reduction here the way it does for classify. Measured on the VPS
+    # 2026-08-04 (qwen3:4b, 4 vCPU) on ollama's NATIVE endpoint with think:false
+    # already in effect: generation runs at 5.9-7.2 tokens/sec, and the model
+    # runs to the cap every time (done_reason=length at 300/400/500/800), so the
+    # 800-token bound below costs 112-135s of pure output generation. A 120s
+    # native budget was tried and FAILED ALL THREE DRAFTS of a real ingest at
+    # exactly 120.13s each. 300 leaves ~2.2x over the worst observed 135s.
+    #
+    # A design estimate of "~25-45s native" for a card did not survive contact
+    # with the hardware; it extrapolated from Dreaming's 22.5s, which is a
+    # ~145-token JSON at this token rate — a fifth of a skill card. If you
+    # reduce this, measure a real draft on YOUR hardware first: at ~6 tok/s the
+    # floor is (SKILL_SYNTH_MAX_TOKENS / 6) seconds plus prompt eval.
     SKILL_SYNTH_TIMEOUT_SECONDS: float = 300.0
-    SKILL_SYNTH_NATIVE_TIMEOUT_SECONDS: float = 120.0
     # Output bound for a skill card. Both synthesis calls previously sent NO
     # limit at all, so a thinking model could generate reasoning until the
-    # timeout with no card ever emitted. A card is ~300-500 tokens; 800 leaves
-    # room without permitting a runaway.
+    # timeout with no card ever emitted. This is also the real cost control:
+    # per the measurement above the model does NOT stop on its own, so this
+    # number multiplied by the token rate IS the wall-clock cost of a draft.
+    # 800 yields a complete card (all four sections) with the tail truncated;
+    # lowering it lowers latency proportionally and truncates more.
     SKILL_SYNTH_MAX_TOKENS: int = 800
 
     # MCP Server

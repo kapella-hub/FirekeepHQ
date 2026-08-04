@@ -331,8 +331,10 @@ class SkillSynthesizer:
         result = await llm.chat(
             settings=s,
             messages=[{"role": "user", "content": prompt}],
+            # No `native_timeout`: one budget for both endpoints here. Drafting
+            # is generation-bound, so the native path is barely faster — see
+            # SKILL_SYNTH_TIMEOUT_SECONDS in config.py for the measurement.
             timeout=s.SKILL_SYNTH_TIMEOUT_SECONDS,
-            native_timeout=getattr(s, "SKILL_SYNTH_NATIVE_TIMEOUT_SECONDS", None),
             max_tokens=getattr(s, "SKILL_SYNTH_MAX_TOKENS", 800),
             purpose=purpose,
         )
