@@ -42,6 +42,21 @@ def test_counter_on_missing_key_is_zero():
     assert _state().get_counter("never_set") == 0
 
 
+def test_reset_progress_clears_every_per_run_counter():
+    """Naming the whole set explicitly, because a counter that is bumped but
+    never listed in reset_progress silently becomes an all-time total. That is
+    what would make `insights_written` — the field GET /dreams uses to tell a
+    productive run from a barren one — describe the deployment's history rather
+    than the run in front of the operator."""
+    s = _state()
+    per_run = ("new_memories", "clusters_done", "profiles_done",
+               "insights_written", "errors")
+    for name in per_run:
+        s.bump_counter(name, 3)
+    s.reset_progress()
+    assert {name: s.get_counter(name) for name in per_run} == dict.fromkeys(per_run, 0)
+
+
 def test_done_set_on_fresh_redis_is_empty_set_not_error():
     assert _state().done_set("profile") == set()
 

@@ -5,6 +5,17 @@
 on thinking that the JSON grammar blocks and returns EMPTY content after 101s.
 Both spellings are sent because ollama accepts the native `think` flag and the
 OpenAI-compatible path reads `chat_template_kwargs.enable_thinking`.
+
+**But the flags are not sufficient, and an earlier version of this docstring
+claimed they made the problem go away.** Ollama honours both on its NATIVE
+`/api/chat` and silently IGNORES both on `/v1/chat/completions` — which is the
+endpoint this module posts to, because `LLM_BASE_URL` ends in `/v1`. Live
+validation against ollama 0.17.5 reproduced the exact empty-content failure
+mode *with the flags set*, 3 probes out of 3: the reasoning ran anyway and ate
+the whole completion budget. On a `/v1` deployment the budget is therefore the
+control that actually decides whether anything comes back at all — see
+`_MAX_COMPLETION_TOKENS` below. The flags stay because they are correct and do
+work for a deployment pointed at `/api`.
 """
 from __future__ import annotations
 
@@ -21,6 +32,43 @@ logger = logging.getLogger(__name__)
 _MAX_INSIGHTS = 3
 _EPISODE_TRUNCATE_CHARS = 600
 _DEFAULT_MAX_CHARS = 800
+
+# Completion budget for one synthesis call — sized to ABSORB a thinking model's
+# blocked reasoning, not just the JSON answer (which is ~200-400 tokens).
+#
+# It was 700, and 700 starved the feature on its own documented reference
+# configuration. Measured live against ollama 0.17.5 with this exact request
+# body, 3 probes out of 3: HTTP 200, `finish_reason='length'`,
+# `completion_tokens=700` (i.e. exactly the cap), **content length 0**,
+# reasoning length ~3200 chars. The identical call with `max_tokens=4000`
+# returned correct JSON. So it is budget starvation, not a broken model and not
+# a broken flag: `think:false` / `chat_template_kwargs.enable_thinking` are
+# ignored on `/v1/chat/completions` (see the module docstring), the reasoning
+# runs regardless, the JSON grammar blocks it from being emitted as content, and
+# the cap is hit before a single content token exists. Field impact: 2 of 3
+# clusters produced ZERO insights, reproducibly, across two full runs — and a
+# zero-insight cluster is never added to `dreams:consolidated`, so those
+# clusters were re-selected and re-attempted on every subsequent run forever.
+#
+# Deliberately NOT derived from `DREAM_MAX_INSIGHT_CHARS` and deliberately not a
+# config field. That setting caps the CONTENT of each insight (800 chars,
+# enforced by `parse_insights`); the tokens this number has to cover are
+# overwhelmingly reasoning the content cap knows nothing about, so tying them
+# would make raising the content cap silently shrink the reasoning headroom and
+# vice versa. It is also read by `build_request_body`, which is a pure function
+# shared with `profile.py` and has no `Settings` in scope.
+#
+# KNOWN INTERACTION, stated rather than hidden: on a `/v1` deployment this
+# raises worst-case wall time, because the reasoning tokens now actually get
+# generated instead of being truncated at 700. `DREAM_SYNTH_TIMEOUT_SECONDS`
+# (45.0) is the only control that binds under `--pool=solo`, so on slow CPU
+# inference the call can now time out where it previously returned fast-and-
+# empty. Both outcomes yield zero insights; the difference is that the timeout
+# is loud (a WARNING from `synthesize`) and `GET /dreams` reports `degraded`
+# rather than `ok`. The real fix for such a deployment is to point
+# `LLM_BASE_URL` at ollama's `/api` (where `think:false` works and 22.5s is the
+# measured latency) or to raise the timeout with a measurement behind it.
+_MAX_COMPLETION_TOKENS = 4000
 
 
 def _system_prompt(max_chars: int) -> str:
@@ -75,9 +123,12 @@ def build_request_body(model: str, messages: list[dict]) -> dict:
         "stream": False,
         "temperature": 0.2,
         "response_format": {"type": "json_object"},
+        # Correct, and honoured on ollama's native /api/chat — IGNORED on
+        # /v1/chat/completions, which is where this request goes. That is
+        # precisely why the budget below has to accommodate reasoning tokens.
         "think": False,
         "chat_template_kwargs": {"enable_thinking": False},
-        "max_tokens": 700,
+        "max_tokens": _MAX_COMPLETION_TOKENS,
     }
 
 

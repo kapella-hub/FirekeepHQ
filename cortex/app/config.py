@@ -201,6 +201,19 @@ class Settings(BaseSettings):
     # minute instead of stalling the solo worker for ~3.5 minutes. Do not
     # raise time_limit to compensate for a bigger value here — it's a no-op
     # under --pool=solo, so it would look like a boost with no real effect.
+    #
+    # CAVEAT added after live validation (2026-08-04): the 22.5s measurement
+    # above holds where think:false is HONOURED, i.e. ollama's native
+    # /api/chat. On /v1/chat/completions — where LLM_BASE_URL points by
+    # default — ollama IGNORES the flag, the reasoning runs anyway, and the
+    # completion budget (synthesize._MAX_COMPLETION_TOKENS, raised to 4000 to
+    # stop that reasoning starving the answer) has to be generated before any
+    # JSON appears. On slow CPU inference that can exceed 45s, in which case
+    # this timeout fires, synthesize() returns [] with a WARNING and the run
+    # reports health="degraded" at GET /dreams. Raising this number is NOT the
+    # blind fix: pointing LLM_BASE_URL at /api restores the measured 22.5s
+    # path. Any increase here should carry its own measurement, as this 45s
+    # does.
     DREAM_SYNTH_TIMEOUT_SECONDS: float = 45.0
     DREAM_LOCK_TTL_SECONDS: int = 1800
     DREAM_PROFILES_ENABLED: bool = True

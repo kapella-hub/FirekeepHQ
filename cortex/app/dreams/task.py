@@ -30,7 +30,9 @@ LOCK_KEY = "dreams:lock"
 #   norm-precomputed): ~3.5s @500, ~14.1s @1000, ~58.8s @2000. Against
 #   soft_time_limit=150s/time_limit=180s — which also has to leave room for
 #   one synthesis call (~22.5s per the design doc's ground truth, up to
-#   DREAM_SYNTH_TIMEOUT_SECONDS=120s worst case) plus Qdrant/Redis overhead —
+#   DREAM_SYNTH_TIMEOUT_SECONDS=45s worst case — this comment said 120s, the
+#   value that setting held before it was re-derived from that measurement;
+#   see app/config.py for the 45s reasoning) plus Qdrant/Redis overhead —
 #   2000 leaves too little margin. 1000 (~14s clustering) leaves generous
 #   headroom.
 #
@@ -259,6 +261,34 @@ def _is_backend_unavailable(exc: Exception) -> bool:
                                or "not exist" in msg)
 
 
+def _model_available(model: str, models: list[str]) -> bool:
+    """Whether `model` names something in `models`, tolerating ollama's tag forms.
+
+    Mirrors client/firekeep_client/nightshift.py's `_model_available` exactly,
+    for the same reason: ollama's `/v1/models` reports fully-tagged ids
+    (`qwen3:4b`, `llama3:latest`) while its chat API accepts and resolves the
+    bare name, so strict equality can veto a model that would have worked.
+    Compared in both directions so neither spelling is penalised.
+    """
+    if model in models:
+        return True
+    if ":" not in model and f"{model}:latest" in models:
+        return True
+    if model.endswith(":latest") and model[: -len(":latest")] in models:
+        return True
+    return False
+
+
+def _listed_models(data) -> list[str]:
+    """Model ids out of an OpenAI-compatible `/models` body, or `[]` when the
+    shape is not readable. `[]` means "cannot tell" and never "has no models" —
+    see the leniency note in _generation_backend_available."""
+    try:
+        return [str(m["id"]) for m in (data or {}).get("data") or [] if m.get("id")]
+    except Exception:  # noqa: BLE001 — any unexpected shape is "cannot tell"
+        return []
+
+
 async def _generation_backend_available(settings) -> bool:
     """Gate #2 from the design spec (docs/superpowers/specs/2026-08-04-
     dreaming-design.md), not covered by Task 6's original brief — added in
@@ -280,24 +310,50 @@ async def _generation_backend_available(settings) -> bool:
     backend answered — treated as available, so synthesis attempts the real
     call and fails on its own terms rather than being pre-empted here.
 
-    NOT independently verified against a live backend in this fix round (no
-    Ollama/Qdrant reachable in the environment the round was done in) —
-    the /models convention is standard OpenAI-compat surface and Night
-    Shift's client-side backend detection (client/firekeep_client, see root
-    CLAUDE.md) uses the same convention, but this specific call has only
-    been exercised against mocked httpx transports (see
-    test_dreams_task.py's backend-unavailable tests)."""
+    **Probing the endpoint is not the same as having the MODEL**, and until
+    live validation this function only did the former. Proven against a real
+    backend: with `LLM_MODEL=this-model-does-not-exist:7b` the probe returned
+    True, the pass then walked the ENTIRE backlog (3 clusters + 2 profile
+    groups) marking every unit done with zero output, stamped
+    `last_completed_at` and reported `status=complete health=ok` — the exact
+    false-complete this gate exists to prevent, just moved one level down. So
+    the listed model ids are now checked too. The repo already had this right
+    on the client side; `nightshift.py`'s comment says it best — finding the
+    BACKEND is not the same as having the MODEL.
+
+    LENIENT, following that same precedent: an empty or unreadable model list
+    means "cannot tell", NEVER "absent". Only a list that is both readable and
+    demonstrably missing the configured model returns False, so a backend
+    reporting an unexpected `/models` shape can never veto a runnable pass —
+    the failure mode of a wrong veto (dreaming silently never runs, reported as
+    `unavailable`) is worse than the failure mode of a wrong pass (one real
+    call fails loudly on its own terms).
+
+    The probe itself is exercised against mocked httpx transports here (see
+    test_dreams_task.py); the false-complete it now prevents was observed on a
+    live deployment."""
     import httpx
 
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(f"{settings.LLM_BASE_URL}/models")
             resp.raise_for_status()
-        return True
+            data = resp.json()
     except Exception as exc:
         if _is_backend_unavailable(exc):
             return False
         return True
+
+    models = _listed_models(data)
+    model = str(getattr(settings, "LLM_MODEL", "") or "")
+    if models and model and not _model_available(model, models):
+        logger.warning(
+            "Dream generation model %r is not served by %s (available: %s) — "
+            "skipping this tick rather than walking the backlog with no output",
+            model, settings.LLM_BASE_URL, ", ".join(sorted(models)[:10]),
+        )
+        return False
+    return True
 
 
 async def _build_clients():
@@ -451,6 +507,15 @@ async def run_one_unit() -> dict:
                 # on a later run (the per-run done-set below is what stops it
                 # being retried every tick within THIS one).
                 state.mark_consolidated([m.id for m in members])
+                # The cumulative per-run insight total. record_run was already
+                # being handed an `insights_written`, but it was THIS TICK's
+                # count — so the hash held whatever the last tick did and a run
+                # that wrote six insights across six ticks reported one. Going
+                # through a counter makes it a real per-run total (cleared by
+                # reset_progress, like every other per-run tally), and it is
+                # what lets GET /dreams tell a productive run from one that
+                # marked every unit done and wrote nothing.
+                state.bump_counter("insights_written", len(written))
             # Mark the CLUSTER done regardless of insight count (including
             # zero) — a cluster the LLM can't synthesize must not be retried
             # forever (synthesize() already logs the failure at WARNING).
@@ -458,7 +523,8 @@ async def run_one_unit() -> dict:
             done = state.bump_counter("clusters_done")
             state.record_run(
                 status="ok", health="ok", clusters_done=done,
-                last_cluster_key=key, insights_written=len(written),
+                last_cluster_key=key,
+                insights_written=state.get_counter("insights_written"),
             )
             return {
                 "status": "ok", "unit": "cluster", "cluster_key": key,
@@ -579,15 +645,46 @@ async def run_one_unit() -> dict:
                 state.record_run(
                     status="ok", health="ok", profiles_done=done,
                     last_profile_member_id=member_id,
+                    # Re-mirrored on every working tick so the hash always
+                    # describes the CURRENT run — a profile tick that left it
+                    # alone would let the previous run's total sit there while
+                    # this one is in progress.
+                    insights_written=state.get_counter("insights_written"),
                 )
                 return {
                     "status": "ok", "unit": "profile", "member_id": member_id,
                     "workspace_id": workspace_id, "written": written,
                 }
 
+        # Read the per-run tallies BEFORE reset_progress clears them.
+        #
+        # A run that attempted clusters and produced nothing is NOT healthy,
+        # and reporting it as `ok` is how the live starvation in synthesize.py
+        # (see _MAX_COMPLETION_TOKENS) stayed invisible for two full runs: 2 of
+        # 3 clusters wrote zero insights while GET /dreams reported
+        # `{"clusters_done":3,"errors":0,"health":"ok"}`. `errors` cannot cover
+        # this — synthesize() never raises by contract, so the outer `except`
+        # that bumps it is unreachable on an LLM failure. Zero output across
+        # one or more ATTEMPTED clusters is the signal, and `degraded` is the
+        # honest word for it (the same value the error path uses; `unavailable`
+        # is reserved for the backend gate above).
+        #
+        # A run that attempted no clusters at all — profiles only, or an empty
+        # store — is `ok`: there was nothing to write, which is not a failure.
+        # Known limit, deliberately not stretched: a run that attempted only
+        # PROFILES and wrote none of them still reports `ok`, because a profile
+        # write is not an insight and this counter deliberately measures one
+        # thing.
+        insights_written = state.get_counter("insights_written")
+        clusters_attempted = state.get_counter("clusters_done")
+        health = "degraded" if clusters_attempted and not insights_written else "ok"
         state.reset_progress()
-        state.record_run(status="complete", health="ok", last_completed_at=now.isoformat())
-        return {"status": "complete"}
+        state.record_run(
+            status="complete", health=health, last_completed_at=now.isoformat(),
+            insights_written=insights_written,
+        )
+        return {"status": "complete", "insights_written": insights_written,
+                "health": health}
     except Exception as exc:
         logger.exception("Dream unit failed")
         if redis_client is not None:

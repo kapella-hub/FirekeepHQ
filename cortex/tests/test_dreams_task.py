@@ -100,6 +100,20 @@ def test_is_backend_unavailable_false_for_a_reachable_backend_erroring():
 
 class _Settings:
     LLM_BASE_URL = "http://x/v1"
+    LLM_MODEL = "qwen3:4b"
+
+
+def _models_response(*ids):
+    """An OpenAI-compatible GET /models body listing exactly `ids`."""
+    return {"data": [{"id": i} for i in ids]}
+
+
+def _serving(monkeypatch, body):
+    """Point the probe at a backend that answers /models with `body`."""
+    async def fake_get(self, url, **kw):
+        return httpx.Response(200, request=httpx.Request("GET", url), json=body)
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
 
 
 @pytest.mark.asyncio
@@ -118,6 +132,177 @@ async def test_generation_backend_available_false_on_connect_error(monkeypatch):
 
     monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
     assert not await dt._generation_backend_available(_Settings())
+
+
+# --- P4: probing the ENDPOINT is not the same as having the MODEL ------------
+#
+# Proven live: with LLM_MODEL set to a model the backend does not serve, the
+# probe returned True, the pass walked the entire backlog marking every unit
+# done with zero output, stamped last_completed_at and reported
+# status=complete health=ok — the exact false-complete the gate exists to stop.
+
+@pytest.mark.asyncio
+async def test_backend_available_when_the_configured_model_is_served(monkeypatch):
+    _serving(monkeypatch, _models_response("nomic-embed-text:latest", "qwen3:4b"))
+    assert await dt._generation_backend_available(_Settings())
+
+
+@pytest.mark.asyncio
+async def test_backend_unavailable_when_the_model_is_absent_from_a_readable_list(monkeypatch):
+    _serving(monkeypatch, _models_response("llama3.2:3b", "granite-embedding:30m"))
+
+    class _Missing(_Settings):
+        LLM_MODEL = "this-model-does-not-exist:7b"
+
+    assert not await dt._generation_backend_available(_Missing())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body", [
+    {"data": []},              # readable, but empty — "cannot tell"
+    {},                        # no data key at all
+    {"data": "not-a-list"},    # unexpected shape
+    {"data": [{"name": "qwen3:4b"}]},  # entries without an `id`
+    [],                        # not even an object
+])
+async def test_an_unreadable_model_list_is_lenient_never_a_veto(monkeypatch, body):
+    """Night Shift's precedent, mirrored deliberately: an empty or unreadable
+    list means "cannot tell", NEVER "absent". A backend reporting an unexpected
+    /models shape must not be able to silently switch dreaming off — a wrong
+    veto stops the feature entirely and reports `unavailable`, whereas a wrong
+    pass costs one real call that fails loudly on its own terms."""
+    _serving(monkeypatch, body)
+    assert await dt._generation_backend_available(_Settings())
+
+
+@pytest.mark.parametrize("model,listed", [
+    ("qwen3:4b", ["qwen3:4b"]),
+    ("llama3", ["llama3:latest"]),          # bare name, tagged listing
+    ("llama3:latest", ["llama3"]),          # tagged name, bare listing
+])
+def test_model_matching_tolerates_ollama_tag_forms(model, listed):
+    """Mirrors client/firekeep_client/nightshift.py::_model_available. Ollama's
+    /v1/models reports fully-tagged ids while its chat API resolves the bare
+    name, so strict equality would veto a model that works."""
+    assert dt._model_available(model, listed)
+
+
+def test_model_matching_still_rejects_a_genuinely_different_model():
+    assert not dt._model_available("qwen3:4b", ["llama3.2:3b", "qwen3:8b"])
+
+
+@pytest.mark.asyncio
+async def test_a_missing_model_stops_the_run_instead_of_falsely_completing(monkeypatch):
+    """The end-to-end shape of the live failure, with the REAL probe in the
+    loop rather than a mocked one: a reachable backend that does not serve
+    LLM_MODEL must close the gate, not walk the backlog to status=complete."""
+    points = [_FakePoint(f"m{i}", _candidate_payload("mem1", "ws1", i)) for i in range(4)]
+    r = fakeredis.FakeStrictRedis()
+    vector = _FakeVector(points)
+    settings = _dream_settings().model_copy(update={
+        "LLM_BASE_URL": "http://x/v1", "LLM_MODEL": "this-model-does-not-exist:7b",
+    })
+
+    async def fake_build_clients():
+        return r, vector, settings
+
+    monkeypatch.setattr(dt, "_build_clients", fake_build_clients)
+    _serving(monkeypatch, _models_response("llama3.2:3b"))
+
+    out = await dt.run_one_unit()
+
+    assert out["status"] == "unavailable"
+    from app.dreams.state import DreamState
+
+    state = DreamState(r)
+    assert state.done_set("cluster") == set()
+    assert state.done_set("profile") == set()
+    assert state.get_run().get("last_completed_at") is None
+    assert not vector.upserted
+
+
+# ---------------------------------------------------------------------------
+# P5 — a run that wrote nothing must not look like a run that wrote six.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_a_completed_run_reports_its_cumulative_insight_total(monkeypatch):
+    """`insights_written` was handed to record_run as THIS TICK's count, so the
+    hash held whatever the last tick did — a run that wrote one insight on each
+    of two ticks reported 1, and GET /dreams never surfaced it at all."""
+    from app.dreams.state import DreamState
+
+    r, _vector, _settings, _ = _starvation_fixture(monkeypatch, cap=2)
+
+    keys = await _drive_run()
+    assert len(keys) == 2, "fixture precondition: two clusters, one insight each"
+
+    run = DreamState(r).get_run()
+    assert run["insights_written"] == "2", "must be the run total, not the last tick's"
+    assert run["health"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_a_run_that_attempted_clusters_and_wrote_nothing_is_degraded(monkeypatch):
+    """The live shape this exists for: 2 of 3 clusters produced zero insights
+    while the endpoint reported clusters_done=3, errors=0, health=ok. `errors`
+    structurally cannot cover it — synthesize() never raises by contract, so
+    the outer except that bumps the counter is unreachable on an LLM failure.
+    Zero output across attempted clusters is the only signal there is."""
+    from app.dreams.state import DreamState
+
+    r, vector, _settings, _ = _starvation_fixture(monkeypatch, cap=2)
+
+    async def _no_insights(members, **kw):
+        return []
+
+    monkeypatch.setattr("app.dreams.synthesize.synthesize", _no_insights)
+
+    keys = await _drive_run()
+    assert len(keys) == 2, "the clusters were attempted — that is what makes it degraded"
+    assert not vector.upserted
+
+    run = DreamState(r).get_run()
+    assert run["health"] == "degraded", "a run that wrote nothing must not report ok"
+    assert run["insights_written"] == "0"
+
+
+@pytest.mark.asyncio
+async def test_a_run_with_no_clusters_to_attempt_is_still_ok(monkeypatch):
+    """The other half, and the reason the check is `attempted AND none written`
+    rather than just `none written`: a run with nothing to consolidate wrote
+    nothing because there was nothing to write. That is not a failure, and
+    reporting it as degraded would make the signal worthless."""
+    from app.dreams.state import DreamState
+
+    points = _multi_project_points(["alpha"])  # 2 points, below DREAM_MIN_CLUSTER
+    r, _vector, _settings = _profile_fixture(monkeypatch, points)
+
+    assert (await dt.run_one_unit())["unit"] == "profile"
+    out = await dt.run_one_unit()
+
+    assert out["status"] == "complete" and out["health"] == "ok"
+    assert DreamState(r).get_run()["health"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_the_insight_total_is_per_run_and_does_not_accumulate(monkeypatch):
+    """reset_progress must clear it, like every other per-run tally — otherwise
+    the number becomes an all-time total that says nothing about the run an
+    operator is looking at."""
+    from app.dreams.state import DreamState
+
+    r, _vector, _settings, _ = _starvation_fixture(monkeypatch, cap=2)
+
+    await _drive_run()
+    assert DreamState(r).get_counter("insights_written") == 0, \
+        "reset_progress must clear the counter at completion"
+    assert DreamState(r).get_run()["insights_written"] == "2", \
+        "...while the completed run's total survives in the hash for GET /dreams"
+
+    await _drive_run()
+    assert DreamState(r).get_run()["insights_written"] == "2", \
+        "run 2 reports ITS OWN two insights, not a running four"
 
 
 # ---------------------------------------------------------------------------

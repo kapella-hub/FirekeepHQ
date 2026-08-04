@@ -45,6 +45,7 @@ def test_dreams_status_shaped_when_enabled():
         b"last_run": b"2026-08-04T12:00:00+00:00",
         b"clusters_done": b"3",
         b"profiles_done": b"1",
+        b"insights_written": b"6",
         b"health": b"ok",
     }, counters={"dreams:counter:errors": b"0"})
     with patch("app.dreams.api.get_settings") as gs:
@@ -58,9 +59,51 @@ def test_dreams_status_shaped_when_enabled():
         "last_run": "2026-08-04T12:00:00+00:00",
         "clusters_done": 3,
         "profiles_done": 1,
+        "insights_written": 6,
         "errors": 0,
         "health": "ok",
     }
+
+
+def test_dreams_distinguishes_a_productive_run_from_one_that_wrote_nothing():
+    """Before this field, these two bodies were IDENTICAL — a run that wrote 6
+    dreams and a run that marked every unit done and wrote 0 both reported
+    {"clusters_done":3,"profiles_done":2,"errors":0,"health":"ok"}. That is how
+    a live 2-of-3-clusters-produced-nothing run passed for healthy.
+    """
+    shared = {b"clusters_done": b"3", b"profiles_done": b"2"}
+    productive = _redis({**shared, b"insights_written": b"6", b"health": b"ok"})
+    barren = _redis({**shared, b"insights_written": b"0", b"health": b"degraded"})
+
+    with patch("app.dreams.api.get_settings") as gs:
+        gs.return_value.DREAM_ENABLED = True
+        good = TestClient(_app(productive)).get("/dreams").json()
+        bad = TestClient(_app(barren)).get("/dreams").json()
+
+    assert good["insights_written"] == 6 and good["health"] == "ok"
+    assert bad["insights_written"] == 0 and bad["health"] == "degraded"
+    assert good != bad, "the two runs must not be indistinguishable"
+
+
+def test_dreams_insights_written_reads_the_hash_not_the_per_run_counter():
+    """Deliberately unlike `errors` (below), and the difference is load-bearing:
+    `dreams:counter:insights_written` is per-run and reset_progress clears it at
+    completion, so reading the counter would report 0 for the run that just
+    finished — precisely when an operator wants the number. task.py mirrors the
+    cumulative counter into the run hash on every working tick, so the hash
+    carries the current run's running total and then its final one.
+
+    The counter here holds a deliberately contradictory 0: reading it would
+    satisfy a naive assertion, so this fails loudly if the read ever moves.
+    """
+    mock_redis = _redis(
+        {b"insights_written": b"4", b"health": b"ok"},
+        counters={"dreams:counter:insights_written": b"0"},
+    )
+    with patch("app.dreams.api.get_settings") as gs:
+        gs.return_value.DREAM_ENABLED = True
+        resp = TestClient(_app(mock_redis)).get("/dreams")
+    assert resp.json()["insights_written"] == 4
 
 
 def test_dreams_errors_reports_the_counter_the_task_actually_bumps():
@@ -106,6 +149,7 @@ def test_dreams_health_unknown_before_any_run():
     assert data["last_run"] is None
     assert data["clusters_done"] == 0
     assert data["profiles_done"] == 0
+    assert data["insights_written"] == 0
     assert data["errors"] == 0
 
 

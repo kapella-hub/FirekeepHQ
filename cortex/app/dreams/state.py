@@ -108,9 +108,14 @@ class DreamState:
           - done-sets, kinds ("cluster", "profile") — which units this run has
             already spent a tick on.
           - counters ("new_memories", "clusters_done", "profiles_done",
-            "errors") — this run's tallies. `clusters_done` doubles as the
-            per-run budget against DREAM_MAX_CLUSTERS_PER_RUN, so clearing it
-            is what starts the next run's budget.
+            "insights_written", "errors") — this run's tallies.
+            `clusters_done` doubles as the per-run budget against
+            DREAM_MAX_CLUSTERS_PER_RUN, so clearing it is what starts the next
+            run's budget. `insights_written` is what makes "this run wrote
+            nothing" distinguishable from "this run wrote six" at
+            GET /dreams — it must be per-run, hence cleared here, and the
+            completed run's final total survives in the `dreams:run` hash
+            (record_run mirrors it there before this call).
 
         CONSOLIDATED_KEY is deliberately NOT in either list and must never be
         added to one. It is not progress — it is the durable answer to "has
@@ -122,5 +127,6 @@ class DreamState:
         """
         for kind in ("cluster", "profile"):
             self._r.delete(DONE_KEY.format(kind=kind))
-        for name in ("new_memories", "clusters_done", "profiles_done", "errors"):
+        for name in ("new_memories", "clusters_done", "profiles_done",
+                     "insights_written", "errors"):
             self._r.delete(COUNTER_KEY.format(name=name))

@@ -56,6 +56,22 @@ def create_dreams_router() -> APIRouter:
             "last_run": run.get("last_run"),
             "clusters_done": _int(run.get("clusters_done")),
             "profiles_done": _int(run.get("profiles_done")),
+            # Without this, a run that wrote 6 dreams and a run that wrote 0
+            # were indistinguishable here — both reported
+            # {"clusters_done":3,"profiles_done":2,"errors":0,"health":"ok"},
+            # which is exactly how a live 2-of-3-clusters-produced-nothing run
+            # passed for healthy. Read from the RUN HASH, not from
+            # `dreams:counter:insights_written`, and deliberately unlike
+            # `errors` above: the counter is per-run and reset_progress clears
+            # it at completion, so reading the counter would report 0 for the
+            # run that just finished — the moment an operator most wants the
+            # number. task.py mirrors the cumulative counter into the hash on
+            # every tick that does work, so the hash carries the current run's
+            # running total and then the completed run's final one. (The
+            # argument against mirroring `errors` doesn't apply: nothing ever
+            # writes `errors` into the hash, so a mirror there would be a value
+            # that only ever goes stale.)
+            "insights_written": _int(run.get("insights_written")),
             "errors": _int(_s(errors_raw)),
             "health": run.get("health", "unknown"),
         }

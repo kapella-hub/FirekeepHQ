@@ -18,6 +18,27 @@ def test_request_body_always_disables_thinking():
     assert body["response_format"] == {"type": "json_object"}
 
 
+def test_completion_budget_absorbs_blocked_reasoning_tokens():
+    """The flags above are IGNORED on ollama's /v1/chat/completions, which is
+    where synthesize() posts. Measured live against ollama 0.17.5 with this
+    exact body, 3 probes of 3: max_tokens=700 gave HTTP 200,
+    finish_reason='length', completion_tokens=700, content length ZERO and
+    ~3200 chars of reasoning; the same call at 4000 returned correct JSON. Two
+    of three live clusters produced no insights at all because of it.
+
+    Asserts the FLOOR as well as the constant: the failure this guards is a
+    later "tidy-up" quietly lowering the number back toward the answer size
+    (~200-400 tokens), which looks reasonable and silently reinstates the
+    starvation.
+    """
+    body = syn.build_request_body("qwen3:4b", [{"role": "user", "content": "x"}])
+    assert body["max_tokens"] == syn._MAX_COMPLETION_TOKENS
+    assert body["max_tokens"] >= 4000, (
+        "4000 is the empirically verified working value; anything below it was "
+        "measured returning empty content"
+    )
+
+
 def test_messages_carry_indexed_episodes():
     msgs = syn.build_messages(_members(3))
     joined = " ".join(m["content"] for m in msgs)
