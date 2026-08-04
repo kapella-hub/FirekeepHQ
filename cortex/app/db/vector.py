@@ -116,16 +116,18 @@ def _projected_metadata(payload: dict | None, point_id: str) -> dict[str, Any]:
         "tags": payload.get("tags", []),
         "domain": payload.get("domain", ""),
         "timestamp": payload.get("timestamp", ""),
-        # Dreaming Task 5 (audit finding #3): recall read memory_type through
-        # this projection while GC read it from the top-level payload — the
-        # two could disagree. Explicit here, before the metadata spread, so a
-        # nested legacy value still wins for pre-promotion points.
-        "memory_type": payload.get("memory_type", "episodic"),
         **(payload.get("metadata", {})),
         # Team continuity: who wrote this, in what session, for what project.
         **{k: payload[k] for k in _PROMOTED_PAYLOAD_KEYS if k in payload},
         # Lifecycle fields last so the top-level payload is authoritative —
         # recall scoring reads these (SP0 C2).
+        # Dreaming Task 5 (audit finding #3): recall read memory_type through
+        # this projection while GC (app/workers/gc.py) reads it from the
+        # top-level payload first, nested metadata as fallback — the two
+        # could disagree. memory_type belongs here, not among the earlier
+        # explicit keys, for the same reason status/confirmed_count do: the
+        # top-level payload must win over any nested legacy copy.
+        "memory_type": payload.get("memory_type", "episodic"),
         "status": payload.get("status", "active"),
         "confirmed_count": payload.get("confirmed_count", 0),
         "contradicted_count": payload.get("contradicted_count", 0),
@@ -188,10 +190,13 @@ def _similarity_filter(namespace: str, domain: str | None) -> Filter:
          could silently supersede a memory a human explicitly confirmed. GC's
          own scan already treats confirmed_count > 0 as untouchable; this
          brings contradiction detection in line with that guard.
-      2. ``source == "dream"`` — without this, the 6-hourly deep_contradiction
-         pass (which also calls find_similar) could supersede a dream with the
-         very episode it summarised, or supersede one dream with another —
-         a feedback loop with no dream code involved at all.
+      2. ``source == "dream"`` — ``find_similar``'s only caller is
+         ``contradiction.py``'s ``detect_and_supersede``, invoked from every
+         ordinary ``/memory/learn``; without this guard, learning ANY new
+         memory similar enough to a dream could supersede that dream. This
+         is distinct from the memory_agent's 6-hourly passes: those build
+         their own filters (``_active_non_corpus_filter``) and never call
+         ``find_similar`` at all — dreams are protected there separately.
     """
     conditions = [FieldCondition(key="status", match=MatchValue(value="active"))]
     if namespace != "default":
