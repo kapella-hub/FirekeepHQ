@@ -24,6 +24,7 @@ from qdrant_client.models import (
     Filter,
     MatchValue,
     PointStruct,
+    Range,
 )
 
 from app.config import get_settings
@@ -92,6 +93,24 @@ def _active_non_corpus_filter() -> Filter:
     point id), and deep_contradiction_pass would supersede it against the
     very memories it was synthesized from. Broad prose at domain="general" is
     exactly the shape that trips both.
+
+    `confirmed_count > 0` is DELIBERATELY NOT excluded here, even though the
+    confirmed-memory hole this filter's callers had is real (see
+    `_dedup_scope_filter` and `deep_contradiction_pass`). This filter is
+    shared by three passes and blanket exclusion is wrong for two of them:
+
+      * deep_contradiction_pass — the filter scopes the similarity QUERY as
+        well as the scroll, so excluding confirmed memories would stop one
+        being FOUND, not just stop it being buried. A confirmed memory must
+        still be able to supersede a stale rival; that pass therefore keeps
+        full scope and refuses the write instead.
+      * cluster_coherence_pass — it rewrites `domain`, never status or text,
+        so it does not bury anything a human confirmed. Excluding confirmed
+        memories would also drop them out of the per-domain CENTROIDS, which
+        changes outlier detection for the UNCONFIRMED memories around them —
+        a behaviour change to memories the protection is not about.
+
+    Only dedup wants the exclusion, and it takes it via `_dedup_scope_filter`.
     """
     return Filter(
         must=[FieldCondition(key="status", match=MatchValue(value="active"))],
@@ -99,6 +118,43 @@ def _active_non_corpus_filter() -> Filter:
             FieldCondition(key="source", match=MatchValue(value="corpus")),
             FieldCondition(key="source", match=MatchValue(value="dream")),
             FieldCondition(key="source", match=MatchValue(value="dream_profile")),
+        ],
+    )
+
+
+def _dedup_scope_filter() -> Filter:
+    """`_active_non_corpus_filter` plus: never a human-confirmed memory.
+
+    A merge is not a ranking decision that a later pass can revisit — it
+    REPLACES text. `_merge_cluster` re-embeds the LLM's synthesis, writes it
+    as a new point, and supersedes every original including the keeper, so
+    there is no merge outcome in which a confirmed memory's own wording
+    survives. Worse, `_merge_lifecycle` folds `confirmed_count` forward as a
+    max, so the synthesized point inherits the human's confirmation — text
+    nobody vouched for, carrying the mark that says somebody did.
+
+    Refusing to supersede the confirmed member (the shape used in
+    `deep_contradiction_pass`) is not an option here: it would leave the
+    confirmed original active NEXT TO the merged point built from it, which
+    is the duplicate dedup exists to remove, plus a laundered confirmation.
+    Exclusion from scope is the only coherent answer, and it matches the two
+    standing precedents — `gc.py::_scan_candidates` skips `confirmed_count >
+    0` as its first test, and `vector.py::_similarity_filter` carries the
+    same `must_not` for learn-time contradiction detection.
+
+    Derived from the shared filter rather than restated so the corpus/dream
+    conditions cannot drift apart from it.
+
+    Note the condition is `Range(gt=0)`, not "field absent": a point that
+    predates the field has no `confirmed_count` to match, so `must_not` lets
+    it through and legacy memories stay eligible for dedup.
+    """
+    scope = _active_non_corpus_filter()
+    return Filter(
+        must=list(scope.must or []),
+        must_not=[
+            *(scope.must_not or []),
+            FieldCondition(key="confirmed_count", range=Range(gt=0)),
         ],
     )
 
@@ -111,8 +167,9 @@ def _active_non_corpus_filter() -> Filter:
 def duplicate_detection_pass() -> dict[str, Any]:
     """Find near-duplicate active memories and merge them.
 
-    Gated behind DEDUP_ENABLED (default False). Corpus chunks are excluded
-    from dedup scope entirely, and merges are restricted to same-domain
+    Gated behind DEDUP_ENABLED (default False). Corpus chunks and
+    human-confirmed memories are excluded from dedup scope entirely
+    (see `_dedup_scope_filter`), and merges are restricted to same-domain
     clusters (SP0 B1, defect #3).
     """
     settings = get_settings()
@@ -127,8 +184,9 @@ def duplicate_detection_pass() -> dict[str, Any]:
     merged_count = 0
     results: list[dict] = []
 
-    # Active memories only, never corpus chunks (document shredding guard).
-    dedup_filter = _active_non_corpus_filter()
+    # Active memories only; never corpus chunks (document shredding guard),
+    # never a memory a human confirmed (its text cannot survive a merge).
+    dedup_filter = _dedup_scope_filter()
 
     try:
         # Scroll all active non-corpus memories
@@ -456,6 +514,10 @@ def deep_contradiction_pass() -> dict[str, Any]:
 
     Corpus chunks are excluded from scope — document fragments are not
     competing memories to auto-supersede (SP0 B1 follow-up).
+
+    Human-confirmed memories stay IN scope but are never the superseded side
+    (see the guard below): confirmation must protect a memory from burial
+    without also disqualifying it from winning.
     """
     settings = get_settings()
     client = _get_qdrant_client()
@@ -538,6 +600,28 @@ def deep_contradiction_pass() -> dict[str, Any]:
                     stale, keeper = mem, other
                 else:
                     stale, keeper = other, mem
+
+                # Human confirmation is PROTECTION, not a tiebreak input.
+                # The ratio above already reads confirmed_count, which is
+                # what made this look handled — but it only ever ranks: a
+                # memory confirmed once (2.0) still loses to one confirmed
+                # three times (4.0), and a confirmed-but-contradicted memory
+                # (1+1)/(1+2)=0.67 loses to a never-confirmed one (1.0).
+                # Either way an explicit human "this is correct" ended in
+                # status=superseded, a permanent 0.5 recall multiplier.
+                #
+                # Skip the pair rather than inverting it: inverting would
+                # bury the side the ratio says is better on no human signal
+                # at all, and when BOTH sides are confirmed there is nothing
+                # to invert to. One rule, both directions — this pass never
+                # supersedes a confirmed memory, and a confirmed KEEPER
+                # still supersedes an unconfirmed rival exactly as before.
+                if (stale.get("confirmed_count") or 0) > 0:
+                    logger.debug(
+                        "Skipping contradiction %s -> %s: stale side is human-confirmed",
+                        keeper["id"], stale["id"],
+                    )
+                    continue
 
                 # Supersede the stale memory
                 try:
