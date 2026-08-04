@@ -17,7 +17,7 @@ from typing import Any
 from fastapi import APIRouter, Depends
 
 from app.config import get_settings
-from app.dreams.state import RUN_KEY
+from app.dreams.state import COUNTER_KEY, RUN_KEY
 
 
 def _s(v: Any) -> Any:
@@ -40,12 +40,23 @@ def create_dreams_router() -> APIRouter:
         settings = get_settings()
         raw = await redis_client.hgetall(RUN_KEY)
         run = {_s(k): _s(v) for k, v in (raw or {}).items()}
+        # `errors` is the ONLY one of the three counters that never reaches
+        # the dreams:run hash: task.py writes clusters_done/profiles_done
+        # through record_run() on the success paths, but the error path calls
+        # bump_counter("errors") and then record_run(status="error", ...)
+        # WITHOUT an errors field — so `run.get("errors")` was structurally
+        # always absent and this endpoint reported 0 no matter how many ticks
+        # had failed (final-review I4). Read the counter key itself rather
+        # than mirroring it into the hash: hset merges and reset_progress
+        # clears counters but not hash fields, so a mirrored value would
+        # linger across runs long after the errors it described were gone.
+        errors_raw = await redis_client.get(COUNTER_KEY.format(name="errors"))
         return {
             "enabled": bool(settings.DREAM_ENABLED),
             "last_run": run.get("last_run"),
             "clusters_done": _int(run.get("clusters_done")),
             "profiles_done": _int(run.get("profiles_done")),
-            "errors": _int(run.get("errors")),
+            "errors": _int(_s(errors_raw)),
             "health": run.get("health", "unknown"),
         }
 
