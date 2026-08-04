@@ -272,6 +272,13 @@ async def test_reasoning_field_is_not_used_as_a_fallback():
 async def test_openai_body_carries_no_vendor_flags_and_no_output_cap():
     """`/v1` gets standard OpenAI fields only.
 
+    `response_format` now carries the SCHEMA envelope, not the bare
+    `{"type": "json_object"}` this asserted before structured outputs: measured
+    on the VPS, `json_object` let qwen3:4b answer 0/3 questions on both runs by
+    mirroring the user message back. `json_schema` is standard OpenAI, so this
+    is still "standard fields only" — the vendor-flag half of the assertion is
+    unchanged and is the half that guards `dreams/synthesize.py`'s mistake.
+
     The `max_tokens` absence is asserted, not incidental: this call is JSON
     mode, so the grammar ends generation on its own and a cap could only
     truncate a valid object into an invalid one. Contrast
@@ -288,7 +295,11 @@ async def test_openai_body_carries_no_vendor_flags_and_no_output_cap():
     url = client.post.await_args.args[0]
     body = client.post.await_args.kwargs["json"]
     assert url == "http://ollama:11434/v1/chat/completions"
-    assert body["response_format"] == {"type": "json_object"}
+    rf = body["response_format"]
+    assert rf["type"] == "json_schema"
+    assert rf["json_schema"]["name"] == "decision_suggestions"
+    assert rf["json_schema"]["strict"] is True
+    assert rf["json_schema"]["schema"]["required"] == ["q0"]
     assert body["temperature"] == 0.2
     assert "max_tokens" not in body
     assert "think" not in body and "chat_template_kwargs" not in body
@@ -323,7 +334,10 @@ async def test_native_body_when_the_backend_is_ollama():
     assert url == "http://ollama:11434/api/chat"
     assert body["stream"] is False
     assert body["think"] is False
-    assert body["format"] == "json"
+    # `format` carries the SCHEMA OBJECT, not the string "json" — that string is
+    # the setting under which the live board answered 0/3 questions twice.
+    assert isinstance(body["format"], dict)
+    assert body["format"]["required"] == ["q0"]
     assert body["options"] == {"temperature": 0.2}   # no num_predict — see above
     assert "response_format" not in body
 
@@ -364,3 +378,164 @@ async def test_the_configured_budget_bounds_both_endpoints(native_chat, expected
     assert client.post.await_args.args[0] == expected_url
     # llm.chat builds its own client with the budget when none is injected.
     assert mc.call_args.kwargs["timeout"] == 12.5
+
+
+# ---------------------------------------------------------------------------
+# Structured outputs, and the detector for a payload that grounds nothing.
+#
+# THE PRODUCTION FAILURE THIS CLOSES, measured on the VPS 2026-08-04: under
+# `format:"json"` the board completed in 15.07s, reported `degraded: False`, and
+# every question came back `answers=0 actions=0`. The model had mirrored the
+# USER MESSAGE back — `{"context": ..., "questions": [...]}` — so `.get("q0")`
+# missed on every question, nothing raised, and a board that produced nothing
+# reported itself healthy. Two separate defects: no shape constraint, and no
+# check that the shape arrived.
+# ---------------------------------------------------------------------------
+
+def _schema_from(client):
+    """Pull the schema out of whichever endpoint's body was actually posted."""
+    body = client.post.await_args.kwargs["json"]
+    if "format" in body:
+        return body["format"]
+    return body["response_format"]["json_schema"]["schema"]
+
+
+@pytest.mark.asyncio
+async def test_the_schema_names_every_question_id_in_properties_and_required():
+    """`required` is the load-bearing half. `properties` alone describes a shape
+    the model may decline to produce; naming every id in `required` is what
+    makes the mirrored-input answer ungrammatical rather than merely
+    discouraged."""
+    rag = _rag_with_one_source()
+    client = _mock_client(_openai_response("{}"))
+
+    with patch("app.llm.httpx.AsyncClient") as mc:
+        mc.return_value = client
+        await synthesize_board("ctx", ["a?", "b?", "c?"], rag_engine=rag, settings=_settings())
+
+    schema = _schema_from(client)
+    assert sorted(schema["properties"]) == ["q0", "q1", "q2"]
+    assert schema["required"] == ["q0", "q1", "q2"]
+    assert schema["additionalProperties"] is False
+    per_q = schema["properties"]["q0"]
+    assert per_q["required"] == ["suggested_answers", "suggested_actions"]
+    assert per_q["properties"]["suggested_answers"] == {
+        "type": "array", "items": {"type": "string"}}
+
+
+@pytest.mark.asyncio
+async def test_the_schema_sets_no_minimum_item_count():
+    """Measured and rejected: `minItems:1` cost 24.51s against 14.81–16.55s for
+    the identical 3/3 result. Adherence was already total without it, so it buys
+    latency plus pressure to invent a suggestion where the model has none."""
+    rag = _rag_with_one_source()
+    client = _mock_client(_openai_response("{}"))
+
+    with patch("app.llm.httpx.AsyncClient") as mc:
+        mc.return_value = client
+        await synthesize_board("ctx", ["a?"], rag_engine=rag, settings=_settings())
+
+    assert "minItems" not in json.dumps(_schema_from(client))
+
+
+@pytest.mark.asyncio
+async def test_a_board_with_no_questions_sends_no_schema():
+    """A schema built from zero ids constrains output to the literal `{}` and is
+    also the one shape OpenAI's strict mode has no use for. Plain json mode is
+    the honest request for 'nothing to ask'."""
+    rag = MagicMock()
+    rag.recall = AsyncMock(return_value=_recall([]))
+    client = _mock_client(_openai_response("{}"))
+
+    with patch("app.llm.httpx.AsyncClient") as mc:
+        mc.return_value = client
+        board = await synthesize_board("ctx", [], rag_engine=rag, settings=_settings())
+
+    assert client.post.await_args.kwargs["json"]["response_format"] == {"type": "json_object"}
+    # ...and no questions means nothing was omitted, so the board is NOT degraded.
+    assert board["degraded"] is False
+    assert board["note"] == ""
+
+
+@pytest.mark.asyncio
+async def test_a_mirrored_input_payload_is_degraded_not_healthy():
+    """The exact production payload. Well-formed JSON, HTTP 200, nothing raised
+    — and it answers a different question than the one asked. A board keyed by
+    `q0..qN` cannot be built from `{context, questions}`, and saying so is the
+    difference between a bug that took three phases to find and one that names
+    itself in the first log line."""
+    rag = _rag_with_one_source()
+    mirrored = json.dumps({
+        "context": "Rolling out memory consolidation to production.",
+        "questions": [{"id": "q0", "text": "restart?", "evidence_snippets": []}],
+    })
+
+    with patch("app.llm.httpx.AsyncClient") as mc:
+        mc.return_value = _mock_client(_openai_response(mirrored))
+        board = await synthesize_board("ctx", ["restart?"], rag_engine=rag, settings=_settings())
+
+    assert board["degraded"] is True
+    assert board["note"] == "suggestions-unusable"
+    q = board["questions"][0]
+    assert q["suggested_answers"] == [] and q["suggested_actions"] == []
+    # Retrieval is never blocked by the suggestion pass — the standing contract.
+    assert q["knowledge_found"] is True
+    assert q["evidence"][0]["snippet"] == "the runbook says restart"
+
+
+@pytest.mark.asyncio
+async def test_ids_that_match_but_carry_nothing_are_degraded_as_empty():
+    """A distinct note, because it needs a distinct response: `unusable` means
+    the model answered a different question, `empty` means it answered this one
+    with nothing. Both are boards that produced nothing, and neither may report
+    itself healthy — that shape is the whole defect."""
+    rag = _rag_with_one_source()
+    payload = json.dumps({"q0": {"suggested_answers": [], "suggested_actions": []}})
+
+    with patch("app.llm.httpx.AsyncClient") as mc:
+        mc.return_value = _mock_client(_openai_response(payload))
+        board = await synthesize_board("ctx", ["restart?"], rag_engine=rag, settings=_settings())
+
+    assert board["degraded"] is True
+    assert board["note"] == "suggestions-empty"
+
+
+@pytest.mark.asyncio
+async def test_one_grounded_question_out_of_several_is_not_degraded():
+    """The detector fires on a board that grounded NOTHING, not on a model that
+    had nothing for one question. Over-reporting `degraded` would make the flag
+    mean 'a board was served' and cost it the meaning this change gives it."""
+    rag = _rag_with_one_source()
+    payload = json.dumps({
+        "q0": {"suggested_answers": [], "suggested_actions": []},
+        "q1": {"suggested_answers": ["Ship it behind a flag"], "suggested_actions": []},
+    })
+
+    with patch("app.llm.httpx.AsyncClient") as mc:
+        mc.return_value = _mock_client(_openai_response(payload))
+        board = await synthesize_board("ctx", ["a?", "b?"], rag_engine=rag, settings=_settings())
+
+    assert board["degraded"] is False
+    assert board["note"] == ""
+    assert board["questions"][1]["suggested_answers"] == ["Ship it behind a flag"]
+
+
+@pytest.mark.asyncio
+async def test_one_malformed_entry_does_not_abandon_the_other_questions():
+    """`suggestions.get(id) or {}` followed by `.get` raised AttributeError on a
+    non-dict value, halfway through the loop — leaving the questions before it
+    assigned and every one after it untouched, with no record of where it
+    stopped. One bad entry is not a reason to drop the good ones."""
+    rag = _rag_with_one_source()
+    payload = json.dumps({
+        "q0": ["not", "a", "dict"],
+        "q1": {"suggested_answers": ["Deploy to staging first"], "suggested_actions": []},
+    })
+
+    with patch("app.llm.httpx.AsyncClient") as mc:
+        mc.return_value = _mock_client(_openai_response(payload))
+        board = await synthesize_board("ctx", ["a?", "b?"], rag_engine=rag, settings=_settings())
+
+    assert board["questions"][0]["suggested_answers"] == []
+    assert board["questions"][1]["suggested_answers"] == ["Deploy to staging first"]
+    assert board["degraded"] is False

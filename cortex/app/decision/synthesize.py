@@ -13,6 +13,17 @@ budget's own reasoning, and app/llm.py for all five wire measurements.
 Retrieval is deliberately sequenced BEFORE the LLM pass and is never inside its
 try/except: evidence and knowledge_found are produced, and returned, whatever
 the suggestion call does.
+
+THE SUGGESTION CALL IS SCHEMA-CONSTRAINED (`_suggestion_schema`, 2026-08-04).
+Fixing the endpoint and the budget was necessary and not sufficient: measured on
+the deployed VPS afterwards, the board completed in 15.07s, reported
+`degraded: False`, and returned `answers=0 actions=0` on every question, because
+`format:"json"` constrains SYNTAX ONLY and qwen3:4b answered by mirroring the
+user message's own shape back. Two things changed. The schema makes that answer
+ungrammatical rather than merely discouraged; and `synthesize_board` now checks
+that the payload grounded something, because a board that produced nothing must
+never report itself healthy — the same shape as the `_llm_suggest` swallow, one
+level down.
 """
 from __future__ import annotations
 
@@ -48,6 +59,52 @@ _SUGGEST_SYSTEM_PROMPT = (
     '"suggested_actions": ["Run scripts/restart_worker.sh"]}\n'
     "}"
 )
+
+
+def _suggestion_schema(question_ids: list[str]) -> dict:
+    """A JSON Schema pinning the contract the system prompt above only DESCRIBES.
+
+    Measured 2026-08-04 on the VPS (ollama 0.32.4, qwen3:4b) with this exact
+    prompt and three questions: under `format:"json"` the model answered 0/3 on
+    both runs and instead echoed the USER message's own shape back — top-level
+    keys `['context', 'questions']`, one run corrupting a key to
+    `"evidence_sn:"`. Under this schema it answered 3/3 on both runs with
+    top-level keys exactly `['q0','q1','q2']`. `json_mode` constrains SYNTAX;
+    only a schema constrains SHAPE, and a small model handed a JSON input under
+    a syntax-only constraint reproduces the input.
+
+    Naming every question id in `properties` AND `required` is the load-bearing
+    part — it is what makes the mirrored-input answer ungrammatical rather than
+    merely discouraged. `additionalProperties: false` closes the same door from
+    the other side and is also what OpenAI's `strict: true` requires.
+
+    NO `minItems`. It was measured (24.51s vs 14.81–16.55s for the same 3/3
+    result) and rejected: adherence was already total without it, so it buys
+    latency plus pressure to invent a suggestion where the model has none.
+    """
+    def _string_list() -> dict:
+        return {"type": "array", "items": {"type": "string"}}
+
+    def _per_question() -> dict:
+        # Freshly built per question rather than shared: these dicts are handed
+        # to json serialisation, and an aliased sub-object is a trap waiting for
+        # the first caller who mutates one.
+        return {
+            "type": "object",
+            "properties": {
+                "suggested_answers": _string_list(),
+                "suggested_actions": _string_list(),
+            },
+            "required": ["suggested_answers", "suggested_actions"],
+            "additionalProperties": False,
+        }
+
+    return {
+        "type": "object",
+        "properties": {qid: _per_question() for qid in question_ids},
+        "required": list(question_ids),
+        "additionalProperties": False,
+    }
 
 
 async def _recall_evidence(rag_engine, text: str) -> tuple[bool, list[dict]]:
@@ -88,6 +145,14 @@ async def _llm_suggest(context: str, questions: list[dict], *, settings) -> dict
     ]
     user_content = json.dumps({"context": context, "questions": payload_questions})
 
+    # Built from the ids actually on this board, so the schema names `q0..qN`
+    # for THIS call. Omitted entirely for a board with no questions: the schema
+    # would then constrain output to the literal `{}`, and an empty
+    # `properties`/`required` pair is also the one shape OpenAI's strict mode
+    # has no use for. Plain json mode is the honest request for "nothing to ask".
+    question_ids = [q["id"] for q in questions]
+    schema = _suggestion_schema(question_ids) if question_ids else None
+
     result = await llm.chat(
         settings=settings,
         messages=[
@@ -95,6 +160,8 @@ async def _llm_suggest(context: str, questions: list[dict], *, settings) -> dict
             {"role": "user", "content": user_content},
         ],
         json_mode=True,
+        json_schema=schema,
+        json_schema_name="decision_suggestions",
         temperature=0.2,
         # ONE budget for both endpoints — no `native_timeout`, unlike
         # knowledge/classifier.py. A native sibling could only ever be LOWER
@@ -158,6 +225,7 @@ async def synthesize_board(context: str, draft_questions: list[str], *, rag_engi
                 "degraded": True, "note": "retrieval-unavailable"}
 
     degraded = False
+    note = ""
     try:
         # `wait_for` stays even though `llm.chat` is given the same budget:
         # httpx applies its timeout PER OPERATION (connect/write/read), so a
@@ -170,10 +238,53 @@ async def synthesize_board(context: str, draft_questions: list[str], *, rag_engi
             _llm_suggest(context, questions, settings=settings),
             timeout=float(getattr(settings, "DECISION_SYNTH_TIMEOUT_SECONDS", 30.0)))
         # grounding: keep only what maps to a real question id; suggestions never carry evidence
+        matched = 0
+        grounded = 0
         for q in questions:
-            s = suggestions.get(q["id"]) or {}
-            q["suggested_answers"] = [str(a) for a in (s.get("suggested_answers") or [])]
-            q["suggested_actions"] = [str(a) for a in (s.get("suggested_actions") or [])]
+            s = suggestions.get(q["id"])
+            # isinstance rather than `or {}`: a non-dict value (a list, a bare
+            # string) would raise on `.get` HALFWAY through the loop, leaving
+            # some questions assigned and the rest not. One malformed entry is
+            # not a reason to abandon the others.
+            if not isinstance(s, dict):
+                s = {}
+            else:
+                matched += 1
+            answers = [str(a) for a in (s.get("suggested_answers") or [])]
+            actions = [str(a) for a in (s.get("suggested_actions") or [])]
+            q["suggested_answers"] = answers
+            q["suggested_actions"] = actions
+            if answers or actions:
+                grounded += 1
+
+        # A successful call that grounded NOTHING is not a healthy board.
+        #
+        # This is the same defect one level down from the one the `_llm_suggest`
+        # rewrite closed: there, any exception reported `degraded=False`; here,
+        # a 200 carrying a structurally unusable payload did. It is not
+        # hypothetical — it is what the VPS served in production. `format:"json"`
+        # made qwen3:4b mirror the user message back, so `suggestions` was a
+        # well-formed dict keyed `['context','questions']`, `.get("q0")` missed
+        # on every question, nothing raised, and the endpoint reported a healthy
+        # board with `answers=0 actions=0` on all of them. The schema above is
+        # the fix; this is the detector that would have named it in an hour
+        # instead of three phases, and still catches any backend that ignores
+        # or is denied the schema.
+        #
+        # The two notes are distinguished because they need different responses:
+        # `unusable` means the model answered a different question than the one
+        # asked (a prompt/schema/backend problem), `empty` means it answered
+        # this one with nothing (a retrieval or model-capability problem).
+        # `matched` counts ids PRESENT, not ids answered, which is what makes
+        # them separable.
+        if questions and not grounded:
+            degraded = True
+            note = "suggestions-empty" if matched else "suggestions-unusable"
+            logger.warning(
+                "decision suggestion pass returned a payload that grounded "
+                "nothing (%s): %d/%d question ids present, top-level keys=%s",
+                note, matched, len(questions),
+                sorted(suggestions.keys())[:10] if isinstance(suggestions, dict) else "n/a")
     except Exception as exc:
         # The type name matters: a bare wait_for TimeoutError stringifies to "",
         # so "%s" alone would log a reason of nothing at all.
@@ -181,6 +292,7 @@ async def synthesize_board(context: str, draft_questions: list[str], *, rag_engi
             "decision suggestion LLM pass failed — retrieval-only board: %s: %s",
             type(exc).__name__, exc)
         degraded = True
+        note = "retrieval-only"
 
     return {"questions": questions, "generated_at": datetime.now(timezone.utc).isoformat(),
-            "degraded": degraded, "note": "retrieval-only" if degraded else ""}
+            "degraded": degraded, "note": note}
