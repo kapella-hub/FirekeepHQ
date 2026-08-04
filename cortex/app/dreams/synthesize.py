@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Any
 
 import httpx
 
@@ -21,26 +20,33 @@ logger = logging.getLogger(__name__)
 
 _MAX_INSIGHTS = 3
 _EPISODE_TRUNCATE_CHARS = 600
+_DEFAULT_MAX_CHARS = 800
 
-SYNTHESIS_SYSTEM_PROMPT = (
-    "You are the Dreaming pass for a long-term agent memory store. You are given "
-    "a cluster of episodic memories that were judged similar to each other. Find "
-    "1-3 DURABLE, GENERAL insights that are each supported by MULTIPLE episodes "
-    "in the cluster — not a restatement of any single episode.\n\n"
-    "Rules:\n"
-    "- Each insight must be a general lesson, not a specific event.\n"
-    "- Each insight must be supported by at least 2 episodes; cite them by index.\n"
-    "- Do not invent facts not present in the episodes.\n"
-    "- Keep each insight concise.\n\n"
-    "## Output Format\n"
-    "Return ONLY a valid JSON object. No markdown fencing, no explanation.\n\n"
-    "{\n"
-    '  "insights": [\n'
-    '    {"content": "<the durable lesson>", "memory_type": "procedural", '
-    '"source_indices": [0, 2]}\n'
-    "  ]\n"
-    "}"
-)
+
+def _system_prompt(max_chars: int) -> str:
+    """The char budget is interpolated in so the model has a concrete length
+    cue — without one it has no idea what "concise" means and can burn a full
+    ~22s CPU call producing insights parse_insights then silently discards for
+    being over max_chars."""
+    return (
+        "You are the Dreaming pass for a long-term agent memory store. You are given "
+        "a cluster of episodic memories that were judged similar to each other. Find "
+        "1-3 DURABLE, GENERAL insights that are each supported by MULTIPLE episodes "
+        "in the cluster — not a restatement of any single episode.\n\n"
+        "Rules:\n"
+        "- Each insight must be a general lesson, not a specific event.\n"
+        "- Each insight must be supported by at least 2 episodes; cite them by index.\n"
+        "- Do not invent facts not present in the episodes.\n"
+        f"- Keep each insight under {max_chars} characters; longer insights are discarded.\n\n"
+        "## Output Format\n"
+        "Return ONLY a valid JSON object. No markdown fencing, no explanation.\n\n"
+        "{\n"
+        '  "insights": [\n'
+        '    {"content": "<the durable lesson>", "memory_type": "procedural", '
+        '"source_indices": [0, 2]}\n'
+        "  ]\n"
+        "}"
+    )
 
 
 @dataclass
@@ -50,14 +56,14 @@ class Insight:
     source_ids: list[str] = field(default_factory=list)
 
 
-def build_messages(members: list[Candidate]) -> list[dict]:
+def build_messages(members: list[Candidate], *, max_chars: int = _DEFAULT_MAX_CHARS) -> list[dict]:
     lines = []
     for i, member in enumerate(members):
         text = member.text[:_EPISODE_TRUNCATE_CHARS]
         lines.append(f"[{i}] {text}")
     user_content = "\n".join(lines)
     return [
-        {"role": "system", "content": SYNTHESIS_SYSTEM_PROMPT},
+        {"role": "system", "content": _system_prompt(max_chars)},
         {"role": "user", "content": user_content},
     ]
 
@@ -134,20 +140,28 @@ async def synthesize(
     client: httpx.AsyncClient | None = None,
 ) -> list[Insight]:
     """Turn a cluster of episodes into 0-3 durable insights via one guarded LLM
-    call. Returns [] on ANY failure — unreachable backend, non-2xx response, or
-    an empty/invalid parse. Never raises.
+    call. Returns [] on ANY failure — unreachable backend, non-2xx response, an
+    unusable cluster (e.g. a corrupt Qdrant payload with non-string text), or an
+    empty/invalid parse. Never raises.
+
+    The whole body is wrapped in a single outer guard (mirrors
+    app/knowledge/classifier.py's fail-loud-but-never-raise posture): request
+    construction (build_messages/build_request_body) runs INSIDE the try, not
+    before it, because a background orchestrator loops many clusters and one bad
+    candidate must not kill the run.
 
     Malformed model JSON gets exactly one retry (a fresh call to the same
     backend); any other failure (connection error, non-2xx, unexpected response
     shape) returns [] immediately without retrying."""
-    messages = build_messages(members)
-    body = build_request_body(model, messages)
-    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-    url = f"{base_url}/chat/completions"
-
     own_client = client is None
-    http_client = client if client is not None else httpx.AsyncClient(timeout=timeout)
+    http_client: httpx.AsyncClient | None = None
     try:
+        http_client = client if client is not None else httpx.AsyncClient(timeout=timeout)
+        messages = build_messages(members, max_chars=max_chars)
+        body = build_request_body(model, messages)
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        url = f"{base_url}/chat/completions"
+
         text: str | None = None
         for attempt in range(2):
             try:
@@ -177,6 +191,12 @@ async def synthesize(
         if text is None:
             return []
         return parse_insights(text, members, max_chars=max_chars)
+    except Exception as exc:
+        # Catches anything the loop above doesn't — e.g. a corrupt candidate
+        # (non-string .text) blowing up build_messages, or client construction
+        # itself failing. Nothing may escape synthesize().
+        logger.warning("Dream synthesis failed: %s", exc)
+        return []
     finally:
-        if own_client:
+        if own_client and http_client is not None:
             await http_client.aclose()

@@ -24,6 +24,12 @@ def test_messages_carry_indexed_episodes():
     assert "[0]" in joined and "episode 2" in joined
 
 
+def test_build_messages_states_the_char_budget():
+    msgs = syn.build_messages(_members(2), max_chars=450)
+    system_msg = next(m["content"] for m in msgs if m["role"] == "system")
+    assert "450" in system_msg
+
+
 def _raw(**kw):
     ins = {"content": "a durable lesson", "memory_type": "procedural", "source_indices": [0, 1]}
     ins.update(kw)
@@ -107,3 +113,17 @@ async def test_synthesize_returns_empty_on_backend_error_never_raises():
             _members(), base_url="http://x/v1", model="m", api_key="",
             timeout=5.0, max_chars=800, client=client,
         ) == []
+
+
+@pytest.mark.asyncio
+async def test_synthesize_never_raises_on_malformed_candidate():
+    """A cluster member with a corrupt payload (non-string .text, e.g. from a
+    bad Qdrant record) must degrade to [] rather than raising — the Task 6
+    orchestrator loops many clusters in a background pass and one bad payload
+    must not kill the run."""
+    bad = [Candidate(id="m0", text=None, vector=[1.0], payload={})]
+    out = await syn.synthesize(
+        bad, base_url="http://x/v1", model="m", api_key="",
+        timeout=5.0, max_chars=800,
+    )
+    assert out == []
