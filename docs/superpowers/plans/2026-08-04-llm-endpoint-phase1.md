@@ -287,6 +287,10 @@ container files with `docker cp`, never `docker exec cp`.**
    `degraded=False` on a board that produced nothing), and — after checking
    `GET /ops/queues` for `event_dlq` — `sleep_cycle.py`, which needs a sync
    `chat_sync()` wrapper.
+   **Done for the decision board only** — see
+   `docs/superpowers/plans/2026-08-04-llm-endpoint-phase2.md`. `sleep_cycle.py`
+   is still outstanding: the `event_dlq` check was not run, so it was
+   deliberately left out rather than converted blind.
 4. **Phase 3**: `dreams/`, and rewriting `config.py:205-216` + the
    `dreams/synthesize.py` docstring, which currently instruct the reader to
    repoint `LLM_BASE_URL` — advice this change makes both unnecessary and
