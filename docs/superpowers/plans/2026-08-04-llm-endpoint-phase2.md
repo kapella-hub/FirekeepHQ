@@ -98,9 +98,17 @@ matching `knowledge/classifier.py`'s shape. No second hand-rolled httpx block;
 
 **Deleted the `reasoning`-field fallback**, for the same reason phase 1 deleted
 the classifier's: under JSON mode an empty `content` means the grammar blocked
-the output, so `reasoning` is prose by construction and can never be the JSON.
-Both paths ended in `JSONDecodeError`. No terminal state changes; one line that
-read as a rescue stops pretending.
+the output, so `reasoning` is prose **on every backend measured** (phase-1 probe
+E returned 1978 chars of it) and `json.loads` rejects prose.
+
+An earlier draft of this record said "both paths ended in `JSONDecodeError`" and
+claimed no terminal state changes. That was **empirical, not tautological**, and
+the review caught the overreach: a backend that mirrored valid JSON into
+`reasoning` *would* have been rescued by the old fallback and returned a healthy
+board. So this does trade an unobserved rescue for a visible failure. That is
+the right way round — the rescue path also returned `degraded=False`, so it
+could turn a broken call into a board claiming to be healthy, which is the exact
+defect this change exists to close.
 
 **Fixed the silent-success bug.** `_llm_suggest` raises now — on transport, HTTP
 status, unparseable JSON, and on valid JSON of the wrong top-level shape. The
@@ -132,12 +140,35 @@ holds, for two independent reasons:
    disagreed since SP4 shipped.
 2. **30 is also the client's ceiling.** The same file derives its HTTP timeout
    for `POST /decision/synthesize` as `synth + _INGEST_TIMEOUT_HEADROOM (15.0)`
-   = **45s**. This endpoint must answer inside that or be hung up on. The only
-   work outside the LLM budget is the recalls, and they issue
+   = **45s**. This endpoint must answer inside that or be hung up on. **Past 30
+   needs a coordinated client release, not an env change.**
+
+   **What the raise costs, stated plainly.** The 45s is fixed, so the margin for
+   everything outside the LLM budget — the up-to-9 recalls — went **25s → 15s**.
+   That is a *reduction*, not the restoration "restoring the 15s the constant is
+   named for" makes it sound like; the 15s is precisely the recall headroom, and
+   it is what shrank. It is still the right trade, because at 20 the LLM pass
+   never completed at all, so the extra 10s of recall margin was protecting a
+   call that produced nothing.
+
+   What actually lives in that margin: the recalls issue
    `ContextQuery(format="raw")`, which `RAGEngine.recall` uses to skip the
-   synthesis LLM pass entirely (`engine/rag.py:302`) — ~10ms each, at most 9.
-   So 30 restores exactly the 15s of headroom the client's own constant is named
-   for. **Past 30 needs a coordinated client release, not an env change.**
+   synthesis LLM pass entirely (`engine/rag.py:302`) — so **no generation**. But
+   there *is* one embed per recall (`VectorClient._embed` →
+   `POST {LLM_BASE_URL}/embeddings`), LRU-cached by content hash and therefore
+   **always cold** for distinct question texts. Sub-second each on this
+   hardware, not free, and nobody has timed nine of them. An earlier draft of
+   this record and of `config.py` said "~10ms each"; that number was **not
+   measured and is wrong by roughly two orders of magnitude** — corrected here
+   rather than quietly dropped, because the ceiling argument is justified with
+   it. The conclusion survives: no generation on that path, and 15s absorbs the
+   embeds with room.
+
+   **Ops note:** `RERANK_ENABLED=true` fires `top_k ×
+   RERANK_CANDIDATES_MULTIPLIER` LLM calls *per recall*, times 9 questions. That
+   already exceeded the old 25s, so this is not a new regression — but the
+   margin is thinner now. Do not enable it on a CPU backend and expect this
+   endpoint to answer inside the client's ceiling.
 
 A third reason the design did not state, and the one that makes 20 wrong on its
 own terms: **20 was below the floor even for the endpoint this change makes
@@ -182,15 +213,35 @@ truncate on the one deployment shape where this feature *currently works* — a
 non-thinking model on `/v1`, i.e. the office deploy. Sized large enough to be
 safe there, it would never bind on the CPU boxes anyway.
 
-### Honest ceiling — this is a partial win
+### Honest ceiling — this is a partial win, and it is now measured
 
-30s is roughly **180 native output tokens** on a 4-vCPU box. A suggestion JSON
-for 1–3 questions (~150 tokens) fits; a full 8-question board (~400–550 tokens,
-~60–90s) does not, and still degrades to retrieval-only — correctly labelled now
-rather than reported as healthy. The remaining lever is the **prompt** (cap
-suggestions per question, cap their length), not a larger budget the client will
-cut off and not a token cap that only truncates. That is a semantic change to
-output quality, it is unmeasured, and it is not in this change. Follow-up 1.
+Run live on the VPS (qwen3:4b, native `/api/chat`, `think:false`) after the
+change landed:
+
+| Board | Wall clock | Output tokens | vs the 30s budget |
+|-------|-----------|---------------|-------------------|
+| 1 question  | **20.98s** | 57  | fits |
+| 3 questions | **16.31s** | 111 | fits |
+| 8 questions | **37.28s** | 239 | **exceeds** |
+
+**The ceiling claim is confirmed: small boards get suggestions, a full board
+still degrades to retrieval-only** — correctly labelled now rather than reported
+as healthy.
+
+Two corrections to what this record previously estimated. My token figure was
+**high** — I guessed ~400–550 output tokens for an 8-question board; the real
+number is **239**. The timing conclusion survives only because generation is
+*slower* than the estimate assumed, so the binding constraint is **wall clock at
+~6.5 tok/s, not output size**: 239 tokens is a small answer and it still costs
+37s. Read the table as three data points rather than a function of question
+count — the 1-question run is *slower* than the 3-question one, so per-call
+overhead and warmness dominate at this size.
+
+The remaining lever is therefore the **prompt** (cap suggestions per question
+and their length, which cuts tokens actually generated), not a larger budget the
+client will cut off and not a token cap that only truncates. That is a semantic
+change to output quality, it is unmeasured, and it is not in this change.
+Follow-up 1.
 
 ---
 
@@ -219,11 +270,15 @@ setting it in a developer's shell reaches the client only. That is documented in
 both `CLAUDE.md`s and is pre-existing; it is a trap for anyone who assumes one
 knob.
 
-**No live measurement.** Every latency number here is phase 1's, measured on the
-same box, same model, same endpoints — the suggestion call itself was not timed
-against the VPS, per instruction. The two claims that would benefit most from one
-real measurement are (a) the ~400–550 token estimate for a full 8-question board
-and (b) whether a 1–3 question board really does land inside 30s natively.
+**Live measurement was run by the team lead, not by this change.** The
+implementation was written against phase 1's numbers (same box, same model, same
+endpoints) because this agent was instructed not to touch the VPS. The two
+claims flagged as estimates — the token count for a full board, and whether a
+1–3 question board lands inside 30s — were then measured and are in "Honest
+ceiling" above. One was wrong (tokens, high by ~2x) and the conclusion held
+anyway. **The lesson is the flagging, not the luck:** an estimate labelled as an
+estimate got checked; the "~10ms" recall figure, which was stated as fact, did
+not, and was wrong by two orders of magnitude.
 
 ---
 
@@ -245,7 +300,7 @@ The third gate's working directory is load-bearing (phase 1's note):
 
 | File | Change |
 |------|--------|
-| `cortex/tests/test_decision_synthesize.py` | `_settings()` became a plain class instead of a `MagicMock` — `app.llm` type-guards `LLM_BASE_URL` to `str`, so a MagicMock resolves to "no native root" and every endpoint assertion would have been testing the fallback by accident — with `LLM_NATIVE_CHAT="never"` pinned (phase 1's trap: on the default `auto` these would fire a real `GET http://ollama:11434/api/version`, which happens to fail in CI and happens to land back on `/v1`, passing for a reason unrelated to what they assert and flipping on any dev box running ollama). **9 tests added**, the first in this file to exercise `_llm_suggest` at all: suggestions landing on their questions; connect error → `degraded` **and evidence intact**; HTTP error → degraded; unparseable completion → degraded; JSON array instead of object → degraded; the deleted `reasoning` fallback; the `/v1` body carrying standard OpenAI fields only and **no** `max_tokens`; the native body (`stream:False`, `think:False`, `format:"json"`, `options` without `num_predict`); and the one budget reaching both endpoints. |
+| `cortex/tests/test_decision_synthesize.py` | `_settings()` became a plain class instead of a `MagicMock` — `app.llm` type-guards `LLM_BASE_URL` to `str`, so a MagicMock resolves to "no native root" and every endpoint assertion would have been testing the fallback by accident — with `LLM_NATIVE_CHAT="never"` pinned (phase 1's trap: on the default `auto` these would fire a real `GET http://ollama:11434/api/version`, which happens to fail in CI and happens to land back on `/v1`, passing for a reason unrelated to what they assert and flipping on any dev box running ollama). **9 tests added**, the first in this file to exercise `_llm_suggest` at all: suggestions landing on their questions; connect error → `degraded` **and evidence intact**; HTTP error → degraded; unparseable completion → degraded; JSON array instead of object → degraded; the deleted `reasoning` fallback; the `/v1` body carrying standard OpenAI fields only and **no** `max_tokens`; the native body (`stream:False`, `think:False`, `format:"json"`, `options` without `num_predict`); and the one budget reaching both endpoints — that last one **parametrised over both**, since it originally asserted only `/v1` (`_Settings` pins `LLM_NATIVE_CHAT="never"` and nothing overrode it) and so had not earned the "both" in its name. |
 | `cortex/tests/test_decision_config.py` | Default 20.0 → 30.0, with a comment saying *why* the number is pinned (it is a contract with a second process). **2 tests added** asserting `docker-compose.yml`'s `${DECISION_SYNTH_TIMEOUT_SECONDS:-N}` and `.env.example` both agree with the code default — phase 1's first trap, mechanised so the next person cannot hit it. |
 | `cortex/tests/test_decision_api.py` | **Unchanged** — it patches `synthesize_board` itself, above the seam that moved. |
 
@@ -261,10 +316,22 @@ intended changes (`degraded` now tells the truth, and the endpoint moved).
    2 answers and 2 actions per question, ≤12 words each". That is what makes a
    full 8-question board fit a 30s budget on CPU. It changes output semantics and
    is unmeasured, so it is not in this change.
-2. **`sleep_cycle.py`** (phase 2(b)) — check `GET /ops/queues` `event_dlq` first;
+2. **OPEN QUESTION — suggestion COVERAGE may be broken independently of
+   latency.** In the team lead's live probe, qwen3:4b returned only **2
+   top-level question keys regardless of board size** — the same for a
+   1-question and an 8-question board. That probe used a *simplified* prompt,
+   not the production `_SUGGEST_SYSTEM_PROMPT`, so do not over-conclude from it.
+   But if it reproduces with the real prompt, a board would come back with two
+   questions carrying suggestions and the rest silently empty — and the grounding
+   loop in `synthesize_board` would render that as `degraded=False`, because
+   partial coverage is indistinguishable from "the model had nothing to add for
+   those". Same class of defect as phase 1's follow-up on skill drafts echoing
+   `_DOC_LLM_PROMPT`'s placeholders: qwen3:4b not adhering to an output schema.
+   **Unverified with the production prompt — check before trusting coverage.**
+3. **`sleep_cycle.py`** (phase 2(b)) — check `GET /ops/queues` `event_dlq` first;
    needs `chat_sync()`.
-3. **Phase 3** — `dreams/`, plus rewriting `config.py`'s dreams caveat and
+4. **Phase 3** — `dreams/`, plus rewriting `config.py`'s dreams caveat and
    `dreams/synthesize.py`'s docstring, which still instruct the reader to
    repoint `LLM_BASE_URL` (advice the embeddings grep makes actively harmful).
-4. The split-brain state stands and is documented in both `CLAUDE.md`s: five
+5. The split-brain state stands and is documented in both `CLAUDE.md`s: five
    converted sites, six not. **Do not sweep the rest in one unreviewed change.**

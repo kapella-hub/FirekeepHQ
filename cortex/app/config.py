@@ -203,12 +203,26 @@ class Settings(BaseSettings):
     #    have disagreed since SP4 shipped.
     # 2. 30 IS ALSO THE CLIENT'S CEILING. That same file derives its HTTP timeout
     #    for POST /decision/synthesize as synth + _INGEST_TIMEOUT_HEADROOM (15.0)
-    #    = 45s, so this endpoint must answer inside 45s or be hung up on. The
-    #    only work outside this budget is the recalls, and they run
-    #    `format="raw"` (RAGEngine skips the synthesis LLM pass entirely) at
-    #    ~10ms each, at most 9 of them. So 30 restores exactly the 15s of
-    #    headroom the client's own constant is named for. Going past 30 needs a
-    #    coordinated client release, not an env change.
+    #    = 45s, so this endpoint must answer inside 45s or be hung up on. Going
+    #    past 30 needs a coordinated client release, not an env change.
+    #
+    #    Be clear about what the raise COSTS, because the 45s is fixed: the
+    #    margin left for everything outside this budget — the up-to-9 recalls —
+    #    went 25s -> 15s. That is the right trade (at 20 the LLM pass never
+    #    completed at all, so the 25s bought nothing), but it is a REDUCTION,
+    #    not the restoration it can read as. What lives in that margin: the
+    #    recalls issue `ContextQuery(format="raw")`, which `RAGEngine.recall`
+    #    uses to skip the synthesis LLM pass entirely (engine/rag.py:302), so
+    #    there is no GENERATION on that path — but there IS one embed per recall
+    #    (`VectorClient._embed` -> `POST {LLM_BASE_URL}/embeddings`), LRU-cached
+    #    by content hash and therefore ALWAYS COLD for distinct question texts.
+    #    Sub-second each on this hardware, not free, and nobody has timed nine of
+    #    them; 15s absorbs them with room, and that is the honest claim.
+    #    OPS NOTE: `RERANK_ENABLED=true` adds `top_k x
+    #    RERANK_CANDIDATES_MULTIPLIER` LLM calls per recall, times 9 questions.
+    #    That already blew through the old 25s, so it is not a new regression —
+    #    but the margin is thinner now. Do not enable it on a CPU backend and
+    #    expect this endpoint to answer inside the client's ceiling.
     # 3. 20 WAS BELOW THE FLOOR EVEN FOR THE FAST PATH. Native generation on the
     #    VPS measured 5.9-7.2 tok/s (see SKILL_SYNTH_TIMEOUT_SECONDS below), so
     #    20s buys ~120-145 output tokens — less than a suggestion JSON for three
@@ -224,12 +238,21 @@ class Settings(BaseSettings):
     # from `think:false`. Raising the /v1 budget is capped by the client at 45s.
     # One number for both endpoints.
     #
-    # HONEST CEILING: 30s is ~180 native output tokens on a 4-vCPU CPU box. A
-    # 1-3 question board fits; a full 8-question board (~400-550 tokens) does
-    # not, and still degrades to retrieval-only. The remaining lever is the
-    # PROMPT (cap suggestions per question), not a larger timeout the client
-    # will cut off and not `max_tokens`, which in JSON mode can only truncate
-    # valid output into invalid — see app/decision/synthesize.py.
+    # HONEST CEILING — measured live on the VPS 2026-08-04 (qwen3:4b, native
+    # /api/chat with think:false), not extrapolated:
+    #     1 question    20.98s    57 output tokens    FITS
+    #     3 questions   16.31s   111 output tokens    FITS
+    #     8 questions   37.28s   239 output tokens    EXCEEDS the 30s budget
+    # So a small board now gets suggestions and a FULL board still degrades to
+    # retrieval-only. The binding constraint is WALL CLOCK at ~6.5 tok/s, not
+    # output size: 239 tokens is small — an earlier estimate of ~400-550 was
+    # high — and still costs 37s. Read these as three data points, not a
+    # function of question count: the 1-question run is SLOWER than the
+    # 3-question one, so per-call overhead and warmness dominate at this size.
+    # The remaining lever is therefore the PROMPT (cap suggestions per question
+    # and their length, which cuts tokens actually generated), not a larger
+    # timeout the client will cut off and not `max_tokens`, which in JSON mode
+    # can only truncate valid output into invalid — see decision/synthesize.py.
     DECISION_SYNTH_TIMEOUT_SECONDS: float = 30.0
     DECISION_MAX_QUESTIONS: int = 8               # hard cap on per-question recalls
 

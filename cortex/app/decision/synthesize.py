@@ -120,9 +120,14 @@ async def _llm_suggest(context: str, questions: list[dict], *, settings) -> dict
 
     # No reasoning-field fallback; it was deleted here for the same reason
     # knowledge/classifier.py's was. Under JSON mode, empty content means the
-    # grammar blocked the output, so `reasoning` is prose by construction and
-    # can never be the JSON. Both paths ended in JSONDecodeError — the fallback
-    # only read like a rescue.
+    # grammar blocked the output, so `reasoning` is prose ON EVERY BACKEND
+    # MEASURED — phase-1 probe E returned 1978 chars of it — and json.loads
+    # rejects prose. Stated that way deliberately: it is not proven universally.
+    # A backend that mirrored the JSON into `reasoning` would have been rescued
+    # by the old fallback, so this does trade an unobserved rescue for a visible
+    # failure. That is the right way round, because the rescue path also
+    # returned `degraded=False` — it could turn a broken call into a board that
+    # claimed to be healthy, which is the defect this change exists to close.
     data = json.loads(result.content)
     if not isinstance(data, dict):
         raise ValueError(

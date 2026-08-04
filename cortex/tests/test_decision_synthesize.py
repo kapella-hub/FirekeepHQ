@@ -328,19 +328,39 @@ async def test_native_body_when_the_backend_is_ollama():
     assert "response_format" not in body
 
 
+@pytest.mark.parametrize("native_chat,expected_url", [
+    ("never", "http://ollama:11434/v1/chat/completions"),
+    ("always", "http://ollama:11434/api/chat"),
+])
 @pytest.mark.asyncio
-async def test_the_configured_budget_bounds_both_endpoints():
+async def test_the_configured_budget_bounds_both_endpoints(native_chat, expected_url):
     """One number for both, deliberately: a native sibling could only be LOWER,
     and phase 1 measured that a lower native budget strands non-thinking-model
-    deploys, which take the native path and gain nothing from `think:false`."""
+    deploys, which take the native path and gain nothing from `think:false`.
+
+    Parametrised over BOTH endpoints on purpose. Asserting only `/v1` would have
+    left the "both" in the name unearned, since `_Settings` pins
+    `LLM_NATIVE_CHAT="never"` and nothing else here overrides it.
+    """
     rag = _rag_with_one_source()
     s = _settings()
+    s.LLM_NATIVE_CHAT = native_chat
     s.DECISION_SYNTH_TIMEOUT_SECONDS = 12.5
-    client = _mock_client(_openai_response("{}"))
+    # Native reads `message.content`, /v1 reads `choices[0].message.content`;
+    # a body carrying both is valid for whichever path runs.
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.raise_for_status = MagicMock()
+    resp.json = MagicMock(return_value={
+        "message": {"role": "assistant", "content": "{}"},
+        "choices": [{"message": {"content": "{}"}}],
+    })
+    client = _mock_client(resp)
 
     with patch("app.llm.httpx.AsyncClient") as mc:
         mc.return_value = client
         await synthesize_board("ctx", ["q1"], rag_engine=rag, settings=s)
 
+    assert client.post.await_args.args[0] == expected_url
     # llm.chat builds its own client with the budget when none is injected.
     assert mc.call_args.kwargs["timeout"] == 12.5
