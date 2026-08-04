@@ -103,9 +103,15 @@ class TestDuplicateDetection:
         client = MagicMock()
         mock_qdrant.return_value = client
 
+        # confirmed_count is 0 on both members deliberately. A human-confirmed
+        # memory can no longer reach this pass at all — `_dedup_scope_filter`
+        # excludes it — so seeding one here would describe a state production
+        # cannot produce. The lifecycle fold is asserted below on created_at
+        # instead; see tests/test_memory_agent_confirmed.py for the guard.
         p1 = _make_point("id-1", {"text": "Use Postgres for storage", "status": "active",
-                                    "domain": "db", "tags": [], "confirmed_count": 1,
-                                    "contradicted_count": 0, "timestamp": "2026-01-01T00:00:00+00:00"},
+                                    "domain": "db", "tags": [], "confirmed_count": 0,
+                                    "contradicted_count": 0, "timestamp": "2026-01-01T00:00:00+00:00",
+                                    "created_at": "2025-06-01T00:00:00+00:00"},
                          [0.9, 0.1, 0.0])
         p2 = _make_point("id-2", {"text": "Postgres is the storage backend", "status": "active",
                                     "domain": "db", "tags": [], "confirmed_count": 0,
@@ -150,7 +156,13 @@ class TestDuplicateDetection:
         assert str(point.id) == expected_id
         assert point.vector == [0.5] * 3
         assert point.payload["text"] == merged_text
-        assert point.payload["confirmed_count"] == 1  # max of cluster
+        # Lifecycle is folded, not discarded: the EARLIEST member's created_at
+        # survives (folding runs newest-first, so the oldest folds last).
+        # This assertion used to read `confirmed_count == 1  # max of cluster`,
+        # which documented the confirmed-memory hole as correct behaviour —
+        # the merged point inheriting a human's confirmation onto LLM-written
+        # text. That input is now excluded from the pass.
+        assert point.payload["created_at"] == "2025-06-01T00:00:00+00:00"
         assert point.payload["status"] == "active"
 
         # Both old points superseded by the new id
@@ -180,11 +192,16 @@ class TestDuplicateDetection:
         client = MagicMock()
         mock_qdrant.return_value = client
 
+        # The keeper is differentiated by contradicted_count, not by
+        # confirmed_count: a confirmed memory is out of this pass's scope
+        # entirely (`_dedup_scope_filter`), so it can no longer be the member
+        # that wins the confidence comparison. Confidence here is
+        # (1+0)/(1+2)=0.33 for id-1 against (1+0)/(1+0)=1.0 for id-2.
         p1 = _make_point("id-1", {"text": "Short", "status": "active", "domain": "db",
-                                    "tags": [], "confirmed_count": 0, "contradicted_count": 0},
+                                    "tags": [], "confirmed_count": 0, "contradicted_count": 2},
                          [0.9, 0.1, 0.0])
         p2 = _make_point("id-2", {"text": "Better memory with more detail", "status": "active",
-                                    "domain": "db", "tags": [], "confirmed_count": 3,
+                                    "domain": "db", "tags": [], "confirmed_count": 0,
                                     "contradicted_count": 0},
                          [0.89, 0.11, 0.01])
         client.scroll.return_value = ([p1, p2], None)
@@ -310,8 +327,9 @@ class TestDedupSafety:
 
         client = MagicMock()
         mock_qdrant.return_value = client
+        # confirmed_count 0: a confirmed memory is out of this pass's scope.
         p1 = _make_point("id-1", {"text": "Use Postgres for storage", "status": "active",
-                                    "domain": "db", "tags": [], "confirmed_count": 1,
+                                    "domain": "db", "tags": [], "confirmed_count": 0,
                                     "contradicted_count": 0}, [0.9, 0.1, 0.0])
         p2 = _make_point("id-2", {"text": "Postgres is the storage backend", "status": "active",
                                     "domain": "db", "tags": [], "confirmed_count": 0,
