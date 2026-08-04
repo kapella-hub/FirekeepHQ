@@ -368,7 +368,7 @@ def _starvation_fixture(monkeypatch, *, cap):
     in sorted key order, so bucket "alpha" is always reached first — with a
     cap of 2 the "beta" bucket is never in the returned list at all. That is
     the shape the live store has (a 297-memory project-less bucket ahead of
-    firekeep/nexusstack/timegrapher), just small enough to assert on.
+    every named-project bucket), just small enough to assert on.
     """
     dims = 4
     points = (

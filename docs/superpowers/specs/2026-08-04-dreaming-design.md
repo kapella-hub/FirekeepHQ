@@ -27,7 +27,7 @@ Measured on the live VPS 2026-08-04, not assumed:
 | Active by type | 272 `episodic`, 266 **no `memory_type` at all** | Filtering on `memory_type == "episodic"` silently ignores half the store. Candidate selection must treat a missing type as episodic-equivalent (matching `rag.py`'s decay fallback). |
 | `member_id` on active | **uniform** (`member-7312be8f…`) | **Profiles key on `member_id`, not `agent_id`.** |
 | `agent_id` on active | **7 distinct values for one human** (`agent-marat_pc-5a60`, `Oganesyan, Marat`, `Marat`, `mogan`, `unknown`, `default`, `legacy-pre-team-continuity`) | Keying profiles on `agent_id` would build seven partial profiles of the same person. This was the design's biggest latent flaw. |
-| `project` on active | set on ~45% (`firekeep` 140, `nexusstack` 63, `timegrapher` 25, …; 297 unset) | Multi-project store. Clusters must not span projects; unset is its own bucket, not a wildcard. |
+| `project` on active | set on ~45% (largest named project 140, then 63, 25, … a long tail; 297 unset) | Multi-project store. Clusters must not span projects; unset is its own bucket, not a wildcard. |
 | Synthesis latency | **22.5s** per cluster (qwen3:4b, 4 vCPU) **with `think:false`** | Server-side CPU dreaming is viable. |
 | Synthesis latency **without** `think:false` | **101s and returns EMPTY** | qwen3 under a JSON grammar burns its whole budget on blocked thinking. Non-negotiable requirement, pinned by a test. |
 

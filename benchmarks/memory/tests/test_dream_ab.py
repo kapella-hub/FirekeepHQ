@@ -1,6 +1,5 @@
 import json
 
-import pytest
 
 from bench import dream_ab
 

@@ -65,7 +65,7 @@ class DreamState:
         on 30 clusters across two project buckets at cap 20: the second
         bucket was never reached, on any run. On the live store the
         project-less bucket (297 memories) would have consumed the cap and
-        `firekeep`/`nexusstack`/`timegrapher` would never have been
+        every named-project bucket after it would never have been
         consolidated at all.
 
         Called only after a dream point is actually WRITTEN — a cluster the
