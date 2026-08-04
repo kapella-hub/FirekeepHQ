@@ -51,6 +51,44 @@ Native response shape (probe A/B): `{model, created_at, message: {role, content
 [, thinking]}, done, done_reason, eval_count, eval_duration, load_duration,
 prompt_eval_count, prompt_eval_duration, total_duration}`.
 
+STRUCTURED OUTPUTS (`json_schema=`, added 2026-08-04 after the measurements
+below). `json_mode=True` constrains output to SYNTACTICALLY VALID JSON and
+NOTHING MORE — it enforces no schema, on either endpoint. Measured on the same
+VPS/model with the decision board's own suggestion prompt (three questions,
+system prompt documenting a `{question_id: {suggested_answers,
+suggested_actions}}` contract):
+
+    F  format:"json"      -> 20.62s / 16.31s, 0/3 questions answered BOTH runs.
+       The model MIRRORED THE USER MESSAGE back — top-level keys `['context',
+       'questions']`, and not even cleanly (one run emitted the corrupted key
+       `"evidence_sn:"`). Handed a JSON input under a "be valid JSON"
+       constraint, a small model reproduces the input's shape.
+    G  format:<json schema> -> 16.55s / 14.81s, 3/3 answered BOTH runs, top-level
+       keys exactly `['q0','q1','q2']`.
+    H  as G plus `minItems:1` -> 24.51s, 3/3 — no adherence gain over G, so the
+       extra constraint buys only latency and pressure to invent. Not used.
+    I  G, latency vs question count: n=1 8.16s, n=3 22.95s, n=8 52.75s
+       (43/126/328 output tokens) — constrained decode is bounded by tokens
+       emitted, as unconstrained decode is. A schema does not make a big board
+       fit a small budget.
+
+So the schema is not a tuning knob, it is the difference between a feature that
+answers and one that echoes. Passing `json_schema` sets ollama's native `format`
+to the schema object and `/v1`'s `response_format` to the OpenAI
+`{"type":"json_schema", ...}` shape. `json_mode` is IMPLIED by a schema (see
+`chat`) so the schema-dropped fallback below is still JSON rather than prose.
+
+NON-OLLAMA SAFETY. Structured outputs are not universal: a `/v1` backend that
+does not implement `response_format.type = "json_schema"` rejects the request.
+There is no capability endpoint to feature-detect against, so `chat` uses the
+mechanism already in this file — a pre-generation 4xx triggers ONE retry with
+the schema dropped, on the same endpoint, degrading to plain json mode rather
+than failing. `422` joins `_DEMOTE_STATUS_CODES` for this: vLLM's server is
+FastAPI, whose request-validation rejection is a 422, and it is pre-generation
+exactly like the other four. A schema-dropped call returns unconstrained output,
+which is what the caller's own adherence check is for — `decision/synthesize.py`
+reports `degraded` when the payload grounds nothing.
+
 THE OPENAI BRANCH SENDS ONLY STANDARD OPENAI FIELDS. `dreams/synthesize.py`
 sends `think` and `chat_template_kwargs` on the `/v1` path unconditionally;
 nobody has been burned because `DREAM_ENABLED=false`. Real OpenAI rejects
@@ -87,12 +125,18 @@ _PROBE_TIMEOUT_SECONDS = 2.0
 # ~83-289s `/v1` path for the full positive TTL.
 _NEGATIVE_TTL_CEILING_SECONDS = 60.0
 
-# Returned BEFORE generation starts, so retrying on `/v1` is ~free. An older
-# ollama daemon may reject the `think` flag outright; without this net,
-# upgrading ollama would become a prerequisite of this change. Deliberately
+# Returned BEFORE generation starts, so retrying is ~free. An older ollama
+# daemon may reject the `think` flag outright, and a `/v1` backend that has not
+# implemented structured outputs rejects `response_format.type=json_schema`;
+# without this net, either would become a hard prerequisite. Deliberately
 # excludes 5xx and timeouts — those may arrive mid-generation, where a retry
 # costs a second full generation.
-_DEMOTE_STATUS_CODES = frozenset({400, 404, 405, 501})
+#
+# 422 is here for the schema fallback specifically: vLLM's OpenAI-compatible
+# server is FastAPI, whose request-validation rejection is a 422 rather than a
+# 400. It satisfies this set's one criterion — pre-generation — exactly like the
+# other four, so it is safe on the endpoint-demotion path too.
+_DEMOTE_STATUS_CODES = frozenset({400, 404, 405, 422, 501})
 
 _NATIVE = "native"
 _OPENAI = "openai"
@@ -170,6 +214,7 @@ def build_native_body(
     model: str,
     messages: list[dict],
     json_mode: bool = False,
+    json_schema: dict | None = None,
     temperature: float | None = None,
     max_tokens: int | None = None,
 ) -> dict:
@@ -179,6 +224,12 @@ def build_native_body(
     NDJSON breaks `resp.json()` (probe C), `think:False` because it is the
     entire point of using this endpoint (probe D: 4.00s vs 111.20s).
     `temperature`/`num_predict` go inside `options`; `format` stays top level.
+
+    `format` carries the SCHEMA OBJECT when one is supplied — that is ollama's
+    structured-outputs surface, the same field that otherwise carries the string
+    `"json"`. A schema therefore supersedes `json_mode` rather than combining
+    with it: probe F/G measured that the string alone constrains syntax only and
+    let qwen3:4b mirror the input back on every run.
     """
     body: dict[str, Any] = {
         "model": model,
@@ -186,7 +237,9 @@ def build_native_body(
         "stream": False,
         "think": False,
     }
-    if json_mode:
+    if json_schema is not None:
+        body["format"] = json_schema
+    elif json_mode:
         body["format"] = "json"
 
     options: dict[str, Any] = {}
@@ -204,16 +257,35 @@ def build_openai_body(
     model: str,
     messages: list[dict],
     json_mode: bool = False,
+    json_schema: dict | None = None,
+    json_schema_name: str = "response",
     temperature: float | None = None,
     max_tokens: int | None = None,
 ) -> dict:
     """Body for `/v1/chat/completions` — standard OpenAI fields ONLY.
 
     No `think`, no `chat_template_kwargs`, no `format`: ollama ignores them here
-    and real OpenAI 400s on unrecognised arguments.
+    and real OpenAI 400s on unrecognised arguments. `response_format` IS
+    standard, in both its `json_object` and its `json_schema` form, so the
+    schema goes in the OpenAI envelope rather than a vendor field.
+
+    `strict: True` is what makes the schema binding rather than advisory on
+    OpenAI; a backend that has not implemented `json_schema` at all rejects the
+    request pre-generation, which `chat` answers by retrying once without it.
+    `json_schema_name` must match OpenAI's `^[a-zA-Z0-9_-]{1,64}$` — callers own
+    it, it is never derived from user input.
     """
     body: dict[str, Any] = {"model": model, "messages": messages}
-    if json_mode:
+    if json_schema is not None:
+        body["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": json_schema_name,
+                "strict": True,
+                "schema": json_schema,
+            },
+        }
+    elif json_mode:
         body["response_format"] = {"type": "json_object"}
     if temperature is not None:
         body["temperature"] = temperature
@@ -361,6 +433,8 @@ async def chat(
     messages: list[dict],
     timeout: float,
     json_mode: bool = False,
+    json_schema: dict | None = None,
+    json_schema_name: str = "response",
     temperature: float | None = None,
     max_tokens: int | None = None,
     native_timeout: float | None = None,
@@ -375,12 +449,26 @@ async def chat(
     be simultaneously a safe ceiling for the slow one and a useful one for the
     fast one. Callers that do not care may omit it and get `timeout` for both.
 
+    `json_schema`, when supplied, constrains generation to that shape — see the
+    module docstring for why `json_mode` alone does not. It is a request, not a
+    guarantee: a backend that rejects it pre-generation gets ONE retry with the
+    schema dropped, so a deploy against vLLM/LiteLLM/OpenAI that has not
+    implemented structured outputs keeps working at the pre-schema quality
+    rather than failing.
+
     RAISES on transport or HTTP failure. Callers own their own degradation.
     """
+    # A schema implies JSON output. Coerced once, here, so the schema-dropped
+    # fallback attempt is still json-mode: a caller that passed only a schema
+    # would otherwise fall back to a body carrying NO output constraint at all,
+    # turning a backend's polite 400 into free-form prose and a JSONDecodeError.
+    json_mode = json_mode or json_schema is not None
+
     native = await is_native(settings)
     root = _resolve_root(settings) if native else None
 
-    def _plan(use_native: bool) -> tuple[str, dict, float]:
+    def _plan(use_native: bool, use_schema: bool) -> tuple[str, dict, float]:
+        schema = json_schema if use_schema else None
         if use_native:
             return (
                 f"{root}/api/chat",
@@ -388,6 +476,7 @@ async def chat(
                     model=settings.LLM_MODEL,
                     messages=messages,
                     json_mode=json_mode,
+                    json_schema=schema,
                     temperature=temperature,
                     max_tokens=max_tokens,
                 ),
@@ -399,6 +488,8 @@ async def chat(
                 model=settings.LLM_MODEL,
                 messages=messages,
                 json_mode=json_mode,
+                json_schema=schema,
+                json_schema_name=json_schema_name,
                 temperature=temperature,
                 max_tokens=max_tokens,
             ),
@@ -408,8 +499,8 @@ async def chat(
     api_key = getattr(settings, "LLM_API_KEY", "") or ""
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
 
-    async def _post(use_native: bool) -> httpx.Response:
-        url, body, budget = _plan(use_native)
+    async def _post(use_native: bool, use_schema: bool) -> httpx.Response:
+        url, body, budget = _plan(use_native, use_schema)
         if client is not None:
             resp = await client.post(url, json=body, headers=headers, timeout=budget)
         else:
@@ -418,32 +509,68 @@ async def chat(
         resp.raise_for_status()
         return resp
 
-    try:
-        resp = await _post(native)
-    except httpx.HTTPStatusError as exc:
-        status = exc.response.status_code if exc.response is not None else None
-        if not (native and status in _DEMOTE_STATUS_CODES):
-            raise
-        # Pre-generation rejection (most likely an older ollama that does not
-        # know `think`). Demote the cached verdict and retry once on the
-        # contract endpoint.
-        #
-        # The demotion is NOT permanent: it is stored with the negative TTL
-        # (60s), so `auto` re-probes after it lapses. That is deliberate and
-        # better than latching — an ollama upgraded to a version that accepts
-        # `think` is picked up within a minute with no restart — and the cost
-        # of being wrong is bounded to one wasted round trip per minute rather
-        # than one per call.
-        logger.warning(
-            "Native /api/chat returned %s for %s — demoting to "
-            "/v1/chat/completions and retrying once",
-            status,
-            purpose or "chat",
-        )
-        if root:
-            _demote(settings, root)
-        native = False
-        resp = await _post(False)
+    # The ladder of attempts, most-capable first. Each rung drops exactly ONE
+    # capability, so a pre-generation rejection is answered by giving up the
+    # least it can. Without a schema this is bit-identical to the two-rung
+    # native->/v1 ladder that shipped before structured outputs.
+    #
+    # Deliberately no (/v1, schema) rung below a failed (native, schema): on
+    # ollama both endpoints are the same engine, so a schema the native handler
+    # rejects will not be honoured by its own /v1 either — that rung would only
+    # buy a wasted round trip.
+    attempts: list[tuple[bool, bool]] = []
+    if json_schema is not None:
+        attempts.append((native, True))
+    attempts.append((native, False))
+    if native:
+        attempts.append((False, False))
+
+    resp = None
+    for index, (use_native, use_schema) in enumerate(attempts):
+        try:
+            resp = await _post(use_native, use_schema)
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code if exc.response is not None else None
+            last = index == len(attempts) - 1
+            if last or status not in _DEMOTE_STATUS_CODES:
+                raise
+            next_native, next_schema = attempts[index + 1]
+            if use_schema and not next_schema:
+                logger.warning(
+                    "%s returned %s for %s with a JSON schema — retrying once "
+                    "without it (this backend appears not to implement "
+                    "structured outputs; output adherence is no longer enforced)",
+                    "Native /api/chat" if use_native else "/v1/chat/completions",
+                    status,
+                    purpose or "chat",
+                )
+            if use_native and not next_native:
+                # Pre-generation rejection (most likely an older ollama that
+                # does not know `think`). Demote the cached verdict and retry
+                # once on the contract endpoint.
+                #
+                # The demotion is NOT permanent: it is stored with the negative
+                # TTL (60s), so `auto` re-probes after it lapses. That is
+                # deliberate and better than latching — an ollama upgraded to a
+                # version that accepts `think` is picked up within a minute with
+                # no restart — and the cost of being wrong is bounded to one
+                # wasted round trip per minute rather than one per call.
+                #
+                # It fires ONLY on this transition. A native call that failed
+                # merely because of the schema is retried natively without it,
+                # and must not cost the process its native verdict: the endpoint
+                # was never the problem.
+                logger.warning(
+                    "Native /api/chat returned %s for %s — demoting to "
+                    "/v1/chat/completions and retrying once",
+                    status,
+                    purpose or "chat",
+                )
+                if root:
+                    _demote(settings, root)
+            continue
+        native = use_native
+        break
 
     data = resp.json()
     if native:

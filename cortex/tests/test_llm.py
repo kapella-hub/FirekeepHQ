@@ -175,6 +175,238 @@ def test_openai_body_omits_optional_fields_when_unset():
 
 
 # ---------------------------------------------------------------------------
+# Structured outputs (json_schema)
+#
+# MEASURED 2026-08-04, same VPS/model, with the decision board's own prompt:
+# `format:"json"` answered 0/3 questions on BOTH runs and echoed the user
+# message's shape back; the same prompt under a schema answered 3/3 on BOTH.
+# json_mode constrains syntax, a schema constrains shape — these are the body
+# shapes that carry that distinction to each endpoint.
+# ---------------------------------------------------------------------------
+
+_SCHEMA = {
+    "type": "object",
+    "properties": {"q0": {"type": "object", "properties": {}}},
+    "required": ["q0"],
+    "additionalProperties": False,
+}
+
+
+def test_native_body_puts_the_schema_object_in_format():
+    """ollama's structured-outputs surface IS `format` — the same field that
+    otherwise carries the string "json"."""
+    body = llm.build_native_body(model="m", messages=[], json_schema=_SCHEMA)
+    assert body["format"] == _SCHEMA
+    assert body["stream"] is False and body["think"] is False
+
+
+def test_a_native_schema_supersedes_json_mode_rather_than_combining():
+    """One field, one value. A caller passing both must get the constraint that
+    actually works, not the string that does not."""
+    body = llm.build_native_body(model="m", messages=[], json_mode=True, json_schema=_SCHEMA)
+    assert body["format"] == _SCHEMA
+
+
+def test_openai_body_wraps_the_schema_in_the_standard_strict_envelope():
+    """`strict: True` is what makes the schema binding rather than advisory on
+    OpenAI. `json_schema` is a standard `response_format` type, so this stays
+    inside the "standard OpenAI fields only" rule the sibling test guards."""
+    body = llm.build_openai_body(
+        model="gpt-4o", messages=[], json_mode=True,
+        json_schema=_SCHEMA, json_schema_name="decision_suggestions",
+    )
+    assert body["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "decision_suggestions",
+            "strict": True,
+            "schema": _SCHEMA,
+        },
+    }
+    for forbidden in ("think", "chat_template_kwargs", "format", "options", "stream"):
+        assert forbidden not in body
+
+
+def test_no_schema_leaves_both_bodies_byte_identical_to_the_pre_schema_shape():
+    """The change is additive. Every caller that does not opt in — the
+    classifier, the skill synthesizer, dreams — must send exactly what it sent
+    before, or this is not a safe change to a shared helper."""
+    assert llm.build_native_body(model="m", messages=[], json_mode=True)["format"] == "json"
+    assert llm.build_openai_body(model="m", messages=[], json_mode=True)[
+        "response_format"
+    ] == {"type": "json_object"}
+
+
+@pytest.mark.asyncio
+async def test_chat_sends_the_schema_on_the_native_endpoint():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"message": {"content": "{}"}})
+
+    async with _client(handler) as client:
+        with _probe(_ok_probe()):
+            await llm.chat(settings=_S(), messages=[], timeout=1.0,
+                           json_schema=_SCHEMA, client=client)
+
+    assert seen["body"]["format"] == _SCHEMA
+
+
+@pytest.mark.asyncio
+async def test_a_schema_implies_json_mode_on_the_dropped_schema_fallback():
+    """A caller may pass only `json_schema`. If the fallback body then carried
+    NO output constraint at all, a backend's polite 400 would be converted into
+    free-form prose and a JSONDecodeError — a worse outcome than the rejection.
+    `chat` coerces json_mode once, up front."""
+    bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        bodies.append(body)
+        if "json_schema" in json.dumps(body.get("response_format", "")):
+            return httpx.Response(400, json={"error": "unknown response_format type"})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
+
+    async with _client(handler) as client:
+        await llm.chat(settings=_S(LLM_NATIVE_CHAT="never"), messages=[], timeout=1.0,
+                       json_schema=_SCHEMA, client=client)  # note: json_mode NOT passed
+
+    assert len(bodies) == 2
+    assert bodies[1]["response_format"] == {"type": "json_object"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [400, 404, 405, 422, 501])
+async def test_a_v1_backend_that_rejects_json_schema_retries_once_without_it(status):
+    """THE NON-OLLAMA SAFETY CASE. Structured outputs are not universal and
+    there is no capability endpoint to feature-detect against, so a
+    vLLM/LiteLLM/OpenAI deploy that has not implemented them must degrade to
+    pre-schema quality rather than fail. 422 is in the set because vLLM's server
+    is FastAPI, whose request-validation rejection is a 422, not a 400."""
+    bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        bodies.append(body)
+        if body["response_format"]["type"] == "json_schema":
+            return httpx.Response(status, json={"error": "unsupported"})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
+
+    async with _client(handler) as client:
+        result = await llm.chat(settings=_S(LLM_NATIVE_CHAT="never"), messages=[],
+                                timeout=1.0, json_mode=True, json_schema=_SCHEMA,
+                                client=client)
+
+    assert [b["response_format"]["type"] for b in bodies] == ["json_schema", "json_object"]
+    assert result.content == "{}"
+
+
+@pytest.mark.asyncio
+async def test_a_5xx_with_a_schema_is_not_retried_without_it():
+    """Same reasoning as the endpoint ladder: a 5xx may arrive mid-generation,
+    where a retry costs a second full generation. Only pre-generation
+    rejections are cheap enough to answer by retrying."""
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return httpx.Response(503, json={"error": "overloaded"})
+
+    async with _client(handler) as client:
+        with pytest.raises(httpx.HTTPStatusError):
+            await llm.chat(settings=_S(LLM_NATIVE_CHAT="never"), messages=[],
+                           timeout=1.0, json_schema=_SCHEMA, client=client)
+
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_dropping_the_schema_natively_does_not_cost_the_native_verdict():
+    """The endpoint was never the problem. A native call rejected only because
+    of the schema is retried NATIVELY without it; demoting there would push
+    every subsequent call in the process onto the 83.19s /v1 path for a fault
+    that had nothing to do with the endpoint."""
+    urls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        urls.append(str(request.url))
+        body = json.loads(request.content)
+        if isinstance(body.get("format"), dict):
+            return httpx.Response(400, json={"error": "bad format"})
+        return httpx.Response(200, json={"message": {"content": "{}"}})
+
+    s = _S()
+    async with _client(handler) as client:
+        with _probe(_ok_probe()):
+            result = await llm.chat(settings=s, messages=[], timeout=1.0,
+                                    json_schema=_SCHEMA, client=client)
+
+    assert urls == ["http://ollama:11434/api/chat"] * 2
+    assert result.endpoint == "native"
+    # The cached verdict is untouched — still native, still no re-probe needed.
+    with _probe(_ok_probe()) as probe_urls:
+        assert await llm.is_native(s) is True
+    assert probe_urls == []
+
+
+@pytest.mark.asyncio
+async def test_a_native_endpoint_failure_still_demotes_even_with_a_schema():
+    """The ladder drops ONE capability per rung: schema first, then the
+    endpoint. An old ollama that rejects `think` fails both native rungs and
+    must still end up on /v1 with the verdict demoted — the pre-schema
+    behaviour, reached through one extra ~free round trip."""
+    urls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        urls.append(str(request.url))
+        if request.url.path == "/api/chat":
+            return httpx.Response(400, json={"error": "unknown field think"})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
+
+    s = _S()
+    async with _client(handler) as client:
+        with _probe(_ok_probe()):
+            result = await llm.chat(settings=s, messages=[], timeout=1.0,
+                                    json_schema=_SCHEMA, client=client)
+
+    assert urls == [
+        "http://ollama:11434/api/chat",       # with schema
+        "http://ollama:11434/api/chat",       # schema dropped
+        "http://ollama:11434/v1/chat/completions",
+    ]
+    assert result.endpoint == "openai"
+    with _probe(_ok_probe()) as probe_urls:
+        assert await llm.is_native(s) is False
+    assert probe_urls == []
+
+
+@pytest.mark.asyncio
+async def test_there_is_no_v1_plus_schema_rung_under_a_failed_native_schema():
+    """Deliberate omission. On ollama both endpoints are the same engine, so a
+    schema the native handler rejects will not be honoured by its own /v1 — that
+    rung would buy nothing but a wasted round trip."""
+    schemas_sent = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        schemas_sent.append(
+            isinstance(body.get("format"), dict)
+            or (body.get("response_format") or {}).get("type") == "json_schema"
+        )
+        if request.url.path == "/api/chat":
+            return httpx.Response(400, json={"error": "nope"})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
+
+    async with _client(handler) as client:
+        with _probe(_ok_probe()):
+            await llm.chat(settings=_S(), messages=[], timeout=1.0,
+                           json_schema=_SCHEMA, client=client)
+
+    assert schemas_sent == [True, False, False]
+
+
+# ---------------------------------------------------------------------------
 # Response normalisation
 # ---------------------------------------------------------------------------
 
