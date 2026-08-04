@@ -1,10 +1,13 @@
 """Cortex briefing router — GET /briefing aggregator (SP1b-server).
 
 Template: app/ops.py create_ops_router(). Reads shared clients from
-request.app.state (mirrors the audit router at main.py:213). All 12 sections
+request.app.state (mirrors the audit router at main.py:213). All 13 sections
 run as independent asyncio tasks with a per-section timeout; a failed/hung
 upstream degrades only that section (SP1b spec §5). The 12th, `observed`, is the
-N=1 learning surface (descriptive, unvalidated, provenance-tagged).
+N=1 learning surface (descriptive, unvalidated, provenance-tagged). The 13th,
+`profile` (Dreaming Task 8), is the per-member person profile written by the
+nightly dream pass -- direct point-id lookup, degrades to "empty" (never
+"unavailable") when no profile has been dreamed yet.
 """
 from __future__ import annotations
 
@@ -80,6 +83,9 @@ def create_briefing_router(section_timeout: float = 2.0) -> APIRouter:
             "cross_agent": S.cross_agent_section(st.replay_redis, goal, agent_id),
             "skills": S.skills_section(st.vector_client, settings, goal, project),
             "vault": S.vault_section(scopes),
+            "profile": S.profile_section(
+                st.vector_client, settings, identity.get("member_id"), identity["workspace_id"],
+            ),
             "discipline": S.discipline_section(st.redis_client, st.replay_redis),
             "dlq": S.dlq_section(),
             "resumable_sessions": S.resumable_sessions_section(st.http_client, settings, agent_id),

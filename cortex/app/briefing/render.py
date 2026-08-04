@@ -70,6 +70,17 @@ def render_briefing(*, agent_id: str, goal: str, sections: dict[str, Section],
             return
         body_fn(sec.get("data") or {})
 
+    # 0. profile (Dreaming Task 8) — who this session is working with, rendered
+    # first so it's the first thing read: work -> memories -> nightly dream ->
+    # next session opens already knowing you. Absent on every fresh install
+    # (no dream has run yet) -> section is "empty" -> nothing rendered, not a
+    # placeholder line.
+    def _profile(d):
+        text = d.get("text")
+        if text:
+            lines.append(f"PROFILE: {text}")
+    emit("profile", _profile)
+
     # 1. environment
     def _env(d):
         if d.get("summary") or d.get("event_count"):

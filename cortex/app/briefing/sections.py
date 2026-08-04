@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.config import get_settings
+from app.dreams.store import profile_point_id
 from app.evals.store import get_eval_summary
 from app.patterns.store import get_relevant_patterns, get_observed_patterns, record_tip_shown
 from app.ops import collect_queue_depths
@@ -274,6 +275,44 @@ async def vault_section(scopes: list[str]) -> Section:
     return {"status": status, "error": None,
             "data": {"count": len(secrets), "secrets": [
                 {"key": s.get("key"), "category": s.get("category")} for s in secrets]}}
+
+
+async def profile_section(vector, settings, member_id: str | None, workspace_id: str) -> Section:
+    """The one continuously-updated person profile for member_id (Dreaming
+    Task 8) -- closes work -> memories -> nightly dream -> next briefing.
+
+    A direct point-id lookup on store.profile_point_id, NEVER a vector search:
+    the id is already known, so search would only add latency and subject the
+    read to RECALL_SCORE_FLOOR for no benefit.
+
+    Degrades to "empty" -- never "unavailable" -- when there simply is no
+    profile yet: that is the normal state on every fresh install, before the
+    first dream run has profiled this member, and is not a failure. An
+    unresolvable member_id (identity carries none) is the same "nothing to
+    show" case and also returns empty rather than raising. A genuinely broken
+    vector backend still RAISES here (per the module contract above); the
+    api.py orchestrator is what converts that into status='unavailable' for
+    this section alone, without touching the rest of the briefing.
+    """
+    if not member_id:
+        return _empty()
+    points = await vector._client.retrieve(
+        collection_name=settings.QDRANT_COLLECTION,
+        ids=[profile_point_id(member_id, workspace_id)],
+        with_payload=True,
+        with_vectors=False,
+    )
+    if not points:
+        return _empty()
+    payload = points[0].payload or {}
+    text = payload.get("text", "")
+    if not text:
+        return _empty()
+    return {"status": "ok", "error": None, "data": {
+        "member_id": member_id,
+        "text": text,
+        "updated_at": payload.get("timestamp"),
+    }}
 
 
 async def discipline_section(redis_client, replay_redis=None) -> Section:
