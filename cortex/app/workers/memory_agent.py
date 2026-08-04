@@ -134,13 +134,23 @@ def _dedup_scope_filter() -> Filter:
     nobody vouched for, carrying the mark that says somebody did.
 
     Refusing to supersede the confirmed member (the shape used in
-    `deep_contradiction_pass`) is not an option here: it would leave the
-    confirmed original active NEXT TO the merged point built from it, which
-    is the duplicate dedup exists to remove, plus a laundered confirmation.
-    Exclusion from scope is the only coherent answer, and it matches the two
-    standing precedents — `gc.py::_scan_candidates` skips `confirmed_count >
-    0` as its first test, and `vector.py::_similarity_filter` carries the
-    same `must_not` for learn-time contradiction detection.
+    `deep_contradiction_pass`) would not be enough here — but NOT because it
+    leaves a residual near-duplicate behind. Exclusion leaves one too,
+    whenever two or more unconfirmed members remain to merge: the confirmed
+    memory stays active beside their merged survivor, which is a near
+    duplicate of it. `test_confirmed_memory_is_not_merged_while_its_
+    duplicates_still_are` demonstrates precisely that, so "it would leave a
+    duplicate" cannot be the argument that separates the two options.
+
+    What exclusion uniquely prevents is the two things a refusal cannot. A
+    refused member is still a CLUSTER member: it is still folded into the
+    merged payload, so `_merge_lifecycle` still launders its
+    `confirmed_count` onto the synthesis, and its text is still sent to the
+    merge model in the prompt. Only keeping the point out of the cluster
+    stops both. That is also what the two standing precedents do —
+    `gc.py::_scan_candidates` skips `confirmed_count > 0` as its first test,
+    and `vector.py::_similarity_filter` carries the same `must_not` for
+    learn-time contradiction detection.
 
     Derived from the shared filter rather than restated so the corpus/dream
     conditions cannot drift apart from it.

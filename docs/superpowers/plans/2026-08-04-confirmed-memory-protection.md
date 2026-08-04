@@ -96,10 +96,20 @@ is shared by three passes and blanket exclusion is only right for one:
   write-time refusal because there is no merge outcome that preserves a
   confirmed memory's wording: `_merge_cluster` re-embeds the synthesis, writes
   it under a new id, and supersedes every original *including the keeper*.
-  Refusing to supersede the confirmed member would leave the confirmed original
-  active next to a merged point built from it — the exact duplicate dedup
-  exists to remove, plus the laundered confirmation. Exclusion is the only
-  coherent answer, and it matches both standing precedents.
+
+  The argument is specifically **not** "a refusal would leave a residual
+  duplicate". Exclusion leaves one too, whenever two or more unconfirmed
+  members remain to merge — the confirmed memory stays active beside their
+  merged survivor, which is a near duplicate of it, and
+  `test_confirmed_memory_is_not_merged_while_its_duplicates_still_are`
+  demonstrates exactly that. (An earlier draft of this document and of the
+  `_dedup_scope_filter` docstring made that claim; it was wrong, and the
+  code's own test contradicted it.) What exclusion uniquely prevents is the
+  two things a refusal cannot: a refused member is still a **cluster**
+  member, so `_merge_lifecycle` still launders its `confirmed_count` onto the
+  synthesis, and its text is still sent to the merge model in the prompt.
+  Only keeping the point out of the cluster stops both — which is also what
+  both standing precedents do.
 
 `Range(gt=0)` is used, not an existence check: a point predating the field has
 no `confirmed_count` to match, so `must_not` admits it and legacy memories stay
@@ -127,11 +137,24 @@ Verified by three independent mutations of the fixed tree:
 Mutation C is the one that matters for "do not over-fix": the blunt version of
 this change is caught behaviourally, not just by an absence assertion.
 
-One trap worth recording: the first draft of these tests used near-parallel
-fixture vectors (cosine ≈ 0.9996). `deep_contradiction_pass` only acts on
-`0.85 <= score <= 0.95`, so the pass was a no-op and every "nothing was
-superseded" assertion passed **without the guard ever being reached**.
-`test_fixture_vectors_are_inside_the_contradiction_window` now pins the window.
+Two traps worth recording, both of the same species — a test that passes
+because the code under test never ran:
+
+* The first draft used near-parallel fixture vectors (cosine ≈ 0.9996).
+  `deep_contradiction_pass` only acts on `0.85 <= score <= 0.95`, so the pass
+  was a no-op and every "nothing was superseded" assertion passed **without
+  the guard ever being reached**.
+  `test_fixture_vectors_are_inside_the_contradiction_window` now pins it.
+* `test_confirmed_memory_is_not_superseded_on_the_llm_fallback_path`
+  originally seeded two confirmed memories, so post-fix **both** were
+  excluded and the pass returned at `len(memories) < 2` before any `httpx`
+  call — the `Exception("LLM down")` side effect never fired and the test
+  pinned the early return while its name promised the fallback. It now seeds
+  one confirmed memory plus **two** unconfirmed duplicates, so a real cluster
+  survives to the fallback, and `mock_httpx.assert_called()` holds that. The
+  confirmed member is differentiated by `contradicted_count` rather than
+  `confirmed_count` on purpose: as the highest-confidence member it would
+  become the keeper and survive by accident, testing nothing.
 
 ## Existing tests that encoded the defect
 

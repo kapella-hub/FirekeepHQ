@@ -304,14 +304,30 @@ class TestDedupProtectsConfirmed:
     def test_confirmed_memory_is_not_superseded_on_the_llm_fallback_path(
         self, mock_settings, mock_qdrant, mock_neo4j, mock_webhook
     ):
-        """LLM down. The fallback keeps the keeper's text, so nothing is
-        re-embedded — but the losers are still superseded outright, and a
-        confirmed memory that is not the top-confidence member was one of
-        them. With the LLM unavailable there is no cluster left here at all."""
+        """LLM down. The fallback keeps the keeper's own text, so nothing is
+        re-embedded — but every OTHER cluster member is still superseded
+        outright, and a confirmed memory that is not the top-confidence member
+        was one of them. "The LLM was down" is not protection.
+
+        THREE points, not two, and both details are load-bearing:
+
+        * With only the confirmed memory and one rival, both are excluded and
+          the pass returns at `len(memories) < 2` before any `httpx` call —
+          the fallback would never be reached and the test would pin the
+          early return while claiming to pin the fallback. Two unconfirmed
+          duplicates keep a real cluster alive; `mock_httpx.assert_called()`
+          is what holds that.
+        * The confirmed member is differentiated by `contradicted_count`
+          ((1+1)/(1+2)=0.67 against 1.0), which makes it a LOSER. Seeded as
+          the highest-confidence member it would become the keeper and
+          survive by accident, testing nothing.
+        """
         mock_settings.return_value = _settings()
         client = _FilteringQdrant([
-            _mem("human-confirmed", CONFIRMED_TEXT, [0.90, 0.10, 0.00], confirmed=1),
-            _mem("rival", "confirmed more often", [0.89, 0.11, 0.01], confirmed=3),
+            _mem("human-confirmed", CONFIRMED_TEXT, [0.90, 0.10, 0.00],
+                 confirmed=1, contradicted=2),
+            _mem("dupe-a", "artifacts come from the tagged pipeline", [0.89, 0.11, 0.01]),
+            _mem("dupe-b", "tagged pipeline publishes the artifacts", [0.88, 0.12, 0.00]),
         ])
         mock_qdrant.return_value = client
         _neo4j_noop(mock_neo4j)
@@ -320,9 +336,16 @@ class TestDedupProtectsConfirmed:
             mock_httpx.side_effect = Exception("LLM down")
             result = duplicate_detection_pass()
 
-        assert result["merged"] == 0
-        assert client.payload_writes == []
-        assert client.upserts == []
+        # The fallback path was genuinely taken, not skipped.
+        mock_httpx.assert_called()
+        assert result["merged"] == 1
+        assert result["details"][0]["method"] == "fallback"
+        assert client.upserts == []  # keeper's text is unchanged: no re-embed
+
+        # The unconfirmed loser is superseded; the confirmed memory is not.
+        assert client.superseded_ids == {"dupe-b"}
+        for _payload, ids in client.payload_writes:
+            assert "human-confirmed" not in ids
 
 
 # ---------------------------------------------------------------------------
