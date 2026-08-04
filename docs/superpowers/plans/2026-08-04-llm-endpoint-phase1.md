@@ -78,15 +78,16 @@ deleted; both synthesis calls gained an output bound and an empty-completion
 guard.
 
 **Config:** `LLM_NATIVE_CHAT` (`auto`), `LLM_NATIVE_PROBE_TTL_SECONDS` (600.0),
-`LLM_NATIVE_BASE_URL` (""), `KNOWLEDGE_CLASSIFY_NATIVE_TIMEOUT_SECONDS` (120.0),
-`SKILL_SYNTH_MAX_TOKENS` (800). Mirrored into `docker-compose.yml` (cortex-api +
-cortex-worker), `.env.example`, root `CLAUDE.md`, `cortex/CLAUDE.md`.
+`LLM_NATIVE_BASE_URL` (""), `KNOWLEDGE_CLASSIFY_NATIVE_TIMEOUT_SECONDS` (300.0 —
+see "no timeout was actually reduced" below), `SKILL_SYNTH_MAX_TOKENS` (800).
+Mirrored into `docker-compose.yml` (cortex-api + cortex-worker), `.env.example`,
+root `CLAUDE.md`, `cortex/CLAUDE.md`.
 
 ---
 
 ## Where this deviates from the design, and why
 
-### 1. Timeouts are per-ENDPOINT, not reduced outright
+### 1. Timeouts are per-ENDPOINT, and in the end NOTHING WAS REDUCED
 
 The design said `KNOWLEDGE_CLASSIFY_TIMEOUT_SECONDS` 300 → 120 and
 `SKILL_SYNTH_TIMEOUT_SECONDS` 300 → 120. Its own risk list then says a
@@ -94,10 +95,44 @@ reduction "must not land where the native path does not engage", because a
 deployment whose probe says not-Ollama still takes ~289s and a 120s budget
 would convert today's slow successes into guaranteed timeouts.
 
-Both cannot be true of one number. So the configured value keeps its meaning as
-the `/v1` budget (unchanged at 300) and a **separate** native budget is added,
-selected by `chat()` after the endpoint is resolved. This follows the design's
-reasoning over its arithmetic.
+Both cannot be true of one number, so the configured value keeps its meaning as
+the `/v1` budget (300) and a **separate** native budget is selected by `chat()`
+after the endpoint resolves. That structure is right and is what shipped.
+
+**The 120 that structure was built to carry then turned out to be wrong too.**
+The design's risk was stated as "deployments where the native path does NOT
+engage". The real hazard is the opposite one, and neither the design nor I saw
+it: a deployment where the native path DOES engage and buys nothing.
+
+**"Native" does not imply "fast".** The native path is faster only because it
+disables THINKING, and the probe confirms *ollama*, not *a thinking model*. The
+office deploy runs **llama3.2:3b, a non-thinking model** — the probe confirms
+native, it takes the native path, and `think:false` disables something that was
+never happening. Its recorded ~56s classify stays ~56s while its headroom falls
+5.4x → 2.1x. `classify_document` sends the whole document untruncated and the
+crawler admits 2MB pages, so a document ~2.2x the measured one newly times out.
+The office helm chart lives in a separate config repo and sets none of these
+vars, so it would have inherited the reduction with nobody deciding.
+
+The one escape hatch that might have saved it does not fire. Measured
+2026-08-04, a non-thinking model accepts `think:false` cleanly rather than
+4xx-ing, so `chat`'s demote-and-retry never engages:
+
+```
+llama3:latest  + think:false  -> OK 3.10s  keys=['content','role']
+llama3:latest  WITHOUT flag   -> OK 0.36s  keys=['content','role']
+gemma3:4b      + think:false  -> OK 1.94s  keys=['content','role']
+```
+
+Against all that, the upside was small: a native classify measures ~6s, so 120
+vs 300 only changes how fast a **broken** call gives up. So
+`KNOWLEDGE_CLASSIFY_NATIVE_TIMEOUT_SECONDS` **defaults to 300**. The knob stays
+— it is genuinely useful as a separately tunable budget, and an operator who
+wants fail-fast on a measured backend can lower it — it just no longer defaults
+to a value that strands non-thinking-model deploys.
+
+Net across the whole change: **no timeout was reduced.** The win is the ~13x
+faster classify, not a tighter budget.
 
 ### 2. `SKILL_SYNTH` gets NO native budget at all
 
@@ -201,11 +236,15 @@ That empty queue is real and still visible in production: `GET
 
 ### Gates
 
-| Gate | Result |
-|------|--------|
-| `cd cortex && python -m pytest tests/ -q` | **1565 passed, 30 skipped, 0 failed** (baseline 1504 + 61 new) |
-| `python -m ruff check .` | **All checks passed!** |
-| `python -m pytest tests/test_forbidden_tokens.py -q` | **21 passed** |
+| Gate | Run from | Result |
+|------|----------|--------|
+| `python -m pytest tests/ -q` | `cortex/` | **1565 passed, 30 skipped, 0 failed** (baseline 1504 + 61 new) |
+| `python -m ruff check .` | repo root | **All checks passed!** |
+| `python -m pytest tests/test_forbidden_tokens.py -q` | **repo root** | **21 passed** |
+
+The third gate's working directory is load-bearing: `tests/test_forbidden_tokens.py`
+exists only at the REPO ROOT, so running it from `cortex/` exits 4 (no tests
+collected) and reads like a failure in CI output.
 
 ### VPS state after verification
 
@@ -234,16 +273,25 @@ container files with `docker cp`, never `docker exec cp`.**
    `think:false` on native); previously invisible only because drafts never
    landed at all. Needs a prompt fix and/or a bigger model, plus possibly a
    few-shot example.
-2. **Phase 2**: `decision/synthesize.py` (+ its silent-success bug, where
+2. **`SKILL_SYNTH_MAX_TOKENS=800` is the one body change that also lands on
+   `/v1`** — recorded here rather than fixed. Every other difference is
+   confined to the native branch, but the output bound applies to both, so a
+   NON-Ollama backend (vLLM, LiteLLM, OpenAI) that previously emitted a longer
+   skill card is now truncated at 800 tokens. Justified — an unbounded
+   generation was the defect — and tunable via the setting, but it is a
+   behavioural change beyond Ollama and should not surprise anyone. Note the
+   truncation is not hypothetical even on Ollama: `done_reason=length` at every
+   cap tried means the model always runs to the bound.
+3. **Phase 2**: `decision/synthesize.py` (+ its silent-success bug, where
    `except Exception: return {}` makes `synthesize_board` report
    `degraded=False` on a board that produced nothing), and — after checking
    `GET /ops/queues` for `event_dlq` — `sleep_cycle.py`, which needs a sync
    `chat_sync()` wrapper.
-3. **Phase 3**: `dreams/`, and rewriting `config.py:205-216` + the
+4. **Phase 3**: `dreams/`, and rewriting `config.py:205-216` + the
    `dreams/synthesize.py` docstring, which currently instruct the reader to
    repoint `LLM_BASE_URL` — advice this change makes both unnecessary and
    actively harmful.
-4. The split-brain state is intentional and documented in both `CLAUDE.md`s:
+5. The split-brain state is intentional and documented in both `CLAUDE.md`s:
    four converted sites, seven not. **Do not sweep the rest in one unreviewed
    change.**
 

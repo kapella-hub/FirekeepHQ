@@ -309,6 +309,14 @@ async def is_native(settings: Any) -> bool:
 
     if mode == "always":
         if root:
+            # Returns BEFORE consulting the cache, which means `always` also
+            # ignores a verdict demoted by `chat`'s 4xx safety net. That is the
+            # intended reading of "always" — an explicit operator override is
+            # not something a probe result may quietly overrule — but it has a
+            # cost worth stating: against an older ollama that 400s on `think`,
+            # every single call pays a wasted native round trip before falling
+            # back, forever, because the demotion can never be read. `auto` is
+            # the mode that learns; `always` is the mode that obeys.
             return True
         logger.warning(
             "LLM_NATIVE_CHAT=always but no native root is derivable from "
@@ -417,8 +425,15 @@ async def chat(
         if not (native and status in _DEMOTE_STATUS_CODES):
             raise
         # Pre-generation rejection (most likely an older ollama that does not
-        # know `think`). Demote the cached verdict so the whole process stops
-        # trying, and retry once on the contract endpoint.
+        # know `think`). Demote the cached verdict and retry once on the
+        # contract endpoint.
+        #
+        # The demotion is NOT permanent: it is stored with the negative TTL
+        # (60s), so `auto` re-probes after it lapses. That is deliberate and
+        # better than latching — an ollama upgraded to a version that accepts
+        # `think` is picked up within a minute with no restart — and the cost
+        # of being wrong is bounded to one wasted round trip per minute rather
+        # than one per call.
         logger.warning(
             "Native /api/chat returned %s for %s — demoting to "
             "/v1/chat/completions and retrying once",

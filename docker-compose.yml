@@ -277,10 +277,11 @@ services:
       KNOWLEDGE_ENABLED: ${KNOWLEDGE_ENABLED:-true}
       KNOWLEDGE_MAX_PROCEDURES: ${KNOWLEDGE_MAX_PROCEDURES:-10}
       KNOWLEDGE_CLASSIFY_TIMEOUT_SECONDS: ${KNOWLEDGE_CLASSIFY_TIMEOUT_SECONDS:-300}
-      # Tighter budget for the native endpoint, where think:false is honoured
-      # (VPS: 4.00s; office llama3.2:3b: ~56s and unaffected by the fix, which
-      # is the binding constraint on this number, not the VPS).
-      KNOWLEDGE_CLASSIFY_NATIVE_TIMEOUT_SECONDS: ${KNOWLEDGE_CLASSIFY_NATIVE_TIMEOUT_SECONDS:-120.0}
+      # Separately tunable budget for the native endpoint. Same 300 by default:
+      # "native" does not imply "fast" — the native path only disables THINKING,
+      # so a non-thinking model (office: llama3.2:3b, ~56s) is routed down it and
+      # gains nothing. Lower it only for a backend you have measured.
+      KNOWLEDGE_CLASSIFY_NATIVE_TIMEOUT_SECONDS: ${KNOWLEDGE_CLASSIFY_NATIVE_TIMEOUT_SECONDS:-300.0}
       KNOWLEDGE_STATUS_TTL_SECONDS: ${KNOWLEDGE_STATUS_TTL_SECONDS:-2592000}
       # URL ingestion (SSRF-guarded crawler -> knowledge pipeline)
       KNOWLEDGE_URL_INGEST_ENABLED: ${KNOWLEDGE_URL_INGEST_ENABLED:-true}
@@ -431,10 +432,11 @@ services:
       KNOWLEDGE_ENABLED: ${KNOWLEDGE_ENABLED:-true}
       KNOWLEDGE_MAX_PROCEDURES: ${KNOWLEDGE_MAX_PROCEDURES:-10}
       KNOWLEDGE_CLASSIFY_TIMEOUT_SECONDS: ${KNOWLEDGE_CLASSIFY_TIMEOUT_SECONDS:-300}
-      # Tighter budget for the native endpoint, where think:false is honoured
-      # (VPS: 4.00s; office llama3.2:3b: ~56s and unaffected by the fix, which
-      # is the binding constraint on this number, not the VPS).
-      KNOWLEDGE_CLASSIFY_NATIVE_TIMEOUT_SECONDS: ${KNOWLEDGE_CLASSIFY_NATIVE_TIMEOUT_SECONDS:-120.0}
+      # Separately tunable budget for the native endpoint. Same 300 by default:
+      # "native" does not imply "fast" — the native path only disables THINKING,
+      # so a non-thinking model (office: llama3.2:3b, ~56s) is routed down it and
+      # gains nothing. Lower it only for a backend you have measured.
+      KNOWLEDGE_CLASSIFY_NATIVE_TIMEOUT_SECONDS: ${KNOWLEDGE_CLASSIFY_NATIVE_TIMEOUT_SECONDS:-300.0}
       KNOWLEDGE_STATUS_TTL_SECONDS: ${KNOWLEDGE_STATUS_TTL_SECONDS:-2592000}
       # Decision Board (SP4)
       DECISION_ENABLED: ${DECISION_ENABLED:-true}

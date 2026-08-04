@@ -151,16 +151,34 @@ class Settings(BaseSettings):
     # reasoning model), which is a regression the endpoint fix does not earn.
     #
     # ..._NATIVE_TIMEOUT_SECONDS bounds ollama's /api/chat, where `think:false`
-    # is honoured. 120 is 30x the VPS measurement (4.00s) and ~2.1x the binding
-    # constraint, which is NOT the VPS: the office deploy runs llama3.2:3b at
-    # ~56s per classify, and llama3.2:3b is not a thinking model, so this fix
-    # saves it nothing and its 56s stays 56s. 60s would look defensible from the
-    # VPS number alone and would break the office deploy. The upper bound is the
-    # --pool=solo worker: a 300s classify blocks sleep-cycle consolidation,
-    # backfill drain, gateway sweep and dream-tick for five minutes, and
-    # post-fix a 300s native classify can only mean something is already wrong.
+    # is honoured. It exists as a SEPARATELY TUNABLE budget — an operator who
+    # wants fail-fast on a known-fast backend can lower it — but it DEFAULTS TO
+    # THE SAME 300, deliberately. It was 120 for one review cycle; that was
+    # wrong, and the deployment it would have broken is the office one.
+    #
+    # The trap: "native" does not imply "fast". The native path is faster only
+    # because it disables THINKING, so a non-thinking model gains nothing from
+    # it while still being routed down it — the probe confirms ollama, not a
+    # thinking model. The office deploy runs llama3.2:3b, which has no thinking
+    # to disable, at a recorded ~56s per classify. Measured 2026-08-04, a
+    # non-thinking model also ACCEPTS the flag cleanly rather than 4xx-ing, so
+    # the demote-and-retry escape hatch never fires for it either:
+    #     llama3:latest + think:false -> OK 3.10s, keys=['content','role']
+    #     llama3:latest without flag  -> OK 0.36s, keys=['content','role']
+    #     gemma3:4b     + think:false -> OK 1.94s, keys=['content','role']
+    # So at 120 the office keeps its unchanged ~56s and loses headroom from
+    # 5.4x to 2.1x, for zero speedup. `classify_document` sends the WHOLE
+    # document untruncated and the crawler admits 2MB pages, so a document
+    # ~2.2x the measured one would newly time out. The office helm chart (a
+    # separate config repo) sets none of these vars, so it would have inherited
+    # that with nobody deciding.
+    #
+    # Against that: a native classify measures ~6s (8.59s end-to-end through
+    # the worker), so 120 vs 300 only changes how fast a BROKEN call gives up.
+    # Tiny upside, real regression risk on a deployment we cannot measure.
+    # If you lower this, lower it for a backend you have measured.
     KNOWLEDGE_CLASSIFY_TIMEOUT_SECONDS: float = 300.0
-    KNOWLEDGE_CLASSIFY_NATIVE_TIMEOUT_SECONDS: float = 120.0
+    KNOWLEDGE_CLASSIFY_NATIVE_TIMEOUT_SECONDS: float = 300.0
     KNOWLEDGE_STATUS_TTL_SECONDS: int = 2592000  # 30d orphan safety-net for per-source ingest status
 
     # URL ingestion (SSRF-guarded crawler -> knowledge pipeline)

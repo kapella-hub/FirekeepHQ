@@ -509,7 +509,7 @@ async def test_native_timeout_applies_only_on_the_native_endpoint():
     useful bound on native. A deployment whose probe says NOT-native must keep
     the full /v1 budget, or the reduction converts today's slow successes into
     guaranteed timeouts."""
-    for mode, expected in (("always", 120.0), ("never", 300.0)):
+    for mode, expected in (("always", 55.0), ("never", 300.0)):
         constructed = []
 
         def _factory(*_a, **kw):
@@ -527,7 +527,7 @@ async def test_native_timeout_applies_only_on_the_native_endpoint():
         with patch("app.llm.httpx.AsyncClient", side_effect=_factory):
             await llm.chat(
                 settings=_S(LLM_NATIVE_CHAT=mode), messages=[],
-                timeout=300.0, native_timeout=120.0,
+                timeout=300.0, native_timeout=55.0,
             )
 
         assert constructed == [expected], f"mode={mode}"
