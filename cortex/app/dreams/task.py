@@ -203,7 +203,7 @@ async def run_one_unit() -> dict:
     clusters are already consolidated) persists in Redis via DreamState, so a
     backlog is worked off across many short ticks instead of one long one.
     """
-    from app.dreams import select, store, synthesize
+    from app.dreams import profile, select, store, synthesize
     from app.dreams.state import DreamState
 
     redis_client = None
@@ -289,13 +289,62 @@ async def run_one_unit() -> dict:
                 "insights": len(written),
             }
 
-        # No cluster remains. Task 7 (app.dreams.profile — not yet
-        # implemented) will wire a profile unit in here: pick the member
-        # with the most not-yet-profiled memories this run, synthesize,
-        # write via store.profile_point_id + vector.upsert_point, and
-        # mark_unit_done("profile", member_id). Until profile.py lands,
-        # DREAM_PROFILES_ENABLED has no effect and a run with no remaining
-        # clusters always completes.
+        # No cluster remains. If profiles are enabled, spend this tick's ONE
+        # unit of work on the member with the most not-yet-profiled memories
+        # in this run's candidate pool (the same pool already scanned above
+        # for clustering — a second full scroll is not worth a second
+        # Qdrant pass in the same tick). is_candidate already excludes
+        # dream/dream_profile-authored and confirmed points, so a profile
+        # can never be built from another profile or from a human-confirmed
+        # memory being re-synthesized against its will.
+        if settings.DREAM_PROFILES_ENABLED:
+            by_member: dict[str, list] = {}
+            for c in candidates:
+                member_id = str(c.payload.get("member_id") or "")
+                if not member_id or state.is_unit_done("profile", member_id):
+                    continue
+                by_member.setdefault(member_id, []).append(c)
+
+            if by_member:
+                member_id, members = max(
+                    by_member.items(), key=lambda kv: len(kv[1])
+                )
+                workspace_id = str(members[0].payload.get("workspace_id") or "")
+                run_id = uuid.uuid4().hex
+                memories = [
+                    {"text": m.text, "timestamp": m.payload.get("timestamp")}
+                    for m in members
+                ]
+                raw_text = await profile.synthesize_profile(
+                    member_id,
+                    memories,
+                    base_url=settings.LLM_BASE_URL,
+                    model=settings.LLM_MODEL,
+                    api_key=settings.LLM_API_KEY,
+                    timeout=settings.DREAM_SYNTH_TIMEOUT_SECONDS,
+                    max_chars=settings.DREAM_MAX_INSIGHT_CHARS,
+                )
+                written = False
+                if raw_text:
+                    await profile.write_profile(
+                        vector, raw_text, member_id=member_id,
+                        workspace_id=workspace_id, run_id=run_id,
+                    )
+                    written = True
+                # Mark the MEMBER done regardless of whether synthesis
+                # produced usable text — a member the LLM can't profile must
+                # not be retried forever within the same run (mirrors the
+                # cluster branch's zero-insights handling above).
+                state.mark_unit_done("profile", member_id)
+                done = state.bump_counter("profiles_done")
+                state.record_run(
+                    status="ok", health="ok", profiles_done=done,
+                    last_profile_member_id=member_id,
+                )
+                return {
+                    "status": "ok", "unit": "profile", "member_id": member_id,
+                    "written": written,
+                }
 
         state.reset_progress()
         state.record_run(status="complete", health="ok", last_completed_at=now.isoformat())
