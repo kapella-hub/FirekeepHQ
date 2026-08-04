@@ -128,3 +128,24 @@ def test_select_clusters_respects_max():
 def test_cosine_of_orthogonal_is_zero_and_zero_vector_is_safe():
     assert sel.cosine([1.0, 0.0], [0.0, 1.0]) == pytest.approx(0.0)
     assert sel.cosine([0.0, 0.0], [1.0, 0.0]) == 0.0
+
+
+def test_select_clusters_partitions_once(monkeypatch):
+    """Partitioning must happen exactly once, not once per partition."""
+    cands = []
+    for p in range(3):
+        cands += [_cand(p * 10 + i, [1.0, 0.01 * i], project=f"p{p}") for i in range(4)]
+
+    orig = sel.partition
+    calls = []
+    monkeypatch.setattr(sel, "partition", lambda c: (calls.append(1), orig(c))[1])
+
+    sel.select_clusters(cands, threshold=0.9, min_size=4, max_clusters=10)
+    assert len(calls) == 1, f"partition() called {len(calls)} times, expected 1"
+
+
+def test_is_candidate_accepts_naive_now():
+    """is_candidate must handle naive (tz-unaware) datetime without raising."""
+    p = _payload()
+    naive_now = datetime(2026, 8, 4)  # No tzinfo
+    assert sel.is_candidate(p, now=naive_now, min_age_days=2, owm_floor=0.35, owm_prior_n=5)

@@ -43,6 +43,10 @@ def is_candidate(
     owm_floor: float,
     owm_prior_n: int,
 ) -> bool:
+    # Normalize naive datetime to UTC to match _parse_ts's tz-aware output.
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+
     if payload.get("status", "active") != "active":
         return False
     if str(payload.get("source", "")) in _EXCLUDED_SOURCES:
@@ -138,9 +142,10 @@ def select_clusters(
     """Partition FIRST, cluster within each bucket. A cluster that spans
     workspace/namespace/project is not a cluster — search enforces all three as
     hard must-filters and workspace_id is a tenancy boundary."""
+    buckets = partition(cands)
     out: list[list[Candidate]] = []
-    for key in sorted(partition(cands).keys()):
-        for cl in cluster(partition(cands)[key], threshold=threshold, min_size=min_size):
+    for key in sorted(buckets.keys()):
+        for cl in cluster(buckets[key], threshold=threshold, min_size=min_size):
             out.append(cl)
             if len(out) >= max_clusters:
                 return out
