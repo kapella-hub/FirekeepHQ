@@ -293,7 +293,18 @@ async def profile_section(vector, settings, member_id: str | None, workspace_id:
     vector backend still RAISES here (per the module contract above); the
     api.py orchestrator is what converts that into status='unavailable' for
     this section alone, without touching the rest of the briefing.
+
+    Short-circuits on DREAM_ENABLED (final-review Minor 1). api.py registers
+    this section unconditionally -- deliberately, so the briefing envelope
+    keeps a fixed section set on every deployment -- but with the flag off
+    NOTHING can ever have written a profile point, so the retrieve is a
+    guaranteed-empty Qdrant round trip on every GET /briefing of every
+    deployment in existence. The check belongs here rather than at the
+    registration site for that reason: the envelope shape must not depend on
+    a feature flag.
     """
+    if not getattr(settings, "DREAM_ENABLED", False):
+        return _empty()
     if not member_id:
         return _empty()
     points = await vector._client.retrieve(
@@ -305,6 +316,15 @@ async def profile_section(vector, settings, member_id: str | None, workspace_id:
     if not points:
         return _empty()
     payload = points[0].payload or {}
+    # A profile point is REPLACED in place, never accumulated, so the only
+    # status it should ever hold is "active". If something did supersede or
+    # archive it (a rail failing, or a future round-2 archival path), the
+    # briefing must stop rendering it rather than keep serving retired
+    # content forever -- the direct point-id read bypasses every lifecycle
+    # gate that ordinary recall applies, so this is the only place the check
+    # can happen (final-review I1).
+    if str(payload.get("status") or "active") != "active":
+        return _empty()
     text = payload.get("text", "")
     if not text:
         return _empty()

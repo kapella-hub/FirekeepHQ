@@ -22,12 +22,18 @@ from app.briefing.api import create_briefing_router
 from app.briefing.render import render_briefing
 from app.dreams.store import profile_point_id
 
-_SETTINGS = MagicMock(QDRANT_COLLECTION="firekeep_memory")
+# DREAM_ENABLED is set explicitly rather than left to MagicMock's truthy
+# auto-attribute: the section short-circuits on this flag (final-review
+# Minor 1), so a test that relies on the mock happening to be truthy would
+# be passing by accident.
+_SETTINGS = MagicMock(QDRANT_COLLECTION="firekeep_memory", DREAM_ENABLED=True)
+_SETTINGS_DREAM_OFF = MagicMock(QDRANT_COLLECTION="firekeep_memory", DREAM_ENABLED=False)
 
 
-def _profile_point(text="Owns the dreaming feature. Prefers terse commit messages."):
+def _profile_point(text="Owns the dreaming feature. Prefers terse commit messages.", **extra):
     p = MagicMock()
-    p.payload = {"text": text, "member_id": "mem1", "timestamp": "2026-08-03T00:00:00Z"}
+    p.payload = {"text": text, "member_id": "mem1",
+                 "timestamp": "2026-08-03T00:00:00Z", **extra}
     return p
 
 
@@ -70,6 +76,55 @@ async def test_profile_unresolvable_member_id_is_empty_and_skips_lookup():
     vector._client.retrieve = AsyncMock(side_effect=AssertionError("must not be called"))
     sec = await S.profile_section(vector, _SETTINGS, member_id=None, workspace_id="ws1")
     assert sec["status"] == "empty"
+    vector._client.retrieve.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["superseded", "deprecated", "archived"])
+async def test_profile_with_a_non_active_status_is_empty(status):
+    """final-review I1. A direct point-id retrieve bypasses every lifecycle
+    gate ordinary recall applies (status multipliers, the archived=0.0 floor),
+    so nothing else in the read path can stop a retired profile being served.
+    Without this check a superseded profile would render in every briefing
+    forever."""
+    vector = MagicMock()
+    vector._client = AsyncMock()
+    vector._client.retrieve = AsyncMock(return_value=[_profile_point(status=status)])
+    sec = await S.profile_section(vector, _SETTINGS, member_id="mem1", workspace_id="ws1")
+    assert sec["status"] == "empty"
+    assert sec["error"] is None
+
+
+@pytest.mark.asyncio
+async def test_profile_with_status_active_still_renders():
+    """The complement of the test above — the guard must not swallow the
+    only status a live profile ever carries. A payload with no `status` key
+    at all (every profile written before the field mattered) is also live."""
+    vector = MagicMock()
+    vector._client = AsyncMock()
+    vector._client.retrieve = AsyncMock(return_value=[_profile_point(status="active")])
+    assert (await S.profile_section(
+        vector, _SETTINGS, member_id="mem1", workspace_id="ws1"))["status"] == "ok"
+
+    vector._client.retrieve = AsyncMock(return_value=[_profile_point()])  # no status key
+    assert (await S.profile_section(
+        vector, _SETTINGS, member_id="mem1", workspace_id="ws1"))["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_profile_section_skips_the_lookup_entirely_when_dreaming_is_off():
+    """final-review Minor 1. DREAM_ENABLED=false is the DEFAULT on every
+    deployment, and with it off no profile point can exist — so an
+    unconditional retrieve is a guaranteed-empty Qdrant round trip on every
+    GET /briefing everywhere. The section is still registered (the envelope
+    keeps a fixed section set); it just does no work."""
+    vector = MagicMock()
+    vector._client = AsyncMock()
+    vector._client.retrieve = AsyncMock(side_effect=AssertionError("must not be called"))
+    sec = await S.profile_section(
+        vector, _SETTINGS_DREAM_OFF, member_id="mem1", workspace_id="ws1")
+    assert sec["status"] == "empty"
+    assert sec["error"] is None
     vector._client.retrieve.assert_not_awaited()
 
 
@@ -151,11 +206,20 @@ class _OkClient:
         return _Resp({})
 
 
-def _make_ok_app(monkeypatch, *, retrieve):
+def _make_ok_app(monkeypatch, *, retrieve, dream_enabled=True):
     async def _zero_depths():
         return {"celery": 0, "event_stream": 0, "event_dlq": 0,
                 "memory_backfill": 0, "memory_backfill_dlq": 0, "distill_dlq": 0}
     monkeypatch.setattr(S, "collect_queue_depths", _zero_depths)
+
+    # The router reads real settings, where DREAM_ENABLED defaults to false —
+    # and the profile section now short-circuits on it (final-review Minor 1).
+    # Patch the router's own reference rather than the env var: get_settings is
+    # lru_cached process-wide, so setenv + cache_clear would leak a
+    # dreaming-enabled Settings into every later test in the session.
+    from app.config import get_settings as _get_settings
+    _patched = _get_settings().model_copy(update={"DREAM_ENABLED": dream_enabled})
+    monkeypatch.setattr("app.briefing.api.get_settings", lambda: _patched)
 
     app = FastAPI()
     app.include_router(create_briefing_router(section_timeout=2.0))
@@ -215,3 +279,19 @@ def test_profile_present_renders_into_the_full_briefing_text(monkeypatch):
     assert body["sections"]["profile"]["status"] == "ok"
     assert "PROFILE: Prefers dark mode." in body["rendered"]
     assert body["degraded"] is False
+
+
+def test_dreaming_off_keeps_the_profile_section_present_but_silent(monkeypatch):
+    """final-review Minor 1, at envelope level. Gating must not remove the
+    section from the envelope — a briefing whose section SET depends on a
+    feature flag is a shape every consumer has to branch on. The section
+    stays, reports `empty`, leaves `degraded` false, and does no Qdrant
+    work."""
+    retrieve = AsyncMock(side_effect=AssertionError("must not be called"))
+    app = _make_ok_app(monkeypatch, retrieve=retrieve, dream_enabled=False)
+    body = TestClient(app).get("/briefing?agent_id=mem1").json()
+    assert "profile" in body["sections"]
+    assert body["sections"]["profile"]["status"] == "empty"
+    assert body["degraded"] is False
+    assert "PROFILE" not in body["rendered"]
+    retrieve.assert_not_awaited()
