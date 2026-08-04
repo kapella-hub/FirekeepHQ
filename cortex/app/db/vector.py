@@ -582,6 +582,25 @@ class VectorClient:
                 f"Failed to upsert vector: {exc}"
             ) from exc
 
+    async def upsert_point(self, point_id: str, text: str, payload: dict) -> str:
+        """Write a point at a CALLER-CHOSEN id with a caller-owned payload.
+
+        `upsert` derives its id as uuid5(text) and merges lifecycle from whatever
+        point already sits at that id — which is right for learned memories and
+        wrong for anything that must be updated in place (skills already work
+        around it with a raw PointStruct; dreams are the second case). Nothing
+        here infers, promotes or supersedes: the payload is written verbatim.
+        """
+        try:
+            vector = await self._embed(text)
+            await self._client.upsert(
+                collection_name=self._collection,
+                points=[PointStruct(id=point_id, vector=vector, payload=payload)],
+            )
+            return point_id
+        except Exception as exc:
+            raise VectorStoreError(f"Failed to upsert point {point_id}: {exc}") from exc
+
     async def delete_by_filter(self, payload_filter: Filter) -> None:
         """Delete points matching a payload filter.
 
