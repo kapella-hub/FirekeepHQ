@@ -1,9 +1,13 @@
 """Person profiles: one continuously-updated memory per human, keyed by
 `member_id` — never `agent_id`. Ground truth, measured on the live store: one
-human appears under SEVEN distinct agent_id values
-(agent-marat_pc-5a60/Oganesyan, Marat/Marat/mogan/unknown/default/legacy-pre-
-team-continuity) while member_id is uniform across all active memories. Keying
-on agent_id would build seven partial profiles of the same person.
+human appeared under SEVEN distinct agent_id values — a hook-minted
+`agent-<host>-<hash>`, a directory-style `<Surname, Forename>`, a bare
+`<first-name>`, an OS `<username>`, plus `unknown`, `default` and
+`legacy-pre-team-continuity` — while member_id was uniform across all 538
+active memories. Keying on agent_id would build seven partial profiles of the
+same person. (The real values are a named individual's identifiers and are
+deliberately not reproduced in shipped source; the shape is what the design
+turns on, not the strings.)
 
 Written through store.profile_point_id + VectorClient.upsert_point — the same
 dedicated write path dream insights use, for the same three reasons documented
@@ -33,6 +37,73 @@ logger = logging.getLogger(__name__)
 _DEFAULT_MAX_CHARS = 800
 _MEMORY_TRUNCATE_CHARS = 600
 _MAX_MEMORIES = 40
+
+# A refusal is not a profile. Observed on a live run, stored at the member's
+# deterministic point id and then SERVED through the briefing's profile
+# section: "No human is mentioned in the memories. The text describes system
+# behavior...". parse_profile rejected only empty and overlong text, so an LLM
+# that declined the task produced a perfectly valid-looking profile point —
+# and because a profile is REPLACED IN PLACE, that non-answer overwrote
+# whatever real profile was there.
+#
+# This is a HEURISTIC and is meant to read as one. Two deliberate choices keep
+# it from doing more harm than the bug:
+#
+#   - It matches only within the first _REFUSAL_WINDOW_CHARS. A real profile
+#     may legitimately contain "there is no evidence that ..." mid-body;
+#     rejecting that would be worse than the defect. A refusal lives in the
+#     opening clause, so that is the only place worth looking.
+#   - The patterns are specific verb phrases, not bare negations, for the same
+#     reason.
+#
+# The asymmetry it trades on: a false REJECT costs one skipped refresh (the
+# group is marked done for this run and picked up on a later one, with the
+# previous profile left intact); a false ACCEPT overwrites a good profile with
+# a non-answer that then gets injected into every briefing. Rejecting is the
+# cheap direction.
+#
+# Explicitly NOT a guarantee — a differently-worded refusal still gets through.
+# What was rejected as too fragile: requiring the profile to mention the member
+# id. `member_id` is an opaque `member-<hex>` handle a profile has no reason to
+# quote, so that check would reject almost every VALID profile.
+_REFUSAL_WINDOW_CHARS = 200
+_REFUSAL_PATTERNS = (
+    "no human",
+    "no person",
+    "no individual",
+    "no one is mentioned",
+    "does not mention",
+    "do not mention",
+    "don't mention",
+    "there is no ",
+    "there are no ",
+    "cannot build",
+    "cannot create",
+    "cannot produce",
+    "cannot generate",
+    "can't build",
+    "can't create",
+    "can't produce",
+    "can't generate",
+    "unable to build",
+    "unable to create",
+    "unable to produce",
+    "unable to generate",
+    "i'm sorry",
+    "i am sorry",
+    "insufficient information",
+    "not enough information",
+    "no information about",
+)
+
+
+def _looks_like_refusal(text: str) -> bool:
+    """True when the OPENING of `text` reads as the model declining the task
+    rather than answering it. See the _REFUSAL_PATTERNS comment above for why
+    this is windowed, why it is a heuristic, and what was rejected as too
+    fragile."""
+    head = text[:_REFUSAL_WINDOW_CHARS].lower()
+    return any(pattern in head for pattern in _REFUSAL_PATTERNS)
 
 
 def _system_prompt(max_chars: int) -> str:
@@ -69,14 +140,18 @@ def build_profile_messages(
 
 def parse_profile(raw: str, *, max_chars: int) -> str | None:
     """Validate a raw LLM response as profile text. Never raises. Rejects
-    empty/whitespace-only and over-budget output; anything else is returned
-    stripped."""
+    empty/whitespace-only output, over-budget output, and output whose opening
+    reads as a refusal rather than a profile (see _REFUSAL_PATTERNS); anything
+    else is returned stripped."""
     if not isinstance(raw, str):
         return None
     text = raw.strip()
     if not text:
         return None
     if len(text) > max_chars:
+        return None
+    if _looks_like_refusal(text):
+        logger.warning("Dream profile rejected as an LLM refusal: %.120s", text)
         return None
     return text
 
@@ -152,12 +227,17 @@ async def synthesize_profile(
     backend, non-2xx response, or an empty/overlong parse. Never raises.
 
     Reuses synthesize.build_request_body so `think:false` (and
-    chat_template_kwargs.enable_thinking) is inherited rather than re-derived
-    — see synthesize.py's module docstring for why that flag is not optional
+    chat_template_kwargs.enable_thinking) AND the completion budget
+    (`synthesize._MAX_COMPLETION_TOKENS`) are inherited rather than re-derived
+    — see synthesize.py's module docstring for why the flag is not optional
     (without it, qwen3 burns its whole budget thinking and returns empty
-    content after 101s). The one field overridden afterward is
-    `response_format`: insight extraction needs the JSON grammar, a profile is
-    plain prose, and leaving json_object on would fight the prompt above.
+    content after 101s) and why the flag alone is not enough on ollama's `/v1`
+    endpoint, which ignores it. A profile is far shorter than the budget
+    allows; the budget exists to leave room for reasoning tokens that get
+    generated whether or not this prompt wants them. The one field overridden
+    afterward is `response_format`: insight extraction needs the JSON grammar,
+    a profile is plain prose, and leaving json_object on would fight the
+    prompt above.
     """
     if not memories:
         return None
