@@ -384,6 +384,8 @@ services=(
 )
 
 FAILED=0
+# Where to probe. NOT localhost — see health_probe_hosts in deploy/lib.sh.
+PROBE_HOSTS="$(health_probe_hosts .env)"
 for svc in "${services[@]}"; do
     # Three colon-separated fields: name:port:probe-path. Split them by
     # POSITION. `${svc##*:}` strips the LONGEST `*:` prefix, so on a
@@ -429,7 +431,16 @@ for svc in "${services[@]}"; do
         # strictly worse than a weaker-but-correct liveness signal. Restoring
         # the stronger check needs the real response code observed against a
         # running stack first.
-        code="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:${port}${probe}" 2>/dev/null)" || code="000"
+        # Accept the service as up if EITHER candidate host answers; keep the
+        # most informative code for the failure message.
+        code="000"
+        for host in $PROBE_HOSTS; do
+            hcode="$(curl -s -o /dev/null -w '%{http_code}' "http://${host}:${port}${probe}" 2>/dev/null)" || hcode="000"
+            [ "$hcode" != "000" ] && code="$hcode"
+            case "$hcode" in
+                2??|401|405) break ;;
+            esac
+        done
         case "$code" in
             2??|401|405)
                 echo "[OK]"
@@ -437,7 +448,7 @@ for svc in "${services[@]}"; do
                 ;;
         esac
         if [ "$i" -eq 30 ]; then
-            echo "[TIMEOUT] (last HTTP ${code} from http://localhost:${port}${probe})"
+            echo "[TIMEOUT] (last HTTP ${code}, tried ${PROBE_HOSTS// /, } on :${port}${probe})"
             FAILED=1
         fi
         sleep 2

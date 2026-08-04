@@ -136,6 +136,40 @@ bind_addr_is_public() {
     esac
 }
 
+# health_probe_hosts <envfile>
+# Echo the space-separated host(s) a health check should try, most-likely
+# first. Both install.sh and update.sh probed a hardcoded `localhost`, which
+# reports EVERY service failed on any deployment whose ports bind elsewhere —
+# a tailnet address, a LAN IP. Observed 2026-08-04 on a healthy stack: six
+# [TIMEOUT] lines and exit 1 while all six services answered 200 on the bound
+# address. A check that cries wolf on every deploy trains its operator to
+# ignore it, which is strictly worse than having no check at all.
+#
+# Two hosts rather than one, because neither is correct everywhere and the
+# script cannot tell which case it is in:
+#   - the effective BIND_ADDR is where compose published, but
+#     docker-compose.office.yml pins its ports to 127.0.0.1 with `!override`
+#     literals, so BIND_ADDR is NOT authoritative on an office deploy;
+#   - 127.0.0.1 covers that case, and also covers 0.0.0.0 / ::, which are
+#     bind addresses and not necessarily connect addresses.
+# A service answering on EITHER is up, so trying both is strictly more robust
+# than modelling which one ought to apply — and it cannot regress the old
+# behaviour, since 127.0.0.1 is always among the candidates.
+health_probe_hosts() {
+    local envfile="${1:?envfile required}" addr
+    addr="$(effective_bind_addr "$envfile")"
+    case "$addr" in
+        # Already loopback — one probe is enough.
+        127.0.0.1|localhost) printf '%s\n' "127.0.0.1" ;;
+        # Wildcards: bind-only. Connect to loopback instead.
+        0.0.0.0|::) printf '%s\n' "127.0.0.1" ;;
+        # IPv6 literals need brackets in a URL; ::1 IS loopback.
+        ::1|"[::1]") printf '%s\n' "[::1] 127.0.0.1" ;;
+        *:*) printf '%s\n' "[$addr] 127.0.0.1" ;;
+        *) printf '%s\n' "$addr 127.0.0.1" ;;
+    esac
+}
+
 # configure_env <envfile> <example> <vps_ip> <neo4j_password>
 #
 # Validates the two installer prompts and atomically writes <envfile> from

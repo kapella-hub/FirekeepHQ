@@ -370,6 +370,10 @@ services=(
 
 FAILED=0
 
+# Where to probe. NOT localhost — see health_probe_hosts in deploy/lib.sh for
+# why that reported six failures on a fully healthy stack.
+PROBE_HOSTS="$(health_probe_hosts .env)"
+
 for svc in "${services[@]}"; do
     # Split by position — see the note in install.sh: `${svc##*:}` returns the
     # probe path on a three-field entry, not the port.
@@ -386,7 +390,17 @@ for svc in "${services[@]}"; do
         # declared successful. Read the status code instead, and accept only
         # what install.sh accepts: 2xx, 401 (nginx enforcing basic auth) and
         # 405 (cortex-mcp's /mcp route exists but does not allow GET).
-        code="$(curl -s -o /dev/null --max-time 2 -w '%{http_code}' "http://localhost:${port}${probe}" 2>/dev/null)" || code="000"
+        # Accept the service as up if EITHER candidate host answers; keep the
+        # most informative code for the failure message (a real status beats
+        # the 000 that a wrong host produces).
+        code="000"
+        for host in $PROBE_HOSTS; do
+            hcode="$(curl -s -o /dev/null --max-time 2 -w '%{http_code}' "http://${host}:${port}${probe}" 2>/dev/null)" || hcode="000"
+            [ "$hcode" != "000" ] && code="$hcode"
+            case "$hcode" in
+                2??|401|405) break ;;
+            esac
+        done
         case "$code" in
             2??|401|405)
                 echo "[OK]"
@@ -394,7 +408,7 @@ for svc in "${services[@]}"; do
                 ;;
         esac
         if [ "$i" -eq 30 ]; then
-            echo "[TIMEOUT] (last HTTP ${code} from http://localhost:${port}${probe})"
+            echo "[TIMEOUT] (last HTTP ${code}, tried ${PROBE_HOSTS// /, } on :${port}${probe})"
             FAILED=1
         fi
         sleep 2
