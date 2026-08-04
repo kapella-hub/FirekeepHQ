@@ -174,6 +174,22 @@ class Settings(BaseSettings):
     OWM_SCHEDULE_HOURS: int = 24      # Celery beat cadence for the scoring pass
     OWM_AGENT_CAP: int = 5            # max observations one agent contributes per memory
 
+    # Dreaming (app/dreams/) — automated consolidation + person profiles.
+    # Opt-in: round 1 is additive (nothing is archived).
+    DREAM_ENABLED: bool = False
+    DREAM_TICK_MINUTES: int = 5
+    DREAM_IDLE_MINUTES: int = 30
+    DREAM_MIN_NEW_MEMORIES: int = 25
+    DREAM_MIN_AGE_DAYS: int = 2
+    DREAM_MIN_CLUSTER: int = 4
+    DREAM_CLUSTER_THRESHOLD: float = 0.72
+    DREAM_MAX_CLUSTERS_PER_RUN: int = 20
+    DREAM_MAX_INSIGHT_CHARS: int = 800
+    DREAM_OWM_FLOOR: float = 0.35
+    DREAM_SYNTH_TIMEOUT_SECONDS: float = 120.0
+    DREAM_LOCK_TTL_SECONDS: int = 1800
+    DREAM_PROFILES_ENABLED: bool = True
+
     # Memory Reliability (SP0 — WS-A)
     EMBED_RETRY_ATTEMPTS: int = 3
     BACKFILL_MAX_ATTEMPTS: int = 10
