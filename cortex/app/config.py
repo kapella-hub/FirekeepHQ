@@ -186,7 +186,22 @@ class Settings(BaseSettings):
     DREAM_MAX_CLUSTERS_PER_RUN: int = 20
     DREAM_MAX_INSIGHT_CHARS: int = 800
     DREAM_OWM_FLOOR: float = 0.35
-    DREAM_SYNTH_TIMEOUT_SECONDS: float = 120.0
+    # This is the ONLY timeout that actually binds on the dream tick. The
+    # Celery worker runs --pool=solo (docker-compose.yml:437), and Celery's
+    # solo pool silently IGNORES soft_time_limit/time_limit — they're
+    # declared on the task for correctness under a future prefork pool, but
+    # do nothing today. httpx's timeout, enforced inside synthesize()/
+    # synthesize_profile(), is the real control. Measured real synthesis on
+    # the production VPS is 22.5s (qwen3:4b, 4 vCPU) — 45s is 2x headroom;
+    # the prior 120s was 5.3x with no measured basis. 45s also sits BELOW
+    # this module's own documented failure mode: without think:false, qwen3
+    # returns EMPTY after ~101s, which parses as JSONDecodeError and
+    # triggers synthesize()'s one retry -> ~202s total. At 45s that
+    # regression fails fast (returns [] with a WARNING) in well under a
+    # minute instead of stalling the solo worker for ~3.5 minutes. Do not
+    # raise time_limit to compensate for a bigger value here — it's a no-op
+    # under --pool=solo, so it would look like a boost with no real effect.
+    DREAM_SYNTH_TIMEOUT_SECONDS: float = 45.0
     DREAM_LOCK_TTL_SECONDS: int = 1800
     DREAM_PROFILES_ENABLED: bool = True
 

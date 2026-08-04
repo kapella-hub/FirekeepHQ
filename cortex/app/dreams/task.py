@@ -12,6 +12,7 @@ docstring was checked and found false).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -107,6 +108,19 @@ def _scope_filter():
             FieldCondition(key="source", match=MatchValue(value="dream_profile")),
         ],
     )
+
+
+def _profile_done_key(group_key: tuple[str, str, str, str]) -> str:
+    """Stable dedupe key for one (member_id, workspace_id, namespace,
+    project) profile group. A round-2 review finding: a plain `"::".join(...)`
+    is ambiguous whenever a component itself contains "::" — member_id/
+    workspace_id/namespace/project are free-form strings with no such
+    guarantee, so two DIFFERENT groups could collide onto the SAME joined
+    string (e.g. ("a::b", "c", "", "") and ("a", "b::c", "", "") both join to
+    "a::b::c::::"). Hashing the tuple sidesteps the ambiguity entirely and
+    mirrors select.cluster_key's own sha256-over-joined-ids approach."""
+    joined = "\x1f".join(group_key)  # ASCII unit separator, still hashed below
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:32]
 
 
 async def _activity_metrics(vector, settings, state) -> tuple[datetime | None, int]:
@@ -424,8 +438,7 @@ async def run_one_unit() -> dict:
                 if not member_id:
                     continue
                 group_key = (member_id, *select.partition_key(c.payload))
-                done_key = "::".join(group_key)
-                if done_key in profiles_done:
+                if _profile_done_key(group_key) in profiles_done:
                     continue
                 by_group.setdefault(group_key, []).append(c)
 
@@ -434,50 +447,59 @@ async def run_one_unit() -> dict:
                     by_group.items(), key=lambda kv: len(kv[1])
                 )
                 member_id, workspace_id, namespace, project = group_key
-                done_key = "::".join(group_key)
-                # I2: derive namespace/project from the (now homogeneous)
-                # group instead of hardcoding "default"/None — project is a
-                # hard `must` filter in VectorClient.search, so a profile
-                # stamped project=None when its source memories actually
-                # carried one was invisible to every project-scoped recall.
-                run_id = uuid.uuid4().hex
-                memories = [
-                    {"text": m.text, "timestamp": m.payload.get("timestamp")}
-                    for m in members
-                ]
-                raw_text = await profile.synthesize_profile(
-                    member_id,
-                    memories,
-                    base_url=settings.LLM_BASE_URL,
-                    model=settings.LLM_MODEL,
-                    api_key=settings.LLM_API_KEY,
-                    timeout=settings.DREAM_SYNTH_TIMEOUT_SECONDS,
-                    max_chars=settings.DREAM_MAX_INSIGHT_CHARS,
-                )
+                done_key = _profile_done_key(group_key)
+
                 written = False
                 if not workspace_id:
-                    # M5: a candidate lacking workspace_id yields "" from
+                    # M5 (round 2: moved ABOVE the synthesis call — the
+                    # original ordering awaited synthesize_profile FIRST and
+                    # only checked workspace_id afterward, burning a full LLM
+                    # call on a group that was always going to be discarded;
+                    # this check is pure and free, so it must run first). A
+                    # candidate lacking workspace_id yields "" from
                     # partition_key — writing to profile_point_id(member_id,
                     # "") would be a permanently unreadable point (no real
-                    # workspace could ever match it). Skip the write, but
-                    # still mark the group done below so it isn't retried
-                    # every tick.
+                    # workspace could ever match it). Skip synthesis AND the
+                    # write, but still mark the group done below so it isn't
+                    # retried every tick.
                     logger.warning(
                         "Dream profile group for member %s has no workspace_id "
-                        "(namespace=%r project=%r) — skipping write",
+                        "(namespace=%r project=%r) — skipping synthesis and write",
                         member_id, namespace, project,
                     )
-                elif raw_text:
-                    await profile.write_profile(
-                        vector, raw_text, member_id=member_id,
-                        workspace_id=workspace_id, run_id=run_id,
-                        namespace=namespace or "default", project=project or None,
+                else:
+                    run_id = uuid.uuid4().hex
+                    memories = [
+                        {"text": m.text, "timestamp": m.payload.get("timestamp")}
+                        for m in members
+                    ]
+                    raw_text = await profile.synthesize_profile(
+                        member_id,
+                        memories,
+                        base_url=settings.LLM_BASE_URL,
+                        model=settings.LLM_MODEL,
+                        api_key=settings.LLM_API_KEY,
+                        timeout=settings.DREAM_SYNTH_TIMEOUT_SECONDS,
+                        max_chars=settings.DREAM_MAX_INSIGHT_CHARS,
                     )
-                    written = True
-                # Mark the GROUP done regardless of whether synthesis
-                # produced usable text — a group the LLM can't profile must
-                # not be retried forever within the same run (mirrors the
-                # cluster branch's zero-insights handling above).
+                    # I2: derive namespace/project from the (now homogeneous)
+                    # group instead of hardcoding "default"/None — project is
+                    # a hard `must` filter in VectorClient.search, so a
+                    # profile stamped project=None when its source memories
+                    # actually carried one was invisible to every
+                    # project-scoped recall.
+                    if raw_text:
+                        await profile.write_profile(
+                            vector, raw_text, member_id=member_id,
+                            workspace_id=workspace_id, run_id=run_id,
+                            namespace=namespace or "default", project=project or None,
+                        )
+                        written = True
+                # Mark the GROUP done regardless of whether synthesis was
+                # attempted or produced usable text — a group that can't be
+                # profiled (missing workspace_id, or the LLM can't produce
+                # text) must not be retried forever within the same run
+                # (mirrors the cluster branch's zero-insights handling above).
                 state.mark_unit_done("profile", done_key)
                 done = state.bump_counter("profiles_done")
                 state.record_run(
@@ -546,6 +568,24 @@ async def run_one_unit() -> dict:
 from app.workers.sleep_cycle import celery_app  # noqa: E402
 
 
+# IMPORTANT (round-2 review finding, confirmed against docker-compose.yml:437):
+# soft_time_limit/time_limit below are declared for correctness under a
+# future PREFORK pool, but the current worker runs --pool=solo, and Celery's
+# solo pool silently IGNORES both — no SoftTimeLimitExceeded is ever raised,
+# no hard kill ever happens. They are decorative on this deployment today.
+# The control that actually binds is DREAM_SYNTH_TIMEOUT_SECONDS
+# (app/config.py — see its own comment for the 45s reasoning), enforced by
+# httpx INSIDE synthesize()/synthesize_profile(), not by Celery.
+#
+# If the worker pool is ever switched to prefork, this task's broad
+# `except Exception` (below) and run_one_unit's own outer `except Exception`
+# will each catch celery.exceptions.SoftTimeLimitExceeded too, since it IS
+# an Exception subclass — so simply switching pools would NOT make the soft
+# limit start firing in practice; it would still be swallowed here just like
+# any other failure. Whoever makes that switch must narrow both `except`
+# clauses (e.g. `except SoftTimeLimitExceeded: raise` before the generic
+# handler) or the limit will keep looking like it's enforced while doing
+# nothing, which is worse than the current honestly-decorative state.
 @celery_app.task(name="app.dreams.task.run_dream_tick", soft_time_limit=150, time_limit=180)
 def run_dream_tick() -> dict:
     """Beat fires unconditionally; the task self-gates on DREAM_ENABLED

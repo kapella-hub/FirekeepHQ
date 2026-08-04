@@ -257,6 +257,38 @@ async def test_profile_derives_namespace_and_project_from_group(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_profile_group_missing_workspace_id_skips_synthesis_entirely(monkeypatch):
+    """M5 (round 2): the workspace_id guard must run BEFORE synthesize_profile
+    is awaited — a group that's always going to be discarded (no real
+    workspace could ever match profile_point_id(member_id, "")) must not
+    burn a full LLM call first. The original ordering awaited synthesis
+    unconditionally and only checked workspace_id afterward."""
+    points = [_FakePoint(f"m{i}", _candidate_payload("mem1", "", i)) for i in range(2)]
+    r = fakeredis.FakeStrictRedis()
+    vector = _FakeVector(points)
+    settings = _dream_settings()
+
+    async def fake_build_clients():
+        return r, vector, settings
+
+    monkeypatch.setattr(dt, "_build_clients", fake_build_clients)
+    monkeypatch.setattr(dt, "_generation_backend_available", AsyncMock(return_value=True))
+    synth_mock = AsyncMock(return_value="should never be produced")
+    monkeypatch.setattr("app.dreams.profile.synthesize_profile", synth_mock)
+
+    out = await dt.run_one_unit()
+    assert out["status"] == "ok" and out["unit"] == "profile"
+    assert out["written"] is False
+    synth_mock.assert_not_awaited()
+    assert not vector.upserted
+
+    from app.dreams.state import DreamState
+
+    # still marked done so the empty-workspace group isn't retried forever
+    assert len(DreamState(r).done_set("profile")) == 1
+
+
+@pytest.mark.asyncio
 async def test_backend_unavailable_skips_unit_without_marking_anything_done(monkeypatch):
     """I5: when the generation backend is unreachable, the tick must not
     walk the backlog marking clusters/profiles done with zero insights, and
