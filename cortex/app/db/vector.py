@@ -219,6 +219,14 @@ def _similarity_filter(namespace: str, domain: str | None) -> Filter:
          is distinct from the memory_agent's 6-hourly passes: those build
          their own filters (``_active_non_corpus_filter``) and never call
          ``find_similar`` at all — dreams are protected there separately.
+      3. ``source == "dream_profile"`` — the person profiles written by
+         ``app/dreams/profile.py``. This was MISSING while the docs claimed
+         it was here (final-review I1). A profile is broad prose stamped
+         ``domain="general"``, which makes it a plausible >=0.85 cosine match
+         for an ordinary general-domain ``/memory/learn`` — so without this
+         guard a routine learn could supersede the profile, and the "one
+         continuously-updated profile per human" contract would be defeated
+         by the most ordinary write path in the system.
     """
     conditions = [FieldCondition(key="status", match=MatchValue(value="active"))]
     if namespace != "default":
@@ -228,6 +236,7 @@ def _similarity_filter(namespace: str, domain: str | None) -> Filter:
     must_not = [
         FieldCondition(key="confirmed_count", range=Range(gt=0)),
         FieldCondition(key="source", match=MatchValue(value="dream")),
+        FieldCondition(key="source", match=MatchValue(value="dream_profile")),
     ]
     return Filter(must=conditions, must_not=must_not)
 

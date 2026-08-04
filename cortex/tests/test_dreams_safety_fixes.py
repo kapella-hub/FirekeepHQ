@@ -1,4 +1,6 @@
 """Each test here pins one audit finding. If a test fails, a rail is gone."""
+import pytest
+
 from app.db.vector import _projected_metadata
 
 
@@ -92,21 +94,60 @@ def test_find_similar_filter_excludes_confirmed_memories():
     assert matches[0].range is not None and matches[0].range.gt == 0
 
 
-def test_find_similar_filter_excludes_dreams():
+def _excluded_sources(f):
+    return {
+        c.match.value
+        for c in _must_not_conditions(f, "source")
+        if c.match is not None
+    }
+
+
+# Both dream-authored sources, on every rail that can supersede or rewrite a
+# point. `dream_profile` was absent from BOTH shipped filters while the docs
+# asserted it was present (final-review I1) — hence one parametrized test per
+# rail over both values, so neither can be dropped without a named failure.
+DREAM_SOURCES = ("dream", "dream_profile")
+
+
+@pytest.mark.parametrize("source", DREAM_SOURCES)
+def test_find_similar_filter_excludes_dream_authored_sources(source):
+    """`find_similar`'s only caller is contradiction.py's
+    detect_and_supersede, invoked from EVERY ordinary /memory/learn. A person
+    profile is broad prose at domain="general" — a plausible >=0.85 match for
+    a general-domain learn — so without this a routine write supersedes the
+    profile and "one continuously-updated profile per human" is defeated by
+    the most ordinary path in the system."""
     from app.db import vector as v
 
     f = v._similarity_filter(namespace="default", domain="infra")
-    matches = _must_not_conditions(f, "source")
-    assert any(
-        m.match is not None and m.match.value == "dream" for m in matches
-    ), "must_not must exclude source=='dream', structurally"
+    assert source in _excluded_sources(f), (
+        f"must_not must exclude source=={source!r}, structurally"
+    )
 
 
-def test_memory_agent_scope_filter_excludes_dreams():
+@pytest.mark.parametrize("source", DREAM_SOURCES)
+def test_memory_agent_scope_filter_excludes_dream_authored_sources(source):
+    """duplicate_detection_pass LLM-merges near-duplicate text and
+    deep_contradiction_pass supersedes across domains. Both are actively
+    wrong on a point that is REPLACED in place on every dream run."""
     from app.workers.memory_agent import _active_non_corpus_filter
 
     f = _active_non_corpus_filter()
-    matches = _must_not_conditions(f, "source")
-    assert any(
-        m.match is not None and m.match.value == "dream" for m in matches
-    ), "must_not must exclude source=='dream', structurally"
+    assert source in _excluded_sources(f), (
+        f"must_not must exclude source=={source!r}, structurally"
+    )
+
+
+@pytest.mark.parametrize("source", DREAM_SOURCES)
+def test_dream_activity_gate_ignores_dream_authored_writes(source):
+    """The design spec's §Testing item, previously unwritten (final-review
+    I6a). `_scope_filter` is the ONE filter both the activity gate and
+    candidate selection scan, so it is the single point where dreaming could
+    start feeding itself: dream output counted as "new memory activity" would
+    hold the work-available gate open forever, and dream output entering the
+    candidate pool would let the pass dream about its own dreams."""
+    from app.dreams.task import _scope_filter
+
+    assert source in _excluded_sources(_scope_filter()), (
+        f"must_not must exclude source=={source!r}, structurally"
+    )
