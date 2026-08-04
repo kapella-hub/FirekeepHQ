@@ -190,7 +190,47 @@ class Settings(BaseSettings):
 
     # Decision Board (SP4)
     DECISION_ENABLED: bool = True
-    DECISION_SYNTH_TIMEOUT_SECONDS: float = 20.0  # bound the best-effort suggestion LLM pass
+    # Bounds the best-effort suggestion LLM pass in app/decision/synthesize.py.
+    # Retrieval runs BEFORE this call and outside its try/except, so evidence
+    # and knowledge_found are returned whatever it does; only
+    # suggested_answers/suggested_actions are at stake.
+    #
+    # 20.0 -> 30.0 (2026-08-04, LLM endpoint phase 2). Three reasons, none taste:
+    #
+    # 1. THE CLIENT ALREADY ASSUMED 30. client/firekeep_client/decision/server.py
+    #    sets `_DEFAULT_SYNTH_TIMEOUT = 30.0` under the comment "Kept env-tunable
+    #    to mirror the server default". It did not mirror it; the two processes
+    #    have disagreed since SP4 shipped.
+    # 2. 30 IS ALSO THE CLIENT'S CEILING. That same file derives its HTTP timeout
+    #    for POST /decision/synthesize as synth + _INGEST_TIMEOUT_HEADROOM (15.0)
+    #    = 45s, so this endpoint must answer inside 45s or be hung up on. The
+    #    only work outside this budget is the recalls, and they run
+    #    `format="raw"` (RAGEngine skips the synthesis LLM pass entirely) at
+    #    ~10ms each, at most 9 of them. So 30 restores exactly the 15s of
+    #    headroom the client's own constant is named for. Going past 30 needs a
+    #    coordinated client release, not an env change.
+    # 3. 20 WAS BELOW THE FLOOR EVEN FOR THE FAST PATH. Native generation on the
+    #    VPS measured 5.9-7.2 tok/s (see SKILL_SYNTH_TIMEOUT_SECONDS below), so
+    #    20s buys ~120-145 output tokens — less than a suggestion JSON for three
+    #    questions. On `/v1` it never had a chance at all: ollama ignores
+    #    `think:false` there, so a thinking model generates its full reasoning
+    #    first (83.19s on a comparable call, app/llm.py probe E).
+    #
+    # DELIBERATELY NO NATIVE SIBLING, unlike KNOWLEDGE_CLASSIFY_* above. The
+    # asymmetry runs the wrong way here: a native budget could only be LOWER
+    # than this one, and phase 1 measured that lowering the native budget
+    # strands non-thinking-model deploys — the probe confirms ollama, not a
+    # thinking model, so such a backend takes the native path and gains nothing
+    # from `think:false`. Raising the /v1 budget is capped by the client at 45s.
+    # One number for both endpoints.
+    #
+    # HONEST CEILING: 30s is ~180 native output tokens on a 4-vCPU CPU box. A
+    # 1-3 question board fits; a full 8-question board (~400-550 tokens) does
+    # not, and still degrades to retrieval-only. The remaining lever is the
+    # PROMPT (cap suggestions per question), not a larger timeout the client
+    # will cut off and not `max_tokens`, which in JSON mode can only truncate
+    # valid output into invalid — see app/decision/synthesize.py.
+    DECISION_SYNTH_TIMEOUT_SECONDS: float = 30.0
     DECISION_MAX_QUESTIONS: int = 8               # hard cap on per-question recalls
 
     # Collectors (SP3 — Living Knowledge Sync)

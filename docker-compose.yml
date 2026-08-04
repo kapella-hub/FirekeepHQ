@@ -291,7 +291,10 @@ services:
       KNOWLEDGE_CRAWL_MAX_PAGE_BYTES: ${KNOWLEDGE_CRAWL_MAX_PAGE_BYTES:-2000000}
       # Decision Board (SP4)
       DECISION_ENABLED: ${DECISION_ENABLED:-true}
-      DECISION_SYNTH_TIMEOUT_SECONDS: ${DECISION_SYNTH_TIMEOUT_SECONDS:-20}
+      # 20 -> 30: the client (firekeep-decision) already assumed 30 and gives
+      # this call a 45s ceiling (its synth default + 15s headroom). Do not raise
+      # past 30 without a coordinated client release. See config.py.
+      DECISION_SYNTH_TIMEOUT_SECONDS: ${DECISION_SYNTH_TIMEOUT_SECONDS:-30}
       DECISION_MAX_QUESTIONS: ${DECISION_MAX_QUESTIONS:-8}
       # Pattern validation (promotion ladder + A/B) — frozen until session volume (N=1)
       PATTERN_VALIDATION_ENABLED: ${PATTERN_VALIDATION_ENABLED:-false}
@@ -440,7 +443,8 @@ services:
       KNOWLEDGE_STATUS_TTL_SECONDS: ${KNOWLEDGE_STATUS_TTL_SECONDS:-2592000}
       # Decision Board (SP4)
       DECISION_ENABLED: ${DECISION_ENABLED:-true}
-      DECISION_SYNTH_TIMEOUT_SECONDS: ${DECISION_SYNTH_TIMEOUT_SECONDS:-20}
+      # 20 -> 30, matching cortex-api above. See config.py for the reasoning.
+      DECISION_SYNTH_TIMEOUT_SECONDS: ${DECISION_SYNTH_TIMEOUT_SECONDS:-30}
       DECISION_MAX_QUESTIONS: ${DECISION_MAX_QUESTIONS:-8}
     env_file:
       - .env
