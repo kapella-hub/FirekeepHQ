@@ -526,6 +526,15 @@ async def chat(
         attempts.append((False, False))
 
     resp = None
+    # The endpoint whose schema-carrying attempt was rejected, if any. Recorded
+    # rather than acted on immediately: at rejection time we know only THAT the
+    # request was refused, never WHY. An older ollama rejecting `think` refuses
+    # the schema-carrying body too, so a diagnosis logged here would announce
+    # "this backend does not implement structured outputs" about a backend whose
+    # actual complaint was a different field — and would do it one line before
+    # the demote message that gives the real reason.
+    schema_rejected_on: bool | None = None
+
     for index, (use_native, use_schema) in enumerate(attempts):
         try:
             resp = await _post(use_native, use_schema)
@@ -536,10 +545,11 @@ async def chat(
                 raise
             next_native, next_schema = attempts[index + 1]
             if use_schema and not next_schema:
+                schema_rejected_on = use_native
+                # Strictly what happened. No cause claimed.
                 logger.warning(
                     "%s returned %s for %s with a JSON schema — retrying once "
-                    "without it (this backend appears not to implement "
-                    "structured outputs; output adherence is no longer enforced)",
+                    "without it",
                     "Native /api/chat" if use_native else "/v1/chat/completions",
                     status,
                     purpose or "chat",
@@ -569,6 +579,22 @@ async def chat(
                 if root:
                     _demote(settings, root)
             continue
+
+        # The diagnosis, emitted only where it is earned: the SAME endpoint that
+        # refused the schema accepted the identical request without it. That is
+        # the only evidence available that the schema was the thing it objected
+        # to. A success on the OTHER endpoint proves nothing about the schema —
+        # the demote line above already explains that case — so it stays silent.
+        if (schema_rejected_on is not None
+                and not use_schema
+                and use_native == schema_rejected_on):
+            logger.warning(
+                "%s accepted %s without the JSON schema it had just rejected — "
+                "this backend appears not to implement structured outputs, so "
+                "output adherence is not enforced for this call",
+                "Native /api/chat" if use_native else "/v1/chat/completions",
+                purpose or "chat",
+            )
         native = use_native
         break
 

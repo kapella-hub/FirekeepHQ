@@ -107,6 +107,32 @@ def _suggestion_schema(question_ids: list[str]) -> dict:
     }
 
 
+def _string_list(value) -> list[str]:
+    """A suggestion field → a list of strings, or nothing.
+
+    `[str(a) for a in (value or [])]` iterates whatever it is handed, and the
+    two things a model most plausibly sends instead of a list are exactly the
+    two that iterate into garbage: a BARE STRING yields one entry PER CHARACTER
+    (`"Restart the worker"` → `['R','e','s','t',...]`, rendered to the human as
+    eighteen suggestions), and a dict yields its keys. Neither raises, so the
+    board reported `degraded=False` and showed the mess.
+
+    This is the sibling of the `isinstance` guard on the question value one
+    level up, and it matters most on the schema-DROPPED fallback rung, which is
+    precisely where an unconstrained model is free to emit a bare string.
+
+    A non-list is DISCARDED, not coerced. Wrapping a bare string into a
+    one-element list would look kinder, but it invents structure the model did
+    not produce, and there is no honest answer for the dict case. Discarding
+    leaves the question ungrounded, which is a state this module already knows
+    how to report: if every question ends up that way, the board degrades and
+    says so.
+    """
+    if not isinstance(value, list):
+        return []
+    return [str(a) for a in value]
+
+
 async def _recall_evidence(rag_engine, text: str) -> tuple[bool, list[dict]]:
     """Global recall (project=None, raw) → (knowledge_found, evidence[])."""
     resp = await rag_engine.recall(ContextQuery(task=text, project=None, format="raw"))
@@ -238,23 +264,33 @@ async def synthesize_board(context: str, draft_questions: list[str], *, rag_engi
             _llm_suggest(context, questions, settings=settings),
             timeout=float(getattr(settings, "DECISION_SYNTH_TIMEOUT_SECONDS", 30.0)))
         # grounding: keep only what maps to a real question id; suggestions never carry evidence
-        matched = 0
+        #
+        # Three counts, not one, because they are three different facts and the
+        # log line has to be able to tell them apart:
+        #   present  — the id is a key in the payload, whatever its value
+        #   usable   — that value is a dict we can read fields off
+        #   grounded — reading it produced at least one suggestion
+        # Collapsing present into usable is what made an earlier version of the
+        # warning below report "0/1 question ids present" while printing
+        # `top-level keys=['q0']` in the same line.
+        present = 0
+        usable = 0
         grounded = 0
         for q in questions:
+            if q["id"] in suggestions:
+                present += 1
             s = suggestions.get(q["id"])
             # isinstance rather than `or {}`: a non-dict value (a list, a bare
             # string) would raise on `.get` HALFWAY through the loop, leaving
             # some questions assigned and the rest not. One malformed entry is
             # not a reason to abandon the others.
-            if not isinstance(s, dict):
-                s = {}
+            if isinstance(s, dict):
+                usable += 1
             else:
-                matched += 1
-            answers = [str(a) for a in (s.get("suggested_answers") or [])]
-            actions = [str(a) for a in (s.get("suggested_actions") or [])]
-            q["suggested_answers"] = answers
-            q["suggested_actions"] = actions
-            if answers or actions:
+                s = {}
+            q["suggested_answers"] = _string_list(s.get("suggested_answers"))
+            q["suggested_actions"] = _string_list(s.get("suggested_actions"))
+            if q["suggested_answers"] or q["suggested_actions"]:
                 grounded += 1
 
         # A successful call that grounded NOTHING is not a healthy board.
@@ -275,16 +311,18 @@ async def synthesize_board(context: str, draft_questions: list[str], *, rag_engi
         # `unusable` means the model answered a different question than the one
         # asked (a prompt/schema/backend problem), `empty` means it answered
         # this one with nothing (a retrieval or model-capability problem).
-        # `matched` counts ids PRESENT, not ids answered, which is what makes
-        # them separable.
+        # The split keys off `usable`, not `present`: an id whose value is a
+        # bare list or string IS present, but the model still did not answer the
+        # question in the required shape, which is `unusable`.
         if questions and not grounded:
             degraded = True
-            note = "suggestions-empty" if matched else "suggestions-unusable"
+            note = "suggestions-empty" if usable else "suggestions-unusable"
             logger.warning(
                 "decision suggestion pass returned a payload that grounded "
-                "nothing (%s): %d/%d question ids present, top-level keys=%s",
-                note, matched, len(questions),
-                sorted(suggestions.keys())[:10] if isinstance(suggestions, dict) else "n/a")
+                "nothing (%s): of %d question(s), %d id(s) present and %d "
+                "usable; top-level keys=%s",
+                note, len(questions), present, usable,
+                sorted(suggestions.keys())[:10])
     except Exception as exc:
         # The type name matters: a bare wait_for TimeoutError stringifies to "",
         # so "%s" alone would log a reason of nothing at all.

@@ -382,6 +382,58 @@ async def test_a_native_endpoint_failure_still_demotes_even_with_a_schema():
 
 
 @pytest.mark.asyncio
+async def test_the_structured_outputs_diagnosis_waits_for_evidence(caplog):
+    """The retry fires before we know WHY the request was refused, so the
+    warning at that moment states only what happened. The diagnosis is emitted
+    afterwards, and only when the SAME endpoint accepts the identical request
+    without the schema — which is the only evidence that the schema was the
+    thing it objected to."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if isinstance(body.get("format"), dict):
+            return httpx.Response(400, json={"error": "bad format"})
+        return httpx.Response(200, json={"message": {"content": "{}"}})
+
+    with caplog.at_level("WARNING", logger="app.llm"):
+        async with _client(handler) as client:
+            with _probe(_ok_probe()):
+                await llm.chat(settings=_S(), messages=[], timeout=1.0,
+                               json_schema=_SCHEMA, client=client)
+
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("retrying once without it" in m for m in messages)
+    assert any("appears not to implement structured outputs" in m for m in messages)
+    # ...and the claim comes AFTER the retry, never before it.
+    assert (next(i for i, m in enumerate(messages) if "retrying once" in m)
+            < next(i for i, m in enumerate(messages)
+                   if "appears not to implement" in m))
+
+
+@pytest.mark.asyncio
+async def test_an_old_ollama_rejecting_think_is_not_blamed_on_structured_outputs(caplog):
+    """The case the earlier wording got wrong. An ollama that rejects `think`
+    refuses the schema-carrying body too, so a diagnosis logged at retry time
+    announced 'this backend does not implement structured outputs' about a
+    backend whose actual complaint was a different field — one line before the
+    demote message that gave the real reason. Success lands on /v1 here, not on
+    the endpoint that refused the schema, so no such claim may be made."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/chat":
+            return httpx.Response(400, json={"error": "unknown field think"})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
+
+    with caplog.at_level("WARNING", logger="app.llm"):
+        async with _client(handler) as client:
+            with _probe(_ok_probe()):
+                await llm.chat(settings=_S(), messages=[], timeout=1.0,
+                               json_schema=_SCHEMA, client=client)
+
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("demoting to /v1/chat/completions" in m for m in messages)
+    assert not any("appears not to implement structured outputs" in m for m in messages)
+
+
+@pytest.mark.asyncio
 async def test_there_is_no_v1_plus_schema_rung_under_a_failed_native_schema():
     """Deliberate omission. On ollama both endpoints are the same engine, so a
     schema the native handler rejects will not be honoured by its own /v1 — that

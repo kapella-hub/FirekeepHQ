@@ -521,6 +521,91 @@ async def test_one_grounded_question_out_of_several_is_not_degraded():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("bad", ["Restart the worker", {"a": 1}, 7, None])
+async def test_a_non_list_suggestion_field_yields_nothing_rather_than_garbage(bad):
+    """`[str(a) for a in (value or [])]` iterates whatever it is handed, and the
+    two most plausible wrong types iterate into nonsense: a BARE STRING yields
+    one entry per character — `"Restart the worker"` became eighteen
+    "suggestions" shown to the human — and a dict yields its keys. Neither
+    raises, so the board reported itself healthy while displaying that.
+
+    Discarded rather than coerced: wrapping a bare string into a one-element
+    list invents structure the model did not produce, and there is no honest
+    answer for the dict case. Discarding leaves the question ungrounded, which
+    this module already knows how to report."""
+    rag = _rag_with_one_source()
+    payload = json.dumps({"q0": {"suggested_answers": bad, "suggested_actions": bad}})
+
+    with patch("app.llm.httpx.AsyncClient") as mc:
+        mc.return_value = _mock_client(_openai_response(payload))
+        board = await synthesize_board("ctx", ["restart?"], rag_engine=rag, settings=_settings())
+
+    q = board["questions"][0]
+    assert q["suggested_answers"] == []
+    assert q["suggested_actions"] == []
+    # Nothing grounded, so the board must say so rather than show the garbage.
+    assert board["degraded"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_well_formed_list_still_passes_through_unchanged():
+    """The guard must not cost the working case — non-string entries are still
+    coerced with str(), as they always were."""
+    rag = _rag_with_one_source()
+    payload = json.dumps({"q0": {"suggested_answers": ["Ship it", 42],
+                                 "suggested_actions": []}})
+
+    with patch("app.llm.httpx.AsyncClient") as mc:
+        mc.return_value = _mock_client(_openai_response(payload))
+        board = await synthesize_board("ctx", ["restart?"], rag_engine=rag, settings=_settings())
+
+    assert board["questions"][0]["suggested_answers"] == ["Ship it", "42"]
+    assert board["degraded"] is False
+
+
+@pytest.mark.asyncio
+async def test_an_id_present_with_an_unusable_value_is_reported_as_such(caplog):
+    """The detector's own log line has to be true. `present` and `usable` are
+    counted separately because an earlier version collapsed them and logged
+    '0/1 question ids present' while printing `top-level keys=['q0']` in the
+    same breath — a self-contradiction inside the one diagnostic whose entire
+    reason for existing is that the last bug took three phases to find.
+
+    The note stays `unusable`: the id is there, but the model did not answer
+    the question in the required shape."""
+    rag = _rag_with_one_source()
+
+    with caplog.at_level("WARNING", logger="app.decision.synthesize"):
+        with patch("app.llm.httpx.AsyncClient") as mc:
+            mc.return_value = _mock_client(_openai_response(json.dumps({"q0": ["x"]})))
+            board = await synthesize_board("ctx", ["restart?"], rag_engine=rag,
+                                           settings=_settings())
+
+    assert board["degraded"] is True
+    assert board["note"] == "suggestions-unusable"
+    line = next(r.getMessage() for r in caplog.records if "grounded" in r.getMessage())
+    assert "1 id(s) present and 0 usable" in line
+    assert "['q0']" in line
+
+
+@pytest.mark.asyncio
+async def test_the_mirrored_payload_log_reports_zero_present_truthfully(caplog):
+    """The other side of the same count: here the ids genuinely are absent, and
+    the line has to say so while naming what did arrive instead."""
+    rag = _rag_with_one_source()
+    mirrored = json.dumps({"context": "c", "questions": [{"id": "q0"}]})
+
+    with caplog.at_level("WARNING", logger="app.decision.synthesize"):
+        with patch("app.llm.httpx.AsyncClient") as mc:
+            mc.return_value = _mock_client(_openai_response(mirrored))
+            await synthesize_board("ctx", ["restart?"], rag_engine=rag, settings=_settings())
+
+    line = next(r.getMessage() for r in caplog.records if "grounded" in r.getMessage())
+    assert "0 id(s) present and 0 usable" in line
+    assert "['context', 'questions']" in line
+
+
+@pytest.mark.asyncio
 async def test_one_malformed_entry_does_not_abandon_the_other_questions():
     """`suggestions.get(id) or {}` followed by `.get` raised AttributeError on a
     non-dict value, halfway through the loop — leaving the questions before it

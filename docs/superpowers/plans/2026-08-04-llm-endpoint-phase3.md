@@ -253,9 +253,64 @@ absence of `minItems`, no-schema-for-an-empty-board, the **actual mirrored-input
 payload** → `suggestions-unusable`, ids-matched-but-empty → `suggestions-empty`,
 partial grounding → not degraded, and one malformed entry not abandoning the rest.
 
-Two pre-existing tests were updated rather than added to, both deliberately:
-`test_openai_body_carries_no_vendor_flags_and_no_output_cap` and
+Two pre-existing tests were updated rather than added to, both deliberately, and
+**both in `test_decision_synthesize.py`** (`test_llm.py` is purely additive,
++232/-0): `test_openai_body_carries_no_vendor_flags_and_no_output_cap` and
 `test_native_body_when_the_backend_is_ollama` pinned the *pre-schema* body for
 this path (`{"type":"json_object"}` / `format == "json"`) — precisely the setting
 under which the live board answered 0/3 twice. They now assert the schema
-envelope; their vendor-flag and no-`max_tokens` halves are unchanged.
+envelope; their vendor-flag and no-`max_tokens` halves are unchanged. The
+contract they carried was not deleted but **moved to the caller it is actually
+true for** — `test_no_schema_leaves_both_bodies_byte_identical_to_the_pre_schema_shape`
+asserts it for every non-schema caller, which is all of them but this one.
+
+## Review follow-ups
+
+Three LOW findings from review, fixed before push. All three are the same class:
+a line that says something not quite true.
+
+**1. The detector's log line contradicted itself.** `matched` incremented only
+when the id's value was a dict, but the message reported it as "question ids
+present" — so `{"q0": ["x"]}` on a one-question board logged `0/1 question ids
+present, top-level keys=['q0']`, denying the presence of an id it printed in the
+same breath. Diagnostic-only (the chosen note was right), but this detector
+exists *because* the last bug took three phases to find. Now three counts:
+`present` (id is a key), `usable` (value is a dict), `grounded` (yielded a
+suggestion). The `empty`/`unusable` split keys off `usable`, preserving the note
+exactly — an id present with a garbage value is still `unusable`, because the
+model did not answer the question in the required shape.
+
+**2. A bare string rendered one suggestion PER CHARACTER.**
+`[str(a) for a in (v or [])]` iterates whatever it is given, and the two most
+plausible wrong types iterate into nonsense: `{"suggested_answers": "Restart the
+worker"}` became `['R','e','s','t',...]` — eighteen "suggestions" shown to the
+human — and a dict yields its keys. Neither raises, so `degraded=False`.
+Pre-existing and unchanged by phase 3, so **not a regression** — fixed here
+anyway because phase 3 added an `isinstance` guard one line above for exactly
+this class and left the sibling case, and because the schema-DROPPED fallback
+rung is precisely where an unconstrained model is free to emit a bare string.
+`_string_list` discards a non-list rather than coercing it: wrapping a bare
+string into a one-element list invents structure the model did not produce, and
+there is no honest answer for the dict case. Discarding leaves the question
+ungrounded — a state this module already knows how to report.
+
+**3. The schema-retry warning asserted a diagnosis it could not know.** It fired
+*before* the retry, so an old ollama rejecting `think` was told "this backend
+appears not to implement structured outputs" — false in that case — one line
+before the correct demote message. The retry-time line is now strictly factual
+("retrying once without it"); the diagnosis is emitted only when the **same
+endpoint accepts the identical request without the schema**, which is the only
+evidence available that the schema was the objection. A success on the *other*
+endpoint proves nothing about the schema, so it stays silent there.
+
+Guards for these: `test_llm.py` +2 (`..._diagnosis_waits_for_evidence` asserts
+both the wording and the ordering; `..._old_ollama_rejecting_think_is_not_blamed_
+on_structured_outputs` asserts the claim is absent on the demote path) and
+`test_decision_synthesize.py` +7 (four non-list suggestion types, the
+well-formed-list no-regression case, and the two `present`-vs-`usable` log
+assertions, one per side of the count).
+
+Review INFO items were assessed as correct-as-is and deliberately not acted on:
+no schema-capability cache, `always` mode widening, the unreachable `resp = None`,
+unbounded `draft_questions`, the kebab-case notes being human-visible, and the
+OpenAI-refusal path.
