@@ -164,3 +164,73 @@ GPT-4o-reader numbers, the judge is the same model as the reader, LongMemEval
 haystacks are synthetic and likely a floor rather than a ceiling for
 Firekeep's actual production write path, and more) — read it before quoting
 any number from `results/*.json` out of context.
+
+## Dreaming A/B: the regression gate
+
+**The rule: Dreaming ships enabled only on a measured non-regression against
+this benchmark.** No other signal in the stack can make that call. Cortex's
+existing auto-eval, `_memory_freshness_at_recall`, averages
+`RecallResponse.score`, which is `max(sources[].score)` after min-max
+normalisation — it is pinned to 1.0 by construction and cannot detect a
+retrieval regression no matter how badly Dreaming degrades recall. This
+LongMemEval-S harness is the only instrument in the repo that measures actual
+retrieval quality end to end, which is why it is the gate.
+
+`DREAM_ENABLED` defaults to `false` (`cortex/app/config.py`), so a completely
+ordinary full run of this harness against an unmodified stack **is** the
+"before" measurement — no special setup needed for that half.
+
+### Running the A/B
+
+```bash
+cd benchmarks/memory
+# 1. Full benchmark with dreaming off (the default) — this is "before".
+.venv/Scripts/python -m bench.run --config both --run-label pre-dream
+#    -> results/<timestamp>-pre-dream.json
+
+# 2. Enable dreaming: add `DREAM_ENABLED: "true"` to cortex-api's
+#    `environment:` block in docker-compose.bench.yml (it defaults false and
+#    is absent there today), then recreate the container so it's picked up:
+docker compose -f docker-compose.bench.yml -p firekeep-bench up -d --build cortex-api
+#    Then let it accumulate real ticks — DREAM_TICK_MINUTES defaults to 5,
+#    but a single tick is not representative; give it the same order of
+#    magnitude of wall-clock time / session volume you expect a customer
+#    deployment to reach before dreaming has had a chance to act on
+#    (DREAM_MIN_NEW_MEMORIES=25, DREAM_MIN_AGE_DAYS=2 by default — a fresh
+#    bench stack needs to clear both before the first cluster fires).
+
+# 3. Full benchmark again, same dataset, same stack — this is "after".
+.venv/Scripts/python -m bench.run --config both --run-label post-dream
+#    -> results/<timestamp>-post-dream.json
+
+# 4. Compare.
+.venv/Scripts/python -m bench.dream_ab \
+  --before results/<timestamp>-pre-dream.json \
+  --after results/<timestamp>-post-dream.json
+```
+
+`bench.dream_ab` prints one markdown table per recall config (`defaults` and
+`bench`, whichever configs are common to both result files) showing the delta
+on every metric, followed by a verdict line per config and one overall
+verdict. It exits **non-zero if any config regressed**, so it can gate CI or
+a release checklist directly:
+
+```bash
+.venv/Scripts/python -m bench.dream_ab --before results/X.json --after results/Y.json \
+  || { echo "dreaming regressed retrieval — do not ship DREAM_ENABLED=true"; exit 1; }
+```
+
+A run is flagged `regressed=True` if **any** of Recall@k, Coverage@k, or
+NDCG@k drops by more than `--tolerance` (default `0.005`) between before and
+after — MRR is reported for visibility but does not gate. Comparisons that
+are not apples-to-apples fail loudly instead of producing a number: a `k`
+mismatch between the two runs, or a run missing its `overall` block, is
+reported as an `ERROR:` verdict with `regressed=True` rather than a computed
+(and meaningless) delta.
+
+`compare_runs(before, after)` is the pure comparison primitive: it takes a
+single pair of `score_run` dicts (`work/scores_<config>.json`'s shape — one
+recall config's `{"k": ..., "overall": {...}}`) and returns one verdict.
+`compare_result_files(before, after)` is what the CLI actually calls — it
+accepts full `results/<timestamp>-<label>.json` run-records (or bare
+`score_run`s) and compares every recall config present in both.
