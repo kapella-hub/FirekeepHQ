@@ -17,7 +17,6 @@ from app.skills.search import search_skill_points
 from app.models import (
     SkillRequest, SkillResponse, SkillPatchRequest, SkillEvaluateRequest
 )
-from app.skills.search import search_skill_points
 
 logger = logging.getLogger(__name__)
 

@@ -106,7 +106,8 @@ def _mkrepo(tmp_path):
                        cwd=str(r), capture_output=True, text=True, check=False)
     g("init", "-q")
     (r / "a.py").write_text("committed\n", encoding="utf-8")
-    g("add", "-A"); g("commit", "-qm", "base")
+    g("add", "-A")
+    g("commit", "-qm", "base")
     return r
 
 

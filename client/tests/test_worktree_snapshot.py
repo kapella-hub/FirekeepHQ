@@ -8,7 +8,6 @@ it only means something against real `git checkout`.
 """
 from __future__ import annotations
 
-import os
 import subprocess
 
 import pytest

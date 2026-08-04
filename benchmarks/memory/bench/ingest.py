@@ -87,7 +87,9 @@ class Ledger:
         self._path = path
         self._done: dict[str, int] = {}
         if path.exists():
-            lines = [l for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
+            lines = [
+                ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()
+            ]
             for i, line in enumerate(lines):
                 try:
                     rec = json.loads(line)

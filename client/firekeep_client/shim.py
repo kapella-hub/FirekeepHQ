@@ -16,7 +16,6 @@ import json
 import re
 import logging
 import os
-import re
 import ssl
 import sys
 

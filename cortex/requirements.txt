@@ -22,7 +22,7 @@ fastmcp>=3.1,<4
 # edge. Floor raised to 43.0 (the oldest version actually exercised here);
 # intermediate 44-48 versions were not individually tested, but Fernet's API
 # has been stable across all of them.
-cryptography>=43.0,<50
+cryptography>=50.0,<51
 markdownify>=1.2,<2
 
 # Test dependencies live in requirements-dev.txt, NOT here. cortex/Dockerfile:12
