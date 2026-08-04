@@ -7,10 +7,7 @@ answer and a release you can apply.
 
 ## Reporting a vulnerability
 
-> **⚠️ CONTACT NOT YET SET.** The address below is a placeholder. Filling it in is
-> the last step before this file is true — see "Before first sale" at the bottom.
-
-Email **`security@<DOMAIN-TBD>`** with:
+Email **`security@firekeep.ai`** with:
 
 - what you found and where (file, endpoint, or configuration),
 - how to reproduce it,
@@ -98,8 +95,10 @@ None of that finds design flaws. That is what this policy is for.
 Tracked here rather than in a private note, because a security policy that
 overstates its own maturity is itself a security problem:
 
-1. **Set the disclosure address.** A monitored inbox on a domain the project
-   controls, not a personal mailbox.
+1. **Confirm `security@firekeep.ai` is actually monitored.** The address is set
+   and is the one firekeep.ai already publishes, so this file no longer names a
+   placeholder — but an unread inbox is worse than an honest "no channel yet".
+   Verify delivery reaches a human before the first customer relies on it.
 2. **Confirm the SLA targets are ones a solo maintainer can actually hit**, and
    lower them if not. A missed published deadline is worse than a modest one.
 3. **Decide the advisory channel** — GitHub Security Advisories on a private repo
