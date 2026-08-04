@@ -38,7 +38,14 @@ async def detect_and_supersede(
     superseded_ids: list[str] = []
 
     try:
-        # Find similar active memories
+        # Find similar active memories. As of Dreaming Task 5, find_similar's
+        # own filter (app/db/vector.py: _similarity_filter) excludes
+        # confirmed_count > 0 points (a confirmed memory must never be
+        # auto-superseded by an ordinary /memory/learn — a pre-existing
+        # defect) and source="dream" points (a dream must never be merged
+        # into or superseded by the episode it summarised). Nothing below
+        # needs to duplicate those guards — they hold for every caller of
+        # find_similar, not just this one.
         similar = await vector.find_similar(
             text=new_text,
             namespace=namespace,

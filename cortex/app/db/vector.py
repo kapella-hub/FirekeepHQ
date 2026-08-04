@@ -26,6 +26,7 @@ from qdrant_client.models import (
     MatchValue,
     PayloadSchemaType,
     PointStruct,
+    Range,
     VectorParams,
 )
 
@@ -101,7 +102,11 @@ def _projected_metadata(payload: dict | None, point_id: str) -> dict[str, Any]:
     before the promotion keeps whatever its nested metadata held instead of being
     overwritten with None.
     """
-    if not payload:
+    # `is None`, not `not payload`: a missing payload (Qdrant can return one
+    # when with_payload=False) is the "nothing to project" case, but an empty
+    # *dict* is a real payload whose fields should still get their defaults
+    # (e.g. memory_type="episodic") rather than being collapsed to {}.
+    if payload is None:
         return {}
     return {
         # "id" was added by Task 8 (access-count HINCRBY reads it) — this
@@ -111,6 +116,11 @@ def _projected_metadata(payload: dict | None, point_id: str) -> dict[str, Any]:
         "tags": payload.get("tags", []),
         "domain": payload.get("domain", ""),
         "timestamp": payload.get("timestamp", ""),
+        # Dreaming Task 5 (audit finding #3): recall read memory_type through
+        # this projection while GC read it from the top-level payload — the
+        # two could disagree. Explicit here, before the metadata spread, so a
+        # nested legacy value still wins for pre-promotion points.
+        "memory_type": payload.get("memory_type", "episodic"),
         **(payload.get("metadata", {})),
         # Team continuity: who wrote this, in what session, for what project.
         **{k: payload[k] for k in _PROMOTED_PAYLOAD_KEYS if k in payload},
@@ -167,6 +177,32 @@ def _merge_lifecycle(existing: dict | None, fresh: dict) -> dict:
     if existing.get("last_confirmed_at"):
         merged["last_confirmed_at"] = existing["last_confirmed_at"]
     return merged
+
+
+def _similarity_filter(namespace: str, domain: str | None) -> Filter:
+    """Build the query filter used by ``find_similar`` (contradiction detection).
+
+    Two ``must_not`` guards, both audit findings (Dreaming Task 5):
+      1. ``confirmed_count > 0`` — this filter previously checked status/
+         namespace/domain but not confirmed_count, so an ordinary /memory/learn
+         could silently supersede a memory a human explicitly confirmed. GC's
+         own scan already treats confirmed_count > 0 as untouchable; this
+         brings contradiction detection in line with that guard.
+      2. ``source == "dream"`` — without this, the 6-hourly deep_contradiction
+         pass (which also calls find_similar) could supersede a dream with the
+         very episode it summarised, or supersede one dream with another —
+         a feedback loop with no dream code involved at all.
+    """
+    conditions = [FieldCondition(key="status", match=MatchValue(value="active"))]
+    if namespace != "default":
+        conditions.append(FieldCondition(key="namespace", match=MatchValue(value=namespace)))
+    if domain:
+        conditions.append(FieldCondition(key="domain", match=MatchValue(value=domain)))
+    must_not = [
+        FieldCondition(key="confirmed_count", range=Range(gt=0)),
+        FieldCondition(key="source", match=MatchValue(value="dream")),
+    ]
+    return Filter(must=conditions, must_not=must_not)
 
 
 class VectorClient:
@@ -1158,15 +1194,10 @@ class VectorClient:
     async def find_similar(self, text: str, namespace: str = "default", domain: str | None = None, threshold: float = 0.85, top_k: int = 3) -> list[dict]:
         """Find similar active memories for contradiction detection."""
         embedding = await self._embed(text)
-        conditions = [FieldCondition(key="status", match=MatchValue(value="active"))]
-        if namespace != "default":
-            conditions.append(FieldCondition(key="namespace", match=MatchValue(value=namespace)))
-        if domain:
-            conditions.append(FieldCondition(key="domain", match=MatchValue(value=domain)))
         results = await self._client.query_points(
             collection_name=self._collection,
             query=embedding,
-            query_filter=Filter(must=conditions),
+            query_filter=_similarity_filter(namespace=namespace, domain=domain),
             limit=top_k,
             with_payload=True,
         )

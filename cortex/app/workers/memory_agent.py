@@ -77,10 +77,18 @@ def _active_non_corpus_filter() -> Filter:
     never corpus chunks. Corpus chunks are document fragments, not competing
     memories — they must never be merged, superseded, or reclassified by
     the agent passes (SP0 B1, defect #3).
+
+    Also excludes source="dream" (Dreaming Task 5, audit finding #2): without
+    this, duplicate_detection_pass could merge two dreams (or a dream with a
+    surviving source) and deep_contradiction_pass could supersede a dream with
+    its own source episode — a feedback loop no dream code participates in.
     """
     return Filter(
         must=[FieldCondition(key="status", match=MatchValue(value="active"))],
-        must_not=[FieldCondition(key="source", match=MatchValue(value="corpus"))],
+        must_not=[
+            FieldCondition(key="source", match=MatchValue(value="corpus")),
+            FieldCondition(key="source", match=MatchValue(value="dream")),
+        ],
     )
 
 
