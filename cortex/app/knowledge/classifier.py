@@ -5,10 +5,10 @@ procedural content, extracts the titles of each distinct self-contained
 procedure/runbook so they can be queued for per-procedure skill drafting
 (see cortex/app/skills/synthesizer.py's synthesize_from_document, Task 4).
 
-JSON-mode call pattern mirrors app/workers/sleep_cycle.py's LLM extraction
-call (~line 362) verbatim: same headers/timeout/content-or-reasoning
-fallback logic, ported to httpx.AsyncClient since this runs in the async
-request path (POST /knowledge/ingest, Task 6) rather than a Celery task.
+The LLM call goes through `app.llm.chat`, which selects ollama's native
+`/api/chat` when the backend supports it (measured 4.00s) over
+`/v1/chat/completions` (83.19s for the same document, because ollama ignores
+`think:false` there and generates the full reasoning anyway). See app/llm.py.
 
 Fail-loud posture (matches sleep_cycle, NOT memory_agent's silent
 fallback): any failure anywhere in the call/parse/validate chain returns
@@ -22,6 +22,8 @@ import logging
 from typing import Any
 
 import httpx
+
+from app import llm
 
 logger = logging.getLogger(__name__)
 
@@ -46,8 +48,26 @@ def _fail_note(exc: Exception) -> str:
     ConnectError here rather than a bare 'classification failed'. Exception
     reprs on this path (ConnectError/HTTPStatusError/JSONDecodeError) do not
     carry the API key (headers are never in the message)."""
+    if _is_read_timeout(exc):
+        # httpx.ReadTimeout usually stringifies to "", so the generic
+        # "(reason: ReadTimeout: )" says nothing actionable. Name the budget
+        # that was exceeded instead — this is now a reachable state, since a
+        # read timeout no longer masquerades as 'backend unavailable'.
+        return (
+            f"{_FAIL_LOUD_NOTE} (reason: the generation backend accepted the "
+            "request but did not answer within KNOWLEDGE_CLASSIFY_TIMEOUT_SECONDS "
+            "— it is reachable but too slow, not absent)"
+        )
     reason = f"{type(exc).__name__}: {exc}"
     return f"{_FAIL_LOUD_NOTE} (reason: {reason[:200]})"
+
+
+def _is_read_timeout(exc: Exception) -> bool:
+    """A timeout waiting for a RESPONSE from a backend that accepted the
+    connection — i.e. deployed, reachable, and merely slow. Deliberately
+    excludes ConnectTimeout, which subclasses TimeoutException but means the
+    backend never answered at all."""
+    return isinstance(exc, httpx.TimeoutException) and not isinstance(exc, httpx.ConnectTimeout)
 
 
 def _is_backend_unavailable(exc: Exception) -> bool:
@@ -55,9 +75,22 @@ def _is_backend_unavailable(exc: Exception) -> bool:
     absent/unreachable (an embed-only deploy has no chat model) rather than a
     genuine classify error. Lets the ingest degrade to a clean 'corpus_only'
     status instead of a scary 'failed', and auto-revert once generation returns.
-    Covers: connection/timeout errors (backend down) and HTTP 404 / 'model not
-    found' (ollama's response for a chat model it doesn't have)."""
-    if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.TimeoutException)):
+    Covers: connection errors (backend down) and HTTP 404 / 'model not found'
+    (ollama's response for a chat model it doesn't have).
+
+    A READ TIMEOUT IS DELIBERATELY NOT IN THIS SET, and used to be. The tuple
+    named bare `httpx.TimeoutException`, which `httpx.ReadTimeout` subclasses —
+    so a classify that ran out its budget against a working, answering backend
+    was recorded terminal `corpus_only` with a note claiming the generation
+    backend was unavailable and that classification "will run automatically once
+    a generation model is deployed". On the VPS the model IS deployed and
+    answering; the status was simply false, and nothing ever re-enqueues a
+    `corpus_only` source, so the document stayed silently corpus-only forever.
+    That was not a rare corner: the pre-fix /v1 classify measured 288.9s against
+    a 300.0s budget. `ConnectTimeout` must stay named explicitly — it subclasses
+    TimeoutException too, but it means nothing answered, which IS unavailable.
+    """
+    if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
         return True
     if (isinstance(exc, httpx.HTTPStatusError) and exc.response is not None
             and exc.response.status_code == 404):
@@ -101,31 +134,27 @@ async def classify_document(content: str, *, settings: Any) -> dict:
     fallback so the caller can proceed with corpus-only ingestion.
     """
     try:
-        headers = {"Authorization": f"Bearer {settings.LLM_API_KEY}"} if settings.LLM_API_KEY else {}
-        timeout = getattr(settings, "KNOWLEDGE_CLASSIFY_TIMEOUT_SECONDS", 300.0)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(
-                f"{settings.LLM_BASE_URL}/chat/completions",
-                json={
-                    "model": settings.LLM_MODEL,
-                    "messages": [
-                        {"role": "system", "content": CLASSIFY_SYSTEM_PROMPT},
-                        {"role": "user", "content": content},
-                    ],
-                    "temperature": 0.1,
-                    "response_format": {"type": "json_object"},
-                },
-                headers=headers,
-            )
-            resp.raise_for_status()
+        result = await llm.chat(
+            settings=settings,
+            messages=[
+                {"role": "system", "content": CLASSIFY_SYSTEM_PROMPT},
+                {"role": "user", "content": content},
+            ],
+            json_mode=True,
+            temperature=0.1,
+            timeout=getattr(settings, "KNOWLEDGE_CLASSIFY_TIMEOUT_SECONDS", 300.0),
+            native_timeout=getattr(settings, "KNOWLEDGE_CLASSIFY_NATIVE_TIMEOUT_SECONDS", None),
+            purpose="knowledge classify",
+        )
 
-        msg = resp.json()["choices"][0]["message"]
-        text = msg.get("content") or ""
-        # Fallback: some models (e.g. qwen3) put output in a reasoning field
-        # (verbatim from sleep_cycle.py's .strip()-gated fallback).
-        if not text.strip():
-            text = msg.get("reasoning") or ""
-        data = json.loads(text)
+        # No reasoning-field fallback. It used to feed msg["reasoning"] to
+        # json.loads when content was empty, which under JSON mode cannot help
+        # BY CONSTRUCTION: if content is empty the grammar blocked it, so
+        # `reasoning` is prose, not JSON (the measured /v1 call returned 4357
+        # chars of it). Both paths end in JSONDecodeError, so dropping it
+        # changes no terminal state — it only removes a line that read as a
+        # recovery mechanism while never recovering anything.
+        data = json.loads(result.content)
 
         primary_type = data.get("primary_type")
         if primary_type not in _VALID_PRIMARY_TYPES:
