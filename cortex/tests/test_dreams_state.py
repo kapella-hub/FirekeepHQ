@@ -40,3 +40,15 @@ def test_counter_bump_and_reset():
 
 def test_counter_on_missing_key_is_zero():
     assert _state().get_counter("never_set") == 0
+
+
+def test_done_set_on_fresh_redis_is_empty_set_not_error():
+    assert _state().done_set("profile") == set()
+
+
+def test_done_set_returns_all_marked_keys_in_one_read():
+    s = _state()
+    s.mark_unit_done("profile", "m1::ws1::default::")
+    s.mark_unit_done("profile", "m2::ws1::default::")
+    assert s.done_set("profile") == {"m1::ws1::default::", "m2::ws1::default::"}
+    assert s.done_set("cluster") == set()

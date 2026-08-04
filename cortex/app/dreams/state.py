@@ -39,6 +39,15 @@ class DreamState:
     def is_unit_done(self, kind: str, key: str) -> bool:
         return bool(self._r.sismember(DONE_KEY.format(kind=kind), key))
 
+    def done_set(self, kind: str) -> set[str]:
+        """The whole done-set for `kind` in one SMEMBERS round trip. Added in
+        the dreams Task 6/7 fix round (M6): task.py's profile grouping used
+        to call is_unit_done once per scanned candidate (up to the scan
+        cap SISMEMBERs per tick) purely to filter out already-profiled
+        members — one bulk read replaces that whole loop of round trips."""
+        raw = self._r.smembers(DONE_KEY.format(kind=kind)) or set()
+        return {_s(v) for v in raw}
+
     def bump_counter(self, name: str, n: int = 1) -> int:
         return int(self._r.incrby(COUNTER_KEY.format(name=name), n))
 

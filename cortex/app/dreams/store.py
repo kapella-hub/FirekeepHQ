@@ -21,8 +21,13 @@ from app.dreams.synthesize import Insight
 DREAM_NS = uuid.UUID("6f1d0c9a-7c1e-5b2a-9f43-0d5e8a2b4c71")
 
 
-def dream_point_id(cluster_key: str) -> str:
-    return str(uuid.uuid5(DREAM_NS, f"dream::{cluster_key}"))
+def dream_point_id(cluster_key: str, index: int = 0) -> str:
+    """`index` distinguishes multiple insights synthesized from the SAME
+    cluster (synthesize() may return up to 3) without folding the index into
+    `cluster_key` itself — index==0 (the default) reproduces the original
+    id exactly, so every existing caller/test is unaffected."""
+    seed = cluster_key if index == 0 else f"{cluster_key}:{index}"
+    return str(uuid.uuid5(DREAM_NS, f"dream::{seed}"))
 
 
 def profile_point_id(member_id: str, workspace_id: str) -> str:
@@ -74,9 +79,16 @@ def build_dream_payload(
 
 
 async def write_dream(
-    vector, insight: Insight, members: list[Candidate], *, cluster_key: str, run_id: str
+    vector, insight: Insight, members: list[Candidate], *, cluster_key: str, run_id: str,
+    index: int = 0,
 ) -> str:
+    """`index` (default 0, backward compatible) selects which of a cluster's
+    up-to-3 insights this call writes — see dream_point_id. It feeds ONLY the
+    point id: `cluster_key` reaches build_dream_payload UNCHANGED, so the
+    stored `dream_cluster_key` / provenance always names the real cluster,
+    never a synthetic "key:i" value a caller looking it up later wouldn't
+    recognise (fix-round review, dreaming Task 6/7)."""
     payload = build_dream_payload(insight, members, cluster_key=cluster_key, run_id=run_id)
-    point_id = dream_point_id(cluster_key)
+    point_id = dream_point_id(cluster_key, index)
     await vector.upsert_point(point_id, insight.content, payload)
     return point_id

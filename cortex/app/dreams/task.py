@@ -4,10 +4,10 @@ work -> record. See docs/superpowers/specs/2026-08-04-dreaming-design.md.
 Structure mirrors app/owm.py: a pure gate function, an async run_one_unit that
 builds and closes its own clients, and a thin sync Celery wrapper that
 self-gates on DREAM_ENABLED before ever calling run_one_unit. celery_app is
-imported at the BOTTOM (app/collectors/confluence.py:102-110 is the
-precedent) — sleep_cycle.py's `include` list names this module, so importing
-`celery_app` from sleep_cycle at the top of this file would run into that
-module's own import machinery before this module's public surface exists.
+imported at the BOTTOM, matching app/owm.py and app/collectors/confluence.py —
+see the comment at that import for why (a defensive convention, not a fix for
+an active import cycle; the cycle claim in an earlier version of this
+docstring was checked and found false).
 """
 from __future__ import annotations
 
@@ -20,12 +20,39 @@ logger = logging.getLogger(__name__)
 
 LOCK_KEY = "dreams:lock"
 
-# Bounds one Qdrant scroll pass. The live active pool is ~500 points (measured
-# 2026-08-04, per the design doc's ground-truth table); this is generous
-# headroom while still bounding worst-case scan cost on a much larger store.
-# Applies independently to the (vector-less) activity scan and the
-# (with-vectors) candidate scan.
-_SCAN_LIMIT = 2000
+# Two SEPARATE scan caps (fix-round review, dreaming Task 6/7, I6 + I7) — a
+# single shared _SCAN_LIMIT=2000 conflated two different concerns with two
+# different costs:
+#
+#   I7 (performance): select.cluster() is O(n^2) in candidate count. Measured
+#   on this machine with synthetic 1024-dim vectors, cluster() (post-fix,
+#   norm-precomputed): ~3.5s @500, ~14.1s @1000, ~58.8s @2000. Against
+#   soft_time_limit=150s/time_limit=180s — which also has to leave room for
+#   one synthesis call (~22.5s per the design doc's ground truth, up to
+#   DREAM_SYNTH_TIMEOUT_SECONDS=120s worst case) plus Qdrant/Redis overhead —
+#   2000 leaves too little margin. 1000 (~14s clustering) leaves generous
+#   headroom.
+#
+#   I6 (correctness): the activity scan's `last_write_at` signal takes
+#   max(timestamp) over the scanned page(s), but Qdrant scroll pages by point
+#   ID, uncorrelated with timestamp. Above the scan cap, the true most-recent
+#   write can land on an unscanned page and idle detection can wrongly read
+#   "idle" while an agent is actively working. The correct fix is a single
+#   `scroll(limit=1, order_by=...)` server-side lookup, but that requires a
+#   payload index on `timestamp` (Qdrant enforces this for order_by) whose
+#   behaviour could not be verified end-to-end — no live Qdrant was reachable
+#   in the environment this fix round was done in. Per review guidance, the
+#   accepted fallback is a larger, DECOUPLED cap for this scan: it does no
+#   O(n^2) work (pure Python cost measured at 1.5ms for 6000 payloads — the
+#   real cost is Qdrant network paging, not CPU), so it can afford a much
+#   higher ceiling than the candidate scan without touching the time budget.
+#   KNOWN LIMIT, honestly stated: above _ACTIVITY_SCAN_LIMIT active
+#   non-dream memories, idle detection can still be wrong in the same way —
+#   just at ~9x the pool size this was ever actually measured at (538, per
+#   the design doc's ground truth). Revisit with a real order_by+DATETIME
+#   payload-index fix once a live Qdrant is available to validate against.
+_ACTIVITY_SCAN_LIMIT = 5000
+_CANDIDATE_SCAN_LIMIT = 1000
 _PAGE_SIZE = 256
 
 
@@ -63,10 +90,10 @@ def _scope_filter():
     activity gate and candidate selection scan.
 
     Excludes source in {corpus, dream, dream_profile}: corpus chunks aren't
-    memories, and neither dream insights nor person profiles (Task 7, not yet
-    implemented — writes with source="dream_profile") may count as "new"
-    activity or feed back into clustering. That is precisely the self-feeding
-    loop the design calls out: an activity gate on any store-level counter is
+    memories, and neither dream insights nor person profiles (source=
+    "dream_profile", written by profile.py) may count as "new" activity or
+    feed back into clustering. That is precisely the self-feeding loop the
+    design calls out: an activity gate on any store-level counter is
     satisfied by dreaming's own output unless dream-authored writes are
     excluded at the source.
     """
@@ -97,19 +124,19 @@ async def _activity_metrics(vector, settings, state) -> tuple[datetime | None, i
     could stall consolidation of a backlog that was large enough to open the
     gate in the first place.
     """
-    from app.dreams.select import _parse_ts
+    from app.dreams.select import parse_ts
 
-    last_completed_dt = _parse_ts(state.get_run().get("last_completed_at"))
+    last_completed_dt = parse_ts(state.get_run().get("last_completed_at"))
     latest: datetime | None = None
     new_count = 0
     scanned = 0
     offset = None
     scope = _scope_filter()
-    while scanned < _SCAN_LIMIT:
+    while scanned < _ACTIVITY_SCAN_LIMIT:
         points, offset = await vector._client.scroll(
             collection_name=settings.QDRANT_COLLECTION,
             scroll_filter=scope,
-            limit=min(_PAGE_SIZE, _SCAN_LIMIT - scanned),
+            limit=min(_PAGE_SIZE, _ACTIVITY_SCAN_LIMIT - scanned),
             offset=offset,
             with_payload=True,
             with_vectors=False,
@@ -118,7 +145,7 @@ async def _activity_metrics(vector, settings, state) -> tuple[datetime | None, i
             break
         for p in points:
             scanned += 1
-            ts = _parse_ts((p.payload or {}).get("timestamp"))
+            ts = parse_ts((p.payload or {}).get("timestamp"))
             if ts is None:
                 continue
             if latest is None or ts > latest:
@@ -140,11 +167,11 @@ async def _scroll_candidates(vector, settings, *, now: datetime) -> list:
     scanned = 0
     offset = None
     scope = _scope_filter()
-    while scanned < _SCAN_LIMIT:
+    while scanned < _CANDIDATE_SCAN_LIMIT:
         points, offset = await vector._client.scroll(
             collection_name=settings.QDRANT_COLLECTION,
             scroll_filter=scope,
-            limit=min(_PAGE_SIZE, _SCAN_LIMIT - scanned),
+            limit=min(_PAGE_SIZE, _CANDIDATE_SCAN_LIMIT - scanned),
             offset=offset,
             with_payload=True,
             with_vectors=True,
@@ -172,6 +199,67 @@ async def _scroll_candidates(vector, settings, *, now: datetime) -> list:
     return out
 
 
+def _is_backend_unavailable(exc: Exception) -> bool:
+    """True when a call failed because the GENERATION backend is absent or
+    unreachable (an embed-only deploy has no chat model) rather than a
+    genuine per-call error. Mirrors app/knowledge/classifier.py's
+    `_is_backend_unavailable` predicate exactly (fix-round review I5) —
+    duplicated rather than imported, since that one is private to an
+    unrelated package and this predicate is small/pure enough that
+    duplication is cheaper and safer than a cross-package private import."""
+    import httpx
+
+    if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.TimeoutException)):
+        return True
+    if (isinstance(exc, httpx.HTTPStatusError) and exc.response is not None
+            and exc.response.status_code == 404):
+        return True
+    msg = str(exc).lower()
+    return "model" in msg and ("not found" in msg or "does not exist" in msg
+                               or "not exist" in msg)
+
+
+async def _generation_backend_available(settings) -> bool:
+    """Gate #2 from the design spec (docs/superpowers/specs/2026-08-04-
+    dreaming-design.md), not covered by Task 6's original brief — added in
+    the fix round (I5). Before this, if the LLM backend was down,
+    synthesize()/synthesize_profile() would return []/None as designed, but
+    run_one_unit had no way to tell "backend unreachable" apart from "this
+    particular cluster/member genuinely can't be synthesized" — so it marked
+    every unit done anyway, walking the ENTIRE backlog to a false
+    status=complete with zero insights written. On the office CPU deploy,
+    generation-offline is a documented NORMAL state (see the corpus_only
+    precedent in app/knowledge/classifier.py), so this was likely the
+    default behaviour there, not an edge case.
+
+    A cheap pre-flight probe: GET {LLM_BASE_URL}/models, the standard
+    OpenAI-compatible listing endpoint Ollama also implements. Short,
+    DEDICATED timeout — this is a health check, not a generation call, and
+    must not eat into the tick's soft_time_limit budget. Any failure that
+    ISN'T backend-unavailable (auth error, 500, malformed body) means the
+    backend answered — treated as available, so synthesis attempts the real
+    call and fails on its own terms rather than being pre-empted here.
+
+    NOT independently verified against a live backend in this fix round (no
+    Ollama/Qdrant reachable in the environment the round was done in) —
+    the /models convention is standard OpenAI-compat surface and Night
+    Shift's client-side backend detection (client/firekeep_client, see root
+    CLAUDE.md) uses the same convention, but this specific call has only
+    been exercised against mocked httpx transports (see
+    test_dreams_task.py's backend-unavailable tests)."""
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{settings.LLM_BASE_URL}/models")
+            resp.raise_for_status()
+        return True
+    except Exception as exc:
+        if _is_backend_unavailable(exc):
+            return False
+        return True
+
+
 async def _build_clients():
     """Client construction, isolated as its own seam so tests can short-
     circuit it without a live Redis/Qdrant (see
@@ -193,9 +281,9 @@ async def _build_clients():
 
 
 async def run_one_unit() -> dict:
-    """Gate -> lock -> AT MOST one cluster (or, once Task 7's profile.py
-    lands, one profile) -> record. Returns after one unit; never loops over
-    clusters, never raises.
+    """Gate -> lock -> AT MOST one cluster (or, if none remain and profiles
+    are enabled, one person profile) -> record. Returns after one unit; never
+    loops over clusters, never raises.
 
     The single Celery worker runs --concurrency=1 --pool=solo, so a long task
     blocks every other periodic task (including the 60s agent-gateway
@@ -233,6 +321,15 @@ async def run_one_unit() -> dict:
             state.record_run(status="skipped", reason=reason, health="ok")
             return {"status": "skipped", "reason": reason}
 
+        # Design-spec gate #2 (fix-round review I5): if the generation
+        # backend is down, don't walk the backlog marking every cluster/
+        # profile "done" with zero insights — bail out before touching any
+        # of it, and don't stamp completion either (there IS a backlog, we
+        # just can't work it right now).
+        if not await _generation_backend_available(settings):
+            state.record_run(status="unavailable", health="unavailable")
+            return {"status": "unavailable"}
+
         candidates = await _scroll_candidates(vector, settings, now=now)
         clusters = select.select_clusters(
             candidates,
@@ -241,10 +338,15 @@ async def run_one_unit() -> dict:
             max_clusters=settings.DREAM_MAX_CLUSTERS_PER_RUN,
         )
 
+        # One bulk read instead of one is_unit_done (SISMEMBER) call per
+        # cluster (fix-round review M6 — the candidate-scan-scale version of
+        # this same pattern hits the profile grouping loop below harder, but
+        # applying it here too costs nothing and keeps both loops consistent).
+        clusters_done = state.done_set("cluster")
         target = None
         for cl in clusters:
             key = select.cluster_key(cl)
-            if not state.is_unit_done("cluster", key):
+            if key not in clusters_done:
                 target = (key, cl)
                 break
 
@@ -261,18 +363,18 @@ async def run_one_unit() -> dict:
             )
             written = []
             # A cluster has ONE cluster_key, but synthesize() may return up
-            # to 3 insights, and store.dream_point_id is derived from
-            # cluster_key alone — writing every insight under the bare key
-            # would have each overwrite the last. Suffix with the insight's
-            # index instead: still deterministic/idempotent (re-processing
-            # the same cluster lands on the same points), and every insight
-            # survives. `members` is select_clusters' own output, so it is
-            # never empty/undersized here (min_size is enforced upstream) —
-            # store.build_dream_payload has no empty-members guard of its
-            # own, so this invariant must hold at the call site.
+            # to 3 insights. write_dream's `index` param (fix-round review,
+            # store.py minor) distinguishes the resulting point ids WITHOUT
+            # touching `cluster_key` itself, so the stored `dream_cluster_key`
+            # provenance always names the real cluster — index==0 (insight 0)
+            # reproduces the pre-fix point id exactly. `members` is
+            # select_clusters' own output, so it is never empty/undersized
+            # here (min_size is enforced upstream) — store.build_dream_payload
+            # has no empty-members guard of its own, so this invariant must
+            # hold at the call site.
             for i, insight in enumerate(insights):
                 point_id = await store.write_dream(
-                    vector, insight, members, cluster_key=f"{key}:{i}", run_id=run_id
+                    vector, insight, members, cluster_key=key, run_id=run_id, index=i,
                 )
                 written.append(point_id)
             # Mark the CLUSTER done regardless of insight count (including
@@ -290,26 +392,54 @@ async def run_one_unit() -> dict:
             }
 
         # No cluster remains. If profiles are enabled, spend this tick's ONE
-        # unit of work on the member with the most not-yet-profiled memories
-        # in this run's candidate pool (the same pool already scanned above
-        # for clustering — a second full scroll is not worth a second
-        # Qdrant pass in the same tick). is_candidate already excludes
-        # dream/dream_profile-authored and confirmed points, so a profile
-        # can never be built from another profile or from a human-confirmed
-        # memory being re-synthesized against its will.
+        # unit of work on the (member, tenancy-partition) group with the most
+        # not-yet-profiled memories in this run's candidate pool (the same
+        # pool already scanned above for clustering — a second full scroll is
+        # not worth a second Qdrant pass in the same tick). is_candidate
+        # already excludes dream/dream_profile-authored and confirmed points,
+        # so a profile can never be built from another profile or from a
+        # human-confirmed memory being re-synthesized against its will.
+        #
+        # Grouping key (fix-round review C1 — CRITICAL): must be
+        # (member_id, *select.partition_key(payload)) — i.e. (member_id,
+        # workspace_id, namespace, project) — NOT member_id alone. Grouping
+        # on member_id alone let one member's memories from TWO workspaces be
+        # synthesized into ONE profile, stamped with whichever workspace
+        # happened to be first in Qdrant scroll order — content from a
+        # workspace a reader has no access to could leak into a profile that
+        # workspace's principal-scoped recall then legitimately surfaces.
+        # That same scroll-order instability also meant the SAME member could
+        # get a DIFFERENT workspace_id (and therefore a different
+        # store.profile_point_id) on different runs, leaving two live profile
+        # points for one member with no mechanism to reconcile or retire the
+        # stale one. Grouping on the full tenancy partition makes every
+        # group homogeneous by construction (mirrors how select.select_clusters
+        # itself partitions BEFORE clustering) and makes which point a given
+        # group writes to a function of real data, not scroll order.
         if settings.DREAM_PROFILES_ENABLED:
-            by_member: dict[str, list] = {}
+            profiles_done = state.done_set("profile")  # M6: one bulk read
+            by_group: dict[tuple[str, str, str, str], list] = {}
             for c in candidates:
                 member_id = str(c.payload.get("member_id") or "")
-                if not member_id or state.is_unit_done("profile", member_id):
+                if not member_id:
                     continue
-                by_member.setdefault(member_id, []).append(c)
+                group_key = (member_id, *select.partition_key(c.payload))
+                done_key = "::".join(group_key)
+                if done_key in profiles_done:
+                    continue
+                by_group.setdefault(group_key, []).append(c)
 
-            if by_member:
-                member_id, members = max(
-                    by_member.items(), key=lambda kv: len(kv[1])
+            if by_group:
+                group_key, members = max(
+                    by_group.items(), key=lambda kv: len(kv[1])
                 )
-                workspace_id = str(members[0].payload.get("workspace_id") or "")
+                member_id, workspace_id, namespace, project = group_key
+                done_key = "::".join(group_key)
+                # I2: derive namespace/project from the (now homogeneous)
+                # group instead of hardcoding "default"/None — project is a
+                # hard `must` filter in VectorClient.search, so a profile
+                # stamped project=None when its source memories actually
+                # carried one was invisible to every project-scoped recall.
                 run_id = uuid.uuid4().hex
                 memories = [
                     {"text": m.text, "timestamp": m.payload.get("timestamp")}
@@ -325,17 +455,30 @@ async def run_one_unit() -> dict:
                     max_chars=settings.DREAM_MAX_INSIGHT_CHARS,
                 )
                 written = False
-                if raw_text:
+                if not workspace_id:
+                    # M5: a candidate lacking workspace_id yields "" from
+                    # partition_key — writing to profile_point_id(member_id,
+                    # "") would be a permanently unreadable point (no real
+                    # workspace could ever match it). Skip the write, but
+                    # still mark the group done below so it isn't retried
+                    # every tick.
+                    logger.warning(
+                        "Dream profile group for member %s has no workspace_id "
+                        "(namespace=%r project=%r) — skipping write",
+                        member_id, namespace, project,
+                    )
+                elif raw_text:
                     await profile.write_profile(
                         vector, raw_text, member_id=member_id,
                         workspace_id=workspace_id, run_id=run_id,
+                        namespace=namespace or "default", project=project or None,
                     )
                     written = True
-                # Mark the MEMBER done regardless of whether synthesis
-                # produced usable text — a member the LLM can't profile must
+                # Mark the GROUP done regardless of whether synthesis
+                # produced usable text — a group the LLM can't profile must
                 # not be retried forever within the same run (mirrors the
                 # cluster branch's zero-insights handling above).
-                state.mark_unit_done("profile", member_id)
+                state.mark_unit_done("profile", done_key)
                 done = state.bump_counter("profiles_done")
                 state.record_run(
                     status="ok", health="ok", profiles_done=done,
@@ -343,7 +486,7 @@ async def run_one_unit() -> dict:
                 )
                 return {
                     "status": "ok", "unit": "profile", "member_id": member_id,
-                    "written": written,
+                    "workspace_id": workspace_id, "written": written,
                 }
 
         state.reset_progress()
@@ -377,11 +520,29 @@ async def run_one_unit() -> dict:
                 logger.debug("Dream vector close failed")
 
 
-# Import placement is load-bearing (confluence-collector precedent, app/
-# collectors/confluence.py:102-110): celery_app is imported at the BOTTOM so
-# this module's public surface (should_run, run_one_unit, _build_clients —
-# the test's monkeypatch target) is fully defined before sleep_cycle.py's own
-# import machinery (triggered by its `include` list naming this module) runs.
+# celery_app is imported at the BOTTOM, matching app/owm.py and
+# app/collectors/confluence.py:102-110.
+#
+# Corrected reasoning (fix-round review — the original comment here, copied
+# from confluence.py's, claimed this avoids an import CYCLE via
+# sleep_cycle.py's `include` list; that claim was checked directly and is
+# FALSE for this codebase's actual import structure. `include` is Celery
+# config DATA — a list of dotted module names — and is only resolved by
+# Celery's loader lazily, at worker/beat startup; `_create_celery_app()`
+# never imports those modules as a side effect of building the Celery app.
+# Verified empirically: importing sleep_cycle alone does not add
+# app.dreams.task to sys.modules, and moving this import to the TOP of the
+# file and running it both ways (task-first, sleep_cycle-first) plus the
+# full 1426-test suite all passed with no cycle of any kind.
+#
+# So this placement is a defensive convention, not a fix for an active bug:
+# every module in sleep_cycle.py's `include` list imports celery_app back
+# from the very module that names it, and keeping that import lexically LAST
+# is a zero-cost guard against a FUTURE change to sleep_cycle.py's eagerness
+# (e.g. an eager import_default_modules() call added there for some other
+# reason) making the reverse-import order matter when it doesn't today. It
+# also keeps every Celery task module in this codebase following one
+# uniform, auditable pattern rather than several.
 from app.workers.sleep_cycle import celery_app  # noqa: E402
 
 

@@ -149,3 +149,14 @@ def test_is_candidate_accepts_naive_now():
     p = _payload()
     naive_now = datetime(2026, 8, 4)  # No tzinfo
     assert sel.is_candidate(p, now=naive_now, min_age_days=2, owm_floor=0.35, owm_prior_n=5)
+
+
+def test_dream_profile_source_is_excluded_even_if_memory_type_is_forged():
+    """Fix-round review I4: a profile payload (source="dream_profile") must
+    never be selectable as a dreaming candidate, even in the adversarial case
+    where its memory_type has been forced to "episodic" — is_candidate's own
+    defence must not rest solely on memory_type, since
+    profile.build_profile_payload's memory_type="reference" is a SEPARATE
+    mechanism that already blocks this in practice."""
+    p = _payload(source="dream_profile", memory_type="episodic")
+    assert not _ok(p)

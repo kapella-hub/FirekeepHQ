@@ -82,8 +82,18 @@ def parse_profile(raw: str, *, max_chars: int) -> str | None:
 
 
 def build_profile_payload(
-    text: str, *, member_id: str, workspace_id: str, run_id: str
+    text: str, *, member_id: str, workspace_id: str, run_id: str,
+    namespace: str = "default", project: str | None = None,
 ) -> dict:
+    """`namespace`/`project` default to the pre-fix-round hardcoded values
+    (backward compatible for any existing caller that doesn't pass them), but
+    task.py's real call site now derives both from the (post-C1-fix)
+    homogeneous candidate group a profile was built from — see the module
+    docstring's tenancy note. A profile stamped project=None when its source
+    memories actually carried a project was INVISIBLE to project-scoped
+    recall, since `project` is a hard `must` filter in VectorClient.search;
+    with ~45% of live active memories carrying a project, this was a
+    functional bug, not a future nicety (fix-round review I2)."""
     now = datetime.now(timezone.utc).isoformat()
     return {
         "text": text,
@@ -99,8 +109,8 @@ def build_profile_payload(
         "timestamp": now,
         "created_at": now,
         "workspace_id": workspace_id,
-        "namespace": "default",
-        "project": None,
+        "namespace": namespace,
+        "project": project,
         "member_id": member_id,
         "agent_id": "dream",
         "session_id": None,
@@ -114,10 +124,12 @@ def build_profile_payload(
 
 
 async def write_profile(
-    vector, text: str, *, member_id: str, workspace_id: str, run_id: str
+    vector, text: str, *, member_id: str, workspace_id: str, run_id: str,
+    namespace: str = "default", project: str | None = None,
 ) -> str:
     payload = build_profile_payload(
-        text, member_id=member_id, workspace_id=workspace_id, run_id=run_id
+        text, member_id=member_id, workspace_id=workspace_id, run_id=run_id,
+        namespace=namespace, project=project,
     )
     point_id = store.profile_point_id(member_id, workspace_id)
     await vector.upsert_point(point_id, text, payload)

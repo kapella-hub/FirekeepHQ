@@ -85,3 +85,37 @@ async def test_write_dream_is_idempotent_same_cluster_one_point():
     for _ in range(3):
         await store.write_dream(v, _insight(), _members(), cluster_key="k", run_id="r")
     assert len(v.points) == 1
+
+
+def test_dream_point_id_default_index_matches_bare_cluster_key():
+    """Fix-round review minor: dream_point_id(cluster_key, index=0) must
+    reproduce the pre-fix (no-index) id exactly — every existing caller/test
+    only ever passes one positional arg."""
+    assert store.dream_point_id("k1") == store.dream_point_id("k1", 0)
+    assert store.dream_point_id("k1") == store.dream_point_id("k1", index=0)
+
+
+def test_dream_point_id_distinguishes_insight_index():
+    a = store.dream_point_id("k1", index=0)
+    b = store.dream_point_id("k1", index=1)
+    assert a != b
+
+
+@pytest.mark.asyncio
+async def test_write_dream_index_writes_distinct_points_same_cluster_key_in_payload():
+    """Fix-round review minor: multiple insights from ONE cluster must land
+    as distinct points (via `index`), while the stored `dream_cluster_key`
+    provenance always names the real cluster — never a synthetic "key:i"
+    value, which would make the point unfindable by its true cluster key."""
+    v = FakeVector()
+    insight_a = Insight(content="lesson A", memory_type="procedural", source_ids=["m0"])
+    insight_b = Insight(content="lesson B", memory_type="procedural", source_ids=["m1"])
+    id_a = await store.write_dream(v, insight_a, _members(), cluster_key="k", run_id="r", index=0)
+    id_b = await store.write_dream(v, insight_b, _members(), cluster_key="k", run_id="r", index=1)
+
+    assert id_a != id_b
+    assert len(v.points) == 2
+    assert v.points[id_a]["payload"]["dream_cluster_key"] == "k"
+    assert v.points[id_b]["payload"]["dream_cluster_key"] == "k"
+    assert v.points[id_a]["text"] == "lesson A"
+    assert v.points[id_b]["text"] == "lesson B"

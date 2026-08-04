@@ -53,3 +53,37 @@ async def test_two_members_get_two_points():
     await profile.write_profile(v, "b", member_id="m2", workspace_id="ws1", run_id="r")
     assert len(v.points) == 2
     assert store.profile_point_id("m1", "ws1") in v.points
+
+
+def test_build_profile_payload_defaults_match_pre_fix_behaviour():
+    """Backward compatibility: a caller that doesn't pass namespace/project
+    (as every pre-fix-round caller did) still gets the old hardcoded values."""
+    p = profile.build_profile_payload("x", member_id="m", workspace_id="w", run_id="r")
+    assert p["namespace"] == "default"
+    assert p["project"] is None
+
+
+def test_build_profile_payload_derives_namespace_and_project():
+    """Fix-round review I2: namespace/project must be DERIVED from the
+    member's memories, not hardcoded — project is a hard `must` filter in
+    VectorClient.search, so a profile stamped project=None when its source
+    memories actually carried a project was invisible to project-scoped
+    recall."""
+    p = profile.build_profile_payload(
+        "x", member_id="m", workspace_id="w", run_id="r",
+        namespace="acme", project="firekeep",
+    )
+    assert p["namespace"] == "acme"
+    assert p["project"] == "firekeep"
+
+
+@pytest.mark.asyncio
+async def test_write_profile_passes_through_namespace_and_project():
+    v = FakeVector()
+    point_id = await profile.write_profile(
+        v, "text", member_id="m1", workspace_id="ws1", run_id="r",
+        namespace="acme", project="firekeep",
+    )
+    payload = v.points[point_id]["payload"]
+    assert payload["namespace"] == "acme"
+    assert payload["project"] == "firekeep"
