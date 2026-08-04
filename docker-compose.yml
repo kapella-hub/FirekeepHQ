@@ -234,6 +234,13 @@ services:
       - "${BIND_ADDR:-127.0.0.1}:8100:8000"
     environment:
       LLM_BASE_URL: http://ollama:11434/v1
+      # Chat-endpoint selection (app/llm.py). `auto` probes {root}/api/version
+      # once per process per TTL and uses ollama's native /api/chat when
+      # confirmed — it honours think:false, which /v1 ignores (measured 4.00s
+      # vs 83.19s on the same document). `never` disables it.
+      LLM_NATIVE_CHAT: ${LLM_NATIVE_CHAT:-auto}
+      LLM_NATIVE_PROBE_TTL_SECONDS: ${LLM_NATIVE_PROBE_TTL_SECONDS:-600.0}
+      LLM_NATIVE_BASE_URL: ${LLM_NATIVE_BASE_URL:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-["*"]}
       # v2: Replay, Auth
       RP_REDIS_URL: redis://redis:6379/6
@@ -270,6 +277,10 @@ services:
       KNOWLEDGE_ENABLED: ${KNOWLEDGE_ENABLED:-true}
       KNOWLEDGE_MAX_PROCEDURES: ${KNOWLEDGE_MAX_PROCEDURES:-10}
       KNOWLEDGE_CLASSIFY_TIMEOUT_SECONDS: ${KNOWLEDGE_CLASSIFY_TIMEOUT_SECONDS:-300}
+      # Tighter budget for the native endpoint, where think:false is honoured
+      # (VPS: 4.00s; office llama3.2:3b: ~56s and unaffected by the fix, which
+      # is the binding constraint on this number, not the VPS).
+      KNOWLEDGE_CLASSIFY_NATIVE_TIMEOUT_SECONDS: ${KNOWLEDGE_CLASSIFY_NATIVE_TIMEOUT_SECONDS:-120.0}
       KNOWLEDGE_STATUS_TTL_SECONDS: ${KNOWLEDGE_STATUS_TTL_SECONDS:-2592000}
       # URL ingestion (SSRF-guarded crawler -> knowledge pipeline)
       KNOWLEDGE_URL_INGEST_ENABLED: ${KNOWLEDGE_URL_INGEST_ENABLED:-true}
@@ -321,6 +332,8 @@ services:
       SKILL_RESOLUTION_WEIGHT: ${SKILL_RESOLUTION_WEIGHT:-0.35}
       SKILL_AGENT_SCHEDULE_HOURS: ${SKILL_AGENT_SCHEDULE_HOURS:-6}
       SKILL_SYNTH_TIMEOUT_SECONDS: ${SKILL_SYNTH_TIMEOUT_SECONDS:-300.0}
+      SKILL_SYNTH_NATIVE_TIMEOUT_SECONDS: ${SKILL_SYNTH_NATIVE_TIMEOUT_SECONDS:-120.0}
+      SKILL_SYNTH_MAX_TOKENS: ${SKILL_SYNTH_MAX_TOKENS:-800}
       # Team continuity — agent identity
       FIREKEEP_AGENT_ID: "${FIREKEEP_AGENT_ID:-firekeep-server}"
       # Agent Gateway
@@ -419,6 +432,10 @@ services:
       KNOWLEDGE_ENABLED: ${KNOWLEDGE_ENABLED:-true}
       KNOWLEDGE_MAX_PROCEDURES: ${KNOWLEDGE_MAX_PROCEDURES:-10}
       KNOWLEDGE_CLASSIFY_TIMEOUT_SECONDS: ${KNOWLEDGE_CLASSIFY_TIMEOUT_SECONDS:-300}
+      # Tighter budget for the native endpoint, where think:false is honoured
+      # (VPS: 4.00s; office llama3.2:3b: ~56s and unaffected by the fix, which
+      # is the binding constraint on this number, not the VPS).
+      KNOWLEDGE_CLASSIFY_NATIVE_TIMEOUT_SECONDS: ${KNOWLEDGE_CLASSIFY_NATIVE_TIMEOUT_SECONDS:-120.0}
       KNOWLEDGE_STATUS_TTL_SECONDS: ${KNOWLEDGE_STATUS_TTL_SECONDS:-2592000}
       # Decision Board (SP4)
       DECISION_ENABLED: ${DECISION_ENABLED:-true}
@@ -455,6 +472,12 @@ services:
     command: celery -A app.workers.sleep_cycle worker --loglevel=info --concurrency=1 --pool=solo
     environment:
       LLM_BASE_URL: http://ollama:11434/v1
+      # Chat-endpoint selection — see the cortex-api block above. The worker is
+      # where classify and skill drafting actually run, so this is the service
+      # the 20x saving lands on.
+      LLM_NATIVE_CHAT: ${LLM_NATIVE_CHAT:-auto}
+      LLM_NATIVE_PROBE_TTL_SECONDS: ${LLM_NATIVE_PROBE_TTL_SECONDS:-600.0}
+      LLM_NATIVE_BASE_URL: ${LLM_NATIVE_BASE_URL:-}
       # Team continuity — agent identity
       FIREKEEP_AGENT_ID: "${FIREKEEP_AGENT_ID:-firekeep-server}"
       # Vault (encrypted secret storage, shares Redis DB 7 with auth) — needed
@@ -487,6 +510,8 @@ services:
       SKILL_RESOLUTION_WEIGHT: ${SKILL_RESOLUTION_WEIGHT:-0.35}
       SKILL_AGENT_SCHEDULE_HOURS: ${SKILL_AGENT_SCHEDULE_HOURS:-6}
       SKILL_SYNTH_TIMEOUT_SECONDS: ${SKILL_SYNTH_TIMEOUT_SECONDS:-300.0}
+      SKILL_SYNTH_NATIVE_TIMEOUT_SECONDS: ${SKILL_SYNTH_NATIVE_TIMEOUT_SECONDS:-120.0}
+      SKILL_SYNTH_MAX_TOKENS: ${SKILL_SYNTH_MAX_TOKENS:-800}
       # Pattern validation (promotion ladder + A/B) — frozen until session volume (N=1);
       # cortex-worker runs promote_all_patterns, so it must read the same flag.
       PATTERN_VALIDATION_ENABLED: ${PATTERN_VALIDATION_ENABLED:-false}

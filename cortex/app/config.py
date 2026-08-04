@@ -48,6 +48,29 @@ class Settings(BaseSettings):
     LLM_MODEL: str = "llama3"
     LLM_API_KEY: str = ""  # Must be set via environment / .env
 
+    # Chat-endpoint selection (app/llm.py). Ollama honours `think:false` on its
+    # NATIVE /api/chat and silently IGNORES it on /v1/chat/completions, so a
+    # thinking model generates its full reasoning on /v1 no matter what is sent.
+    # Measured 2026-08-04 on the VPS (ollama 0.32.4, qwen3:4b, 4 vCPU), same
+    # document both ways: 83.19s on /v1 vs 4.00s native. See app/llm.py's
+    # docstring for all five probes.
+    #
+    # `auto` derives a native root from LLM_BASE_URL (which must end in /v1) and
+    # confirms it with one cached GET {root}/api/version; anything unconfirmed
+    # falls back to /v1, so a vLLM/LiteLLM/OpenAI backend is unaffected.
+    # `always` skips the probe, `never` disables the native path entirely — the
+    # escape hatch if something non-ollama ever answers /api/version.
+    #
+    # NOT a substitute for this: repointing LLM_BASE_URL at http://host:11434.
+    # Eleven chat sites concatenate `/chat/completions` onto it and THREE
+    # EMBEDDING sites concatenate `/embeddings` (db/vector.py, workers/reembed.py),
+    # so repointing breaks every memory write.
+    LLM_NATIVE_CHAT: str = "auto"
+    LLM_NATIVE_PROBE_TTL_SECONDS: float = 600.0
+    # Only for a backend that speaks ollama's native API at a root this cannot
+    # derive (LLM_BASE_URL not ending in /v1). Normally empty.
+    LLM_NATIVE_BASE_URL: str = ""
+
     # Embedding — defaults MUST match the deployed model + the Qdrant collection's
     # vector size, or a deploy without an .env override embeds at the wrong dimension
     # into the existing collection and every write fails. The stack ships
@@ -115,10 +138,29 @@ class Settings(BaseSettings):
     # Knowledge Ingestion (docs -> skills orchestration, SP2)
     KNOWLEDGE_ENABLED: bool = True
     KNOWLEDGE_MAX_PROCEDURES: int = 10
-    # Synchronous classify LLM call timeout (POST /knowledge/ingest). Defaults
-    # sized for CPU Ollama, where a single classify runs ~150-200s (measured on
-    # qwen3:4b); lower it on GPU deployments for faster fail-loud.
+    # Classify LLM call timeout, per endpoint. TWO values because the two
+    # endpoints have genuinely different latency regimes and one number cannot
+    # be both a safe ceiling for the slow one and a useful bound on the fast one.
+    #
+    # ..._TIMEOUT_SECONDS bounds /v1/chat/completions and STAYS 300. On a
+    # thinking model /v1 generates the full reasoning regardless of flags: the
+    # audit measured 288.9s against this 300s budget — 3.7% headroom — and the
+    # VPS measured 83.19s on a smaller document. Cutting this to 120 would
+    # convert today's slow successes into guaranteed timeouts on any deployment
+    # the native path does NOT engage on (a vLLM/LiteLLM backend serving a
+    # reasoning model), which is a regression the endpoint fix does not earn.
+    #
+    # ..._NATIVE_TIMEOUT_SECONDS bounds ollama's /api/chat, where `think:false`
+    # is honoured. 120 is 30x the VPS measurement (4.00s) and ~2.1x the binding
+    # constraint, which is NOT the VPS: the office deploy runs llama3.2:3b at
+    # ~56s per classify, and llama3.2:3b is not a thinking model, so this fix
+    # saves it nothing and its 56s stays 56s. 60s would look defensible from the
+    # VPS number alone and would break the office deploy. The upper bound is the
+    # --pool=solo worker: a 300s classify blocks sleep-cycle consolidation,
+    # backfill drain, gateway sweep and dream-tick for five minutes, and
+    # post-fix a 300s native classify can only mean something is already wrong.
     KNOWLEDGE_CLASSIFY_TIMEOUT_SECONDS: float = 300.0
+    KNOWLEDGE_CLASSIFY_NATIVE_TIMEOUT_SECONDS: float = 120.0
     KNOWLEDGE_STATUS_TTL_SECONDS: int = 2592000  # 30d orphan safety-net for per-source ingest status
 
     # URL ingestion (SSRF-guarded crawler -> knowledge pipeline)
@@ -283,10 +325,25 @@ class Settings(BaseSettings):
     SKILL_ANOMALY_WEIGHT: float = 0.20
     SKILL_RESOLUTION_WEIGHT: float = 0.35
     SKILL_AGENT_SCHEDULE_HOURS: int = 6
-    # LLM generation budget for skill synthesis (session + doc drafting). Sized for
-    # CPU Ollama, where a qwen3:4b generation runs ~150-200s — the old hardcoded 60s
-    # timed out every draft, so docs->skills never produced a skill. Lower on GPU.
+    # LLM generation budget for skill synthesis (session + doc drafting), per
+    # endpoint — same two-regime split as KNOWLEDGE_CLASSIFY_* above, and for
+    # the same reason. 300 stays on /v1 (CPU qwen3:4b runs ~150-200s there, and
+    # the old hardcoded 60s timed out every draft so docs->skills never produced
+    # a skill). 120 on native: dreams measured 22.5s for a few-hundred-token
+    # JSON on the same qwen3:4b/4-vCPU box, a skill card is ~300-500 content
+    # tokens (~25-45s), and scaling the office deploy's 56s classify by output
+    # length suggests 60-90s there — so 120 holds 2.5-5x on the VPS and ~1.3-2x
+    # on office. It also caps the fan-out stall: N drafts x 300s is a 20-minute
+    # solo-worker outage for a 3-procedure document; N x 120s is under 6.
+    # This is the number with the least measurement behind it — take one real
+    # office draft before tightening it further.
     SKILL_SYNTH_TIMEOUT_SECONDS: float = 300.0
+    SKILL_SYNTH_NATIVE_TIMEOUT_SECONDS: float = 120.0
+    # Output bound for a skill card. Both synthesis calls previously sent NO
+    # limit at all, so a thinking model could generate reasoning until the
+    # timeout with no card ever emitted. A card is ~300-500 tokens; 800 leaves
+    # room without permitting a runaway.
+    SKILL_SYNTH_MAX_TOKENS: int = 800
 
     # MCP Server
     FIREKEEP_API_URL: str = "http://localhost:8000"

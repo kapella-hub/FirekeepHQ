@@ -75,6 +75,19 @@ from app.engine.rag import RAGEngine
 from app.main import app, get_graph, get_rag_engine, get_redis, get_vector
 
 
+@pytest.fixture(autouse=True)
+def _reset_llm_probe_cache():
+    """`app.llm` caches its native-endpoint verdict in a module-global dict with
+    a TTL, so without this a verdict decided in one test leaks into every later
+    test in the same process — and the leak is order-dependent, which is the
+    worst kind. Reset on both sides of every test."""
+    from app import llm
+
+    llm.reset_probe_cache()
+    yield
+    llm.reset_probe_cache()
+
+
 @pytest.fixture()
 def test_settings() -> Settings:
     """Settings with test-friendly defaults (nothing connects to real services)."""
