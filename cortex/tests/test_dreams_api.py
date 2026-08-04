@@ -1,9 +1,11 @@
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.dreams.api import create_dreams_router
+from app.dreams.state import DreamState
 
 
 def _app(mock_redis):
@@ -96,3 +98,21 @@ def test_dreams_health_unavailable_is_passed_through():
         client = TestClient(_app(mock_redis))
         resp = client.get("/dreams")
     assert resp.json()["health"] == "unavailable"
+
+
+def test_dreamstate_is_sync_only_and_raises_on_an_async_client():
+    """Pins the rationale in api.py's module docstring for why this endpoint
+    does NOT go through DreamState: handing DreamState (synchronous, built
+    for the Celery task's own sync redis.Redis client) an async-style client
+    does not silently return bad data -- it raises. `hgetall` on an async
+    client returns an unawaited coroutine, which is always truthy, so
+    DreamState.get_run()'s `raw = ... or {}` guard never fires and the very
+    next `.items()` call blows up with AttributeError."""
+    async def _fake_hgetall(_key):
+        return {}
+
+    mock_redis = MagicMock()
+    mock_redis.hgetall = _fake_hgetall
+    state = DreamState(mock_redis)
+    with pytest.raises(AttributeError):
+        state.get_run()

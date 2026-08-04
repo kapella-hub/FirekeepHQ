@@ -3,10 +3,12 @@
 Mirrors collectors/api.py's shape (SP3 precedent). One difference: DreamState
 (app/dreams/state.py) is intentionally SYNCHRONOUS — it's built for the Celery
 task's own sync `redis.Redis` client (see task.py's `_build_clients` and its
-docstring), so handing it this app's async `get_redis` client would silently
-return unawaited coroutines instead of data rather than raising. This endpoint
-therefore reads the same `dreams:run` hash directly via the async client
-instead of going through DreamState.
+docstring), so handing it this app's async `get_redis` client would raise
+`AttributeError: 'coroutine' object has no attribute 'items'` — redis-py's
+async methods return unawaited coroutines, which are always truthy, so
+DreamState.get_run()'s `or {}` guard never fires and the very next `.items()`
+call crashes. This endpoint therefore reads the same `dreams:run` hash
+directly via the async client instead of going through DreamState.
 """
 from __future__ import annotations
 
