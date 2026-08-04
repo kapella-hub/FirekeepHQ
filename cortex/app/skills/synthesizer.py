@@ -11,6 +11,7 @@ import redis.asyncio
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import PointStruct
 
+from app import llm
 from app.skills import internal_key_headers
 from app.skills.scorer import SkillScore
 
@@ -304,36 +305,59 @@ class SkillSynthesizer:
         outcome = data.get("outcome", "")
         return shadow_text, goal, outcome
 
-    async def _call_llm(self, goal: str, shadow_text: str, outcome: str) -> str:
+    async def _chat(self, prompt: str, *, purpose: str) -> str:
+        """One skill-card generation, via the shared endpoint helper.
+
+        `json_mode=False` — a skill card is header-plus-Markdown, not JSON;
+        `parse_skill_content` handles the text.
+
+        `max_tokens` is NEW. Both synthesis calls previously sent no output
+        bound at all, so on a thinking model the reasoning and the card had to
+        fit inside one timeout with nothing capping the former. That is why this
+        path failed more often than the classifier: it had neither a grammar
+        forcing output nor a budget bounding reasoning.
+
+        Blank content RAISES rather than being returned. `parse_skill_content("")`
+        yields the fallback dict whose trigger is the literal string
+        "Synthesized skill" — which is truthy, so the callers' empty-guard
+        (`if not trigger and not body`) does NOT fire and a contentless
+        placeholder gets stored. Both callers document that a failed synthesis
+        must never pollute the draft queue; raising is what makes that true. An
+        empty completion is a real, observed failure mode on a thinking model
+        (see dreams/synthesize.py), so this is a live guard, not a theoretical
+        one.
+        """
         s = self._settings
-        prompt = _LLM_PROMPT.format(goal=goal, shadow_text=shadow_text, outcome=outcome)
-        headers = {"Authorization": f"Bearer {s.LLM_API_KEY}"} if s.LLM_API_KEY else {}
-        async with httpx.AsyncClient(timeout=s.SKILL_SYNTH_TIMEOUT_SECONDS) as client:
-            resp = await client.post(
-                f"{s.LLM_BASE_URL}/chat/completions",
-                json={"model": s.LLM_MODEL, "messages": [{"role": "user", "content": prompt}]},
-                headers=headers,
+        result = await llm.chat(
+            settings=s,
+            messages=[{"role": "user", "content": prompt}],
+            timeout=s.SKILL_SYNTH_TIMEOUT_SECONDS,
+            native_timeout=getattr(s, "SKILL_SYNTH_NATIVE_TIMEOUT_SECONDS", None),
+            max_tokens=getattr(s, "SKILL_SYNTH_MAX_TOKENS", 800),
+            purpose=purpose,
+        )
+        if not result.content.strip():
+            raise ValueError(
+                f"{purpose}: model returned empty content "
+                f"(endpoint={result.endpoint}, reasoning={len(result.reasoning)} chars)"
             )
-            resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"]
+        return result.content
+
+    async def _call_llm(self, goal: str, shadow_text: str, outcome: str) -> str:
+        return await self._chat(
+            _LLM_PROMPT.format(goal=goal, shadow_text=shadow_text, outcome=outcome),
+            purpose="skill synthesis (session)",
+        )
 
     async def _call_llm_doc(self, source_name: str, title: str, doc_content: str) -> str:
         """Doc-mode LLM call: extract one named procedure out of a document's
-        full text and draft it as a skill card. Same call shape as `_call_llm`
-        (no response_format — parse_skill_content handles the header/body text)."""
-        s = self._settings
-        prompt = _DOC_LLM_PROMPT.format(
-            source_name=source_name, title=title, doc_content=doc_content
+        full text and draft it as a skill card."""
+        return await self._chat(
+            _DOC_LLM_PROMPT.format(
+                source_name=source_name, title=title, doc_content=doc_content
+            ),
+            purpose="skill synthesis (document)",
         )
-        headers = {"Authorization": f"Bearer {s.LLM_API_KEY}"} if s.LLM_API_KEY else {}
-        async with httpx.AsyncClient(timeout=s.SKILL_SYNTH_TIMEOUT_SECONDS) as client:
-            resp = await client.post(
-                f"{s.LLM_BASE_URL}/chat/completions",
-                json={"model": s.LLM_MODEL, "messages": [{"role": "user", "content": prompt}]},
-                headers=headers,
-            )
-            resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"]
 
     async def _store(self, content: str, payload: dict, skill_id: str | None = None) -> str:
         s = self._settings

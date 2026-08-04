@@ -57,6 +57,12 @@ async def test_synthesize_calls_llm_and_stores():
     settings.LLM_BASE_URL = "http://ollama:11434/v1"
     settings.LLM_MODEL = "qwen2.5:7b"
     settings.LLM_API_KEY = ""
+    # Pin the /v1 path: the llm_response fixture below is OpenAI-shaped. Left on
+    # the "auto" default, app.llm would derive a native root from the /v1 suffix
+    # and fire a probe whose verdict depends on what these MagicMocks happen to
+    # return — the test would still pass, for a reason unrelated to what it
+    # asserts. Native-path coverage lives in test_llm.py.
+    settings.LLM_NATIVE_CHAT = "never"
     settings.QDRANT_HOST = "localhost"
     settings.QDRANT_PORT = 6333
     settings.QDRANT_COLLECTION = "firekeep_memory"
@@ -253,6 +259,7 @@ def _doc_settings():
     settings.LLM_BASE_URL = "http://ollama:11434/v1"
     settings.LLM_MODEL = "qwen2.5:7b"
     settings.LLM_API_KEY = ""
+    settings.LLM_NATIVE_CHAT = "never"  # see test_synthesize_calls_llm_and_stores
     settings.QDRANT_HOST = "localhost"
     settings.QDRANT_PORT = 6333
     settings.QDRANT_COLLECTION = "firekeep_memory"
@@ -440,3 +447,127 @@ async def test_synthesize_from_document_active_guard_blocks_overwrite():
     assert "skill_status" not in kwargs["payload"]
     assert "trigger" not in kwargs["payload"]
     assert "symptoms" not in kwargs["payload"]
+
+
+# ---------------------------------------------------------------------------
+# Output bound + empty-completion guard (added with the app/llm.py conversion)
+# ---------------------------------------------------------------------------
+
+def _chat_settings(**overrides):
+    settings = MagicMock()
+    settings.LLM_BASE_URL = "http://ollama:11434/v1"
+    settings.LLM_MODEL = "qwen2.5:7b"
+    settings.LLM_API_KEY = ""
+    settings.LLM_NATIVE_CHAT = "never"
+    settings.SKILL_SYNTH_TIMEOUT_SECONDS = 300.0
+    settings.SKILL_SYNTH_NATIVE_TIMEOUT_SECONDS = 120.0
+    settings.SKILL_SYNTH_MAX_TOKENS = 800
+    for k, v in overrides.items():
+        setattr(settings, k, v)
+    return settings
+
+
+def _chat_response(content):
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.raise_for_status = MagicMock()
+    resp.json = MagicMock(return_value={"choices": [{"message": {"content": content}}]})
+    mock_http = AsyncMock()
+    mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+    mock_http.__aexit__ = AsyncMock(return_value=False)
+    mock_http.post = AsyncMock(return_value=resp)
+    return mock_http
+
+
+@pytest.mark.asyncio
+async def test_skill_synthesis_sends_an_output_bound():
+    """Both synthesis calls previously sent NO max_tokens at all, so on a
+    thinking model the reasoning and the card had to fit in one timeout with
+    nothing capping the former. That is why this path failed more often than the
+    classifier: no grammar forcing output AND no budget bounding reasoning."""
+    mock_http = _chat_response(_DOC_LLM_RAW)
+
+    with patch("app.llm.httpx.AsyncClient") as mc:
+        mc.return_value = mock_http
+        synth = SkillSynthesizer(_chat_settings())
+        out = await synth._call_llm_doc("src", "Restart the widget", "doc body")
+
+    assert out == _DOC_LLM_RAW
+    body = mock_http.post.await_args.kwargs["json"]
+    assert body["max_tokens"] == 800
+    # /v1 branch must carry no ollama-only vendor flags — real OpenAI 400s on
+    # unrecognised request arguments.
+    assert "think" not in body
+    assert "chat_template_kwargs" not in body
+
+
+@pytest.mark.asyncio
+async def test_native_skill_synthesis_bounds_output_via_num_predict():
+    """On the native body the same bound is spelled options.num_predict."""
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.raise_for_status = MagicMock()
+    resp.json = MagicMock(return_value={"message": {"content": _DOC_LLM_RAW}})
+    mock_http = AsyncMock()
+    mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+    mock_http.__aexit__ = AsyncMock(return_value=False)
+    mock_http.post = AsyncMock(return_value=resp)
+
+    with patch("app.llm.httpx.AsyncClient") as mc:
+        mc.return_value = mock_http
+        synth = SkillSynthesizer(_chat_settings(LLM_NATIVE_CHAT="always"))
+        out = await synth._call_llm_doc("src", "Restart the widget", "doc body")
+
+    assert out == _DOC_LLM_RAW
+    body = mock_http.post.await_args.kwargs["json"]
+    assert mock_http.post.await_args.args[0] == "http://ollama:11434/api/chat"
+    assert body["options"]["num_predict"] == 800
+    assert body["stream"] is False
+    assert body["think"] is False
+    assert "format" not in body  # a skill card is Markdown, not JSON
+
+
+@pytest.mark.asyncio
+async def test_empty_completion_raises_instead_of_storing_a_placeholder():
+    """An empty completion is a real, observed failure mode on a thinking model.
+    parse_skill_content("") returns the fallback dict whose trigger is the
+    literal "Synthesized skill" — TRUTHY — so the callers' `if not trigger and
+    not body` guard does NOT fire and a contentless placeholder would be stored,
+    which both callers document must never happen. Raising is what makes that
+    promise true."""
+    mock_http = _chat_response("   ")
+
+    with patch("app.llm.httpx.AsyncClient") as mc:
+        mc.return_value = mock_http
+        synth = SkillSynthesizer(_chat_settings())
+        with pytest.raises(ValueError, match="empty content"):
+            await synth._call_llm_doc("src", "title", "doc body")
+
+
+@pytest.mark.asyncio
+async def test_empty_completion_is_reported_as_synthesis_failed_not_drafted():
+    """End to end: the raise above must surface as synthesis_failed and write
+    NOTHING to Qdrant."""
+    mock_http = _chat_response("")
+
+    with (
+        patch("app.llm.httpx.AsyncClient") as mc,
+        patch("app.skills.synthesizer.AsyncQdrantClient") as mock_qdrant_cls,
+    ):
+        mc.return_value = mock_http
+        mock_qdrant = AsyncMock()
+        mock_qdrant.retrieve = AsyncMock(return_value=[])
+        mock_qdrant.upsert = AsyncMock()
+        mock_qdrant.set_payload = AsyncMock()
+        mock_qdrant.close = AsyncMock()
+        mock_qdrant_cls.return_value = mock_qdrant
+
+        synth = SkillSynthesizer(_chat_settings())
+        result = await synth.synthesize_from_document(
+            source_name="wiki-runbook",
+            procedure_title="Restart the widget",
+            doc_content="doc body",
+        )
+
+    assert result["status"] == "synthesis_failed"
+    mock_qdrant.upsert.assert_not_called()
