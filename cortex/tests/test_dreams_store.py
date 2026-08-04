@@ -119,3 +119,33 @@ async def test_write_dream_index_writes_distinct_points_same_cluster_key_in_payl
     assert v.points[id_b]["payload"]["dream_cluster_key"] == "k"
     assert v.points[id_a]["text"] == "lesson A"
     assert v.points[id_b]["text"] == "lesson B"
+
+
+# --- VectorClient.upsert_point error wrapping (final-review Minor 6) --------
+
+@pytest.mark.asyncio
+async def test_upsert_point_does_not_double_wrap_a_vector_store_error():
+    """`upsert` has carried an `except VectorStoreError: raise` re-raise since
+    SP0; `upsert_point` — the write path EVERY dream and profile goes through
+    — did not. `_embed` raises VectorStoreError of its own (notably the
+    context-length case, which the embed path has to report precisely because
+    it is the one a caller can act on), and re-wrapping it produced
+    "Failed to upsert point <id>: Failed to embed ...: <real cause>" —
+    the diagnostic buried one level down in a background Celery task whose
+    only other trace is a log line.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.config import get_settings
+    from app.db.vector import VectorClient
+    from app.exceptions import VectorStoreError
+
+    client = VectorClient(get_settings())
+    client._embed = AsyncMock(side_effect=VectorStoreError("Failed to embed: context length"))
+    client._client = MagicMock()
+
+    with pytest.raises(VectorStoreError) as exc:
+        await client.upsert_point("pid", "text", {})
+
+    assert str(exc.value) == "Failed to embed: context length"
+    assert "Failed to upsert point" not in str(exc.value)

@@ -670,6 +670,12 @@ class VectorClient:
                 points=[PointStruct(id=point_id, vector=vector, payload=payload)],
             )
             return point_id
+        except VectorStoreError:
+            # Same guard `upsert` above already carries: `_embed` raises
+            # VectorStoreError of its own, and re-wrapping it here nested one
+            # "Failed to ..." message inside another, burying the real cause
+            # (e.g. the context-length text the embed path reports).
+            raise
         except Exception as exc:
             raise VectorStoreError(f"Failed to upsert point {point_id}: {exc}") from exc
 
