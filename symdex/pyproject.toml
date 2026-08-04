@@ -1,6 +1,6 @@
 [project]
 name = "firekeep-symdex"
-version = "0.2.14"
+version = "0.2.15"
 description = "Token-efficient MCP server for source code exploration via tree-sitter AST parsing"
 readme = "README.md"
 requires-python = ">=3.10"
