@@ -341,6 +341,24 @@ services:
       CONFLUENCE_PAT: ${CONFLUENCE_PAT:-}
       CONFLUENCE_COLLECTOR_SCHEDULE_HOURS: ${CONFLUENCE_COLLECTOR_SCHEDULE_HOURS:-24}
       COLLECTOR_LOCK_TTL_SECONDS: ${COLLECTOR_LOCK_TTL_SECONDS:-3600}
+      # Dreaming (app/dreams/) — automated consolidation + person profiles.
+      # Round 1 is additive-only (nothing is archived); off by default. Only
+      # DREAM_ENABLED actually gates anything here (the GET /dreams router
+      # mount) — the rest are passed for parity with worker/beat, mirroring
+      # the Collectors precedent above.
+      DREAM_ENABLED: ${DREAM_ENABLED:-false}
+      DREAM_TICK_MINUTES: ${DREAM_TICK_MINUTES:-5}
+      DREAM_IDLE_MINUTES: ${DREAM_IDLE_MINUTES:-30}
+      DREAM_MIN_NEW_MEMORIES: ${DREAM_MIN_NEW_MEMORIES:-25}
+      DREAM_MIN_AGE_DAYS: ${DREAM_MIN_AGE_DAYS:-2}
+      DREAM_MIN_CLUSTER: ${DREAM_MIN_CLUSTER:-4}
+      DREAM_CLUSTER_THRESHOLD: ${DREAM_CLUSTER_THRESHOLD:-0.72}
+      DREAM_MAX_CLUSTERS_PER_RUN: ${DREAM_MAX_CLUSTERS_PER_RUN:-20}
+      DREAM_MAX_INSIGHT_CHARS: ${DREAM_MAX_INSIGHT_CHARS:-800}
+      DREAM_OWM_FLOOR: ${DREAM_OWM_FLOOR:-0.35}
+      DREAM_SYNTH_TIMEOUT_SECONDS: ${DREAM_SYNTH_TIMEOUT_SECONDS:-45.0}
+      DREAM_LOCK_TTL_SECONDS: ${DREAM_LOCK_TTL_SECONDS:-1800}
+      DREAM_PROFILES_ENABLED: ${DREAM_PROFILES_ENABLED:-true}
     env_file:
       - .env
     depends_on:
@@ -498,6 +516,22 @@ services:
       # (an older .env without RP_REDIS_URL would otherwise point at localhost)
       RP_REDIS_URL: redis://redis:6379/6
       COLLECTOR_LOCK_TTL_SECONDS: ${COLLECTOR_LOCK_TTL_SECONDS:-3600}
+      # Dreaming (app/dreams/) — this is the worker that actually runs
+      # run_dream_tick (app/dreams/task.py), so every DREAM_* setting binds
+      # here. Round 1 is additive-only (nothing is archived); off by default.
+      DREAM_ENABLED: ${DREAM_ENABLED:-false}
+      DREAM_TICK_MINUTES: ${DREAM_TICK_MINUTES:-5}
+      DREAM_IDLE_MINUTES: ${DREAM_IDLE_MINUTES:-30}
+      DREAM_MIN_NEW_MEMORIES: ${DREAM_MIN_NEW_MEMORIES:-25}
+      DREAM_MIN_AGE_DAYS: ${DREAM_MIN_AGE_DAYS:-2}
+      DREAM_MIN_CLUSTER: ${DREAM_MIN_CLUSTER:-4}
+      DREAM_CLUSTER_THRESHOLD: ${DREAM_CLUSTER_THRESHOLD:-0.72}
+      DREAM_MAX_CLUSTERS_PER_RUN: ${DREAM_MAX_CLUSTERS_PER_RUN:-20}
+      DREAM_MAX_INSIGHT_CHARS: ${DREAM_MAX_INSIGHT_CHARS:-800}
+      DREAM_OWM_FLOOR: ${DREAM_OWM_FLOOR:-0.35}
+      DREAM_SYNTH_TIMEOUT_SECONDS: ${DREAM_SYNTH_TIMEOUT_SECONDS:-45.0}
+      DREAM_LOCK_TTL_SECONDS: ${DREAM_LOCK_TTL_SECONDS:-1800}
+      DREAM_PROFILES_ENABLED: ${DREAM_PROFILES_ENABLED:-true}
     env_file:
       - .env
     depends_on:
@@ -551,6 +585,23 @@ services:
       CONFLUENCE_COLLECTOR_SCHEDULE_HOURS: ${CONFLUENCE_COLLECTOR_SCHEDULE_HOURS:-24}
       OWM_SCHEDULE_HOURS: ${OWM_SCHEDULE_HOURS:-24}
       COLLECTOR_LOCK_TTL_SECONDS: ${COLLECTOR_LOCK_TTL_SECONDS:-3600}
+      # Dreaming (app/dreams/) — beat needs DREAM_TICK_MINUTES at startup to
+      # build the "dream-tick" beat_schedule entry; the rest mirror
+      # worker/api for parity, same as the Collectors block above. Round 1
+      # is additive-only (nothing is archived); off by default.
+      DREAM_ENABLED: ${DREAM_ENABLED:-false}
+      DREAM_TICK_MINUTES: ${DREAM_TICK_MINUTES:-5}
+      DREAM_IDLE_MINUTES: ${DREAM_IDLE_MINUTES:-30}
+      DREAM_MIN_NEW_MEMORIES: ${DREAM_MIN_NEW_MEMORIES:-25}
+      DREAM_MIN_AGE_DAYS: ${DREAM_MIN_AGE_DAYS:-2}
+      DREAM_MIN_CLUSTER: ${DREAM_MIN_CLUSTER:-4}
+      DREAM_CLUSTER_THRESHOLD: ${DREAM_CLUSTER_THRESHOLD:-0.72}
+      DREAM_MAX_CLUSTERS_PER_RUN: ${DREAM_MAX_CLUSTERS_PER_RUN:-20}
+      DREAM_MAX_INSIGHT_CHARS: ${DREAM_MAX_INSIGHT_CHARS:-800}
+      DREAM_OWM_FLOOR: ${DREAM_OWM_FLOOR:-0.35}
+      DREAM_SYNTH_TIMEOUT_SECONDS: ${DREAM_SYNTH_TIMEOUT_SECONDS:-45.0}
+      DREAM_LOCK_TTL_SECONDS: ${DREAM_LOCK_TTL_SECONDS:-1800}
+      DREAM_PROFILES_ENABLED: ${DREAM_PROFILES_ENABLED:-true}
     env_file:
       - .env
     depends_on:

@@ -30,10 +30,14 @@ def test_member_seat_code_never_reads_runtime_identity_or_liveness():
 def test_entitlement_imports_are_confined_to_membership_and_read_only_surfaces():
     consumers = []
     for path in ROOT.rglob("*.py"):
-        # `.claude` covers worktrees — nested checkouts carry their own copies
-        # of every consumer and would double-count them on any machine with an
-        # active worktree.
-        if any(part in {"tests", ".venv", "venv", ".claude"} for part in path.parts):
+        # Exclusions are checked RELATIVE to ROOT, never on the absolute path:
+        # `.claude` is here to skip nested worktree checkouts *beneath* the repo
+        # (they carry their own copy of every consumer and would double-count),
+        # but the repo root itself can BE inside a `.claude/worktrees/<name>`
+        # path — and an absolute-path check would then skip every file in the
+        # repo and silently assert against an empty set.
+        rel = path.relative_to(ROOT)
+        if any(part in {"tests", ".venv", "venv", ".claude"} for part in rel.parts):
             continue
         source = path.read_text(encoding="utf-8", errors="ignore")
         if "auth.entitlements" in source:

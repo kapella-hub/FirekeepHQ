@@ -26,6 +26,7 @@ from qdrant_client.models import (
     MatchValue,
     PayloadSchemaType,
     PointStruct,
+    Range,
     VectorParams,
 )
 
@@ -101,7 +102,11 @@ def _projected_metadata(payload: dict | None, point_id: str) -> dict[str, Any]:
     before the promotion keeps whatever its nested metadata held instead of being
     overwritten with None.
     """
-    if not payload:
+    # `is None`, not `not payload`: a missing payload (Qdrant can return one
+    # when with_payload=False) is the "nothing to project" case, but an empty
+    # *dict* is a real payload whose fields should still get their defaults
+    # (e.g. memory_type="episodic") rather than being collapsed to {}.
+    if payload is None:
         return {}
     return {
         # "id" was added by Task 8 (access-count HINCRBY reads it) — this
@@ -111,11 +116,40 @@ def _projected_metadata(payload: dict | None, point_id: str) -> dict[str, Any]:
         "tags": payload.get("tags", []),
         "domain": payload.get("domain", ""),
         "timestamp": payload.get("timestamp", ""),
-        **(payload.get("metadata", {})),
+        # `or {}`, not a `{}` default: a payload carrying an explicit
+        # metadata=None makes `**` raise TypeError, and this projection runs
+        # on every recall result. GC tolerates that shape (`payload.get(
+        # "metadata") or {}`), so tolerating it here is also what keeps the
+        # two reads below agreeing on every input rather than on most of them.
+        **(payload.get("metadata") or {}),
         # Team continuity: who wrote this, in what session, for what project.
         **{k: payload[k] for k in _PROMOTED_PAYLOAD_KEYS if k in payload},
         # Lifecycle fields last so the top-level payload is authoritative —
         # recall scoring reads these (SP0 C2).
+        # Dreaming Task 5 (audit finding #3): recall read memory_type through
+        # this projection while GC (app/workers/gc.py) reads it from the
+        # top-level payload first, nested metadata as fallback — the two
+        # could disagree. memory_type belongs here, not among the earlier
+        # explicit keys, for the same reason status/confirmed_count do: the
+        # top-level payload must win over any nested legacy copy.
+        #
+        # The three-step read below is NOT decoration — it is gc.py:341-345's
+        # order, character for character, and BOTH halves are load-bearing.
+        # A plain `payload.get("metadata", {})` spread (the pre-Task-5 state)
+        # let a stale nested copy beat the top level. A plain
+        # `payload.get("memory_type", "episodic")` sitting after that spread
+        # is the exact mirror-image defect: its literal default fires whenever
+        # the top-level key is ABSENT, overriding the nested value the spread
+        # had just supplied — so a legacy point carrying only
+        # metadata.memory_type="reference" recalled as "episodic" (a 90-day
+        # half-life) while GC still read "reference" (no age decay). Legacy
+        # "procedural" degraded 180d -> 90d the same way. Only the explicit
+        # top-level -> nested -> literal chain agrees with GC on every shape.
+        "memory_type": (
+            payload.get("memory_type")
+            or (payload.get("metadata") or {}).get("memory_type")
+            or "episodic"
+        ),
         "status": payload.get("status", "active"),
         "confirmed_count": payload.get("confirmed_count", 0),
         "contradicted_count": payload.get("contradicted_count", 0),
@@ -167,6 +201,44 @@ def _merge_lifecycle(existing: dict | None, fresh: dict) -> dict:
     if existing.get("last_confirmed_at"):
         merged["last_confirmed_at"] = existing["last_confirmed_at"]
     return merged
+
+
+def _similarity_filter(namespace: str, domain: str | None) -> Filter:
+    """Build the query filter used by ``find_similar`` (contradiction detection).
+
+    Two ``must_not`` guards, both audit findings (Dreaming Task 5):
+      1. ``confirmed_count > 0`` — this filter previously checked status/
+         namespace/domain but not confirmed_count, so an ordinary /memory/learn
+         could silently supersede a memory a human explicitly confirmed. GC's
+         own scan already treats confirmed_count > 0 as untouchable; this
+         brings contradiction detection in line with that guard.
+      2. ``source == "dream"`` — ``find_similar``'s only caller is
+         ``contradiction.py``'s ``detect_and_supersede``, invoked from every
+         ordinary ``/memory/learn``; without this guard, learning ANY new
+         memory similar enough to a dream could supersede that dream. This
+         is distinct from the memory_agent's 6-hourly passes: those build
+         their own filters (``_active_non_corpus_filter``) and never call
+         ``find_similar`` at all — dreams are protected there separately.
+      3. ``source == "dream_profile"`` — the person profiles written by
+         ``app/dreams/profile.py``. This was MISSING while the docs claimed
+         it was here (final-review I1). A profile is broad prose stamped
+         ``domain="general"``, which makes it a plausible >=0.85 cosine match
+         for an ordinary general-domain ``/memory/learn`` — so without this
+         guard a routine learn could supersede the profile, and the "one
+         continuously-updated profile per human" contract would be defeated
+         by the most ordinary write path in the system.
+    """
+    conditions = [FieldCondition(key="status", match=MatchValue(value="active"))]
+    if namespace != "default":
+        conditions.append(FieldCondition(key="namespace", match=MatchValue(value=namespace)))
+    if domain:
+        conditions.append(FieldCondition(key="domain", match=MatchValue(value=domain)))
+    must_not = [
+        FieldCondition(key="confirmed_count", range=Range(gt=0)),
+        FieldCondition(key="source", match=MatchValue(value="dream")),
+        FieldCondition(key="source", match=MatchValue(value="dream_profile")),
+    ]
+    return Filter(must=conditions, must_not=must_not)
 
 
 class VectorClient:
@@ -581,6 +653,31 @@ class VectorClient:
             raise VectorStoreError(
                 f"Failed to upsert vector: {exc}"
             ) from exc
+
+    async def upsert_point(self, point_id: str, text: str, payload: dict) -> str:
+        """Write a point at a CALLER-CHOSEN id with a caller-owned payload.
+
+        `upsert` derives its id as uuid5(text) and merges lifecycle from whatever
+        point already sits at that id — which is right for learned memories and
+        wrong for anything that must be updated in place (skills already work
+        around it with a raw PointStruct; dreams are the second case). Nothing
+        here infers, promotes or supersedes: the payload is written verbatim.
+        """
+        try:
+            vector = await self._embed(text)
+            await self._client.upsert(
+                collection_name=self._collection,
+                points=[PointStruct(id=point_id, vector=vector, payload=payload)],
+            )
+            return point_id
+        except VectorStoreError:
+            # Same guard `upsert` above already carries: `_embed` raises
+            # VectorStoreError of its own, and re-wrapping it here nested one
+            # "Failed to ..." message inside another, burying the real cause
+            # (e.g. the context-length text the embed path reports).
+            raise
+        except Exception as exc:
+            raise VectorStoreError(f"Failed to upsert point {point_id}: {exc}") from exc
 
     async def delete_by_filter(self, payload_filter: Filter) -> None:
         """Delete points matching a payload filter.
@@ -1139,15 +1236,10 @@ class VectorClient:
     async def find_similar(self, text: str, namespace: str = "default", domain: str | None = None, threshold: float = 0.85, top_k: int = 3) -> list[dict]:
         """Find similar active memories for contradiction detection."""
         embedding = await self._embed(text)
-        conditions = [FieldCondition(key="status", match=MatchValue(value="active"))]
-        if namespace != "default":
-            conditions.append(FieldCondition(key="namespace", match=MatchValue(value=namespace)))
-        if domain:
-            conditions.append(FieldCondition(key="domain", match=MatchValue(value=domain)))
         results = await self._client.query_points(
             collection_name=self._collection,
             query=embedding,
-            query_filter=Filter(must=conditions),
+            query_filter=_similarity_filter(namespace=namespace, domain=domain),
             limit=top_k,
             with_payload=True,
         )

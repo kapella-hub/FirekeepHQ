@@ -336,6 +336,13 @@ def _register_feature_routers(app: FastAPI) -> None:
         app.include_router(create_collectors_router())
         logger.info("Collectors router registered at /collectors")
 
+    # Dreaming — consolidation pass status API. Round 1 is additive-only
+    # (nothing is archived); disabled by default (DREAM_ENABLED=false).
+    if get_settings().DREAM_ENABLED:
+        from app.dreams.api import create_dreams_router
+        app.include_router(create_dreams_router())
+        logger.info("Dreams router registered at /dreams")
+
     # Audit endpoints (/audit/*)
     try:
         from app.audit import get_memory_audit, get_memory_access_summary

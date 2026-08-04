@@ -77,10 +77,29 @@ def _active_non_corpus_filter() -> Filter:
     never corpus chunks. Corpus chunks are document fragments, not competing
     memories — they must never be merged, superseded, or reclassified by
     the agent passes (SP0 B1, defect #3).
+
+    Also excludes source="dream" (Dreaming Task 5, audit finding #2): without
+    this, duplicate_detection_pass could merge two dreams (or a dream with a
+    surviving source) and deep_contradiction_pass could supersede a dream with
+    its own source episode — a feedback loop no dream code participates in.
+
+    ...and source="dream_profile", the per-human person profiles written by
+    app/dreams/profile.py, which was MISSING here while the docs claimed it
+    was present (final-review I1). A profile is a single point that is
+    REPLACED in place on every dream run, so both maintenance passes are
+    actively wrong on it: duplicate_detection_pass would LLM-merge it into
+    some other memory's text (destroying the one thing the briefing reads by
+    point id), and deep_contradiction_pass would supersede it against the
+    very memories it was synthesized from. Broad prose at domain="general" is
+    exactly the shape that trips both.
     """
     return Filter(
         must=[FieldCondition(key="status", match=MatchValue(value="active"))],
-        must_not=[FieldCondition(key="source", match=MatchValue(value="corpus"))],
+        must_not=[
+            FieldCondition(key="source", match=MatchValue(value="corpus")),
+            FieldCondition(key="source", match=MatchValue(value="dream")),
+            FieldCondition(key="source", match=MatchValue(value="dream_profile")),
+        ],
     )
 
 

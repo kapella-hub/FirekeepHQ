@@ -12,12 +12,15 @@ from app.briefing.api import create_briefing_router
 from app.version import get_version_info
 from auth.entitlements import Entitlement
 
-# The 12 sections that MUST always be present (fail-loud: never omitted).
+# The 13 sections that MUST always be present (fail-loud: never omitted).
 # `observed` is the N=1 learning surface (descriptive, unvalidated) added in the
-# n1-learning-loop work — it always ships alongside the original 11.
+# n1-learning-loop work — it always ships alongside the original 11. `profile`
+# (Dreaming Task 8) is the per-member person profile written by the nightly
+# dream pass — it always ships too, degrading to "empty" when none exists yet.
 ALL_SECTIONS = {
     "environment", "tasks", "bulletins", "quality", "strategy_tips", "observed",
     "cross_agent", "skills", "vault", "discipline", "dlq", "resumable_sessions",
+    "profile",
 }
 
 
@@ -36,6 +39,9 @@ def _make_app(monkeypatch, section_timeout: float = 2.0) -> FastAPI:
     live-but-empty backend so it reports "empty" instead of degrading:
     - replay_redis / redis_client: real fakeredis (evals, patterns, untagged).
     - vector_client._client.scroll: async, returns ([], None) (skills → empty).
+    - vector_client._client.retrieve: async, returns [] (profile → empty; Dreaming
+      Task 8's point-id lookup finds nothing, same "empty, not unavailable"
+      contract as skills' scroll above).
     - collect_queue_depths: patched to all-zero so the dlq section neither hits
       real Redis nor times out (in production it reads live broker/data/bridge
       DBs; that path is covered by test_ops.py, not this fixture).
@@ -78,6 +84,7 @@ def _make_app(monkeypatch, section_timeout: float = 2.0) -> FastAPI:
     # check only section keys and envelope shape, nothing would fail.
     vector._embed = AsyncMock(return_value=[1.0, 0.0, 0.0])
     vector._client.query_points = _query_points
+    vector._client.retrieve = AsyncMock(return_value=[])
     app.state.vector_client = vector
 
     class _NoopClient:
@@ -145,9 +152,9 @@ def test_briefing_surfaces_licence_expiry_without_gating_sections(monkeypatch):
 def test_briefing_sections_status_and_vault_fail_loud(monkeypatch):
     """Real (post-Task-8) behavior with live-but-empty fakes.
 
-    The 6 in-process sections with a live-but-empty backend (quality,
-    strategy_tips, cross_agent, skills, discipline, dlq) report "empty" —
-    nothing to show. Five sections correctly degrade to "unavailable" because
+    The 7 in-process sections with a live-but-empty backend (quality,
+    strategy_tips, cross_agent, skills, discipline, dlq, profile) report
+    "empty" — nothing to show. Five sections correctly degrade to "unavailable" because
     their upstream genuinely fails in this minimal app:
     - vault: see below. As of 2026-07-26 the anonymous identity no longer
       carries ["*"], so on the auth-disabled path vault_section is OMITTED
