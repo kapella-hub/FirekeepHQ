@@ -37,6 +37,52 @@ def test_projected_metadata_top_level_memory_type_wins_over_nested():
     assert _projected_metadata(payload, "p1")["memory_type"] == "procedural"
 
 
+def test_projected_metadata_falls_back_to_nested_memory_type():
+    """The third shape, and the one the first two could not catch (C1).
+
+    With only both-absent and top-level-present covered, a literal
+    ``payload.get("memory_type", "episodic")`` placed AFTER the
+    ``**payload.get("metadata", {})`` spread passes both — and is still
+    wrong: its default fires on the nested-only shape and OVERRIDES the value
+    the spread supplied. That is a live recall regression on every
+    deployment, independent of DREAM_ENABLED — a legacy ``reference`` memory
+    (no age decay) starts recalling as ``episodic`` (90-day half-life) while
+    GC keeps reading ``reference``, and legacy ``procedural`` degrades
+    180d -> 90d the same way. GC's own read order (app/workers/gc.py:341-345)
+    is the contract; this pins agreement with it on the shape where they can
+    silently differ.
+    """
+    payload = {"metadata": {"memory_type": "reference"}}
+    assert _projected_metadata(payload, "p1")["memory_type"] == "reference"
+
+
+def test_projected_metadata_agrees_with_gc_on_every_memory_type_shape():
+    """Same read, both sides, no shape excepted — the two are only safe if
+    they cannot disagree at all, not if they happen to agree on three cases
+    somebody thought of."""
+    def _gc_read(payload):
+        # Verbatim from app/workers/gc.py's scan loop.
+        return (
+            payload.get("memory_type")
+            or (payload.get("metadata") or {}).get("memory_type")
+            or "episodic"
+        )
+
+    shapes = [
+        {},
+        {"metadata": {}},
+        {"metadata": None},
+        {"memory_type": "procedural"},
+        {"memory_type": "reference", "metadata": {"memory_type": "episodic"}},
+        {"metadata": {"memory_type": "reference"}},
+        {"metadata": {"memory_type": "procedural"}},
+        {"memory_type": "", "metadata": {"memory_type": "transient"}},
+        {"memory_type": None, "metadata": {"memory_type": "reference"}},
+    ]
+    for payload in shapes:
+        assert _projected_metadata(payload, "p1")["memory_type"] == _gc_read(payload), payload
+
+
 def test_find_similar_filter_excludes_confirmed_memories():
     from app.db import vector as v
 

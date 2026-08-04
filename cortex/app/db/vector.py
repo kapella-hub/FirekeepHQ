@@ -116,7 +116,12 @@ def _projected_metadata(payload: dict | None, point_id: str) -> dict[str, Any]:
         "tags": payload.get("tags", []),
         "domain": payload.get("domain", ""),
         "timestamp": payload.get("timestamp", ""),
-        **(payload.get("metadata", {})),
+        # `or {}`, not a `{}` default: a payload carrying an explicit
+        # metadata=None makes `**` raise TypeError, and this projection runs
+        # on every recall result. GC tolerates that shape (`payload.get(
+        # "metadata") or {}`), so tolerating it here is also what keeps the
+        # two reads below agreeing on every input rather than on most of them.
+        **(payload.get("metadata") or {}),
         # Team continuity: who wrote this, in what session, for what project.
         **{k: payload[k] for k in _PROMOTED_PAYLOAD_KEYS if k in payload},
         # Lifecycle fields last so the top-level payload is authoritative —
@@ -127,7 +132,24 @@ def _projected_metadata(payload: dict | None, point_id: str) -> dict[str, Any]:
         # could disagree. memory_type belongs here, not among the earlier
         # explicit keys, for the same reason status/confirmed_count do: the
         # top-level payload must win over any nested legacy copy.
-        "memory_type": payload.get("memory_type", "episodic"),
+        #
+        # The three-step read below is NOT decoration — it is gc.py:341-345's
+        # order, character for character, and BOTH halves are load-bearing.
+        # A plain `payload.get("metadata", {})` spread (the pre-Task-5 state)
+        # let a stale nested copy beat the top level. A plain
+        # `payload.get("memory_type", "episodic")` sitting after that spread
+        # is the exact mirror-image defect: its literal default fires whenever
+        # the top-level key is ABSENT, overriding the nested value the spread
+        # had just supplied — so a legacy point carrying only
+        # metadata.memory_type="reference" recalled as "episodic" (a 90-day
+        # half-life) while GC still read "reference" (no age decay). Legacy
+        # "procedural" degraded 180d -> 90d the same way. Only the explicit
+        # top-level -> nested -> literal chain agrees with GC on every shape.
+        "memory_type": (
+            payload.get("memory_type")
+            or (payload.get("metadata") or {}).get("memory_type")
+            or "episodic"
+        ),
         "status": payload.get("status", "active"),
         "confirmed_count": payload.get("confirmed_count", 0),
         "contradicted_count": payload.get("contradicted_count", 0),
