@@ -43,8 +43,13 @@ immediately afterwards, which is what retired `build_request_body`: it was the
 `/v1` body builder both calls shared, it survived the first conversion ONLY
 because profile.py still imported it, and with no caller left a body builder
 that describes nobody's request is exactly how this module's docstring came to
-lie in the first place. `_MAX_COMPLETION_TOKENS` below is still shared with
-profile.py and is still documented here.
+lie in the first place. `_MAX_COMPLETION_TOKENS` below was the last thing the
+two calls shared, and no longer is: profile.py now sizes its own
+`_MAX_PROFILE_TOKENS` from `DREAM_MAX_INSIGHT_CHARS`, because 4000 is a budget
+sized to ABSORB a thinking model's blocked reasoning on `/v1` and a profile
+under a JSON schema has nothing of the sort to absorb — it measured as a
+runaway there (200s+, no completion) rather than as headroom. The number below
+is this module's alone now.
 
 `llm.chat` RAISES on transport or HTTP failure by contract — callers own their
 degradation. `synthesize` therefore keeps its own guard and its own retry rule,
@@ -100,10 +105,14 @@ _DEFAULT_MAX_CHARS = 800
 # enforced by `parse_insights`); the tokens this number has to cover are
 # overwhelmingly reasoning the content cap knows nothing about, so tying them
 # would make raising the content cap silently shrink the reasoning headroom and
-# vice versa. It is ALSO `profile.py`'s budget: that module imports this constant
-# directly now that `build_request_body` (which used to carry the number to it)
-# is gone. One number, deliberately — both calls face the same `/v1` fallback
-# regime, and a second constant next door is a thing that drifts.
+# vice versa. It was ALSO `profile.py`'s budget until 2026-08-05, imported
+# directly once `build_request_body` (which used to carry the number to it) was
+# gone. It is not any more, and the split is the point rather than drift: this
+# call must survive a thinking model on `/v1` generating reasoning the JSON
+# grammar blocks, while `profile.py`'s is a schema-terminated string whose
+# largest valid answer is ~330 tokens — sharing one number there meant a cap
+# ~12x the answer, i.e. no terminator at all, which is exactly what it measured
+# as (4000 -> 200s, no completion, prompt echoed back).
 #
 # KNOWN INTERACTION, stated rather than hidden: on a `/v1` deployment this
 # raises worst-case wall time, because the reasoning tokens now actually get

@@ -56,7 +56,7 @@ app/
     ├── select.py        # Pure candidate selection + partitioning + clustering + per-synthesis member sampling (centroid-nearest), no I/O
     ├── synthesize.py     # The one LLM call for cluster insights — via app/llm.py's chat() (native /api/chat where available, so think:false is actually honoured), JSON mode
     ├── store.py          # Dedicated write path — raw PointStruct, deterministic IDs, never /memory/learn
-    ├── profile.py        # Person-profile assembly, keyed by member_id — its one LLM call also goes via app/llm.py's chat(), but json_mode=False (a profile is prose, not JSON)
+    ├── profile.py        # Person-profile assembly, keyed by member_id — its one LLM call also goes via app/llm.py's chat(), SCHEMA-CONSTRAINED to `{"profile": "<prose>"}` and the prose extracted back out (the stored payload is still prose; the grammar is on the wire, not in the store)
     ├── state.py          # Redis run-record + progress counters (DreamState, sync client — see task.py)
     ├── task.py           # Celery task: gate → lock → one unit of work → record
     └── api.py            # GET /dreams status endpoint

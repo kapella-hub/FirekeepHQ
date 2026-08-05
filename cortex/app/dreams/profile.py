@@ -43,12 +43,57 @@ and the budget is nine times too small for it. Profiles are the user-facing
 half of Dreaming (`GET /briefing`'s profile section reads them), so this was
 the half where the failure was most visible and least explicable.
 
-Unlike `synthesize()` this call is NOT json-mode: a profile is plain prose, and
-the JSON grammar would fight the prompt. See `synthesize_profile` for what that
-changes and what it does not.
+THIS CALL IS SCHEMA-CONSTRAINED (`_PROFILE_SCHEMA`, 2026-08-05). An earlier
+revision of this docstring claimed the opposite — "unlike `synthesize()` this
+call is NOT json-mode: a profile is plain prose, and the JSON grammar would
+fight the prompt" — and that claim was false in letter once the schema landed
+and had always been false in effect. THE ABSENCE OF A GRAMMAR IS WHAT BROKE IT.
+A profile is prose, so the reasoning went, therefore constrain nothing; what
+that actually bought was free-form generation with nothing to terminate it and
+no constraint on shape, handed to a small model along with a template.
+
+MEASURED on the production VPS 2026-08-05 (qwen3:4b, 4 vCPU, native /api/chat,
+`DREAM_SYNTH_TIMEOUT_SECONDS` already raised to 90s):
+
+    prompt size sweep, 20/12/10 memories -> prompts of 23,486 / 8,546 / 5,627 /
+    3,815 chars: ALL FOUR failed identically at the 240s client timeout.
+
+The FLAT result is the finding. A size-driven effect shows a gradient; this
+showed none, so the prompt was never the variable.
+
+    max_tokens sweep at a fixed prompt: 4000 -> FAILED at 200s.
+
+4000 tokens of prose at the ~6.5 tok/s this box sustains is ~10 minutes, so
+there was no budget under which that cap could terminate anything. And at
+SMALLER caps the model did not return a profile at all — it returned the SYSTEM
+PROMPT ECHOED BACK, then narrated its own procedure:
+
+    " - what they consistently ask for
+      - recurring corrections they have given
+      Steps:
+      1. Read each memory to extract relevant facts without speculation.
+      Let's go through the memories:
+      Memory [0]: ..."
+
+That is the THIRD recorded instance of one failure in this codebase, not a new
+one: qwen3:4b echoed `_DOC_LLM_PROMPT`'s template placeholders in LLM-endpoint
+phase 1, and mirrored the user message's own shape back in phase 3's decision
+board. A small model handed a template under no structural constraint
+reproduces the template. `synthesize()` never hit any of this, and not by
+design — `format:"json"` happens to constrain shape enough to stop the echo AND
+to terminate generation, so the sibling call was protected by an accident of
+being JSON-shaped.
+
+The fix is the phase-3 mechanism applied here: a minimal schema
+(`{"profile": "<prose>"}`), the prose extracted back out of it, and the stored
+payload still prose. Phase 3 measured adherence going 0/3 -> 3/3 at no latency
+cost, because a constrained decode emits fewer wasted tokens. See
+`_PROFILE_SCHEMA`, `_extract_profile_text` and `_MAX_PROFILE_TOKENS` for the
+three decisions that carries.
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -58,21 +103,75 @@ import httpx
 from app import llm
 from app.dreams import store
 
-# One number for both dreams LLM calls. It used to reach this module inside
-# `synthesize.build_request_body`, the shared `/v1` body builder; that function
-# is gone (nothing built a body by hand any more once both calls went through
-# `llm.chat`), so the constant is imported directly instead. Deliberately not
-# copied: a second 4000 next door is a thing that drifts, and synthesize.py is
-# where the measurement that justifies the number is written down. It is
-# private-by-name and shared-by-intent within one package — see its comment
-# there before changing it.
-from app.dreams.synthesize import _MAX_COMPLETION_TOKENS
-
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_CHARS = 800
 _MEMORY_TRUNCATE_CHARS = 600
 _MAX_MEMORIES = 40
+
+# The one key the schema below defines, named once so the schema, the extractor
+# and the system prompt cannot drift apart.
+_PROFILE_KEY = "profile"
+
+# The MINIMAL schema that does the job: one required string. It is not here to
+# describe a profile — a profile is prose and there is nothing in it to model —
+# it is here to do the two things the unconstrained call could not do at all:
+# pin the SHAPE so the model cannot answer with the system prompt it was handed
+# (measured above), and TERMINATE generation, which for a string means the
+# closing quote rather than a token cap nobody can size.
+#
+# OpenAI strict mode is what `llm.build_openai_body` requests (`strict: True`),
+# and it requires `properties` and `required` to name exactly the same keys and
+# `additionalProperties: false` — the same three conditions `decision/
+# synthesize.py::_suggestion_schema` satisfies and records a conformance
+# argument for. This satisfies them trivially, having one key.
+#
+# NO `minLength`/`maxLength`. `parse_profile` already rejects empty and
+# over-`max_chars` output and does it AFTER extraction, where the number means
+# what `DREAM_MAX_INSIGHT_CHARS` says it means; expressing the same bound in the
+# grammar would either truncate a profile mid-word into a valid-but-mutilated
+# string (a grammar cannot decline, only stop) or, at the low end, pressure the
+# model into padding a group it had little to say about. Phase 3 rejected
+# `minItems` on the same argument, measured: no adherence gain, latency and
+# invention as the cost.
+_PROFILE_SCHEMA: dict = {
+    "type": "object",
+    "properties": {_PROFILE_KEY: {"type": "string"}},
+    "required": [_PROFILE_KEY],
+    "additionalProperties": False,
+}
+
+# Completion budget for one profile call. 4000, the same number synthesize.py
+# uses, and for the same measured reason — NOT because it is tidy to share.
+#
+# A derivation from the ANSWER size is the intuitive move and it is wrong. It
+# was tried at 512 (a valid profile is at most DREAM_MAX_INSIGHT_CHARS = 800
+# chars, ~200-330 tokens, plus envelope) and that reasoning silently assumes
+# every generated token lands in the answer. On ollama's `/v1` endpoint it does
+# not: `think:false` is IGNORED there, so the model generates its full reasoning
+# block FIRST and the budget is spent before the answer starts. This repo has
+# already measured exactly that, and the number is in synthesize.py's own
+# comment: at max_tokens=700 on `/v1`, three probes of three returned HTTP 200,
+# finish_reason='length', completion_tokens=700, CONTENT LENGTH ZERO and ~3200
+# chars of reasoning; the identical call at 4000 returned correct output.
+#
+# 512 is below 700. So an answer-sized cap does not merely reduce headroom on a
+# `/v1`-routed thinking-model deploy — it returns None on every call, forever,
+# which is strictly worse than the state before the schema landed. That path is
+# live: any non-ollama backend, and any ollama demoted by a pre-generation 4xx.
+#
+# THE SCHEMA IS THE TERMINATOR, WHICH IS WHY A LARGE CAP IS FREE. A JSON string
+# ends at its closing quote, so on the native path generation stops on its own
+# and the cap is never approached; the measured failure it replaced was an
+# UNCONSTRAINED call, where nothing stopped at 4000 because nothing was stopping
+# it at all. The cap now only bounds a backend that ignored or was denied the
+# schema, and on that backend it must be large enough to reach the answer.
+#
+# The cost of being wrong is asymmetric and that decides it. Too large: a
+# runaway on the fallback rung burns up to DREAM_SYNTH_TIMEOUT_SECONDS, one
+# tick, loudly, and the next tick retries the unit. Too small: silent, total,
+# permanent None on a whole class of deployment. Prefer the loud failure.
+_MAX_PROFILE_TOKENS = 4000
 
 # A refusal is not a profile. Observed on a live run, stored at the member's
 # deterministic point id and then SERVED through the briefing's profile
@@ -142,7 +241,125 @@ def _looks_like_refusal(text: str) -> bool:
     return any(pattern in head for pattern in _REFUSAL_PATTERNS)
 
 
+def _strip_code_fence(text: str) -> str:
+    """Unwrap a ```-fenced block, if the whole response is one. Never raises.
+
+    The `{`-prefix guard below refuses an unparseable JSON envelope instead of
+    storing it verbatim as a profile. A fence defeats that guard by prefixing
+    the envelope: ```` ```json\\n{"profile": "..." ```` does not START with `{`,
+    so a truncated fenced envelope would fall through the prose branch and be
+    stored — with its fence and its JSON syntax — at the member's deterministic
+    point id, then served through every briefing. That is the precise failure
+    the guard exists for, reached by a different door.
+
+    Newly likely rather than hypothetical: the system prompt now ASKS for JSON,
+    and its previous instruction not to use markdown fencing was removed with
+    it, so a model on the schema-dropped rung (constrained in syntax only, or
+    not at all) has both a reason to emit JSON and no instruction against
+    fencing it.
+
+    Only a whole-response fence is unwrapped. A fence in the MIDDLE of prose is
+    left alone: that is a profile that happens to quote a code block, and
+    mangling it would be a worse bug than the one being fixed.
+    """
+    if not text.startswith("```"):
+        return text
+    body = text[3:]
+    newline = body.find("\n")
+    if newline == -1:            # ```json with no body at all
+        return text
+    body = body[newline + 1:]
+    close = body.rfind("```")
+    return (body[:close] if close != -1 else body).strip()
+
+
+def _extract_profile_text(raw: str) -> str | None:
+    """The schema's envelope -> the prose inside it. Never raises.
+
+    TWO RUNGS ARRIVE HERE, AND BOTH MUST WORK. `llm.chat` answers a
+    pre-generation 4xx by retrying ONCE with the schema dropped, which is what
+    keeps a vLLM/LiteLLM/OpenAI deploy that has not implemented structured
+    outputs working at all. Handling only the schema-shaped reply would trade a
+    broken feature on ollama for a broken feature everywhere else.
+
+    Rung 1 (schema honoured): `{"profile": "<prose>"}` -> the prose.
+    Rung 2 (schema dropped): whatever the model felt like. Note the retry is
+    still json-MODE — `llm.chat` coerces `json_mode` true whenever a schema was
+    requested, precisely so the fallback is constrained JSON rather than
+    nothing — but json mode constrains SYNTAX ONLY, so rung 2 can be a
+    correctly-keyed object, a differently-keyed object, or (on a backend that
+    honours neither) bare prose.
+
+    The rules, and why each is the way round it is:
+
+      - Text that does not parse as JSON is PROSE and is returned as-is. Prose
+        is never valid JSON, so this branch cannot swallow a JSON reply.
+      - Text that OPENS with `{` and does not parse is a TRUNCATED OR MALFORMED
+        ENVELOPE, and is refused rather than returned. This is the branch that
+        matters: without it, a completion cut off at `_MAX_PROFILE_TOKENS`
+        would be handed back as prose and stored as the literal string
+        `{"profile": "Works on cortex...`, at the member's deterministic point
+        id, and served through every briefing.
+      - A parsed object carrying `profile` as a string yields it.
+      - Anything else that PARSED is valid JSON of the wrong shape — the
+        mirrored-input failure this schema exists to prevent, arriving from a
+        backend that ignored or was denied it. Refused, not stringified: a
+        profile that reads `{"summary": ...}` is not a profile.
+
+    A bare JSON string (`"Works on cortex..."`) is accepted and unquoted; it is
+    the same prose with one layer of encoding on it, and refusing it would only
+    punish a backend for being tidy.
+    """
+    if not isinstance(raw, str):
+        return None
+    text = _strip_code_fence(raw.strip())
+    if not text:
+        return None
+
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        if text.lstrip().startswith("{"):
+            logger.warning(
+                "Dream profile response opened as a JSON object but did not "
+                "parse (truncated or malformed, %d chars) — refusing rather "
+                "than storing the envelope as prose: %.120s",
+                len(text), text,
+            )
+            return None
+        return text
+
+    if isinstance(data, str):
+        return data
+    if isinstance(data, dict):
+        value = data.get(_PROFILE_KEY)
+        if isinstance(value, str):
+            return value
+        logger.warning(
+            "Dream profile response was a JSON object without a string %r key "
+            "(keys=%s) — the schema was ignored or dropped",
+            _PROFILE_KEY, sorted(map(str, data.keys()))[:10],
+        )
+        return None
+
+    logger.warning(
+        "Dream profile response parsed as %s, not an object or a string",
+        type(data).__name__,
+    )
+    return None
+
+
 def _system_prompt(max_chars: int) -> str:
+    """ONE paragraph changed when the schema landed: the output-format
+    instruction, which used to end "No markdown fencing, no JSON, no preamble".
+    That was not merely stale, it CONTRADICTED the grammar the call now sends —
+    the model was being told not to emit the only thing it was permitted to
+    emit. Everything above it is byte-identical on purpose: the schema is the
+    variable under test, and changing the task description in the same breath
+    would make the next measurement unattributable. The `decision/synthesize.py`
+    precedent is the shape followed here — the prompt DESCRIBES the contract,
+    the schema PINS it, and a model that can read only one of them still has a
+    coherent instruction."""
     return (
         "You are the Dreaming pass for a long-term agent memory store, building a "
         "PERSON PROFILE for one human from memories that mention them. Produce a "
@@ -155,8 +372,11 @@ def _system_prompt(max_chars: int) -> str:
         "- If the memories don't support one of the categories above, omit it "
         "rather than guessing.\n"
         f"- Keep the whole profile under {max_chars} characters.\n\n"
-        "Return ONLY the profile text as plain prose. No markdown fencing, no "
-        "JSON, no preamble like 'Here is the profile'."
+        "## Output Format\n"
+        'Return ONLY a JSON object of the form {"' + _PROFILE_KEY + '": "<the '
+        'profile>"}. The value is the profile itself, as plain prose — no '
+        "markdown fencing, no preamble like 'Here is the profile', no other keys, "
+        "and do not restate these instructions."
     )
 
 
@@ -178,10 +398,30 @@ def parse_profile(raw: str, *, max_chars: int) -> str | None:
     """Validate a raw LLM response as profile text. Never raises. Rejects
     empty/whitespace-only output, over-budget output, and output whose opening
     reads as a refusal rather than a profile (see _REFUSAL_PATTERNS); anything
-    else is returned stripped."""
-    if not isinstance(raw, str):
+    else is returned stripped.
+
+    EXTRACTION RUNS FIRST, INSIDE THIS FUNCTION, and that placement is the
+    point: every guard below then operates on the PROSE rather than on the JSON
+    envelope carrying it. Both of them are wrong otherwise.
+
+    `max_chars` is `DREAM_MAX_INSIGHT_CHARS`, a bound on the profile — measuring
+    the envelope instead would silently spend ~14 of the human's characters on
+    punctuation and reject a profile that is exactly at budget.
+
+    `_looks_like_refusal` windows to the OPENING of the text
+    (`_REFUSAL_WINDOW_CHARS`), so a guard applied to the raw response is defeated
+    by any envelope whose prose starts past that window. `{"profile": "` is only
+    13 characters, so the schema-honouring rung would in fact still be caught —
+    the case that is NOT is the schema-DROPPED rung, where the model is
+    constrained in syntax only and is free to emit keys of its own before the one
+    we asked for. That is the rung a non-ollama deploy lives on permanently, and
+    the incident this guard exists for (a refusal stored at the member's
+    deterministic point id and served through the briefing) is destructive
+    rather than cosmetic, because a profile is replaced in place."""
+    text = _extract_profile_text(raw)
+    if text is None:
         return None
-    text = raw.strip()
+    text = text.strip()
     if not text:
         return None
     if len(text) > max_chars:
@@ -267,14 +507,33 @@ async def synthesize_profile(
     `Exception`-shaped rather than type-enumerated, so every one of them lands
     in the same `return None`.
 
-    RETRY SEMANTICS ARE UNCHANGED, AND THEY ARE NOT `synthesize()`'S. There is
-    exactly ONE call and NO retry — any failure, including a malformed or
-    refusing response, returns None immediately. That is deliberate and was
-    deliberate before this conversion: the failure is absorbed by the caller,
-    which marks the group done and leaves the PREVIOUS profile in place (a
-    profile is replaced in place, so not writing is a real, safe outcome — a
-    cluster has no such fallback, which is why `synthesize()` retries once on
-    malformed JSON and this does not).
+    RETRY SEMANTICS ARE DELIBERATELY UNCHANGED — STILL EXACTLY ONE CALL, STILL
+    NO RETRY — AND THAT WAS RE-DECIDED, NOT INHERITED. The response is JSON now,
+    which is `synthesize()`'s stated reason for retrying once ("only the model's
+    own output is worth asking twice for"), so the question is live. Four
+    arguments against, in descending weight:
+
+      1. The asymmetry that justified no-retry is about the CALLER, not the
+         response format, and the schema did not touch it: a failed profile
+         leaves the PREVIOUS profile in place, so not writing is a real and safe
+         outcome. A cluster has no equivalent — a failed synthesis leaves
+         nothing at all — which is the whole of why `synthesize()` retries.
+      2. A retry is a second FULL generation on a `--pool=solo` worker. At the
+         measured ~6.5 tok/s and a 90s budget, one retry can take the tick from
+         a 90s stall to a ~3 minute stall, during which nothing else on the box
+         runs, including the 60s agent-gateway sweeper. `synthesize()` accepts
+         that cost because the alternative is losing the cluster; here the
+         alternative is keeping a profile that already exists.
+      3. What a retry could rescue is now rare and, where it isn't, is not
+         intermittent. The schema makes a malformed reply ungrammatical on the
+         path that honours it. On the schema-dropped rung a retry re-sends an
+         identical unconstrained request to the same model — and every recorded
+         instance of this failure in this codebase (phase 1's placeholder echo,
+         phase 3's mirrored input, the prompt-echo measured above) was
+         REPRODUCIBLE ACROSS RUNS, not flaky. Paying a second generation for the
+         same wrong answer is the likely outcome, not the unlucky one.
+      4. The unit is retried anyway, just not inside this call: the caller marks
+         the group done for THIS run and a later tick picks it up.
 
     `settings` replaces the old base_url/model/api_key/timeout quartet, all four
     of which are now `llm.chat`'s business — endpoint selection additionally
@@ -282,19 +541,18 @@ async def synthesize_profile(
     signature had no way to carry. `max_chars` stays an argument: it is the
     prompt's length cue and `parse_profile`'s rejection threshold, not the LLM's.
 
-    NOT json-mode — the ONE place this deviates from `synthesize()`. The old
-    code built the shared JSON body and then overrode `response_format` to
-    `{"type": "text"}`, i.e. it deliberately turned the grammar OFF, because a
-    profile is plain prose and JSON mode would fight the system prompt above.
-    `json_mode=False` reproduces that exactly: `build_openai_body` emits no
-    `response_format` at all (OpenAI's default is `{"type": "text"}`) and
-    `build_native_body` emits no `format`. Passing `json_mode=True` here would
-    not be a tidy-up, it would break every profile.
+    SCHEMA-CONSTRAINED, and `json_mode` is left False on purpose: `llm.chat`
+    coerces it true whenever a schema is present, so passing both would only
+    duplicate a decision the callee already makes, while the False here records
+    that this module wants THE SCHEMA — not json mode with a schema attached.
+    What comes back is `{"profile": "<prose>"}` and `parse_profile` extracts the
+    prose from it, so the STORED payload is prose exactly as before; the grammar
+    is on the wire, not in the store.
 
-    NO `native_timeout` and NO `json_schema`, for `synthesize()`'s reasons: 45s
-    already clears the measured native latency and a lower native sibling is
-    what strands a non-thinking-model ollama deploy (the probe confirms ollama,
-    not a thinking model); and there is no JSON here for a schema to constrain.
+    NO `native_timeout`, for `synthesize()`'s reason: 90s already clears the
+    measured native latency, and a lower native sibling is what strands a
+    non-thinking-model ollama deploy (the probe confirms ollama, not a thinking
+    model).
     """
     if not memories:
         return None
@@ -304,8 +562,10 @@ async def synthesize_profile(
             settings=settings,
             messages=messages,
             json_mode=False,
+            json_schema=_PROFILE_SCHEMA,
+            json_schema_name="dream_profile",
             temperature=0.2,
-            max_tokens=_MAX_COMPLETION_TOKENS,
+            max_tokens=_MAX_PROFILE_TOKENS,
             # Read off `settings` now that the caller passes no timeout. The
             # literal is a stub-only fallback — production always passes a real
             # Settings — and it is pinned to config.py's default by the drift
@@ -318,17 +578,19 @@ async def synthesize_profile(
             purpose="dream profile synthesis",
         )
 
-        # NO `msg.get("reasoning")` FALLBACK. It used to read the reasoning
-        # field when content came back empty, and here — unlike in JSON mode,
-        # where the argument is that an empty content means the grammar blocked
-        # it so the reasoning is prose by construction — the reasoning IS prose,
-        # which makes the fallback worse rather than merely useless: it would
-        # store a model's raw chain-of-thought at the member's deterministic
-        # point id and serve it through every briefing, replacing the real
-        # profile. That is the same defect class as the refusal incident
-        # `_looks_like_refusal` exists for, arriving through a different door.
-        # An empty content is a failed profile; the caller's correct response is
-        # to leave the previous one alone.
+        # NO `msg.get("reasoning")` FALLBACK, and the schema makes the argument
+        # STRONGER rather than weakening it. Elsewhere (classifier.py,
+        # decision/synthesize.py) the case against it is that under a grammar an
+        # empty content means the grammar blocked the output, so `reasoning` is
+        # prose and `json.loads` will reject it anyway — useless, not harmful.
+        # Here it would be actively harmful, because the caller of this value
+        # ACCEPTS prose: `_extract_profile_text`'s rung-2 branch returns any
+        # non-JSON text as-is. Feeding it a model's raw chain-of-thought would
+        # store that at the member's deterministic point id and serve it through
+        # every briefing, replacing the real profile — the same defect class as
+        # the refusal incident `_looks_like_refusal` exists for, through a
+        # different door. An empty content is a failed profile; the caller's
+        # correct response is to leave the previous one alone.
         if not result.content.strip():
             logger.warning(
                 "Dream profile synthesis returned empty content for member %s "
