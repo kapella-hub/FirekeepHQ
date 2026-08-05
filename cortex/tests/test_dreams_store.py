@@ -212,3 +212,55 @@ def test_no_derived_sampled_boolean_is_stored():
     p = store.build_dream_payload(_insight(), _members(), cluster_key="k", run_id="r")
     assert "dream_sampled" not in p
     assert "dreamed_sampled" not in p
+
+
+# ---------------------------------------------------------------------------
+# domain heterogeneity. Found on the production VPS 2026-08-05, and only AFTER
+# the synthesis timeout was fixed: a ~32s call produced usable insights, then
+# build_dream_payload raised and the tick recorded status="error" having
+# written nothing. The timeout had been masking this for the entire life of
+# the feature.
+# ---------------------------------------------------------------------------
+
+def _mixed_domain_members(domains):
+    return [
+        Candidate(id=f"m{i}", text=f"e{i}", vector=[1.0], payload={
+            "workspace_id": "ws1", "namespace": "default", "project": "firekeep",
+            "member_id": "member-1", "agent_id": "a1", "domain": d,
+        })
+        for i, d in enumerate(domains)
+    ]
+
+
+def test_a_cluster_spanning_several_domains_does_not_raise():
+    """The live failure, verbatim. Clusters are grouped by COSINE and
+    partitioned by (workspace_id, namespace, project) — `domain` is in neither,
+    so a cluster is free to span several and on real data routinely does. These
+    seven strings are one concept spelled seven ways, which is precisely what
+    the clusterer is supposed to see past and what memory_agent's
+    cluster-coherence pass exists to reconcile."""
+    members = _mixed_domain_members([
+        "ansible", "ansible-playbooks", "automation-playbooks", "automation-portal",
+        "automation_playbooks", "automationportal", "infrastructure-automation",
+    ])
+    p = store.build_dream_payload(_insight(), members, cluster_key="k", run_id="r")
+    assert p["domain"] == "general"
+
+
+def test_a_cluster_agreeing_on_one_domain_still_keeps_it():
+    """The fallback must not cost the common case its real label."""
+    p = store.build_dream_payload(_insight(), _members(), cluster_key="k", run_id="r")
+    assert p["domain"] == "infra"
+
+
+@pytest.mark.parametrize("key", ["workspace_id", "namespace", "project"])
+def test_the_strict_check_survives_where_it_is_load_bearing(key):
+    """Do NOT relax _uniform for these. They ARE partition invariants
+    (select.partition_key), so disagreement means the partitioning broke, and a
+    point that silently claimed one tenant's workspace for another's memories
+    would be a cross-tenant leak. `domain` was only ever wrong because nothing
+    established it as an invariant in the first place."""
+    members = _members()
+    members[0].payload[key] = "somewhere-else"
+    with pytest.raises(ValueError, match=key):
+        store.build_dream_payload(_insight(), members, cluster_key="k", run_id="r")

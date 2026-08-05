@@ -35,10 +35,52 @@ def profile_point_id(member_id: str, workspace_id: str) -> str:
 
 
 def _uniform(members: list[Candidate], key: str) -> str:
+    """The cluster's shared value for `key`. RAISES when they disagree.
+
+    Only legitimate for keys that `select.partition_key` actually makes
+    invariant — `workspace_id`, `namespace`, `project`. A cluster is built
+    inside one of those buckets, so disagreement means the partitioning broke
+    and writing a point that silently claims one tenant's workspace for
+    another's memories would be a cross-tenant leak. Failing loud is right.
+
+    For anything else use `_uniform_or_blank`: raising about a key nothing
+    ever promised is not a safety check, it is a crash.
+    """
     values = {str(m.payload.get(key) or "") for m in members}
     if len(values) > 1:
         raise ValueError(f"cluster is not homogeneous in {key}: {sorted(values)}")
     return values.pop() if values else ""
+
+
+def _uniform_or_blank(members: list[Candidate], key: str) -> str:
+    """The cluster's shared value for `key`, or "" when they disagree.
+
+    For keys that are NOT partition invariants. `domain` is the live case, and
+    it took down the whole pass: clusters are grouped by cosine similarity and
+    partitioned by (workspace_id, namespace, project) — `domain` is in neither,
+    so a cluster is free to span several, and on the production store one
+    routinely does. A real cluster carried seven spellings of a single concept
+    (`ansible`, `ansible-playbooks`, `automation-playbooks`, `automation-portal`,
+    `automation_playbooks`, `automationportal`, `infrastructure-automation`),
+    which is exactly the label fragmentation `memory_agent`'s cluster-coherence
+    pass exists to reconcile and exactly what the clusterer is supposed to see
+    past.
+
+    Passing that through `_uniform` raised, `run_one_unit` recorded
+    status="error", and the tick wrote nothing — AFTER a successful ~32s
+    synthesis that had already produced usable insights. The `or "general"` at
+    the call site is the proof this was never the intent: it can only mean the
+    author expected a falsy return for "no single answer", which is what this
+    function does and what `_uniform` does only for the empty case.
+
+    Deliberately mirrors `task.py::_uniform_or_blank`, which reached the same
+    conclusion for profile groups. Not shared between the two modules: task.py's
+    operates on profile groups keyed by (member_id, workspace_id) and store.py's
+    on clusters, and collapsing them would tie two different grouping contracts
+    to one helper for the sake of four identical lines.
+    """
+    values = {str(m.payload.get(key) or "") for m in members}
+    return values.pop() if len(values) == 1 else ""
 
 
 def build_dream_payload(
@@ -101,7 +143,9 @@ def build_dream_payload(
         "member_id": member_ids[0] if len(member_ids) == 1 else None,
         "agent_id": "dream",
         "session_id": None,
-        "domain": _uniform(members, "domain") or "general",
+        # NOT _uniform: domain is not a partition invariant and a real cluster
+        # spans several. See _uniform_or_blank's docstring.
+        "domain": _uniform_or_blank(members, "domain") or "general",
         "tags": ["dream"],
         # Recall reads memory_type from the projection, GC from top-level — write
         # both so they can never disagree about this point.
