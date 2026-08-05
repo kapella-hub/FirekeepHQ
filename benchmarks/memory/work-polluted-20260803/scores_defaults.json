@@ -1,0 +1,58 @@
+{
+  "k": 3,
+  "overall": {
+    "n": 470,
+    "recall_at_k": 0.7787234042553192,
+    "coverage_at_k": 0.5612765957446809,
+    "mrr": 0.7680851063829788,
+    "ndcg_at_k": 0.5713286955128061
+  },
+  "by_question_type": {
+    "knowledge-update": {
+      "n": 72,
+      "recall_at_k": 0.8888888888888888,
+      "coverage_at_k": 0.625,
+      "mrr": 0.8888888888888888,
+      "ndcg_at_k": 0.6597593223950341
+    },
+    "multi-session": {
+      "n": 121,
+      "recall_at_k": 0.8099173553719008,
+      "coverage_at_k": 0.4275482093663912,
+      "mrr": 0.7933884297520661,
+      "ndcg_at_k": 0.5984560215120098
+    },
+    "single-session-assistant": {
+      "n": 56,
+      "recall_at_k": 0.8214285714285714,
+      "coverage_at_k": 0.8214285714285714,
+      "mrr": 0.8214285714285714,
+      "ndcg_at_k": 0.6873489354220695
+    },
+    "single-session-preference": {
+      "n": 30,
+      "recall_at_k": 0.6666666666666666,
+      "coverage_at_k": 0.6666666666666666,
+      "mrr": 0.65,
+      "ndcg_at_k": 0.445250815297345
+    },
+    "single-session-user": {
+      "n": 64,
+      "recall_at_k": 0.6875,
+      "coverage_at_k": 0.6875,
+      "mrr": 0.6875,
+      "ndcg_at_k": 0.4845489192001026
+    },
+    "temporal-reasoning": {
+      "n": 127,
+      "recall_at_k": 0.7401574803149606,
+      "coverage_at_k": 0.44934383202099737,
+      "mrr": 0.7204724409448819,
+      "ndcg_at_k": 0.5177042630256725
+    }
+  },
+  "errored_questions": [],
+  "missing_questions": [],
+  "abstention_excluded": 30,
+  "ledger_gap_questions": []
+}

@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from app import llm
+from app.dreams import select as sel
 from app.dreams import synthesize as syn
 from app.dreams.select import Candidate
 
@@ -500,3 +501,217 @@ async def test_a_settings_stub_without_the_budget_field_falls_back_to_the_config
     assert seen["timeout"]["read"] == (
         Settings.model_fields["DREAM_SYNTH_TIMEOUT_SECONDS"].default
     )
+
+
+# --------------------------------------------------------------------------
+# Cluster sampling (DREAM_MAX_CLUSTER_MEMBERS_PER_SYNTHESIS)
+#
+# synthesize() sends at most N of a cluster's members. Measured on the live
+# store 2026-08-04 (VPS, qwen3:4b, 4 vCPU, native /api/chat, 45s budget), 526
+# candidates / 20 clusters sized [23,16,10,10,10,9,8,8,7,6,6,5]: 4 members ->
+# an uncapped 23-member cluster (~15,000 chars) never completed, which is what
+# the real tick hit. Single probes per size suggested a clean size->latency
+# ordering; repeating each capped prompt 3x dissolved it — cap 4 spanned
+# 12.0-42.9s on IDENTICAL input, cap 5 gave 29.8-35.8s, cap 6 gave 25.1-35.8s.
+# All of 4..6 fit; uncapped never does. Capping also improved output (4 -> 1
+# insight, 6 -> 3 specific ones, uncapped -> 0). See config.py for the table.
+# --------------------------------------------------------------------------
+
+
+def _spread(n):
+    """Members whose vectors fan out, so centrality actually discriminates."""
+    return [
+        Candidate(id=f"m{i:02d}", text=f"episode {i}", vector=[1.0, i * 0.05], payload={})
+        for i in range(n)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_synthesize_caps_how_many_episodes_reach_the_prompt():
+    """The measured defect: a 23-member cluster built a ~15,000-char prompt and
+    blew the budget. Assert on the WIRE, because the prompt is the thing that
+    cost the time — a unit test of sample_cluster alone would not prove the
+    sample is what got sent."""
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"message": {"content": _raw()}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await syn.synthesize(
+            _spread(23),
+            settings=_S(DREAM_MAX_CLUSTER_MEMBERS_PER_SYNTHESIS=5),
+            max_chars=800, client=client,
+        )
+
+    user = next(m["content"] for m in seen["body"]["messages"] if m["role"] == "user")
+    assert len(user.splitlines()) == 5
+    assert "[5]" not in user, "indices must be 0..4 — they index the SAMPLE"
+
+
+@pytest.mark.asyncio
+async def test_a_cluster_under_the_cap_produces_a_byte_identical_prompt():
+    """No behaviour change for a cluster that already fitted. Captured by
+    running the same members with the cap on and with it effectively off and
+    comparing the request bodies — the assertion the "small clusters are
+    unaffected" requirement actually needs."""
+    bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"message": {"content": _raw()}})
+
+    members = _spread(4)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await syn.synthesize(
+            members, settings=_S(DREAM_MAX_CLUSTER_MEMBERS_PER_SYNTHESIS=5),
+            max_chars=800, client=client,
+        )
+        await syn.synthesize(
+            members, settings=_S(DREAM_MAX_CLUSTER_MEMBERS_PER_SYNTHESIS=0),
+            max_chars=800, client=client,
+        )
+
+    assert bodies[0] == bodies[1]
+
+
+@pytest.mark.asyncio
+async def test_source_indices_map_to_the_SAMPLED_members_not_the_whole_cluster():
+    """The silent-corruption case this cap could have introduced.
+
+    The model is shown 5 of 23 and cites index 4. If parse_insights were handed
+    the CLUSTER instead of the SAMPLE, index 4 would resolve to the cluster's
+    fifth member — a real id, in range, and the wrong memory. No exception, no
+    log line, just a dream attributed to something it was never shown.
+
+    The sample here is the 5 nearest the centroid of a fanned-out 23, so it is
+    NOT the first five by id — which is what makes the two mappings disagree
+    and lets this test fail if they are ever confused.
+    """
+    members = _spread(23)
+    expected = [m.id for m in sel.sample_cluster(members, 5)]
+    assert expected != [m.id for m in members[:5]], "sample must differ from the prefix"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"message": {"content": _raw(source_indices=[0, 4])}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        out = await syn.synthesize(
+            members, settings=_S(DREAM_MAX_CLUSTER_MEMBERS_PER_SYNTHESIS=5),
+            max_chars=800, client=client,
+        )
+
+    assert len(out) == 1
+    assert out[0].source_ids == [expected[0], expected[4]]
+
+
+@pytest.mark.asyncio
+async def test_an_index_past_the_sample_is_rejected_even_though_the_cluster_is_longer():
+    """Range validation must be against the SAMPLE. Index 7 is out of range for
+    a 5-member prompt but perfectly in range for the 23-member cluster, so a
+    validator pointed at the cluster would accept a citation the model could
+    not have made."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"message": {"content": _raw(source_indices=[7])}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        out = await syn.synthesize(
+            _spread(23), settings=_S(DREAM_MAX_CLUSTER_MEMBERS_PER_SYNTHESIS=5),
+            max_chars=800, client=client,
+        )
+    assert out == []
+
+
+@pytest.mark.asyncio
+async def test_insight_records_how_many_episodes_it_was_shown():
+    """`sample_size` is what lets the write path say "5 of 23" instead of
+    implying the model read all 23. It is what the model SAW, deliberately not
+    len(source_ids), which is only what it cited."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"message": {"content": _raw(source_indices=[0, 1])}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        out = await syn.synthesize(
+            _spread(23), settings=_S(DREAM_MAX_CLUSTER_MEMBERS_PER_SYNTHESIS=5),
+            max_chars=800, client=client,
+        )
+    assert out[0].sample_size == 5
+    assert len(out[0].source_ids) == 2
+
+
+def test_parse_insights_records_the_sample_size_it_validated_against():
+    got = syn.parse_insights(_raw(), _members(4), max_chars=800)
+    assert got[0].sample_size == 4
+
+
+def test_hand_built_insight_defaults_to_unrecorded_sample_size():
+    """Every pre-existing caller/test constructs an Insight with three fields;
+    the new one must be optional, and its 0 must read as "not recorded" (store
+    falls back to the cluster size) rather than "saw nothing"."""
+    assert syn.Insight(content="c", memory_type="procedural", source_ids=["a"]).sample_size == 0
+
+
+def test_default_cap_is_five_and_is_pinned_to_the_config_default():
+    """synthesize() reads the cap as `getattr(settings, ..., 5)`; that literal
+    is the duck-typed-stub fallback production never reaches, and this pins it
+    to the real default so the two cannot drift silently — same shape as the
+    DREAM_SYNTH_TIMEOUT_SECONDS drift guard above.
+
+    5 is chosen for headroom under measured variance, not for a winning time:
+    across 3 runs each, caps 4/5/6 all fit the 45s budget (worst run 35.8s at
+    cap 5), while cap 4 alone spanned 12.0-42.9s on identical input. 5 clears
+    the prompt's 2-episodes-per-insight floor and produced multiple insights in
+    the quality probe. See config.py for the full table and why single probes
+    are not sufficient to tune this.
+    """
+    from app.config import Settings
+
+    assert Settings.model_fields["DREAM_MAX_CLUSTER_MEMBERS_PER_SYNTHESIS"].default == 5
+
+
+@pytest.mark.asyncio
+async def test_settings_without_the_cap_field_still_caps_at_the_default():
+    """A settings object predating the field (or a stub) must not silently
+    revert to the unbounded prompt that made 19 of 20 clusters unrunnable."""
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"message": {"content": _raw()}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await syn.synthesize(_spread(23), settings=_S(), max_chars=800, client=client)
+
+    user = next(m["content"] for m in seen["body"]["messages"] if m["role"] == "user")
+    assert len(user.splitlines()) == 5
+
+
+def test_compose_default_does_not_override_the_code_default():
+    """A stale `${VAR:-N}` in compose silently wins over the code default:
+    compose supplies the fallback when the operator's `.env` does not set the
+    variable, so the container receives compose's number and Settings never
+    sees its own. All three cortex services that run or schedule the dream tick
+    must therefore carry the same 5 this file pins — a compose block left at,
+    say, 23 would reinstate the unbounded prompt on the deployment while every
+    test here passed. (`.env.example` carries no DREAM_* vars at all, so there
+    is deliberately no sibling guard for it.)"""
+    import re
+    from pathlib import Path
+
+    from app.config import Settings
+
+    repo = Path(__file__).resolve().parents[2]
+    text = (repo / "docker-compose.yml").read_text(encoding="utf-8")
+    found = re.findall(
+        r"DREAM_MAX_CLUSTER_MEMBERS_PER_SYNTHESIS:\s*"
+        r"\$\{DREAM_MAX_CLUSTER_MEMBERS_PER_SYNTHESIS:-([0-9]+)\}",
+        text,
+    )
+    assert len(found) == 3, (
+        "docker-compose.yml must set DREAM_MAX_CLUSTER_MEMBERS_PER_SYNTHESIS on "
+        f"all three dream-carrying services; found {len(found)}"
+    )
+    assert {int(v) for v in found} == {
+        Settings.model_fields["DREAM_MAX_CLUSTER_MEMBERS_PER_SYNTHESIS"].default
+    }

@@ -308,6 +308,56 @@ class Settings(BaseSettings):
     DREAM_CLUSTER_THRESHOLD: float = 0.72
     DREAM_MAX_CLUSTERS_PER_RUN: int = 20
     DREAM_MAX_INSIGHT_CHARS: int = 800
+    # How many of a cluster's members are actually SENT to the model for one
+    # cluster synthesis. This caps the PROMPT, not the cluster: the resulting
+    # dream still covers the whole cluster, and store.build_dream_payload
+    # records both numbers (dream_cluster_size / dream_sampled_count) so a
+    # reader can tell "summarised from 5 of 23" from "5 of 5".
+    #
+    # Before this existed there was no cap at all, and on the live production
+    # store that made most of the pass unrunnable. Measured on the VPS
+    # 2026-08-04 (qwen3:4b, 4 vCPU, native /api/chat, budget
+    # DREAM_SYNTH_TIMEOUT_SECONDS=45s) against 526 real candidates forming 20
+    # clusters of sizes [23,16,10,10,10,9,8,8,7,6,6,5]:
+    #
+    # a single probe per size gave 38.1s (4 members), 52.0s (5), 65.9s (10) and
+    # a timeout on the 23-member cluster the real tick actually hit — the last
+    # of which is why dreaming wrote zero insights in production.
+    #
+    # DO NOT TUNE THIS OFF SINGLE PROBES. Re-measuring the SAME capped prompt
+    # three times each showed the box's latency is dominated by variance, not
+    # by prompt size:
+    #
+    #     cap  prompt chars   runs (s)            median   worst   vs 45s
+    #      4      3,159       42.9, 16.8, 12.0     16.8s   42.9s   fits
+    #      5      3,764       35.8, 29.8, 30.3     30.3s   35.8s   fits
+    #      6      4,369       35.8, 25.1, 31.3     31.3s   35.8s   fits
+    #
+    # Identical input at cap=4 spanned 12.0-42.9s, a 3.6x spread. So the
+    # single-probe table above measured scheduling noise on a shared 4-vCPU box
+    # as much as it measured tokens, and its apparent "5 EXCEEDS, 6 fits at 93%
+    # utilisation" ordering does not survive repetition. What DOES survive: an
+    # uncapped 23-member cluster never completes, and every cap in 4..6 does.
+    #
+    # Capping also makes the OUTPUT BETTER, which is the durable finding. Same
+    # 23-member cluster: capped to 4 -> 1 insight; capped to 6 -> 3 specific,
+    # usable insights; uncapped -> 0. Cluster members are near-duplicates BY
+    # CONSTRUCTION (cosine >= DREAM_CLUSTER_THRESHOLD), so members past the
+    # first handful are redundant tokens that dilute the signal and eat the
+    # generation budget that writing the answer needs.
+    #
+    # 5 is chosen for headroom under that variance, not for a winning time: it
+    # is >= the 2 episodes the prompt requires per insight, produced multiple
+    # insights in the quality probe, and its worst observed run (35.8s) leaves
+    # ~20% of the budget spare on an otherwise-idle box. 4 has a lower median
+    # but yielded a single hedged generality; 6 is not measurably slower than 5
+    # and is a defensible alternative on a machine that has been measured.
+    #
+    # <= 0 means "no cap" (send the whole cluster) — the pre-change behaviour,
+    # available for a fast-GPU deploy that measured it. Values below 2 are
+    # legal but pointless: the system prompt requires each insight to be
+    # supported by at least 2 episodes.
+    DREAM_MAX_CLUSTER_MEMBERS_PER_SYNTHESIS: int = 5
     DREAM_OWM_FLOOR: float = 0.35
     # This is the ONLY timeout that actually binds on the dream tick. The
     # Celery worker runs --pool=solo (docker-compose.yml:437), and Celery's

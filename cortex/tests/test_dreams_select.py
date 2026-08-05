@@ -186,3 +186,135 @@ def test_dream_profile_source_is_excluded_even_if_memory_type_is_forged():
     mechanism that already blocks this in practice."""
     p = _payload(source="dream_profile", memory_type="episodic")
     assert not _ok(p)
+
+
+# --------------------------------------------------------------------------
+# sample_cluster — the prompt cap (DREAM_MAX_CLUSTER_MEMBERS_PER_SYNTHESIS)
+#
+# WHY it exists, measured on the live production store 2026-08-04 (VPS,
+# qwen3:4b, 4 vCPU, native /api/chat, DREAM_SYNTH_TIMEOUT_SECONDS=45s), 526
+# candidates forming 20 clusters sized [23,16,10,10,10,9,8,8,7,6,6,5]:
+# an uncapped 23-member cluster (~15,000 chars) never completed, which is why
+# the real tick wrote zero insights. Repeating the SAME capped prompt 3x each
+# showed latency is variance-dominated, not size-dominated: cap 4 spanned
+# 12.0-42.9s, cap 5 gave 29.8-35.8s, cap 6 gave 25.1-35.8s. Every cap in 4..6
+# fits the 45s budget; the uncapped cluster never does. Capping also improved
+# output (4 -> 1 insight, 6 -> 3 specific ones, uncapped -> 0), which is the
+# finding that survives repetition. See config.py for the full table.
+# --------------------------------------------------------------------------
+
+
+def _c(i, vector):
+    return sel.Candidate(id=f"m{i:02d}", text=f"e{i}", vector=list(vector), payload={})
+
+
+def test_cluster_at_or_below_the_cap_is_returned_completely_unchanged():
+    """The load-bearing no-op case. A cluster that already fits must not just
+    contain the same members — it must be the SAME ORDER, so build_messages
+    emits a byte-identical prompt and the cap cannot perturb the behaviour of
+    the clusters that were already working (only 1 of 20 on the live store,
+    but that one must not regress)."""
+    members = [_c(i, [1.0, float(i)]) for i in range(4)]
+    assert sel.sample_cluster(members, 5) == members
+    assert sel.sample_cluster(members, 4) == members
+    # Also true of the degenerate "no cap" setting.
+    assert sel.sample_cluster(members, 0) == members
+    assert sel.sample_cluster(members, -1) == members
+
+
+def test_no_cap_setting_sends_the_whole_cluster():
+    members = [_c(i, [1.0, 0.0]) for i in range(30)]
+    assert len(sel.sample_cluster(members, 0)) == 30
+
+
+def test_cap_is_honoured_and_does_not_mutate_the_input():
+    members = [_c(i, [1.0, float(i) / 100.0]) for i in range(23)]
+    before = list(members)
+    got = sel.sample_cluster(members, 5)
+    assert len(got) == 5
+    assert members == before, "sample_cluster must not reorder or shorten its input"
+    assert all(m in members for m in got)
+
+
+def test_sample_is_deterministic_across_repeated_calls_and_input_order():
+    """The whole module's reproducibility property. Same cluster, any input
+    ordering, same sample — otherwise two runs of the same store could produce
+    different dreams from the same cluster_key."""
+    members = [_c(i, [1.0, float(i) / 10.0]) for i in range(12)]
+    a = sel.sample_cluster(members, 5)
+    b = sel.sample_cluster(members, 5)
+    c = sel.sample_cluster(list(reversed(members)), 5)
+    assert [m.id for m in a] == [m.id for m in b] == [m.id for m in c]
+
+
+def test_sample_is_returned_in_id_order():
+    """Prompt position is not a ranking signal — returning centrality order
+    would imply to the model that index 0 matters more, which nothing here
+    supports. id order also matches cluster_key's own convention."""
+    members = [_c(i, [1.0, float(i) / 10.0]) for i in range(12)]
+    got = sel.sample_cluster(members, 5)
+    assert [m.id for m in got] == sorted(m.id for m in got)
+
+
+def test_sample_picks_the_members_NEAREST_THE_CENTROID_not_the_first_k():
+    """The centrality claim is a computed one, so it has to be provable.
+
+    Nine members sit tightly around [1, 0]; two outliers sit far off it. The
+    centroid is dominated by the tight group, so the outliers must be the ones
+    dropped — even though one of them sorts FIRST by id and would therefore be
+    kept by any arbitrary-but-stable ordering.
+    """
+    tight = [_c(i, [1.0, 0.01 * i]) for i in range(2, 11)]
+    outliers = [_c(0, [0.0, 1.0]), _c(99, [-1.0, 0.2])]
+    members = outliers[:1] + tight + outliers[1:]
+
+    got = [m.id for m in sel.sample_cluster(members, 5)]
+
+    assert "m00" not in got, "the far outlier sorting first by id must not be kept"
+    assert "m99" not in got
+    assert set(got) <= {m.id for m in tight}
+
+
+def test_a_member_with_no_vector_sinks_but_is_not_excluded():
+    """Scoring 0.0 is the honest answer for a member whose vector is unusable
+    among usable ones — it sinks below every real match without needing a
+    special case, and a cluster of ONLY such members can still be sampled (next
+    test), because a cluster must always be able to produce a prompt."""
+    members = [_c(i, [1.0, 0.0]) for i in range(1, 6)] + [_c(0, [])]
+    got = [m.id for m in sel.sample_cluster(members, 3)]
+    assert "m00" not in got
+
+
+def test_unusable_vectors_degrade_to_stable_id_order_not_a_crash():
+    """Missing or ragged vectors mean no centroid can be computed. The
+    fallback is plain id order, which is arbitrary-but-stable and documented
+    as exactly that rather than dressed up as representative."""
+    ragged = [
+        sel.Candidate(id="m03", text="c", vector=[1.0, 2.0], payload={}),
+        sel.Candidate(id="m01", text="a", vector=[1.0], payload={}),
+        sel.Candidate(id="m02", text="b", vector=[], payload={}),
+        sel.Candidate(id="m04", text="d", vector=[3.0, 4.0, 5.0], payload={}),
+    ]
+    got = sel.sample_cluster(ragged, 2)
+    assert [m.id for m in got] == ["m01", "m02"]
+
+    novectors = [sel.Candidate(id=f"m{i}", text="x", vector=[], payload={}) for i in range(6)]
+    assert len(sel.sample_cluster(novectors, 3)) == 3
+
+
+def test_zero_centroid_degrades_instead_of_dividing_by_zero():
+    """Antipodal members average to the zero vector, whose norm is 0. Cosine
+    against it is undefined, so this must fall back rather than raise."""
+    members = [
+        _c(1, [1.0, 0.0]), _c(2, [-1.0, 0.0]),
+        _c(3, [0.0, 1.0]), _c(4, [0.0, -1.0]),
+    ]
+    got = sel.sample_cluster(members, 2)
+    assert [m.id for m in got] == ["m01", "m02"]
+
+
+def test_centroid_is_the_component_wise_mean_and_refuses_ragged_input():
+    assert sel.centroid([[1.0, 3.0], [3.0, 1.0]]) == [2.0, 2.0]
+    assert sel.centroid([]) is None
+    assert sel.centroid([[]]) is None
+    assert sel.centroid([[1.0], [1.0, 2.0]]) is None

@@ -54,7 +54,38 @@ def build_dream_payload(
         "source": "dream",
         "dream_run_id": run_id,
         "dream_cluster_key": cluster_key,
+        # Three provenance facts, deliberately distinct — a reader who conflates
+        # them gets a different (and wrong) answer to "what does this dream
+        # cover?":
+        #
+        #   dreamed_from        the ids the MODEL CITED. Unchanged in meaning by
+        #                       cluster sampling — it was already a subset of the
+        #                       cluster, since a model cites only what it used.
+        #   dream_sampled_count how many episodes the model was SHOWN.
+        #   dream_cluster_size  how many the cluster HAS, i.e. what this dream is
+        #                       about and what mark_consolidated recorded.
+        #
+        # Sampling (synthesize.sample_cluster, capped by
+        # DREAM_MAX_CLUSTER_MEMBERS_PER_SYNTHESIS) changes only the middle one.
+        # Without it the stored point would imply all N members were read, which
+        # is the one thing capping must not be allowed to misreport: "summarised
+        # from 5 of 23" and "from 23 of 23" have to be distinguishable here.
+        #
+        # Two integers, and deliberately NO derived `dream_sampled: bool`. The
+        # boolean is `sampled_count < cluster_size` — recomputable by anyone, and
+        # a stored copy is a second source of truth that can disagree with the
+        # numbers the moment one writer sets one field and not the other. Two
+        # numbers also answer the question the boolean cannot: how much less.
+        #
+        # `insight.sample_size` is 0 only for an Insight built by hand rather
+        # than by parse_insights; falling back to the cluster size there states
+        # the pre-sampling reality (no sampling happened) rather than writing a 0
+        # that reads as "the model saw nothing".
         "dreamed_from": list(insight.source_ids),
+        "dream_cluster_size": len(members),
+        "dream_sampled_count": (
+            getattr(insight, "sample_size", 0) or len(members)
+        ),
         # procedural, NEVER reference: reference means no age decay at all, and an
         # auto-approved unreviewed memory must be able to fade if it stops helping.
         "memory_type": "procedural",

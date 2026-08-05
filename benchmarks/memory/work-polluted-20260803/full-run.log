@@ -1,0 +1,15 @@
+[preflight] ok
+[ingest] done=23769 skipped=98 calls=123845 errors=0
+[recall:defaults] completed=498 skipped=2 errored=0 -> E:\Documents\Projects\Firekeep\.claude\worktrees\memory-benchmark\benchmarks\memory\work\recall_defaults.jsonl
+[recall:bench] completed=498 skipped=2 errored=0 -> E:\Documents\Projects\Firekeep\.claude\worktrees\memory-benchmark\benchmarks\memory\work\recall_bench.jsonl
+[score:defaults] n=470 recall@k=0.779 mrr=0.768 -> E:\Documents\Projects\Firekeep\.claude\worktrees\memory-benchmark\benchmarks\memory\work\scores_defaults.json
+[score:bench] n=470 recall@k=0.819 mrr=0.777 -> E:\Documents\Projects\Firekeep\.claude\worktrees\memory-benchmark\benchmarks\memory\work\scores_bench.json
+[qa] answered=498 skipped=2 judge_errors=0 -> E:\Documents\Projects\Firekeep\.claude\worktrees\memory-benchmark\benchmarks\memory\work\qa_bench.jsonl
+| config | k | n | Recall@k | Coverage@k | MRR | NDCG@k |
+|---|---|---|---|---|---|---|
+| defaults | 3 | 470 | 0.779 | 0.561 | 0.768 | 0.571 |
+| bench | 10 | 470 | 0.819 | 0.718 | 0.777 | 0.630 |
+
+Local-reader QA (bench config, NOT comparable to published GPT-4o-reader numbers): 238/500 = 0.476 accuracy (0 judge errors).
+[report] -> E:\Documents\Projects\Firekeep\.claude\worktrees\memory-benchmark\benchmarks\memory\results\20260803-201503-full-v1.json
+[report] -> E:\Documents\Projects\Firekeep\.claude\worktrees\memory-benchmark\benchmarks\memory\results\METHODOLOGY.md

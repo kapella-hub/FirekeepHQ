@@ -822,3 +822,69 @@ async def test_lock_contention_returns_locked_without_touching_data(monkeypatch)
     out = await dt.run_one_unit()
     assert out == {"status": "locked"}
     assert not vector.upserted
+
+
+# ---------------------------------------------------------------------------
+# Cluster sampling must not narrow what a dream COVERS
+#
+# synthesize() caps the prompt at DREAM_MAX_CLUSTER_MEMBERS_PER_SYNTHESIS (5)
+# — without it, 19 of the 20 clusters on the live store exceeded the 45s
+# budget and wrote nothing. The cap is about tokens; it must leave the unit of
+# consolidation alone. If only the sampled members were marked consolidated,
+# the other 18 would stay candidates, re-cluster into a near-identical cluster
+# next run and be re-synthesized forever — exactly the starvation
+# `dreams:consolidated` exists to prevent (see state.mark_consolidated).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_sampled_cluster_still_consolidates_every_member(monkeypatch):
+    from app.dreams.state import DreamState
+    from app.dreams.synthesize import Insight
+
+    # 12 tightly-similar memories: ONE cluster, well over the cap of 5.
+    points = [
+        _FakePoint(f"p{i:02d}", _candidate_payload("mem1", "wsA", i), vector=[1.0, 0.01 * i])
+        for i in range(12)
+    ]
+    r = fakeredis.FakeStrictRedis()
+    vector = _FakeVector(points)
+    settings = _dream_settings(
+        DREAM_CLUSTER_THRESHOLD=0.5, DREAM_PROFILES_ENABLED=False,
+        DREAM_MAX_CLUSTER_MEMBERS_PER_SYNTHESIS=5,
+    )
+
+    async def fake_build_clients():
+        return r, vector, settings
+
+    seen = {}
+
+    async def fake_synth(members, **kw):
+        # Stands in for a CAPPED call: the real synthesize() would have sampled
+        # internally and cited only sampled ids. What is under test here is the
+        # task/store wiring around it, not the sampling itself (that is
+        # test_dreams_synthesize.py's job).
+        seen["cluster_size"] = len(members)
+        return [Insight(content="lesson", memory_type="procedural",
+                        source_ids=[members[0].id], sample_size=5)]
+
+    monkeypatch.setattr(dt, "_build_clients", fake_build_clients)
+    monkeypatch.setattr(dt, "_generation_backend_available", AsyncMock(return_value=True))
+    monkeypatch.setattr("app.dreams.synthesize.synthesize", fake_synth)
+
+    out = await dt.run_one_unit()
+    assert out["status"] == "ok" and out["unit"] == "cluster"
+
+    # The task hands synthesize the WHOLE cluster; sampling happens inside it,
+    # so nothing upstream ever sees a shortened cluster.
+    assert seen["cluster_size"] == 12
+
+    assert len(DreamState(r).consolidated_set()) == 12, (
+        "every member of a sampled cluster must be consolidated — marking only "
+        "the sample leaves the rest to re-cluster and be re-dreamed forever"
+    )
+
+    payload = next(iter(vector.upserted.values()))["payload"]
+    assert payload["dream_cluster_size"] == 12
+    assert payload["dream_sampled_count"] == 5
+    assert payload["dreamed_from"] == ["p00"]

@@ -61,7 +61,7 @@ from typing import Any
 import httpx
 
 from app import llm
-from app.dreams.select import Candidate
+from app.dreams.select import Candidate, sample_cluster
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +151,18 @@ class Insight:
     content: str
     memory_type: str
     source_ids: list[str] = field(default_factory=list)
+    # How many episodes were actually PUT IN FRONT OF THE MODEL to produce
+    # this insight — set by parse_insights to len(the members it validated
+    # against), which is the sample when synthesize() capped one. It is NOT
+    # len(source_ids): the model cites only what it used, while this is what
+    # it saw. store.build_dream_payload turns it into `dream_sampled_count` so
+    # a stored dream cannot imply it read a whole cluster it only sampled.
+    #
+    # Default 0 means "not recorded" and is what a hand-constructed Insight
+    # (every pre-existing test, and any future caller building one directly)
+    # gets; store treats that as "no sampling" and falls back to the cluster
+    # size. Every Insight this module actually produces carries a real value.
+    sample_size: int = 0
 
 
 def build_messages(members: list[Candidate], *, max_chars: int = _DEFAULT_MAX_CHARS) -> list[dict]:
@@ -179,7 +191,16 @@ def build_messages(members: list[Candidate], *, max_chars: int = _DEFAULT_MAX_CH
 def parse_insights(raw: str, members: list[Candidate], *, max_chars: int) -> list[Insight]:
     """Validate and convert raw LLM JSON into Insights. Never raises — any
     malformed input (bad JSON, wrong shape, out-of-range indices, empty/overlong
-    content) is rejected item-by-item or as a whole, returning [] at worst."""
+    content) is rejected item-by-item or as a whole, returning [] at worst.
+
+    `members` MUST be the exact list `build_messages` was given, because
+    `source_indices` are positions in THAT list — the model can only cite what
+    it was shown. Since synthesize() may cap a cluster down to a sample
+    (sample_cluster), passing the whole cluster here while the prompt carried
+    the sample would map every index onto the wrong memory: a silent
+    mis-attribution, not an error. The range check below (`0 <= i < len`) would
+    not catch it, since a cluster is always at least as long as its sample.
+    Both call sites in synthesize() therefore pass the same `sample` object."""
     try:
         data = json.loads(raw)
     except (json.JSONDecodeError, TypeError):
@@ -219,7 +240,10 @@ def parse_insights(raw: str, members: list[Candidate], *, max_chars: int) -> lis
         # memory_type is FORCED to procedural regardless of what the model
         # returned — "reference" means no age decay at all (permanent rank
         # immunity), which an unreviewed auto-approved memory must never get.
-        out.append(Insight(content=content, memory_type="procedural", source_ids=source_ids))
+        out.append(Insight(
+            content=content, memory_type="procedural", source_ids=source_ids,
+            sample_size=len(member_ids),
+        ))
 
     return out[:_MAX_INSIGHTS]
 
@@ -253,6 +277,17 @@ async def synthesize(
     settings object missing `LLM_MODEL` — but the arms below are `Exception`-
     shaped, not type-enumerated, so every one of them lands in a `return []`.
 
+    NOT EVERY MEMBER IS SENT. `sample_cluster` caps the prompt at
+    `DREAM_MAX_CLUSTER_MEMBERS_PER_SYNTHESIS` (5) of the cluster's members,
+    chosen by cosine proximity to the cluster centroid. Without a cap, 19 of
+    the 20 clusters on the live store exceeded this call's budget and wrote
+    nothing at all; capping the same 23-member cluster to 6 produced three good
+    insights in 41.9s (see the config field for the full measurement table).
+    The returned Insights' `source_ids` therefore name sampled members only,
+    and each carries `sample_size` so the write path can record honestly how
+    many of the cluster were read. What the cluster IS — and therefore what the
+    dream covers and what gets marked consolidated — is unchanged.
+
     Malformed model JSON gets exactly one retry (a second `llm.chat` call); any
     other failure (connection error, non-2xx, unexpected response shape)
     returns [] immediately without retrying. That distinction is deliberate:
@@ -267,7 +302,21 @@ async def synthesize(
     `knowledge/classifier.py` one).
     """
     try:
-        messages = build_messages(members, max_chars=max_chars)
+        # Cap what the model SEES. Everything downstream of this call still
+        # treats the whole cluster as the unit that was consolidated — see
+        # sample_cluster's docstring and store.build_dream_payload.
+        #
+        # The cap lives HERE rather than at the call site in task.py on
+        # purpose: it is a prompt-budget control, so it belongs against the
+        # thing it protects (build_messages), and there is then no way for a
+        # future caller to reach the LLM without it. The cost of that choice
+        # is that `members` and `sample` must not be confused below — hence
+        # the invariant spelled out in parse_insights' docstring.
+        sample = sample_cluster(
+            members,
+            int(getattr(settings, "DREAM_MAX_CLUSTER_MEMBERS_PER_SYNTHESIS", 5)),
+        )
+        messages = build_messages(sample, max_chars=max_chars)
         timeout = float(getattr(settings, "DREAM_SYNTH_TIMEOUT_SECONDS", 45.0))
 
         text: str | None = None
@@ -328,7 +377,8 @@ async def synthesize(
 
         if text is None:
             return []
-        return parse_insights(text, members, max_chars=max_chars)
+        # `sample`, NOT `members` — source_indices index the prompt.
+        return parse_insights(text, sample, max_chars=max_chars)
     except Exception as exc:
         # Catches anything the loop above doesn't — e.g. a corrupt candidate
         # (non-string .text) blowing up build_messages. Nothing may escape

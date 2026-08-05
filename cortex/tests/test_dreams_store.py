@@ -149,3 +149,66 @@ async def test_upsert_point_does_not_double_wrap_a_vector_store_error():
 
     assert str(exc.value) == "Failed to embed: context length"
     assert "Failed to upsert point" not in str(exc.value)
+
+
+# --------------------------------------------------------------------------
+# Sampling provenance. synthesize() sends at most
+# DREAM_MAX_CLUSTER_MEMBERS_PER_SYNTHESIS (5) of a cluster's members to the
+# model — a prompt cap, not a change of what the dream is about. The stored
+# point must therefore be able to say "summarised from 5 of 23", never imply
+# it read 23.
+# --------------------------------------------------------------------------
+
+
+def test_payload_records_cluster_size_and_how_many_were_actually_read():
+    """The honesty requirement. Twelve members in the cluster, five put in
+    front of the model: both numbers are recorded, and they disagree, which is
+    the whole point — a reader can tell a sampled dream from a complete one."""
+    members = [
+        Candidate(id=f"m{i}", text=f"e{i}", vector=[1.0], payload={
+            "workspace_id": "ws1", "namespace": "default", "project": "firekeep",
+            "member_id": "member-1", "agent_id": "a1", "domain": "infra",
+        })
+        for i in range(12)
+    ]
+    ins = Insight(content="lesson", memory_type="procedural",
+                  source_ids=["m0", "m3"], sample_size=5)
+    p = store.build_dream_payload(ins, members, cluster_key="k", run_id="r")
+
+    assert p["dream_cluster_size"] == 12
+    assert p["dream_sampled_count"] == 5
+    # dreamed_from keeps its own, older meaning: what the model CITED. It was
+    # already a subset of the cluster before sampling existed, so sampling does
+    # not narrow it — and conflating it with either count would lose the
+    # citation link.
+    assert p["dreamed_from"] == ["m0", "m3"]
+
+
+def test_an_unsampled_dream_reports_the_full_cluster_on_both_counts():
+    """A cluster at or below the cap is sent whole, so the two numbers agree —
+    "4 of 4". This is the shape every pre-cap dream had and must keep."""
+    p = store.build_dream_payload(
+        Insight(content="c", memory_type="procedural", source_ids=["m0"], sample_size=4),
+        _members(), cluster_key="k", run_id="r",
+    )
+    assert p["dream_cluster_size"] == p["dream_sampled_count"] == 4
+
+
+def test_an_insight_with_no_recorded_sample_size_reports_the_cluster_size():
+    """sample_size==0 means "not recorded" (a hand-built Insight), not "the
+    model saw nothing". Writing a literal 0 would claim a dream was
+    synthesized from no episodes at all, which is strictly less true than the
+    pre-sampling reality it is standing in for."""
+    p = store.build_dream_payload(_insight(), _members(), cluster_key="k", run_id="r")
+    assert p["dream_sampled_count"] == 4
+    assert p["dream_cluster_size"] == 4
+
+
+def test_no_derived_sampled_boolean_is_stored():
+    """`sampled_count < cluster_size` is recomputable by any reader. A stored
+    copy is a second source of truth that can disagree with the numbers as
+    soon as one writer sets one field and not the other — the failure mode this
+    package has already paid for elsewhere (memory_type in two places)."""
+    p = store.build_dream_payload(_insight(), _members(), cluster_key="k", run_id="r")
+    assert "dream_sampled" not in p
+    assert "dreamed_sampled" not in p

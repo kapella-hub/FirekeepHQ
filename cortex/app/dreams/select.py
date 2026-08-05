@@ -182,6 +182,94 @@ def cluster(
     return clusters
 
 
+def centroid(vectors: list[list[float]]) -> list[float] | None:
+    """Component-wise mean of `vectors`, or None when they cannot be averaged
+    (empty input, an empty vector, or disagreeing dimensionality). None is the
+    caller's cue to fall back to a vector-free ordering — it must never be
+    confused with a zero vector, which is a real (if useless) centroid."""
+    usable = [v for v in vectors if v]
+    if not usable:
+        return None
+    dim = len(usable[0])
+    if dim == 0 or any(len(v) != dim for v in usable):
+        return None
+    n = float(len(usable))
+    return [sum(v[i] for v in usable) / n for i in range(dim)]
+
+
+def sample_cluster(members: list[Candidate], max_members: int) -> list[Candidate]:
+    """The at-most-`max_members` members of `members` actually sent to the LLM.
+
+    This caps the PROMPT, not the cluster. The caller still treats the whole
+    cluster as consolidated and still records the whole cluster's size — see
+    store.build_dream_payload's `dream_cluster_size`/`dream_sampled_count` and
+    DreamState.mark_consolidated. Marking only the sample consolidated would
+    leave the remainder as candidates, they would re-cluster, and the pass
+    would re-synthesize the same neighbourhood forever: precisely the
+    starvation `dreams:consolidated` exists to prevent.
+
+    WHY a cap exists at all is measured, not assumed — see
+    DREAM_MAX_CLUSTER_MEMBERS_PER_SYNTHESIS in app/config.py for the numbers.
+    Short version: with no cap, 19 of 20 real clusters exceeded the synthesis
+    budget and wrote nothing, and the same 23-member cluster capped to 6
+    produced 3 good insights in 41.9s.
+
+    SELECTION IS BY CENTRALITY, AND THE CENTRALITY IS ACTUALLY COMPUTED. The
+    cluster's centroid is the component-wise mean of its members' vectors —
+    which this module already holds, so it costs one pass over the members —
+    and the sample is the `max_members` nearest it by cosine, ties broken by
+    id ascending. A cluster is a threshold neighbourhood around an arbitrary
+    greedy SEED (see cluster()), so the seed is not its most representative
+    member and "the first k" would be an arbitrary-but-stable choice; the
+    centroid is the one cheap thing here that is actually about the content.
+
+    Deterministic in every branch, which the whole module depends on:
+    similarity is a pure function of the stored vectors, ties fall back to id,
+    and when no centroid can be computed (missing/ragged vectors — see
+    centroid()) the fallback is plain id order, which is arbitrary-but-stable
+    and is documented as such rather than dressed up as representative. A
+    member with an unusable vector among usable ones simply scores 0.0 and
+    sinks; it is not excluded, because a cluster must always be able to
+    produce a sample.
+
+    The RESULT is returned in id order, not centrality order. Prompt position
+    is not a ranking signal and implying one to the model would be a claim
+    nothing here supports; id order also matches cluster_key's own convention.
+
+    A cluster at or below the cap is returned UNCHANGED — same members, same
+    order, so the prompt is byte-identical to the pre-cap one and no centroid
+    is computed at all. `max_members <= 0` means no cap, for a deploy that
+    measured its own backend.
+    """
+    if max_members <= 0 or len(members) <= max_members:
+        return list(members)
+
+    c = centroid([m.vector for m in members])
+    if c is None:
+        return sorted(members, key=lambda m: m.id)[:max_members]
+
+    cn = math.sqrt(sum(x * x for x in c))
+    if cn == 0.0:
+        return sorted(members, key=lambda m: m.id)[:max_members]
+
+    scored: list[tuple[float, str, int]] = []
+    for i, m in enumerate(members):
+        v = m.vector
+        if not v or len(v) != len(c):
+            sim = 0.0
+        else:
+            mn = math.sqrt(sum(x * x for x in v))
+            sim = 0.0 if mn == 0.0 else sum(x * y for x, y in zip(v, c)) / (mn * cn)
+        # Negated similarity first => descending by similarity; then id, then
+        # the original index as a final tiebreak so two members that are equal
+        # in both still order deterministically.
+        scored.append((-sim, m.id, i))
+
+    scored.sort()
+    chosen = {i for _, _, i in scored[:max_members]}
+    return sorted((members[i] for i in chosen), key=lambda m: m.id)
+
+
 def cluster_key(cluster_members: list[Candidate]) -> str:
     joined = "|".join(sorted(c.id for c in cluster_members))
     return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:32]
