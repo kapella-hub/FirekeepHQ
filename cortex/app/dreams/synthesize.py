@@ -22,7 +22,7 @@ work this pass ever attempts):
 
     via /v1, the code this replaced   -> >400s, did not complete
                                          (hit a 400s client timeout)
-    DREAM_SYNTH_TIMEOUT_SECONDS       -> 45.0
+    DREAM_SYNTH_TIMEOUT_SECONDS       -> 90.0
     an actual dream tick              -> "Dream synthesis failed:" (a bare
                                          TimeoutError with an EMPTY str),
                                          47.3s, 0 insights
@@ -293,7 +293,7 @@ async def synthesize(
     returns [] immediately without retrying. That distinction is deliberate:
     only the model's own output is worth asking twice for.
 
-    NO `native_timeout`. `DREAM_SYNTH_TIMEOUT_SECONDS` (45.0) already
+    NO `native_timeout`. `DREAM_SYNTH_TIMEOUT_SECONDS` (90.0) already
     accommodates the measured 22.5s native latency with room to spare, and a
     native sibling could only ever be LOWER — which is exactly what strands a
     non-thinking-model ollama deploy, since the probe confirms ollama, not a
@@ -317,7 +317,7 @@ async def synthesize(
             int(getattr(settings, "DREAM_MAX_CLUSTER_MEMBERS_PER_SYNTHESIS", 5)),
         )
         messages = build_messages(sample, max_chars=max_chars)
-        timeout = float(getattr(settings, "DREAM_SYNTH_TIMEOUT_SECONDS", 45.0))
+        timeout = float(getattr(settings, "DREAM_SYNTH_TIMEOUT_SECONDS", 90.0))
 
         text: str | None = None
         for attempt in range(2):

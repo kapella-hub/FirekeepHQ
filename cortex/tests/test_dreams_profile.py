@@ -29,7 +29,7 @@ class _S:
         self.LLM_NATIVE_CHAT = kw.pop("LLM_NATIVE_CHAT", "always")
         self.LLM_NATIVE_PROBE_TTL_SECONDS = kw.pop("LLM_NATIVE_PROBE_TTL_SECONDS", 600.0)
         self.LLM_NATIVE_BASE_URL = kw.pop("LLM_NATIVE_BASE_URL", "")
-        self.DREAM_SYNTH_TIMEOUT_SECONDS = kw.pop("DREAM_SYNTH_TIMEOUT_SECONDS", 45.0)
+        self.DREAM_SYNTH_TIMEOUT_SECONDS = kw.pop("DREAM_SYNTH_TIMEOUT_SECONDS", 90.0)
         for k, v in kw.items():
             setattr(self, k, v)
 
@@ -294,10 +294,10 @@ async def test_profile_synthesis_is_bounded_by_the_configured_dream_budget():
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         await profile.synthesize_profile(
-            "mem1", _MEMORIES, settings=_S(DREAM_SYNTH_TIMEOUT_SECONDS=45.0),
+            "mem1", _MEMORIES, settings=_S(DREAM_SYNTH_TIMEOUT_SECONDS=90.0),
             max_chars=800, client=client)
 
-    assert seen["timeout"]["read"] == 45.0
+    assert seen["timeout"]["read"] == 90.0
 
 
 @pytest.mark.asyncio

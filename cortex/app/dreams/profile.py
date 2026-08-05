@@ -313,7 +313,7 @@ async def synthesize_profile(
             # `Settings.model_fields["DREAM_SYNTH_TIMEOUT_SECONDS"].default`
             # directly so a config change fails the suite rather than silently
             # diverging from this copy.
-            timeout=float(getattr(settings, "DREAM_SYNTH_TIMEOUT_SECONDS", 45.0)),
+            timeout=float(getattr(settings, "DREAM_SYNTH_TIMEOUT_SECONDS", 90.0)),
             client=client,
             purpose="dream profile synthesis",
         )

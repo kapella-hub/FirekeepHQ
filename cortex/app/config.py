@@ -401,8 +401,34 @@ class Settings(BaseSettings):
     # health="degraded" at GET /dreams. The remedy for such a deploy is NOT
     # repointing LLM_BASE_URL at /api: three embedding call sites concatenate
     # /embeddings onto that same variable, so it would break every memory write.
-    # Any increase here should carry its own measurement, as this 45s does.
-    DREAM_SYNTH_TIMEOUT_SECONDS: float = 45.0
+    # Any increase here should carry its own measurement, as this 90s does.
+    #
+    # RAISED 45.0 -> 90.0 on 2026-08-05, after 45 was measured to be a number
+    # nobody had ever timed. On the production VPS (4 vCPU, qwen3:4b, native
+    # /api/chat, 5-member capped prompts) a real cluster synthesis takes
+    # ~27-85s and reliably produces 3 insights; 45s caught roughly a third of
+    # runs, so the pass intermittently wrote good insights and intermittently
+    # wrote nothing. Three plausible causes were investigated and fixed on
+    # their own merits before the budget itself was suspected — the /v1
+    # endpoint (real, 15x, insufficient), unbounded cluster size (real, made
+    # insights possible at all, insufficient) and model eviction
+    # (OLLAMA_KEEP_ALIVE, real, insufficient) — which is exactly how a wrong
+    # constant survives: every genuine bottleneck you remove makes the next
+    # measurement look like progress toward a target that was never reachable.
+    #
+    # 90 is the task's measured cost, not a safety margin on a guess. The work
+    # is generation-bound: 3 insights x up to DREAM_MAX_INSIGHT_CHARS at the
+    # ~6.5 tok/s this box sustains IS about a minute, so a budget under it does
+    # not make dreaming faster, it makes dreaming fail. Lowering it again means
+    # asking for fewer or shorter insights, which is a product decision.
+    #
+    # The cost is real and is paid by OTHER tasks: the worker is --pool=solo,
+    # so this is 90s during which nothing else on that box runs, including the
+    # 60s agent-gateway sweeper. At DREAM_TICK_MINUTES=5 that is a 30% worst-
+    # case duty cycle, and only when the gate actually opens (idle + enough new
+    # memories). A deployment that cannot afford that should turn DREAM_ENABLED
+    # off rather than shrink this back to a number that produces nothing.
+    DREAM_SYNTH_TIMEOUT_SECONDS: float = 90.0
     DREAM_LOCK_TTL_SECONDS: int = 1800
     DREAM_PROFILES_ENABLED: bool = True
 

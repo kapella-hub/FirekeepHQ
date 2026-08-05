@@ -34,7 +34,7 @@ class _S:
         self.LLM_NATIVE_CHAT = kw.pop("LLM_NATIVE_CHAT", "always")
         self.LLM_NATIVE_PROBE_TTL_SECONDS = kw.pop("LLM_NATIVE_PROBE_TTL_SECONDS", 600.0)
         self.LLM_NATIVE_BASE_URL = kw.pop("LLM_NATIVE_BASE_URL", "")
-        self.DREAM_SYNTH_TIMEOUT_SECONDS = kw.pop("DREAM_SYNTH_TIMEOUT_SECONDS", 45.0)
+        self.DREAM_SYNTH_TIMEOUT_SECONDS = kw.pop("DREAM_SYNTH_TIMEOUT_SECONDS", 90.0)
         for k, v in kw.items():
             setattr(self, k, v)
 
@@ -219,10 +219,10 @@ async def test_synthesize_bounds_the_call_with_the_configured_dream_budget():
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         await syn.synthesize(
-            _members(), settings=_S(DREAM_SYNTH_TIMEOUT_SECONDS=45.0),
+            _members(), settings=_S(DREAM_SYNTH_TIMEOUT_SECONDS=90.0),
             max_chars=800, client=client,
         )
-    assert seen["timeout"]["read"] == 45.0
+    assert seen["timeout"]["read"] == 90.0
 
 
 @pytest.mark.asyncio
@@ -458,7 +458,7 @@ async def test_a_pre_generation_4xx_on_native_demotes_and_the_retry_lands_on_v1(
 
 def test_the_hardcoded_timeout_fallback_tracks_the_config_default():
     """`synthesize()` and `synthesize_profile()` both read the budget as
-    `getattr(settings, "DREAM_SYNTH_TIMEOUT_SECONDS", 45.0)` — a literal copy of
+    `getattr(settings, "DREAM_SYNTH_TIMEOUT_SECONDS", 90.0)` — a literal copy of
     config.py's default, which can silently drift if that default is ever
     changed. Keeping the literal is deliberate: the fallback is unreachable in
     production, where `settings` is always the real Settings object, so it
@@ -469,7 +469,7 @@ def test_the_hardcoded_timeout_fallback_tracks_the_config_default():
     in test_decision_config.py."""
     from app.config import Settings
 
-    assert Settings.model_fields["DREAM_SYNTH_TIMEOUT_SECONDS"].default == 45.0, (
+    assert Settings.model_fields["DREAM_SYNTH_TIMEOUT_SECONDS"].default == 90.0, (
         "config default moved; update the literal fallback in "
         "dreams/synthesize.py and dreams/profile.py to match"
     )
