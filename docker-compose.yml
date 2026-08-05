@@ -150,6 +150,31 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:11434:11434"
+    environment:
+      # Keep models RESIDENT. ollama's default keep_alive is 5 minutes, and a
+      # model evicted from memory is reloaded from disk on the next request —
+      # on CPU that is seconds to tens of seconds before a single token is
+      # produced, and it lands entirely inside the caller's timeout.
+      #
+      # Measured on this VPS 2026-08-05: the identical dream-synthesis call
+      # (qwen3:4b, 5-member capped prompt) ranged 26.8s to 63.3s run to run,
+      # with prompt size NOT predicting the outcome — a 3,088-char prompt took
+      # 53.4s while a 3,183-char one took 35.0s. The distribution is bimodal,
+      # not noisy, and the cause is eviction: DREAM_TICK_MINUTES defaults to 5,
+      # exactly ollama's default keep_alive, so every tick was a coin-flip on
+      # whether it paid a 3.2GB cold load first. DREAM_SYNTH_TIMEOUT_SECONDS is
+      # 45s, which sits in the middle of that distribution — hence a feature
+      # that intermittently produced good insights and intermittently produced
+      # nothing, for reasons that looked like model or prompt problems.
+      #
+      # `-1` = never evict. Sized deliberately against the 8g limit below:
+      # qwen3:4b resident is ~3.2GB and mxbai-embed-large ~1GB, so both fit
+      # with room to spare. MAX_LOADED_MODELS=2 is the pair this deployment
+      # actually uses (one chat + one embedding); a third concurrent model
+      # would exceed the limit and get OOM-killed rather than swapped, so the
+      # cap is a guard, not a tuning knob. Raise both together or neither.
+      OLLAMA_KEEP_ALIVE: "${OLLAMA_KEEP_ALIVE:--1}"
+      OLLAMA_MAX_LOADED_MODELS: "${OLLAMA_MAX_LOADED_MODELS:-2}"
     volumes:
       - ollama_data:/root/.ollama
     healthcheck:
