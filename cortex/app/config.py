@@ -336,21 +336,22 @@ class Settings(BaseSettings):
     # budget that is not slow, it is inoperable — and it was the live state,
     # because synthesize() built its own /v1 body.
     #
-    # RESOLVED for synthesize(): it now calls app/llm.py's chat(), which
-    # selects the native endpoint whenever the backend confirms as ollama and
-    # falls back to /v1 otherwise. This value is passed straight through as
-    # that call's budget, for BOTH endpoints — there is deliberately no native
-    # sibling (see synthesize()'s docstring: a lower native budget strands a
-    # non-thinking-model ollama deploy, which takes the native path and gains
-    # nothing from think:false).
+    # RESOLVED for BOTH dreams LLM calls: synthesize() and synthesize_profile()
+    # now call app/llm.py's chat(), which selects the native endpoint whenever
+    # the backend confirms as ollama and falls back to /v1 otherwise. This value
+    # is passed straight through as each call's budget, for BOTH endpoints —
+    # there is deliberately no native sibling (see synthesize()'s docstring: a
+    # lower native budget strands a non-thinking-model ollama deploy, which
+    # takes the native path and gains nothing from think:false).
     #
-    # STILL LIVE for profile.py, which posts to /v1 itself: there the timeout
-    # can fire, synthesize_profile() returns None, and the run reports
-    # health="degraded" at GET /dreams. The remedy is NOT repointing
-    # LLM_BASE_URL at /api — three embedding call sites concatenate
-    # /embeddings onto that same variable, so it would break every memory
-    # write — it is converting that call too. Any increase here should carry
-    # its own measurement, as this 45s does.
+    # The /v1 regime above is therefore no longer the live state, but it is not
+    # gone: any backend that does not confirm as ollama, and any ollama demoted
+    # by a pre-generation 4xx, still lands there — where this timeout can fire,
+    # synthesize()/synthesize_profile() return []/None, and the run reports
+    # health="degraded" at GET /dreams. The remedy for such a deploy is NOT
+    # repointing LLM_BASE_URL at /api: three embedding call sites concatenate
+    # /embeddings onto that same variable, so it would break every memory write.
+    # Any increase here should carry its own measurement, as this 45s does.
     DREAM_SYNTH_TIMEOUT_SECONDS: float = 45.0
     DREAM_LOCK_TTL_SECONDS: int = 1800
     DREAM_PROFILES_ENABLED: bool = True

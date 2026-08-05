@@ -89,13 +89,17 @@ exactly like the other four. A schema-dropped call returns unconstrained output,
 which is what the caller's own adherence check is for — `decision/synthesize.py`
 reports `degraded` when the payload grounds nothing.
 
-THE OPENAI BRANCH SENDS ONLY STANDARD OPENAI FIELDS. `dreams/profile.py`
-sends `think` and `chat_template_kwargs` on the `/v1` path unconditionally
-(`dreams/synthesize.py` did too until it was converted to this module); nobody
-has been burned because `DREAM_ENABLED=false`. Real OpenAI rejects
-unrecognised request arguments with a 400, so a helper used by default-on paths
-cannot inherit that. The non-native path here is strictly more standards-
-compliant than the code it replaces.
+THE OPENAI BRANCH SENDS ONLY STANDARD OPENAI FIELDS. Both `dreams/synthesize.py`
+and `dreams/profile.py` used to send `think` and `chat_template_kwargs` on the
+`/v1` path unconditionally, and nobody was burned only because
+`DREAM_ENABLED=false`; both have since been converted to this module. Hand-built `/v1` bodies do
+still exist — `engine/rag.py`, `mcp_server.py`, `workers/memory_agent.py` and
+`workers/sleep_cycle.py` are the documented not-yet-converted set (see root
+CLAUDE.md's "Converted so far" list); what is no longer true is that any of
+them sends ollama-only vendor flags. Real OpenAI rejects unrecognised
+request arguments with a 400, so a helper used by default-on paths cannot
+inherit that. The non-native path here is strictly more standards-compliant
+than the code it replaced.
 
 THIS MODULE RAISES. It never swallows a transport or HTTP failure, because
 `knowledge/classifier.py` inspects the caught exception to choose between the

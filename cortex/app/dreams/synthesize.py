@@ -38,9 +38,13 @@ reasoning runs no matter how the request is phrased, so only the endpoint
 choice removes it. Conversion was deliberately deferred out of LLM-endpoint
 phases 1-3 and is paid off here.
 
-STILL ON THE OLD PATH: `profile.py`, which posts to `/v1` itself using
-`build_request_body` below. It is a separate call with its own failure profile
-and is out of scope for this change; the function stays for it and says so.
+`profile.py` — the other dreams LLM call — was converted the same way
+immediately afterwards, which is what retired `build_request_body`: it was the
+`/v1` body builder both calls shared, it survived the first conversion ONLY
+because profile.py still imported it, and with no caller left a body builder
+that describes nobody's request is exactly how this module's docstring came to
+lie in the first place. `_MAX_COMPLETION_TOKENS` below is still shared with
+profile.py and is still documented here.
 
 `llm.chat` RAISES on transport or HTTP failure by contract — callers own their
 degradation. `synthesize` therefore keeps its own guard and its own retry rule,
@@ -96,8 +100,10 @@ _DEFAULT_MAX_CHARS = 800
 # enforced by `parse_insights`); the tokens this number has to cover are
 # overwhelmingly reasoning the content cap knows nothing about, so tying them
 # would make raising the content cap silently shrink the reasoning headroom and
-# vice versa. It is also read by `build_request_body`, which is a pure function
-# used by `profile.py` and has no `Settings` in scope.
+# vice versa. It is ALSO `profile.py`'s budget: that module imports this constant
+# directly now that `build_request_body` (which used to carry the number to it)
+# is gone. One number, deliberately — both calls face the same `/v1` fallback
+# regime, and a second constant next door is a thing that drifts.
 #
 # KNOWN INTERACTION, stated rather than hidden: on a `/v1` deployment this
 # raises worst-case wall time, because the reasoning tokens now actually get
@@ -108,8 +114,9 @@ _DEFAULT_MAX_CHARS = 800
 # (a WARNING from `synthesize`) and `GET /dreams` reports `degraded` rather than
 # `ok`. That was the state this module shipped in and the reason it was
 # converted: the endpoint, not the budget, is what removes the reasoning. The
-# note remains live for `profile.py`, which still posts to `/v1` directly, and
-# for any synthesis routed down the `/v1` fallback.
+# note remains live for any call routed down the `/v1` fallback — which now
+# includes `profile.py`'s, since it goes through `llm.chat` too and reaches `/v1`
+# on any backend that does not confirm as ollama.
 _MAX_COMPLETION_TOKENS = 4000
 
 
@@ -158,32 +165,15 @@ def build_messages(members: list[Candidate], *, max_chars: int = _DEFAULT_MAX_CH
     ]
 
 
-def build_request_body(model: str, messages: list[dict]) -> dict:
-    """`/v1/chat/completions` body — used ONLY by `profile.py` now.
-
-    `synthesize()` below no longer calls this: it goes through `app.llm.chat`,
-    which builds the body for whichever endpoint it selects. Kept rather than
-    deleted because `profile.py` still imports it (`from app.dreams.synthesize
-    import build_request_body`) and is not part of that conversion, and it is
-    named here rather than left to a grep because a body builder that describes
-    nobody's request is exactly how this module's docstring came to lie.
-
-    So the caveat below is a live description of the profile call, not a
-    historical note: `think` / `chat_template_kwargs.enable_thinking` are
-    correct and honoured on ollama's native `/api/chat`, and IGNORED on
-    `/v1/chat/completions`, which is where profile.py posts. That is why the
-    budget has to cover reasoning tokens there.
-    """
-    return {
-        "model": model,
-        "messages": messages,
-        "stream": False,
-        "temperature": 0.2,
-        "response_format": {"type": "json_object"},
-        "think": False,
-        "chat_template_kwargs": {"enable_thinking": False},
-        "max_tokens": _MAX_COMPLETION_TOKENS,
-    }
+# `build_request_body` lived here. It built the `/v1/chat/completions` body by
+# hand — `think` + `chat_template_kwargs.enable_thinking` (which that endpoint
+# ignores), `response_format`, `max_tokens` — and it survived this module's own
+# conversion to `llm.chat` for exactly one reason: `profile.py` still imported
+# it. profile.py has now been converted too, so it had no callers left, and
+# `llm.chat`'s `build_openai_body` is the one place a `/v1` body is built. The
+# two facts it used to carry did not go with it: `think:false` is unconditional
+# in `llm.build_native_body`, and the completion budget is `_MAX_COMPLETION_TOKENS`
+# above, which both callers now pass to `llm.chat(max_tokens=...)` directly.
 
 
 def parse_insights(raw: str, members: list[Candidate], *, max_chars: int) -> list[Insight]:

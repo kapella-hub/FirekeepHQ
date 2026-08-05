@@ -21,16 +21,52 @@ all). A profile must not decay, because it is replaced wholesale on every run,
 not accumulated; select.is_candidate's memory_type check (episodic-or-missing
 only) is what keeps a profile out of its own future clustering input, so a
 profile can never dream about itself.
+
+THE LLM CALL GOES THROUGH `app.llm.chat`, which selects ollama's native
+`/api/chat` when the backend confirms as ollama and falls back to
+`/v1/chat/completions` otherwise. That is not tidiness; it is the difference
+between this half of Dreaming working on a CPU deploy and not existing at all,
+and it is the same fix `synthesize.py` took one commit earlier.
+
+WHY, measured rather than reasoned. Ollama honours `think:false` on its native
+`/api/chat` and silently IGNORES it — along with
+`chat_template_kwargs.enable_thinking` — on `/v1/chat/completions`. This module
+posted to `{LLM_BASE_URL}/chat/completions`, and `LLM_BASE_URL` ends in `/v1`,
+so it sent both spellings of a flag the endpoint threw away and paid the full
+reasoning cost on every call. On the production VPS (qwen3:4b, 4 vCPU) the
+sibling cluster call measured >400s on `/v1` WITHOUT COMPLETING against the
+same 45s `DREAM_SYNTH_TIMEOUT_SECONDS` this call is bounded by, versus 22.5s
+native. A profile prompt is a different prompt, so that number is not this
+call's latency — but the reasoning block it has to generate first is the same
+block, produced by the same model on the same endpoint under the same budget,
+and the budget is nine times too small for it. Profiles are the user-facing
+half of Dreaming (`GET /briefing`'s profile section reads them), so this was
+the half where the failure was most visible and least explicable.
+
+Unlike `synthesize()` this call is NOT json-mode: a profile is plain prose, and
+the JSON grammar would fight the prompt. See `synthesize_profile` for what that
+changes and what it does not.
 """
 from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from typing import Any
 
 import httpx
 
+from app import llm
 from app.dreams import store
-from app.dreams.synthesize import build_request_body
+
+# One number for both dreams LLM calls. It used to reach this module inside
+# `synthesize.build_request_body`, the shared `/v1` body builder; that function
+# is gone (nothing built a body by hand any more once both calls went through
+# `llm.chat`), so the constant is imported directly instead. Deliberately not
+# copied: a second 4000 next door is a thing that drifts, and synthesize.py is
+# where the measurement that justifies the number is written down. It is
+# private-by-name and shared-by-intent within one package — see its comment
+# there before changing it.
+from app.dreams.synthesize import _MAX_COMPLETION_TOKENS
 
 logger = logging.getLogger(__name__)
 
@@ -215,51 +251,94 @@ async def synthesize_profile(
     member_id: str,
     memories: list[dict],
     *,
-    base_url: str,
-    model: str,
-    api_key: str,
-    timeout: float,
+    settings: Any,
     max_chars: int,
     client: httpx.AsyncClient | None = None,
 ) -> str | None:
     """Turn one member's memories into a single durable profile via one
     guarded LLM call. Returns None on ANY failure — no memories, unreachable
-    backend, non-2xx response, or an empty/overlong parse. Never raises.
+    backend, non-2xx response, or an empty/refusing/overlong parse.
 
-    Reuses synthesize.build_request_body so `think:false` (and
-    chat_template_kwargs.enable_thinking) AND the completion budget
-    (`synthesize._MAX_COMPLETION_TOKENS`) are inherited rather than re-derived
-    — see synthesize.py's module docstring for why the flag is not optional
-    (without it, qwen3 burns its whole budget thinking and returns empty
-    content after 101s) and why the flag alone is not enough on ollama's `/v1`
-    endpoint, which ignores it. A profile is far shorter than the budget
-    allows; the budget exists to leave room for reasoning tokens that get
-    generated whether or not this prompt wants them. The one field overridden
-    afterward is `response_format`: insight extraction needs the JSON grammar,
-    a profile is plain prose, and leaving json_object on would fight the
-    prompt above.
+    NEVER RAISES, and that guarantee had to be RE-VERIFIED rather than assumed
+    when this moved onto `llm.chat`: `llm.chat` RAISES by contract, including
+    `httpx.HTTPStatusError` (this function used to call `raise_for_status()`
+    itself, so the type is not new to the process but is new to this guard) and
+    `AttributeError` from a settings object with no `LLM_MODEL`. The guard is
+    `Exception`-shaped rather than type-enumerated, so every one of them lands
+    in the same `return None`.
+
+    RETRY SEMANTICS ARE UNCHANGED, AND THEY ARE NOT `synthesize()`'S. There is
+    exactly ONE call and NO retry — any failure, including a malformed or
+    refusing response, returns None immediately. That is deliberate and was
+    deliberate before this conversion: the failure is absorbed by the caller,
+    which marks the group done and leaves the PREVIOUS profile in place (a
+    profile is replaced in place, so not writing is a real, safe outcome — a
+    cluster has no such fallback, which is why `synthesize()` retries once on
+    malformed JSON and this does not).
+
+    `settings` replaces the old base_url/model/api_key/timeout quartet, all four
+    of which are now `llm.chat`'s business — endpoint selection additionally
+    needs `LLM_NATIVE_CHAT`/`LLM_NATIVE_BASE_URL`, which a four-argument
+    signature had no way to carry. `max_chars` stays an argument: it is the
+    prompt's length cue and `parse_profile`'s rejection threshold, not the LLM's.
+
+    NOT json-mode — the ONE place this deviates from `synthesize()`. The old
+    code built the shared JSON body and then overrode `response_format` to
+    `{"type": "text"}`, i.e. it deliberately turned the grammar OFF, because a
+    profile is plain prose and JSON mode would fight the system prompt above.
+    `json_mode=False` reproduces that exactly: `build_openai_body` emits no
+    `response_format` at all (OpenAI's default is `{"type": "text"}`) and
+    `build_native_body` emits no `format`. Passing `json_mode=True` here would
+    not be a tidy-up, it would break every profile.
+
+    NO `native_timeout` and NO `json_schema`, for `synthesize()`'s reasons: 45s
+    already clears the measured native latency and a lower native sibling is
+    what strands a non-thinking-model ollama deploy (the probe confirms ollama,
+    not a thinking model); and there is no JSON here for a schema to constrain.
     """
     if not memories:
         return None
-    own_client = client is None
-    http_client: httpx.AsyncClient | None = None
     try:
-        http_client = client if client is not None else httpx.AsyncClient(timeout=timeout)
         messages = build_profile_messages(member_id, memories, max_chars=max_chars)
-        body = build_request_body(model, messages)
-        body["response_format"] = {"type": "text"}
-        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-        url = f"{base_url}/chat/completions"
+        result = await llm.chat(
+            settings=settings,
+            messages=messages,
+            json_mode=False,
+            temperature=0.2,
+            max_tokens=_MAX_COMPLETION_TOKENS,
+            # Read off `settings` now that the caller passes no timeout. The
+            # literal is a stub-only fallback — production always passes a real
+            # Settings — and it is pinned to config.py's default by the drift
+            # guard in tests/test_dreams_synthesize.py, which asserts
+            # `Settings.model_fields["DREAM_SYNTH_TIMEOUT_SECONDS"].default`
+            # directly so a config change fails the suite rather than silently
+            # diverging from this copy.
+            timeout=float(getattr(settings, "DREAM_SYNTH_TIMEOUT_SECONDS", 45.0)),
+            client=client,
+            purpose="dream profile synthesis",
+        )
 
-        resp = await http_client.post(url, json=body, headers=headers, timeout=timeout)
-        resp.raise_for_status()
-
-        msg = resp.json()["choices"][0]["message"]
-        raw = msg.get("content") or msg.get("reasoning") or ""
-        return parse_profile(raw, max_chars=max_chars)
+        # NO `msg.get("reasoning")` FALLBACK. It used to read the reasoning
+        # field when content came back empty, and here — unlike in JSON mode,
+        # where the argument is that an empty content means the grammar blocked
+        # it so the reasoning is prose by construction — the reasoning IS prose,
+        # which makes the fallback worse rather than merely useless: it would
+        # store a model's raw chain-of-thought at the member's deterministic
+        # point id and serve it through every briefing, replacing the real
+        # profile. That is the same defect class as the refusal incident
+        # `_looks_like_refusal` exists for, arriving through a different door.
+        # An empty content is a failed profile; the caller's correct response is
+        # to leave the previous one alone.
+        if not result.content.strip():
+            logger.warning(
+                "Dream profile synthesis returned empty content for member %s "
+                "(endpoint=%s, reasoning=%d chars)",
+                member_id, result.endpoint, len(result.reasoning),
+            )
+        return parse_profile(result.content, max_chars=max_chars)
     except Exception as exc:
-        logger.warning("Profile synthesis failed: %s", exc)
+        # Type AND message: the failure this conversion fixes is a bare
+        # TimeoutError whose str() is empty, which logged as
+        # "Profile synthesis failed: " and told an operator nothing.
+        logger.warning("Profile synthesis failed: %s: %s", type(exc).__name__, exc)
         return None
-    finally:
-        if own_client and http_client is not None:
-            await http_client.aclose()

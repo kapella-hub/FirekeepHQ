@@ -618,10 +618,13 @@ async def run_one_unit() -> dict:
                     raw_text = await profile.synthesize_profile(
                         member_id,
                         memories,
-                        base_url=settings.LLM_BASE_URL,
-                        model=settings.LLM_MODEL,
-                        api_key=settings.LLM_API_KEY,
-                        timeout=settings.DREAM_SYNTH_TIMEOUT_SECONDS,
+                        # One `settings`, matching synthesize() above: the
+                        # endpoint choice lives in app/llm.py and needs
+                        # LLM_NATIVE_CHAT/LLM_NATIVE_BASE_URL as well, which the
+                        # old base_url/model/api_key/timeout quartet could not
+                        # carry. DREAM_SYNTH_TIMEOUT_SECONDS is read off the
+                        # same object.
+                        settings=settings,
                         max_chars=settings.DREAM_MAX_INSIGHT_CHARS,
                     )
                     # I2: derive namespace/project from the (now homogeneous)
@@ -748,8 +751,8 @@ from app.workers.sleep_cycle import celery_app  # noqa: E402
 # no hard kill ever happens. They are decorative on this deployment today.
 # The control that actually binds is DREAM_SYNTH_TIMEOUT_SECONDS
 # (app/config.py — see its own comment for the 45s reasoning), enforced by
-# httpx INSIDE synthesize() (through app.llm.chat, which it passes the budget
-# to) and synthesize_profile(), not by Celery.
+# httpx INSIDE synthesize() and synthesize_profile() — both of which now reach
+# it through app.llm.chat, to which they pass the budget — not by Celery.
 #
 # If the worker pool is ever switched to prefork, this task's broad
 # `except Exception` (below) and run_one_unit's own outer `except Exception`
