@@ -107,7 +107,40 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_CHARS = 800
 _MEMORY_TRUNCATE_CHARS = 600
-_MAX_MEMORIES = 40
+
+# How many of a member's memories are SENT. 40 produced no usable profile.
+#
+# Measured on the production VPS 2026-08-05 (qwen3:4b, 4 vCPU, native /api/chat,
+# schema-constrained, DREAM_SYNTH_TIMEOUT_SECONDS=90), one member with 498
+# candidate memories:
+#
+#     memories  prompt chars   elapsed        result
+#        40        23,621      52.0s / 83.4s  None, or a bare list of topics
+#        20        12,178      90.1s          None (hit the budget)
+#        12         8,162      28.9-34.8s     a real profile, 3 runs of 3
+#        10         6,950      39.7s          a real profile
+#
+# The 40-memory failure is the interesting one, because it is NOT primarily
+# latency: one run finished in 52s, well inside the budget, and still yielded
+# nothing usable — the model extracted a list of artifacts ("client 0.1.13,
+# <sha>, kiro-cli steering files, ...") instead of characterising a person. Too
+# much context did not make the abstraction better, it replaced abstraction with
+# enumeration. At 12 the same model reliably answers the four things the system
+# prompt actually asks for, and the SAME recurring corrections surface across
+# independent runs — reproducible signal rather than one lucky sample.
+#
+# Same finding as the cluster cap (DREAM_MAX_CLUSTER_MEMBERS_PER_SYNTHESIS): on
+# this hardware, fewer well-chosen inputs beat more inputs on BOTH latency and
+# quality. Kept a plain module constant rather than a Setting because, unlike
+# the cluster cap, nothing has yet been measured that would want it tuned per
+# deployment; promote it if that changes.
+#
+# NOT changed here, and worth knowing: selection is still `memories[:N]` in
+# whatever order the caller supplied. For a profile, most-RECENT would likely
+# beat arbitrary-but-stable, since a profile should describe how someone works
+# now. That is a second variable and it has not been measured; changing it in
+# the same breath as the count would make neither attributable.
+_MAX_MEMORIES = 12
 
 # The one key the schema below defines, named once so the schema, the extractor
 # and the system prompt cannot drift apart.

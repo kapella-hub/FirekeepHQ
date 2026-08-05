@@ -7,7 +7,7 @@ import pytest
 
 from app import llm
 from app.dreams import profile, store
-from app.dreams.profile import _MAX_PROFILE_TOKENS
+from app.dreams.profile import _MAX_MEMORIES, _MAX_PROFILE_TOKENS, build_profile_messages
 
 
 class _S:
@@ -755,3 +755,45 @@ def test_the_system_prompt_no_longer_contradicts_the_grammar():
     prompt = profile._system_prompt(800)
     assert "no JSON" not in prompt
     assert profile._PROFILE_KEY in prompt
+
+
+def test_the_memory_cap_is_sized_for_abstraction_not_for_coverage():
+    """40 memories produced no usable profile; 12 reliably does.
+
+    Measured on the production VPS 2026-08-05 (schema-constrained, 90s budget),
+    one member with 498 candidates: 40 memories (23,621 prompt chars) returned
+    None or a bare list of topics, 20 (12,178) hit the budget at 90.1s, and 12
+    (8,162) produced a real profile in 28.9-34.8s across three runs.
+
+    The load-bearing part is that 40 failed even when it was FAST — one run
+    finished in 52s, well inside the budget, and still enumerated artifacts
+    instead of characterising a person. So this bound is about abstraction
+    quality first and latency second, which is why it must not be raised back
+    toward "more context is better" on the strength of the headroom the schema
+    freed up.
+
+    Same finding as DREAM_MAX_CLUSTER_MEMBERS_PER_SYNTHESIS one module over:
+    on this hardware fewer well-chosen inputs beat more inputs on BOTH axes."""
+    assert _MAX_MEMORIES <= 12, (
+        "raising this past the measured 12 reintroduces enumeration-instead-of-"
+        "abstraction, which failed even at 52s (i.e. not a timeout problem)"
+    )
+
+
+def test_a_member_with_fewer_memories_than_the_cap_is_unaffected():
+    """The cap must not change the small case at all — every memory is sent."""
+    mems = [{"text": f"memory {i}"} for i in range(5)]
+    msgs = build_profile_messages("member-1", mems, max_chars=800)
+    user = next(m["content"] for m in msgs if m["role"] == "user")
+    for i in range(5):
+        assert f"[{i}] memory {i}" in user
+
+
+def test_the_cap_bounds_what_reaches_the_prompt():
+    """A member with far more memories than the cap sends only the cap's worth.
+    Guards the actual truncation, not just the constant."""
+    mems = [{"text": f"memory {i}"} for i in range(200)]
+    msgs = build_profile_messages("member-1", mems, max_chars=800)
+    user = next(m["content"] for m in msgs if m["role"] == "user")
+    assert f"[{_MAX_MEMORIES - 1}] " in user
+    assert f"[{_MAX_MEMORIES}] " not in user
