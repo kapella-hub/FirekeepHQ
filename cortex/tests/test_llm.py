@@ -152,8 +152,9 @@ def test_native_body_omits_format_and_options_when_not_requested():
 
 
 def test_openai_body_sends_only_standard_openai_fields():
-    """dreams/synthesize.py sends `think` and `chat_template_kwargs` on /v1
-    unconditionally; ollama ignores them and real OpenAI 400s on unrecognised
+    """dreams/profile.py sends `think` and `chat_template_kwargs` on /v1
+    unconditionally (dreams/synthesize.py did too, until it was converted to
+    this module); ollama ignores them and real OpenAI 400s on unrecognised
     request arguments. A helper used by default-on paths must not inherit that."""
     body = llm.build_openai_body(
         model="gpt-4o", messages=[{"role": "user", "content": "hi"}],

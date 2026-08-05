@@ -89,9 +89,10 @@ exactly like the other four. A schema-dropped call returns unconstrained output,
 which is what the caller's own adherence check is for — `decision/synthesize.py`
 reports `degraded` when the payload grounds nothing.
 
-THE OPENAI BRANCH SENDS ONLY STANDARD OPENAI FIELDS. `dreams/synthesize.py`
-sends `think` and `chat_template_kwargs` on the `/v1` path unconditionally;
-nobody has been burned because `DREAM_ENABLED=false`. Real OpenAI rejects
+THE OPENAI BRANCH SENDS ONLY STANDARD OPENAI FIELDS. `dreams/profile.py`
+sends `think` and `chat_template_kwargs` on the `/v1` path unconditionally
+(`dreams/synthesize.py` did too until it was converted to this module); nobody
+has been burned because `DREAM_ENABLED=false`. Real OpenAI rejects
 unrecognised request arguments with a 400, so a helper used by default-on paths
 cannot inherit that. The non-native path here is strictly more standards-
 compliant than the code it replaces.

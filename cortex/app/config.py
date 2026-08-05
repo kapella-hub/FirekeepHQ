@@ -327,16 +327,30 @@ class Settings(BaseSettings):
     #
     # CAVEAT added after live validation (2026-08-04): the 22.5s measurement
     # above holds where think:false is HONOURED, i.e. ollama's native
-    # /api/chat. On /v1/chat/completions — where LLM_BASE_URL points by
-    # default — ollama IGNORES the flag, the reasoning runs anyway, and the
-    # completion budget (synthesize._MAX_COMPLETION_TOKENS, raised to 4000 to
-    # stop that reasoning starving the answer) has to be generated before any
-    # JSON appears. On slow CPU inference that can exceed 45s, in which case
-    # this timeout fires, synthesize() returns [] with a WARNING and the run
-    # reports health="degraded" at GET /dreams. Raising this number is NOT the
-    # blind fix: pointing LLM_BASE_URL at /api restores the measured 22.5s
-    # path. Any increase here should carry its own measurement, as this 45s
-    # does.
+    # /api/chat. On /v1/chat/completions ollama IGNORES the flag, the reasoning
+    # runs anyway, and the completion budget (synthesize._MAX_COMPLETION_TOKENS,
+    # raised to 4000 to stop that reasoning starving the answer) has to be
+    # generated before any JSON appears. Measured that day on the VPS with the
+    # SMALLEST cluster the pass ever attempts (4 members, 2,595-char prompt):
+    # >400s on /v1 without completing, versus 22.5s native. Against this 45s
+    # budget that is not slow, it is inoperable — and it was the live state,
+    # because synthesize() built its own /v1 body.
+    #
+    # RESOLVED for synthesize(): it now calls app/llm.py's chat(), which
+    # selects the native endpoint whenever the backend confirms as ollama and
+    # falls back to /v1 otherwise. This value is passed straight through as
+    # that call's budget, for BOTH endpoints — there is deliberately no native
+    # sibling (see synthesize()'s docstring: a lower native budget strands a
+    # non-thinking-model ollama deploy, which takes the native path and gains
+    # nothing from think:false).
+    #
+    # STILL LIVE for profile.py, which posts to /v1 itself: there the timeout
+    # can fire, synthesize_profile() returns None, and the run reports
+    # health="degraded" at GET /dreams. The remedy is NOT repointing
+    # LLM_BASE_URL at /api — three embedding call sites concatenate
+    # /embeddings onto that same variable, so it would break every memory
+    # write — it is converting that call too. Any increase here should carry
+    # its own measurement, as this 45s does.
     DREAM_SYNTH_TIMEOUT_SECONDS: float = 45.0
     DREAM_LOCK_TTL_SECONDS: int = 1800
     DREAM_PROFILES_ENABLED: bool = True
