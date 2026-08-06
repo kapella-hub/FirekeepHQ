@@ -55,6 +55,18 @@ LOCK_KEY = "dreams:lock"
 #   the design doc's ground truth). Revisit with a real order_by+DATETIME
 #   payload-index fix once a live Qdrant is available to validate against.
 _ACTIVITY_SCAN_LIMIT = 5000
+# Default ceiling on how many candidate memories one tick considers. Now a
+# FLOOR-value default rather than the whole story: `DREAM_CANDIDATE_SCAN_LIMIT`
+# overrides it (see _candidate_scan_limit below).
+#
+# 1000 was sized against the design doc's ground truth of 538 active memories,
+# i.e. ~2x the pool it was ever measured on. Measured 2026-08-05 against a
+# 96,084-memory store, it is ~1% of the store — and because clustering
+# partitions by (workspace_id, namespace, project) BEFORE grouping, those 1000
+# candidates scattered into 425 partitions averaging 2.4 memories each, against
+# a DREAM_MIN_CLUSTER of 4. Result: zero clusters, on a store with 96k memories
+# in it. The cap is a performance guard, but at a large store it silently
+# becomes a correctness ceiling on what can ever be consolidated.
 _CANDIDATE_SCAN_LIMIT = 1000
 _PAGE_SIZE = 256
 
@@ -188,6 +200,28 @@ async def _activity_metrics(vector, settings, state) -> tuple[datetime | None, i
     return latest, new_count
 
 
+def _candidate_scan_limit(settings) -> int:
+    """How many candidates one tick may scan. `DREAM_CANDIDATE_SCAN_LIMIT` when
+    set and positive, else `_CANDIDATE_SCAN_LIMIT`.
+
+    Configurable because the right value is a property of the STORE, not of the
+    code: 1000 is ~2x the pool this feature was designed against and ~1% of a
+    96k-memory one, and below roughly (partitions x DREAM_MIN_CLUSTER) nothing
+    can cluster at all. Raising it costs Qdrant paging and a larger pure-Python
+    clustering pass, which is why it stays opt-in rather than being defaulted
+    up for deployments that do not need it.
+
+    A non-positive or unreadable value falls back to the default rather than
+    meaning "unlimited" — an accidental 0 must not turn one tick into a full
+    scan of an arbitrarily large store on a --pool=solo worker.
+    """
+    try:
+        value = int(getattr(settings, "DREAM_CANDIDATE_SCAN_LIMIT", 0) or 0)
+    except (TypeError, ValueError):
+        return _CANDIDATE_SCAN_LIMIT
+    return value if value > 0 else _CANDIDATE_SCAN_LIMIT
+
+
 async def _scroll_candidates(
     vector, settings, *, now: datetime, consolidated: set[str] | None = None
 ) -> list:
@@ -207,11 +241,12 @@ async def _scroll_candidates(
     scanned = 0
     offset = None
     scope = _scope_filter()
-    while scanned < _CANDIDATE_SCAN_LIMIT:
+    cap = _candidate_scan_limit(settings)
+    while scanned < cap:
         points, offset = await vector._client.scroll(
             collection_name=settings.QDRANT_COLLECTION,
             scroll_filter=scope,
-            limit=min(_PAGE_SIZE, _CANDIDATE_SCAN_LIMIT - scanned),
+            limit=min(_PAGE_SIZE, cap - scanned),
             offset=offset,
             with_payload=True,
             with_vectors=True,

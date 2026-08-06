@@ -357,6 +357,26 @@ class Settings(BaseSettings):
     # available for a fast-GPU deploy that measured it. Values below 2 are
     # legal but pointless: the system prompt requires each insight to be
     # supported by at least 2 episodes.
+    # How many candidate memories ONE tick may scan. 0 (the default) means
+    # "use the code default", app/dreams/task.py's _CANDIDATE_SCAN_LIMIT = 1000
+    # — deliberately NOT "unlimited", so an accidental 0 cannot turn a tick into
+    # a full scan of an arbitrarily large store on the --pool=solo worker.
+    #
+    # 1000 was sized against the design doc's ground truth of 538 active
+    # memories. Measured 2026-08-05 on a 96,084-memory store it is ~1% of the
+    # store, and because clustering partitions by
+    # (workspace_id, namespace, project) BEFORE grouping, those 1000 candidates
+    # landed in 425 partitions averaging 2.4 memories each against a
+    # DREAM_MIN_CLUSTER of 4 — zero clusters formed, on a store with 96k
+    # memories in it. Below roughly (partitions x DREAM_MIN_CLUSTER) nothing can
+    # cluster at all, so on a large or heavily-partitioned store this stops
+    # being a performance guard and becomes a ceiling on what can EVER be
+    # consolidated.
+    #
+    # Left opt-in rather than defaulted up: raising it costs Qdrant paging and a
+    # larger pure-Python clustering pass every tick, and a deployment at the
+    # scale this was designed for does not need it.
+    DREAM_CANDIDATE_SCAN_LIMIT: int = 0
     DREAM_MAX_CLUSTER_MEMBERS_PER_SYNTHESIS: int = 5
     DREAM_OWM_FLOOR: float = 0.35
     # This is the ONLY timeout that actually binds on the dream tick. The

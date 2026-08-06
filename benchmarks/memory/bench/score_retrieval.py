@@ -7,7 +7,14 @@ import math
 from collections import defaultdict
 from pathlib import Path
 
-from bench.common import DATA_DIR, WORK_DIR, is_abstention, load_dataset, sanitize_namespace
+from bench.common import (
+    DATA_DIR,
+    WORK_DIR,
+    is_abstention,
+    load_dataset,
+    run_work_dir,
+    sanitize_namespace,
+)
 from bench.ingest import Ledger
 
 _METRICS = ("recall_at_k", "coverage_at_k", "mrr", "ndcg_at_k")
@@ -91,11 +98,15 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
     ap.add_argument("--k", type=int, required=True)
+    # Scores are per run label, like the recall rows they are computed from.
+    # The ingest ledger is NOT — the store is a shared fixture (see bench.run).
+    ap.add_argument("--run-label", default="bench")
     args = ap.parse_args()
     rows = load_dataset(DATA_DIR / "longmemeval_s.json")
     ledger = Ledger(WORK_DIR / "ingest_ledger.jsonl")
-    result = score_run(rows, WORK_DIR / f"recall_{args.config}.jsonl", ledger, args.k)
-    out = WORK_DIR / f"scores_{args.config}.json"
+    work = run_work_dir(args.run_label, work_dir=WORK_DIR)
+    result = score_run(rows, work / f"recall_{args.config}.jsonl", ledger, args.k)
+    out = work / f"scores_{args.config}.json"
     out.write_text(json.dumps(result, indent=2), encoding="utf-8")
     print(json.dumps(result["overall"], indent=2))
     print(f"-> {out}")

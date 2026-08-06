@@ -11,13 +11,19 @@ import asyncio
 import json
 import shutil
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
 
 from bench import ingest, qa, recall, report, score_retrieval
-from bench.common import DATA_DIR, RESULTS_DIR, WORK_DIR, load_dataset
+from bench.common import (
+    DATA_DIR,
+    RESULTS_DIR,
+    WORK_DIR,
+    legacy_unscoped_artefacts,
+    load_dataset,
+    run_work_dir,
+)
 
 _COMPOSE_HINT = (
     "is the bench stack up? "
@@ -114,15 +120,88 @@ def _persist_ingest_errors(errors: list[str]) -> None:
         json.dumps(errors, indent=2), encoding="utf-8")
 
 
+def _int(value, default: int = 0) -> int:
+    """Read a count off disk without trusting it. A hand-edited or truncated
+    counts file must degrade to 0, never crash the run that is writing it."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else default
+
+
+def _record_recall_counts(work: Path, config_name: str, stats) -> dict:
+    """Persist what the recall stage actually DID, per config, per run label.
+
+    Two figures, because they answer two different questions and only one of
+    them can gate:
+
+    - `completed`/`errored` ACCUMULATE across invocations of the same label. A
+      4-hour leg is expected to be resumed, and the cumulative figure is what
+      answers "did this label ever recall anything" — useful provenance.
+    - `completed_last_invocation` is what the FINAL invocation executed, and it
+      is what `bench.dream_ab` gates on. The cumulative figure cannot: run a
+      leg, enable dreaming, re-run the identical command, and the second
+      invocation skips all 500 questions while still reporting the first
+      invocation's large `completed` — a no-op certified as evidence. The two
+      cases separate mechanically here: a genuine resume's final invocation
+      completes the remaining questions (> 0), a no-op re-run completes 0.
+
+    `skipped` is already the last invocation's only: skips are per-invocation
+    by nature and summing them would double-count the same questions.
+    """
+    counts = report.load_recall_counts(work)
+    prev = counts.get(config_name)
+    prev = prev if isinstance(prev, dict) else {}
+    entry = {
+        "completed": _int(prev.get("completed")) + stats.completed,
+        "errored": _int(prev.get("errored")) + stats.errored,
+        "skipped": stats.skipped,
+        "invocations": _int(prev.get("invocations")) + 1,
+        "completed_last_invocation": stats.completed,
+    }
+    counts[config_name] = entry
+    work.mkdir(parents=True, exist_ok=True)
+    (work / "recall_counts.json").write_text(
+        json.dumps(counts, indent=2), encoding="utf-8")
+    return entry
+
+
+def _warn_legacy_artefacts() -> None:
+    """Pre-scoping artefacts sit directly in `work/` and belong to no label.
+
+    They are never adopted — adopting them silently is precisely the defect
+    label-scoping fixes (a leg that recalls nothing and re-scores an older
+    leg's rows). They are also never moved or deleted, because another run may
+    hold them open. The operator is told they exist and how to claim them.
+    """
+    stale = legacy_unscoped_artefacts(WORK_DIR)
+    if not stale:
+        return
+    print(
+        "[work] NOTE: unscoped (pre-label) artefacts found in work/ — they are "
+        "NOT read, because which run produced them is unknowable:"
+    )
+    for path in stale:
+        print(f"  - {path.name}")
+    print(
+        "[work]   To resume one of them under a label, move it yourself into "
+        "work/<run-label>/ (and only if you are certain that label produced it)."
+    )
+
+
 def _assemble_report(run_label: str, cortex_url: str, ollama_url: str, reader_model: str) -> None:
+    work = run_work_dir(run_label, work_dir=WORK_DIR)
+
     scores = {}
     for name in recall.CONFIGS:
-        path = WORK_DIR / f"scores_{name}.json"
+        path = work / f"scores_{name}.json"
         if path.exists():
             scores[name] = json.loads(path.read_text(encoding="utf-8"))
+    # The positive control: what the recall stage actually executed for each
+    # config, carried inside the same dict `bench.dream_ab` compares — so a leg
+    # that recalled nothing cannot pass the gate. Shared with the standalone
+    # `python -m bench.report` path, which must stamp the identical block.
+    report.attach_recall_counts(scores, work)
 
     qa_result = None
-    qa_path = WORK_DIR / "qa_bench.jsonl"
+    qa_path = work / "qa_bench.jsonl"
     if qa_path.exists():
         qa_rows = [
             json.loads(line) for line in
@@ -133,15 +212,17 @@ def _assemble_report(run_label: str, cortex_url: str, ollama_url: str, reader_mo
 
     meta = report._load_meta(cortex_url, ollama_url, reader_model)
     ingest_errors = report._load_ingest_errors()
-    per_question = report._load_per_question(list(scores))
+    per_question = report._load_per_question(list(scores), work_dir=work)
     result = report.build_result(
         scores, qa_result, meta,
         ingest_errors=ingest_errors, per_question=per_question,
     )
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    out_json = RESULTS_DIR / f"{timestamp}-{run_label}.json"
+    # Sanitized, not raw: `--run-label a/b` used to reach this line after
+    # ingest, a full recall stage and scoring — hours on the real dataset —
+    # and die on `No such file or directory`. See `report.results_path`.
+    out_json = report.results_path(run_label, RESULTS_DIR)
     out_json.write_text(json.dumps(result, indent=2), encoding="utf-8")
 
     out_md = RESULTS_DIR / "METHODOLOGY.md"
@@ -192,6 +273,18 @@ def run(argv: list[str] | None = None) -> int:
     if args.limit:
         rows = rows[: args.limit]
 
+    work = run_work_dir(args.run_label, work_dir=WORK_DIR)
+    work.mkdir(parents=True, exist_ok=True)
+    print(f"[work] run artefacts -> {work}")
+    _warn_legacy_artefacts()
+
+    # The ingest ledger is deliberately SHARED and unscoped, unlike every other
+    # artefact below. The store is the fixture under test: both legs of an A/B
+    # must run against the SAME ingested corpus, and ingest is idempotent by
+    # ledger. Scoping it per label would re-ingest ~10 minutes of haystacks and,
+    # far worse, mean the two legs no longer measured the same store — which
+    # destroys the comparison that label-scoping the recall artefacts exists to
+    # protect.
     ledger = ingest.Ledger(WORK_DIR / "ingest_ledger.jsonl")
     try:
         ingest_stats = asyncio.run(ingest.ingest(
@@ -212,7 +305,7 @@ def run(argv: list[str] | None = None) -> int:
 
     recall_paths: dict[str, Path] = {}
     for name in names:
-        out = WORK_DIR / f"recall_{name}.jsonl"
+        out = work / f"recall_{name}.jsonl"
         try:
             stats = asyncio.run(recall.run_recall(
                 rows, args.base_url, name, out, progress=True,
@@ -221,9 +314,16 @@ def run(argv: list[str] | None = None) -> int:
             print(f"[recall:{name}] FAILED: {exc}")
             return 1
         recall_paths[name] = out
+        entry = _record_recall_counts(work, name, stats)
         print(
             f"[recall:{name}] completed={stats.completed} skipped={stats.skipped} "
             f"errored={stats.errored} -> {out}"
+        )
+        print(
+            f"[recall:{name}] label totals: completed={entry['completed']} "
+            f"errored={entry['errored']} invocations={entry['invocations']} "
+            f"(this invocation completed={entry['completed_last_invocation']}"
+            f" — the figure bench.dream_ab gates on)"
         )
 
     for name in names:
@@ -233,7 +333,7 @@ def run(argv: list[str] | None = None) -> int:
         except Exception as exc:
             print(f"[score:{name}] FAILED: {exc}")
             return 1
-        out = WORK_DIR / f"scores_{name}.json"
+        out = work / f"scores_{name}.json"
         out.write_text(json.dumps(result, indent=2), encoding="utf-8")
         overall = result["overall"]
         print(
@@ -243,7 +343,7 @@ def run(argv: list[str] | None = None) -> int:
 
     if not args.skip_qa:
         # Guarded above: skip_qa=False implies "bench" is in names/recall_paths.
-        qa_out = WORK_DIR / "qa_bench.jsonl"
+        qa_out = work / "qa_bench.jsonl"
         try:
             qa_stats = asyncio.run(qa.run_qa(
                 rows, recall_paths["bench"], qa_out,

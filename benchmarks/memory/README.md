@@ -108,7 +108,7 @@ planning estimate, not a promise.
 
 ## Where results land
 
-- `results/<timestamp>-<run-label>.json` — one immutable, publishable
+- `results/<timestamp>-<run-label>-<digest>.json` — one immutable, publishable
   run-record per `bench.run` invocation: dataset provenance (sha256, source,
   question count), Cortex `/version`, a snapshot of the host's Ollama
   `/api/tags`, retrieval scores per config (overall and broken down by
@@ -120,11 +120,27 @@ planning estimate, not a promise.
   config rows, states the local-QA-vs-published-GPT-4o caveat, and lists known
   limitations. Always reflects the most recent run, not necessarily the run
   you care about — the per-run JSON is the citable artifact.
-- `work/` — intermediate, resumable state: `ingest_ledger.jsonl`,
-  `recall_<config>.jsonl`, `scores_<config>.json`, `qa_bench.jsonl`.
-  Gitignored. Safe to delete between runs you want fully independent of each
-  other; deleting it forces a complete re-ingest and re-recall on the next
-  `bench.run`.
+- `work/` — intermediate, resumable state. Gitignored. Two tiers, and the
+  split is load-bearing:
+  - `work/ingest_ledger.jsonl` (plus `work/ingest_errors.json`) is **shared
+    across every run label**. The ingested store is the fixture under test:
+    both legs of an A/B must measure the same corpus, and ingest is idempotent
+    by ledger, so re-ingesting per label would cost ~10 minutes *and* destroy
+    the comparison.
+  - `work/<run-label>-<digest>/` holds everything a single leg owns —
+    `recall_<config>.jsonl`, `scores_<config>.json`, `recall_counts.json`,
+    `qa_bench.jsonl`. These resume by question id, so scoping them by label is
+    what keeps a resumed leg cheap while making it impossible for one label's
+    rows to be silently reused by another. The directory name is the label
+    with anything path-unsafe replaced by `_`, plus a short digest of the raw
+    label: the replacement alone is many-to-one (`post dream`, `post/dream`
+    and `post_dream` all cleaned to `post_dream`, as did any two labels
+    agreeing on their first 100 characters), and two labels sharing a
+    directory share a `recall_<config>.jsonl` — which is the cross-label
+    resume leak this layout exists to prevent.
+
+  Safe to delete a label's directory to force that leg to re-recall from
+  scratch; deleting all of `work/` additionally forces a complete re-ingest.
 - `data/` — the downloaded dataset and its metadata. Gitignored.
   `bench.download` is a no-op once `data/longmemeval_s.json` exists.
 
@@ -136,12 +152,15 @@ exact same `bench.run` command** — nothing already completed is repeated.
 
 - **Ingest** maintains a ledger (`work/ingest_ledger.jsonl`) of sessions
   already ingested; a re-run skips them and only sends the ones still
-  missing.
+  missing. This ledger is shared by every run label, deliberately.
 - **Recall** writes one line per finished question to
-  `work/recall_<config>.jsonl` per config and skips question ids already
-  present in that file.
-- **QA** appends to `work/qa_bench.jsonl` and skips question ids already
-  answered.
+  `work/<run-label>-<digest>/recall_<config>.jsonl` per config and skips question ids
+  already present in that file. **Changing `--run-label` therefore forces a
+  full re-recall** — that is the point: the resume set is keyed by question
+  id, so an unscoped file made a second label skip all 500 recalls and
+  re-score the first label's rows.
+- **QA** appends to `work/<run-label>-<digest>/qa_bench.jsonl` and skips question ids
+  already answered.
 - **Scoring** and **report generation** are cheap, idempotent
   recomputations over whatever is currently on disk — they always run in
   full on every invocation, but finish in seconds regardless of dataset size.
@@ -150,9 +169,20 @@ One consequence worth knowing: because the smoke run and the full run both
 read `data/longmemeval_s.json` in the same fixed order and key their ledgers
 by session id (not by question index), the smoke run's `--limit 2` is a
 literal prefix of the full run's 500 questions. Running the smoke test before
-the full run means those first 2 questions' ingest/recall/QA state is already
+the full run means those first 2 questions' **ingest** state is already
 present and gets skipped, not redone, when the full run reaches them — this
-is expected and harmless, not stale data bleeding across runs.
+is expected and harmless, not stale data bleeding across runs. Their recall
+and QA state is only reused if the full run uses the *same* `--run-label`
+(the reproduction commands above use `smoke` and `full`, so it does not).
+
+If you have a `work/` from before recall artefacts were label-scoped, you
+will see unscoped `recall_*.jsonl` / `scores_*.json` / `qa_*.jsonl` files
+sitting directly in `work/`. `bench.run` names them at startup and **never
+reads, moves or deletes them** — which run produced them is unknowable, and
+guessing is the bug this layout exists to prevent. To resume one under a
+label, move it into `work/<run-label>-<digest>/` yourself (run the leg once to
+see the directory name it prints), and only if you are certain
+that label produced it.
 
 ## Methodology and metric definitions
 
@@ -182,11 +212,22 @@ ordinary full run of this harness against an unmodified stack **is** the
 
 ### Running the A/B
 
+The two legs **must** use different `--run-label`s, and that is now sufficient
+as well as necessary: recall rows, scores and QA answers live under
+`work/<run-label>-<digest>/`, so the "after" leg cannot resume the "before"
+leg's rows.
+Expect the after leg to take as long as the before leg did — a label change
+forces a full re-recall by design. A post-dream leg that finishes in seconds
+did not run; check the `completed=` counts the recall stage prints. Re-running
+the SAME label is also a no-op — `bench.dream_ab` detects and refuses that
+(see "The positive control" below), but it is cheaper to notice here.
+
 ```bash
 cd benchmarks/memory
 # 1. Full benchmark with dreaming off (the default) — this is "before".
 .venv/Scripts/python -m bench.run --config both --run-label pre-dream
-#    -> results/<timestamp>-pre-dream.json
+#    -> results/<timestamp>-pre-dream-<digest>.json
+#    -> work/pre-dream-<digest>/{recall_*.jsonl,scores_*.json,recall_counts.json}
 
 # 2. Enable dreaming: add `DREAM_ENABLED: "true"` to cortex-api's
 #    `environment:` block in docker-compose.bench.yml (it defaults false and
@@ -199,14 +240,17 @@ docker compose -f docker-compose.bench.yml -p firekeep-bench up -d --build corte
 #    (DREAM_MIN_NEW_MEMORIES=25, DREAM_MIN_AGE_DAYS=2 by default — a fresh
 #    bench stack needs to clear both before the first cluster fires).
 
-# 3. Full benchmark again, same dataset, same stack — this is "after".
+# 3. Full benchmark again, same dataset, same stack, DIFFERENT label — this
+#    is "after". The label change forces a full re-recall; the shared ingest
+#    ledger means the store itself is NOT re-ingested.
 .venv/Scripts/python -m bench.run --config both --run-label post-dream
-#    -> results/<timestamp>-post-dream.json
+#    -> results/<timestamp>-post-dream-<digest>.json
+#    -> work/post-dream-<digest>/{recall_*.jsonl,scores_*.json,recall_counts.json}
 
 # 4. Compare.
 .venv/Scripts/python -m bench.dream_ab \
-  --before results/<timestamp>-pre-dream.json \
-  --after results/<timestamp>-post-dream.json
+  --before results/<timestamp>-pre-dream-<digest>.json \
+  --after results/<timestamp>-post-dream-<digest>.json
 ```
 
 `bench.dream_ab` prints one markdown table per recall config (`defaults` and
@@ -228,9 +272,39 @@ mismatch between the two runs, or a run missing its `overall` block, is
 reported as an `ERROR:` verdict with `regressed=True` rather than a computed
 (and meaningless) delta.
 
+**The positive control.** Every run record carries, per recall config, a
+`recall_counts` block recording what the recall stage actually executed:
+`completed` / `errored` accumulate across resumed invocations of that label,
+`skipped` and **`completed_last_invocation`** are the last invocation's only.
+
+`completed_last_invocation` is the figure that gates, and the distinction is
+load-bearing rather than pedantic. Re-running a label is a no-op — every
+question is already on disk and skipped — so "run the leg, enable dreaming,
+run the identical command again" (and `--run-label` defaults to `bench`, so
+this is easy to do by accident) leaves a record whose cumulative `completed`
+is still large while its final invocation measured nothing at all. Gating on
+the last invocation separates that from a legitimate resume mechanically: a
+resumed 4-hour leg's final invocation completes the questions that remained
+(`> 0`), a no-op re-run completes `0`. Re-running a leg that had already
+finished is likewise not evidence about the store as it stands now, and is
+likewise refused.
+
+So if the **after** run's last invocation recorded `completed: 0` it recalled
+nothing, its scores are a re-score of artefacts an earlier invocation
+produced, and `bench.dream_ab` refuses the comparison outright (`ERROR: …
+completed=0`, `regressed=True`) rather than reporting the +0.0000 delta it
+would otherwise compute. A run record from before these fields existed still
+compares, but prints a `WARNING: UNVERIFIED …` line naming what it could not
+check (no counts at all, or a cumulative count with no per-invocation one),
+and — because it cannot be checked mechanically — an additional `WARNING:
+SUSPECT …` if every metric is bit-identical. Warnings do not fail the gate (deterministic scoring means an
+unchanged store legitimately produces identical numbers, so identity is
+suspicious, not proof), but the final line reads `VERDICT: OK (WITH
+WARNINGS)` so it cannot be missed.
+
 `compare_runs(before, after)` is the pure comparison primitive: it takes a
 single pair of `score_run` dicts (`work/scores_<config>.json`'s shape — one
 recall config's `{"k": ..., "overall": {...}}`) and returns one verdict.
 `compare_result_files(before, after)` is what the CLI actually calls — it
-accepts full `results/<timestamp>-<label>.json` run-records (or bare
+accepts full `results/<timestamp>-<label>-<digest>.json` run-records (or bare
 `score_run`s) and compares every recall config present in both.

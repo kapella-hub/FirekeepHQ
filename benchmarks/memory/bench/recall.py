@@ -11,7 +11,15 @@ from pathlib import Path
 import httpx
 from tqdm import tqdm
 
-from bench.common import DATA_DIR, WORK_DIR, load_dataset, parse_date_tag, parse_session_tag, sanitize_namespace
+from bench.common import (
+    DATA_DIR,
+    WORK_DIR,
+    load_dataset,
+    parse_date_tag,
+    parse_session_tag,
+    run_work_dir,
+    sanitize_namespace,
+)
 
 CONFIGS: dict[str, dict] = {
     # What a stock install does — the honesty row.
@@ -109,13 +117,16 @@ def main() -> None:
     ap.add_argument("--base-url", default="http://127.0.0.1:18100")
     ap.add_argument("--config", choices=[*CONFIGS, "both"], default="both")
     ap.add_argument("--limit", type=int, default=None)
+    # Recall rows are per run label — resume must never leak across labels.
+    ap.add_argument("--run-label", default="bench")
     args = ap.parse_args()
     rows = load_dataset(DATA_DIR / "longmemeval_s.json")
     if args.limit:
         rows = rows[: args.limit]
     names = list(CONFIGS) if args.config == "both" else [args.config]
+    work = run_work_dir(args.run_label, work_dir=WORK_DIR)
     for name in names:
-        out = WORK_DIR / f"recall_{name}.jsonl"
+        out = work / f"recall_{name}.jsonl"
         stats = asyncio.run(run_recall(
             rows, args.base_url, name, out, progress=True))
         print(f"[{name}] completed={stats.completed} skipped={stats.skipped} "

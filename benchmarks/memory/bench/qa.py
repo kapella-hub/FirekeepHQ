@@ -11,7 +11,7 @@ from pathlib import Path
 import httpx
 from tqdm import tqdm
 
-from bench.common import DATA_DIR, WORK_DIR, is_abstention, load_dataset
+from bench.common import DATA_DIR, WORK_DIR, is_abstention, load_dataset, run_work_dir
 
 READER_MODEL = "qwen3:14b"
 _ABSTAIN_MARKERS = ("don't know", "do not know", "no information")
@@ -158,12 +158,16 @@ def main() -> None:
     ap.add_argument("--model", default=READER_MODEL)
     ap.add_argument("--ollama-url", default="http://127.0.0.1:11434")
     ap.add_argument("--limit", type=int, default=None)
+    # QA answers are derived from ONE label's recall rows and resume by
+    # question id, so they are scoped exactly like those rows.
+    ap.add_argument("--run-label", default="bench")
     args = ap.parse_args()
     rows = load_dataset(DATA_DIR / "longmemeval_s.json")
     if args.limit:
         rows = rows[: args.limit]
+    work = run_work_dir(args.run_label, work_dir=WORK_DIR)
     stats = asyncio.run(run_qa(
-        rows, WORK_DIR / "recall_bench.jsonl", WORK_DIR / "qa_bench.jsonl",
+        rows, work / "recall_bench.jsonl", work / "qa_bench.jsonl",
         base_url=args.ollama_url, model=args.model, progress=True))
     print(f"answered={stats.answered} skipped={stats.skipped} "
           f"judge_errors={stats.judge_errors}")

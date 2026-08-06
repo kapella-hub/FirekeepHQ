@@ -70,6 +70,23 @@ def _is_skipped_path(path: Path) -> bool:
     return (
         any(part in SKIP_DIRS for part in parts)
         or any(parts[i:i + 2] == (".claude", "worktrees") for i in range(len(parts) - 1))
+        # symdex/benchmarks/repos/ — third-party repositories CLONED locally as
+        # tree-sitter parser fixtures (clap, click, cobra, express, gson, guzzle,
+        # jq, ...). Gitignored at symdex/.gitignore:54 and confirmed untracked
+        # (`git ls-files` returns nothing under it), so these are not files this
+        # repository ships, publishes or builds — they are somebody else's source
+        # that happens to be on disk.
+        #
+        # Without this the guard failed on `composer:latest`, `php:7.4` and
+        # `debian:12-slim` in guzzle's and jq's own Dockerfiles: real unpinned
+        # bases, in projects Firekeep has no authority over and does not build.
+        # A guard that cannot be satisfied is a guard that gets muted, and this
+        # one protects a licence boundary (the Redis 7.2->7.4 relicensing is the
+        # recorded reason it exists), so it must stay actionable.
+        #
+        # Scoped to the exact two-segment path, following the .claude/worktrees
+        # precedent above, rather than skipping every directory named "repos".
+        or any(parts[i:i + 2] == ("benchmarks", "repos") for i in range(len(parts) - 1))
     )
 
 # The files that must be covered. Discovery is a walk, so a NEW compose file or

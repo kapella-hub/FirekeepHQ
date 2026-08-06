@@ -93,6 +93,41 @@ services:
       VAULT_ENABLED: "false"
       # 60/min (the default) would strangle a ~300k-call ingest.
       RATE_LIMIT: "100000/minute"
+      # --- Dreaming A/B (see README "Dreaming A/B: the regression gate") -------
+      # OFF for the "before" leg; flip DREAM_ENABLED to "true" and re-create
+      # cortex-api for the "after" leg. The other three are BENCH-ONLY overrides
+      # and each is here for a reason that does not apply to a real deployment:
+      #
+      #   MIN_AGE_DAYS=0  — the harness puts LongMemEval's session dates in TAGS,
+      #     not in `timestamp`, so every memory here is minutes old and NOTHING
+      #     would clear the default 2-day gate. This makes the gate STRICTER, not
+      #     weaker: dreaming gets the whole store as candidates instead of an
+      #     aged subset, which is the maximum-exposure case for a regression test.
+      #   IDLE_MINUTES=0  — the idle gate exists to keep dreaming off a store
+      #     someone is actively writing to. The benchmark ingest has finished by
+      #     the time this runs, and waiting 30 minutes measures nothing.
+      #   TICK_MINUTES=1  — the bench stack runs no worker or beat at all, so
+      #     ticks are driven by hand; this only stops the value looking load-
+      #     bearing when it is not.
+      DREAM_ENABLED: "${DREAM_ENABLED:-false}"
+      DREAM_MIN_AGE_DAYS: "0"
+      DREAM_IDLE_MINUTES: "0"
+      DREAM_TICK_MINUTES: "1"
+      # The shipped default (1000) sees ~1% of this 96k-memory store, and
+      # clustering partitions by (workspace_id, namespace, project) BEFORE
+      # grouping — so 1000 candidates land in 425 per-question namespaces
+      # averaging 2.4 memories each, against DREAM_MIN_CLUSTER=4. Measured
+      # 2026-08-05: ZERO clusters formed, i.e. the A/B had no treatment
+      # condition and would have "passed" by doing nothing.
+      DREAM_CANDIDATE_SCAN_LIMIT: "40000"
+      # Pin the model the PRODUCTION deployment runs. Without this the config
+      # default (`llama3`) wins, and the host happens to serve `llama3:latest`,
+      # so the A/B would run green against a model nobody deploys. Measured
+      # 2026-08-05 on the VPS: on identical clusters qwen3:4b gave 6 specific,
+      # usable insights in 26.8-32.4s while the llama3 family gave 4 terse
+      # fragments in 28.5-51.9s — so the substitution would change both the
+      # latency and the CONTENT being scored.
+      LLM_MODEL: "${BENCH_LLM_MODEL:-qwen3:4b}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:

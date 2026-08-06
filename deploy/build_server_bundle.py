@@ -94,13 +94,34 @@ def build_bundle(repo: Path, output: Path, version: str) -> tuple[Path, Path]:
         for relative in BUNDLE_FILES:
             source = repo / relative
             if relative != ".env.example":
-                tar.add(source, arcname=f"{root}/{relative}", recursive=False)
+                # Normalise CRLF -> LF. The bundle is extracted and executed on a
+                # customer's LINUX host, where `#!/usr/bin/env bash\r` is not a
+                # valid shebang — the script dies with a bare "bad interpreter"
+                # naming a path that looks correct.
+                #
+                # Git's Windows autocrlf converts on CHECKOUT, so the repository
+                # blobs are LF (verified) while the working tree this reads from
+                # is CRLF. CI builds the real release on ubuntu-latest and is
+                # unaffected, which is exactly why this is worth fixing rather
+                # than muting: the one build that produces a broken bundle is a
+                # developer's local one, and it is broken in a way nothing on
+                # their machine can execute to discover.
+                #
+                # Applied to every bundled file, not just *.sh: the bundle also
+                # carries compose YAML, which is LF by convention, and there is
+                # no bundled file for which CRLF is correct. Byte-identical on a
+                # checkout that is already LF.
+                data = source.read_bytes().replace(b"\r\n", b"\n")
+                info = tarfile.TarInfo(f"{root}/{relative}")
+                info.size = len(data)
+                info.mode = source.stat().st_mode & 0o777
+                tar.addfile(info, io.BytesIO(data))
                 continue
             env = re.sub(
                 r"(?m)^IMAGE_TAG=.*$",
                 f"IMAGE_TAG={version}",
                 source.read_text(encoding="utf-8"),
-            ).encode()
+            ).encode().replace(b"\r\n", b"\n")
             info = tarfile.TarInfo(f"{root}/{relative}")
             info.size = len(env)
             info.mode = source.stat().st_mode & 0o777

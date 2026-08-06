@@ -888,3 +888,47 @@ async def test_a_sampled_cluster_still_consolidates_every_member(monkeypatch):
     assert payload["dream_cluster_size"] == 12
     assert payload["dream_sampled_count"] == 5
     assert payload["dreamed_from"] == ["p00"]
+
+
+# ---------------------------------------------------------------------------
+# DREAM_CANDIDATE_SCAN_LIMIT. Measured 2026-08-05 on a 96,084-memory store: the
+# hardcoded 1000 saw ~1% of it, and clustering partitions BEFORE grouping, so
+# those 1000 fell into 425 partitions averaging 2.4 memories against a
+# DREAM_MIN_CLUSTER of 4 — zero clusters, on a store with 96k memories.
+# ---------------------------------------------------------------------------
+
+class _ScanS:
+    def __init__(self, value=None):
+        if value is not None:
+            self.DREAM_CANDIDATE_SCAN_LIMIT = value
+
+
+def test_the_scan_limit_defaults_to_the_code_constant():
+    """An absent setting must behave exactly as before this was configurable."""
+    from app.dreams.task import _CANDIDATE_SCAN_LIMIT, _candidate_scan_limit
+    assert _candidate_scan_limit(_ScanS()) == _CANDIDATE_SCAN_LIMIT
+
+
+def test_a_positive_scan_limit_is_honoured():
+    from app.dreams.task import _candidate_scan_limit
+    assert _candidate_scan_limit(_ScanS(25000)) == 25000
+
+
+@pytest.mark.parametrize("bad", [0, -1, "", None, "abc", 3.7])
+def test_a_non_positive_or_unreadable_scan_limit_falls_back_never_unlimited(bad):
+    """0 must mean "the default", NOT "no ceiling". A tick that scans an
+    arbitrarily large store blocks the --pool=solo worker, and every other
+    periodic task with it, for as long as the scan takes. Falling back is the
+    only safe reading of a value somebody fat-fingered."""
+    from app.dreams.task import _CANDIDATE_SCAN_LIMIT, _candidate_scan_limit
+    got = _candidate_scan_limit(_ScanS(bad))
+    assert got == _CANDIDATE_SCAN_LIMIT or got == int(bad)
+    assert got > 0
+
+
+def test_the_shipped_default_is_zero_meaning_use_the_code_constant():
+    """Guards the opt-in posture: raising this costs Qdrant paging and a larger
+    clustering pass on every tick, so a deployment at the scale the feature was
+    designed for must not silently pay for it."""
+    from app.config import Settings
+    assert Settings.model_fields["DREAM_CANDIDATE_SCAN_LIMIT"].default == 0
