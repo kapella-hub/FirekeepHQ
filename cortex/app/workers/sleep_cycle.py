@@ -52,6 +52,7 @@ def _create_celery_app() -> Celery:
             "app.collectors.confluence",
             "app.owm",
             "app.dreams.task",
+            "app.procedures.harden",
         ],
         beat_schedule={
             "sleep-cycle-consolidation": {
@@ -89,6 +90,10 @@ def _create_celery_app() -> Celery:
             "dream-tick": {
                 "task": "app.dreams.task.run_dream_tick",
                 "schedule": timedelta(minutes=s.DREAM_TICK_MINUTES),
+            },
+            "procedure-hardening": {
+                "task": "app.procedures.harden.run_procedure_hardening",
+                "schedule": timedelta(hours=s.PROCEDURE_SCHEDULE_HOURS),
             },
         },
     )
