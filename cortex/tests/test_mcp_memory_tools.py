@@ -194,7 +194,18 @@ class TestMemoryHandoff:
             json=[],
             request=httpx.Request("GET", "http://test"),
         )
-        recall_resp = _mock_response({"context_block": "Recent auth work by alice."})
+        # `sources` is required for this test to reach the LLM path at all:
+        # a handoff with no contributors AND no recalled sources now
+        # short-circuits to "nothing to hand off" rather than asking an LLM to
+        # narrate an empty result (see TestMemoryHandoffEmptyProject). A real
+        # /memory/recall never returns a populated context_block with zero
+        # sources — the block is BUILT from them — so this makes the fixture
+        # match the API, it does not weaken the test.
+        recall_resp = _mock_response({
+            "context_block": "Recent auth work by alice.",
+            "sources": [{"store": "vector", "content": "auth work", "score": 0.9,
+                         "metadata": {"id": "m1"}}],
+        })
 
         with (
             patch.object(
@@ -224,7 +235,11 @@ class TestMemoryHandoff:
             text="unavailable",
             request=httpx.Request("GET", "http://test"),
         )
-        recall_resp = _mock_response({"context_block": "Some memories here."})
+        recall_resp = _mock_response({
+            "context_block": "Some memories here.",
+            "sources": [{"store": "vector", "content": "x", "score": 0.8,
+                         "metadata": {"id": "m1"}}],
+        })
 
         with (
             patch.object(
@@ -243,6 +258,47 @@ class TestMemoryHandoff:
 
         assert isinstance(result, str)
         assert len(result) > 0
+
+
+class TestMemoryHandoffEmptyProject:
+    @pytest.mark.asyncio
+    async def test_unknown_project_is_not_narrated(self):
+        """A handoff for a project with nothing in it must SAY it is empty.
+
+        Everything after retrieval hands the context to an LLM and asks for a
+        handoff summary — and it will always write one, from whatever survived.
+        Measured on the REST sibling of this flow: a handoff for
+        `__no_such_project_xyz` returned HTTP 200 narrating ANOTHER project's
+        work ("All 303 Karma tests pass...") as though it were that project's.
+        Scoped retrieval stops the wrong memories arriving; this stops an
+        EMPTY result being narrated anyway.
+        """
+        from unittest.mock import patch
+
+        contrib_resp_get = httpx.Response(
+            status_code=200, json=[], request=httpx.Request("GET", "http://test"),
+        )
+        recall_resp = _mock_response({"context_block": "", "sources": []})
+        llm_calls = []
+
+        # Patched onto the CLASS, so it is bound: `self` first, then the URL.
+        async def _post(self, url, *a, **k):
+            if "recall" in str(url):
+                return recall_resp
+            llm_calls.append(url)
+            raise AssertionError("the LLM must not be asked to invent a handoff")
+
+        with (
+            patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock,
+                         return_value=contrib_resp_get),
+            patch.object(httpx.AsyncClient, "post", new=_post),
+        ):
+            from app.mcp_server import memory_handoff
+            result = await memory_handoff(project="__no_such_project_xyz")
+
+        assert "__no_such_project_xyz" in result
+        assert "Nothing to hand off" in result
+        assert llm_calls == []
 
 
 @pytest.mark.asyncio

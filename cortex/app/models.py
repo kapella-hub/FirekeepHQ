@@ -25,7 +25,17 @@ class ContextQuery(BaseModel):
     task: str = Field(..., min_length=1, max_length=2000)
     tags: list[Annotated[str, Field(max_length=100)]] = Field(default=[], max_length=20)
     top_k: int = Field(default=5, ge=1, le=100)
-    namespace: str = Field(default="default", min_length=1, max_length=200, pattern=r"^[a-zA-Z0-9_-]+$")
+    # Category scope, and OPTIONAL BY DEFAULT — see `db/vector.namespace_condition`.
+    # Omitting it searches every namespace the caller's workspace_id permits;
+    # naming one scopes to exactly that one, `"default"` included. This field
+    # used to default to the literal `"default"`, which the vector leg then
+    # treated as a wildcard — so "unspecified" and "the default category" were
+    # the same request and could not both be served. Splitting them is what
+    # lets an unscoped recall reach the 146 memories the product's own guidance
+    # tells agents to file under `namespace="infrastructure"` and friends.
+    namespace: str | None = Field(
+        default=None, min_length=1, max_length=200, pattern=r"^[a-zA-Z0-9_-]+$"
+    )
     include_archived: bool = Field(default=False)
     project: str | None = Field(default=None, max_length=200)
     token_budget: int = Field(default=600, ge=50, le=10000)
@@ -50,8 +60,8 @@ class ContextQuery(BaseModel):
 
     @field_validator("namespace")
     @classmethod
-    def _normalize_namespace(cls, v: str) -> str:
-        return normalize_namespace(v)
+    def _normalize_namespace(cls, v: str | None) -> str | None:
+        return normalize_namespace(v) if v is not None else None
 
 
 class ActionLog(BaseModel):
@@ -172,7 +182,11 @@ class RecallResponse(BaseModel):
     sources: list[MemorySource]
     score: float
     request_id: str | None = None
-    namespace: str = "default"
+    # Echoes back the namespace the query was SCOPED to; `None` means the recall
+    # spanned every namespace in the caller's workspace. Never invent
+    # `"default"` here — that string now names one category, and reporting it
+    # for an unscoped recall is exactly the confusion this change removes.
+    namespace: str | None = None
     tokens_used: int = 0
     token_budget: int = 600
     format: str = "raw"

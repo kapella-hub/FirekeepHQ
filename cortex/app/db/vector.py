@@ -22,8 +22,10 @@ from qdrant_client.models import (
     Distance,
     FieldCondition,
     Filter,
+    IsEmptyCondition,
     MatchAny,
     MatchValue,
+    PayloadField,
     PayloadSchemaType,
     PointStruct,
     Range,
@@ -203,6 +205,62 @@ def _merge_lifecycle(existing: dict | None, fresh: dict) -> dict:
     return merged
 
 
+def namespace_condition(namespace: str | None) -> Filter | FieldCondition | None:
+    """The one namespace scope clause, shared by search and near-duplicate collapse.
+
+    NAMESPACE IS A CATEGORY, NOT A TENANT. That is the design decision this
+    function encodes, and it is worth stating because the code used to imply
+    otherwise. ``workspace_id`` is the tenancy boundary: it is applied as a hard
+    ``must`` in the same filter, it is DERIVED FROM THE VERIFIED PRINCIPAL, and
+    a caller cannot choose it. ``namespace`` is the opposite — a free string on
+    the request body that any caller may set to any value — so it can never
+    isolate anything, and scoping recall to it buys no security while costing
+    coverage. Measured on the live store: all 4347 memories carry ONE
+    ``workspace_id``, while ``namespace`` holds 18 distinct values that read as
+    topics — ``infrastructure``, ``engineering``, ``product``, ``research``,
+    ``team``, ``architecture``, ``strategy``, ``release_operations`` — plus a
+    few historical service names.
+
+    THE SEMANTICS:
+
+    * ``None`` — no clause. Every namespace the caller's ``workspace_id``
+      already permits. This is what an unspecified namespace means, and it is
+      the recall default (``ContextQuery.namespace`` defaults to ``None``).
+    * any string, INCLUDING ``"default"`` — exactly that namespace. Asking for
+      one category returns that category.
+
+    The literal string ``"default"`` no longer means "everything". It used to,
+    by accident: both call sites read ``if namespace != "default":`` before
+    appending the condition, so ``default`` applied no filter at all while the
+    response echoed ``namespace: "default"`` back as though it had. That was a
+    real defect and it is gone — but the first fix for it made the clause
+    unconditional while the client kit still sent the literal ``"default"`` on
+    every recall, which hid 146 memories (129 of them active, several written
+    the same week) behind a filter nobody asked for. The product's own shipped
+    guidance tells agents to store operational facts under
+    ``namespace="infrastructure"``; a default recall that cannot see them is a
+    product that forgets on purpose. Separating "unspecified" from "default" is
+    what lets both statements be true at once.
+
+    ``default`` keeps ONE special property, orthogonal to the above: points
+    written before the field existed carry no ``namespace`` key, and Qdrant will
+    not match a missing field against ``MatchValue("default")``. An explicit
+    ``namespace="default"`` therefore matches ``namespace == "default" OR the
+    field is absent``, so scoping to the default category cannot silently
+    disappear legacy memories.
+    """
+    if namespace is None:
+        return None
+    if namespace != "default":
+        return FieldCondition(key="namespace", match=MatchValue(value=namespace))
+    return Filter(
+        should=[
+            FieldCondition(key="namespace", match=MatchValue(value="default")),
+            IsEmptyCondition(is_empty=PayloadField(key="namespace")),
+        ]
+    )
+
+
 def _similarity_filter(namespace: str, domain: str | None) -> Filter:
     """Build the query filter used by ``find_similar`` (contradiction detection).
 
@@ -227,10 +285,25 @@ def _similarity_filter(namespace: str, domain: str | None) -> Filter:
          guard a routine learn could supersede the profile, and the "one
          continuously-updated profile per human" contract would be defeated
          by the most ordinary write path in the system.
+
+    NAMESPACE ON THE WRITE PATH IS SCOPED, AND UNLIKE RECALL THAT IS THE POINT.
+    ``/memory/learn`` always names a namespace (the model defaults it to
+    ``"default"``), so this filter is always scoped to exactly one category.
+    Previously ``default`` was the unfiltered wildcard here too, which made the
+    behaviour asymmetric in the destructive direction: a write into ``default``
+    could supersede an ``infrastructure`` memory, while a write into
+    ``infrastructure`` could not see a ``default`` near-duplicate. Scoping it
+    both ways only ever NARROWS what can be superseded — no memory becomes less
+    recallable, and a memory filed under a different category is no longer
+    collapsed by a write that never mentioned it. The cost is that the same fact
+    stored under two categories will not be collapsed into one; that is the
+    honest consequence of treating namespace as a category, and a duplicate is
+    cheaper than a wrongful supersession.
     """
     conditions = [FieldCondition(key="status", match=MatchValue(value="active"))]
-    if namespace != "default":
-        conditions.append(FieldCondition(key="namespace", match=MatchValue(value=namespace)))
+    ns_clause = namespace_condition(namespace)
+    if ns_clause is not None:
+        conditions.append(ns_clause)
     if domain:
         conditions.append(FieldCondition(key="domain", match=MatchValue(value=domain)))
     must_not = [
@@ -700,7 +773,7 @@ class VectorClient:
         query: str,
         top_k: int = 5,
         filter_tags: list[str] | None = None,
-        namespace: str = "default",
+        namespace: str | None = "default",
         include_archived: bool = False,
         project: str | None = None,
         workspace_id: str | None = None,
@@ -712,7 +785,11 @@ class VectorClient:
             query: The search query text.
             top_k: Maximum number of results to return.
             filter_tags: Optional list of tags to filter on (match any).
-            namespace: Tenant namespace for multi-tenant filtering.
+            namespace: Category scope. ``None`` (the recall default) searches
+                every namespace inside ``workspace_id``; any string, including
+                ``"default"``, scopes to exactly that namespace. Tenancy is
+                ``workspace_id``'s job, not this argument's — see
+                ``namespace_condition``.
 
         Returns:
             List of dicts with id, score, text, and metadata.
@@ -746,13 +823,9 @@ class VectorClient:
                         match=MatchValue(value=workspace_id),
                     )
                 )
-            if namespace != "default":
-                filter_conditions.append(
-                    FieldCondition(
-                        key="namespace",
-                        match=MatchValue(value=namespace),
-                    )
-                )
+            ns_clause = namespace_condition(namespace)
+            if ns_clause is not None:
+                filter_conditions.append(ns_clause)
             if not include_archived:
                 must_not_conditions.append(
                     FieldCondition(
@@ -1051,11 +1124,25 @@ class VectorClient:
         status: str,
         superseded_by: str | None = None,
         reason: str | None = None,
+        count_as_contradiction: bool = True,
     ) -> None:
         """Update memory lifecycle status and optionally set superseded_by.
 
         SP0 B2: contradiction also persists a recomputed `confidence` so GC's
         composite eviction score reads reality instead of the 0.5 default.
+
+        ``count_as_contradiction=False`` supersedes WITHOUT bumping
+        ``contradicted_count`` or re-deriving confidence downward. It exists
+        because ``contradiction.py`` decides supersession on cosine similarity
+        alone — a near-duplicate RESTATEMENT and a genuine correction reach
+        this method by the identical path, and the restatement is the common
+        case. Recording "this memory was contradicted" for a memory that was
+        merely said twice is a false claim, and it is not cosmetic: it feeds
+        `compute_confidence`, the `(1+confirmed)/(1+contradicted)` factor in
+        recall scoring, and the memory-agent's tie-breaks. Proven live —
+        storing a fact and then the SAME fact reworded left the first with
+        ``status=superseded, contradicted_count=1``, with nothing having
+        contradicted it.
 
         Archiving through this path is a HUMAN act, so it records
         ``archive_source="manual"`` and no ``purge_eligible_at``: GC's purge
@@ -1089,7 +1176,7 @@ class VectorClient:
                     "purge_eligible_at": None,
                 }
             )
-        if status == "superseded":
+        if status == "superseded" and count_as_contradiction:
             # Increment contradicted_count and persist recomputed confidence
             points = await self._client.retrieve(self._collection, [memory_id], with_payload=True)
             if points:
@@ -1190,6 +1277,15 @@ class VectorClient:
         lifecycle, so this is the read the graph retrieval leg admits rows
         against; a store failure degrades to an empty map (fail closed: nothing
         is admitted) rather than propagating and taking recall down with it.
+
+        ``project`` / ``workspace_id`` / ``namespace`` are projected alongside
+        lifecycle because Qdrant is authoritative for SCOPE too, and the graph
+        leg has no scope filter of its own: ``query_related`` takes neither a
+        project nor a workspace_id, so a project-scoped recall was answered by
+        a vector leg that honoured the scope and a graph leg that ignored it.
+        The caller (``RAGEngine._scope_verdict``) uses these to gate the rows
+        that name a vector memory; a row naming none is graph-owned knowledge
+        and stays admitted, exactly as it does for lifecycle.
         """
         if not memory_ids:
             return {}
@@ -1210,6 +1306,9 @@ class VectorClient:
                 "memory_type": payload.get("memory_type", "episodic"),
                 "confirmed_count": payload.get("confirmed_count", 0),
                 "contradicted_count": payload.get("contradicted_count", 0),
+                "project": payload.get("project"),
+                "workspace_id": payload.get("workspace_id"),
+                "namespace": payload.get("namespace"),
             }
         return states
 

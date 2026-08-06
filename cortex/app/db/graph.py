@@ -589,7 +589,7 @@ class Neo4jClient:
     # ------------------------------------------------------------------
 
     async def query_related(
-        self, concept: str, limit: int = 10, namespace: str = "default"
+        self, concept: str, limit: int = 10, namespace: str | None = "default"
     ) -> list[dict[str, Any]]:
         """Find nodes related to a concept via graph traversal (up to 3 hops).
 
@@ -597,8 +597,27 @@ class Neo4jClient:
         Falls back to CONTAINS-based keyword matching if the fulltext
         index is not available.
 
-        When namespace is not "default", results are filtered to nodes
-        reachable from the given Namespace node via CONTAINS relationships.
+        NAMESPACE ON THE GRAPH LEG — what it does and what it deliberately does
+        not do. A named namespace other than ``"default"`` filters results to
+        nodes reachable from that ``Namespace`` node via ``CONTAINS*..3``.
+        ``None`` (the recall default since namespace became optional) applies no
+        clause. ``"default"`` ALSO applies no clause, and that is a stated
+        residual rather than an oversight:
+
+        MEASURED on the live graph, 2026-08-06 — of 5459 recallable nodes
+        (Domain/Concept/Action/Outcome/Resolution), **118** are reachable from
+        ANY ``Namespace`` node. 97.8% of the graph carries no namespace
+        attribution at all, because sleep-cycle extraction writes graph-owned
+        knowledge that no ``/memory/learn`` namespace ever touched. Filtering
+        this leg on ``"default"`` would therefore not scope it, it would delete
+        it — the vector leg has an ``IsEmpty`` arm for exactly this case and the
+        graph has no equivalent, since "reachable from no Namespace" is not the
+        same claim as "belongs to the default category".
+
+        Namespace IS enforced on graph rows that can be attributed: a row naming
+        vector ``memory_ids`` is checked against those memories' payloads by
+        ``RAGEngine._scope_verdict``. Rows naming none are unattributable and
+        stay admitted. See that method for the residual that leaves.
         """
         keywords = self._extract_keywords(concept)
         if not keywords:
@@ -619,7 +638,7 @@ class Neo4jClient:
         return await self._query_related_contains(expanded, effective_limit, namespace)
 
     async def _query_related_fulltext(
-        self, keywords: list[str], limit: int, namespace: str = "default"
+        self, keywords: list[str], limit: int, namespace: str | None = "default"
     ) -> list[dict[str, Any]] | None:
         """Try fulltext index search. Returns None if index doesn't exist."""
         # Build Lucene query string: OR-join all keywords
@@ -643,7 +662,7 @@ class Neo4jClient:
             "search_terms": search_terms,
             "limit": limit,
         }
-        if namespace != "default":
+        if namespace and namespace != "default":
             ns_filter = (
                 "AND EXISTS((result)<-[:CONTAINS*..3]-(:Namespace {name: $namespace}))"
             )
@@ -689,7 +708,7 @@ class Neo4jClient:
         self,
         concept: str,
         limit: int = 10,
-        namespace: str = "default",
+        namespace: str | None = "default",
         max_hops: int = 3,
         decay_per_hop: float = 0.5,
     ) -> list[dict[str, Any]]:
@@ -724,7 +743,7 @@ class Neo4jClient:
         self,
         keywords: list[str],
         limit: int,
-        namespace: str,
+        namespace: str | None,
         max_hops: int,
         decay_per_hop: float,
     ) -> list[dict[str, Any]] | None:
@@ -755,7 +774,7 @@ class Neo4jClient:
             "start_limit": 20,
             "decay": decay_per_hop,
         }
-        if namespace != "default":
+        if namespace and namespace != "default":
             ns_filter = (
                 "AND EXISTS((result)<-[:CONTAINS*..3]-(:Namespace {name: $namespace}))"
             )
@@ -810,7 +829,7 @@ class Neo4jClient:
             return None
 
     async def _query_related_contains(
-        self, keywords: list[str], limit: int, namespace: str = "default"
+        self, keywords: list[str], limit: int, namespace: str | None = "default"
     ) -> list[dict[str, Any]]:
         """Fallback CONTAINS-based keyword search with label filtering."""
         # Build OR-chained CONTAINS conditions for each keyword.
@@ -828,7 +847,7 @@ class Neo4jClient:
         # Build namespace filter clause
         ns_filter_start = ""
         ns_filter_related = ""
-        if namespace != "default":
+        if namespace and namespace != "default":
             ns_filter_start = (
                 "AND EXISTS((start)<-[:CONTAINS*..3]-(:Namespace {name: $namespace}))"
             )
@@ -1242,7 +1261,7 @@ class Neo4jClient:
             return []
 
     async def query_resolutions(
-        self, error_pattern: str, limit: int = 5, namespace: str = "default"
+        self, error_pattern: str, limit: int = 5, namespace: str | None = "default"
     ) -> list[dict[str, Any]]:
         """Find resolutions for outcomes matching the given error pattern."""
         params: dict[str, Any] = {
@@ -1251,7 +1270,7 @@ class Neo4jClient:
         }
 
         ns_filter = ""
-        if namespace != "default":
+        if namespace and namespace != "default":
             ns_filter = (
                 "AND EXISTS((r)<-[:CONTAINS*..3]-(:Namespace {name: $namespace}))"
             )

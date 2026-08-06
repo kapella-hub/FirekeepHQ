@@ -37,7 +37,10 @@ class TestContextQuery:
         q = ContextQuery(task="anything")
         assert q.tags == []
         assert q.top_k == 5
-        assert q.namespace == "default"
+        # None, not "default": an unspecified namespace searches every
+        # namespace in the caller's workspace, while the literal "default"
+        # names one category. See db/vector.namespace_condition.
+        assert q.namespace is None
 
     def test_custom_values(self):
         q = ContextQuery(task="search", tags=["auth", "db"], top_k=10)
@@ -47,7 +50,7 @@ class TestContextQuery:
     def test_serialization_roundtrip(self):
         q = ContextQuery(task="Fix login bug", tags=["auth"], top_k=3)
         data = q.model_dump()
-        assert data == {"task": "Fix login bug", "tags": ["auth"], "top_k": 3, "namespace": "default", "include_archived": False, "project": None, "token_budget": 600, "format": "synthesized"}
+        assert data == {"task": "Fix login bug", "tags": ["auth"], "top_k": 3, "namespace": None, "include_archived": False, "project": None, "token_budget": 600, "format": "synthesized"}
         q2 = ContextQuery.model_validate(data)
         assert q2 == q
 
@@ -362,9 +365,15 @@ class TestFieldValidation:
 
 class TestNamespaceValidation:
     def test_context_query_default_namespace(self):
-        """ContextQuery namespace defaults to 'default'."""
+        """ContextQuery namespace defaults to None — every namespace.
+
+        The recall model is the ONE place where "default" was overloaded to
+        mean both "the default category" and "no scope at all". Splitting them
+        is what lets an unscoped recall reach the 146 non-default memories the
+        product's own guidance creates.
+        """
         q = ContextQuery(task="test")
-        assert q.namespace == "default"
+        assert q.namespace is None
 
     def test_action_log_default_namespace(self):
         """ActionLog namespace defaults to 'default'."""
@@ -377,9 +386,13 @@ class TestNamespaceValidation:
         assert event.namespace == "default"
 
     def test_recall_response_default_namespace(self):
-        """RecallResponse namespace defaults to 'default'."""
+        """RecallResponse echoes None for a recall that named no namespace.
+
+        Reporting "default" for an unscoped recall would be the same false
+        echo the pre-fix vector filter produced.
+        """
         rr = RecallResponse(context_block="block", sources=[], score=0.0)
-        assert rr.namespace == "default"
+        assert rr.namespace is None
 
     def test_learn_response_default_namespace(self):
         """LearnResponse namespace defaults to 'default'."""
@@ -476,9 +489,9 @@ class TestNamespaceValidation:
         assert event.namespace == "tenant_c"
 
     def test_namespace_default_unchanged(self):
-        """Default namespace 'default' should pass through unchanged."""
-        q = ContextQuery(task="test")
-        assert q.namespace == "default"
+        """An EXPLICIT 'default' passes through unchanged; omitting it is None."""
+        assert ContextQuery(task="test", namespace="default").namespace == "default"
+        assert ContextQuery(task="test").namespace is None
 
     def test_namespace_already_normalized_unchanged(self):
         """Already normalized namespace should pass through unchanged."""

@@ -9,7 +9,7 @@ import pytest
 from fastapi import FastAPI
 
 from app.main import app, get_vector, get_rag_engine
-from app.models import RecallResponse
+from app.models import MemorySource, RecallResponse
 
 
 # ---------------------------------------------------------------------------
@@ -182,11 +182,21 @@ class TestHandoffEndpoint:
         assert data["project"] == "testproj"
 
     def test_summary_falls_back_to_context_block_when_llm_unavailable(self, contributors_client):
-        """POST /memory/handoff falls back to context_block when synthesize_memories returns None."""
+        """POST /memory/handoff falls back to context_block when synthesize_memories returns None.
+
+        The recall must return at least one SOURCE for this path to be reached:
+        a handoff with no contributors and no sources now short-circuits to an
+        explicit "nothing to hand off" (see the empty-project test below), so
+        exercising the LLM fallback requires a project that actually has
+        content.
+        """
         contributors_client._mock_engine.recall = AsyncMock(return_value=RecallResponse(
             context_block="fallback context here",
-            sources=[],
-            score=0.0,
+            sources=[MemorySource(
+                store="vector", content="something real",
+                score=0.9, metadata={"id": "m1"},
+            )],
+            score=0.9,
         ))
 
         with patch("app.main.synthesize_memories", new_callable=AsyncMock) as mock_synth:
@@ -199,6 +209,59 @@ class TestHandoffEndpoint:
         assert resp.status_code == 200
         data = resp.json()
         assert data["summary"] == "fallback context here"
+
+    def test_unknown_project_says_so_instead_of_summarising_someone_elses_work(
+        self, contributors_client
+    ):
+        """A handoff for a project with nothing in it must SAY it is empty.
+
+        Measured on the live deployment: `{"project": "__no_such_project_xyz"}`
+        returned HTTP 200 with another project's memories rendered as that
+        project's handoff ("All 303 Karma tests pass...", every leaked row
+        tagged `(graph)`). Two things caused it — the graph retrieval leg
+        ignored the project filter entirely (fixed in
+        RAGEngine._scope_verdict), and this endpoint then handed whatever
+        survived to an LLM and asked for a summary, which it will always write.
+        This guard is the second half: with nothing to hand off, say nothing,
+        rather than narrating whatever retrieval happened to return.
+        """
+        contributors_client._mock_engine.recall = AsyncMock(return_value=RecallResponse(
+            context_block="", sources=[], score=0.0,
+        ))
+
+        with patch("app.main.synthesize_memories", new_callable=AsyncMock) as mock_synth:
+            mock_synth.return_value = "an invented narrative"
+            resp = contributors_client.post(
+                "/memory/handoff",
+                json={"project": "__no_such_project_xyz", "since_days": 7},
+            )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["empty"] is True
+        assert "__no_such_project_xyz" in data["summary"]
+        assert "Nothing to hand off" in data["summary"]
+        # The LLM must never have been consulted — there was nothing to say.
+        mock_synth.assert_not_awaited()
+
+    def test_passes_the_callers_workspace_to_recall(self, contributors_client):
+        """Handoff was the one recall in the system that crossed tenancy.
+
+        /memory/recall passes principal['workspace_id']; this endpoint called
+        engine.recall() without it, so the vector leg's hard workspace filter
+        was never applied to a handoff.
+        """
+        contributors_client._mock_engine.recall = AsyncMock(return_value=RecallResponse(
+            context_block="x",
+            sources=[MemorySource(store="vector", content="x", score=0.5, metadata={})],
+            score=0.5,
+        ))
+        with patch("app.main.synthesize_memories", new_callable=AsyncMock) as mock_synth:
+            mock_synth.return_value = "summary"
+            contributors_client.post("/memory/handoff", json={"project": "p"})
+
+        kwargs = contributors_client._mock_engine.recall.await_args.kwargs
+        assert kwargs["workspace_id"]
 
     def test_requires_project_field(self, contributors_client):
         """POST /memory/handoff returns 422 when project is missing."""

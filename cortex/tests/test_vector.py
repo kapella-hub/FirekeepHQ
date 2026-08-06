@@ -338,11 +338,14 @@ class TestSearch:
         assert results[0]["metadata"]["source"] == "action_log"
         assert results[0]["metadata"]["extra"] == "val"
 
-        # Verify only the archived exclusion filter was passed (no must conditions)
+        # The default namespace is SCOPED like any other (see
+        # vector.namespace_condition). It used to add no condition at all,
+        # which meant a recall declaring namespace="default" matched every
+        # tenant's memories while echoing "default" back as though applied.
         call_kwargs = mock_qdrant_client.query_points.call_args.kwargs
         query_filter = call_kwargs["query_filter"]
         assert query_filter is not None
-        assert query_filter.must is None
+        assert len(query_filter.must) == 1
         assert query_filter.must_not is not None
         assert call_kwargs["limit"] == 3
 
@@ -362,9 +365,10 @@ class TestSearch:
         call_kwargs = mock_qdrant_client.query_points.call_args.kwargs
         query_filter = call_kwargs["query_filter"]
         assert query_filter is not None
-        # Filter should have a FieldCondition on "tags"
-        assert len(query_filter.must) == 1
-        assert query_filter.must[0].key == "tags"
+        # tags condition PLUS the always-present namespace scope clause (the
+        # default namespace is scoped now — see namespace_condition).
+        assert len(query_filter.must) == 2
+        assert [c for c in query_filter.must if getattr(c, "key", None) == "tags"]
 
     @pytest.mark.asyncio
     async def test_search_failure(self, vector_client, mock_qdrant_client):
@@ -706,8 +710,29 @@ class TestNamespaceSupport:
         assert ns_conditions[0].match.value == "agent-1"
 
     @pytest.mark.asyncio
-    async def test_search_default_namespace_no_filter(self, vector_client, mock_qdrant_client):
-        """search with default namespace should NOT add namespace filter (only archived exclusion)."""
+    async def test_search_default_namespace_is_scoped_and_admits_fieldless_points(
+        self, vector_client, mock_qdrant_client
+    ):
+        """The default namespace must be a REAL scope, not an unscoped pass.
+
+        THIS TEST USED TO ASSERT THE BUG. It was
+        `test_search_default_namespace_no_filter`, pinning `must is None` — the
+        `if namespace != "default"` guard in `search`, which made a recall
+        scoped to `default` match every namespace in the store while the
+        response echoed `namespace: "default"` back. Measured on the live
+        deployment: memories written ONLY to `__sweep_probe` all came back from
+        a `default`-scoped query, while `someothertenant` correctly returned
+        nothing — the non-default path was right, which is what hid it. At the
+        scale it ran at (4202 of 4348 memories in `default`, and `default` is
+        the client kit's own default) essentially every real recall was
+        unscoped.
+
+        The `should` arm is not a loophole: points written before the
+        namespace field existed carry no `namespace` key, and Qdrant does not
+        match a missing field against MatchValue("default"). Without the
+        IsEmpty arm the fix would have traded a leak for silently
+        unrecallable legacy memories.
+        """
         result_obj = MagicMock()
         result_obj.points = []
         mock_qdrant_client.query_points.return_value = result_obj
@@ -719,11 +744,42 @@ class TestNamespaceSupport:
 
         call_kwargs = mock_qdrant_client.query_points.call_args.kwargs
         query_filter = call_kwargs["query_filter"]
-        # Should have must_not for archived but no must conditions for namespace
         assert query_filter is not None
+        assert query_filter.must is not None
+        ns_clause = next(
+            c for c in query_filter.must if getattr(c, "should", None)
+        )
+        keys = {
+            getattr(c, "key", None) or c.is_empty.key for c in ns_clause.should
+        }
+        assert keys == {"namespace"}
+        assert any(
+            getattr(c, "match", None) and c.match.value == "default"
+            for c in ns_clause.should
+        )
+        assert any(getattr(c, "is_empty", None) for c in ns_clause.should)
+
+    @pytest.mark.asyncio
+    async def test_search_namespace_none_is_the_explicit_unscoped_mode(
+        self, vector_client, mock_qdrant_client
+    ):
+        """`None` is how a caller asks for every namespace, in words.
+
+        The old code overloaded the literal string "default" for this, which is
+        why nobody could tell an intentional cross-namespace search from a
+        forgotten scope. Guards the replacement flag.
+        """
+        result_obj = MagicMock()
+        result_obj.points = []
+        mock_qdrant_client.query_points.return_value = result_obj
+
+        with patch.object(
+            vector_client, "_embed", new_callable=AsyncMock, return_value=[0.1] * 768
+        ):
+            await vector_client.search("auth bug", top_k=5, namespace=None)
+
+        query_filter = mock_qdrant_client.query_points.call_args.kwargs["query_filter"]
         assert query_filter.must is None
-        ns_conditions = [c for c in (query_filter.must or []) if c.key == "namespace"]
-        assert len(ns_conditions) == 0
 
     @pytest.mark.asyncio
     async def test_search_namespace_combined_with_tags(self, vector_client, mock_qdrant_client):
@@ -1044,7 +1100,9 @@ class TestFindSimilar:
         # Verify filter includes status=active
         call_kwargs = mock_qdrant_client.query_points.call_args.kwargs
         query_filter = call_kwargs["query_filter"]
-        status_conditions = [c for c in query_filter.must if c.key == "status"]
+        status_conditions = [
+            c for c in query_filter.must if getattr(c, "key", None) == "status"
+        ]
         assert len(status_conditions) == 1
         assert status_conditions[0].match.value == "active"
 
@@ -1062,7 +1120,9 @@ class TestFindSimilar:
 
         call_kwargs = mock_qdrant_client.query_points.call_args.kwargs
         query_filter = call_kwargs["query_filter"]
-        domain_conditions = [c for c in query_filter.must if c.key == "domain"]
+        domain_conditions = [
+            c for c in query_filter.must if getattr(c, "key", None) == "domain"
+        ]
         assert len(domain_conditions) == 1
         assert domain_conditions[0].match.value == "infra"
 
@@ -1158,7 +1218,29 @@ _MISSING = object()
 
 
 def _field_matches(cond, payload: dict) -> bool:
-    """Evaluate a single Qdrant FieldCondition against a payload dict."""
+    """Evaluate one Qdrant condition against a payload dict.
+
+    Handles the three shapes `VectorClient` actually builds:
+      * ``FieldCondition`` — the common case;
+      * ``IsEmptyCondition`` — true when the field is absent/null/empty, which
+        is how the default-namespace clause admits points written before the
+        namespace field existed;
+      * a nested ``Filter`` with a ``should`` list — Qdrant's way of expressing
+        OR inside a ``must``, used by ``namespace_condition``. The fake has to
+        understand nesting because the real client does; a fake that only knew
+        FieldCondition would report the scoped filter as broken.
+    """
+    should = getattr(cond, "should", None)
+    if should:
+        return any(_field_matches(c, payload) for c in should)
+    nested_must = getattr(cond, "must", None)
+    if nested_must:
+        return all(_field_matches(c, payload) for c in nested_must)
+    is_empty = getattr(cond, "is_empty", None)
+    if is_empty is not None:
+        value = payload.get(is_empty.key, _MISSING)
+        return value is _MISSING or value is None or value == []
+
     value = payload.get(cond.key, _MISSING)
     match = cond.match
     if hasattr(match, "value"):

@@ -176,7 +176,7 @@ async def memory_recall(
     task: str,
     tags: list[str] | None = None,
     top_k: int = 3,
-    namespace: str = "default",
+    namespace: str | None = None,
     session_id: str = "unknown",
     agent_id: str = "unknown",
     token_budget: int = 600,
@@ -191,6 +191,12 @@ async def memory_recall(
         task: What the agent is trying to do.
         tags: Optional filter tags.
         top_k: Max results (default 3).
+        namespace: Optional CATEGORY filter. LEAVE IT UNSET — the default
+            searches every namespace in your workspace, which is what you
+            almost always want, because `memory_learn` files operational facts
+            under categories like "infrastructure". Naming one restricts the
+            search to exactly that category and nothing else. It is not a
+            tenancy boundary; your workspace already is.
         session_id, agent_id: For replay tracing.
         token_budget: Max tokens in response (default 600).
         format: "synthesized" (LLM-compressed) or "raw" (numbered list).
@@ -202,10 +208,13 @@ async def memory_recall(
         body: dict = {
             "task": task,
             "top_k": top_k,
-            "namespace": namespace,
             "token_budget": token_budget,
             "format": format,
         }
+        # Omitted, not defaulted. Sending the literal "default" would scope the
+        # recall to one category — it is a real namespace, not a wildcard.
+        if namespace is not None:
+            body["namespace"] = namespace
         if tags:
             body["tags"] = tags
         if project is not None:
@@ -279,13 +288,15 @@ async def memory_handoff(
 
     # Fetch recent memories for the project
     memories_text = "(memory recall unavailable)"
+    memory_sources = 0
     try:
         body: dict = {
             "task": f"recent work on {project}",
             "project": project,
             "top_k": 10,
             "format": "raw",
-            "namespace": "default",
+            # No `namespace`: a handoff wants every category of this project's
+            # work, and naming "default" would scope it to one of them.
             "token_budget": 800,
         }
         headers: dict[str, str] = {}
@@ -295,9 +306,25 @@ async def memory_handoff(
             headers["X-Agent-Id"] = agent_id
         resp = await client.post("/memory/recall", json=body, headers=headers)
         resp.raise_for_status()
-        memories_text = resp.json().get("context_block", "")
+        recall_body = resp.json()
+        memories_text = recall_body.get("context_block", "")
+        memory_sources = len(recall_body.get("sources") or [])
     except Exception:
         pass
+
+    # An unknown project must SAY it is unknown. Everything below hands the
+    # retrieved context to an LLM and asks for a handoff summary — and it will
+    # always write one, from whatever survived retrieval. Measured on the REST
+    # sibling of this flow: a handoff for `__no_such_project_xyz` came back
+    # narrating another project's work as though it were that project's.
+    # Retrieval scoping (the vector leg's project filter, and now the graph
+    # leg's — RAGEngine._scope_verdict) is what stops the wrong memories
+    # arriving; this is what stops an EMPTY result being narrated anyway.
+    if contributors_text == "(contributor data unavailable)" and memory_sources == 0:
+        return (
+            f"No memories found for project '{project}' in the last "
+            f"{since_days} days. Nothing to hand off."
+        )
 
     combined_context = f"{contributors_text}\n\nRecent memories:\n{memories_text}"
 
@@ -643,7 +670,32 @@ async def replay_narrow(session_id: str, failure_event_id: str, max_depth: int =
         data = resp.json()
         suspects = data.get("suspects", [])
         if not suspects:
-            return f"No suspects found for failure event {failure_event_id[:12]}. The failure may have no trace links to follow."
+            # Three distinct outcomes, three distinct sentences. This returned
+            # one sentence for all of them, so a fabricated event id got the
+            # same confident answer as a real one — with the fake id echoed
+            # back. Worse, this deployment emits no trace links at all (a
+            # census of the 3,000 most recent events found trace_links
+            # populated zero times), so the single message was reporting
+            # "nothing caused it" about a feature that had no data to read.
+            if not data.get("failure_event_found", True):
+                return (
+                    f"No event {failure_event_id[:12]} in session {session_id}. "
+                    f"Check the id against replay_timeline — this is an unknown "
+                    f"event, not a failure without a cause."
+                )
+            if not data.get("session_has_trace_links", False):
+                return (
+                    f"Cannot narrow: session {session_id} records NO trace links "
+                    f"(no event in it carries parent/trace linkage), so there is "
+                    f"nothing to walk backward from {failure_event_id[:12]}. This "
+                    f"is missing instrumentation, not an absence of causes — the "
+                    f"emitters do not populate trace links. Use replay_timeline "
+                    f"for the ordered event sequence instead."
+                )
+            return (
+                f"No suspects found for failure event {failure_event_id[:12]}: it "
+                f"exists and the session has trace links, but none lead back to it."
+            )
         lines = [
             f"## Narrowing Results — {len(suspects)} suspects (walked {data['total_events_walked']} events)",
         ]
@@ -853,7 +905,10 @@ async def vault_store(
 
     For non-secret operational facts (VPS IPs, service URLs, hostnames) use
     memory_learn with namespace="infrastructure" instead — they don't need
-    encryption and are easier to recall.
+    encryption and are easier to recall. `namespace` there is a CATEGORY
+    label, not a partition: a `memory_recall` that names no namespace searches
+    every one of them, so filing a fact under "infrastructure" makes it easier
+    to find, never harder.
 
     Args:
         key: Unique secret name (alphanumeric, hyphens, underscores, dots).

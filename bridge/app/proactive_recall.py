@@ -13,7 +13,7 @@ async def fetch_relevant_memories(
     context: str,
     api_url: str,
     api_key: str | None = None,
-    namespace: str = "default",
+    namespace: str | None = None,
     top_k: int = 3,
     min_score: float = 0.35,
     timeout: float = 30.0,
@@ -34,11 +34,21 @@ async def fetch_relevant_memories(
     payload = {
         "task": context[:500],
         "top_k": top_k,
-        "namespace": namespace,
         # Hot path: raw list, no LLM synthesis (SP0 C6, defect #11). The 30s
         # default timeout matches the server's own backend budget.
         "format": "raw",
     }
+    # Omitted unless the caller names one. `namespace` on Cortex is a CATEGORY,
+    # and sending the literal "default" would scope proactive recall to that one
+    # category — hiding every memory an agent filed under "infrastructure",
+    # "engineering" and the rest, which on the live store is 146 memories, 129 of
+    # them active. Omitting the key searches all of them. This is what
+    # `FIREKEEP_NAMESPACE`'s "unified with Cortex's default namespace so
+    # distillates and proactive recall see the same memories" comment was
+    # reaching for; the writes still name their namespace, only the READ is
+    # unscoped.
+    if namespace is not None:
+        payload["namespace"] = namespace
 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:

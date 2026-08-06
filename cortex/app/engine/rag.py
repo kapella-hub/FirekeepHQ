@@ -110,6 +110,39 @@ def _memory_ids_of(row: Any) -> list[str]:
     return [str(m) for m in raw if m]
 
 
+def _state_in_scope(
+    state: dict[str, Any], scope: dict[str, str | None]
+) -> bool:
+    """Does one resolved vector payload satisfy every requested scope key?
+
+    Comparison rules match the vector leg's own filters exactly, so the two
+    legs cannot admit different sets:
+      * ``project`` is normalised to lowercase on write, so compare lowercased
+        and treat a project-less memory as matching no declared project;
+      * ``workspace_id`` is an exact equality — it is a tenancy boundary;
+      * ``namespace`` treats an ABSENT field as ``"default"``, mirroring
+        ``vector.namespace_condition``'s ``IsEmpty`` arm: points written before
+        the field existed belong to the default namespace, and refusing them
+        would trade a leak for data loss.
+    """
+    want_project = scope.get("project")
+    if want_project is not None:
+        have = state.get("project")
+        if not have or str(have).lower() != str(want_project).lower():
+            return False
+
+    want_workspace = scope.get("workspace_id")
+    if want_workspace is not None and state.get("workspace_id") != want_workspace:
+        return False
+
+    want_namespace = scope.get("namespace")
+    if want_namespace is not None:
+        have_ns = state.get("namespace") or "default"
+        if have_ns != want_namespace:
+            return False
+    return True
+
+
 def _min_max_normalize(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Normalize entry scores to [0, 1] via min-max normalization.
 
@@ -228,9 +261,20 @@ class RAGEngine:
         self._http_client = http_client
 
     async def recall(
-        self, query: ContextQuery, *, workspace_id: str | None = None
+        self,
+        query: ContextQuery,
+        *,
+        workspace_id: str | None = None,
+        unattributed_graph: str = "admit",
     ) -> RecallResponse:
         """Retrieve, merge, score, and format memory context for an LLM.
+
+        ``unattributed_graph`` decides what a graph row that names NO vector
+        memory means for a scoped request: ``"admit"`` (the default, and what
+        ordinary recall wants — see ``_scope_verdict``) or ``"deny"``, used by
+        ``POST /memory/handoff``, whose whole output is a claim about one
+        project and which therefore cannot carry rows it cannot attribute.
+
 
         Steps:
             1. Concurrent dual-retrieval from Qdrant and Neo4j.
@@ -262,7 +306,10 @@ class RAGEngine:
         # is only as recallable as that memory is. Done before scoring so a
         # dropped row cannot influence min-max normalization.
         graph_entries = await self._verify_graph_lifecycle(
-            graph_entries, include_archived=include_archived
+            graph_entries,
+            include_archived=include_archived,
+            scope=self._scope_of(query, workspace_id),
+            unattributed=unattributed_graph,
         )
 
         # Apply memory decay BEFORE min-max normalization so an aged entry
@@ -377,17 +424,20 @@ class RAGEngine:
             try:
                 results = await self._graph.query_related(
                     query.task, limit=query.top_k,
-                    namespace=getattr(query, "namespace", "default"),
+                    namespace=getattr(query, "namespace", None),
                 )
             except Exception:
                 logger.exception("Graph query failed in streaming recall")
                 return "graph", []
-            # Same lifecycle gate as the non-streaming path: an archived
-            # memory must not resurface through the graph leg just because
-            # this caller asked for SSE. (The streaming path still applies no
-            # lifecycle/OWM score multipliers — a pre-existing divergence.)
+            # Same lifecycle AND scope gate as the non-streaming path: neither
+            # an archived memory nor another project's/tenant's memory may
+            # resurface through the graph leg just because this caller asked
+            # for SSE. (The streaming path still applies no lifecycle/OWM
+            # score multipliers — a pre-existing divergence.)
             return "graph", await self._filter_graph_rows(
-                results, include_archived=bool(getattr(query, "include_archived", False))
+                results,
+                include_archived=bool(getattr(query, "include_archived", False)),
+                scope=self._scope_of(query, workspace_id),
             )
 
         vector_task = asyncio.create_task(_vector_search())
@@ -459,7 +509,7 @@ class RAGEngine:
             query.task,
             top_k=query.top_k,
             filter_tags=query.tags or None,
-            namespace=getattr(query, "namespace", "default"),
+            namespace=getattr(query, "namespace", None),
             include_archived=getattr(query, "include_archived", False),
             project=query.project,
             workspace_id=workspace_id,
@@ -505,13 +555,13 @@ class RAGEngine:
                     return await self._graph.query_related_multihop(
                         query.task,
                         limit=query.top_k * 3,
-                        namespace=getattr(query, "namespace", "default"),
+                        namespace=getattr(query, "namespace", None),
                         max_hops=self._settings.MULTIHOP_MAX_HOPS,
                         decay_per_hop=self._settings.MULTIHOP_DECAY_PER_HOP,
                     )
                 return await self._graph.query_related(
                     query.task, limit=query.top_k,
-                    namespace=getattr(query, "namespace", "default"),
+                    namespace=getattr(query, "namespace", None),
                 )
             except Exception:
                 logger.exception("Graph query failed")
@@ -734,8 +784,116 @@ class RAGEngine:
             return False, status
         return True, status
 
+    @staticmethod
+    def _scope_of(
+        query: ContextQuery, workspace_id: str | None
+    ) -> dict[str, str | None]:
+        """The scope a recall declared, as the graph gate reads it."""
+        return {
+            "project": query.project,
+            "workspace_id": workspace_id,
+            "namespace": getattr(query, "namespace", None),
+        }
+
+    @staticmethod
+    def _scope_verdict(
+        states: dict[str, dict[str, Any]] | None,
+        memory_ids: list[str],
+        scope: dict[str, str | None] | None,
+        *,
+        unattributed: str = "admit",
+    ) -> bool:
+        """Decide one graph row against the recall's declared scope.
+
+        WHY. ``query_related`` / ``query_related_multihop`` take a namespace and
+        nothing else — no project, no workspace_id. So a recall that declared a
+        project was answered by a vector leg that honoured it and a graph leg
+        that did not, and every leaked row arrived tagged ``(graph)``. Measured
+        via ``POST /memory/handoff``: a handoff for a project that does not
+        exist returned another project's work as though it were that project's.
+        The same hole is a TENANCY one for ``workspace_id``, which the vector
+        leg treats as a hard ``must``.
+
+        Scope lives here rather than in Cypher because Qdrant is already the
+        authority the graph leg is checked against (see ``_lifecycle_verdict``),
+        the payload fields are already being fetched for that check, and graph
+        nodes carry no property to filter on: MEASURED on the live graph
+        2026-08-06, ``Action``/``Outcome``/``Resolution``/``Concept`` nodes hold
+        exactly ``id`` and ``description`` — no project, no workspace_id, no
+        namespace. A Cypher-side scope filter is not a smaller version of this
+        change, it is a schema migration plus a backfill of 5459 nodes.
+
+        HOW MUCH THIS ACTUALLY CLOSES, MEASURED. The denominator that matters is
+        what ``query_related``/``query_related_multihop`` can actually RETURN —
+        both filter on exactly ``Domain|Concept|Action|Outcome|Resolution`` —
+        which is **5459** nodes on the live store (2026-08-06). Of those, **27
+        carry ``memory_ids``** (12 Action, 12 Outcome, 3 Resolution) — **0.49%**.
+        So this gate can adjudicate 0.49% of returnable graph rows and, under
+        ``unattributed="admit"``, waves the other 99.5% through. Do NOT quote
+        3859 here, as an earlier revision did: that is Action+Outcome+Resolution
+        only, silently dropping 1480 returnable ``Concept`` nodes of which zero
+        are linked, and it therefore flatters the fix. That number is the
+        finding, not a footnote: labelling the general-recall case "fixed" would
+        have been false, and it is labelled a PARTIAL MITIGATION in the root
+        ``CLAUDE.md`` and ``cortex/CLAUDE.md`` for exactly this reason.
+
+        ``unattributed`` is the lever, and it exists because the right answer
+        genuinely differs by caller:
+
+        ``"admit"`` (default — ``/memory/recall``, streaming). An unlinked row is
+        graph-owned knowledge from sleep-cycle extraction. Denying it would not
+        scope the graph leg, it would DELETE it: ``workspace_id`` is non-None on
+        every authenticated recall, so a blanket deny would drop 99.3% of graph
+        rows from every request in the system. Recall's job is to surface what
+        is known; an unattributable row is a weaker claim about scope, not a
+        false one, because it is offered as one result among many.
+
+        ``"deny"`` (``/memory/handoff``). A handoff is not a list of results, it
+        is a single narrative asserting "this is project X's work". A row that
+        cannot be attributed to project X cannot support that assertion, and an
+        LLM handed it will fold it in indistinguishably. Here refusing the
+        unverifiable is the whole point, and the cost is bounded and known: the
+        handoff loses graph-owned rows it could never have attributed anyway,
+        while the vector leg — which IS scoped, by project and workspace both —
+        still supplies the content. It is also what makes the endpoint's
+        ``empty: True`` short-circuit reachable: with unlinked rows admitted,
+        ``recall_resp.sources`` was never empty, so a handoff for a nonexistent
+        project always had something to narrate.
+
+        Everything else mirrors the lifecycle gate exactly, so the two cannot
+        disagree about what "unverifiable" means:
+          * nothing requested -> admit;
+          * ``states is None`` (the lookup was unavailable) -> admit, because
+            the graph leg is the one leg that still works when Qdrant is down
+            and an outage must not silently empty recall. This holds even under
+            ``"deny"``: a Qdrant outage is not evidence about scope.
+          * otherwise admit iff at least ONE resolved memory satisfies EVERY
+            requested key. A graph node carries the memory_ids of every memory
+            that mentioned it; one in-scope memory is enough to make the node's
+            description in-scope, and requiring all of them would drop shared
+            entities like "docker" from every scoped recall.
+        """
+        if not scope or not any(v is not None for v in scope.values()):
+            return True
+        if states is None:
+            return True
+        if not memory_ids:
+            return unattributed != "deny"
+        resolved = [states[m] for m in memory_ids if m in states]
+        if not resolved:
+            # Lifecycle already refuses this row; agreeing here keeps the two
+            # gates from disagreeing about a dangling link.
+            return False
+        return any(
+            _state_in_scope(state, scope) for state in resolved
+        )
+
     async def _verify_graph_lifecycle(
-        self, entries: list[dict[str, Any]], include_archived: bool = False
+        self,
+        entries: list[dict[str, Any]],
+        include_archived: bool = False,
+        scope: dict[str, str | None] | None = None,
+        unattributed: str = "admit",
     ) -> list[dict[str, Any]]:
         """Drop graph entries whose backing vector memory forbids recall.
 
@@ -756,10 +914,15 @@ class RAGEngine:
         kept: list[dict[str, Any]] = []
         for entry in entries:
             metadata = entry.setdefault("metadata", {})
+            memory_ids = metadata.get("memory_ids") or []
             admit, status = self._lifecycle_verdict(
-                states, metadata.get("memory_ids") or [], include_archived
+                states, memory_ids, include_archived
             )
             if not admit:
+                continue
+            if not self._scope_verdict(
+                states, memory_ids, scope, unattributed=unattributed
+            ):
                 continue
             metadata["lifecycle_verified"] = status is not None
             if status is not None:
@@ -768,9 +931,13 @@ class RAGEngine:
         return kept
 
     async def _filter_graph_rows(
-        self, rows: list[dict[str, Any]], include_archived: bool = False
+        self,
+        rows: list[dict[str, Any]],
+        include_archived: bool = False,
+        scope: dict[str, str | None] | None = None,
+        unattributed: str = "admit",
     ) -> list[dict[str, Any]]:
-        """Lifecycle gate for raw graph rows (the streaming path)."""
+        """Lifecycle + scope gate for raw graph rows (the streaming path)."""
         ids: list[str] = []
         seen: set[str] = set()
         for row in rows:
@@ -786,6 +953,9 @@ class RAGEngine:
             if self._lifecycle_verdict(
                 states, _memory_ids_of(row), include_archived
             )[0]
+            and self._scope_verdict(
+                states, _memory_ids_of(row), scope, unattributed=unattributed
+            )
         ]
 
     # ------------------------------------------------------------------
