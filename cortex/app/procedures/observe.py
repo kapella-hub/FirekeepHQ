@@ -37,15 +37,20 @@ class ProcedureObserver:
         self._index_at = now
         return self._index
 
-    async def observe(self, req: ActionBeforeRequest) -> list[Advisory]:
-        """Never raises. Returns [] whenever anything is missing or off."""
+    async def observe(self, req: ActionBeforeRequest, *,
+                      action_id: str = "") -> list[Advisory]:
+        """Never raises. Returns [] whenever anything is missing or off.
+
+        `action_id` is the id `decide()` minted for THIS action. The spec's
+        receipt is `{action_id, target, ts}`; storing an empty one makes the
+        observation unjoinable to the `agent.action.predict` event it describes,
+        which is the whole point of recording it.
+        """
         try:
             settings = self._settings_fn()
             if not getattr(settings, "PROCEDURE_ENABLED", False):
                 return []
             if req.action.type != "edit_file":
-                return []
-            if (req.session_id or "").strip().lower() in _UNUSABLE_SESSIONS:
                 return []
 
             redis_client = self._get_redis()
@@ -56,6 +61,18 @@ class ProcedureObserver:
                 return []
             matched = match.match_target(index, req.action.target)
             if not matched:
+                return []
+
+            # Checked AFTER the match, deliberately. An execution that cannot be
+            # joined to an outcome is not evidence, but the drop is only worth
+            # counting once work was RECOGNISED — and checking earlier would put
+            # a Redis write on every edit of a deployment with no specs at all.
+            if (req.session_id or "").strip().lower() in _UNUSABLE_SESSIONS:
+                logger.debug(
+                    "procedure match on %s dropped: session_id %r is unjoinable",
+                    req.action.target, req.session_id,
+                )
+                await store.bump_unjoinable(redis_client)
                 return []
 
             warn_on = bool(getattr(settings, "PROCEDURE_WARN_ENABLED", True))
@@ -70,7 +87,7 @@ class ProcedureObserver:
                 exec_id = await store.record_observation(
                     redis_client, settings,
                     session_id=req.session_id, skill_id=skill_id,
-                    step_id=entry["step_id"], action_id="",
+                    step_id=entry["step_id"], action_id=action_id,
                     target=req.action.target, agent_id=req.agent_id,
                     adapter=req.adapter,
                 )

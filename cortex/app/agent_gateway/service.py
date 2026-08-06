@@ -114,8 +114,13 @@ class AgentGatewayService:
         # Living Procedures: recognise the work, record it, and advise on a
         # load-bearing step left undone. Advisory only, and its own try/except
         # inside observe() — it can never change the decision.
+        # action_id is threaded in because the observation's receipt is
+        # {action_id, target, ts} — without it the record cannot be joined to
+        # the agent.action.predict event that describes the same edit.
         if self._procedure_observer is not None:
-            advisories.extend(await self._procedure_observer.observe(req))
+            advisories.extend(
+                await self._procedure_observer.observe(req, action_id=action_id)
+            )
 
         # Predict-incapable adapter mitigation: never rethink on prediction_required alone.
         # Advisory is kept for telemetry; decision is softened to allow.

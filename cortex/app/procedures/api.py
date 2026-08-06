@@ -31,30 +31,68 @@ def create_procedures_router(get_redis, get_vector, settings_fn) -> APIRouter:
     async def list_procedures():
         r = get_redis()
         index = await store.load_index(r)
+        coverage = await store.load_coverage(r)
         by_skill: dict[str, list[dict]] = {}
         for e in index:
             by_skill.setdefault(e["skill_id"], []).append(e)
 
-        rows = []
+        # Rows come from the COVERAGE summary, not from the matcher index. The
+        # index holds file_glob specs only, so deriving rows from it made a
+        # procedure whose steps are all `unobservable` produce no row at all and
+        # `specs_total: 0` — and the dashboard then renders the cold-start
+        # message ("no procedure has step specs yet") at a human who has just
+        # compiled them. H2 requires the opposite: say "0 of 7 observable". The
+        # index is the fallback for a deployment that has not rebuilt since the
+        # coverage key was introduced.
+        summary = dict(coverage)
         for skill_id, entries in by_skill.items():
+            summary.setdefault(skill_id, {
+                "trigger": entries[0].get("skill_trigger", ""),
+                "spec_count": len(entries),
+                "observable": len(entries),
+            })
+
+        # Live, from the execution records, NOT from the nightly stats blob.
+        # `GET /procedures/{id}/executions` reads the records, so the two
+        # endpoints answered "has this ever run?" differently for up to a full
+        # PROCEDURE_SCHEDULE_HOURS — and the rollup was the one that was wrong.
+        exec_counts: dict[str, int] = {}
+        for rec in await store.iter_executions(r):
+            sid = rec.get("skill_id")
+            if sid:
+                exec_counts[sid] = exec_counts.get(sid, 0) + 1
+
+        rows = []
+        for skill_id, cov in summary.items():
             stats = await store.get_step_stats(r, skill_id)
             proposals = await store.list_proposals(r, skill_id)
-            executions = max(
-                [s.get("executions", 0) for s in stats.values()] or [0]
-            )
             rows.append({
                 "skill_id": skill_id,
-                "trigger": entries[0].get("skill_trigger", ""),
+                "trigger": cov.get("trigger", ""),
                 # Coverage is REPORTED, never hidden: a step with no matcher is
                 # unobservable, and a coverage number the user cannot see is the
                 # same silent cap this repo bans elsewhere.
-                "observable_steps": len(entries),
-                "executions": executions,
+                "spec_count": int(cov.get("spec_count", 0)),
+                "observable_steps": int(cov.get("observable", 0)),
+                "executions": exec_counts.get(skill_id, 0),
                 "steps": stats,
                 "proposals": proposals,
             })
         rows.sort(key=lambda x: (-x["executions"], x["skill_id"]))
-        return {"procedures": rows, "count": len(rows), "specs_total": len(index)}
+        return {
+            "procedures": rows,
+            "count": len(rows),
+            "specs_total": sum(row["spec_count"] for row in rows),
+            # What the pass did, and — the point of it — WHICH closed state
+            # Tier B is in. Without this a deployment where the gate is shut for
+            # lack of an outcome signal is byte-identical to one where it is
+            # open and found nothing, with no last_run to say whether the pass
+            # has ever executed (the /dreams precedent).
+            "run": await store.get_run(r),
+            # Spec §4 Stage 2: recognised work dropped for an unjoinable
+            # session "is counted and surfaced, not hidden".
+            "unjoinable_edits": await store.get_unjoinable(r),
+        }
 
     @router.get("/procedures/{skill_id}/executions", dependencies=read_dep)
     async def list_executions(skill_id: str, limit: int = 50):

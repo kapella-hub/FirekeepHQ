@@ -114,6 +114,55 @@ def test_patch_replaces_the_spec_list_wholesale(mock_vector, mock_settings):
     assert resp.json()["step_specs"][0]["text"] == "only step"
 
 
+def test_a_spec_edit_keeps_the_ids_of_the_steps_it_did_not_change(
+        mock_vector, mock_settings):
+    """The design pins `id` as "minted server-side if absent, STABLE thereafter",
+    and every id is the key an execution's evidence is filed under.
+
+    Nothing on the agent path can hold ids still: `skill_add_step_specs`'
+    documented entry shape has no `id`, no MCP surface ever RETURNS one, and the
+    same docstring tells the caller to resend the whole list to add one step. So
+    every wording fix re-keyed all five steps, orphaning the procedure's entire
+    recorded history — and the nightly pass then read each stored execution as a
+    skip of every current step.
+    """
+    point = _make_mock_point(skill_id="skill-1")
+    point.payload["step_specs"] = [
+        {"id": "keep-me", "text": "bump the version", "kind": "file_glob",
+         "pattern": "client/pyproject.toml", "load_bearing": True},
+        {"id": "retired", "text": "tag the release", "kind": "unobservable",
+         "pattern": "", "load_bearing": False},
+    ]
+    _patchable(mock_vector, point)
+    client = TestClient(_make_app(mock_vector, mock_settings))
+
+    resp = client.patch("/skills/skill-1", json={"step_specs": [
+        {"text": "bump the version", "kind": "file_glob",
+         "pattern": "client/pyproject.toml", "load_bearing": True},
+        {"text": "push the signed tag", "kind": "unobservable"},
+    ]})
+    assert resp.status_code == 200, resp.text
+    specs = resp.json()["step_specs"]
+    assert specs[0]["id"] == "keep-me"
+    # A step whose TEXT changed is a different step: its evidence should not
+    # follow, and it must not inherit the retired step's id either.
+    assert specs[1]["id"] not in {"keep-me", "retired"}
+
+
+def test_an_explicit_id_still_wins_over_the_text_match(mock_vector, mock_settings):
+    point = _make_mock_point(skill_id="skill-1")
+    point.payload["step_specs"] = [
+        {"id": "old", "text": "one", "kind": "unobservable", "pattern": "",
+         "load_bearing": False},
+    ]
+    _patchable(mock_vector, point)
+    client = TestClient(_make_app(mock_vector, mock_settings))
+    resp = client.patch("/skills/skill-1", json={
+        "step_specs": [{"id": "chosen", "text": "one", "kind": "unobservable"}],
+    })
+    assert resp.json()["step_specs"][0]["id"] == "chosen"
+
+
 def test_specs_are_not_a_semantic_field(mock_vector, mock_settings):
     """Changing specs must NOT re-embed: specs are metadata about the steps,
     not the skill's meaning, and a needless embed on every spec edit puts an

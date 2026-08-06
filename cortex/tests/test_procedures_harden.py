@@ -56,9 +56,15 @@ class _Vector:
         self._client = _FilterHonouringQdrant(list(points))
 
 
-def _skill(pid, steps, *, load_bearing=(), status="active", trigger="release"):
+def _skill(pid, steps, *, load_bearing=(), status="active", trigger="release",
+           content=None):
+    # The body QUOTES every step, so this fixture carries no spec_drift. Without
+    # a `content` key the pass correctly reports every spec as drifted (its text
+    # cannot appear in a body that does not exist), which is a true finding about
+    # a fixture rather than about the behaviour these cases are asserting.
     return _Point(pid, {
         "memory_type": "skill", "skill_status": status, "trigger": trigger,
+        "content": content if content is not None else "## Steps\n" + "\n".join(steps),
         "step_specs": [
             {"id": sid, "text": sid, "kind": "file_glob",
              "pattern": f"{sid}.py", "load_bearing": sid in load_bearing}

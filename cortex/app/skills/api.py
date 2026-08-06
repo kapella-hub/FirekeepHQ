@@ -252,7 +252,16 @@ def create_skills_router(
             # steps, not what the skill means, so they must not trigger a
             # re-embed — that would put an embedding-backend outage in the path
             # of every spec edit, and the re-embed path fails loud by design.
-            updates["step_specs"] = [s.model_dump() for s in req.step_specs]
+            #
+            # Ids are carried forward by text rather than re-minted: a step id is
+            # the key its recorded executions are filed under, and no agent-facing
+            # surface returns ids, so a wholesale replace silently orphaned a
+            # procedure's entire history on every wording fix.
+            from app.procedures.models import merge_step_specs
+
+            updates["step_specs"] = merge_step_specs(
+                req.step_specs, (points[0].payload or {}).get("step_specs"),
+            )
         if any(field in updates for field in SEMANTIC_PATCH_FIELDS):
             # The text changed, so the stored vector no longer describes it. Merge
             # onto the CURRENT payload rather than writing `updates` alone — an

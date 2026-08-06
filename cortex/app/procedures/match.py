@@ -8,12 +8,24 @@ import fnmatch
 from typing import Any
 
 
+# How many trailing path segments a repo-relative pattern is allowed to reach
+# back over. Rebuilding EVERY suffix was O(len(target)^2) per index entry, and
+# `Action.target` carries no max_length (its sibling `preview` is capped at
+# 2048) — measured, a 20k-segment target cost 2.75s for ONE entry, on the
+# blocking pre-edit path, from any caller holding an ordinary key. Suffixes are
+# tried SHORTEST-FIRST because that is what an authored pattern matches; a
+# pattern that needs to reach further than this is not repo-relative, and
+# `_matches`' full-path fnmatch already covers a `*`-leading glob (fnmatch's `*`
+# crosses `/`, so a suffix match by such a pattern implies a full-path match).
+_MAX_SUFFIX_SEGMENTS = 16
+
+
 def _norm(path: str) -> str:
     return path.replace("\\", "/").strip()
 
 
-def _matches(pattern: str, target: str) -> bool:
-    """Glob against the full path and against every path suffix.
+def _matches(pattern: str, target: str, parts: list[str] | None = None) -> bool:
+    """Glob against the full path and against a bounded set of path suffixes.
 
     Suffix matching is what lets a repo-relative pattern authored by a human
     match the absolute path a tool actually reports.
@@ -25,8 +37,10 @@ def _matches(pattern: str, target: str) -> bool:
             return False
         if fnmatch.fnmatch(t, p):
             return True
-        parts = t.split("/")
-        for i in range(1, len(parts)):
+        if parts is None:
+            parts = t.split("/")
+        stop = max(1, len(parts) - _MAX_SUFFIX_SEGMENTS)
+        for i in range(len(parts) - 1, stop - 1, -1):
             if fnmatch.fnmatch("/".join(parts[i:]), p):
                 return True
         return False
@@ -37,7 +51,13 @@ def _matches(pattern: str, target: str) -> bool:
 def match_target(index: list[dict[str, Any]], target: str) -> list[dict[str, Any]]:
     if not target:
         return []
-    return [e for e in index if _matches(e.get("pattern", ""), target)]
+    # Split once, not once per index entry: the index admits up to
+    # PROCEDURE_MAX_SPECS entries per skill across every active skill.
+    try:
+        parts = _norm(target).split("/")
+    except Exception:  # noqa: BLE001
+        return []
+    return [e for e in index if _matches(e.get("pattern", ""), target, parts)]
 
 
 def missing_load_bearing(

@@ -6,22 +6,33 @@ than a hedge:
   Tier A — frequency. Needs no outcome signal. "This procedure ran 41 times;
            step 3 was skipped in 24 of them" is true and useful on day one.
   Tier B — efficacy verdicts. Gated on executions whose sessions have a KNOWABLE
-           outcome. Measured on this repo, no production emitter passes outcome=
-           to replay except Bridge's session lifecycle, so _failure_rate is 0.0
-           and effectively every session reads as a success. A pass that trusted
-           that would find every step dead and propose deleting the procedure.
-           Closed is the correct state; it reports that it is closed.
+           outcome AND on that outcome actually DISCRIMINATING. Measured on this
+           repo, _failure_rate is 0.0 for a session no event marked as failing,
+           and the reconcile emit now stamps post_tool's `success`, which
+           defaults to True — so effectively every session reads as a success.
+           Counting knowable outcomes alone therefore opens the gate on a signal
+           that separates nothing, and the efficacy comparison degenerates into
+           a Beta-prior artefact of bucket size: it proposes deleting steps that
+           were never once associated with a failure, "confidently, with
+           statistics" (spec §F1 consequence 2). Both halves are required.
+           Closed is the correct state; it reports WHICH closed state it is in.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 
 from app.procedures import store
 
 logger = logging.getLogger(__name__)
+
+# Tier B verdict states, reported verbatim through GET /procedures.
+TIER_B_OPEN = "open"
+TIER_B_INSUFFICIENT = "insufficient outcome signal"
+TIER_B_UNIFORM = "uniform outcome signal"
 
 
 async def _resolve_outcome(replay_r, session_id: str) -> bool | None:
@@ -80,6 +91,52 @@ def _within_window(rec: dict, cutoff: datetime) -> bool:
     return dt >= cutoff
 
 
+_WS = re.compile(r"\s+")
+
+
+def _flat(text: str) -> str:
+    return _WS.sub(" ", (text or "")).strip().lower()
+
+
+def _spec_drift(skills: list[dict]) -> dict[str, list[dict]]:
+    """Tier A, and it needs no executions at all — it compares two stored things.
+
+    A spec's `text` is self-contained by design (it does not index into the
+    skill's `## Steps` markdown), which is exactly why the two can silently
+    diverge: a human PATCHes `content` and the specs still describe the old
+    body. That is the one drift nothing else in the system can see, and it
+    applies to `unobservable` steps too — the body was edited without the specs
+    whether or not round 1 can watch the step.
+
+    Substring over whitespace-flattened, case-folded text: a paraphrase reads as
+    drift, which is a proposal to a human, dismissible and regenerated nightly,
+    not a mutation.
+    """
+    out: dict[str, list[dict]] = {}
+    for skill in skills:
+        specs = skill.get("step_specs")
+        if not isinstance(specs, list) or not specs:
+            continue
+        body = _flat(skill.get("content") or "")
+        for spec in specs:
+            if not isinstance(spec, dict):
+                continue
+            text = (spec.get("text") or "").strip()
+            step_id = spec.get("id")
+            if not text or not step_id:
+                continue
+            if _flat(text) in body:
+                continue
+            out.setdefault(skill["skill_id"], []).append({
+                "id": uuid.uuid4().hex[:12], "kind": "spec_drift",
+                "skill_id": skill["skill_id"], "step_id": step_id,
+                "detail": (f"Step \"{text}\" no longer appears in this skill's "
+                           f"body — it was edited without the specs. Recompile "
+                           f"the step specs?"),
+            })
+    return out
+
+
 async def run_pass(redis_client, replay_r, vector, settings) -> dict:
     """One full hardening pass. Never raises for a single bad execution."""
     if not getattr(settings, "PROCEDURE_ENABLED", False):
@@ -96,11 +153,20 @@ async def run_pass(redis_client, replay_r, vector, settings) -> dict:
     # write-path rebuild fires only when step_specs are touched — a draft->active
     # PATCH changes index MEMBERSHIP without touching a spec. Rebuilding
     # unconditionally here means a missed write can never strand the index.
+    #
+    # ONE scan, two readers: the index rebuild and spec_drift both need every
+    # active skill's payload, and a second scroll of the same collection would
+    # only be a second chance to disagree with the first.
+    skills: list[dict] = []
+    scan_ok = True
     try:
-        await store.rebuild_index(vector, redis_client, settings)
+        skills = await store.scan_active_skills(vector, settings)
+        await store.write_index(redis_client, skills, settings)
     except Exception as exc:  # noqa: BLE001
+        scan_ok = False
         logger.warning("index rebuild failed during hardening: %s", exc)
 
+    drift = _spec_drift(skills)
     index = await store.load_index(redis_client)
     steps_by_skill: dict[str, list[dict]] = {}
     for entry in index:
@@ -114,6 +180,7 @@ async def run_pass(redis_client, replay_r, vector, settings) -> dict:
     # agent_seen[skill][step][agent] -> count, for the fairness cap
     agent_seen: dict[str, dict[str, dict[str, int]]] = {}
     outcome_backed = 0
+    outcome_success = outcome_failure = 0
 
     for rec in executions:
         skill_id = rec.get("skill_id")
@@ -121,8 +188,16 @@ async def run_pass(redis_client, replay_r, vector, settings) -> dict:
             continue
         if not _within_window(rec, cutoff):
             continue
-        observed_ids = set(rec.get("observed") or {})
-        # I2: no sibling evidence => this execution says nothing about any step.
+        # I2, and it is checked against the steps the procedure HAS, not against
+        # whatever ids the execution happens to name. Spec ids are minted
+        # server-side and no surface returns them, so a wording edit re-keys
+        # every step; the stored executions then name ids that no longer exist.
+        # "This execution observed something" is satisfied by those, and every
+        # CURRENT step was then tallied `skipped` — 40 real executions rendering
+        # as "observed 0 / skipped 40" for steps performed in all 40.
+        live_ids = {e["step_id"] for e in steps_by_skill[skill_id]}
+        observed_ids = set(rec.get("observed") or {}) & live_ids
+        # No sibling evidence => this execution says nothing about any step.
         # Without it every kiro session (fs_write maps to `other`), every
         # shell-heavy session and every personal-mode session votes to delete
         # each load-bearing step it never had the ability to observe.
@@ -132,6 +207,10 @@ async def run_pass(redis_client, replay_r, vector, settings) -> dict:
         outcome = await _resolve_outcome(replay_r, rec.get("session_id") or "")
         if outcome is not None:
             outcome_backed += 1
+            if outcome:
+                outcome_success += 1
+            else:
+                outcome_failure += 1
         agent = rec.get("agent_id") or "unknown"
 
         for entry in steps_by_skill[skill_id]:
@@ -156,30 +235,94 @@ async def run_pass(redis_client, replay_r, vector, settings) -> dict:
             if outcome:
                 t[f"{bucket}_success"] += 1
 
-    tier_b_open = outcome_backed >= min_n
+    # KNOWABILITY IS NOT DISCRIMINATION. `outcome_backed >= min_n` counts
+    # sessions whose outcome can be resolved; it says nothing about whether the
+    # resolved outcomes differ. With every session resolving `success` (the
+    # measured state of this deployment — see the module docstring) the efficacy
+    # of "observed" and "skipped" both collapse to (n + prior/2)/(n + prior),
+    # and which branch fires is decided by bucket SIZE alone. Both classes must
+    # be present before a verdict is offered to a human.
+    if outcome_backed < min_n:
+        tier_b = TIER_B_INSUFFICIENT
+    elif not (outcome_success and outcome_failure):
+        tier_b = TIER_B_UNIFORM
+    else:
+        tier_b = TIER_B_OPEN
+    tier_b_open = tier_b == TIER_B_OPEN
+    # How many steps could actually receive a verdict if the gate is open. An
+    # open gate is not the same as a reachable verdict: `PROCEDURE_AGENT_CAP` is
+    # spent across BOTH buckets while a verdict needs `min_n` scored executions
+    # in EACH, so with both defaulting to 5 no step can be decided by fewer than
+    # two distinct agent identities — deliberate (the cap exists precisely so one
+    # identity cannot decide a team's procedure) but invisible, and "open with
+    # zero proposals, forever" is indistinguishable from "open and nothing found".
+    verdict_ready = sum(
+        1 for steps in tallies.values() for t in steps.values()
+        if t["observed_scored"] >= min_n and t["skipped_scored"] >= min_n
+    )
     written = proposed = 0
 
-    for skill_id, steps in tallies.items():
+    # Iterate the INDEXED skills, not `tallies`. A skill only enters `tallies`
+    # when it still has in-window evidence — which is exactly the set that does
+    # NOT need clearing. Iterating it meant a procedure whose executions had
+    # aged out kept its last stats and its last `dead_step` proposal ("skipped
+    # in 11 of 12 executions. Remove it?") standing forever, on keys carrying no
+    # TTL, against evidence that no longer exists. That is the opposite of the
+    # OWM stale-reset shape this pass claims (owm.py runs a second sweep over
+    # previously-scored points and deletes what it did not rewrite).
+    stale_candidates = await store.written_skills(redis_client)
+    touched: set[str] = set()
+    for skill_id in sorted(set(steps_by_skill) | set(drift)):
+        steps = tallies.get(skill_id, {})
         await store.write_step_stats(redis_client, settings, skill_id, steps)
         written += 1
-        proposals: list[dict] = []
-        if tier_b_open:
-            proposals = _tier_b_proposals(
-                skill_id, steps, steps_by_skill[skill_id], min_n, prior_n, delta
-            )
+        touched.add(skill_id)
+        proposals: list[dict] = list(drift.get(skill_id, []))
+        if tier_b_open and steps:
+            proposals.extend(_tier_b_proposals(
+                skill_id, steps, steps_by_skill.get(skill_id, []),
+                min_n, prior_n, delta,
+            ))
         # Written even when empty: a proposal with no supporting evidence in
         # the window must DISAPPEAR (OWM's stale-reset shape), not ratchet.
         await store.write_proposals(redis_client, skill_id, proposals)
         proposed += len(proposals)
 
-    return {
+    # And the skills that left the index entirely — deleted, flipped to draft,
+    # or had their specs removed. They can never reappear in `steps_by_skill`,
+    # so nothing above can reach them; their stats and proposals were stranded
+    # with no TTL and no sweep, still served by GET /procedures.
+    #
+    # Skipped outright when the skill scan FAILED: the index the sweep compares
+    # against is then whatever the last successful pass left, and a Qdrant
+    # outage must not read as "every procedure was deleted".
+    orphaned = 0
+    for skill_id in (sorted(stale_candidates - touched) if scan_ok else []):
+        try:
+            await store.clear_skill(redis_client, skill_id)
+            orphaned += 1
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("orphan sweep failed for %s: %s", skill_id, exc)
+
+    result = {
         "status": "ok",
         "executions": len(executions),
         "skills": written,
         "proposals": proposed,
+        "spec_drift": sum(len(v) for v in drift.values()),
+        "orphans_cleared": orphaned,
         "outcome_backed_executions": outcome_backed,
-        "tier_b": "open" if tier_b_open else "insufficient outcome signal",
+        "outcome_success": outcome_success,
+        "outcome_failure": outcome_failure,
+        "tier_b": tier_b,
+        "verdict_ready_steps": verdict_ready,
+        "health": "ok",
     }
+    # Persisted, not merely returned: the Celery result backend is not a
+    # surface a human reads, and "Tier B is closed for lack of outcome signal"
+    # is the single most important thing this pass has to say on today's data.
+    await store.record_run(redis_client, result)
+    return result
 
 
 def _tier_b_proposals(skill_id, steps, entries, min_n, prior_n, delta) -> list[dict]:
@@ -250,6 +393,12 @@ async def _run() -> dict:
     vector = VectorClient(settings)
     try:
         return await run_pass(r, replay_r, vector, settings)
+    except Exception as exc:  # noqa: BLE001
+        # A crashed run must not read as "never ran" on the next GET /procedures
+        # — that is the state an operator uses to decide whether to look.
+        await store.record_run(r, {"status": "error", "health": "error",
+                                   "error": str(exc)})
+        raise
     finally:
         for closer in (r.aclose, replay_r.aclose, vector.close):
             try:

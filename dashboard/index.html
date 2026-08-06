@@ -4984,13 +4984,57 @@ function procStepRows(row, specs) {
     return out;
 }
 
+function procRunLine(data) {
+    // WHAT THE PASS DID, AND WHICH CLOSED STATE TIER B IS IN. Without this a
+    // deployment where the gate is shut for lack of an outcome signal -- the
+    // EXPECTED state on today's data (spec F1) -- renders identically to one
+    // where it is open and found nothing, with nothing to say whether the
+    // nightly pass has ever run at all. That indistinguishability is what the
+    // /dreams endpoint's last_run/health fields were added to kill.
+    var run = (data && data.run) || null;
+    var bits = [];
+    if (!run || !run.last_run) {
+        bits.push('the nightly hardening pass has not run yet');
+    } else {
+        bits.push('last pass ' + run.last_run);
+        if (run.health === 'error') {
+            bits.push('the last pass FAILED: ' + (run.error || 'unknown error'));
+        }
+        if (run.tier_b === 'insufficient outcome signal') {
+            bits.push('efficacy verdicts are withheld: too few sessions have a knowable outcome');
+        } else if (run.tier_b === 'uniform outcome signal') {
+            bits.push('efficacy verdicts are withheld: every scored session reports the same outcome, so a comparison would measure nothing');
+        } else if (run.tier_b === 'open') {
+            // An open gate is not a reachable verdict: a step needs
+            // PROCEDURE_MIN_EXECUTIONS scored executions in BOTH the observed
+            // and skipped buckets, while PROCEDURE_AGENT_CAP is spent across
+            // the two combined -- so with the shipped defaults no step can be
+            // decided by fewer than two distinct agent identities. Saying
+            // "open" while nothing can ever be proposed is the inert-subsystem
+            // report this repo has already paid for three times.
+            bits.push((run.verdict_ready_steps > 0)
+                ? 'efficacy verdicts are being offered'
+                : 'the efficacy gate is open but no step yet has enough scored'
+                  + ' executions in both the observed and skipped buckets');
+        }
+    }
+    var dropped = (data && data.unjoinable_edits) || 0;
+    if (dropped) {
+        bits.push(dropped + ' recognised edit' + (dropped === 1 ? '' : 's')
+                  + ' recorded nothing: no joinable session id');
+    }
+    return bits.join(' — ');
+}
+
 function renderProceduresPanel(data, skillsById) {
     var rows = (data && data.procedures) || [];
     var specsTotal = (data && data.specs_total != null) ? data.specs_total : 0;
-    var head = '<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:8px">'
+    var head = '<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:2px">'
         + '<span style="font-weight:600;font-size:14px">Procedures</span>'
         + '<span class="text-dim" style="font-size:11px">executions recorded against skills that carry step specs</span>'
-        + '</div>';
+        + '</div>'
+        + '<div class="text-dim" style="font-size:11px;margin-bottom:8px">'
+        + procEsc(procRunLine(data)) + '</div>';
     if (!specsTotal) {
         // H3, cold start: no existing skill has specs, so the feature does
         // nothing at all. That is correct, and must not read as a bug.

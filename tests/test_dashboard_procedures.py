@@ -307,3 +307,83 @@ class TestWiring:
         m = re.search(r"function dismissProcedureProposal\([\s\S]*?\n\}", src)
         assert m
         assert ".catch(" in m.group(0)
+
+
+class TestTheClosedTierBStateReachesAHuman:
+    """`tier_b: "insufficient outcome signal"` used to exist only as a Celery
+    task return value: no Redis record, no field on `GET /procedures`, nothing
+    rendered. So a deployment where the gate is shut -- the EXPECTED state on
+    today's data (spec F1) -- was byte-identical on screen to one where it is
+    open and found nothing, with no last_run to say whether the pass had ever
+    executed. That is the indistinguishability `/dreams`' last_run/health fields
+    exist to kill, and this panel had neither.
+    """
+
+    def test_a_deployment_where_the_pass_never_ran_says_so(self):
+        html = _render(_body([ROW]), {"sk1": SKILL})
+        assert "has not run yet" in html
+
+    def test_a_closed_gate_says_why_the_verdicts_are_missing(self):
+        body = dict(_body([ROW]), run={
+            "last_run": "2026-08-06T02:00:00+00:00", "health": "ok",
+            "tier_b": "insufficient outcome signal",
+        })
+        html = _render(body, {"sk1": SKILL})
+        assert "2026-08-06T02:00:00+00:00" in html
+        assert "withheld" in html
+        assert "knowable outcome" in html
+
+    def test_a_degenerate_signal_is_named_as_such_not_as_a_shortage(self):
+        """The two closed states have different remedies: one needs more
+        sessions, the other needs sessions that actually differ. Reporting the
+        second as the first sends an operator to collect more of what cannot
+        help."""
+        body = dict(_body([ROW]), run={
+            "last_run": "2026-08-06T02:00:00+00:00", "health": "ok",
+            "tier_b": "uniform outcome signal",
+        })
+        html = _render(body, {"sk1": SKILL})
+        assert "same outcome" in html
+
+    def test_a_failed_pass_is_not_reported_as_never_having_run(self):
+        body = dict(_body([ROW]), run={
+            "last_run": "2026-08-06T02:00:00+00:00", "health": "error",
+            "tier_b": "unknown", "error": "qdrant unreachable",
+        })
+        html = _render(body, {"sk1": SKILL})
+        assert "FAILED" in html and "qdrant unreachable" in html
+
+    def test_dropped_unjoinable_edits_are_surfaced_not_hidden(self):
+        """Spec section 4 stage 2, of exactly this drop: 'This is counted and
+        surfaced, not hidden.'"""
+        html = _render(dict(_body([ROW]), unjoinable_edits=7), {"sk1": SKILL})
+        assert "7 recognised edits" in html
+
+    def test_the_run_line_escapes_what_the_server_sent(self):
+        body = dict(_body([ROW]), run={
+            "last_run": "2026-08-06", "health": "error", "tier_b": "unknown",
+            "error": "<img src=x onerror=alert(1)>",
+        })
+        html = _render(body, {"sk1": SKILL})
+        assert "<img" not in html
+        assert "&lt;img" in html
+
+    def test_an_open_gate_with_no_decidable_step_says_so(self):
+        """PROCEDURE_AGENT_CAP is spent across BOTH buckets while a verdict needs
+        PROCEDURE_MIN_EXECUTIONS in EACH, and both default to 5 -- so no step can
+        be decided by fewer than two distinct agent identities. Reporting "open"
+        while nothing can ever be proposed is the inert-subsystem report."""
+        body = dict(_body([ROW]), run={
+            "last_run": "2026-08-06T02:00:00+00:00", "health": "ok",
+            "tier_b": "open", "verdict_ready_steps": 0,
+        })
+        html = _render(body, {"sk1": SKILL})
+        assert "no step yet has enough scored" in html
+
+    def test_an_open_gate_with_a_decidable_step_reads_plainly(self):
+        body = dict(_body([ROW]), run={
+            "last_run": "2026-08-06T02:00:00+00:00", "health": "ok",
+            "tier_b": "open", "verdict_ready_steps": 2,
+        })
+        html = _render(body, {"sk1": SKILL})
+        assert "efficacy verdicts are being offered" in html
