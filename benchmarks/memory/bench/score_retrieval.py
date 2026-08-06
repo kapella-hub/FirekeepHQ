@@ -48,6 +48,60 @@ def aggregate(question_scores: list[dict]) -> dict:
     return out
 
 
+def displacement_facts(dataset_rows, recalls: dict, k: int) -> dict:
+    """The displacement block stamped onto every score record.
+
+    Two jobs, and the second is the reason it lives here rather than in
+    `bench.displacement`:
+
+    1. **Single-run counts.** `evidence_hits_at_k` and `untagged_slots_at_k`
+       are the two headline numbers a displacement comparison is built from, so
+       carrying them per run makes "untagged slots went 0 -> 3" readable
+       straight off two published records with no tooling at all.
+    2. **The dataset join.** A hit row records only `session_id` and rank;
+       deciding whether that slot held EVIDENCE needs the question's
+       `answer_session_ids`, which exist only in the 265 MB dataset — and
+       `data/` is gitignored while `results/` is committed. Stamping the map
+       here (the scorer is the one stage that holds the dataset) is what keeps
+       a published record analysable for displacement after the fact, on a
+       machine that never downloaded LongMemEval-S.
+
+    Its scope is deliberately WIDER than the metrics beside it: `score_run`
+    excludes abstention (`*_abs`) questions from every aggregate, but a dream
+    can displace evidence in an abstention question's top-k just as easily —
+    and in the first measured A/B that is exactly where the one lost evidence
+    hit landed. Scoping this block to the scored subset would rebuild the blind
+    spot the displacement analysis exists to remove, so every dataset row is
+    stamped and the abstention share is reported separately.
+
+    Errored recalls are counted in neither total: they returned no hits, and a
+    zero from a failed call is not a measurement of retrieval.
+    """
+    answer_session_ids: dict[str, list] = {}
+    totals = {"questions": 0, "evidence_hits_at_k": 0, "untagged_slots_at_k": 0,
+              "questions_with_untagged_slots": 0}
+    abstention = dict(totals)
+
+    for row in dataset_rows:
+        qid = row["question_id"]
+        evidence = set(row["answer_session_ids"])
+        answer_session_ids[qid] = list(row["answer_session_ids"])
+        rec = recalls.get(qid)
+        if rec is None or rec.get("error"):
+            continue
+        top = (rec.get("hits") or [])[:k]
+        ev_hits = sum(1 for h in top if h.get("session_id") in evidence)
+        untagged = sum(1 for h in top if h.get("session_id") is None)
+        for bucket in (totals, abstention) if is_abstention(qid) else (totals,):
+            bucket["questions"] += 1
+            bucket["evidence_hits_at_k"] += ev_hits
+            bucket["untagged_slots_at_k"] += untagged
+            bucket["questions_with_untagged_slots"] += 1 if untagged else 0
+
+    return {"k": k, **totals, "abstention": abstention,
+            "answer_session_ids": answer_session_ids}
+
+
 def score_run(dataset_rows, recall_path: Path, ledger: Ledger, k: int) -> dict:
     recalls = {}
     for line in recall_path.read_text(encoding="utf-8").splitlines():
@@ -91,6 +145,11 @@ def score_run(dataset_rows, recall_path: Path, ledger: Ledger, k: int) -> dict:
         "missing_questions": missing,
         "abstention_excluded": abstention_excluded,
         "ledger_gap_questions": ledger_gap_questions,
+        # Everything `bench.displacement` needs that only the dataset can
+        # supply, plus the two single-run counts a reader can compare by eye.
+        # Deliberately spans every question, abstention included — see
+        # `displacement_facts`.
+        "displacement": displacement_facts(dataset_rows, recalls, k),
     }
 
 

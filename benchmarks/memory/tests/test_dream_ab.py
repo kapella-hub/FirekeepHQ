@@ -425,3 +425,234 @@ def test_a_zero_with_no_shape_recorded_says_so_rather_than_guessing():
     got = dream_ab.compare_runs(before, after)
     assert got["regressed"] is True
     assert "does not say" in got["verdict"]
+
+
+# ---------------------------------------------------------------------------
+# The second gate. The aggregate comparison above watches four means; a dream
+# taking a top-k slot from real evidence moves them by ~1e-5, four orders of
+# magnitude under the tolerance. `bench.displacement` is the instrument for
+# that, and the CLI must run it, print it, and let it fail the exit code —
+# without disturbing the aggregate gate's own contract above.
+# ---------------------------------------------------------------------------
+
+def _displacing_record(n_lost: int, n_total: int, *, side: str,
+                       stamp_evidence: bool = False) -> dict:
+    """A run record whose first `n_lost` questions lose one evidence hit to an
+    untagged (dream-shaped) slot on the 'after' side."""
+    rows, evidence = [], {}
+    for i in range(n_total):
+        qid = f"q{i:03d}"
+        evidence[qid] = ["e"]
+        losing = side == "after" and i < n_lost
+        hits = ["e", None] if losing else ["e", "e"]
+        rows.append({
+            "question_id": qid,
+            "hits": [{"session_id": s, "rank": j + 1} for j, s in enumerate(hits)],
+            "error": None,
+        })
+    scores = _scores(0.80, 0.70, 0.60, completed=n_total)
+    if stamp_evidence:
+        scores["displacement"] = {"k": 10, "answer_session_ids": evidence}
+    return {"generated_at": "2026-08-06T00:00:00Z", "meta": {},
+            "retrieval": {"bench": scores}, "per_question": {"bench": rows}}
+
+
+def test_displacement_section_gates_when_dreams_displace_evidence():
+    before = _displacing_record(0, 500, side="before", stamp_evidence=True)
+    after = _displacing_record(5, 500, side="after")
+    markdown, regressed, warnings = dream_ab.displacement_section(before, after)
+    assert regressed is True
+    assert "EVIDENCE DISPLACEMENT" in markdown
+
+
+def test_displacement_section_does_not_gate_on_a_single_lost_question():
+    before = _displacing_record(0, 500, side="before", stamp_evidence=True)
+    after = _displacing_record(1, 500, side="after")
+    markdown, regressed, warnings = dream_ab.displacement_section(before, after)
+    assert regressed is False
+    assert any("BELOW GATE" in w for w in warnings)
+
+
+def test_displacement_section_says_out_loud_when_it_could_not_run(tmp_path):
+    """`data/` is gitignored and `results/` is committed, so two published
+    records with no stamped evidence and no dataset on disk are a normal
+    situation — but a gate that quietly does not run is the failure mode this
+    whole module exists to prevent, so it must name itself."""
+    before = _full_run_record({"bench": _scores(0.80, 0.70, 0.60, completed=470)})
+    after = _full_run_record({"bench": _scores(0.80, 0.70, 0.60, completed=470)})
+    markdown, regressed, warnings = dream_ab.displacement_section(
+        before, after, dataset_path=tmp_path / "missing.json")
+    assert regressed is False
+    assert markdown == ""
+    assert any("DISPLACEMENT GATE DID NOT RUN" in w for w in warnings)
+
+
+def test_main_fails_on_displacement_even_when_every_aggregate_metric_is_flat(
+        tmp_path, capsys):
+    """The measured defect, scaled up: identical means, evidence quietly
+    leaving top-k. The aggregate gate passes; the run must still fail."""
+    before_path = tmp_path / "before.json"
+    after_path = tmp_path / "after.json"
+    before_path.write_text(json.dumps(
+        _displacing_record(0, 500, side="before", stamp_evidence=True)), encoding="utf-8")
+    after_path.write_text(json.dumps(
+        _displacing_record(5, 500, side="after")), encoding="utf-8")
+
+    rc = dream_ab.main(["--before", str(before_path), "--after", str(after_path)])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "displaced evidence" in out
+    assert "aggregate retrieval metrics regressed" not in out
+    # The aggregate half must still have run and reported no regression.
+    assert "no gate metric dropped" in out
+
+
+def test_main_names_which_of_the_two_gates_failed(tmp_path, capsys):
+    before_path = tmp_path / "before.json"
+    after_path = tmp_path / "after.json"
+    before = _displacing_record(0, 500, side="before", stamp_evidence=True)
+    after = _displacing_record(5, 500, side="after")
+    after["retrieval"]["bench"]["overall"]["recall_at_k"] = 0.10
+    before_path.write_text(json.dumps(before), encoding="utf-8")
+    after_path.write_text(json.dumps(after), encoding="utf-8")
+
+    rc = dream_ab.main(["--before", str(before_path), "--after", str(after_path)])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "aggregate retrieval metrics regressed" in out
+    assert "displaced evidence" in out
+
+
+def test_main_runs_the_displacement_section_on_a_clean_pair(tmp_path, capsys):
+    before_path = tmp_path / "before.json"
+    after_path = tmp_path / "after.json"
+    record = _displacing_record(0, 20, side="before", stamp_evidence=True)
+    before_path.write_text(json.dumps(record), encoding="utf-8")
+    after_path.write_text(json.dumps(record), encoding="utf-8")
+
+    rc = dream_ab.main(["--before", str(before_path), "--after", str(after_path)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Evidence displacement" in out
+    assert "untagged" in out
+
+
+def test_displacement_section_surfaces_a_refused_after_leg_by_name():
+    """A refused config is a loud failure, so it carries no warnings of its own
+    — `displacement_section` has to synthesise the marker or the composed CLI
+    cannot tell "a dream took an evidence slot" from "this leg never ran"."""
+    before = _displacing_record(0, 20, side="before", stamp_evidence=True)
+    after = _displacing_record(0, 20, side="before")
+    after["retrieval"]["bench"]["recall_counts"]["completed_last_invocation"] = 0
+    after["retrieval"]["bench"]["recall_counts"]["skipped"] = 20
+    markdown, regressed, warnings = dream_ab.displacement_section(before, after)
+    assert regressed is True
+    assert any(w.startswith(dream_ab.NOT_CERTIFIED_MARKER) for w in warnings)
+    assert "REFUSED" in markdown
+
+
+def test_main_calls_a_zero_recall_after_leg_uncertified_not_displacement(
+        tmp_path, capsys):
+    """Naming the wrong failure is worse than naming none: "dreams displaced
+    evidence from top-k" would send an operator to audit a design change when
+    the repair is to re-run the leg."""
+    before = _displacing_record(0, 20, side="before", stamp_evidence=True)
+    after = _displacing_record(0, 20, side="before")
+    after["retrieval"]["bench"]["recall_counts"]["completed_last_invocation"] = 0
+    after["retrieval"]["bench"]["recall_counts"]["skipped"] = 20
+    before_path = tmp_path / "before.json"
+    after_path = tmp_path / "after.json"
+    before_path.write_text(json.dumps(before), encoding="utf-8")
+    after_path.write_text(json.dumps(after), encoding="utf-8")
+
+    rc = dream_ab.main(["--before", str(before_path), "--after", str(after_path)])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "refused to certify" in out
+    assert "dreams displaced evidence from top-k" not in out
+    assert dream_ab.NOT_CERTIFIED_MARKER in out
+    # The aggregate gate refuses the identical shape, from the identical
+    # implementation — both halves must fail, not just one.
+    assert "completed=0" in out
+
+
+def test_the_two_gates_read_the_same_zero_recall_control():
+    """One implementation, in `bench.common`. A second copy in `displacement`
+    is how this defect came back once already."""
+    from bench import common, displacement as disp
+
+    run = _scores(0.8, 0.7, 0.6, completed=500, completed_last=0)
+    assert common.completed_recalls(run) == (0, True)
+    assert disp.recall_provenance(run)["status"] == disp.PROVENANCE_REFUSED
+    aggregate = dream_ab.compare_runs(_scores(0.8, 0.7, 0.6, completed=500), run)
+    assert aggregate["regressed"] is True
+    # Same sentence from the same builder in both gates.
+    assert common.describe_zero_recalls(run, True) in aggregate["verdict"]
+    displaced = disp.compare_displacement(
+        [], [], {}, after_run=run)
+    assert common.describe_zero_recalls(run, True) in displaced["verdict"]
+
+
+def test_no_displacement_flag_skips_the_gate_but_says_so(tmp_path, capsys):
+    before_path = tmp_path / "before.json"
+    after_path = tmp_path / "after.json"
+    before_path.write_text(json.dumps(
+        _displacing_record(0, 500, side="before", stamp_evidence=True)), encoding="utf-8")
+    after_path.write_text(json.dumps(
+        _displacing_record(5, 500, side="after")), encoding="utf-8")
+
+    rc = dream_ab.main([
+        "--before", str(before_path), "--after", str(after_path), "--no-displacement",
+    ])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "SKIPPED (--no-displacement)" in out
+    assert "OK (WITH WARNINGS)" in out
+
+
+def test_the_aggregate_gate_is_unchanged_by_the_new_section():
+    """`compare_runs`/`compare_result_files` are the aggregate gate's fixed
+    contract; the displacement gate composes at the CLI and must not have
+    leaked into their return shape."""
+    out = dream_ab.compare_runs(
+        _scores(0.80, 0.70, 0.60, completed=470),
+        _scores(0.85, 0.75, 0.65, completed=470),
+    )
+    assert set(out) == {"deltas", "regressed", "verdict", "warnings"}
+
+
+def test_main_reports_a_record_with_no_per_question_rows_as_gate_not_run(
+        tmp_path, capsys):
+    """A record predating `per_question` must not fail the run — but the final
+    line must make it impossible to believe the displacement gate ran."""
+    before_path = tmp_path / "before.json"
+    after_path = tmp_path / "after.json"
+    before_path.write_text(json.dumps(_full_run_record(
+        {"bench": _scores(0.80, 0.70, 0.60, completed=470)})), encoding="utf-8")
+    after_path.write_text(json.dumps(_full_run_record(
+        {"bench": _scores(0.85, 0.75, 0.65, completed=470)})), encoding="utf-8")
+
+    rc = dream_ab.main(["--before", str(before_path), "--after", str(after_path)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "DISPLACEMENT GATE DID NOT RUN" in out
+    assert "OK (WITH WARNINGS)" in out
+
+
+def test_a_k_mismatch_in_the_per_question_rows_still_fails(tmp_path, capsys):
+    """Incomparable is not the same as unavailable: a record that carries rows
+    but cannot be compared to the other fails, exactly as the aggregate gate
+    does for the same shape."""
+    before = _displacing_record(0, 20, side="before", stamp_evidence=True)
+    after = _displacing_record(0, 20, side="before", stamp_evidence=True)
+    before["retrieval"]["bench"]["k"] = 3
+    after["retrieval"]["bench"]["k"] = 10
+    before_path = tmp_path / "before.json"
+    after_path = tmp_path / "after.json"
+    before_path.write_text(json.dumps(before), encoding="utf-8")
+    after_path.write_text(json.dumps(after), encoding="utf-8")
+
+    rc = dream_ab.main(["--before", str(before_path), "--after", str(after_path)])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "k mismatch" in out

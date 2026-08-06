@@ -24,6 +24,14 @@ invocation produces a full run-record (`results/<ts>-<label>.json`, one
 `score_run` per recall config nested under `retrieval`), so the CLI accepts
 either that shape or a bare `score_run` (e.g. `work/scores_<config>.json`)
 and compares every recall config common to both files.
+
+The CLI runs a SECOND, independent gate alongside this one:
+`bench.displacement`. The aggregate comparison here watches four means and
+cannot see a tail — a dream taking a top-k slot that held real evidence moves
+`ndcg_at_k` by ~1e-5, four orders of magnitude under the 0.005 tolerance, so a
+design that leaks evidence at that rate passes this gate indefinitely. That is
+not hypothetical: it is what the first measured A/B did. Both gates run, both
+can fail the exit code, and neither subsumes the other.
 """
 from __future__ import annotations
 
@@ -32,64 +40,23 @@ import json
 import sys
 from pathlib import Path
 
+from bench import displacement
+from bench.common import (
+    RECALL_LAST_INVOCATION_KEY as _LAST_INVOCATION_KEY,
+    completed_recalls as _completed_recalls,
+    describe_zero_recalls as _describe_zero_recalls,
+)
+
 # The three metrics the regression gate watches, per the design brief.
 # `mrr` is still reported in `deltas` for visibility but deliberately does
 # NOT gate — the brief specifies Recall@k / Coverage@k / NDCG@k only.
 _GATE_METRICS = ("recall_at_k", "coverage_at_k", "ndcg_at_k")
 _ALL_METRICS = ("recall_at_k", "coverage_at_k", "mrr", "ndcg_at_k")
 
-
-_CUMULATIVE_KEY = "completed"
-_LAST_INVOCATION_KEY = "completed_last_invocation"
-
-
-def _as_count(value) -> int | None:
-    """An int that is not a bool, else `None`. `True` is an `int` in Python and
-    would otherwise read as `completed=1`."""
-    if isinstance(value, bool) or not isinstance(value, int):
-        return None
-    return value
-
-
-def _recall_counts(run: dict) -> dict:
-    """The run's `recall_counts` block, or `{}`. Never raises.
-
-    Sibling of `_completed_recalls`, which reads the ONE number that gates.
-    This reads the rest of the block so a failure can name its own shape:
-    `completed == 0` has causes with opposite remedies (all-skipped is a resume
-    or run-label problem; all-errored is a backend problem) and the block
-    already distinguishes them.
-    """
-    counts = run.get("recall_counts") if isinstance(run, dict) else None
-    return counts if isinstance(counts, dict) else {}
-
-
-def _completed_recalls(run: dict) -> tuple[int | None, bool]:
-    """`(completed, per_invocation)` — how many recalls the gate should read.
-
-    `completed` is `None` when the run record does not say (a record produced
-    before `recall_counts` was written, or a bare
-    `work/<label>/scores_<config>.json`). `None` and `0` must never collapse
-    into each other: `0` is a positive statement that nothing was recalled,
-    while `None` is an absence of evidence — treating the latter as the former
-    would make the comparator unable to read its own published history.
-
-    `per_invocation` says which figure it is. `completed_last_invocation` is
-    preferred and is the only one that can actually gate: `completed`
-    accumulates over every invocation of a run label, so a leg re-run under
-    the SAME label recalls nothing yet still reports the first invocation's
-    large total. When only the cumulative figure exists (a record written
-    before it was recorded) it is still read — `0` is unambiguous either way —
-    but the caller downgrades to a warning, because a same-label no-op re-run
-    is indistinguishable from a single honest run in that record.
-    """
-    counts = run.get("recall_counts") if isinstance(run, dict) else None
-    if not isinstance(counts, dict):
-        return None, False
-    last = _as_count(counts.get(_LAST_INVOCATION_KEY))
-    if last is not None:
-        return last, True
-    return _as_count(counts.get(_CUMULATIVE_KEY)), False
+# The zero-recall positive control lives in `bench.common` — `bench.displacement`
+# needs the identical control and re-implementing it there is how this defect
+# came back once already. The names above are kept so `compare_runs` reads as it
+# always did; the implementations are shared, not copied.
 
 
 def compare_runs(before: dict, after: dict, *, tolerance: float = 0.005) -> dict:
@@ -144,45 +111,13 @@ def compare_runs(before: dict, after: dict, *, tolerance: float = 0.005) -> dict
     # equally refused.
     after_completed, per_invocation = _completed_recalls(after)
     if after_completed == 0:
-        whose = (
-            "the 'after' run's final invocation recorded completed=0 recalls"
-            if per_invocation else
-            "the 'after' run recorded completed=0 recalls"
-        )
-        # Name the SHAPE of the zero, do not assume it. completed=0 has at least
-        # two causes with opposite remedies, and the counts entry already
-        # distinguishes them at no cost:
-        #   skipped>0, errored=0 -> resume/label hygiene (the defect this gate
-        #     was built for: an "after" leg that re-scored an earlier run's rows)
-        #   errored>0            -> the recalls RAN and FAILED; the stack was
-        #     down or unreachable, and nothing was skipped or re-scored
-        # Asserting the first unconditionally sends an operator whose Cortex was
-        # down to go and audit their run labels. A diagnosis that is wrong in a
-        # legible way is worse than no diagnosis, because it is actionable.
-        counts = _recall_counts(after)
-        errored = counts.get("errored") if isinstance(counts, dict) else None
-        skipped = counts.get("skipped") if isinstance(counts, dict) else None
-        if isinstance(errored, int) and not isinstance(errored, bool) and errored > 0:
-            cause = (
-                f"{errored} recall(s) ERRORED and none completed — the queries "
-                "ran and failed, so this is a backend/connectivity problem, not "
-                "a resume or run-label one"
-            )
-        elif isinstance(skipped, int) and not isinstance(skipped, bool) and skipped > 0:
-            cause = (
-                f"all {skipped} question(s) were already on disk and skipped — "
-                "its scores are a re-score of artefacts from an earlier run, "
-                "not a measurement of this one"
-            )
-        else:
-            cause = (
-                "it executed no recalls, and the record does not say whether "
-                "they were skipped or errored"
-            )
         return {
             "deltas": {},
             "regressed": True,
-            "verdict": f"ERROR: not comparable — {whose} ({cause})",
+            "verdict": (
+                "ERROR: not comparable — "
+                + _describe_zero_recalls(after, per_invocation)
+            ),
             "warnings": [],
         }
 
@@ -349,11 +284,131 @@ def _load_json(path: str) -> dict:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
+# Prefix of the warning `displacement_section` raises when the displacement
+# gate refused a config outright. `main` reads it to name WHICH gate failed;
+# keeping it a module constant is what stops that from being a loose string
+# match on prose that a later edit could silently break.
+NOT_CERTIFIED_MARKER = "DISPLACEMENT GATE REFUSED"
+
+
+def displacement_section(before: dict, after: dict, *, dataset_path=None,
+                         min_lost_questions: int = displacement.MIN_LOST_QUESTIONS_DEFAULT,
+                         lost_question_rate: float = displacement.LOST_QUESTION_RATE_DEFAULT,
+                         rank_shift_warn: int = displacement.RANK_SHIFT_WARN_DEFAULT,
+                         ) -> tuple[str, bool, list[str]]:
+    """`(markdown, regressed, warnings)` for the displacement half of the gate.
+
+    Kept out of `compare_runs`/`compare_result_files` on purpose: those two
+    functions are the aggregate gate, they are exercised by their own tests as
+    a fixed contract, and a second gate bolted into their return shape would
+    make one failure indistinguishable from the other. This composes at the CLI
+    instead, where two independent verdicts can both be printed and both feed
+    the exit code.
+
+    A record with no `per_question` block, or no reachable source of
+    `answer_session_ids`, does not fail the run: it returns `regressed=False`
+    with a WARNING saying in as many words that the displacement gate DID NOT
+    RUN. That is deliberate and it is the same call `compare_runs` makes for a
+    record carrying no `recall_counts` — `data/` is gitignored while `results/`
+    is committed, so refusing to compare two published records on a machine
+    that never downloaded the 265 MB dataset would break the tool for its most
+    common use. The cost is that a silent absence is possible, which is why the
+    warning names the gate by name and the CLI's final line reads
+    "OK (WITH WARNINGS)". `python -m bench.displacement` makes the opposite
+    call and exits non-zero, because there displacement is the whole job.
+
+    Records that DO carry rows and are nonetheless incomparable (a `k`
+    mismatch, a malformed row, an 'after' leg that completed no recalls) still
+    fail — that is a broken comparison, not a missing capability, and the
+    aggregate gate refuses the same shapes.
+
+    The zero-recall refusal is surfaced through `warnings` with the
+    `NOT_CERTIFIED_MARKER` prefix as well as through `regressed`, because
+    `regressed=True` alone cannot tell `main` WHICH failure it is, and the two
+    have different remedies: a displacement pattern means the design leaks
+    evidence, an uncertified leg means the measurement never happened.
+
+    The row check runs BEFORE evidence resolution so a record predating
+    `per_question` does not pay for a 265 MB dataset load to learn there is
+    nothing to analyse.
+    """
+    if not displacement.common_configs(before, after):
+        return "", False, [
+            "DISPLACEMENT GATE DID NOT RUN: neither run record carries "
+            "per-question recall rows for a config the other also has, so "
+            "there is nothing to compare slot by slot (a record written before "
+            "`per_question` existed, or one assembled without it)"
+        ]
+    resolved = displacement.resolve_evidence(before, after, dataset_path=dataset_path)
+    if resolved["error"]:
+        return "", False, [
+            "DISPLACEMENT GATE DID NOT RUN: " + resolved["error"]
+        ]
+    analyses = displacement.compare_displacement_files(
+        before, after, resolved["evidence"],
+        known_sessions=resolved["known_sessions"],
+        min_lost_questions=min_lost_questions,
+        lost_question_rate=lost_question_rate,
+        rank_shift_warn=rank_shift_warn,
+    )
+    markdown = (
+        f"Evidence source: {resolved['source']}\n\n"
+        + displacement.render_markdown(analyses)
+    )
+    regressed = any(a["regressed"] for a in analyses.values())
+    warnings = [w for a in analyses.values() for w in (a.get("warnings") or [])]
+    # A refused config is a loud failure, so it carries no warnings of its own
+    # (`_failure` returns an empty list by contract). Surface it here, first, so
+    # the composed CLI can name it — and so a reader skimming the warning block
+    # cannot miss that a config was not analysed at all.
+    refused = displacement.refused_configs(analyses)
+    if refused:
+        warnings.insert(0, (
+            f"{NOT_CERTIFIED_MARKER}: config(s) {', '.join(refused)} were not "
+            "analysed — the 'after' leg completed no recalls, so its "
+            "per-question rows are an earlier invocation's artefacts and a "
+            "clean displacement table would be a comparison of those rows with "
+            "themselves"
+        ))
+    return markdown, regressed, warnings
+
+
 def _build_argparser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="python -m bench.dream_ab")
     ap.add_argument("--before", required=True, help="path to the 'before' results/*.json")
     ap.add_argument("--after", required=True, help="path to the 'after' results/*.json")
     ap.add_argument("--tolerance", type=float, default=0.005)
+    ap.add_argument(
+        "--dataset", default=None,
+        help="path to longmemeval_s.json for the displacement gate's evidence "
+             "join (defaults to the block stamped in the run records, then to "
+             "data/longmemeval_s.json)",
+    )
+    ap.add_argument(
+        "--min-lost-questions", type=int,
+        default=displacement.MIN_LOST_QUESTIONS_DEFAULT,
+        help="displacement gate: floor for the number of questions that must "
+             "lose an evidence hit before it fires "
+             f"(default {displacement.MIN_LOST_QUESTIONS_DEFAULT})",
+    )
+    ap.add_argument(
+        "--lost-question-rate", type=float,
+        default=displacement.LOST_QUESTION_RATE_DEFAULT,
+        help="displacement gate: fraction of compared questions that fires it, "
+             f"whichever is larger (default {displacement.LOST_QUESTION_RATE_DEFAULT})",
+    )
+    ap.add_argument(
+        "--rank-shift-warn", type=int,
+        default=displacement.RANK_SHIFT_WARN_DEFAULT,
+        help="displacement report: slots an evidence hit that stayed in top-k "
+             "must slide down before its question is named in a RANK "
+             f"DEGRADATION warning (default {displacement.RANK_SHIFT_WARN_DEFAULT}; "
+             "warns, never gates)",
+    )
+    ap.add_argument(
+        "--no-displacement", action="store_true",
+        help="skip the displacement gate entirely (the aggregate gate still runs)",
+    )
     return ap
 
 
@@ -367,18 +422,75 @@ def main(argv: list[str] | None = None) -> int:
     print(render_markdown(comparisons))
     print()
 
-    regressed = any(cmp["regressed"] for cmp in comparisons.values())
-    if regressed:
-        print("VERDICT: REGRESSION — dreaming must not ship enabled (see above)")
+    aggregate_regressed = any(cmp["regressed"] for cmp in comparisons.values())
+    warned = any(cmp.get("warnings") for cmp in comparisons.values())
+
+    displaced = False
+    not_certified = False
+    if args.no_displacement:
+        print(
+            "## Evidence displacement\n\n"
+            "SKIPPED (--no-displacement) — the aggregate metrics above cannot "
+            "detect a dream displacing evidence from top-k."
+        )
+        warned = True
+    else:
+        markdown, displaced, dwarnings = displacement_section(
+            before, after,
+            dataset_path=Path(args.dataset) if args.dataset else None,
+            min_lost_questions=args.min_lost_questions,
+            lost_question_rate=args.lost_question_rate,
+            rank_shift_warn=args.rank_shift_warn,
+        )
+        not_certified = any(w.startswith(NOT_CERTIFIED_MARKER) for w in dwarnings)
+        print("## Evidence displacement\n")
+        if markdown:
+            # Per-config WARNING lines are already rendered inside the tables,
+            # attached to the config they belong to; re-printing the collected
+            # list here would attribute every warning to every config. The
+            # refusal marker is the exception: it is synthesised OUTSIDE the
+            # tables (a refused config is a loud failure and carries no warnings
+            # of its own), so without this it would be printed nowhere at all.
+            print(markdown)
+            for warning in dwarnings:
+                if warning.startswith(NOT_CERTIFIED_MARKER):
+                    print(f"\nWARNING: {warning}")
+        else:
+            for warning in dwarnings:
+                print(f"WARNING: {warning}")
+        warned = warned or bool(dwarnings)
+    print()
+
+    # Two independent gates. Naming which one failed is the whole point of
+    # running both: an aggregate regression and an evidence-displacement
+    # pattern have different causes and different remedies.
+    if aggregate_regressed or displaced:
+        failed = []
+        if aggregate_regressed:
+            failed.append("aggregate retrieval metrics regressed")
+        if not_certified:
+            # Never call this "dreams displaced evidence". The leg did not run;
+            # nothing was measured, in either direction.
+            failed.append(
+                "the displacement gate refused to certify the 'after' leg — it "
+                "completed no recalls"
+            )
+        elif displaced:
+            failed.append("dreams displaced evidence from top-k")
+        print(
+            f"VERDICT: REGRESSION ({'; '.join(failed)}) — dreaming must not "
+            "ship enabled (see above)"
+        )
         return 1
     # A warning does not fail the gate — every warning below is a shape the
     # comparator could not rule out, not a measured regression — but it must be
     # impossible to read the final line and miss it.
-    if any(cmp.get("warnings") for cmp in comparisons.values()):
+    if warned:
         print(
-            "VERDICT: OK (WITH WARNINGS) — no gate metric regressed, but the "
-            "comparison could not be fully verified; read the WARNING lines "
-            "above before treating this as a green gate"
+            "VERDICT: OK (WITH WARNINGS) — no gate metric regressed and no "
+            "displacement pattern fired, but the comparison could not be fully "
+            "verified; read the WARNING lines above before treating this as a "
+            "green gate"
         )
         return 0
     print("VERDICT: OK — no regression beyond tolerance; safe to ship dreaming enabled")

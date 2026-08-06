@@ -253,20 +253,24 @@ docker compose -f docker-compose.bench.yml -p firekeep-bench up -d --build corte
   --after results/<timestamp>-post-dream-<digest>.json
 ```
 
-`bench.dream_ab` prints one markdown table per recall config (`defaults` and
+`bench.dream_ab` runs **two independent gates** and exits non-zero if either
+fires. First it prints one markdown table per recall config (`defaults` and
 `bench`, whichever configs are common to both result files) showing the delta
-on every metric, followed by a verdict line per config and one overall
-verdict. It exits **non-zero if any config regressed**, so it can gate CI or
-a release checklist directly:
+on every aggregate metric, followed by a verdict line per config. Then it
+prints an **Evidence displacement** section (see "Displacement analysis" at the
+bottom of this file) — the aggregate metrics are means and cannot see a dream
+taking a single top-k slot from real evidence. Finally it prints one overall
+verdict naming which gate, if either, failed. It can gate CI or a release
+checklist directly:
 
 ```bash
 .venv/Scripts/python -m bench.dream_ab --before results/X.json --after results/Y.json \
   || { echo "dreaming regressed retrieval — do not ship DREAM_ENABLED=true"; exit 1; }
 ```
 
-A run is flagged `regressed=True` if **any** of Recall@k, Coverage@k, or
-NDCG@k drops by more than `--tolerance` (default `0.005`) between before and
-after — MRR is reported for visibility but does not gate. Comparisons that
+The **aggregate** gate flags `regressed=True` if **any** of Recall@k,
+Coverage@k, or NDCG@k drops by more than `--tolerance` (default `0.005`)
+between before and after — MRR is reported for visibility but does not gate. Comparisons that
 are not apples-to-apples fail loudly instead of producing a number: a `k`
 mismatch between the two runs, or a run missing its `overall` block, is
 reported as an `ERROR:` verdict with `regressed=True` rather than a computed
@@ -308,3 +312,228 @@ recall config's `{"k": ..., "overall": {...}}`) and returns one verdict.
 `compare_result_files(before, after)` is what the CLI actually calls — it
 accepts full `results/<timestamp>-<label>-<digest>.json` run-records (or bare
 `score_run`s) and compares every recall config present in both.
+
+### Displacement analysis: the tail the aggregate gate cannot see
+
+`bench.displacement` is the second gate, and it exists because the first one
+demonstrably cannot do this job.
+
+**What happened.** The first real Dreaming A/B ran at low dream density — 38
+dream insights, 0.040% of a 96,123-point store — and the aggregate comparison
+came back:
+
+```
+recall_at_k +0.0000  coverage_at_k +0.0000  mrr +0.0000  ndcg_at_k -0.0000  -> PASSES
+```
+
+A hand audit of the same two run records found something that table could not
+show. Under the `bench` config (k=10), 2 of 500 result sets had changed, three
+top-10 slots were now held by untagged (dream-shaped) points, and one question
+— `031748ae_abs` — went from 9 evidence hits to 8. **A dream displaced real
+evidence.** (The other changed question, `00ca467f`, was neutral: a dream took
+a slot from a distractor session, which is the feature working.) Under
+`defaults` (k=3) nothing changed at all — dreams never reached the top 3.
+
+**Why the aggregate cannot see it, and why tightening `--tolerance` would not
+help.** The two instruments measure different things. `compare_runs` watches
+four *means* over ~470 questions; displacement is a *tail*. One lost evidence
+hit moves `ndcg_at_k` by roughly 1e-5, four orders of magnitude below the
+0.005 tolerance, so a design that leaks evidence at that rate passes the gate
+indefinitely while getting worse. And the one question that lost evidence was
+an abstention question (`*_abs`), which `score_run` excludes from every
+aggregate — so that loss was not merely below tolerance, it was outside the
+metric's scope entirely.
+
+**What it measures**, per recall config, over every question the two runs have
+in common (abstention included):
+
+| measure | meaning |
+|---|---|
+| result sets changed | how many questions' ordered top-k session lists differ at all |
+| evidence hits in top-k | slots holding a session in the question's `answer_session_ids`, before then after |
+| questions that LOST / GAINED evidence | the event counts the means average away |
+| net evidence delta | after minus before, summed over every compared question — reported, but deliberately **not** part of the gate; see below |
+| best evidence rank shift | for evidence still in top-k on both sides: mean and worst movement of its best rank |
+| questions whose best rank worsened by >= N | the tail of that, named question by question (`--rank-shift-warn`, default 3) |
+| untagged slots (`session_id=None`) | slots whose hit carries no `lm_session:` tag |
+| foreign-session slots | tagged hits naming a session outside the question's own haystack |
+| 'after' leg recall provenance | whether the after leg's final invocation demonstrably executed its recalls |
+| scored / abstention split | where the losses sit, since only the scored half reaches the metrics |
+
+For every question that lost evidence it also prints **rank-level detail**: the
+ranks that evidence session held before, and which of them the loss is
+attributed to. Occurrences of one session are interchangeable — nothing in a
+recall row says *which* memory left — so n lost occurrences are attributed to
+the n deepest ranks, which is what a top-k truncation does. `ranks_before` is
+printed in full so you can read it differently.
+
+A note on the word "untagged". A hit's `session_id` comes from the ingest-time
+`lm_session:` tag; a dream insight carries no such tag and so surfaces as
+`session_id=null`. That was verified against the artefacts rather than assumed:
+the pre-dream leg has **zero** untagged slots across 1019 + 5000 slots, the
+post-dream leg has exactly three, and all three hold generalised insight prose.
+But "untagged" is not a synonym for "dream" — `results/METHODOLOGY.md` already
+documents graph-only hits taking rank slots the same way — so the counter is
+named for what it observes, in the rendered table as well as here: the row
+reads `untagged slots (session_id=None)` and carries a footnote saying in as
+many words that it records a shape, not a cause. (It used to read `untagged
+(dream-shaped) slots`, which asserted provenance the data cannot support to the
+one audience that only ever sees the table.) `foreign_session_slots` sits
+alongside it as a floor against a future dream that somehow inherited a tag; it
+measures 0 on both legs.
+
+**The gate rule.** It fires on **breadth of per-question loss**, and on nothing
+else:
+
+```
+lost_evidence_questions >= max(--min-lost-questions,
+                               ceil(--lost-question-rate * compared))
+```
+
+Defaults: `--min-lost-questions 3`, `--lost-question-rate 0.005`. On the
+500-question split that is a threshold of **3 lost-evidence questions**. A
+question is counted at most once, and only if *its own* evidence occupancy
+fell.
+
+**There is deliberately no `net_evidence_delta < 0` condition.** There used to
+be, and it was a hole of exactly the kind this module exists to close: the net
+is a global sum, so five questions each losing one evidence hit while one
+unrelated question gained five came to a net of 0 and the gate stayed silent,
+raising at most a `CHURN` warning. That is a mean wearing an event counter's
+clothes. Displacement is a *tail*; summing across questions is the very
+averaging that hid the defect in `compare_runs` one level up. Question B
+gaining an evidence hit does not repair question A's answer — different query,
+different user. Netting *within* one question is legitimate and is retained
+(evidence session `e1` handing a slot to evidence session `e2` leaves that
+question flat and is correctly not counted); netting *across* questions is not.
+Gains are still reported, in their own column and in the `Gained evidence:`
+detail, and when the gate fires with a non-negative net the verdict says so and
+says why it is not a defence.
+
+The floor is what stops breadth firing on noise. Retrieval scoring here is
+deterministic, so any store mutation reshuffles something and single events are
+expected. One lost question is one displacement event: real, reported in full,
+but not a pattern — it cannot distinguish "dreams displace evidence" from "the
+store changed". Two is still consistent with two unrelated one-offs. Three
+independent questions losing evidence is the smallest count at which "pattern"
+is a defensible word, and it is 3x the rate measured at the density that
+produced the passing run — so the gate has honest headroom against today's
+baseline while firing at roughly 3x that dream density. The rate is 0.5%
+because `ceil(0.005 * 500) = 3`, so on this dataset it changes nothing; it
+exists so that a 5000-question split does not inherit a fixed count of 3 and
+become hypersensitive. The two are combined with `max`, which means
+**tightening the gate requires lowering both knobs**.
+
+**Rank degradation warns; it does not gate.** Evidence can also get worse
+without leaving top-k: a hit moving from rank 1 to rank 9 inside k=10 kept
+every occurrence it had, so `lost=0, net=0` and — before this was added — no
+row anywhere in the report said anything had happened, while that question's
+MRR went 1.00 → 0.11 and the aggregate moved by ~1e-3 over 500 questions. Same
+tail-versus-mean blindness, one level further down. So the report now carries
+the mean and worst best-rank shift for evidence present on both sides, plus a
+`RANK DEGRADATION` warning naming every question whose best evidence rank
+slipped by `--rank-shift-warn` (default 3) or more. It warns rather than gates
+because a hit at rank 9 of 10 has *not* left the top-k the product spends, and
+reordering is what dreams are for — an insight that legitimately outranks one
+raw episode pushes everything below it down a slot. A gate firing on that would
+fire on the feature working. Invisible, however, was never acceptable.
+
+**The positive control.** `bench.displacement` runs the same zero-recall check
+`bench.dream_ab` does, from the same implementation in `bench.common`: if the
+'after' leg's final invocation completed 0 recalls it did not measure the
+store, it re-scored rows an earlier invocation left on disk. That failure is
+*worse* here than in the aggregate — two identical row sets compared slot by
+slot yield a table of perfect zeroes and the most reassuring verdict this tool
+can print — so such a pair is **refused**, with `VERDICT: NOT CERTIFIED` and a
+non-zero exit, naming whether the recalls were skipped (a resume/run-label
+problem) or errored (a backend problem). Provenance that is merely *absent* —
+as in the two committed A/B records, which predate `recall_counts` — reports
+`UNVERIFIED` and warns; it never passes silently. The provenance verdict is a
+row in every rendered table.
+
+Abstention questions are counted and they do gate, even though the aggregate
+metrics exclude them. The displacement mechanism does not care which subset a
+question belongs to, and a gate restricted to the scored subset would reproduce
+exactly the blind spot that let this through. The scored/abstention split is
+always reported so you can see where a loss sits.
+
+**How to read the output.** `result sets changed` tells you whether dreaming
+touched retrieval at all. `untagged slots` tells you whether dreams are
+reaching top-k. Those two rising with a flat `net evidence delta` is the
+healthy shape — dreams are being retrieved and are taking slots from
+distractors. `questions that LOST evidence` is the number to watch, not the
+net: it is reported with a `BELOW GATE` warning long before it reaches the
+threshold, precisely so a rising trend is visible across successive A/Bs rather
+than arriving as a surprise the day it crosses. Check the provenance row first
+— a table full of zeroes from an `UNVERIFIED` leg is not a result — and read
+`RANK DEGRADATION` even when nothing gated, since evidence sliding down the
+page is the failure mode with no event count of its own.
+
+**Running it standalone:**
+
+```bash
+.venv/Scripts/python -m bench.displacement \
+  --before results/<timestamp>-pre-dream-<digest>.json \
+  --after  results/<timestamp>-post-dream-<digest>.json
+```
+
+It prints the same markdown section `bench.dream_ab` embeds and exits non-zero
+when the gate fires — or when it cannot run at all, since displacement is its
+whole job. `--dataset`, `--min-lost-questions` and `--lost-question-rate` are
+accepted by both tools; `bench.dream_ab` additionally takes `--no-displacement`
+to skip the section (which then reports itself as skipped and downgrades the
+final line to `OK (WITH WARNINGS)`).
+
+**Where the evidence join comes from.** Deciding whether a slot held *evidence*
+needs the question's `answer_session_ids`, which live only in the 265 MB
+dataset — and `data/` is gitignored while `results/` is committed. So the
+scoring step stamps a `displacement` block onto every score record
+(`retrieval[<config>].displacement`) carrying the `answer_session_ids` map plus
+that run's own `evidence_hits_at_k` / `untagged_slots_at_k` counts. Two records
+written by a current harness are therefore analysable on a machine that never
+downloaded LongMemEval-S, and the two headline counts are readable straight off
+the JSON with no tooling at all. That block deliberately spans **every**
+question including abstention ones, unlike the metrics beside it, for the
+reason given above. Resolution order is: an explicit `--dataset` (the only
+source that also enables foreign-session detection), then the records' stamped
+block, then `data/longmemeval_s.json` if it happens to exist.
+
+Two stamps that **disagree** about a question's evidence are refused, at both
+scopes and with the same force: two configs of one record ("run record
+disagrees with itself") and the two records of a pair ("the two run records
+disagree"). The second used to be silent last-wins — a `before` stamping
+`q1 -> [A]` and an `after` stamping `q1 -> [Z]` resolved to `[Z]` with no
+error, which does not merely mislabel one side, it silently reclassifies which
+slots held evidence on **both**. Records that disagree about what the evidence
+*is* are not comparable.
+
+**The ground-truth tests do not need the dataset.** The three tests pinning
+this module to the hand audit used to be `skipif`'d on
+`data/longmemeval_s.json`, which is gitignored and which no CI job fetches — so
+the load-bearing guarantee ran only where someone happened to have downloaded
+265 MB. The evidence join is the only part they needed it for, and that part is
+32 KB: `tests/fixtures/ab_answer_session_ids.json` carries
+`{question_id: answer_session_ids}` for all 500 questions — byte-for-byte the
+map `displacement_facts` now stamps into new records — and a drift check
+verifies it against the real dataset whenever the file *is* present. Only
+`foreign_session_slots` still requires the dataset (it needs every question's
+~48 haystack ids: 430 KB of fixture to assert a zero), and that single
+assertion is split out and gated on its own. `benchmarks/memory/` also now has
+a CI job (`benchmarks` in `.github/workflows/ci.yml`) — before this it had
+none at all, and no workflow referenced `benchmarks/` in any form.
+
+Records written **before** that block existed — including the two committed A/B
+records — have no stamped evidence, so they need `data/` present or an explicit
+`--dataset`. Inside `bench.dream_ab` that shortfall is a warning, not a
+failure: it prints `DISPLACEMENT GATE DID NOT RUN: …` and the final line reads
+`OK (WITH WARNINGS)`, because refusing to compare two published records on a
+machine with no dataset would break the tool for its commonest use. A record
+that *does* carry rows but cannot be compared (a `k` mismatch, a malformed row,
+a question with no evidence entry) still fails loudly — that is a broken
+comparison, not a missing capability, and `compare_displacement` returns a
+verdict naming the cause rather than a number computed over a partial join.
+
+`compare_displacement(before_rows, after_rows, evidence)` is the pure
+primitive; `compare_displacement_files(before, after, evidence)` is what the
+CLIs call, comparing every recall config with per-question rows in both
+records.

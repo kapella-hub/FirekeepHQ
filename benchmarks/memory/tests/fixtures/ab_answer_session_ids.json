@@ -1,0 +1,1961 @@
+{
+"_regenerate": "python -m bench.download, then re-derive: {r[\"question_id\"]: r[\"answer_session_ids\"] for r in load_dataset(DATA_DIR/\"longmemeval_s.json\")}. tests/test_displacement.py::test_the_committed_evidence_fixture_matches_the_dataset checks it against the real file whenever that file is present.",
+"_what": "answer_session_ids for every LongMemEval-S question, extracted from the dataset named below. Byte-for-byte the map bench.score_retrieval.displacement_facts now stamps into every run record as retrieval[<config>].displacement.answer_session_ids.",
+"_why": "The two committed A/B run records predate that stamp, and data/ is gitignored. Without this file the tests that pin bench.displacement to the hand audit can only run on a machine that has downloaded the 265 MB dataset, which is no machine in CI.",
+"answer_session_ids": {
+"001be529": [
+"answer_530960c1"
+],
+"00ca467f": [
+"answer_39900a0a_3",
+"answer_39900a0a_2",
+"answer_39900a0a_1"
+],
+"0100672e": [
+"answer_35c9798c_2",
+"answer_35c9798c_1"
+],
+"01493427": [
+"answer_a7b44747_1",
+"answer_a7b44747_2"
+],
+"031748ae": [
+"answer_8748f791_1",
+"answer_8748f791_2"
+],
+"031748ae_abs": [
+"answer_8748f791_abs_1",
+"answer_8748f791_abs_2"
+],
+"06878be2": [
+"answer_555dfb94"
+],
+"06db6396": [
+"answer_da72b1b4_1",
+"answer_da72b1b4_2"
+],
+"06f04340": [
+"answer_92d5f7cd"
+],
+"07741c44": [
+"answer_7e9ad7b4_1",
+"answer_7e9ad7b4_2"
+],
+"07741c45": [
+"answer_7e9ad7b4_1",
+"answer_7e9ad7b4_2"
+],
+"078150f1": [
+"answer_254d8b09_1",
+"answer_254d8b09_2"
+],
+"07b6f563": [
+"answer_d03098f9"
+],
+"0862e8bf": [
+"answer_c6fd8ebd"
+],
+"0862e8bf_abs": [
+"answer_c6fd8ebd_abs"
+],
+"08e075c7": [
+"answer_cdbe2250_1",
+"answer_cdbe2250_2"
+],
+"08f4fc43": [
+"answer_6ea1541e_2",
+"answer_6ea1541e_1"
+],
+"0977f2af": [
+"answer_3bf5b73b_1",
+"answer_3bf5b73b_2"
+],
+"099778bb": [
+"answer_80d6d664_2",
+"answer_80d6d664_1"
+],
+"09ba9854": [
+"answer_96c743d0_2",
+"answer_96c743d0_1"
+],
+"09ba9854_abs": [
+"answer_96c743d0_abs_1",
+"answer_96c743d0_abs_2"
+],
+"09d032c9": [
+"answer_b10dce5e"
+],
+"0a34ad58": [
+"answer_cebb7159"
+],
+"0a995998": [
+"answer_afa9873b_2",
+"answer_afa9873b_3",
+"answer_afa9873b_1"
+],
+"0bb5a684": [
+"answer_e936197f_1",
+"answer_e936197f_2"
+],
+"0bc8ad92": [
+"answer_f4ea84fb_3",
+"answer_f4ea84fb_2",
+"answer_f4ea84fb_1"
+],
+"0bc8ad93": [
+"answer_f4ea84fc_3",
+"answer_f4ea84fc_2",
+"answer_f4ea84fc_1"
+],
+"0db4c65d": [
+"answer_b9e32ff8_1",
+"answer_b9e32ff8_2"
+],
+"0ddfec37": [
+"answer_a22b654d_1",
+"answer_a22b654d_2"
+],
+"0ddfec37_abs": [
+"answer_a22b654d_abs_1",
+"answer_a22b654d_abs_2"
+],
+"0e4e4c46": [
+"answer_f2f998c7_1",
+"answer_f2f998c7_2"
+],
+"0e5e2d1a": [
+"answer_ultrachat_113156"
+],
+"0ea62687": [
+"answer_dc5e537d_1",
+"answer_dc5e537d_2"
+],
+"0edc2aef": [
+"answer_d586e9cd"
+],
+"0f05491a": [
+"answer_d6d2eba8_1",
+"answer_d6d2eba8_2"
+],
+"10d9b85a": [
+"answer_e0585cb5_2",
+"answer_e0585cb5_1"
+],
+"10e09553": [
+"answer_67be2c38_1",
+"answer_67be2c38_2"
+],
+"118b2229": [
+"answer_40a90d51"
+],
+"1192316e": [
+"answer_e184e4c3_2",
+"answer_e184e4c3_1"
+],
+"129d1232": [
+"answer_1de862d6_1",
+"answer_1de862d6_3",
+"answer_1de862d6_2"
+],
+"1568498a": [
+"answer_sharegpt_d6JJiqH_76"
+],
+"15745da0": [
+"answer_586de428"
+],
+"15745da0_abs": [
+"answer_586de428_abs"
+],
+"157a136e": [
+"answer_8de18468_2",
+"answer_8de18468_1"
+],
+"16c90bf4": [
+"answer_ultrachat_294807"
+],
+"184da446": [
+"answer_e2f4f947_1",
+"answer_e2f4f947_2"
+],
+"18bc8abd": [
+"answer_fff743f5_1",
+"answer_fff743f5_2"
+],
+"18dcd5a5": [
+"answer_sharegpt_hn3IS1q_0"
+],
+"1903aded": [
+"answer_sharegpt_hA7AkP3_0"
+],
+"195a1a1b": [
+"answer_6dc4305e"
+],
+"19b5f2b3": [
+"answer_5ff494b9"
+],
+"19b5f2b3_abs": [
+"answer_5ff494b9_abs"
+],
+"1a1907b4": [
+"answer_719502eb"
+],
+"1a8a66a6": [
+"answer_2bd23659_3",
+"answer_2bd23659_2",
+"answer_2bd23659_4",
+"answer_2bd23659_1"
+],
+"1b9b7252": [
+"answer_ultrachat_115151"
+],
+"1c0ddc50": [
+"answer_8da8c7e0"
+],
+"1c549ce4": [
+"answer_4cb841a8_1",
+"answer_4cb841a8_2"
+],
+"1cea1afa": [
+"answer_79c395a9_1",
+"answer_79c395a9_2"
+],
+"1d4da289": [
+"answer_ultrachat_348449"
+],
+"1d4e3b97": [
+"answer_e6b6353d"
+],
+"1da05512": [
+"answer_4d3be2ab"
+],
+"1de5cff2": [
+"answer_ultrachat_440262"
+],
+"1e043500": [
+"answer_3e012175"
+],
+"1f2b8d4f": [
+"answer_d8454588_1",
+"answer_d8454588_2"
+],
+"1faac195": [
+"answer_d01949bf"
+],
+"2133c1b5": [
+"answer_52382508_1",
+"answer_52382508_2"
+],
+"2133c1b5_abs": [
+"answer_52382508_abs_1",
+"answer_52382508_abs_2"
+],
+"21436231": [
+"answer_1e6d4567"
+],
+"21d02d0d": [
+"answer_2c637141_2",
+"answer_2c637141_1"
+],
+"22d2cb42": [
+"answer_bcce0b73_1",
+"answer_bcce0b73_2"
+],
+"2311e44b": [
+"answer_bf633415_2",
+"answer_bf633415_1"
+],
+"2311e44b_abs": [
+"answer_bf633415_abs_1",
+"answer_bf633415_abs_2"
+],
+"2318644b": [
+"answer_eaa8e3ef_1",
+"answer_eaa8e3ef_2"
+],
+"25e5aa4f": [
+"answer_986de8c3"
+],
+"2698e78f": [
+"answer_9282283d_1",
+"answer_9282283d_2"
+],
+"2698e78f_abs": [
+"answer_9282283d_abs_1",
+"answer_9282283d_abs_2"
+],
+"26bdc477": [
+"answer_f762ad8d_1",
+"answer_f762ad8d_2"
+],
+"27016adc": [
+"answer_a37bdf22_2",
+"answer_a37bdf22_1"
+],
+"2788b940": [
+"answer_8f6b938d_1",
+"answer_8f6b938d_3",
+"answer_8f6b938d_4",
+"answer_8f6b938d_2"
+],
+"28bcfaac": [
+"answer_ultrachat_446979"
+],
+"28dc39ac": [
+"answer_8d015d9d_3",
+"answer_8d015d9d_5",
+"answer_8d015d9d_2",
+"answer_8d015d9d_4",
+"answer_8d015d9d_1"
+],
+"29f2956b": [
+"answer_7cc5362f"
+],
+"29f2956b_abs": [
+"answer_7cc5362f_abs"
+],
+"2a1811e2": [
+"answer_1cc3cd0c_1",
+"answer_1cc3cd0c_2"
+],
+"2b8f3739": [
+"answer_23759615_2",
+"answer_23759615_3",
+"answer_23759615_1"
+],
+"2bf43736": [
+"answer_sharegpt_2kpncbX_13"
+],
+"2c63a862": [
+"answer_d39b7977_1",
+"answer_d39b7977_2"
+],
+"2ce6a0f2": [
+"answer_901a6763_2",
+"answer_901a6763_4",
+"answer_901a6763_1",
+"answer_901a6763_3"
+],
+"2e6d26dc": [
+"answer_fa526fc0_4",
+"answer_fa526fc0_3",
+"answer_fa526fc0_1",
+"answer_fa526fc0_2"
+],
+"2ebe6c90": [
+"answer_c9d35c00_1",
+"answer_c9d35c00_2"
+],
+"2ebe6c92": [
+"answer_c9d35c00_1",
+"answer_c9d35c00_2"
+],
+"311778f1": [
+"answer_e40b054e"
+],
+"32260d93": [
+"answer_0250ae1c"
+],
+"3249768e": [
+"answer_sharegpt_CaxTGYP_0"
+],
+"352ab8bd": [
+"answer_sharegpt_NoDZzot_7"
+],
+"35a27287": [
+"answer_9b182436"
+],
+"36580ce8": [
+"answer_93e1bd22"
+],
+"36b9f61e": [
+"answer_ef74281f_2",
+"answer_ef74281f_1",
+"answer_ef74281f_3"
+],
+"370a8ff4": [
+"answer_61d1be50_1",
+"answer_61d1be50_2"
+],
+"37d43f65": [
+"answer_55161935"
+],
+"37f165cf": [
+"answer_6b9b2b1e_2",
+"answer_6b9b2b1e_1"
+],
+"38146c39": [
+"answer_772472c8"
+],
+"3a704032": [
+"answer_c2204106_2",
+"answer_c2204106_3",
+"answer_c2204106_1"
+],
+"3b6f954b": [
+"answer_94030872"
+],
+"3ba21379": [
+"answer_cd345582_1",
+"answer_cd345582_2"
+],
+"3c1045c8": [
+"answer_c8cc60d6_2",
+"answer_c8cc60d6_1"
+],
+"3d86fd0a": [
+"answer_19c24c11"
+],
+"3e321797": [
+"answer_ultrachat_94624"
+],
+"3f1e9474": [
+"answer_57fc1954"
+],
+"3fdac837": [
+"answer_419d21d5_2",
+"answer_419d21d5_1"
+],
+"3fe836c9": [
+"answer_1bb63ea5_2",
+"answer_1bb63ea5_1"
+],
+"4100d0a0": [
+"answer_83c13ff9"
+],
+"41275add": [
+"answer_sharegpt_81riySf_0"
+],
+"41698283": [
+"answer_c7ddc051_1",
+"answer_c7ddc051_2"
+],
+"42ec0761": [
+"answer_e3892371_1",
+"answer_e3892371_2"
+],
+"4388e9dd": [
+"answer_sharegpt_qTi81nS_0"
+],
+"45dc21b6": [
+"answer_07664d43_1",
+"answer_07664d43_2"
+],
+"46a3abf7": [
+"answer_c65042d7_3",
+"answer_c65042d7_2",
+"answer_c65042d7_1"
+],
+"488d3006": [
+"answer_ultrachat_275993"
+],
+"4adc0475": [
+"answer_6efce493_1",
+"answer_6efce493_2"
+],
+"4b24c848": [
+"answer_2cec623b_1",
+"answer_2cec623b_2"
+],
+"4baee567": [
+"answer_sharegpt_i9adwQn_0"
+],
+"4bc144e2": [
+"answer_9ef115d4_1",
+"answer_9ef115d4_2"
+],
+"4c36ccef": [
+"answer_ultrachat_448704"
+],
+"4d6b87c8": [
+"answer_766ab8da_1",
+"answer_766ab8da_2"
+],
+"4dfccbf7": [
+"answer_4bebc782_1",
+"answer_4bebc782_2"
+],
+"4dfccbf8": [
+"answer_4bebc783_1",
+"answer_4bebc783_2"
+],
+"4f54b7c9": [
+"answer_50940cb7_2",
+"answer_50940cb7_1"
+],
+"4fd1909e": [
+"answer_2952aee4"
+],
+"5025383b": [
+"answer_688f9a3f_1",
+"answer_688f9a3f_2"
+],
+"505af2f5": [
+"answer_f3164f2c"
+],
+"50635ada": [
+"answer_dcd74827_1",
+"answer_dcd74827_2"
+],
+"51a45a95": [
+"answer_d61669c7"
+],
+"51b23612": [
+"answer_ultrachat_427265"
+],
+"51c32626": [
+"answer_58820c75_1",
+"answer_58820c75_2"
+],
+"54026fce": [
+"answer_f7b22c66"
+],
+"545bd2b5": [
+"answer_47ffab4c"
+],
+"55241a1f": [
+"answer_fa08bf49_1",
+"answer_fa08bf49_2"
+],
+"561fabcd": [
+"answer_sharegpt_hChsWOp_97"
+],
+"577d4d32": [
+"answer_0dd4d99a"
+],
+"57f827a0": [
+"answer_1bde8d3b"
+],
+"5809eb10": [
+"answer_sharegpt_4aJsGCH_0"
+],
+"5831f84d": [
+"answer_8d63a897_1",
+"answer_8d63a897_2"
+],
+"58470ed2": [
+"answer_sharegpt_U4oCSfU_7"
+],
+"58bf7951": [
+"answer_355c48bb"
+],
+"58ef2f1c": [
+"answer_59547700"
+],
+"59524333": [
+"answer_b28f2c7a_1",
+"answer_b28f2c7a_2"
+],
+"5a4f22c0": [
+"answer_b0f3dfff_1",
+"answer_b0f3dfff_2"
+],
+"5a7937c8": [
+"answer_4cef8a3c_3",
+"answer_4cef8a3c_1",
+"answer_4cef8a3c_2"
+],
+"5c40ec5b": [
+"answer_1cb52d0a_1",
+"answer_1cb52d0a_2"
+],
+"5d3d2817": [
+"answer_235eb6fb"
+],
+"5e1b23de": [
+"answer_c18d480b_1"
+],
+"60036106": [
+"answer_e552e1f9_1",
+"answer_e552e1f9_2"
+],
+"60159905": [
+"answer_75eca223_2",
+"answer_75eca223_1"
+],
+"603deb26": [
+"answer_8afdebac_1",
+"answer_8afdebac_2"
+],
+"60472f9c": [
+"answer_e7fe8c8b_1",
+"answer_e7fe8c8b_2",
+"answer_e7fe8c8b_3"
+],
+"6071bd76": [
+"answer_4dac77cb_1",
+"answer_4dac77cb_2"
+],
+"60bf93ed": [
+"answer_e0956e0a_1",
+"answer_e0956e0a_2"
+],
+"60bf93ed_abs": [
+"answer_e0956e0a_abs_2",
+"answer_e0956e0a_abs_1"
+],
+"60d45044": [
+"answer_9cddca88"
+],
+"618f13b2": [
+"answer_caf5b52e_1",
+"answer_caf5b52e_2"
+],
+"61f8c8f8": [
+"answer_872e8da2_2",
+"answer_872e8da2_1"
+],
+"6222b6eb": [
+"answer_sharegpt_H9PiM5G_0"
+],
+"6456829e": [
+"answer_743f03a1_2",
+"answer_743f03a1_1"
+],
+"6456829e_abs": [
+"answer_743f03a1_abs_1",
+"answer_743f03a1_abs_2"
+],
+"65240037": [
+"answer_ultrachat_403752"
+],
+"6613b389": [
+"answer_aaf71ce2_3",
+"answer_aaf71ce2_2",
+"answer_aaf71ce2_1"
+],
+"66f24dbb": [
+"answer_fea2e4d3"
+],
+"67e0d0f2": [
+"answer_3a5010af_2",
+"answer_3a5010af_1"
+],
+"681a1674": [
+"answer_3be95d43_1",
+"answer_3be95d43_2"
+],
+"69fee5aa": [
+"answer_d6028d6e_1",
+"answer_d6028d6e_2"
+],
+"6a1eabeb": [
+"answer_a25d4a91_1",
+"answer_a25d4a91_2"
+],
+"6a27ffc2": [
+"answer_77f32504_1",
+"answer_77f32504_2"
+],
+"6ade9755": [
+"answer_9398da02"
+],
+"6ae235be": [
+"answer_sharegpt_IUWQYGQ_0"
+],
+"6aeb4375": [
+"answer_3f9693b7_1",
+"answer_3f9693b7_2"
+],
+"6aeb4375_abs": [
+"answer_3f9693b7_abs_1",
+"answer_3f9693b7_abs_2"
+],
+"6b168ec8": [
+"answer_e623ae87"
+],
+"6b7dfb22": [
+"answer_f6502d0f"
+],
+"6c49646a": [
+"answer_cc1ced21_2",
+"answer_cc1ced21_1"
+],
+"6cb6f249": [
+"answer_a4204937_2",
+"answer_a4204937_1"
+],
+"6d550036": [
+"answer_ec904b3c_1",
+"answer_ec904b3c_4",
+"answer_ec904b3c_3",
+"answer_ec904b3c_2"
+],
+"6e984301": [
+"answer_88841f26_1",
+"answer_88841f26_2"
+],
+"6e984302": [
+"answer_88841f27_1",
+"answer_88841f27_2"
+],
+"6f9b354f": [
+"answer_feb5200f"
+],
+"7024f17c": [
+"answer_a21f3697_1",
+"answer_a21f3697_2",
+"answer_a21f3697_3"
+],
+"70b3e69b": [
+"answer_ultrachat_334948"
+],
+"71017276": [
+"answer_0b4a8adc_1"
+],
+"71017277": [
+"answer_0b4a8adc_1"
+],
+"71315a70": [
+"answer_c44b9df4_1",
+"answer_c44b9df4_2"
+],
+"7161e7e2": [
+"answer_sharegpt_5Lzox6N_0"
+],
+"71a3fd6b": [
+"answer_ultrachat_417348"
+],
+"720133ac": [
+"answer_c9dfeaea_1",
+"answer_c9dfeaea_2"
+],
+"726462e0": [
+"answer_f38f679b"
+],
+"72e3ee87": [
+"answer_d7de9a6a_1",
+"answer_d7de9a6a_2"
+],
+"73d42213": [
+"answer_1881e7db_1",
+"answer_1881e7db_2"
+],
+"7401057b": [
+"answer_94650bfa_1",
+"answer_94650bfa_2"
+],
+"7405e8b1": [
+"answer_80323f3f_1",
+"answer_80323f3f_2"
+],
+"7527f7e2": [
+"answer_7cb94507"
+],
+"75499fd8": [
+"answer_723bf11f"
+],
+"75832dbd": [
+"answer_d87a6ef8"
+],
+"75f70248": [
+"answer_8ee04a2e"
+],
+"76d63226": [
+"answer_bbdc7b0a"
+],
+"778164c6": [
+"answer_ultrachat_399000"
+],
+"77eafa52": [
+"answer_33c251f0_2",
+"answer_33c251f0_1"
+],
+"7a87bd0c": [
+"answer_d08a934d_1",
+"answer_d08a934d_2"
+],
+"7a8d0b71": [
+"answer_sharegpt_i0tMT9q_9"
+],
+"7e00a6cb": [
+"answer_ultrachat_370515"
+],
+"7e974930": [
+"answer_c9f5693c_1",
+"answer_c9f5693c_2"
+],
+"8077ef71": [
+"answer_0dd54b7c_1"
+],
+"80ec1f4f": [
+"answer_990c8992_2",
+"answer_990c8992_1",
+"answer_990c8992_3"
+],
+"80ec1f4f_abs": [
+"answer_990c8992_abs_2",
+"answer_990c8992_abs_3",
+"answer_990c8992_abs_1"
+],
+"81507db6": [
+"answer_da3c1266_3",
+"answer_da3c1266_4",
+"answer_da3c1266_1",
+"answer_da3c1266_5",
+"answer_da3c1266_2"
+],
+"830ce83f": [
+"answer_0b1a0942_1",
+"answer_0b1a0942_2"
+],
+"8464fc84": [
+"answer_ultrachat_467053"
+],
+"852ce960": [
+"answer_3a6f1e82_1",
+"answer_3a6f1e82_2"
+],
+"853b0a1d": [
+"answer_69811d4a"
+],
+"8550ddae": [
+"answer_c8354ae9"
+],
+"85fa3a3f": [
+"answer_dcb18b9b_2",
+"answer_dcb18b9b_1"
+],
+"86b68151": [
+"answer_dc11c1eb"
+],
+"86f00804": [
+"answer_96b8c9ee"
+],
+"8752c811": [
+"answer_sharegpt_6pWK9yx_0"
+],
+"87f22b4a": [
+"answer_f56e6152_2",
+"answer_f56e6152_1"
+],
+"88432d0a": [
+"answer_733e443a_3",
+"answer_733e443a_4",
+"answer_733e443a_2",
+"answer_733e443a_1"
+],
+"88432d0a_abs": [
+"answer_733e443a_abs_1",
+"answer_733e443a_abs_3",
+"answer_733e443a_abs_2",
+"answer_733e443a_abs_4"
+],
+"89527b6b": [
+"answer_sharegpt_YkWn1Ne_0"
+],
+"8979f9ec": [
+"answer_35e36341_1",
+"answer_35e36341_2"
+],
+"89941a93": [
+"answer_e1403127_1",
+"answer_e1403127_2"
+],
+"89941a94": [
+"answer_e1403127_1",
+"answer_e1403127_2"
+],
+"8a137a7f": [
+"answer_15d63a22"
+],
+"8a2466db": [
+"answer_edb03329"
+],
+"8aef76bc": [
+"answer_ultrachat_563222"
+],
+"8b9d4367": [
+"answer_ultrachat_289157"
+],
+"8c18457d": [
+"answer_124f5dc3_2",
+"answer_124f5dc3_1"
+],
+"8cf4d046": [
+"answer_e2278b24_1",
+"answer_e2278b24_2"
+],
+"8cf51dda": [
+"answer_sharegpt_HFMn2ZX_0"
+],
+"8e91e7d9": [
+"answer_477ae455_1",
+"answer_477ae455_2"
+],
+"8e9d538c": [
+"answer_7bdcbd23"
+],
+"8ebdbe50": [
+"answer_8ad8a34f"
+],
+"8fb83627": [
+"answer_966cecbb_1",
+"answer_966cecbb_2"
+],
+"91b15a6e": [
+"answer_5404a208_1",
+"answer_5404a208_2"
+],
+"92a0aa75": [
+"answer_6cb8f792_1",
+"answer_6cb8f792_2"
+],
+"945e3d21": [
+"answer_6a4f8626_1",
+"answer_6a4f8626_2"
+],
+"94f70d80": [
+"answer_c63c0458"
+],
+"95228167": [
+"answer_5e613445"
+],
+"95bcc1c8": [
+"answer_cb742a61"
+],
+"982b5123": [
+"answer_ab603dd5_1",
+"answer_ab603dd5_2"
+],
+"982b5123_abs": [
+"answer_ab603dd5_abs_1",
+"answer_ab603dd5_abs_2"
+],
+"993da5e2": [
+"answer_54f0d6f9_1",
+"answer_54f0d6f9_2"
+],
+"9a707b81": [
+"answer_dba89487_2",
+"answer_dba89487_1"
+],
+"9a707b82": [
+"answer_dba89488_2",
+"answer_dba89488_1"
+],
+"9aaed6a3": [
+"answer_353d3c6d_2",
+"answer_353d3c6d_1"
+],
+"9bbe84a2": [
+"answer_c6a0c6c2_1",
+"answer_c6a0c6c2_2"
+],
+"9d25d4e0": [
+"answer_fcff2dc4_2",
+"answer_fcff2dc4_1",
+"answer_fcff2dc4_3"
+],
+"9ea5eabc": [
+"answer_02e66dec_1",
+"answer_02e66dec_2"
+],
+"9ee3ecd6": [
+"answer_66c23110_1",
+"answer_66c23110_2"
+],
+"a06e4cfe": [
+"answer_6fe9fb49"
+],
+"a08a253f": [
+"answer_47152166_2",
+"answer_47152166_1"
+],
+"a11281a2": [
+"answer_c69ee1f9_2",
+"answer_c69ee1f9_1"
+],
+"a1cc6108": [
+"answer_17dc2f5b_2",
+"answer_17dc2f5b_1"
+],
+"a1eacc2a": [
+"answer_0eb23770_1",
+"answer_0eb23770_2"
+],
+"a2f3aa27": [
+"answer_5126c02d_1",
+"answer_5126c02d_2"
+],
+"a3045048": [
+"answer_016f6bd4_2",
+"answer_016f6bd4_1"
+],
+"a3332713": [
+"answer_16ece55f_2",
+"answer_16ece55f_1"
+],
+"a346bb18": [
+"answer_4934b2d7_2",
+"answer_4934b2d7_1"
+],
+"a3838d2b": [
+"answer_4ffa04a2_1",
+"answer_4ffa04a2_6",
+"answer_4ffa04a2_4",
+"answer_4ffa04a2_3",
+"answer_4ffa04a2_5",
+"answer_4ffa04a2_2"
+],
+"a40e080f": [
+"answer_ultrachat_269020"
+],
+"a4996e51": [
+"answer_feb5f98a_1",
+"answer_feb5f98a_2"
+],
+"a82c026e": [
+"answer_787e6a6d"
+],
+"a89d7624": [
+"answer_8f15ac24"
+],
+"a96c20ee": [
+"answer_ef84b994_1",
+"answer_ef84b994_2"
+],
+"a96c20ee_abs": [
+"answer_ef84b994_abs_1",
+"answer_ef84b994_abs_2"
+],
+"a9f6b44c": [
+"answer_cc021f81_2",
+"answer_cc021f81_3",
+"answer_cc021f81_1"
+],
+"aae3761f": [
+"answer_526354c8_1",
+"answer_526354c8_3",
+"answer_526354c8_2"
+],
+"ac031881": [
+"answer_sharegpt_GYqnAhC_190"
+],
+"ad7109d1": [
+"answer_679840f8"
+],
+"af082822": [
+"answer_b51b6115_1"
+],
+"af8d2e46": [
+"answer_82a04f59"
+],
+"afdc33df": [
+"answer_8549e5e0"
+],
+"affe2881": [
+"answer_90de9b4d_1",
+"answer_90de9b4d_2"
+],
+"b01defab": [
+"answer_8c0712af_1",
+"answer_8c0712af_2"
+],
+"b0479f84": [
+"answer_30f63ddb"
+],
+"b29f3365": [
+"answer_436d4309_2",
+"answer_436d4309_1"
+],
+"b320f3f8": [
+"answer_5cc9b056"
+],
+"b3c15d39": [
+"answer_05d808e6_1",
+"answer_05d808e6_2"
+],
+"b46e15ed": [
+"answer_4bfcc250_4",
+"answer_4bfcc250_3",
+"answer_4bfcc250_2",
+"answer_4bfcc250_1"
+],
+"b46e15ee": [
+"answer_4bfcc251_4",
+"answer_4bfcc251_3",
+"answer_4bfcc251_2",
+"answer_4bfcc251_1"
+],
+"b5ef892d": [
+"answer_a8b4290f_3",
+"answer_a8b4290f_1",
+"answer_a8b4290f_2"
+],
+"b6019101": [
+"answer_67074b4b_1",
+"answer_67074b4b_2"
+],
+"b6025781": [
+"answer_8414cc57"
+],
+"b759caee": [
+"answer_sharegpt_2BSXlAr_0"
+],
+"b86304ba": [
+"answer_645b0329"
+],
+"b9cfe692": [
+"answer_5e3bb940_3",
+"answer_5e3bb940_2",
+"answer_5e3bb940_1"
+],
+"ba358f49": [
+"answer_cbd08e3c_1",
+"answer_cbd08e3c_2"
+],
+"ba358f49_abs": [
+"answer_cbd08e3c_abs_1",
+"answer_cbd08e3c_abs_2"
+],
+"ba61f0b9": [
+"answer_f377cda7_1",
+"answer_f377cda7_2"
+],
+"bb7c3b45": [
+"answer_de64539a_1",
+"answer_de64539a_2"
+],
+"bbf86515": [
+"answer_b3763b6b_1",
+"answer_b3763b6b_2"
+],
+"bc149d6b": [
+"answer_92147866_1",
+"answer_92147866_2"
+],
+"bc8a6e93": [
+"answer_e6143162"
+],
+"bc8a6e93_abs": [
+"answer_e6143162_abs"
+],
+"bcbe585f": [
+"answer_43ba3965_1"
+],
+"bf659f65": [
+"answer_7726e7e9_1",
+"answer_7726e7e9_3",
+"answer_7726e7e9_2"
+],
+"c14c00dd": [
+"answer_304511ce"
+],
+"c18a7dc8": [
+"answer_2e2085fa_2",
+"answer_2e2085fa_1"
+],
+"c19f7a0b": [
+"answer_f442ccbe"
+],
+"c2ac3c61": [
+"answer_923c0221_1",
+"answer_923c0221_2"
+],
+"c4a1ceb8": [
+"answer_56d02cab_3",
+"answer_56d02cab_4",
+"answer_56d02cab_2",
+"answer_56d02cab_1"
+],
+"c4ea545c": [
+"answer_d3bf812b_1",
+"answer_d3bf812b_2"
+],
+"c4f10528": [
+"answer_ultrachat_234453"
+],
+"c5e8278d": [
+"answer_f6168136"
+],
+"c6853660": [
+"answer_626e93c4_1",
+"answer_626e93c4_2"
+],
+"c7cf7dfd": [
+"answer_ultrachat_456407"
+],
+"c7dc5443": [
+"answer_0cdbca92_1",
+"answer_0cdbca92_2"
+],
+"c8090214": [
+"answer_70dc7d08_2",
+"answer_70dc7d08_1"
+],
+"c8090214_abs": [
+"answer_70dc7d08_abs_1",
+"answer_70dc7d08_abs_2"
+],
+"c8c3f81d": [
+"answer_761acef8"
+],
+"c8f1aeed": [
+"answer_ultrachat_519486"
+],
+"c960da58": [
+"answer_e05e4612"
+],
+"c9f37c46": [
+"answer_cdba3d9f_1",
+"answer_cdba3d9f_2"
+],
+"caf03d32": [
+"answer_2fc6aabb"
+],
+"caf9ead2": [
+"answer_0714183a"
+],
+"cc06de0d": [
+"answer_4fb01417_2",
+"answer_4fb01417_1"
+],
+"cc539528": [
+"answer_ultrachat_374124"
+],
+"cc5ded98": [
+"answer_a5b68517_1",
+"answer_a5b68517_2"
+],
+"cc6d1ec1": [
+"answer_be73098b_2",
+"answer_be73098b_1"
+],
+"ccb36322": [
+"answer_f1fbb330"
+],
+"ce6d2d27": [
+"answer_73540165_1",
+"answer_73540165_2"
+],
+"ceb54acb": [
+"answer_sharegpt_cGdjmYo_0"
+],
+"cf22b7bf": [
+"answer_ae3a122b_1",
+"answer_ae3a122b_2"
+],
+"d01c6aa8": [
+"answer_991d55e5_1",
+"answer_991d55e5_2"
+],
+"d23cf73b": [
+"answer_5a0d28f8_4",
+"answer_5a0d28f8_2",
+"answer_5a0d28f8_3",
+"answer_5a0d28f8_1"
+],
+"d24813b1": [
+"answer_7c0ade93"
+],
+"d3ab962e": [
+"answer_5237bb0b_2",
+"answer_5237bb0b_1"
+],
+"d52b4f67": [
+"answer_0df6aa4b"
+],
+"d596882b": [
+"answer_ultrachat_252214"
+],
+"d6062bb9": [
+"answer_23f3a657_2",
+"answer_23f3a657_1"
+],
+"d6233ab6": [
+"answer_b0fac439"
+],
+"d682f1a2": [
+"answer_c008e5df_1",
+"answer_c008e5df_2",
+"answer_c008e5df_3"
+],
+"d7c942c3": [
+"answer_eecb10d9_1",
+"answer_eecb10d9_2"
+],
+"d851d5ba": [
+"answer_5cdf9bd2_2",
+"answer_5cdf9bd2_1",
+"answer_5cdf9bd2_3",
+"answer_5cdf9bd2_4"
+],
+"d905b33f": [
+"answer_85a77c48_2",
+"answer_85a77c48_1"
+],
+"dad224aa": [
+"answer_4a97ae40_1",
+"answer_4a97ae40_2"
+],
+"db467c8c": [
+"answer_611b6e83_1",
+"answer_611b6e83_2"
+],
+"dc439ea3": [
+"answer_ultrachat_459954"
+],
+"dccbc061": [
+"answer_8f276838"
+],
+"dcfa8644": [
+"answer_5e3eeb12_2",
+"answer_5e3eeb12_1"
+],
+"dd2973ad": [
+"answer_f9de4602_2",
+"answer_f9de4602_1"
+],
+"dfde3500": [
+"answer_35d6c0be_1",
+"answer_35d6c0be_2"
+],
+"e01b8e2f": [
+"answer_5ca6cd28"
+],
+"e25c3b8d": [
+"answer_6702277b_1",
+"answer_6702277b_2"
+],
+"e3038f8c": [
+"answer_b6018747_2",
+"answer_b6018747_4",
+"answer_b6018747_1",
+"answer_b6018747_3"
+],
+"e3fc4d6e": [
+"answer_sharegpt_5m7gg5F_0"
+],
+"e47becba": [
+"answer_280352e9"
+],
+"e48988bc": [
+"answer_ultrachat_174360"
+],
+"e493bb7c": [
+"answer_1a374afa_1",
+"answer_1a374afa_2"
+],
+"e4e14d04": [
+"answer_cf425855_1",
+"answer_cf425855_2"
+],
+"e56a43b9": [
+"answer_430d0a87_1",
+"answer_430d0a87_2"
+],
+"e5ba910e_abs": [
+"answer_e49ed9d3_abs_1",
+"answer_e49ed9d3_abs_2"
+],
+"e6041065": [
+"answer_4eb6d671_2",
+"answer_4eb6d671_1"
+],
+"e61a7584": [
+"answer_f25c32f5_1",
+"answer_f25c32f5_2"
+],
+"e66b632c": [
+"answer_ac0140ce_1",
+"answer_ac0140ce_2"
+],
+"e831120c": [
+"answer_86c505e7_1",
+"answer_86c505e7_2"
+],
+"e8a79c70": [
+"answer_ultrachat_13075"
+],
+"e9327a54": [
+"answer_ultrachat_480665"
+],
+"e982271f": [
+"answer_ultrachat_195444"
+],
+"eac54adc": [
+"answer_0d4d0347_1",
+"answer_0d4d0347_2"
+],
+"eac54add": [
+"answer_0d4d0348_1",
+"answer_0d4d0348_2"
+],
+"eaca4986": [
+"answer_sharegpt_SS141vi_0"
+],
+"eace081b": [
+"answer_8a791264_1",
+"answer_8a791264_2"
+],
+"ec81a493": [
+"answer_ed1982fc"
+],
+"ed4ddc30": [
+"answer_babbaccb_1",
+"answer_babbaccb_2"
+],
+"edced276": [
+"answer_60e8941a_2",
+"answer_60e8941a_1"
+],
+"edced276_abs": [
+"answer_60e8941a_abs_1",
+"answer_60e8941a_abs_2"
+],
+"eeda8a6d": [
+"answer_3e5fea0e_1",
+"answer_3e5fea0e_2"
+],
+"eeda8a6d_abs": [
+"answer_3e5fea0e_abs_2",
+"answer_3e5fea0e_abs_1"
+],
+"ef66a6e5": [
+"answer_f7fd1029_2",
+"answer_f7fd1029_1"
+],
+"ef9cf60a": [
+"answer_87e3a1cb_1",
+"answer_87e3a1cb_2"
+],
+"efc3f7c2": [
+"answer_fc81d1a2_1",
+"answer_fc81d1a2_2"
+],
+"f0853d11": [
+"answer_932ea3bf_2",
+"answer_932ea3bf_1"
+],
+"f0e564bc": [
+"answer_cfcf5340_1",
+"answer_cfcf5340_2"
+],
+"f35224e0": [
+"answer_e9bb9500_2",
+"answer_e9bb9500_1"
+],
+"f4f1d8a4": [
+"answer_f5b33470"
+],
+"f4f1d8a4_abs": [
+"answer_f5b33470_abs"
+],
+"f523d9fe": [
+"answer_sharegpt_m2xJfjo_0"
+],
+"f685340e": [
+"answer_25df025b_1",
+"answer_25df025b_2"
+],
+"f685340e_abs": [
+"answer_25df025b_abs_1",
+"answer_25df025b_abs_2"
+],
+"f8c5f88b": [
+"answer_c3567066"
+],
+"f9e8c073": [
+"answer_b191df5b_1",
+"answer_b191df5b_2"
+],
+"faba32e5": [
+"answer_39b12014"
+],
+"fca70973": [
+"answer_a1e169b1"
+],
+"fca762bc": [
+"answer_ultrachat_39395"
+],
+"fea54f57": [
+"answer_ultrachat_187684"
+],
+"gpt4_0a05b494": [
+"answer_a68db5db_2",
+"answer_a68db5db_1"
+],
+"gpt4_0b2f1d21": [
+"answer_c4e5d969_2",
+"answer_c4e5d969_1"
+],
+"gpt4_15e38248": [
+"answer_8858d9dc_3",
+"answer_8858d9dc_1",
+"answer_8858d9dc_4",
+"answer_8858d9dc_2"
+],
+"gpt4_18c2b244": [
+"answer_c862f65a_2",
+"answer_c862f65a_3",
+"answer_c862f65a_1"
+],
+"gpt4_1916e0ea": [
+"answer_447052a5_2",
+"answer_447052a5_1"
+],
+"gpt4_194be4b3": [
+"answer_3826dc55_1",
+"answer_3826dc55_3",
+"answer_3826dc55_5",
+"answer_3826dc55_2",
+"answer_3826dc55_4"
+],
+"gpt4_1a1dc16d": [
+"answer_faad7d7a_2",
+"answer_faad7d7a_1"
+],
+"gpt4_1d4ab0c9": [
+"answer_febde667_1",
+"answer_febde667_2"
+],
+"gpt4_1d80365e": [
+"answer_661b711f_1",
+"answer_661b711f_2"
+],
+"gpt4_1e4a8aeb": [
+"answer_16bd5ea5_1",
+"answer_16bd5ea5_2"
+],
+"gpt4_1e4a8aec": [
+"answer_16bd5ea6_1",
+"answer_16bd5ea6_2"
+],
+"gpt4_213fd887": [
+"answer_53582e7e_2",
+"answer_53582e7e_1"
+],
+"gpt4_21adecb5": [
+"answer_1e2369c9_1",
+"answer_1e2369c9_2"
+],
+"gpt4_2312f94c": [
+"answer_5328c3c2_2",
+"answer_5328c3c2_1"
+],
+"gpt4_2487a7cb": [
+"answer_1c6b85ea_2",
+"answer_1c6b85ea_1"
+],
+"gpt4_2655b836": [
+"answer_4be1b6b4_1",
+"answer_4be1b6b4_2",
+"answer_4be1b6b4_3"
+],
+"gpt4_2ba83207": [
+"answer_6a3b5c13_3",
+"answer_6a3b5c13_1",
+"answer_6a3b5c13_2",
+"answer_6a3b5c13_4"
+],
+"gpt4_2c50253f": [
+"answer_9af4e346_1",
+"answer_9af4e346_2"
+],
+"gpt4_2d58bcd6": [
+"answer_3e11e0ae_1",
+"answer_3e11e0ae_2"
+],
+"gpt4_2f56ae70": [
+"answer_7a36e820_2",
+"answer_7a36e820_3",
+"answer_7a36e820_1"
+],
+"gpt4_2f584639": [
+"answer_11a8f823_2",
+"answer_11a8f823_1"
+],
+"gpt4_2f8be40d": [
+"answer_e7b0637e_2",
+"answer_e7b0637e_1",
+"answer_e7b0637e_3"
+],
+"gpt4_2f91af09": [
+"answer_669318cf_2",
+"answer_669318cf_1",
+"answer_669318cf_3"
+],
+"gpt4_31ff4165": [
+"answer_02b63d04_1",
+"answer_02b63d04_5",
+"answer_02b63d04_2",
+"answer_02b63d04_3",
+"answer_02b63d04_4"
+],
+"gpt4_372c3eed": [
+"answer_35c5419d_3",
+"answer_35c5419d_2",
+"answer_35c5419d_1"
+],
+"gpt4_372c3eed_abs": [
+"answer_35c5419d_abs_3",
+"answer_35c5419d_abs_1",
+"answer_35c5419d_abs_2"
+],
+"gpt4_385a5000": [
+"answer_7a4a93f1_2",
+"answer_7a4a93f1_1"
+],
+"gpt4_45189cb4": [
+"answer_e6c20e52_3",
+"answer_e6c20e52_2",
+"answer_e6c20e52_1"
+],
+"gpt4_468eb063": [
+"answer_9b09d95b_1"
+],
+"gpt4_468eb064": [
+"answer_9b09d95b_1"
+],
+"gpt4_483dd43c": [
+"answer_fb793c87_1",
+"answer_fb793c87_2"
+],
+"gpt4_4929293a": [
+"answer_add9b012_2",
+"answer_add9b012_1"
+],
+"gpt4_4929293b": [
+"answer_add9b013_2",
+"answer_add9b013_1"
+],
+"gpt4_4cd9eba1": [
+"answer_5fcca8bc_2",
+"answer_5fcca8bc_1"
+],
+"gpt4_4edbafa2": [
+"answer_0a00c163_1",
+"answer_0a00c163_2"
+],
+"gpt4_4ef30696": [
+"answer_f964cea3_1",
+"answer_f964cea3_2"
+],
+"gpt4_4fc4f797": [
+"answer_be07688f_1",
+"answer_be07688f_2"
+],
+"gpt4_5438fa52": [
+"answer_b10f3828_1",
+"answer_b10f3828_2"
+],
+"gpt4_5501fe77": [
+"answer_203bf3fa_1",
+"answer_203bf3fa_3",
+"answer_203bf3fa_2"
+],
+"gpt4_59149c77": [
+"answer_d00ba6d0_1",
+"answer_d00ba6d0_2"
+],
+"gpt4_59149c78": [
+"answer_d00ba6d1_1",
+"answer_d00ba6d1_2"
+],
+"gpt4_59c863d7": [
+"answer_593bdffd_4",
+"answer_593bdffd_1",
+"answer_593bdffd_3",
+"answer_593bdffd_2"
+],
+"gpt4_5dcc0aab": [
+"answer_099c1b6c_5",
+"answer_099c1b6c_2",
+"answer_099c1b6c_4",
+"answer_099c1b6c_3",
+"answer_099c1b6c_1"
+],
+"gpt4_61e13b3c": [
+"answer_e831a29f_1",
+"answer_e831a29f_2"
+],
+"gpt4_65aabe59": [
+"answer_30dfe889_1",
+"answer_30dfe889_2"
+],
+"gpt4_68e94287": [
+"answer_9793daa3_2",
+"answer_9793daa3_1"
+],
+"gpt4_68e94288": [
+"answer_9793daa4_2",
+"answer_9793daa4_1"
+],
+"gpt4_6dc9b45b": [
+"answer_c4df007f_1"
+],
+"gpt4_6ed717ea": [
+"answer_d50a8a33_1",
+"answer_d50a8a33_2"
+],
+"gpt4_70e84552": [
+"answer_b3070ec4_2",
+"answer_b3070ec4_1"
+],
+"gpt4_70e84552_abs": [
+"answer_b3070ec4_abs_2",
+"answer_b3070ec4_abs_1"
+],
+"gpt4_731e37d7": [
+"answer_826d51da_3",
+"answer_826d51da_4",
+"answer_826d51da_2",
+"answer_826d51da_1"
+],
+"gpt4_74aed68e": [
+"answer_aed8cf17_1",
+"answer_aed8cf17_2"
+],
+"gpt4_76048e76": [
+"answer_b535969f_1",
+"answer_b535969f_2"
+],
+"gpt4_78cf46a3": [
+"answer_5a78688d_1",
+"answer_5a78688d_2"
+],
+"gpt4_7a0daae1": [
+"answer_4d5490f1_1",
+"answer_4d5490f1_2"
+],
+"gpt4_7abb270c": [
+"answer_7093d898_1",
+"answer_7093d898_2",
+"answer_7093d898_3",
+"answer_7093d898_4",
+"answer_7093d898_5",
+"answer_7093d898_6"
+],
+"gpt4_7bc6cf22": [
+"answer_e22d6aef_1"
+],
+"gpt4_7ca326fa": [
+"answer_cf021b36_1",
+"answer_cf021b36_2",
+"answer_cf021b36_3"
+],
+"gpt4_7ddcf75f": [
+"answer_ad8a76cb_1"
+],
+"gpt4_7de946e7": [
+"answer_6a78e959_2",
+"answer_6a78e959_1"
+],
+"gpt4_7f6b06db": [
+"answer_5d8c99d3_1",
+"answer_5d8c99d3_2",
+"answer_5d8c99d3_3"
+],
+"gpt4_7fce9456": [
+"answer_a679a86a_5",
+"answer_a679a86a_4",
+"answer_a679a86a_2",
+"answer_a679a86a_3",
+"answer_a679a86a_1"
+],
+"gpt4_8279ba02": [
+"answer_56521e65_1"
+],
+"gpt4_8279ba03": [
+"answer_56521e66_1"
+],
+"gpt4_85da3956": [
+"answer_581ab834_1"
+],
+"gpt4_88806d6e": [
+"answer_e60a93ff_1",
+"answer_e60a93ff_2"
+],
+"gpt4_8c8961ae": [
+"answer_72d9aa58_1",
+"answer_72d9aa58_2"
+],
+"gpt4_8e165409": [
+"answer_d97db962_1",
+"answer_d97db962_2"
+],
+"gpt4_93159ced": [
+"answer_e5131a1b_2",
+"answer_e5131a1b_1"
+],
+"gpt4_93159ced_abs": [
+"answer_e5131a1b_abs_1",
+"answer_e5131a1b_abs_2"
+],
+"gpt4_93f6379c": [
+"answer_544fe66c_2",
+"answer_544fe66c_1",
+"answer_544fe66c_3"
+],
+"gpt4_98f46fc6": [
+"answer_5850de18_2",
+"answer_5850de18_1"
+],
+"gpt4_9a159967": [
+"answer_8a42fedf_1",
+"answer_8a42fedf_3",
+"answer_8a42fedf_2"
+],
+"gpt4_a1b77f9c": [
+"answer_e9ad5914_1",
+"answer_e9ad5914_2",
+"answer_e9ad5914_3",
+"answer_e9ad5914_4",
+"answer_e9ad5914_5",
+"answer_e9ad5914_6"
+],
+"gpt4_a2d1d1f6": [
+"answer_f6d6e33f_1"
+],
+"gpt4_a56e767c": [
+"answer_cf9e3940_2",
+"answer_cf9e3940_1",
+"answer_cf9e3940_3"
+],
+"gpt4_ab202e7f": [
+"answer_728deb4d_5",
+"answer_728deb4d_2",
+"answer_728deb4d_3",
+"answer_728deb4d_1",
+"answer_728deb4d_4"
+],
+"gpt4_af6db32f": [
+"answer_184c8f56_1"
+],
+"gpt4_b0863698": [
+"answer_550bb2d1_1"
+],
+"gpt4_b4a80587": [
+"answer_b9d9150e_2",
+"answer_b9d9150e_1"
+],
+"gpt4_b5700ca0": [
+"answer_a17423e8_1"
+],
+"gpt4_b5700ca9": [
+"answer_a17423e7_1"
+],
+"gpt4_c27434e8": [
+"answer_d8e33f5c_1",
+"answer_d8e33f5c_2"
+],
+"gpt4_c27434e8_abs": [
+"answer_d8e33f5c_abs_1",
+"answer_d8e33f5c_abs_2"
+],
+"gpt4_cd90e484": [
+"answer_aa930b56_1",
+"answer_aa930b56_2"
+],
+"gpt4_d12ceb0e": [
+"answer_2504635e_3",
+"answer_2504635e_2",
+"answer_2504635e_1"
+],
+"gpt4_d31cdae3": [
+"answer_8464304d_1",
+"answer_8464304d_2"
+],
+"gpt4_d6585ce8": [
+"answer_f999b05b_1",
+"answer_f999b05b_4",
+"answer_f999b05b_2",
+"answer_f999b05b_5",
+"answer_f999b05b_3"
+],
+"gpt4_d6585ce9": [
+"answer_f999b05c_1",
+"answer_f999b05c_4",
+"answer_f999b05c_2",
+"answer_f999b05c_5",
+"answer_f999b05c_3"
+],
+"gpt4_d84a3211": [
+"answer_2880eb6c_2",
+"answer_2880eb6c_4",
+"answer_2880eb6c_1",
+"answer_2880eb6c_3"
+],
+"gpt4_d9af6064": [
+"answer_da704e79_2",
+"answer_da704e79_1"
+],
+"gpt4_e05b82a6": [
+"answer_6350aa4f_1",
+"answer_6350aa4f_2",
+"answer_6350aa4f_3",
+"answer_6350aa4f_4"
+],
+"gpt4_e061b84f": [
+"answer_8c64ce25_2",
+"answer_8c64ce25_1",
+"answer_8c64ce25_3"
+],
+"gpt4_e061b84g": [
+"answer_8c64ce26_2",
+"answer_8c64ce26_1",
+"answer_8c64ce26_3"
+],
+"gpt4_e072b769": [
+"answer_c19bd2bf_1"
+],
+"gpt4_e414231e": [
+"answer_e28c1f0d_1",
+"answer_e28c1f0d_2"
+],
+"gpt4_e414231f": [
+"answer_e28c1f0e_1",
+"answer_e28c1f0e_2"
+],
+"gpt4_ec93e27f": [
+"answer_e3aa84c4_2",
+"answer_e3aa84c4_1"
+],
+"gpt4_f2262a51": [
+"answer_55a6940c_3",
+"answer_55a6940c_1",
+"answer_55a6940c_2"
+],
+"gpt4_f420262c": [
+"answer_d8a1af6b_1",
+"answer_d8a1af6b_2",
+"answer_d8a1af6b_3",
+"answer_d8a1af6b_4",
+"answer_d8a1af6b_5"
+],
+"gpt4_f420262d": [
+"answer_d8a1af6c_1",
+"answer_d8a1af6c_2",
+"answer_d8a1af6c_5",
+"answer_d8a1af6c_4",
+"answer_d8a1af6c_3"
+],
+"gpt4_f49edff3": [
+"answer_3e9fce53_1",
+"answer_3e9fce53_2",
+"answer_3e9fce53_3"
+],
+"gpt4_fa19884c": [
+"answer_ff201786_1",
+"answer_ff201786_2"
+],
+"gpt4_fa19884d": [
+"answer_ff201787_1",
+"answer_ff201787_2"
+],
+"gpt4_fe651585": [
+"answer_65600ff6_2",
+"answer_65600ff6_1"
+],
+"gpt4_fe651585_abs": [
+"answer_65600ff6_abs_1",
+"answer_65600ff6_abs_2"
+]
+},
+"dataset": {
+"fetched_at": "2026-08-03T16:25:00.208798+00:00",
+"questions": 500,
+"sha256": "d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442",
+"source": "hf://xiaowu0162/longmemeval-cleaned/longmemeval_s_cleaned.json"
+}
+}
