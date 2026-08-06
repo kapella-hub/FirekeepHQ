@@ -222,12 +222,18 @@ A nightly Celery pass in the shape of `skill_staleness_pass` (`cortex/app/skills
 
 For each active skill with specs, over executions in the last `PROCEDURE_WINDOW_DAYS`:
 
-1. **Resolve the outcome.** Read `rp:eval:{session_id}`. If absent, compute it (the pass
-   calls the same computation `POST /evals/sessions/{sid}/compute` uses). This is not
-   defensive padding: the evals router's own docstring records a live incident where all 19
-   stored evals were `trigger="manual"` and 12 days stale against 54 completed sessions, so
-   a pass that merely *reads* evals would have almost no sample.
-2. **Apply I4.** Drop the execution if the eval has no outcome-bearing event.
+**Tier A runs unconditionally** (frequency only — see F1). **Tier B runs only if the outcome
+gate below is satisfied.**
+
+1. **Resolve the outcome.** Read `rp:eval:{session_id}` via `evals.store.get_eval`. If
+   absent, compute it with `evals.compute.compute_session_eval(replay_r, sid,
+   trigger="manual")`. This is not defensive padding: the evals router's own docstring
+   records a live incident where all 19 stored evals were `trigger="manual"` and 12 days
+   stale against 54 completed sessions, so a pass that merely *reads* evals would have
+   almost no sample.
+2. **Apply I4.** Drop the execution from Tier B if the session's timeline carries no
+   outcome-bearing event, or if `owm.session_success` returns `None`. It still counts in
+   Tier A.
 3. **Apply I2.** Within a surviving execution, a spec'd step is `observed` or `skipped`;
    `skipped` counts only if ≥1 sibling step of the same procedure was observed in that same
    execution. Otherwise the execution is evidence-free for that step and contributes nothing.
@@ -272,9 +278,59 @@ is written only by the PATCH path. Every derived number lives in Redis. *Because
 PATCH does retrieve → merge → re-embed → full `upsert`, which discards a concurrent
 `set_payload`.
 
-**I4 — Outcome requires evidence.** A session contributes only if its eval contains ≥1
-outcome-bearing event. *Because* `_failure_rate` returns `0.0` on no evidence and `0.0`
-reads as success.
+**I4 — Outcome requires evidence, and most sessions do not have it.** A session contributes
+to an efficacy verdict only if `session_success` returns a non-`None` answer *and* the
+session carries at least one outcome-bearing replay event. *Because* `_failure_rate` returns
+`0.0` on no evidence (`evals/scorers.py:133-139`) and `0.0` reads as success.
+
+**This invariant turned out to be far more expensive than it looked, and it forced §4 Stage 5
+to be restructured — see F1 below.**
+
+### F1 — The outcome signal is degenerate today, and that is a finding about the system
+
+Measured by grep over the whole repo: **no production emitter passes `outcome=` to
+`replay.emitter.emit` except the Bridge session-lifecycle calls** (`bridge/app/mcp_server.py:478`
+`outcome="success"`, `:526` `outcome="partial"`) and one in `cortex/app/main.py:1391`.
+`agent.action.predict`, `agent.action.reconcile`, `memory_read` and `memory_write` all pass
+none. Since `_failure_rate` divides over *events that carry an outcome*, a typical completed
+session has exactly one such event and it says `success` — so `failure_rate` is `0.0`,
+`session_success` returns `True`, and **effectively every session in the deployment evaluates
+as a success.**
+
+Consequences, in order of importance:
+
+1. **This is a pre-existing defect in OWM, not in this feature.** `owm_efficacy` is computed
+   from `session_success`, so it converges toward "everything worked" and the recall
+   multiplier discriminates far less than the design intends. Living Procedures merely
+   surfaced it. It is out of scope here and is written up as its own finding rather than
+   fixed in passing — changing what "success" means repoints a shipped ranking signal and
+   deserves its own measurement.
+2. **A naive hardening pass would be actively harmful.** If every execution succeeds, then
+   skipping any step correlates with success, every step looks dead, and the pass proposes
+   deleting the entire procedure — confidently, with statistics.
+3. **Emitting a real outcome on reconcile is necessary but not sufficient.** `post_tool`
+   already computes a genuine `success` (`post_tool.py:43-58`), so threading it into the
+   emit is a one-line server change. But a mechanical edit almost always succeeds, so it
+   sharpens the signal only slightly. The load-bearing session signals that actually exist
+   are Bridge's `abandoned` status and an explicit `outcome` passed at session completion.
+
+**Therefore Stage 5 splits into two tiers**, and the split is the design's answer to a weak
+signal rather than a hedge:
+
+- **Tier A — frequency, needs no outcome at all.** Execution counts, per-step
+  observed/skipped frequencies, and `spec_drift`. Available from the first execution.
+  "This procedure has run 41 times; step 3 was skipped in 24 of them" is a true and useful
+  statement that requires no notion of success.
+- **Tier B — efficacy, gated hard.** `dead_step` and `load_bearing` verdicts require
+  ≥ `PROCEDURE_MIN_EXECUTIONS` executions **whose sessions have a knowable outcome**
+  (`session_success` non-`None` and ≥1 outcome-bearing event). On today's data that gate is
+  expected to stay closed, and closed is the correct state: the pass reports
+  `tier_b: "insufficient outcome signal"` rather than proposing anything.
+
+`load_bearing` therefore remains **author-declared** in round 1, and the warn in Stage 4
+stands on the author's declaration, not on statistics. The statistics only ever *add* a
+sentence to the warn when Tier B has earned one. That is what keeps the feature useful on
+day one of data instead of waiting for a signal the system does not currently produce.
 
 **I5 — Nothing on the pre-edit path may touch Qdrant or embed.** One Redis GET, memoised
 in-process for 30s, then `fnmatch` in memory. *Because* rules and gateway steps run
