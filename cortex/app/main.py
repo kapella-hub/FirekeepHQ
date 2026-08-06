@@ -343,6 +343,27 @@ def _register_feature_routers(app: FastAPI) -> None:
         app.include_router(create_dreams_router())
         logger.info("Dreams router registered at /dreams")
 
+    # Living Procedures — per-skill rollup, execution receipts, proposal
+    # dismissal. Same conditional-mount precedent: a disabled deploy 404s
+    # rather than serving a disabled-shaped body.
+    #
+    # The clients are passed as CLOSURES over app.state rather than captured
+    # values, matching the gateway's ProcedureObserver wiring above: this
+    # function runs inside the lifespan, but a client replaced later must be
+    # picked up rather than pinned at registration time.
+    if get_settings().PROCEDURE_ENABLED:
+        try:
+            from app.procedures.api import create_procedures_router
+
+            app.include_router(create_procedures_router(
+                get_redis=lambda: app.state.redis_client,
+                get_vector=lambda: app.state.vector_client,
+                settings_fn=get_settings,
+            ))
+            logger.info("Procedures router registered at /procedures")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Procedures router not registered: %s", exc)
+
     # Audit endpoints (/audit/*)
     try:
         from app.audit import get_memory_audit, get_memory_access_summary
