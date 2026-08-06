@@ -5,6 +5,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.procedures.models import StepSpec
 from app.version import VERSION
 
 
@@ -418,6 +419,19 @@ class SkillEvaluateRequest(BaseModel):
     skill_worthy: bool = False
 
 
+# Mirrors Settings.PROCEDURE_MAX_SPECS. A pydantic validator cannot read
+# Settings (model validation would then depend on process env, and every test
+# that builds a request would inherit the deployment's config), so the cap is
+# stated in both places and tests/test_procedure_config.py is the drift guard.
+MAX_STEP_SPECS_PER_SKILL = 50
+
+
+def _cap_step_specs(v: list[StepSpec] | None) -> list[StepSpec] | None:
+    if v is not None and len(v) > MAX_STEP_SPECS_PER_SKILL:
+        raise ValueError(f"at most {MAX_STEP_SPECS_PER_SKILL} step_specs per skill")
+    return v
+
+
 class SkillRequest(BaseModel):
     trigger: str
     symptoms: str
@@ -431,11 +445,20 @@ class SkillRequest(BaseModel):
     # in the same human-review queue as server-drafted skills (draft skills are
     # excluded from every recall path until approved via PATCH skill_status=active).
     status: Literal["active", "draft"] = "active"
+    # Living Procedures: optional per-step matchers, compiled by the AUTHORING
+    # agent (the server runs no LLM for this). Absent => the skill is simply not
+    # an observed procedure. See docs/superpowers/specs/2026-08-06-living-procedures-design.md
+    step_specs: list[StepSpec] | None = None
 
     @field_validator("project", mode="before")
     @classmethod
     def _lower_project(cls, v: str | None) -> str | None:
         return v.lower() if v else v
+
+    @field_validator("step_specs")
+    @classmethod
+    def _cap_specs(cls, v: list[StepSpec] | None) -> list[StepSpec] | None:
+        return _cap_step_specs(v)
 
 
 class SkillResponse(BaseModel):
@@ -465,6 +488,10 @@ class SkillResponse(BaseModel):
     stale_detected_at: str | None = None
     stale_reviewed_at: str | None = None
     last_recalled_at: str | None = None
+    # Living Procedures: absent on every skill authored before this feature, and
+    # on every skill whose author declined to compile specs — None, not [], so a
+    # reader can tell "not a procedure" from "a procedure with no steps".
+    step_specs: list[StepSpec] | None = None
 
 
 class SkillPatchRequest(BaseModel):
@@ -474,3 +501,11 @@ class SkillPatchRequest(BaseModel):
     symptoms: str | None = None
     needs_rereview: bool | None = None
     stale: bool | None = None
+    # Replaces the whole list when present (I3: the PATCH path is the ONLY
+    # writer of step_specs — every derived number lives in Redis).
+    step_specs: list[StepSpec] | None = None
+
+    @field_validator("step_specs")
+    @classmethod
+    def _cap_specs(cls, v: list[StepSpec] | None) -> list[StepSpec] | None:
+        return _cap_step_specs(v)

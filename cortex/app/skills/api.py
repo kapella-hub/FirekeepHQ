@@ -164,6 +164,11 @@ def create_skills_router(
             "namespace": req.namespace, "timestamp": now,
             "source_type": "manual",
         }
+        # Living Procedures: written only when the author supplied specs, so an
+        # ordinary skill carries no key at all and a reader can distinguish "not
+        # a procedure" from "a procedure with zero steps".
+        if req.step_specs:
+            payload["step_specs"] = [s.model_dump() for s in req.step_specs]
         await vector._client.upsert(
             collection_name=settings.QDRANT_COLLECTION,
             points=[PointStruct(id=skill_id, vector=embedding, payload=payload)],
@@ -182,6 +187,7 @@ def create_skills_router(
             namespace=payload["namespace"],
             created_at=now,
             source_type=payload["source_type"],
+            step_specs=payload.get("step_specs"),
         )
 
     @router.patch("/skills/{skill_id}", response_model=SkillResponse)
@@ -229,6 +235,12 @@ def create_skills_router(
                 updates["stale_reviewed_at"] = datetime.datetime.now(
                     datetime.timezone.utc
                 ).isoformat()
+        if req.step_specs is not None:
+            # NOT in SEMANTIC_PATCH_FIELDS: specs describe how to OBSERVE the
+            # steps, not what the skill means, so they must not trigger a
+            # re-embed — that would put an embedding-backend outage in the path
+            # of every spec edit, and the re-embed path fails loud by design.
+            updates["step_specs"] = [s.model_dump() for s in req.step_specs]
         if any(field in updates for field in SEMANTIC_PATCH_FIELDS):
             # The text changed, so the stored vector no longer describes it. Merge
             # onto the CURRENT payload rather than writing `updates` alone — an
@@ -354,6 +366,7 @@ def _point_to_response(point: Any) -> SkillResponse:
         stale_detected_at=p.get("stale_detected_at"),
         stale_reviewed_at=p.get("stale_reviewed_at"),
         last_recalled_at=p.get("last_recalled_at"),
+        step_specs=p.get("step_specs"),
     )
 
 
