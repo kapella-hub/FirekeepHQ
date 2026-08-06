@@ -59,6 +59,11 @@ class AgentGatewayService:
         prediction_redis=None,  # NEW — Redis for the prediction store (cross-process safe)
         fastpath_redis=None,  # optional: enables fastpath cache updates in record()
         policy_decision_redis=None,  # optional: enables audit recording of block/rethink decisions
+        # Living Procedures stage. OPTIONAL by construction: main.py builds the
+        # whole gateway inside one try/except, so a constructor that rejected an
+        # older call site would take out /agent/action/* entirely rather than
+        # just this feature.
+        procedure_observer=None,
     ):
         self.policy_engine = policy_engine
         self.recent_failure_check = recent_failure_check
@@ -69,6 +74,7 @@ class AgentGatewayService:
         self.prediction_redis = prediction_redis
         self._fastpath_redis = fastpath_redis
         self._policy_decision_redis = policy_decision_redis
+        self._procedure_observer = procedure_observer
 
     async def decide(self, req: ActionBeforeRequest) -> ActionBeforeResponse:
         action_id = f"act_{uuid.uuid4().hex[:12]}"
@@ -104,6 +110,12 @@ class AgentGatewayService:
         advisories: list[Advisory] = []
         for reason in policy_decision.reasons:
             advisories.append(self._reason_to_advisory(reason))
+
+        # Living Procedures: recognise the work, record it, and advise on a
+        # load-bearing step left undone. Advisory only, and its own try/except
+        # inside observe() — it can never change the decision.
+        if self._procedure_observer is not None:
+            advisories.extend(await self._procedure_observer.observe(req))
 
         # Predict-incapable adapter mitigation: never rethink on prediction_required alone.
         # Advisory is kept for telemetry; decision is softened to allow.

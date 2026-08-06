@@ -22,6 +22,11 @@ AdvisoryCode = Literal[
     "path_deny",
     "session_health",
     "file_risk",
+    # Living Procedures. AdvisoryCode is a CLOSED Literal, so constructing an
+    # Advisory with an unlisted code raises inside decide() — which is not
+    # wrapped at that site, 500s the before-call, and makes the client fail open,
+    # silently disabling the whole gate.
+    "procedure_step_missing",
 ]
 
 

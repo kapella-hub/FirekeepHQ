@@ -173,6 +173,17 @@ def create_skills_router(
             collection_name=settings.QDRANT_COLLECTION,
             points=[PointStruct(id=skill_id, vector=embedding, payload=payload)],
         )
+        # Keep the pre-edit matcher index fresh. Best-effort: a rebuild failure
+        # must not fail the write, and the nightly pass rebuilds unconditionally.
+        if req.step_specs is not None:
+            try:
+                from app.procedures import store as _proc_store
+
+                _r = getattr(request.app.state, "redis_client", None)
+                if _r is not None:
+                    await _proc_store.rebuild_index(vector, _r, settings)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("procedure index rebuild skipped: %s", exc)
         return SkillResponse(
             id=skill_id,
             trigger=payload["trigger"],
@@ -194,6 +205,7 @@ def create_skills_router(
     async def patch_skill(
         skill_id: str,
         req: SkillPatchRequest,
+        request: Request,
         vector: VectorClient = Depends(get_vector),
     ):
         settings = settings_fn()
@@ -273,6 +285,18 @@ def create_skills_router(
                 payload=updates,
                 points=[skill_id],
             )
+        # Keep the pre-edit matcher index fresh. `is not None` rather than truthy:
+        # a PATCH that CLEARS the spec list must evict those steps from the index,
+        # or the pre-edit path keeps matching steps the author just deleted.
+        if req.step_specs is not None:
+            try:
+                from app.procedures import store as _proc_store
+
+                _r = getattr(request.app.state, "redis_client", None)
+                if _r is not None:
+                    await _proc_store.rebuild_index(vector, _r, settings)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("procedure index rebuild skipped: %s", exc)
         # Re-fetch updated point
         updated = await vector._client.retrieve(
             collection_name=settings.QDRANT_COLLECTION,

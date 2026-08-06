@@ -522,6 +522,17 @@ def _register_feature_routers(app: FastAPI) -> None:
 
         _rethink_counter = RethinkCounter(_get_rethink_redis())
 
+        # Living Procedures pre-edit stage. Reads app.state.redis_client through
+        # a closure rather than capturing it, so a client replaced later in the
+        # lifespan is picked up; it holds no vector client at all (I5 — the
+        # pre-edit path performs no Qdrant call and no embed).
+        from app.procedures.observe import ProcedureObserver
+
+        _procedure_observer = ProcedureObserver(
+            get_redis=lambda: getattr(app.state, "redis_client", None),
+            settings_fn=get_settings,
+        )
+
         # policy_engine is constructed in the block above and stored on app.state.
         # We reference it via app.state so the gateway always gets the live instance.
         _gateway_service = AgentGatewayService(
@@ -534,6 +545,7 @@ def _register_feature_routers(app: FastAPI) -> None:
             prediction_redis=_get_rethink_redis(),  # Redis-backed prediction store (cross-process safe)
             fastpath_redis=_fastpath_redis_client,
             policy_decision_redis=app.state.redis_client,  # audit log of block/rethink decisions
+            procedure_observer=_procedure_observer,
         )
 
         # Override module-level DI hook so router resolves to real service.
