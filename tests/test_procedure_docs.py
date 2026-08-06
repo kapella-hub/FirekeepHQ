@@ -80,7 +80,7 @@ def test_the_root_guide_documents_each_setting_with_the_code_default(
         )
 
 
-@pytest.mark.parametrize("invariant", ["I1", "I2", "I3", "I4", "I5", "I6"])
+@pytest.mark.parametrize("invariant", ["I1", "I2", "I3", "I4", "I5", "I6", "I7"])
 def test_each_invariant_is_named_in_the_section(invariant: str) -> None:
     """The spec's §5 invariants are the load-bearing part: each exists because
     the naive version is provably wrong, so a reader who does not meet them will

@@ -5015,7 +5015,19 @@ function procRunLine(data) {
             bits.push((run.verdict_ready_steps > 0)
                 ? 'efficacy verdicts are being offered'
                 : 'the efficacy gate is open but no step yet has enough scored'
-                  + ' executions in both the observed and skipped buckets');
+                  + ' executions in both the observed and skipped buckets, with a'
+                  + ' mix of outcomes to compare');
+        }
+        // The stale sweep DECLINED. A skill scan that succeeds and returns
+        // EMPTY -- wrong QDRANT_COLLECTION, a collection restored empty, a
+        // payload index mid-rebuild -- is not evidence that every procedure was
+        // deleted, so the pass leaves the derived state standing. Surfaced
+        // because "0 orphans cleared" is what a healthy pass and a declined one
+        // both look like from outside, and the cause is an operator's to fix.
+        if (run.orphan_sweep && run.orphan_sweep.indexOf('declined') === 0) {
+            bits.push('stale cleanup declined (' + run.orphan_sweep
+                      + '): the skill scan returned nothing, which is not'
+                      + ' evidence that these procedures were deleted');
         }
     }
     var dropped = (data && data.unjoinable_edits) || 0;

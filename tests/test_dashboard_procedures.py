@@ -380,6 +380,31 @@ class TestTheClosedTierBStateReachesAHuman:
         html = _render(body, {"sk1": SKILL})
         assert "no step yet has enough scored" in html
 
+    def test_a_declined_stale_sweep_reaches_the_operator(self):
+        """A skill scan that succeeds and returns EMPTY — wrong
+        QDRANT_COLLECTION, a collection restored empty, a payload index
+        mid-rebuild — is not evidence that every procedure was deleted, so the
+        pass leaves the derived state standing rather than clearing it. The
+        decline has to be visible: `orphans_cleared: 0` is what a healthy pass
+        and a declined one both look like, and only an operator can fix the
+        cause."""
+        body = dict(_body([ROW]), run={
+            "last_run": "2026-08-06T02:00:00+00:00", "health": "ok",
+            "tier_b": "open", "verdict_ready_steps": 1,
+            "orphans_cleared": 0, "orphan_sweep": "declined: vacuous scan",
+        })
+        html = _render(body, {"sk1": SKILL})
+        assert "stale cleanup declined" in html
+        assert "vacuous scan" in html
+
+    def test_a_healthy_sweep_says_nothing_about_itself(self):
+        body = dict(_body([ROW]), run={
+            "last_run": "2026-08-06T02:00:00+00:00", "health": "ok",
+            "tier_b": "open", "verdict_ready_steps": 1,
+            "orphans_cleared": 2, "orphan_sweep": "ok",
+        })
+        assert "stale cleanup declined" not in _render(body, {"sk1": SKILL})
+
     def test_an_open_gate_with_a_decidable_step_reads_plainly(self):
         body = dict(_body([ROW]), run={
             "last_run": "2026-08-06T02:00:00+00:00", "health": "ok",

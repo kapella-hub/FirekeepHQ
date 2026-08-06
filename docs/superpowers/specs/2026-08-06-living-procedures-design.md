@@ -148,6 +148,21 @@ about it, and there is no silently-discarded `(None, skill_id)` key.
 If `req.session_id` is empty or `"unknown"`, no execution is opened — an execution that
 cannot be joined to an outcome is not evidence. This is counted and surfaced, not hidden.
 
+**The stage is split in two, and the write happens only after the decision settles on
+`allow`.** `decide()` is not finished deciding when this stage runs: `PathDenyRule` can
+already have blocked, and the rethink-limit escalation turns a rethink into a block
+*afterwards*. Recording there wrote edits that never happened — inflating Tier A frequency
+with work that did not occur and, worse, suppressing the warn for that step for the rest of
+the execution, because the next call reads `observed` as the earlier-step evidence; on a
+rethink the agent resubmits and it double-counted the same edit. `ProcedureObserver.plan()`
+does the matching and builds the advisories **in place**, so the advisory keeps its position
+ahead of any `rethink_limit` advisory the escalation adds; `PendingObservation.commit()`
+writes and is called only on `allow`, and `.abort()` releases the warn latches claimed while
+building the advisories (holding them would spend this execution's one warn on an edit the
+agent is about to resubmit). The unjoinable counter is deferred the same way: an edit that
+never happened is not recognised work. `observe()` remains as `plan()`-then-`commit()` for a
+caller that already knows the action is going ahead. **Invariant I7** (§5).
+
 ### Stage 3 — Observe
 
 The observation write is **live**, during the session, not reconstructed at pass time. This
@@ -230,7 +245,14 @@ gate below is satisfied.**
    trigger="manual")`. This is not defensive padding: the evals router's own docstring
    records a live incident where all 19 stored evals were `trigger="manual"` and 12 days
    stale against 54 completed sessions, so a pass that merely *reads* evals would have
-   almost no sample.
+   almost no sample. **Bridge status is part of resolving it**, fetched once per pass
+   through `owm._fetch_bridge_statuses` (reused, not reimplemented — it already carries the
+   internal key, the route's 200-session clamp and the degrade-to-empty contract) and passed
+   into `owm.session_success`. F1 names `abandoned` as one of only two failure signals this
+   system actually produces, so hardcoding `bridge_status=None` here discarded the signal
+   most likely to legitimately open this pass's own gate — and made its
+   "uniform outcome signal" verdict partly self-inflicted. Bridge unreachable degrades to
+   eval-only outcomes and never fails the pass.
 2. **Apply I4.** Drop the execution from Tier B if the session's timeline carries no
    outcome-bearing event, or if `owm.session_success` returns `None`. It still counts in
    Tier A.
@@ -240,7 +262,9 @@ gate below is satisfied.**
 4. **Fairness, borrowed from OWM verbatim:** one session counts once per step; one
    `agent_id` contributes at most `PROCEDURE_AGENT_CAP` observations per step.
 5. **Score.** `compute_efficacy` (imported from `app.owm`) over `(skipped, outcome)` and
-   `(observed, outcome)`, gated at `n >= PROCEDURE_MIN_EXECUTIONS`.
+   `(observed, outcome)`, gated at `n >= PROCEDURE_MIN_EXECUTIONS` **in each bucket, and on
+   that step's own scored outcomes carrying both classes** — see the discrimination note
+   below.
 6. **Propose.** Write proposals to Redis. Never mutate the skill.
 
 Three proposal kinds:
@@ -251,9 +275,30 @@ Three proposal kinds:
 | `load_bearing` | `efficacy(skipped) < efficacy(observed) - PROCEDURE_EFFICACY_DELTA` at `n >= PROCEDURE_MIN_EXECUTIONS`, and the spec is not already `load_bearing` | set `load_bearing=true` (turns on the warn) |
 | `spec_drift` | a spec's `text` no longer appears in the skill's `content` | recompile specs — the body was edited without them |
 
+**The discrimination check has to hold where the comparison is made — per step.** The
+pass-level `tier_b` string sums `outcome_success`/`outcome_failure` across every execution of
+every skill, so **one failing session anywhere in the deployment flipped it to `open`**, and
+the comparison it then authorised is per step. Applied to a step whose own scored buckets are
+uniformly successful, `compute_efficacy` returns the *identical* Beta-prior value for both,
+`eff_skip >= eff_obs - delta` holds exactly, and a `dead_step` ("remove it?") is emitted on a
+signal that separated nothing — F1 consequence 2, one level down, and the same defect class
+the round-1 review caught at the pass level. A step yields no verdict unless its **own** scored
+outcomes carry both classes (all-failure is refused for the mirror reason: every step of a
+procedure that only ever ran in failing sessions would read as load-bearing). `tier_b` remains
+in the run record for the operator — it is a true statement about the deployment — but it is
+**a report, not an authorisation**, and `verdict_ready_steps` counts every gate that actually
+authorises a verdict, discrimination included.
+
 Like OWM's stale-reset sweep (`owm.py:181-210`), a proposal with no supporting evidence in
 the window is **deleted**, not left standing. Verdicts decay back to neutral; they do not
-ratchet.
+ratchet. **The orphan sweep that implements that decay declines on a vacuous scan**: it was
+skipped only when the skill scan *raised*, but a scan can succeed and return **empty** — a
+`QDRANT_COLLECTION` pointing at the wrong name, a collection restored empty, a payload index
+mid-rebuild — and the sweep then cleared every previously-written skill's stats and proposals.
+An empty scan is not evidence of deletion, so the sweep runs only when the scan is both
+non-raising and non-vacuous relative to what the store already held; the decline is logged at
+warning level and reported as `orphan_sweep` in the run record, because "0 orphans cleared" is
+what a healthy pass and a declined one both look like from outside.
 
 ## 5. Invariants
 
@@ -332,13 +377,37 @@ stands on the author's declaration, not on statistics. The statistics only ever 
 sentence to the warn when Tier B has earned one. That is what keeps the feature useful on
 day one of data instead of waiting for a signal the system does not currently produce.
 
-**I5 — Nothing on the pre-edit path may touch Qdrant or embed.** One Redis GET, memoised
-in-process for 30s, then `fnmatch` in memory. *Because* rules and gateway steps run
-sequentially on every customer Edit/Write, and a slow gate is a silently skipped gate.
+**I5 — Nothing on the pre-edit path may touch Qdrant or embed.** *Because* rules and gateway
+steps run sequentially on every customer Edit/Write, and a slow gate is a silently skipped
+gate. The Qdrant half is absolute: `ProcedureObserver` holds no vector client at all, asserted
+against its constructor signature.
+
+**The Redis half was overstated and is corrected here.** This invariant used to read "one
+Redis GET, memoised in-process for 30s, then `fnmatch` in memory", and that is true only of
+the path that does **not** match — which is every edit on a deployment with no specs, and most
+edits on one that has them. A **match** costs, per matched index entry:
+`HGETALL` (read the execution) → `HGETALL` (again, inside `record_observation`) → `HSET`
+(+`SADD` on a first observation) → `EXPIRE` → and, when an earlier load-bearing step is
+missing, `GET` (step stats) + `SET NX` (the warn latch) — five to seven round trips, not one,
+and they are on the blocking path. Nothing measured it because nothing counted them; stating
+the real number is the point of an invariant. Reducing it (a Lua script, or a pipeline) is a
+round-2 change, not a claim to make in advance.
+
+`record_observation` is also **`HGETALL` → `json.loads` → mutate → `HSET` with no `WATCH` and
+no Lua**, so two concurrent matched edits in one session can lose one another's update. It is
+a bounded loss (one receipt, and `observed_counts` is written from the same lost copy) on a
+path already documented as machine-global per session identity (H5), and it is unfixed.
 
 **I6 — The feature can never block.** Advisory only, in its own `try/except`, on a path that
 already fails open. There is no severity that escalates. *Because* an agent authoring a bad
 spec in passing must not be able to brick edits team-wide.
+
+**I7 — An observation is a claim that the edit HAPPENED.** The write is committed only once
+`decide()` has settled on `allow`; a `block` or a `rethink` records nothing and gives back any
+warn latch claimed while building the advisory. *Because* the stage runs mid-`decide()`, where
+`PathDenyRule` may already have blocked and the rethink-limit escalation can still block
+afterwards — so the corpus this entire feature rests on was counting edits that never
+occurred, and each one suppressed that step's warn for the rest of the execution.
 
 ## 6. Honest limits
 
@@ -370,6 +439,50 @@ compile guidance says so.
 **H5 — One machine-global caveat inherited unchanged.** Two concurrent sessions under the
 same identity already share a session stash (documented in `CLAUDE.md`). Executions key on
 `session_id`, so they inherit exactly that behaviour — no better, no worse.
+
+**H6 — The WARN path has no tenancy boundary. On a multi-workspace deployment a step's text
+can reach an advisory in another workspace.** The two read surfaces (`GET /procedures`,
+`GET /procedures/{id}/executions`) are scoped to the caller's workspace from the verified
+principal, and that half is complete. The pre-edit path is not: `proc:index` is one
+machine-global key and `ActionBeforeRequest` carries no principal at all, so the matcher has
+nothing to scope on and scoping it means threading a principal through the gateway — a
+change to a shipped request model on the blocking edit path, which belongs in its own change
+with its own test sweep. What *is* done: each index entry and each coverage row now carries
+the `workspace_id` of the skill it came from, so the data a later fix needs is present. What
+leaks until then: an edit matching a glob authored in workspace B can produce an advisory
+quoting **B's step text and trigger** to a user in workspace A. Execution records are also
+keyed `proc:exec:{session}:{skill}` with no workspace component; they are scoped on read
+through the skill they belong to. **On the default single-workspace deployment — which is
+every deployment today, since `FIREKEEP_WORKSPACE_ID` is one env var — this is inert.**
+
+**H7 — I4 runs before Bridge `abandoned` is consulted.** `_resolve_outcome` checks for an
+outcome-bearing replay event first, so a session that Bridge calls `abandoned` but which
+carries no such event is still excluded. It is the correct reading of I4 as written and is
+rarely reachable in practice (an execution exists only because an edit happened, and the
+reconcile emit stamps an outcome), but it is a place where a knowable failure is dropped.
+
+**H8 — `DELETE /skills/{id}` triggers no index rebuild.** `create_skill` and `patch_skill`
+rebuild `proc:index` when specs are touched; the delete route does not, and the only other
+rebuild is the nightly pass. So for up to `PROCEDURE_SCHEDULE_HOURS` the pre-edit path keeps
+matching a deleted skill's globs — opening executions against it and warning about its steps.
+The rollup does not show it (rows come from the rebuilt coverage key), which makes the two
+surfaces disagree for that window.
+
+**H9 — The hardening pass mutates the evals and pattern stores as a side effect.**
+`_resolve_outcome` calls `compute_session_eval` on a cache miss, which **writes** the eval,
+its eval features and any extracted patterns. That is deliberate (§4 Stage 5, step 1 — a pass
+that only read evals would have almost no sample) but it is not free: it runs inside the
+`--pool=solo` worker, where one long task blocks every other periodic task. There is also no
+per-session memoisation, so a session holding N execution records (one per matching skill)
+fetches its timeline N times and recomputes against it N times.
+
+**H10 — Tier B is structurally unreachable on a single-developer deployment.**
+`PROCEDURE_AGENT_CAP` (5) is spent across **both** buckets while a verdict needs
+`PROCEDURE_MIN_EXECUTIONS` (5) scored executions in **each**, so no step can reach a verdict
+from fewer than two distinct `agent_id`s. The cap exists precisely so one identity cannot
+decide a team's procedure, so this is the intended trade — but it means a solo deployment sees
+`tier_b: open` and zero proposals forever. `verdict_ready_steps` in the run record is what
+makes that legible rather than mysterious.
 
 ## 7. Prerequisite fixes
 
@@ -440,6 +553,15 @@ accept path remains as ungated as it is today. That is deliberate — retrofitti
 gate onto `/skills` changes the auth posture of a shipped surface and belongs in its own
 change, with its own test sweep, not smuggled in here. The asymmetry is: this feature adds
 no new ungated route, and does not pretend the existing one is gated.
+
+**Tenancy, which is a different question from scope.** `memory:read` is held by every agent
+key in the deployment, so gating on it is a permission check, not a boundary: both reads
+returned every workspace's triggers, step text, session ids, agent ids and edited file paths.
+Both are now filtered to the caller's own `workspace_id`, taken from
+`auth.principal.request_principal` the way `/memory/*` and the skills write path already take
+it. A row carrying **no** recorded workspace belongs to the deployment's own — the same rule
+`workspace_migration.backfill_memories` applies to an unattributed Qdrant point, so the index
+and the store cannot disagree about who owns one. The warn path is **not** scoped; see H6.
 
 **MCP:** `skill_add_step_specs(skill_id, step_specs)` — so an agent can compile specs for an
 existing skill without a PATCH tool. Round-1 answer to the cold start.
