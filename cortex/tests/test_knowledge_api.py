@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pytest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -87,10 +88,16 @@ def test_get_sources_includes_ingest_status(client, mock_vector):
         return ([], None)  # draft counts not under test here
     mock_vector._client.scroll = AsyncMock(side_effect=_scroll)
 
+    # RELATIVE, not a fixed date. This test is about STATUS PLUMBING, and a
+    # hardcoded stamp silently became a time bomb: once it aged past the
+    # drafts-missing grace window the endpoint correctly stopped saying
+    # "classified" and the test failed for a reason it was never about.
+    recent = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+
     async def _status(name, redis_client):
         if name == "Runbook":
             return {"status": "classified", "disposition": "procedural",
-                    "skills_queued": 2, "note": "", "updated_at": "2026-07-01T00:00:01+00:00"}
+                    "skills_queued": 2, "note": "", "updated_at": recent}
         return None
 
     with (
@@ -104,9 +111,47 @@ def test_get_sources_includes_ingest_status(client, mock_vector):
     by_name = {s["name"]: s for s in resp.json()["sources"]}
     assert by_name["Runbook"]["status"] == "classified"
     assert by_name["Runbook"]["disposition"] == "procedural"
-    assert by_name["Runbook"]["updated_at"] == "2026-07-01T00:00:01+00:00"
+    assert by_name["Runbook"]["updated_at"] == recent
     assert by_name["Overview"]["status"] == "unknown"
     assert by_name["Overview"]["updated_at"] == ""
+
+
+def test_get_sources_reports_a_long_stale_queued_source_as_drafts_missing(client, mock_vector):
+    """End-to-end wiring for the derived verdict, including the grace window.
+
+    The pure function is covered in test_docs_to_skills_works.py; this asserts
+    the ENDPOINT actually threads `_draft_grace_seconds(settings)` through, which
+    a unit test of `_effective_status` cannot see.
+    """
+    corpus_sources = [
+        {"name": "Runbook", "source_type": "wiki", "chunks": 5,
+         "last_ingested": "2026-07-01T00:00:00+00:00"},
+    ]
+
+    async def _scroll(collection_name, scroll_filter, limit, with_payload, with_vectors):
+        return ([], None)  # no draft points landed — that is the whole point
+    mock_vector._client.scroll = AsyncMock(side_effect=_scroll)
+
+    stale = (datetime.now(timezone.utc) - timedelta(days=25)).isoformat()
+
+    async def _status(name, redis_client):
+        # No skills_failed key at all — a record written before per-draft
+        # outcomes were counted. This is the live 2026-07-12 shape.
+        return {"status": "classified", "disposition": "procedural",
+                "skills_queued": 1, "note": "", "updated_at": stale}
+
+    with (
+        patch("app.knowledge.api.corpus_api") as mock_corpus_api,
+        patch("app.knowledge.api.get_ingest_status", new=AsyncMock(side_effect=_status)),
+    ):
+        mock_corpus_api.get_corpus_sources = AsyncMock(return_value=corpus_sources)
+        resp = client.get("/knowledge/sources")
+
+    assert resp.status_code == 200
+    row = resp.json()["sources"][0]
+    assert row["status"] == "drafts_missing"
+    # The stored classify status is never destroyed — classification DID succeed.
+    assert row["classify_status"] == "classified"
 
 
 def test_get_sources_503_when_corpus_not_initialized(client):

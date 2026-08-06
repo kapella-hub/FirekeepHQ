@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime
+import json
 import logging
 import uuid
 from typing import Any
@@ -90,6 +91,174 @@ PROCEDURE TITLE: {title}
 DOCUMENT CONTENT:
 {doc_content}"""
 
+# ---------------------------------------------------------------------------
+# Structured outputs — why a skill card is drafted as JSON and rendered here
+# ---------------------------------------------------------------------------
+#
+# The two prompts ABOVE ask for a Markdown card in free-form text and are kept
+# only as the last rung of the fallback ladder (see `_chat`). They are not what
+# is sent to a backend that accepts a schema, because on the reference
+# deployment they never produced a card at all.
+#
+# MEASURED 2026-08-06, live on the VPS (ollama 0.32.4, qwen3:4b, native
+# `/api/chat`, `think:false`, the real `_DOC_LLM_PROMPT` over the real
+# "Runbook: Restart stuck Celery worker" corpus document):
+#
+#   free-form, num_predict=800  -> done_reason="length", eval_count=800,
+#                                  3512 chars, 143.82s, NO `---` header,
+#                                  NO `## Steps`, tail mid-sentence
+#                                  ("...But the problem doesn't specify.")
+#   free-form + `/no_think`     -> done_reason="length", eval_count=800,
+#                                  3393 chars, 116.63s, still no card, head
+#                                  "We are given a specific procedure title:"
+#   SCHEMA, num_predict=800     -> done_reason="stop", 263-317 output tokens,
+#                                  parsed, all 8 fields, 33.69-54.54s
+#                                  (5 runs: small doc x3, larger doc x2)
+#
+# `think:false` does NOT stop qwen3:4b deliberating on this ollama build — it
+# moves the deliberation OUT of the `thinking` key and INTO `content` (one probe
+# returned a literal `</think>` inside `content`). So the token budget was being
+# spent on reasoning before the card began, and the card never began. That is
+# the whole of the "Docs->Skills produces zero drafts" failure, and it is also
+# where the live review queue's `trigger: "Synthesized skill"` + raw-deliberation
+# body came from: the deliberation IS the completion.
+#
+# Raising the cap cannot fix it on this deployment. Generation measured ~5.6
+# tok/s, so `SKILL_SYNTH_TIMEOUT_SECONDS=300` buys ~1680 tokens; a run long
+# enough to deliberate AND write a card would hit the clock instead of the cap
+# and fail just as completely, only slower. A grammar removes the deliberation
+# rather than budgeting for it — the same result LLM-endpoint phase 3 measured
+# for the decision board (adherence 0 -> 100%, latency no worse, because a
+# constrained decode stops emitting wasted tokens).
+#
+# `SKILL_SYNTH_MAX_TOKENS=800` is therefore LEFT AT 800: under the schema the
+# worst measured run used 317 of it. It is now a real safety bound instead of
+# the thing that broke the feature.
+_CARD_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "trigger": {"type": "string"},
+        "symptoms": {"type": "string"},
+        "domain": {"type": "string"},
+        "verified_on": {"type": "string"},
+        "whats_happening": {"type": "string"},
+        "steps": {"type": "array", "items": {"type": "string"}},
+        "gotchas": {"type": "array", "items": {"type": "string"}},
+        "example": {"type": "string"},
+    },
+    "required": [
+        "trigger", "symptoms", "domain", "verified_on",
+        "whats_happening", "steps", "gotchas", "example",
+    ],
+}
+
+_FIELD_GUIDE = """\
+Field meanings:
+- trigger: one sentence — what situation activates this skill
+- symptoms: observable signals (error messages, failing patterns)
+- domain: a single lowercase word, e.g. neo4j, docker, qdrant, python, api-auth
+- verified_on: project/YYYY-MM
+- whats_happening: the root cause in 1-3 sentences
+- steps: ordered actions, one per array element, no numbering
+- gotchas: things that look like the fix but aren't, one per array element
+- example: a concrete command or snippet that worked"""
+
+_DOC_JSON_PROMPT = """\
+You are a technical knowledge distiller. From the following document, extract the \
+procedure titled "{title}" and return a skill card as JSON.
+
+""" + _FIELD_GUIDE + """
+
+SOURCE DOCUMENT: {source_name}
+PROCEDURE TITLE: {title}
+DOCUMENT CONTENT:
+{doc_content}"""
+
+_SESSION_JSON_PROMPT = """\
+You are a technical knowledge distiller. Given a session's goal, shadow notes, and \
+outcome, return a reusable skill card as JSON.
+
+""" + _FIELD_GUIDE + """
+
+SESSION GOAL: {goal}
+SHADOW NOTES: {shadow_text}
+OUTCOME: {outcome}"""
+
+
+def _render_card(raw: str) -> str:
+    """Turn a schema-shaped JSON completion into skill-card text.
+
+    Anything that is not a JSON object carrying at least one card field is
+    returned VERBATIM, so the free-form path (`parse_skill_content`) still sees
+    exactly what it saw before. That is the fallback for a backend whose
+    `json_schema` rung `llm.chat` had to drop, and it is why adding the schema
+    cannot regress a deployment where the old prompt happened to work.
+    """
+    text = raw.strip()
+    if not text.startswith("{"):
+        return raw
+    try:
+        payload = json.loads(text)
+    except (ValueError, TypeError):
+        return raw
+    if not isinstance(payload, dict):
+        return raw
+    if not any(k in payload for k in _CARD_SCHEMA["properties"]):
+        return raw
+    card = card_from_payload(payload)
+    return build_skill_content(
+        trigger=card["trigger"], symptoms=card["symptoms"],
+        domain=card["domain"], verified_on=card["verified_on"],
+        body=card["body"],
+    )
+
+
+def _bullets(values: Any, marker: str) -> str:
+    """Render a schema array as Markdown lines; tolerate a bare string."""
+    if isinstance(values, str):
+        items = [v.strip() for v in values.splitlines() if v.strip()]
+    elif isinstance(values, (list, tuple)):
+        items = [str(v).strip() for v in values if str(v).strip()]
+    else:
+        items = []
+    if marker == "1.":
+        return "\n".join(f"{i}. {v}" for i, v in enumerate(items, 1))
+    return "\n".join(f"- {v}" for v in items)
+
+
+def card_from_payload(payload: dict[str, Any]) -> dict[str, str]:
+    """Render a schema-shaped card payload into the parsed-card dict.
+
+    The STORED artifact is unchanged — `build_skill_content` still writes the
+    same `trigger:/symptoms:/domain:/verified_on:` header plus a Markdown body,
+    and `GET /skills` still serves exactly that. The grammar lives on the wire,
+    not in the store (the `dreams/profile.py` precedent).
+
+    Section headings are emitted verbatim because downstream code reads them:
+    `card_defect` requires `## Steps`, and a human reviewing the draft queue is
+    reading the same shape a hand-authored skill has.
+    """
+    body_parts: list[str] = []
+    whats = str(payload.get("whats_happening") or "").strip()
+    if whats:
+        body_parts.append(f"## What's happening\n{whats}")
+    steps = _bullets(payload.get("steps"), "1.")
+    if steps:
+        body_parts.append(f"## Steps\n{steps}")
+    gotchas = _bullets(payload.get("gotchas"), "-")
+    if gotchas:
+        body_parts.append(f"## Gotchas\n{gotchas}")
+    example = str(payload.get("example") or "").strip()
+    if example:
+        body_parts.append(f"## Example\n{example}")
+    return {
+        "trigger": str(payload.get("trigger") or "").strip(),
+        "symptoms": str(payload.get("symptoms") or "").strip(),
+        "domain": str(payload.get("domain") or "").strip(),
+        "verified_on": str(payload.get("verified_on") or "").strip(),
+        "body": "\n\n".join(body_parts),
+    }
+
 
 def build_skill_content(
     trigger: str, symptoms: str, domain: str, verified_on: str, body: str
@@ -100,12 +269,65 @@ def build_skill_content(
     )
 
 
+FALLBACK_TRIGGER = "Synthesized skill"
+
+
+def card_defect(parsed: dict[str, str]) -> str | None:
+    """Name what is wrong with a parsed skill card, or None if it is usable.
+
+    WHY THIS EXISTS. The empty-guard the callers already had requires BOTH
+    trigger and body to be blank — and neither of the two ways a synthesis
+    actually fails produces a blank trigger:
+
+      * `parse_skill_content` substitutes the literal ``"Synthesized skill"``
+        whenever the model returned prose with no ``---`` header. On the live
+        deployment that stored the model's raw deliberation as a skill —
+        trigger ``"Synthesized skill"``, symptoms ``""``, domain ``""``, body
+        "We are given a specific procedure title... But the problem says
+        \\"single word\\"... I think the domain should be" — truncated
+        mid-sentence.
+      * A small model handed a template often ECHOES it. The sibling draft from
+        the same document stored ``trigger: "<one sentence — what situation
+        activates this skill>"`` and the matching placeholders for symptoms and
+        domain, verbatim, as real field values.
+
+    Both are truthy, so both sailed past the guard, and every status surface
+    reported success: the worker logged ``{status: drafted}``,
+    ``/knowledge/sources`` showed ``classified/procedural, skills_queued=2``,
+    and both sat in the human review queue looking legitimate. The code's own
+    stated intent — "A failed/empty synthesis must not become a placeholder
+    draft — that just pollutes the review queue" — is what this enforces.
+
+    A skill card is a CARD: a trigger a human wrote, and steps. Anything that
+    is neither is not a draft worth reviewing.
+    """
+    trigger = (parsed.get("trigger") or "").strip()
+    body = (parsed.get("body") or "").strip()
+
+    if not trigger and not body:
+        return "empty"
+    if trigger == FALLBACK_TRIGGER:
+        # No `---` header was parsed at all: the model returned prose, not a
+        # card, and the trigger is the parser's own placeholder.
+        return "no-card-header"
+    for field_name in ("trigger", "symptoms", "domain"):
+        value = (parsed.get(field_name) or "").strip()
+        if value.startswith("<") and value.endswith(">"):
+            return f"template-placeholder:{field_name}"
+    if "## Steps" not in body:
+        # A skill without steps is not a playbook. The prompt asks for the
+        # section by name, so its absence means the model did not follow the
+        # format rather than that this procedure happens to have no steps.
+        return "no-steps"
+    return None
+
+
 def parse_skill_content(raw: str) -> dict[str, str]:
     """Parse hybrid skill content into header fields + body."""
     if "---" not in raw:
         # Fallback: treat entire text as body
         return {
-            "trigger": "Synthesized skill",
+            "trigger": FALLBACK_TRIGGER,
             "symptoms": "",
             "domain": "",
             "verified_on": "",
@@ -120,7 +342,7 @@ def parse_skill_content(raw: str) -> dict[str, str]:
     for field in ("trigger", "symptoms", "domain", "verified_on"):
         result.setdefault(field, "")
     if not result["trigger"]:
-        result["trigger"] = "Synthesized skill"
+        result["trigger"] = FALLBACK_TRIGGER
     return result
 
 
@@ -152,12 +374,14 @@ class SkillSynthesizer:
             await self._mark_evaluated(session_id)
             return {"status": "synthesis_failed", "session_id": session_id}
 
-        trigger = (parsed.get("trigger") or "").strip()
-        body = (parsed.get("body") or "").strip()
-        if not trigger and not body:
-            logger.warning("Skill synthesis produced empty content for session %s — not stored", session_id)
+        defect = card_defect(parsed)
+        if defect:
+            logger.warning(
+                "Skill synthesis produced an unusable card for session %s (%s) — not stored",
+                session_id, defect,
+            )
             await self._mark_evaluated(session_id)
-            return {"status": "empty", "session_id": session_id}
+            return {"status": "empty", "session_id": session_id, "defect": defect}
 
         full_content = build_skill_content(
             trigger=parsed.get("trigger", ""),
@@ -192,6 +416,8 @@ class SkillSynthesizer:
         doc_content: str,
         project: str | None = None,
         namespace: str = "default",
+        workspace_id: str | None = None,
+        member_id: str | None = None,
     ) -> dict[str, Any]:
         """Draft a skill from a single procedure extracted out of an ingested document.
 
@@ -215,12 +441,18 @@ class SkillSynthesizer:
                     "procedure_title": procedure_title}
 
         # A failed/empty synthesis must not become a 'Synthesis failed' placeholder
-        # draft — that just pollutes the review queue.
-        if not (parsed.get("trigger") or "").strip() and not (parsed.get("body") or "").strip():
-            logger.warning("Doc skill synthesis produced empty content for %s :: %s — not stored",
-                           source_name, procedure_title)
+        # draft — that just pollutes the review queue. `card_defect` is what makes
+        # that true for the two failures that actually happen (a headerless prose
+        # dump, and an echoed prompt template); the old blank-both test caught
+        # neither, because both produce a truthy trigger.
+        defect = card_defect(parsed)
+        if defect:
+            logger.warning(
+                "Doc skill synthesis produced an unusable card for %s :: %s (%s) — not stored",
+                source_name, procedure_title, defect,
+            )
             return {"status": "empty", "source_doc": source_name,
-                    "procedure_title": procedure_title}
+                    "procedure_title": procedure_title, "defect": defect}
 
         full_content = build_skill_content(
             trigger=parsed.get("trigger", ""),
@@ -248,6 +480,16 @@ class SkillSynthesizer:
             "procedure_title": procedure_title,
             "needs_rereview": False,
         }
+        # Tenancy. A skill point written with workspace_id=null is filtered out
+        # of every recall path (VectorClient.search applies workspace_id as a
+        # hard `must`), so it is not "awaiting review", it is unfindable —
+        # measured live: a probe skill scored 0.877 at rank 1 with no filter
+        # and vanished under the caller's real workspace. Emitted only when
+        # known so a re-draft cannot overwrite a migration backfill with null.
+        if workspace_id:
+            payload["workspace_id"] = workspace_id
+        if member_id:
+            payload["member_id"] = member_id
 
         skill_id = str(uuid.uuid5(SKILL_NS, f"{source_name}::{procedure_title}"))
 
@@ -308,14 +550,23 @@ class SkillSynthesizer:
     async def _chat(self, prompt: str, *, purpose: str) -> str:
         """One skill-card generation, via the shared endpoint helper.
 
-        `json_mode=False` — a skill card is header-plus-Markdown, not JSON;
-        `parse_skill_content` handles the text.
+        SCHEMA-CONSTRAINED. A skill card is still STORED as header-plus-Markdown
+        and `parse_skill_content` still handles the text — but it is REQUESTED as
+        JSON against `_CARD_SCHEMA` and rendered back to card text here, because
+        free-form prompting produced no card at all on the reference deployment.
+        The measurement, and why raising the token cap could not have fixed it,
+        is with `_CARD_SCHEMA` above.
 
-        `max_tokens` is NEW. Both synthesis calls previously sent no output
-        bound at all, so on a thinking model the reasoning and the card had to
-        fit inside one timeout with nothing capping the former. That is why this
-        path failed more often than the classifier: it had neither a grammar
-        forcing output nor a budget bounding reasoning.
+        A grammar is not a substitute for the guards below, it is what stops them
+        firing. `llm.chat`'s own ladder drops the schema and retries once against
+        a backend that rejects it (a schema implies `json_mode`, so the retry is
+        still JSON); if even that yields prose, `_render_card` passes the text
+        through untouched and the free-form parse path takes over exactly as
+        before. Every rung degrades to a previously-shipped behaviour.
+
+        `max_tokens` bounds output. Both synthesis calls previously sent no bound
+        at all, so on a thinking model the reasoning and the card had to fit
+        inside one timeout with nothing capping the former.
 
         Blank content RAISES rather than being returned. `parse_skill_content("")`
         yields the fallback dict whose trigger is the literal string
@@ -336,6 +587,8 @@ class SkillSynthesizer:
             # SKILL_SYNTH_TIMEOUT_SECONDS in config.py for the measurement.
             timeout=s.SKILL_SYNTH_TIMEOUT_SECONDS,
             max_tokens=getattr(s, "SKILL_SYNTH_MAX_TOKENS", 800),
+            json_schema=_CARD_SCHEMA,
+            json_schema_name="skill_card",
             purpose=purpose,
         )
         if not result.content.strip():
@@ -343,11 +596,33 @@ class SkillSynthesizer:
                 f"{purpose}: model returned empty content "
                 f"(endpoint={result.endpoint}, reasoning={len(result.reasoning)} chars)"
             )
-        return result.content
+        if result.truncated:
+            # Stopped at the token cap, not at the end of the answer. The card
+            # is half-written by construction — a live draft ended
+            # '...I think the domain should be'. Storing it puts a
+            # mid-sentence fragment in the human review queue wearing the same
+            # badge as a real skill; raising sends it down the callers'
+            # already-correct not-stored path.
+            #
+            # This guard is CORRECT and stays. It is also, since the schema
+            # landed, expected never to fire on the reference deployment: the
+            # worst of five live runs used 317 of the 800-token cap and stopped
+            # on `done_reason="stop"`. Before the schema it fired on 100% of
+            # drafts, which turned a right refusal into a disabled feature —
+            # refusing bad output is only defensible when good output is
+            # reachable.
+            raise ValueError(
+                f"{purpose}: model hit the {getattr(s, 'SKILL_SYNTH_MAX_TOKENS', 800)}-token "
+                f"cap and the card is truncated (endpoint={result.endpoint}, "
+                f"{len(result.content)} chars)"
+            )
+        return _render_card(result.content)
 
     async def _call_llm(self, goal: str, shadow_text: str, outcome: str) -> str:
         return await self._chat(
-            _LLM_PROMPT.format(goal=goal, shadow_text=shadow_text, outcome=outcome),
+            _SESSION_JSON_PROMPT.format(
+                goal=goal, shadow_text=shadow_text, outcome=outcome
+            ),
             purpose="skill synthesis (session)",
         )
 
@@ -355,7 +630,7 @@ class SkillSynthesizer:
         """Doc-mode LLM call: extract one named procedure out of a document's
         full text and draft it as a skill card."""
         return await self._chat(
-            _DOC_LLM_PROMPT.format(
+            _DOC_JSON_PROMPT.format(
                 source_name=source_name, title=title, doc_content=doc_content
             ),
             purpose="skill synthesis (document)",

@@ -71,9 +71,28 @@ _MISSING = object()
 
 
 def _field_matches(cond, payload: dict) -> bool:
-    """Evaluate a single Qdrant FieldCondition against a payload dict (same
-    approach as test_skill_api.py / test_briefing_sections_inprocess.py /
-    test_vector.py's filter-aware fakes)."""
+    """Evaluate one Qdrant condition against a payload dict (same approach as
+    test_skill_api.py / test_briefing_sections_inprocess.py / test_vector.py's
+    filter-aware fakes).
+
+    Nested ``Filter``s and ``IsEmptyCondition`` are handled because
+    ``VectorClient`` now builds both: ``namespace_condition`` expresses
+    "namespace == default OR the field is absent" as a nested should-filter
+    inside ``must``. A fake that only understood ``FieldCondition`` would raise
+    ``'Filter' object has no attribute 'key'`` and report a correct filter as a
+    broken one.
+    """
+    should = getattr(cond, "should", None)
+    if should:
+        return any(_field_matches(c, payload) for c in should)
+    nested_must = getattr(cond, "must", None)
+    if nested_must:
+        return all(_field_matches(c, payload) for c in nested_must)
+    is_empty = getattr(cond, "is_empty", None)
+    if is_empty is not None:
+        value = payload.get(is_empty.key, _MISSING)
+        return value is _MISSING or value is None or value == []
+
     value = payload.get(cond.key, _MISSING)
     match = cond.match
     if hasattr(match, "value"):

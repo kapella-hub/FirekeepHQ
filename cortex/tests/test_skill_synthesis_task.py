@@ -69,6 +69,11 @@ def test_draft_skill_from_doc_returns_synthesizer_result():
         doc_content="1. Do this. 2. Do that.",
         project="acme",
         namespace="default",
+        # Tenancy now travels with the draft. Writing a skill point with
+        # workspace_id=null put it outside memory_recall's hard workspace
+        # filter — stored, listed in the review queue, and matched by nothing.
+        workspace_id=None,
+        member_id=None,
     )
 
 

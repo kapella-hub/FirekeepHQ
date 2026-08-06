@@ -10,7 +10,7 @@ import redis.asyncio
 from app.config import get_settings
 from app.db.vector import VectorClient
 from app.knowledge.classifier import classify_document
-from app.knowledge.status import set_ingest_status
+from app.knowledge.status import record_draft_outcome, set_ingest_status
 from app.skills.reconcile import reconcile_source_skills
 from app.skills.scorer import compute_skill_score
 from app.skills.synthesizer import SkillSynthesizer
@@ -36,11 +36,22 @@ def draft_skill_from_doc(
     doc_content: str,
     project: str | None = None,
     namespace: str = "default",
+    workspace_id: str | None = None,
+    member_id: str | None = None,
 ) -> dict[str, Any]:
-    """Celery task: draft a skill from a single procedure extracted out of an ingested document."""
+    """Celery task: draft a skill from a single procedure extracted out of an ingested document.
+
+    ``workspace_id``/``member_id`` come from the ingesting principal via
+    ``ingest_knowledge_document`` -> ``classify_and_draft_from_doc``. A draft
+    written without them is stamped ``workspace_id=null`` and is unreachable
+    from every recall path, which is not "in the review queue", it is lost.
+    """
     try:
         return asyncio.run(
-            _run_doc_synthesis(source_name, procedure_title, doc_content, project, namespace)
+            _run_doc_synthesis(
+                source_name, procedure_title, doc_content, project, namespace,
+                workspace_id, member_id,
+            )
         )
     except Exception as e:
         logger.exception(
@@ -65,6 +76,8 @@ def classify_and_draft_from_doc(
     source_type: str,
     project: str | None = None,
     namespace: str = "default",
+    workspace_id: str | None = None,
+    member_id: str | None = None,
 ) -> dict[str, Any]:
     """Celery task: classify an ingested doc, then fan out per-procedure draft tasks.
 
@@ -73,7 +86,10 @@ def classify_and_draft_from_doc(
     (all redis work is inside _run_classify_and_draft's own client)."""
     try:
         return asyncio.run(
-            _run_classify_and_draft(source_name, content, source_type, project, namespace)
+            _run_classify_and_draft(
+                source_name, content, source_type, project, namespace,
+                workspace_id, member_id,
+            )
         )
     except Exception as e:
         logger.exception("Unhandled error in classify_and_draft_from_doc(%s)", source_name)
@@ -133,9 +149,19 @@ async def _run_doc_synthesis(
     doc_content: str,
     project: str | None,
     namespace: str,
+    workspace_id: str | None = None,
+    member_id: str | None = None,
 ) -> dict[str, Any]:
-    """Core doc-drafting logic — build synthesizer, run synthesize_from_document."""
+    """Core doc-drafting logic — build synthesizer, run synthesize_from_document.
+
+    The outcome is reported back to the source's ingest-status record. Without
+    that, `classify_and_draft_from_doc`'s `classified/skills_queued=N` was the
+    only thing `GET /knowledge/sources` ever saw, so N failed drafts and N
+    successful drafts were indistinguishable — see
+    `app/knowledge/status.py::record_draft_outcome`.
+    """
     settings = get_settings()
+    result: dict[str, Any]
     try:
         synth = SkillSynthesizer(settings)
         result = await synth.synthesize_from_document(
@@ -144,20 +170,49 @@ async def _run_doc_synthesis(
             doc_content=doc_content,
             project=project,
             namespace=namespace,
+            workspace_id=workspace_id,
+            member_id=member_id,
         )
         logger.info(
             "Skill drafted from document %s :: %s: %s",
             source_name, procedure_title, result.get("status", ""),
         )
-        return result
     except Exception as e:
         logger.exception("Doc skill drafting failed for %s :: %s", source_name, procedure_title)
-        return {
+        result = {
             "status": "draft_failed",
             "source_doc": source_name,
             "procedure_title": procedure_title,
             "error": str(e),
         }
+    await _record_draft_outcome(source_name, result)
+    return result
+
+
+async def _record_draft_outcome(source_name: str, result: dict[str, Any]) -> None:
+    """Count one draft against its source, on its own short-lived redis client.
+
+    Best-effort throughout: a bookkeeping failure must not turn a stored draft
+    into a reported failure, so every error is swallowed after logging.
+    """
+    settings = get_settings()
+    r = None
+    try:
+        r = redis.asyncio.from_url(settings.REDIS_URL, decode_responses=True)
+        # `rereview_flagged` counts as success: the procedure WAS drafted, and a
+        # human-approved skill already occupies its deterministic point id, so
+        # refusing to overwrite it is the designed outcome rather than a failure.
+        ok = result.get("status") in ("drafted", "rereview_flagged")
+        note = "" if ok else str(result.get("defect") or result.get("error") or result.get("status") or "")
+        await record_draft_outcome(source_name, ok=ok, redis_client=r, note=note)
+    except Exception:
+        logger.warning("Could not record draft outcome for %s", source_name, exc_info=True)
+    finally:
+        if r is not None:
+            try:
+                await r.aclose()
+            except Exception:
+                pass
 
 
 async def _run_classify_and_draft(
@@ -166,6 +221,8 @@ async def _run_classify_and_draft(
     source_type: str,
     project: str | None,
     namespace: str,
+    workspace_id: str | None = None,
+    member_id: str | None = None,
 ) -> dict[str, Any]:
     """Classify then enqueue per-title drafts, recording ingest status. Owns its
     own redis client (try/finally aclose), mirroring _run_pass."""
@@ -195,6 +252,7 @@ async def _run_classify_and_draft(
         for title in titles:
             draft_skill_from_doc.delay(
                 source_name, title, content, project=project, namespace=namespace,
+                workspace_id=workspace_id, member_id=member_id,
             )
         await set_ingest_status(
             source_name, "classified",
@@ -238,6 +296,14 @@ async def _run_url_ingest_impl(url: str, depth: int, max_pages: int) -> dict[str
 
     from app.knowledge.crawler import crawl
     from app.knowledge.ingest_core import ingest_knowledge_document
+    from auth.principal import deployment_owner_member_id, deployment_workspace_id
+
+    # A Celery task has no HTTP principal, so it stamps the DEPLOYMENT
+    # workspace explicitly rather than leaving it null. Null is not "unscoped"
+    # here — VectorClient.search filters workspace_id as a hard `must`, so a
+    # null-stamped page is ingested and then invisible to every recall.
+    workspace_id = deployment_workspace_id()
+    member_id = deployment_owner_member_id()
 
     settings = get_settings()
     r = redis.asyncio.from_url(settings.REDIS_URL, decode_responses=True)
@@ -259,6 +325,7 @@ async def _run_url_ingest_impl(url: str, depth: int, max_pages: int) -> dict[str
                 source_name = f"Web:{hostname}:{label}"
                 await ingest_knowledge_document(
                     page.markdown, source_name, "web", vector=vector, redis=r,
+                    workspace_id=workspace_id, member_id=member_id,
                 )
                 ingested += 1
             except Exception:

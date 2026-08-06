@@ -17,7 +17,13 @@ async def test_corpus_then_status_then_enqueue():
     mock_corpus.assert_awaited_once()
     mock_status.assert_awaited_once()
     assert mock_status.await_args.args[1] == "queued"
-    mock_task.delay.assert_called_once_with("Doc", "body", "wiki", project=None, namespace="default")
+    # workspace_id/member_id now ride along so the DRAFT SKILLS the classifier
+    # fans out are stamped with the ingesting principal's tenancy — a skill
+    # written with workspace_id=null is excluded from every recall path.
+    mock_task.delay.assert_called_once_with(
+        "Doc", "body", "wiki", project=None, namespace="default",
+        workspace_id=None, member_id=None,
+    )
 
 
 @pytest.mark.asyncio

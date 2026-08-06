@@ -50,6 +50,41 @@ async def set_ingest_status(
     await redis_client.expire(key, get_settings().KNOWLEDGE_STATUS_TTL_SECONDS)
 
 
+async def record_draft_outcome(
+    source_name: str, *, ok: bool, redis_client, note: str = ""
+) -> None:
+    """Count one finished ``draft_skill_from_doc`` against its source.
+
+    WHY. ``classify_and_draft_from_doc`` writes ``classified`` with
+    ``skills_queued=N`` and then fans out N independent Celery tasks whose
+    outcomes were never recorded anywhere. So ``GET /knowledge/sources``
+    reported ``status=classified, skills_queued=1`` for a source that had
+    produced zero drafts and could never produce one — measured on the live
+    deployment for "Runbook: Restart stuck Celery worker" (queued 1, drafted 0,
+    unchanged since 2026-07-12). "Enqueued" was being rendered as "succeeded".
+
+    HINCRBY rather than a rewrite because the N tasks run independently and a
+    read-modify-write would lose counts. The stored ``status`` is deliberately
+    NOT changed: classification really did succeed, and overwriting it would
+    lose that. The honest verdict is DERIVED at read time — see
+    ``app/knowledge/api.py::_effective_status``.
+    """
+    if redis_client is None:
+        return
+    key = f"{_KEY_PREFIX}{source_name}"
+    field = "skills_drafted" if ok else "skills_failed"
+    try:
+        await redis_client.hincrby(key, field, 1)
+        mapping = {"updated_at": datetime.now(timezone.utc).isoformat()}
+        if note:
+            mapping["last_draft_error" if not ok else "last_draft_note"] = note[:300]
+        await redis_client.hset(key, mapping=mapping)
+        await redis_client.expire(key, get_settings().KNOWLEDGE_STATUS_TTL_SECONDS)
+    except Exception:
+        # Bookkeeping must never fail a draft that otherwise succeeded.
+        logger.warning("Failed to record draft outcome for %s", source_name, exc_info=True)
+
+
 async def get_ingest_status(source_name: str, redis_client) -> dict | None:
     """Read the ingest-status hash for a source, or None if absent. Bytes-safe."""
     if redis_client is None:
@@ -58,10 +93,11 @@ async def get_ingest_status(source_name: str, redis_client) -> dict | None:
     if not raw:
         return None
     data = {_s(k): _s(v) for k, v in raw.items()}
-    try:
-        data["skills_queued"] = int(data.get("skills_queued", 0) or 0)
-    except (ValueError, TypeError):
-        data["skills_queued"] = 0
+    for counter in ("skills_queued", "skills_drafted", "skills_failed"):
+        try:
+            data[counter] = int(data.get(counter, 0) or 0)
+        except (ValueError, TypeError):
+            data[counter] = 0
     data.setdefault("status", "unknown")
     data.setdefault("disposition", "")
     data.setdefault("note", "")

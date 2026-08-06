@@ -4158,7 +4158,18 @@ function loadOps() {
         wList.innerHTML = '';
         var workers = data.workers || [];
         if (!workers.length) {
-            wList.appendChild(el('div', { style: { color: 'var(--text-dim)', fontSize: '13px' }, textContent: 'No workers online.' }));
+            // "No workers online" was a LIE whenever a --pool=solo worker was
+            // inside a task: one thread runs the task and answers control
+            // broadcasts, so a busy worker cannot reply to the inspect ping.
+            // Measured: 11 consecutive calls rendered this line while the
+            // worker log showed it processing and the celery queue climbed
+            // 1 -> 7 -> 14. The endpoint now reports which case it is.
+            var msg = data.probe === 'no reply'
+                ? 'No reply from the worker. With --pool=solo this is expected while it is executing a long task — check the queue depths below for movement before concluding it is down.'
+                : data.probe === 'error'
+                    ? 'Worker inspect failed: ' + (data.error || 'unknown error')
+                    : 'No workers online.';
+            wList.appendChild(el('div', { style: { color: 'var(--text-dim)', fontSize: '13px' }, textContent: msg }));
         } else {
             workers.forEach(function(w) {
                 var dot = el('span', { style: { display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%', background: 'var(--green)', marginRight: '8px' } });
@@ -4727,11 +4738,18 @@ if ($('vaultStoreForm')) $('vaultStoreForm').addEventListener('submit', function
 
 if ($('btnRefreshVault')) $('btnRefreshVault').addEventListener('click', loadVaultSecrets);
 
+/* >>> knowledgeStatusBadge — extracted and executed by
+   tests/test_dashboard_knowledge_badge.py. These sentinels are load-bearing:
+   the test runs THIS source under node, not a copy, because the whole class of
+   bug here is a badge that renders a confident verdict the data does not
+   support. `esc` and `relTime` are stubbed by the harness (the shipped `esc`
+   needs a DOM), so that file tests the status->badge DECISION, not escaping. */
 function knowledgeStatusBadge(s) {
     var st = s.status || 'unknown';
     var dispo = s.disposition || '';
     var queued = s.skills_queued != null ? s.skills_queued : 0;
     var drafts = s.draft_skill_count != null ? s.draft_skill_count : 0;
+    var failed = s.skills_failed != null ? s.skills_failed : 0;
     if (st === 'unknown') return '';
     if (st === 'queued' || st === 'classifying') {
         var stale = '';
@@ -4743,13 +4761,39 @@ function knowledgeStatusBadge(s) {
     }
     if (st === 'corpus_only') return '<span class="badge badge-blue" title="Ingested to the corpus and searchable via memory_recall. Classification/skill-drafting is deferred because no generation model is deployed; it runs automatically once one is.">Corpus-only (generation offline)</span>';
     if (st === 'failed') return '<span class="badge badge-red">Classification failed</span>';
+    // Classification succeeded, every draft it queued failed. Without this the
+    // row rendered "Drafting… (0/1)" indefinitely — the same "an intention is
+    // not a result" defect the endpoint had, one layer up. The reason comes
+    // from the last failing draft.
+    if (st === 'drafts_failed') {
+        var why = s.last_draft_error ? ' &mdash; ' + esc(s.last_draft_error) : '';
+        return '<span class="badge badge-red" title="The document classified, but every skill draft it queued failed. Nothing is in the review queue for this source.">'
+            + esc(failed) + ' draft(s) failed' + why + '</span>';
+    }
+    // Classification succeeded and queued drafts, but none ever landed and the
+    // record has not moved for well past the worst-case drafting time. Distinct
+    // from drafts_failed: no draft ever REPORTED failure (typically a record
+    // written before per-draft outcomes were counted), so we state absence, not
+    // failure. Amber, not red — the corpus content is still ingested and
+    // searchable; only the skill drafts are missing.
+    if (st === 'drafts_missing') {
+        return '<span class="badge badge-yellow" title="The document classified and queued ' + esc(queued)
+            + ' draft(s), but none reached the review queue and nothing has changed since. No draft reported a failure, so this is absence rather than observed failure — usually an ingest from before per-draft outcomes were recorded. Re-ingest to retry (it is idempotent).">'
+            + 'Drafts never landed (0/' + esc(queued) + ') &mdash; re-ingest</span>';
+    }
     if (st === 'classified') {
         if (dispo === 'reference' || queued === 0) return '<span class="badge">Reference &mdash; no skills</span>';
-        if (drafts < queued) return '<span class="badge badge-yellow">Drafting&hellip; (' + esc(drafts) + '/' + esc(queued) + ')</span>';
+        if (drafts < queued) {
+            var partial = failed > 0
+                ? '<span class="badge badge-yellow" title="Some drafts failed.">' + esc(drafts) + '/' + esc(queued) + ' drafted, ' + esc(failed) + ' failed</span>'
+                : '<span class="badge badge-yellow">Drafting&hellip; (' + esc(drafts) + '/' + esc(queued) + ')</span>';
+            return partial;
+        }
         return '<span class="badge badge-green">' + esc(drafts) + ' draft(s)</span>';
     }
     return esc(st);
 }
+/* <<< knowledgeStatusBadge */
 
 function loadKnowledgeSources() {
     var container = $('knowledgeSourcesList');

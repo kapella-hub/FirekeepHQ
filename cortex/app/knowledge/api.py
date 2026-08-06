@@ -36,8 +36,9 @@ Design notes:
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
@@ -86,6 +87,112 @@ class KnowledgeUrlIngestResponse(BaseModel):
     note: str | None = None
 
 
+#: Multiplier applied to worst-case drafting wall time to get the grace window
+#: after which "still in flight" stops being a credible explanation for a source
+#: that has produced no drafts. Worst case is
+#: ``KNOWLEDGE_MAX_PROCEDURES x SKILL_SYNTH_TIMEOUT_SECONDS`` = 10 x 300s = 50min
+#: on the solo worker; x24 is 20h, and the 24h floor below dominates at defaults.
+_DRAFT_GRACE_MULTIPLIER = 24
+_DRAFT_GRACE_FLOOR_SECONDS = 86_400.0
+
+
+def _draft_grace_seconds(settings) -> float:
+    """How long a queued-but-undrafted source may stay unexplained.
+
+    Derived rather than hardcoded so a deploy that raises
+    ``KNOWLEDGE_MAX_PROCEDURES`` or ``SKILL_SYNTH_TIMEOUT_SECONDS`` cannot make
+    this window too tight and start calling slow-but-healthy ingests missing.
+    """
+    try:
+        worst_case = max(1, int(settings.KNOWLEDGE_MAX_PROCEDURES)) * max(
+            1.0, float(settings.SKILL_SYNTH_TIMEOUT_SECONDS)
+        )
+    except Exception:
+        worst_case = 0.0
+    return max(_DRAFT_GRACE_FLOOR_SECONDS, worst_case * _DRAFT_GRACE_MULTIPLIER)
+
+
+def _age_seconds(rec: dict, now: datetime | None = None) -> float | None:
+    """Age of the record's ``updated_at``, or None if it cannot be read.
+
+    Never raises: an unparseable stamp must leave the conservative stored
+    status in place, not crash a listing endpoint.
+    """
+    raw = rec.get("updated_at")
+    if not raw:
+        return None
+    try:
+        stamp = datetime.fromisoformat(str(raw))
+    except (ValueError, TypeError):
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    ref = now or datetime.now(timezone.utc)
+    if ref.tzinfo is None:
+        ref = ref.replace(tzinfo=timezone.utc)
+    return (ref - stamp).total_seconds()
+
+
+def _effective_status(
+    rec: dict,
+    drafted: int,
+    failed: int,
+    queued: int,
+    draft_points: int,
+    *,
+    grace_seconds: float = _DRAFT_GRACE_FLOOR_SECONDS,
+    now: datetime | None = None,
+) -> str:
+    """What this source's ingest ACTUALLY produced, not what it was asked to do.
+
+    ``classify_and_draft_from_doc`` stores ``classified`` the moment it has
+    enqueued N ``draft_skill_from_doc`` tasks. Those tasks then reported their
+    outcome to nobody, so a source whose every draft failed was served as
+    ``{"status": "classified", "skills_queued": 1}`` indefinitely — measured
+    live on "Runbook: Restart stuck Celery worker": queued 1, drafted 0,
+    unchanged since 2026-07-12, while `GET /skills?status=draft` held nothing
+    from it. The endpoint was reporting an intention as a result.
+
+    Two derived verdicts, deliberately distinct because they rest on different
+    evidence and must not be conflated:
+
+    ``drafts_failed`` — POSITIVE evidence of failure. The classifier asked for
+    drafts, at least one draft REPORTED failure, none reported success, and
+    Qdrant holds no draft point for the source (the last clause means a source
+    drafted successfully by an earlier ingest is never relabelled by a later
+    failed one).
+
+    ``drafts_missing`` — evidence of ABSENCE, which is the only thing available
+    for a record written before ``record_draft_outcome`` existed. Such a record
+    has ``skills_failed`` unset, so it can never satisfy ``failed > 0`` and
+    would otherwise read as ``classified`` forever. Measured live: "Runbook:
+    Restart stuck Celery worker" still resolved to ``classified`` (queued 1,
+    drafted 0, no draft point) 25 days after its drafts died — the endpoint went
+    on reporting an intention as a result for exactly the source that proved the
+    bug. So when nothing was drafted, nothing landed in Qdrant, and the record
+    has not moved for ``grace_seconds`` (24h floor vs a ~50min worst case, see
+    ``_draft_grace_seconds``), we say so. We do NOT say ``drafts_failed``: no
+    failure was ever observed, and claiming one would be the same overreach in
+    the opposite direction.
+
+    Anything short of both keeps the stored classify status — an in-flight
+    ingest must not be reported as broken, and an unreadable ``updated_at``
+    counts as in-flight. ``classify_status`` is returned alongside either way,
+    so nothing is lost.
+    """
+    stored = rec.get("status", "unknown")
+    if stored != "classified" or queued <= 0:
+        return stored
+    if drafted > 0 or draft_points > 0:
+        return stored
+    if failed > 0:
+        return "drafts_failed"
+    age = _age_seconds(rec, now)
+    if age is not None and age >= grace_seconds:
+        return "drafts_missing"
+    return stored
+
+
 def create_knowledge_router() -> APIRouter:
     """Create the knowledge ingestion REST router."""
 
@@ -98,17 +205,28 @@ def create_knowledge_router() -> APIRouter:
 
     @router.post("/ingest", response_model=KnowledgeIngestResponse, status_code=202)
     async def ingest(
+        request: Request,
         req: KnowledgeIngestRequest,
         vector: VectorClient = Depends(get_vector),
         redis_client=Depends(get_redis),
     ) -> KnowledgeIngestResponse:
-        """Corpus-ingest synchronously (doc searchable now), then queue classify+draft."""
+        """Corpus-ingest synchronously (doc searchable now), then queue classify+draft.
+
+        The caller's principal is threaded into both halves of the pipeline
+        (corpus chunks now, draft skills later via the Celery kwargs). Without
+        it both landed with ``workspace_id=null`` and neither was reachable
+        from ``memory_recall``, which filters on the caller's workspace.
+        """
         if not req.content.strip():
             raise HTTPException(status_code=400, detail="content must not be empty or whitespace-only")
 
+        from auth.principal import request_principal
+
+        principal = request_principal(request)
         try:
             await ingest_knowledge_document(
                 req.content, req.source_name, req.source_type, vector=vector, redis=redis_client,
+                workspace_id=principal["workspace_id"], member_id=principal["member_id"],
             )
         except Exception as exc:
             logger.exception("Knowledge ingest failed for '%s'", req.source_name)
@@ -176,13 +294,24 @@ def create_knowledge_router() -> APIRouter:
                 )
                 draft_count = len(points)
                 status_rec = await get_ingest_status(name, redis_client=redis_client)
+            rec = status_rec or {}
+            drafted = int(rec.get("skills_drafted", 0) or 0)
+            failed = int(rec.get("skills_failed", 0) or 0)
+            queued = int(rec.get("skills_queued", 0) or 0)
             result.append({
                 **src,
                 "draft_skill_count": draft_count,
-                "status": (status_rec or {}).get("status", "unknown"),
-                "disposition": (status_rec or {}).get("disposition", ""),
-                "skills_queued": (status_rec or {}).get("skills_queued", 0),
-                "updated_at": (status_rec or {}).get("updated_at", ""),
+                "status": _effective_status(
+                    rec, drafted, failed, queued, draft_count,
+                    grace_seconds=_draft_grace_seconds(settings),
+                ),
+                "classify_status": rec.get("status", "unknown"),
+                "disposition": rec.get("disposition", ""),
+                "skills_queued": queued,
+                "skills_drafted": drafted,
+                "skills_failed": failed,
+                "last_draft_error": rec.get("last_draft_error", ""),
+                "updated_at": rec.get("updated_at", ""),
             })
 
         return KnowledgeSourcesResponse(sources=result, count=len(result))

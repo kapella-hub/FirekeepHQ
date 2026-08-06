@@ -51,8 +51,11 @@ async def test_procedural_fans_out_and_marks_classified():
         await _run_classify_and_draft("Runbook", "1. restart 2. rotate", "wiki", None, "default")
 
     assert mock_delay.delay.call_count == 2
+    # Tenancy is forwarded to each per-procedure draft task: a skill point
+    # written with workspace_id=null is filtered out of every recall path.
     mock_delay.delay.assert_any_call("Runbook", "Restart", "1. restart 2. rotate",
-                                     project=None, namespace="default")
+                                     project=None, namespace="default",
+                                     workspace_id=None, member_id=None)
     # classifying written BEFORE classified (crash-diagnosis signal)
     statuses = [c.args[1] for c in mock_set.await_args_list]
     assert statuses == ["classifying", "classified"]

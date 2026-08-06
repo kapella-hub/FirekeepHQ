@@ -524,7 +524,16 @@ async def test_native_skill_synthesis_bounds_output_via_num_predict():
     assert body["options"]["num_predict"] == 800
     assert body["stream"] is False
     assert body["think"] is False
-    assert "format" not in body  # a skill card is Markdown, not JSON
+    # `format` now carries the CARD SCHEMA. It used to be absent, with the
+    # comment "a skill card is Markdown, not JSON" — true of the stored artifact
+    # and irrelevant to the wire. Measured live on the VPS: with no schema the
+    # real prompt hit done_reason="length" at 800 tokens having produced no card
+    # at all, twice; with the schema it stopped on "stop" in 263-317 tokens,
+    # five times out of five. The card is still Markdown; it is RENDERED from
+    # the JSON by `card_from_payload`.
+    assert body["format"]["type"] == "object"
+    assert "trigger" in body["format"]["properties"]
+    assert "steps" in body["format"]["required"]
 
 
 @pytest.mark.asyncio
