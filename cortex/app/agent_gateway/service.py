@@ -111,16 +111,25 @@ class AgentGatewayService:
         for reason in policy_decision.reasons:
             advisories.append(self._reason_to_advisory(reason))
 
-        # Living Procedures: recognise the work, record it, and advise on a
-        # load-bearing step left undone. Advisory only, and its own try/except
-        # inside observe() — it can never change the decision.
+        # Living Procedures: recognise the work and advise on a load-bearing
+        # step left undone. Advisory only, and its own try/except inside plan()
+        # — it can never change the decision.
+        #
+        # The advisory is built HERE so it keeps its place ahead of any advisory
+        # the escalation below adds, but the WRITE is deferred: `decision` is
+        # not final yet (the rethink counter can still escalate to block, and
+        # PathDenyRule may already have blocked), and an observation is a claim
+        # that the edit HAPPENED. See the commit/abort pair after the escalation.
+        #
         # action_id is threaded in because the observation's receipt is
         # {action_id, target, ts} — without it the record cannot be joined to
         # the agent.action.predict event that describes the same edit.
+        pending_observation = None
         if self._procedure_observer is not None:
-            advisories.extend(
-                await self._procedure_observer.observe(req, action_id=action_id)
+            pending_observation = await self._procedure_observer.plan(
+                req, action_id=action_id,
             )
+            advisories.extend(pending_observation.advisories)
 
         # Predict-incapable adapter mitigation: never rethink on prediction_required alone.
         # Advisory is kept for telemetry; decision is softened to allow.
@@ -146,6 +155,16 @@ class AgentGatewayService:
                 ))
         elif decision == "allow":
             await self.rethink_counter.reset(target_key)
+
+        # `decision` is final from here. Only now may the observation be written:
+        # a block or a rethink means the edit did not happen, and recording it
+        # would inflate Tier A frequency with work that never occurred and spend
+        # this execution's one warn on a step the agent is about to resubmit.
+        if pending_observation is not None:
+            if decision == "allow":
+                await pending_observation.commit()
+            else:
+                await pending_observation.abort(decision)
 
         # Auto-reconcile defaults
         auto_reconcile = AUTO_RECONCILE_MATRIX.get(
@@ -284,12 +303,33 @@ class AgentGatewayService:
             except Exception as exc:
                 logger.debug("fastpath update skipped: %s", exc)
 
-        # Emit reconcile event (best-effort)
+        # Emit reconcile event (best-effort), but ONLY when it can be attributed
+        # to a session.
+        #
+        # `ActionAfterRequest` carries {action_id, outcome} and nothing else, so
+        # identity comes entirely from the `ag:predict:{action_id}` record —
+        # which expires at AGENT_RECONCILE_DEADLINE_SECONDS. A reconcile arriving
+        # after that emitted session_id="", and now that the emit stamps a real
+        # `outcome=`, it lands as an OUTCOME-BEARING event filed under the empty
+        # session: the same pollution the outcome emit was added to fix, aimed at
+        # a bucket nothing reads (`get_session_timeline("")` is not a query
+        # anything makes). Dropping it loses nothing and stops poisoning it.
+        session_id = (entry or {}).get("session_id") or ""
+        if not session_id:
+            logger.debug(
+                "reconcile for %s not emitted: no prediction record, so the "
+                "event has no session to be filed under", req.action_id,
+            )
+            return ActionAfterResponse(
+                action_id=req.action_id,
+                prediction_match_score=score,
+                recorded=True,
+            )
         try:
             await self.replay_emitter(
                 event_type="agent.action.reconcile",
-                session_id=entry["session_id"] if entry else "",
-                agent_id=entry["agent_id"] if entry else "",
+                session_id=session_id,
+                agent_id=(entry or {}).get("agent_id") or "",
                 payload={
                     "action_id": req.action_id,
                     "outcome": req.outcome.model_dump(),

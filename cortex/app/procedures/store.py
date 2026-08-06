@@ -59,6 +59,8 @@ _UNKNOWN_RUN: dict[str, Any] = {
     "skills": 0,
     "proposals": 0,
     "spec_drift": 0,
+    "orphans_cleared": 0,
+    "orphan_sweep": "unknown",
     "outcome_backed_executions": 0,
     "outcome_success": 0,
     "outcome_failure": 0,
@@ -120,6 +122,11 @@ async def scan_active_skills(vector, settings) -> list[dict[str, Any]]:
                 "trigger": payload.get("trigger") or "",
                 "content": payload.get("content") or "",
                 "step_specs": payload.get("step_specs") or [],
+                # The tenancy boundary, carried through to the index and the
+                # coverage summary so the read surface has something to scope
+                # on. Skill points already hold it (skills/api.py writes it from
+                # the verified principal); nothing downstream of this scan did.
+                "workspace_id": payload.get("workspace_id") or "",
             })
         if not offset or not points:
             break
@@ -162,6 +169,12 @@ def index_entries(skills: list[dict[str, Any]], settings) -> tuple[list[dict], d
             entries.append({
                 "skill_id": skill["skill_id"],
                 "skill_trigger": skill.get("trigger") or "",
+                # Present but NOT enforced on the pre-edit path: the matcher
+                # index is machine-global and ActionBeforeRequest carries no
+                # principal, so the warn cannot be scoped without threading one
+                # through the gateway (spec §6 H6). Carried so the data is there
+                # when it can be.
+                "workspace_id": skill.get("workspace_id") or "",
                 "step_id": step_id,
                 "step_text": spec.get("text") or "",
                 "pattern": pattern,
@@ -175,6 +188,7 @@ def index_entries(skills: list[dict[str, Any]], settings) -> tuple[list[dict], d
             "trigger": skill.get("trigger") or "",
             "spec_count": len(kept),
             "observable": observable,
+            "workspace_id": skill.get("workspace_id") or "",
         }
     return entries, coverage
 
@@ -221,19 +235,31 @@ async def load_coverage(redis_client) -> dict[str, dict[str, Any]]:
         return {}
 
 
+def new_exec_id() -> str:
+    """Mint an exec_id ahead of the write.
+
+    The advisory quotes it as its receipt (`Advisory.evidence_event_id`) and the
+    advisory is built BEFORE the decision is settled, while the write happens
+    only once it is — so the id has to exist independently of the write that
+    stores it.
+    """
+    return f"proc_{uuid.uuid4().hex[:12]}"
+
+
 async def record_observation(
     redis_client, settings, *, session_id: str, skill_id: str, step_id: str,
     action_id: str, target: str, agent_id: str, adapter: str,
+    exec_id: str = "",
 ) -> str:
     """Open-or-extend the execution for (session, skill). Returns its exec_id."""
     key = exec_key(session_id, skill_id)
     raw = _smap(await redis_client.hgetall(key))
     if raw:
-        exec_id = raw.get("exec_id") or f"proc_{uuid.uuid4().hex[:12]}"
+        exec_id = raw.get("exec_id") or exec_id or new_exec_id()
         observed = json.loads(raw.get("observed") or "{}")
         counts = json.loads(raw.get("observed_counts") or "{}")
     else:
-        exec_id = f"proc_{uuid.uuid4().hex[:12]}"
+        exec_id = exec_id or new_exec_id()
         observed, counts = {}, {}
         await redis_client.hset(key, mapping={
             "exec_id": exec_id, "skill_id": skill_id, "session_id": session_id,
@@ -295,9 +321,27 @@ async def claim_warn(redis_client, settings, *, session_id: str, skill_id: str,
     consulted by nobody; two mechanisms where one is real is how the dead one
     comes to be trusted.
     """
-    key = f"{exec_key(session_id, skill_id)}:warned:{step_id}"
+    key = _warn_key(session_id, skill_id, step_id)
     ttl = int(getattr(settings, "PROCEDURE_EXEC_TTL_DAYS", 90)) * 86400
     return bool(await redis_client.set(key, _now(), nx=True, ex=ttl))
+
+
+async def release_warn(redis_client, *, session_id: str, skill_id: str,
+                       step_id: str) -> None:
+    """Give back a claim made for an action the gateway then refused.
+
+    The claim is taken while the advisory is built, which is BEFORE the decision
+    is final — `decide()` can still escalate a rethink into a block. Keeping the
+    claim for an edit that never happened spends the one warn this execution
+    gets on a step the agent is about to resubmit, so the resubmission (the edit
+    that actually lands) is never warned. Best-effort: a lost release costs one
+    advisory, never correctness.
+    """
+    await redis_client.delete(_warn_key(session_id, skill_id, step_id))
+
+
+def _warn_key(session_id: str, skill_id: str, step_id: str) -> str:
+    return f"{exec_key(session_id, skill_id)}:warned:{step_id}"
 
 
 async def iter_executions(redis_client) -> list[dict[str, Any]]:

@@ -100,6 +100,36 @@ async def test_reconcile_emits_a_real_outcome():
 
 
 @pytest.mark.asyncio
+async def test_a_reconcile_that_cannot_be_attributed_is_not_emitted():
+    """P1's residual, made WORSE by the outcome emit.
+
+    `ActionAfterRequest` carries only {action_id, outcome}, so identity comes
+    entirely from the `ag:predict:{action_id}` record — which expires at
+    `AGENT_RECONCILE_DEADLINE_SECONDS`. A reconcile arriving after that still
+    emitted `session_id=""`, and now carries a real `outcome=`, so it lands as
+    an OUTCOME-BEARING event filed under the empty session: exactly the
+    pollution class the outcome emit was added to fix, redirected into a bucket
+    nobody reads. Nothing is lost by dropping it — `get_session_timeline("")`
+    is not a query anything makes.
+    """
+    import fakeredis.aioredis as fr
+
+    r = fr.FakeRedis(decode_responses=True)
+    emitted: list = []
+    svc = _service(r, _Engine(_Decision()), emitted, [])
+
+    # No decide() first: the prediction record has expired (or never existed).
+    resp = await svc.record(ActionAfterRequest(
+        action_id="act_expired", outcome=Outcome(success=True),
+    ))
+
+    assert [e for e in emitted if e["event_type"] == "agent.action.reconcile"] == []
+    # The wire contract is unchanged — the caller is still told it was recorded.
+    assert resp.recorded is True
+    assert resp.action_id == "act_expired"
+
+
+@pytest.mark.asyncio
 async def test_warn_decisions_are_recorded():
     """P2: warn is remapped to allow before the audit gate, so no warn has ever
     reached policy:decisions."""

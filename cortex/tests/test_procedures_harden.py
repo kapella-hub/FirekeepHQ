@@ -93,7 +93,7 @@ async def _exec(r, session, skill, observed, agent="ag"):
             action_id="x", target="t", agent_id=agent, adapter="shell-hook")
 
 
-async def _no_outcome(replay_r, sid):
+async def _no_outcome(replay_r, sid, bridge_status=None):
     return None
 
 
@@ -148,7 +148,7 @@ async def test_tier_b_proposes_load_bearing_when_skipping_predicts_failure(r, mo
     await _exec(r, "bad-1", "s1", ["b"], agent="ag3")
     await _exec(r, "bad-2", "s1", ["b"], agent="ag4")
 
-    async def _outcome(replay_r, sid):
+    async def _outcome(replay_r, sid, bridge_status=None):
         return True if sid.startswith("ok") else False
 
     monkeypatch.setattr(harden, "_resolve_outcome", _outcome)
@@ -166,7 +166,7 @@ async def test_a_step_already_declared_load_bearing_is_not_proposed_again(r, mon
     await _exec(r, "bad-1", "s1", ["b"], agent="ag3")
     await _exec(r, "bad-2", "s1", ["b"], agent="ag4")
 
-    async def _outcome(replay_r, sid):
+    async def _outcome(replay_r, sid, bridge_status=None):
         return sid.startswith("ok")
 
     monkeypatch.setattr(harden, "_resolve_outcome", _outcome)
@@ -183,7 +183,7 @@ async def test_one_agent_cannot_decide_a_procedure(r, monkeypatch):
     for i in range(20):
         await _exec(r, f"bot-{i}", "s1", ["b"], agent="ci-bot")
 
-    async def _outcome(replay_r, sid):
+    async def _outcome(replay_r, sid, bridge_status=None):
         return False
 
     monkeypatch.setattr(harden, "_resolve_outcome", _outcome)

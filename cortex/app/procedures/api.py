@@ -4,17 +4,49 @@ Scope note: unlike the skills router (which declares no dependencies= and
 contains no require_scope at all), these routes are gated. Accepting a proposal
 is still a PATCH /skills/{id} and therefore still as ungated as it is today —
 retrofitting a gate onto a shipped surface belongs in its own change.
+
+TENANCY. `memory:read` is a permission, not a boundary: it is held by every
+agent key in the deployment, and these two reads returned EVERY workspace's
+triggers, step text, session ids, agent ids and edited file paths. Both are now
+scoped to the caller's own workspace, from the verified principal, the way
+`/memory/*` and the skills write path already do it. The pre-edit WARN path is
+NOT scoped — see H6 in the design doc — because the matcher index is
+machine-global and `ActionBeforeRequest` carries no principal.
 """
 
 from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.procedures import store
 
 logger = logging.getLogger(__name__)
+
+
+def _deployment_workspace() -> str:
+    try:
+        from auth.principal import deployment_workspace_id
+
+        return deployment_workspace_id()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("deployment workspace unresolved: %s", exc)
+        return ""
+
+
+def _visible(recorded: str, caller: str) -> bool:
+    """Is a row recorded under `recorded` visible to a caller in `caller`?
+
+    A row with NO recorded workspace belongs to the deployment's own — exactly
+    the rule `workspace_migration.backfill_memories` applies to an unattributed
+    Qdrant point, so the index and the store cannot disagree about who owns one.
+    Index entries written before this field existed, and executions for a skill
+    that has since left the index, both land here.
+    """
+    if recorded:
+        return recorded == caller
+    return bool(caller) and caller == _deployment_workspace()
 
 
 def create_procedures_router(get_redis, get_vector, settings_fn) -> APIRouter:
@@ -27,9 +59,24 @@ def create_procedures_router(get_redis, get_vector, settings_fn) -> APIRouter:
     except Exception:  # noqa: BLE001 — auth optional in unit tests
         read_dep, admin_dep = [], []
 
+    def _caller_workspace(request: Request) -> str:
+        from auth.principal import request_principal
+
+        return request_principal(request).get("workspace_id") or ""
+
+    def _workspace_of(skill_id: str, coverage: dict, by_skill: dict) -> str:
+        cov = coverage.get(skill_id) or {}
+        if cov.get("workspace_id"):
+            return str(cov["workspace_id"])
+        for entry in by_skill.get(skill_id) or []:
+            if entry.get("workspace_id"):
+                return str(entry["workspace_id"])
+        return ""
+
     @router.get("/procedures", dependencies=read_dep)
-    async def list_procedures():
+    async def list_procedures(request: Request):
         r = get_redis()
+        caller_ws = _caller_workspace(request)
         index = await store.load_index(r)
         coverage = await store.load_coverage(r)
         by_skill: dict[str, list[dict]] = {}
@@ -64,6 +111,8 @@ def create_procedures_router(get_redis, get_vector, settings_fn) -> APIRouter:
 
         rows = []
         for skill_id, cov in summary.items():
+            if not _visible(_workspace_of(skill_id, coverage, by_skill), caller_ws):
+                continue
             stats = await store.get_step_stats(r, skill_id)
             proposals = await store.list_proposals(r, skill_id)
             rows.append({
@@ -95,8 +144,19 @@ def create_procedures_router(get_redis, get_vector, settings_fn) -> APIRouter:
         }
 
     @router.get("/procedures/{skill_id}/executions", dependencies=read_dep)
-    async def list_executions(skill_id: str, limit: int = 50):
+    async def list_executions(skill_id: str, request: Request, limit: int = 50):
         r = get_redis()
+        # Execution keys are `proc:exec:{session}:{skill}` — no workspace
+        # component — so they are scoped through the SKILL they belong to, which
+        # is the same boundary the rollup applies and the only one the records
+        # can be joined to.
+        index = await store.load_index(r)
+        by_skill: dict[str, list[dict]] = {}
+        for e in index:
+            by_skill.setdefault(e["skill_id"], []).append(e)
+        recorded = _workspace_of(skill_id, await store.load_coverage(r), by_skill)
+        if not _visible(recorded, _caller_workspace(request)):
+            return {"executions": [], "count": 0}
         all_execs = await store.iter_executions(r)
         mine = [e for e in all_execs if e.get("skill_id") == skill_id]
         mine.sort(key=lambda e: e.get("last_seen_at") or "", reverse=True)

@@ -16,6 +16,14 @@ than a hedge:
            were never once associated with a failure, "confidently, with
            statistics" (spec §F1 consequence 2). Both halves are required.
            Closed is the correct state; it reports WHICH closed state it is in.
+
+AND THE DISCRIMINATION CHECK HOLDS WHERE THE COMPARISON IS MADE — PER STEP.
+The `tier_b` string below is summed over every execution of every skill, so ONE
+failing session anywhere in the deployment flipped it to `open` while the thing
+it authorised is a per-step comparison; applied to a step whose own buckets are
+uniformly successful it emits `dead_step` on a signal that separated nothing —
+the same defect one level down. `tier_b` stays because an operator needs to know
+which state the DEPLOYMENT is in; `_discriminates` is what authorises a verdict.
 """
 
 from __future__ import annotations
@@ -35,12 +43,42 @@ TIER_B_INSUFFICIENT = "insufficient outcome signal"
 TIER_B_UNIFORM = "uniform outcome signal"
 
 
-async def _resolve_outcome(replay_r, session_id: str) -> bool | None:
+async def _bridge_statuses(settings) -> dict[str, str]:
+    """Session-status map from Bridge, via OWM's own fetcher.
+
+    Spec F1 names Bridge `abandoned` as one of only TWO failure signals this
+    system actually produces today, and this pass hardcoded `bridge_status=None`
+    — discarding the signal most likely to legitimately open its own gate and
+    making its "uniform outcome signal" verdict partly self-inflicted.
+
+    OWM's helper is REUSED rather than reimplemented: it already carries the
+    internal key, the 200-session clamp the Bridge route imposes, and the
+    degrade-to-empty-on-any-failure contract. A second copy is a second thing to
+    keep true.
+    """
+    try:
+        from app.owm import _fetch_bridge_statuses
+
+        return await _fetch_bridge_statuses(settings) or {}
+    except Exception as exc:  # noqa: BLE001 — never fail the pass for this
+        logger.warning("procedure pass: bridge statuses unavailable (%s) — "
+                       "eval-only outcomes", exc)
+        return {}
+
+
+async def _resolve_outcome(replay_r, session_id: str,
+                           bridge_status: str | None = None) -> bool | None:
     """True/False when the session's outcome is knowable, None to exclude it.
 
     Excludes on ANY doubt: no replay events, no outcome-bearing event (I4 —
     _failure_rate returns 0.0 in that case, which reads as success), an eval
     that cannot be computed, or session_success's ambiguous middle band.
+
+    `bridge_status` is what makes `abandoned` count: `session_success` treats it
+    as failure regardless of metrics, which is exactly the case F1 describes —
+    every edit succeeded mechanically, `failure_rate` is 0.0, and the human
+    walked away. I4 still runs first, so an abandoned session that carries no
+    outcome-bearing replay event at all is still excluded (§6, H7).
     """
     if replay_r is None or not session_id:
         return None
@@ -72,7 +110,7 @@ async def _resolve_outcome(replay_r, session_id: str) -> bool | None:
         from app.owm import session_success
 
         data = ev.model_dump() if hasattr(ev, "model_dump") else dict(ev)
-        return session_success(data, None)
+        return session_success(data, bridge_status)
     except Exception as exc:  # noqa: BLE001
         logger.debug("outcome unresolved for %s: %s", session_id, exc)
         return None
@@ -175,6 +213,9 @@ async def run_pass(redis_client, replay_r, vector, settings) -> dict:
         steps_by_skill.setdefault(entry["skill_id"], []).append(entry)
 
     executions = await store.iter_executions(redis_client)
+    # Fetched ONCE per pass, and only when there is something to score — an
+    # idle deployment must not make an HTTP call to say nothing happened.
+    bridge_statuses = await _bridge_statuses(settings) if executions else {}
     # tallies[skill][step] -> counters
     tallies: dict[str, dict[str, dict]] = {}
     # agent_seen[skill][step][agent] -> count, for the fairness cap
@@ -204,7 +245,10 @@ async def run_pass(redis_client, replay_r, vector, settings) -> dict:
         if not observed_ids:
             continue
 
-        outcome = await _resolve_outcome(replay_r, rec.get("session_id") or "")
+        session_id = rec.get("session_id") or ""
+        outcome = await _resolve_outcome(
+            replay_r, session_id, bridge_statuses.get(session_id),
+        )
         if outcome is not None:
             outcome_backed += 1
             if outcome:
@@ -240,25 +284,31 @@ async def run_pass(redis_client, replay_r, vector, settings) -> dict:
     # resolved outcomes differ. With every session resolving `success` (the
     # measured state of this deployment — see the module docstring) the efficacy
     # of "observed" and "skipped" both collapse to (n + prior/2)/(n + prior),
-    # and which branch fires is decided by bucket SIZE alone. Both classes must
-    # be present before a verdict is offered to a human.
+    # and which branch fires is decided by bucket SIZE alone.
+    #
+    # THIS STRING IS A REPORT, NOT AN AUTHORISATION. It is summed across every
+    # execution of every skill, so one failing session anywhere in the
+    # deployment flipped it to `open` — and `_tier_b_proposals` was then applied
+    # to steps whose OWN buckets were uniformly successful, which is the same
+    # defect one level down. The per-step check that actually authorises a
+    # verdict lives in `_discriminates`, where the comparison is made.
     if outcome_backed < min_n:
         tier_b = TIER_B_INSUFFICIENT
     elif not (outcome_success and outcome_failure):
         tier_b = TIER_B_UNIFORM
     else:
         tier_b = TIER_B_OPEN
-    tier_b_open = tier_b == TIER_B_OPEN
-    # How many steps could actually receive a verdict if the gate is open. An
-    # open gate is not the same as a reachable verdict: `PROCEDURE_AGENT_CAP` is
-    # spent across BOTH buckets while a verdict needs `min_n` scored executions
-    # in EACH, so with both defaulting to 5 no step can be decided by fewer than
-    # two distinct agent identities — deliberate (the cap exists precisely so one
-    # identity cannot decide a team's procedure) but invisible, and "open with
-    # zero proposals, forever" is indistinguishable from "open and nothing found".
+    # How many steps could actually receive a verdict — every gate that
+    # authorises one, not just the sample-size half. An open pass-level string is
+    # not the same as a reachable verdict: `PROCEDURE_AGENT_CAP` is spent across
+    # BOTH buckets while a verdict needs `min_n` scored executions in EACH, so
+    # with both defaulting to 5 no step can be decided by fewer than two distinct
+    # agent identities — deliberate (the cap exists precisely so one identity
+    # cannot decide a team's procedure) but invisible, and "open with zero
+    # proposals, forever" is indistinguishable from "open and nothing found".
     verdict_ready = sum(
         1 for steps in tallies.values() for t in steps.values()
-        if t["observed_scored"] >= min_n and t["skipped_scored"] >= min_n
+        if _verdict_reachable(t, min_n)
     )
     written = proposed = 0
 
@@ -278,7 +328,7 @@ async def run_pass(redis_client, replay_r, vector, settings) -> dict:
         written += 1
         touched.add(skill_id)
         proposals: list[dict] = list(drift.get(skill_id, []))
-        if tier_b_open and steps:
+        if steps:
             proposals.extend(_tier_b_proposals(
                 skill_id, steps, steps_by_skill.get(skill_id, []),
                 min_n, prior_n, delta,
@@ -296,8 +346,31 @@ async def run_pass(redis_client, replay_r, vector, settings) -> dict:
     # Skipped outright when the skill scan FAILED: the index the sweep compares
     # against is then whatever the last successful pass left, and a Qdrant
     # outage must not read as "every procedure was deleted".
+    #
+    # AND skipped when the scan SUCCEEDED AND RETURNED NOTHING while the store
+    # holds derived state for skills that existed before. `scan_ok` was False
+    # only on a raise, but a scan can return an empty page perfectly happily —
+    # a QDRANT_COLLECTION pointing at the wrong name, a collection restored
+    # empty, a payload index mid-rebuild. `touched` is then empty and the sweep
+    # clears every procedure's stats and proposals: silent data loss caused by a
+    # transient infrastructure state, on keys nothing else can rebuild (the
+    # execution records survive, the derived numbers do not until the next pass).
+    # An empty scan is not evidence of deletion.
+    sweep = "ok"
+    if not scan_ok:
+        sweep = "declined: scan failed"
+    elif not skills and stale_candidates:
+        sweep = "declined: vacuous scan"
+        logger.warning(
+            "procedure orphan sweep DECLINED: the skill scan returned 0 active "
+            "skills while %s already hold derived state. An empty scan is not "
+            "evidence of deletion — check QDRANT_COLLECTION and the collection's "
+            "health; stats and proposals are left standing until a scan returns "
+            "something. Affected: %s",
+            len(stale_candidates), sorted(stale_candidates)[:20],
+        )
     orphaned = 0
-    for skill_id in (sorted(stale_candidates - touched) if scan_ok else []):
+    for skill_id in (sorted(stale_candidates - touched) if sweep == "ok" else []):
         try:
             await store.clear_skill(redis_client, skill_id)
             orphaned += 1
@@ -311,6 +384,9 @@ async def run_pass(redis_client, replay_r, vector, settings) -> dict:
         "proposals": proposed,
         "spec_drift": sum(len(v) for v in drift.values()),
         "orphans_cleared": orphaned,
+        # Reported, not merely logged: "0 orphans cleared" is what a healthy
+        # pass and a declined sweep both look like from outside.
+        "orphan_sweep": sweep,
         "outcome_backed_executions": outcome_backed,
         "outcome_success": outcome_success,
         "outcome_failure": outcome_failure,
@@ -325,13 +401,35 @@ async def run_pass(redis_client, replay_r, vector, settings) -> dict:
     return result
 
 
+def _discriminates(t: dict) -> bool:
+    """Both outcome classes present in THIS STEP's own scored buckets.
+
+    The pass-level gate is summed over every execution of every skill, so one
+    failing session anywhere in the deployment opened it — and the comparison it
+    authorised is per step. Applied to a step whose own scored outcomes are
+    uniformly successful, `compute_efficacy` returns the IDENTICAL Beta-prior
+    value for both buckets, `eff_skip >= eff_obs - delta` holds exactly, and a
+    `dead_step` ("remove it?") is emitted on a signal that separated nothing.
+    All-failure is refused for the mirror reason: every step of a procedure that
+    only ever ran in failing sessions would read as load-bearing.
+    """
+    scored = t["observed_scored"] + t["skipped_scored"]
+    successes = t["observed_success"] + t["skipped_success"]
+    return 0 < successes < scored
+
+
+def _verdict_reachable(t: dict, min_n: int) -> bool:
+    return (t["observed_scored"] >= min_n and t["skipped_scored"] >= min_n
+            and _discriminates(t))
+
+
 def _tier_b_proposals(skill_id, steps, entries, min_n, prior_n, delta) -> list[dict]:
     from app.owm import compute_efficacy
 
     by_id = {e["step_id"]: e for e in entries}
     out: list[dict] = []
     for step_id, t in steps.items():
-        if t["observed_scored"] < min_n or t["skipped_scored"] < min_n:
+        if not _verdict_reachable(t, min_n):
             continue
         eff_obs = compute_efficacy(t["observed_success"], t["observed_scored"], prior_n)
         eff_skip = compute_efficacy(t["skipped_success"], t["skipped_scored"], prior_n)

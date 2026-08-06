@@ -122,7 +122,7 @@ async def _exec(client, session, skill, observed, agent="ag", settings=None):
             action_id="x", target="t", agent_id=agent, adapter="shell-hook")
 
 
-async def _no_outcome(replay_r, sid):
+async def _no_outcome(replay_r, sid, bridge_status=None):
     return None
 
 
@@ -428,7 +428,7 @@ class TestTierBNeedsASignalThatDiscriminates:
         await _exec(r, "s-3", "s1", ["b"], agent="ag3")
         await _exec(r, "s-4", "s1", ["b"], agent="ag4")
 
-        async def _all_good(replay_r, sid):
+        async def _all_good(replay_r, sid, bridge_status=None):
             return True
 
         monkeypatch.setattr(harden, "_resolve_outcome", _all_good)
@@ -446,7 +446,7 @@ class TestTierBNeedsASignalThatDiscriminates:
         await _exec(r, "bad-1", "s1", ["b"], agent="ag3")
         await _exec(r, "bad-2", "s1", ["b"], agent="ag4")
 
-        async def _outcome(replay_r, sid):
+        async def _outcome(replay_r, sid, bridge_status=None):
             return sid.startswith("ok")
 
         monkeypatch.setattr(harden, "_resolve_outcome", _outcome)
@@ -607,7 +607,7 @@ class TestAnOpenGateIsNotTheSameAsAReachableVerdict:
         await _exec(r, "ok-1", "s1", ["a", "b"], agent="solo")
         await _exec(r, "bad-1", "s1", ["b"], agent="solo")
 
-        async def _outcome(replay_r, sid):
+        async def _outcome(replay_r, sid, bridge_status=None):
             return sid.startswith("ok")
 
         monkeypatch.setattr(harden, "_resolve_outcome", _outcome)
