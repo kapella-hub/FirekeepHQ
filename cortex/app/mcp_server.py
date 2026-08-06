@@ -1206,6 +1206,7 @@ async def skill_create(
     domain: str = "",
     project: str | None = None,
     status: str = "active",
+    step_specs: list[dict] | None = None,
     session_id: str = "unknown",
     agent_id: str = "unknown",
 ) -> str:
@@ -1227,6 +1228,21 @@ async def skill_create(
             the human review queue, excluded from recall until approved) — use
             "draft" for skills drafted from an ingested document when you want a
             human to review before the team relies on them.
+        step_specs: Optional per-step matchers that turn this skill into an
+            OBSERVED procedure. One entry per step, in order:
+              {"text": "<the step, verbatim>",
+               "kind": "file_glob" | "unobservable",
+               "pattern": "<glob, e.g. 'client/pyproject.toml'>",
+               "load_bearing": true|false}
+            Use "file_glob" when the step edits a file whose path you can name.
+            Use "unobservable" for anything else — asking a human, or running a
+            shell command (round 1 does not observe shell commands, so a shell
+            step must be "unobservable" even though the command is precise).
+            Mark load_bearing=true only when skipping the step is what breaks
+            things: that is what raises a warning to the next person.
+            Prefer specific globs. "*.py" matches everything and is not a step.
+            The LIST ORDER is the procedure's order — it is the only ordering
+            that exists, and a warning only ever names an EARLIER step.
     """
     try:
         session_id, agent_id = _resolve_identity(session_id, agent_id)
@@ -1238,6 +1254,11 @@ async def skill_create(
         }
         if project:
             body["project"] = project
+        # Omitted, not null: an ordinary skill is not a procedure, and the create
+        # path writes the payload key only for a non-empty list, so a skill with
+        # no specs carries none at all.
+        if step_specs:
+            body["step_specs"] = step_specs
         # Forward the resolved identity so POST /skills persists provenance —
         # previously resolved and DISCARDED, so every skill lost its origin
         # (wf_02954176; memory_learn already did this correctly).
@@ -1250,6 +1271,57 @@ async def skill_create(
         resp.raise_for_status()
         data = resp.json()
         return f"Skill created: {data.get('id')} — \"{data.get('trigger')}\""
+    except httpx.HTTPStatusError as exc:
+        return _format_error(exc)
+    except httpx.RequestError as exc:
+        return _connection_error(exc)
+
+
+@mcp.tool()
+async def skill_add_step_specs(skill_id: str, step_specs: list[dict]) -> str:
+    """Compile step matchers onto an EXISTING skill (PATCH /skills/{id}).
+
+    The cold-start path: a skill written before step specs existed has none, so
+    the procedure machinery is inert for it. Read the skill's steps, write one
+    spec per step in order, and send them here. REPLACES the whole list — send
+    every step, not just the one you are adding, or the rest are deleted.
+
+    See skill_create's step_specs for the entry shape and the round-1 limits
+    (a shell step must be "unobservable"; a broad glob is not a step).
+
+    Args:
+        skill_id: The skill to compile specs onto (from skill_list or skill_recall).
+        step_specs: The complete ordered list of per-step matchers.
+    """
+    try:
+        client = await _get_client()
+        resp = await client.patch(f"/skills/{skill_id}", json={"step_specs": step_specs})
+        resp.raise_for_status()
+        data = resp.json()
+        # Report what the SERVER stored, never what was sent: it mints ids, clears
+        # the pattern on an unobservable spec, and caps the list — so echoing the
+        # request would claim coverage the deployment does not have.
+        if "step_specs" not in data:
+            return (
+                f"Skill {skill_id} accepted the patch, but the response did not "
+                "report its step specs, so the stored coverage is unknown. Read "
+                "the skill back before relying on it."
+            )
+        stored = data.get("step_specs") or []
+        total = len(stored)
+        observable = sum(
+            1 for s in stored if isinstance(s, dict) and s.get("kind") == "file_glob"
+        )
+        lines = [
+            f"Stored {total} step spec{'' if total == 1 else 's'} on skill "
+            f"{skill_id} — {observable} of {total} observable (kind file_glob)."
+        ]
+        if observable < total:
+            lines.append(
+                "The rest are unobservable in round 1: nothing watches them, so "
+                "they raise no warning and contribute no evidence."
+            )
+        return " ".join(lines)
     except httpx.HTTPStatusError as exc:
         return _format_error(exc)
     except httpx.RequestError as exc:
