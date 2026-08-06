@@ -75,20 +75,22 @@ own documented exit-2 contract.
 
 ## Legacy migration
 
-kiro's `render()` (`adapters/kiro.py`, `_migrate_legacy`) now migrates pre-kit artifacts on
+kiro's `render()` (`adapters/kiro.py`, `_migrate_legacy`) migrates pre-kit artifacts on
 every render, mirroring the claude adapter's `LEGACY_HOOK_MARKERS` precedent: it drops every
 firekeep-owned entry (exact key match or `<key>_`-prefixed, e.g. `firekeep-cortex_DISABLED`) from
-`~/.kiro/settings/mcp.json`, and archives `~/.kiro/agents/firekeep.json` +
-`~/.kiro/firekeep.env` to `.bak`. Best-effort (a missing/malformed file never fails
-`render()` or the install) and one-way (`unrender()` does not restore the archived
-artifacts). Live-validated on the first migrated machine (2026-07-13): the mcp.json sweep
-removed 5 legacy entries (including a `_DISABLED` one carrying a plaintext credential),
-both `firekeep.*` artifacts archived, and the sweep surfaced one follow-up the migration
-now also covers — `~/.kiro/settings/cli.json`'s `"chat.defaultAgent": "firekeep"` pointed
-at the archived agent (kiro errored "user defined default firekeep not found" on every
-chat start); `_migrate_legacy` flips it to `"firekeep"` when and only when it names the pre-kit
-agent. The env-dict validation is row 6 in the table above — CONFIRMED via live spawn
-probe.
+`~/.kiro/settings/mcp.json`, and flips `~/.kiro/settings/cli.json`'s `chat.defaultAgent`
+to `"firekeep"` when and only when it names the pre-kit agent. Best-effort (a
+missing/malformed file never fails `render()` or the install) and one-way. The
+legacy-artifact **archival step was removed**: `_migrate_legacy` used to move the pre-kit
+agent file and env file aside to `.bak`, but after the product rename that path collided
+with the adapter's *own* output (`~/.kiro/agents/firekeep.json`), so every render archived
+the user's live config — it was removed rather than re-pointed (see the long comment at
+the former site in `adapters/kiro.py`). Live-validated on the first migrated machine
+(2026-07-13, as the code was then): the mcp.json sweep removed 5 legacy entries (including
+a `_DISABLED` one carrying a plaintext credential), both pre-kit artifacts archived, and
+the sweep surfaced the `chat.defaultAgent` follow-up — the value pointed at the archived
+pre-kit agent, so kiro errored "user defined default ... not found" on every chat start.
+The env-dict validation is row 6 in the table above — CONFIRMED via live spawn probe.
 
 ## Re-validation checklist (run on a kiro-cli upgrade)
 

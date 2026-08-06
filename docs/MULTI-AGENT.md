@@ -17,15 +17,17 @@ QUALITY: From 3 recent sessions: tool success rate is 87%
 === END BRIEFING ===
 ```
 
-**What it pulls:** `GET /briefing` aggregates 11 sections:
+**What it pulls:** `GET /briefing` aggregates 13 sections:
 - **Environment** — Sentinel collector health, recent errors
 - **Tasks** — pending assignments from other agents (via Relay)
 - **Bulletins** — recent announcements on the bulletin board
 - **Quality** — eval patterns from recent sessions (tool success rate, failure rate)
 - **Strategy tips** — trial/validated patterns from the pattern engine
+- **Observed patterns** — patterns observed in this agent's own sessions
 - **Cross-agent learnings** — patterns discovered by other agents
 - **Skills** — active skills matching the session goal
 - **Vault** — available secrets (admin-scoped callers only)
+- **Profile** — the person profile from Dreaming (empty unless `DREAM_ENABLED=true`)
 - **Resumable sessions** — paused/crashed sessions to pick up
 - **Discipline** — untagged-call visibility
 - **DLQ** — dead-letter queue depth (backfill/distill)
@@ -34,7 +36,7 @@ Connection details come from the single `[server]` section in `~/.firekeep/confi
 
 ## Session Debrief
 
-When a session ends, the `Stop` hook (`firekeep_client.hooks.stop`) provides guided completion:
+At the end of every assistant turn, the `Stop` hook (`firekeep_client.hooks.stop`) provides guided completion — note Claude fires `Stop` per turn, not at session end; true session end is the `SessionEnd` event (`hooks.session_end`):
 
 - Reminds to call `ctx_complete_session` with an outcome summary
 - Reminds to store non-obvious learnings with `memory_learn`
@@ -115,7 +117,7 @@ This is simpler than multi-terminal coordination and sufficient for most tasks. 
 
 This is a LOCAL, per-user clarification surface — distinct from the Relay task/bulletin board above, which is team-visible. It's served by its own always-on stdio MCP server, `firekeep-decision` (stdio-local like `firekeep-symdex` — both installed unconditionally, no opt-in flag).
 
-- `decision_board(context, draft_questions=[])` — asks Cortex to synthesize a board (evidence + suggested answers per question, pulled from a memory recall across all teammates' knowledge), opens it in your browser, and waits for your answers. Returns the answers (markdown) once submitted, or `{status: "pending", board_id, next}` if you haven't answered yet.
+- `decision_board(context, draft_questions=[])` — asks Cortex to synthesize a board (evidence + suggested answers per question, pulled from a memory recall across all teammates' knowledge), opens it in your browser, and waits for your answers. Returns the answers (markdown) once submitted, or `{status: "pending", board_id, board_url, next}` if you haven't answered yet — `board_url` lets you open the board manually if the auto-open failed.
 - `decision_board_check(board_id)` — call with the `board_id` from a pending response to collect the answers once you've submitted them.
 
 No browser available (headless/CI)? The board is returned as plain text to answer inline instead.
@@ -125,8 +127,8 @@ No browser available (headless/CI)? The board is returned as plain text to answe
 For personal work you can make Firekeep go **dormant** — nothing is logged, recalled, or sent to the server:
 
 - **In a Claude session:** type `/personal` (or `! firekeep personal`). It takes effect **live** — the next turn shows a "⚠ PERSONAL MODE" banner, the hooks stop briefing/presence/gate/capture, the sidecar stops sending presence, and the decision board suppresses itself. Type `/personal` again to rejoin team mode.
-- **Any runtime (kiro/Codex):** `firekeep personal on|off|status|toggle` (there's no rendered `/personal` command outside Claude). `firekeep doctor` shows a WARN row while bypass is active, so it's never silently left on.
-- **Auto-clears at session end** (Claude/kiro) — the `stop` hook wipes the marker, so it can't leak into your next session. A 12h TTL backstop (`FIREKEEP_PERSONAL_TTL_HOURS`) covers a crash. Codex is hookless, so there the marker clears only via `firekeep personal off` or the TTL.
+- **In a kiro session:** typing `/personal [on|off|status|toggle]` as plain chat text works too — the hook dispatcher intercepts it (kiro has no slash-command surface, so there is no rendered command, but the typed text does the same toggle). **Codex and OpenCode:** use `firekeep personal on|off|status|toggle` (Codex is hookless; OpenCode's bridge delivers no prompt text to intercept). `firekeep doctor` shows a WARN row while bypass is active, so it's never silently left on.
+- **Auto-clears at session end** (Claude and OpenCode) — the `session_end` hook core wipes the marker (Claude's `SessionEnd`, OpenCode's `session.deleted`), so it can't leak into your next session. The `stop` hook deliberately does **not** clear it — Stop fires every assistant turn, and clearing there ended personal mode after turn 1. kiro has no session-end event and Codex is hookless, so on both the marker clears only via `firekeep personal off` or the 12h TTL backstop (`FIREKEEP_PERSONAL_TTL_HOURS`), which also covers a crash on any runtime.
 - **Whole session personal from launch:** set `FIREKEEP_BYPASS=1` before starting your runtime — the hard cutoff where even the MCP servers (via the shim) serve zero tools, so nothing can reach the server at all.
 
 The marker (`~/.firekeep/personal`) is separate from your config — toggling it never rewrites `~/.firekeep/config`. It is machine-global, so concurrent sessions share personal mode.
@@ -162,7 +164,7 @@ The briefing hook shows available vault secrets at session start. Agents should 
 
 ## Hook Cores (client kit — `firekeep_client.hooks`)
 
-The five bash hooks are retired. The adapter wires stdlib Python hook cores at install (Claude `settings.json`, kiro inline hooks; Codex has no hook surface):
+The five bash hooks are retired. The adapter wires stdlib Python hook cores at install (Claude `settings.json`, kiro inline hooks, OpenCode via a rendered JS plugin at `~/.config/opencode/plugins/firekeep-hooks.js`; Codex has no hook surface):
 
 | Retired bash hook | Client-kit replacement (event) |
 |---|---|
@@ -173,7 +175,9 @@ The five bash hooks are retired. The adapter wires stdlib Python hook cores at i
 | `multi-agent-postaction.sh` | `firekeep_client.hooks.post_tool` (PostToolUse) |
 | `start-agent.sh` | retired — set `FIREKEEP_AGENT_ID` in the environment (overrides `[identity] agent_id`) and start your runtime |
 
-Presence registration (`session_start`), heartbeat (`prompt`), and clean exit deregistration (`stop`) are owned directly by the hook cores above for both Claude Code and kiro — kiro wires the same five hook cores to its `agentSpawn`/`userPromptSubmit`/`preToolUse`/`postToolUse`/`stop` events (see the table above), so its presence lifecycle works the same way. The **sidecar** (`firekeep-sidecar`) is the *intended* presence owner only for MCP-only runtimes with no hook lifecycle at all — Codex today — but nothing currently spawns it automatically; a Codex user has no presence path unless they run `firekeep-sidecar` by hand. The sidecar and every adapter use the same `[server]` connection. Each adapter registers one local `firekeep` gateway; it starts the four parameterized remote shims plus local Symdex and Decision Board backends.
+Two newer cores have no bash predecessor: `session_end` (presence deregistration + personal-mode clear at *real* session end — Claude `SessionEnd`, OpenCode `session.deleted`) and `precompact` (Claude-only `PreCompact` checkpoint).
+
+Presence registration (`session_start`) and heartbeat (`prompt`) are owned directly by the hook cores above. Clean-exit deregistration lives in `session_end`, **not** `stop` — Stop fires at the end of every assistant turn, and deregistering there deleted presence after turn 1. That means the presence lifecycle differs by runtime: Claude and OpenCode deregister at real session end; kiro wires the five original cores to its `agentSpawn`/`userPromptSubmit`/`preToolUse`/`postToolUse`/`stop` events but has **no session-end event** (and passes no session id), so a kiro session cannot deregister — it leaves at most one idle presence record per agent_id, reclaimed on that agent's next `agentSpawn` (see docs/KIRO-VALIDATION.md). The **sidecar** (`firekeep-sidecar`) is the *intended* presence owner only for MCP-only runtimes with no hook lifecycle at all — Codex today — but nothing currently spawns it automatically; a Codex user has no presence path unless they run `firekeep-sidecar` by hand. The sidecar and every adapter use the same `[server]` connection. Each adapter registers one local `firekeep` gateway; it starts the four parameterized remote shims plus local Symdex and Decision Board backends.
 
 ## Environment Variables
 

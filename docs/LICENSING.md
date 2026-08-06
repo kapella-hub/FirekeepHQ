@@ -47,7 +47,7 @@ License section opens with an OSI identifier.
 |---|---|---|
 | Wheel `License-Expression` | `client/pyproject.toml`, `symdex/pyproject.toml` → `license` | `test_pyproject_declares_the_source_available_licence` |
 | Wheel long description | the file each `readme` field names | `test_readme_licence_section_does_not_contradict_metadata` |
-| Bundled licence text | `license-files = ["LICENSE", "NOTICE"]` | `test_root_licence_file_is_not_an_osi_licence` |
+| Bundled licence text | `license-files = ["LICENSE", "NOTICE"]` | `test_root_licence_file_is_busl` |
 | Third-party notices | `NOTICE`, `client/NOTICE`, `symdex/NOTICE` (identical) | `scripts/generate_notice.py` + the CI licences job |
 | Datastore obligations | `docs/THIRD-PARTY-DATASTORES.md` | prose; reviewed by hand. `tests/test_image_pins.py` guards the *pins* underneath it — that every image reference is digest-pinned, and that the versions the summary table states a licence for are the versions actually pinned. It cannot check a licence; it can stop the versions moving out from under one |
 

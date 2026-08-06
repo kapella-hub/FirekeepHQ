@@ -53,7 +53,7 @@ Firekeep never redistributes them (see
 
 ```bash
 git clone https://github.com/kapella-hub/FirekeepHQ.git   # private; requires access
-cd Firekeep
+cd FirekeepHQ
 bash install.sh
 ```
 
@@ -78,7 +78,7 @@ registry that is unreachable from anywhere else.
 3. Prompts for:
    - **VPS IP** — used for CORS origins and printed in MCP URLs
    - **Neo4j password** — required, no default
-4. Bootstraps auth keys (`deploy/bootstrap-keys.sh`) — mints `FIREKEEP_INTERNAL_KEY` and `DASHBOARD_API_KEY` into `.env` and prints a one-time admin key. **Copy that admin key somewhere durable before the terminal scrolls; it is never written to disk.** See [DEPLOYMENT-OFFICE.md](DEPLOYMENT-OFFICE.md) for the full per-person key model.
+4. Bootstraps auth keys (`deploy/bootstrap-keys.sh`) — mints `FIREKEEP_INTERNAL_KEY`, `DASHBOARD_API_KEY`, and `RELAY_INTERNAL_API_KEY` into `.env` and prints a one-time admin key. **Copy that admin key somewhere durable before the terminal scrolls; it is never written to disk.** See [DEPLOYMENT-OFFICE.md](DEPLOYMENT-OFFICE.md) for the full per-person key model.
 5. Runs `docker compose up -d --build`
 6. Waits for all services to pass health checks
 7. Prints a status table with all MCP URLs
@@ -86,8 +86,11 @@ registry that is unreachable from anywhere else.
 Step 4 runs *before* step 5 on purpose: auth is enforced from the first request,
 so the keys have to exist before anything is listening. The health checks in
 step 6 still pass — `/health` and `/version` are pre-auth, and the one probe
-that does hit a gated path (`GET /mcp` on cortex-mcp) is satisfied by the 401,
-which is itself proof the route is mounted and enforcing.
+that does hit a gated path (`GET /mcp` on cortex-mcp) is satisfied by the 401.
+The 401 proves the process is up and enforcing auth — the middleware answers
+before routing, so it does not prove the `/mcp` route itself is mounted (see
+the "KNOWN DEGRADATION" comment in `install.sh` for why the stronger check
+was retired).
 
 The installer generates `dashboard/.htpasswd` with user `admin` and a random
 password. The password is written **once** to `dashboard/.htpasswd.cred`
@@ -122,7 +125,7 @@ printf 'admin:%s\n' "$(printf '%s' "$DASH_PASS" | openssl passwd -6 -stdin)" > d
 chmod 0644 dashboard/.htpasswd
 echo "dashboard password: $DASH_PASS"   # save this now -- it is not stored anywhere else
 
-# Bootstrap auth keys (mints FIREKEEP_INTERNAL_KEY / DASHBOARD_API_KEY into .env)
+# Bootstrap auth keys (mints FIREKEEP_INTERNAL_KEY / DASHBOARD_API_KEY / RELAY_INTERNAL_API_KEY into .env)
 docker compose up -d redis
 bash deploy/bootstrap-keys.sh
 
@@ -380,6 +383,23 @@ docker compose up -d
 
 **Test your restore.** A backup that has never been restored is not a backup.
 
+### Export and backup — what is covered
+
+Two mechanisms with different scopes; know which one you are relying on:
+
+- **Knowledge export** — `GET /memory/export` (admin-scoped) streams every
+  memory plus the Neo4j graph (nodes and edges) as JSONL;
+  `POST /memory/import` (also admin-scoped) restores from that stream. This
+  covers the *knowledge*: vector memories and graph structure.
+- **Not covered by export:** Bridge session state, vault secrets, replay
+  traces, and the rest of the Redis operational state (queues, presence,
+  tasks, auth keys). Those live only in the Redis/Neo4j/Qdrant volumes.
+
+A **full backup** therefore requires the volume backup (`deploy/backup.sh`,
+above — it ships in the server bundle); the JSONL export covers the knowledge
+and is the right tool for migration between deployments, not for disaster
+recovery of a whole stack.
+
 ### Support bundle
 
 ```bash
@@ -406,7 +426,7 @@ Application layer:
   bridge        ← depends on redis (+ cortex-api for distillation)
   sentinel      ← depends on redis
   relay         ← depends on redis
-  dashboard     ← no dependencies (static nginx)
+  dashboard     ← depends on cortex-api, bridge, sentinel, relay (healthy) — static nginx, but it starts last so its proxy targets are already answering
 ```
 
 ## Health Endpoints
@@ -415,19 +435,23 @@ Every service exposes a health endpoint:
 
 | Service | URL | Response |
 |---------|-----|----------|
-| Cortex API | `GET :8100/health` | `{status, version, uptime, memory_count}` |
+| Cortex API | `GET :8100/health` | `{status, services, version, uptime_seconds, memory_count, ...}` — `services` carries per-backend connectivity |
 | Cortex MCP | TCP check on :8080 | — |
-| FirekeepBridge | TCP check on :8070 | — |
-| FirekeepSentinel | `GET :8060/health` | `{status, redis}` |
-| FirekeepRelay | `GET :8050/health` | `{status, redis, active_channels, bulletin_count, active_claims}` |
+| FirekeepBridge | `GET :8070/health` | `{status, service}` (compose healthcheck is TCP-only) |
+| FirekeepSentinel | `GET :8060/health` | `{status, service, redis, collectors, event_count}` |
+| FirekeepRelay | `GET :8050/health` | `{status, service}` (channel/bulletin/claim counts come from the `relay_status` MCP tool, not this route) |
 | Relay A2A | `GET :8050/.well-known/agent.json` | A2A Agent Card for external discovery (discovery-only) |
 | Dashboard | HTTP check on :8040 | nginx serves index.html |
 
 Every row above answers **without a key** — `/health`, `/version` and the A2A
 agent card are on the auth skip list, and the dashboard's 401 is nginx basic
 auth, not the API gate. That is deliberate: a monitor should be able to tell
-"the service is down" from "you didn't authenticate". None of them touch a
-backend either, so they still answer when Neo4j or Redis is unavailable.
+"the service is down" from "you didn't authenticate". They also still answer
+when Neo4j or Redis is unavailable — but for different reasons: `/version`,
+bridge/relay `/health`, and the A2A card touch no backend at all, while Cortex
+`/health` probes Redis/Neo4j/Qdrant and Sentinel `/health` pings Redis; those
+two catch every probe failure and report `degraded`/`disconnected` instead of
+erroring.
 
 ## Resource Limits
 
@@ -540,8 +564,10 @@ the old `firekeepcortex_*` volumes. Keep them as a rollback for at least a week.
   want watched and point `NS_WATCH_PATHS` at them.
 - **API keys** — `AUTH_ENABLED=true` is the default; a valid `X-API-Key` is required on
   all MCP and REST endpoints except the pre-auth paths (`/health`, `/version`,
-  `/.well-known/agent.json`, and Cortex's `/docs`, `/redoc`, `/openapi.json` and keyless
-  `/dashboard` HTML shell). Keys are minted per-agent via `deploy/bootstrap-keys.sh` /
+  `/.well-known/agent.json`, and Cortex's `/docs`, `/redoc`, `/openapi.json`, its keyless
+  `/dashboard` HTML shell, and the public enrollment routes `/enroll`, `/enroll/anchor`,
+  `/members/invites/accept`, `/members/invites/anchor` — a device enrolling has no key
+  yet). Keys are minted per-agent via `deploy/bootstrap-keys.sh` /
   `deploy/firekeep-admin` — there is no single shared `API_KEY` (see
   [DEPLOYMENT-OFFICE.md](DEPLOYMENT-OFFICE.md)). Setting `AUTH_ENABLED=false` no longer
   hands out `admin` — the anonymous identity is granted every scope except that one, and
@@ -636,16 +662,22 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
 ```
 
-If you want to use embedding fine-tuning locally or in Docker, install the optional training stack separately:
-
-```bash
-cd cortex
-pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements-finetune.txt
-```
-
-For Docker Compose, set `CORTEX_INSTALL_FINETUNE_DEPS=true` in `.env` and rebuild `cortex-worker`.
-
 ## Monitoring
+
+### Who babysits it — what exists
+
+The stack is 13 compose services (4 datastores, `ollama-pull`, 7 Python
+services, the dashboard). The built-in operational surface is:
+
+- **Sentinel** is the environment observer: collectors (the Docker collector
+  is opt-in; git/file watches are configured, not on by default), webhook
+  intake, and `GET :8060/environment` (auth-gated) for the full environment
+  picture the briefing consumes.
+- **`/health` and `/version` per service** (see [Health Endpoints](#health-endpoints))
+  — keyless, so an external monitor can poll them without credentials.
+- **The dashboard Operations tab** shows Celery workers, Redis queue depths,
+  and every DLQ (`memory_backfill_dlq`, event DLQ, bridge `distill_dlq`) with
+  a requeue/retry action button per DLQ row.
 
 ### Docker Compose status
 ```bash

@@ -47,8 +47,8 @@ cd /path/to/Firekeep
 echo 'COMPOSE_FILE=docker-compose.yml:docker-compose.office.yml' >> .env
 echo 'FIREKEEP_OFFICE_MODE=true' >> .env
 bash deploy/bootstrap-keys.sh        # idempotent — safe to re-run any time
-# -> writes FIREKEEP_INTERNAL_KEY= and DASHBOARD_API_KEY= into .env
-# -> registers internal + dashboard + admin key hashes in Redis DB 7
+# -> writes FIREKEEP_INTERNAL_KEY=, DASHBOARD_API_KEY= and RELAY_INTERNAL_API_KEY= into .env
+# -> registers internal + dashboard + relay-internal + admin key hashes in Redis DB 7
 # -> prints the ADMIN key plaintext ONCE. Save it in a password manager NOW.
 chmod 600 .env                       # bootstrap-keys.sh writes live keys here
 sed -i 's/^AUTH_ENABLED=.*/AUTH_ENABLED=true/' .env
@@ -65,10 +65,11 @@ docker compose -f docker-compose.yml -f docker-compose.office.yml up -d --build
 > itself has no auth middleware and is loopback-only as of Task 33, so
 > inbound calls to it, e.g. Sentinel's git-reindex trigger, need no key.)
 > No known gaps remain among the SP1b §11 background integrations (Sentinel,
-> Symdex, Skill Synthesis). One separate known gap stays open: FirekeepScope's
-> `origin:"mcp"` Relay→Bridge persistence needs a manually provisioned
-> `NR_FIREKEEP_API_KEY` under `AUTH_ENABLED=true` (see CLAUDE.md's FirekeepScope
-> section) — without it that one flow goes quiet.
+> Symdex, Skill Synthesis). FirekeepScope's `origin:"mcp"` Relay→Bridge
+> persistence is also covered now: `deploy/bootstrap-keys.sh` mints
+> `RELAY_INTERNAL_API_KEY` (scopes `["session:write"]`) automatically and
+> `docker-compose.yml` wires it to `NR_FIREKEEP_API_KEY` — no manual
+> provisioning on any install that has run `install.sh`/`update.sh` since.
 
 `install.sh` and `update.sh` both invoke `deploy/bootstrap-keys.sh` automatically,
 so routine updates keep the keys in place. Re-runs mint nothing if the key
@@ -219,8 +220,8 @@ curl -s -o /dev/null -w '%{http_code}\n' https://<host>/.well-known/agent.json #
 
 **Redis-wipe key recovery** (`docker compose down -v` or DB 7 loss): all key
 hashes are gone, all clients 401. Fix: `bash deploy/bootstrap-keys.sh` again —
-it re-registers the internal + dashboard keys from the plaintext still in
-`.env` and mints a NEW admin key (printed once). Device credentials must be
+it re-registers the internal + dashboard + relay-internal keys from the
+plaintext still in `.env` and mints a NEW admin key (printed once). Device credentials must be
 re-enrolled with fresh single-use invites.
 
 **Locked out?** (lost admin key): two doors, on the office host itself.
@@ -241,9 +242,13 @@ re-enrolled with fresh single-use invites.
    > a **403**, not a pass-through. Disabling auth to recover now costs you the
    > stack's protection and still does not mint a key.
 
-2. **Direct hash write** (if the script itself is unavailable) — mirrors
-   `auth/middleware.py` `create_key` exactly (`auth:key:{sha256}` hash +
-   `auth:key_index` zset):
+2. **Direct hash write** (if the script itself is unavailable) — a minimal
+   legacy-shaped record that `auth/keys.py`'s validation accepts via its
+   missing-field fallbacks. It is *not* an exact mirror of `create_key`
+   (which also writes `workspace_id`/`member_id`/`device_id`/`credential_id`,
+   an `auth:cred:{credential_id}` mapping, and indexes the zset by
+   credential_id); `bootstrap-keys.sh`'s `backfill_credential_mappings`
+   upgrades exactly this shape on its next run:
    ```bash
    KEY="nxs_$(openssl rand -hex 24)"
    HASH=$(printf '%s' "$KEY" | sha256sum | cut -d' ' -f1)
