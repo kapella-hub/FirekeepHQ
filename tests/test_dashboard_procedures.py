@@ -1,0 +1,309 @@
+"""The Procedures panel must not invent numbers it was not given.
+
+Why this file exists
+--------------------
+`GET /procedures` returns per-step STATS keyed by step id (`app/procedures/api.py`)
+and carries neither the step text nor the total step count. The design's coverage
+claim -- "4 of 7 steps observable" (spec H2) -- is a statement the rollup alone
+cannot make, and the whole point of showing coverage is that a coverage number
+the user cannot see is the same silent-cap failure this repo bans elsewhere.
+
+So the panel enriches each row with the authored `step_specs` from
+`GET /skills/{id}`, and every case below pins what it does when that enrichment
+is NOT available: it says the denominator is unknown rather than rendering
+"X of X", and it labels a step by its id rather than inventing text. A panel
+that quietly reports full coverage because it could not fetch the total is the
+confident-wrong-signal failure `healthVerdict` was written to kill, one tab over.
+
+The rendering is a pure function behind sentinels for the same reason
+`healthVerdict` is: the previous generation of this tab decided everything
+inline inside a fetch callback, so nothing could assert on it without a browser.
+This file executes the SHIPPED source under node, not a copy.
+"""
+from __future__ import annotations
+
+import json
+import re
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+DASHBOARD = Path(__file__).resolve().parents[1] / "dashboard" / "index.html"
+START, END = ">>> proceduresPanel", "<<< proceduresPanel"
+
+pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+
+
+def _extract() -> str:
+    src = DASHBOARD.read_text(encoding="utf-8")
+    try:
+        body = src.split(START, 1)[1].split(END, 1)[0]
+    except IndexError:  # pragma: no cover - only when someone deletes the markers
+        pytest.fail(
+            f"sentinels {START!r}/{END!r} missing from dashboard/index.html. "
+            "They are load-bearing: this test executes the shipped function."
+        )
+    # Both sentinels live INSIDE /* */ comments (the healthVerdict precedent), so
+    # a raw split leaves comment fragments at each end. Cut at the close of the
+    # opening comment and the open of the closing one.
+    return body.split("*/", 1)[1].rsplit("/*", 1)[0]
+
+
+def _render(data, skills_by_id=None) -> str:
+    js = _extract() + (
+        "\nconst out = renderProceduresPanel(%s, %s);\n"
+        "process.stdout.write(String(out));\n"
+    ) % (json.dumps(data), json.dumps(skills_by_id or {}))
+    p = subprocess.run(["node", "-e", js], capture_output=True, text=True, timeout=30)
+    assert p.returncode == 0, f"node failed: {p.stderr[:600]}"
+    return p.stdout
+
+
+def _call(fn: str, *args) -> str:
+    js = _extract() + (
+        "\nprocess.stdout.write(String(%s(%s)));\n"
+        % (fn, ", ".join(json.dumps(a) for a in args))
+    )
+    p = subprocess.run(["node", "-e", js], capture_output=True, text=True, timeout=30)
+    assert p.returncode == 0, f"node failed: {p.stderr[:600]}"
+    return p.stdout
+
+
+# ---------------------------------------------------------------- fixtures --
+# Shapes copied from app/procedures/api.py's real response, not invented: a row
+# is {skill_id, trigger, observable_steps, executions, steps, proposals}, `steps`
+# is store.get_step_stats verbatim (seven int keys), `proposals` is
+# store.list_proposals verbatim ({id, kind, skill_id, step_id, detail}).
+
+ROW = {
+    "skill_id": "sk1",
+    "trigger": "Publish a client release",
+    "observable_steps": 2,
+    "executions": 4,
+    "steps": {
+        "a": {"observed": 3, "skipped": 1, "executions": 4,
+              "observed_scored": 0, "observed_success": 0,
+              "skipped_scored": 0, "skipped_success": 0},
+        "b": {"observed": 1, "skipped": 3, "executions": 4,
+              "observed_scored": 0, "observed_success": 0,
+              "skipped_scored": 0, "skipped_success": 0},
+    },
+    "proposals": [],
+}
+
+SKILL = {
+    "id": "sk1",
+    "trigger": "Publish a client release",
+    "step_specs": [
+        {"id": "a", "text": "bump the bundled symdex wheel",
+         "kind": "file_glob", "pattern": "*.toml", "load_bearing": True},
+        {"id": "b", "text": "regenerate the bootstrap checksum",
+         "kind": "file_glob", "pattern": "client/bootstrap/*", "load_bearing": False},
+        {"id": "c", "text": "ask the release owner to confirm",
+         "kind": "unobservable", "pattern": "", "load_bearing": False},
+    ],
+}
+
+
+def _body(rows, specs_total=3):
+    return {"procedures": rows, "count": len(rows), "specs_total": specs_total}
+
+
+class TestColdStart:
+    """H3: no existing skill has specs. Until some are authored the feature does
+    nothing at all, which is correct and must not read as a bug."""
+
+    def test_zero_specs_names_the_tool_that_fixes_it(self):
+        html = _render(_body([], specs_total=0))
+        assert "skill_add_step_specs" in html, (
+            "the cold-start line must name the tool that ends the cold start"
+        )
+
+    def test_zero_specs_renders_no_procedure_card(self):
+        html = _render(_body([], specs_total=0))
+        assert "steps observable" not in html
+
+    def test_a_missing_body_does_not_throw(self):
+        assert "skill_add_step_specs" in _render(None)
+
+
+class TestCoverage:
+    """Coverage is REPORTED, never hidden or guessed."""
+
+    def test_coverage_counts_unobservable_steps_in_the_denominator(self):
+        html = _render(_body([ROW]), {"sk1": SKILL})
+        assert "2 of 3 steps observable" in html, (
+            "the denominator is every authored step, observable or not -- that is "
+            "the number H2 exists to expose"
+        )
+
+    def test_coverage_is_shown_when_nothing_is_observable(self):
+        skill = dict(SKILL)
+        skill["step_specs"] = [
+            {"id": "c", "text": "ask the owner", "kind": "unobservable",
+             "pattern": "", "load_bearing": False},
+        ]
+        row = dict(ROW, observable_steps=0, steps={})
+        html = _render(_body([row]), {"sk1": skill})
+        assert "0 of 1 steps observable" in html
+
+    def test_an_unavailable_spec_list_says_the_total_is_unknown(self):
+        """THE case that matters. Without the skill detail the total is genuinely
+        unknown; rendering "2 of 2" would claim full coverage on no evidence."""
+        html = _render(_body([ROW]), {})
+        assert "2 of 2 steps observable" not in html, (
+            "an unknown denominator must never be filled in with the numerator"
+        )
+        assert "unavailable" in html.lower()
+        assert "2 observable step" in html
+
+
+class TestStepRows:
+    def test_step_text_is_rendered_when_the_skill_is_available(self):
+        html = _render(_body([ROW]), {"sk1": SKILL})
+        assert "bump the bundled symdex wheel" in html
+        assert "regenerate the bootstrap checksum" in html
+
+    def test_counts_come_from_the_rollup_stats(self):
+        html = _render(_body([ROW]), {"sk1": SKILL})
+        assert "observed 3" in html and "skipped 1" in html
+        assert "observed 1" in html and "skipped 3" in html
+
+    def test_a_step_with_no_stats_says_so_instead_of_showing_zeros(self):
+        """`steps` is written by the nightly pass. Before it has run the dict is
+        empty, and "observed 0 / skipped 0" would report a measurement nobody
+        made -- absence of evidence rendered as evidence of absence (I2)."""
+        row = dict(ROW, steps={}, executions=0)
+        html = _render(_body([row]), {"sk1": SKILL})
+        assert "observed 0" not in html
+        assert "no observations recorded yet" in html
+
+    def test_unobservable_steps_are_labelled_as_such(self):
+        html = _render(_body([ROW]), {"sk1": SKILL})
+        assert "ask the release owner to confirm" in html
+        assert "unobservable" in html
+
+    def test_without_the_skill_the_step_id_is_the_label(self):
+        html = _render(_body([ROW]), {})
+        assert "bump the bundled symdex wheel" not in html
+        assert "observed 3" in html, "the stats still render, keyed by id"
+
+    def test_the_execution_count_is_shown(self):
+        html = _render(_body([ROW]), {"sk1": SKILL})
+        assert "4 executions" in html
+
+
+class TestProposals:
+    def test_a_proposal_renders_its_detail_and_a_dismiss_button(self):
+        row = dict(ROW, proposals=[{
+            "id": "p1", "kind": "dead_step", "skill_id": "sk1", "step_id": "b",
+            "detail": "skipped in 9 of 10 executions at no measurable cost",
+        }])
+        html = _render(_body([row]), {"sk1": SKILL})
+        assert "skipped in 9 of 10 executions at no measurable cost" in html
+        assert "dismissProcedureProposal('p1')" in html
+
+    def test_no_proposals_means_no_dismiss_button(self):
+        html = _render(_body([ROW]), {"sk1": SKILL})
+        assert "dismissProcedureProposal" not in html
+
+
+class TestEscaping:
+    """The panel builds HTML strings, and one of them is a JS call inside an
+    onclick attribute -- two nested contexts, two escapes."""
+
+    def test_hostile_trigger_text_is_escaped(self):
+        row = dict(ROW, trigger="<script>alert(1)</script>")
+        html = _render(_body([row]), {})
+        assert "<script>" not in html
+
+    def test_hostile_step_text_is_escaped(self):
+        skill = dict(SKILL)
+        skill["step_specs"] = [{"id": "a", "text": "<img src=x onerror=alert(1)>",
+                                "kind": "file_glob", "pattern": "*", "load_bearing": False}]
+        html = _render(_body([ROW]), {"sk1": skill})
+        assert "<img" not in html
+
+    def test_a_quote_in_a_proposal_id_cannot_break_out_of_the_onclick(self):
+        """HTML-entity escaping ALONE is not enough here: the parser decodes
+        &#39; back to ' BEFORE the JS in the attribute is parsed, so a lone
+        entity-escaped quote still closes the string and the rest executes."""
+        row = dict(ROW, proposals=[{
+            "id": "');alert(1);//", "kind": "dead_step", "skill_id": "sk1",
+            "step_id": "b", "detail": "d",
+        }])
+        html = _render(_body([row]), {"sk1": SKILL})
+        assert "alert(1)" in html, "the payload should still be present, inert"
+        assert "('&#39;);alert" not in html, (
+            "an entity-only escape decodes straight back into an argument break: "
+            "the parser hands the JS a bare ' and the rest of the payload executes"
+        )
+        assert "\\&#39;);alert" in html, (
+            "the quote must be JS-escaped BEFORE it is HTML-escaped"
+        )
+
+    def test_the_attribute_escaper_is_not_merely_the_html_escaper(self):
+        """Proves discrimination: if procAttr ever degrades to procEsc this test
+        goes red, which is the only way to notice."""
+        assert _call("procEsc", "a'b") != _call("procAttr", "a'b")
+
+
+class TestWiring:
+    """The hazard the plan names: an inline onclick handler that is not
+    window.-exported does nothing at click time, with no build- or test-time
+    detection anywhere."""
+
+    def test_every_handler_used_from_an_onclick_in_this_panel_is_exported(self):
+        block = _extract()
+        handlers = set(re.findall(r'onclick=\\?"([A-Za-z_$][\w$]*)\(', block))
+        assert handlers, "expected at least one inline onclick handler in the panel"
+        src = DASHBOARD.read_text(encoding="utf-8")
+        for h in sorted(handlers):
+            assert re.search(r"\bwindow\.%s\s*=" % re.escape(h), src), (
+                f"{h}() is called from an inline onclick but is never "
+                f"window.-exported -- the button will silently do nothing"
+            )
+
+    def test_the_panel_is_loaded_when_the_skills_tab_opens(self):
+        src = DASHBOARD.read_text(encoding="utf-8")
+        m = re.search(r"else if \(name === 'skills'\) \{([^}]*)\}", src)
+        assert m, "could not find the skills branch of switchTab"
+        assert "loadProcedures()" in m.group(1)
+
+    def test_the_panel_container_exists_in_the_skills_section(self):
+        src = DASHBOARD.read_text(encoding="utf-8")
+        assert 'id="proceduresPanel"' in src
+
+    def test_a_disabled_deployment_hides_the_panel_rather_than_erroring(self):
+        """PROCEDURE_ENABLED=false does not mount the router at all (the /dreams
+        + /collectors precedent), so the panel must treat 404 as 'off', not as a
+        fault to shout about."""
+        src = DASHBOARD.read_text(encoding="utf-8")
+        m = re.search(r"function loadProcedures\(\)[\s\S]*?\n\}", src)
+        assert m, "loadProcedures not found"
+        body = m.group(0)
+        assert "404" in body and "display" in body, (
+            "loadProcedures must hide the panel on a 404 rather than render an error"
+        )
+
+    def test_the_panel_uses_fetchJSON_not_bare_fetch(self):
+        """The existing Skills tab uses bare fetch with no timeout and no status
+        check; new handlers do not inherit that."""
+        src = DASHBOARD.read_text(encoding="utf-8")
+        for fn in ("loadProcedures", "dismissProcedureProposal"):
+            m = re.search(r"function %s\([\s\S]*?\n\}" % fn, src)
+            assert m, f"{fn} not found"
+            body = m.group(0)
+            assert "fetchJSON(" in body, f"{fn} must use fetchJSON"
+            assert not re.search(r"[^J]\bfetch\(", body), f"{fn} must not use bare fetch"
+
+    def test_the_dismiss_handler_has_a_catch(self):
+        """Dismiss is admin-gated server-side, so a 403 is a REACHABLE outcome
+        here. Without a .catch the button fails silently and the row re-renders
+        unchanged -- the exact defect the existing PATCH handlers still have."""
+        src = DASHBOARD.read_text(encoding="utf-8")
+        m = re.search(r"function dismissProcedureProposal\([\s\S]*?\n\}", src)
+        assert m
+        assert ".catch(" in m.group(0)

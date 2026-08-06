@@ -1418,6 +1418,9 @@ button.btn-outline:hover { border-color: var(--accent); color: var(--accent); ba
                     </div>
                 </div>
             </div>
+            <!-- Living Procedures. Hidden entirely when PROCEDURE_ENABLED=false:
+                 the router is not mounted at all on a disabled deploy. -->
+            <div id="proceduresPanel" style="margin-bottom:20px"></div>
             <div id="skillsGrid" style="display:grid;gap:12px"></div>
         </section>
 
@@ -2223,7 +2226,7 @@ function switchTab(name) {
 
     if (name === 'overview') { refreshOverview(); activeTimer = setInterval(refreshOverview, 30000); }
     else if (name === 'memory') { loadMemoryStats(); loadBrowse(); loadProjectFilter(); loadMemoryHygiene(); }
-    else if (name === 'skills') { loadSkills(); }
+    else if (name === 'skills') { loadSkills(); loadProcedures(); }
     else if (name === 'knowledge') { loadKnowledgeSources(); loadCollectors(); }
     else if (name === 'sessions') { loadSessions(); }
     else if (name === 'events') { loadEvents(); activeTimer = setInterval(loadEvents, 30000); }
@@ -4910,6 +4913,182 @@ function loadCollectors() {
 if ($('btnRefreshCollectors')) $('btnRefreshCollectors').addEventListener('click', loadCollectors);
 
 window.loadCollectors = loadCollectors;
+
+/* >>> proceduresPanel — extracted and executed by tests/test_dashboard_procedures.py.
+   Keep this block self-contained and free of DOM/browser references: the test
+   pulls the text between these sentinels straight into node.
+
+   WHY THIS IS A PURE FUNCTION AT ALL: the healthVerdict precedent above. The
+   rest of this tab decides everything inline inside a fetch callback, tangled
+   with DOM writes, so its behaviour cannot be asserted without a browser.
+
+   WHAT IT MUST NOT DO: invent a number. `GET /procedures` returns per-step
+   STATS keyed by step id and carries neither the step text nor the total step
+   count, so the coverage claim the design promises ("4 of 7 steps observable")
+   needs the authored step_specs from GET /skills/{id}. When that enrichment is
+   unavailable the denominator is genuinely unknown, and rendering "2 of 2"
+   would report full coverage on no evidence — the confident-wrong-signal
+   failure healthVerdict exists to kill, one tab over. */
+function procEsc(s) {
+    // Deliberately NOT the file's esc(): that round-trips through a DOM node,
+    // which does not exist under node, and it leaves ' untouched.
+    if (s == null) return '';
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function procAttr(s) {
+    // Two nested contexts, two escapes, in this order: the value lands inside a
+    // JS string literal that lives inside an HTML attribute. HTML-escaping alone
+    // is NOT enough — the parser decodes &#39; back to ' BEFORE the JS is
+    // parsed, so a lone entity-escaped quote still closes the argument.
+    return procEsc(String(s == null ? '' : s).replace(/\\/g, '\\\\').replace(/'/g, "\\'"));
+}
+
+function procCoverage(row, specs) {
+    var observable = (row && row.observable_steps != null) ? row.observable_steps : 0;
+    if (!specs || !specs.length) {
+        return observable + ' observable step' + (observable === 1 ? '' : 's')
+            + ', total step count unavailable';
+    }
+    var obs = 0;
+    specs.forEach(function(sp) { if (sp && sp.kind === 'file_glob') obs++; });
+    // The denominator counts UNOBSERVABLE steps too. That is the whole point of
+    // the line: round 1 cannot watch shell steps (H2), and a coverage number the
+    // user cannot see is the same silent cap this repo bans elsewhere.
+    return obs + ' of ' + specs.length + ' steps observable';
+}
+
+function procStepRows(row, specs) {
+    var stats = (row && row.steps) || {};
+    var out = [];
+    if (specs && specs.length) {
+        specs.forEach(function(sp, i) {
+            var id = (sp && sp.id) ? String(sp.id) : '';
+            var has = id && Object.prototype.hasOwnProperty.call(stats, id);
+            out.push({
+                id: id,
+                label: (sp && sp.text) ? sp.text : (id || ('step ' + (i + 1))),
+                observable: !!(sp && sp.kind === 'file_glob'),
+                load_bearing: !!(sp && sp.load_bearing),
+                stats: has ? stats[id] : null
+            });
+        });
+        return out;
+    }
+    // Degraded: with no spec list the id IS the only label there is. Saying so
+    // beats inventing one.
+    Object.keys(stats).forEach(function(id) {
+        out.push({ id: id, label: id, observable: true, load_bearing: false, stats: stats[id] });
+    });
+    return out;
+}
+
+function renderProceduresPanel(data, skillsById) {
+    var rows = (data && data.procedures) || [];
+    var specsTotal = (data && data.specs_total != null) ? data.specs_total : 0;
+    var head = '<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:8px">'
+        + '<span style="font-weight:600;font-size:14px">Procedures</span>'
+        + '<span class="text-dim" style="font-size:11px">executions recorded against skills that carry step specs</span>'
+        + '</div>';
+    if (!specsTotal) {
+        // H3, cold start: no existing skill has specs, so the feature does
+        // nothing at all. That is correct, and must not read as a bug.
+        return head + '<div class="text-dim" style="font-size:12px;padding:4px 0">'
+            + 'No procedure has step specs yet &mdash; ask an agent to compile them with '
+            + '<code>skill_add_step_specs</code>.</div>';
+    }
+    var cards = rows.map(function(row) {
+        var skill = (skillsById && skillsById[row.skill_id]) || null;
+        var specs = (skill && Array.isArray(skill.step_specs) && skill.step_specs.length)
+            ? skill.step_specs : null;
+        var execs = (row.executions != null) ? row.executions : 0;
+
+        var steps = procStepRows(row, specs).map(function(s) {
+            var counts = s.stats
+                ? ('observed ' + procEsc(s.stats.observed != null ? s.stats.observed : 0)
+                   + ' / skipped ' + procEsc(s.stats.skipped != null ? s.stats.skipped : 0))
+                // I2, one layer up: the nightly pass writes these. Before it has
+                // run, "observed 0 / skipped 0" would report a measurement
+                // nobody made.
+                : 'no observations recorded yet';
+            var tags = '';
+            if (!s.observable) tags += '<span class="badge" style="margin-left:6px">unobservable</span>';
+            if (s.load_bearing) tags += '<span class="badge badge-yellow" style="margin-left:4px">load-bearing</span>';
+            return '<div style="display:flex;justify-content:space-between;gap:12px;font-size:11px;padding:3px 0;border-top:1px solid var(--border-subtle)">'
+                + '<span>' + procEsc(s.label) + tags + '</span>'
+                + '<span class="text-dim" style="white-space:nowrap">' + procEsc(counts) + '</span>'
+                + '</div>';
+        }).join('');
+
+        var props = (row.proposals || []).map(function(p) {
+            var pid = (p && p.id) ? p.id : '';
+            return '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:11px;margin-top:6px;color:var(--yellow,var(--amber))">'
+                + '<span>&#9888; ' + procEsc((p && p.kind) || 'proposal') + ': ' + procEsc((p && p.detail) || '') + '</span>'
+                + '<button class="btn btn-sm btn-outline" onclick="dismissProcedureProposal(\'' + procAttr(pid) + '\')" style="padding:2px 8px;font-size:10px">Dismiss</button>'
+                + '</div>';
+        }).join('');
+
+        return '<div class="card" style="padding:12px;margin-bottom:10px">'
+            + '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px">'
+                + '<span style="font-weight:600;font-size:13px">' + procEsc(row.trigger || row.skill_id) + '</span>'
+                + '<span class="text-dim" style="font-size:11px;white-space:nowrap">' + procEsc(execs) + ' execution' + (execs === 1 ? '' : 's') + '</span>'
+            + '</div>'
+            + '<div class="text-dim" style="font-size:11px;margin-top:2px">' + procEsc(procCoverage(row, specs)) + '</div>'
+            + steps + props
+            + '</div>';
+    }).join('');
+    return head + cards;
+}
+/* <<< proceduresPanel */
+
+function loadProcedures() {
+    var panel = $('proceduresPanel');
+    if (!panel) return;
+    panel.style.display = '';
+    panel.innerHTML = '<div class="spinner">Loading procedures...</div>';
+    fetchJSON(CONFIG.CORTEX_API + '/procedures').then(function(data) {
+        var rows = (data && data.procedures) || [];
+        // Best-effort enrichment. The rollup carries stats keyed by step id and
+        // neither the step text nor the total step count, so the authored spec
+        // list is read per procedure to render a legible card. Any failure
+        // degrades that one card (id labels, unknown denominator), never the
+        // panel — which is why each call has its own catch.
+        return Promise.all(rows.map(function(row) {
+            return fetchJSON(CONFIG.CORTEX_API + '/skills/' + encodeURIComponent(row.skill_id))
+                .catch(function() { return null; });
+        })).then(function(skills) {
+            var byId = {};
+            skills.forEach(function(s, i) { if (s) byId[rows[i].skill_id] = s; });
+            panel.innerHTML = renderProceduresPanel(data, byId);
+        });
+    }).catch(function(e) {
+        var m = (e && e.message) ? e.message : '';
+        if (m.indexOf('404') !== -1 || m.indexOf('503') !== -1) {
+            // PROCEDURE_ENABLED=false does not mount the router at all (the
+            // /dreams + /collectors precedent), so a 404 means "off", not
+            // "broken". Hide rather than shout.
+            panel.innerHTML = '';
+            panel.style.display = 'none';
+            return;
+        }
+        panel.innerHTML = '';
+        panel.appendChild(errMsg('Cannot load procedures: ' + m));
+    });
+}
+
+function dismissProcedureProposal(id) {
+    // The dismiss route is admin-gated server-side, so 403 is a REACHABLE
+    // outcome here. Without this catch the button would fail silently and the
+    // panel would re-render unchanged — the defect the PATCH handlers below
+    // still have.
+    return fetchJSON(CONFIG.CORTEX_API + '/procedures/proposals/' + encodeURIComponent(id) + '/dismiss', { method: 'POST' })
+        .then(function() { toast('Proposal dismissed', 'success'); loadProcedures(); })
+        .catch(function(e) { toast('Dismiss failed: ' + ((e && e.message) ? e.message : 'unknown error'), 'error'); });
+}
+
+window.loadProcedures = loadProcedures;
+window.dismissProcedureProposal = dismissProcedureProposal;
 
 async function loadSkills() {
     var status = $('skillStatusFilter') ? $('skillStatusFilter').value : 'active';
