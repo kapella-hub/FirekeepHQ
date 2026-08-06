@@ -300,6 +300,18 @@ non-raising and non-vacuous relative to what the store already held; the decline
 warning level and reported as `orphan_sweep` in the run record, because "0 orphans cleared" is
 what a healthy pass and a declined one both look like from outside.
 
+**That guard is partial, and the gap is the interesting half.** It triggers on a *fully*
+empty scan, so a scan that returns 1 of 50 skills leaves `skills` non-empty, `orphan_sweep`
+reads `ok`, and the other 49 are swept. The guard covers the failure mode that is easy to
+detect, not the one that is dangerous — a total outage announces itself; a partial one is
+indistinguishable from real deletions by inspection of a single pass. **The correct fix is
+not a bigger threshold but a second opinion:** absence should have to be observed by two
+consecutive passes before anything is cleared (the two-strikes shape, same reasoning as
+`loop-until-dry`), because a transient scan cannot establish absence and no percentage
+cutoff can tell "40 skills were deleted" from "40 skills were not returned". Not implemented
+in round 1; a deployment that deletes skills in bulk should run the pass once by hand
+afterwards and check `orphan_sweep` before trusting the next automatic run.
+
 ## 5. Invariants
 
 These are the load-bearing properties. Each exists because the code audit found a specific
@@ -387,10 +399,18 @@ Redis GET, memoised in-process for 30s, then `fnmatch` in memory", and that is t
 the path that does **not** match — which is every edit on a deployment with no specs, and most
 edits on one that has them. A **match** costs, per matched index entry:
 `HGETALL` (read the execution) → `HGETALL` (again, inside `record_observation`) → `HSET`
-(+`SADD` on a first observation) → `EXPIRE` → and, when an earlier load-bearing step is
-missing, `GET` (step stats) + `SET NX` (the warn latch) — five to seven round trips, not one,
-and they are on the blocking path. Nothing measured it because nothing counted them; stating
-the real number is the point of an invariant. Reducing it (a Lua script, or a pipeline) is a
+(the observed map) → `EXPIRE`, plus `HSET` + `SADD` when this is the execution's **first**
+observation, plus `GET` (step stats) + `SET NX` (the warn latch) when an earlier load-bearing
+step is missing — **four round trips at minimum, eight at maximum**, not one, and they are on
+the blocking path.
+
+That range was written as "five to seven" for one review cycle and was wrong at **both**
+ends, which is worth recording rather than quietly correcting: the floor missed that a
+warn-free match on an existing execution never touches the stats `GET` or the latch, and the
+ceiling missed that `record_observation` issues **two** `HSET`s on a first observation — one
+for the opening fields, one for `observed`/`observed_counts`/`last_seen_at` unconditionally
+afterwards. An invariant whose entire purpose is to state the real number is the last place a
+guessed number belongs. Count them in the code before editing this sentence again. Reducing it (a Lua script, or a pipeline) is a
 round-2 change, not a claim to make in advance.
 
 `record_observation` is also **`HGETALL` → `json.loads` → mutate → `HSET` with no `WATCH` and
@@ -525,7 +545,12 @@ All new, all optional, all inert while `PROCEDURE_ENABLED=false`.
 | `PROCEDURE_EXEC_TTL_DAYS` | `90` | Execution-record TTL; deliberately > the window so a window never reaches past its data |
 | `PROCEDURE_AGENT_CAP` | `5` | Max observations one `agent_id` contributes per step (mirrors `OWM_AGENT_CAP`) |
 | `PROCEDURE_INDEX_CACHE_SECONDS` | `30` | In-process matcher-index cache TTL |
+| `PROCEDURE_MAX_SPECS` | `50` | Hard cap on specs per skill — bounds the index and the pre-edit match loop |
 | `PROCEDURE_SCHEDULE_HOURS` | `24` | Hardening pass cadence |
+
+Eleven, not ten: `PROCEDURE_MAX_SPECS` was missing from this table for one review cycle
+while `cortex/CLAUDE.md` correctly said "all eleven are plumbed". A config table that
+undercounts the config is how a var comes to exist with nobody's decision behind it.
 
 Per the change-consistency checklist, each lands in `cortex/app/config.py`,
 `docker-compose.yml` (**including `cortex-beat`**, since `beat_schedule` is built from
