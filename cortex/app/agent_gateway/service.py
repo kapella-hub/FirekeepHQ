@@ -135,11 +135,18 @@ class AgentGatewayService:
             (req.adapter, req.action.type), False,
         )
 
-        # Audit-record non-allow decisions (block/rethink) for policy visibility.
-        # Allows are the common case and would evict interesting records under the
-        # list cap, so they are intentionally skipped. Best-effort: never break the
-        # decision path.
-        if decision != "allow" and self._policy_decision_redis is not None:
+        # Audit-record non-allow decisions (warn/block/rethink) for policy
+        # visibility. Allows are the common case and would evict interesting
+        # records under the list cap, so they are intentionally skipped.
+        # Best-effort: never break the decision path.
+        #
+        # `warn` is remapped to `allow` above (the gateway Decision literal has
+        # no warn), so gating on `decision` dropped every warn ever produced by
+        # FileRiskRule/SessionHealthRule/RecentFailureRule. Gate on the RAW
+        # action and record the warn under its own name; block/rethink keep
+        # recording the FINAL decision so rethink->block escalation is visible.
+        audit_action = decision if decision != "allow" else raw_action
+        if audit_action != "allow" and self._policy_decision_redis is not None:
             try:
                 from app.policy.store import record_policy_decision
                 await record_policy_decision(
@@ -147,7 +154,7 @@ class AgentGatewayService:
                     file_path=req.action.target,
                     agent_id=req.agent_id,
                     session_id=req.session_id,
-                    action=decision,
+                    action=audit_action,
                     risk_score=policy_decision.risk_score,
                     reasons=policy_decision.reasons,
                     signals=policy_decision.signals,
@@ -155,13 +162,18 @@ class AgentGatewayService:
             except Exception as exc:
                 logger.warning("policy decision record failed for %s: %s", action_id, exc)
 
-        # Store prediction for later reconciliation (only if prediction present and Redis available)
-        if req.prediction is not None and self.prediction_redis is not None:
+        # Store the action record for later reconciliation. Written for EVERY
+        # action, not only predicted ones: the shell hook sends no prediction,
+        # so gating this on `req.prediction is not None` filed every reconcile
+        # from Claude Code under session_id="" and made it invisible to
+        # get_session_timeline — which also silently zeroed compute_session_eval's
+        # predict->reconcile Brier calculation on that path.
+        if self.prediction_redis is not None:
             import json as _json
             entry = {
                 "agent_id": req.agent_id,
                 "session_id": req.session_id,
-                "prediction": req.prediction.model_dump(),
+                "prediction": req.prediction.model_dump() if req.prediction else None,
                 "adapter": req.adapter,
                 "action_type": req.action.type,
                 "target": req.action.target,
@@ -222,10 +234,15 @@ class AgentGatewayService:
             except Exception as exc:
                 logger.warning("prediction store read failed for %s: %s", req.action_id, exc)
 
+        # An action record is now written for EVERY action, so `prediction` is
+        # None whenever the caller sent none (the shell-hook path). A null
+        # prediction scores None — there is nothing to compare — rather than
+        # raising into the warning log on every reconcile.
         score = None
-        if entry is not None:
+        stored_prediction = (entry or {}).get("prediction")
+        if stored_prediction:
             try:
-                pred = Prediction(**entry["prediction"])
+                pred = Prediction(**stored_prediction)
                 score = compute_prediction_match_score(pred, req.outcome)
             except Exception as exc:
                 logger.warning("score computation failed for %s: %s", req.action_id, exc)
@@ -262,6 +279,11 @@ class AgentGatewayService:
                     "source": "agent",
                     "prediction_match_score": score,
                 },
+                # Without this the event carries no top-level outcome, so
+                # _failure_rate (evals/scorers.py) never counts it. Measured:
+                # no production emitter passed outcome= except Bridge's session
+                # lifecycle, so effectively every session evaluated as success.
+                outcome="success" if req.outcome.success else "failure",
             )
         except Exception as exc:
             logger.warning("reconcile emit failed for %s: %s", req.action_id, exc)
