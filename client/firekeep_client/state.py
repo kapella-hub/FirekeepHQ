@@ -326,6 +326,41 @@ def _reap_expired_scratch() -> None:
         return
 
 
+# --- unsigned-update notice (release signing, docs/RELEASE-SIGNING.md) -------
+#
+# `firekeep update` prints a one-line warning when a release installs without a
+# verified signature — but the background auto-update runs DETACHED with stderr
+# on DEVNULL, so that warning reaches nobody. cmd_update persists it here and the
+# next session_start briefing prints it once (consume-on-read). TTL'd so a
+# machine whose sessions never start (codex-only, abandoned) doesn't keep the
+# marker forever; reap_stale honours the declared expiry.
+
+_UNSIGNED_NOTICE_KEY = "unsigned_update_notice"
+_UNSIGNED_NOTICE_TTL_SECONDS = 14 * 86400.0
+
+
+def note_unsigned_update(message: str) -> None:
+    """Record that an update ran without a verified release signature. Never raises
+    — the notice is best-effort by nature; failing the update over it would invert
+    the priority."""
+    try:
+        write_scratch(_UNSIGNED_NOTICE_KEY, message,
+                      ttl_seconds=_UNSIGNED_NOTICE_TTL_SECONDS)
+    except Exception:
+        pass
+
+
+def consume_unsigned_update_notice() -> "str | None":
+    """Return-and-delete the pending unsigned-update notice (one-shot). Never raises."""
+    try:
+        raw = read_scratch(_UNSIGNED_NOTICE_KEY)
+        if raw:
+            delete_scratch(_UNSIGNED_NOTICE_KEY)
+        return raw or None
+    except Exception:
+        return None
+
+
 def _session_stash_key(agent_id: str) -> str:
     return f"session_current_{agent_id}"
 

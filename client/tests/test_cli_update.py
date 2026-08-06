@@ -19,10 +19,21 @@ def update_env(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     monkeypatch.setenv("FIREKEEP_CONFIG", str(cfg))
+    # cmd_update persists the unsigned-notice marker via state (scratch); keep
+    # that off the real machine cache.
+    monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path / "cache"))
     execs = []
-    monkeypatch.setattr(cli, "_exec_bootstrap",
-                        lambda script, version, base: execs.append((script, version, base)))
-    return {"home": home, "execs": execs}
+    handed = []
+    monkeypatch.setattr(
+        cli, "_exec_bootstrap",
+        lambda script, version, base, sums_file=None: (
+            execs.append((script, version, base)), handed.append(sums_file)))
+    # Neutral signing default: no pinned key -> silent skip. Keeps these tests
+    # network-free even after the operator pins a real key in signing.py; the
+    # signing-specific wiring tests below override this per-test.
+    monkeypatch.setattr(cli.updater, "fetch_signed_sums",
+                        lambda base, version, **kw: updater.SignedSums(None, False, None))
+    return {"home": home, "execs": execs, "handed": handed}
 
 
 def test_update_auto_off_writes_config_and_does_not_update(update_env, monkeypatch):
@@ -138,6 +149,65 @@ def test_update_to_pins_a_version_and_allows_rollback(update_env, monkeypatch):
     assert version == "0.0.1", "--to must win over the manifest's latest"
 
 
+# --- release-signing wiring (the check must actually run on the update path) ----
+
+
+def test_update_prints_the_unsigned_warning(update_env, monkeypatch, capsys):
+    """Absence under require_signed=false must be a clear one-line warning, not
+    silence — a teammate should be able to see their update ran unverified."""
+    _manifest(monkeypatch, "9.9.9")
+    monkeypatch.setattr(cli.updater, "download", _fake_download())
+    monkeypatch.setattr(
+        cli.updater, "fetch_signed_sums",
+        lambda base, version, **kw: updater.SignedSums(None, False,
+                                                       "release 9.9.9 is not signed"),
+    )
+    assert cli.main(["update"]) == 0
+    assert "WARNING: release 9.9.9 is not signed" in capsys.readouterr().err
+    assert len(update_env["execs"]) == 1, "a warning must not block the update"
+
+
+def test_update_stops_on_a_signature_failure(update_env, monkeypatch, capsys):
+    """fetch_signed_sums raising (invalid signature / require_signed violation) must
+    end the update before any script is downloaded, let alone executed."""
+    _manifest(monkeypatch, "9.9.9")
+
+    def _boom(base, version, **kw):
+        raise updater.UpdateError("SIGNATURE VERIFICATION FAILED for release 9.9.9")
+
+    monkeypatch.setattr(cli.updater, "fetch_signed_sums", _boom)
+    monkeypatch.setattr(cli.updater, "download",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not download")))
+    rc = cli.main(["update"])
+    assert rc == 1
+    assert "SIGNATURE VERIFICATION FAILED" in capsys.readouterr().err
+    assert update_env["execs"] == []
+
+
+def test_update_uses_the_signature_anchored_bootstrap_hash(update_env, monkeypatch):
+    """With a verified signature, the hash handed to download() must come from the
+    SIGNED SHA256SUMS (via bootstrap_sha256), not the unsigned manifest alone."""
+    import hashlib
+    script_body = {"sh": b"#!/bin/sh\nsigned\n", "ps1": b"# ps signed\n"}
+    sh_hash = hashlib.sha256(script_body["sh"]).hexdigest()
+    ps1_hash = hashlib.sha256(script_body["ps1"]).hexdigest()
+    monkeypatch.setattr(
+        cli.updater, "fetch_manifest",
+        lambda base, **kw: updater.Manifest(
+            "9.9.9", bootstrap_sha256=sh_hash, bootstrap_ps1_sha256=ps1_hash,
+        ),
+    )
+    sums = f"{sh_hash}  install.sh\n{ps1_hash}  install.ps1\n"
+    monkeypatch.setattr(
+        cli.updater, "fetch_signed_sums",
+        lambda base, version, **kw: updater.SignedSums(sums, True, None),
+    )
+    seen = {}
+    monkeypatch.setattr(cli.updater, "download", _fake_download(seen))
+    assert cli.main(["update"]) == 0
+    assert seen["sha256"] == (ps1_hash if os.name == "nt" else sh_hash)
+
+
 def test_update_on_a_malformed_manifest_version_fails_loud(update_env, monkeypatch, capsys):
     """fetch_manifest only checks that `version` is a str, not that it parses — so a bad
     release (the manifest is fetched over plain HTTP, unsigned) reaches is_newer() and
@@ -175,3 +245,277 @@ def test_update_unreachable_manifest_is_fail_loud(update_env, monkeypatch, capsy
     rc = cli.main(["update"])
     assert rc == 1
     assert "cannot reach" in capsys.readouterr().err
+
+
+# --- the verified SHA256SUMS is threaded THROUGH to the bootstrap (HIGH) --------
+#
+# The client verifies <version>/SHA256SUMS.minisig and used to throw the verified
+# bytes away; the bootstrap then re-fetched its own copy, and a host serving
+# different bytes to the two fetches installed attacker artifacts with exit 0.
+# These tests pin the client half of the fix: verified -> a 0600 file handed via
+# _exec_bootstrap; unverified -> nothing handed (and nothing stale inherited).
+
+
+def _signed_release(version="9.9.9"):
+    import hashlib
+    sh, ps1 = b"#!/bin/sh\nsigned\n", b"# ps signed\n"
+    sums = (
+        f"{hashlib.sha256(sh).hexdigest()}  install.sh\n"
+        f"{hashlib.sha256(ps1).hexdigest()}  install.ps1\n"
+        f"{'ab' * 32}  firekeep_client-{version}-py3-none-any.whl\n"
+    )
+    manifest = updater.Manifest(
+        version,
+        bootstrap_sha256=hashlib.sha256(sh).hexdigest(),
+        bootstrap_ps1_sha256=hashlib.sha256(ps1).hexdigest(),
+    )
+    return manifest, sums
+
+
+def test_update_hands_the_verified_sums_file_to_the_bootstrap(update_env, monkeypatch):
+    manifest, sums = _signed_release()
+    monkeypatch.setattr(cli.updater, "fetch_manifest", lambda base, **kw: manifest)
+    monkeypatch.setattr(cli.updater, "fetch_signed_sums",
+                        lambda base, version, **kw: updater.SignedSums(sums, True, None))
+    monkeypatch.setattr(cli.updater, "download", _fake_download())
+    assert cli.main(["update"]) == 0
+    assert update_env["handed"] == [update_env["home"] / "bootstrap" / "SHA256SUMS.verified"]
+    handed = update_env["handed"][0]
+    assert handed.read_text(encoding="utf-8") == sums, (
+        "the bootstrap must verify against EXACTLY the bytes the client verified"
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+def test_the_handed_sums_file_is_private(update_env, monkeypatch):
+    import stat
+    manifest, sums = _signed_release()
+    monkeypatch.setattr(cli.updater, "fetch_manifest", lambda base, **kw: manifest)
+    monkeypatch.setattr(cli.updater, "fetch_signed_sums",
+                        lambda base, version, **kw: updater.SignedSums(sums, True, None))
+    monkeypatch.setattr(cli.updater, "download", _fake_download())
+    assert cli.main(["update"]) == 0
+    mode = stat.S_IMODE(update_env["handed"][0].stat().st_mode)
+    assert mode == 0o600, f"handed sums must be 0600, got {oct(mode)}"
+
+
+def test_the_handed_sums_mode_is_applied_at_creation_never_chmod_after(update_env, monkeypatch):
+    """SHAPE, not just outcome — the outcome test above survives the mutant.
+
+    Re-review found it: flipping _write_verified_sums' os.open mode 0o600 -> 0o644
+    leaves the mode assertion GREEN, because state._private()'s chmod-after
+    silently rescues it. That is exactly the write-then-chmod permissive window
+    this codebase just removed from generate_signing_key.py — a co-resident user
+    can read the file between the two calls. Assert the O_EXCL + explicit mode at
+    open, the way test_keygen_applies_the_mode_at_open_never_chmod_after does."""
+    import inspect
+    src = inspect.getsource(cli._write_verified_sums)
+    assert "O_EXCL" in src, "must refuse a pre-planted file/symlink race-free"
+    assert "0o600" in src, "the final mode must be applied AT open, not after"
+    open_at = src.index("os.open")
+    assert ".chmod(0o600)" not in src[open_at:], (
+        "a chmod after os.open re-opens the permissive window the mode argument closes"
+    )
+
+
+def test_the_handed_sums_parent_directory_is_not_world_writable(update_env, monkeypatch):
+    """A 0600 file under a 0777 parent is still substitutable: an unprivileged
+    co-resident can unlink and replace it between our write and the bootstrap's
+    read. mkdir applies the umask, so the mode must be passed and re-asserted."""
+    import inspect
+    import os as _os
+    import stat as _stat
+
+    import pytest as _pytest
+    src = inspect.getsource(cli._write_verified_sums)
+    assert "mode=0o700" in src, "mkdir must not inherit a permissive umask"
+    if _os.name == "nt":
+        _pytest.skip("POSIX mode bits are meaningless on Windows (dirs report 0777)")
+    manifest, sums = _signed_release()
+    monkeypatch.setattr(cli.updater, "fetch_manifest", lambda base, **kw: manifest)
+    monkeypatch.setattr(cli.updater, "fetch_signed_sums",
+                        lambda base, version, **kw: updater.SignedSums(sums, True, None))
+    monkeypatch.setattr(cli.updater, "download", _fake_download())
+    assert cli.main(["update"]) == 0
+    parent_mode = _stat.S_IMODE(update_env["handed"][0].parent.stat().st_mode)
+    assert not (parent_mode & 0o022), f"parent must not be group/other-writable, got {oct(parent_mode)}"
+
+
+def test_update_hands_nothing_when_the_signature_did_not_verify(update_env, monkeypatch):
+    """Unverified sums must NOT be handed through: the hand-off asserts 'these bytes
+    were verified against the pinned key', and handing an unverified fetch would
+    launder it into that claim."""
+    _manifest(monkeypatch, "9.9.9")
+    monkeypatch.setattr(
+        cli.updater, "fetch_signed_sums",
+        lambda base, version, **kw: updater.SignedSums("00" * 32 + "  x.whl\n", False,
+                                                       "release 9.9.9 is not signed"),
+    )
+    monkeypatch.setattr(cli.updater, "download", _fake_download())
+    assert cli.main(["update"]) == 0
+    assert update_env["handed"] == [None]
+
+
+def test_exec_bootstrap_sets_and_clears_the_sums_env(monkeypatch, tmp_path):
+    """With a verified file: FIREKEEP_SUMS_FILE points at it. Without: any inherited
+    FIREKEEP_SUMS_FILE is DROPPED — a stale file from a previous update (or a
+    caller's env) must never masquerade as this update's verified sums."""
+    seen = {}
+
+    def _capture(path, argv, env):
+        seen.clear()
+        seen.update(env)
+        raise SystemExit(0)
+
+    monkeypatch.setattr(cli.os, "execve", _capture)
+    monkeypatch.setattr(cli.os, "name", "posix")
+    monkeypatch.setenv("FIREKEEP_SUMS_FILE", "/stale/from/last/time")
+
+    sums = tmp_path / "SHA256SUMS.verified"
+    sums.write_text("aa\n")
+    with pytest.raises(SystemExit):
+        cli._exec_bootstrap(tmp_path / "install.sh", "1.2.3", "http://gl/rel", sums_file=sums)
+    assert seen["FIREKEEP_SUMS_FILE"] == str(sums)
+
+    with pytest.raises(SystemExit):
+        cli._exec_bootstrap(tmp_path / "install.sh", "1.2.3", "http://gl/rel")
+    assert "FIREKEEP_SUMS_FILE" not in seen
+
+
+def test_exec_bootstrap_exports_the_pinned_signing_pub(monkeypatch, tmp_path):
+    """LOW finding: the bootstrap's own minisign check otherwise trusts only the
+    HOST-baked key — circular on the update path. The client must export ITS pinned
+    key (the bare base64 line, what minisign -P takes) as FIREKEEP_SIGNING_PUB."""
+    from firekeep_client import signing
+    seen = {}
+    monkeypatch.setattr(cli.os, "execve",
+                        lambda path, argv, env: seen.update(env) or (_ for _ in ()).throw(SystemExit(0)))
+    monkeypatch.setattr(cli.os, "name", "posix")
+    monkeypatch.setattr(signing, "PINNED_PUBLIC_KEY",
+                        "untrusted comment: minisign public key ABC\nRWTbase64line\n")
+    with pytest.raises(SystemExit):
+        cli._exec_bootstrap(tmp_path / "install.sh", "1.2.3", "http://gl/rel")
+    assert seen["FIREKEEP_SIGNING_PUB"] == "RWTbase64line"
+
+    # No pinned key -> nothing exported (a pre-mint build must not invent one).
+    monkeypatch.setattr(signing, "PINNED_PUBLIC_KEY", "")
+    monkeypatch.delenv("FIREKEEP_SIGNING_PUB", raising=False)
+    seen.clear()
+    with pytest.raises(SystemExit):
+        cli._exec_bootstrap(tmp_path / "install.sh", "1.2.3", "http://gl/rel")
+    assert "FIREKEEP_SIGNING_PUB" not in seen
+
+
+# --- `--to` verifies the TARGET version's signature (MEDIUM) --------------------
+
+
+def test_update_to_verifies_the_target_and_the_script_versions(update_env, monkeypatch):
+    """--to 0.0.1 must verify 0.0.1's sums (what the bootstrap installs) — verifying
+    only latest's left every rollback unsigned. Latest's sums are ALSO fetched,
+    because the executed bootstrap script is latest/'s and only latest's sums list
+    its bytes."""
+    _manifest(monkeypatch, "9.9.9")
+    versions = []
+
+    def _fss(base, version, **kw):
+        versions.append(version)
+        return updater.SignedSums(None, False, None)
+
+    monkeypatch.setattr(cli.updater, "fetch_signed_sums", _fss)
+    monkeypatch.setattr(cli.updater, "download", _fake_download())
+    assert cli.main(["update", "--to", "0.0.1"]) == 0
+    assert versions == ["0.0.1", "9.9.9"]
+    assert update_env["execs"][0][1] == "0.0.1"
+
+
+def test_update_without_to_verifies_latest_exactly_once(update_env, monkeypatch):
+    _manifest(monkeypatch, "9.9.9")
+    versions = []
+
+    def _fss(base, version, **kw):
+        versions.append(version)
+        return updater.SignedSums(None, False, None)
+
+    monkeypatch.setattr(cli.updater, "fetch_signed_sums", _fss)
+    monkeypatch.setattr(cli.updater, "download", _fake_download())
+    assert cli.main(["update"]) == 0
+    assert versions == ["9.9.9"], "the common path must not grow a second fetch"
+
+
+def test_update_to_an_unsigned_target_fails_under_require_signed(update_env, monkeypatch, capsys):
+    """Rollback enforcement: an unsigned OLD target under require_signed must fail
+    with a message naming the flag — before anything is downloaded or executed."""
+    cfg_path = update_env["home"] / "config"
+    cfg_path.write_text(cfg_path.read_text(encoding="utf-8")
+                        + "require_signed = true\n", encoding="utf-8")
+    _manifest(monkeypatch, "9.9.9")
+
+    def _fss(base, version, *, require_signed, **kw):
+        assert require_signed is True, "cmd_update must thread the config flag through"
+        raise updater.UpdateError(
+            f"release {version} is not signed (no SHA256SUMS.minisig) and "
+            f"[dist] require_signed = true — refusing to update"
+        )
+
+    monkeypatch.setattr(cli.updater, "fetch_signed_sums", _fss)
+    monkeypatch.setattr(cli.updater, "download",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not download")))
+    rc = cli.main(["update", "--to", "0.0.1"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "release 0.0.1 is not signed" in err
+    assert "require_signed" in err
+    assert update_env["execs"] == []
+
+
+def test_update_to_with_a_verified_target_hands_the_targets_sums(update_env, monkeypatch):
+    """The handed file must be the TARGET's sums — they are what the bootstrap
+    verifies FIREKEEP_VERSION=target's artifacts against; latest's sums would fail
+    every checksum on a rollback."""
+    manifest, latest_sums = _signed_release("9.9.9")
+    target_sums = "cc" * 32 + "  firekeep_client-0.0.1-py3-none-any.whl\n"
+    monkeypatch.setattr(cli.updater, "fetch_manifest", lambda base, **kw: manifest)
+    monkeypatch.setattr(
+        cli.updater, "fetch_signed_sums",
+        lambda base, version, **kw: updater.SignedSums(
+            target_sums if version == "0.0.1" else latest_sums, True, None),
+    )
+    monkeypatch.setattr(cli.updater, "download", _fake_download())
+    assert cli.main(["update", "--to", "0.0.1"]) == 0
+    assert update_env["handed"][0].read_text(encoding="utf-8") == target_sums
+
+
+# --- the unsigned warning must survive a detached update (MEDIUM) ---------------
+
+
+def test_update_persists_the_unsigned_notice_for_the_next_session(update_env, monkeypatch):
+    """The background auto-update runs detached with stderr on DEVNULL, so the
+    one-line unsigned warning reaches nobody. cmd_update must persist a marker the
+    next session_start briefing prints (and consumes)."""
+    from firekeep_client import state
+    _manifest(monkeypatch, "9.9.9")
+    monkeypatch.setattr(
+        cli.updater, "fetch_signed_sums",
+        lambda base, version, **kw: updater.SignedSums(None, False,
+                                                       "release 9.9.9 is not signed"),
+    )
+    monkeypatch.setattr(cli.updater, "download", _fake_download())
+    assert cli.main(["update"]) == 0
+    notice = state.consume_unsigned_update_notice()
+    assert notice is not None
+    assert "9.9.9" in notice
+    assert "WITHOUT a verified release signature" in notice
+    assert "require_signed" in notice
+    # one-shot: consumed above, gone now
+    assert state.consume_unsigned_update_notice() is None
+
+
+def test_update_writes_no_unsigned_notice_when_verified(update_env, monkeypatch):
+    from firekeep_client import state
+    manifest, sums = _signed_release()
+    monkeypatch.setattr(cli.updater, "fetch_manifest", lambda base, **kw: manifest)
+    monkeypatch.setattr(cli.updater, "fetch_signed_sums",
+                        lambda base, version, **kw: updater.SignedSums(sums, True, None))
+    monkeypatch.setattr(cli.updater, "download", _fake_download())
+    assert cli.main(["update"]) == 0
+    assert state.consume_unsigned_update_notice() is None

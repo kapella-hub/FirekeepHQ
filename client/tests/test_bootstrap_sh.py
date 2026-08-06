@@ -82,14 +82,30 @@ def artifact_server(tmp_path):
         "bootstrap_ps1_sha256": "00" * 32,
     }))
 
-    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(root))
+    # Request log: the two-fetch-split tests below must PROVE the bootstrap made
+    # no second SHA256SUMS fetch, which only a server-side record can show —
+    # asserting on the script's output would trust the very code under test.
+    requests: list[str] = []
+
+    class _Handler(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, directory=str(root), **kwargs)
+
+        def do_GET(self):
+            requests.append(self.path)
+            super().do_GET()
+
+        def log_message(self, *args):  # keep pytest output readable
+            pass
+
+    handler = functools.partial(_Handler)
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
     port = srv.server_address[1]
     base = f"http://127.0.0.1:{port}"
 
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     yield {"root": root, "base": base, "target": target, "version": VERSION,
-           "wheel_name": wheel_name}
+           "wheel_name": wheel_name, "requests": requests}
     srv.shutdown()
 
 
@@ -256,3 +272,216 @@ def test_install_sh_uses_the_baked_dist_base_when_env_is_unset(tmp_path, artifac
     )
     assert proc.returncode == 0, f"baked headless install must not fail:\n{proc.stderr}"
     assert "FIREKEEP_INSTALL_CALLED" in proc.stdout
+
+
+# --- release signing: best-effort minisign verification (docs/RELEASE-SIGNING.md) ---
+#
+# A stub `minisign` on PATH decides the verdict, so these exercise the script's WIRING
+# (gate, fetch, fatal-vs-warn split) without needing the real binary in CI.
+
+def _stub_minisign(tmp_path, exit_code):
+    stub_dir = tmp_path / "stub-bin"
+    stub_dir.mkdir(exist_ok=True)
+    stub = stub_dir / "minisign"
+    stub.write_text(f"#!/bin/sh\nexit {exit_code}\n")
+    stub.chmod(0o755)
+    return stub_dir
+
+
+def _sign_env(tmp_path, artifact_server, stub_dir=None):
+    path = f"{stub_dir}:/usr/bin:/bin" if stub_dir else "/usr/bin:/bin"
+    return {"PATH": path, "HOME": str(tmp_path),
+            "FIREKEEP_DIST_BASE": artifact_server["base"],
+            "FIREKEEP_SIGNING_PUB": "RWTfakekeyforwiringtests"}
+
+
+def test_install_sh_dies_when_minisign_rejects_the_signature(tmp_path, artifact_server):
+    """A PRESENT signature that fails verification is tampering evidence and must stop
+    the install before any artifact is trusted — unlike absence, which only warns."""
+    (artifact_server["root"] / artifact_server["version"] / "SHA256SUMS.minisig").write_text(
+        "untrusted comment: x\nAAAA\ntrusted comment: x\nAAAA\n"
+    )
+    proc = subprocess.run(
+        ["sh", str(BOOTSTRAP)], capture_output=True, text=True,
+        env=_sign_env(tmp_path, artifact_server, _stub_minisign(tmp_path, 1)),
+        stdin=subprocess.DEVNULL,
+    )
+    assert proc.returncode != 0
+    assert "signature verification FAILED" in proc.stderr
+    assert not (tmp_path / ".firekeep" / "venv").exists(), (
+        "a failed signature must stop the install before anything is provisioned"
+    )
+
+
+def test_install_sh_verifies_and_proceeds_when_minisign_accepts(tmp_path, artifact_server):
+    (artifact_server["root"] / artifact_server["version"] / "SHA256SUMS.minisig").write_text(
+        "untrusted comment: x\nAAAA\ntrusted comment: x\nAAAA\n"
+    )
+    proc = subprocess.run(
+        ["sh", str(BOOTSTRAP)], capture_output=True, text=True,
+        env=_sign_env(tmp_path, artifact_server, _stub_minisign(tmp_path, 0)),
+        stdin=subprocess.DEVNULL,
+    )
+    assert proc.returncode == 0, f"verified install must complete:\n{proc.stderr}"
+    assert "signature verified" in proc.stdout
+    assert "FIREKEEP_INSTALL_CALLED" in proc.stdout
+
+
+def test_install_sh_warns_but_continues_when_the_release_is_unsigned(tmp_path, artifact_server):
+    """verify-if-present: releases predating signing publish no .minisig, and
+    `firekeep update --to <old>` must keep working — with a visible one-line warning,
+    never silence and never a failure (until [dist] require_signed flips client-side)."""
+    proc = subprocess.run(
+        ["sh", str(BOOTSTRAP)], capture_output=True, text=True,
+        env=_sign_env(tmp_path, artifact_server, _stub_minisign(tmp_path, 0)),
+        stdin=subprocess.DEVNULL,
+    )
+    assert proc.returncode == 0, f"unsigned release must still install:\n{proc.stderr}"
+    assert "not signed" in proc.stderr
+    assert "FIREKEEP_INSTALL_CALLED" in proc.stdout
+
+
+def test_install_sh_skips_signing_silently_on_a_bare_machine(tmp_path, artifact_server):
+    """No minisign binary -> the whole block is a no-op: constraint 'must not break
+    bare machines'. The checksum + TLS layer still applies in full."""
+    proc = subprocess.run(
+        ["sh", str(BOOTSTRAP)], capture_output=True, text=True,
+        env=_sign_env(tmp_path, artifact_server, stub_dir=None),
+        stdin=subprocess.DEVNULL,
+    )
+    assert proc.returncode == 0, f"install without minisign must succeed:\n{proc.stderr}"
+    assert "FIREKEEP_INSTALL_CALLED" in proc.stdout
+
+
+# --- the two-fetch split (security review, HIGH) --------------------------------
+#
+# `firekeep update` verifies <version>/SHA256SUMS.minisig against the client's pinned
+# key — then re-execs this script, which used to fetch its OWN SHA256SUMS over the
+# network and verify uv + the wheels against THAT. The client's fetch (urllib) and
+# the bootstrap's (curl) are trivially distinguishable, so a malicious host could
+# serve honest bytes to the verifier and attacker bytes to the installer: exit 0,
+# attacker wheel installed, even under require_signed=true. The fix threads the
+# verified bytes through as FIREKEEP_SUMS_FILE; under it the bootstrap makes NO
+# sums/.minisig fetch at all. The server-side request log is what makes these
+# tests proof rather than trust.
+
+
+def _sums_requests(artifact_server):
+    return [p for p in artifact_server["requests"] if "SHA256SUMS" in p]
+
+
+def _handed_env(tmp_path, artifact_server, sums_file):
+    return {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path),
+            "FIREKEEP_DIST_BASE": artifact_server["base"],
+            "FIREKEEP_VERSION": artifact_server["version"],
+            "FIREKEEP_SUMS_FILE": str(sums_file)}
+
+
+def test_install_sh_two_fetch_split_no_longer_works(tmp_path, artifact_server):
+    """THE regression test for the HIGH finding, both halves proven:
+
+    1. CONTROL: the server's artifacts and its served SHA256SUMS are mutually
+       consistent (the exact state a split-serving host presents to fetch #2), so
+       a network-fetching bootstrap installs them with exit 0. That is the attack
+       working — on the path where it is still by-design accepted (manual TOFU
+       install, no handed file).
+    2. With the CLIENT-VERIFIED sums handed through FIREKEEP_SUMS_FILE — sums that
+       describe the artifacts the signature actually covered, not what the host
+       chose to serve — the same server is REFUSED on checksum mismatch, no venv
+       is created, and the request log shows the bootstrap never fetched
+       SHA256SUMS (or its .minisig) at all: fetch #2 does not happen.
+    """
+    # CONTROL — the attack-shaped server is accepted when nothing is handed:
+    proc = subprocess.run(
+        ["sh", str(BOOTSTRAP)], capture_output=True, text=True,
+        env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path),
+             "FIREKEEP_DIST_BASE": artifact_server["base"]},
+        stdin=subprocess.DEVNULL,
+    )
+    assert proc.returncode == 0, f"control (manual install) should accept the host:\n{proc.stderr}"
+    assert any(p.endswith("/SHA256SUMS") for p in _sums_requests(artifact_server))
+    artifact_server["requests"].clear()
+
+    # The client verified DIFFERENT sums than the host now serves: same uv (the
+    # attacker only swapped the wheel), different wheel hash.
+    vdir = artifact_server["root"] / artifact_server["version"]
+    uv_digest = hashlib.sha256((vdir / f"uv-{artifact_server['target']}").read_bytes()).hexdigest()
+    genuine_wheel_digest = hashlib.sha256(b"the wheel the signature covered\n").hexdigest()
+    verified = tmp_path / "SHA256SUMS.verified"
+    verified.write_text(
+        f"{uv_digest}  uv-{artifact_server['target']}\n"
+        f"{genuine_wheel_digest}  {artifact_server['wheel_name']}\n"
+    )
+
+    home2 = tmp_path / "home2"
+    home2.mkdir()
+    proc = subprocess.run(
+        ["sh", str(BOOTSTRAP)], capture_output=True, text=True,
+        env=_handed_env(home2, artifact_server, verified),
+        stdin=subprocess.DEVNULL,
+    )
+    assert proc.returncode != 0, (
+        "a host serving different bytes than the client verified must be REFUSED:\n"
+        f"{proc.stdout}\n{proc.stderr}"
+    )
+    assert "checksum mismatch" in proc.stderr.lower()
+    assert not (home2 / ".firekeep" / "venv").exists()
+    assert _sums_requests(artifact_server) == [], (
+        "under a handed FIREKEEP_SUMS_FILE the bootstrap must make NO SHA256SUMS "
+        f"fetch — fetch #2 is the vulnerability. Saw: {_sums_requests(artifact_server)}"
+    )
+
+
+def test_install_sh_handed_sums_installs_without_any_sums_fetch(tmp_path, artifact_server):
+    """The success half: handed sums matching the artifacts -> full install, zero
+    SHA256SUMS/.minisig requests, and the hand-off announced on stdout."""
+    verified = tmp_path / "SHA256SUMS.verified"
+    verified.write_text(
+        (artifact_server["root"] / artifact_server["version"] / "SHA256SUMS")
+        .read_text()
+    )
+    artifact_server["requests"].clear()
+    proc = subprocess.run(
+        ["sh", str(BOOTSTRAP)], capture_output=True, text=True,
+        env=_handed_env(tmp_path, artifact_server, verified),
+        stdin=subprocess.DEVNULL,
+    )
+    assert proc.returncode == 0, f"handed-sums install must complete:\n{proc.stderr}"
+    assert "FIREKEEP_INSTALL_CALLED" in proc.stdout
+    assert "handed by firekeep update" in proc.stdout
+    assert _sums_requests(artifact_server) == []
+
+
+def test_install_sh_ignores_the_handed_sums_without_a_pinned_version(tmp_path, artifact_server):
+    """FIREKEEP_SUMS_FILE without FIREKEEP_VERSION is not the client's hand-off shape
+    (cmd_update always pins the version) — a manual run with a stray env var must
+    fetch from the network exactly as before, not trust the stray file."""
+    stray = tmp_path / "stray-sums"
+    stray.write_text("00" * 32 + "  something\n")
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path),
+           "FIREKEEP_DIST_BASE": artifact_server["base"],
+           "FIREKEEP_SUMS_FILE": str(stray)}
+    artifact_server["requests"].clear()
+    proc = subprocess.run(["sh", str(BOOTSTRAP)], capture_output=True, text=True,
+                          env=env, stdin=subprocess.DEVNULL)
+    assert proc.returncode == 0, f"manual install must proceed on network sums:\n{proc.stderr}"
+    assert any(p.endswith("/SHA256SUMS") for p in _sums_requests(artifact_server)), (
+        "without the client's hand-off shape the sums must come from the network"
+    )
+
+
+def test_install_sh_dies_when_the_handed_sums_file_is_unusable(tmp_path, artifact_server):
+    """Set-but-unreadable must be FATAL, never a silent fallback to a network fetch —
+    the fallback IS the two-fetch vulnerability."""
+    artifact_server["requests"].clear()
+    proc = subprocess.run(
+        ["sh", str(BOOTSTRAP)], capture_output=True, text=True,
+        env=_handed_env(tmp_path, artifact_server, tmp_path / "does-not-exist"),
+        stdin=subprocess.DEVNULL,
+    )
+    assert proc.returncode != 0
+    assert "FIREKEEP_SUMS_FILE" in proc.stderr
+    assert _sums_requests(artifact_server) == [], (
+        "an unusable handed file must not degrade to the network fetch it replaces"
+    )
+    assert not (tmp_path / ".firekeep" / "venv").exists()

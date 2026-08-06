@@ -55,6 +55,19 @@ fetch() {
     fi
 }
 
+fetch_opt() {
+    # Best-effort fetch: $1 = url, $2 = dest. Returns nonzero (never dies) when the
+    # artifact is absent — the .minisig path uses this, because a missing signature is
+    # a warning under the current rollout, while a missing REQUIRED artifact stays die().
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "$1" -o "$2" 2>/dev/null || { rm -f "$2"; return 1; }
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO "$2" "$1" 2>/dev/null || { rm -f "$2"; return 1; }
+    else
+        return 1
+    fi
+}
+
 sha256_of() {
     # Assign, then check: `sha256sum "$1" | cut -f1` would mask a sha256sum failure behind
     # cut's exit 0, yielding an empty digest and a nonsense "expected X, got " message.
@@ -137,8 +150,55 @@ FIREKEEP_FORCE_REINSTALL=1 to force a full reinstall." >&2
     exit $?
 fi
 
-# --- 3. this version's SHA256SUMS, fetched once ------------------------------
-fetch "${VBASE}/SHA256SUMS" "${BIN}/SHA256SUMS"
+# --- 3. this version's SHA256SUMS ---------------------------------------------
+# On the `firekeep update` path the CLIENT has already fetched this version's
+# SHA256SUMS and verified its minisign signature against the key pinned in the
+# installed client — and it hands the VERIFIED bytes through FIREKEEP_SUMS_FILE.
+# Using that file, and NOT fetching again, is what closes the two-fetch split: a
+# host serving different bytes to the client's fetch (urllib) and this one (curl)
+# could otherwise install attacker artifacts with exit 0 even after the client
+# "verified" the release. Honoured only alongside FIREKEEP_VERSION — the shape
+# only the client's hand-off produces — so a manual `curl | sh` run (which sets
+# neither) fetches exactly as before. Set-but-unusable is fatal, never a silent
+# fallback to the network: the fallback IS the vulnerability.
+SUMS_HANDED=""
+if [ -n "${FIREKEEP_SUMS_FILE:-}" ] && [ -n "${FIREKEEP_VERSION:-}" ]; then
+    [ -r "${FIREKEEP_SUMS_FILE}" ] || die "FIREKEEP_SUMS_FILE is set but not readable: ${FIREKEEP_SUMS_FILE}"
+    cp "${FIREKEEP_SUMS_FILE}" "${BIN}/SHA256SUMS" || die "cannot copy FIREKEEP_SUMS_FILE into place"
+    SUMS_HANDED=1
+    echo "firekeep: using signature-verified SHA256SUMS handed by firekeep update (no re-fetch)"
+else
+    fetch "${VBASE}/SHA256SUMS" "${BIN}/SHA256SUMS"
+fi
+
+# --- 3b. BEST-EFFORT minisign verification of SHA256SUMS ---------------------
+# Honest scope (docs/RELEASE-SIGNING.md): this script was itself fetched from the
+# release host, so on a FIRST install this check cannot defeat a compromised host —
+# that trust-on-first-use is stated in the threat model, not papered over. It earns
+# its keep on the `firekeep update` re-exec path, where the client verified THIS script
+# against a signed SHA256SUMS before running it, making the baked key trustworthy —
+# and it lets a cautious first-time installer pin the key out of band via
+# FIREKEEP_SIGNING_PUB. Best-effort by design: no minisign binary, no baked/provided
+# key, or no published .minisig -> skip/warn, never break a bare machine. A PRESENT
+# signature that fails to verify is fatal — invalid is tampering, absence is history.
+# The placeholder probe is split like the dist-base one so make_release's token
+# substitution can't rewrite the comparison itself.
+# Skipped entirely under a handed FIREKEEP_SUMS_FILE: the client already did the
+# authoritative verification against ITS pinned key, and "under a handed file, do
+# not fetch at all" is the contract — fetching the .minisig here would reopen a
+# network round trip on a path whose whole point is that it makes none.
+SIGNING_PUB_DEFAULT="__FIREKEEP_SIGNING_PUB_DEFAULT__"
+sig_placeholder="__FIREKEEP_SIGNING_PUB_""DEFAULT__"
+[ "${SIGNING_PUB_DEFAULT}" = "${sig_placeholder}" ] && SIGNING_PUB_DEFAULT=""
+SIGNING_PUB="${FIREKEEP_SIGNING_PUB:-${SIGNING_PUB_DEFAULT}}"
+if [ -z "${SUMS_HANDED}" ] && [ -n "${SIGNING_PUB}" ] && command -v minisign >/dev/null 2>&1; then
+    if fetch_opt "${VBASE}/SHA256SUMS.minisig" "${BIN}/SHA256SUMS.minisig"; then
+        minisign -Vq -m "${BIN}/SHA256SUMS" -x "${BIN}/SHA256SUMS.minisig" -P "${SIGNING_PUB}"             || die "SHA256SUMS signature verification FAILED — refusing to install (possible release-host compromise)"
+        echo "firekeep: SHA256SUMS signature verified (minisign)"
+    else
+        echo "firekeep: WARNING: release ${V} is not signed (no SHA256SUMS.minisig); relying on TLS + checksums" >&2
+    fi
+fi
 
 verify_against_sums() {
     # $1 = local file, $2 = basename to look up. Assign THEN cut: `grep | cut` returns cut's

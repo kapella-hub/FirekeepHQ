@@ -206,3 +206,35 @@ class TestUpdateNudge:
         assert "update available" not in out["systemMessage"]
         session_start.run({})
         assert len(calls) == 1  # failure cached: no retry storm on a dead host
+
+
+class TestUnsignedUpdateNotice:
+    """Security review (MEDIUM): the detached background auto-update sends its
+    'release is not signed' warning to DEVNULL. cmd_update persists a marker; the
+    NEXT session start must print it exactly once."""
+
+    def _quiet(self, monkeypatch):
+        from firekeep_client import transport
+        from firekeep_client.hooks import _mcp
+        monkeypatch.setattr(transport, "get_json",
+                            lambda url, **k: {"rendered": "BRIEFING"})
+        monkeypatch.setattr(_mcp, "call_tool", lambda *a, **k: {})
+
+    def test_pending_notice_is_printed_once_then_consumed(self, client_env, monkeypatch):
+        from firekeep_client import state
+        from firekeep_client.hooks import session_start
+        self._quiet(monkeypatch)
+        state.note_unsigned_update(
+            "client update to 9.9.9 ran WITHOUT a verified release signature")
+        out = session_start.run({})
+        assert "WITHOUT a verified release signature" in out["systemMessage"]
+        assert "9.9.9" in out["systemMessage"]
+        # one-shot: the next session start says nothing
+        out2 = session_start.run({})
+        assert "WITHOUT a verified release signature" not in out2["systemMessage"]
+
+    def test_no_notice_no_line(self, client_env, monkeypatch):
+        from firekeep_client.hooks import session_start
+        self._quiet(monkeypatch)
+        out = session_start.run({})
+        assert "release signature" not in out["systemMessage"]

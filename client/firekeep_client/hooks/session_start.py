@@ -68,6 +68,20 @@ def _update_nudge(cfg) -> str:
     return ""
 
 
+def _unsigned_notice() -> str:
+    """One line, once, when a previous `firekeep update` installed a release without a
+    verified signature. The detached background auto-update sends its warning to
+    DEVNULL, so this persisted marker is the only path that warning has to a human.
+    Consumed on read. Never raises."""
+    try:
+        raw = state.consume_unsigned_update_notice()
+        if raw:
+            return f"\n\n[firekeep] WARNING: {raw}"
+    except Exception:  # noqa: BLE001 — a notice must never cost a session
+        pass
+    return ""
+
+
 @never_raise({})
 def run(payload: dict) -> dict:
     cfg = resolver.load_config()
@@ -135,5 +149,5 @@ def run(payload: dict) -> dict:
     # 4. Auto-index this workspace for symdex (detached; see symdexindex module
     #    docstring for why this can't be inline and why it replaces the old
     #    plugin hook's ACTION-REQUIRED nag).
-    return {"systemMessage": rendered + _update_nudge(cfg)
+    return {"systemMessage": rendered + _update_nudge(cfg) + _unsigned_notice()
             + symdexindex.index_nudge(cfg, payload)}

@@ -217,6 +217,56 @@ class TestTheE2EBootstrapGateRuns:
         )
 
 
+class TestTheSignaturePathIsServedAndVerified:
+    """Security review (LOW): CI polled only latest/latest.json, so a signed build
+    whose .minisig never reached the site — or served stale bytes — went green while
+    every updating client silently fell back to the unsigned path. And make_release
+    lists install.sh/install.ps1 in <version>/SHA256SUMS (the signature must cover
+    the script `firekeep update` executes — updater.bootstrap_sha256 cross-checks
+    latest.json against those entries, so the listing cannot be dropped), which
+    obliges <version>/ to actually SERVE those files."""
+
+    VERIFY_STEP = "Verify the release is actually served"
+
+    def _verify_run(self, wf) -> str:
+        step = next(s for s in wf["jobs"]["release"]["steps"]
+                    if (s.get("name") or "") == self.VERIFY_STEP)
+        return step.get("run", "")
+
+    def test_the_served_minisig_is_polled_when_signing_ran(self, wf):
+        run = self._verify_run(wf)
+        assert "SHA256SUMS.minisig" in run, (
+            "the verify step never confirms the signature is SERVED — a green "
+            "publish with a missing .minisig downgrades every client to the "
+            "unsigned warning path"
+        )
+        assert "dist/SHA256SUMS.minisig" in run, (
+            "the check must be conditional on signing having actually run "
+            "(unsigned builds publish no .minisig by design)"
+        )
+
+    def test_the_served_minisig_is_byte_compared_not_just_fetched(self, wf):
+        run = self._verify_run(wf)
+        assert "cmp" in run, (
+            "fetching a 200 is not verification — a stale or foreign .minisig "
+            "must fail the step, so the served bytes must be compared against "
+            "the built signature"
+        )
+
+    def test_the_bootstraps_are_published_under_the_version_directory(self, publish_step):
+        # Join shell line continuations so the versioned cp reads as one command.
+        joined = publish_step.replace("\\\n", " ")
+        version_cps = [ln for ln in joined.splitlines()
+                       if ln.strip().startswith("cp ") and 'gh/${VERSION}/"' in ln]
+        assert version_cps, "no versioned copy found in the publish step"
+        assert any("dist/install.sh" in ln and "dist/install.ps1" in ln
+                   for ln in version_cps), (
+            "install.sh/install.ps1 are listed in <version>/SHA256SUMS but were "
+            "not served under <version>/ — a sums file describing files its "
+            "directory does not carry"
+        )
+
+
 class TestTheWorkflowIsValidToGitHub:
     """PyYAML is more permissive than GitHub's parser, and the gap is not academic.
 

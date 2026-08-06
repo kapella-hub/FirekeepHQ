@@ -6,6 +6,7 @@ Native runtime config is written once at install and refreshed idempotently.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import shutil
 import ssl
@@ -1128,7 +1129,42 @@ def cmd_doctor(args) -> int:
 
 # --- update: re-exec the bootstrap; never pip over a running process --------
 
-def _exec_bootstrap(script: Path, version: str | None, base: str) -> None:
+def _write_verified_sums(text: str) -> Path:
+    """Persist the signature-VERIFIED SHA256SUMS for the bootstrap hand-off.
+
+    Why this exists (security review, HIGH): the client verifies
+    `<version>/SHA256SUMS.minisig` against its pinned key — and then used to throw
+    the verified bytes away. The bootstrap fetched its OWN copy over the network
+    and verified uv + the wheels against THAT, so a host serving different bytes to
+    the two fetches (they are trivially distinguishable: urllib vs curl/IWR user
+    agents) installed attacker artifacts with exit 0 even under require_signed.
+    Handing the verified bytes through by PATH is what makes the signature cover
+    what actually gets installed.
+
+    Created 0600 with no permissive window: unlink first, then O_CREAT|O_EXCL with
+    the final mode — the file never exists readable to anyone else.
+    """
+    path = _firekeep_home() / "bootstrap" / "SHA256SUMS.verified"
+    # mode=0o700 on the DIRECTORY too, not just the file. `mkdir` applies the
+    # process umask, so under a permissive umask (000 measured) the parent lands
+    # 0777 — and a world-writable parent lets a co-resident unprivileged user
+    # unlink-and-replace the sums file between our write and the bootstrap's
+    # read, which is the same substitution the file's own 0600 exists to stop.
+    # exist_ok leaves an already-correct dir alone; the chmod re-asserts the mode
+    # on a directory created by an earlier, more permissive version.
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with contextlib.suppress(OSError):
+        path.parent.chmod(0o700)
+    path.unlink(missing_ok=True)
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(text)
+    state._private(path)  # Windows: POSIX mode bits do nothing; tighten the ACL too
+    return path
+
+
+def _exec_bootstrap(script: Path, version: str | None, base: str,
+                    *, sums_file: "Path | None" = None) -> None:
     """Replace THIS process with the bootstrap script.
 
     The whole point: by the time uv rewrites ~/.firekeep/venv, `firekeep` is no longer running.
@@ -1138,11 +1174,30 @@ def _exec_bootstrap(script: Path, version: str | None, base: str) -> None:
 
     `base` is REQUIRED: the bootstrap dies on an unset FIREKEEP_DIST_BASE (that is its own
     fail-loud guard), and an exec'd script inherits none of our config.
+
+    `sums_file` (when the signature verified) is handed through as FIREKEEP_SUMS_FILE so
+    the bootstrap verifies artifacts against the SAME bytes the client verified, never a
+    second network fetch. When absent, any inherited FIREKEEP_SUMS_FILE is dropped — a
+    stale or caller-set file must not masquerade as this update's verified sums.
     """
     env = dict(os.environ)
     env["FIREKEEP_DIST_BASE"] = base
     if version:
         env["FIREKEEP_VERSION"] = version  # the bootstrap pins this exact release
+    if sums_file is not None:
+        env["FIREKEEP_SUMS_FILE"] = str(sums_file)
+    else:
+        env.pop("FIREKEEP_SUMS_FILE", None)
+    # Hand the CLIENT'S pinned signing key to the bootstrap's own best-effort
+    # minisign check (it otherwise trusts whatever key the HOST baked into the
+    # script — circular on the update path). The bootstrap already accepts
+    # FIREKEEP_SIGNING_PUB as an out-of-band override; minisign -P wants the bare
+    # base64 line, which by our own convention (make_release.sign_release) is the
+    # last line of the pinned text.
+    from firekeep_client import signing
+    pinned = signing.PINNED_PUBLIC_KEY.strip()
+    if pinned:
+        env["FIREKEEP_SIGNING_PUB"] = pinned.splitlines()[-1].strip()
     if os.name == "nt":
         # os.execv on Windows can leave the parent's image briefly held; spawn detached and
         # exit immediately so the launcher is released before uv touches the venv.
@@ -1207,14 +1262,67 @@ def cmd_update(args) -> int:
             return 0
 
         windows = os.name == "nt"
+        # Release-signing check (docs/RELEASE-SIGNING.md): verify the TARGET release's
+        # SHA256SUMS signature against the key pinned in THIS build — the target is what
+        # the bootstrap will install, so `--to <older>` must verify THAT version's sums,
+        # not latest's (security review, MEDIUM: verifying manifest.version while the
+        # bootstrap pinned FIREKEEP_VERSION=target left every rollback unsigned, even
+        # under require_signed=true). verify-if-present — absence warns (until
+        # [dist] require_signed flips), an invalid signature is always fatal inside
+        # fetch_signed_sums itself.
+        req_signed = updater.require_signed(cfg)
+        signed = updater.fetch_signed_sums(base, target, require_signed=req_signed)
+        # The bootstrap SCRIPT we execute is always latest/'s, whose bytes are listed in
+        # the LATEST version's signed sums. On a pinned --to that differs from latest,
+        # anchor the script hash against latest's sums separately — target's sums
+        # describe the target's own (older) scripts, not the one we are about to run.
+        if target == manifest.version:
+            signed_script = signed
+        else:
+            signed_script = updater.fetch_signed_sums(
+                base, manifest.version, require_signed=req_signed
+            )
+        warnings = []
+        for s in (signed, signed_script):
+            if s.warning and s.warning not in warnings:
+                warnings.append(s.warning)
+        for warning in warnings:
+            print(f"firekeep: WARNING: {warning}", file=sys.stderr)
+        if warnings:
+            # The detached background auto-update sends this stderr to DEVNULL, so
+            # persist a one-shot marker the NEXT session_start briefing prints —
+            # otherwise nobody ever learns an unsigned release was installed
+            # (security review, MEDIUM: absence is attacker-choosable while
+            # require_signed=false, and an invisible warning is no warning).
+            state.note_unsigned_update(
+                f"client update to {target} ran WITHOUT a verified release signature "
+                f"({warnings[0]}); [dist] require_signed=false tolerates this — "
+                f"see docs/RELEASE-SIGNING.md"
+            )
         # The checksum is REQUIRED here: we are about to EXECUTE this script. Verifying uv
         # inside install.sh while exec'ing an unverified install.sh would be theatre.
+        # When the signature verified, bootstrap_sha256 anchors this hash to the SIGNED
+        # SHA256SUMS (and refuses a manifest that disagrees with it).
         # download() creates dest's parent itself — do not duplicate that here.
         script = updater.download(
             updater.bootstrap_url(base, windows=windows),
             _firekeep_home() / "bootstrap" / ("install.ps1" if windows else "install.sh"),
-            sha256=manifest.bootstrap_hash_for(windows=windows),
+            sha256=updater.bootstrap_sha256(manifest, signed_script, windows=windows),
         )
+        # Thread the VERIFIED sums through to the bootstrap (see _write_verified_sums):
+        # only ever the TARGET's sums — they are what the bootstrap verifies uv and the
+        # wheels for FIREKEEP_VERSION=target against. A write failure is FATAL, not a
+        # silent degrade: handing nothing would put the bootstrap back on its own
+        # network fetch — the exact hole the hand-off closes.
+        sums_file = None
+        if signed.verified and signed.text is not None:
+            try:
+                sums_file = _write_verified_sums(signed.text)
+            except OSError as exc:
+                raise updater.UpdateError(
+                    f"cannot write the verified SHA256SUMS for the bootstrap "
+                    f"hand-off: {exc}"
+                ) from exc
     except resolver.ConfigMigrationConflict as exc:
         print(f"firekeep: {exc}", file=sys.stderr)
         return 3
@@ -1223,7 +1331,7 @@ def cmd_update(args) -> int:
         return 1
 
     print(f"firekeep: updating {__version__} -> {target}")
-    _exec_bootstrap(script, target, base)
+    _exec_bootstrap(script, target, base, sums_file=sums_file)
     return 0  # POSIX never reaches this (execve replaced the image)
 
 

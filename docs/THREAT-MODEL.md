@@ -160,17 +160,69 @@ downloaded to a local path and installed by path, never by URL (`uv pip install
 <url>` does no hash checking) and never by name (`nexus-client` on PyPI is a third
 party's package).
 
-**OPEN:** `SHA256SUMS` itself is fetched over TLS but is **not signed**. Whoever
-controls the release host controls what every client installs. Signing it, and
-pinning the key in the bootstrap, is the fix. Until then the release host is a
-single point of total compromise for every developer machine.
+**Mitigated (2026-08-05), with stated residuals:** `SHA256SUMS` is now signed —
+an Ed25519 detached signature in minisign format (`SHA256SUMS.minisig`, produced
+by `client/scripts/make_release.py` when the `FIREKEEP_SIGNING_KEY` CI secret is
+set; verifiable with the standard `minisign` tool). The client pins the public
+key as `PINNED_PUBLIC_KEY` in `client/firekeep_client/signing.py` (a pure-stdlib
+verifier — the import boundary rules out `cryptography`, and RFC 8032 test
+vectors pin the arithmetic). On `firekeep update`, the client verifies the target
+release's `SHA256SUMS` signature against that key (the *target's*, so `--to`
+rollbacks are signed too, plus the latest release's when they differ — that is
+what anchors the `latest/` bootstrap being executed), cross-checks the unsigned
+`latest.json` bootstrap hash against the signed sums entry (the bootstraps are
+listed in `SHA256SUMS` and published under `<version>/`), and refuses a valid
+signature minted for a different version (the trusted comment binds
+`version:<X.Y.Z>`). The verified sums bytes are then handed to the bootstrap by
+path (`FIREKEEP_SUMS_FILE`, 0600), and under that hand-off the bootstrap makes
+**no** sums/`.minisig` network fetch of its own — closing the two-fetch split
+where a host could serve honest bytes to the client's verification fetch and
+attacker bytes to the bootstrap's re-fetch (the two requests are trivially
+distinguishable by user agent). Key custody, rotation, and the compromise
+procedure: `docs/RELEASE-SIGNING.md`.
+
+What the signature actually buys, and from whom: a compromised **release host**
+can no longer introduce code the signing key never signed into the update path.
+It says nothing about a compromised **signing key** or CI, and the residuals are
+real:
+
+- **First install is TOFU and stays TOFU.** `curl | sh` fetches the bootstrap
+  from the very host it would need to distrust; a key delivered by that host
+  cannot authenticate it. Signing protects *updates*, where the pinned key
+  predates the fetch. A cautious first installer can pin out of band via
+  `FIREKEEP_SIGNING_PUB` (the published `latest/signing.pub` is a transparency
+  copy, not a trust anchor).
+- **Enforcement is off by default, and while it is, absence is
+  attacker-choosable.** Releases predating signing have no `.minisig`, so
+  absence is a one-line warning, not a failure, until
+  `[dist] require_signed = true` — the flip waits until every supported version
+  is signed. Named plainly: an attacker with host write access can just publish
+  *unsigned* and the default installs it with a warning — tolerating absence is
+  the explicit cost of the migration default, removed only by flipping
+  `require_signed`. The warning is therefore made impossible to lose: the
+  background auto-update runs detached with stderr on DEVNULL, so the client
+  persists an unsigned-install marker and the next session-start briefing
+  prints it once. An *invalid* signature is fatal regardless of the flag:
+  invalid is tampering evidence, absence is history. Until the operator mints
+  keys and a build pinning them ships, the machinery is inert and this
+  mitigation is **pending key mint**, not yet active in the field.
+- **Downgrade/freeze window.** `latest.json` is unsigned, so a compromised host
+  can still replay an older *signed* release or pin the fleet to one. It cannot
+  introduce new code.
+- **The shell bootstrap's own check is best-effort.** It verifies with the
+  standard `minisign` binary only if one is installed (baked key or
+  `FIREKEEP_SIGNING_PUB` — which `firekeep update` exports from the client's own
+  pinned key); a bare machine falls back to TLS + checksums. On the update
+  re-exec path the in-script check does not run at all: the client verified the
+  sums itself and hands the verified bytes through `FIREKEEP_SUMS_FILE`, which
+  is strictly stronger than re-checking a re-fetch.
 
 ## 6. Threats, ranked
 
 | # | Threat | State |
 |---|---|---|
 | 1 | Unauthenticated read of the vault over the network | **Fixed** — three independent layers (§5.1) |
-| 2 | Release-host compromise → arbitrary code on every dev machine | **OPEN** — `SHA256SUMS` unsigned (§5.6) |
+| 2 | Release-host compromise → arbitrary code on every dev machine | **Mitigated, pending key mint** — signed `SHA256SUMS` verified against a client-pinned Ed25519 key; residuals: TOFU first install, enforce-off default, unsigned-downgrade window (§5.6) |
 | 3 | A new route under a skip-list prefix is silently public | **Partly mitigated** — prefix/exact split; no test enumerates skip-list reachability |
 | 4 | `.env` read → total compromise (VAULT_KEY, Neo4j, all keys) | **Accepted** — plaintext by design; `chmod 600` documented. Sentinel no longer mounts it. |
 | 5 | Compromised agent with a valid non-admin key poisons memory | **OPEN, unmitigated** — writes are attributed but not validated, and poisoned memories are recalled like any other |

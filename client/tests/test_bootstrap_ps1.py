@@ -209,6 +209,12 @@ def test_ps1_guards_every_network_fetch_with_try_catch():
     failed: $1"`): without a per-call guard, a failed download surfaces as PowerShell's raw
     exception trace instead of the script's own firekeep-prefixed message.
 
+    ONE deliberate exception: the SHA256SUMS.minisig fetch (release signing) is
+    best-effort BY CONTRACT - releases predating signing publish no .minisig, so its
+    catch must WARN and continue, never Die. Its guard is still per-fetch; only the
+    catch body's obligation differs, and this test asserts that difference explicitly
+    rather than exempting the line.
+
     What this does NOT prove: it is not a parser and does not execute the script. It is a
     deliberately stricter replacement for a earlier version of this test that only compared
     aggregate counts (3 fetches, >=3 try/catch blocks, 3 "download failed:" strings). Counts
@@ -232,11 +238,12 @@ def test_ps1_guards_every_network_fetch_with_try_catch():
         return any(marker in line for marker in fetch_markers)
 
     fetch_indices = [i for i, line in enumerate(lines) if is_fetch_line(line)]
-    # 1 Invoke-RestMethod (latest/latest.json, to resolve the version) + 4 Invoke-WebRequest
-    # (this version's SHA256SUMS, uv.exe, the wheel, and the opt-in symdex wheel) = 5. Was 4
-    # before symdex gained its own fetch-to-a-local-file step, and 3 before the main wheel did
-    # (C2's fix) rather than being installed straight from a URL.
-    assert len(fetch_indices) == 5, "expected exactly 5 network fetches; update this test if that changes"
+    # 1 Invoke-RestMethod (latest/latest.json, to resolve the version) + 5 Invoke-WebRequest
+    # (this version's SHA256SUMS, its best-effort .minisig, uv.exe, the wheel, and the
+    # always-on symdex wheel) = 6. Was 5 before release signing added the .minisig fetch,
+    # 4 before symdex gained its own fetch-to-a-local-file step, and 3 before the main
+    # wheel did (C2's fix) rather than being installed straight from a URL.
+    assert len(fetch_indices) == 6, "expected exactly 6 network fetches; update this test if that changes"
 
     for idx in fetch_indices:
         fetch_line = lines[idx].strip()
@@ -272,16 +279,28 @@ def test_ps1_guards_every_network_fetch_with_try_catch():
                 break
         assert catch_idx is not None, f"line {idx + 1} ({fetch_line!r}) has no following 'catch {{'"
 
-        # That catch block must actually Die with a download-failed message, not just exist.
+        # That catch block must actually Die with a download-failed message, not just
+        # exist — EXCEPT the best-effort .minisig fetch, whose catch must WARN and
+        # continue (a missing signature is history, not an error, until
+        # [dist] require_signed flips) and must NOT Die.
         catch_body = []
         for j in range(catch_idx + 1, len(lines)):
             catch_body.append(lines[j])
             if "}" in lines[j]:
                 break
-        assert any('Die "download failed:' in line for line in catch_body), (
-            f"catch block for the fetch at line {idx + 1} ({fetch_line!r}) does not Die "
-            "with a 'download failed: ...' message"
-        )
+        if "SHA256SUMS.minisig" in fetch_line:
+            assert not any("Die " in line for line in catch_body), (
+                f"the .minisig fetch at line {idx + 1} must stay best-effort: its catch "
+                "must warn, never Die — a signature-less legacy release has to keep installing"
+            )
+            assert any("not signed" in line for line in catch_body), (
+                f"the .minisig fetch at line {idx + 1} must WARN on absence, not stay silent"
+            )
+        else:
+            assert any('Die "download failed:' in line for line in catch_body), (
+                f"catch block for the fetch at line {idx + 1} ({fetch_line!r}) does not Die "
+                "with a 'download failed: ...' message"
+            )
 
 
 def test_ps1_suppresses_cleanup_errors_consistently_before_die():
@@ -339,3 +358,146 @@ def test_both_bootstraps_use_native_tls_and_neutralize_ssl_cert_file():
         tls_idx = text.index("UV_NATIVE_TLS")
         venv_idx = text.index("venv $Venv" if script is BOOTSTRAP else 'venv "${VENV}"')
         assert tls_idx < venv_idx, f"{script.name}: TLS block must precede uv venv"
+
+
+def test_both_bootstraps_carry_the_signing_verification_block():
+    """Release signing (docs/RELEASE-SIGNING.md): both scripts must keep the baked-key
+    placeholder (make_release substitutes the real public key at release time), the
+    split-string placeholder probe (so the substitution cannot rewrite the comparison
+    itself), the FIREKEEP_SIGNING_PUB out-of-band override, and the minisign-if-present
+    gate — best-effort by contract, so a bare machine without minisign stays installable."""
+    for script in (BOOTSTRAP, BOOTSTRAP_SH):
+        text = script.read_text(encoding="utf-8")
+        assert "__FIREKEEP_SIGNING_PUB" in text, f"{script.name}: signing-pub placeholder lost"
+        assert "FIREKEEP_SIGNING_PUB" in text, f"{script.name}: no out-of-band key override"
+        assert "minisign" in text, f"{script.name}: no minisign verification path"
+        assert "SHA256SUMS.minisig" in text, f"{script.name}: never fetches the signature"
+    # The probe strings are split so make_release's token substitution can't rewrite them.
+    assert '"__FIREKEEP_SIGNING_PUB_""DEFAULT__"' in BOOTSTRAP_SH.read_text(encoding="utf-8")
+    assert "'__FIREKEEP_SIGNING_PUB_' + 'DEFAULT__'" in BOOTSTRAP.read_text(encoding="utf-8")
+
+
+def test_ps1_minisign_rejection_is_fatal_and_checked_via_lastexitcode():
+    """minisign is a native executable: $ErrorActionPreference does not see its exit
+    code, so the script must check $LASTEXITCODE and Die. An invalid signature is
+    tampering evidence — unlike an ABSENT one, it must never degrade to a warning."""
+    text = BOOTSTRAP.read_text(encoding="utf-8")
+    idx = text.index("$Minisign.Source")
+    tail = text[idx:idx + 400]
+    assert "$LASTEXITCODE -ne 0" in tail
+    assert "signature verification FAILED" in tail
+    assert "Die" in tail
+
+
+# --- the verified-sums hand-off (two-fetch split, security review HIGH) ---------
+#
+# The executable proof lives in test_bootstrap_sh.py (request-logged server); these
+# keep the PowerShell mirror from drifting out of the contract, plus one Windows-only
+# executable check of the handed branch itself.
+
+
+def test_both_bootstraps_accept_the_handed_sums_file():
+    """Both scripts must honour FIREKEEP_SUMS_FILE — and only TOGETHER with
+    FIREKEEP_VERSION, the shape only the client's `firekeep update` hand-off produces,
+    so a stray env var cannot redirect a manual install's verification."""
+    sh = BOOTSTRAP_SH.read_text(encoding="utf-8")
+    ps = BOOTSTRAP.read_text(encoding="utf-8")
+    assert '[ -n "${FIREKEEP_SUMS_FILE:-}" ] && [ -n "${FIREKEEP_VERSION:-}" ]' in sh
+    assert "$env:FIREKEEP_SUMS_FILE -and $env:FIREKEEP_VERSION" in ps
+    # Set-but-unusable is fatal in both — a silent fallback to the network fetch
+    # would reopen the exact hole the hand-off closes.
+    for name, text in (("install.sh", sh), ("install.ps1", ps)):
+        assert "FIREKEEP_SUMS_FILE is set but not readable" in text, (
+            f"{name}: an unusable handed file must die, not fall back to fetching"
+        )
+
+
+def test_both_bootstraps_skip_all_sums_network_fetches_under_a_handed_file():
+    """Under a handed file there must be NO sums fetch and NO .minisig fetch: the
+    client already verified against its pinned key, and 'no fetch #2' is the whole
+    fix. The minisign block must be gated on the handed flag in both scripts."""
+    sh = BOOTSTRAP_SH.read_text(encoding="utf-8")
+    ps = BOOTSTRAP.read_text(encoding="utf-8")
+    # sh: the SHA256SUMS fetch sits in the else of the handed branch...
+    assert 'fetch "${VBASE}/SHA256SUMS" "${BIN}/SHA256SUMS"' in sh
+    assert sh.index("FIREKEEP_SUMS_FILE") < sh.index('fetch "${VBASE}/SHA256SUMS"')
+    # ...and the minisign gate checks the handed flag first.
+    sh_gate = next(line for line in sh.splitlines()
+                   if "command -v minisign" in line and "if " in line)
+    assert '-z "${SUMS_HANDED}"' in sh_gate
+    ps_gate = next(line for line in ps.splitlines()
+                   if "$Minisign" in line and line.strip().startswith("if "))
+    assert "-not $SumsHanded" in ps_gate
+
+
+@pytest.mark.skipif(os.name != "nt" or shutil.which("powershell") is None,
+                    reason="Windows + PowerShell required")
+def test_ps1_handed_sums_makes_no_sums_fetch_and_refuses_mismatched_artifacts(tmp_path):
+    """Executable Windows check of the handed branch: serve a self-consistent
+    'attacker' release, hand a DIFFERENT (client-verified) sums file, and prove from
+    the server's request log that the script fetched neither SHA256SUMS nor its
+    .minisig — then refused the artifacts on checksum mismatch. The full POSIX twin
+    (control run included) is test_bootstrap_sh.py's two-fetch-split test."""
+    import functools
+    import hashlib
+    import http.server
+    import threading
+
+    root = tmp_path / "release"
+    vdir = root / "1.0.0"
+    vdir.mkdir(parents=True)
+    uv = vdir / "uv-x86_64-pc-windows-msvc.exe"
+    uv.write_bytes(b"not really an exe, never reached")
+    wheel = vdir / "firekeep_client-1.0.0-py3-none-any.whl"
+    wheel.write_bytes(b"attacker wheel bytes\n")
+    (vdir / "SHA256SUMS").write_text(  # self-consistent: fetch #2 would accept it
+        f"{hashlib.sha256(uv.read_bytes()).hexdigest()}  uv-x86_64-pc-windows-msvc.exe\n"
+        f"{hashlib.sha256(wheel.read_bytes()).hexdigest()}  firekeep_client-1.0.0-py3-none-any.whl\n"
+    )
+
+    requests: list[str] = []
+
+    class _Handler(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, directory=str(root), **kwargs)
+
+        def do_GET(self):
+            requests.append(self.path)
+            super().do_GET()
+
+        def log_message(self, *args):
+            pass
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(_Handler))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        # What the CLIENT verified: same uv, different (genuine) wheel hash.
+        verified = tmp_path / "SHA256SUMS.verified"
+        verified.write_text(
+            f"{hashlib.sha256(uv.read_bytes()).hexdigest()}  uv-x86_64-pc-windows-msvc.exe\n"
+            f"{hashlib.sha256(b'genuine wheel').hexdigest()}  firekeep_client-1.0.0-py3-none-any.whl\n"
+        )
+        home = tmp_path / "home"
+        home.mkdir()
+        env = {"USERPROFILE": str(home), "PATH": os.environ["PATH"],
+               "FIREKEEP_DIST_BASE": f"http://127.0.0.1:{srv.server_address[1]}",
+               "FIREKEEP_VERSION": "1.0.0",
+               "FIREKEEP_SUMS_FILE": str(verified)}
+        env.update({k: os.environ[k] for k in ("SystemRoot", "SystemDrive")
+                    if k in os.environ})
+        proc = subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+             "-File", str(BOOTSTRAP)],
+            capture_output=True, text=True, env=env, timeout=120,
+        )
+    finally:
+        srv.shutdown()
+
+    assert proc.returncode != 0, f"mismatched artifacts must be refused:\n{proc.stdout}"
+    assert "handed by firekeep update" in proc.stdout
+    assert "checksum mismatch" in proc.stderr.lower()
+    sums_fetches = [p for p in requests if "SHA256SUMS" in p]
+    assert sums_fetches == [], (
+        f"under a handed FIREKEEP_SUMS_FILE the script must fetch no sums: {sums_fetches}"
+    )
+    assert not (home / ".firekeep" / "venv").exists()

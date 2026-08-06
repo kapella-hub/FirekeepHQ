@@ -114,12 +114,64 @@ if (($Installed -eq $V) -and -not $env:FIREKEEP_FORCE_REINSTALL) {
     exit $FirekeepExit
 }
 
-# --- 2. this version's SHA256SUMS, fetched once ------------------------------
+# --- 2. this version's SHA256SUMS ---------------------------------------------
+# Mirrors install.sh step 3: on the `firekeep update` path the CLIENT already fetched
+# and signature-verified this version's SHA256SUMS against its pinned key, and hands
+# the VERIFIED bytes through FIREKEEP_SUMS_FILE. Using that file — and NOT fetching
+# again — closes the two-fetch split (a host can serve different bytes to the
+# client's urllib fetch and this script's own web request). Honoured only alongside
+# FIREKEEP_VERSION, the shape only the client's hand-off produces; a manual
+# `irm | iex` run sets neither and fetches as before. Set-but-unusable is fatal —
+# a silent fallback to the network would BE the vulnerability.
 $SumsPath = Join-Path $Bin 'SHA256SUMS'
-try {
-    Invoke-WebRequest -UseBasicParsing -Uri "$VBase/SHA256SUMS" -OutFile $SumsPath
-} catch {
-    Die "download failed: $VBase/SHA256SUMS"
+$SumsHanded = $false
+if ($env:FIREKEEP_SUMS_FILE -and $env:FIREKEEP_VERSION) {
+    if (-not (Test-Path -PathType Leaf $env:FIREKEEP_SUMS_FILE)) {
+        Die "FIREKEEP_SUMS_FILE is set but not readable: $($env:FIREKEEP_SUMS_FILE)"
+    }
+    try {
+        Copy-Item $env:FIREKEEP_SUMS_FILE $SumsPath -Force
+    } catch {
+        Die "cannot copy FIREKEEP_SUMS_FILE into place: $($env:FIREKEEP_SUMS_FILE)"
+    }
+    $SumsHanded = $true
+    Write-Host "firekeep: using signature-verified SHA256SUMS handed by firekeep update (no re-fetch)"
+} else {
+    try {
+        Invoke-WebRequest -UseBasicParsing -Uri "$VBase/SHA256SUMS" -OutFile $SumsPath
+    } catch {
+        Die "download failed: $VBase/SHA256SUMS"
+    }
+}
+
+# --- 2b. BEST-EFFORT minisign verification of SHA256SUMS ---------------------
+# Mirrors install.sh step 3b — see its comment and docs/RELEASE-SIGNING.md for the
+# honest scope: TOFU on a first install, real protection on the `firekeep update` re-exec
+# path (the client verified this script against a signed SHA256SUMS before running it).
+# Skips silently without a minisign binary or a baked/provided key; warns when the
+# release publishes no .minisig; a PRESENT signature that fails to verify is fatal.
+# Skipped entirely under a handed FIREKEEP_SUMS_FILE (mirrors install.sh 3b): the
+# client already did the authoritative verification against ITS pinned key, and a
+# handed file means NO network round trips on this path — not even for the .minisig.
+$SigningPubDefault = '__FIREKEEP_SIGNING_PUB_DEFAULT__'
+$SigPlaceholder = '__FIREKEEP_SIGNING_PUB_' + 'DEFAULT__'
+if ($SigningPubDefault -eq $SigPlaceholder) { $SigningPubDefault = '' }
+$SigningPub = if ($env:FIREKEEP_SIGNING_PUB) { $env:FIREKEEP_SIGNING_PUB } else { $SigningPubDefault }
+$Minisign = Get-Command minisign -ErrorAction SilentlyContinue
+if ((-not $SumsHanded) -and $SigningPub -and $Minisign) {
+    $SigPath = Join-Path $Bin 'SHA256SUMS.minisig'
+    $SigFetched = $true
+    try {
+        Invoke-WebRequest -UseBasicParsing -Uri "$VBase/SHA256SUMS.minisig" -OutFile $SigPath
+    } catch {
+        $SigFetched = $false
+        [Console]::Error.WriteLine("firekeep: WARNING: release $V is not signed (no SHA256SUMS.minisig); relying on TLS + checksums")
+    }
+    if ($SigFetched) {
+        & $Minisign.Source -Vq -m $SumsPath -x $SigPath -P $SigningPub
+        if ($LASTEXITCODE -ne 0) { Die "SHA256SUMS signature verification FAILED - refusing to install (possible release-host compromise)" }
+        Write-Host "firekeep: SHA256SUMS signature verified (minisign)"
+    }
 }
 
 # Verify a local file against this SHA256SUMS. Shared by uv.exe AND the wheel — a SECOND,

@@ -182,6 +182,41 @@ process-wide default context and would widen the configured server's `ca_path` t
 instead of leaving it scoped; when `truststore` isn't installed the call returns `None`
 and the caller falls back to the stdlib default context.
 
+**Release signing (docs/RELEASE-SIGNING.md — read it before touching keys or the verify
+path):** `make_release.py` signs `SHA256SUMS` (Ed25519, minisign format, `SHA256SUMS.minisig`)
+when the `FIREKEEP_SIGNING_KEY` CI secret is set — absent secret = loud UNSIGNED release, set-but-
+garbage secret = failed release. SHA256SUMS now also lists `install.sh`/`install.ps1`, so the
+signature covers the script `firekeep update` executes: `updater.fetch_signed_sums` verifies the
+target release's sums against `signing.PINNED_PUBLIC_KEY` (`client/firekeep_client/signing.py`
+— pure-stdlib RFC 8032 verifier, EMPTY until the operator mints keys per the runbook;
+the import boundary is why it isn't `cryptography`), `updater.bootstrap_sha256` refuses a
+`latest.json` that disagrees with the signed entry, and the trusted comment's `version:` token
+kills cross-version replay. Verify-if-present: no pinned key or no published `.minisig` →
+warn/skip (until `[dist] require_signed = true`, default false FOR NOW); an INVALID signature
+is always fatal. The bootstraps carry a best-effort mirror (baked `__FIREKEEP_SIGNING_PUB_DEFAULT__`
+placeholder, `FIREKEEP_SIGNING_PUB` override — which `firekeep update` now exports from the CLIENT's
+pinned key, so the update path isn't circular on the host-baked one; `minisign`-binary-if-present;
+absence never breaks a bare machine). **Security-review plumbing fixes (2026-08-05):** the verified
+sums are THREADED THROUGH, never re-fetched — `cmd_update` writes the signature-verified SHA256SUMS
+to a 0600 file and hands its path as `FIREKEEP_SUMS_FILE`; both bootstraps use it (honoured only
+alongside `FIREKEEP_VERSION`, the client hand-off's shape; set-but-unreadable is fatal, and under it
+NO sums/`.minisig` fetch happens at all), closing the two-fetch split where a host served honest
+bytes to the client's verification fetch and attacker bytes to the bootstrap's re-fetch (guard:
+`test_install_sh_two_fetch_split_no_longer_works`, request-log-proven, + the executable ps1 twin).
+`--to X.Y.Z` verifies the TARGET's sums (what gets installed; latest's too when they differ — those
+anchor the executed `latest/` bootstrap), so rollbacks are signed and an unsigned old target fails
+under `require_signed`. Because the detached auto-update's stderr is DEVNULL, an unsigned-release
+warning also persists a one-shot scratch marker (`state.note_unsigned_update`) that the next
+`session_start` briefing prints. CI publishes `install.sh`/`install.ps1` under `<version>/` (the
+sums list them, so the dir must serve them) and the verify step byte-compares the SERVED
+`<version>/SHA256SUMS.minisig` against the built one on signed builds. `generate_signing_key.py`
+creates the secret 0600 at open (`O_EXCL`), no chmod-after window. First install stays TOFU;
+`latest.json` stays unsigned (downgrade residual); absence stays attacker-choosable until
+`require_signed` flips — all stated in `docs/THREAT-MODEL.md` §5.6. Guards:
+`client/tests/test_signing.py`, signing halves of `test_updater.py` / `test_cli_update.py` /
+`test_make_release.py` / both bootstrap test files, and `tests/test_release_workflow.py`'s
+signature-served class.
+
 `~/.firekeep/config` (INI, `0600`) is the single source of truth: `[identity]` holds `agent_id`, `[server]` holds the one connection/auth/TLS policy, and optional `[dist]` holds update metadata. There is no active-profile selector or per-runtime pin; every adapter reads the same server, while `FIREKEEP_AGENT_ID` remains the supported per-process identity override. `firekeep doctor` runs health + versions (a verdict-free client/cortex report; the two ship on independent tag series so equality is meaningless) + client-version (staleness vs the release manifest — the only version row that renders a verdict) + key-ACL + CA-expiry preflight. Legacy profile configs migrate automatically when they identify one unambiguous server; conflicting connections are left untouched and reported with exit code 3.
 
 **Install prompts (`firekeep_client/wizard.py`):** an interactive install asks for the agent identity and the one server connection — `host` (+ optional `api_key`) for an existing/default `kind=ports` connection, or `base_url` + `ca_path` + `api_key` when the existing/migrated connection is `kind=paths`. It never asks the user to choose a product tier or profile. Every prompt is prefilled with the current value, so Enter-through is a no-op and re-running the installer after a kit upgrade is safe. `ca_path` accepts the literal **`os`** (`resolver.OS_TRUST`) to verify TLS against the operating-system trust store instead of a CA file — the MDM-managed-corporate-CA case, where the CA lives in the OS keychain and there is no PEM to point at; the wizard offers `os` as the default automatically when a read-only TLS probe (`wizard._probe_os_trust`, best-effort — any failure just keeps the file prompt) shows the server cert verifying against the OS store, but never overrides a deliberately configured ca_path. Under the hood `transport._build_ssl_context("os")` builds a scoped `truststore` context shared by the stdlib and shim/httpx paths — still verified TLS, never a bypass — and `firekeep doctor` reports `ok` for `os` (the OS owns rotation). A ports-style connection is deliberately not offered a TLS toggle: `resolver._verify_for()` refuses `scheme=https` without both `verify_tls=true` and a `ca_path`. No TTY (CI, piped) or `--non-interactive` means no prompts; `--agent-id` and `--host` seed the prompts interactively and are written directly otherwise.

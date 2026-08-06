@@ -8,6 +8,15 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import make_release  # noqa: E402
 
+from firekeep_client import signing  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_signing_key(monkeypatch):
+    """A signing key leaking in from the invoking environment would silently flip
+    every unsigned-path assertion below. Each signing test sets its own."""
+    monkeypatch.delenv(make_release.SIGNING_KEY_ENV, raising=False)
+
 
 def _scripts(tmp_path):
     sh = tmp_path / "install.sh"
@@ -89,11 +98,13 @@ def test_main_happy_path_writes_a_complete_manifest_and_sums(tmp_path):
     assert manifest["bootstrap_ps1_sha256"] == hashlib.sha256(ps1.read_bytes()).hexdigest()
 
     # --- SHA256SUMS: this is now the wheel's ONLY integrity check (latest.json carries no
-    # per-wheel hash) — a line for every uv binary AND the wheel, none silently dropped ---
+    # per-wheel hash) — a line for every uv binary AND the wheel, none silently dropped.
+    # The bootstrap scripts are listed too (release signing): the signature over this
+    # file is what anchors the script `firekeep update` executes ---
     sums_path = tmp_path / "SHA256SUMS"
     assert sums_path.is_file()
     lines = sums_path.read_text().splitlines()
-    expected_names = {p.name for p in uv_paths} | {wheel.name, symdex.name}
+    expected_names = {p.name for p in uv_paths} | {wheel.name, symdex.name, sh.name, ps1.name}
     assert len(lines) == len(expected_names)
 
     # Exact line format: "<hex><two spaces><basename>", no directory component. This is a
@@ -109,8 +120,10 @@ def test_main_happy_path_writes_a_complete_manifest_and_sums(tmp_path):
         seen_names.add(name)
     assert seen_names == expected_names
 
-    # Verify the digests themselves aren't just well-formed but correct, and that install.sh
-    # and install.ps1 (non-uv, non-wheel files) are NOT present in SHA256SUMS.
+    # Verify the digests themselves aren't just well-formed but correct. install.sh and
+    # install.ps1 ARE present (since release signing) and must agree byte-for-byte with
+    # latest.json's bootstrap hashes — updater.bootstrap_sha256 refuses a release where
+    # the two disagree.
     by_name = {}
     for line in lines:
         hexpart, _, name = line.partition("  ")
@@ -119,8 +132,8 @@ def test_main_happy_path_writes_a_complete_manifest_and_sums(tmp_path):
         assert by_name[p.name] == hashlib.sha256(p.read_bytes()).hexdigest()
     assert by_name[wheel.name] == hashlib.sha256(wheel.read_bytes()).hexdigest()
     assert by_name[symdex.name] == hashlib.sha256(symdex.read_bytes()).hexdigest()
-    assert sh.name not in by_name
-    assert ps1.name not in by_name
+    assert by_name[sh.name] == manifest["bootstrap_sha256"]
+    assert by_name[ps1.name] == manifest["bootstrap_ps1_sha256"]
 
 
 def test_main_fails_loudly_when_no_wheel_is_present(tmp_path):
@@ -288,3 +301,102 @@ def test_without_dist_base_nothing_is_baked(tmp_path):
     rc = make_release.main(["make_release.py", "1.2.3", str(tmp_path)])
     assert rc == 0
     assert "__FIREKEEP_DIST_BASE_DEFAULT__" in sh.read_text()
+
+
+# --- release signing (docs/RELEASE-SIGNING.md) ---------------------------------
+
+
+def _scripts_with_signing_placeholder(tmp_path):
+    sh = tmp_path / "install.sh"
+    sh.write_bytes(
+        b'#!/bin/sh\nSIGNING_PUB_DEFAULT="__FIREKEEP_SIGNING_PUB_DEFAULT__"\n'
+    )
+    ps1 = tmp_path / "install.ps1"
+    ps1.write_bytes(
+        b"# ps\n$SigningPubDefault = '__FIREKEEP_SIGNING_PUB_DEFAULT__'\n"
+    )
+    return sh, ps1
+
+
+def _signed_dist_dir(tmp_path, monkeypatch, version="1.2.3"):
+    _populate_dist_dir(tmp_path, version=version)
+    for p in (tmp_path / "install.sh", tmp_path / "install.ps1"):
+        p.unlink()
+    sh, ps1 = _scripts_with_signing_placeholder(tmp_path)
+    (tmp_path / "firekeep_symdex-0.2.13-py3-none-any.whl").write_bytes(b"symdex")
+    pub_text, sec_text = signing.generate_keypair()
+    monkeypatch.setenv(make_release.SIGNING_KEY_ENV, sec_text)
+    return sh, ps1, pub_text, sec_text
+
+
+def test_signed_release_produces_a_verifying_minisig(tmp_path, monkeypatch):
+    """The exact artifact chain a signed release publishes: SHA256SUMS.minisig verifies
+    over the SHA256SUMS bytes with the key derived from FIREKEEP_SIGNING_KEY, and the
+    trusted comment binds the release version (the client refuses cross-version replay)."""
+    _sh, _ps1, pub_text, _sec = _signed_dist_dir(tmp_path, monkeypatch)
+    rc = make_release.main(["make_release.py", "1.2.3", str(tmp_path)])
+    assert rc == 0
+    sums = (tmp_path / "SHA256SUMS").read_bytes()
+    sig_text = (tmp_path / "SHA256SUMS.minisig").read_text()
+    trusted = signing.verify(sums, sig_text, pub_text)
+    assert signing.trusted_comment_version(trusted) == "1.2.3"
+    assert b"\r\n" not in (tmp_path / "SHA256SUMS.minisig").read_bytes()
+
+
+def test_signed_release_publishes_the_public_key(tmp_path, monkeypatch):
+    """signing.pub is the transparency copy CI serves at latest/signing.pub. It must be
+    the SIGNING key's public half — a mismatch would advertise a key that verifies nothing."""
+    _sh, _ps1, pub_text, _sec = _signed_dist_dir(tmp_path, monkeypatch)
+    make_release.main(["make_release.py", "1.2.3", str(tmp_path)])
+    published = (tmp_path / "signing.pub").read_text()
+    assert signing.parse_public_key(published) == signing.parse_public_key(pub_text)
+
+
+def test_signing_bakes_the_public_key_into_the_bootstraps_before_hashing(tmp_path, monkeypatch):
+    """Like the dist base: the baked bytes are what ships, so they are what latest.json
+    hashes AND what the signed SHA256SUMS lists — all three must describe the same file."""
+    sh, ps1, pub_text, _sec = _signed_dist_dir(tmp_path, monkeypatch)
+    make_release.main(["make_release.py", "1.2.3", str(tmp_path)])
+    pub_b64 = pub_text.splitlines()[1]
+    baked = sh.read_text()
+    assert "__FIREKEEP_SIGNING_PUB_DEFAULT__" not in baked
+    assert pub_b64 in baked
+    assert pub_b64 in ps1.read_text()
+    manifest = json.loads((tmp_path / "latest.json").read_text())
+    assert manifest["bootstrap_sha256"] == hashlib.sha256(sh.read_bytes()).hexdigest()
+    sums = (tmp_path / "SHA256SUMS").read_text()
+    assert f"{manifest['bootstrap_sha256']}  install.sh" in sums
+
+
+def test_unsigned_release_is_loud_but_not_fatal(tmp_path, monkeypatch, capsys):
+    """Releases must keep working before the operator mints keys — but an unsigned
+    build must never look like an oversight in the CI log."""
+    _populate_dist_dir(tmp_path)
+    (tmp_path / "firekeep_symdex-0.2.13-py3-none-any.whl").write_bytes(b"symdex")
+    rc = make_release.main(["make_release.py", "1.2.3", str(tmp_path)])
+    assert rc == 0
+    assert not (tmp_path / "SHA256SUMS.minisig").exists()
+    assert not (tmp_path / "signing.pub").exists()
+    assert "UNSIGNED" in capsys.readouterr().out
+
+
+def test_unusable_signing_key_fails_the_release(tmp_path, monkeypatch):
+    """A set-but-garbage secret must never fall back to shipping unsigned — that would
+    turn a CI secret misconfiguration into a silent loss of the security property."""
+    _populate_dist_dir(tmp_path)
+    (tmp_path / "firekeep_symdex-0.2.13-py3-none-any.whl").write_bytes(b"symdex")
+    monkeypatch.setenv(make_release.SIGNING_KEY_ENV, "not a key")
+    with pytest.raises(SystemExit, match="unusable"):
+        make_release.main(["make_release.py", "1.2.3", str(tmp_path)])
+
+
+def test_signing_requires_the_bootstrap_placeholder(tmp_path, monkeypatch):
+    """Signing against bootstraps without the pub-key placeholder means the repo copies
+    and make_release drifted — fail the release, never publish a script that silently
+    cannot verify what it installs."""
+    _populate_dist_dir(tmp_path)  # scripts WITHOUT the signing placeholder
+    (tmp_path / "firekeep_symdex-0.2.13-py3-none-any.whl").write_bytes(b"symdex")
+    _pub, sec_text = signing.generate_keypair()
+    monkeypatch.setenv(make_release.SIGNING_KEY_ENV, sec_text)
+    with pytest.raises(SystemExit, match="placeholder"):
+        make_release.main(["make_release.py", "1.2.3", str(tmp_path)])

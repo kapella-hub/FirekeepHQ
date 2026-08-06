@@ -110,6 +110,157 @@ def _read_url(url: str, timeout: float) -> bytes:
         return resp.read()
 
 
+# --- release signing (docs/RELEASE-SIGNING.md) --------------------------------
+#
+# `SHA256SUMS` is what the whole update path hangs off: the bootstrap verifies uv and
+# both wheels against it, and (since signing landed) it also carries the bootstrap
+# scripts' own hashes. Verifying its minisign signature against the key PINNED IN THE
+# CURRENTLY INSTALLED CLIENT is therefore what turns "trust the release host" into
+# "trust the key holder": a compromised host can serve only bytes the signing key
+# actually signed. Honest limits, stated where the code lives:
+#   - first install (curl|sh) is TOFU and stays TOFU — the bootstrap fetched from the
+#     host cannot be verified by a key it delivers itself; signing protects UPDATES,
+#     where the pinned key predates the fetch.
+#   - the manifest (latest.json) is unsigned, so a host compromise can still replay an
+#     older SIGNED release (downgrade/freeze). It cannot introduce new code.
+#   - verify-if-present: releases predating signing have no .minisig, so absence is a
+#     WARNING while [dist] require_signed=false (the default until every supported
+#     version is signed). An INVALID signature is fatal regardless of that flag —
+#     invalid is tampering evidence, absence is history.
+
+@dataclass(frozen=True)
+class SignedSums:
+    """Result of the best-effort SHA256SUMS signature check for one release."""
+    text: "str | None"      # the SHA256SUMS content, when it could be fetched
+    verified: bool          # True only when the minisign signature verified against the pinned key
+    warning: "str | None"   # one-line, caller-printed explanation when not verified
+
+
+def require_signed(cfg) -> bool:
+    """[dist] require_signed — default false FOR NOW (flips once every supported
+    release is signed). Garbage values fail loud: silently reading a mistyped
+    security flag as false would be the worst of both worlds."""
+    if not cfg.has_section("dist"):
+        return False
+    raw = cfg.get("dist", "require_signed", fallback="").strip().lower()
+    if raw in ("", "0", "false", "no", "off"):
+        return False
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    raise UpdateError(f"[dist] require_signed = {raw!r} is not a boolean (use true or false)")
+
+
+def fetch_signed_sums(base: str, version: str, *, require_signed: bool,
+                      timeout: float = 10.0) -> SignedSums:
+    """Fetch `<base>/<version>/SHA256SUMS` (+ its .minisig) and verify the signature
+    against the client's pinned key. Every degraded outcome is explicit:
+
+      no pinned key            -> nothing to verify against; silent skip (pre-mint
+                                  builds), unless require_signed, which then fails.
+      sums/.minisig unfetchable-> warning (or hard failure under require_signed).
+      signature INVALID        -> UpdateError, ALWAYS — require_signed only governs
+                                  absence, never validity.
+      verified                 -> the sums text is signature-anchored; the caller can
+                                  pin further hashes (the bootstrap script) to it.
+    """
+    # Lazy on purpose: hooks import updater for the daily version check, and the
+    # verification machinery must stay off every hook path (import-boundary spirit —
+    # signing.py is stdlib-only, but it has exactly one caller: this update path).
+    from firekeep_client import signing
+
+    pinned = signing.PINNED_PUBLIC_KEY.strip()
+    if not pinned:
+        if require_signed:
+            raise UpdateError(
+                "[dist] require_signed = true, but this client build pins no release "
+                "signing key (firekeep_client/signing.py PINNED_PUBLIC_KEY is empty) — "
+                "update from a build that pins one, or unset require_signed"
+            )
+        return SignedSums(text=None, verified=False, warning=None)
+
+    sums_url = f"{base.rstrip('/')}/{version}/SHA256SUMS"
+    try:
+        sums_bytes = _read_url(sums_url, timeout)
+    except (urllib.error.URLError, OSError) as exc:
+        if require_signed:
+            raise UpdateError(
+                f"cannot fetch {sums_url} for signature verification "
+                f"([dist] require_signed = true): {exc}"
+            ) from exc
+        return SignedSums(None, False,
+                          f"cannot fetch SHA256SUMS for {version} ({exc}); "
+                          f"skipping signature verification")
+
+    sums_text = sums_bytes.decode("utf-8", "replace")
+    sig_url = sums_url + ".minisig"
+    try:
+        sig_bytes = _read_url(sig_url, timeout)
+    except (urllib.error.URLError, OSError) as exc:
+        if require_signed:
+            raise UpdateError(
+                f"release {version} is not signed (no SHA256SUMS.minisig) and "
+                f"[dist] require_signed = true — refusing to update. ({exc})"
+            ) from exc
+        return SignedSums(sums_text, False,
+                          f"release {version} is not signed (no SHA256SUMS.minisig); "
+                          f"relying on TLS + checksums alone")
+
+    try:
+        trusted = signing.verify(sums_bytes, sig_bytes.decode("utf-8", "replace"), pinned)
+    except signing.VerifyUnavailable as exc:
+        if require_signed:
+            raise UpdateError(
+                f"cannot verify the release signature ({exc}) and "
+                f"[dist] require_signed = true — refusing to update"
+            ) from exc
+        return SignedSums(sums_text, False,
+                          f"release signature present but unverifiable ({exc}); "
+                          f"relying on TLS + checksums alone")
+    except signing.SignatureError as exc:
+        raise UpdateError(
+            f"SIGNATURE VERIFICATION FAILED for release {version}'s SHA256SUMS: {exc}. "
+            f"Refusing to update — this can indicate a compromised release host, and "
+            f"no configuration overrides it."
+        ) from exc
+
+    bound = signing.trusted_comment_version(trusted)
+    if bound is not None and bound != version:
+        raise UpdateError(
+            f"release {version}'s SHA256SUMS carries a valid signature for a DIFFERENT "
+            f"release ({bound}) — refusing to update (signature replay across versions)"
+        )
+    return SignedSums(sums_text, True, None)
+
+
+def sums_entry(sums_text: str, name: str) -> str:
+    """The sha256 for `name` out of a SHA256SUMS body ('<hex>  <basename>' lines)."""
+    for line in sums_text.splitlines():
+        digest, _, fname = line.strip().partition("  ")
+        if fname.strip() == name and digest:
+            return digest.strip().lower()
+    raise UpdateError(f"the signed SHA256SUMS has no entry for {name} — release is malformed")
+
+
+def bootstrap_sha256(manifest: Manifest, signed: SignedSums, *, windows: bool) -> str:
+    """The hash `firekeep update` must demand of the bootstrap it is about to execute.
+
+    Unverified: the manifest's hash, exactly as before signing existed. Verified: the
+    SIGNED SHA256SUMS entry is authoritative, and the unsigned manifest must AGREE with
+    it — a disagreement means the host is serving a manifest the key holder never
+    described, which is precisely the attack signing exists to catch."""
+    expected = manifest.bootstrap_hash_for(windows=windows).strip().lower()
+    if not signed.verified or signed.text is None:
+        return expected
+    name = "install.ps1" if windows else "install.sh"
+    anchored = sums_entry(signed.text, name)
+    if anchored != expected:
+        raise UpdateError(
+            f"latest.json's {name} hash does not match the SIGNED SHA256SUMS entry — "
+            f"refusing to update (the unsigned manifest disagrees with the signed release)"
+        )
+    return anchored
+
+
 def download(url: str, dest: Path, *, sha256: str, timeout: float = 60.0) -> Path:
     """Fetch `url` to `dest`, verifying its digest FIRST. Nothing is written unless the
     checksum matches, so an unverified artifact never exists on disk at all.
