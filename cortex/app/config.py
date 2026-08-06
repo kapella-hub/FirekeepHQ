@@ -452,6 +452,42 @@ class Settings(BaseSettings):
     DREAM_LOCK_TTL_SECONDS: int = 1800
     DREAM_PROFILES_ENABLED: bool = True
 
+    # --- Living Procedures (docs/superpowers/specs/2026-08-06-living-procedures-design.md)
+    # Opt-in. While false the gateway stage is a no-op, the pass self-gates, and
+    # the /procedures router is not mounted (the /dreams + /collectors precedent:
+    # a disabled deploy 404s rather than serving a disabled-shaped body).
+    PROCEDURE_ENABLED: bool = False
+    # Observe-without-warning, for a first deployment that wants evidence before
+    # it wants opinions.
+    PROCEDURE_WARN_ENABLED: bool = True
+    # Executions required before an efficacy VERDICT is offered. Frequency
+    # reporting (Tier A) needs none. Deliberately an explicit gate: OWM has no
+    # such gate because a ranking nudge can be neutral-by-prior, but a proposal
+    # shown to a human cannot.
+    PROCEDURE_MIN_EXECUTIONS: int = 5
+    # Beta prior handed to owm.compute_efficacy (mirrors OWM_PRIOR_N).
+    PROCEDURE_PRIOR_N: int = 5
+    # How far efficacy(skipped) must fall below efficacy(observed) to call a
+    # step load-bearing — and, symmetrically, how close it must stay to call it
+    # dead.
+    PROCEDURE_EFFICACY_DELTA: float = 0.15
+    # Evidence window; matches the 30d eval TTL, beyond which there is nothing
+    # to join to.
+    PROCEDURE_WINDOW_DAYS: int = 30
+    # Execution-record TTL. Deliberately > the window so a window never reaches
+    # past its own data.
+    PROCEDURE_EXEC_TTL_DAYS: int = 90
+    # Max observations one agent_id contributes per step (mirrors OWM_AGENT_CAP):
+    # one CI identity in a loop must not decide a team's procedure.
+    PROCEDURE_AGENT_CAP: int = 5
+    # In-process matcher-index cache. Staleness of this long on a warn is
+    # harmless; a Redis GET per customer Edit is not.
+    PROCEDURE_INDEX_CACHE_SECONDS: int = 30
+    # Hard cap on specs per skill — bounds the index and the pre-edit match loop.
+    PROCEDURE_MAX_SPECS: int = 50
+    PROCEDURE_SCHEDULE_HOURS: int = 24
+
+
     # Memory Reliability (SP0 — WS-A)
     EMBED_RETRY_ATTEMPTS: int = 3
     BACKFILL_MAX_ATTEMPTS: int = 10

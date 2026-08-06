@@ -401,6 +401,22 @@ services:
       DREAM_SYNTH_TIMEOUT_SECONDS: ${DREAM_SYNTH_TIMEOUT_SECONDS:-90.0}
       DREAM_LOCK_TTL_SECONDS: ${DREAM_LOCK_TTL_SECONDS:-1800}
       DREAM_PROFILES_ENABLED: ${DREAM_PROFILES_ENABLED:-true}
+      # Living Procedures (app/procedures/) - this is the service that runs the
+      # gateway observe stage and mounts GET /procedures, so the enable flags and
+      # the matcher-cache / exec-TTL values bind here. Opt-in; off by default.
+      # The whole set is carried on all four cortex services because one Settings
+      # class is read by four processes.
+      PROCEDURE_ENABLED: ${PROCEDURE_ENABLED:-false}
+      PROCEDURE_WARN_ENABLED: ${PROCEDURE_WARN_ENABLED:-true}
+      PROCEDURE_MIN_EXECUTIONS: ${PROCEDURE_MIN_EXECUTIONS:-5}
+      PROCEDURE_PRIOR_N: ${PROCEDURE_PRIOR_N:-5}
+      PROCEDURE_EFFICACY_DELTA: ${PROCEDURE_EFFICACY_DELTA:-0.15}
+      PROCEDURE_WINDOW_DAYS: ${PROCEDURE_WINDOW_DAYS:-30}
+      PROCEDURE_EXEC_TTL_DAYS: ${PROCEDURE_EXEC_TTL_DAYS:-90}
+      PROCEDURE_AGENT_CAP: ${PROCEDURE_AGENT_CAP:-5}
+      PROCEDURE_INDEX_CACHE_SECONDS: ${PROCEDURE_INDEX_CACHE_SECONDS:-30}
+      PROCEDURE_MAX_SPECS: ${PROCEDURE_MAX_SPECS:-50}
+      PROCEDURE_SCHEDULE_HOURS: ${PROCEDURE_SCHEDULE_HOURS:-24}
     env_file:
       - .env
     depends_on:
@@ -472,6 +488,20 @@ services:
       # 20 -> 30, matching cortex-api above. See config.py for the reasoning.
       DECISION_SYNTH_TIMEOUT_SECONDS: ${DECISION_SYNTH_TIMEOUT_SECONDS:-30}
       DECISION_MAX_QUESTIONS: ${DECISION_MAX_QUESTIONS:-8}
+      # Living Procedures (app/procedures/) - carried for parity with the other
+      # cortex services (the MCP tool surface proxies to cortex-api REST, which is
+      # where these actually bind). Opt-in; off by default.
+      PROCEDURE_ENABLED: ${PROCEDURE_ENABLED:-false}
+      PROCEDURE_WARN_ENABLED: ${PROCEDURE_WARN_ENABLED:-true}
+      PROCEDURE_MIN_EXECUTIONS: ${PROCEDURE_MIN_EXECUTIONS:-5}
+      PROCEDURE_PRIOR_N: ${PROCEDURE_PRIOR_N:-5}
+      PROCEDURE_EFFICACY_DELTA: ${PROCEDURE_EFFICACY_DELTA:-0.15}
+      PROCEDURE_WINDOW_DAYS: ${PROCEDURE_WINDOW_DAYS:-30}
+      PROCEDURE_EXEC_TTL_DAYS: ${PROCEDURE_EXEC_TTL_DAYS:-90}
+      PROCEDURE_AGENT_CAP: ${PROCEDURE_AGENT_CAP:-5}
+      PROCEDURE_INDEX_CACHE_SECONDS: ${PROCEDURE_INDEX_CACHE_SECONDS:-30}
+      PROCEDURE_MAX_SPECS: ${PROCEDURE_MAX_SPECS:-50}
+      PROCEDURE_SCHEDULE_HOURS: ${PROCEDURE_SCHEDULE_HOURS:-24}
     env_file:
       - .env
     depends_on:
@@ -588,6 +618,20 @@ services:
       DREAM_SYNTH_TIMEOUT_SECONDS: ${DREAM_SYNTH_TIMEOUT_SECONDS:-90.0}
       DREAM_LOCK_TTL_SECONDS: ${DREAM_LOCK_TTL_SECONDS:-1800}
       DREAM_PROFILES_ENABLED: ${DREAM_PROFILES_ENABLED:-true}
+      # Living Procedures (app/procedures/) - this is the worker that runs the
+      # nightly hardening pass, so the window / TTL / prior / agent-cap values
+      # bind here. Opt-in; off by default.
+      PROCEDURE_ENABLED: ${PROCEDURE_ENABLED:-false}
+      PROCEDURE_WARN_ENABLED: ${PROCEDURE_WARN_ENABLED:-true}
+      PROCEDURE_MIN_EXECUTIONS: ${PROCEDURE_MIN_EXECUTIONS:-5}
+      PROCEDURE_PRIOR_N: ${PROCEDURE_PRIOR_N:-5}
+      PROCEDURE_EFFICACY_DELTA: ${PROCEDURE_EFFICACY_DELTA:-0.15}
+      PROCEDURE_WINDOW_DAYS: ${PROCEDURE_WINDOW_DAYS:-30}
+      PROCEDURE_EXEC_TTL_DAYS: ${PROCEDURE_EXEC_TTL_DAYS:-90}
+      PROCEDURE_AGENT_CAP: ${PROCEDURE_AGENT_CAP:-5}
+      PROCEDURE_INDEX_CACHE_SECONDS: ${PROCEDURE_INDEX_CACHE_SECONDS:-30}
+      PROCEDURE_MAX_SPECS: ${PROCEDURE_MAX_SPECS:-50}
+      PROCEDURE_SCHEDULE_HOURS: ${PROCEDURE_SCHEDULE_HOURS:-24}
     env_file:
       - .env
     depends_on:
@@ -659,6 +703,23 @@ services:
       DREAM_SYNTH_TIMEOUT_SECONDS: ${DREAM_SYNTH_TIMEOUT_SECONDS:-90.0}
       DREAM_LOCK_TTL_SECONDS: ${DREAM_LOCK_TTL_SECONDS:-1800}
       DREAM_PROFILES_ENABLED: ${DREAM_PROFILES_ENABLED:-true}
+      # Living Procedures (app/procedures/) - beat needs the schedule value at
+      # startup to build the hardening pass's beat_schedule entry (beat_schedule
+      # is assembled from get_settings() at IMPORT time, so a var missing here
+      # silently uses the code default while the API uses the operator's .env
+      # value). The rest mirror worker/api for parity, same as the Collectors and
+      # Dreaming blocks above.
+      PROCEDURE_ENABLED: ${PROCEDURE_ENABLED:-false}
+      PROCEDURE_WARN_ENABLED: ${PROCEDURE_WARN_ENABLED:-true}
+      PROCEDURE_MIN_EXECUTIONS: ${PROCEDURE_MIN_EXECUTIONS:-5}
+      PROCEDURE_PRIOR_N: ${PROCEDURE_PRIOR_N:-5}
+      PROCEDURE_EFFICACY_DELTA: ${PROCEDURE_EFFICACY_DELTA:-0.15}
+      PROCEDURE_WINDOW_DAYS: ${PROCEDURE_WINDOW_DAYS:-30}
+      PROCEDURE_EXEC_TTL_DAYS: ${PROCEDURE_EXEC_TTL_DAYS:-90}
+      PROCEDURE_AGENT_CAP: ${PROCEDURE_AGENT_CAP:-5}
+      PROCEDURE_INDEX_CACHE_SECONDS: ${PROCEDURE_INDEX_CACHE_SECONDS:-30}
+      PROCEDURE_MAX_SPECS: ${PROCEDURE_MAX_SPECS:-50}
+      PROCEDURE_SCHEDULE_HOURS: ${PROCEDURE_SCHEDULE_HOURS:-24}
     env_file:
       - .env
     depends_on:
