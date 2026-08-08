@@ -34,10 +34,10 @@ REPO = Path(__file__).resolve().parents[1]
 BUDGETS = {
     # Loaded in EVERY session in this repository.
     "CLAUDE.md": 32_000,
-    # Loaded ON TOP of the above whenever work happens inside cortex/. Set just above
-    # its current size: a ratchet that stops further growth. It has not been split yet
-    # and should be — see the note in the failure message.
-    "cortex/CLAUDE.md": 66_000,
+    # Loaded ON TOP of the above whenever work happens inside cortex/. Split the same
+    # way (63 KB -> 11 KB): the endpoint list, the configuration surface and the
+    # design-decision record are consulted while working on an area, not on every task.
+    "cortex/CLAUDE.md": 20_000,
 }
 
 
@@ -72,15 +72,25 @@ def test_every_guide_referenced_from_the_index_exists() -> None:
 
 
 def test_no_guide_is_orphaned() -> None:
-    """Every file in docs/guides/ is reachable from the index. An unreferenced guide is
-    invisible: nobody browses a directory they were never told about."""
+    """Every file in docs/guides/ is reachable from a guide. An unreferenced guide is
+    invisible: nobody browses a directory they were never told about.
+
+    Either guide counts. The cortex-specific references are indexed from
+    cortex/CLAUDE.md, which is where someone working in that service is already
+    reading — requiring the root guide to list them would put cortex's endpoint
+    reference in front of every session that never touches cortex, which is the
+    cost this whole split exists to remove.
+    """
     import re
 
-    guide = (REPO / "CLAUDE.md").read_text(encoding="utf-8")
-    refs = set(re.findall(r"docs/guides/([a-z0-9-]+\.md)", guide))
+    indexes = "\n".join(
+        (REPO / rel).read_text(encoding="utf-8") for rel in BUDGETS
+    )
+    refs = set(re.findall(r"docs/guides/([a-z0-9-]+\.md)", indexes))
     on_disk = {p.name for p in (REPO / "docs" / "guides").glob("*.md")}
     orphans = sorted(on_disk - refs)
     assert not orphans, (
-        f"docs/guides/ contains files the root guide never links: {orphans}. "
-        "Add them to the Feature guides table."
+        f"docs/guides/ contains files no guide links: {orphans}. "
+        "Add them to the Feature guides table in CLAUDE.md, or the Reference table "
+        "in cortex/CLAUDE.md if they are cortex-specific."
     )

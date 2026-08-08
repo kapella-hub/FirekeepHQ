@@ -26,7 +26,12 @@ REPO = Path(__file__).resolve().parents[1]
 # a documented default that disagrees with the code is exactly as wrong in
 # docs/guides/ as it was in CLAUDE.md.
 ROOT_GUIDE = (REPO / "docs" / "guides" / "living-procedures.md").read_text(encoding="utf-8")
+# The MODULE MAP is orientation and stayed in cortex/CLAUDE.md; the ENDPOINT REFERENCE
+# moved to its own guide when cortex/CLAUDE.md was cut from 63 KB to 11 KB. Two
+# constants because they are now two files, and each check reads the one that owns
+# the thing it is asserting about.
 CORTEX_GUIDE = (REPO / "cortex" / "CLAUDE.md").read_text(encoding="utf-8")
+CORTEX_ENDPOINTS = (REPO / "docs" / "guides" / "cortex-api-endpoints.md").read_text(encoding="utf-8")
 PROCEDURES = REPO / "cortex" / "app" / "procedures"
 
 # h3 in the old root guide, h2 as its own document.
@@ -162,15 +167,17 @@ def test_the_cortex_guide_lists_every_procedures_route() -> None:
     routes = _routes()
     assert len(routes) == 3, f"expected 3 procedures routes, found {routes}"
     for path in routes:
-        assert path in CORTEX_GUIDE, f"cortex/CLAUDE.md does not document {path}"
+        assert path in CORTEX_ENDPOINTS, (
+            f"docs/guides/cortex-api-endpoints.md does not document {path}"
+        )
 
 
 def test_the_cortex_guide_records_the_scope_gate_on_each_route() -> None:
     """The reads gate `memory:read` and the dismiss gates `admin`. Stating this
     matters because the neighbouring skills router gates NOTHING, so a reader
     cannot infer the posture from its surroundings."""
-    idx = CORTEX_GUIDE.find("/procedures")
+    idx = CORTEX_ENDPOINTS.find("/procedures")
     assert idx != -1
-    window = CORTEX_GUIDE[idx:idx + 4000]
+    window = CORTEX_ENDPOINTS[idx:idx + 4000]
     assert "memory:read" in window
     assert "admin" in window
