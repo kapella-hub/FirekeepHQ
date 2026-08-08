@@ -203,3 +203,10 @@ class NarrowingResponse(BaseModel):
     failure_event_id: str
     suspects: list[NarrowingResult]
     total_events_walked: int
+    # An empty `suspects` list has three very different causes and used to
+    # report all three identically. These two separate them: the id was not
+    # found at all, the session records no trace links for the algorithm to
+    # walk, or a genuine walk turned up nothing. Defaults keep the shape
+    # backward-compatible for any caller built against the old body.
+    failure_event_found: bool = True
+    session_has_trace_links: bool = False

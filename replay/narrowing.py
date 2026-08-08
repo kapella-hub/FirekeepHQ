@@ -49,6 +49,21 @@ async def narrow(
     5. Return ranked suspects.
 
     Returns a NarrowingResponse-compatible dict.
+
+    THREE OUTCOMES, NOT ONE. This used to answer an unknown event id and a
+    linkless one with the identical body — an empty `suspects` list —
+    so `replay_narrow` gave a byte-identical reply for a real event and for
+    `deadbeefdeadbeefdeadbeefdeadbeef`, echoing the fabricated id back with the
+    same confident sentence. That matters here more than usual, because this
+    deployment records NO trace links at all: a census of the 3,000 most recent
+    events found `parent_span_id` populated 0 times and `trace_links` populated
+    0 times, every event having `trace_id == span_id == id`. So the tool's one
+    answer was covering "no cause found", "no such event", and "this feature
+    has no data to work with" — and a debugging tool that cannot tell those
+    apart is worse than one that is absent.
+
+    `failure_event_found` and `session_has_trace_links` are what let the caller
+    say which of the three happened. Neither changes the suspect ranking.
     """
     failure = await get_event(r, failure_event_id)
     if not failure:
@@ -56,6 +71,8 @@ async def narrow(
             "failure_event_id": failure_event_id,
             "suspects": [],
             "total_events_walked": 0,
+            "failure_event_found": False,
+            "session_has_trace_links": False,
         }
 
     suspects: list[dict[str, Any]] = []
@@ -112,7 +129,27 @@ async def narrow(
         "failure_event_id": failure_event_id,
         "suspects": suspects[:max_results],
         "total_events_walked": total_walked,
+        "failure_event_found": True,
+        "session_has_trace_links": await _session_has_trace_links(r, session_id),
     }
+
+
+async def _session_has_trace_links(r: aioredis.Redis, session_id: str) -> bool:
+    """Does ANY event in this session carry a trace link?
+
+    Answers the question "is there data for this algorithm to walk", which is
+    the difference between "no cause found" and "nothing to look at". Bounded
+    by the same timeline read `_get_temporal_neighbors` already does, and
+    fail-soft: an unreadable timeline reports False, which only makes the
+    caller's message more cautious, never less.
+    """
+    try:
+        timeline = await get_session_timeline(r, session_id, limit=500)
+    except Exception:
+        logger.debug("trace-link census failed for session %s", session_id)
+        return False
+    events = (timeline or {}).get("events") or []
+    return any((e or {}).get("trace_links") for e in events)
 
 
 async def _get_temporal_neighbors(
