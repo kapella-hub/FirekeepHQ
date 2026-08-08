@@ -355,7 +355,12 @@ services:
       # section). NOT RECALL_SCORE_FLOOR — skills embed a terse composite, and the
       # office deploy uses a different embedding model/dim. Most likely knob to tune.
       SKILL_MATCH_SCORE_FLOOR: ${SKILL_MATCH_SCORE_FLOOR:-0.30}
-      SKILL_MATCH_EMBED_TIMEOUT_SECONDS: ${SKILL_MATCH_EMBED_TIMEOUT_SECONDS:-1.2}
+      # 10.0 for the ENDPOINT (GET /skills?q=, behind skill_recall) — it runs under
+      # no per-section cap and a cold CPU embed measured 0.62s/4.63s/8.16s live, so
+      # the old 1.2 returned zero matches for ordinary tasks. The BRIEFING keeps 1.2
+      # because _run_section is hard-capped at 2.0s. Two deadlines, two numbers.
+      SKILL_MATCH_EMBED_TIMEOUT_SECONDS: ${SKILL_MATCH_EMBED_TIMEOUT_SECONDS:-10.0}
+      SKILL_MATCH_BRIEFING_EMBED_TIMEOUT_SECONDS: ${SKILL_MATCH_BRIEFING_EMBED_TIMEOUT_SECONDS:-1.2}
       SKILL_ERROR_DENSITY_WEIGHT: ${SKILL_ERROR_DENSITY_WEIGHT:-0.30}
       SKILL_ANOMALY_WEIGHT: ${SKILL_ANOMALY_WEIGHT:-0.20}
       SKILL_RESOLUTION_WEIGHT: ${SKILL_RESOLUTION_WEIGHT:-0.35}
@@ -565,7 +570,12 @@ services:
       # section). NOT RECALL_SCORE_FLOOR — skills embed a terse composite, and the
       # office deploy uses a different embedding model/dim. Most likely knob to tune.
       SKILL_MATCH_SCORE_FLOOR: ${SKILL_MATCH_SCORE_FLOOR:-0.30}
-      SKILL_MATCH_EMBED_TIMEOUT_SECONDS: ${SKILL_MATCH_EMBED_TIMEOUT_SECONDS:-1.2}
+      # 10.0 for the ENDPOINT (GET /skills?q=, behind skill_recall) — it runs under
+      # no per-section cap and a cold CPU embed measured 0.62s/4.63s/8.16s live, so
+      # the old 1.2 returned zero matches for ordinary tasks. The BRIEFING keeps 1.2
+      # because _run_section is hard-capped at 2.0s. Two deadlines, two numbers.
+      SKILL_MATCH_EMBED_TIMEOUT_SECONDS: ${SKILL_MATCH_EMBED_TIMEOUT_SECONDS:-10.0}
+      SKILL_MATCH_BRIEFING_EMBED_TIMEOUT_SECONDS: ${SKILL_MATCH_BRIEFING_EMBED_TIMEOUT_SECONDS:-1.2}
       SKILL_ERROR_DENSITY_WEIGHT: ${SKILL_ERROR_DENSITY_WEIGHT:-0.30}
       SKILL_ANOMALY_WEIGHT: ${SKILL_ANOMALY_WEIGHT:-0.20}
       SKILL_RESOLUTION_WEIGHT: ${SKILL_RESOLUTION_WEIGHT:-0.35}

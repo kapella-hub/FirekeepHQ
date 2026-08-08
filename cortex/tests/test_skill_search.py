@@ -376,4 +376,10 @@ async def test_briefing_never_unavailable_on_embed_failure(vector, settings):
     sec = await S.skills_section(vector, settings, goal="a real goal", project=None)
 
     assert sec["status"] in ("ok", "empty")
-    assert sec["error"] is None
+    # The section reports the degradation instead of hiding it. It must NOT
+    # become 'unavailable' (that is what flips the envelope), but a bare
+    # status='empty' with a null error was indistinguishable from an empty
+    # skill store — which is how a live deployment reported "no skills" with
+    # 28 skills present and degraded=false, and why nobody noticed for weeks.
+    assert sec["error"] == "skill match degraded to scroll"
+    assert sec["data"]["match"] == "degraded-scroll"

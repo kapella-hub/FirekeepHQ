@@ -18,7 +18,7 @@ from app.evals.store import get_eval_summary
 from app.patterns.store import get_relevant_patterns, get_observed_patterns, record_tip_shown
 from app.ops import collect_queue_depths
 from app.skills import internal_key_headers
-from app.skills.search import search_skill_points
+from app.skills.search import _float_setting, search_skill_points
 from vault.store import list_secrets
 
 from datetime import datetime, timedelta, timezone
@@ -275,6 +275,13 @@ async def skills_section(vector, settings, goal: str, project: str | None) -> Se
         must.append(FieldCondition(key="project", match=MatchValue(value=project.lower())))
     points, semantic = await search_skill_points(
         vector, settings, must=must, query=goal, limit=3,
+        # The briefing's own embed budget, NOT the endpoint's. `GET /skills?q=`
+        # runs under no per-section cap and waits ~10s for a cold CPU embed;
+        # this section is hard-capped at 2.0s and must give up sooner. Sharing
+        # one number gave the endpoint a budget that disabled it.
+        embed_timeout=_float_setting(
+            settings, "SKILL_MATCH_BRIEFING_EMBED_TIMEOUT_SECONDS", 1.2
+        ),
     )
     skills = []
     ql = (goal or "").lower()
@@ -292,7 +299,22 @@ async def skills_section(vector, settings, goal: str, project: str | None) -> Se
         skills.append({"id": str(p.id), "trigger": trigger,
                        "symptoms": payload.get("symptoms", "")})
     status = "ok" if skills else "empty"
-    return {"status": status, "error": None, "data": {"skills": skills}}
+    # `match` makes "no skills matched" distinguishable from "the matcher did
+    # not run". Reporting a bare status='empty' after an embed timeout is what
+    # made `GET /briefing` say "no skills" against a store of 28 with
+    # degraded=false, i.e. indistinguishable from an empty skill store — the
+    # single hardest thing about diagnosing this on the live deployment. The
+    # section still does not flip to 'unavailable' (that would set degraded on
+    # the whole envelope at every cold start, which the module contract above
+    # forbids); it says what happened instead.
+    return {
+        "status": status,
+        "error": None if (semantic or not goal) else "skill match degraded to scroll",
+        "data": {
+            "skills": skills,
+            "match": "semantic" if semantic else ("none" if not goal else "degraded-scroll"),
+        },
+    }
 
 
 async def vault_section(scopes: list[str]) -> Section:

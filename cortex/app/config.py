@@ -487,7 +487,6 @@ class Settings(BaseSettings):
     PROCEDURE_MAX_SPECS: int = 50
     PROCEDURE_SCHEDULE_HOURS: int = 24
 
-
     # Memory Reliability (SP0 — WS-A)
     EMBED_RETRY_ATTEMPTS: int = 3
     BACKFILL_MAX_ATTEMPTS: int = 10
@@ -544,11 +543,36 @@ class Settings(BaseSettings):
     # A too-high value cannot regress below the legacy behaviour: when nothing clears
     # the floor the matcher falls back to the pre-existing scroll + substring path.
     SKILL_MATCH_SCORE_FLOOR: float = 0.30
-    # Bounds the query embed on the skill-match path. Sized to fit inside the
-    # briefing's 2.0s per-section budget (briefing/api.py `_run_section`) with room for
-    # the Qdrant round trip AND the scroll fallback — without it, a hung embeddings
-    # backend costs 3 x 30s httpx timeouts plus backoff before failing.
-    SKILL_MATCH_EMBED_TIMEOUT_SECONDS: float = 1.2
+    # Bounds the query embed for `GET /skills?q=` — the endpoint behind
+    # `skill_recall`, which runs under no per-section budget.
+    #
+    # 10.0, RAISED FROM 1.2. The old value was sized for the briefing's 2.0s
+    # per-section cap and then applied to both callers, which broke the one
+    # that had no such cap: measured cold `_embed` latency inside the live
+    # container was 0.62s / 4.63s / 8.16s, so `skill_recall` returned NOTHING
+    # for ordinary tasks against a store holding 28 skills ("the sweep probe
+    # ingest queue is wedged" -> 0; "publish the firekeep marketing website"
+    # -> 0, with a skill triggering on exactly that). Allowed to finish, the
+    # same embed ranked the right skill at 0.7316, far above the 0.30 floor.
+    # A too-small budget here does not degrade matching, it disables it.
+    #
+    # It is still a real bound: without one a hung embeddings backend costs
+    # 3 x 30s httpx timeouts plus backoff before failing.
+    SKILL_MATCH_EMBED_TIMEOUT_SECONDS: float = 10.0
+    # The briefing's own, tighter budget for the same embed. The briefing is
+    # hard-capped at 2.0s per section (briefing/api.py `_run_section`) and a
+    # section that overruns is rendered '[SKILLS unavailable]' with the whole
+    # envelope flipped to degraded — so it CANNOT wait as long as the endpoint
+    # above, and pretending otherwise would trade "no skills" for "briefing
+    # degraded on every cold start". Two numbers because there are genuinely
+    # two deadlines; one number suited neither.
+    #
+    # This budget is survivable now only because a timed-out embed is no longer
+    # cancelled (skills/search.py `_embed_with_cache_warm`): it runs on and
+    # populates the LRU cache, so the next session start is a cache hit that
+    # matches. Before that, a query that missed the budget once missed it
+    # forever.
+    SKILL_MATCH_BRIEFING_EMBED_TIMEOUT_SECONDS: float = 1.2
     SKILL_ERROR_DENSITY_WEIGHT: float = 0.30
     SKILL_ANOMALY_WEIGHT: float = 0.20
     SKILL_RESOLUTION_WEIGHT: float = 0.35

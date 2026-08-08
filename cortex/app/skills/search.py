@@ -69,7 +69,23 @@ logger = logging.getLogger(__name__)
 # Fallbacks for callers whose settings object predates these keys (and for the many
 # tests built on a bare MagicMock settings — see _float_setting).
 DEFAULT_SCORE_FLOOR = 0.30
-DEFAULT_EMBED_TIMEOUT = 1.2
+# 10.0, not the 1.2 this shipped with. 1.2 was sized to fit the briefing's 2.0s
+# per-section budget, which is the wrong constraint for the OTHER caller:
+# `GET /skills?q=` (behind `skill_recall`) is a plain request under no such cap.
+# Measured cold `_embed` latency inside the live container: 0.62s / 4.63s /
+# 8.16s — so `skill_recall` returned n=0 for ordinary tasks on a deployment
+# holding 28 skills, and `GET /briefing` reported `skills: {status: 'empty'}`
+# for a goal whose skill matched at 0.7316 when the embed was allowed to
+# finish. The briefing passes its own tighter budget explicitly (see
+# `embed_timeout`), so the two callers no longer share one number that suits
+# neither.
+DEFAULT_EMBED_TIMEOUT = 10.0
+
+# Strong references to embeds that outlived their caller's timeout (see
+# `_embed_with_cache_warm`). Without this the task is only referenced by the
+# event loop and CPython is free to collect it mid-flight, which would defeat
+# the whole point of letting it run on.
+_WARMING: set = set()
 
 
 def _float_setting(settings, name: str, default: float) -> float:
@@ -101,6 +117,49 @@ async def _scroll_page(vector, settings, must: list, limit: int) -> list:
     return list(points)
 
 
+async def _embed_with_cache_warm(vector, q: str, timeout: float) -> list:
+    """Embed `q` under `timeout`, letting a slow embed FINISH in the background.
+
+    THE SELF-HEALING PROPERTY. `vector._embed` caches by content hash, and the
+    cache write is the LAST thing it does. A plain `asyncio.wait_for` CANCELS
+    the coroutine on timeout, so the cache is never populated and the identical
+    query times out again on every subsequent call — measured on the live
+    deployment: the same `?status=draft&q=<task>` returned 0,0,0,0 across four
+    attempts, while a query that happened to land under the budget was cached
+    and returned 28,28,28,28 forever after. Whether an agent got skill matching
+    was decided by the latency of its first call and never revisited.
+
+    `shield` is what changes that: the caller gives up on schedule, the embed
+    runs to completion, and the NEXT call is a cache hit. One slow start
+    degrades one call instead of poisoning the query.
+
+    The shielded task is deliberately not awaited anywhere — its exception (if
+    any) is consumed in the done-callback so it cannot surface as an
+    "exception was never retrieved" warning, and the strong reference in
+    `_WARMING` keeps it alive until it finishes.
+    """
+    task = asyncio.ensure_future(vector._embed(q))
+    try:
+        return await asyncio.wait_for(asyncio.shield(task), timeout)
+    except asyncio.TimeoutError:
+        _WARMING.add(task)
+
+        def _done(t: asyncio.Future) -> None:
+            _WARMING.discard(t)
+            if not t.cancelled() and t.exception() is not None:
+                logger.debug("background skill embed failed: %s", t.exception())
+            else:
+                logger.debug("background skill embed completed — cache warmed")
+
+        task.add_done_callback(_done)
+        raise
+    except BaseException:
+        # Any other failure (including our caller being cancelled) leaves no
+        # useful cache entry to wait for; don't leak the task.
+        task.cancel()
+        raise
+
+
 async def search_skill_points(
     vector,
     settings,
@@ -108,6 +167,7 @@ async def search_skill_points(
     must: list,
     query: str | None,
     limit: int,
+    embed_timeout: float | None = None,
 ) -> tuple[list, bool]:
     """Return `(points, semantic)` for a skill query.
 
@@ -128,12 +188,16 @@ async def search_skill_points(
         return await _scroll_page(vector, settings, must, limit), False
 
     floor = _float_setting(settings, "SKILL_MATCH_SCORE_FLOOR", DEFAULT_SCORE_FLOOR)
-    timeout = _float_setting(
-        settings, "SKILL_MATCH_EMBED_TIMEOUT_SECONDS", DEFAULT_EMBED_TIMEOUT
+    timeout = (
+        embed_timeout
+        if isinstance(embed_timeout, (int, float)) and not isinstance(embed_timeout, bool)
+        else _float_setting(
+            settings, "SKILL_MATCH_EMBED_TIMEOUT_SECONDS", DEFAULT_EMBED_TIMEOUT
+        )
     )
 
     try:
-        vec = await asyncio.wait_for(vector._embed(q), timeout)
+        vec = await _embed_with_cache_warm(vector, q, timeout)
     except Exception as exc:  # noqa: BLE001
         # BROAD on purpose. The embed path raises VectorStoreError for its own
         # recognised failures, but a misconfigured client raises TypeError and a slow
