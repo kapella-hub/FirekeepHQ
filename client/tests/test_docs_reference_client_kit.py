@@ -10,6 +10,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 LIVE_DOCS = [
     "CLAUDE.md",
     "cortex/CLAUDE.md",
+    # The client-kit narrative moved here when the root CLAUDE.md was cut from 264 KB
+    # to ~17 KB (it is a prompt prefix; reference material does not belong in one).
+    # It is live user-facing content, so the retired-token scan must cover it — the
+    # forbidden list is the whole reason this file exists.
+    "docs/guides/client-kit.md",
     "AGENTS.md",
     "README.md",
     "docs/MULTI-AGENT.md",

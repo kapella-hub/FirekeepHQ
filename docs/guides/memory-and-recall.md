@@ -1,0 +1,80 @@
+# Memory, recall, corpus and vault
+
+> Moved out of the root `CLAUDE.md`, which is a prompt prefix loaded into every
+> session. This content is reference and decision history: read it when you are
+> working on this area, not on every task. Nothing was reworded in the move.
+
+## Intelligence Features (Cortex)
+
+- **Memory types**: `reference` (no age decay by default), `procedural` (180d), `episodic` (90d), `transient` (14d). Direct learns default to episodic unless the caller supplies a type; the sleep-cycle LLM classifies knowledge extracted from raw event streams.
+- **Multi-hop graph**: 3-hop traversal with 0.5x decay per hop. Config: `MULTIHOP_ENABLED`, `MULTIHOP_MAX_HOPS`.
+- **Proactive recall**: Bridge auto-queries Cortex on `ctx_update` for plan/progress. Injected into shadow as "Relevant Past Experience."
+- **Episodic distillation**: Session completion preserves full decision/progress sequences with `→` separators and file paths.
+- **Archive-first aging**: GC scores each active memory as `(age/half_life) × 1/(1+ln(access+1)) × (1-confidence) × (0.5 + (1 − owm_efficacy))` — the last factor is OWM's (neutral 1.0 when unscored or `OWM_ENABLED=false`). Eligible memories are archived with preview/audit/restore, not deleted. Confirmed memories, skills and corpus chunks are protected; hard purge is explicitly opt-in and off by default.
+- **Token-conscious recall**: Results trimmed to `token_budget` (≥2 results always kept) then optionally synthesized by LLM into coherent Markdown. Config: `RECALL_TOKEN_BUDGET=600`, `RECALL_SYNTHESIS_ENABLED=false`. Synthesis is opt-in because a slow generation backend can add its full timeout; set `format="raw"` to skip synthesis for an individual recall.
+- **Outcome-Weighted Memory (OWM, `cortex/app/owm.py`)**: recall ranked by real-world results — the nightly Celery pass (`app.owm.run_owm_scoring`, interval `OWM_SCHEDULE_HOURS=24`) joins replay `memory_read` events (which now stamp the RETURNED `memory_ids` — `app/main.py` recall handler) to session outcomes (auto-evals `failure_rate` bands: ≤0.2 success, ≥0.5 failure, middle band EXCLUDED; Bridge `abandoned` overrides as failure; eval `outcome` as fallback), computes Beta-shrunk efficacy `(s + P/2)/(n + P)` per memory (`OWM_PRIOR_N=5` — neutral 0.5 at low N by construction), and writes `owm_efficacy`/`owm_n`/`owm_updated_at` onto Qdrant payloads. Recall applies `score × (1 + OWM_WEIGHT·2·(eff−0.5))` in the lifecycle scorer (`OWM_WEIGHT=0.15`, clamped; absent field or `OWM_ENABLED=false` → bit-identical to pre-OWM ranking); the GC composite score gains an efficacy factor (neutral 0.5 bit-identical; misleading memories archive up to 1.5× faster). Deterministic end to end — no LLM, no ML (the deleted recall-ranker lesson); the pass recomputes from scratch each run over `OWM_WINDOW_DAYS=30` (matching the 30d eval TTL — a larger window is dead weight) and DELETES the OWM keys from previously-scored memories with no in-window evidence, so penalties decay back to neutral rather than ratcheting (no death spiral). Fairness: sessions count ONCE per memory, one agent identity contributes at most `OWM_AGENT_CAP=5` observations per memory (a CI bot's failing loop can't bury shared memories), and corpus chunks/skill points are excluded from scoring. Kill switch is total: `OWM_ENABLED=false` neutralizes the recall multiplier AND the GC factor (stale payload values ignored). Scope caveats, documented: applies to `POST /memory/recall` only — the SSE streaming path applies the lifecycle gate but neither the lifecycle/OWM score multipliers (pre-existing divergence) nor `memory_ids` stamping; abandoned-session detection rides Bridge's 200-newest status window (best-effort beyond it). **The input signal is measurably degenerate, and that is a finding about the system rather than about this module (2026-08-06, surfaced by Living Procedures).** Grep over the whole repo: **no production emitter passes `outcome=` to `replay.emitter.emit` except Bridge's session-lifecycle calls** (`bridge/app/mcp_server.py` `success`/`partial`) and one in `cortex/app/main.py` — `agent.action.predict`, `agent.action.reconcile`, `memory_read` and `memory_write` all pass none. Since `_failure_rate` (`evals/scorers.py`) divides over *events that carry an outcome* and returns `0.0` when none do, a typical completed session has exactly one such event, it says success, `failure_rate` is `0.0`, `session_success` reads `0.0 <= 0.2 → True` — so **effectively every session in the deployment evaluates as a success**, and `owm_efficacy` converges toward "everything worked" while the recall multiplier discriminates far less than the design intends. The Living Procedures prerequisite fixed the gateway half (`agent.action.reconcile` now emits a real `outcome=`), but a mechanical edit almost always succeeds, so it sharpens the signal only slightly; the load-bearing signals that actually exist are Bridge's `abandoned` status and an explicit `outcome` at session completion. **The rest is deliberately unfixed and unmade:** changing what "success" means repoints a shipped ranking signal and deserves its own measurement pass, not a fix in passing. Read `owm_efficacy` numbers against this until it is done.
+- **Team continuity**: All memories carry `project` and `agent_id` (contributor) fields. `GET /memory/contributors` reports per-contributor activity. `POST /memory/handoff` generates an LLM-synthesized handoff brief for a project. `memory_handoff` MCP tool wraps this.
+- **Recall scope on the graph leg — a real fix for handoff, a PARTIAL MITIGATION for recall.** `query_related`/`query_related_multihop` take a namespace and nothing else — no `project`, no `workspace_id` — so a scoped recall was answered by a vector leg that honoured the scope and a graph leg that ignored it. Proven live: a handoff for a project that **does not exist** returned HTTP 200 narrating another project's work, and every leaked row arrived tagged `(graph)`. It is a cross-**workspace** hole, not merely cross-project. `rag.py::_scope_verdict` now adjudicates each graph row against the Qdrant payloads of the memories it names. **What that actually closes, measured 2026-08-06:** of the **5459** nodes `query_related` can return (`Domain|Concept|Action|Outcome|Resolution`), only **27 carry `memory_ids`** — **0.49%**. `POST /memory/handoff` passes `unattributed_graph="deny"` and IS fixed (verified live: the nonexistent-project probe goes 2 sources → 0, which is also what first makes its `{"empty": true}` short-circuit reachable). `POST /memory/recall` keeps `"admit"` and is therefore **only partially mitigated**: `workspace_id` is non-None on every authenticated recall, so denying unattributable rows would not scope the graph leg, it would delete 99.51% of it from every request. Closing the rest needs project/workspace properties written onto graph nodes at extraction time plus a 5459-node backfill, and a decision about what a project-scoped recall should do with sleep-cycle knowledge that legitimately belongs to no project. Not fixed, and not claimed to be. Guards: `cortex/tests/test_handoff_graph_scope.py`, `cortex/tests/test_recall_scope_leaks.py`.
+
+## Secrets Vault (`vault/`)
+Encrypted secret storage for infrastructure credentials, API tokens, and connection strings. Uses Fernet symmetric encryption with values encrypted at rest in Redis DB 7 (shared with auth, distinct key prefix `vault:secret:`).
+
+**MCP Tools:** `vault_store`, `vault_retrieve`, `vault_list`, `vault_delete`
+**REST Endpoints (on Cortex :8100):** `POST /vault/secrets`, `GET /vault/secrets/{key}`, `DELETE /vault/secrets/{key}`, `GET /vault/secrets` (list metadata only)
+**Config:** `VAULT_ENABLED=true`, `VAULT_KEY=<fernet-key>` (required), `VAULT_REDIS_URL=redis://redis:6379/7`
+**Generate key:** `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`
+
+## Corpus (`corpus/`)
+Business knowledge documents chunked and stored in Qdrant for semantic recall. Chunks are naturally discoverable via `memory_recall` (tagged `source=corpus`). Source metadata tracked in Redis. Corpus stores chunks only — there is no entity/relationship graph (a former Neo4j extraction path was removed; see `docs/HISTORY-NOTES.md`).
+
+**MCP Tools:** `corpus_ingest`, `corpus_sources`, `corpus_delete`
+**REST Endpoints (on Cortex :8100):** `POST /corpus/ingest`, `GET /corpus/sources`, `DELETE /corpus/sources/{source_name}`
+**Config:** `CORPUS_ENABLED=true`
+
+**Tenancy is stamped at write time.** `corpus.pipeline.ingest_document` had NO workspace parameter at all, so every point written through `POST /corpus/ingest`, `POST /knowledge/ingest` and `POST /skills` landed with `workspace_id=null` — and `memory_recall` applies `workspace_id` as a hard Qdrant `must`, so none of it was retrievable. Measured live, same query: with `workspace_id=None` the freshly ingested chunk was the TOP hit at 0.8193; with the caller's real workspace it was ABSENT and recall returned unrelated 0.58 matches. A probe skill scored 0.877 at rank 1 unfiltered and vanished under the filter. All five PRE-EXISTING corpus chunks carried a real workspace, because the startup `migrate_single_workspace` backfill heals orphans — which made the damage window "until someone restarts cortex-api" (24h on that box) rather than permanent, and is why this looked intermittent. A migration is not a substitute for stamping at write time. The principal's `workspace_id`/`member_id` now thread from the request through `ingest_document` → `store_chunks`, through `ingest_knowledge_document` → the `classify_and_draft_from_doc`/`draft_skill_from_doc` Celery kwargs → the draft skill payload, and into the `POST /skills` payload. Worker-only paths that have no HTTP principal (`run_url_ingest`, the Confluence collector) stamp the DEPLOYMENT workspace explicitly rather than leaving null. Values are emitted only when known, never as an explicit `None`: `upsert` promotes them to top-level payload keys, so writing null on a re-ingest would overwrite whatever the migration had backfilled. Guards: `cortex/tests/test_ingest_tenancy.py`.
+
+**Usage:** Agents ingest docs via `corpus_ingest` (copy-paste text or fetch URL first). Corpus chunks are tagged with `source=corpus` and `tags=["corpus", source_type, source_name_slug]` so they appear in regular memory recall alongside operational memories. Re-ingesting a source with the same name automatically replaces old content via a staged swap (new chunks are written and committed first; the previous generation is deleted only afterward, so a mid-ingest failure leaves the old content intact).
+
+## Memory Improvements (`cortex/app/`)
+Phase 1–3 upgrades for storage hygiene, retrieval precision, and team continuity.
+
+**Phase 1 — Storage Hygiene:**
+- Archive-first aging: `score = (age/half_life) × 1/(1+ln(access+1)) × (1-confidence) × (0.5 + (1 − owm_efficacy))` (OWM factor neutral at 1.0 when unscored/disabled). Confirmed memories, skills and corpus chunks are protected. Eligible active memories are recoverably archived; hard purge is disabled by default.
+- Dedup threshold: `DEDUP_SIMILARITY_THRESHOLD=0.78` (replaces old fixed 0.85)
+
+**Phase 2 — Retrieval Precision:**
+- Token budget: trims results to `RECALL_TOKEN_BUDGET` tokens (always keeps ≥2), then optionally synthesizes via LLM
+- `format` param on `memory_recall`: `"synthesized"` (default) runs LLM synthesis, `"raw"` skips it
+
+**Phase 3 — Team Continuity:**
+- `project` and `agent_id` fields on all memories; `project` is normalized to lowercase
+- `agent_id` = contributor identity (person's name). An interactive `firekeep install` prompts for it (default: the configured value, else the OS username) and writes it to `[identity]`. `CHANGEME` remains the skeleton value only on a non-interactive install that passed no `--agent-id`. `FIREKEEP_AGENT_ID` still overrides the configured identity per-process.
+- `/memory/learn` reads `X-Agent-Id` / `X-Session-Id` from request headers and persists them to the Qdrant payload (top-level fields, so `/memory/contributors` and project filters can read them directly). Default is `"unknown"` when headers are absent.
+- **Recall returns provenance** (`app/db/vector.py: _projected_metadata`, `app/engine/rag.py: _provenance_suffix`). `upsert` promotes `_PROMOTED_PAYLOAD_KEYS` (`agent_id`, `session_id`, `project`) to top-level payload AND strips them from the nested `metadata` sub-dict; `search`'s projection named only source/tags/domain/timestamp, so the promotion moved them out of the one place the reader looked and every memory written since reported no author at recall. The projection now derives those keys from the same constant (emitting them only when present, so a pre-promotion record keeps its nested value instead of being overwritten with `None`), and `_format_markdown` appends ` — {agent}, {YYYY-MM-DD}` to each line. `agent_id="unknown"` and the legacy sentinel render as nothing rather than as noise; `session_id` reaches `sources[].metadata` for auditing but is never rendered (32 hex chars an LLM cannot use). This matters beyond attribution: without it a caller cannot tell a teammate's memory from its own session's output, which is what made recall look effective while measuring nothing.
+- Legacy sentinel: memories created before the `agent_id` field was wired (~3.9K records) are tagged `agent_id="legacy-pre-team-continuity"` via `cortex/scripts/backfill_legacy_agent_id.py`. The backfill is idempotent and only touches records with `agent_id` missing or `"unknown"` AND `timestamp` before today's UTC date.
+
+**MCP Tools (updated/new):**
+- `memory_recall` — now accepts `token_budget=600`, `format="synthesized"`, `project=None`; top_k default 3
+- `memory_handoff` — generate LLM handoff brief for a project: `memory_handoff(project, since_days=7, agent_id, session_id)`
+
+**REST Endpoints (on Cortex :8100):**
+- `GET /memory/contributors?project=X&since_days=7` — list contributors with activity stats
+- `POST /memory/handoff` — body: `{project, since_days}` — returns synthesized handoff Markdown. Scoped on both legs: it passes `unattributed_graph="deny"` so a graph row that cannot be attributed to the requested project is refused rather than narrated (see the recall-scope bullet above; `/memory/recall` deliberately keeps `"admit"` and is only partially mitigated).
+
+**Config:**
+
+| Var | Default | Purpose |
+|-----|---------|---------|
+| `EVICTION_THRESHOLD` | `1.5` | Composite score cutoff for archive eligibility |
+| `GC_ENABLED` | `true` | Enable scheduled archive-first maintenance |
+| `GC_DRY_RUN` | `false` | Preview scheduled actions without changing the knowledge stores |
+| `GC_ARCHIVE_GRACE_DAYS` | `90` | Recovery window before GC-origin archives become purge-eligible |
+| `GC_PURGE_ENABLED` | `false` | Explicitly allow expired GC-origin hard purge and GC graph cleanup |
+| `DEDUP_SIMILARITY_THRESHOLD` | `0.78` | Memory agent dedup cosine threshold |
+| `RECALL_TOKEN_BUDGET` | `600` | Max tokens per recall response |
+| `RECALL_TOP_K` | `3` | Default number of results to retrieve |
+| `RECALL_SYNTHESIS_ENABLED` | `false` | Enable the optional LLM synthesis pass in recall |
+| `DEDUP_ENABLED` | `false` | Master switch for the 6-hourly dedup/merge pass (default off until validated) |
+| `RECALL_SCORE_FLOOR` | `0.35` | Raw-cosine floor passed to Qdrant `score_threshold`; recall returns `degraded: true` when vector search fails |
+| `EMBED_RETRY_ATTEMPTS` | `3` | Write-path embedding retries before backfill enqueue |
+| `BACKFILL_MAX_ATTEMPTS` | `10` | Per-entry backfill drain attempts before the entry moves to `memory:backfill:dlq` |

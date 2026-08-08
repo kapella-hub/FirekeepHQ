@@ -39,7 +39,12 @@ def _application_default() -> bool:
 
 
 def _project_guide_default() -> bool:
-    text = (REPO / "CLAUDE.md").read_text(encoding="utf-8")
+    # Both the table and the prose moved to docs/guides/memory-and-recall.md when the
+    # root CLAUDE.md was cut from 264 KB to ~16 KB. The guard follows the content: two
+    # statements of the same default in one document still have to agree, and that is
+    # as true in a guide as it was in the prompt prefix.
+    guide = REPO / "docs" / "guides" / "memory-and-recall.md"
+    text = guide.read_text(encoding="utf-8")
     table_match = re.search(
         r"\| `RECALL_SYNTHESIS_ENABLED` \| `(true|false)` \|",
         text,
@@ -48,10 +53,10 @@ def _project_guide_default() -> bool:
         r"Config:[^\n]*RECALL_SYNTHESIS_ENABLED=(true|false)",
         text,
     )
-    assert table_match is not None, "CLAUDE.md configuration table must document recall synthesis"
-    assert prose_match is not None, "CLAUDE.md recall guidance must document synthesis"
+    assert table_match is not None, f"{guide.name} configuration table must document recall synthesis"
+    assert prose_match is not None, f"{guide.name} recall guidance must document synthesis"
     assert table_match.group(1) == prose_match.group(1), (
-        "CLAUDE.md recall guidance and configuration table must agree"
+        f"{guide.name} recall guidance and configuration table must agree"
     )
     return table_match.group(1) == "true"
 

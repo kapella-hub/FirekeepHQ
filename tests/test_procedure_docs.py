@@ -20,11 +20,17 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[1]
-ROOT_GUIDE = (REPO / "CLAUDE.md").read_text(encoding="utf-8")
+# The narrative moved out of the root CLAUDE.md when that file was cut from 264 KB
+# to ~16 KB: it is a prompt prefix loaded into every session, and reference material
+# does not belong there. The GUARD follows the content rather than being deleted —
+# a documented default that disagrees with the code is exactly as wrong in
+# docs/guides/ as it was in CLAUDE.md.
+ROOT_GUIDE = (REPO / "docs" / "guides" / "living-procedures.md").read_text(encoding="utf-8")
 CORTEX_GUIDE = (REPO / "cortex" / "CLAUDE.md").read_text(encoding="utf-8")
 PROCEDURES = REPO / "cortex" / "app" / "procedures"
 
-SECTION_HEADING = "### Living Procedures (`cortex/app/procedures/`)"
+# h3 in the old root guide, h2 as its own document.
+SECTION_HEADING = "## Living Procedures (`cortex/app/procedures/`)"
 
 
 def _code_defaults() -> dict[str, str]:
@@ -111,11 +117,16 @@ def test_the_owm_paragraph_itself_records_the_outcome_signal_finding() -> None:
     reads as a success — which means `owm_efficacy` discriminates far less than
     the design intends. That belongs where OWM is documented.
     """
+    # Deliberately NOT ROOT_GUIDE: OWM is documented in the memory guide, and the
+    # whole point of this test is that the finding must sit where OWM's readers are
+    # rather than in the feature that discovered it. Pointing it at the procedures
+    # guide would re-create exactly the mis-filing it exists to prevent.
+    memory_guide = (REPO / "docs" / "guides" / "memory-and-recall.md").read_text(encoding="utf-8")
     bullets = [
-        line for line in ROOT_GUIDE.splitlines()
+        line for line in memory_guide.splitlines()
         if line.lstrip().startswith("- **Outcome-Weighted Memory")
     ]
-    assert bullets, "the OWM bullet is gone from CLAUDE.md"
+    assert bullets, "the OWM bullet is gone from docs/guides/memory-and-recall.md"
     owm = bullets[0]
     for term in ["outcome=", "_failure_rate"]:
         assert term in owm, (
