@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from firekeep_client.adapters.base import GATEWAY_INSTRUCTIONS
+from firekeep_client.stdio import force_utf8_stdio
 
 
 REMOTE_SERVICES = ("cortex", "bridge", "sentinel", "relay")
@@ -268,6 +269,12 @@ class Gateway:
 
 
 def run() -> int:
+    # The gateway's own stdio is the hop that was never configured: the BACKEND
+    # pipes below are pinned to utf-8 (`Popen(..., encoding="utf-8")`), but this
+    # process read `sys.stdin` and wrote `sys.stdout` at the platform default,
+    # which on Windows is cp1252. Every non-ASCII character an agent wrote
+    # through this gateway reached the server as mojibake. See stdio.py.
+    force_utf8_stdio()
     gateway = Gateway()
     try:
         for line in sys.stdin:

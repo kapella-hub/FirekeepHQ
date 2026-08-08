@@ -38,6 +38,7 @@ import json
 import sys
 
 from firekeep_client import hooklog, resolver
+from firekeep_client.stdio import force_utf8_stdio
 from firekeep_client.hooks import (
     post_tool,
     pre_tool,
@@ -156,6 +157,12 @@ def _personal_text_command(payload: dict) -> str | None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Hook payloads arrive as UTF-8 JSON on stdin and hook responses
+    # (systemMessage, block reasons) go back out as UTF-8 JSON on stdout. On
+    # Windows both default to cp1252, which mangles every non-ASCII character
+    # in a prompt, a file path, or a workspace snapshot before it reaches the
+    # server. See firekeep_client/stdio.py for the measurement.
+    force_utf8_stdio()
     argv = list(sys.argv[1:] if argv is None else argv)
     core_name = argv[0] if argv else ""
 

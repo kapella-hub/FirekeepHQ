@@ -41,6 +41,7 @@ from typing import Any, Callable
 import anyio
 
 from firekeep_client import hooklog, resolver, transport
+from firekeep_client.stdio import force_utf8_stdio
 from firekeep_client.decision.board import BOARD_CSP, BOARD_HTML, render_answers
 
 # --------------------------------------------------------------------------- #
@@ -679,6 +680,12 @@ async def _run_decision_board_check(board_id: str):
 
 
 def main() -> int:
+    # UTF-8 stdio before the MCP handshake — a board's context, questions and
+    # answers are free text and routinely non-ASCII, and the Windows default
+    # (cp1252) corrupts every such character on the wire. See
+    # firekeep_client/stdio.py.
+    force_utf8_stdio()
+
     # Resolve once before the MCP handshake so an ambiguous legacy config fails
     # this stdio server loudly instead of appearing as an ordinary degraded board.
     if not resolver.is_bypassed():

@@ -35,6 +35,7 @@ from .resolver import (
     resolve,
 )
 from . import state, transport
+from .stdio import force_utf8_stdio
 
 PROG = "firekeep-shim"
 
@@ -713,6 +714,13 @@ def run(service: str, *, profile: str | None = None, http_client=None, stdio_str
     ``http_client`` / ``stdio_streams`` are injection seams for tests; production
     passes neither.
     """
+    # UTF-8 stdio. The mcp SDK's own `stdio_server()` wraps the buffers itself,
+    # so this is belt-and-braces for that path — but it also covers the stderr
+    # diagnostics below and every early-return branch (unknown service, config
+    # error, inert bypass server), which never reach the SDK at all. See
+    # firekeep_client/stdio.py for why the platform default is not survivable.
+    force_utf8_stdio()
+
     if service == "symdex":
         _stderr(
             f"{PROG}: symdex is stdio-local (run firekeep-symdex directly) and is "
