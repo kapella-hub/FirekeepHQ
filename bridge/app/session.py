@@ -70,6 +70,18 @@ if active and active ~= '' and active ~= ARGV[1] then
     redis.call('HSET', ARGV[3] .. active, 'status', 'paused', 'updated_at', ARGV[2])
     redis.call('ZADD', KEYS[2], ARGV[4], active)
 end
+-- KEYS[3] is the PREVIOUS owner's active pointer (empty string when the
+-- resuming agent already owns the session). A takeover that leaves it in
+-- place gives two agents one session: both ctx_get_shadow(agent=old) and
+-- ctx_get_shadow(agent=new) resolve to it, and the old owner's later
+-- ctx_update writes land in a session it no longer owns. Clearing it inside
+-- the same script is what makes the pointer swap atomic with the resume.
+if KEYS[3] ~= '' and KEYS[3] ~= KEYS[1] then
+    local prev = redis.call('GET', KEYS[3])
+    if prev == ARGV[1] then
+        redis.call('DEL', KEYS[3])
+    end
+end
 redis.call('SET', KEYS[1], ARGV[1])
 return active or ''
 """
@@ -127,6 +139,28 @@ class SessionManager:
         return f"nb:session:{sid}:proactive"
 
     INDEX_KEY = "nb:sessions"
+
+    async def _stale_active_pointers(
+        self, session_id: str, *agent_ids: str | None
+    ) -> list[str]:
+        """Active-pointer keys that name *session_id* and must be cleared.
+
+        Completion used to clear the pointer of ``meta["agent_id"]`` and no
+        one else, so a session that had changed hands left the OTHER agent
+        pointing at a finished session — and that dangling pointer is what
+        made ``ctx_update`` resolve to a completed session and silently drop
+        the write. Checking every agent involved in the call (owner AND
+        caller) is what makes "completing a session releases it" true rather
+        than true-for-one-agent.
+        """
+        keys: list[str] = []
+        for agent_id in dict.fromkeys(a for a in agent_ids if a):
+            key = self._active_key(agent_id)
+            if key in keys:
+                continue
+            if await self._r.get(key) == session_id:
+                keys.append(key)
+        return keys
 
     def _all_session_keys(self, sid: str) -> list[str]:
         return [
@@ -228,6 +262,22 @@ class SessionManager:
         sid = await self._r.get(self._active_key(agent_id))
         if not sid:
             raise ValueError("No active session")
+
+        # A write into a finished session is a LOST write, and it used to
+        # report {"status": "ok"}. This method resolved the target from the
+        # agent's active pointer and dispatched on category with no status
+        # check at all, so an agent whose pointer still named a completed
+        # session wrote entries into it, saw them in ctx_get_shadow, and lost
+        # every one of them — distillation ran at completion and never runs
+        # again. Refusing here mirrors resume_session's own
+        # "Cannot resume completed session". The status read is one HGET on a
+        # hash this method already writes to at the end.
+        status = await self._r.hget(self._session_key(sid), "status")
+        if status in ("completed", "abandoned"):
+            raise ValueError(
+                f"Cannot update {status} session {sid} — its memory was already "
+                f"distilled. Start a new session with ctx_start_session."
+            )
 
         now = datetime.now(timezone.utc).isoformat()
         count = 0
@@ -370,10 +420,9 @@ class SessionManager:
         now = datetime.now(timezone.utc).isoformat()
 
         # Read current active OUTSIDE the pipeline (fix #2)
-        should_clear_active = False
-        if meta.get("agent_id"):
-            current_active = await self._r.get(self._active_key(meta["agent_id"]))
-            should_clear_active = (current_active == session_id)
+        stale_pointers = await self._stale_active_pointers(
+            session_id, meta.get("agent_id"), agent_id
+        )
 
         # Final-review fix: the distill job is XADD'd inside the SAME
         # transaction pipeline as the "queued" state commit. Previously the
@@ -391,8 +440,8 @@ class SessionManager:
                 "outcome": outcome or "",
                 "distillation": "queued",
             })
-            if should_clear_active:
-                pipe.delete(self._active_key(meta["agent_id"]))
+            for key in stale_pointers:
+                pipe.delete(key)
             pipe.xadd(QUEUE_KEY, {
                 "session_id": session_id,
                 "attempts": "0",
@@ -434,18 +483,17 @@ class SessionManager:
         ttl_seconds = self._s.SESSION_TTL_DAYS * 86400
 
         # Read current active OUTSIDE the pipeline (fix #2)
-        should_clear_active = False
-        if meta.get("agent_id"):
-            current_active = await self._r.get(self._active_key(meta["agent_id"]))
-            should_clear_active = (current_active == session_id)
+        stale_pointers = await self._stale_active_pointers(
+            session_id, meta.get("agent_id"), agent_id
+        )
 
         async with self._r.pipeline(transaction=True) as pipe:
             pipe.hset(self._session_key(session_id), mapping={
                 "status": "abandoned",
                 "updated_at": now,
             })
-            if should_clear_active:
-                pipe.delete(self._active_key(meta["agent_id"]))
+            for key in stale_pointers:
+                pipe.delete(key)
             for key in self._all_session_keys(session_id):
                 pipe.expire(key, ttl_seconds)
             await pipe.execute()
@@ -463,7 +511,33 @@ class SessionManager:
     # Resume (fix #1 — Lua script for atomicity)
     # ------------------------------------------------------------------
 
-    async def resume_session(self, session_id: str, agent_id: str | None = None) -> dict[str, Any]:
+    async def resume_session(
+        self,
+        session_id: str,
+        agent_id: str | None = None,
+        *,
+        takeover: bool = False,
+    ) -> dict[str, Any]:
+        """Resume a session and make it the caller's active one.
+
+        OWNERSHIP IS CHECKED (audit finding). This method previously read the
+        session's status and nothing else, then unconditionally rewrote
+        ``agent_id`` and pointed the CALLER's active key at it — so any agent
+        that knew a session id owned that session, and ``ctx_list_sessions()``
+        with no filter returns every agent's session id on a deployment. The
+        consequences compounded: the victim's ``nb:active:<agent>`` pointer was
+        never cleared (two agents sharing one session), an ACTIVE session was
+        stolen even though the tool documents itself as resuming a PAUSED one,
+        and the memory distilled at completion was attributed to the thief.
+
+        The ownership check itself was not a new idea — ``complete_session``
+        below already refuses a session belonging to someone else. This brings
+        resume into line with it.
+
+        ``takeover=True`` is the explicit hand-off: it still clears the prior
+        owner's pointer (inside RESUME_SESSION_LUA, atomically), so a takeover
+        transfers the session rather than sharing it.
+        """
         agent_id = agent_id or self._s.DEFAULT_AGENT_ID
         meta = await self._r.hgetall(self._session_key(session_id))
         if not meta:
@@ -471,16 +545,37 @@ class SessionManager:
         if meta.get("status") in ("completed", "abandoned"):
             raise ValueError(f"Cannot resume {meta['status']} session")
 
+        owner = meta.get("agent_id") or ""
+        if owner and owner != agent_id and not takeover:
+            raise ValueError(
+                f"Session {session_id} belongs to agent '{owner}'. "
+                f"Pass takeover=True to take it over explicitly."
+            )
+        if owner and owner != agent_id and meta.get("status") == "active":
+            # Even an explicit takeover refuses a session someone is actively
+            # working in. "Resume" means picking up work that stopped; there is
+            # no version of that which involves evicting a live agent.
+            raise ValueError(
+                f"Session {session_id} is ACTIVE for agent '{owner}'. "
+                f"It must be paused, completed or abandoned before another "
+                f"agent can take it."
+            )
+
         now = datetime.now(timezone.utc).isoformat()
         ts = datetime.now(timezone.utc).timestamp()
 
-        # Atomically pause current active and set new active (fix #1)
+        # Atomically pause current active, clear the PREVIOUS owner's pointer,
+        # and set new active (fix #1 + takeover fix)
         active_key = self._active_key(agent_id)
+        prev_owner_key = (
+            self._active_key(owner) if owner and owner != agent_id else ""
+        )
         await self._r.eval(
             RESUME_SESSION_LUA,
-            2,
+            3,
             active_key,
             self.INDEX_KEY,
+            prev_owner_key,  # KEYS[3]: previous owner's active pointer ('' = none)
             session_id,    # ARGV[1]: session to resume
             now,           # ARGV[2]: updated_at for paused session
             "nb:session:", # ARGV[3]: session key prefix for pausing previous active

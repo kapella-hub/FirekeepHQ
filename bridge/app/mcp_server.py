@@ -178,12 +178,21 @@ async def _trigger_eval(api_url: str, session_id: str, max_retries: int = 3):
                 resp = await client.post(
                     f"{api_url}/evals/sessions/{session_id}/compute",
                     headers=headers,
+                    params={"trigger": "session_complete"},
                 )
                 if resp.status_code < 400:  # 2xx success
                     return True
                 if resp.status_code < 500:  # 4xx permanent failure — don't retry
-                    logger.warning(
-                        "Eval trigger permanent failure for session %s: HTTP %d",
+                    # ERROR, not WARNING: a 4xx here is a CONFIGURATION fault
+                    # that repeats on every completion and silently starves
+                    # OWM, quality trends and the pattern A/B join. The live
+                    # deployment logged this at WARNING on every session for
+                    # 12 days (403 — the compute route was admin-gated while
+                    # the internal key holds eval:write) and nobody saw it.
+                    logger.error(
+                        "Eval trigger PERMANENT failure for session %s: HTTP %d. "
+                        "Auto-evals are not being computed; check the key's "
+                        "scopes against POST /evals/sessions/{id}/compute.",
                         session_id, resp.status_code,
                     )
                     return False
@@ -319,7 +328,13 @@ async def ctx_update(
                     content,
                     api_url=settings.FIREKEEP_API_URL,
                     api_key=settings.FIREKEEP_API_KEY,
-                    namespace=settings.FIREKEEP_NAMESPACE,
+                    # Deliberately NOT settings.FIREKEEP_NAMESPACE. That value
+                    # ("default") is the namespace Bridge WRITES distillates
+                    # under, and on Cortex a namespace is a category, not a
+                    # partition — passing it here would scope proactive recall
+                    # to one category and hide everything an agent filed under
+                    # another. Omitting it searches them all.
+                    namespace=None,
                     top_k=settings.PROACTIVE_RECALL_TOP_K,
                     min_score=settings.PROACTIVE_RECALL_MIN_SCORE,
                 )
@@ -476,7 +491,13 @@ async def ctx_complete_session(
     # Auto-eval: detached fire-and-forget (SP0 D5) — completion must return
     # as soon as the session state + distill enqueue are committed.
     _spawn_background(_trigger_eval(settings.FIREKEEP_API_URL, sid))
-    result["eval_triggered"] = "scheduled"
+    # "dispatched", not "scheduled": the call is detached by design (SP0 D5 —
+    # completion returns as soon as session state + distill enqueue commit),
+    # so this response CANNOT know whether the eval computed. It said
+    # "scheduled" while every single trigger was 403-ing, which told the agent
+    # a thing that had not happened. This word claims only what is true — the
+    # request left this process.
+    result["eval_triggered"] = "dispatched"
 
     # Skill synthesis: trigger async (fire-and-forget)
     skill_ok = await _trigger_skill_evaluate(settings.FIREKEEP_API_URL, sid, skill_worthy)
@@ -534,17 +555,27 @@ async def ctx_list_sessions(
 
 
 @mcp.tool()
-async def ctx_resume_session(session_id: str, agent_id: str = "default") -> dict:
-    """Resume a paused session and get its working context.
+async def ctx_resume_session(
+    session_id: str, agent_id: str = "default", takeover: bool = False
+) -> dict:
+    """Resume a PAUSED session of your own and get its working context.
+
+    Resuming a session that belongs to another agent is refused unless you
+    pass takeover=True, and a session that is currently ACTIVE for another
+    agent is refused outright — resume picks up work that stopped, it never
+    evicts a live agent.
 
     Args:
         session_id: The session ID to resume.
         agent_id: Your agent identifier.
+        takeover: Explicitly adopt a paused session owned by another agent.
+            The previous owner loses it (their active pointer is cleared), so
+            only use this for a deliberate hand-off.
     """
     agent_id = _default_agent_id(agent_id)
     mgr = await _get_manager()
     try:
-        await mgr.resume_session(session_id, agent_id=agent_id)
+        await mgr.resume_session(session_id, agent_id=agent_id, takeover=takeover)
     except ValueError as e:
         return {"error": str(e)}
 
