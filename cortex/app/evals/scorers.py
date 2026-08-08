@@ -33,6 +33,7 @@ def compute_tier1_metrics(events: list[dict[str, Any]]) -> dict[str, float]:
     metrics["memory_freshness_at_recall"] = _memory_freshness_at_recall(events)
     metrics["claim_contention_rate"] = _claim_contention_rate(events)
     metrics["failure_rate"] = _failure_rate(events)
+    metrics["outcome_event_count"] = _outcome_event_count(events)
     metrics["session_duration_ms"] = _session_duration_ms(events)
     metrics["unique_event_types"] = _unique_event_types(events)
     metrics["context_snapshot_count"] = _context_snapshot_count(events)
@@ -87,10 +88,25 @@ def _recall_used_rate(events: list[dict]) -> float:
 
 
 def _memory_freshness_at_recall(events: list[dict]) -> float | None:
-    """Average top_score of memory_read events.
+    """Average best-relevance of memory_read events.
 
-    Higher scores suggest the recalled memories were more relevant.
-    This is a proxy for memory freshness — stale memories tend to score lower.
+    Higher scores suggest the recalled memories were more relevant. This is a
+    proxy for memory freshness — stale memories tend to score lower.
+
+    READS `raw_top_score`, NOT `top_score`, and the difference is the whole
+    metric. `top_score` is `RecallResponse.score`, which is a max over values
+    that `_min_max_normalize` has already rescaled so the best entry is exactly
+    1.0 — so it is 1.0 whenever any result survives, however poor the match.
+    Measured live 2026-08-06: three unrelated queries, including deliberate
+    nonsense about knitting patterns, all returned 1.0, and this metric read
+    1.0 across all 19 evaluated sessions. A freshness proxy pinned at "perfectly
+    fresh" cannot report staleness, which is the only thing it is for.
+
+    `raw_top_score` (emitted by `main.py::_raw_top_score`) is the
+    pre-normalization value. Events predating it carry only `top_score`; those
+    fall back rather than being dropped, so history stays readable — but such
+    events are the pinned-1.0 kind, so a mixed window reads high. Prefer windows
+    after 2026-08-06 when judging a trend.
     """
     read_events = [e for e in events if e.get("event_type") == "memory_read"]
     if not read_events:
@@ -104,7 +120,9 @@ def _memory_freshness_at_recall(events: list[dict]) -> float | None:
                 payload = json.loads(payload)
             except (json.JSONDecodeError, TypeError):
                 payload = {}
-        top_score = payload.get("top_score")
+        top_score = payload.get("raw_top_score")
+        if top_score is None:
+            top_score = payload.get("top_score")
         if top_score is not None:
             try:
                 scores.append(float(top_score))
@@ -131,12 +149,40 @@ def _claim_contention_rate(events: list[dict]) -> float | None:
 
 
 def _failure_rate(events: list[dict]) -> float:
-    """Rate of events with outcome=failure."""
+    """Rate of events with outcome=failure.
+
+    NOTE the denominator, and read `outcome_event_count` beside this number.
+    Only events CARRYING an outcome are counted, so `0.0` means "no failures
+    among the events that reported one" — which includes the case where nothing
+    reported one at all. Measured on the live deployment: a typical session
+    emits ~48 events of which exactly ONE carries an outcome (Bridge's own
+    session-completion call, which reports its own success), so this metric
+    reads 0.0 for essentially every session in the deployment.
+
+    Deliberately NOT changed to return None like `_tool_success_rate` does on
+    the same input: `owm.session_success` and the Living Procedures Tier B gate
+    both key off this value, and flipping it to None repoints two shipped
+    signals — that is its own measurement pass, not a fix in passing (see the
+    root CLAUDE.md's OWM section). `_outcome_event_count` is added instead so a
+    READER can tell an informative 0.0 from a vacuous one.
+    """
     with_outcome = [e for e in events if e.get("outcome")]
     if not with_outcome:
         return 0.0
     failures = sum(1 for e in with_outcome if e["outcome"] == "failure")
     return round(failures / len(with_outcome), 4)
+
+
+def _outcome_event_count(events: list[dict]) -> float:
+    """How many events actually carried an outcome — the denominator above.
+
+    Exists because `failure_rate` and `tool_success_rate` are unreadable without
+    it: both are ratios over this population, and the population is ~1 in
+    production. A rate computed over a single self-reported event is not a
+    quality measurement, and nothing downstream could previously tell the
+    difference.
+    """
+    return float(sum(1 for e in events if e.get("outcome")))
 
 
 def _session_duration_ms(events: list[dict]) -> float | None:

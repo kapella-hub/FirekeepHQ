@@ -104,6 +104,52 @@ async def _replay_emit(event_type: str, session_id: str, agent_id: str, payload:
         logger.warning("Replay emit failed for %s: %s", event_type, exc)
 
 
+def _raw_top_score(sources) -> float | None:
+    """Best PRE-normalization relevance among recall sources, or None.
+
+    WHY THIS EXISTS. `RecallResponse.score` is `max()` over per-entry scores
+    that `engine/rag.py::_min_max_normalize` has already rescaled, and that
+    function sets the best entry in the set to exactly 1.0 by construction. So
+    the field is 1.0 whenever ANY result survives, no matter how poor the match.
+    Measured on the live deployment 2026-08-06 -- "how do I deploy to the VPS",
+    "what is the qdrant collection name", and a deliberate nonsense query about
+    knitting patterns all returned `score: 1.0`, top source 1.0.
+
+    That made `memory_freshness_at_recall` -- documented as "a proxy for memory
+    freshness, stale memories tend to score lower" -- pinned at 1.0 and
+    incapable of reporting staleness, which is its only job.
+
+    `raw_score` is stamped into each entry's metadata before normalization
+    (cosine for vector entries, the weighted jaccard/distance blend for graph
+    ones). This mirrors the identical fix already made for the recall confidence
+    band in `_format_markdown`, whose comment states the principle: a band that
+    cannot come out low is not a band. Entries without `raw_score` (resolution
+    bonuses, which carry a sentinel 1.2) are SKIPPED rather than counted, so
+    they cannot prop the value up -- same rule, same reason.
+
+    Returns None when nothing carries a raw score, so a reader can tell "no
+    signal" from "a real 0.0". Never raises: this runs inside the recall hot
+    path's best-effort telemetry, where a malformed payload must not fail a
+    recall that already succeeded.
+    """
+    try:
+        real = []
+        for s in sources or []:
+            meta = getattr(s, "metadata", None)
+            if not isinstance(meta, dict):
+                continue
+            rs = meta.get("raw_score")
+            if rs is None:
+                continue
+            try:
+                real.append(float(rs))
+            except (TypeError, ValueError):
+                continue
+        return round(max(real), 4) if real else None
+    except Exception:
+        return None
+
+
 async def _bump_untagged_counter(redis_client: redis.asyncio.Redis, session_id: str) -> None:
     """Increment the daily untagged-call counter when session_id is missing or 'unknown'.
 
@@ -1203,7 +1249,20 @@ async def memory_recall(
             "query": query.task[:200],
             "top_k": query.top_k,
             "result_count": len(result.sources),
+            # `top_score` is RecallResponse.score, which is max() over scores
+            # that have been through _min_max_normalize -- so it is exactly 1.0
+            # whenever any result survives, by construction. Measured live
+            # 2026-08-06: "how do I deploy to the VPS", "what is the qdrant
+            # collection name" and "zzz nonsense query about knitting patterns"
+            # ALL returned 1.0. Kept for payload compatibility, but it is a
+            # constant, not a relevance signal.
             "top_score": result.score,
+            # The number that actually varies: best PRE-normalization relevance
+            # (cosine for vector entries, the jaccard/distance blend for graph
+            # ones). Same reasoning as the confidence band in
+            # engine/rag.py::_format_markdown -- "a band that cannot come out
+            # low is not a band" -- applied to the metric that reads this.
+            "raw_top_score": _raw_top_score(result.sources),
             "namespace": query.namespace,
             # OWM: the ids RETURNED, so a nightly pass can join which sessions
             # saw which memories to how those sessions ended (app/owm.py).

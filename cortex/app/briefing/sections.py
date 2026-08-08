@@ -97,6 +97,15 @@ def vault_visible(scopes: list[str]) -> bool:
 
 # --- Task 6 stubs (all replaced in Tasks 7–9) ------------------------------
 
+#: Average outcome-bearing events per session below which `failure_rate` and
+#: `tool_success_rate` are a single self-report rather than a rate, and the
+#: briefing must not read their silence as good news. 2.0 is deliberately
+#: conservative: it fires only in the genuinely degenerate case (~1 event, which
+#: is what production emits today) and stops firing on its own the moment real
+#: outcome instrumentation lands, with no config change and nothing to remember.
+_MIN_OUTCOME_EVENTS_FOR_A_VERDICT = 2.0
+
+
 async def quality_section(replay_redis) -> Section:
     """From /evals summary: total sessions + threshold-based insights.
 
@@ -122,7 +131,28 @@ async def quality_section(replay_redis) -> Section:
     if fr is not None and fr > 0.1:
         insights.append(f"elevated failure rate ({fr:.0%})")
     if total and not insights:
-        insights.append("quality looks good")
+        # "quality looks good" USED TO BE unconditional here, and it read as a
+        # verdict while being a constant. Both thresholds above are ratios over
+        # events that CARRY an outcome, and on the live deployment that
+        # population is ~1 event per session -- Bridge's own session-completion
+        # call, reporting its own success. So tool_success_rate is pinned at 1.0
+        # and failure_rate at 0.0 by construction, neither threshold can fire,
+        # and the else-branch always ran. Measured 2026-08-06 on the owner's
+        # store: 19 sessions, event_count 48.3, failure_rate 0.0,
+        # sessions_with_failures 0 -- "quality looks good" on a metric
+        # structurally incapable of saying anything else.
+        #
+        # A briefing is the first thing a human reads about their own system. It
+        # may report that nothing crossed a threshold; it may not infer from a
+        # silent instrument that all is well.
+        oec = avg.get("outcome_event_count")
+        if oec is not None and oec < _MIN_OUTCOME_EVENTS_FOR_A_VERDICT:
+            insights.append(
+                f"no failure signal ({oec:.1f} outcome-bearing event(s) per session) "
+                "— thresholds cannot fire, so this is not a clean bill of health"
+            )
+        else:
+            insights.append(f"no quality threshold breached across {total} session(s)")
     if total == 0:
         return {"status": "empty", "error": None,
                 "data": {"total_sessions": 0, "avg_metrics": {}, "insights": []}}
