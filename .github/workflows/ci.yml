@@ -328,6 +328,35 @@ jobs:
           /tmp/venv-symdex/bin/pip install -q ./symdex
           /tmp/venv-symdex/bin/python scripts/check_licenses.py
 
+  benchmarks:
+    name: benchmarks (LongMemEval harness)
+    runs-on: ubuntu-latest
+    # NOTHING RAN THESE. `benchmarks/memory/` carries the Dreaming ship gate —
+    # `bench.dream_ab`'s aggregate comparator and `bench.displacement`'s
+    # evidence-displacement analysis — and no job in this file referenced
+    # `benchmarks/` at all, so the tests pinning those gates (including the ones
+    # pinning displacement to a hand audit of two real run records) were a
+    # local-only courtesy. A gate whose own guards do not run is the same class
+    # of decoration as the forbidden-token scan that could not fail.
+    #
+    # No dataset, no containers, no network: `data/` is gitignored (265 MB) and
+    # the ground-truth tests read the committed 32 KB evidence extract at
+    # tests/fixtures/ instead. The two assertions that genuinely need the raw
+    # dataset skip themselves and say so.
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install harness dependencies
+        run: pip install -r benchmarks/memory/requirements.txt
+      # `python -m pytest`, not `pytest` — the console script does not put the
+      # CWD on sys.path, and both `bench` and `tests.conftest` are imported by
+      # package path (the same trap documented on the repo-scripts job above).
+      - name: Run harness tests
+        run: cd benchmarks/memory && python -m pytest tests -q
+
   lint:
     name: lint (ruff)
     runs-on: ubuntu-latest

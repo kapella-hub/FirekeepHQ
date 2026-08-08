@@ -1,11 +1,11 @@
 # LongMemEval Benchmark Methodology
 
-Generated: 2026-08-03T20:15:03.395736+00:00
+Generated: 2026-08-06T21:22:11.254174+00:00
 
 ## What was run
 
 - Dataset: `{"sha256": "d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442", "source": "hf://xiaowu0162/longmemeval-cleaned/longmemeval_s_cleaned.json", "questions": 500, "fetched_at": "2026-08-03T16:25:00.208798+00:00"}`
-- Cortex version: `{"version": "9f94dd4-dirty", "git_sha": "9f94dd4", "build_time": "2026-08-03T16:52:51Z"}`
+- Cortex version: `{"version": "0.6.0", "git_sha": "unknown", "build_time": "unknown"}`
 - Models: `{"reader": "qwen3:14b", "embed": "mxbai-embed-large"}`
 - Config rows (verbatim): `{"defaults": {"top_k": 3, "token_budget": 600, "format": "synthesized"}, "bench": {"top_k": 10, "token_budget": 10000, "format": "raw"}}`
 
