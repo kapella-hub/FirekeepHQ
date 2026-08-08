@@ -44,7 +44,10 @@ class TestFireAndForgetEval:
             )
 
         assert result["status"] == "completed"
-        assert result["eval_triggered"] == "scheduled"
+        # "dispatched", not "scheduled": the call is detached, so this response
+        # cannot know the eval computed. It claimed "scheduled" throughout the
+        # 12-day window in which every trigger was 403-ing.
+        assert result["eval_triggered"] == "dispatched"
 
         # Clean up the detached hanging task
         for task in list(mcp_server._background_tasks):
@@ -93,3 +96,74 @@ class TestFireAndForgetEval:
         for task in list(mcp_server._background_tasks):
             task.cancel()
         await asyncio.gather(*mcp_server._background_tasks, return_exceptions=True)
+
+
+class TestEvalTriggerContract:
+    """The trigger call must be identifiable and its failure must be loud.
+
+    Every session completion 403'd for 12 days and the only trace was a
+    WARNING line in a container log, while the tool response said the eval was
+    "scheduled". Two separate lies: the severity, and the word.
+    """
+
+    @pytest.mark.asyncio
+    async def test_marks_the_trigger_as_session_complete(self):
+        """`trigger` was hardcoded "manual" server-side, so a Bridge-initiated
+        eval was indistinguishable from a human one — and "all 19 evals say
+        manual" was the signal that surfaced the outage in the first place."""
+        from app import mcp_server
+
+        captured = {}
+
+        class _Resp:
+            status_code = 200
+
+        class _Client:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def post(self, url, headers=None, params=None):
+                captured["params"] = params
+                return _Resp()
+
+        import httpx
+
+        with patch.object(httpx, "AsyncClient", lambda **k: _Client()):
+            ok = await mcp_server._trigger_eval("http://cortex", "s1")
+
+        assert ok is True
+        assert captured["params"] == {"trigger": "session_complete"}
+
+    @pytest.mark.asyncio
+    async def test_a_4xx_is_logged_at_error_not_warning(self, caplog):
+        """A 4xx here is a CONFIGURATION fault that repeats on every session
+        and silently starves OWM, quality trends and the pattern A/B join. It
+        sat at WARNING and nobody saw it."""
+        import logging
+
+        from app import mcp_server
+
+        class _Resp:
+            status_code = 403
+
+        class _Client:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def post(self, url, headers=None, params=None):
+                return _Resp()
+
+        import httpx
+
+        with caplog.at_level(logging.ERROR):
+            with patch.object(httpx, "AsyncClient", lambda **k: _Client()):
+                ok = await mcp_server._trigger_eval("http://cortex", "s1")
+
+        assert ok is False
+        assert any(r.levelno >= logging.ERROR for r in caplog.records)
