@@ -174,6 +174,28 @@ class ChatResult:
     endpoint: str  # _NATIVE | _OPENAI
     raw: dict[str, Any] = field(default_factory=dict, repr=False)
 
+    @property
+    def truncated(self) -> bool:
+        """Did the backend stop because it hit the token cap, not the answer?
+
+        Both endpoints say so, in different fields — ollama native as
+        ``done_reason``, OpenAI-compatible as ``choices[0].finish_reason``,
+        both with the value ``"length"``. Normalising it here is what lets a
+        caller refuse a HALF-WRITTEN result: without it a skill card truncated
+        mid-sentence looks exactly like a complete one, and one was stored on
+        the live deployment reading '...I think the domain should be'.
+
+        Absent or malformed metadata means "cannot tell", which is False —
+        never refuse output on the basis of a field a backend did not send.
+        """
+        raw = self.raw if isinstance(self.raw, dict) else {}
+        if raw.get("done_reason") == "length":
+            return True
+        choices = raw.get("choices")
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            return choices[0].get("finish_reason") == "length"
+        return False
+
 
 # --------------------------------------------------------------------------
 # Pure helpers — no I/O, testable without a network
