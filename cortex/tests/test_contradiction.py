@@ -44,8 +44,14 @@ class TestContradictionDetection:
             vector, graph, "new text", "new-id", "graph-id", "test"
         )
         assert result == ["old-id"]
+        # count_as_contradiction=False: this path decides supersession on cosine
+        # similarity alone, so a RESTATEMENT and a correction arrive identically.
+        # Bumping contradicted_count for a memory nothing contradicted is a false
+        # claim that feeds compute_confidence, the recall confidence factor, and
+        # the memory agent's tie-breaks.
         vector.update_status.assert_called_once_with(
-            memory_id="old-id", status="superseded", superseded_by="new-id"
+            memory_id="old-id", status="superseded", superseded_by="new-id",
+            reason="near-duplicate", count_as_contradiction=False,
         )
         graph.create_supersession.assert_called_once()
 
