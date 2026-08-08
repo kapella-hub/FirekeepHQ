@@ -654,7 +654,19 @@ services:
       ollama:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "celery -A app.workers.sleep_cycle inspect ping --timeout 5"]
+      # NOT `celery inspect ping`. The worker runs --pool=solo: one thread both
+      # executes the task and services control broadcasts, so it cannot answer a
+      # ping while inside one — and a skill draft measured 251s, a classify 56s.
+      # Observed live: `Up 24 hours (unhealthy)`, ExitCode 69, "No nodes replied
+      # within time constraint", FailingStreak 6, against a worker whose own log
+      # showed it executing normally. A health signal that goes red precisely
+      # when the service is BUSY is the one an operator learns to ignore, and it
+      # makes `depends_on: {condition: service_healthy}` unusable here.
+      # app.worker_health pings first (a reply is positive proof) and falls back
+      # to a stdlib /proc scan for a live worker process — no procps in the slim
+      # image. It deliberately does not detect a WEDGED worker; nothing outside
+      # the worker can, and queue depth (GET /ops/queues) is the progress signal.
+      test: ["CMD-SHELL", "python -m app.worker_health"]
       interval: 30s
       timeout: 10s
       retries: 3
