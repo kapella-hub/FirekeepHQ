@@ -49,6 +49,8 @@ async def store_chunks(
     chunks: list[Chunk],
     vector_client,
     ingest_id: str | None = None,
+    workspace_id: str | None = None,
+    member_id: str | None = None,
 ) -> int:
     """Store chunks into the shared firekeep_memory collection via VectorClient.
 
@@ -58,6 +60,17 @@ async def store_chunks(
         ingest_id: Per-run staging tag (SP0 A4). Stored in the nested chunk
             metadata (payload.metadata.ingest_id) so the staged re-ingest
             flow can delete the previous generation while keeping this one.
+        workspace_id / member_id: the ingesting principal's tenancy. WITHOUT
+            THESE THE CHUNK IS NOT RECALLABLE. ``VectorClient.search`` applies
+            ``workspace_id`` as a hard ``must`` filter, so a chunk written with
+            ``workspace_id=None`` matches no real caller's recall — measured on
+            the live store, a freshly ingested chunk was the TOP hit (0.8193)
+            with the filter off and ABSENT with the caller's real workspace,
+            while ``corpus_ingest``'s own docstring promises "every chunk is
+            searchable via memory_recall". The startup ``migrate_single_workspace``
+            backfill healed it on the next restart, which made the damage window
+            "until someone restarts cortex-api" rather than permanent — a
+            migration is not a substitute for stamping at write time.
     """
     if not chunks:
         return 0
@@ -75,6 +88,13 @@ async def store_chunks(
         }
         if ingest_id:
             metadata["ingest_id"] = ingest_id
+        # Emitted only when known: `upsert` promotes these to top-level payload
+        # keys, and writing an explicit None would stamp the very value the
+        # filter cannot match, overwriting a migration backfill on re-ingest.
+        if workspace_id:
+            metadata["workspace_id"] = workspace_id
+        if member_id:
+            metadata["member_id"] = member_id
         await vector_client.upsert(text=chunk.content, metadata=metadata)
         count += 1
 

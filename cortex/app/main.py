@@ -744,13 +744,18 @@ async def lifespan(app: FastAPI):
             _vector = app.state.vector_client
             _redis = app.state.redis_client
 
-            async def _do_ingest(content, source_name, source_type):
+            async def _do_ingest(
+                content, source_name, source_type,
+                workspace_id=None, member_id=None,
+            ):
                 return await _ingest_doc(
                     content=content,
                     source_name=source_name,
                     source_type=source_type,
                     vector_client=_vector,
                     redis_client=_redis,
+                    workspace_id=workspace_id,
+                    member_id=member_id,
                 )
 
             async def _do_sources():
@@ -1654,6 +1659,8 @@ async def post_memory_handoff(
     """Generate team handoff summary for a project."""
     from datetime import timedelta
 
+    from auth.principal import request_principal
+
     settings = get_settings()
     since_dt = datetime.now(timezone.utc) - timedelta(days=req.since_days)
 
@@ -1678,7 +1685,41 @@ async def post_memory_handoff(
         top_k=10,
         format="raw",
     )
-    recall_resp = await engine.recall(recall_query)
+    # workspace_id was NOT passed here while /memory/recall passed it — so a
+    # handoff was the one recall in the system that crossed tenancy.
+    #
+    # `unattributed_graph="deny"` is the other half, and it is what makes this
+    # endpoint actually scoped rather than mostly scoped. `_scope_verdict` can
+    # only adjudicate a graph row that names vector memory_ids, and MEASURED on
+    # the live graph only 27 of 3859 nodes do (0.7%) — so admitting the
+    # unattributable, which is right for `/memory/recall`, leaves a handoff
+    # narrating rows it cannot attribute to the project it names. A handoff is
+    # a single assertion about one project, not a list of candidate results,
+    # and an LLM handed an out-of-scope row will fold it in indistinguishably.
+    # Here the unverifiable is refused; see `RAGEngine._scope_verdict`.
+    principal = request_principal(request)
+    recall_resp = await engine.recall(
+        recall_query,
+        workspace_id=principal["workspace_id"],
+        unattributed_graph="deny",
+    )
+
+    # An unknown project must SAY it is unknown. Returning a synthesised
+    # narrative built from whatever survived retrieval is how a handoff for
+    # `__no_such_project_xyz` came back describing another project's work as
+    # though it were that project's: the LLM is handed sources and asked for a
+    # summary, and it will always write one. This branch was UNREACHABLE while
+    # unlinked graph rows were admitted — `sources` was never empty — which is
+    # why the two changes ship together rather than either alone.
+    if not contributors_data and not recall_resp.sources:
+        return {
+            "summary": (
+                f"No memories found for project '{req.project}' "
+                f"in the last {req.since_days} days. Nothing to hand off."
+            ),
+            "project": req.project,
+            "empty": True,
+        }
 
     combined = f"Contributors:\n{contributors_text}\n\nRecent memories:\n{recall_resp.context_block}"
     summary = await synthesize_memories(

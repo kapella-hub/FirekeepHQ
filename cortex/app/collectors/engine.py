@@ -93,7 +93,21 @@ class CollectorEngine:
                 seen_i += 1
                 try:
                     md, source_name, source_type = await adapter.fetch_content(item)
-                    await ingest_knowledge_document(md, source_name, source_type, vector=vector, redis=r)
+                    # No HTTP principal in a scheduled collector — stamp the
+                    # deployment workspace explicitly. Leaving it null writes
+                    # chunks that memory_recall's workspace filter can never
+                    # return, i.e. a sync that reports success and delivers
+                    # nothing findable.
+                    from auth.principal import (
+                        deployment_owner_member_id,
+                        deployment_workspace_id,
+                    )
+
+                    await ingest_knowledge_document(
+                        md, source_name, source_type, vector=vector, redis=r,
+                        workspace_id=deployment_workspace_id(),
+                        member_id=deployment_owner_member_id(),
+                    )
                     await CollectorState.record_version(name, item["stable_id"], item["version"], r)
                     ingested += 1
                 except Exception:

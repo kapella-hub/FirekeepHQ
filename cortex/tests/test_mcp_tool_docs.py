@@ -22,7 +22,8 @@ from pathlib import Path
 from app import mcp_server
 
 # `initialize` is the MCP protocol handshake method, not a Firekeep tool.
-NON_TOOL_BACKTICKED = {"initialize"}
+# `namespace` is a REQUEST FIELD named in memory_recall's Args, not a tool.
+NON_TOOL_BACKTICKED = {"initialize", "namespace"}
 
 _SRC = Path(mcp_server.__file__).read_text(encoding="utf-8")
 

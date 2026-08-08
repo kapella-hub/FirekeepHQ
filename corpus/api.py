@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -67,16 +67,27 @@ def create_corpus_router() -> APIRouter:
     router = APIRouter(prefix="/corpus", tags=["corpus"])
 
     @router.post("/ingest", response_model=IngestResponse)
-    async def ingest(req: IngestRequest) -> IngestResponse:
-        """Ingest a document: chunk -> store in Qdrant vector store."""
+    async def ingest(request: Request, req: IngestRequest) -> IngestResponse:
+        """Ingest a document: chunk -> store in Qdrant vector store.
+
+        The caller's principal is threaded down to the chunk payloads. Without
+        it every chunk landed with ``workspace_id=null`` and was unreachable
+        from ``memory_recall``, which filters on the caller's workspace — the
+        exact opposite of what this endpoint's contract promises.
+        """
         if ingest_document is None:
             raise HTTPException(status_code=503, detail="Corpus module not initialized")
 
+        from auth.principal import request_principal
+
+        principal = request_principal(request)
         try:
             result = await ingest_document(
                 content=req.content,
                 source_name=req.source_name,
                 source_type=req.source_type,
+                workspace_id=principal["workspace_id"],
+                member_id=principal["member_id"],
             )
             return IngestResponse(**result)
         except Exception as e:

@@ -41,6 +41,8 @@ async def ingest_document(
     source_type: str = "text",
     vector_client=None,
     redis_client=None,
+    workspace_id: str | None = None,
+    member_id: str | None = None,
     # Legacy params accepted but ignored (no longer used)
     neo4j_driver=None,
     llm_base_url: str = "",
@@ -48,6 +50,12 @@ async def ingest_document(
     llm_model: str = "",
 ) -> dict[str, Any]:
     """Ingest a document: stage chunks + swap generations in Qdrant, track in Redis.
+
+    ``workspace_id`` / ``member_id`` are the ingesting principal's tenancy and
+    are stamped onto every chunk. This function had NO workspace parameter at
+    all, so every corpus and knowledge ingest wrote ``workspace_id=null`` and
+    the chunks were invisible to ``memory_recall``, which filters on the
+    caller's workspace — see ``corpus.store.store_chunks`` for the measurement.
 
     Returns a dict matching IngestionResult fields. The entities_extracted
     field is always 0 — entity extraction was removed.
@@ -97,7 +105,8 @@ async def ingest_document(
         ]
         try:
             chunks_stored = await store_chunks(
-                chunk_objects, vector_client, ingest_id=ingest_id
+                chunk_objects, vector_client, ingest_id=ingest_id,
+                workspace_id=workspace_id, member_id=member_id,
             )
         except Exception:
             # Fail loudly. Old chunks are still intact and source metadata is

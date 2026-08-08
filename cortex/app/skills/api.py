@@ -169,6 +169,17 @@ def create_skills_router(
         # a procedure" from "a procedure with zero steps".
         if req.step_specs:
             payload["step_specs"] = [s.model_dump() for s in req.step_specs]
+        # Tenancy, from the verified principal — NOT optional. VectorClient.search
+        # filters workspace_id as a hard `must`, so a skill created without it
+        # was stored, listed in the dashboard, and matched by NOTHING: measured
+        # live, a freshly created skill ranked 1st at 0.877 with the filter off
+        # and disappeared entirely under the caller's real workspace. Only a
+        # cortex-api restart healed it, via the migration backfill.
+        from auth.principal import request_principal
+
+        principal = request_principal(request)
+        payload["workspace_id"] = principal["workspace_id"]
+        payload["member_id"] = principal["member_id"]
         await vector._client.upsert(
             collection_name=settings.QDRANT_COLLECTION,
             points=[PointStruct(id=skill_id, vector=embedding, payload=payload)],
