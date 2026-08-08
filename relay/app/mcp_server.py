@@ -77,6 +77,20 @@ async def _replay_emit(event_type: str, payload: dict, agent_id: str = "relay", 
         pass
 
 _VALID_NAME = re.compile(r'^[a-zA-Z0-9._-]{1,200}$')
+# A resource_id is a FILE PATH, and file paths are not agent names. The name
+# charset above rejected every Windows absolute path (the drive-letter colon)
+# and every path containing a space on any OS, which made the lease gate
+# structurally unreachable for the caller that matters: the pre-edit hook
+# derives its resource_id from `os.path.normpath(file_path)`, so on Windows it
+# always asks about `E:/Documents/...` and always got back
+# `{"error": "Invalid resource_id: ...", "status": "unavailable"}`. The hook
+# then tests `lease.get("held")`, which is absent from that error dict, so the
+# edit was allowed with no warning printed and no failure logged — a second
+# agent's lease was invisible, silently, on every Windows machine.
+# ':' and ' ' are the two additions. Both are ordinary Redis key bytes; a
+# resource_id is the final segment of `nr:lease:<id>`, so it cannot collide
+# across key families.
+_VALID_RESOURCE_ID = re.compile(r'^[a-zA-Z0-9._: -]{1,200}$')
 _MAX_CONTENT_SIZE = 65536
 _MAX_LIMIT = 200
 
@@ -112,7 +126,11 @@ def _normalize_resource_id(resource_id: str) -> str:
         raise ValueError("Invalid resource_id: path traversal is not allowed")
     normalized = resource_id[1:] if resource_id.startswith("/") else resource_id
     normalized = normalized.replace("/", ".")
-    return _validate_name(normalized, "resource_id")
+    if not _VALID_RESOURCE_ID.match(normalized):
+        raise ValueError(
+            "Invalid resource_id: must be 1-200 alphanumeric/._- : or space chars"
+        )
+    return normalized
 
 
 @mcp.tool()

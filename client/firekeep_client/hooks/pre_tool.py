@@ -102,7 +102,27 @@ def run(payload: dict) -> int:
             try:
                 lease = _mcp.call_tool("relay", "relay_lease_status",
                                        {"resource_id": rid}, cfg=cfg)
-                if (isinstance(lease, dict) and lease.get("held")
+                # An error RESPONSE is a failed check, not an absent lease.
+                # relay tools return {"error": ...} with HTTP 200 and never
+                # raise, so this dict reached the truthiness test below with no
+                # "held" key and read exactly like "nobody holds it" — the edit
+                # proceeded, silently, with nothing logged. Every Windows path
+                # took that branch (the drive-letter colon failed relay's
+                # resource_id charset), so the lease gate could not fire at all
+                # on Windows, nor for any path containing a space anywhere.
+                # Still fail OPEN — a coordination check must not stop a user
+                # editing their own files — but SAY SO, because a gate that
+                # cannot run and does not admit it is worse than no gate.
+                if isinstance(lease, dict) and lease.get("error"):
+                    hooklog.log_failure(
+                        _HOOK, f"relay_lease_status rejected {rid!r}: {lease['error']}"
+                    )
+                    print(
+                        f"firekeep: lease check unavailable for {target} "
+                        f"({lease['error']}) — proceeding UNCOORDINATED.",
+                        file=sys.stderr,
+                    )
+                elif (isinstance(lease, dict) and lease.get("held")
                         and lease.get("holder_id") != agent):
                     holder = lease.get("holder_id", "unknown")
                     print(f"BLOCKED: {target} is leased by {holder}. Coordinate via "

@@ -159,3 +159,61 @@ class TestRealServerContract:
                            "tool_input": {"file_path": str(f)}, "session_id": "s1"})
         assert rc == 0
         assert "hotspot" in capsys.readouterr().err
+
+
+class TestLeaseCheckFailureIsVisible:
+    """A lease check that could not RUN must not read as "nobody holds it".
+
+    Relay's MCP tools return `{"error": ...}` with HTTP 200 and never raise, so
+    an error dict flowed straight into `lease.get("held")` — absent, therefore
+    falsy, therefore allow. Nothing printed, nothing logged (`hooklog` only
+    fired on a raised exception). That is exactly what happened on every
+    Windows machine, because relay's `resource_id` charset rejected the
+    drive-letter colon in the path this hook always sends: the coordination
+    gate was structurally inert and reported nothing.
+
+    Failing OPEN is right — a coordination check must not stop someone editing
+    their own files — but it has to SAY so.
+    """
+
+    def test_error_response_warns_and_allows(self, client_env, monkeypatch,
+                                             tmp_path, capsys):
+        from firekeep_client.hooks import pre_tool
+        f = tmp_path / "x.py"
+        f.write_text("x\n")
+        _lease(monkeypatch, {"error": "Invalid resource_id: must be 1-200 ...",
+                             "status": "unavailable"})
+        _gateway(monkeypatch, {"decision": "allow", "action_id": "a", "advisories": []})
+        rc = pre_tool.run({"tool_name": "Edit",
+                           "tool_input": {"file_path": str(f)}, "session_id": "s1"})
+        assert rc == 0  # fail open
+        err = capsys.readouterr().err
+        assert "lease check unavailable" in err
+        assert "UNCOORDINATED" in err
+
+    def test_error_response_is_hooklogged(self, client_env, monkeypatch, tmp_path):
+        """It was invisible in the log too — `hooklog.log_failure` only ran on
+        a raised exception, and this path raises nothing."""
+        from firekeep_client.hooks import pre_tool
+        from firekeep_client import hooklog
+        seen = []
+        monkeypatch.setattr(hooklog, "log_failure", lambda h, m: seen.append((h, m)))
+        f = tmp_path / "x.py"
+        f.write_text("x\n")
+        _lease(monkeypatch, {"error": "relay unreachable"})
+        _gateway(monkeypatch, {"decision": "allow", "action_id": "a", "advisories": []})
+        pre_tool.run({"tool_name": "Edit",
+                      "tool_input": {"file_path": str(f)}, "session_id": "s1"})
+        assert any("relay unreachable" in m for _, m in seen)
+
+    def test_a_real_lease_still_blocks(self, client_env, monkeypatch, tmp_path, capsys):
+        """The new branch must not swallow the case it sits next to."""
+        from firekeep_client.hooks import pre_tool
+        f = tmp_path / "x.py"
+        f.write_text("x\n")
+        _lease(monkeypatch, {"held": True, "holder_id": "other"})
+        _gateway(monkeypatch, {"decision": "allow", "action_id": "a", "advisories": []})
+        rc = pre_tool.run({"tool_name": "Edit",
+                           "tool_input": {"file_path": str(f)}, "session_id": "s1"})
+        assert rc == 2
+        assert "BLOCKED" in capsys.readouterr().err
