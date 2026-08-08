@@ -64,10 +64,15 @@ class StatefulFakeVector:
         return point_id
 
     async def search(self, query, top_k=5, **kwargs):
-        namespace = kwargs.get("namespace", "default")
+        # Mirrors app.db.vector.namespace_condition: None = every namespace,
+        # any string = exactly that one (a missing field counting as "default").
+        # This fake previously reimplemented the old `!= "default"` wildcard,
+        # which made it disagree with production the moment that stopped being
+        # the contract.
+        namespace = kwargs.get("namespace")
         out = []
         for pid, p in self.points.items():
-            if namespace != "default" and p["namespace"] != namespace:
+            if namespace is not None and (p.get("namespace") or "default") != namespace:
                 continue
             out.append({
                 "id": pid,

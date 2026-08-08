@@ -191,17 +191,57 @@ def create_ops_router() -> APIRouter:
 
     @router.get("/workers")
     async def get_workers() -> dict[str, Any]:
-        """Celery worker status. The inspect broadcasts are blocking (~10s total),
-        so run them in a threadpool — otherwise they stall the event loop and every
-        other concurrent /ops and /admin request behind them."""
-        def _collect() -> list[dict[str, Any]]:
-            return _inspect_workers(celery_app.control.inspect(timeout=2.0))
+        """Celery worker status.
+
+        The inspect broadcasts are blocking, so they run in a threadpool —
+        otherwise they stall the event loop and every other concurrent /ops and
+        /admin request behind them.
+
+        TWO CORRECTIONS, both from watching this against a busy worker.
+
+        (1) ``count: 0`` DOES NOT MEAN "no workers". The worker runs
+        ``--pool=solo``, i.e. one thread that executes the task AND services
+        control broadcasts, so while it is inside a task (an LLM call is 60s+)
+        it cannot answer a ping. Measured: 11 consecutive calls returned
+        ``{"workers": [], "count": 0}`` and the dashboard rendered "No workers
+        online" while the worker log showed it processing normally and the
+        celery queue climbed 1 -> 7 -> 14. The response now says which of the
+        two it is, via ``probe``: ``"replied"`` or ``"no reply"``. It cannot be
+        inferred any other way from outside the worker, and a monitoring
+        surface that reports a busy worker as absent trains people to ignore
+        it.
+
+        (2) ``_inspect_workers`` issues FIVE separate broadcasts (stats,
+        active, reserved, scheduled, registered), each waiting the full
+        timeout when nobody answers — which is where the observed ~10.1s per
+        call came from, on a 2.0s timeout. A single ``ping()`` first cuts the
+        no-reply case to one timeout, and skips four pointless broadcasts.
+        """
+        def _collect() -> tuple[list[dict[str, Any]], bool]:
+            inspect = celery_app.control.inspect(timeout=2.0)
+            if not (inspect.ping() or {}):
+                return [], False
+            return _inspect_workers(inspect), True
+
         try:
-            workers = await run_in_threadpool(_collect)
+            workers, replied = await run_in_threadpool(_collect)
         except Exception as exc:
             logger.warning("Celery inspect failed: %s", exc)
-            return {"workers": [], "count": 0, "error": str(exc)}
-        return {"workers": workers, "count": len(workers)}
+            return {"workers": [], "count": 0, "probe": "error", "error": str(exc)}
+
+        if not replied:
+            return {
+                "workers": [],
+                "count": 0,
+                "probe": "no reply",
+                "note": (
+                    "No worker answered the control ping within the timeout. "
+                    "With --pool=solo this is the EXPECTED response while a "
+                    "worker is executing a long task — check /ops/queues for "
+                    "movement before concluding the worker is down."
+                ),
+            }
+        return {"workers": workers, "count": len(workers), "probe": "replied"}
 
     @router.get("/queues")
     async def get_queues() -> dict[str, Any]:

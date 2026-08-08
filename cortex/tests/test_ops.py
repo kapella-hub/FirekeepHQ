@@ -6,6 +6,15 @@ from app.ops import _get_queue_depths, _inspect_workers
 
 
 class _FakeInspect:
+    def ping(self):
+        """`GET /ops/workers` pings FIRST and short-circuits on silence.
+
+        A solo worker inside a task answers nothing, and five sequential
+        broadcasts each waiting out the timeout is where the observed ~10.1s
+        per call came from. A reply here means "enumerate properly".
+        """
+        return {"worker@node": {"ok": "pong"}}
+
     def stats(self):
         return {
             "worker@node": {
