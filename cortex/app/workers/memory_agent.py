@@ -557,6 +557,16 @@ def deep_contradiction_pass() -> dict[str, Any]:
                     "timestamp": p.payload.get("timestamp", "") if p.payload else "",
                     "confirmed_count": p.payload.get("confirmed_count", 0) if p.payload else 0,
                     "contradicted_count": p.payload.get("contradicted_count", 0) if p.payload else 0,
+                    # Carried so the contested skip holds ACROSS passes: a pair
+                    # flagged yesterday must not be re-contested (and possibly
+                    # re-pointed at a different partner) before it is resolved.
+                    "contested": bool(p.payload.get("contested")) if p.payload else False,
+                    # Carried so a coexist VERDICT holds across passes: both
+                    # sides of a resolved pair stay active with unchanged texts
+                    # still inside the similarity band, so without this marker
+                    # the pass would re-contest the identical pair every night
+                    # and the verdict would be functionally meaningless.
+                    "coexist_with": p.payload.get("coexist_with") if p.payload else None,
                     "vector": p.vector,
                 })
             if next_offset is None or not points:
@@ -600,6 +610,24 @@ def deep_contradiction_pass() -> dict[str, Any]:
                 if other is None:
                     continue
 
+                # A memory superseded EARLIER IN THIS PASS is out of play for
+                # every later pair. The Qdrant write already happened but the
+                # in-memory dicts scrolled at the start don't know it — without
+                # this guard a chain A~B~C (B confirmed) superseded A via the
+                # (A,B) pair and then contested (A,C), producing a dispute
+                # whose other half is invisible to recall and to the inbox's
+                # active-only contested section.
+                if mem.get("_superseded_in_pass") or other.get("_superseded_in_pass"):
+                    continue
+
+                # A pair a human already resolved as "both true" (coexist
+                # verdict) is settled — re-flagging it would undo the verdict.
+                if (
+                    mem.get("coexist_with") == other["id"]
+                    or other.get("coexist_with") == mem["id"]
+                ):
+                    continue
+
                 mem_confidence = (1 + mem["confirmed_count"]) / (1 + mem["contradicted_count"])
                 other_confidence = (1 + other["confirmed_count"]) / (1 + other["contradicted_count"])
 
@@ -633,40 +661,89 @@ def deep_contradiction_pass() -> dict[str, Any]:
                     )
                     continue
 
-                # Supersede the stale memory
-                try:
-                    client.set_payload(
-                        collection_name=collection,
-                        payload={
-                            "status": "superseded",
-                            "superseded_by": keeper["id"],
-                        },
-                        points=[stale["id"]],
-                    )
-                except Exception:
-                    logger.warning("Failed to supersede memory %s", stale["id"])
-                    continue
-
-                # Create SUPERSEDES edge
-                try:
-                    driver = _get_neo4j_driver()
-                    with driver.session() as session:
-                        session.run(
-                            "MERGE (ref_new:MemoryRef {vector_id: $keeper_id}) "
-                            "MERGE (ref_old:MemoryRef {vector_id: $old_id}) "
-                            "MERGE (ref_new)-[:SUPERSEDES {reason: $reason, detected: 'agent', timestamp: datetime()}]->(ref_old)",
-                            keeper_id=keeper["id"],
-                            old_id=stale["id"],
-                            reason=f"Deep contradiction scan (similarity={point.score:.3f})",
+                # CONTESTED, not silently superseded (Knowledge Autopilot
+                # round 1). When NEITHER side carries human confirmation, the
+                # confidence ratio above is a guess dressed as a decision —
+                # both counts are usually 0/0 and the "winner" is just the
+                # newer timestamp. Superseding on that made the loser
+                # unrecallable (recall's filter is a hard status=active) with
+                # nobody ever seeing the conflict. Now: both sides stay
+                # active, both get contested flags, recall annotates the
+                # dispute, and the autopilot inbox surfaces the pair for a
+                # human verdict (resolved via /memory/contested/resolve).
+                # A confirmed KEEPER against an unconfirmed rival still
+                # supersedes exactly as before — human evidence is a real
+                # signal and acting on it is not guessing.
+                if (keeper.get("confirmed_count") or 0) > 0:
+                    try:
+                        client.set_payload(
+                            collection_name=collection,
+                            payload={
+                                "status": "superseded",
+                                "superseded_by": keeper["id"],
+                                # The digest counts supersessions by this stamp;
+                                # without it a nightly-pass supersession under a
+                                # months-old confirmed keeper is invisible to
+                                # "what changed this week".
+                                "superseded_at": datetime.now(timezone.utc).isoformat(),
+                            },
+                            points=[stale["id"]],
                         )
-                except Exception:
-                    logger.warning("Failed to create SUPERSEDES edge")
+                    except Exception:
+                        logger.warning("Failed to supersede memory %s", stale["id"])
+                        continue
+                    stale["_superseded_in_pass"] = True
+                    try:
+                        driver = _get_neo4j_driver()
+                        with driver.session() as session:
+                            session.run(
+                                "MERGE (ref_new:MemoryRef {vector_id: $keeper_id}) "
+                                "MERGE (ref_old:MemoryRef {vector_id: $old_id}) "
+                                "MERGE (ref_new)-[:SUPERSEDES {reason: $reason, detected: 'agent', timestamp: datetime()}]->(ref_old)",
+                                keeper_id=keeper["id"],
+                                old_id=stale["id"],
+                                reason=f"Deep contradiction scan (similarity={point.score:.3f})",
+                            )
+                    except Exception:
+                        logger.warning("Failed to create SUPERSEDES edge")
+                    contradiction_info = {
+                        "kept": keeper["id"],
+                        "superseded": stale["id"],
+                        "similarity": round(point.score, 4),
+                    }
+                else:
+                    # One conflict at a time per memory: a pair where either
+                    # side is already contested waits for the open dispute to
+                    # be resolved first.
+                    if mem.get("contested") or other.get("contested"):
+                        continue
+                    contested_at = datetime.now(timezone.utc).isoformat()
+                    try:
+                        for this_id, other_id in (
+                            (mem["id"], other["id"]),
+                            (other["id"], mem["id"]),
+                        ):
+                            client.set_payload(
+                                collection_name=collection,
+                                payload={
+                                    "contested": True,
+                                    "contested_with": other_id,
+                                    "contested_at": contested_at,
+                                },
+                                points=[this_id],
+                            )
+                    except Exception:
+                        logger.warning(
+                            "Failed to contest pair %s / %s", mem["id"], other["id"]
+                        )
+                        continue
+                    mem["contested"] = True
+                    other["contested"] = True
+                    contradiction_info = {
+                        "contested": [mem["id"], other["id"]],
+                        "similarity": round(point.score, 4),
+                    }
 
-                contradiction_info = {
-                    "kept": keeper["id"],
-                    "superseded": stale["id"],
-                    "similarity": round(point.score, 4),
-                }
                 contradictions.append(contradiction_info)
 
                 _fire_webhook_sync(

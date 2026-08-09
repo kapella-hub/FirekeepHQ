@@ -160,6 +160,16 @@ def _projected_metadata(payload: dict | None, point_id: str) -> dict[str, Any]:
         # lifecycle scorer. Absent -> neutral.
         "owm_efficacy": payload.get("owm_efficacy"),
         "owm_n": payload.get("owm_n"),
+        # Feedback counters (set_feedback): direct thumbs from the dashboard or
+        # the memory_feedback MCP tool, read by the RAG feedback multiplier.
+        # Absent -> neutral, and the scorer must see them or they are inert.
+        "feedback_useful_count": payload.get("feedback_useful_count", 0),
+        "feedback_not_useful_count": payload.get("feedback_not_useful_count", 0),
+        # Contested (workers/memory_agent.py deep_contradiction_pass): two
+        # unconfirmed memories genuinely disagree and neither was silently
+        # picked. Surfaced in recall annotations and the autopilot inbox.
+        "contested": payload.get("contested"),
+        "contested_with": payload.get("contested_with"),
     }
 
 
@@ -1081,21 +1091,46 @@ class VectorClient:
         comment: str | None,
         timestamp: str,
     ) -> None:
-        """Update a memory point's payload with feedback metadata.
+        """Accumulate feedback counters on a memory point.
 
-        Args:
-            memory_id: The Qdrant point ID to update.
-            useful: Whether the memory was useful.
-            comment: Optional feedback comment.
-            timestamp: ISO-format timestamp of the feedback.
+        Counters, not last-write-wins: the original implementation wrote three
+        flat fields (feedback_useful/comment/timestamp), so a second thumb
+        OVERWROTE the first and the ranking layer had nothing to aggregate —
+        the signal existed but was structurally unusable, and nothing consumed
+        it. The counters feed the recall-time feedback multiplier
+        (engine/rag.py, FEEDBACK_* settings) through the same Beta-shrink OWM
+        uses. Read-modify-write without a transaction: two racing thumbs can
+        lose one count, the same accepted "benign undercount" contract as the
+        recall access counters (workers/memory_agent.py flush passes).
+
+        Raises if the point does not exist — the caller decides whether a
+        missing id is an error (the REST route logs and continues).
         """
+        points = await self._client.retrieve(
+            collection_name=self._collection,
+            ids=[memory_id],
+            with_payload=True,
+            with_vectors=False,
+        )
+        if not points:
+            raise VectorStoreError(f"Memory {memory_id} not found")
+        payload = points[0].payload or {}
+        useful_count = int(payload.get("feedback_useful_count", 0) or 0)
+        not_useful_count = int(payload.get("feedback_not_useful_count", 0) or 0)
+        if useful:
+            useful_count += 1
+        else:
+            not_useful_count += 1
+        update: dict[str, Any] = {
+            "feedback_useful_count": useful_count,
+            "feedback_not_useful_count": not_useful_count,
+            "feedback_last_at": timestamp,
+        }
+        if comment:
+            update["feedback_last_comment"] = comment[:500]
         await self._client.set_payload(
             collection_name=self._collection,
-            payload={
-                "feedback_useful": useful,
-                "feedback_comment": comment,
-                "feedback_timestamp": timestamp,
-            },
+            payload=update,
             points=[memory_id],
         )
 
@@ -1156,6 +1191,12 @@ class VectorClient:
             payload["superseded_by"] = superseded_by
         if reason:
             payload["status_reason"] = reason
+        if status == "superseded":
+            # The autopilot digest counts supersessions by this stamp. Before
+            # it existed the digest could only guess "superseded by a memory
+            # written in the window", which misses every supersession under a
+            # pre-existing keeper (nightly deep pass, contested verdicts).
+            payload["superseded_at"] = datetime.now(timezone.utc).isoformat()
         if status == "archived":
             points = await self._client.retrieve(
                 self._collection, [memory_id], with_payload=True

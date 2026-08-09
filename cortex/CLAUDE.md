@@ -59,6 +59,10 @@ app/
 │   ├── observe.py       # ProcedureObserver — the recognise/advise stage called from AgentGatewayService.decide(); returns a PendingObservation whose commit() runs only once the decision settles on allow (I7). Holds NO vector client (I5)
 │   ├── harden.py        # Nightly Celery pass: Tier A frequency + gated Tier B efficacy → proposals, never mutations
 │   └── api.py           # GET /procedures, GET /procedures/{skill_id}/executions, POST /procedures/proposals/{id}/dismiss
+├── autopilot/         # Knowledge Autopilot round 1 (docs/guides/knowledge-autopilot.md) — READ-ONLY operator surface
+│   ├── inbox.py         # Section builders: draft/stale/rereview skills, LP proposals, contested pairs, eval DLQ
+│   ├── digest.py        # Windowed activity counts (learned/archived/superseded/dreamed/drafted/feedback/GC)
+│   └── api.py           # GET /autopilot/inbox + /autopilot/digest (admin); per-section fault isolation
 └── dreams/            # Automated memory consolidation + person profiles (round 1 — additive only)
     ├── select.py        # Pure candidate selection + partitioning + clustering + per-synthesis member sampling (centroid-nearest), no I/O
     ├── synthesize.py     # The one LLM call for cluster insights — via app/llm.py's chat() (native /api/chat where available, so think:false is actually honoured), JSON mode

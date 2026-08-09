@@ -53,6 +53,10 @@ result names a vault key, follow up with vault_retrieve.
 Write as you go: ctx_update after each meaningful step, memory_learn the moment a
 fix works (including what failed first), skill_create after a hard-won fix,
 ctx_complete_session when done. Secrets go to vault_store, never memory_learn.
+
+When recalled knowledge shaped what you DID — you acted on it and it held, or it
+sent you the wrong way — call memory_feedback(memory_ids=[...], useful=...) with a
+one-line comment. Report only knowledge you acted on, not everything you saw.
 """
 
 mcp = FastMCP("FirekeepCortex", instructions=_INSTRUCTIONS)
@@ -441,6 +445,59 @@ async def memory_learn(
             f"Stored memory in domain '{domain}': '{truncated}{suffix}'. "
             "Outcome and resolution are now available for future recall."
         )
+    except httpx.HTTPStatusError as exc:
+        return _format_error(exc)
+    except httpx.RequestError as exc:
+        return _connection_error(exc)
+
+
+@mcp.tool()
+async def memory_feedback(
+    memory_ids: list[str],
+    useful: bool,
+    comment: str | None = None,
+    session_id: str = "unknown",
+    agent_id: str = "unknown",
+) -> str:
+    """Report whether recalled memories actually helped (Knowledge Autopilot).
+
+    Call after USING recalled knowledge, not after merely seeing it: a thumb
+    means "I acted on this and it was right/wrong", and it directly nudges how
+    the memory ranks in future recalls (Beta-shrunk, so one thumb nudges — it
+    never yanks). This is the judgment channel session outcomes cannot carry:
+    a session can succeed while one recalled memory was misleading, and vice
+    versa. Works on memory ids AND skill ids returned by recall.
+
+    Args:
+        memory_ids: The ids exactly as recall returned them (1-50).
+        useful: True = this knowledge was correct and helped; False = it was
+            wrong, stale, or misleading.
+        comment: One line on WHY, when not-useful — it lands in the evidence
+            ledger a human reviews.
+        session_id, agent_id: For replay tracing.
+    """
+    try:
+        session_id, agent_id = _resolve_identity(session_id, agent_id)
+        client = await _get_client()
+        body: dict = {"memory_ids": memory_ids, "useful": useful}
+        if comment:
+            body["comment"] = comment
+        headers: dict[str, str] = {}
+        if session_id and session_id != "unknown":
+            headers["X-Session-Id"] = session_id
+        if agent_id and agent_id != "unknown":
+            headers["X-Agent-Id"] = agent_id
+        resp = await client.post("/memory/feedback", json=body, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+        updated = data.get("updated", 0)
+        verdict = "useful" if useful else "not useful"
+        if updated < len(memory_ids):
+            return (
+                f"Recorded '{verdict}' on {updated} of {len(memory_ids)} "
+                f"memories — the rest were not found (stale ids?)."
+            )
+        return f"Recorded '{verdict}' feedback on {updated} memorie(s)."
     except httpx.HTTPStatusError as exc:
         return _format_error(exc)
     except httpx.RequestError as exc:

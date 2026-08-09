@@ -410,6 +410,25 @@ def _register_feature_routers(app: FastAPI) -> None:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Procedures router not registered: %s", exc)
 
+    # Knowledge Autopilot round 1 (docs/guides/knowledge-autopilot.md): the
+    # operator's exception inbox + digest. Unconditional — it is a read-model
+    # over stores that all exist on every deployment; sections degrade
+    # individually inside the router. The replay Redis is a SEPARATE closure:
+    # the eval DLQ lives only on app.state.replay_redis, and handing the main
+    # client here would make that section silently always-empty.
+    try:
+        from app.autopilot.api import create_autopilot_router
+
+        app.include_router(create_autopilot_router(
+            get_redis=lambda: app.state.redis_client,
+            get_replay_redis=lambda: app.state.replay_redis,
+            get_vector=lambda: app.state.vector_client,
+            settings_fn=get_settings,
+        ))
+        logger.info("Autopilot router registered at /autopilot")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Autopilot router not registered: %s", exc)
+
     # Audit endpoints (/audit/*)
     try:
         from app.audit import get_memory_audit, get_memory_access_summary

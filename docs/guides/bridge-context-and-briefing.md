@@ -33,3 +33,35 @@ The seventh fail-safe earns its place in `residency.py` rather than at the call 
 **The client may never supply `since`.** Passing it is an assertion about what is still in the model's context, which a separate process cannot observe — so no hook, shim, or sidecar sends it. Only the agent can, which means the instruction has to reach the runtime's instruction layer, not just the tool docstring (the `decision_board` lesson): `adapters/base.py`'s rendered firekeep instruction block carries the "pass `since` ONLY if the earlier shadow is still visible in your context; if unsure, omit it" line alongside the tool's own `Args:` documentation.
 
 **Measured before shipping:** 39.8% aggregate saving, 50.7% on sessions ≥1000 tokens, across 26 real sessions with a real tokenizer (`tiktoken` cl100k_base, not `chars/4`), simulating a cursor 75% of the way through each session. 80% of the saving comes from filtering decision/progress/file entries and only 20% from omitting an unchanged plan; the unfilterable scratchpad is just 14.1% of all shadow tokens, which is what retired the concern that it would dominate and erase the gain. A first pass measured **0.4%** and would have cancelled the phase — a bug in the measurement, not the design (it split sections on every `### ` line, so agent-authored markdown headings inside scratch values were mis-counted as unfilterable sections). Full write-up and caveats in `docs/HISTORY-NOTES.md`. Guards: `bridge/tests/test_residency.py`, `test_shadow_delta.py`, `test_shadow_omission.py`.
+
+## Session Reaper (Bridge, Knowledge Autopilot round 1 — `bridge/app/reaper.py`)
+
+A session whose agent died or walked away never calls `ctx_complete_session`,
+so it sat `status="active"` forever: no TTL, never distilled, never evaluated —
+it did not fail, it *vanished*. Since OWM's load-bearing failure signal is
+Bridge's `abandoned` status, the sessions most likely to have gone badly were
+exactly the ones that never counted (the outcome-degeneracy finding in
+`memory-and-recall.md`).
+
+The reaper is a second lifespan worker (same loop shape as the distiller):
+every `NB_REAPER_INTERVAL_SECONDS` (3600) it scans the `nb:sessions` index —
+which is scored by *last activity*, so a long session still being written to is
+never a candidate — for entries idle beyond `NB_REAPER_IDLE_HOURS` (72;
+conservative because reaping is not usefully reversible), capped at
+`NB_REAPER_MAX_PER_PASS` (500) per pass so the first pass on an old deployment
+drains its backlog oldest-first across hourly passes instead of firing an eval
+POST per session in one burst, and abandons each
+`active` one through `SessionManager.abandon_session` (owning pointer cleanup,
+TTL and the `session.abandoned` event) followed by the shared `after_abandon`
+helper (the `session_end` event with `outcome="partial"` — payload gains
+`reaped: true` on this path only — plus the eval trigger). Dangling index
+entries are self-healed; `paused`/`completed`/`abandoned` are skipped, each
+already carrying somebody's decision. Per-session fault isolation: one racing
+session never strands the sweep. `NB_REAPER_ENABLED=false` no-ops per pass;
+the loop registration is unconditional, the stack's standard gating idiom.
+
+Deliberate tradeoff, documented where it bites: abandonment does not distill,
+so a reaped session's content is discarded when its TTL lapses. The outcome
+signal is the point of this round; recovering knowledge from failed sessions
+is future work. Guards: `bridge/tests/test_reaper.py` (19 tests, including
+the byte-identical human-abandon payload and the per-pass cap).

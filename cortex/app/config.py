@@ -297,6 +297,18 @@ class Settings(BaseSettings):
     OWM_SCHEDULE_HOURS: int = 24      # Celery beat cadence for the scoring pass
     OWM_AGENT_CAP: int = 5            # max observations one agent contributes per memory
 
+    # Feedback-weighted recall (Knowledge Autopilot round 1): thumbs-up/down —
+    # from the dashboard or the memory_feedback MCP tool — accumulates as
+    # useful/not-useful counters on the memory and nudges recall ranking with
+    # the same Beta-shrunk, clamped multiplier shape as OWM. This is the DIRECT
+    # human/agent judgment channel that OWM's session-outcome join cannot see;
+    # a smaller weight than OWM because a single reader's thumb is noisier
+    # evidence than a session outcome. Neutral-by-construction at zero
+    # feedback: unrated memories rank bit-identically to pre-feedback.
+    FEEDBACK_ENABLED: bool = True
+    FEEDBACK_WEIGHT: float = 0.10     # max +/- multiplier feedback can apply
+    FEEDBACK_PRIOR_N: int = 4         # pseudo-observations pulling toward neutral 0.5
+
     # Dreaming (app/dreams/) — automated consolidation + person profiles.
     # Opt-in: round 1 is additive (nothing is archived).
     DREAM_ENABLED: bool = False

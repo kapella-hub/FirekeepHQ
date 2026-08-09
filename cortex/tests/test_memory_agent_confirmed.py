@@ -441,20 +441,27 @@ class TestContradictionProtectsConfirmed:
         assert result["contradictions_found"] == 1
         assert result["details"][0]["kept"] == "human-confirmed"
         assert result["details"][0]["superseded"] == "stale"
-        assert client.payload_writes == [
-            ({"status": "superseded", "superseded_by": "human-confirmed"}, ["stale"]),
-        ]
+        assert len(client.payload_writes) == 1
+        written, points = client.payload_writes[0]
+        assert points == ["stale"]
+        assert written["status"] == "superseded"
+        assert written["superseded_by"] == "human-confirmed"
+        assert written["superseded_at"]  # digest counts by this stamp
 
     @patch("app.workers.memory_agent._fire_webhook_sync")
     @patch("app.workers.memory_agent._has_supersedes_link", return_value=False)
     @patch("app.workers.memory_agent._get_neo4j_driver")
     @patch("app.workers.memory_agent._get_qdrant_client")
     @patch("app.workers.memory_agent.get_settings")
-    def test_unconfirmed_contradictions_are_unaffected(
+    def test_unconfirmed_contradictions_are_contested_not_superseded(
         self, mock_settings, mock_qdrant, mock_neo4j, mock_link, mock_webhook
     ):
-        """Neither side confirmed: the pass behaves exactly as before, older
-        loses on the equal-confidence tiebreak."""
+        """Neither side confirmed: the pass must NOT guess a winner (Knowledge
+        Autopilot round 1). It used to supersede on the equal-confidence
+        tiebreak — "older loses", which at 0/0 counts on both sides was the
+        timestamp dressed as a decision, and the loser dropped out of recall
+        entirely. Now both sides stay active with contested flags and the
+        dispute goes to the inbox for a human verdict."""
         mock_settings.return_value = _settings()
         client = _FilteringQdrant([
             _mem("older", "the older claim", VEC_A,
@@ -468,5 +475,14 @@ class TestContradictionProtectsConfirmed:
         result = deep_contradiction_pass()
 
         assert result["contradictions_found"] == 1
-        assert result["details"][0]["superseded"] == "older"
-        assert client.superseded_ids == {"older"}
+        assert set(result["details"][0]["contested"]) == {"older", "newer"}
+        assert "superseded" not in result["details"][0]
+        assert client.superseded_ids == set()
+        contested_writes = {
+            ids[0]: payload
+            for payload, ids in client.payload_writes
+            if payload.get("contested")
+        }
+        assert set(contested_writes) == {"older", "newer"}
+        assert contested_writes["older"]["contested_with"] == "newer"
+        assert contested_writes["newer"]["contested_with"] == "older"

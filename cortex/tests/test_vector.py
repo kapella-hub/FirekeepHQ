@@ -594,9 +594,28 @@ class TestBatchEmbedLRU:
 
 
 class TestSetFeedback:
+    """set_feedback ACCUMULATES counters (Knowledge Autopilot round 1).
+
+    The original wrote three flat last-write-wins fields, so a second thumb
+    overwrote the first — the signal existed but nothing could aggregate it and
+    nothing consumed it. These tests pin the counter contract the recall-time
+    feedback multiplier depends on. Behavior-level coverage (multiplier math,
+    endpoint flow) lives in tests/test_feedback_and_contested.py.
+    """
+
+    @staticmethod
+    def _existing_point(payload):
+        point = MagicMock()
+        point.payload = payload
+        return point
+
     @pytest.mark.asyncio
-    async def test_set_feedback_calls_qdrant(self, vector_client, mock_qdrant_client):
-        """set_feedback should call set_payload on the Qdrant client."""
+    async def test_set_feedback_accumulates_counters(self, vector_client, mock_qdrant_client):
+        mock_qdrant_client.retrieve = AsyncMock(
+            return_value=[self._existing_point(
+                {"feedback_useful_count": 1, "feedback_not_useful_count": 2}
+            )]
+        )
         mock_qdrant_client.set_payload = AsyncMock()
 
         await vector_client.set_feedback(
@@ -606,19 +625,24 @@ class TestSetFeedback:
             timestamp="2026-03-05T12:00:00+00:00",
         )
 
-        mock_qdrant_client.set_payload.assert_called_once_with(
-            collection_name="test_collection",
-            payload={
-                "feedback_useful": True,
-                "feedback_comment": "Very helpful",
-                "feedback_timestamp": "2026-03-05T12:00:00+00:00",
-            },
-            points=["point-123"],
-        )
+        call_kwargs = mock_qdrant_client.set_payload.call_args.kwargs
+        assert call_kwargs["collection_name"] == "test_collection"
+        assert call_kwargs["points"] == ["point-123"]
+        payload = call_kwargs["payload"]
+        assert payload["feedback_useful_count"] == 2
+        assert payload["feedback_not_useful_count"] == 2
+        assert payload["feedback_last_at"] == "2026-03-05T12:00:00+00:00"
+        assert payload["feedback_last_comment"] == "Very helpful"
+        # The retired last-write-wins fields must not come back.
+        assert "feedback_useful" not in payload
+        assert "feedback_comment" not in payload
 
     @pytest.mark.asyncio
-    async def test_set_feedback_with_no_comment(self, vector_client, mock_qdrant_client):
-        """set_feedback with comment=None should store None in payload."""
+    async def test_set_feedback_with_no_comment_omits_the_field(self, vector_client, mock_qdrant_client):
+        """comment=None must not overwrite an earlier comment with None."""
+        mock_qdrant_client.retrieve = AsyncMock(
+            return_value=[self._existing_point({})]
+        )
         mock_qdrant_client.set_payload = AsyncMock()
 
         await vector_client.set_feedback(
@@ -628,13 +652,17 @@ class TestSetFeedback:
             timestamp="2026-03-05T12:00:00+00:00",
         )
 
-        call_kwargs = mock_qdrant_client.set_payload.call_args.kwargs
-        assert call_kwargs["payload"]["feedback_useful"] is False
-        assert call_kwargs["payload"]["feedback_comment"] is None
+        payload = mock_qdrant_client.set_payload.call_args.kwargs["payload"]
+        assert payload["feedback_not_useful_count"] == 1
+        assert payload["feedback_useful_count"] == 0
+        assert "feedback_last_comment" not in payload
 
     @pytest.mark.asyncio
     async def test_set_feedback_propagates_errors(self, vector_client, mock_qdrant_client):
         """Errors from Qdrant should propagate to the caller."""
+        mock_qdrant_client.retrieve = AsyncMock(
+            return_value=[self._existing_point({})]
+        )
         mock_qdrant_client.set_payload = AsyncMock(
             side_effect=RuntimeError("Qdrant unavailable")
         )

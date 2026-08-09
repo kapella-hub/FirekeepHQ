@@ -471,12 +471,14 @@ class TestDeepContradiction:
         assert detail["superseded"] == "mem-1"
         assert detail["similarity"] == 0.9
 
-        # Verify stale memory superseded in Qdrant
-        client.set_payload.assert_called_with(
-            collection_name="firekeep_memories",
-            payload={"status": "superseded", "superseded_by": "mem-2"},
-            points=["mem-1"],
-        )
+        # Verify stale memory superseded in Qdrant, stamped for the digest
+        supersede_call = client.set_payload.call_args
+        assert supersede_call.kwargs["collection_name"] == "firekeep_memories"
+        assert supersede_call.kwargs["points"] == ["mem-1"]
+        written = supersede_call.kwargs["payload"]
+        assert written["status"] == "superseded"
+        assert written["superseded_by"] == "mem-2"
+        assert written["superseded_at"]  # digest counts by this stamp
 
         # Verify webhook
         mock_webhook.assert_called_once()
@@ -529,6 +531,206 @@ class TestDeepContradiction:
         assert query_filter.must_not, "similarity query must exclude corpus"
         assert query_filter.must_not[0].key == "source"
         assert query_filter.must_not[0].match.value == "corpus"
+
+    @patch("app.workers.memory_agent._fire_webhook_sync")
+    @patch("app.workers.memory_agent._has_supersedes_link", return_value=False)
+    @patch("app.workers.memory_agent._get_neo4j_driver")
+    @patch("app.workers.memory_agent._get_qdrant_client")
+    @patch("app.workers.memory_agent.get_settings")
+    def test_unconfirmed_pair_is_contested_not_superseded(
+        self, mock_settings, mock_qdrant, mock_neo4j, mock_link, mock_webhook
+    ):
+        """Knowledge Autopilot: with NO human evidence on either side, the pass
+        must not guess a winner. The pre-Autopilot behavior superseded the
+        lower-confidence side — which, at 0/0 counts on both, meant "the newer
+        timestamp wins" dressed up as a decision, and the loser became
+        unrecallable (recall filters on status=active). Now both sides stay
+        active and both carry contested flags for a human verdict."""
+        settings = _make_settings()
+        mock_settings.return_value = settings
+
+        client = MagicMock()
+        mock_qdrant.return_value = client
+
+        p1 = _make_point("mem-1", {
+            "text": "Deploy on Fridays is fine", "status": "active", "domain": "workflow",
+            "timestamp": "2025-01-01T00:00:00Z",
+            "confirmed_count": 0, "contradicted_count": 0,
+        }, [0.5, 0.5, 0.0])
+        p2 = _make_point("mem-2", {
+            "text": "Never deploy on Fridays", "status": "active", "domain": "workflow",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "confirmed_count": 0, "contradicted_count": 0,
+        }, [0.5, 0.5, 0.01])
+        client.scroll.return_value = ([p1, p2], None)
+
+        sp2 = _make_point("mem-2", score=0.90)
+        sp1 = _make_point("mem-1", score=0.90)
+        client.query_points.side_effect = [
+            _make_query_result([sp2]),
+            _make_query_result([sp1]),
+        ]
+
+        result = deep_contradiction_pass()
+
+        assert result["status"] == "ok"
+        assert result["contradictions_found"] == 1
+        detail = result["details"][0]
+        assert set(detail["contested"]) == {"mem-1", "mem-2"}
+        assert "superseded" not in detail
+
+        # Both sides flagged, NEITHER superseded — status is never written.
+        payloads = [c.kwargs["payload"] for c in client.set_payload.call_args_list]
+        assert len(payloads) == 2
+        for p in payloads:
+            assert p["contested"] is True
+            assert p["contested_with"] in {"mem-1", "mem-2"}
+            assert "status" not in p
+        flagged = {c.kwargs["points"][0] for c in client.set_payload.call_args_list}
+        assert flagged == {"mem-1", "mem-2"}
+
+    @patch("app.workers.memory_agent._fire_webhook_sync")
+    @patch("app.workers.memory_agent._has_supersedes_link", return_value=False)
+    @patch("app.workers.memory_agent._get_neo4j_driver")
+    @patch("app.workers.memory_agent._get_qdrant_client")
+    @patch("app.workers.memory_agent.get_settings")
+    def test_already_contested_pair_is_left_alone(
+        self, mock_settings, mock_qdrant, mock_neo4j, mock_link, mock_webhook
+    ):
+        """A pair flagged in an earlier pass must not be re-contested (the
+        flags could silently re-point contested_with at a different partner)
+        while its dispute is still open."""
+        settings = _make_settings()
+        mock_settings.return_value = settings
+
+        client = MagicMock()
+        mock_qdrant.return_value = client
+
+        p1 = _make_point("mem-1", {
+            "text": "Deploy on Fridays is fine", "status": "active", "domain": "workflow",
+            "timestamp": "2025-01-01T00:00:00Z",
+            "confirmed_count": 0, "contradicted_count": 0,
+            "contested": True, "contested_with": "mem-2",
+        }, [0.5, 0.5, 0.0])
+        p2 = _make_point("mem-2", {
+            "text": "Never deploy on Fridays", "status": "active", "domain": "workflow",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "confirmed_count": 0, "contradicted_count": 0,
+            "contested": True, "contested_with": "mem-1",
+        }, [0.5, 0.5, 0.01])
+        client.scroll.return_value = ([p1, p2], None)
+
+        sp2 = _make_point("mem-2", score=0.90)
+        sp1 = _make_point("mem-1", score=0.90)
+        client.query_points.side_effect = [
+            _make_query_result([sp2]),
+            _make_query_result([sp1]),
+        ]
+
+        result = deep_contradiction_pass()
+
+        assert result["contradictions_found"] == 0
+        client.set_payload.assert_not_called()
+
+    @patch("app.workers.memory_agent._fire_webhook_sync")
+    @patch("app.workers.memory_agent._has_supersedes_link", return_value=False)
+    @patch("app.workers.memory_agent._get_neo4j_driver")
+    @patch("app.workers.memory_agent._get_qdrant_client")
+    @patch("app.workers.memory_agent.get_settings")
+    def test_superseded_in_pass_is_out_of_play_for_later_pairs(
+        self, mock_settings, mock_qdrant, mock_neo4j, mock_link, mock_webhook
+    ):
+        """Chain A~B~C with B confirmed: pair (A,B) supersedes A, so the later
+        pair (A,C) must be SKIPPED — the Qdrant write already happened but the
+        in-memory dicts scrolled at the start don't know it, and without the
+        guard the pass contested (A,C), producing a dispute whose other half
+        is superseded and therefore invisible to recall and to the inbox's
+        active-only contested section."""
+        settings = _make_settings()
+        mock_settings.return_value = settings
+
+        client = MagicMock()
+        mock_qdrant.return_value = client
+
+        pa = _make_point("mem-a", {
+            "text": "Deploy from main", "status": "active", "domain": "workflow",
+            "timestamp": "2025-01-01T00:00:00Z",
+            "confirmed_count": 0, "contradicted_count": 0,
+        }, [0.5, 0.5, 0.0])
+        pb = _make_point("mem-b", {
+            "text": "Deploy from release branches", "status": "active",
+            "domain": "workflow", "timestamp": "2026-01-01T00:00:00Z",
+            "confirmed_count": 1, "contradicted_count": 0,
+        }, [0.5, 0.5, 0.01])
+        pc = _make_point("mem-c", {
+            "text": "Deploy from tags only", "status": "active",
+            "domain": "workflow", "timestamp": "2026-02-01T00:00:00Z",
+            "confirmed_count": 0, "contradicted_count": 0,
+        }, [0.5, 0.5, 0.02])
+        client.scroll.return_value = ([pa, pb, pc], None)
+
+        client.query_points.side_effect = [
+            _make_query_result([_make_point("mem-b", score=0.90)]),  # for A
+            _make_query_result([_make_point("mem-a", score=0.90)]),  # for B (dup pair)
+            _make_query_result([_make_point("mem-a", score=0.90)]),  # for C
+        ]
+
+        mock_session = MagicMock()
+        mock_neo4j.return_value.session.return_value.__enter__ = MagicMock(return_value=mock_session)
+        mock_neo4j.return_value.session.return_value.__exit__ = MagicMock(return_value=False)
+
+        result = deep_contradiction_pass()
+
+        # Exactly ONE action: the (A,B) supersede. (A,C) is skipped, never
+        # contested.
+        assert result["contradictions_found"] == 1
+        assert result["details"][0]["superseded"] == "mem-a"
+        payloads = [c.kwargs["payload"] for c in client.set_payload.call_args_list]
+        assert len(payloads) == 1
+        assert not any(p.get("contested") for p in payloads)
+
+    @patch("app.workers.memory_agent._fire_webhook_sync")
+    @patch("app.workers.memory_agent._has_supersedes_link", return_value=False)
+    @patch("app.workers.memory_agent._get_neo4j_driver")
+    @patch("app.workers.memory_agent._get_qdrant_client")
+    @patch("app.workers.memory_agent.get_settings")
+    def test_coexist_verdict_is_not_recontested(
+        self, mock_settings, mock_qdrant, mock_neo4j, mock_link, mock_webhook
+    ):
+        """A pair a human resolved as 'both true' carries coexist_with markers,
+        and the pass must honor them: both memories stay active with unchanged
+        texts still inside the similarity band, so without this check the
+        identical pair would be re-contested every night and the coexist
+        verdict would be functionally meaningless."""
+        settings = _make_settings()
+        mock_settings.return_value = settings
+
+        client = MagicMock()
+        mock_qdrant.return_value = client
+
+        p1 = _make_point("mem-1", {
+            "text": "Use spaces in Python", "status": "active", "domain": "style",
+            "timestamp": "2025-01-01T00:00:00Z",
+            "confirmed_count": 0, "contradicted_count": 0,
+            "coexist_with": "mem-2",
+        }, [0.5, 0.5, 0.0])
+        p2 = _make_point("mem-2", {
+            "text": "Use tabs in Go", "status": "active", "domain": "style",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "confirmed_count": 0, "contradicted_count": 0,
+            "coexist_with": "mem-1",
+        }, [0.5, 0.5, 0.01])
+        client.scroll.return_value = ([p1, p2], None)
+
+        client.query_points.side_effect = [
+            _make_query_result([_make_point("mem-2", score=0.90)]),
+            _make_query_result([_make_point("mem-1", score=0.90)]),
+        ]
+
+        result = deep_contradiction_pass()
+
+        assert result["contradictions_found"] == 0
+        client.set_payload.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

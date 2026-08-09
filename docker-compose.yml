@@ -340,6 +340,10 @@ services:
       # Outcome-Weighted Memory (recall ranking term)
       OWM_ENABLED: ${OWM_ENABLED:-true}
       OWM_WEIGHT: ${OWM_WEIGHT:-0.15}
+      # Feedback-weighted recall (Knowledge Autopilot round 1)
+      FEEDBACK_ENABLED: ${FEEDBACK_ENABLED:-true}
+      FEEDBACK_WEIGHT: ${FEEDBACK_WEIGHT:-0.10}
+      FEEDBACK_PRIOR_N: ${FEEDBACK_PRIOR_N:-4}
       # SP0 memory reliability
       EMBED_RETRY_ATTEMPTS: ${EMBED_RETRY_ATTEMPTS:-3}
       BACKFILL_MAX_ATTEMPTS: ${BACKFILL_MAX_ATTEMPTS:-10}

@@ -27,6 +27,27 @@ class Settings(BaseSettings):
     PROACTIVE_RECALL_MIN_SCORE: float = 0.35  # raw-cosine scale, matches Cortex RECALL_SCORE_FLOOR
     PROACTIVE_RECALL_CATEGORIES: str = "plan,progress"
 
+    # Crashed-session reaper (app/reaper.py). A session whose agent died without
+    # calling ctx_complete_session sits status="active" forever — no TTL, never
+    # distilled, never evaluated. OWM treats a Bridge "abandoned" session as an
+    # outright failure signal, so those walked-away sessions are precisely the
+    # missing outcome truth; today they vanish from scoring instead of counting
+    # against it. Reaping them is what makes the failure signal exist.
+    REAPER_ENABLED: bool = True
+    # Three days of silence on an "active" session is a crash or a walk-away,
+    # not a lunch break. Conservative on purpose: reaping is not reversible in
+    # any useful sense (an abandoned session is never distilled), so the cost of
+    # waiting too long is a delayed signal while the cost of reaping too early
+    # is discarding live work.
+    REAPER_IDLE_HOURS: int = 72
+    REAPER_INTERVAL_SECONDS: int = 3600
+    # Per-pass ceiling. The first pass after enabling on an old deployment
+    # would otherwise drain months of backlog in one sweep — several Redis
+    # round trips plus a fire-and-forget eval POST per session, all in one
+    # burst. Capped, the hourly loop drains the same backlog at a bounded
+    # rate; at steady state a pass never comes near the cap.
+    REAPER_MAX_PER_PASS: int = 500
+
     # Component size limits
     PLAN_MAX_BYTES: int = 10240  # 10 KB
     DECISIONS_MAX: int = 50

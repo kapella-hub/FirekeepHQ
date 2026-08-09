@@ -37,18 +37,27 @@ from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def _lifespan(server):
-    """Start the distillation worker for the lifetime of the server (SP0 D1)."""
+    """Start the background workers for the lifetime of the server.
+
+    Two of them: the distillation worker (SP0 D1) and the crashed-session reaper
+    (see app/reaper.py — a session whose agent died never reaches a terminal
+    state on its own, so it is never scored). The reaper is registered
+    unconditionally and no-ops per pass when NB_REAPER_ENABLED is false.
+    """
     from app.distill_worker import close_distiller, distill_worker_loop
+    from app.reaper import reaper_loop
 
     worker_task = asyncio.create_task(distill_worker_loop())
+    reaper_task = asyncio.create_task(reaper_loop())
     try:
         yield {}
     finally:
-        worker_task.cancel()
-        try:
-            await worker_task
-        except asyncio.CancelledError:
-            pass
+        for task in (worker_task, reaper_task):
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
         await close_distiller()
 
 
@@ -234,6 +243,34 @@ async def _trigger_skill_evaluate(api_url: str, session_id: str, skill_worthy: b
     except Exception as exc:
         logger.debug("Skill evaluate trigger failed for session %s: %s", session_id, exc)
         return False
+
+
+async def after_abandon(session_id: str, agent_id: str, *, reaped: bool = False) -> None:
+    """Post-abandon effects shared by ctx_abandon_session and the reaper.
+
+    SessionManager.abandon_session owns the Redis invariants (status, pointer
+    cleanup, TTL, the `session.abandoned` replay event). These two effects sit
+    OUTSIDE it and are what make an abandonment visible to scoring: the
+    `session_end` event carrying outcome="partial", and the eval trigger that
+    turns it into a computed eval. A reaped session that skipped either one
+    would be abandoned in Redis and invisible to OWM — which is the whole
+    defect the reaper exists to close.
+
+    It lives here rather than in reaper.py so there is exactly one definition:
+    a copy-pasted second version is how the two paths silently diverge, and the
+    divergence would only ever show up as a gap in scoring nobody is watching.
+
+    `reaped` marks the event as the reaper's work rather than a human's explicit
+    ctx_abandon_session. The flag is added only on the reaper path, leaving the
+    already-shipped human-abandon payload byte-identical.
+    """
+    payload: dict = {"outcome": "abandoned", "distilled": False}
+    if reaped:
+        payload["reaped"] = True
+    await _replay_emit("session_end", session_id, agent_id, payload, outcome="partial")
+
+    # Detached fire-and-forget (SP0 D5) — the caller must not wait on Cortex.
+    _spawn_background(_trigger_eval(settings.FIREKEEP_API_URL, session_id))
 
 
 @mcp.tool()
@@ -523,17 +560,11 @@ async def ctx_abandon_session(session_id: str | None = None, agent_id: str = "de
     except ValueError as e:
         return {"error": str(e)}
 
-    # Replay: trace session abandoned
+    # Replay: trace session abandoned, then auto-eval. Shared with the reaper —
+    # see after_abandon's docstring for why these two effects are not optional.
     sid = result.get("session_id", session_id or "")
     if sid:
-        await _replay_emit(
-            "session_end", sid, agent_id,
-            {"outcome": "abandoned", "distilled": False},
-            outcome="partial",
-        )
-
-        # Auto-eval on abandon: detached fire-and-forget (SP0 D5)
-        _spawn_background(_trigger_eval(settings.FIREKEEP_API_URL, sid))
+        await after_abandon(sid, agent_id)
 
     return result
 

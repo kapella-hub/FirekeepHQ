@@ -120,6 +120,7 @@ reference material does not need to be.
 | The client kit — install, hooks, night shift, personal mode | [`docs/guides/client-kit.md`](docs/guides/client-kit.md) |
 | Memory, recall, corpus and vault | [`docs/guides/memory-and-recall.md`](docs/guides/memory-and-recall.md) |
 | Skills, docs→skills and collectors | [`docs/guides/knowledge-and-skills.md`](docs/guides/knowledge-and-skills.md) |
+| Knowledge Autopilot — feedback, reaper, contested, inbox | [`docs/guides/knowledge-autopilot.md`](docs/guides/knowledge-autopilot.md) |
 | LLM endpoint selection | [`docs/guides/llm-endpoint-selection.md`](docs/guides/llm-endpoint-selection.md) |
 | Dreaming — consolidation and person profiles | [`docs/guides/dreaming.md`](docs/guides/dreaming.md) |
 | Living Procedures — observed runbooks | [`docs/guides/living-procedures.md`](docs/guides/living-procedures.md) |

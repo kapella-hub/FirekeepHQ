@@ -21,6 +21,7 @@ from app.config import Settings, get_settings
 from app.db.graph import Neo4jClient
 from app.db.vector import VectorClient
 from app.models import ContextQuery, MemorySource, RecallResponse
+from app.owm import compute_efficacy
 
 logger = logging.getLogger(__name__)
 
@@ -1170,13 +1171,39 @@ class RAGEngine:
                 owm_mult = 1.0 + w * 2.0 * (float(eff) - 0.5)
                 owm_mult = min(max(owm_mult, 1.0 - w), 1.0 + w)
 
-            item["score"] = item["score"] * multiplier * confidence * owm_mult
+            # Feedback (set_feedback counters): direct thumbs, Beta-shrunk
+            # through the same compute_efficacy OWM uses so a single thumb
+            # nudges rather than yanks — compute_efficacy(1, 1, prior=4) is
+            # 0.6, not 1.0. Zero feedback is exactly 1.0 (0.5 -> neutral), so
+            # unrated memories rank bit-identically to pre-feedback. Smaller
+            # weight than OWM on purpose: one reader's thumb is noisier
+            # evidence than a session outcome.
+            fb_mult = 1.0
+            if self._settings.FEEDBACK_ENABLED:
+                fb_useful = int(metadata.get("feedback_useful_count") or 0)
+                fb_not = int(metadata.get("feedback_not_useful_count") or 0)
+                fb_n = fb_useful + fb_not
+                if fb_n > 0:
+                    fb_eff = compute_efficacy(
+                        fb_useful, fb_n, self._settings.FEEDBACK_PRIOR_N
+                    )
+                    fw = self._settings.FEEDBACK_WEIGHT
+                    fb_mult = 1.0 + fw * 2.0 * (fb_eff - 0.5)
+                    fb_mult = min(max(fb_mult, 1.0 - fw), 1.0 + fw)
+
+            item["score"] = item["score"] * multiplier * confidence * owm_mult * fb_mult
 
             # Annotate for context block
             if status != "active":
                 item["_lifecycle_status"] = status
             if metadata.get("superseded_by"):
                 item["_superseded_by"] = metadata["superseded_by"]
+            # Contested: two unconfirmed memories genuinely disagree and the
+            # deep-contradiction pass declined to guess a winner. No score
+            # penalty in round 1 — the agent should SEE the dispute, not have
+            # it silently down-ranked out of view.
+            if metadata.get("contested") and metadata.get("contested_with"):
+                item["_contested_with"] = metadata["contested_with"]
 
             result.append(item)
 
@@ -1360,6 +1387,12 @@ class RAGEngine:
             superseded_by = entry.get("_superseded_by")
             if superseded_by:
                 status_label += f" (superseded by {superseded_by})"
+            # A contested memory is served at full strength but the reader is
+            # told another active memory disagrees — the agent weighs the
+            # dispute instead of one side being silently chosen for it.
+            contested_with = entry.get("_contested_with")
+            if contested_with:
+                status_label += f" [CONTESTED by {contested_with}]"
 
             provenance = _provenance_suffix(md)
 

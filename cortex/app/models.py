@@ -268,6 +268,18 @@ class FeedbackResponse(BaseModel):
     updated: int
 
 
+class ContestedResolveRequest(BaseModel):
+    """Human verdict on a contested memory pair (Knowledge Autopilot).
+
+    'supersede' = the winner is right (and gets confirmed — a verdict IS human
+    evidence); 'coexist' = both are true in their own contexts, clear the flags.
+    """
+
+    winner_id: str = Field(..., min_length=1, max_length=128)
+    loser_id: str = Field(..., min_length=1, max_length=128)
+    action: Literal["supersede", "coexist"] = "supersede"
+
+
 # ---------------------------------------------------------------------------
 # Stats & Transfer Models
 # ---------------------------------------------------------------------------

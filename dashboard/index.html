@@ -711,6 +711,7 @@ button.btn-outline:hover { border-color: var(--accent); color: var(--accent); ba
   <symbol id="i-memory" viewBox="0 0 24 24"><ellipse cx="12" cy="5.8" rx="7.4" ry="2.9"/><path d="M4.6 5.8v6c0 1.6 3.3 2.9 7.4 2.9s7.4-1.3 7.4-2.9v-6"/><path d="M4.6 11.8v6c0 1.6 3.3 2.9 7.4 2.9s7.4-1.3 7.4-2.9v-6"/></symbol>
   <symbol id="i-skills" viewBox="0 0 24 24"><path d="M12 3.2l2.65 5.37 5.93.86-4.29 4.18 1.01 5.9L12 16.71l-5.3 2.79 1.01-5.9-4.29-4.18 5.93-.86z"/></symbol>
   <symbol id="i-knowledge" viewBox="0 0 24 24"><path d="M5 4.6A1.6 1.6 0 0 1 6.6 3H19.2v14.6H6.6A1.6 1.6 0 0 0 5 19.2z"/><path d="M5 19.2a1.6 1.6 0 0 0 1.6 1.6h12.6"/><path d="M9 7.2h6.4"/></symbol>
+  <symbol id="i-autopilot" viewBox="0 0 24 24"><path d="M3.6 13.4L6.2 4.9A1.8 1.8 0 0 1 7.9 3.7h8.2a1.8 1.8 0 0 1 1.7 1.2l2.6 8.5"/><path d="M3.6 13.4h4.3l1.2 2.6h5.8l1.2-2.6h4.3v4.7a1.8 1.8 0 0 1-1.8 1.8H5.4a1.8 1.8 0 0 1-1.8-1.8z"/></symbol>
   <symbol id="i-patterns" viewBox="0 0 24 24"><circle cx="6" cy="6.4" r="2.2"/><circle cx="18" cy="8.4" r="2.2"/><circle cx="9.4" cy="18" r="2.2"/><path d="M8.2 6.7l7.6 1.3M7 8.5l1.9 7.4M11.4 16.9l5.3-6.7"/></symbol>
   <symbol id="i-replay" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.4"/><path d="M10.3 8.9v6.2l5.1-3.1z"/></symbol>
   <symbol id="i-evals" viewBox="0 0 24 24"><path d="M5 20.4V11.6M12 20.4V3.6M19 20.4v-6.2"/></symbol>
@@ -752,6 +753,7 @@ button.btn-outline:hover { border-color: var(--accent); color: var(--accent); ba
         <button class="nav-btn" data-tab="relay"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-relay"/></svg> Relay <span class="kbd-hint">5</span></button>
         <button class="nav-btn" data-tab="scope"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-scope"/></svg> Scope</button>
         <div class="sidebar-label" style="margin-top:16px">Intelligence</div>
+        <button class="nav-btn" data-tab="autopilot"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-autopilot"/></svg> Autopilot</button>
         <button class="nav-btn" data-tab="memory"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-memory"/></svg> Memory <span class="kbd-hint">2</span></button>
         <button class="nav-btn" data-tab="skills"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-skills"/></svg> Skills <span class="kbd-hint">6</span></button>
         <button class="nav-btn" data-tab="knowledge"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-knowledge"/></svg> Knowledge</button>
@@ -1466,6 +1468,31 @@ button.btn-outline:hover { border-color: var(--accent); color: var(--accent); ba
             </div>
         </section>
 
+
+        <!-- AUTOPILOT. Round 1 is READ-ONLY: this panel aggregates five review
+             queues that already exist behind five other tabs and hands each one
+             back to the surface that owns it. It issues no POST/PATCH/DELETE at
+             all, and tests/test_dashboard_autopilot.py pins that absence as an
+             invariant — an aggregator that also mutates becomes a second write
+             path for five subsystems' invariants, acting on a stale read. -->
+        <section class="tab-panel" id="panel-autopilot">
+            <div class="flex-between mb-24">
+                <div><h1 class="page-title">Autopilot</h1><p class="page-subtitle">What changed, and what is waiting for you</p></div>
+                <div style="display:flex;gap:8px;align-items:center">
+                    <button class="btn btn-sm btn-outline" id="btnRefreshAutopilot">Refresh</button>
+                </div>
+            </div>
+
+            <div class="section">
+                <div class="card-header">This week <span data-freshness="autopilot" class="freshness"></span></div>
+                <div id="autopilotDigest"><div class="spinner">Loading digest...</div></div>
+            </div>
+
+            <div class="section" style="margin-top:20px">
+                <div class="card-header">Exception inbox</div>
+                <div id="autopilotInbox"><div class="spinner">Loading inbox...</div></div>
+            </div>
+        </section>
 
         <section class="tab-panel" id="panel-search">
             <div class="flex-between mb-24">
@@ -2201,6 +2228,7 @@ function switchTab(name) {
     else if (name === 'memory') { loadMemoryStats(); loadBrowse(); loadProjectFilter(); loadMemoryHygiene(); }
     else if (name === 'skills') { loadSkills(); loadProcedures(); }
     else if (name === 'knowledge') { loadKnowledgeSources(); loadCollectors(); }
+    else if (name === 'autopilot') { loadAutopilot(); }
     else if (name === 'sessions') { loadSessions(); }
     else if (name === 'events') { loadEvents(); activeTimer = setInterval(loadEvents, 30000); }
     else if (name === 'relay') { loadRelay(); }
@@ -5126,6 +5154,263 @@ function dismissProcedureProposal(id) {
         .then(function() { toast('Proposal dismissed', 'success'); loadProcedures(); })
         .catch(function(e) { toast('Dismiss failed: ' + ((e && e.message) ? e.message : 'unknown error'), 'error'); });
 }
+
+/* >>> autopilotPanel — extracted and executed by tests/test_dashboard_autopilot.py.
+   Keep this block self-contained and free of DOM/browser references: the test
+   pulls the text between these sentinels straight into node. Same reasoning as
+   proceduresPanel above — a panel that decides everything inline inside a fetch
+   callback cannot be asserted on without a browser.
+
+   ROUND 1 IS READ-ONLY. Nothing in this block issues a write. Every row hands
+   the operator back to the surface that already owns the action (the Skills
+   draft queue, the procedures panel, replay), because an aggregator that also
+   mutates becomes a second write path for five subsystems' invariants and its
+   first bug is silent — acting on a stale read of somebody else's state.
+
+   WHAT IT MUST NOT DO: report a total as if it were complete when a queue could
+   not be read. "3 items waiting" reads identically whether the other three
+   queues are empty or unreachable, and only one of those is good news. */
+function apEsc(s) {
+    // Deliberately NOT the file's esc(): that round-trips through a DOM node,
+    // which does not exist under node, and it leaves ' untouched.
+    if (s == null) return '';
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function apAttr(s) {
+    // Two nested contexts, two escapes, in this order: the value lands inside a
+    // JS string literal that lives inside an HTML attribute. HTML-escaping alone
+    // is NOT enough — the parser decodes &#39; back to ' BEFORE the JS is
+    // parsed, so a lone entity-escaped quote still closes the argument.
+    return apEsc(String(s == null ? '' : s).replace(/\\/g, '\\\\').replace(/'/g, "\\'"));
+}
+
+var AP_DIGEST_LABELS = [
+    ['memories_learned', 'learned'],
+    ['memories_superseded', 'superseded'],
+    ['memories_archived', 'archived'],
+    ['dream_insights', 'consolidated'],
+    ['skills_drafted', 'skills drafted'],
+    ['skills_activated', 'skills blessed'],
+    ['feedback_given', 'feedback'],
+    ['gc_actions', 'maintenance']
+];
+
+function apChip(label, value) {
+    return '<span class="badge" style="margin:0 6px 6px 0"><b>' + apEsc(value) + '</b> '
+        + apEsc(label) + '</span>';
+}
+
+function renderAutopilotDigest(d) {
+    if (!d) return '<div class="card card-padded"><div class="empty-state">Digest unavailable.</div></div>';
+    var counts = d.counts || {};
+    var chips = AP_DIGEST_LABELS.map(function(pair) {
+        var v = counts[pair[0]];
+        return v ? apChip(pair[1], v) : '';
+    }).join('');
+
+    var out = '<div class="card card-padded">'
+        + '<div style="font-size:15px;line-height:1.6">' + apEsc(d.summary || '') + '</div>';
+    if (chips) out += '<div style="margin-top:12px">' + chips + '</div>';
+
+    // The approximate flag is not decoration. Qdrant scroll pages by point ID,
+    // uncorrelated with time, so a capped scan is an arbitrary SAMPLE and these
+    // numbers under-report by an unknown amount. Presenting a sample as a census
+    // is the failure this line exists to prevent.
+    if (d.approximate) {
+        out += '<div style="margin-top:10px;font-size:12px;color:var(--amber)">'
+            + 'Counts are a LOWER BOUND: the scan was capped at ' + apEsc(d.scanned)
+            + ' memories, and scroll pages by id rather than by time, so the real '
+            + 'numbers are higher by an unknown amount.</div>';
+    }
+    if (d.errors) {
+        var parts = [];
+        for (var k in d.errors) { if (Object.prototype.hasOwnProperty.call(d.errors, k)) parts.push(k); }
+        if (parts.length) {
+            out += '<div style="margin-top:10px;font-size:12px;color:var(--red)">'
+                + 'Some sources could not be read (' + apEsc(parts.join(', '))
+                + '), so their numbers are missing rather than zero.</div>';
+        }
+    }
+    if (d.notes && d.notes.length) {
+        out += '<div style="margin-top:10px;font-size:11px;color:var(--text-dim);line-height:1.6">'
+            + d.notes.map(apEsc).join('<br>') + '</div>';
+    }
+    return out + '</div>';
+}
+
+function apSkillRow(it) {
+    return '<div style="padding:7px 0;border-top:1px solid var(--border);font-size:13px">'
+        + apEsc(it.title || it.trigger || it.id)
+        + (it.source_doc ? '<span style="color:var(--text-dim);margin-left:8px">from '
+            + apEsc(it.source_doc) + '</span>' : '')
+        + '</div>';
+}
+
+function apProposalRow(it) {
+    return '<div style="padding:7px 0;border-top:1px solid var(--border);font-size:13px">'
+        + '<span class="badge">' + apEsc(it.kind || 'proposal') + '</span> '
+        + apEsc(it.detail || '') + '</div>';
+}
+
+function apContestedRow(it) {
+    // The flag time is the point of the row: a contested pair is the one
+    // lifecycle state the system deliberately refuses to decide on its own, so
+    // how long it has sat unresolved is the number that decides whether it
+    // matters. Both sides of a dispute are flagged, so one dispute is two rows.
+    return '<div style="padding:7px 0;border-top:1px solid var(--border);font-size:13px">'
+        + apEsc(it.text_preview || '')
+        + '<span style="color:var(--text-dim);margin-left:8px">contests '
+        + apEsc(it.contested_with || 'another memory')
+        + (it.contested_at ? ' since ' + apEsc(it.contested_at) : '')
+        + '</span></div>';
+}
+
+function apDlqRow(it) {
+    // The session id is the useful handle here, and replay already knows how to
+    // open one — so this row links to the existing surface rather than growing
+    // a second session viewer inside the inbox.
+    return '<div style="padding:7px 0;border-top:1px solid var(--border);font-size:13px">'
+        + '<a href="#" onclick="openReplayForSession(\'' + apAttr(it.session_id) + '\');return false"'
+        + ' style="color:var(--accent)">' + apEsc(it.session_id) + '</a> '
+        + '<span class="badge">' + apEsc(it.failure_type || 'unknown') + '</span> '
+        + '<span style="color:var(--text-dim)">' + apEsc(it.error || '') + '</span></div>';
+}
+
+var AUTOPILOT_SECTIONS = [
+    { key: 'draft_skills', title: 'Draft skills awaiting approval',
+      cta: 'Open draft queue', action: "autopilotOpenSkills('draft')",
+      pick: function(s) { return s.items || []; }, row: apSkillRow },
+    { key: 'stale_skills', title: 'Skills gone stale',
+      cta: 'Review stale skills', action: "autopilotOpenSkills('stale')",
+      pick: function(s) { return s.items || []; }, row: apSkillRow },
+    { key: 'rereview_skills', title: 'Skills whose source document changed',
+      cta: 'Open skills', action: "autopilotOpenSkills('active')",
+      pick: function(s) { return s.items || []; }, row: apSkillRow },
+    { key: 'procedure_proposals', title: 'Procedure proposals',
+      cta: 'Open procedures', action: "autopilotOpen('skills')",
+      pick: function(s) { return s.items || []; }, row: apProposalRow },
+    { key: 'contested_memories', title: 'Contested memories',
+      cta: 'Open memory', action: "autopilotOpen('memory')",
+      pick: function(s) { return s.pairs || []; }, row: apContestedRow },
+    { key: 'eval_dlq', title: 'Session evals that failed',
+      cta: 'Open replay', action: "autopilotOpen('replay')",
+      pick: function(s) { return s.items || []; }, row: apDlqRow }
+];
+
+function apSectionCard(sec, s, body) {
+    var count = s.count || 0;
+    var label = s.error ? '<span class="badge badge-red">unreadable</span>'
+        : '<span class="badge badge-yellow">' + apEsc(count) + (s.approximate ? '+' : '') + '</span>';
+    return '<div class="card card-padded" style="margin-bottom:12px">'
+        + '<div class="flex-between" style="align-items:center">'
+        + '<div style="font-weight:600;font-size:14px">' + apEsc(sec.title) + ' ' + label + '</div>'
+        + '<button class="btn btn-sm btn-outline" onclick="' + sec.action + '">'
+        + apEsc(sec.cta) + '</button></div>' + body + '</div>';
+}
+
+function renderAutopilotInbox(inbox) {
+    if (!inbox) return '<div class="card card-padded"><div class="empty-state">Inbox unavailable.</div></div>';
+    var items = inbox.items || {};
+    var total = inbox.total_actionable != null ? inbox.total_actionable : 0;
+    var degraded = inbox.degraded || [];
+
+    var head = '<div class="card card-padded" style="margin-bottom:14px">'
+        + '<div style="font-size:15px;font-weight:600">'
+        + (total === 1 ? '1 item waiting' : apEsc(total) + ' items waiting') + '</div>';
+    if (degraded.length) {
+        // Without this the total is a confident lie: it is the sum of what could
+        // be READ, and a queue that failed contributes zero indistinguishably
+        // from a queue that is empty.
+        head += '<div style="margin-top:6px;font-size:12px;color:var(--amber)">'
+            + 'That total is INCOMPLETE — could not read: ' + apEsc(degraded.join(', '))
+            + '. Anything queued there is not counted above.</div>';
+    }
+    head += '</div>';
+
+    var cards = [];
+    var clear = [];
+    AUTOPILOT_SECTIONS.forEach(function(sec) {
+        var s = items[sec.key] || {};
+        if (s.error) {
+            cards.push(apSectionCard(sec, s,
+                '<div style="margin-top:8px;font-size:12px;color:var(--red)">Could not read this queue: '
+                + apEsc(s.error) + '</div>'));
+            return;
+        }
+        if (s.enabled === false) { clear.push(sec.title + ' (disabled)'); return; }
+        var count = s.count || 0;
+        if (!count) { clear.push(sec.title); return; }
+        var rows = sec.pick(s);
+        var body = rows.map(sec.row).join('');
+        if (count > rows.length) {
+            body += '<div style="padding:7px 0;border-top:1px solid var(--border);font-size:12px;color:var(--text-dim)">'
+                + apEsc(count - rows.length) + ' more not shown here.</div>';
+        }
+        cards.push(apSectionCard(sec, s, body));
+    });
+
+    // A positive statement about the queues that ARE clear, not silence. Silence
+    // is what "I never checked" also looks like.
+    var footer = '';
+    if (clear.length) {
+        footer = '<div style="margin-top:12px;font-size:12px;color:var(--text-dim);line-height:1.6">'
+            + 'Nothing waiting in: ' + apEsc(clear.join(', ')) + '.</div>';
+    }
+    if (!cards.length && !degraded.length) {
+        return head + '<div class="card card-padded"><div class="empty-state">'
+            + 'Nothing needs your attention.</div>' + footer + '</div>';
+    }
+    return head + cards.join('') + footer;
+}
+/* <<< autopilotPanel */
+
+function loadAutopilot() {
+    var digestEl = $('autopilotDigest');
+    var inboxEl = $('autopilotInbox');
+    if (!digestEl || !inboxEl) return;
+    digestEl.innerHTML = '<div class="spinner">Loading digest...</div>';
+    inboxEl.innerHTML = '<div class="spinner">Loading inbox...</div>';
+
+    // Two independent fetches with independent catches: the inbox and the digest
+    // read different things and one being unavailable is not a reason to withhold
+    // the other — the same reason the endpoints themselves degrade per section.
+    fetchJSON(CONFIG.CORTEX_API + '/autopilot/digest?days=7').then(function(data) {
+        digestEl.innerHTML = renderAutopilotDigest(data);
+        markRefreshed('autopilot');
+    }).catch(function(e) {
+        digestEl.innerHTML = '';
+        digestEl.appendChild(errMsg('Cannot load digest: ' + ((e && e.message) ? e.message : 'unknown error')));
+    });
+
+    fetchJSON(CONFIG.CORTEX_API + '/autopilot/inbox').then(function(data) {
+        inboxEl.innerHTML = renderAutopilotInbox(data);
+    }).catch(function(e) {
+        inboxEl.innerHTML = '';
+        inboxEl.appendChild(errMsg('Cannot load inbox: ' + ((e && e.message) ? e.message : 'unknown error')));
+    });
+}
+
+function autopilotOpen(tab) {
+    switchTab(tab);
+}
+
+function autopilotOpenSkills(filter) {
+    // Land the operator on the right QUEUE, not merely the right tab. switchTab
+    // calls loadSkills() itself, so the filter is set first and the tab switch
+    // does the fetch — setting it afterwards would render the previous filter's
+    // results and then silently disagree with the dropdown.
+    var sel = $('skillStatusFilter');
+    if (sel) sel.value = filter;
+    switchTab('skills');
+}
+
+if ($('btnRefreshAutopilot')) $('btnRefreshAutopilot').addEventListener('click', loadAutopilot);
+
+window.loadAutopilot = loadAutopilot;
+window.autopilotOpen = autopilotOpen;
+window.autopilotOpenSkills = autopilotOpenSkills;
 
 window.loadProcedures = loadProcedures;
 window.dismissProcedureProposal = dismissProcedureProposal;

@@ -22,6 +22,7 @@ from app.models import (
     BacklinksResponse,
     ConfirmRequest,
     ConfirmResponse,
+    ContestedResolveRequest,
     DeprecateRequest,
     DeprecateResponse,
     MemoryHistoryResponse,
@@ -182,5 +183,190 @@ def create_lifecycle_router(
             backlinks=links,
             total=len(links),
         )
+
+    @router.get("/memory/{memory_id}/evidence")
+    @limiter.limit(lambda: get_settings().RATE_LIMIT)
+    async def memory_evidence(
+        request: Request,
+        memory_id: str,
+        identity: dict = Depends(require_scope("admin")),
+    ) -> dict[str, Any]:
+        """The evidence ledger for one memory, assembled from what already flows.
+
+        Knowledge Autopilot round 1: before anything is ever promoted or
+        retired automatically, a human must be able to see WHY a memory ranks
+        the way it does — every signal that feeds scoring and every lifecycle
+        fact, in one read. Nothing here is new bookkeeping; it is the existing
+        payload fields, graph lineage, and dream provenance composed into one
+        response.
+
+        Admin-scoped like the autopilot inbox, and for the same reason: it
+        exposes free-text feedback comments and member/agent provenance, and
+        memory ids are handed out by recall — a non-admin key must not be able
+        to walk them into other workspaces' evidence.
+        """
+        memory = await vector.get_memory(memory_id)
+        if not memory:
+            raise HTTPException(status_code=404, detail="Memory not found")
+
+        # get_memory hoists only id/text/status/confirmed_count/
+        # contradicted_count/last_confirmed_at/superseded_by and folds every
+        # other payload key under "metadata". Everything below that is not in
+        # that hoisted set MUST be read from meta — reading it at the top level
+        # returns None/0 for every real memory.
+        meta = memory.get("metadata") or {}
+
+        graph_history: dict = {"supersedes": [], "superseded_by": None}
+        try:
+            graph_history = await graph.get_supersession_history(memory_id)
+        except Exception:
+            logger.warning("Failed to get graph history for %s", memory_id)
+
+        return {
+            "memory_id": memory_id,
+            "status": memory.get("status", "active"),
+            "provenance": {
+                "source": meta.get("source"),
+                "agent_id": meta.get("agent_id"),
+                "member_id": meta.get("member_id"),
+                "workspace_id": meta.get("workspace_id"),
+                "project": meta.get("project"),
+                "created_at": meta.get("created_at"),
+                "timestamp": meta.get("timestamp"),
+                "dreamed_from": meta.get("dreamed_from"),
+            },
+            "usage": {
+                "access_count": meta.get("access_count", 0),
+                "last_recalled_at": meta.get("last_recalled_at"),
+            },
+            "judgments": {
+                "confirmed_count": memory.get("confirmed_count", 0),
+                "contradicted_count": memory.get("contradicted_count", 0),
+                "last_confirmed_at": memory.get("last_confirmed_at"),
+                "feedback_useful_count": meta.get("feedback_useful_count", 0),
+                "feedback_not_useful_count": meta.get("feedback_not_useful_count", 0),
+                "feedback_last_at": meta.get("feedback_last_at"),
+                "feedback_last_comment": meta.get("feedback_last_comment"),
+            },
+            "outcomes": {
+                "owm_efficacy": meta.get("owm_efficacy"),
+                "owm_n": meta.get("owm_n"),
+                "owm_updated_at": meta.get("owm_updated_at"),
+            },
+            "disputes": {
+                "contested": bool(meta.get("contested")),
+                "contested_with": meta.get("contested_with"),
+                "contested_at": meta.get("contested_at"),
+                "coexist_with": meta.get("coexist_with"),
+            },
+            "lineage": {
+                "superseded_by": memory.get("superseded_by"),
+                "supersedes": graph_history.get("supersedes", []),
+                "status_reason": meta.get("status_reason"),
+            },
+            "archive": {
+                "archived_at": meta.get("archived_at"),
+                "archive_source": meta.get("archive_source"),
+                "purge_eligible_at": meta.get("purge_eligible_at"),
+            },
+        }
+
+    @router.post("/memory/contested/resolve")
+    @limiter.limit(lambda: get_settings().RATE_LIMIT)
+    async def resolve_contested(
+        request: Request,
+        body: ContestedResolveRequest,
+        identity: dict = Depends(require_scope("memory:write")),
+    ) -> dict[str, Any]:
+        """Resolve a contested pair with a human (or explicitly-delegated) verdict.
+
+        The deep-contradiction pass refuses to guess between two unconfirmed
+        memories; this is where the guess it declined to make gets made by
+        someone accountable. Two verdicts:
+        - 'supersede': winner stays active (and is confirmed — the verdict IS
+          human evidence), loser is superseded with the contradiction counted
+          and a SUPERSEDES edge recorded, same as every other supersede path.
+        - 'coexist': both are genuinely true (different contexts); flags clear
+          on both and each side gets a durable `coexist_with` marker naming
+          the other. The marker is what stops the nightly pass re-contesting
+          the identical pair forever — their unchanged texts still sit in the
+          similarity band, so without it a coexist verdict would be undone
+          within 24 hours.
+        """
+        winner = await vector.get_memory(body.winner_id)
+        loser = await vector.get_memory(body.loser_id)
+        if not winner or not loser:
+            raise HTTPException(status_code=404, detail="Memory not found")
+        # contested_with is NOT a hoisted get_memory field — it lives under
+        # "metadata". Reading it at the top level made this endpoint 409 on
+        # every genuinely contested pair.
+        winner_meta = winner.get("metadata") or {}
+        loser_meta = loser.get("metadata") or {}
+        if winner_meta.get("contested_with") != body.loser_id and loser_meta.get(
+            "contested_with"
+        ) != body.winner_id:
+            raise HTTPException(
+                status_code=409,
+                detail="These memories are not contested with each other",
+            )
+
+        settings = get_settings()
+        if body.action == "supersede":
+            # Verdict FIRST, flags cleared LAST: if the supersede write fails,
+            # the request 500s with the dispute still recorded — the pair stays
+            # in the inbox and the human retries, instead of the verdict
+            # silently evaporating with both memories left active.
+            await vector.update_status(
+                body.loser_id,
+                "superseded",
+                superseded_by=body.winner_id,
+                reason="contested pair resolved by verdict",
+                count_as_contradiction=True,
+            )
+            await vector.confirm_memory(body.winner_id)
+            # Same best-effort edge every sibling supersede path records —
+            # without it the verdict is invisible to get_supersession_history,
+            # which the evidence endpoint's lineage section reads.
+            try:
+                await graph.create_supersession(
+                    newer_id=body.winner_id,
+                    older_id=body.loser_id,
+                    reason="contested pair resolved by verdict",
+                    detected="verdict",
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to create supersession edge for %s", body.loser_id
+                )
+            await vector._client.set_payload(
+                collection_name=settings.QDRANT_COLLECTION,
+                payload={
+                    "contested": False,
+                    "contested_with": None,
+                    "contested_at": None,
+                },
+                points=[body.winner_id, body.loser_id],
+            )
+        else:  # coexist — clear the dispute AND leave the durable marker
+            for this_id, other_id in (
+                (body.winner_id, body.loser_id),
+                (body.loser_id, body.winner_id),
+            ):
+                await vector._client.set_payload(
+                    collection_name=settings.QDRANT_COLLECTION,
+                    payload={
+                        "contested": False,
+                        "contested_with": None,
+                        "contested_at": None,
+                        "coexist_with": other_id,
+                    },
+                    points=[this_id],
+                )
+        return {
+            "status": "resolved",
+            "action": body.action,
+            "winner_id": body.winner_id,
+            "loser_id": body.loser_id,
+        }
 
     return router
