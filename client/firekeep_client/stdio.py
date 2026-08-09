@@ -55,3 +55,41 @@ def force_utf8_stdio() -> None:
             reconfigure(**kwargs)
         except Exception:  # noqa: BLE001 — see module docstring
             pass
+
+
+def pin_import_paths() -> None:
+    """Freeze module resolution to the real venv dir this process started under.
+
+    The side-by-side install layout launches every kit process through the
+    ``~/.firekeep/current`` alias (Windows junction / POSIX symlink), and Python
+    does NOT canonicalize it: ``sys.prefix`` and every ``sys.path`` entry stay on
+    the alias path. A long-running process (gateway, shim, decision, sidecar)
+    would therefore resolve any import it performs *after* an update through the
+    flipped alias — mixing modules from two client versions inside one process,
+    the kind of skew that produces an unreproducible crash hours after the
+    update that caused it.
+
+    TWO surfaces need pinning, and sys.path alone is not enough. Submodule
+    imports (``from firekeep_client.join import join``, anyio's backend
+    selection) consult the PARENT PACKAGE's ``__path__``, computed at first
+    import from the alias — so every already-imported package's ``__path__``
+    is realpath'd too, or the most common lazy-import shape would still cross
+    versions. ``sys.prefix``/``sys.executable`` deliberately stay on the alias:
+    they feed SPAWNS (which should get the alias's current target), not imports.
+
+    On Windows the pinned real dir survives until this process exits — open
+    executable images make GC's rename-probe fail. On POSIX that protection is
+    the GC's lsof gate plus the keep-previous policy, not filesystem physics.
+
+    Same shape as force_utf8_stdio: applied at every long-lived entry point,
+    no-op when nothing is linked, and never a reason to refuse to start.
+    """
+    try:
+        import os
+        sys.path[:] = [os.path.realpath(p) if p else p for p in sys.path]
+        for mod in list(sys.modules.values()):
+            path = getattr(mod, "__path__", None)
+            if isinstance(path, list):
+                path[:] = [os.path.realpath(p) if p else p for p in path]
+    except Exception:  # noqa: BLE001 — startup hygiene must never kill the process
+        pass

@@ -43,11 +43,13 @@ If you prefer to configure it manually (or want to see what the installer render
 
 ```toml
 [mcp_servers.firekeep]
-command = '/absolute/path/to/.firekeep/venv/bin/firekeep'
+command = '/absolute/path/to/.firekeep/current/bin/firekeep'
 args = ["gateway"]
 ```
 
-(On Windows, the command points at `.firekeep\venv\Scripts\firekeep.exe`.)
+(On Windows, the command points at `.firekeep\current\Scripts\firekeep.exe`. The
+`current` link selects the installed version's venv under `venvs/<version>` —
+never hand-write a versioned path; updates garbage-collect old venvs.)
 
 Notes:
 

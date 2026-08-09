@@ -139,8 +139,10 @@ dashboard-independent fallback. An operator who already has SSH access can use
 `firekeep connect root@<server>`; it issues the same single-use code remotely
 and then calls the same join path. A working tunnel is reused, not duplicated.
 
-The kit lives in `~/.firekeep/venv` and prepares every shipped adapter by
-default: Claude Code, Codex, Kiro, and OpenCode. Claude gets user-scoped
+The kit lives in `~/.firekeep` — one venv per version under `venvs/<version>`,
+selected by the `~/.firekeep/current` link that every rendered path routes
+through, so updates never require closing agent sessions — and prepares every
+shipped adapter by default: Claude Code, Codex, Kiro, and OpenCode. Claude gets user-scoped
 `~/.claude.json` + `~/.claude/settings.json`; the other clients receive their
 native MCP and instruction files. Each receives exactly one `firekeep` entry;
 the local gateway aggregates Cortex, Bridge, Sentinel, Relay, code intelligence,
@@ -178,7 +180,7 @@ terminals, agent identities, and background workers do not.
 server has no authorization server, so the command directs the user to request
 a join code instead; it never asks them to choose a tier.
 
-This installs the `firekeep-client` kit into `~/.firekeep/venv`, bootstraps `~/.firekeep/config`, and prepares every shipped adapter: Claude Code, Codex, Kiro, and OpenCode. Claude gets user-scoped `~/.claude.json` + `~/.claude/settings.json` (MCP servers via `firekeep-shim`, five hook cores); the other clients receive their native MCP and instruction files. Two stdio-local servers — code intelligence (`firekeep-symdex`) and the Decision Board (`firekeep-decision`) — are installed automatically, always-on, no flag needed. Use `firekeep install --runtime <name>` only for a targeted re-render or repair.
+This installs the `firekeep-client` kit into `~/.firekeep` (a versioned venv under `venvs/`, selected by the `current` link), bootstraps `~/.firekeep/config`, and prepares every shipped adapter: Claude Code, Codex, Kiro, and OpenCode. Claude gets user-scoped `~/.claude.json` + `~/.claude/settings.json` (MCP servers via `firekeep-shim`, five hook cores); the other clients receive their native MCP and instruction files. Two stdio-local servers — code intelligence (`firekeep-symdex`) and the Decision Board (`firekeep-decision`) — are installed automatically, always-on, no flag needed. Use `firekeep install --runtime <name>` only for a targeted re-render or repair.
 
 The installer prompts for the connection **and an API key**. Mint one on the
 server with `deploy/firekeep-admin keys create --agent <you>`; `firekeep-shim`

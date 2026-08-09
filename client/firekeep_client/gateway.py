@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from firekeep_client.adapters.base import GATEWAY_INSTRUCTIONS
-from firekeep_client.stdio import force_utf8_stdio
+from firekeep_client.stdio import force_utf8_stdio, pin_import_paths
 
 
 REMOTE_SERVICES = ("cortex", "bridge", "sentinel", "relay")
@@ -275,6 +275,10 @@ def run() -> int:
     # which on Windows is cp1252. Every non-ASCII character an agent wrote
     # through this gateway reached the server as mojibake. See stdio.py.
     force_utf8_stdio()
+    # Long-running process launched through the `current` alias: freeze imports
+    # to the venv we started under, so an update's flip mid-session can never
+    # mix two client versions into this process. See stdio.pin_import_paths.
+    pin_import_paths()
     gateway = Gateway()
     try:
         for line in sys.stdin:

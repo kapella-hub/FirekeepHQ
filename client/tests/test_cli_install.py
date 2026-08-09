@@ -24,8 +24,24 @@ def install_env(tmp_path, monkeypatch):
     home = tmp_path / ".firekeep"
     monkeypatch.setenv("FIREKEEP_CONFIG", str(home / "config"))
     monkeypatch.setattr("firekeep_client.state._private", lambda p: None)
+    # Deterministic side-by-side version: checkout installs provision
+    # home/venvs/<kit-version> and flip `current` at it, so these tests pin the
+    # version rather than parsing the real pyproject.toml — otherwise every
+    # release bump would ripple through this file's layout assertions.
+    monkeypatch.setattr(cli, "_kit_version", lambda kit: "1.2.3")
     runs = []
-    monkeypatch.setattr(cli, "_run", lambda cmd, **kw: runs.append(list(cmd)))
+
+    def fake_run(cmd, **kw):
+        runs.append(list(cmd))
+        # Mirror the ONE side effect cmd_install depends on: `python -m venv
+        # <path>` creates the directory. _point_current then aliases `current`
+        # at it — and a Windows junction (a real one is created when these tests
+        # run on Windows) cannot be made onto a missing target, so without this
+        # every checkout-install test dies at the flip instead of its assertion.
+        if "-m" in cmd and "venv" in cmd:
+            Path(cmd[-1]).mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(cli, "_run", fake_run)
     rec = _RecordingAdapter()
     monkeypatch.setattr(cli, "get_adapter", lambda name: rec)
     # Hermetic: never touch the developer's REAL ~/.zshrc from a test run. The PATH
@@ -85,6 +101,12 @@ def test_install_creates_venv_and_pip_installs_client(install_env):
     cli.main(["install", "--runtime", "claude"])
     blob = _flatten(runs)
     assert "-m venv" in blob
+    # Side-by-side layout: the venv is provisioned AT its final versioned path
+    # (venvs are not relocatable — pyvenv.cfg bakes the absolute path), never at
+    # the legacy home/venv location.
+    venv_cmds = [cmd for cmd in runs if "venv" in cmd and "-m" in cmd]
+    assert venv_cmds, "expected a venv-provision invocation"
+    assert Path(venv_cmds[0][-1]) == home / "venvs" / "1.2.3"
     assert "firekeep-symdex" not in blob
     # The client kit must be installed from the LOCAL kit directory (the dir
     # holding client/pyproject.toml), never resolved as a bare name against
@@ -109,7 +131,10 @@ def test_install_adds_firekeep_to_path(install_env, monkeypatch):
     assert rc == 0
     assert calls, "install must put a firekeep launcher on PATH"
     called_home, called_venv_bin = calls[0]
-    assert called_venv_bin == home / "venv" / ("Scripts" if os.name == "nt" else "bin")
+    # The launcher must route through the `current` alias — the versioned
+    # venvs/<V> dir is GC-able, and the legacy home/venv dir is what the
+    # side-by-side layout retires. Only `current` survives every update.
+    assert called_venv_bin == home / "current" / ("Scripts" if os.name == "nt" else "bin")
 
 
 def test_no_modify_path_flag_skips_path(install_env, monkeypatch, capsys):
@@ -152,8 +177,53 @@ def test_install_renders_selected_adapter_with_venv_bin(install_env):
     cli.main(["install", "--runtime", "claude"])
     assert len(rec.calls) == 1
     venv_bin = rec.calls[0]
-    expected = home / "venv" / ("Scripts" if os.name == "nt" else "bin")
+    # Rendered surfaces reference the `current` alias so the embedded paths stay
+    # literally identical across updates (the flip retargets the alias, never
+    # the configs) — see test_adapters_never_receive_a_versioned_venvs_path for
+    # the inverse guard.
+    expected = home / "current" / ("Scripts" if os.name == "nt" else "bin")
     assert venv_bin == expected
+
+
+def test_checkout_install_points_current_at_the_versioned_venv(install_env):
+    """Side-by-side guard (a): after a checkout install, home/current resolves to
+    home/venvs/<kit-version>.
+
+    `current` is the single alias every rendered surface (shims, all four
+    adapters, doctor) routes through; a checkout install that provisioned the
+    versioned venv but failed to flip the alias would leave every rendered
+    config pointing at nothing — a dead client that looks installed. The flip
+    is a REAL junction on Windows / symlink on POSIX (cli._point_current), so
+    this exercises the actual link primitive on whichever OS runs the suite."""
+    home, runs, rec = install_env
+    assert cli.main(["install", "--runtime", "claude"]) == 0
+    current = home / "current"
+    versioned = home / "venvs" / "1.2.3"
+    assert versioned.is_dir(), "the versioned venv must be provisioned at its final path"
+    assert current.exists(), "the current alias must exist after a checkout install"
+    assert current.resolve() == versioned.resolve()
+
+
+def test_adapters_never_receive_a_versioned_venvs_path(install_env):
+    """Side-by-side guard (b): adapters render against `current`, NEVER against
+    venvs/<version>.
+
+    A rendered config embedding the versioned path would pin that runtime to a
+    directory a later update's GC removes — the config keeps working right up
+    until the sweep, then every MCP spawn dies file-not-found with no visible
+    cause. Routing through `current` is what makes updates render-free AND makes
+    old venvs safely collectable; both halves break if even one adapter sees the
+    versioned path."""
+    home, runs, rec = install_env
+    assert cli.main(["install", "--runtime", "all"]) == 0
+    assert len(rec.calls) == 4
+    for venv_bin in rec.calls:
+        assert venv_bin.parent == home / "current", (
+            f"adapter rendered against {venv_bin}, not the current alias"
+        )
+        assert "venvs" not in venv_bin.parts, (
+            f"adapter received a GC-able versioned path: {venv_bin}"
+        )
 
 
 def test_install_all_renders_four_runtimes(install_env):
@@ -244,7 +314,28 @@ def test_install_from_installed_venv_skips_pip_and_still_renders(install_env, mo
     assert rc == 0
     assert not [cmd for cmd in runs if "install" in cmd], "pip must not run with no kit dir"
     assert rec.calls, "adapters must still be rendered"
+    # A pre-0.1.35 install has no `current` link: _venv_root falls back to the
+    # legacy home/venv so a re-render keeps working until the first
+    # side-by-side update migrates the layout.
+    assert rec.calls[0] == home / "venv" / ("Scripts" if os.name == "nt" else "bin")
     assert "skipping pip" in capsys.readouterr().out
+
+
+def test_installed_venv_run_renders_through_current_when_present(install_env, monkeypatch):
+    """The release bootstrap's wizard hand-off runs `firekeep install` FROM the
+    freshly provisioned venvs/<V> (kit=None) after flipping `current` — the
+    adapters it renders must reference the alias, not the versioned dir the
+    process happens to be executing from. This is the installed-run half of the
+    guard test_adapters_never_receive_a_versioned_venvs_path pins for checkout
+    installs."""
+    home, runs, rec = install_env
+    monkeypatch.setattr(cli, "_kit_dir", lambda: None)
+    versioned = home / "venvs" / "1.2.3"
+    versioned.mkdir(parents=True)
+    cli._point_current(home, versioned)
+
+    assert cli.main(["install", "--runtime", "claude"]) == 0
+    assert rec.calls == [home / "current" / ("Scripts" if os.name == "nt" else "bin")]
 
 
 def test_kit_dir_is_none_without_a_pyproject(monkeypatch, tmp_path):
@@ -448,7 +539,14 @@ def test_installed_venv_run_never_touches_the_venv(install_env, monkeypatch):
     executing from, wiping the freshly installed kit (ModuleNotFoundError at the
     render step, bare pip-only venv left behind). With no kit dir there is nothing to
     reinstall afterwards, so rebuilding is never recoverable: cmd_install must not
-    create OR rebuild the venv when kit is None."""
+    create OR rebuild the venv when kit is None.
+
+    Under the side-by-side layout the kit=None venv is DERIVED from
+    sys.executable (it may live at venvs/<V> or the legacy venv/ — the code must
+    never guess), so no venv path is assumed here either; the invariant is
+    simply that NO venv/pip subprocess runs. The _venv_has_pip stub stays: if a
+    regression ever routes kit=None through _create_venv again, 'no pip' forces
+    the destructive --clear branch and the `runs` assertion catches it."""
     home, runs, rec = install_env
     monkeypatch.setattr(cli, "_kit_dir", lambda: None)
     venv_bin = home / "venv" / ("Scripts" if os.name == "nt" else "bin")

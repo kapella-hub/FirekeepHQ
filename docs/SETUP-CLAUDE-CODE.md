@@ -25,7 +25,7 @@ For a checkout/development install without a join code:
 
 With a join code, the customer path is fully non-interactive. It:
 
-1. **Creates `~/.firekeep/venv`** and pip-installs `firekeep-client` (pulling `mcp`+`httpx`)
+1. **Creates a versioned venv at `~/.firekeep/venvs/<version>`** (selected by the `~/.firekeep/current` link) and pip-installs `firekeep-client` (pulling `mcp`+`httpx`)
 2. **Bootstraps `~/.firekeep/`** — config skeleton (`0600`), hook-core files, contract fragment, CA slot
 3. **Writes `~/.claude.json`** — one user-scoped `firekeep` stdio gateway entry aggregating all four remote and two local backends
 4. **Writes `~/.claude/settings.json`** — 5 hook cores + env vars (user-scoped), merging non-destructively with any existing foreign hooks/servers
@@ -35,7 +35,7 @@ Enrollment writes the one `[server]` connection and `[identity]`, then runs
 printed by default. Configuration takes effect on the next Claude Code session
 start.
 
-The Firekeep Claude integration is user-scoped and venv-relocation-proof: the hook commands are absolute paths into `~/.firekeep/venv`, not into this repository.
+The Firekeep Claude integration is user-scoped and venv-relocation-proof: the hook commands are absolute paths through `~/.firekeep/current` (the link that survives every update), not into this repository.
 
 ## What Gets Configured
 
@@ -112,17 +112,17 @@ See [docs/MULTI-AGENT.md](MULTI-AGENT.md) for the full workflow guide.
 
 ## Manual Setup
 
-The installer is the supported path; there is no manual alternative that reaches the same result, because the MCP entries and hook commands must point at **absolute** paths inside `~/.firekeep/venv` (a bare `firekeep-shim` is not on Claude Code's `PATH`). If you want to see what gets rendered without guessing paths, run `firekeep install --runtime claude` and inspect `~/.claude.json` / `~/.claude/settings.json` afterward — entries look like:
+The installer is the supported path; there is no manual alternative that reaches the same result, because the MCP entries and hook commands must point at **absolute** paths through `~/.firekeep/current` (a bare `firekeep-shim` is not on Claude Code's `PATH`, and a versioned `venvs/<X.Y.Z>` path would pin the config to a venv updates garbage-collect). If you want to see what gets rendered without guessing paths, run `firekeep install --runtime claude` and inspect `~/.claude.json` / `~/.claude/settings.json` afterward — entries look like:
 
 ```json
 {
   "mcpServers": {
-    "firekeep": {"type": "stdio", "command": "/absolute/path/to/.firekeep/venv/bin/firekeep", "args": ["gateway"]}
+    "firekeep": {"type": "stdio", "command": "/absolute/path/to/.firekeep/current/bin/firekeep", "args": ["gateway"]}
   }
 }
 ```
 
-(On Windows the path points at `.firekeep\venv\Scripts\firekeep.exe`.) Re-running `firekeep install --runtime claude` is idempotent and non-clobbering — it removes the six retired Firekeep entries, writes the one gateway entry, and leaves foreign MCP servers and hooks untouched.
+(On Windows the path points at `.firekeep\current\Scripts\firekeep.exe`.) Re-running `firekeep install --runtime claude` is idempotent and non-clobbering — it removes the six retired Firekeep entries, writes the one gateway entry, and leaves foreign MCP servers and hooks untouched.
 
 ## Troubleshooting
 
@@ -153,5 +153,5 @@ The installer is the supported path; there is no manual alternative that reaches
 
 ### Hooks not firing
 - Hooks are user-scoped — check `~/.claude/settings.json` exists and has the `hooks` key
-- Run `firekeep doctor` — it verifies the rendered `firekeep-shim`/hook-core paths in `~/.firekeep/venv` exist and are executable
+- Run `firekeep doctor` — it verifies the `current` link resolves to the installed version and the rendered `firekeep-shim`/hook-core paths behind it exist and are executable
 - If you moved or reinstalled `~/.firekeep`, rerun `firekeep install` to refresh the absolute venv script paths in your native config

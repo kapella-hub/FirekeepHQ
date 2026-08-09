@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import os
+import re
 import shutil
 import ssl
 import stat
@@ -87,6 +88,93 @@ def _venv_bin(venv: Path) -> Path:
 
 def _venv_python(venv: Path) -> Path:
     return _venv_bin(venv) / ("python.exe" if os.name == "nt" else "python")
+
+
+# --- side-by-side venv layout (client 0.1.35) --------------------------------
+# ~/.firekeep/venvs/<version>/ holds one full venv per installed client version,
+# provisioned AT that final path and never moved (a uv venv is not relocatable:
+# pyvenv.cfg and every console-script interpreter line bake the absolute path —
+# the recorded 0.1.26 failure in client/bootstrap/install.sh). ~/.firekeep/current
+# is the alias every rendered surface routes through: a junction on Windows
+# (works without admin, unlike a directory symlink) and a symlink on POSIX.
+# Updating = provision the new venvs/<V> beside whatever is running, flip
+# `current`, re-render. Live sessions keep executing the old version untouched —
+# their open handles pin the real files, not the link — which is what retires
+# the "close every agent session" requirement the in-place rebuild imposed.
+# ~/.firekeep/venv (legacy, pre-0.1.35) is left alone while held and GC'd by a
+# later update's bootstrap.
+
+VENVS_DIR_NAME = "venvs"
+CURRENT_LINK_NAME = "current"
+
+
+def _current_link(home: Path | None = None) -> Path:
+    return (home if home is not None else _firekeep_home()) / CURRENT_LINK_NAME
+
+
+def _venv_root(home: Path | None = None) -> Path:
+    """The venv path rendered surfaces should reference and doctor should inspect.
+
+    Prefers the `current` link; falls back to the legacy single venv so a
+    pre-0.1.35 install (or a hand-built `pip install -e client` into one) keeps
+    working until its first side-by-side update.
+    """
+    home = home if home is not None else _firekeep_home()
+    current = home / CURRENT_LINK_NAME
+    # lexists, not exists: exists() FOLLOWS the link, so a dangling `current`
+    # (crashed GC, hand-deleted venvs/<V>) would silently fall back to the
+    # legacy path — and a re-render would then rewrite every adapter, hook and
+    # launcher against a ~/.firekeep/venv that never existed on this machine,
+    # exiting 0. A dangling alias must stay authoritative: rendering through it
+    # keeps the configs correct for the moment the link is repaired, and
+    # doctor's current-link row is what names the dangle.
+    if os.path.lexists(current) or current.exists():
+        return current
+    return home / "venv"
+
+
+def _point_current(home: Path, venv: Path) -> None:
+    """Create or retarget the `current` alias to point at `venv`.
+
+    Windows: junction, recreated via os.rmdir + _winapi.CreateJunction. os.rmdir
+    removes the LINK NODE only — never use a recursive delete on a junction; a
+    traversal that follows the reparse point deletes the target venv's files.
+    The two-step flip leaves a millisecond window where `current` is absent; a
+    spawn in that window fails file-not-found and the retry succeeds (hooks fail
+    open by design). POSIX: symlink swapped with os.replace — atomic rename(2),
+    no window at all.
+    """
+    current = home / CURRENT_LINK_NAME
+    venv = venv.resolve()
+    if os.name == "nt":
+        import _winapi
+        # lexists sees the LINK NODE. A DANGLING junction reports False for
+        # both is_symlink() and exists() (probe-confirmed on this repo's own
+        # box), so guarding on those skips the rmdir and CreateJunction dies
+        # with WinError 183 — making the exact broken state doctor sends users
+        # here to repair the one state this function cannot repair.
+        if os.path.lexists(current) or current.is_symlink() or current.exists():
+            os.rmdir(current)  # removes the junction node, not the target
+        _winapi.CreateJunction(str(venv), str(current))
+        return
+    tmp = home / f".current.tmp.{os.getpid()}"
+    if os.path.lexists(tmp):
+        tmp.unlink()
+    tmp.symlink_to(venv)
+    os.replace(tmp, current)
+
+
+def _kit_version(kit: Path) -> str:
+    """The version a checkout install provisions venvs/<version> under.
+
+    Parsed textually rather than with tomllib: checkout installs support system
+    Pythons back to 3.10, and tomllib arrived in 3.11.
+    """
+    text = (kit / "pyproject.toml").read_text(encoding="utf-8")
+    match = re.search(r'^version\s*=\s*"([^"]+)"', text, flags=re.MULTILINE)
+    if match is None:
+        raise RuntimeError(f"no version field in {kit / 'pyproject.toml'}")
+    return match.group(1)
 
 
 def _truthy_env(name: str) -> bool:
@@ -244,19 +332,26 @@ def cmd_install(args) -> int:
         needs_edit = _configure(args)
 
         step = "create venv"
-        venv = home / "venv"
         # kit resolved BEFORE the venv step: when kit is None the process is EXECUTING
-        # from ~/.firekeep/venv (the bootstrap's wizard hand-off, or a documented
+        # from the installed venv (the bootstrap's wizard hand-off, or a documented
         # re-render), and with no kit dir there is nothing to reinstall afterwards —
         # so never create or rebuild here. The pip-less-venv rebuild in _create_venv
         # exists for half-built CHECKOUT installs; run against the bootstrap's uv venv
         # (which ships no pip BY DESIGN) it wiped the very install it belonged to,
         # leaving a bare pip-only venv (release-breaking bug found live in the 0.1.2
         # bootstrap acceptance, 2026-07-13). The venv's existence is self-evident when
-        # we are running from it.
+        # we are running from it — and its PATH is derived from sys.executable, not
+        # assumed, because side-by-side layouts put it at venvs/<version>, legacy
+        # installs at venv/, and this code must never guess wrong about which venv
+        # it is standing in.
         kit = _kit_dir()
         if kit is not None:
+            # Checkout install: provision a fresh versioned venv at its FINAL path
+            # (never moved — venvs aren't relocatable) and flip `current` to it below.
+            venv = home / VENVS_DIR_NAME / _kit_version(kit)
             _create_venv(venv)
+        else:
+            venv = Path(sys.executable).resolve().parent.parent
         python = _venv_python(venv)
 
         step = "pip install firekeep-client"
@@ -291,8 +386,16 @@ def cmd_install(args) -> int:
         step = "lock down config permissions"
         state._private(_config_path())  # lock down the key-bearing config
 
+        step = "select this version (current link)"
+        if kit is not None:
+            _point_current(home, venv)
+
         step = "render runtime adapters"
-        venv_bin = _venv_bin(venv)
+        # Rendered surfaces route through the `current` alias, never the
+        # versioned dir: that is what makes future updates render-free (the
+        # embedded paths stay literally identical across flips) and keeps
+        # runtime configs from pinning a venv that GC will remove.
+        venv_bin = _venv_bin(_venv_root(home))
         for name in _selected_runtimes(args.runtime):
             step = f"render {name} adapter"
             get_adapter(name).render(venv_bin=venv_bin)
@@ -525,23 +628,65 @@ def _check_venv_scripts(venv: Path, is_windows: bool | None = None) -> tuple[str
     )
     missing = [n for n in wanted if not (bindir / f"{n}{ext}").exists()]
     if missing:
-        # Partial-venv detection: `firekeep install` only creates the venv when
-        # the bin dir doesn't exist yet (_create_venv short-circuits
-        # otherwise), so a venv whose creation was interrupted -- bin dir
-        # present, python interpreter never landed -- will NOT be repaired by
-        # a plain rerun. Name that distinctly so the fix (delete + reinstall)
-        # is obvious rather than a confusing repeat failure.
+        # Partial-venv detection: bin dir present, python interpreter never
+        # landed -- an interrupted provisioning. Under the side-by-side layout
+        # the release bootstrap repairs this itself (its fast path re-provisions
+        # an unhealthy venvs/<V> with --clear), so the advice is a re-run; only
+        # a legacy or checkout install needs the manual delete, because
+        # `firekeep install` skips venv creation once the bin dir exists.
         if venv.exists() and not (bindir / f"python{ext}").exists():
+            if venv.name == CURRENT_LINK_NAME:
+                repair = ("re-run the release installer or `firekeep update` "
+                          "-- it reprovisions the broken versioned venv")
+            else:
+                repair = (f"a rerun of `firekeep install` will NOT repair this -- "
+                          f"it skips venv creation once the bin dir exists; delete "
+                          f"{venv} and rerun `firekeep install`")
             return (
                 "venv-scripts", "fail",
                 f"partial venv at {venv}: python interpreter never landed in "
-                f"{bindir} (a rerun of `firekeep install` will NOT repair this -- "
-                f"it skips venv creation once the bin dir exists; delete "
-                f"{venv} and rerun `firekeep install`); also missing: "
-                f"{', '.join(missing)}",
+                f"{bindir} ({repair}); also missing: {', '.join(missing)}",
             )
         return ("venv-scripts", "fail", f"missing in {bindir}: {', '.join(missing)}")
     return ("venv-scripts", "ok", str(bindir))
+
+
+def _check_current_link(home: Path | None = None) -> tuple[str, str, str] | None:
+    """Health of the `current` alias under the side-by-side layout.
+
+    None on a legacy install (no venvs/ dir and no link) — a pre-0.1.35 layout
+    is not a fault, it just hasn't updated yet. Once either exists, a dangling
+    or mispointed link is exactly the failure doctor must name: every rendered
+    surface routes through it, so a bad link is a dead client that looks
+    installed.
+    """
+    home = home if home is not None else _firekeep_home()
+    current = home / CURRENT_LINK_NAME
+    venvs = home / VENVS_DIR_NAME
+    # os.path.lexists sees the LINK NODE itself. This matters on Windows: a
+    # DANGLING junction reports False for both is_symlink() and exists()
+    # (probe-verified), so without lexists a dangling alias whose venvs/ dir is
+    # also gone would silently read as "pure legacy, nothing to check" — the
+    # one state where every rendered surface is dead and doctor says nothing.
+    link_node_exists = os.path.lexists(current) or current.is_symlink() or current.exists()
+    if not link_node_exists:
+        if not venvs.is_dir():
+            return None  # legacy layout — nothing to check
+        return ("current-link", "fail",
+                f"{current} missing while {venvs} exists; re-run the installer "
+                f"(irm/curl per docs) or `firekeep update` to repoint it")
+    try:
+        target = current.resolve(strict=True)
+    except OSError:
+        return ("current-link", "fail",
+                f"{current} is dangling (its target venv was removed); re-run "
+                f"the installer or `firekeep update`")
+    installed = __version__
+    if target.name != installed:
+        return ("current-link", "warn",
+                f"{current} -> {target} but this client is {installed}; a new "
+                f"session will run {target.name} (fine mid-update, stale otherwise)")
+    return ("current-link", "ok", f"{current} -> {target}")
 
 
 def _check_codex_adapter(venv: Path) -> list[tuple[str, str, str]]:
@@ -763,8 +908,11 @@ def run_doctor(cfg=None) -> list[tuple[str, str, str]]:
     api_key_result = _check_api_key(cfg)
     if api_key_result is not None:
         results.append(api_key_result)
-    results.append(_check_venv_scripts(_firekeep_home() / "venv"))
-    results.extend(_check_codex_adapter(_firekeep_home() / "venv"))
+    current_link = _check_current_link()
+    if current_link is not None:
+        results.append(current_link)
+    results.append(_check_venv_scripts(_venv_root()))
+    results.extend(_check_codex_adapter(_venv_root()))
     results.append(_check_config_perms(_config_path()))
     ca = _check_ca_expiry(cfg)
     if ca is not None:
@@ -1165,12 +1313,17 @@ def _write_verified_sums(text: str) -> Path:
 
 def _exec_bootstrap(script: Path, version: str | None, base: str,
                     *, sums_file: "Path | None" = None) -> None:
-    """Replace THIS process with the bootstrap script.
+    """Hand this process over to the bootstrap script.
 
-    The whole point: by the time uv rewrites ~/.firekeep/venv, `firekeep` is no longer running.
-    On Windows, `Scripts\\firekeep.exe` is locked while it executes and simply cannot be
-    overwritten in place — every self-upgrading tool that ignores this grows a rename-dance.
-    Handing off means the replacing process is uv, under sh/powershell, and nothing is held.
+    POSIX: a true execve — the bootstrap replaces us. Windows: a FOREGROUND child we
+    wait on, streaming its output in order to the same console, exiting with its code.
+    Waiting is safe precisely because of the side-by-side layout: the bootstrap
+    provisions venvs/<version> beside this process's venv and flips the `current`
+    junction — nothing this process holds (its own exe included) is ever overwritten.
+    The previous design rebuilt ~/.firekeep/venv in place, which forced a detached
+    spawn + immediate exit to release the exe lock, and the detached installer's
+    output then tore across the caller's returned prompt — the exact console mess
+    this replaces.
 
     `base` is REQUIRED: the bootstrap dies on an unset FIREKEEP_DIST_BASE (that is its own
     fail-loud guard), and an exec'd script inherits none of our config.
@@ -1218,13 +1371,13 @@ def _exec_bootstrap(script: Path, version: str | None, base: str,
         # literal env.pop("PSModulePath") silently pops nothing and the bug survives.
         for key in [k for k in env if k.upper() == "PSMODULEPATH"]:
             env.pop(key)
-        # os.execv on Windows can leave the parent's image briefly held; spawn detached and
-        # exit immediately so the launcher is released before uv touches the venv.
-        subprocess.Popen(
+        # Foreground on purpose (see docstring): the side-by-side bootstrap never
+        # touches this process's venv, so there is no lock to get out of the way of.
+        proc = subprocess.Popen(
             ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)],
-            env=env, close_fds=True,
+            env=env,
         )
-        sys.exit(0)
+        sys.exit(proc.wait())
     os.execve("/bin/sh", ["/bin/sh", str(script)], env)
 
 

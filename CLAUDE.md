@@ -64,8 +64,11 @@ curl -fsSL <release-base>/latest/install.sh | sh      # macOS / Linux
 irm <release-base>/latest/install.ps1 | iex           # Windows
 ```
 From a checkout: `cd client && ./install` (`.\install.ps1` on Windows), then
-`firekeep install` to re-render adapters only. `firekeep update` re-execs the bootstrap
-rather than pip-installing over itself — on Windows the running `firekeep.exe` is locked.
+`firekeep install` to re-render adapters only. `firekeep update` re-execs the bootstrap,
+which installs each release side-by-side at `~/.firekeep/venvs/<version>` and flips the
+`~/.firekeep/current` link (NTFS junction / POSIX symlink) that every rendered surface
+routes through — so since client 0.1.35 updates land without closing any agent session;
+running sessions keep their old venv until GC proves nothing holds it.
 
 Everything else about the kit — the five hook cores, night shift, personal mode, symdex
 auto-index, PATH handling, release signing — is in

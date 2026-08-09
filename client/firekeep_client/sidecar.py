@@ -307,6 +307,13 @@ def _install_signal_handlers(sidecar: "Sidecar") -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # The sidecar is the LONGEST-lived kit process — a persistent daemon that
+    # near-certainly straddles a `firekeep update` flip of the `current` alias.
+    # Pin imports to the venv it started under, same as every other long-lived
+    # entry point (see stdio.pin_import_paths; leaving one process unpinned is
+    # exactly the half-fixed shipping mode that function's tests guard against).
+    from firekeep_client.stdio import pin_import_paths
+    pin_import_paths()
     interval = float(os.environ.get("FIREKEEP_SIDECAR_INTERVAL", DEFAULT_INTERVAL))
     sc = Sidecar(interval=interval)
     _install_signal_handlers(sc)

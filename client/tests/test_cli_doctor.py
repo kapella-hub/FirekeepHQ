@@ -314,7 +314,9 @@ def test_check_venv_scripts_partial_venv_is_diagnosed_distinctly(tmp_path):
     # venv dir + bin dir exist (creation started) but nothing landed inside —
     # this is NOT the same as "no venv at all": `firekeep install` skips venv
     # creation whenever the bin dir already exists, so a plain rerun won't
-    # repair it. The detail string must say so.
+    # repair it. The detail string must say so — for a LEGACY/checkout venv
+    # (anything not inspected through the `current` alias) the only working
+    # advice is still delete-and-rerun, so the word "delete" must survive.
     for is_win in (False, True):
         venv = tmp_path / f"partial-{is_win}"
         bindir = venv / ("Scripts" if is_win else "bin")
@@ -322,7 +324,31 @@ def test_check_venv_scripts_partial_venv_is_diagnosed_distinctly(tmp_path):
         name, status, detail = cli._check_venv_scripts(venv, is_windows=is_win)
         assert name == "venv-scripts" and status == "fail"
         assert "partial venv" in detail.lower()
-        assert "install" in detail.lower()
+        assert "delete" in detail.lower()
+        assert "firekeep install" in detail
+
+
+def test_check_venv_scripts_partial_venv_under_current_advises_update_not_delete(tmp_path):
+    """The side-by-side branch of the partial-venv advice.
+
+    When doctor inspects the venv THROUGH the `current` alias (venv.name ==
+    CURRENT_LINK_NAME), the legacy delete-and-rerun advice is actively wrong on
+    both counts: hand-deleting through the alias would gut the versioned venv
+    behind the junction, and the release bootstrap ALREADY repairs this case
+    itself — its fast path probes venvs/<V> with `python -I` and reprovisions an
+    unhealthy one. So the advice must be a re-run of the installer or `firekeep
+    update`, and must NOT tell the user to delete anything."""
+    for is_win in (False, True):
+        # A plain dir NAMED `current` is enough: the branch keys off venv.name,
+        # not off link-ness (doctor may hold either the resolved or alias path).
+        venv = tmp_path / ("win" if is_win else "posix") / cli.CURRENT_LINK_NAME
+        bindir = venv / ("Scripts" if is_win else "bin")
+        bindir.mkdir(parents=True, exist_ok=True)
+        name, status, detail = cli._check_venv_scripts(venv, is_windows=is_win)
+        assert name == "venv-scripts" and status == "fail"
+        assert "partial venv" in detail.lower()
+        assert "firekeep update" in detail
+        assert "delete" not in detail.lower()
 
 
 def test_check_venv_scripts_missing_entirely_is_not_labeled_partial(tmp_path):
@@ -346,6 +372,88 @@ def test_check_venv_scripts_requires_local_gateway_backends(tmp_path):
     assert status == "fail"
     assert "firekeep-decision" in detail
     assert "firekeep-symdex" in detail
+
+
+# --- current-link (side-by-side venvs, client 0.1.35) -------------------------
+#
+# Every rendered surface — shims, all four adapters, the /personal command —
+# routes through ~/.firekeep/current, so a missing or mispointed alias is a dead
+# client that still LOOKS installed (the versioned venvs are all healthy; nothing
+# else would fail loudly). Doctor's `current-link` row is the one place that
+# names it. These tests build REAL links via cli._point_current — a junction on
+# Windows, a symlink on POSIX — so the row is exercised against the same
+# primitive the installer uses, not a stand-in.
+
+def test_check_current_link_absent_on_a_pure_legacy_layout(tmp_path):
+    """A pre-0.1.35 install (legacy home/venv, no venvs/, no current) is not a
+    fault — it just hasn't updated yet. Inventing a fail row for every existing
+    customer the day 0.1.35 ships would teach them doctor cries wolf."""
+    home = tmp_path / ".firekeep"
+    (home / "venv").mkdir(parents=True)
+    assert cli._check_current_link(home) is None
+
+
+def test_check_current_link_fails_when_missing_beside_venvs(tmp_path):
+    """venvs/ existing WITHOUT a current link is a half-migrated install (e.g. a
+    bootstrap crash after provisioning but before the flip): every rendered
+    surface points at a path that does not exist. The advice must name the
+    repair — re-running the installer/update, whose fast path re-flips without
+    re-downloading."""
+    home = tmp_path / ".firekeep"
+    (home / "venvs" / "1.0.0").mkdir(parents=True)
+    name, status, detail = cli._check_current_link(home)
+    assert (name, status) == ("current-link", "fail")
+    assert "firekeep update" in detail
+
+
+def test_check_current_link_fails_when_dangling(tmp_path):
+    """A current link whose target venv was removed (crashed GC, hand-deleted
+    dir) must fail, not warn: every spawn through it dies file-not-found.
+
+    Only the status is pinned, not which fail message: a dangling POSIX symlink
+    still is_symlink() and takes the explicit 'dangling' branch, while a
+    dangling Windows JUNCTION reports neither is_symlink() nor exists() (the
+    probe on this repo's own Windows box confirmed both are False), so it lands
+    in the 'missing' branch. Both are fail rows naming the same repair."""
+    import shutil
+
+    home = tmp_path / ".firekeep"
+    venv = home / "venvs" / "1.0.0"
+    venv.mkdir(parents=True)
+    cli._point_current(home, venv)
+    shutil.rmtree(venv)  # the link node survives; its target is gone
+
+    result = cli._check_current_link(home)
+    assert result is not None, "a dangling alias must never read as legacy-and-fine"
+    name, status, detail = result
+    assert (name, status) == ("current-link", "fail")
+    assert "update" in detail
+
+
+def test_check_current_link_warns_on_version_mismatch(tmp_path):
+    """current -> venvs/<other-version> while THIS client is __version__: warn,
+    not fail — it is the normal state mid-update (the flip lands before the old
+    process exits) and the legitimate state right after `firekeep update --to
+    <prev>`. The detail must name both versions so a human can tell stale from
+    mid-flight."""
+    home = tmp_path / ".firekeep"
+    venv = home / "venvs" / "0.0.1"
+    venv.mkdir(parents=True)
+    cli._point_current(home, venv)
+    name, status, detail = cli._check_current_link(home)
+    assert (name, status) == ("current-link", "warn")
+    assert "0.0.1" in detail
+    assert __version__ in detail
+
+
+def test_check_current_link_ok_when_pointing_at_the_installed_version(tmp_path):
+    home = tmp_path / ".firekeep"
+    venv = home / "venvs" / __version__
+    venv.mkdir(parents=True)
+    cli._point_current(home, venv)
+    name, status, detail = cli._check_current_link(home)
+    assert (name, status) == ("current-link", "ok")
+    assert __version__ in detail
 
 
 def _render_codex(tmp_path, monkeypatch):
@@ -445,6 +553,33 @@ def test_run_doctor_includes_agent_id_check(tmp_path, monkeypatch):
     status = {n: s for n, s, _ in results}["agent-id"]
     assert status == "warn"
     assert {"codex-mcp", "codex-instructions"} <= names
+    # This tmp home has neither venvs/ nor a current link — a pure legacy
+    # layout, so run_doctor must NOT surface a current-link row (see
+    # test_check_current_link_absent_on_a_pure_legacy_layout for why).
+    assert "current-link" not in names
+
+
+def test_run_doctor_includes_the_current_link_row_on_a_side_by_side_layout(tmp_path, monkeypatch):
+    """run_doctor must actually WIRE _check_current_link in: the unit tests
+    above prove the check works, but a row that run_doctor never appends is a
+    check nobody runs — the exact write-only-machinery failure mode this repo
+    deletes features over."""
+    cfg = _cfg(tmp_path, monkeypatch, SERVER)
+    home = tmp_path / ".firekeep"
+    venv = home / "venvs" / __version__
+    venv.mkdir(parents=True)
+    cli._point_current(home, venv)
+    monkeypatch.setattr(cli, "_check_health", lambda cfg: [])
+    monkeypatch.setattr(cli, "_check_versions", lambda cfg: ("versions", "ok", ""))
+    monkeypatch.setattr(cli, "_check_entitlement", lambda cfg: None)
+    monkeypatch.setattr(cli, "_check_api_key", lambda cfg: None)
+    monkeypatch.setattr(cli, "_check_venv_scripts", lambda venv, is_windows=None: ("venv-scripts", "ok", ""))
+    monkeypatch.setattr(cli, "_check_codex_adapter", lambda venv: [])
+    monkeypatch.setattr(cli, "_check_config_perms", lambda config, is_windows=None: ("config-perms", "ok", ""))
+    monkeypatch.setattr(cli, "_check_ca_expiry", lambda cfg: None)
+    results = cli.run_doctor(cfg)
+    rows = {n: s for n, s, _ in results}
+    assert rows.get("current-link") == "ok"
 
 
 # --- api-key false-green trap (T27 review Critical) --------------------------

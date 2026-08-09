@@ -216,11 +216,16 @@ def _write_launcher(shim_dir: Path, venv_bin: Path, windows: bool) -> Path:
     shim_dir.mkdir(parents=True, exist_ok=True)
     if windows:
         launcher = shim_dir / "firekeep.cmd"
-        # %~dp0 is the .cmd's own dir (…/shims). The shims<->venv layout is fixed
-        # (both siblings under ~/.firekeep), so a relative hop avoids freezing an
-        # absolute home path AND sidesteps path-separator rendering.
+        # %~dp0 is the .cmd's own dir (…/shims). The venv root and shims are
+        # siblings under ~/.firekeep, so a relative hop avoids freezing an
+        # absolute home path AND sidesteps path-separator rendering. The hop
+        # targets whatever root the caller rendered against — `current` (the
+        # side-by-side junction, so this file never changes across updates) or
+        # the legacy `venv` on a not-yet-migrated install. Never a versioned
+        # venvs\<X.Y.Z> path: that would pin the launcher to a venv GC removes.
+        root_name = venv_bin.parent.name
         launcher.write_text(
-            '@echo off\r\n"%~dp0..\\venv\\Scripts\\firekeep.exe" %*\r\n',
+            f'@echo off\r\n"%~dp0..\\{root_name}\\Scripts\\firekeep.exe" %*\r\n',
             encoding="utf-8",
         )
         return launcher

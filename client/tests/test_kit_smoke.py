@@ -2,21 +2,30 @@
 
 Mocked-transport, end-to-end pass over the whole installed-kit topology:
   1. Write a tmp ~/.firekeep OFFICE profile via the existing tests/conftest.py fixtures.
-  2. Render each runtime adapter (claude/codex/kiro) into tmp native-config dirs, with
-     Path.home() monkeypatched the same way each adapter's own test module does --
-     ALL THREE share one tmp home (mirrors a real teammate's `~`), not three isolated
-     tmp_paths, since the point here is "does the whole kit cohere", not per-adapter
-     isolation (already covered by tests/adapters/test_*.py).
-  3. Assert every rendered MCP entry points at the ABSOLUTE venv firekeep-shim path per
-     service, and every hook command invokes the stdlib dispatcher.
-  4. Run `firekeep doctor` (run_doctor) with ONLY the network transport (get_json) and the
-     CA-cert decode mocked -- every other check (agent-id, api-key, venv-scripts,
-     config-perms, ca-expiry) runs for real against the tmp topology built above -- and
-     assert no FAIL status.
+  2. Build the SIDE-BY-SIDE venv layout the 0.1.35 installer provisions: a fake venv at
+     ~/.firekeep/venvs/X plus a REAL `current` link created via cli._point_current (a
+     junction on Windows, a symlink on POSIX — the same primitive the installer flips).
+  3. Render each runtime adapter (claude/codex/kiro/opencode) into tmp native-config
+     dirs against _venv_bin(home/current), with Path.home() monkeypatched the same way
+     each adapter's own test module does -- ALL FOUR share one tmp home (mirrors a real
+     teammate's `~`), not isolated tmp_paths, since the point here is "does the whole
+     kit cohere", not per-adapter isolation (already covered by tests/adapters/test_*.py).
+  4. Assert every rendered MCP entry points at the ABSOLUTE current-based firekeep path,
+     every hook command invokes the stdlib dispatcher, and — the cross-consumer guard —
+     every rendered file references the `current` alias and NONE references the
+     versioned venvs/<X> dir (a versioned path in a config pins that runtime to a dir a
+     later update's GC removes: it works until the sweep, then every spawn dies
+     file-not-found with no visible cause).
+  5. Run `firekeep doctor` (run_doctor) with ONLY the network transport (get_json) and
+     the CA-cert decode mocked -- every other check (agent-id, api-key, current-link,
+     venv-scripts, config-perms, ca-expiry) runs for real against the tmp topology built
+     above -- and assert no FAIL status, plus that doctor inspects the SAME current-based
+     bin dir the adapters embedded (doctor agreeing with the rendered configs is the
+     whole point of routing every surface through one alias).
 
 Unlike the adapters' own render tests (one adapter at a time, isolated tmp_path) and
 test_cli_doctor.py (doctor checks in isolation with everything but the transport
-mocked), this is the ONE flow that exercises all three adapters, the resolver-backed
+mocked), this is the ONE flow that exercises all the adapters, the resolver-backed
 ~/.firekeep config, and doctor's real (non-network) checks together against a single
 shared tmp topology -- the "whole kit hangs together" pin the SP1b design spec (§10/§12)
 calls for.
@@ -57,30 +66,45 @@ KIRO_EVENTS = (
 
 def test_kit_hangs_together(firekeep_env, write_config, monkeypatch):
     # -- 1. tmp ~/.firekeep OFFICE profile, via the existing conftest fixtures ---------
-    home_root = firekeep_env["home"].parent  # firekeep_env["home"] IS ~/.firekeep already
+    home = firekeep_env["home"]  # IS ~/.firekeep already
+    home_root = home.parent
     monkeypatch.setenv("USERPROFILE", str(home_root))  # adapters' fake_home trick
     monkeypatch.setenv("HOME", str(home_root))          # (Path.home() on both OSes)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home_root / ".config"))  # opencode
     write_config(active="office", office=DEFAULT_OFFICE)
 
-    # A believable installed venv at the SAME location `firekeep install` uses
-    # (firekeep_env["home"] / "venv") -- serves double duty below: the path baked into
-    # every adapter's rendered MCP command, and what doctor's venv-scripts check
-    # inspects, so this one fixture stands in for a real `firekeep install`.
+    # -- 2. the SIDE-BY-SIDE layout `firekeep install` provisions: the venv lives at
+    # its final versioned path (venvs are not relocatable) and every rendered surface
+    # routes through the `current` alias — built here with the REAL link primitive
+    # (cli._point_current), so on Windows this test renders and resolves through an
+    # actual NTFS junction, exactly like a customer machine.
     ext = ".exe" if sys.platform == "win32" else ""
     bindir_name = "Scripts" if sys.platform == "win32" else "bin"
-    venv_bin = firekeep_env["home"] / "venv" / bindir_name
-    venv_bin.mkdir(parents=True, exist_ok=True)
+    versioned = home / cli.VENVS_DIR_NAME / "X"
+    real_bin = versioned / bindir_name
+    real_bin.mkdir(parents=True, exist_ok=True)
     for name in (
         "python", "firekeep", "firekeep-shim", "firekeep-sidecar",
         "firekeep-decision", "firekeep-symdex",
     ):
-        (venv_bin / f"{name}{ext}").write_text("x", encoding="utf-8")
+        (real_bin / f"{name}{ext}").write_text("x", encoding="utf-8")
+    cli._point_current(home, versioned)
+
+    # Render against EXACTLY what cmd_install renders against: the alias.
+    venv_bin = cli._venv_bin(home / cli.CURRENT_LINK_NAME)
+    assert venv_bin == cli._venv_bin(cli._venv_root(home)), (
+        "with a current link present, _venv_root must select it — otherwise this "
+        "test and cmd_install would render different paths"
+    )
 
     expected_gateway = console_script_path(venv_bin / "firekeep")
     expected_python = console_script_path(venv_bin / "python")
     assert Path(expected_gateway).is_absolute()
+    assert (venv_bin / f"firekeep{ext}").exists(), (
+        "the alias must resolve through to the real versioned scripts"
+    )
 
-    # -- 2 & 3. render each adapter; assert ABSOLUTE shim path + dispatcher hooks ---
+    # -- 3 & 4. render each adapter; assert ABSOLUTE current path + dispatcher hooks ---
     get_adapter("claude").render(venv_bin=venv_bin)
     claude_cfg = _read_json(home_root / ".claude.json")
     claude_settings = _read_json(home_root / ".claude" / "settings.json")
@@ -114,11 +138,40 @@ def test_kit_hangs_together(firekeep_env, write_config, monkeypatch):
     assert entry["args"] == ["gateway"]
     # codex renders no hooks (spec §7.1: MCP servers only) -- nothing to assert there.
 
-    # -- 4. `firekeep doctor` -- mock ONLY the network transport + CA-cert decode ------
+    get_adapter("opencode").render(venv_bin=venv_bin)
+    opencode_cfg = _read_json(home_root / ".config" / "opencode" / "opencode.json")
+    assert set(opencode_cfg["mcp"]) == {"firekeep"}
+    assert opencode_cfg["mcp"]["firekeep"]["command"][0] == expected_gateway
+
+    # CROSS-CONSUMER GUARD (side-by-side venvs, 0.1.35): every rendered file
+    # must reference the `current` alias and may NEVER reference the versioned
+    # venvs/<X> dir. The alias is what makes updates render-free (the embedded
+    # strings stay literally identical across flips) and old venvs GC-able; one
+    # adapter embedding the versioned path silently re-couples that runtime's
+    # lifetime to a directory a later update deletes.
+    rendered = {
+        "claude-mcp": home_root / ".claude.json",
+        "claude-hooks": home_root / ".claude" / "settings.json",
+        "kiro": home_root / ".kiro" / "agents" / "firekeep.json",
+        "codex": home_root / ".codex" / "config.toml",
+        "opencode": home_root / ".config" / "opencode" / "opencode.json",
+        "opencode-plugin": home_root / ".config" / "opencode" / "plugins" / "firekeep-hooks.js",
+    }
+    for label, path in rendered.items():
+        assert path.is_file(), f"{label}: expected rendered file {path}"
+        text = path.read_text(encoding="utf-8")
+        assert cli.CURRENT_LINK_NAME in text, (
+            f"{label} must route through the `current` alias, got no mention in {path}"
+        )
+        assert cli.VENVS_DIR_NAME not in text, (
+            f"{label} embeds a versioned venvs/ path — pinned to a dir GC removes"
+        )
+
+    # -- 5. `firekeep doctor` -- mock ONLY the network transport + CA-cert decode ------
     monkeypatch.setattr(
         cli, "get_json", lambda url, **kw: {"status": "ok", "version": cli.__version__}
     )
-    ca_path = firekeep_env["home"] / "firekeep-root-ca.crt"  # DEFAULT_OFFICE's ca_path
+    ca_path = home / "firekeep-root-ca.crt"  # DEFAULT_OFFICE's ca_path
     ca_path.write_text("dummy PEM bytes -- decode is mocked below", encoding="utf-8")
     monkeypatch.setattr(
         cli, "_cert_not_after",
@@ -132,4 +185,20 @@ def test_kit_hangs_together(firekeep_env, write_config, monkeypatch):
     names = {name for name, _, _ in results}
     assert set(SERVICES) <= names  # per-service health rows present
     assert {"versions", "agent-id", "api-key", "venv-scripts",
-            "config-perms", "ca-expiry"} <= names
+            "config-perms", "ca-expiry", "current-link"} <= names
+
+    rows = {name: (status, detail) for name, status, detail in results}
+    # Doctor must inspect the SAME current-based bin dir the adapters embedded —
+    # if doctor resolved the venv differently from the render path, a green
+    # venv-scripts row would say nothing about the configs actually in use.
+    status, detail = rows["venv-scripts"]
+    assert status == "ok"
+    assert detail == str(venv_bin)
+    assert cli.VENVS_DIR_NAME not in detail
+    # current -> venvs/X while this client is __version__: the mismatch row is
+    # deliberately a WARN (normal mid-update, or right after a rollback), never
+    # a fail — asserted here so the integrated flow pins it, not just the unit
+    # tests in test_cli_doctor.py.
+    status, detail = rows["current-link"]
+    assert status == "warn"
+    assert "X" in detail

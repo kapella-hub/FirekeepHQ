@@ -5,31 +5,27 @@ ON by default; opt out with the `FIREKEEP_NO_AUTO_UPDATE` env var or
 once-a-day version check calls `maybe_spawn()`, which fire-and-forgets a DETACHED
 `firekeep update` when a newer release exists.
 
-Why detached + "applies next session": `firekeep update` re-execs the bootstrap and
-rebuilds ~/.firekeep/venv. It can't replace the install it is running from, so the
-update lands for the NEXT session, never the running one.
+Why detached + "applies next session": `firekeep update` re-execs the bootstrap,
+which provisions the NEW version's venv beside the running one and flips the
+`current` alias — the install this process runs from is never touched, so the
+update lands for the NEXT session (and next fresh hook exec), never the running one.
 
-The bootstrap now BUILDS BESIDE AND SWAPS (`${VENV}.new` -> rename), which is what
-makes running this in the background acceptable. The previous rationale here was
-wrong and worth recording, because it reads as reassuring:
+History, because an earlier version of this docstring described a design that had
+NOT shipped. 0.1.26 tried BUILD BESIDE AND RENAME (`${VENV}.new` -> mv) and it
+failed — a uv venv is not relocatable (pyvenv.cfg and every console-script
+interpreter line bake the absolute path), so the renamed venv's scripts pointed
+at a dead path (e2e gate: exit 127). The in-place `uv venv --clear` it reverted
+to deleted the live venv for 30-120s, during which every hook on every live
+macOS/Linux session failed with "No such file or directory" — and every fresh
+exec matters, because unlink safety only covers files a process has ALREADY
+MAPPED, while every lifecycle hook spawns a fresh `${VENV}/bin/python`.
 
-    "on POSIX that's unlink-safe (running processes keep old inodes; new files
-     land for next time)"
-
-Unlink safety covers files a process has ALREADY MAPPED. It does not cover a new
-exec — and every lifecycle hook spawns a fresh `${VENV}/bin/python` (PreToolUse
-gates every Edit; PostToolUse, UserPromptSubmit, SessionStart and Stop all fire
-per event; the four HTTP-backed stdio MCP shims are fresh execs at agent startup).
-The old
-`uv venv --clear` deleted the live venv and took 30-120s to repopulate it, so for
-that entire window every hook on every live macOS/Linux session failed with
-"No such file or directory" — with auto-update ON by default, meaning nobody had
-asked for that window to open.
-
-Windows was never exposed to this: the bootstrap there refused outright to
-overwrite a venv held by live agent processes. Staging retires that asymmetry
-instead of copying the guard to POSIX — neither platform now deletes an in-use
-venv, and the swap window is one rename(2) rather than a reinstall.
+The side-by-side layout (client 0.1.35, venvs/<version> + `current`) is the
+design that actually solves it: each venv is provisioned AT its final path and
+never moved, so nothing is relocated; nothing in-use is ever deleted (GC
+rename-probes before removing); and the swap window is an atomic rename(2) on
+POSIX and a millisecond junction flip on Windows — down from the 30-120s hole,
+and from Windows' previous outright refusal while any session was open.
 
 At most one spawn per calendar day per target version — the daily check caches a
 'newer' verdict, so without this guard every session start that day would relaunch.

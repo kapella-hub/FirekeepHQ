@@ -38,7 +38,7 @@ import json
 import sys
 
 from firekeep_client import hooklog, resolver
-from firekeep_client.stdio import force_utf8_stdio
+from firekeep_client.stdio import force_utf8_stdio, pin_import_paths
 from firekeep_client.hooks import (
     post_tool,
     pre_tool,
@@ -163,6 +163,9 @@ def main(argv: list[str] | None = None) -> int:
     # in a prompt, a file path, or a workspace snapshot before it reaches the
     # server. See firekeep_client/stdio.py for the measurement.
     force_utf8_stdio()
+    # Short-lived, but launched via the `current` alias like every kit process —
+    # pinning is symmetric across entry points (see stdio.pin_import_paths).
+    pin_import_paths()
     argv = list(sys.argv[1:] if argv is None else argv)
     core_name = argv[0] if argv else ""
 

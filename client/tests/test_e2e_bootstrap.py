@@ -144,8 +144,23 @@ def test_bootstrap_installs_and_renders_one_hook_group_per_event(release, tmp_pa
     proc = _run_bootstrap(["sh", str(CLIENT / "bootstrap" / "install.sh")], env)
     assert proc.returncode == 0, proc.stderr
 
-    firekeep = home / ".firekeep" / "venv" / "bin" / "firekeep"
-    assert firekeep.is_file(), "the venv must expose the firekeep console script"
+    # Side-by-side layout (client 0.1.35): the venv is provisioned AT its final
+    # versioned path — venvs/<V> — and never moved (a uv venv is not relocatable;
+    # pyvenv.cfg and every console-script interpreter line bake the absolute path).
+    firekeep = home / ".firekeep" / "venvs" / VERSION / "bin" / "firekeep"
+    assert firekeep.is_file(), "venvs/<V> must expose the firekeep console script"
+
+    # `current` is the alias every rendered surface routes through; updates flip it
+    # atomically instead of rebuilding a venv in place, so it must exist as a
+    # symlink resolving to the versioned venv just provisioned.
+    current = home / ".firekeep" / "current"
+    assert current.is_symlink(), "current must be a symlink, not a copied dir"
+    assert current.resolve() == (home / ".firekeep" / "venvs" / VERSION).resolve(), (
+        "current must resolve to the venv this install provisioned"
+    )
+    # A fresh install must never create the legacy single-venv path — that layout
+    # is what forced in-place rebuilds (and the 30-120s no-venv window) to begin with.
+    assert not (home / ".firekeep" / "venv").exists()
 
     # The config records where it came from, so `firekeep update` can find its way home.
     cfg = (home / ".firekeep" / "config").read_text()
@@ -157,7 +172,14 @@ def test_bootstrap_installs_and_renders_one_hook_group_per_event(release, tmp_pa
     for event in ("SessionStart", "Stop", "UserPromptSubmit", "PreToolUse", "PostToolUse"):
         groups = settings["hooks"][event]
         assert len(groups) == 1, f"{event} has {len(groups)} groups, expected 1"
-        assert "firekeep_client.hooks" in groups[0]["hooks"][0]["command"]
+        command = groups[0]["hooks"][0]["command"]
+        assert "firekeep_client.hooks" in command
+        # THE render-free-updates guard: rendered commands route through the
+        # `current` alias and NEVER a versioned venvs/<V> path. A versioned path
+        # here would pin the hook to a venv GC removes, and would force every
+        # update to re-render every surface — the exact coupling `current` retires.
+        assert str(home / ".firekeep" / "current") in command, command
+        assert str(home / ".firekeep" / "venvs") not in command, command
 
 
 def test_bootstrap_migrates_a_preexisting_duplicate_hook_setup(release, tmp_path):
@@ -198,7 +220,11 @@ def test_bootstrap_migrates_a_preexisting_duplicate_hook_setup(release, tmp_path
     command = session_start[0]["hooks"][0]["command"]
     assert "firekeep_client.hooks" in command
     assert "briefing.sh" not in command
-    assert str(home / ".firekeep" / "venv") in command, "must point at THIS install's fresh venv"
+    # Render-free-updates guard (same as the fresh-install test): the collapsed
+    # group must route through THIS install's `current` alias, never a versioned
+    # venvs/<V> path a later update's GC would remove.
+    assert str(home / ".firekeep" / "current") in command, "must route through the current alias"
+    assert str(home / ".firekeep" / "venvs") not in command, command
     # Foreign hook untouched.
     assert settings["hooks"]["Notification"][0]["hooks"][0]["command"] == "notify-send hi"
 
@@ -221,7 +247,9 @@ def test_update_replaces_the_wheel_in_place(release, tmp_path):
     manifest["version"] = "99.0.0"
     manifest_path.write_text(json.dumps(manifest))
 
-    firekeep = home / ".firekeep" / "venv" / "bin" / "firekeep"
+    # Invoke through the `current` alias — the path every rendered surface (shim,
+    # adapters) actually launches, so this exercises what sessions really run.
+    firekeep = home / ".firekeep" / "current" / "bin" / "firekeep"
     proc = subprocess.run([str(firekeep), "update", "--check"],
                           capture_output=True, text=True, env=env, timeout=120)
     assert proc.returncode == 0
@@ -231,33 +259,46 @@ def test_update_replaces_the_wheel_in_place(release, tmp_path):
 def test_update_to_actually_completes_a_real_reinstall_in_place(release, tmp_path):
     """`--check` (above) only proves the manifest-advance half of C3. This drives the FULL
     `firekeep update --to <version>` path — the one a teammate actually runs — through its real
-    re-exec: `cmd_update` downloads+verifies the bootstrap script, execve(2)s over the running
-    `firekeep` process, and install.sh re-provisions ~/.firekeep/venv IN PLACE, at the exact path the
-    process invoking it is running from.
+    re-exec: `cmd_update` downloads+verifies the bootstrap script and execve(2)s over the
+    running `firekeep` process.
 
-    That re-provisioning step is where a real gap was found during this task's own manual
-    verification: `uv venv <path>` refuses to recreate a venv that already exists ("Use
-    --clear"), and a post-install machine's ~/.firekeep/venv always already exists by
-    definition — so every real (non---check) `firekeep update` died at 'provisioning Python'
-    before this fix added --clear to both bootstraps' `uv venv` invocations. --check alone
-    would never catch this: it never re-execs the bootstrap at all. Pinning `--to` the SAME
-    version (rather than a fabricated 'newer' one) exercises the exact re-provision-in-place
-    code path without needing a second real wheel build at a different version."""
+    What that re-exec DOES changed with the side-by-side layout (client 0.1.35), and this
+    test now codifies the new invariant. Before, install.sh re-provisioned ~/.firekeep/venv
+    IN PLACE — which is where the `uv venv ... --clear` gap was found (uv refuses to
+    recreate an existing venv, so every real non---check update died at 'provisioning
+    Python' until --clear was added). Now `--to` a version whose venvs/<V> already exists
+    and is healthy takes the idempotent FAST PATH: no downloads, no re-provision — just an
+    atomic flip of the `current` symlink plus the wizard re-render. That same rule is what
+    makes `firekeep update --to <prev>` an instant rollback while venvs/<prev> survives GC.
+    (--clear is still passed on the full provision path, which now exists to rebuild a
+    PARTIAL venvs/<V> left by an interrupted install — the fast path's health probe fails
+    those into it; guarded by the bootstrap provisioning suite, not here.)
+
+    Pinning `--to` the SAME version (rather than a fabricated 'newer' one) exercises the
+    exact re-exec + fast-path code without needing a second real wheel build at a different
+    version — and still proves the handoff completes rather than deadlocking on its own
+    running process, which --check alone never could (it never re-execs the bootstrap)."""
     home = tmp_path / "home"
     home.mkdir()
     env = _bare_machine_env(home, release["base"])
     _run_bootstrap(["sh", str(CLIENT / "bootstrap" / "install.sh")], env, check=True)
 
-    firekeep = home / ".firekeep" / "venv" / "bin" / "firekeep"
+    firekeep = home / ".firekeep" / "current" / "bin" / "firekeep"
     proc = _run_bootstrap(
         [str(firekeep), "update", "--to", release["version"]], env,
     )
     assert proc.returncode == 0, f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
     assert "could not provision Python" not in proc.stderr
+    # The venv already exists and is healthy, so the bootstrap must take the
+    # zero-download fast path (flip + re-render), not a full re-provision.
+    assert "already provisioned" in proc.stderr, (
+        f"expected the fast-path message; stderr:\n{proc.stderr}")
 
     # The re-exec replaced the process image (os.execve), so `firekeep` must still work
-    # afterwards — a botched in-place reinstall would otherwise leave a half-provisioned or
-    # missing venv that only a SUBSEQUENT command would ever reveal as broken.
+    # afterwards — a botched update would otherwise leave `current` dangling or a
+    # half-provisioned venv that only a SUBSEQUENT command would ever reveal as broken.
+    assert (home / ".firekeep" / "current").resolve() == (
+        home / ".firekeep" / "venvs" / release["version"]).resolve()
     check = subprocess.run([str(firekeep), "update", "--check"],
                             capture_output=True, text=True, env=env, timeout=60)
     assert check.returncode == 0
@@ -273,8 +314,10 @@ def test_bootstrap_dies_on_a_tampered_wheel_and_never_creates_the_venv(release, 
     the time this test runs (the `release` fixture ran it). Corrupting the SERVED wheel here
     reproduces exactly what a MITM or a broken mirror would produce: bytes on the wire that
     no longer match the hash the release actually published. install.sh must die with a
-    checksum error and must not create the venv at all — verification happens strictly
-    before `uv venv` is invoked, not just before `uv pip install`."""
+    checksum error and must not create venvs/<V> at all — verification happens strictly
+    before `uv venv` is invoked, not just before `uv pip install`. And `current` must never
+    have been created: the flip is the LAST act of a successful install (after both wheels
+    verify and install), so a failed install leaves nothing for a session to launch through."""
     vdir = release["served"] / release["version"]
     wheel = next(vdir.glob("firekeep_client-*.whl"))
     original = wheel.read_bytes()
@@ -287,7 +330,13 @@ def test_bootstrap_dies_on_a_tampered_wheel_and_never_creates_the_venv(release, 
 
     assert proc.returncode != 0, proc.stdout
     assert "checksum" in proc.stderr.lower(), proc.stderr
-    assert not (home / ".firekeep" / "venv").exists(), (
+    assert not (home / ".firekeep" / "venvs" / release["version"]).exists(), (
         "a wheel that fails checksum verification must never reach `uv pip install`, and "
-        "since verification now runs before `uv venv` too, the venv must not exist at all"
+        "since verification runs before `uv venv` too, venvs/<V> must not exist at all"
+    )
+    # lexists, not exists: a DANGLING current symlink would be just as much a bug
+    # (sessions would launch through it into nothing) and Path.exists() follows links.
+    assert not os.path.lexists(home / ".firekeep" / "current"), (
+        "current is flipped only after a complete, verified install — a failed install "
+        "must never create it"
     )

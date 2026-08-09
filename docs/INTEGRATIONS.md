@@ -103,7 +103,7 @@ Re-run `firekeep install` for your runtime; it is idempotent and non-clobbering.
 Codex is MCP-only (no hook surface), so use the client kit's local gateway rather than raw HTTP — Codex's `~/.codex/config.toml` speaks stdio, not `type: "http"`. Run `firekeep install --runtime codex` (see [docs/SETUP-CODEX.md](docs/SETUP-CODEX.md)), which renders:
 ```toml
 [mcp_servers.firekeep]
-command = '/absolute/path/to/.firekeep/venv/bin/firekeep'
+command = '/absolute/path/to/.firekeep/current/bin/firekeep'
 args = ["gateway"]
 ```
 The gateway injects TLS + auth headers from `[server]` and `[identity]` in
@@ -118,7 +118,7 @@ Run `firekeep install --runtime kiro`, which renders `~/.kiro/agents/firekeep.js
 {
   "mcpServers": {
     "firekeep": {
-      "command": "/absolute/path/to/.firekeep/venv/bin/firekeep",
+      "command": "/absolute/path/to/.firekeep/current/bin/firekeep",
       "args": ["gateway"]
     }
   }

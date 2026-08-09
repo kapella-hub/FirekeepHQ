@@ -137,6 +137,84 @@ class TestClaudeUpgrade:
         assert env.get("FOO") == "bar"
 
 
+def test_legacy_venv_paths_migrate_to_current_on_rerender(fake_home):
+    """0.1.34 -> 0.1.35 layout migration: one re-render, zero stale paths.
+
+    Machines that installed before the side-by-side layout carry rendered configs
+    whose hook commands and MCP server entry embed the ABSOLUTE legacy path,
+    `~/.firekeep/venv/...`. The redesign's whole promise — updates are render-free
+    because every surface routes through the `current` alias — only holds once
+    those machines converge: the first re-render against a current-based venv_bin
+    must remove every old-path entry and leave exactly one current-based entry
+    per event, or the machine runs hooks from a venv a later update's GC deletes
+    (the exact "No such file or directory on every lifecycle hook" failure the
+    layout exists to retire).
+
+    No new machinery should be needed, and this test proves none regressed:
+    HOOK_MARKER identifies a firekeep hook by the `firekeep_client.hooks` module
+    token, NOT by its path, so upsert_hook_group's collapse-all treats the old
+    layout's groups as ours; merge_owned overwrites the `firekeep` MCP key. That
+    path-independence is load-bearing — a marker that embedded the venv path
+    would silently orphan every pre-0.1.35 machine while staying green here.
+    """
+    bin_name = "Scripts" if os.name == "nt" else "bin"
+    old_bin = fake_home / ".firekeep" / "venv" / bin_name
+    exe = ".exe" if os.name == "nt" else ""
+    # Exactly as the pre-0.1.35 adapter rendered them: absolute legacy venv path,
+    # forward-slashed (hook commands are bash-executed shell strings).
+    old_py = str(old_bin / "python").replace("\\", "/") + exe
+    (fake_home / ".claude").mkdir(parents=True, exist_ok=True)
+    (fake_home / ".claude.json").write_text(json.dumps({"mcpServers": {
+        "firekeep": {"type": "stdio", "command": str(old_bin / "firekeep") + exe,
+                     "args": ["gateway"]},
+        "someone-elses-server": {"command": "keep me"},
+    }}), encoding="utf-8")
+    (fake_home / ".claude" / "settings.json").write_text(json.dumps({
+        "hooks": {
+            "SessionStart": [{"hooks": [
+                {"type": "command",
+                 "command": f"{old_py} -m firekeep_client.hooks session_start",
+                 "timeout": 15}]}],
+            "Stop": [
+                # A foreign group ahead of ours: it must survive, in place.
+                {"hooks": [{"type": "command", "command": "notify-send bye"}]},
+                {"hooks": [
+                    {"type": "command",
+                     "command": f"{old_py} -m firekeep_client.hooks stop",
+                     "timeout": 5}]},
+            ],
+        },
+    }), encoding="utf-8")
+
+    new_bin = fake_home / ".firekeep" / "current" / bin_name
+    get_adapter("claude").render(venv_bin=new_bin)
+
+    # Trailing separator on purpose: distinguishes the legacy `venv/` dir from the
+    # new `venvs/` dir, which shares it as a prefix.
+    old_marker = str(fake_home / ".firekeep" / "venv").replace("\\", "/") + "/"
+    new_marker = str(fake_home / ".firekeep" / "current").replace("\\", "/") + "/"
+
+    hooks = json.loads(
+        (fake_home / ".claude" / "settings.json").read_text(encoding="utf-8"))["hooks"]
+    for event in ("SessionStart", "Stop"):
+        commands = [h.get("command", "")
+                    for g in hooks.get(event, []) for h in g.get("hooks", [])]
+        assert not any(old_marker in c for c in commands), (
+            f"{event} still invokes the legacy ~/.firekeep/venv layout: {commands}")
+        assert sum(new_marker in c for c in commands) == 1, (
+            f"{event} should hold exactly one current-based command, got {commands}")
+    assert any("notify-send bye" in h.get("command", "")
+               for g in hooks["Stop"] for h in g.get("hooks", [])), (
+        "the foreign Stop hook must survive the migration untouched")
+
+    servers = json.loads(
+        (fake_home / ".claude.json").read_text(encoding="utf-8"))["mcpServers"]
+    assert str(fake_home / ".firekeep" / "current") in servers["firekeep"]["command"], (
+        "the gateway entry must be repointed through the current alias")
+    assert str(fake_home / ".firekeep" / "venv") + os.sep not in servers["firekeep"]["command"]
+    assert servers["someone-elses-server"] == {"command": "keep me"}
+
+
 _OLD = 1_600_000_000  # a fixed mtime in the past; no sleep needed
 
 

@@ -48,15 +48,40 @@ machines need, since the corporate interception CA lives there alongside the pub
 It then runs `firekeep install`, which prompts for identity and the single
 server connection, then renders every runtime adapter.
 
+**Layout (side-by-side venvs, client 0.1.35):** the kit lives at
+`~/.firekeep/venvs/<version>` — one full uv venv per installed version, provisioned AT that
+final path and never moved, because a uv venv is not relocatable: `pyvenv.cfg` and every
+console-script interpreter line bake the absolute path (the recorded 0.1.26
+build-beside-and-rename failure). `~/.firekeep/current` selects the active one — an NTFS
+junction on Windows (works without admin, unlike a directory symlink), a plain symlink on
+POSIX. Every rendered surface — the PATH shim, all four adapters' MCP/hook commands, the
+`/personal` command file, doctor — routes through `current` and never a versioned path,
+which is what makes updates render-free (the embedded paths stay literally identical across
+flips) and keeps runtime configs from pinning a venv that GC will remove. One hazard the
+alias creates is closed at startup: a long-running kit process launched through `current`
+would resolve imports it performs *after* a flip through the NEW venv — mixing modules from
+two client versions in one process — so every stdio entry point (gateway, hooks, shim,
+decision) realpaths `sys.path` first thing (`stdio.pin_import_paths()`), freezing module
+resolution to the versioned dir it actually started under. The legacy pre-0.1.35
+`~/.firekeep/venv` is left alone while sessions still run from it and GC'd by a later
+update (see Updating below).
+
 **`firekeep` on PATH (`firekeep_client/pathenv.py`, client 0.1.20):** every install path funnels
 through `firekeep install` (fresh bootstrap, `firekeep update` re-exec, checkout `./install`), so
 that is where a `firekeep` launcher gets put on PATH — best-effort (a PATH failure NEVER fails
-the install). It does **not** PATH `~/.firekeep/venv/bin`: that dir holds the kit's standalone
+the install). It does **not** PATH the venv's bin dir: that dir holds the kit's standalone
 CPython (`python`/`python3`/`pip`) and every internal entry point (`firekeep-shim`,
 `firekeep-sidecar`, `firekeep-decision`, `firekeep-symdex`), so prepending it would shadow the user's
 own `python3`. Instead it drops ONE launcher — `firekeep` — into a dedicated `~/.firekeep/shims`
-dir (POSIX: a `#!/bin/sh` wrapper `exec`ing the venv firekeep; Windows: `firekeep.cmd` →
-`%~dp0..\venv\Scripts\firekeep.exe`) and PATHs only that (the pipx/rustup pattern). POSIX writes
+dir (POSIX: a `#!/bin/sh` wrapper `exec`ing `~/.firekeep/current/bin/firekeep`; Windows:
+`firekeep.cmd` → `%~dp0..\current\Scripts\firekeep.exe`, a relative hop to whatever root it
+was rendered against — `current` under the side-by-side layout, the legacy `venv` on a
+not-yet-migrated install, never a versioned `venvs\<X.Y.Z>` path that would pin the
+launcher to a venv GC removes) and PATHs only that (the pipx/rustup pattern). Because the
+launcher routes through `current`, it survives every update byte-identical —
+`~/.firekeep/shims/firekeep` is the STABLE path for anything external (cron entries, CI,
+night-shift schedulers); a scheduler still pointing at `~/.firekeep/venv/bin/firekeep`
+breaks when a later update GCs the legacy dir. POSIX writes
 a marker-delimited `export PATH=...` block into the shell rc for `$SHELL` (zsh→`.zshrc`;
 bash→`.bashrc` + existing `.bash_profile`/`.profile`; fish→`conf.d/firekeep.fish`; else
 `.profile`) — extras are updated only if they already exist, so a login-shell sourcing chain
@@ -73,42 +98,81 @@ firekeep install --runtime claude      # re-render one runtime: claude | codex |
 # firekeep-symdex (stdio-local code intelligence) now installs automatically — no flag needed
 firekeep install --non-interactive --agent-id ci-bot --host 10.0.0.4   # scripted/fleet
 ```
-`./install` (from a checkout, requires a system `python3 >= 3.10`) installs the kit into
-`~/.firekeep/venv` and renders the adapters. `firekeep install` (from that venv) **re-renders
-adapters only** — it skips pip, because the code it would install is the code already
-running.
+`./install` (from a checkout, requires a system `python3 >= 3.10`) provisions the kit into
+`~/.firekeep/venvs/<version>` (version parsed from `client/pyproject.toml`), points `current`
+at it, and renders the adapters. `firekeep install` (from that venv) **re-renders adapters
+only** — it skips pip, because the code it would install is the code already running; the
+venv it stands in is derived from `sys.executable`, never guessed, so it works from a
+versioned venv and a legacy `venv/` alike.
 
-**Updating:** `firekeep update` (`--check` to report only, `--to X.Y.Z` to pin or roll back).
-It re-execs the bootstrap rather than pip-installing over itself — on Windows the running
-`Scripts\firekeep.exe` is locked and cannot be overwritten in place. Install and update are
-therefore one code path. The Windows bootstrap additionally (a) pins `uv venv
---python-preference only-managed` so interpreter discovery never walks the PATH into a
-dangling Windows Store python alias (zero-byte APPEXECLINK stub → "os error 3") nor binds
-the venv to a non-standalone system Python, and (b) refuses to replace a `~/.firekeep/venv`
-that live agent processes still run from (every open Claude Code/kiro session runs the
-kit's stdio MCP servers — firekeep-decision, firekeep-symdex, shims — from that venv): it names
-the holder processes and asks you to close those sessions, instead of letting uv die with
-a bare "Access is denied (os error 5)". POSIX needs neither guard (unlink of in-use files
-succeeds; only-managed is mirrored there for the standalone-CPython contract, not the
-crash). `~/.firekeep/config`'s `[dist] base_url` (written by the bootstrap, or
-via `firekeep install --dist-base URL`) is how `firekeep update` knows where its releases live; a
-checkout install has no `[dist]` section and `firekeep update` says so plainly. `firekeep doctor`
-reports a `client-version` check when a newer release exists.
+**Updating (render-free since client 0.1.35):** `firekeep update` (`--check` to report only,
+`--to X.Y.Z` to pin or roll back). It re-execs the bootstrap rather than pip-installing over
+itself, so install and update are one code path — and the bootstrap provisions `venvs/<V>`
+beside whatever is running, checksum-verifies and installs both wheels into it, and only
+then flips `current`. **Updates no longer require closing sessions.** Live sessions keep
+executing their old venv untouched — their open handles pin the real files, not the link —
+and everything launched afterwards gets the new version. That retires both defects of the
+in-place rebuild this replaces: the Windows holder-PID guard (it enumerated ~93 raw PIDs on
+the owner's machine and told an audience that lives inside agent sessions to close every
+one) and the 30–120 s POSIX window where `~/.firekeep/venv` did not exist mid-rebuild and
+every fresh hook exec on every live session failed with "No such file or directory". The
+flip itself is atomic on POSIX (`os.replace` over the symlink) and a millisecond
+`rmdir`+junction recreate on Windows — a spawn in that window fails file-not-found once and
+its retry succeeds (hooks fail open by design). The ONE refusal left is Windows-only:
+`FIREKEEP_FORCE_REINSTALL=1` of the version `current` points at while sessions still run
+it — clearing a held venv there dies mid-delete and leaves it gutted, so the bootstrap
+refuses, summarizing holders as `Nx name` counts, never raw PIDs (POSIX clears a held venv
+inode-safely and just proceeds). A `venvs/<V>` whose own `python -I`
+probe reports `V` takes the fast path (flip + re-render, zero downloads) — one rule that
+covers idempotent re-runs, crash-healing (a crash between flip and wizard re-runs to the
+same state), and INSTANT rollback: `firekeep update --to <prev>` while `venvs/<prev>`
+survives GC is just a flip. On Windows the client now waits on the bootstrap as a
+FOREGROUND child, streaming its output in order to the same console — safe precisely
+because the side-by-side install never overwrites the running `firekeep.exe`; the detached
+spawn whose output tore across the caller's returned prompt is gone (POSIX keeps `execve`).
+The Windows bootstrap still pins `uv venv --python-preference only-managed` so interpreter
+discovery never walks the PATH into a dangling Windows Store python alias (zero-byte
+APPEXECLINK stub → "os error 3") nor binds the venv to a non-standalone system Python
+(mirrored on POSIX for the standalone-CPython contract).
+
+**GC — rename-probe, keep two.** After the wizard hand-off the bootstrap removes every
+versioned venv except the one `current` points at and the newest other version (kept as the
+instant-rollback target), plus leftovers of interrupted GCs, plus the legacy pre-0.1.35
+`~/.firekeep/venv`. Liveness is proven by RENAME, not process enumeration: renaming a
+directory with open files anywhere beneath it fails atomically with no partial state,
+whereas a recursive delete guts a held venv before hitting the first locked exe ("delete
+failed" would mean "venv now corrupt") — so GC renames to `<name>.gc`, deletes the renamed
+dir on success, and on failure keeps it with one humane line ("kept <name> — still in use
+by open agent sessions; a future update will remove it"). A crash mid-GC leaves only a
+`.gc` dir a future run re-sweeps. POSIX gates the LEGACY venv on `lsof` instead — rename
+succeeds there even while held, and pre-0.1.35 rendered configs exec hooks from that dir by
+absolute path, so deleting it under a live legacy session would break that session's fresh
+hook execs; sessions opened before the migration keep running from it, and the wizard's
+re-render is what moves every rendered path onto `current`. `~/.firekeep/config`'s
+`[dist] base_url` (written by the bootstrap, or via `firekeep install --dist-base URL`) is how
+`firekeep update` knows where its releases live; a checkout install has no `[dist]` section
+and `firekeep update` says so plainly. `firekeep doctor` reports a `client-version` check when a
+newer release exists, plus a `current-link` row: a link that is missing while `venvs/`
+exists, dangling, or pointing at a different version than the running client is named
+outright — every rendered surface routes through it, so a bad link is a dead client that
+looks installed. A pure legacy layout (no `venvs/`, no link) gets no row: not yet updated
+is not a fault.
 
 **Background auto-update (`firekeep_client/autoupdate.py`, client 0.1.20) — ON by default.** The
 `session_start` daily version check (below) no longer only nudges: when a newer release
 exists it fire-and-forgets a DETACHED `firekeep update` (`autoupdate.maybe_spawn` →
 `subprocess.Popen([venv/firekeep, "update"], start_new_session=True` / Windows
-`DETACHED_PROCESS`). This automates the SAME operation a user runs by hand mid-session, so it
-carries the same safety: `firekeep update` rebuilds `~/.firekeep/venv`, which can't replace the
-install it runs from — POSIX unlink-safety means the running session keeps working and the
-new version applies to the **next** session. **Windows caveat:** the detached update is
-refused by the bootstrap's live-holder guard whenever a session's stdio MCP servers
-(firekeep-decision, firekeep-symdex, shims) still hold the venv — which at session start they
-always do — so on Windows the background update silently no-ops during active use and only
-lands once no session holds the venv; Windows teammates should treat `firekeep update`
-(manual) as the reliable path. The failed attempt is harmless (detached, output to
-DEVNULL) and the daily guard means at most one such attempt per day. Guarded to **at most one spawn per calendar day per
+`DETACHED_PROCESS`). This automates the SAME operation a user runs by hand mid-session, and
+since the side-by-side layout (0.1.35) it lands on every platform without closing anything:
+the update provisions `venvs/<V>` beside the running install and flips `current`, touching
+nothing the session holds. The old Windows caveat is **retired with the guard that caused
+it** — the bootstrap's live-holder guard refused whenever a session's stdio MCP servers
+(firekeep-decision, firekeep-symdex, shims) still held `~/.firekeep/venv`, which at session
+start they always did, so Windows background updates silently no-opped during active use
+and the manual path was the only reliable one. "Applies next session" stays true for
+RUNNING sessions: they keep executing the venv they started under (the design, not a
+limitation — that venv is pinned by their open handles and `pin_import_paths()`), and the
+new version takes effect for everything launched after the flip. Guarded to **at most one spawn per calendar day per
 target version** (the daily check caches a 'newer' verdict, so without this every session
 start that day would relaunch — the guard is a `today|latest` stamp in scratch). The
 detached update runs `--non-interactive` (no tty), so it never prompts and preserves config.

@@ -41,7 +41,7 @@ from typing import Any, Callable
 import anyio
 
 from firekeep_client import hooklog, resolver, transport
-from firekeep_client.stdio import force_utf8_stdio
+from firekeep_client.stdio import force_utf8_stdio, pin_import_paths
 from firekeep_client.decision.board import BOARD_CSP, BOARD_HTML, render_answers
 
 # --------------------------------------------------------------------------- #
@@ -685,6 +685,9 @@ def main() -> int:
     # (cp1252) corrupts every such character on the wire. See
     # firekeep_client/stdio.py.
     force_utf8_stdio()
+    # Long-running stdio server launched via the `current` alias — pin imports
+    # to the venv we started under (see stdio.pin_import_paths).
+    pin_import_paths()
 
     # Resolve once before the MCP handshake so an ambiguous legacy config fails
     # this stdio server loudly instead of appearing as an ordinary degraded board.

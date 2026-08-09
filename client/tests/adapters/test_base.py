@@ -75,10 +75,12 @@ def test_hook_command_forward_slashes_survive_bash_on_windows(monkeypatch):
     real backslash, which is exactly how this shipped."""
     from pathlib import PureWindowsPath
     monkeypatch.setattr(sys, "platform", "win32")
-    venv_bin = PureWindowsPath(r"C:\Users\mogan\.firekeep\venv\Scripts")
+    # `current` is the side-by-side layout's alias (the junction every rendered
+    # surface routes through) — what cmd_install actually passes as venv_bin.
+    venv_bin = PureWindowsPath(r"C:\Users\mogan\.firekeep\current\Scripts")
     cmd = hook_command(venv_bin, "prompt")
     assert "\\" not in cmd                          # no backslash reaches the bash string
-    assert cmd == "C:/Users/mogan/.firekeep/venv/Scripts/python.exe -m firekeep_client.hooks prompt"
+    assert cmd == "C:/Users/mogan/.firekeep/current/Scripts/python.exe -m firekeep_client.hooks prompt"
 
 
 def test_hook_command_quotes_spaced_windows_path_with_forward_slashes(monkeypatch):
@@ -86,10 +88,10 @@ def test_hook_command_quotes_spaced_windows_path_with_forward_slashes(monkeypatc
     spaced path) AND use forward slashes (bash-safe) -- both concerns handled together."""
     from pathlib import PureWindowsPath
     monkeypatch.setattr(sys, "platform", "win32")
-    venv_bin = PureWindowsPath(r"C:\Users\First Last\.firekeep\venv\Scripts")
+    venv_bin = PureWindowsPath(r"C:\Users\First Last\.firekeep\current\Scripts")
     cmd = hook_command(venv_bin, "session_start")
     assert "\\" not in cmd
-    assert cmd == '"C:/Users/First Last/.firekeep/venv/Scripts/python.exe" -m firekeep_client.hooks session_start'
+    assert cmd == '"C:/Users/First Last/.firekeep/current/Scripts/python.exe" -m firekeep_client.hooks session_start'
 
 
 def test_hook_command_dispatcher_form_is_module_not_submodule(tmp_path):
@@ -139,7 +141,7 @@ def test_hook_command_quotes_paths_with_spaces(monkeypatch, tmp_path):
     from firekeep_client.adapters import base
 
     monkeypatch.setattr(_sys, "platform", "win32")
-    venv_bin = tmp_path / "First Last" / ".firekeep" / "venv" / "Scripts"
+    venv_bin = tmp_path / "First Last" / ".firekeep" / "current" / "Scripts"
     cmd = base.hook_command(venv_bin, "pre_tool", extra_args="--block-exit 2")
     assert cmd.startswith('"') and '" -m firekeep_client.hooks pre_tool' in cmd
     assert cmd.endswith("--block-exit 2")

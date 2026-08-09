@@ -35,7 +35,7 @@ from .resolver import (
     resolve,
 )
 from . import state, transport
-from .stdio import force_utf8_stdio
+from .stdio import force_utf8_stdio, pin_import_paths
 
 PROG = "firekeep-shim"
 
@@ -720,6 +720,9 @@ def run(service: str, *, profile: str | None = None, http_client=None, stdio_str
     # error, inert bypass server), which never reach the SDK at all. See
     # firekeep_client/stdio.py for why the platform default is not survivable.
     force_utf8_stdio()
+    # Long-running stdio server launched via the `current` alias — pin imports
+    # to the venv we started under (see stdio.pin_import_paths).
+    pin_import_paths()
 
     if service == "symdex":
         _stderr(

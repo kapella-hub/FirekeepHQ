@@ -35,7 +35,15 @@ def artifact_server(tmp_path):
     `pip install` (drop a `firekeep` shim that records its argv). That lets us drive the whole
     bootstrap without downloading a real CPython. The wheel itself is a stub too — the stub
     uv's `pip install` branch is a no-op regardless of its argument, so only the BYTES need to
-    match SHA256SUMS, not real wheel contents."""
+    match SHA256SUMS, not real wheel contents.
+
+    Since the side-by-side layout (0.1.35) the stub venv must also carry `bin/python`:
+    the script's venv_version() health probe runs `<venv>/bin/python -I -c` and
+    point_current() flips the `current` symlink by running os.replace THROUGH the target
+    venv's own python (mv cannot replace a symlink-to-directory portably). The stub python
+    execs the real python3, which keeps both faithful: os.replace really renames, and the
+    probe's `import firekeep_client` really fails (the stub venv holds no such module —
+    exactly a fresh machine's state, so the handoff stays interactive)."""
     root = tmp_path / "release"
     (root / "latest").mkdir(parents=True)
     vdir = root / VERSION
@@ -55,6 +63,8 @@ def artifact_server(tmp_path):
         '    "if [ -t 0 ]; then echo FIREKEEP_STDIN_IS_TTY; else echo FIREKEEP_STDIN_NOT_TTY; fi" \\\n'
         '    "echo FIREKEEP_INSTALL_CALLED \\$@" > "$2/bin/firekeep"\n'
         '  chmod +x "$2/bin/firekeep"\n'
+        "  printf '%s\\n' '#!/bin/sh' 'exec \"$(command -v python3)\" \"$@\"' > \"$2/bin/python\"\n"
+        '  chmod +x "$2/bin/python"\n'
         "fi\n"
         "exit 0\n"
     )
@@ -109,6 +119,36 @@ def artifact_server(tmp_path):
     srv.shutdown()
 
 
+def _assert_nothing_provisioned(home):
+    """The side-by-side layout's 'must not proceed' shape: a failed install leaves
+    NO venvs/<V> and NO `current` alias (pre-0.1.35 this was `~/.firekeep/venv`
+    not existing). lexists on `current`, not exists: a dangling symlink would be
+    exactly the kind of half-flip these tests exist to rule out."""
+    fk = home / ".firekeep"
+    assert not (fk / "venvs" / VERSION).exists(), (
+        "the versioned venv must not be provisioned past a failure"
+    )
+    assert not os.path.lexists(fk / "current"), (
+        "`current` must not exist (not even dangling) after a failed install — "
+        "the flip is the last observable act, after both wheels verify"
+    )
+
+
+def _assert_current_selects_the_new_venv(home):
+    """The side-by-side layout's success shape: venvs/<V> exists at its FINAL
+    path (a venv is not relocatable — it must be born where it lives) and
+    `current` is a SYMLINK resolving to it, because every rendered surface
+    (shims, adapters, the wizard hand-off itself) routes through the alias."""
+    venv = home / ".firekeep" / "venvs" / VERSION
+    cur = home / ".firekeep" / "current"
+    assert (venv / "bin" / "firekeep").exists(), "venvs/<V> was not provisioned"
+    assert cur.is_symlink(), "`current` must be a symlink, not a copied directory"
+    assert Path(os.path.realpath(cur)) == Path(os.path.realpath(venv)), (
+        f"`current` resolves to {os.path.realpath(cur)}, not the freshly "
+        f"installed {venv}"
+    )
+
+
 def test_install_sh_refuses_an_unset_dist_base(tmp_path):
     """Fail loud: an installer with nowhere to fetch from must say so, not 404 six steps in."""
     proc = subprocess.run(["sh", str(BOOTSTRAP)], capture_output=True, text=True,
@@ -139,7 +179,7 @@ def test_install_sh_aborts_on_a_uv_checksum_mismatch(tmp_path, artifact_server):
     )
     assert proc.returncode != 0
     assert "checksum" in proc.stderr.lower()
-    assert not (tmp_path / ".firekeep" / "venv").exists(), "must not proceed past a bad checksum"
+    _assert_nothing_provisioned(tmp_path)  # must not proceed past a bad checksum
 
 
 def test_install_sh_aborts_on_a_wheel_checksum_mismatch(tmp_path, artifact_server):
@@ -163,11 +203,10 @@ def test_install_sh_aborts_on_a_wheel_checksum_mismatch(tmp_path, artifact_serve
     )
     assert proc.returncode != 0
     assert "checksum" in proc.stderr.lower()
-    assert not (tmp_path / ".firekeep" / "venv").exists(), (
-        "a wheel that fails verification must never reach `uv pip install`, and — since "
-        "verification now happens before the venv is provisioned at all — the venv must not "
-        "exist as if nothing happened"
-    )
+    # A wheel that fails verification must never reach `uv pip install`, and — since
+    # verification happens before the venv is provisioned at all — venvs/<V> must not
+    # exist and `current` must not have been flipped, as if nothing happened.
+    _assert_nothing_provisioned(tmp_path)
 
 
 def test_install_sh_distinguishes_a_missing_sums_entry_from_a_mismatch(tmp_path, artifact_server):
@@ -189,7 +228,7 @@ def test_install_sh_distinguishes_a_missing_sums_entry_from_a_mismatch(tmp_path,
     assert "no SHA256SUMS entry" in proc.stderr, (
         f"a missing entry must not be reported as a checksum mismatch:\n{proc.stderr}"
     )
-    assert not (tmp_path / ".firekeep" / "venv").exists()
+    _assert_nothing_provisioned(tmp_path)
 
 
 def test_install_sh_reattaches_the_terminal_when_piped_to_sh(tmp_path, artifact_server):
@@ -252,6 +291,7 @@ def test_install_sh_falls_back_when_there_is_no_controlling_terminal(tmp_path, a
         f"no terminal available — the wizard must not be asked to prompt:\n{proc.stdout}"
     )
     assert "no terminal available" in proc.stderr
+    _assert_current_selects_the_new_venv(tmp_path)
 
 
 def test_install_sh_uses_the_baked_dist_base_when_env_is_unset(tmp_path, artifact_server):
@@ -272,6 +312,7 @@ def test_install_sh_uses_the_baked_dist_base_when_env_is_unset(tmp_path, artifac
     )
     assert proc.returncode == 0, f"baked headless install must not fail:\n{proc.stderr}"
     assert "FIREKEEP_INSTALL_CALLED" in proc.stdout
+    _assert_current_selects_the_new_venv(tmp_path)
 
 
 # --- release signing: best-effort minisign verification (docs/RELEASE-SIGNING.md) ---
@@ -308,9 +349,8 @@ def test_install_sh_dies_when_minisign_rejects_the_signature(tmp_path, artifact_
     )
     assert proc.returncode != 0
     assert "signature verification FAILED" in proc.stderr
-    assert not (tmp_path / ".firekeep" / "venv").exists(), (
-        "a failed signature must stop the install before anything is provisioned"
-    )
+    # A failed signature must stop the install before anything is provisioned.
+    _assert_nothing_provisioned(tmp_path)
 
 
 def test_install_sh_verifies_and_proceeds_when_minisign_accepts(tmp_path, artifact_server):
@@ -425,7 +465,7 @@ def test_install_sh_two_fetch_split_no_longer_works(tmp_path, artifact_server):
         f"{proc.stdout}\n{proc.stderr}"
     )
     assert "checksum mismatch" in proc.stderr.lower()
-    assert not (home2 / ".firekeep" / "venv").exists()
+    _assert_nothing_provisioned(home2)
     assert _sums_requests(artifact_server) == [], (
         "under a handed FIREKEEP_SUMS_FILE the bootstrap must make NO SHA256SUMS "
         f"fetch — fetch #2 is the vulnerability. Saw: {_sums_requests(artifact_server)}"
@@ -450,6 +490,7 @@ def test_install_sh_handed_sums_installs_without_any_sums_fetch(tmp_path, artifa
     assert "FIREKEEP_INSTALL_CALLED" in proc.stdout
     assert "handed by firekeep update" in proc.stdout
     assert _sums_requests(artifact_server) == []
+    _assert_current_selects_the_new_venv(tmp_path)
 
 
 def test_install_sh_ignores_the_handed_sums_without_a_pinned_version(tmp_path, artifact_server):
@@ -484,4 +525,4 @@ def test_install_sh_dies_when_the_handed_sums_file_is_unusable(tmp_path, artifac
     assert _sums_requests(artifact_server) == [], (
         "an unusable handed file must not degrade to the network fetch it replaces"
     )
-    assert not (tmp_path / ".firekeep" / "venv").exists()
+    _assert_nothing_provisioned(tmp_path)

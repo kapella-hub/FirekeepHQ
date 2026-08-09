@@ -162,6 +162,43 @@ cd client && python -m pytest tests/test_e2e_bootstrap.py -m e2e -q
 ```
 
 
+- **0.1.35** — Side-by-side venvs: every release installs to its own
+  `~/.firekeep/venvs/<version>`, selected by a `~/.firekeep/current` link (NTFS
+  junction / POSIX symlink) that every rendered surface routes through. Updates
+  provision the new venv beside whatever is running and flip the link, so they
+  no longer ask you to close agent sessions — the old Windows guard printed a
+  wall of ~93 raw PIDs and refused; the one refusal left is a forced reinstall
+  of the running version, and it counts holders by process name. The Windows
+  updater runs the bootstrap as a foreground child streaming to the caller's
+  console instead of a detached process tearing across it, `firekeep update
+  --to <prev>` is an instant flip while the previous venv survives GC (keep
+  current + previous; liveness proven by rename-probe, never process
+  enumeration), and a venv held by open sessions is kept with one humane line.
+  Also fixes the two update-path defects that made the update to 0.1.34 print
+  success while installing nothing: the version probe now runs `python -I` so
+  a checkout's working directory cannot shadow the installed version into a
+  false "already up to date", and Windows PowerShell 5.1 no longer inherits a
+  pwsh-7 `PSModulePath` that broke `Get-FileHash` inside the checksum gate.
+- **0.1.34** — UTF-8 stdio: the Windows client spoke JSON on stdio at the ANSI
+  code page, silently corrupting every non-ASCII character an agent wrote
+  through it (an em dash landed in the live store as `â€"`; the server was
+  never involved). Every stdio entry point now pins stdin/stdout/stderr to
+  UTF-8 with literal-LF newlines. Releases are signed: Ed25519/minisign over
+  SHA256SUMS, verified against the client's pinned key when one is minted
+  (verify-if-present until `require_signed` flips; an invalid signature is
+  always fatal), with the verified sums threaded through to the bootstrap
+  rather than fetched twice. The Windows lease gate fires again (and says why
+  when it cannot), and gateway reconcile
+  stops losing the session, the outcome, and every warning. Ships symdex
+  0.2.16, whose `watch_folder` can finally see files that were added.
+- **0.1.33** — Uncommitted work becomes recoverable: destructive git commands
+  (`git checkout --`, `git restore`) snapshot the dirty tree locally before
+  running — `firekeep restore --list|--apply` reads it back, and snapshots
+  never leave the machine. Night Shift gains Ollama alongside LM Studio
+  (detection, not protocol) and stops re-enqueuing per-turn duplicate distill
+  tasks (193 of 200 pending tasks on the live queue were duplicates from
+  unstamped sessions). Ships symdex 0.2.15 with the audited 12-language
+  retrieval baseline.
 - **0.1.32** — Windows updates preserve the optional `--non-interactive`
   handoff as a one-element argument array, so PowerShell does not splat it into
   individual characters before adapter re-rendering.

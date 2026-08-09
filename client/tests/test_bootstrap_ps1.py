@@ -35,21 +35,43 @@ def test_both_bootstraps_provision_only_managed_python():
         )
 
 
-def test_ps1_refuses_to_replace_a_venv_that_is_in_use():
-    """Second real-machine failure (2026-07-12): with agent sessions alive, the kit's own
-    stdio MCP servers (firekeep-decision, firekeep-symdex, shims) run FROM ~/.firekeep/venv, and
-    Windows cannot delete a directory whose executables are running — `uv venv` died
-    mid-install with a bare "failed to remove directory ... Access is denied. (os error 5)".
-    The script must enumerate the holder processes and Die with their names BEFORE uv
-    touches the venv, so the operator learns WHAT to close instead of googling os error 5.
-    Windows-only by nature: POSIX unlink()s running executables happily, so install.sh
-    deliberately has no twin — same reasoning as the documented stdin-trap asymmetry."""
+def test_ps1_refuses_a_forced_reinstall_of_the_held_running_version():
+    """Descendant of the 2026-07-12 in-use guard, rescoped by the side-by-side layout.
+
+    The original failure: with agent sessions alive, the kit's stdio MCP servers ran
+    FROM the single ~/.firekeep/venv, and Windows cannot delete a directory whose
+    executables are running — `uv venv --clear` died mid-install with a bare
+    "Access is denied. (os error 5)", and the guard's only possible advice was
+    "close every session" plus a wall of ~93 raw PIDs.
+
+    Side-by-side venvs dissolve that case for NORMAL updates (the target venvs/<V>
+    is a fresh directory nobody holds). The ONE case where live processes can still
+    hold venvs/<V> itself is FIREKEEP_FORCE_REINSTALL of the version `current`
+    points at while sessions run it — clearing a held venv on Windows dies
+    mid-delete and leaves it gutted, so the script must still refuse, BEFORE uv
+    touches the venv. The message must stay humane: holders summarized as
+    'Nx name' counts (Group-Object ProcessName), never the PID wall.
+
+    Windows-only by nature: POSIX unlink()s running executables happily, so
+    install.sh deliberately has no twin — same reasoning as the stdin-trap
+    asymmetry."""
     text = BOOTSTRAP.read_text(encoding="utf-8")
     assert "Get-Process" in text, "no process enumeration — the guard is missing"
+    scope_idx = text.index("if (Test-Path $TargetVenv) {")
     guard_idx = text.index("Get-Process")
-    venv_idx = text.index("venv $Venv --python $PythonVersion")
-    assert guard_idx < venv_idx, "the in-use guard must run before uv venv"
-    assert "in use by" in text, "the Die message must name the holder processes"
+    venv_idx = text.index("venv $TargetVenv --python $PythonVersion")
+    assert scope_idx < guard_idx < venv_idx, (
+        "the guard must be scoped to an already-existing venvs/<V> (the only dir a "
+        "forced reinstall can collide with) and must run before uv venv touches it"
+    )
+    assert "Group-Object ProcessName" in text, (
+        "holders must be summarized by process name — never the raw-PID wall the "
+        "old in-place guard printed"
+    )
+    assert "a normal update never does" in text, (
+        "the Die message must say that only a FORCED reinstall of the running "
+        "version needs sessions closed — a normal update never does"
+    )
     assert "close" in text.lower(), "the Die message must say what action unblocks"
 
 
@@ -72,18 +94,35 @@ def test_both_bootstraps_forward_join_on_fast_and_main_paths():
 
 
 def test_ps1_existing_install_handoff_is_non_interactive_even_when_forced():
-    """Detect an installed client independently of the no-rebuild fast path.
+    """Detect an installed client independently of the healthy-venv fast path.
 
     A version-changing update and ``FIREKEEP_FORCE_REINSTALL=1`` both take the full
     provisioning path, but neither may turn the final adapter re-render back into a
     credential prompt. A fresh install remains interactive because the argument array
     stays empty when there is no installed version or join code.
+
+    Detection probes `current` (the layout's truth) with the legacy single venv as
+    the pre-0.1.35 mid-migration fallback; the fast path is a separate probe of
+    venvs/<V> itself, so a healthy already-provisioned target flips + re-renders
+    with zero downloads while detection still decides interactivity.
     """
     text = BOOTSTRAP.read_text(encoding="utf-8")
-    detection = "if (Test-Path $FirekeepExe) {"
-    fast_path = "if (($Installed -eq $V) -and -not $env:FIREKEEP_FORCE_REINSTALL) {"
+    detection = "$Installed = Get-VenvVersion $Current"
+    legacy_fallback = "if (-not $Installed) { $Installed = Get-VenvVersion $LegacyVenv }"
+    # Test-VenvComplete in the condition is load-bearing: an install killed
+    # between the client wheel and the symdex wheel leaves a venv whose python
+    # happily reports $V — without the completeness probe the fast path would
+    # flip `current` to that half-installed venv forever, and nothing would
+    # ever route back through the full provision that repairs it.
+    fast_path = ("if (((Get-VenvVersion $TargetVenv) -eq $V) "
+                 "-and (Test-VenvComplete $TargetVenv) "
+                 "-and -not $env:FIREKEEP_FORCE_REINSTALL) {")
 
     assert detection in text
+    assert legacy_fallback in text, (
+        "a pre-0.1.35 install (legacy ~/.firekeep/venv, no `current` yet) must "
+        "still be detected as installed, or its update re-prompts for credentials"
+    )
     assert fast_path in text
     assert text.index(detection) < text.index(fast_path)
     assert "$Installed -or $env:FIREKEEP_JOIN" in text
@@ -162,7 +201,7 @@ def test_ps1_verifies_the_wheel_against_sha256sums_before_installing_it():
     # what makes "tampered wheel -> no venv at all" true rather than "tampered wheel -> venv
     # exists but the wheel never got installed."
     verify_idx = text.index("Verify-AgainstSums $WheelPath $WheelName")
-    venv_idx = text.index("venv $Venv --python $PythonVersion")
+    venv_idx = text.index("venv $TargetVenv --python $PythonVersion")
     assert verify_idx < venv_idx
 
 
@@ -323,6 +362,64 @@ def test_ps1_documents_why_there_is_no_stdin_trap():
     assert "irm" in text.lower() or "iex" in text.lower() or "stdin" in text.lower()
 
 
+# --- the `current` alias (side-by-side venvs, 0.1.35) ---------------------------
+#
+# Windows-only (they run on the client-windows CI job): these guard the choice of
+# NTFS link primitive, which only matters — and can only be meaningfully probed —
+# on the platform whose privilege model created the problem.
+
+
+@pytest.mark.skipif(os.name != "nt", reason="NTFS junction semantics are Windows-only")
+def test_ps1_current_link_is_a_junction_not_a_directory_symlink():
+    """`current` must be an NTFS JUNCTION, never a directory symlink.
+
+    Creating a directory symlink (`New-Item -ItemType SymbolicLink`, `mklink /D`)
+    requires SeCreateSymbolicLinkPrivilege — admin, or Developer Mode. CI runners
+    and the owner's box often have that privilege, so a symlink-based flip passes
+    every automated check and then fails ONLY on real teammates' locked-down
+    machines, at install time, with an 'A required privilege is not held' error.
+    Junctions need no privilege at all (probe-verified non-elevated on Windows 11),
+    which is the entire reason the design chose them."""
+    text = BOOTSTRAP.read_text(encoding="utf-8")
+    assert "New-Item -ItemType Junction" in text, (
+        "the current alias is no longer created as an NTFS junction"
+    )
+    assert "-ItemType SymbolicLink" not in text, (
+        "a directory symlink needs admin/Developer Mode — it would pass on "
+        "privileged CI while failing for real teammates at install time"
+    )
+    assert "mklink" not in text.lower(), (
+        "mklink /D creates a directory SYMLINK (privilege-gated); /J would work "
+        "but the script standardizes on New-Item -ItemType Junction"
+    )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="NTFS junction semantics are Windows-only")
+def test_ps1_junction_removal_is_rmdir_only():
+    """`cmd /c rmdir` must be the ONLY way the `current` junction is removed.
+
+    rmdir on a junction deletes exactly the LINK NODE on every PowerShell build.
+    Remove-Item is not that primitive: current builds happen to stop at the
+    reparse point, but ancient 5.1 builds recursed THROUGH it and deleted the
+    TARGET venv's files (probed live) — turning a routine flip into a gutted
+    install. Every Remove-Item in the script must therefore stay away from
+    $Current; recursive deletes are reserved for the GC's renamed .gc corpses."""
+    text = BOOTSTRAP.read_text(encoding="utf-8")
+    assert 'cmd /c rmdir "$Current"' in text, (
+        "the junction is no longer removed via `cmd /c rmdir` — the only "
+        "link-node-only removal primitive across PS builds"
+    )
+    offenders = [
+        line.strip() for line in text.splitlines()
+        if "Remove-Item" in line and "$Current" in line
+        and not line.strip().startswith("#")
+    ]
+    assert offenders == [], (
+        "Remove-Item must never target the `current` junction (old 5.1 builds "
+        f"recurse through the reparse point into the venv): {offenders}"
+    )
+
+
 @pytest.mark.skipif(os.name != "nt" or shutil.which("powershell") is None,
                     reason="Windows + PowerShell required")
 def test_ps1_refuses_an_unset_dist_base(tmp_path):
@@ -356,7 +453,9 @@ def test_both_bootstraps_use_native_tls_and_neutralize_ssl_cert_file():
             f"{script.name}: missing the keep-override escape hatch"
         )
         tls_idx = text.index("UV_NATIVE_TLS")
-        venv_idx = text.index("venv $Venv" if script is BOOTSTRAP else 'venv "${VENV}"')
+        venv_idx = text.index(
+            "venv $TargetVenv" if script is BOOTSTRAP else 'venv "${TARGET_VENV}"'
+        )
         assert tls_idx < venv_idx, f"{script.name}: TLS block must precede uv venv"
 
 
@@ -500,4 +599,7 @@ def test_ps1_handed_sums_makes_no_sums_fetch_and_refuses_mismatched_artifacts(tm
     assert sums_fetches == [], (
         f"under a handed FIREKEEP_SUMS_FILE the script must fetch no sums: {sums_fetches}"
     )
-    assert not (home / ".firekeep" / "venv").exists()
+    # Side-by-side layout: a refused install must leave no venvs/<V> and no
+    # `current` junction — the flip is the LAST act, after both wheels verify.
+    assert not (home / ".firekeep" / "venvs" / "1.0.0").exists()
+    assert not (home / ".firekeep" / "current").exists()

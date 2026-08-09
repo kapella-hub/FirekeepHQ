@@ -1,5 +1,6 @@
 import configparser
 import os
+import types
 
 import pytest
 
@@ -423,13 +424,20 @@ def test_exec_bootstrap_drops_psmodulepath_on_windows(monkeypatch, tmp_path, nam
     """
     seen = {}
     monkeypatch.setattr(cli.os, "name", "nt")
-    monkeypatch.setattr(cli.subprocess, "Popen",
-                        lambda argv, env=None, **kw: seen.update(env or {}))
+    # _exec_bootstrap is a FOREGROUND child on Windows now — it calls
+    # proc.wait() and sys.exit()s with the child's code, so the stub must
+    # return a process-shaped object, not None.
+    monkeypatch.setattr(
+        cli.subprocess, "Popen",
+        lambda argv, env=None, **kw: seen.update(env or {})
+        or types.SimpleNamespace(wait=lambda: 0),
+    )
     monkeypatch.setenv(name, r"C:\pwsh7\Modules;C:\WINDOWS\system32\WindowsPowerShell\v1.0\Modules")
     monkeypatch.setenv("FIREKEEP_KEEP_ME", "1")
 
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as excinfo:
         cli._exec_bootstrap(tmp_path / "install.ps1", "1.2.3", "http://gl/rel")
+    assert excinfo.value.code == 0
 
     assert not [k for k in seen if k.upper() == "PSMODULEPATH"], (
         "PSModulePath must be dropped so PowerShell 5.1 rebuilds its own default"
@@ -437,6 +445,58 @@ def test_exec_bootstrap_drops_psmodulepath_on_windows(monkeypatch, tmp_path, nam
     # Only that one variable goes; the rest of the environment must survive intact.
     assert seen["FIREKEEP_KEEP_ME"] == "1"
     assert seen["FIREKEEP_DIST_BASE"] == "http://gl/rel"
+
+
+def test_exec_bootstrap_windows_waits_and_propagates_the_exit_code(monkeypatch, tmp_path):
+    """The Windows hand-off is a FOREGROUND child: wait for it, exit with ITS code.
+
+    The previous design rebuilt ~/.firekeep/venv in place, which forced a
+    DETACHED spawn + immediate parent exit to release the firekeep.exe lock —
+    and the detached installer's output then tore across the caller's returned
+    prompt (the measured 0.1.34 console mess `firekeep update` printed on the
+    owner's machine). The side-by-side layout is what makes waiting safe: the
+    bootstrap provisions venvs/<V> BESIDE this process's venv and flips the
+    `current` junction, so nothing the parent holds (its own exe included) is
+    ever overwritten, and there is no lock to get out of the way of.
+
+    Two invariants, either's regression re-tears the console:
+      1. the parent WAITS (proc.wait() called exactly once), and
+      2. the child's exit code propagates as the parent's (a swallowed nonzero
+         would report a failed update as success to shells and schedulers).
+    """
+    class _Proc:
+        def __init__(self):
+            self.waits = 0
+
+        def wait(self):
+            self.waits += 1
+            return 7
+
+    proc = _Proc()
+    captured = {}
+
+    def _popen(argv, env=None, **kw):
+        captured["argv"] = list(argv)
+        captured["kw"] = kw
+        return proc
+
+    monkeypatch.setattr(cli.os, "name", "nt")
+    monkeypatch.setattr(cli.subprocess, "Popen", _popen)
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli._exec_bootstrap(tmp_path / "install.ps1", "1.2.3", "http://gl/rel")
+
+    assert proc.waits == 1, "the parent must wait for the bootstrap child"
+    assert excinfo.value.code == 7, "the child's exit code must propagate verbatim"
+    # Foreground SHAPE, not just outcome: the detached spawn passed detach
+    # creationflags and redirected/closed handles; a foreground child streams
+    # its output in order to the SAME console by inheriting stdio, so none of
+    # those knobs may be passed.
+    for detached_only in ("creationflags", "close_fds", "stdout", "stderr", "stdin"):
+        assert detached_only not in captured["kw"], (
+            f"{detached_only}= is detached-spawn residue; the foreground child "
+            f"must inherit the caller's console untouched"
+        )
 
 
 def test_exec_bootstrap_keeps_psmodulepath_on_posix(monkeypatch, tmp_path):

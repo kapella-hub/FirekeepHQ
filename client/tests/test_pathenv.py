@@ -1,9 +1,16 @@
 """PATH management: put a single `firekeep` launcher on the user's PATH.
 
-Design (pipx/rustup pattern): NEVER PATH ~/.firekeep/venv/bin — it holds the kit's
-standalone python/pip and every internal firekeep-* script, and prepending it would
-shadow the user's own python3. Instead drop ONE launcher in ~/.firekeep/shims and
-PATH only that dir.
+Design (pipx/rustup pattern): NEVER PATH the venv bin dir itself — it holds the
+kit's standalone python/pip and every internal firekeep-* script, and prepending it
+would shadow the user's own python3. Instead drop ONE launcher in ~/.firekeep/shims
+and PATH only that dir.
+
+Side-by-side venvs (client 0.1.35): the launcher targets the venv root the caller
+rendered against — `current` (the alias flipped by updates; ~/.firekeep/current/bin
+on POSIX, a `..\\current\\Scripts` relative hop in the Windows .cmd) on the new
+layout, or the legacy `venv` on a not-yet-migrated install. NEVER a versioned
+venvs/<X.Y.Z> path: the shim is the ONE stable path external schedulers may hold
+(night-shift cron), and a versioned target dies the day GC removes that venv.
 
 The Windows registry write is a thin injectable seam (`registry=`), so the merge
 logic is exercised here on any host; the live winreg round-trip is unexercised on
@@ -84,8 +91,12 @@ _posix_only = pytest.mark.skipif(os.name == "nt", reason="POSIX rc/launcher bran
 
 
 def _mk_home(tmp_path):
+    # The side-by-side layout: cmd_install renders against _venv_root(home) ==
+    # home/current once the alias exists. A plain dir stands in for the symlink —
+    # the launcher only embeds the PATH STRING, and the link primitive itself is
+    # exercised by test_cli_install/test_kit_smoke via cli._point_current.
     home = tmp_path / ".firekeep"
-    venv_bin = home / "venv" / "bin"
+    venv_bin = home / "current" / "bin"
     venv_bin.mkdir(parents=True)
     return home, venv_bin
 
@@ -101,8 +112,13 @@ def test_ensure_posix_writes_executable_launcher_and_rc(tmp_path, monkeypatch):
     launcher = home / "shims" / "firekeep"
     assert launcher.exists()
     assert os.access(launcher, os.X_OK), "launcher must be executable"
-    # It must exec the REAL venv firekeep, not shadow anything.
-    assert f'"{venv_bin}/firekeep"' in launcher.read_text()
+    # It must exec the REAL venv firekeep, not shadow anything. The POSIX
+    # launcher embeds the venv_bin path ABSOLUTELY — home/current/bin under the
+    # side-by-side layout, so updates flip the symlink and this file never
+    # changes — and must never embed a versioned venvs/ path (GC removes those).
+    text = launcher.read_text()
+    assert f'"{venv_bin}/firekeep"' in text
+    assert "venvs" not in text
 
     rc = tmp_path / ".zshrc"
     assert rc.exists()
@@ -254,7 +270,7 @@ class _FakeReg:
 
 def test_ensure_windows_writes_cmd_and_registry(tmp_path):
     home = tmp_path / ".firekeep"
-    venv_bin = home / "venv" / "Scripts"
+    venv_bin = home / "current" / "Scripts"  # side-by-side alias layout
     venv_bin.mkdir(parents=True)
     reg = _FakeReg(value=r"C:\existing", regtype=2)  # 2 == REG_EXPAND_SZ
 
@@ -262,7 +278,10 @@ def test_ensure_windows_writes_cmd_and_registry(tmp_path):
 
     cmd = home / "shims" / "firekeep.cmd"
     assert cmd.exists()
-    assert "firekeep.exe" in cmd.read_text()
+    # The EXACT relative hop, not a substring of the exe name — see
+    # test_windows_launcher_hop_is_exact_for_the_current_layout for why the
+    # loose assertion was a silent-green gap.
+    assert '"%~dp0..\\current\\Scripts\\firekeep.exe" %*' in cmd.read_text()
 
     assert reg.writes, "registry must be written when the entry is absent"
     written, regtype = reg.writes[0]
@@ -274,13 +293,58 @@ def test_ensure_windows_writes_cmd_and_registry(tmp_path):
 
 def test_ensure_windows_idempotent_when_already_present(tmp_path):
     home = tmp_path / ".firekeep"
-    venv_bin = home / "venv" / "Scripts"
+    venv_bin = home / "current" / "Scripts"
     venv_bin.mkdir(parents=True)
     reg = _FakeReg(value=str(home / "shims"), regtype=1)
 
     pathenv.ensure_on_path(home, venv_bin, windows=True, registry=reg)
 
     assert reg.writes == [], "already present: registry must not be rewritten"
+
+
+# --- Windows launcher hop: exact target per layout (side-by-side venvs) -------
+
+def _windows_launcher_text(tmp_path, root_name):
+    home = tmp_path / ".firekeep"
+    venv_bin = home / root_name / "Scripts"
+    venv_bin.mkdir(parents=True)
+    launcher = pathenv._write_launcher(home / "shims", venv_bin, windows=True)
+    return launcher.read_text(encoding="utf-8")
+
+
+def test_windows_launcher_hop_is_exact_for_the_current_layout(tmp_path):
+    """CLOSES A SILENT-GREEN GAP: the old assertion was `"firekeep.exe" in text`,
+    which stays green no matter WHERE the hop points — a launcher targeting
+    ..\\venv\\, ..\\venvs\\0.1.35\\, or an absolute C:\\ path all contain that
+    substring. The hop is the load-bearing part: rendered against the
+    side-by-side alias it must be exactly ..\\current\\Scripts\\firekeep.exe,
+    because `current` is what update flips — this file is written once and must
+    keep working across every future version without a re-render."""
+    text = _windows_launcher_text(tmp_path, "current")
+    assert '"%~dp0..\\current\\Scripts\\firekeep.exe" %*' in text
+
+
+def test_windows_launcher_hop_stays_venv_on_a_legacy_install(tmp_path):
+    """A pre-0.1.35 install (no `current` alias yet) renders against the legacy
+    home/venv — the hop must then be ..\\venv\\..., or `firekeep install` run on
+    a not-yet-migrated machine writes a launcher pointing at a dir that does not
+    exist and the command dies on the spot."""
+    text = _windows_launcher_text(tmp_path, "venv")
+    assert '"%~dp0..\\venv\\Scripts\\firekeep.exe" %*' in text
+
+
+def test_windows_launcher_never_embeds_a_versioned_venvs_path(tmp_path):
+    """The .cmd shim is the ONE path external callers (user PATH, schedulers)
+    hold forever. A `venvs` component in it would pin the launcher to a
+    versioned venv that a later update's GC deletes — the launcher keeps
+    resolving right up to the sweep, then every `firekeep` invocation dies
+    file-not-found with nothing left to name the cause. Both legitimate render
+    inputs must produce a venvs-free launcher."""
+    for root_name in ("current", "venv"):
+        text = _windows_launcher_text(tmp_path / root_name, root_name)
+        assert "venvs" not in text, (
+            f"launcher rendered against {root_name!r} embeds a GC-able venvs path"
+        )
 
 
 # --- removal (future uninstall) ----------------------------------------------
