@@ -406,6 +406,57 @@ def test_exec_bootstrap_exports_the_pinned_signing_pub(monkeypatch, tmp_path):
     assert "FIREKEEP_SIGNING_PUB" not in seen
 
 
+@pytest.mark.parametrize("name", ["PSMODULEPATH", "PSModulePath"])
+def test_exec_bootstrap_drops_psmodulepath_on_windows(monkeypatch, tmp_path, name):
+    """MEASURED on Windows 11 + pwsh 7.6.4: `firekeep update` died with
+    "Get-FileHash is not recognized" inside the bootstrap's Verify-AgainstSums.
+
+    `powershell` is Windows PowerShell 5.1. Handed a PSModulePath built by pwsh 7,
+    it autoloads Microsoft.PowerShell.Utility 7.0.0.0 ahead of its own 3.1.0.0, and
+    that module binds `Select-String` under 5.1 but NOT `Get-FileHash` -- so the
+    failure lands precisely on the checksum gate for a binary about to be executed,
+    and reads like a broken Windows install.
+
+    Both spellings are asserted because `dict(os.environ)` UPPERCASES keys on
+    Windows and leaves them verbatim elsewhere; a case-sensitive pop passes on
+    Linux CI and does nothing on the machine that actually has the bug.
+    """
+    seen = {}
+    monkeypatch.setattr(cli.os, "name", "nt")
+    monkeypatch.setattr(cli.subprocess, "Popen",
+                        lambda argv, env=None, **kw: seen.update(env or {}))
+    monkeypatch.setenv(name, r"C:\pwsh7\Modules;C:\WINDOWS\system32\WindowsPowerShell\v1.0\Modules")
+    monkeypatch.setenv("FIREKEEP_KEEP_ME", "1")
+
+    with pytest.raises(SystemExit):
+        cli._exec_bootstrap(tmp_path / "install.ps1", "1.2.3", "http://gl/rel")
+
+    assert not [k for k in seen if k.upper() == "PSMODULEPATH"], (
+        "PSModulePath must be dropped so PowerShell 5.1 rebuilds its own default"
+    )
+    # Only that one variable goes; the rest of the environment must survive intact.
+    assert seen["FIREKEEP_KEEP_ME"] == "1"
+    assert seen["FIREKEEP_DIST_BASE"] == "http://gl/rel"
+
+
+def test_exec_bootstrap_keeps_psmodulepath_on_posix(monkeypatch, tmp_path):
+    """The clash is Windows-PowerShell-specific. /bin/sh neither reads nor is
+    confused by PSModulePath, so the posix path stays a pure env passthrough."""
+    seen = {}
+    monkeypatch.setattr(cli.os, "name", "posix")
+    monkeypatch.setattr(cli.os, "execve",
+                        lambda path, argv, env: seen.update(env) or (_ for _ in ()).throw(SystemExit(0)))
+    monkeypatch.setenv("PSModulePath", "/whatever")
+
+    with pytest.raises(SystemExit):
+        cli._exec_bootstrap(tmp_path / "install.sh", "1.2.3", "http://gl/rel")
+
+    # Case-insensitive lookup: this file also runs ON Windows, where os.environ
+    # uppercases the name we just set. Asserting seen["PSModulePath"] would fail
+    # there for the very reason the fix exists.
+    assert [seen[k] for k in seen if k.upper() == "PSMODULEPATH"] == ["/whatever"]
+
+
 # --- `--to` verifies the TARGET version's signature (MEDIUM) --------------------
 
 

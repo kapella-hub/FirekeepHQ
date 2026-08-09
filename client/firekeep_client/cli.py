@@ -1199,6 +1199,25 @@ def _exec_bootstrap(script: Path, version: str | None, base: str,
     if pinned:
         env["FIREKEEP_SIGNING_PUB"] = pinned.splitlines()[-1].strip()
     if os.name == "nt":
+        # `powershell` is Windows PowerShell 5.1, and it must not inherit a PSModulePath
+        # built by PowerShell 7. When the parent shell is pwsh (increasingly the default,
+        # and what every agent runtime spawns us under), that variable leads with pwsh's
+        # own module directories -- so 5.1 autoloads Microsoft.PowerShell.Utility 7.0.0.0
+        # ahead of its own 3.1.0.0. That module binds SOME of its cmdlets under 5.1 and
+        # not others: `Select-String` resolves, `Get-FileHash` does not. The bootstrap
+        # then dies inside Verify-AgainstSums -- the checksum gate on a binary it is
+        # about to execute -- with "Get-FileHash is not recognized", which reads like a
+        # broken Windows install rather than an inherited variable.
+        #
+        # Dropping it is the fix, not overriding it: 5.1 rebuilds the correct default
+        # from the registry (HKLM Session Manager\Environment) when it is unset, so we
+        # never have to hard-code a path list that Microsoft owns.
+        #
+        # Case matters. `dict(os.environ)` on Windows returns a PLAIN dict with keys
+        # UPPERCASED, losing the case-insensitive lookup os.environ itself has -- a
+        # literal env.pop("PSModulePath") silently pops nothing and the bug survives.
+        for key in [k for k in env if k.upper() == "PSMODULEPATH"]:
+            env.pop(key)
         # os.execv on Windows can leave the parent's image briefly held; spawn detached and
         # exit immediately so the launcher is released before uv touches the venv.
         subprocess.Popen(

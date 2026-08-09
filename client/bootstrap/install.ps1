@@ -89,7 +89,16 @@ $JoinArgs = if ($env:FIREKEEP_JOIN) { @('--join', $env:FIREKEEP_JOIN) } else { @
 $Installed = ''
 if (Test-Path $FirekeepExe) {
     try {
-        $Installed = (& (Join-Path $Venv 'Scripts\python.exe') -c "import firekeep_client; print(firekeep_client.__version__)" 2>$null | Out-String).Trim()
+        # -I (isolated) is load-bearing, not tidiness. `python -c` puts the CURRENT
+        # WORKING DIRECTORY on sys.path[0], so running this from a checkout's client/
+        # directory -- the likeliest place a developer runs an update from -- imports
+        # the SOURCE TREE and reports its version instead of the venv's. When that
+        # misread happens to equal $V, the fast path below skips the whole install and
+        # prints "already at $V": the update silently does nothing while reporting
+        # success. MEASURED: a venv holding 0.1.33 reported 0.1.34 from client/, and
+        # `firekeep update` no-opped. -I also drops PYTHONPATH and user site-packages,
+        # the other two ways the caller's environment can shadow what is INSTALLED.
+        $Installed = (& (Join-Path $Venv 'Scripts\python.exe') -I -c "import firekeep_client; print(firekeep_client.__version__)" 2>$null | Out-String).Trim()
     } catch { $Installed = '' }
 }
 [string[]]$NonInteractiveArgs = @()

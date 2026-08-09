@@ -118,7 +118,13 @@ FIREKEEP_BIN="${VENV}/bin/firekeep"
 # existing connection instead of prompting for it again. Join codes are zero-prompt too.
 installed=""
 if [ -x "${FIREKEEP_BIN}" ]; then
-    installed="$("${VENV}/bin/python" -c 'import firekeep_client; print(firekeep_client.__version__)' 2>/dev/null || true)"
+    # -I (isolated) is load-bearing, not tidiness -- see the matching note in
+    # install.ps1. `python -c` puts the CURRENT WORKING DIRECTORY on sys.path[0], so
+    # running this from a checkout's client/ directory imports the SOURCE TREE and
+    # reports its version rather than the venv's. When that misread equals ${V}, the
+    # fast path below skips the install and prints "already at ${V}" -- a silent no-op
+    # reported as success. -I also drops PYTHONPATH and user site-packages.
+    installed="$("${VENV}/bin/python" -I -c 'import firekeep_client; print(firekeep_client.__version__)' 2>/dev/null || true)"
 fi
 NON_INTERACTIVE_ARG=""
 if [ -n "${installed}" ] || [ -n "${FIREKEEP_JOIN:-}" ]; then

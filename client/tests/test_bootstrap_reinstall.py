@@ -22,6 +22,30 @@ def test_sh_idempotent_fast_path():
     assert "FIREKEEP_FORCE_REINSTALL" in sh
 
 
+def test_version_probe_is_isolated_from_the_working_directory():
+    """The fast path is only safe if it reads the INSTALLED version.
+
+    `python -c` puts the current working directory on sys.path[0]. Probing without
+    -I from a checkout's client/ directory imports the SOURCE TREE, and when its
+    version happens to equal the release being installed, the fast path skips the
+    install entirely and prints "already at <V>" -- a silent no-op reported as
+    success. MEASURED: a venv holding 0.1.33 reported 0.1.34 that way, and
+    `firekeep update` did nothing twice in a row.
+
+    -I additionally drops PYTHONPATH and user site-packages, the other two ways the
+    caller's environment can shadow what is installed.
+    """
+    for name in ("install.sh", "install.ps1"):
+        probes = [line for line in (BOOT / name).read_text().splitlines()
+                  if "firekeep_client.__version__" in line and "python" in line]
+        assert probes, f"{name}: no version probe found"
+        for line in probes:
+            assert " -I -c " in line, (
+                f"{name}: version probe must run python with -I, else the working "
+                f"directory can shadow the venv:\n{line.strip()}"
+            )
+
+
 def test_sh_existing_install_handoff_is_non_interactive_even_when_forced():
     """Force reinstall controls rebuilding, not whether existing config is reused."""
     sh = (BOOT / "install.sh").read_text()
