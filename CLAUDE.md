@@ -257,8 +257,9 @@ build time — the right outcome, and the reason not to hard-code `docker.io` th
 ## Security
 
 - **`SECURITY.md`** (root) — disclosure policy, SLA targets, in/out-of-scope, supported
-  versions. **The contact address is still a placeholder** and is tracked as blocking
-  first sale; everything else in the file is accurate.
+  versions. The contact address `security@firekeep.ai` is a live, monitored mailbox
+  (confirmed 2026-08-09; `sales@firekeep.ai` exists too). Remaining before-first-sale
+  items are tracked in the file itself.
 - **`docs/THREAT-MODEL.md`** (2026-07-26) — all four services, the dashboard, the client
   kit and the URL crawler. Supersedes `cortex/docs/SECURITY_REVIEW.md`, which covers
   Cortex v0.1.0 as of 2026-03-02 and predates auth, the vault, the agent gateway and the
