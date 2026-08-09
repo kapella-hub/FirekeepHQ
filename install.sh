@@ -319,6 +319,16 @@ else
     docker compose up -d --build
 fi
 
+# The dashboard bind-mounts index.html as a SINGLE FILE, and single-file bind
+# mounts track the inode captured at container start — so on a re-run over an
+# existing deployment (git pull, or a bundle re-extract via `firekeep init`),
+# `up -d` does not recreate the unchanged-config dashboard container and nginx
+# keeps serving the pre-update file. MEASURED on the v0.3.0 deploy: the
+# checkout's index.html had no Licence tab while the served page still did.
+# update.sh has carried this force-recreate for the same reason; the install
+# path needs it for the re-run case. Idempotent and cheap on a fresh install.
+docker compose up -d --force-recreate dashboard
+
 # --- Wait for the model pull ---
 # cortex-api depends on `ollama: service_healthy`, NOT on ollama-pull
 # completing (docker-compose.yml has no service_completed_successfully
