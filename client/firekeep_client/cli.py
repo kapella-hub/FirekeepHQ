@@ -520,27 +520,6 @@ def _check_versions(cfg) -> tuple[str, str, str]:
         return ("versions", "warn", f"cortex /version unreachable: {exc}")
 
 
-def _check_entitlement(cfg) -> tuple[str, str, str] | None:
-    """Report the server-authoritative plan and any licence expiry warning."""
-    try:
-        ep = resolver.resolve("cortex", cfg=cfg)
-        data = get_json(f"{ep.rest_base}/workspace", headers=ep.headers, verify=ep.verify)
-    except (TransportError, resolver.ConfigError, OSError):
-        return None  # reachability/auth already have dedicated doctor rows
-    entitlement = data.get("entitlement") if isinstance(data, dict) else None
-    if not isinstance(entitlement, dict):
-        return None  # pre-workspace server; version/update rows provide the action
-    plan = str(entitlement.get("plan", "solo")).title()
-    maximum = entitlement.get("max_members", 1)
-    warning = entitlement.get("warning")
-    if warning:
-        return ("licence", "warn", f"{plan}, {maximum} member(s) — {warning}")
-    if not entitlement.get("verified") and entitlement.get("source") != "built-in":
-        reason = entitlement.get("reason", "licence is not valid")
-        return ("licence", "warn", f"{plan}, {maximum} member(s) — {reason}")
-    return ("licence", "ok", f"{plan}, up to {maximum} member(s)")
-
-
 def _check_agent_id(cfg) -> tuple[str, str, str] | None:
     # The installer skeleton (_CONFIG_SKELETON above) writes agent_id =
     # CHANGEME. If a teammate never edits it, every memory
@@ -896,9 +875,6 @@ def run_doctor(cfg=None) -> list[tuple[str, str, str]]:
     # rest -- doctor always runs the full suite and reports everything.
     results.extend(_check_health(cfg))
     results.append(_check_versions(cfg))
-    entitlement = _check_entitlement(cfg)
-    if entitlement is not None:
-        results.append(entitlement)
     client_version = _check_client_version(cfg)
     if client_version is not None:
         results.append(client_version)

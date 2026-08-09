@@ -1,16 +1,20 @@
-"""Atomic member invite issue/accept operations on Redis DB 7."""
+"""Atomic member invite issue/accept operations on Redis DB 7.
+
+Membership is unmetered: the WATCH transactions below exist for invite/record
+consistency under concurrency, not for seat counting. (The seat-limit gate that
+used to live inside them was removed with the single-product conversion — the
+BUSL LICENSE's multi-member terms are legal, not enforced here.)
+"""
 
 from __future__ import annotations
 
 import hashlib
 import secrets
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from redis.exceptions import WatchError
 
-from auth.entitlements import Entitlement
 from auth.workspace import MEMBER_INDEX, MEMBER_PREFIX, Workspace
 
 from app.enroll.store import TICKET_INDEX, TICKET_PREFIX, EnrollmentStore, ticket_id
@@ -20,22 +24,6 @@ INVITE_PREFIX = "auth:member_invite:"
 INVITE_INDEX = "auth:member_invite_index"
 INVITE_TTL_DAYS = 7
 INVITE_TOMBSTONE_DAYS = 14
-
-
-@dataclass(frozen=True)
-class SeatLimitError(RuntimeError):
-    plan: str
-    active_members: int
-    outstanding_invites: int
-    max_members: int
-
-    def detail(self) -> str:
-        return (
-            f"The {self.plan.title()} plan allows {self.max_members} member(s); "
-            f"this workspace has {self.active_members} active and "
-            f"{self.outstanding_invites} pending invite(s). "
-            "Upgrade at https://firekeep.ai/pricing, then retry."
-        )
 
 
 class MemberInviteError(RuntimeError):
@@ -50,19 +38,10 @@ class MemberStore:
     async def _prune_expired(self, now_epoch: float) -> None:
         await self.redis.zremrangebyscore(INVITE_INDEX, "-inf", now_epoch)
 
-    async def counts(self, now: datetime | None = None) -> tuple[int, int]:
-        now = now or datetime.now(timezone.utc)
-        await self._prune_expired(now.timestamp())
-        active, outstanding = await self.redis.zcard(MEMBER_INDEX), await self.redis.zcard(
-            INVITE_INDEX
-        )
-        return int(active), int(outstanding)
-
     async def issue(
         self,
         *,
         workspace: Workspace,
-        entitlement: Entitlement,
         label: str,
         email: str,
         issuer: str,
@@ -97,16 +76,6 @@ class MemberStore:
                     if await pipe.exists(key):
                         await pipe.unwatch()
                         continue
-                    active = int(await pipe.zcard(MEMBER_INDEX))
-                    outstanding = int(await pipe.zcard(INVITE_INDEX))
-                    if active + outstanding >= entitlement.max_members:
-                        await pipe.unwatch()
-                        raise SeatLimitError(
-                            entitlement.plan,
-                            active,
-                            outstanding,
-                            entitlement.max_members,
-                        )
                     pipe.multi()
                     pipe.hset(key, mapping=record)
                     pipe.expire(key, INVITE_TOMBSTONE_DAYS * 86400)
@@ -122,7 +91,6 @@ class MemberStore:
         *,
         secret: str,
         workspace: Workspace,
-        entitlement: Entitlement,
         now: datetime | None = None,
     ) -> tuple[dict[str, str], dict[str, str], bool]:
         now = now or datetime.now(timezone.utc)
@@ -166,16 +134,6 @@ class MemberStore:
                         await pipe.execute()
                         raise MemberInviteError("member invite has expired")
 
-                    active = int(await pipe.zcard(MEMBER_INDEX))
-                    outstanding = int(await pipe.zcard(INVITE_INDEX))
-                    if active >= entitlement.max_members:
-                        await pipe.unwatch()
-                        raise SeatLimitError(
-                            entitlement.plan,
-                            active,
-                            outstanding,
-                            entitlement.max_members,
-                        )
                     member_id = invite["member_id"]
                     member = {
                         "member_id": member_id,

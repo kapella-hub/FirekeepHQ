@@ -8,8 +8,8 @@
 #                   which the sums list — a version dir must serve what its sums name)
 #   latest/     -> install.sh, install.ps1, latest.json (+ signing.pub on signed builds)
 # Publishing is ACCUMULATIVE — old <version>/ dirs are preserved so `firekeep update --to`
-# keeps resolving them. GitHub Pages is the one public distribution channel for
-# both Solo and Team; plans do not select different artifacts.
+# keeps resolving them. GitHub Pages is the one public distribution channel —
+# every customer installs the same artifacts.
 #
 # ARTIFACTS GO TO A SEPARATE PUBLIC REPO: kapella-hub/firekeep-dist, served at
 # https://kapella-hub.github.io/firekeep-dist. This repo is PRIVATE, and GitHub

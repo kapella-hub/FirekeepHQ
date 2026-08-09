@@ -6,8 +6,6 @@ set -euo pipefail
 #   firekeep-admin invite [--agent NAME] [--expires-days N] [--json]
 #   firekeep-admin keys create --agent NAME [--expires-days N]
 #   firekeep-admin keys revoke CREDENTIAL_ID
-#   firekeep-admin licence status
-#   firekeep-admin licence apply FILE
 
 NON_ADMIN_SCOPES='["memory:read","memory:write","session:read","session:write","replay:read","relay:read","relay:write","eval:read","eval:write","vault:read"]'
 API_URL="${FIREKEEP_API_URL:-http://localhost:8100}"
@@ -22,8 +20,6 @@ Usage:
       [--ca-file PATH | --ca os] [--insecure-http] [--dist-base URL]
   firekeep-admin keys create --agent NAME [--expires-days N]
   firekeep-admin keys revoke CREDENTIAL_ID
-  firekeep-admin licence status
-  firekeep-admin licence apply FILE   (use - to read stdin)
 EOF
     exit 1
 }
@@ -236,44 +232,6 @@ admin_api_key() {
     printf '%s' "$key"
 }
 
-licence_status() {
-    [ $# -eq 0 ] || usage
-    if [ "${FIREKEEP_ADMIN_DRY_RUN:-0}" = "1" ]; then
-        echo "GET ${API_URL}/licence"
-        return
-    fi
-    curl -sf "${API_URL}/licence" -H "X-API-Key: $(admin_api_key)" || {
-        echo "ERROR: licence status failed" >&2; exit 1;
-    }
-    echo
-}
-
-licence_apply() {
-    [ $# -eq 1 ] || usage
-    local source="$1" document
-    if [ "$source" = "-" ]; then
-        document="$(tr -d '\r\n')"
-    else
-        [ -r "$source" ] || { echo "ERROR: cannot read licence file: $source" >&2; exit 1; }
-        document="$(tr -d '\r\n' < "$source")"
-    fi
-    [[ "$document" =~ ^fk_lic_v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$ ]] || {
-        echo "ERROR: file is not a Firekeep signed licence document" >&2; exit 1;
-    }
-    if [ "${FIREKEEP_ADMIN_DRY_RUN:-0}" = "1" ]; then
-        echo "POST ${API_URL}/licence"
-        return
-    fi
-    curl -sf -X POST "${API_URL}/licence" \
-        -H "Content-Type: application/json" \
-        -H "X-API-Key: $(admin_api_key)" \
-        --data-binary "{\"document\":\"${document}\"}" || {
-            echo "ERROR: licence apply failed; run 'firekeep-admin licence status' and check cortex-api logs" >&2
-            exit 1
-        }
-    echo
-}
-
 case "${1:-}" in
     keys)
         case "${2:-}" in
@@ -283,12 +241,5 @@ case "${1:-}" in
         esac
         ;;
     invite) shift; invite "$@" ;;
-    licence)
-        case "${2:-}" in
-            status) shift 2; licence_status "$@" ;;
-            apply) shift 2; licence_apply "$@" ;;
-            *) usage ;;
-        esac
-        ;;
     *) usage ;;
 esac

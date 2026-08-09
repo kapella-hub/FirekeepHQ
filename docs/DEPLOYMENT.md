@@ -22,8 +22,9 @@ There are two paths, and they are not interchangeable.
 
 The Firekeep client downloads a small, checksummed deployment bundle and pulls
 the public release images from `ghcr.io`. No source checkout, registry account,
-registry token, or plan choice is required. The server reads its Solo or Team
-entitlement after it starts; download access is not the licensing boundary.
+or registry token is required — the release images are public. The licence
+(BUSL-1.1, see [LICENSING.md](LICENSING.md)) is a legal boundary, not a
+download gate.
 
 ```bash
 # Latest public server release (prompts only for deployment settings):
@@ -64,7 +65,7 @@ would otherwise silently build something different from what was released.
 
 From a source checkout, `firekeep init --server-dir .` runs the same installer
 in build mode; add `--pull` to exercise published images. From a release bundle,
-pull mode is automatic. No path asks the customer whether they are Solo or Team.
+pull mode is automatic.
 
 `bash install.sh` performs a standard install. Pass `--office` **only** on the
 internal office cluster — it pins the Caddy TLS front and the 127.0.0.1 port

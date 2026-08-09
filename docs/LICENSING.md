@@ -1,33 +1,36 @@
 # Licensing — source-available release policy
 
-_Last updated 2026-07-26._
+_Last updated 2026-08-09._
 
 **This file and the `LICENSE` it describes were written by an engineer, not a
 lawyer. Have a lawyer review the licence text before the first paid sale** —
 nothing here should be treated as vetted legal advice, particularly the
-liability cap, the expiry/degrade term, and the trademark notice.
+liability cap and the trademark notice.
 
 ## Where things stand
 
 `LICENSE` at the repository root is the real licence, not a placeholder.
-**Decided model: source-available Firekeep under BUSL-1.1.** The Additional Use
-Grant permits production use by one natural person in one workspace and one
-deployment, with unlimited personal devices, agent identities, terminals, and
-background workers. Production use for more than one member requires a
-commercial license. This is not an OSI Open Source licence; each version changes
-to Apache-2.0 four years after its first public distribution.
+**Decided model: one product, source-available under BUSL-1.1.** There is no
+Solo edition, no Team edition, and no licence-key or entitlement mechanism —
+the earlier signed-entitlement system was removed in 2026-08. The licence is
+the entire boundary, and it is a legal document, not a technical one:
 
-| | Free tier | Team tier |
-|---|---|---|
-| Client kit and server | Source-available; production use for one member | Source-available; commercial license for additional members |
-| Agent identities, devices, terminals, background workers | Unlimited when controlled by the one member | Unlimited |
-| Group use | Not granted | Commercial license |
-| Source | Available under BUSL-1.1; Apache-2.0 after the Change Date | Same |
-| Enforcement | Contract terms + server-side signed entitlements | Same |
+- The Additional Use Grant permits **free production use by one natural
+  person** in one workspace and one deployment, with unlimited personal
+  devices, agent identities, terminals, and background workers.
+- **Production use by more than one member requires a commercial licence** —
+  contact sales@firekeep.ai.
+- **Nothing enforces this technically.** Membership is unlimited in the
+  software; there are no licence keys, no seat metering, no phone-home, and no
+  feature gates. A deployment that crosses the one-person line is out of
+  compliance with the licence terms, not degraded or locked out.
 
-Pricing, seat counts, and trial duration are deliberately **not** decided and
-are not in the licence — they are referred to "the applicable commercial
-agreement" wherever they would otherwise appear.
+This is not an OSI Open Source licence; each version changes to Apache-2.0
+four years after its first public distribution.
+
+Pricing and trial duration are deliberately **not** decided and are not in the
+licence — they are referred to "the applicable commercial agreement" wherever
+they would otherwise appear.
 
 ### Every place a licence gets stated
 
@@ -58,15 +61,15 @@ nothing false today.
 
 ## What must happen before anything is distributed
 
-1. ~~**Pick the model.**~~ **Done.** BUSL-1.1 with a Solo-only Additional Use
+1. ~~**Pick the model.**~~ **Done.** BUSL-1.1 with a one-person Additional Use
    Grant, then Apache-2.0 after four years (above).
 2. ~~**Write the real licence.**~~ **Done.** `LICENSE` contains the unmodified
    BUSL-1.1 terms and its project-specific parameters. **Needs a lawyer read
    before first sale — see the note at the top of this file.**
-3. **Commercial lifecycle policy.** Signed entitlements may degrade paid Group
-   functionality, but this is product behavior rather than a term added to the
-   standard BUSL text. The commercial agreement must state renewal, support,
-   data export, and any trial terms before paid sale.
+3. **Commercial lifecycle policy.** The commercial agreement must state
+   renewal, support, data export, and any trial terms before paid sale. There
+   is no technical enforcement to configure — the agreement is the whole
+   boundary (see "Where things stand" above).
 4. ~~**Package metadata.**~~ **Done.** `client/pyproject.toml` and
    `symdex/pyproject.toml` now declare `license = "LicenseRef-Firekeep-BUSL-1.1"`
    and `license-files = ["LICENSE", "NOTICE"]` (each package carries its own

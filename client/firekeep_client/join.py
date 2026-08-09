@@ -289,18 +289,18 @@ def join(
                 verify=verify,
             )
         except TransportError as exc:
-            # Seat refusals already name plan, counts, and upgrade path. Preserve
-            # that server text instead of reducing it to a generic join error.
+            # The server's refusal text IS the diagnosis (revoked invite, unknown
+            # ticket, ...). Preserve it instead of reducing it to a generic join
+            # error the operator then has to re-derive from server logs.
             raise JoinError(str(exc), exit_code=3) from exc
         if not isinstance(accepted, dict) or not isinstance(
             accepted.get("join_code"), str
         ):
             raise JoinError("server returned an invalid member-accept response", exit_code=6)
         membership = accepted.get("membership") or {}
-        entitlement = accepted.get("entitlement") or {}
         print(
-            f"member invite accepted for {membership.get('label') or membership.get('email') or 'member'} "
-            f"— {str(entitlement.get('plan', 'solo')).title()} workspace"
+            f"member invite accepted for "
+            f"{membership.get('label') or membership.get('email') or 'member'}"
         )
         return join(
             accepted["join_code"],

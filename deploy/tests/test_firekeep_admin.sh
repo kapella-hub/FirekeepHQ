@@ -86,16 +86,13 @@ fi
 grep -q "nxs_" deploy/firekeep-admin || { echo "FAIL: local nxs_ mint path missing"; exit 1; }
 grep -q "BOOTSTRAP_REDIS_CMD" deploy/firekeep-admin || { echo "FAIL: redis override missing"; exit 1; }
 
-LIC_FILE="$(mktemp)"
-printf 'fk_lic_v1.eyJwbGFuIjoidGVhbSJ9.c2lnbmF0dXJl\n' > "$LIC_FILE"
-LIC_OUT="$(FIREKEEP_ADMIN_DRY_RUN=1 bash deploy/firekeep-admin licence apply "$LIC_FILE")"
-rm -f "$LIC_FILE"
-echo "$LIC_OUT" | grep -q "POST http://localhost:8100/licence" || {
-    echo "FAIL: licence apply dispatch missing"; exit 1;
-}
-STATUS_OUT="$(FIREKEEP_ADMIN_DRY_RUN=1 bash deploy/firekeep-admin licence status)"
-echo "$STATUS_OUT" | grep -q "GET http://localhost:8100/licence" || {
-    echo "FAIL: licence status dispatch missing"; exit 1;
-}
+# Single-product conversion: the licence subcommands are retired. Their
+# reappearance would mean the entitlement system grew back — fail on it.
+if grep -qE 'licence|fk_lic_v1' deploy/firekeep-admin; then
+    echo "FAIL: retired licence subcommands resurfaced in firekeep-admin"; exit 1
+fi
+if bash deploy/firekeep-admin licence status >/dev/null 2>&1; then
+    echo "FAIL: 'firekeep-admin licence' dispatched instead of failing usage"; exit 1
+fi
 
-echo "PASS: firekeep-admin create/revoke/invite/licence dispatch + scope sync + fail-fast"
+echo "PASS: firekeep-admin create/revoke/invite dispatch + scope sync + fail-fast"

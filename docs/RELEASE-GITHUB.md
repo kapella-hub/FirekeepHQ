@@ -1,6 +1,6 @@
 # Firekeep releases on GitHub
 
-GitHub is the public distribution path for both current plans. Client releases
+GitHub is the public distribution path. Client releases
 are cut via `.github/workflows/release.yml`; server images and the source-free
 deployment bundle are cut via `.github/workflows/server-release.yml`. Release
 manifests and client/bundle artifacts are served from **GitHub Pages**. There is
@@ -83,8 +83,8 @@ forced the split:
 2. **Making *this* repo public was the wrong fix.** It would publish the server —
    Cortex's memory pipeline, the pattern engine, the eval machinery — which is the
    actual product. The client wheel is `py3-none-any` and packages only
-   `firekeep_client*`, no server code, and the Free Tier is deliberately gratis, so
-   its source is readable by anyone who installs it either way. **Gating the
+   `firekeep_client*`, no server code, so its source is readable by anyone who
+   installs it either way. **Gating the
    download protects nothing.** The property that matters for artifacts is
    integrity, not secrecy, and `SHA256SUMS` already provides it.
 3. **The bootstraps fetch unauthenticated** — no `Authorization` header in either
@@ -139,7 +139,8 @@ In the `kapella-hub` package settings, change each package visibility to
 - `firekeep-relay`
 
 Do not distribute a registry token as a workaround. Public download access is
-required for Solo; the signed offline entitlement is the Solo/Team boundary.
+the customer install path — the licence (BUSL-1.1) is a legal boundary, never a
+download gate, and there is no entitlement system to fall back on.
 The bundle publishing job reuses the existing `FIREKEEP_DIST_DEPLOY_KEY`.
 
 ## Release notes
@@ -162,6 +163,14 @@ cd client && python -m pytest tests/test_e2e_bootstrap.py -m e2e -q
 ```
 
 
+- **0.1.36** — Single-product conversion: the Solo/Team split and the signed
+  licence-key system are removed — the BUSL-1.1 LICENSE is the only boundary
+  (legal terms, no technical enforcement). On the client that removes the
+  doctor `licence` row (it read the server's entitlement off `GET /workspace`)
+  and the plan label the member-join used to print; joining now simply
+  confirms the membership. Auth is untouched — API keys, scopes, join codes
+  and member enrollment all remain. The server counterpart ships in the
+  matching server release.
 - **0.1.35** — Side-by-side venvs: every release installs to its own
   `~/.firekeep/venvs/<version>`, selected by a `~/.firekeep/current` link (NTFS
   junction / POSIX symlink) that every rendered surface routes through. Updates

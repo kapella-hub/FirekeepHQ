@@ -7,11 +7,12 @@
 # from source. There was no tarball, no vX.Y.Z tag, and no registry — the
 # product was not deliverable in the literal sense.
 #
-# DISTRIBUTION IS NOT ENTITLEMENT: the repository and images use the BUSL/FSL
-# source-available model.  Solo/Team rights are enforced by the signed offline
-# entitlement, not by a registry credential.  All four GHCR packages must be
-# set Public once in the organisation package settings; the anonymous-pull gate
-# below prevents a private package from becoming a customer release.
+# DISTRIBUTION IS NOT THE LICENCE BOUNDARY: the repository and images are
+# source-available under BUSL-1.1, and the LICENSE file's terms — not a registry
+# credential and not any technical gate — are what governs use.  All four GHCR
+# packages must be set Public once in the organisation package settings; the
+# anonymous-pull gate below prevents a private package from becoming a customer
+# release.
 #
 # WHAT IS DELIBERATELY NOT PUBLISHED: neo4j, redis, qdrant and ollama. The
 # customer's own daemon pulls those from their upstream registries, exactly as
@@ -165,7 +166,7 @@ jobs:
       - name: Verify an anonymous customer can pull and run the image
         # A push through the logged-in Actions session proves neither public
         # readability nor runtime health.  Log out, remove the local copy, then
-        # exercise exactly the registry path a Solo customer uses.
+        # exercise exactly the registry path a customer uses.
         run: |
           docker logout ghcr.io
           docker rmi "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}" || true

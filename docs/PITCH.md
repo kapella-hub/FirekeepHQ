@@ -268,8 +268,10 @@ products cannot answer:
   online-backup facility, so the archive could capture a torn write and restore without error.
   Now quiesced, and verified by a full wipe-and-restore round trip.
 
-**Not yet done, and load-bearing for a first sale:** no licence-key mechanism, no seat
-counting, no entitlement surface — so the free/paid boundary is currently unenforceable. No
+**A deliberate non-feature, not a gap:** there is no licence-key mechanism, no seat
+counting, and no entitlement surface — by design. The free/paid boundary is the BUSL-1.1
+licence itself (free production use for one person; commercial licence for more), a legal
+term rather than a technical gate. **Not yet done, and load-bearing for a first sale:** no
 release tag has been cut, so nothing is published for `--pull` to fetch yet.
 
 ---

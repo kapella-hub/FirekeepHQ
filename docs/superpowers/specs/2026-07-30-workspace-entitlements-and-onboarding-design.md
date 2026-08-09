@@ -189,6 +189,17 @@ the deployment's single workspace and its owner member.
 
 ## 3. Entitlements
 
+> **SUPERSEDED (2026-08-09).** The signed-entitlement system this section (and
+> §3.1–§3.2) designs was built and then removed in the single-product
+> conversion: Firekeep ships as one product under BUSL-1.1, and the licence is
+> the only free/paid boundary — legal terms, with no technical enforcement, no
+> plan identity, and no seat metering. Membership is technically unlimited.
+> The workspace/member/credential identity model (§1–§2) and the seat-check
+> *placement* argument below (why enforcement, if it existed, belonged at
+> membership creation and nowhere else) remain the authoritative record of the
+> auth design. Content kept verbatim as the historical record; do not
+> re-implement from it.
+
 A signed document the server holds. The client never evaluates it.
 
 ```json
@@ -348,6 +359,14 @@ one process and additionally fronts the two local stdio servers.
 ---
 
 ## 6. Commercial licensing
+
+> **SUPERSEDED (2026-08-09).** Two decisions here no longer stand: the
+> proprietary licence was replaced by BUSL-1.1 (see the root `LICENSE` and
+> `docs/LICENSING.md`), and signed entitlements were removed with the rest of
+> the plan machinery in the single-product conversion — the licence is a legal
+> boundary with no technical enforcement. The distribution argument for a
+> permissively-licensed standalone symdex is unaffected and still planned.
+> Content kept verbatim as the historical record.
 
 Three tiers of licence, decided 2026-07-30.
 

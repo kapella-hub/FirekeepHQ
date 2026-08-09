@@ -1,4 +1,11 @@
-"""Workspace, member-invite, and offline licence API."""
+"""Workspace and member-invite API.
+
+Membership is identity and attribution, not metering: there is one Firekeep
+product, and the number of members a workspace may enroll is not technically
+limited. (The signed-entitlement system that used to meter seats here was
+removed with the single-product conversion; the BUSL LICENSE's terms are the
+only multi-member boundary, and they are legal, not enforced in code.)
+"""
 
 from __future__ import annotations
 
@@ -13,11 +20,6 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from auth.entitlements import (
-    LICENCE_REDIS_KEY,
-    load_entitlement,
-    verify_licence,
-)
 from auth.middleware import require_scope
 from auth.workspace import Workspace
 
@@ -25,7 +27,7 @@ from app.enroll.api import InviteRequest
 from app.enroll.mint import ca_fingerprint, encode_prepared_join
 from app.enroll.store import EnrollmentStore
 
-from .store import MemberInviteError, MemberStore, SeatLimitError
+from .store import MemberInviteError, MemberStore
 
 
 _TID_RE = re.compile(r"^[0-9a-f]{16}$")
@@ -38,10 +40,6 @@ class MemberInviteRequest(InviteRequest):
 
 class MemberAcceptRequest(BaseModel):
     ticket: str = Field(..., min_length=1, max_length=128)
-
-
-class LicenceApplyRequest(BaseModel):
-    document: str = Field(..., min_length=1, max_length=8192)
 
 
 def _b64url(data: bytes) -> str:
@@ -117,60 +115,16 @@ def create_members_router(
     async def workspace_status(
         identity: dict = Depends(require_scope("memory:read")),
     ) -> dict[str, Any]:
-        entitlement = await load_entitlement(redis_client, workspace.workspace_id)
         return {
             "workspace_id": workspace.workspace_id,
             "member_id": identity["member_id"],
             "credential_id": identity["credential_id"],
-            "entitlement": entitlement.as_dict(),
         }
-
-    @router.get("/licence")
-    async def licence_status(
-        identity: dict = Depends(require_scope("admin")),
-    ) -> dict[str, Any]:
-        return (await load_entitlement(redis_client, workspace.workspace_id)).as_dict()
-
-    @router.post("/licence")
-    async def apply_licence(
-        request: LicenceApplyRequest,
-        identity: dict = Depends(require_scope("admin")),
-    ) -> dict[str, Any]:
-        if os.getenv("FIREKEEP_LICENCE", "").strip():
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "FIREKEEP_LICENCE is set in the server environment and overrides "
-                    "dashboard/admin licences; update that secret instead"
-                ),
-            )
-        entitlement = verify_licence(
-            request.document,
-            workspace.workspace_id,
-            source="redis",
-        )
-        if not entitlement.verified:
-            raise HTTPException(status_code=400, detail=entitlement.reason)
-        await redis_client.set(LICENCE_REDIS_KEY, request.document.strip())
-        return entitlement.as_dict()
-
-    @router.delete("/licence")
-    async def remove_licence(
-        identity: dict = Depends(require_scope("admin")),
-    ) -> dict[str, Any]:
-        if os.getenv("FIREKEEP_LICENCE", "").strip():
-            raise HTTPException(
-                status_code=409,
-                detail="FIREKEEP_LICENCE is set in the server environment; remove it there",
-            )
-        await redis_client.delete(LICENCE_REDIS_KEY)
-        return (await load_entitlement(redis_client, workspace.workspace_id)).as_dict()
 
     @router.get("/members")
     async def list_members(
         identity: dict = Depends(require_scope("admin")),
     ) -> dict[str, Any]:
-        entitlement = await load_entitlement(redis_client, workspace.workspace_id)
         members = await member_store.list_members()
         invites = await member_store.list_outstanding()
         return {
@@ -178,7 +132,6 @@ def create_members_router(
             "invites": invites,
             "active_count": len(members),
             "outstanding_invite_count": len(invites),
-            "entitlement": entitlement.as_dict(),
         }
 
     @router.post("/members/invites")
@@ -186,18 +139,13 @@ def create_members_router(
         request: MemberInviteRequest,
         identity: dict = Depends(require_scope("admin")),
     ) -> dict[str, Any]:
-        entitlement = await load_entitlement(redis_client, workspace.workspace_id)
-        try:
-            ticket, tid, record = await member_store.issue(
-                workspace=workspace,
-                entitlement=entitlement,
-                label=request.label,
-                email=request.email,
-                issuer=f"credential:{identity['credential_id']}",
-                connection=_connection(request),
-            )
-        except SeatLimitError as exc:
-            raise HTTPException(status_code=403, detail=exc.detail()) from exc
+        ticket, tid, record = await member_store.issue(
+            workspace=workspace,
+            label=request.label,
+            email=request.email,
+            issuer=f"credential:{identity['credential_id']}",
+            connection=_connection(request),
+        )
         code = _member_code(ticket, record)
         dist = request.dist_base.rstrip("/")
         return {
@@ -222,15 +170,11 @@ def create_members_router(
 
     @router.post("/members/invites/accept")
     async def accept_member_invite(request: MemberAcceptRequest) -> dict[str, Any]:
-        entitlement = await load_entitlement(redis_client, workspace.workspace_id)
         try:
             member, enrollment, replay = await member_store.accept(
                 secret=request.ticket,
                 workspace=workspace,
-                entitlement=entitlement,
             )
-        except SeatLimitError as exc:
-            raise HTTPException(status_code=403, detail=exc.detail()) from exc
         except MemberInviteError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         code = encode_prepared_join(
@@ -241,7 +185,6 @@ def create_members_router(
         return {
             "workspace_id": workspace.workspace_id,
             "membership": member,
-            "entitlement": entitlement.as_dict(),
             "join_code": code,
             "replay": replay,
         }

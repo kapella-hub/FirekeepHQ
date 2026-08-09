@@ -66,7 +66,6 @@ def test_member_code_accepts_membership_then_runs_shared_device_join(home, monke
         if url.endswith("/members/invites/accept"):
             return {
                 "membership": {"label": "Ada"},
-                "entitlement": {"plan": "team"},
                 "join_code": encode(payload()),
             }
         return response()
@@ -75,7 +74,7 @@ def test_member_code_accepts_membership_then_runs_shared_device_join(home, monke
     assert J.join(member_code) == 0
     assert calls[0].endswith("/members/invites/accept")
     assert calls[1].endswith("/enroll")
-    assert "member invite accepted for Ada — Team workspace" in capsys.readouterr().out
+    assert "member invite accepted for Ada" in capsys.readouterr().out
 
 
 def test_failed_probe_sends_no_ticket_and_changes_no_config(home, monkeypatch):

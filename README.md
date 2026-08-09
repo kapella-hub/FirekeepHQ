@@ -65,11 +65,10 @@ After installing the Firekeep client, provision the latest public server release
 firekeep init
 ```
 
-`firekeep init` is the provisioning path; it never asks whether this is Solo or
-Team. It downloads and verifies the source-free deployment bundle, pulls public
-server images, and prompts only for deployment values. Pin a server release with
-`firekeep init --version vX.Y.Z`. No registry account or licence token is needed
-to download Solo—the signed entitlement is the plan boundary.
+`firekeep init` is the provisioning path. It downloads and verifies the
+source-free deployment bundle, pulls public server images, and prompts only for
+deployment values. Pin a server release with `firekeep init --version vX.Y.Z`.
+No registry account or token is needed — the release images are public.
 
 From a source checkout, `firekeep init --server-dir .` keeps the developer build
 path. The equivalent direct commands from an unpacked bundle or checkout are:
@@ -173,12 +172,11 @@ credential expiry, TLS trust, and all installed runtime adapters.
 
 To add a person, use **Members → Invite member** instead. A member invite is
 accepted once, creates that person's membership, and then hands the client the
-same device-enrollment flow above. People consume seats; their devices,
-terminals, agent identities, and background workers do not.
+same device-enrollment flow above.
 
 `firekeep login <server-url>` is reserved for hosted OAuth sign-in. A self-hosted
 server has no authorization server, so the command directs the user to request
-a join code instead; it never asks them to choose a tier.
+a join code instead.
 
 This installs the `firekeep-client` kit into `~/.firekeep` (a versioned venv under `venvs/`, selected by the `current` link), bootstraps `~/.firekeep/config`, and prepares every shipped adapter: Claude Code, Codex, Kiro, and OpenCode. Claude gets user-scoped `~/.claude.json` + `~/.claude/settings.json` (MCP servers via `firekeep-shim`, five hook cores); the other clients receive their native MCP and instruction files. Two stdio-local servers — code intelligence (`firekeep-symdex`) and the Decision Board (`firekeep-decision`) — are installed automatically, always-on, no flag needed. Use `firekeep install --runtime <name>` only for a targeted re-render or repair.
 
@@ -190,20 +188,6 @@ and HTTPS profiles: it asks the server
 whether it enforces auth rather than inferring from the scheme, because the
 standard personal-VPS shape is plain http to 127.0.0.1 over a tunnel against a
 keyed server — which the old scheme-based check skipped silently.
-
-### Plans
-
-| | Solo | Team |
-|---|---|---|
-| Members | One natural person | Multiple people, up to the signed seat count |
-| Devices, terminals, agent identities, background workers | Unlimited | Unlimited |
-| Runtime features | Available | Available |
-| Entitlement | Built-in fallback; no licence file required | Signed offline licence; no phone-home |
-
-The only runtime enforcement boundary is membership creation: issuing and
-accepting a second-person invite. Device enrollment and agent concurrency are
-never paywalled. If a Team licence is absent, malformed, or expired, Firekeep
-degrades to Solo without hiding or deleting existing data.
 
 ### Verify
 
@@ -261,7 +245,7 @@ front end you deliberately configure. See [Reaching it](#reaching-it).
 | **FirekeepBridge** | Session persistence. Preserves working context (plans, decisions, progress, file knowledge) through context compressions. Auto-distills to Cortex on completion. Crashed-session detection with workspace-snapshot resumption. Emits session lifecycle events to the replay stream. |
 | **FirekeepSentinel** | Environment observer. Docker health, git commits, file changes. Broadcasts alerts to Relay on errors. Container restarts, new commits, and file changes flow into a replayable event stream. |
 | **FirekeepRelay** | Agent coordination. Real-time pub/sub channels, persistent bulletin board, structured task queue, resource leases with monotonic fencing tokens, presence registry, direct messages, and an A2A agent card endpoint for external discovery. |
-| **Dashboard** | Web UI covering coordination, memory, diagnostics, devices, members, offline licensing, policy, vault, and operations. |
+| **Dashboard** | Web UI covering coordination, memory, diagnostics, devices, members, policy, vault, and operations. |
 
 Code intelligence (**FirekeepSymdex** — 38 MCP tools, 8 analytics hidden behind a flag) and the **Decision Board** (`firekeep-decision`) run **client-side** as stdio-local MCP servers installed with the kit, not as VPS containers.
 
@@ -294,8 +278,7 @@ works against the auth-gated stack without you pasting a key into the browser.
 | **Replay** | Session trace timelines, event inspector, root cause narrowing |
 | **Evals** | Aggregate quality metrics, per-session scorecards, quality trends |
 | **Devices** | Device credentials and single-use enrollment commands |
-| **Members** | People, seat usage, and single-use member invites |
-| **Licence** | Offline signed entitlement status, apply, and removal |
+| **Members** | People and single-use member invites |
 
 The dashboard is a zero-dependency static SPA. No build step, no npm, no framework.
 
@@ -352,12 +335,11 @@ costs. Background auto-indexing explicitly disables AI summaries.
 - One degrading local MCP gateway registered by every adapter, aggregating four remote services plus client-local Symdex and Decision Board
 - Code intelligence: client-side `firekeep-symdex` behind the gateway (38 tools, 8 analytics hidden behind a flag), always installed with the kit
 - Docs→skills knowledge pipeline (`knowledge_ingest`, URL ingest) + opt-in scheduled Confluence collectors (SP3)
-- Web dashboard with Devices, Members, and offline Licence management alongside memory, coordination, replay, policy, and operations
+- Web dashboard with Devices and Members management alongside memory, coordination, replay, policy, and operations
 - A2A agent card endpoint (`/.well-known/agent.json`) for external discovery
 - Business knowledge ingestion: chunk documents into vector store, surface during memory recall
 - Webhook notifications (Slack, Discord, generic HTTP)
 - Authentication: per-key API scopes (memory:read/write, session:read/write, replay:read, eval:read, admin, …), **on by default**, with keys bootstrapped by the installer
-- Solo/Team offline entitlements: one member free, Team seats enforced only on member invite issue/accept; devices and agent runtimes stay unlimited
 
 ### Planned
 - Grafana metrics export
