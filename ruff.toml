@@ -29,3 +29,9 @@ ignore = [
 "cortex/app/main.py" = ["E402"]
 # - test_memory_agent.py (SP0): sectioned mid-file import mirroring test_patterns.py
 "cortex/tests/test_memory_agent.py" = ["E402"]
+# - test_skill_step_specs.py: fixtures are IMPORTED from test_skill_api on purpose
+#   (its docstring: a second, subtly different app would let this file pass while
+#   the real router regressed). Pytest injects those names as test parameters,
+#   which ruff reads as redefinition of the import — F811 at every use site, and
+#   a noqa on the import line cannot reach them.
+"cortex/tests/test_skill_step_specs.py" = ["F811"]

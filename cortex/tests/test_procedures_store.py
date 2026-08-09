@@ -1,7 +1,6 @@
 """Redis layer for Living Procedures. Uses a filter-HONOURING Qdrant double —
 every pre-existing fake in this suite ignores scroll_filter, so a test against
 one would pass while the index silently included drafts and non-skills."""
-import json
 
 import pytest
 import fakeredis.aioredis as fr

@@ -1,6 +1,5 @@
 """Pure matching. No I/O — these are the functions that must never raise on the
 blocking pre-edit path (I6)."""
-import pytest
 
 from app.procedures import match
 
