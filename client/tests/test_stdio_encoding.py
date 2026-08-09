@@ -135,6 +135,15 @@ def test_every_stdio_entry_point_pins_utf8(module_path, func, monkeypatch):
     """
     import importlib
 
+    # `shim` and `decision.server` import anyio at module scope, and CI runs this
+    # suite BEFORE `pip install -e client` (the base suite deliberately proves the
+    # kit works on a bare interpreter). Same guard test_migration_entrypoints.py
+    # already uses. The release workflow additionally runs this file in the
+    # transport step, AFTER the install — so these two cases are skipped here and
+    # genuinely executed there, rather than silently never running.
+    if module_path in ("firekeep_client.shim", "firekeep_client.decision.server"):
+        pytest.importorskip("anyio")
+
     module = importlib.import_module(module_path)
     called = []
     monkeypatch.setattr(module, "force_utf8_stdio", lambda: called.append(True))
