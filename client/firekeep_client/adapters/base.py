@@ -363,6 +363,10 @@ the session.
   behind — do it now.
 - `memory_learn` the moment a fix works or a decision is made. Include what you
   tried first and why it failed; that is the part that saves the next session.
+- `memory_feedback(memory_ids, useful, comment)` when recalled knowledge shaped
+  what you DID — you acted on it and it held, or it sent you the wrong way.
+  Report only knowledge you acted on, not everything recall showed you; the
+  signal feeds ranking, so a thumb on unused results is noise.
 - `skill_create(trigger, symptoms, steps, gotchas, domain)` after a hard-won fix or
   a reusable technique. You hold the session context; the server does not
   synthesize this for you.
@@ -430,6 +434,10 @@ result names a vault key, follow up with vault_retrieve.
 Write as you go: ctx_update after each meaningful step, memory_learn the moment a
 fix works (including what failed first), skill_create after a hard-won fix,
 ctx_complete_session when done. Secrets go to vault_store, never memory_learn.
+
+When recalled knowledge shaped what you DID — you acted on it and it held, or it
+sent you the wrong way — call memory_feedback(memory_ids=[...], useful=...) with a
+one-line comment. Report only knowledge you acted on, not everything you saw.
 """
 
 GATEWAY_INSTRUCTIONS = f"""\
