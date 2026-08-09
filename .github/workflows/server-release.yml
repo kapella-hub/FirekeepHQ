@@ -275,7 +275,7 @@ jobs:
         run: |
           BASE="https://kapella-hub.github.io/firekeep-dist"
           EXPECT_LATEST="${{ steps.publish_bundle.outputs.expect_latest }}"
-          for i in $(seq 1 24); do
+          for i in $(seq 1 60); do
             got="$(curl -fsS "${BASE}/server/latest/server.json" 2>/dev/null \
                    | python -c "import json,sys;print(json.load(sys.stdin).get('version',''))" 2>/dev/null || echo '')"
             versioned="$(curl -fsS "${BASE}/server/${TAG}/server.json" 2>/dev/null \
@@ -293,7 +293,7 @@ jobs:
               echo "verified: public versioned server bundle ${TAG} (latest=${got})"
               exit 0
             fi
-            sleep 5
+            sleep 10
           done
-          echo "::error::public server bundle ${TAG} was not fully served within 2 minutes (latest=${got}, expected_latest=${EXPECT_LATEST})"
+          echo "::error::public server bundle ${TAG} was not fully served within 10 minutes (latest=${got}, expected_latest=${EXPECT_LATEST})"
           exit 1
