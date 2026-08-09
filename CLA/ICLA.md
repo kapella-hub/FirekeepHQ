@@ -156,14 +156,12 @@ reasonable and customary use in describing the origin of the Work.
 
 ## 10. Governing Law
 
-This agreement is governed by the laws of the State of **[STATE OF FORMATION —
-confirm with counsel]**, without regard to its conflict-of-laws provisions. If
+This agreement is governed by the laws of the State of **Colorado**, without regard to its conflict-of-laws provisions. If
 any provision of this agreement is held unenforceable, the remaining provisions
 remain in full force and effect.
 
-> **This agreement is not signable while the bracketed placeholder above
-> stands.** Maintainers must not record a signature against it until the
-> governing-law state is filled in and counsel has reviewed the document.
+> **Counsel review is still pending.** Maintainers must not record a
+> signature against this agreement until that review has happened.
 
 ---
 
