@@ -13,6 +13,7 @@ import queue
 import shutil
 import subprocess
 import sys
+import sysconfig
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -38,9 +39,23 @@ STATUS_TOOL = {
 
 def _console_script(name: str) -> str:
     suffix = ".exe" if os.name == "nt" else ""
-    beside_python = Path(sys.executable).resolve().parent / f"{name}{suffix}"
-    if beside_python.exists():
-        return str(beside_python)
+    filename = f"{name}{suffix}"
+    # The UNRESOLVED parent of sys.executable comes first. On POSIX the venv's
+    # bin/python is a SYMLINK to the standalone CPython, so resolving it walks
+    # out of the venv into a directory that holds no console scripts — which is
+    # exactly how client 0.1.37 shipped a Linux gateway whose six backends all
+    # reported executable-not-found while `firekeep doctor` stayed green
+    # (Windows never hit it: Scripts\python.exe is a real file). The resolved
+    # parent is kept as a later candidate, and sysconfig's scripts path covers
+    # any layout where sys.executable is itself relocated.
+    for directory in (
+        Path(sys.executable).parent,
+        Path(sysconfig.get_path("scripts")),
+        Path(sys.executable).resolve().parent,
+    ):
+        candidate = directory / filename
+        if candidate.exists():
+            return str(candidate)
     found = shutil.which(name)
     return found or name
 

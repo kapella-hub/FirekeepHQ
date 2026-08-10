@@ -238,7 +238,8 @@ jobs:
       - name: Mirror uv binaries
         run: |
           for t in aarch64-apple-darwin x86_64-apple-darwin \
-                   x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+                   x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu \
+                   x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
             curl -fsSL "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-${t}.tar.gz" \
               | tar -xz -O --wildcards '*/uv' > "dist/uv-${t}"
           done

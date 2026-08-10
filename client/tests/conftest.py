@@ -10,6 +10,7 @@ write the real ``~/.firekeep``:
 import configparser
 import importlib.util
 import platform
+from pathlib import Path
 
 import pytest
 
@@ -46,12 +47,19 @@ def _uv_target():
     Raises KeyError on any (system, machine) pair outside the four supported targets; callers
     should catch it and skip rather than let an unsupported CI runner error out."""
     system, machine = platform.system(), platform.machine()
-    return {
+    target = {
         ("Darwin", "arm64"): "aarch64-apple-darwin",
         ("Darwin", "x86_64"): "x86_64-apple-darwin",
         ("Linux", "x86_64"): "x86_64-unknown-linux-gnu",
         ("Linux", "aarch64"): "aarch64-unknown-linux-gnu",
     }[(system, machine)]
+    # Mirror install.sh's libc probe: on a musl host (Alpine test runner) the
+    # script fetches the -musl uv, and a mapping frozen to -gnu would make the
+    # artifact server serve a name the script never requests — tests would fail
+    # on the fetch instead of on anything real.
+    if system == "Linux" and Path(f"/lib/ld-musl-{machine}.so.1").exists():
+        target = target.replace("-gnu", "-musl")
+    return target
 
 
 # Reusable profile bodies matching the frozen ~/.firekeep INI schema.

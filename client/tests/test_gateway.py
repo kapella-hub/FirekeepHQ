@@ -126,3 +126,61 @@ for line in sys.stdin:
         assert called["result"]["content"][0]["text"] == "called"
     finally:
         backend.close()
+
+
+class TestConsoleScriptResolution:
+    """client 0.1.37 shipped a Linux gateway whose six backends all reported
+    executable-not-found: _console_script resolved the venv python SYMLINK into
+    the standalone CPython directory and looked for console scripts there.
+    Windows never hit it (Scripts\python.exe is a real file), which is exactly
+    why these tests build the POSIX layout explicitly instead of trusting the
+    host the suite happens to run on."""
+
+    def test_prefers_the_unresolved_venv_bin_dir(self, tmp_path, monkeypatch):
+        """The venv bin dir must win even when python is a symlink pointing
+        elsewhere — the console scripts live beside the symlink, not beside
+        its target."""
+        from firekeep_client import gateway as gw
+
+        standalone = tmp_path / "cpython" / "bin"
+        standalone.mkdir(parents=True)
+        (standalone / "python3").write_text("")
+
+        venv_bin = tmp_path / "venvs" / "1.0.0" / "bin"
+        venv_bin.mkdir(parents=True)
+        try:
+            (venv_bin / "python").symlink_to(standalone / "python3")
+        except OSError:
+            import pytest
+            pytest.skip("symlinks unavailable (Windows without dev mode)")
+        shim = venv_bin / "firekeep-shim"
+        shim.write_text("")
+
+        monkeypatch.setattr(gw.sys, "executable", str(venv_bin / "python"))
+        monkeypatch.setattr(gw.os, "name", "posix")
+        assert gw._console_script("firekeep-shim") == str(shim)
+
+    def test_resolved_dir_still_found_when_venv_bin_lacks_the_script(
+        self, tmp_path, monkeypatch
+    ):
+        """The resolved location stays a fallback — a layout that really does
+        keep scripts beside the interpreter target must keep working."""
+        from firekeep_client import gateway as gw
+
+        standalone = tmp_path / "cpython" / "bin"
+        standalone.mkdir(parents=True)
+        (standalone / "python3").write_text("")
+        beside_target = standalone / "firekeep-shim"
+        beside_target.write_text("")
+
+        venv_bin = tmp_path / "venvs" / "1.0.0" / "bin"
+        venv_bin.mkdir(parents=True)
+        try:
+            (venv_bin / "python").symlink_to(standalone / "python3")
+        except OSError:
+            import pytest
+            pytest.skip("symlinks unavailable (Windows without dev mode)")
+
+        monkeypatch.setattr(gw.sys, "executable", str(venv_bin / "python"))
+        monkeypatch.setattr(gw.os, "name", "posix")
+        assert gw._console_script("firekeep-shim") == str(beside_target)

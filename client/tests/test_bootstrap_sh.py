@@ -526,3 +526,50 @@ def test_install_sh_dies_when_the_handed_sums_file_is_unusable(tmp_path, artifac
         "an unusable handed file must not degrade to the network fetch it replaces"
     )
     _assert_nothing_provisioned(tmp_path)
+
+
+def test_install_sh_selects_the_musl_uv_on_a_musl_host(tmp_path, artifact_server):
+    """Alpine reproduced in miniature: `uname` reports Linux/x86_64 and `ldd`
+    identifies itself as musl (exactly what Alpine's busybox ldd prints), so the
+    script must fetch uv-x86_64-unknown-linux-musl. The real 0.1.37 bootstrap
+    misidentified Alpine as glibc, downloaded the GNU binary, and failed with
+    the misleading `uv: not found` — the musl loader the GNU binary names as
+    its ELF interpreter does not exist there. The stub artifacts are /bin/sh
+    scripts, so the fetched file runs on any host and the whole flow completes."""
+    vdir = artifact_server["root"] / artifact_server["version"]
+    host_uv = vdir / f"uv-{artifact_server['target']}"
+    musl_uv = vdir / "uv-x86_64-unknown-linux-musl"
+    musl_uv.write_bytes(host_uv.read_bytes())
+    sums = vdir / "SHA256SUMS"
+    sums.write_text(
+        sums.read_text()
+        + f"{hashlib.sha256(musl_uv.read_bytes()).hexdigest()}  uv-x86_64-unknown-linux-musl\n"
+    )
+
+    stub_dir = tmp_path / "stub-bin"
+    stub_dir.mkdir()
+    uname = stub_dir / "uname"
+    uname.write_text(
+        '#!/bin/sh\ncase "$1" in -m) echo x86_64 ;; *) echo Linux ;; esac\n'
+    )
+    uname.chmod(0o755)
+    ldd = stub_dir / "ldd"
+    # musl's ldd prints its identity and exits nonzero on --version; reproduce
+    # both so the detection cannot pass by ignoring the exit code by accident.
+    ldd.write_text('#!/bin/sh\necho "musl libc (x86_64)"\nexit 1\n')
+    ldd.chmod(0o755)
+
+    proc = subprocess.run(
+        ["sh", str(BOOTSTRAP)], capture_output=True, text=True,
+        env={"PATH": f"{stub_dir}:/usr/bin:/bin", "HOME": str(tmp_path),
+             "FIREKEEP_DIST_BASE": artifact_server["base"]},
+        stdin=subprocess.DEVNULL,
+    )
+    assert proc.returncode == 0, f"musl-host install must not fail:\n{proc.stderr}"
+    assert any("uv-x86_64-unknown-linux-musl" in r for r in artifact_server["requests"]), (
+        f"the musl uv artifact was never requested; requests: {artifact_server['requests']}"
+    )
+    assert not any(
+        "uv-x86_64-unknown-linux-gnu" in r for r in artifact_server["requests"]
+    ), "a musl host must not download the GNU uv binary"
+    _assert_current_selects_the_new_venv(tmp_path)

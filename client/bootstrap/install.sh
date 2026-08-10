@@ -217,11 +217,23 @@ remove_stale_venvs() {
 
 # --- 1. platform -------------------------------------------------------------
 os="$(uname -s)"; arch="$(uname -m)"
+# Alpine and other musl distros cannot run the GNU uv binary — the missing
+# glibc ELF interpreter surfaces as the misleading "uv: not found" AFTER a
+# successful download. musl's ldd identifies itself; the loader-file check
+# covers minimal images with no ldd at all.
+libc=gnu
+if [ "${os}" = "Linux" ]; then
+    if command -v ldd >/dev/null 2>&1 && ldd --version 2>&1 | grep -qi musl; then
+        libc=musl
+    elif [ -e "/lib/ld-musl-${arch}.so.1" ]; then
+        libc=musl
+    fi
+fi
 case "${os}-${arch}" in
     Darwin-arm64)  target=aarch64-apple-darwin ;;
     Darwin-x86_64) target=x86_64-apple-darwin ;;
-    Linux-x86_64)  target=x86_64-unknown-linux-gnu ;;
-    Linux-aarch64) target=aarch64-unknown-linux-gnu ;;
+    Linux-x86_64)  target="x86_64-unknown-linux-${libc}" ;;
+    Linux-aarch64) target="aarch64-unknown-linux-${libc}" ;;
     *) die "unsupported platform ${os}-${arch}" ;;
 esac
 

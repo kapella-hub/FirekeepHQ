@@ -78,7 +78,8 @@ curl -fsSL https://kapella-hub.github.io/firekeep-dist/latest/install.sh | sh
 firekeep init
 
 # Developers: from a checkout, `bash install.sh` builds from source and
-# `cd client && ./install` installs the kit locally.
+# `cd client && ./install` installs the kit locally; `firekeep install`
+# re-renders the client adapters on their own.
 ```
 
 Next time you open Claude Code, it has memory, safety, and learning — automatically.
