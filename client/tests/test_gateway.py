@@ -136,6 +136,16 @@ class TestConsoleScriptResolution:
     why these tests build the POSIX layout explicitly instead of trusting the
     host the suite happens to run on."""
 
+    @staticmethod
+    def _suffix():
+        # Use the REAL platform suffix rather than monkeypatching os.name:
+        # os is a shared module, and forcing name="posix" makes pathlib mint
+        # PosixPath objects on Windows — which raises NotImplementedError
+        # inside pytest itself (found the hard way on CI, Python 3.11).
+        import os
+
+        return ".exe" if os.name == "nt" else ""
+
     def test_prefers_the_unresolved_venv_bin_dir(self, tmp_path, monkeypatch):
         """The venv bin dir must win even when python is a symlink pointing
         elsewhere — the console scripts live beside the symlink, not beside
@@ -153,11 +163,10 @@ class TestConsoleScriptResolution:
         except OSError:
             import pytest
             pytest.skip("symlinks unavailable (Windows without dev mode)")
-        shim = venv_bin / "firekeep-shim"
+        shim = venv_bin / f"firekeep-shim{self._suffix()}"
         shim.write_text("")
 
         monkeypatch.setattr(gw.sys, "executable", str(venv_bin / "python"))
-        monkeypatch.setattr(gw.os, "name", "posix")
         assert gw._console_script("firekeep-shim") == str(shim)
 
     def test_resolved_dir_still_found_when_venv_bin_lacks_the_script(
@@ -170,7 +179,7 @@ class TestConsoleScriptResolution:
         standalone = tmp_path / "cpython" / "bin"
         standalone.mkdir(parents=True)
         (standalone / "python3").write_text("")
-        beside_target = standalone / "firekeep-shim"
+        beside_target = standalone / f"firekeep-shim{self._suffix()}"
         beside_target.write_text("")
 
         venv_bin = tmp_path / "venvs" / "1.0.0" / "bin"
@@ -182,5 +191,13 @@ class TestConsoleScriptResolution:
             pytest.skip("symlinks unavailable (Windows without dev mode)")
 
         monkeypatch.setattr(gw.sys, "executable", str(venv_bin / "python"))
-        monkeypatch.setattr(gw.os, "name", "posix")
+        # Pin the sysconfig candidate to an empty dir VIA THE MODULE REFERENCE
+        # (never the shared sysconfig module): a host with firekeep-shim
+        # installed in its real scripts dir must not fake this pass.
+        from types import SimpleNamespace
+
+        monkeypatch.setattr(
+            gw, "sysconfig",
+            SimpleNamespace(get_path=lambda kind: str(tmp_path / "empty")),
+        )
         assert gw._console_script("firekeep-shim") == str(beside_target)
