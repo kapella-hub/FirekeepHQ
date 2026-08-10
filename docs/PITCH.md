@@ -16,7 +16,7 @@ The result is predictable: AI assistants that look impressive in a demo but plat
 
 ## What It Does
 
-Firekeep gives every AI agent — Claude, Cursor, Codex, custom Python — five capabilities that compound over time:
+Firekeep gives every AI agent — Claude Code, Codex, Kiro, OpenCode, custom Python runtimes — five capabilities that compound over time:
 
 | Capability | What it changes | Where it shows up |
 |------------|-----------------|-------------------|
@@ -40,6 +40,7 @@ The most under-appreciated property of Firekeep is that **agents on it get bette
 4. Pattern engine watches outcomes across sessions. Strategies that correlate with success get promoted (`candidate → observed → trial → validated`). Strategies that fail silently get retired.
 5. A/B testing randomly withholds tips from a control group to prove causal lift, not just correlation.
 6. The dashboard's Evals tab shows quality trends — success rate, failure rate, memory freshness, claim contention — over time, per agent, per project.
+7. **Knowledge Autopilot (v0.4.0, on by default)** closes the truth side of the loop: recall is re-ranked by recorded session outcomes *and* by agent feedback on knowledge that was acted on (`memory_feedback`); a session reaper makes crashed sessions count as the failures they were; genuinely conflicting memories become visible contested pairs awaiting a human verdict instead of a silent coin-flip; and every review queue lands in one inbox with a weekly digest. Deliberately visibility-first — it proposes and reports, it never mutates on its own.
 
 > **Availability:** the promotion ladder and A/B validation ship disabled
 > (`PATTERN_VALIDATION_ENABLED`, `PATTERN_EXPERIMENTS_ENABLED`). Pattern
@@ -81,11 +82,13 @@ Two always-on local MCP backends run next to the agent behind the single
 - **Corpus** — business knowledge ingestion (manuals, runbooks) that surfaces naturally in agent recall
 - **Agent Gateway** — predict-then-act surface for any agent runtime
 - **Pattern Engine** — six pattern detectors, promotion ladder, A/B testing, cross-agent learning
+- **Knowledge Autopilot** — outcome- and feedback-weighted recall, session reaper, contested-pair verdicts, review inbox + weekly digest, per-memory evidence ledger
 
 ### What it integrates with
 
 - **Claude Code** — first-class hooks at SessionStart, Stop, PreToolUse, UserPromptSubmit, PreCompact, PostToolUse
-- **Any MCP client** — Cursor, Codex, Kiro, custom runtimes via standard MCP tools
+- **Shipped adapters** — Claude Code, Codex, Kiro, OpenCode; the installer renders each client's native MCP and instruction files
+- **Any MCP client** — Cursor has a documented manual path; custom runtimes use standard MCP tools
 - **Any HTTP-capable agent** — REST endpoints mirror every MCP tool
 
 ---
@@ -105,8 +108,6 @@ Two always-on local MCP backends run next to the agent behind the single
 | Test coverage | Automated test suites across all services and the client kit |
 | External SaaS dependencies | **Zero** — Neo4j, Qdrant, Redis, Ollama all self-hosted |
 | API costs to Anthropic / OpenAI for memory or recall | **Zero** — embeddings and synthesis run on local Ollama |
-
-> **Unmeasured.** The synthesis-path figure has not been measured. This document must not be published or shown to a prospect until it is.
 
 > **Read the second row before quoting the first.** Measured 2026-07-26 against a real
 > `docker compose` install on commodity hardware: with the shipped defaults, `memory_recall`
@@ -270,9 +271,10 @@ products cannot answer:
 
 **A deliberate non-feature, not a gap:** there is no licence-key mechanism, no seat
 counting, and no entitlement surface — by design. The free/paid boundary is the BUSL-1.1
-licence itself (free production use for one person; commercial licence for more), a legal
-term rather than a technical gate. **Not yet done, and load-bearing for a first sale:** no
-release tag has been cut, so nothing is published for `--pull` to fetch yet.
+licence itself (individual use free; a team runs on a paid commercial subscription), a
+legal term rather than a technical gate. Releases are cut and published — server tags
+through v0.4.0 ship public images plus a checksummed source-free bundle, and
+`firekeep init` provisions from them with no registry account.
 
 ---
 

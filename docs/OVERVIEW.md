@@ -6,11 +6,11 @@
 
 ## What It Does
 
-Firekeep sits behind your AI coding agent (Claude Code, Cursor, Aider) and gives it superpowers:
+Firekeep sits behind your AI coding agent (shipped adapters for Claude Code, Codex, Kiro, OpenCode; any MCP client works) and gives it superpowers:
 
 - **Remembers everything.** What worked, what failed, what your business does — across sessions.
 - **Stops unsafe edits.** Policy engine blocks risky file changes before they happen.
-- **Gets smarter over time.** Each session's replay data feeds pattern discovery. Proven strategies appear in the next session's briefing.
+- **Gets smarter over time.** Recall is re-ranked by recorded session outcomes and by agent feedback on knowledge that was actually acted on. Genuine conflicts surface as contested pairs for a human verdict; every review queue lands in one Autopilot inbox with a weekly digest.
 - **Coordinates multiple agents.** File locks, task queues, direct messages. No more agents overwriting each other.
 - **Asks the right questions.** When a task is ambiguous, the local Decision Board synthesizes clarifying questions from the whole team's accumulated memory — you answer once, in your browser.
 - **Full visibility.** Every action traced. Quality metrics computed. Trends tracked.
@@ -39,7 +39,7 @@ Your Agent ── stdio ──► local Firekeep gateway ── MCP ──► Fi
 
 | What | How Fast |
 |------|----------|
-| Memory recall (`format="raw"`) | 387ms |
+| Memory recall (`format="raw"`) | 387ms on a populated instance; 9.8ms fresh (LLM synthesis is off by default — see docs/PITCH.md for the full measurement notes) |
 | Policy check | 4ms |
 | Pattern query | 3ms |
 | Vault retrieve | 3ms |
@@ -56,25 +56,29 @@ Your Agent ── stdio ──► local Firekeep gateway ── MCP ──► Fi
 Every session makes the next one better:
 
 1. Agent works → replay traces everything
-2. Session ends → 10 quality metrics computed
-3. Patterns discovered → strategies promoted through candidate → trial → validated
-4. Next session → briefing includes tested tips
-5. Bad tips? Quarantine instantly. A/B testing proves what works.
+2. Session ends → 10 quality metrics computed. Crashed or walked-away sessions are reaped after 72h idle, so failures count instead of vanishing
+3. Recall re-ranks by those outcomes, and by agent feedback on knowledge that was acted on
+4. Conflicting memories become contested pairs; draft skills, procedure proposals and contested pairs queue in the Autopilot inbox for human verdicts
+5. Next session → opens already briefed with what actually held up
+
+(Statistical pattern promotion and A/B validation exist behind flags — they need session volume a fresh install doesn't have. Detectors surface descriptively from day one.)
 
 ---
 
 ## Get Started
 
 ```bash
-# VPS
-git clone <repo> && cd Firekeep && bash install.sh
+# Your machine first (macOS / Linux; fetches a checksum-verified kit):
+curl -fsSL https://kapella-hub.github.io/firekeep-dist/latest/install.sh | sh
+# Windows:
+#   irm https://kapella-hub.github.io/firekeep-dist/latest/install.ps1 | iex
 
-# Your machine (teammate bootstrap — fetches a checksum-verified wheel):
-curl -fsSL https://kapella-hub.github.io/firekeep-dist/latest/install.sh \
-  | FIREKEEP_DIST_BASE=https://kapella-hub.github.io/firekeep-dist sh
+# Then provision the server — downloads the published release bundle and
+# pulls the public images; no source checkout or registry account needed:
+firekeep init
 
-# ...or from a checkout:
-cd client && ./install     # or: firekeep install --runtime claude
+# Developers: from a checkout, `bash install.sh` builds from source and
+# `cd client && ./install` installs the kit locally.
 ```
 
 Next time you open Claude Code, it has memory, safety, and learning — automatically.

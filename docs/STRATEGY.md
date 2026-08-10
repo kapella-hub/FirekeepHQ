@@ -76,3 +76,35 @@ The substrate exists only if agents actually log. "MANDATORY" is an imperative a
 3. **Instrument the gap, gently.** Surface recall hit-rate / logging trend (from the existing `/admin/untagged-calls` + discipline section) as a signal — not 15 lines of MANDATORY.
 
 **Meta-fix for CLAUDE.md:** cut the wall of MANDATORY to a short list of load-bearing behaviors, each with a concrete trigger + its why-in-self-interest ("after a hard-won fix → `skill_create`, because your next session recalls it"). Structure carries the load; instructions explain the reward.
+
+## Status against this strategy — 2026-08-09
+
+What has landed since this document was written, mapped to its own calls:
+
+- **The loop's truth layer shipped as Knowledge Autopilot round 1 (v0.4.0).**
+  This is the "prove memory's worth" bet executed in the right order: before
+  any promotion machinery, make the outcome signal real. Recall is now
+  re-ranked by session outcomes (OWM) *and* per-memory agent feedback
+  (`memory_feedback`); the Bridge reaper gives crashed sessions the failure
+  status they earned (the measured signal was degenerate — every scored
+  session read as success); unconfirmed memory conflicts become visible
+  contested pairs with human verdicts instead of a timestamp coin-flip; and
+  all review queues land in one inbox with a weekly digest. Deliberately
+  visibility-first: automation stays gated on the signal becoming
+  non-degenerate, exactly as the "freeze the statistics" call demanded.
+- **Product and licence are decided and shipped.** One BUSL-1.1 product, no
+  editions, no licence keys; individual use free, team use on a paid
+  commercial subscription. Releases through v0.4.0 publish images + bundle;
+  `firekeep init` provisions from them. First sale is blocked only on counsel
+  review of the CLAs.
+- **The "no new subsystems" rule got a public enforcement mechanism:**
+  firekeep.ai now publishes exactly two roadmap promises (linked instances,
+  domain profiles), and `docs/ROADMAP.md` records the profiles-not-clients
+  decision — domain experiences are profiles of the existing kit over the one
+  shared brain, never separate products or memory stores.
+- **The doc↔behavior drift detector has its seed:** Living Procedures round 1
+  (skills observed as procedures, frequency/efficacy proposals under human
+  review, `PROCEDURE_ENABLED` off by default) crosses documented procedure
+  with observed behavior — the secondary bet's first concrete form.
+- **Still open, and still the gating risk:** dogfooding discipline and the
+  three-teammates-for-60-days adoption work. Nothing above substitutes for it.
