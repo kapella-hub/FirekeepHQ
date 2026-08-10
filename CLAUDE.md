@@ -279,6 +279,8 @@ build time — the right outcome, and the reason not to hard-code `docker.io` th
 
 ## Design Spec
 
+See `docs/ROADMAP.md` for the two published roadmap promises (linked instances,
+domain profiles) and the profiles-not-clients decision record behind rung 06.
 See `docs/DESIGN.md` for the full architecture design spec.
 See `docs/superpowers/plans/2026-03-18-firekeep-v2-master.md` for the v2 design spec (reviewed).
 See `docs/superpowers/plans/` for all implementation plans.
