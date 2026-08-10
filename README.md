@@ -16,7 +16,8 @@ Firekeep fixes this by giving agents durable memory, live operational awareness,
 
 | Capability | What it means |
 |---|---|
-| **Memory** | Agents remember what worked, what failed, and what matters across sessions. Semantic + graph retrieval, confidence scoring, contradiction handling, four memory types (reference / procedural / episodic / transient) with type-aware recall decay, recoverable archive-first aging, and token-conscious recall with optional LLM synthesis. |
+| **Memory** | Agents remember what worked, what failed, and what matters across sessions. Semantic + graph retrieval, confidence scoring, contradiction handling, four memory types (reference / procedural / episodic / transient) with type-aware recall decay, recoverable archive-first aging, and token-conscious recall with optional LLM synthesis. Recall is re-ranked by recorded session outcomes (outcome-weighted memory) and by agent feedback on knowledge that was actually acted on (`memory_feedback`). |
+| **Knowledge Autopilot** | The knowledge base maintains itself without deciding anything on its own. When two unconfirmed memories genuinely conflict, neither is silently dropped — both stay recallable, marked contested, until a human verdict (`/memory/contested/resolve`). A session reaper closes out crashed/walked-away sessions so failures count in outcome scoring. Every review queue (draft skills, stale skills, procedure proposals, contested pairs, eval dead letters) lands in one inbox with a weekly digest, and `/memory/{id}/evidence` shows every signal behind a memory's rank in one read. |
 | **Team Continuity** | Memories carry verified workspace/member provenance plus an untrusted runtime `agent_id` label and project. Per-contributor activity reports and LLM-synthesized handoff briefs let one agent pick up where another left off. |
 | **Session Continuity** | Plans, decisions, and progress recorded through the session tools survive context compression. Crashed sessions are auto-detected on next start and offered for resumption with a periodic workspace snapshot (git branch, recent commits, diff stats) embedded in the shadow. |
 | **Environment Awareness** | Configured Docker, git, and file collectors monitor operational state instead of relying only on prompts. Container restarts, new commits, and file changes flow into a replayable event stream. |
@@ -242,7 +243,7 @@ front end you deliberately configure. See [Reaching it](#reaching-it).
 | Service | What it does |
 |---------|-------------|
 | **FirekeepCortex** | Long-term memory. Semantic + graph RAG, archive/restore lifecycle, sleep-cycle consolidation, four memory types with type-aware decay, versioned memories with confidence scoring, automatic contradiction supersession, agent-authored skills (`skill_create`) + a docs→skills pipeline, and the Agent Gateway (predict-then-act surface). |
-| **FirekeepBridge** | Session persistence. Preserves working context (plans, decisions, progress, file knowledge) through context compressions. Auto-distills to Cortex on completion. Crashed-session detection with workspace-snapshot resumption. Emits session lifecycle events to the replay stream. |
+| **FirekeepBridge** | Session persistence. Preserves working context (plans, decisions, progress, file knowledge) through context compressions. Auto-distills to Cortex on completion. Crashed-session detection with workspace-snapshot resumption. A session reaper abandons sessions idle past 72h so walked-away sessions register as non-successes in outcome scoring. Emits session lifecycle events to the replay stream. |
 | **FirekeepSentinel** | Environment observer. Docker health, git commits, file changes. Broadcasts alerts to Relay on errors. Container restarts, new commits, and file changes flow into a replayable event stream. |
 | **FirekeepRelay** | Agent coordination. Real-time pub/sub channels, persistent bulletin board, structured task queue, resource leases with monotonic fencing tokens, presence registry, direct messages, and an A2A agent card endpoint for external discovery. |
 | **Dashboard** | Web UI covering coordination, memory, diagnostics, devices, members, policy, vault, and operations. |
@@ -271,6 +272,7 @@ works against the auth-gated stack without you pasting a key into the browser.
 | **Memory** | Recall search, active/archive browsers, one-click restore, maintenance preview/audit, store form, contributors, namespace/tag stats |
 | **Skills** | Agent-authored + doc-derived skill cards — review, activate, edit, retire |
 | **Knowledge** | Docs→skills ingestion (paste / URL) + the draft-skill approval queue |
+| **Autopilot** | The review inbox (draft/stale/re-review skills, procedure proposals, contested memory pairs, eval dead letters) + the "what changed this week" digest — read-only; it proposes and reports, never mutates |
 | **Patterns** | Discovered strategy cards; promotion validation and experiment controls when their feature flags are enabled |
 | **Ops** | Workers, queue depths, active agents, vector store info, Discipline counter (untagged memory calls) |
 | **Policy** | Runtime policy rules for pre-edit safety checks, toggle per rule |
@@ -288,7 +290,7 @@ The dashboard is a zero-dependency static SPA. No build step, no npm, no framewo
 |----------|----------|
 | **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** | Installation, updating, backups, troubleshooting, local development |
 | **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)** | All environment variables, Redis DB allocation, intelligence features |
-| **[docs/MCP-TOOLS.md](docs/MCP-TOOLS.md)** | Complete MCP tools reference (~102 tools across 6 logical backends, exposed to shipped clients through one local gateway) |
+| **[docs/MCP-TOOLS.md](docs/MCP-TOOLS.md)** | Complete MCP tools reference (104 tools across 6 logical backends, exposed to shipped clients through one local gateway) |
 | **[docs/DESIGN.md](docs/DESIGN.md)** | Full architecture specification, service contracts, integration points |
 | **[docs/COMPARISON.md](docs/COMPARISON.md)** | Feature-by-feature comparison vs. base Claude Code |
 | **[docs/SETUP-CODEX.md](docs/SETUP-CODEX.md)** | Codex integration guide |
@@ -332,6 +334,9 @@ costs. Background auto-indexing explicitly disables AI summaries.
 - Encrypted secrets vault (Fernet) with MCP tools and REST API
 - Replay traces with root-cause narrowing and per-event context reconstruction
 - Auto-evals: 10 Tier-1 quality metrics computed on session completion, trend tracking, regression detection
+- Knowledge Autopilot round 1 (visibility, never autonomous mutation): feedback-weighted recall + the `memory_feedback` tool, a Bridge session reaper so crashed sessions count as failures, contested-not-superseded handling for unconfirmed memory conflicts with human verdicts, the Autopilot review inbox + weekly digest, and a per-memory evidence ledger (`/memory/{id}/evidence`) — see [docs/guides/knowledge-autopilot.md](docs/guides/knowledge-autopilot.md)
+- Dreaming: automated memory consolidation + person profiles (`DREAM_ENABLED`, off by default)
+- Living Procedures: skills observed as procedures with frequency/efficacy proposals under human review (`PROCEDURE_ENABLED`, off by default)
 - One degrading local MCP gateway registered by every adapter, aggregating four remote services plus client-local Symdex and Decision Board
 - Code intelligence: client-side `firekeep-symdex` behind the gateway (38 tools, 8 analytics hidden behind a flag), always installed with the kit
 - Docs→skills knowledge pipeline (`knowledge_ingest`, URL ingest) + opt-in scheduled Confluence collectors (SP3)
@@ -341,22 +346,30 @@ costs. Background auto-indexing explicitly disables AI summaries.
 - Webhook notifications (Slack, Discord, generic HTTP)
 - Authentication: per-key API scopes (memory:read/write, session:read/write, replay:read, eval:read, admin, …), **on by default**, with keys bootstrapped by the installer
 
-### Planned
+### Promised (the two roadmap rungs published on firekeep.ai)
+- **Linked instances** — multiple Firekeep servers sharing knowledge across an organisation, so what one team learns is recallable by another
+- **Domain profiles** — separate experiences (coding today; documents and research ahead) as profiles of the same client kit over one shared brain: never separate products, never separate memory stores
+
+The decision record behind both — profiles-not-clients, the linkage-layer
+prerequisite, outcome-signal gating, sequencing — is
+[docs/ROADMAP.md](docs/ROADMAP.md).
+
+### Planned (smaller)
 - Grafana metrics export
 - Jira connector ingestion (wiki/Confluence auto-sync already shipped, opt-in)
 - Skill versioning and rollback
-- Cross-VPS federation (multiple Firekeep instances sharing pattern/skill libraries)
 
 ## Status
 
-Firekeep is in active development and used daily. The core implementations — memory, sessions, environment monitoring, coordination, replay, the client kit, and Symdex — are covered by more than 3,500 passing automated tests in the current repository. The architecture is designed for a single-host deployment.
+Firekeep is in active development and used daily. The core implementations — memory, sessions, environment monitoring, coordination, replay, the client kit, and Symdex — are covered by more than 4,000 passing automated tests in the current repository. The architecture is designed for a single-host deployment.
 
 This is currently a private repository preparing for early access.
 
 ## License
 
-Firekeep is source-available under BUSL-1.1. Production use is free for one
-natural person in one workspace; Group use requires a commercial license.
+Firekeep is source-available under BUSL-1.1. Individual use is free —
+production use by one natural person in one workspace; a team of more than one
+person runs on a paid commercial subscription (write to sales@firekeep.ai).
 Each version converts to Apache-2.0 four years after its first public release.
 See [LICENSE](LICENSE) for the full grant and [docs/LICENSING.md](docs/LICENSING.md)
 for status. Symdex

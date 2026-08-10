@@ -1,8 +1,8 @@
 # MCP Tools Reference
 
-Firekeep exposes ~102 MCP tools from 6 logical backends through one client-visible `firekeep` stdio gateway. The four remote services — Cortex :8080, Bridge :8070, Sentinel :8060, Relay :8050 — use Streamable HTTP behind parameterized shims. `firekeep-symdex` (38 code-intelligence tools; 30 visible by default, 8 analytics hidden behind `SYMDEX_ANALYTICS_ENABLED`) and `firekeep-decision` (2 tools) are client-local processes behind the same gateway, not HTTP endpoints. `firekeep_gateway_status` reports per-backend health; one failed backend does not remove the others.
+Firekeep exposes 104 MCP tools from 6 logical backends through one client-visible `firekeep` stdio gateway. The four remote services — Cortex :8080, Bridge :8070, Sentinel :8060, Relay :8050 — use Streamable HTTP behind parameterized shims. `firekeep-symdex` (38 code-intelligence tools; 30 visible by default, 8 analytics hidden behind `SYMDEX_ANALYTICS_ENABLED`) and `firekeep-decision` (2 tools) are client-local processes behind the same gateway, not HTTP endpoints. `firekeep_gateway_status` reports per-backend health; one failed backend does not remove the others.
 
-Tool breakdown: Cortex 27 + Bridge 7 + Sentinel 3 + Relay 25 = 62 HTTP-service tools; plus client-stdio `firekeep-symdex` 38 (30 visible, 8 analytics hidden) + `firekeep-decision` 2 = **102 total**.
+Tool breakdown: Cortex 29 + Bridge 7 + Sentinel 3 + Relay 25 = 64 HTTP-service tools; plus client-stdio `firekeep-symdex` 38 (30 visible, 8 analytics hidden) + `firekeep-decision` 2 = **104 total**. (Counted from `@mcp.tool` registrations per service, 2026-08-09.)
 
 ## FirekeepBridge (session context)
 
@@ -65,6 +65,7 @@ Tool breakdown: Cortex 27 + Bridge 7 + Sentinel 3 + Relay 25 = 62 HTTP-service t
 | `memory_stream` | Ingest raw events for batch processing |
 | `memory_health` | Check memory service health |
 | `memory_handoff` | Generate an LLM handoff brief for a project |
+| `memory_feedback` | Report whether recalled knowledge held up when acted on — accumulates per-memory counters that feed recall ranking (Knowledge Autopilot) |
 | `corpus_ingest` | Ingest business documents (chunk + embed to Qdrant; surfaced via `memory_recall`) |
 | `corpus_sources` | List ingested document sources |
 | `corpus_delete` | Delete a source and all its data |

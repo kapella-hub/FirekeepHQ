@@ -31,7 +31,7 @@ Your Agent ── stdio ──► local Firekeep gateway ── MCP ──► Fi
                  Corpus    Warn      A/B Testing
 ```
 
-**4 core services + dashboard. 13 containers. 6 logical MCP backends, ~102 tools, one client-visible gateway. One `docker compose up`.**
+**4 core services + dashboard. 13 containers. 6 logical MCP backends, 104 tools, one client-visible gateway. One `docker compose up`.**
 
 ---
 
