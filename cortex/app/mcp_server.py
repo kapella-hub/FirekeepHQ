@@ -57,6 +57,12 @@ ctx_complete_session when done. Secrets go to vault_store, never memory_learn.
 When recalled knowledge shaped what you DID — you acted on it and it held, or it
 sent you the wrong way — call memory_feedback(memory_ids=[...], useful=...) with a
 one-line comment. Report only knowledge you acted on, not everything you saw.
+
+Before a risky or hard-to-reverse action (schema change, deletion, deploy, bulk
+edit), declare it: action_before(action_type, target, intent, success_criteria,
+confidence). Reconcile with action_after(action_id, outcome) once it settles —
+stated confidence is scored against reality. Routine edits are hook-gated; no
+declaration needed.
 """
 
 mcp = FastMCP("FirekeepCortex", instructions=_INSTRUCTIONS)
@@ -1500,7 +1506,10 @@ async def action_before(
         intent: Optional description of what you intend to achieve.
         expected_changes: Optional list of file paths or artefacts expected to change.
         success_criteria: Optional list of observable conditions that confirm success.
-        confidence: Optional confidence in the prediction (0.0–1.0).
+        confidence: Optional confidence in the prediction (0.0–1.0). Include it:
+            confidence is what makes the prediction scorable — session evals
+            compute a Brier calibration score from stated confidence vs the
+            reconciled outcome, and a prediction without it scores nothing.
     """
     payload: dict = {
         "session_id": session_id,

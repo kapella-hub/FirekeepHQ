@@ -48,7 +48,9 @@ It is a **control plane for AI coding agents** — infrastructure that sits behi
 
 ### Prerequisites
 
-- A Linux VPS (or any Docker host). **RAM:** 16 GB recommended for the full default stack (Neo4j JVM + Qdrant +
+- Any Docker host — a Linux VPS, an office server, or your own desktop (Docker
+  Desktop on macOS, or with the WSL2 backend on Windows; run the install inside
+  WSL2 there, since the installer is a bash script). **RAM:** 16 GB recommended for the full default stack (Neo4j JVM + Qdrant +
   Redis + Ollama + 7 Python services). 8 GB is the practical floor and requires
   a small embedding model (`EMBEDDING_MODEL=granite-embedding:30m`,
   `EMBEDDING_DIM=384`). Below that, containers are OOM-killed while HTTP health

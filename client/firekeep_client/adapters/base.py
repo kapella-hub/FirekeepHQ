@@ -375,6 +375,14 @@ the session.
   `memory_learn(namespace="infrastructure")`.
 - `ctx_complete_session(outcome=...)` when the work is done. Skipping it discards
   the session.
+
+**Declare consequential actions before taking them.** Before a risky or
+hard-to-reverse action (schema change, deletion, deploy, bulk edit), call
+`action_before(action_type, target, intent, success_criteria, confidence)` —
+state what you expect and how sure you are. After it settles, call
+`action_after(action_id, outcome)` with what actually happened. Your stated
+confidence is scored against reality (calibration); routine single-file edits
+are already gated by hooks and need no declaration.
 """
 
 
