@@ -657,3 +657,14 @@ def test_check_ca_expiry_os_trust_reports_ok(tmp_path, monkeypatch):
     label, status, detail = cli._check_ca_expiry(cfg)
     assert status == "ok"
     assert "OS trust store" in detail
+
+
+def test_status_is_an_alias_for_doctor():
+    """`firekeep status` is what operators type first on an unfamiliar CLI —
+    observed live before the alias existed. It must parse to the same handler
+    as `doctor`, not error with 'invalid choice'."""
+    parser = cli._build_parser()
+    doctor_args = parser.parse_args(["doctor"])
+    status_args = parser.parse_args(["status"])
+    assert status_args.func is doctor_args.func
+    assert status_args.func is cli.cmd_doctor

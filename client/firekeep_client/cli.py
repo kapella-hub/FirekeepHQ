@@ -1576,7 +1576,13 @@ def _build_parser() -> argparse.ArgumentParser:
     gateway = sub.add_parser("gateway", help="run the local Firekeep MCP gateway")
     gateway.set_defaults(func=cmd_gateway)
 
-    doc = sub.add_parser("doctor", help="preflight health / skew / perm checks")
+    # `status` alias: what operators type first on an unfamiliar CLI (observed
+    # live on the maintainer's own Mac before it existed). Dispatch is via
+    # set_defaults(func=...), so the alias needs no handler changes.
+    doc = sub.add_parser(
+        "doctor", aliases=["status"],
+        help="preflight health / skew / perm checks",
+    )
     doc.set_defaults(func=cmd_doctor)
 
     shift = sub.add_parser(
