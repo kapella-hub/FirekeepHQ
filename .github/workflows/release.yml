@@ -53,7 +53,14 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  UV_VERSION: "0.5.11"   # pinned: the bootstrap verifies uv against SHA256SUMS
+  # pinned: the bootstrap verifies uv against SHA256SUMS. 0.5.11 -> 0.8.17
+  # because 0.5.11 cannot provision a managed CPython on musl ("No interpreter
+  # found for Python 3.12 in managed installations" on Alpine after the musl uv
+  # fix made it that far); 0.8.17 downloads the musl python-build-standalone
+  # fine. The exact bootstrap flag set (venv --python-preference only-managed
+  # --clear; pip install --python --reinstall) verified against 0.8.17 on
+  # Alpine 3.20, Ubuntu 24.04 and Windows before this bump.
+  UV_VERSION: "0.8.17"
 
 jobs:
   # ci.yml triggers on `push: branches:[main]` and `pull_request` ONLY, so a
