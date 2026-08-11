@@ -4,7 +4,7 @@
 
 Firekeep is a **self-hosted control plane for AI coding agents**. It gives Claude Code, Codex, Kiro, OpenCode, and other MCP-capable clients persistent memory, session continuity, environment awareness, agent coordination, and replayable traces. The server stack and its default inference path are local; optional connectors and Symdex AI providers contact third-party services only when you configure them.
 
-**[Website](https://firekeep.ai) · [Live demo](https://firekeep.ai/#cross-runtime-demo) · [Install guide](https://firekeep.ai/docs.html#server) · [Case study](https://firekeep.ai/case-study.html) · [Concepts](https://firekeep.ai/agents-md-vs-memory.html)**
+**[Website](https://firekeep.ai) · [Live demo](https://firekeep.ai/?demo=1#cross-runtime-demo) · [Install guide](https://firekeep.ai/docs.html#server) · [Case study](https://firekeep.ai/case-study.html) · [Concepts](https://firekeep.ai/agents-md-vs-memory.html)**
 
 ---
 
