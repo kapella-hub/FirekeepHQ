@@ -739,3 +739,50 @@ async def test_compliance_empty_store_is_honest_zeros(mk, stores):
         "the compliance!=quality caveat is part of the response contract — "
         "the dashboard must not be able to show the numbers without it"
     )
+
+
+@pytest.mark.asyncio
+async def test_compliance_survives_a_non_numeric_metric(mk, stores):
+    """External review, 2026-08-11: a string where a count belongs raised
+    TypeError inside build_rows and 500'd the endpoint — one poisoned metric
+    blanking the table, contradicting the per-record isolation the scan
+    claims. Non-numeric values read as absent; the record still counts."""
+    redis_client, replay_redis = stores
+    await replay_redis.set("rp:eval:ok", _eval_record("ok", memory_read_count=2))
+    await replay_redis.set("rp:eval:poisoned", _eval_record(
+        "poisoned", memory_read_count="not-a-number", brier_score="also-not"))
+
+    async with mk(_FakeVector(_FakeQdrant()), redis_client, replay_redis) as c:
+        resp = await c.get("/autopilot/compliance")
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["sessions_evaluated"] == 2
+    rows = {r["key"]: r for r in body["instructions"]}
+    assert rows["recall_before_work"]["hits"] == 1
+    # A non-numeric brier is not a declared prediction, and a bool must not
+    # masquerade as a count either.
+    assert rows["declared_predictions"]["hits"] == 0
+
+
+@pytest.mark.asyncio
+async def test_compliance_trend_floor_counts_dated_evals_not_all(mk, stores):
+    """External review, 2026-08-11: flooring on ALL evals let ten records with
+    two dates render a 1-vs-1 comparison as a trend."""
+    redis_client, replay_redis = stores
+    for i in range(2):
+        await replay_redis.set(f"rp:eval:dated{i}",
+                               _eval_record(f"dated{i}", days_ago=i + 1,
+                                            memory_read_count=1))
+    for i in range(8):
+        raw = json.loads(_eval_record(f"undated{i}", memory_read_count=1))
+        del raw["created_at"]
+        await replay_redis.set(f"rp:eval:undated{i}", json.dumps(raw))
+
+    async with mk(_FakeVector(_FakeQdrant()), redis_client, replay_redis) as c:
+        body = (await c.get("/autopilot/compliance")).json()
+
+    assert body["sessions_evaluated"] == 10
+    assert body["dated_sessions"] == 2
+    assert all("recent_rate" not in r and "earlier_rate" not in r
+               for r in body["instructions"])

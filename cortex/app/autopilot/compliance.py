@@ -39,44 +39,66 @@ TREND_MIN_SESSIONS = 10
 
 _Metrics = dict[str, Any]
 
-# The founding-measurement predicates, in the spec's row order.
+def _num(value: Any) -> float | None:
+    """A metric value, or None when it is not a number.
+
+    Predicates compare; a string that reached a comparison raised TypeError
+    inside build_rows and 500'd the whole endpoint — one poisoned metric
+    blanking the table, the exact failure the scan's per-record guard claims
+    to prevent (found by external review, 2026-08-11). Non-numeric values now
+    read as absent: for a count predicate that is non-compliance, and for the
+    brier presence predicate a non-numeric score is rightly not a prediction.
+    bool is excluded on purpose — True satisfying `> 0` would let a stray
+    flag masquerade as a count.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+# The founding-measurement predicates, in the spec's row order. KEYS and
+# PREDICATES are frozen to the baseline; the LABEL and DESCRIPTION texts may
+# sharpen (they describe the predicate to a human and were found to overclaim
+# — external review 2026-08-11) because relabeling changes no measured number.
 # key -> (instruction as rendered, predicate description, predicate)
 INSTRUCTIONS: list[tuple[str, str, str, Callable[[_Metrics], bool]]] = [
     (
         "recall_before_work",
         "Recall before you answer",
         "memory_read_count > 0",
-        lambda m: (m.get("memory_read_count") or 0) > 0,
+        lambda m: (_num(m.get("memory_read_count")) or 0) > 0,
     ),
     (
         "write_as_you_go",
         "Write as you go (memory_learn)",
         "memory_write_count > 0",
-        lambda m: (m.get("memory_write_count") or 0) > 0,
+        lambda m: (_num(m.get("memory_write_count")) or 0) > 0,
     ),
     (
         "recall_visibly_used",
-        "Recalled knowledge visibly used",
-        "recall_used_rate > 0",
-        lambda m: (m.get("recall_used_rate") or 0) > 0,
+        "Recalled knowledge used (temporal proxy)",
+        "recall_used_rate > 0 — a later write/predict follows a read; "
+        "proximity, not attribution",
+        lambda m: (_num(m.get("recall_used_rate")) or 0) > 0,
     ),
     (
         "ctx_working_state",
-        "ctx_update as you go",
-        "context_snapshot_count > 0",
-        lambda m: (m.get("context_snapshot_count") or 0) > 0,
+        "Working state captured (agent or stop-hook)",
+        "context_snapshot_count > 0 — the per-turn stop-hook snapshot also "
+        "satisfies this; measures capture, not agent discipline",
+        lambda m: (_num(m.get("context_snapshot_count")) or 0) > 0,
     ),
     (
         "declared_predictions",
         "Declare consequential actions",
         "brier_score is not None",
-        lambda m: m.get("brier_score") is not None,
+        lambda m: _num(m.get("brier_score")) is not None,
     ),
     (
         "outcome_bearing",
         "Outcome-bearing events ≥ 2",
         "outcome_event_count >= 2",
-        lambda m: (m.get("outcome_event_count") or 0) >= 2,
+        lambda m: (_num(m.get("outcome_event_count")) or 0) >= 2,
     ),
 ]
 
@@ -134,7 +156,10 @@ def build_rows(evals: list[dict]) -> list[dict[str, Any]]:
     )
     half = len(dated) // 2
     earlier, recent = dated[:half], dated[half:]
-    with_trend = len(evals) >= TREND_MIN_SESSIONS and half >= 1
+    # The floor is on DATED evals, not all evals: undated records cannot be
+    # placed in a half, and flooring on the total let ten evals with two dates
+    # render a 1-vs-1 comparison as a trend (external review, 2026-08-11).
+    with_trend = len(dated) >= TREND_MIN_SESSIONS
 
     rows: list[dict[str, Any]] = []
     for key, instruction, predicate_desc, predicate in INSTRUCTIONS:
@@ -161,6 +186,7 @@ async def build_compliance(replay_redis) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "sessions_evaluated": len(evals),
+        "dated_sessions": sum(1 for e in evals if _parse_created_at(e) is not None),
         "unparsed": unparsed,
         "approximate": capped,
         "instructions": build_rows(evals),
@@ -169,12 +195,18 @@ async def build_compliance(replay_redis) -> dict[str, Any]:
             "thing. It does not measure whether doing it helped: the outcome "
             "signal is still degenerate (replay-evals-patterns.md), so no "
             "quality claim follows from these rates.",
+            "Rates are over ALL evaluated sessions, including sessions that "
+            "predate an instruction's rollout and sessions on runtimes where a "
+            "behavior is hook-automated — the table measures the fleet, not "
+            "obedience among instructed sessions. Exposure tracking "
+            "(instruction version per session) and per-runtime slicing arrive "
+            "with round 2 variants.",
             "Predicates are frozen to the 2026-08-11 founding measurement "
             "(docs/superpowers/specs/2026-08-11-living-instructions-design.md); "
             "a changed predicate would orphan the baseline, so changes arrive "
             "as new rows.",
-            "Trend halves the evaluated window by eval time; it is withheld "
-            f"below {TREND_MIN_SESSIONS} sessions rather than shown small.",
+            "Trend halves the DATED evals by eval time; it is withheld below "
+            f"{TREND_MIN_SESSIONS} dated sessions rather than shown small.",
         ],
     }
     return payload

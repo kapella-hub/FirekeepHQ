@@ -81,9 +81,12 @@ team has ever been shown which of its agent instructions are actually obeyed.
 ## Rounds
 
 - **Round 1 — visibility only.** The compliance table, live, per instruction,
-  per runtime, with trend over time. No rewriting, no delivery, no stats.
-  Ships the same way Autopilot round 1 shipped: it proposes and reports,
-  never mutates.
+  with trend over time. No rewriting, no delivery, no stats. Ships the same
+  way Autopilot round 1 shipped: it proposes and reports, never mutates.
+  (Per-runtime slicing was originally listed here and is NOT in round 1:
+  stored evals carry no runtime/adapter attribution, so slicing needs an
+  eval-schema addition first — moved to round 2 alongside exposure tracking;
+  external review 2026-08-11.)
 - **Round 2 — proposals under verdict.** Fleet-authored rewrites queue in the
   inbox; an approved rewrite replaces the rendered text at the next client
   release / briefing refresh; measurement continues as sequential
@@ -119,6 +122,41 @@ populates per-memory usefulness, `action_before` compliance populates
 calibration, completion discipline plus the session reaper populates real
 success/failure. Every compliance win makes the quality half more measurable.
 Round N's behavior measurement bootstraps round N+1's outcome measurement.
+
+## External review, 2026-08-11 — findings and dispositions
+
+A same-day review of the shipped round 1 found six issues; all verified,
+four fixed immediately, two folded into round-2 scope:
+
+1. **Denominator conflates exposure with obedience** (valid, round-2 scope):
+   rates cover all evaluated sessions, including sessions predating an
+   instruction's rollout. One nuance held against the review: the 0/32
+   predictions row was never claimed as disobedience — the spec frames it as
+   the pre-rollout arm of the natural experiment, which is exactly a rollout
+   measurement. The general point stands for cross-time comparisons; the
+   response now says so in `notes`, and exposure tracking (instruction
+   version per session) plus per-runtime slicing are round-2 requirements.
+2. **`ctx_working_state` is satisfiable by the stop-hook's automatic per-turn
+   snapshot** (confirmed): the row measures capture, not agent discipline.
+   Predicate kept (frozen key; the capture rate is still worth watching),
+   label and description now say what it actually measures; an agent-driven
+   variant needs an event the hook does not emit — round 2, with exposure.
+3. **`recall_visibly_used` is a temporal proxy** (confirmed): relabeled
+   "(temporal proxy)" with "proximity, not attribution" in the description.
+   Predicate unchanged — comparability with the baseline preserved.
+4. **A non-numeric metric value 500'd the endpoint** (confirmed, fixed):
+   `_num()` coercion — non-numbers read as absent, bools excluded so a stray
+   flag cannot masquerade as a count. Regression test reproduces the
+   original TypeError input.
+5. **Trend floor counted all evals, not dated ones** (confirmed, fixed):
+   ten evals with two dates rendered a 1-vs-1 comparison as a trend. Floor
+   moved to dated evals; `dated_sessions` added to the response.
+6. **The renderer dropped `approximate`** (confirmed, fixed): a capped scan
+   now discloses itself on the dashboard, same rule as the digest.
+
+Label/description texts may sharpen (they describe predicates to humans and
+were overclaiming); KEYS and PREDICATES stay frozen — no measured number
+changed in any fix.
 
 ## Risks, named
 

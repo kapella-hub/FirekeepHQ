@@ -464,3 +464,15 @@ class TestComplianceTable:
 
     def test_a_missing_body_does_not_throw(self):
         assert "unavailable" in _render("renderAutopilotCompliance", None)
+
+    def test_a_capped_scan_is_disclosed(self):
+        """External review, 2026-08-11: the API said approximate: true and the
+        renderer never showed it — a sample displayed as a census."""
+        body = json.loads(json.dumps(COMPLIANCE))
+        body["approximate"] = True
+        html = _render("renderAutopilotCompliance", body)
+        assert "Scan capped" in html
+
+    def test_a_complete_scan_makes_no_cap_claim(self):
+        html = _render("renderAutopilotCompliance", COMPLIANCE)
+        assert "Scan capped" not in html

@@ -5413,6 +5413,11 @@ function renderAutopilotCompliance(d) {
     if (d.unparsed) {
         out += '<div style="margin-top:6px;font-size:12px;color:var(--amber)">' + d.unparsed + ' eval record(s) could not be parsed and are excluded from every rate.</div>';
     }
+    // A capped scan is a sample, not a census — same rule as the digest: the
+    // flag must reach the reader, not stop at the API (external review find).
+    if (d.approximate) {
+        out += '<div style="margin-top:6px;font-size:12px;color:var(--amber)">Scan capped: these rates cover the first ' + n + ' evals found, not necessarily all of them.</div>';
+    }
     out += '</div>';
     return out;
 }
