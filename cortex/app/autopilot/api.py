@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Query
 
+from app.autopilot import compliance as compliance_mod
 from app.autopilot import digest as digest_mod
 from app.autopilot import inbox as inbox_mod
 
@@ -99,5 +100,14 @@ def create_autopilot_router(get_redis, get_replay_redis, get_vector, settings_fn
         return await digest_mod.build_digest(
             get_vector(), get_redis(), settings_fn(), days=days,
         )
+
+    @router.get("/compliance", dependencies=admin_dep)
+    async def compliance():
+        """Living Instructions round 1: the per-instruction compliance table.
+
+        Reads the same replay Redis the eval DLQ lives on — stored evals are
+        `rp:eval:*` there and nowhere else.
+        """
+        return await compliance_mod.build_compliance(get_replay_redis())
 
     return router

@@ -33,6 +33,7 @@
 - `GET /memory/{id}/backlinks` — Get automatically discovered related memories
 - `GET /memory/{id}/evidence` — The evidence ledger for one memory: provenance, usage, judgments, outcomes, disputes, lineage, archive state in one read; requires `admin` (exposes feedback comment text and member/agent provenance)
 - `POST /memory/contested/resolve` — Human verdict on a contested pair (`supersede` records the SUPERSEDES edge and confirms the winner | `coexist` leaves durable `coexist_with` markers so the pass never re-contests the pair); requires `memory:write`
+- `GET /autopilot/compliance` — Living Instructions round 1: per-instruction compliance table over stored session evals (behavior, not quality — the response says so in `notes`); requires `admin`
 - `GET /autopilot/inbox` — Exception inbox: drafts, stale, re-review, procedure proposals, contested pairs, eval DLQ (admin)
 - `GET /autopilot/digest?days=7` — What changed in the window: learned/archived/superseded/dreamed/drafted/feedback counts (admin)
 - `POST /knowledge/ingest` — Docs→skills front door (SP2/SP2.1): ingest a document to the corpus synchronously (searchable immediately), write a `queued` ingest-status record, and enqueue one `classify_and_draft_from_doc` Celery task that classifies the document (`reference`/`procedural`/`mixed`) and fans out one `draft_skill_from_doc` task per detected procedure title. Body: `{content, source_name, source_type}`. Returns **202** `{corpus_source, status, note}`. See `app/knowledge/api.py`, `app/workers/skill_synthesis.py`.

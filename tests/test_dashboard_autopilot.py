@@ -163,7 +163,9 @@ class TestRoundOneIsReadOnly:
             assert url.startswith("/autopilot/"), (
                 f"the panel reads {url}, outside its own read-only surface"
             )
-        assert sorted(urls) == ["/autopilot/digest?days=7", "/autopilot/inbox"]
+        assert sorted(urls) == [
+            "/autopilot/compliance", "/autopilot/digest?days=7", "/autopilot/inbox",
+        ]
 
 
 # ------------------------------------------------------------------ digest --
@@ -362,15 +364,15 @@ class TestWiring:
         assert "fetchJSON(" in body
         assert not re.search(r"[^J]\bfetch\(", body)
 
-    def test_both_loads_have_their_own_catch(self):
+    def test_each_load_has_its_own_catch(self):
         """The routes are admin-scoped, so 403 is a REACHABLE outcome for a
         non-owner dashboard key. Without a catch the panel sits on its spinner
         forever, which reads as "still loading" rather than "refused"."""
         m = re.search(r"function loadAutopilot\([\s\S]*?\n\}", _src())
-        assert m.group(0).count(".catch(") == 2, (
-            "the digest and the inbox are fetched independently and must fail "
-            "independently — one being unavailable is not a reason to withhold "
-            "the other"
+        assert m.group(0).count(".catch(") == 3, (
+            "the digest, the inbox and the compliance table are fetched "
+            "independently and must fail independently — one being "
+            "unavailable is not a reason to withhold the others"
         )
 
     def test_every_handler_used_from_an_onclick_in_this_panel_is_exported(self):
@@ -400,3 +402,65 @@ class TestWiring:
         assert m, "autopilotOpenSkills not found"
         body = m.group(0)
         assert body.index("sel.value = filter") < body.index("switchTab('skills')")
+
+
+# -------------------------------------------- compliance (Living Instructions) --
+# Shape copied from cortex/app/autopilot/compliance.py's real response.
+
+COMPLIANCE = {
+    "generated_at": "2026-08-11T12:00:00+00:00",
+    "sessions_evaluated": 32,
+    "unparsed": 0,
+    "approximate": False,
+    "instructions": [
+        {"key": "recall_before_work", "instruction": "Recall before you answer",
+         "predicate": "memory_read_count > 0", "hits": 18, "total": 32,
+         "rate": 0.5625, "earlier_rate": 0.5, "recent_rate": 0.625},
+        {"key": "declared_predictions", "instruction": "Declare consequential actions",
+         "predicate": "brier_score is not None", "hits": 0, "total": 32,
+         "rate": 0.0, "earlier_rate": 0.0, "recent_rate": 0.0},
+    ],
+    "notes": [
+        "Compliance measures BEHAVIOR — whether sessions did the instructed "
+        "thing. It does not measure whether doing it helped.",
+    ],
+}
+
+
+class TestComplianceTable:
+    def test_rows_render_with_rate_and_predicate(self):
+        html = _render("renderAutopilotCompliance", COMPLIANCE)
+        assert "Recall before you answer" in html
+        assert "56%" in html
+        assert "18/32" in html
+        assert "memory_read_count &gt; 0" in html
+
+    def test_the_behavior_not_quality_caveat_always_renders(self):
+        """The spec's honesty section, enforced at the surface: the table must
+        be impossible to show without the caveat that compliance is behavior,
+        not quality."""
+        html = _render("renderAutopilotCompliance", COMPLIANCE)
+        assert "BEHAVIOR" in html
+
+    def test_trend_absence_renders_no_arrow(self):
+        body = json.loads(json.dumps(COMPLIANCE))
+        for row in body["instructions"]:
+            row.pop("earlier_rate")
+            row.pop("recent_rate")
+        html = _render("renderAutopilotCompliance", body)
+        assert "▲" not in html and "▼" not in html
+
+    def test_unparsed_records_are_disclosed(self):
+        body = json.loads(json.dumps(COMPLIANCE))
+        body["unparsed"] = 3
+        html = _render("renderAutopilotCompliance", body)
+        assert "3 eval record(s) could not be parsed" in html
+
+    def test_zero_sessions_is_an_empty_state_not_a_zero_table(self):
+        html = _render("renderAutopilotCompliance",
+                       {"sessions_evaluated": 0, "unparsed": 0,
+                        "instructions": [], "notes": []})
+        assert "No evaluated sessions yet" in html
+
+    def test_a_missing_body_does_not_throw(self):
+        assert "unavailable" in _render("renderAutopilotCompliance", None)

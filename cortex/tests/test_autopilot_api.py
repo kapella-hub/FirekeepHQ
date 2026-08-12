@@ -594,6 +594,7 @@ async def test_both_routes_refuse_a_keyless_caller(mk, stores):
     async with mk(_FakeVector(_FakeQdrant()), redis_client, replay_redis, key=None) as c:
         assert (await c.get("/autopilot/inbox")).status_code == 401
         assert (await c.get("/autopilot/digest")).status_code == 401
+        assert (await c.get("/autopilot/compliance")).status_code == 401
 
 
 @pytest.mark.asyncio
@@ -607,3 +608,134 @@ async def test_a_memory_read_key_cannot_open_the_inbox(mk, stores):
                   replay_redis, key="reader") as c:
         assert (await c.get("/autopilot/inbox")).status_code == 403
         assert (await c.get("/autopilot/digest")).status_code == 403
+        assert (await c.get("/autopilot/compliance")).status_code == 403
+
+
+# -------------------------------------------------- compliance (Living Instructions) --
+
+def _eval_record(sid, days_ago=1.0, **metrics):
+    return json.dumps({
+        "session_id": sid,
+        "created_at": iso(days_ago),
+        "trigger": "session_complete",
+        "metrics": metrics,
+    })
+
+
+@pytest.mark.asyncio
+async def test_compliance_scores_the_founding_predicates(mk, stores):
+    """Each row must reproduce the 2026-08-11 founding-measurement predicate
+    exactly — the spec is a pre-registration, and a drifted predicate would
+    orphan the baseline every later comparison stands on."""
+    redis_client, replay_redis = stores
+    # One compliant-on-everything session, one blank one.
+    await replay_redis.set("rp:eval:s1", _eval_record(
+        "s1", memory_read_count=2, memory_write_count=1, recall_used_rate=0.5,
+        context_snapshot_count=3, brier_score=0.11, outcome_event_count=2))
+    await replay_redis.set("rp:eval:s2", _eval_record(
+        "s2", memory_read_count=0, memory_write_count=0, recall_used_rate=0.0,
+        context_snapshot_count=0, outcome_event_count=1))
+
+    async with mk(_FakeVector(_FakeQdrant()), redis_client, replay_redis) as c:
+        resp = await c.get("/autopilot/compliance")
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["sessions_evaluated"] == 2
+    assert body["unparsed"] == 0
+    rows = {r["key"]: r for r in body["instructions"]}
+    assert set(rows) == {
+        "recall_before_work", "write_as_you_go", "recall_visibly_used",
+        "ctx_working_state", "declared_predictions", "outcome_bearing",
+    }
+    for key in rows:
+        assert rows[key]["hits"] == 1, key
+        assert rows[key]["rate"] == 0.5, key
+    # brier presence, not truthiness: a PERFECT calibration score of 0.0 is
+    # compliance, and a truthiness predicate would count it as silence.
+    await replay_redis.set("rp:eval:s3", _eval_record("s3", brier_score=0.0))
+    async with mk(_FakeVector(_FakeQdrant()), redis_client, replay_redis) as c:
+        rows3 = {r["key"]: r for r in
+                 (await c.get("/autopilot/compliance")).json()["instructions"]}
+    assert rows3["declared_predictions"]["hits"] == 2
+
+
+@pytest.mark.asyncio
+async def test_compliance_counts_unparsed_instead_of_dropping(mk, stores):
+    """A record that fails to parse is COUNTED — '32 sessions' must never
+    quietly mean '32 of an unknown many'."""
+    redis_client, replay_redis = stores
+    await replay_redis.set("rp:eval:good", _eval_record("good", memory_read_count=1))
+    await replay_redis.set("rp:eval:bad", "not json")
+    await replay_redis.set("rp:eval:nometrics", json.dumps({"session_id": "x"}))
+
+    async with mk(_FakeVector(_FakeQdrant()), redis_client, replay_redis) as c:
+        body = (await c.get("/autopilot/compliance")).json()
+
+    assert body["sessions_evaluated"] == 1
+    assert body["unparsed"] == 2
+
+
+@pytest.mark.asyncio
+async def test_compliance_ignores_the_dlq_and_the_index(mk, stores):
+    """rp:eval_dlq:* and rp:eval_index share the neighborhood but not the
+    prefix — a scan that swept them in would score failure records as
+    sessions."""
+    redis_client, replay_redis = stores
+    await replay_redis.set("rp:eval:s1", _eval_record("s1"))
+    await replay_redis.set("rp:eval_dlq:s2", json.dumps({"error": "boom"}))
+    await replay_redis.zadd("rp:eval_index", {"s1": 1.0})
+
+    async with mk(_FakeVector(_FakeQdrant()), redis_client, replay_redis) as c:
+        body = (await c.get("/autopilot/compliance")).json()
+
+    assert body["sessions_evaluated"] == 1
+    assert body["unparsed"] == 0
+
+
+@pytest.mark.asyncio
+async def test_compliance_trend_is_withheld_below_the_floor(mk, stores):
+    """With a handful of sessions a halves-split arrow is noise; the honest
+    move is absence, not a small-print asterisk."""
+    redis_client, replay_redis = stores
+    for i in range(4):
+        await replay_redis.set(f"rp:eval:s{i}", _eval_record(f"s{i}", days_ago=i,
+                                                             memory_read_count=1))
+    async with mk(_FakeVector(_FakeQdrant()), redis_client, replay_redis) as c:
+        rows = (await c.get("/autopilot/compliance")).json()["instructions"]
+    assert all("recent_rate" not in r and "earlier_rate" not in r for r in rows)
+
+
+@pytest.mark.asyncio
+async def test_compliance_trend_splits_halves_by_eval_time(mk, stores):
+    """Older half all non-compliant, newer half all compliant: the split must
+    put the improvement where it happened, not average it away."""
+    redis_client, replay_redis = stores
+    for i in range(5):  # older half: no reads
+        await replay_redis.set(f"rp:eval:old{i}",
+                               _eval_record(f"old{i}", days_ago=20 + i,
+                                            memory_read_count=0))
+    for i in range(5):  # newer half: reads
+        await replay_redis.set(f"rp:eval:new{i}",
+                               _eval_record(f"new{i}", days_ago=1 + i,
+                                            memory_read_count=2))
+    async with mk(_FakeVector(_FakeQdrant()), redis_client, replay_redis) as c:
+        rows = {r["key"]: r for r in
+                (await c.get("/autopilot/compliance")).json()["instructions"]}
+    row = rows["recall_before_work"]
+    assert row["earlier_rate"] == 0.0
+    assert row["recent_rate"] == 1.0
+    assert row["rate"] == 0.5
+
+
+@pytest.mark.asyncio
+async def test_compliance_empty_store_is_honest_zeros(mk, stores):
+    redis_client, replay_redis = stores
+    async with mk(_FakeVector(_FakeQdrant()), redis_client, replay_redis) as c:
+        body = (await c.get("/autopilot/compliance")).json()
+    assert body["sessions_evaluated"] == 0
+    assert all(r["rate"] is None for r in body["instructions"])
+    assert any("BEHAVIOR" in n for n in body["notes"]), (
+        "the compliance!=quality caveat is part of the response contract — "
+        "the dashboard must not be able to show the numbers without it"
+    )

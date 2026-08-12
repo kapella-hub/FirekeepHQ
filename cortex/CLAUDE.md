@@ -62,7 +62,8 @@ app/
 ├── autopilot/         # Knowledge Autopilot round 1 (docs/guides/knowledge-autopilot.md) — READ-ONLY operator surface
 │   ├── inbox.py         # Section builders: draft/stale/rereview skills, LP proposals, contested pairs, eval DLQ
 │   ├── digest.py        # Windowed activity counts (learned/archived/superseded/dreamed/drafted/feedback/GC)
-│   └── api.py           # GET /autopilot/inbox + /autopilot/digest (admin); per-section fault isolation
+│   ├── compliance.py    # Living Instructions round 1 — per-instruction compliance over rp:eval:* (predicates frozen to the 2026-08-11 founding measurement)
+│   └── api.py           # GET /autopilot/inbox + /digest + /compliance (admin); per-section fault isolation
 └── dreams/            # Automated memory consolidation + person profiles (round 1 — additive only)
     ├── select.py        # Pure candidate selection + partitioning + clustering + per-synthesis member sampling (centroid-nearest), no I/O
     ├── synthesize.py     # The one LLM call for cluster insights — via app/llm.py's chat() (native /api/chat where available, so think:false is actually honoured), JSON mode

@@ -1492,6 +1492,11 @@ button.btn-outline:hover { border-color: var(--accent); color: var(--accent); ba
                 <div class="card-header">Exception inbox</div>
                 <div id="autopilotInbox"><div class="spinner">Loading inbox...</div></div>
             </div>
+
+            <div class="section" style="margin-top:20px">
+                <div class="card-header">Living Instructions <span class="text-dim" style="font-weight:normal;font-size:12px">(instruction compliance — behavior, not quality)</span></div>
+                <div id="autopilotCompliance"><div class="spinner">Loading compliance...</div></div>
+            </div>
         </section>
 
         <section class="tab-panel" id="panel-search">
@@ -5364,6 +5369,54 @@ function renderAutopilotInbox(inbox) {
     }
     return head + cards.join('') + footer;
 }
+function renderAutopilotCompliance(d) {
+    if (!d || !d.instructions) {
+        return '<div class="card card-padded"><div class="empty-state">Compliance unavailable.</div></div>';
+    }
+    var n = d.sessions_evaluated || 0;
+    if (!n) {
+        return '<div class="card card-padded"><div class="empty-state">No evaluated sessions yet — the table populates as sessions complete and eval.</div></div>';
+    }
+    var rows = d.instructions.map(function(r) {
+        var pct = (r.rate == null) ? '—' : Math.round(r.rate * 100) + '%';
+        var trend = '';
+        // recent_rate/earlier_rate are absent below the server's trend floor
+        // (the server withholds a halves-split over too few sessions) —
+        // absence of the arrow IS the message there, so nothing is rendered.
+        if (r.recent_rate !== undefined && r.earlier_rate !== undefined) {
+            var delta = r.recent_rate - r.earlier_rate;
+            var arrow = delta > 0.02 ? '▲' : (delta < -0.02 ? '▼' : '·');
+            var color = delta > 0.02 ? 'var(--green)' : (delta < -0.02 ? 'var(--red)' : 'var(--text-dim)');
+            trend = '<span style="color:' + color + '" title="earlier ' + Math.round(r.earlier_rate * 100)
+                + '% → recent ' + Math.round(r.recent_rate * 100) + '%">' + arrow + '</span>';
+        }
+        var barPct = (r.rate == null) ? 0 : Math.round(r.rate * 100);
+        return '<tr>'
+            + '<td>' + apEsc(r.instruction) + '<div class="text-dim" style="font-size:11px;font-family:var(--mono,monospace)">' + apEsc(r.predicate) + '</div></td>'
+            + '<td style="min-width:130px"><div style="display:flex;align-items:center;gap:8px">'
+            + '<div style="flex:1;height:6px;background:var(--surface-raised,rgba(255,255,255,.06));border-radius:3px;overflow:hidden">'
+            + '<div style="width:' + barPct + '%;height:100%;background:var(--accent)"></div></div>'
+            + '<span style="min-width:38px;text-align:right">' + pct + '</span></div></td>'
+            + '<td class="text-dim">' + r.hits + '/' + r.total + '</td>'
+            + '<td style="text-align:center">' + trend + '</td>'
+            + '</tr>';
+    }).join('');
+    var out = '<div class="card card-padded">'
+        + '<table class="data-table" style="width:100%"><thead><tr>'
+        + '<th>Instruction</th><th>Compliance</th><th>Sessions</th><th>Trend</th>'
+        + '</tr></thead><tbody>' + rows + '</tbody></table>';
+    // The behavior-not-quality caveat is part of the response contract; a
+    // table shown without it would claim more than the measurement can.
+    if (d.notes && d.notes.length) {
+        out += '<div class="text-dim" style="margin-top:10px;font-size:12px">' + apEsc(d.notes[0]) + '</div>';
+    }
+    if (d.unparsed) {
+        out += '<div style="margin-top:6px;font-size:12px;color:var(--amber)">' + d.unparsed + ' eval record(s) could not be parsed and are excluded from every rate.</div>';
+    }
+    out += '</div>';
+    return out;
+}
+
 /* <<< autopilotPanel */
 
 function loadAutopilot() {
@@ -5390,6 +5443,17 @@ function loadAutopilot() {
         inboxEl.innerHTML = '';
         inboxEl.appendChild(errMsg('Cannot load inbox: ' + ((e && e.message) ? e.message : 'unknown error')));
     });
+
+    var complianceEl = $('autopilotCompliance');
+    if (complianceEl) {
+        complianceEl.innerHTML = '<div class="spinner">Loading compliance...</div>';
+        fetchJSON(CONFIG.CORTEX_API + '/autopilot/compliance').then(function(data) {
+            complianceEl.innerHTML = renderAutopilotCompliance(data);
+        }).catch(function(e) {
+            complianceEl.innerHTML = '';
+            complianceEl.appendChild(errMsg('Cannot load compliance: ' + ((e && e.message) ? e.message : 'unknown error')));
+        });
+    }
 }
 
 function autopilotOpen(tab) {

@@ -22,6 +22,7 @@ So round 1 ships **attribution and visibility, no autonomous mutation**:
 | Contested-not-superseded for unconfirmed conflicts | Trial stages, lifecycle ladders for memories/skills |
 | `/autopilot/inbox` + `/autopilot/digest` + dashboard tab | Autopilot "modes" — round 1 *is* Recommend mode |
 | `/memory/{id}/evidence` ledger read | LLM-judged "did the agent follow this advice" |
+| `/autopilot/compliance` — Living Instructions round 1 | Instruction rewriting/AB — Living Instructions rounds 2–3 |
 
 ## 1. Feedback-weighted recall
 
@@ -138,6 +139,23 @@ that before anything is ever promoted or retired automatically, a human can
 see *why* a memory ranks as it does in one read. Admin-scoped like the inbox,
 and for the same reason: it exposes free-text feedback comments and
 member/agent provenance, and memory ids are handed out by recall.
+
+## 6. The instruction-compliance table (Living Instructions round 1)
+
+`GET /autopilot/compliance` (admin) scores each rendered-block instruction
+against what sessions actually did — deterministic predicates over the stored
+session evals (`rp:eval:*`), rendered as the **Living Instructions** table on
+the dashboard's Autopilot tab. The predicates are frozen to the 2026-08-11
+founding measurement
+([`docs/superpowers/specs/2026-08-11-living-instructions-design.md`](../superpowers/specs/2026-08-11-living-instructions-design.md)
+is the pre-registration); changes arrive as new rows, never as edits, or every
+later comparison against the baseline is orphaned. The response carries its
+own honesty contract: a `notes` entry stating that compliance measures
+*behavior*, not whether the behavior helped (the outcome signal is still
+degenerate — see `replay-evals-patterns.md`), an `unparsed` count so the
+denominator cannot silently shrink, and a halves-by-eval-time trend that is
+withheld entirely below 10 sessions rather than shown small. Rewriting
+instructions and A/B validation are rounds 2–3 and deliberately not built.
 
 ## What unlocks round 2
 

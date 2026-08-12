@@ -1,8 +1,9 @@
 # Living Instructions — the instruction layer that measures itself
 
-_Status: proposed, with the founding measurement already taken on the live
-deployment (2026-08-11). Round 1 is visibility only. Not publicly promised;
-see the roadmap-placement section for the gate._
+_Status: round 1 BUILT (2026-08-11) — `GET /autopilot/compliance` +
+the Living Instructions table on the dashboard's Autopilot tab, predicates
+frozen to the founding measurement below. Rounds 2–3 remain proposed. Not
+publicly promised; the roadmap gate is met once round 1 is deployed._
 
 ## The observation this is built on
 
