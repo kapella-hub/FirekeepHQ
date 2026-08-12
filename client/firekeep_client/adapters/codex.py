@@ -36,8 +36,11 @@ CODEX_END = "# <<< firekeep-client (managed) <<<"
 
 
 def _toml_block(venv_bin: Path) -> str:
+    # "codex" literal (CodexAdapter.name) rather than a parameter: this module
+    # renders exactly one runtime, and mcp_block_is_current must compare against
+    # the same rendered form.
     lines: list[str] = []
-    for name, (cmd, args) in shim_servers(venv_bin).items():
+    for name, (cmd, args) in shim_servers(venv_bin, "codex").items():
         arglist = ", ".join(f'"{a}"' for a in args)
         lines.append(f"[mcp_servers.{name}]")
         # TOML literal (single-quoted) string: no escape processing -> Windows backslashes safe.

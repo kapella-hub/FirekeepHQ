@@ -31,23 +31,26 @@ def test_kiro_render_writes_servers_and_hooks(fake_home, tmp_path):
     data = _read(fake_home / ".kiro" / "agents" / "firekeep.json")
 
     assert data["mcpServers"] == {"firekeep": {
-        "command": _exe(venv_bin / "firekeep"), "args": ["gateway"]}}
+        "command": _exe(venv_bin / "firekeep"),
+        "args": ["gateway", "--runtime", "kiro"]}}
 
     assert data["hooks"]["agentSpawn"][0]["command"].endswith(
-        "-m firekeep_client.hooks session_start")
+        "-m firekeep_client.hooks session_start --runtime kiro")
     assert data["hooks"]["userPromptSubmit"][0]["command"].endswith(
-        "-m firekeep_client.hooks prompt")
-    assert data["hooks"]["stop"][0]["command"].endswith("-m firekeep_client.hooks stop")
+        "-m firekeep_client.hooks prompt --runtime kiro")
+    assert data["hooks"]["stop"][0]["command"].endswith(
+        "-m firekeep_client.hooks stop --runtime kiro")
     # Validated against kiro-cli 2.12.1 (docs/KIRO-VALIDATION.md): matchers are EXACT kiro
     # tool names, not regex — `fs_write` is kiro's file create/edit tool (Claude's Edit|Write
     # matched nothing, so the hook never fired). pre_tool carries --block-exit 2 (kiro's
     # documented block-on-exit-2 contract), so its command is not a bare `pre_tool`.
     pre = data["hooks"]["preToolUse"][0]
     assert pre["matcher"] == "fs_write"
-    assert pre["command"].endswith("-m firekeep_client.hooks pre_tool --block-exit 2")
+    assert pre["command"].endswith(
+        "-m firekeep_client.hooks pre_tool --block-exit 2 --runtime kiro")
     post = data["hooks"]["postToolUse"][0]
     assert post["matcher"] == "fs_write"
-    assert post["command"].endswith("-m firekeep_client.hooks post_tool")
+    assert post["command"].endswith("-m firekeep_client.hooks post_tool --runtime kiro")
 
 
 _PINNED_CFG = """

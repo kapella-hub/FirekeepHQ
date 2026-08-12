@@ -30,18 +30,20 @@ def test_claude_render_writes_shim_servers_and_hooks(fake_home, tmp_path):
     get_adapter("claude").render(venv_bin=venv_bin)
 
     cfg = _read(fake_home / ".claude.json")
+    # --runtime claude (0.1.41): the gateway/hook processes export it so server
+    # calls carry the X-Firekeep-* attribution headers.
     assert cfg["mcpServers"] == {"firekeep": {
         "type": "stdio", "command": _exe(venv_bin / "firekeep"),
-        "args": ["gateway"]}}
+        "args": ["gateway", "--runtime", "claude"]}}
 
     settings = _read(fake_home / ".claude" / "settings.json")
     assert settings["env"]["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"] == "1"
     ss = settings["hooks"]["SessionStart"][0]["hooks"][0]["command"]
-    assert ss.endswith("-m firekeep_client.hooks session_start")
+    assert ss.endswith("-m firekeep_client.hooks session_start --runtime claude")
     assert settings["hooks"]["Stop"][0]["hooks"][0]["command"].endswith(
-        "-m firekeep_client.hooks stop")
+        "-m firekeep_client.hooks stop --runtime claude")
     assert settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"].endswith(
-        "-m firekeep_client.hooks prompt")
+        "-m firekeep_client.hooks prompt --runtime claude")
     pre = settings["hooks"]["PreToolUse"][0]
     assert pre["matcher"] == "^(Edit|Write|Bash)$", (
         "Bash must reach the BLOCKING gate: pre_tool has always mapped it to "
@@ -50,11 +52,13 @@ def test_claude_render_writes_shim_servers_and_hooks(fake_home, tmp_path):
     # exit-code remap: rendered WITH --block-exit 2 so pre_tool's rc=1 (gateway
     # block/rethink) AND rc=2 (lease conflict) both actually block Claude's PreToolUse
     # gate, which otherwise blocks ONLY on exit 2.
-    assert pre["hooks"][0]["command"].endswith("-m firekeep_client.hooks pre_tool --block-exit 2")
+    assert pre["hooks"][0]["command"].endswith(
+        "-m firekeep_client.hooks pre_tool --block-exit 2 --runtime claude")
     post = settings["hooks"]["PostToolUse"][0]
     assert post["matcher"] == "^(Edit|Write|MultiEdit|Bash)$"
     # post_tool renders WITHOUT the flag -- it always returns 0, so the remap is a no-op.
-    assert post["hooks"][0]["command"].endswith("-m firekeep_client.hooks post_tool")
+    assert post["hooks"][0]["command"].endswith(
+        "-m firekeep_client.hooks post_tool --runtime claude")
 
 
 def test_claude_render_is_non_clobbering(fake_home, tmp_path):
@@ -118,7 +122,7 @@ def test_claude_render_appends_exe_on_win32(fake_home, tmp_path, monkeypatch):
     # direct-spawned and keep native separators)
     assert ss_cmd.startswith(str(venv_bin / "python").replace("\\", "/") + ".exe ")
     assert "\\" not in ss_cmd
-    assert ss_cmd.endswith("-m firekeep_client.hooks session_start")
+    assert ss_cmd.endswith("-m firekeep_client.hooks session_start --runtime claude")
 
 
 def test_claude_render_no_exe_on_posix(fake_home, tmp_path, monkeypatch):
@@ -239,7 +243,8 @@ def test_claude_render_adds_its_precompact_group_beside_the_legacy_echo(fake_hom
 
     commands = [h["command"] for g in groups for h in g["hooks"]]
     assert any("systemMessage" in c for c in commands), "legacy echo hook was clobbered"
-    assert any(c.endswith("-m firekeep_client.hooks precompact") for c in commands)
+    assert any(c.endswith("-m firekeep_client.hooks precompact --runtime claude")
+               for c in commands)
 
     # Re-render with the foreign group still present: upsert_hook_group must collapse
     # to exactly one firekeep group beside the untouched legacy one, not accumulate a
@@ -356,7 +361,7 @@ def test_claude_render_only_pretool_gets_block_exit_remap(fake_home, tmp_path):
     settings = _read(fake_home / ".claude" / "settings.json")
 
     pre_cmd = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
-    assert pre_cmd.endswith("-m firekeep_client.hooks pre_tool --block-exit 2")
+    assert pre_cmd.endswith("-m firekeep_client.hooks pre_tool --block-exit 2 --runtime claude")
 
     for event, core in (
         ("SessionStart", "session_start"),
@@ -365,5 +370,5 @@ def test_claude_render_only_pretool_gets_block_exit_remap(fake_home, tmp_path):
         ("PostToolUse", "post_tool"),
     ):
         cmd = settings["hooks"][event][0]["hooks"][0]["command"]
-        assert cmd.endswith(f"-m firekeep_client.hooks {core}")
+        assert cmd.endswith(f"-m firekeep_client.hooks {core} --runtime claude")
         assert "--block-exit" not in cmd

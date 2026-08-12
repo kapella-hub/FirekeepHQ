@@ -111,7 +111,7 @@ def test_kit_hangs_together(firekeep_env, write_config, monkeypatch):
     assert set(claude_cfg["mcpServers"]) == {"firekeep"}
     entry = claude_cfg["mcpServers"]["firekeep"]
     assert entry["command"] == expected_gateway
-    assert entry["args"] == ["gateway"]
+    assert entry["args"] == ["gateway", "--runtime", "claude"]
     for event, core in CLAUDE_EVENTS:
         cmd = claude_settings["hooks"][event][0]["hooks"][0]["command"]
         # hooks are bash-executed -> forward-slash interpreter path (bash eats backslashes)
@@ -123,7 +123,7 @@ def test_kit_hangs_together(firekeep_env, write_config, monkeypatch):
     assert set(kiro_data["mcpServers"]) == {"firekeep"}
     entry = kiro_data["mcpServers"]["firekeep"]
     assert entry["command"] == expected_gateway
-    assert entry["args"] == ["gateway"]
+    assert entry["args"] == ["gateway", "--runtime", "kiro"]
     for event, core in KIRO_EVENTS:
         cmd = kiro_data["hooks"][event][0]["command"]
         assert expected_python.replace("\\", "/") in cmd
@@ -135,7 +135,7 @@ def test_kit_hangs_together(firekeep_env, write_config, monkeypatch):
     assert set(codex_parsed["mcp_servers"]) == {"firekeep"}
     entry = codex_parsed["mcp_servers"]["firekeep"]
     assert entry["command"] == expected_gateway
-    assert entry["args"] == ["gateway"]
+    assert entry["args"] == ["gateway", "--runtime", "codex"]
     # codex renders no hooks (spec §7.1: MCP servers only) -- nothing to assert there.
 
     get_adapter("opencode").render(venv_bin=venv_bin)

@@ -115,6 +115,63 @@ async def compute_session_eval(
             if e.get("outcome") == "failure"
         ]
 
+        # Attribution (Living Instructions round 2): read from the
+        # session_start event in the timeline this function ALREADY loaded —
+        # no new I/O. A session from a client that predates 0.1.41 carries no
+        # attribution keys and reads as unattributed — honestly. Malformed
+        # values read as absent, never raise.
+        runtime: str | None = None
+        client_version: str | None = None
+        instructions: dict[str, str] | None = None
+        briefing_delivered: bool | None = None
+
+        start_payload: dict | None = None
+        for e in events:
+            if e.get("event_type") == "session_start":
+                p = e.get("payload")
+                # A junk (non-dict) payload carries no readable receipts:
+                # everything stays None/unknown rather than reading an empty
+                # payload as a measured "no briefing".
+                if isinstance(p, dict):
+                    start_payload = p
+                break
+
+        if start_payload is not None:
+            def _attr(key: str) -> str | None:
+                value = start_payload.get(key)
+                return value if isinstance(value, str) and value else None
+
+            runtime = _attr("runtime")
+            client_version = _attr("client_version")
+            instr: dict[str, str] = {}
+            for payload_key, out_key in (
+                ("instr_rendered", "rendered"),
+                ("instr_expected", "expected"),
+                ("instr_gateway", "gateway"),
+            ):
+                value = _attr(payload_key)
+                if value is not None:
+                    instr[out_key] = value
+            instructions = instr or None
+            # The fetch receipt that already exists: a briefing_id on the
+            # session means GET /briefing was actually delivered to it. The
+            # KEY must be present to claim a measurement either way — a
+            # session_start payload from a pre-round-2 bridge has no
+            # briefing_id key at all, and reading that absence as a measured
+            # False is exactly the absent-vs-measured conflation the contract
+            # bans (external review 2026-08-12).
+            briefing_delivered = (
+                bool(start_payload["briefing_id"])
+                if "briefing_id" in start_payload
+                else None
+            )
+
+        agents_raw = summary.get("agents", [])
+        agents = (
+            [a for a in agents_raw if isinstance(a, str)]
+            if isinstance(agents_raw, list) else []
+        )
+
         result = EvalResult(
             session_id=session_id,
             trigger=trigger,
@@ -124,6 +181,11 @@ async def compute_session_eval(
             outcome=outcome or ("failure" if failure_event_ids else "success"),
             failure_event_ids=failure_event_ids,
             has_failures=bool(failure_event_ids),
+            runtime=runtime,
+            client_version=client_version,
+            instructions=instructions,
+            briefing_delivered=briefing_delivered,
+            agents=agents,
         )
 
         # Store

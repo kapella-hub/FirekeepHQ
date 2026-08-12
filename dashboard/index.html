@@ -5369,6 +5369,52 @@ function renderAutopilotInbox(inbox) {
     }
     return head + cards.join('') + footer;
 }
+function apComplianceRuntimes(br) {
+    // Runtime names originate in X-Firekeep-Runtime — an untrusted
+    // observability label, never a gate — so they are escaped like any other
+    // foreign text. 'unattributed' sorts last: it is the disclosure bucket
+    // (sessions whose client predates the headers), not a runtime.
+    if (!br || typeof br !== 'object') return '<span class="text-dim">—</span>';
+    var names = Object.keys(br).sort(function(a, b) {
+        if (a === 'unattributed') return 1;
+        if (b === 'unattributed') return -1;
+        return a < b ? -1 : (a > b ? 1 : 0);
+    });
+    var parts = [];
+    names.forEach(function(name) {
+        var b = br[name];
+        if (!b || typeof b !== 'object' || b.hits == null || b.total == null) return;
+        var dim = (name === 'unattributed') ? ';color:var(--text-dim)' : '';
+        parts.push('<span style="white-space:nowrap' + dim + '">'
+            + apEsc(name) + ' ' + apEsc(b.hits) + '/' + apEsc(b.total) + '</span>');
+    });
+    if (!parts.length) return '<span class="text-dim">—</span>';
+    return parts.join(' <span class="text-dim">·</span> ');
+}
+function apComplianceExposure(ex) {
+    // An ABSENT field (old server, no attribution computed) and an explicit
+    // null (derived row: recall_visibly_used, outcome_bearing) are different
+    // statements — neither is a zero, but only null means "no instruction
+    // text to be exposed to", so only null gets that label.
+    if (ex === undefined) return '<span class="text-dim">—</span>';
+    if (ex === null || typeof ex !== 'object') {
+        return '<span class="text-dim" title="No instruction text to be exposed to (derived row)">—</span>';
+    }
+    var out = '<div style="white-space:nowrap" title="Sessions a verified instruction artifact reached / verifiably did not reach / cannot be determined (includes every pre-attribution session — nothing backfills)">'
+        + apEsc(ex.exposed) + ' exp <span class="text-dim">·</span> '
+        + apEsc(ex.not_exposed) + ' not <span class="text-dim">·</span> '
+        + apEsc(ex.unknown) + ' unk</div>';
+    if (ex.exposed_rate == null) {
+        out += '<div class="text-dim" style="font-size:11px">no exposed sessions</div>';
+    } else {
+        out += '<div class="text-dim" style="font-size:11px;white-space:nowrap" '
+            + 'title="Predicate rate among EXPOSED sessions only — hits/exposed">'
+            + Math.round(ex.exposed_rate * 100) + '% of exposed'
+            + (ex.exposed_hits == null ? '' : ' (' + apEsc(ex.exposed_hits) + '/' + apEsc(ex.exposed) + ')')
+            + '</div>';
+    }
+    return out;
+}
 function renderAutopilotCompliance(d) {
     if (!d || !d.instructions) {
         return '<div class="card card-padded"><div class="empty-state">Compliance unavailable.</div></div>';
@@ -5377,6 +5423,12 @@ function renderAutopilotCompliance(d) {
     if (!n) {
         return '<div class="card card-padded"><div class="empty-state">No evaluated sessions yet — the table populates as sessions complete and eval.</div></div>';
     }
+    // Round-2 attribution is feature-detected PER RESPONSE: a pre-0.1.41 server
+    // sends rows without by_runtime/exposure, and the table then renders exactly
+    // as round 1 did — no empty columns, and absence never renders as zero.
+    var hasAttribution = d.instructions.some(function(r) {
+        return r.by_runtime !== undefined || r.exposure !== undefined;
+    });
     var rows = d.instructions.map(function(r) {
         var pct = (r.rate == null) ? '—' : Math.round(r.rate * 100) + '%';
         var trend = '';
@@ -5391,6 +5443,13 @@ function renderAutopilotCompliance(d) {
                 + '% → recent ' + Math.round(r.recent_rate * 100) + '%">' + arrow + '</span>';
         }
         var barPct = (r.rate == null) ? 0 : Math.round(r.rate * 100);
+        var attrCells = '';
+        if (hasAttribution) {
+            // Feature-detection is response-wide but tolerance is per row: a
+            // row missing either field renders '—' there, not a fabricated 0.
+            attrCells = '<td style="font-size:12px">' + apComplianceRuntimes(r.by_runtime) + '</td>'
+                + '<td style="font-size:12px">' + apComplianceExposure(r.exposure) + '</td>';
+        }
         return '<tr>'
             + '<td>' + apEsc(r.instruction) + '<div class="text-dim" style="font-size:11px;font-family:var(--mono,monospace)">' + apEsc(r.predicate) + '</div></td>'
             + '<td style="min-width:130px"><div style="display:flex;align-items:center;gap:8px">'
@@ -5399,16 +5458,26 @@ function renderAutopilotCompliance(d) {
             + '<span style="min-width:38px;text-align:right">' + pct + '</span></div></td>'
             + '<td class="text-dim">' + r.hits + '/' + r.total + '</td>'
             + '<td style="text-align:center">' + trend + '</td>'
+            + attrCells
             + '</tr>';
     }).join('');
+    var attrHead = '';
+    if (hasAttribution) {
+        attrHead = '<th title="Same frozen predicate, sliced by the X-Firekeep-Runtime header — an untrusted observability label, never a gate">By runtime</th>'
+            + '<th title="Whether a verified instruction artifact reached the session: exposed / not exposed / unknown, plus the predicate rate among exposed sessions only. Headline hits/total/rate keep the all-sessions denominator.">Exposure</th>';
+    }
     var out = '<div class="card card-padded">'
         + '<table class="data-table" style="width:100%"><thead><tr>'
-        + '<th>Instruction</th><th>Compliance</th><th>Sessions</th><th>Trend</th>'
+        + '<th>Instruction</th><th>Compliance</th><th>Sessions</th><th>Trend</th>' + attrHead
         + '</tr></thead><tbody>' + rows + '</tbody></table>';
     // The behavior-not-quality caveat is part of the response contract; a
-    // table shown without it would claim more than the measurement can.
+    // table shown without it would claim more than the measurement can. ALL
+    // notes render (the digest precedent, `d.notes.map` there) — round 2's
+    // unattributed-window disclosure rides the same array, and a disclosure
+    // that stops at the API is the exact failure this panel bans.
     if (d.notes && d.notes.length) {
-        out += '<div class="text-dim" style="margin-top:10px;font-size:12px">' + apEsc(d.notes[0]) + '</div>';
+        out += '<div class="text-dim" style="margin-top:10px;font-size:12px;line-height:1.6">'
+            + d.notes.map(apEsc).join('<br>') + '</div>';
     }
     if (d.unparsed) {
         out += '<div style="margin-top:6px;font-size:12px;color:var(--amber)">' + d.unparsed + ' eval record(s) could not be parsed and are excluded from every rate.</div>';

@@ -63,7 +63,8 @@ def test_claude_adapter_round_trip_removes_firekeep_gateway(tmp_path, monkeypatc
     adapter.render(venv_bin=venv_bin)
     cfg = json.loads((tmp_path / ".claude.json").read_text(encoding="utf-8"))
     assert cfg["mcpServers"]["firekeep"] == {
-        "type": "stdio", "command": _exe(venv_bin / "firekeep"), "args": ["gateway"]}
+        "type": "stdio", "command": _exe(venv_bin / "firekeep"),
+        "args": ["gateway", "--runtime", "claude"]}
 
     adapter.unrender()
     cfg2 = json.loads((tmp_path / ".claude.json").read_text(encoding="utf-8"))

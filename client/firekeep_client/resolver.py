@@ -40,7 +40,8 @@ REST_PORTS = {"cortex": 8100, "bridge": 8070, "sentinel": 8060, "relay": 8050}
 class Endpoint:
     mcp_url: str
     rest_base: str
-    headers: dict[str, str]  # X-Agent-Id always; X-API-Key if key set; X-Session-Id if given
+    headers: dict[str, str]  # X-Agent-Id always; X-API-Key if key set; X-Session-Id if
+                             # given; X-Firekeep-* attribution when FIREKEEP_RUNTIME is set
     verify: bool | str       # False, a ca_path string, or OS_TRUST ("os") for OS-store TLS
 
 
@@ -258,6 +259,45 @@ def _verify_for(cfg: configparser.ConfigParser, scheme: str, *, section: str = "
     return False
 
 
+# --- runtime attribution (round-2 measurement contract) ----------------------
+# A process that knows which runtime launched it (`firekeep gateway --runtime
+# <name>` exports FIREKEEP_RUNTIME, inherited by the shim children that make the
+# actual HTTP calls; the hook dispatcher's --runtime flag does the same for the
+# hook cores) attaches five X-Firekeep-* headers to every server call. Computed
+# once per process (first resolve) and cached — the on-disk re-hash is a
+# process-start snapshot, not a per-request stat. Trust level is exactly
+# X-Agent-Id's: an untrusted observability label, never a gate.
+_ATTRIBUTION_CACHE: dict[str, dict[str, str]] = {}
+
+
+def _runtime_attribution() -> dict[str, str]:
+    """The X-Firekeep-* attribution headers, or {} when this process has no
+    runtime identity (FIREKEEP_RUNTIME unset — old rendered configs). Never
+    raises: attribution must not be able to break a server call."""
+    runtime = os.environ.get("FIREKEEP_RUNTIME", "").strip()
+    if not runtime:
+        return {}
+    cached = _ATTRIBUTION_CACHE.get(runtime)
+    if cached is None:
+        from firekeep_client import __version__
+        from firekeep_client.adapters import base as _adapters_base
+        try:
+            rendered = _adapters_base.read_rendered_instructions_hash(runtime)
+        except Exception:  # noqa: BLE001 — a hash failure is 'absent', not an outage
+            rendered = None
+        cached = {
+            "X-Firekeep-Runtime": runtime,
+            "X-Firekeep-Client": __version__,
+            # The client re-hashes what is actually on disk rather than trusting
+            # its own stamp — a hand-edited block reports its true hash.
+            "X-Firekeep-Instr-Rendered": rendered if rendered is not None else "absent",
+            "X-Firekeep-Instr-Expected": _adapters_base.RENDERED_INSTRUCTIONS_HASH,
+            "X-Firekeep-Instr-Gateway": _adapters_base.GATEWAY_INSTRUCTIONS_HASH,
+        }
+        _ATTRIBUTION_CACHE[runtime] = cached
+    return dict(cached)
+
+
 def resolve(
     service: str,
     cfg=None,
@@ -283,6 +323,7 @@ def resolve(
     verify = _verify_for(cfg, scheme)
 
     headers = {"X-Agent-Id": agent_id(cfg)}
+    headers.update(_runtime_attribution())  # X-Firekeep-* when the runtime is known
     if cfg.has_option("server", "api_key"):
         key = cfg.get("server", "api_key").strip()
         if key:

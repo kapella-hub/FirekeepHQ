@@ -228,7 +228,7 @@ class ClaudeAdapter(Adapter):
         drop_owned(servers, LEGACY_MCP_KEYS)
         entries = {
             name: {"type": "stdio", "command": cmd, "args": args}
-            for name, (cmd, args) in shim_servers(venv_bin).items()
+            for name, (cmd, args) in shim_servers(venv_bin, self.name).items()
         }
         merge_owned(servers, entries)
         write_json(claude_json, config)
@@ -248,7 +248,8 @@ class ClaudeAdapter(Adapter):
             # this remap, a gateway 'block' (rc=1) would silently fall through as non-blocking.
             extra_args = "--block-exit 2" if core == "pre_tool" else ""
             group = {"hooks": [{"type": "command",
-                                "command": hook_command(venv_bin, core, extra_args=extra_args),
+                                "command": hook_command(venv_bin, core, extra_args=extra_args,
+                                                        runtime=self.name),
                                 "timeout": timeout}]}
             if matcher:
                 group["matcher"] = matcher

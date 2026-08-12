@@ -225,7 +225,7 @@ class KiroAdapter(Adapter):
         drop_owned(servers, LEGACY_MCP_KEYS)
         entries = {
             name: {"command": cmd, "args": args}
-            for name, (cmd, args) in shim_servers(venv_bin).items()
+            for name, (cmd, args) in shim_servers(venv_bin, self.name).items()
         }
         merge_owned(servers, entries)
 
@@ -270,7 +270,8 @@ class KiroAdapter(Adapter):
             # kiro-cli 2.12.1 the block is not actually enforced (see docstring) — the remap
             # is still rendered so it works the moment kiro honors its own contract.
             extra_args = "--block-exit 2" if core == "pre_tool" else ""
-            entry = {"command": hook_command(venv_bin, core, extra_args=extra_args)}
+            entry = {"command": hook_command(venv_bin, core, extra_args=extra_args,
+                                             runtime=self.name)}
             if matcher:
                 entry["matcher"] = matcher
             upsert_flat_hook(hooks.setdefault(event, []), entry)

@@ -83,9 +83,12 @@ INSTRUCTIONS: list[tuple[str, str, str, Callable[[_Metrics], bool]]] = [
     ),
     (
         "ctx_working_state",
-        "Working state captured (agent or stop-hook)",
-        "context_snapshot_count > 0 — the per-turn stop-hook snapshot also "
-        "satisfies this; measures capture, not agent discipline",
+        "Working state captured (agent plan/decision)",
+        "context_snapshot_count > 0 — counts context_ref events, which only "
+        "an agent ctx_update(category=plan|decision) produces; the stop-hook's "
+        "scratch snapshots never carry a context_ref, so this measures agent "
+        "discipline (Correction 1, 2026-08-12 — the cb36570 disclosure "
+        "asserted the opposite of what the code does)",
         lambda m: (_num(m.get("context_snapshot_count")) or 0) > 0,
     ),
     (
@@ -101,6 +104,102 @@ INSTRUCTIONS: list[tuple[str, str, str, Callable[[_Metrics], bool]]] = [
         lambda m: (_num(m.get("outcome_event_count")) or 0) >= 2,
     ),
 ]
+
+
+# ---------------------------------------------------------------------------
+# Round 2 — attribution slicing and exposure (additive; the headline
+# hits/total/rate above these helpers never changes).
+# ---------------------------------------------------------------------------
+
+# The two derived rows have no instruction text of their own — "was the text
+# exposed to this session" is not a question that can be asked of them, so
+# their `exposure` is null rather than a zero that would read as measured.
+DERIVED_KEYS = frozenset({"recall_visibly_used", "outcome_bearing"})
+
+# Per-key introduction gates: the earliest client version whose artifact can
+# carry the key's text, per channel. declared_predictions (the action_before
+# paragraph) entered the rendered block at 0.1.40 and the gateway handshake at
+# 0.1.41 (Correction 2 — the handshake channel did not exist before that).
+# Keys not listed predate attribution entirely, so artifact verification
+# alone suffices.
+INTRODUCTION_VERSIONS: dict[str, dict[str, tuple[int, ...]]] = {
+    "declared_predictions": {"rendered": (0, 1, 40), "gateway": (0, 1, 41)},
+}
+
+
+def _str_or_none(value: Any) -> str | None:
+    """A non-empty string, or None — the _num() discipline applied to the
+    round-2 attribution fields: a malformed value must read as unattributed,
+    never crash the endpoint."""
+    if isinstance(value, str) and value:
+        return value
+    return None
+
+
+def _parse_version(value: Any) -> tuple[int, ...] | None:
+    """A client version as a numeric tuple ("0.1.41" -> (0, 1, 41)), or None
+    when unparseable — and unparseable classifies as unknown, never as a
+    guess in either direction."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return tuple(int(part) for part in value.strip().split("."))
+    except ValueError:
+        return None
+
+
+def _runtime_of(record: dict) -> str:
+    """The record's runtime slice; anything absent or malformed lands in the
+    disclosed "unattributed" bucket."""
+    return _str_or_none(record.get("runtime")) or "unattributed"
+
+
+def _classify_exposure(key: str, record: dict) -> str:
+    """One session's exposure to one instruction key: "exposed",
+    "not_exposed" or "unknown".
+
+    Exposed = a verified artifact carrying the key's text reached the
+    session: rendered block verified current (rendered == expected) or the
+    gateway handshake hash present, each gated by the key's introduction
+    version where one exists. not_exposed = attributed session where NO
+    qualifying artifact reached it (rendered stale/absent with no gateway
+    hash, or below the introduction version on every channel). Everything
+    else — every unattributed session, every malformed record, every
+    unparseable version under a gate — is unknown, never not_exposed.
+    """
+    instructions = record.get("instructions")
+    if not isinstance(instructions, dict):
+        return "unknown"
+    rendered = _str_or_none(instructions.get("rendered"))
+    expected = _str_or_none(instructions.get("expected"))
+    gateway = _str_or_none(instructions.get("gateway"))
+    if rendered is None and gateway is None:
+        # No EVIDENCE-BEARING field arrived. `expected` alone is the wheel's
+        # self-declared hash — a claim about the client, not about any
+        # artifact reaching the session — so a receipt carrying only it
+        # stays unknown, never not_exposed (external review 2026-08-12;
+        # "everything else is unknown" read strictly). `rendered` is
+        # evidence either way: the literal "absent" is an affirmative
+        # report that no block was on disk.
+        return "unknown"
+
+    # The client sends the literal "absent" when no block is on disk; it can
+    # never equal a wheel hash, so plain equality already classifies it.
+    rendered_current = rendered is not None and rendered == expected
+    gateway_present = gateway is not None
+
+    gates = INTRODUCTION_VERSIONS.get(key)
+    if gates:
+        version = _parse_version(record.get("client_version"))
+        if version is None:
+            return "unknown"  # the introduction gate cannot be evaluated
+        rendered_qualifies = rendered_current and version >= gates["rendered"]
+        gateway_qualifies = gateway_present and version >= gates["gateway"]
+    else:
+        rendered_qualifies = rendered_current
+        gateway_qualifies = gateway_present
+
+    return "exposed" if (rendered_qualifies or gateway_qualifies) else "not_exposed"
 
 
 async def scan_evals(replay_redis) -> tuple[list[dict], int, bool]:
@@ -163,7 +262,8 @@ def build_rows(evals: list[dict]) -> list[dict[str, Any]]:
 
     rows: list[dict[str, Any]] = []
     for key, instruction, predicate_desc, predicate in INSTRUCTIONS:
-        hits = sum(1 for e in evals if predicate(e.get("metrics", {})))
+        scored = [(e, predicate(e.get("metrics", {}))) for e in evals]
+        hits = sum(1 for _, hit in scored if hit)
         row: dict[str, Any] = {
             "key": key,
             "instruction": instruction,
@@ -177,6 +277,39 @@ def build_rows(evals: list[dict]) -> list[dict[str, Any]]:
             r_hits = sum(1 for e in recent if predicate(e.get("metrics", {})))
             row["earlier_rate"] = round(e_hits / len(earlier), 4)
             row["recent_rate"] = round(r_hits / len(recent), 4)
+
+        # Round 2, additive: the SAME frozen predicate over runtime slices.
+        # Sessions with no (or malformed) runtime attribution are disclosed
+        # as "unattributed" rather than dropped — the headline denominator
+        # above is untouched.
+        by_runtime: dict[str, dict[str, int]] = {}
+        for e, hit in scored:
+            bucket = by_runtime.setdefault(_runtime_of(e), {"hits": 0, "total": 0})
+            bucket["total"] += 1
+            if hit:
+                bucket["hits"] += 1
+        row["by_runtime"] = by_runtime
+
+        # Exposure: null for the derived rows (no instruction text to be
+        # exposed to); counted per session for the four text-carrying rows.
+        if key in DERIVED_KEYS:
+            row["exposure"] = None
+        else:
+            counts = {"exposed": 0, "not_exposed": 0, "unknown": 0}
+            exposed_hits = 0
+            for e, hit in scored:
+                cls = _classify_exposure(key, e)
+                counts[cls] += 1
+                if cls == "exposed" and hit:
+                    exposed_hits += 1
+            row["exposure"] = {
+                **counts,
+                "exposed_hits": exposed_hits,
+                "exposed_rate": (
+                    round(exposed_hits / counts["exposed"], 4)
+                    if counts["exposed"] else None
+                ),
+            }
         rows.append(row)
     return rows
 
@@ -196,11 +329,18 @@ async def build_compliance(replay_redis) -> dict[str, Any]:
             "signal is still degenerate (replay-evals-patterns.md), so no "
             "quality claim follows from these rates.",
             "Rates are over ALL evaluated sessions, including sessions that "
-            "predate an instruction's rollout and sessions on runtimes where a "
-            "behavior is hook-automated — the table measures the fleet, not "
-            "obedience among instructed sessions. Exposure tracking "
-            "(instruction version per session) and per-runtime slicing arrive "
-            "with round 2 variants.",
+            "predate an instruction's rollout — the table measures the fleet, "
+            "not obedience among instructed sessions. Attribution (runtime, "
+            "client version, instruction-artifact hashes) starts with client "
+            "0.1.41 sessions and nothing backfills: the 30-day eval TTL plus "
+            "non-overwriting eval writes mean every earlier session stays "
+            "unattributed until it ages out, so the per-runtime and exposure "
+            "slices tolerate a mostly-unknown window after rollout.",
+            "A session counts as exposed to an instruction only when a "
+            "verified artifact carrying its text reached it — rendered block "
+            "hash matching the wheel's, or the gateway handshake hash "
+            "present, with per-key introduction version gates — and every "
+            "unattributed session is unknown, never not_exposed.",
             "Predicates are frozen to the 2026-08-11 founding measurement "
             "(docs/superpowers/specs/2026-08-11-living-instructions-design.md); "
             "a changed predicate would orphan the baseline, so changes arrive "

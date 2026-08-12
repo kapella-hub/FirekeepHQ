@@ -104,6 +104,13 @@ natural experiment requiring zero new infrastructure: the `brier_score
 is not None` row moving off zero — or not moving — is the first Living
 Instructions measurement, with this document as the pre-registration.
 
+*(Exposure correction, 2026-08-12: "both instruction layers" was wrong. The
+Cortex MCP handshake channel never reached kit users — the gateway discards
+backend `instructions=` — so true exposure was the rendered block alone from
+2026-08-10 until client 0.1.41 restored the gateway channel. The receipts
+shipped in the same release make the two exposure epochs distinguishable.
+Details under "Round 2 — the measurement contract".)*
+
 ## What the measurement can and cannot claim
 
 **Can:** that behavior changed. Compliance predicates are event counts;
@@ -141,6 +148,10 @@ four fixed immediately, two folded into round-2 scope:
    Predicate kept (frozen key; the capture rate is still worth watching),
    label and description now say what it actually measures; an agent-driven
    variant needs an event the hook does not emit — round 2, with exposure.
+   *(CORRECTED 2026-08-12: this finding was itself wrong, and the relabel it
+   produced overclaimed in the opposite direction — see "Round 2 — the
+   measurement contract" below. The historical text is kept as a record of
+   what was believed when the labels shipped.)*
 3. **`recall_visibly_used` is a temporal proxy** (confirmed): relabeled
    "(temporal proxy)" with "proximity, not attribution" in the description.
    Predicate unchanged — comparability with the baseline preserved.
@@ -157,6 +168,125 @@ four fixed immediately, two folded into round-2 scope:
 Label/description texts may sharpen (they describe predicates to humans and
 were overclaiming); KEYS and PREDICATES stay frozen — no measured number
 changed in any fix.
+
+## Round 2 — the measurement contract (2026-08-12)
+
+Scouting the round-2 requirements found that two loads the round-1 surfaces
+were carrying are wrong — in opposite directions — and both corrections are
+prerequisites to honest exposure tracking. Both were verified at the code
+level, emitter to scorer, not re-reasoned from call sites.
+
+**Correction 1 — review finding #2 was itself wrong; the ctx row already
+measures agent discipline.** `_context_snapshot_count` counts events carrying
+a `context_ref` (`cortex/app/evals/scorers.py:220`), and the only writer of
+`context_ref` in the codebase attaches one exclusively when `ctx_update` is
+called with `category` "decision" or "plan"
+(`bridge/app/mcp_server.py:341-353`). Every hook write — stop, prompt,
+precompact — is `category="scratch"`, so hook snapshots emit `ctx_update`
+events with `context_ref=None` and are never counted. The founding
+measurement's 62% was agent plan/decision discipline all along; the cb36570
+relabel ("the per-turn stop-hook snapshot also satisfies this") asserts the
+opposite of what the code does and is corrected in this round — a
+description change, permitted by this file's own relabeling rule. The
+round-2 item "an agent-driven variant needs an event the hook does not emit"
+is retired: the distinction already exists structurally. The review
+confirmed the finding by call-site reasoning (stop hook calls `ctx_update`;
+`ctx_update` feeds the counter) without checking the category gate between
+them; the lesson — verify the full emitter→scorer path before publishing a
+claim on a measurement surface — is now itself recorded in team memory.
+
+**Correction 2 — the armed experiment's second channel never existed.**
+f23133a added the action_before paragraph to Cortex's FastMCP
+`_INSTRUCTIONS` on the belief that "the Cortex MCP handshake" reaches
+agents. It does not: every kit runtime connects only to the local gateway,
+which discards backend `instructions=` during discovery
+(`client/firekeep_client/gateway.py:99-108` — the initialize result is never
+read) and serves its own `GATEWAY_INSTRUCTIONS`
+(`client/firekeep_client/adapters/base.py:451-457`), which carried no
+action_before paragraph. `client/tests/test_memory_instructions.py` asserts
+the backends SEND instructions; nothing asserted anything receives them.
+True exposure for the 0/32 experiment has therefore been the rendered
+instruction block alone since 2026-08-10. Client 0.1.41 adds the paragraph
+to `MCP_SERVER_INSTRUCTIONS` — deliberately in the same release as exposure
+receipts, so the channel restoration lands as an attributable exposure
+change rather than a silent confound in a pre-registered experiment.
+
+### The contract
+
+Two instruction artifacts exist per session, and the contract names both:
+the **rendered block** (per-runtime file — may be stale, hand-edited, or
+deleted; what is on disk is the truth) and the **gateway handshake text**
+(served fresh from the running wheel every session).
+
+- **Versioning.** `adapters/base.py` computes two module-level constants:
+  `RENDERED_INSTRUCTIONS_HASH = sha256(FIREKEEP_INSTRUCTIONS)[:12]` and
+  `GATEWAY_INSTRUCTIONS_HASH = sha256(GATEWAY_INSTRUCTIONS)[:12]`. The BEGIN
+  marker is stamped — `<!-- firekeep:instructions:begin h=<hash> — … -->` —
+  and block matching moves to LINE-ANCHORED PREFIX matching on
+  `<!-- firekeep:instructions:begin` (the `find_legacy_block_bounds`
+  precedent: the begin line was always allowed a variable tail), so stamped
+  and legacy unstamped blocks upsert/strip identically. The stamp carries
+  NO version field, by review (2026-08-12): a `v=` would rewrite the
+  rendered files on every release even with unchanged instruction text,
+  moving mtime on files in the customer's prompt prefix — the exact cost
+  `write_text_if_changed` exists to avoid. The stamp is a pure function of
+  the content: re-rendering from the same text is a byte-identical no-op,
+  the hash covers only the text BETWEEN the markers (never itself), and
+  which wheel rendered a block is recoverable from the hash while version
+  attribution rides `X-Firekeep-Client`. Line anchoring and an
+  orphaned-BEGIN heal path (replace exactly the damaged marker line, never
+  append a second block) are load-bearing: the review demonstrated both
+  unanchored matching and the legacy append shape destroying user content
+  in `~/.claude/CLAUDE.md` under background auto-update. `firekeep doctor` gains a
+  per-runtime staleness row (on-disk block hash vs wheel hash),
+  generalizing the Codex-only containment check.
+- **Attribution on the wire.** Five headers, attached wherever the caller
+  knows its runtime — the gateway (each adapter now renders `firekeep
+  gateway --runtime <name>`) on every proxied call, and the hook cores
+  (dispatcher gains the same flag) on their server calls:
+  `X-Firekeep-Runtime` (claude|codex|kiro|opencode), `X-Firekeep-Client`
+  (wheel version), `X-Firekeep-Instr-Rendered` (re-hash of the on-disk
+  block at process start, or `absent`), `X-Firekeep-Instr-Expected` (the
+  wheel's rendered-block hash), `X-Firekeep-Instr-Gateway` (the wheel's
+  handshake hash). The client re-hashes what is actually on disk rather
+  than trusting its own stamp — a hand-edited block reports its true hash.
+  Trust level is exactly `X-Agent-Id`'s: an untrusted observability label,
+  never a gate (workspace-entitlements design record).
+- **Persistence.** Bridge `ctx_start_session` reads the headers (the
+  existing `get_http_headers` fallback pattern) and persists them on the
+  session hash; they ride the `session_start` replay payload the same way
+  `briefing_id`/`tags`/`project` already do. Sessions from clients that
+  predate 0.1.41 carry no headers and read as unattributed — honestly.
+- **Evals.** `EvalResult` gains optional top-level fields — `runtime`,
+  `client_version`, `instructions` ({rendered, expected, gateway}),
+  `briefing_delivered` (the session's `briefing_id` presence: the fetch
+  receipt that already exists), `agents` (already computed per session by
+  `get_session_summary` and previously discarded). `metrics` stays
+  `dict[str, float]`; attribution is never a metric.
+- **Compliance response — additive only.** Headline `hits/total/rate` keep
+  the all-sessions denominator (baseline comparability). Each row gains
+  `by_runtime` (same frozen predicate, sliced; `unattributed` bucket
+  disclosed) and `exposure` — exposed / not-exposed / unknown session
+  counts plus an exposed-only rate — `null` for the two derived rows
+  (`recall_visibly_used`, `outcome_bearing`) that have no instruction text
+  to be exposed to. A session counts as *exposed* to an instruction key
+  when a verified artifact carrying that key's text reached it: rendered
+  block verified current (`rendered == expected`), or handshake delivered,
+  with per-key introduction versions (action_before: rendered ≥ 0.1.40,
+  gateway ≥ 0.1.41; the other text-carrying keys predate attribution and
+  need only artifact verification). Everything else is `unknown` —
+  including every pre-0.1.41 session, forever, and including a receipt
+  whose only surviving field is `expected` (the wheel's self-declared hash
+  is a claim about the client, not evidence any artifact reached the
+  session) — and nothing backfills: the
+  30-day TTL plus non-overwriting eval writes mean the table tolerates
+  null attribution for a full window after rollout, and the notes disclose
+  it.
+
+What does NOT change: predicate keys, predicate bodies, the headline
+denominator, the 0/32 pre-registration — whose exposure story gets
+*sharper*, not rewritten: single-channel until 0.1.41, dual-channel after,
+receipts distinguishing the epochs.
 
 ## Risks, named
 

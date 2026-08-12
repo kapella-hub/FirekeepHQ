@@ -413,23 +413,25 @@ def _render_codex(tmp_path, monkeypatch):
 
 
 def test_check_codex_adapter_reports_healthy_generated_files(tmp_path, monkeypatch):
+    # codex-mcp only since 0.1.41: the codex-instructions row moved to
+    # _check_instructions (hash-based, per-runtime) — asserted separately below.
     _, venv = _render_codex(tmp_path, monkeypatch)
     rows = cli._check_codex_adapter(venv)
-    assert {name: status for name, status, _ in rows} == {
-        "codex-mcp": "ok",
-        "codex-instructions": "ok",
-    }
+    assert {name: status for name, status, _ in rows} == {"codex-mcp": "ok"}
+    instr = {name: status for name, status, _ in cli._check_instructions()}
+    assert instr == {"codex-instructions": "ok"}
 
 
-def test_check_codex_adapter_warns_when_instructions_are_missing(tmp_path, monkeypatch):
+def test_check_instructions_reports_absent_when_agents_md_deleted(tmp_path, monkeypatch):
     home, venv = _render_codex(tmp_path, monkeypatch)
     (home / ".codex" / "AGENTS.md").unlink()
 
-    rows = cli._check_codex_adapter(venv)
+    assert {n: s for n, s, _ in cli._check_codex_adapter(venv)} == {"codex-mcp": "ok"}
+    rows = cli._check_instructions()
     statuses = {name: status for name, status, _ in rows}
-    assert statuses["codex-mcp"] == "ok"
     assert statuses["codex-instructions"] == "warn"
     detail = {name: detail for name, _, detail in rows}["codex-instructions"]
+    assert "absent" in detail
     assert "install --runtime codex" in detail
 
 
@@ -438,15 +440,15 @@ def test_check_codex_adapter_fails_when_gateway_config_is_missing(tmp_path, monk
     (home / ".codex" / "config.toml").unlink()
 
     rows = cli._check_codex_adapter(venv)
-    statuses = {name: status for name, status, _ in rows}
-    assert statuses == {
-        "codex-mcp": "fail",
-        "codex-instructions": "ok",
-    }
+    assert {name: status for name, status, _ in rows} == {"codex-mcp": "fail"}
+    instr = {name: status for name, status, _ in cli._check_instructions()}
+    assert instr == {"codex-instructions": "ok"}
 
 
-def test_check_codex_adapter_warns_on_stale_instruction_block(tmp_path, monkeypatch):
-    home, venv = _render_codex(tmp_path, monkeypatch)
+def test_check_instructions_reports_edited_on_a_hand_modified_block(tmp_path, monkeypatch):
+    """A rendered block whose content was hand-edited contradicts its own
+    h= stamp: the row must say 'edited', not merely 'stale'."""
+    home, _venv = _render_codex(tmp_path, monkeypatch)
     instructions = home / ".codex" / "AGENTS.md"
     instructions.write_text(
         instructions.read_text(encoding="utf-8").replace(
@@ -455,10 +457,10 @@ def test_check_codex_adapter_warns_on_stale_instruction_block(tmp_path, monkeypa
         encoding="utf-8",
     )
 
-    rows = cli._check_codex_adapter(venv)
-    statuses = {name: status for name, status, _ in rows}
-    assert statuses["codex-mcp"] == "ok"
-    assert statuses["codex-instructions"] == "warn"
+    rows = cli._check_instructions()
+    (name, status, detail), = rows
+    assert (name, status) == ("codex-instructions", "warn")
+    assert "edited" in detail
 
 
 def test_check_codex_adapter_fails_on_stale_gateway_command(tmp_path, monkeypatch):
@@ -482,6 +484,56 @@ def test_check_codex_adapter_skips_an_unconfigured_runtime(tmp_path, monkeypatch
     assert cli._check_codex_adapter(tmp_path / "venv") == []
 
 
+def test_check_instructions_emits_no_rows_on_a_machine_with_no_runtimes(tmp_path, monkeypatch):
+    """No ~/.claude, ~/.codex, ~/.kiro or opencode config dir -> no rows at all:
+    doctor must not warn a user about runtimes they never installed."""
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    assert cli._check_instructions() == []
+
+
+def test_check_instructions_reports_stale_on_an_older_renders_block(tmp_path, monkeypatch):
+    """An INTACT older render — content matching its own stamp, both differing
+    from this wheel — is 'stale', the re-render nudge, not 'edited'."""
+    from firekeep_client.adapters.base import (
+        INSTRUCTIONS_BEGIN_PREFIX, INSTRUCTIONS_END, _hash12,
+    )
+    home = tmp_path / "home"
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("HOME", str(home))
+    old_content = "old wheel's instruction text\n"
+    old_hash = _hash12(old_content)
+    stamped = (f"{INSTRUCTIONS_BEGIN_PREFIX} v=0.1.40 h={old_hash} — firekeep-owned "
+               f"block, do not edit; re-rendered by `firekeep install` -->\n"
+               f"{old_content}{INSTRUCTIONS_END}\n")
+    agents = home / ".codex" / "AGENTS.md"
+    agents.parent.mkdir(parents=True)
+    agents.write_text(stamped, encoding="utf-8")
+
+    (name, status, detail), = cli._check_instructions()
+    assert (name, status) == ("codex-instructions", "warn")
+    assert "stale" in detail and old_hash in detail
+
+
+def test_check_instructions_legacy_unstamped_block_reads_stale_not_edited(tmp_path, monkeypatch):
+    """A pre-0.1.41 block has no h= stamp, so a mismatch cannot be blamed on the
+    user: it reads 'stale' (re-render migrates it to the stamped form)."""
+    from firekeep_client.adapters.base import INSTRUCTIONS_END
+    home = tmp_path / "home"
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("HOME", str(home))
+    legacy_begin = ("<!-- firekeep:instructions:begin — firekeep-owned block, do not "
+                    "edit; re-rendered by `firekeep install` -->")
+    agents = home / ".codex" / "AGENTS.md"
+    agents.parent.mkdir(parents=True)
+    agents.write_text(f"{legacy_begin}\nold text\n{INSTRUCTIONS_END}\n", encoding="utf-8")
+
+    (name, status, detail), = cli._check_instructions()
+    assert (name, status) == ("codex-instructions", "warn")
+    assert "stale" in detail and "edited" not in detail
+
+
 def test_run_doctor_includes_agent_id_check(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path, monkeypatch, SERVER_CHANGEME)
     monkeypatch.setattr(cli, "_check_health", lambda cfg: [])
@@ -491,6 +543,8 @@ def test_run_doctor_includes_agent_id_check(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_check_ca_expiry", lambda cfg: None)
     monkeypatch.setattr(cli, "_check_codex_adapter", lambda venv: [
         ("codex-mcp", "ok", ""),
+    ])
+    monkeypatch.setattr(cli, "_check_instructions", lambda: [
         ("codex-instructions", "warn", ""),
     ])
     results = cli.run_doctor(cfg)
@@ -520,6 +574,7 @@ def test_run_doctor_includes_the_current_link_row_on_a_side_by_side_layout(tmp_p
     monkeypatch.setattr(cli, "_check_api_key", lambda cfg: None)
     monkeypatch.setattr(cli, "_check_venv_scripts", lambda venv, is_windows=None: ("venv-scripts", "ok", ""))
     monkeypatch.setattr(cli, "_check_codex_adapter", lambda venv: [])
+    monkeypatch.setattr(cli, "_check_instructions", lambda: [])
     monkeypatch.setattr(cli, "_check_config_perms", lambda config, is_windows=None: ("config-perms", "ok", ""))
     monkeypatch.setattr(cli, "_check_ca_expiry", lambda cfg: None)
     results = cli.run_doctor(cfg)

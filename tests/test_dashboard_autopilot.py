@@ -74,7 +74,10 @@ def _render(fn: str, *args) -> str:
         "\nprocess.stdout.write(String(%s(%s)));\n"
         % (fn, ", ".join(json.dumps(a) for a in args))
     )
-    p = subprocess.run(["node", "-e", js], capture_output=True, text=True, timeout=30)
+    # encoding pinned: node emits UTF-8; text=True alone decodes with the
+    # locale codepage on Windows, turning '—' into mojibake mid-assertion.
+    p = subprocess.run(["node", "-e", js], capture_output=True, text=True,
+                       encoding="utf-8", timeout=30)
     assert p.returncode == 0, f"node failed: {p.stderr[:600]}"
     return p.stdout
 
@@ -476,3 +479,160 @@ class TestComplianceTable:
     def test_a_complete_scan_makes_no_cap_claim(self):
         html = _render("renderAutopilotCompliance", COMPLIANCE)
         assert "Scan capped" not in html
+
+
+# ------------------------------------- compliance round 2 (attribution) --
+# Round 2 of the measurement contract (spec 2026-08-11, "Round 2" section)
+# adds two ADDITIVE per-row fields. Shape confirmed against the cortex
+# implementation's contract:
+#   by_runtime: {"<runtime>": {"hits": int, "total": int}, ...,
+#                "unattributed": {...}}   — same frozen predicate, sliced
+#   exposure:   {"exposed", "not_exposed", "unknown", "exposed_hits",
+#                "exposed_rate"(float|None)} — or None for the two derived
+#                rows (recall_visibly_used, outcome_bearing), which have no
+#                instruction text to be exposed to.
+# The renderer must feature-detect: an old server sends neither field and the
+# table renders exactly as round 1 did — no empty columns, no invented zeros.
+
+
+def _compliance_r2():
+    body = json.loads(json.dumps(COMPLIANCE))
+    body["instructions"][0].update({
+        "by_runtime": {
+            "claude": {"hits": 10, "total": 15},
+            "codex": {"hits": 1, "total": 2},
+            "unattributed": {"hits": 7, "total": 15},
+        },
+        "exposure": {"exposed": 5, "not_exposed": 3, "unknown": 24,
+                     "exposed_hits": 4, "exposed_rate": 0.8},
+    })
+    body["instructions"][1].update({
+        "by_runtime": {"unattributed": {"hits": 0, "total": 32}},
+        "exposure": {"exposed": 5, "not_exposed": 3, "unknown": 24,
+                     "exposed_hits": 0, "exposed_rate": 0.0},
+    })
+    body["instructions"].append({
+        "key": "recall_visibly_used",
+        "instruction": "Recalled knowledge used (temporal proxy)",
+        "predicate": "recall_used_rate > 0",
+        "hits": 9, "total": 32, "rate": 0.2813,
+        "by_runtime": {"unattributed": {"hits": 9, "total": 32}},
+        "exposure": None,
+    })
+    return body
+
+
+class TestComplianceAttribution:
+    def test_by_runtime_renders_each_slice_with_unattributed_last(self):
+        """'unattributed' is the disclosure bucket — sessions whose client
+        predates the headers — not a runtime, so it closes the list."""
+        html = _render("renderAutopilotCompliance", _compliance_r2())
+        assert "claude 10/15" in html
+        assert "codex 1/2" in html
+        assert "unattributed 7/15" in html
+        assert html.index("claude 10/15") < html.index("unattributed 7/15")
+        assert "By runtime" in html
+
+    def test_exposure_renders_the_tri_state_and_the_exposed_only_rate(self):
+        html = _render("renderAutopilotCompliance", _compliance_r2())
+        assert "5 exp" in html and "3 not" in html and "24 unk" in html
+        assert "80% of exposed" in html
+        assert "(4/5)" in html, (
+            "the exposed-only rate must show its own numerator/denominator — "
+            "exposed_hits/exposed — or an 80% over 5 sessions reads like an "
+            "80% over 32"
+        )
+
+    def test_a_null_exposure_renders_as_absent_not_as_zeros(self):
+        """The derived rows have no instruction text to be exposed to. An
+        exposure split there would be a category error, and rendering 0/0/0
+        would present that category error as a measurement."""
+        html = _render("renderAutopilotCompliance", _compliance_r2())
+        assert "No instruction text to be exposed to" in html
+        assert "0 exp · 0 not · 0 unk" not in html
+
+    def test_a_zero_exposed_bucket_yields_no_rate_claim(self):
+        """exposed_rate is null when exposed == 0: a rate over an empty
+        denominator is not 0%, it is undefined, and the cell must say which."""
+        body = _compliance_r2()
+        body["instructions"][0]["exposure"] = {
+            "exposed": 0, "not_exposed": 0, "unknown": 32,
+            "exposed_hits": 0, "exposed_rate": None}
+        html = _render("renderAutopilotCompliance", body)
+        assert "no exposed sessions" in html
+        # Row 1 (0/5 exposed hits) still carries its genuine 0% — the absence
+        # is row 0's alone, which the ordering pins:
+        assert html.index("no exposed sessions") < html.index("0% of exposed")
+
+    def test_an_old_server_response_renders_no_attribution_columns(self):
+        """THE degradation case: a pre-0.1.41 server sends rows with neither
+        field. The table must render exactly the round-1 surface — no new
+        headers, no dash-filled columns, nothing inventing attribution."""
+        html = _render("renderAutopilotCompliance", COMPLIANCE)
+        assert "By runtime" not in html
+        assert "Exposure" not in html
+        assert "of exposed" not in html
+        assert "unattributed" not in html
+
+    def test_a_row_missing_both_fields_in_a_mixed_response_degrades_to_dashes(self):
+        """Defensive per-row tolerance: if one row carries attribution and
+        another does not, the bare row renders '—' cells rather than throwing
+        or fabricating zeros."""
+        body = _compliance_r2()
+        del body["instructions"][1]["by_runtime"]
+        del body["instructions"][1]["exposure"]
+        html = _render("renderAutopilotCompliance", body)
+        assert "claude 10/15" in html, "the attributed row still renders"
+        assert "Declare consequential actions" in html, "the bare row still renders"
+        assert "—" in html
+
+    def test_a_hostile_runtime_name_is_escaped(self):
+        """X-Firekeep-Runtime is an untrusted observability label; a hostile
+        agent controls it end-to-end, so it lands in the table as text."""
+        body = _compliance_r2()
+        body["instructions"][0]["by_runtime"] = {
+            "<script>alert(1)</script>": {"hits": 1, "total": 2}}
+        html = _render("renderAutopilotCompliance", body)
+        assert "<script>" not in html
+        assert "&lt;script&gt;" in html
+
+    def test_the_headline_rate_keeps_the_all_sessions_denominator(self):
+        """Additive only: attribution appears BESIDE the headline numbers, and
+        the headline hits/total/rate stay over all evaluated sessions —
+        baseline comparability is the round-2 contract's hard constraint."""
+        html = _render("renderAutopilotCompliance", _compliance_r2())
+        assert "18/32" in html and "56%" in html
+
+    def test_unattributed_sorts_last_even_when_the_server_emits_it_first(self):
+        """The fixture above happens to emit `unattributed` last, so an
+        order-PRESERVING renderer would pass the ordering assertion by luck.
+        This one reverses the emission order to pin the sort itself."""
+        body = _compliance_r2()
+        body["instructions"][0]["by_runtime"] = {
+            "unattributed": {"hits": 7, "total": 15},
+            "claude": {"hits": 10, "total": 15},
+        }
+        html = _render("renderAutopilotCompliance", body)
+        assert html.index("claude 10/15") < html.index("unattributed 7/15")
+
+    def test_a_runtime_bucket_missing_its_counts_is_skipped_not_zeroed(self):
+        body = _compliance_r2()
+        body["instructions"][0]["by_runtime"] = {
+            "kiro": {"hits": None, "total": None}}
+        html = _render("renderAutopilotCompliance", body)
+        assert "kiro" not in html, (
+            "a bucket without counts must not render at all — '?/?' or '0/0' "
+            "would both be inventions"
+        )
+
+    def test_every_note_reaches_the_reader_not_only_the_first(self):
+        """Round 2's unattributed-window disclosure rides the notes array
+        behind the behavior caveat; a renderer showing notes[0] only would
+        strand it at the API — the same stop-at-the-API failure the
+        approximate flag had (external review, 2026-08-11)."""
+        body = _compliance_r2()
+        body["notes"] = list(body.get("notes") or []) + [
+            "Sessions from clients predating 0.1.41 carry no attribution "
+            "headers and count as unknown, forever — nothing backfills."]
+        html = _render("renderAutopilotCompliance", body)
+        assert "nothing backfills" in html

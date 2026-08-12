@@ -22,7 +22,7 @@ So round 1 ships **attribution and visibility, no autonomous mutation**:
 | Contested-not-superseded for unconfirmed conflicts | Trial stages, lifecycle ladders for memories/skills |
 | `/autopilot/inbox` + `/autopilot/digest` + dashboard tab | Autopilot "modes" — round 1 *is* Recommend mode |
 | `/memory/{id}/evidence` ledger read | LLM-judged "did the agent follow this advice" |
-| `/autopilot/compliance` — Living Instructions round 1 | Instruction rewriting/AB — Living Instructions rounds 2–3 |
+| `/autopilot/compliance` — Living Instructions rounds 1–2 (compliance table + attribution/exposure) | Instruction rewriting/AB — Living Instructions later rounds |
 
 ## 1. Feedback-weighted recall
 
@@ -154,8 +154,25 @@ own honesty contract: a `notes` entry stating that compliance measures
 *behavior*, not whether the behavior helped (the outcome signal is still
 degenerate — see `replay-evals-patterns.md`), an `unparsed` count so the
 denominator cannot silently shrink, and a halves-by-eval-time trend that is
-withheld entirely below 10 sessions rather than shown small. Rewriting
-instructions and A/B validation are rounds 2–3 and deliberately not built.
+withheld entirely below 10 sessions rather than shown small.
+
+**Round 2 (2026-08-12, the spec's "Round 2 — the measurement contract") is
+additive attribution, not rewriting** — instruction rewriting and A/B
+validation remain later rounds, deliberately not built. The headline
+`hits/total/rate` keep the all-sessions denominator (baseline comparability);
+each row gains `by_runtime` (the same frozen predicate sliced by the session's
+`X-Firekeep-Runtime` label — an untrusted observability header, never a gate —
+with an `unattributed` bucket disclosed for sessions whose client predates
+0.1.41) and `exposure`: exposed / not-exposed / unknown session counts plus an
+exposed-only rate (`exposed_hits`/`exposed`, `null` when nothing was exposed),
+where `exposure` itself is `null` for the two derived rows
+(`recall_visibly_used`, `outcome_bearing`) that have no instruction text to be
+exposed to. A session counts as *exposed* to a key only when a verified
+artifact carrying that key's text reached it — rendered block verified current
+or handshake delivered, with per-key introduction versions; everything else is
+`unknown`, including every pre-0.1.41 session, forever — nothing backfills.
+The dashboard feature-detects both fields per response, so the table renders
+the round-1 surface unchanged against a server that does not send them.
 
 ## What unlocks round 2
 

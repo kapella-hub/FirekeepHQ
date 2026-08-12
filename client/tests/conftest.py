@@ -9,6 +9,7 @@ write the real ``~/.firekeep``:
 """
 import configparser
 import importlib.util
+import os
 import platform
 from pathlib import Path
 
@@ -93,9 +94,21 @@ def _isolate_firekeep_home(tmp_path, monkeypatch):
 
     Opt-in fixtures (firekeep_env, client_env) re-point these afterwards; autouse just means
     the floor is never the real home."""
+    from firekeep_client import resolver as _resolver
+
     monkeypatch.setenv("FIREKEEP_CONFIG", str(tmp_path / "_isolated" / "config"))
     monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path / "_isolated" / "cache"))
     monkeypatch.setenv("FIREKEEP_LOG_DIR", str(tmp_path / "_isolated" / "logs"))
+    # Runtime attribution (0.1.41) is env-triggered and process-cached. An ambient
+    # FIREKEEP_RUNTIME (or one exported by code under test — gateway.run and the
+    # hook dispatcher SET os.environ, which monkeypatch cannot see) must never
+    # leak X-Firekeep-* headers into an unrelated test's exact-header assertions,
+    # and the cache must never carry one fake home's hash into the next test.
+    monkeypatch.delenv("FIREKEEP_RUNTIME", raising=False)
+    _resolver._ATTRIBUTION_CACHE.clear()
+    yield
+    os.environ.pop("FIREKEEP_RUNTIME", None)
+    _resolver._ATTRIBUTION_CACHE.clear()
 
 
 @pytest.fixture

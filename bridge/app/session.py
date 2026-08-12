@@ -190,6 +190,11 @@ class SessionManager:
         tags: list[str] | None = None,
         project: str | None = None,
         briefing_id: str | None = None,
+        runtime: str | None = None,
+        client_version: str | None = None,
+        instr_rendered: str | None = None,
+        instr_expected: str | None = None,
+        instr_gateway: str | None = None,
     ) -> dict[str, str]:
         agent_id = agent_id or self._s.DEFAULT_AGENT_ID
         now = datetime.now(timezone.utc).isoformat()
@@ -218,6 +223,15 @@ class SessionManager:
             "agent_id": agent_id,
             "project": project or "",
             "briefing_id": briefing_id or "",
+            # Living Instructions round 2 attribution (the five X-Firekeep-*
+            # headers, read by ctx_start_session). Absent → "" — the
+            # briefing_id precedent; an unattributed session is a normal
+            # state, never an error.
+            "runtime": runtime or "",
+            "client_version": client_version or "",
+            "instr_rendered": instr_rendered or "",
+            "instr_expected": instr_expected or "",
+            "instr_gateway": instr_gateway or "",
             "created_at": now,
             "updated_at": now,
             "tags": json.dumps(tags or []),

@@ -29,7 +29,7 @@ def test_codex_render_writes_mcp_servers(fake_home, tmp_path):
     # TOML literal string, Windows-safe; _exe() accounts for the win32 console-script
     # `.exe` suffix that console_script_path (used inside shim_servers) appends.
     assert f"command = '{_exe(venv_bin / 'firekeep')}'" in text
-    assert 'args = ["gateway"]' in text
+    assert 'args = ["gateway", "--runtime", "codex"]' in text
     assert text.count("[mcp_servers.firekeep]") == 1
 
 
@@ -112,7 +112,7 @@ def test_codex_render_produces_parseable_toml(fake_home, tmp_path):
 
     gateway = parsed["mcp_servers"]["firekeep"]
     assert gateway["command"] == _exe(venv_bin / "firekeep")
-    assert gateway["args"] == ["gateway"]
+    assert gateway["args"] == ["gateway", "--runtime", "codex"]
 
 
 def test_upsert_and_strip_block_treat_backslashes_literally():

@@ -29,6 +29,20 @@ class EvalResult(BaseModel):
     duration_ms: int | None = None
     outcome: str | None = None
 
+    # Attribution (Living Instructions round 2 — the measurement contract).
+    # All optional with defaults: records stored before this release carry
+    # none of these and MUST keep parsing. `metrics` above stays
+    # dict[str, float] — attribution is never a metric.
+    runtime: str | None = None
+    client_version: str | None = None
+    # {rendered, expected, gateway} — only the keys whose headers arrived.
+    instructions: dict[str, Any] | None = None
+    # bool(session_start payload briefing_id) when a session_start event
+    # exists; None when the timeline has no session_start at all.
+    briefing_delivered: bool | None = None
+    # From get_session_summary — previously computed per session and discarded.
+    agents: list[str] = []
+
     # Failure analysis (only if session had failures)
     failure_event_ids: list[str] = []
     has_failures: bool = False

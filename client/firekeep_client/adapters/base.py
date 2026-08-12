@@ -6,11 +6,14 @@ settings["hooks"] = {...} wholesale-overwrite bug in local-setup.*).
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sys
 from abc import ABC, abstractmethod
 from pathlib import Path
+
+from firekeep_client import __version__
 
 SERVICES = ("cortex", "bridge", "sentinel", "relay")
 FIREKEEP_MCP_KEYS = ("firekeep",)
@@ -93,18 +96,29 @@ def console_script_path(path: Path) -> str:
     return text
 
 
-def shim_servers(venv_bin: Path) -> dict[str, tuple[str, list[str]]]:
-    """The one local Firekeep MCP gateway entry rendered into every runtime."""
-    return {"firekeep": (console_script_path(venv_bin / "firekeep"), ["gateway"])}
+def shim_servers(venv_bin: Path, runtime: str | None = None) -> dict[str, tuple[str, list[str]]]:
+    """The one local Firekeep MCP gateway entry rendered into every runtime.
+
+    `runtime` (each adapter passes its own `.name`) renders `firekeep gateway
+    --runtime <name>` so the gateway process — and the shim children it spawns —
+    know which runtime launched them and can attach the X-Firekeep-* attribution
+    headers (round-2 measurement contract). None (old rendered configs, direct
+    callers) renders the bare `gateway` form: no runtime identity, no headers."""
+    args = ["gateway"]
+    if runtime:
+        args += ["--runtime", runtime]
+    return {"firekeep": (console_script_path(venv_bin / "firekeep"), args)}
 
 
-def hook_command(venv_bin: Path, core: str, *, extra_args: str = "") -> str:
+def hook_command(venv_bin: Path, core: str, *, extra_args: str = "", runtime: str | None = None) -> str:
     """Absolute command invoking the stdlib hook DISPATCHER (firekeep_client/hooks/__main__.py):
     `<venv>/python -m firekeep_client.hooks <core> [extra_args]`. The dispatcher is what actually
     reads stdin and calls the core's run() -- `-m firekeep_client.hooks.<core>` (importing the
     core module directly) has no `__main__` and would exit 0 without ever running the hook.
     `extra_args` is an opaque, already-formatted string appended verbatim (e.g. the claude
-    adapter's pre_tool `--block-exit 2` remap)."""
+    adapter's pre_tool `--block-exit 2` remap). `runtime` (the adapter's `.name`) appends
+    `--runtime <name>` so the hook cores' server calls carry the X-Firekeep-* attribution
+    headers; None keeps the old form (dispatcher defaults to no runtime — no headers)."""
     python = console_script_path(venv_bin / "python")
     # Hook commands are SHELL STRINGS (settings.json {"type":"command"}) that Claude Code
     # runs through bash -- on Windows too (`/usr/bin/bash -c ...`). In bash an unquoted
@@ -119,6 +133,8 @@ def hook_command(venv_bin: Path, core: str, *, extra_args: str = "") -> str:
     cmd = f"{python} -m {HOOK_MARKER} {core}"
     if extra_args:
         cmd = f"{cmd} {extra_args}"
+    if runtime:
+        cmd = f"{cmd} --runtime {runtime}"
     return cmd
 
 
@@ -272,7 +288,15 @@ class Adapter(ABC):
 # CLAUDE.md, so every other project/runtime never opened a board). The claude
 # adapter upserts this as a marker-delimited block inside the user's global
 # ~/.claude/CLAUDE.md; kiro renders it as a firekeep-owned steering file.
-INSTRUCTIONS_BEGIN = "<!-- firekeep:instructions:begin — firekeep-owned block, do not edit; re-rendered by `firekeep install` -->"
+# BEGIN is matched by PREFIX everywhere (upsert/strip/doctor): the live begin
+# line carries a stamped tail (`v=<wheel version> h=<hash> — …`) that changes
+# per release, and the pre-0.1.41 unstamped line carried a prose tail — the
+# find_legacy_block_bounds precedent. Prefix matching is what makes a legacy
+# unstamped block upsert/strip identically to a stamped one, so an old file is
+# migrated to the stamped form on its next render. END stays an exact match.
+# The stamped INSTRUCTIONS_BEGIN itself is defined below, after the hash
+# constants it embeds.
+INSTRUCTIONS_BEGIN_PREFIX = "<!-- firekeep:instructions:begin"
 INSTRUCTIONS_END = "<!-- firekeep:instructions:end -->"
 
 DECISION_INSTRUCTIONS = """\
@@ -424,11 +448,15 @@ FIREKEEP_INSTRUCTIONS = (
 )
 
 
-# Short form for the MCP `initialize` handshake (FastMCP's `instructions=`).
-# Highest reach per line in the whole fix: it is served by the SERVER, so it
-# arrives at every MCP client with no adapter involvement — including Codex, and
-# including a user who deletes the rendered block from their CLAUDE.md. It is paid
-# for once per session rather than per request, but keep it tight regardless.
+# Short form for the MCP `initialize` handshake. Since the gateway collapsed the
+# per-service shims, the ONLY handshake text an agent ever receives is
+# GATEWAY_INSTRUCTIONS below (gateway.py discards backend `instructions=` during
+# discovery) — so this block, which GATEWAY_INSTRUCTIONS embeds, IS the second
+# delivery channel. The action_before paragraph was added here in 0.1.41 (round-2
+# measurement contract, Correction 2): f23133a put it only in Cortex's FastMCP
+# `_INSTRUCTIONS`, which no kit runtime ever sees, so the armed 0/32 experiment's
+# "second channel" was dead until this release. It is paid for once per session
+# rather than per request, but keep it tight regardless.
 MCP_SERVER_INSTRUCTIONS = """\
 Firekeep — persistent team memory for agents.
 
@@ -446,6 +474,10 @@ ctx_complete_session when done. Secrets go to vault_store, never memory_learn.
 When recalled knowledge shaped what you DID — you acted on it and it held, or it
 sent you the wrong way — call memory_feedback(memory_ids=[...], useful=...) with a
 one-line comment. Report only knowledge you acted on, not everything you saw.
+
+Before a risky or hard-to-reverse action (deletion, deploy, schema change), call
+action_before(action_type, target, intent, success_criteria, confidence); after it
+settles, call action_after(action_id, outcome) — stated confidence is scored against reality.
 """
 
 GATEWAY_INSTRUCTIONS = f"""\
@@ -457,18 +489,107 @@ until the human answers.
 """
 
 
+def _hash12(text: str) -> str:
+    """sha256(text utf-8), first 12 hex chars — the contract's hash shape."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+
+
+# Content hashes of the two instruction artifacts (round-2 measurement contract).
+# RENDERED covers ONLY the text BETWEEN the block markers — exactly the `content`
+# string upsert_marked_block receives — so the stamped BEGIN line never hashes
+# itself and re-rendering from the same wheel stays byte-identical. GATEWAY
+# covers the handshake text served fresh from the running wheel every session.
+RENDERED_INSTRUCTIONS_HASH = _hash12(FIREKEEP_INSTRUCTIONS)
+GATEWAY_INSTRUCTIONS_HASH = _hash12(GATEWAY_INSTRUCTIONS)
+
+# The stamped BEGIN marker: h= the hash of the content it wraps. Deliberately
+# NO v= (wheel version): the stamp must be a pure function of the CONTENT, or
+# every release would rewrite the rendered files even when the instruction
+# text is unchanged — moving mtime on files that sit in the customer's prompt
+# prefix, the exact cost write_text_if_changed's docstring calls indefensible
+# (external review 2026-08-12). Which wheel rendered it is recoverable from
+# the hash; version attribution rides X-Firekeep-Client, not the file.
+INSTRUCTIONS_BEGIN = (
+    f"{INSTRUCTIONS_BEGIN_PREFIX} h={RENDERED_INSTRUCTIONS_HASH}"
+    " — firekeep-owned block, do not edit; re-rendered by `firekeep install` -->"
+)
+
+
+def _line_anchored_find(text: str, needle: str, start: int = 0) -> int:
+    """First occurrence of `needle` at the START OF A LINE, or -1.
+
+    Marker matching must be line-anchored: prose that merely MENTIONS the
+    begin-marker prefix mid-sentence must never be mistaken for the block —
+    with an unanchored find, one render would swallow every user line between
+    the mention and the real block's END (external review 2026-08-12)."""
+    pos = text.find(needle, start)
+    while pos > 0 and text[pos - 1] != "\n":
+        pos = text.find(needle, pos + 1)
+    return pos
+
+
+def has_marked_begin(text: str) -> bool:
+    """Whether a firekeep begin-marker line (stamped or legacy) is present."""
+    return _line_anchored_find(text, INSTRUCTIONS_BEGIN_PREFIX) != -1
+
+
+def _find_marked_block(text: str) -> tuple[int, int] | None:
+    """Bounds of the firekeep-owned block: (start of BEGIN, start of END).
+
+    BEGIN matches by PREFIX, line-anchored, so stamped (0.1.41+) and legacy
+    unstamped begin lines are found identically; END matches in full, searched
+    AFTER the begin so a stray END earlier in the file can never invert the
+    span. None when the pair is incomplete — the ORPHANED-BEGIN case (user
+    deleted the END marker) is handled by upsert/strip themselves, not here,
+    because _extract_block_content must treat a broken block as absent."""
+    begin = _line_anchored_find(text, INSTRUCTIONS_BEGIN_PREFIX)
+    if begin == -1:
+        return None
+    end = text.find(INSTRUCTIONS_END, begin)
+    if end == -1:
+        return None
+    return begin, end
+
+
+def _orphaned_begin_span(text: str) -> tuple[int, int] | None:
+    """Span of a begin-marker LINE that has no END marker after it, or None.
+
+    The heal path for a user-damaged block: the old code APPENDED a second
+    block below the orphan, and the next render's span then ran from the
+    orphan to the appended block's END — swallowing every user line between
+    them on the second render (external review 2026-08-12, verified by
+    execution). Replacing exactly the orphaned line heals in one render and
+    can never claim user content: only the firekeep-owned marker line itself
+    is inside the span."""
+    begin = _line_anchored_find(text, INSTRUCTIONS_BEGIN_PREFIX)
+    if begin == -1 or text.find(INSTRUCTIONS_END, begin) != -1:
+        return None
+    line_end = text.find("\n", begin)
+    return begin, (len(text) if line_end == -1 else line_end)
+
+
 def upsert_marked_block(existing: str, content: str) -> str:
     """Replace the firekeep-owned marker block in `existing`, or append one.
 
     Only text BETWEEN the markers is ever touched — the user's own content is
     preserved byte-for-byte on both sides. Idempotent: rendering twice yields
-    the same file.
-    """
+    the same file. A legacy UNSTAMPED block (pre-0.1.41 begin line) is found by
+    the same prefix match and replaced by the stamped block — the migration
+    path needs no separate code."""
     block = f"{INSTRUCTIONS_BEGIN}\n{content}{INSTRUCTIONS_END}\n"
-    begin = existing.find(INSTRUCTIONS_BEGIN)
-    end = existing.find(INSTRUCTIONS_END)
-    if begin != -1 and end != -1 and end > begin:
+    bounds = _find_marked_block(existing)
+    if bounds is not None:
+        begin, end = bounds
         after = existing[end + len(INSTRUCTIONS_END):]
+        return existing[:begin] + block + after.lstrip("\n")
+    orphan = _orphaned_begin_span(existing)
+    if orphan is not None:
+        # BEGIN without END: replace exactly the orphaned marker line. Any
+        # leftover block body below it is indistinguishable from user content
+        # without an END marker, so it is preserved — visible residue beats
+        # silent deletion.
+        begin, stop = orphan
+        after = existing[stop:]
         return existing[:begin] + block + after.lstrip("\n")
     if existing and not existing.endswith("\n"):
         existing += "\n"
@@ -477,13 +598,100 @@ def upsert_marked_block(existing: str, content: str) -> str:
 
 
 def strip_marked_block(existing: str) -> str:
-    """Remove the firekeep-owned marker block; everything else survives unchanged."""
-    begin = existing.find(INSTRUCTIONS_BEGIN)
-    end = existing.find(INSTRUCTIONS_END)
-    if begin == -1 or end == -1 or end < begin:
-        return existing
+    """Remove the firekeep-owned marker block; everything else survives unchanged.
+    Prefix-matched BEGIN: stamped and legacy unstamped blocks strip identically.
+    An orphaned begin line (END deleted by hand) is removed too — it is
+    firekeep-owned by definition; the content below it is not, and survives."""
+    bounds = _find_marked_block(existing)
+    if bounds is None:
+        orphan = _orphaned_begin_span(existing)
+        if orphan is None:
+            return existing
+        begin, end = orphan
+        after = existing[end:]
+        return existing[:begin].rstrip("\n") + ("\n" if existing[:begin].strip() else "") + after.lstrip("\n")
+    begin, end = bounds
     after = existing[end + len(INSTRUCTIONS_END):]
     return existing[:begin].rstrip("\n") + ("\n" if existing[:begin].strip() else "") + after.lstrip("\n")
+
+
+def rendered_block_stamp(text: str) -> str | None:
+    """The h=<hash> claim stamped on the block's BEGIN line, or None when the
+    line is legacy/unstamped (or there is no block). Lets doctor tell an intact
+    older render (stamp == on-disk hash: stale) from a hand-edited block
+    (stamp != on-disk hash: edited)."""
+    begin = _line_anchored_find(text, INSTRUCTIONS_BEGIN_PREFIX)
+    if begin == -1:
+        return None
+    line_end = text.find("\n", begin)
+    line = text[begin:] if line_end == -1 else text[begin:line_end]
+    match = re.search(r"\bh=([0-9a-f]{12})\b", line)
+    return match.group(1) if match else None
+
+
+def rendered_instructions_path(runtime_name: str) -> Path | None:
+    """The file each runtime's adapter renders the instruction block into.
+
+    Mirrors the adapters' own `_instructions_path`/`_steering_path` (kiro's is a
+    whole-file steering doc, not a marker block — see _extract_block_content).
+    Returns None for an unknown runtime name."""
+    if runtime_name == "claude":
+        return Path.home() / ".claude" / "CLAUDE.md"
+    if runtime_name == "codex":
+        return Path.home() / ".codex" / "AGENTS.md"
+    if runtime_name == "kiro":
+        return Path.home() / ".kiro" / "steering" / "firekeep-instructions.md"
+    if runtime_name == "opencode":
+        # Lazy import: opencode.py imports this module at its top, so a
+        # module-level import here would be a cycle. _config_dir owns the
+        # XDG_CONFIG_HOME resolution — duplicating it here would drift.
+        from firekeep_client.adapters.opencode import _config_dir
+        return _config_dir() / "AGENTS.md"
+    return None
+
+
+def _extract_block_content(text: str, runtime_name: str) -> str | None:
+    """The exact content basis RENDERED_INSTRUCTIONS_HASH is defined over, read
+    back from a rendered file: the text between the markers (claude/codex/
+    opencode), or everything after the steering marker line (kiro's whole-file
+    shape) — so a current file hashes equal to RENDERED_INSTRUCTIONS_HASH on
+    every runtime. None when no block is present."""
+    if runtime_name == "kiro":
+        from firekeep_client.adapters.kiro import STEERING_MARKER  # lazy: cycle
+        marker_line = f"<!-- {STEERING_MARKER} -->\n"
+        start = text.find(marker_line)
+        if start == -1:
+            return None
+        return text[start + len(marker_line):]
+    bounds = _find_marked_block(text)
+    if bounds is None:
+        return None
+    begin, end = bounds
+    newline = text.find("\n", begin)
+    if newline == -1 or newline >= end:
+        return ""  # malformed begin line: hash the (empty) content honestly
+    return text[newline + 1:end]
+
+
+def read_rendered_instructions_hash(runtime_name: str) -> str | None:
+    """Re-hash the instruction block actually ON DISK for `runtime_name`.
+
+    Returns sha256[:12] of the block content, or None when the file/block is
+    absent or unreadable. Deliberately hashes what is there rather than
+    trusting the stamp — a hand-edited block reports its true hash."""
+    path = rendered_instructions_path(runtime_name)
+    if path is None:
+        return None
+    try:
+        if not path.exists():
+            return None
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    content = _extract_block_content(text, runtime_name)
+    if content is None:
+        return None
+    return _hash12(content)
 
 
 def find_legacy_block_bounds(text: str, begin_prefix: str, end_marker: str) -> tuple[int, int] | None:

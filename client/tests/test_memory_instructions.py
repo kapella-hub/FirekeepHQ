@@ -34,6 +34,7 @@ import pytest
 
 from firekeep_client.adapters.base import (
     FIREKEEP_INSTRUCTIONS,
+    GATEWAY_INSTRUCTIONS,
     MCP_SERVER_INSTRUCTIONS,
     MEMORY_INSTRUCTIONS,
 )
@@ -163,6 +164,30 @@ class TestTheMcpHandshakeCarriesItToo:
         low = MCP_SERVER_INSTRUCTIONS.lower()
         assert "memory_recall" in low
         assert "before" in low, "the short form must still state WHEN to recall"
+
+    def test_the_receiving_end_carries_action_before(self):
+        """Round-2 Correction 2: f23133a put the action_before paragraph in
+        Cortex's FastMCP `_INSTRUCTIONS`, which NO kit runtime ever receives —
+        the gateway discards backend `instructions=` during discovery and serves
+        GATEWAY_INSTRUCTIONS instead, which carried no action_before paragraph.
+        `test_every_server_passes_instructions` below asserts the backends SEND
+        instructions; this asserts what an agent actually RECEIVES. Both the
+        short form and the gateway handshake it flows into must carry the
+        declare-before-acting protocol, or the second delivery channel of the
+        armed 0/32 experiment is dead again."""
+        for received in (MCP_SERVER_INSTRUCTIONS, GATEWAY_INSTRUCTIONS):
+            assert "action_before" in received
+            assert "action_after" in received
+            assert "confidence" in received, (
+                "the calibration half — stated confidence scored against "
+                "reality — is what makes the declaration honest"
+            )
+
+    def test_gateway_instructions_embed_the_short_form(self):
+        """GATEWAY_INSTRUCTIONS is derived from MCP_SERVER_INSTRUCTIONS by
+        construction; if that derivation is ever unpicked, the handshake agents
+        receive silently loses every protocol line the short form carries."""
+        assert MCP_SERVER_INSTRUCTIONS.rstrip() in GATEWAY_INSTRUCTIONS
 
     def test_it_stays_short(self):
         """Sent once per session, but it competes with everything else in the

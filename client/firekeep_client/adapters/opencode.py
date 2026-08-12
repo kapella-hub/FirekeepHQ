@@ -77,7 +77,10 @@ const TOOL_NAMES = { edit: "Edit", write: "Write", bash: "Bash" }
 
 function runCore(core, payload, timeoutMs, extra = []) {
   try {
-    return spawnSync(PYTHON, ["-m", "firekeep_client.hooks", core, ...extra], {
+    // --runtime opencode: the dispatcher exports it so the hook cores' server
+    // calls carry the X-Firekeep-* attribution headers (parity with the
+    // hook_command() --runtime flag the other adapters render).
+    return spawnSync(PYTHON, ["-m", "firekeep_client.hooks", core, "--runtime", "opencode", ...extra], {
       input: JSON.stringify(payload || {}),
       timeout: timeoutMs,
       encoding: "utf8",
@@ -186,7 +189,7 @@ class OpencodeAdapter(Adapter):
         drop_owned(servers, LEGACY_MCP_KEYS)
         entries = {
             name: {"type": "local", "command": [cmd, *args], "enabled": True}
-            for name, (cmd, args) in shim_servers(venv_bin).items()
+            for name, (cmd, args) in shim_servers(venv_bin, self.name).items()
         }
         merge_owned(servers, entries)
         write_json(self._config_path(), config)

@@ -234,6 +234,68 @@ signature-served class.
 
 **Render stability — `write_text_if_changed` (`adapters/base.py`):** every adapter previously rewrote byte-identical content on every render, and rewriting identical bytes still moves mtime, which is not free. `firekeep update` re-execs `firekeep install`, which re-renders `~/.claude/CLAUDE.md` and `~/.claude/settings.json` — and background auto-update is ON by default, so this happens **mid-session on a customer's machine**. Those files sit in the prompt prefix: a host that re-reads a rendered instruction file because its mtime moved rebuilds that prefix and invalidates the prompt cache, re-billing the whole conversation at full rate for a zero-byte change. Whether a given host does that cannot be determined from this repo, which is exactly why touching mtime for nothing is indefensible. All rendered-file writes (including `write_json`, which delegates) now go through it. It **fails toward writing**: if the existing file cannot be read or decoded, we cannot prove it matches, so we write — failing to read is not evidence of a match — and it never skips a real change. Guarded by `client/tests/adapters/test_write_stability.py`, whose load-bearing case is `test_second_identical_claude_render_touches_no_rendered_file` (the whole-adapter check, not just the helper's unit behaviour).
 
+## Instruction attribution (client 0.1.41 — Living Instructions round 2)
+
+Two instruction artifacts reach a session, and the round-2 measurement contract
+(`docs/superpowers/specs/2026-08-11-living-instructions-design.md`, "Round 2") names both:
+the **rendered block** — the marker-delimited section upserted into each runtime's
+instruction file (`~/.claude/CLAUDE.md`, codex/opencode `AGENTS.md`, kiro's equivalent),
+which can be stale, hand-edited, or deleted, and **what is on disk is the truth** — and the
+**gateway handshake text** (`GATEWAY_INSTRUCTIONS`), served fresh from the running wheel on
+every MCP initialize. The distinction is load-bearing because of that spec's Correction 2:
+the Cortex backend's own `_INSTRUCTIONS` never reaches an agent — the gateway discards
+backend `instructions=` during discovery (`gateway.py`, the initialize result is never read)
+and serves its own — so the armed action_before experiment's believed "second channel" did
+not exist, and nothing measured could have said so. Attribution turns that class of confound
+from latent into visible.
+
+**Stamped BEGIN marker (`adapters/base.py`).** The begin marker now carries a content
+hash — `<!-- firekeep:instructions:begin h=<hash> — … -->` — where `<hash>` is
+`RENDERED_INSTRUCTIONS_HASH = sha256(FIREKEEP_INSTRUCTIONS)[:12]`, a module-level constant
+beside its handshake twin `GATEWAY_INSTRUCTIONS_HASH = sha256(GATEWAY_INSTRUCTIONS)[:12]`.
+Deliberately NO `v=` (external review 2026-08-12): a wheel-version field would rewrite the
+rendered files on every release even with unchanged instruction text — moving mtime on
+files in the customer's prompt prefix, the exact cost `write_text_if_changed`'s docstring
+calls indefensible. The stamp is a pure function of the content: the hash covers only the
+text BETWEEN the markers (never itself), re-rendering from the same text is a byte-identical
+no-op, and version attribution rides `X-Firekeep-Client` instead of the file. Block matching
+moved to LINE-ANCHORED PREFIX matching on `<!-- firekeep:instructions:begin` (the
+`find_legacy_block_bounds` precedent — the begin line was always allowed a variable tail),
+and that prefix match IS the whole migration story: a legacy unstamped block and a stamped
+one upsert and strip identically, so the first render from a stamped wheel replaces an old
+unstamped block in place with no special case, and `unrender` needs none either. Two damage
+cases are handled defensively (both demonstrated destroying user content in review): prose
+that merely *mentions* the marker prefix mid-line is never matched (line anchoring), and an
+orphaned begin line whose END marker a user deleted is healed by replacing exactly that
+line — never by appending a second block, whose next render swallowed everything between
+orphan and appendix.
+
+**`--runtime` where the process knows it.** Each adapter renders its MCP entry as
+`firekeep gateway --runtime <claude|codex|kiro|opencode>`, and the hook dispatcher takes the
+same flag — the two places a kit process actually knows which runtime it serves, which is
+the only honest place to attach the label (the server guessing from traffic shape would be
+inference dressed as fact).
+
+**Five wire headers.** The gateway attaches them to every proxied call and the hook cores to
+their server calls: `X-Firekeep-Runtime` (claude|codex|kiro|opencode), `X-Firekeep-Client`
+(wheel version), `X-Firekeep-Instr-Rendered` (a re-hash of the on-disk block at process
+start, or `absent` — the client re-hashes what is actually on disk rather than trusting its
+own stamp, so a hand-edited block reports its true hash), `X-Firekeep-Instr-Expected` (the
+wheel's rendered-block hash), `X-Firekeep-Instr-Gateway` (the wheel's handshake hash). Their
+trust level is exactly `X-Agent-Id`'s: **untrusted observability labels, never gates**
+(workspace-entitlements design record). Bridge persists them on the session at
+`ctx_start_session` (see `bridge-context-and-briefing.md`) and the compliance table's
+per-runtime and exposure slices are downstream of that; nothing anywhere authorizes on them.
+Sessions from clients predating 0.1.41 send none and read as **unattributed** — honestly,
+forever: nothing backfills.
+
+**`firekeep doctor` per-runtime staleness rows.** Doctor gains one row per rendered runtime
+comparing the on-disk block's re-hash against the wheel's `RENDERED_INSTRUCTIONS_HASH` —
+generalizing the Codex-only containment check (`cli.py::_check_codex_adapter`, which
+substring-matched the expected block) to every instruction surface. A stale row means
+sessions on that runtime are exposed to whatever the old block carried, not what the wheel
+would render; the repair is the usual `firekeep install --runtime <name>`.
+
 ## Session Hooks (client kit — `firekeep_client.hooks`)
 The five bash hooks are retired; the adapter wires stdlib Python hook cores at install (Claude `settings.json`, kiro inline hooks, OpenCode via a rendered JS plugin bridge; Codex has no hook surface):
 - `session_start` (SessionStart / kiro agentSpawn) — thin fetch-and-print of Cortex `GET /briefing` (server-side aggregator; auth via the resolver) plus local presence registration. Replaces the 610-line briefing assembly and structurally kills its `$SESSION_ID`-unbound + shell-injection bugs. Also stashes the server-minted `briefing_id` into the session stash (`state.write_session_stash`, `session_current_{agent}`) for the bridge shim's identity tap. Runs the once-a-day client-update check (`_update_nudge`): when a newer release exists it spawns the detached background auto-update (on by default — see Background auto-update above) and appends a one-line "updating in background" notice (or the manual "run: firekeep update" nudge when opted out). Finally calls `symdexindex.index_nudge` to background-index the workspace for symdex when the staleness policy says so (see Symdex auto-index below) — silent in every declining case, since a line on every start is the nag it replaces.

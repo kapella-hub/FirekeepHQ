@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from firekeep_client.adapters.base import GATEWAY_INSTRUCTIONS
+from firekeep_client.adapters.base import GATEWAY_INSTRUCTIONS, GATEWAY_INSTRUCTIONS_HASH
 from firekeep_client.stdio import force_utf8_stdio, pin_import_paths
 
 
@@ -229,7 +229,11 @@ class Gateway:
                 "result": {
                     "protocolVersion": self.protocol_version,
                     "capabilities": {"tools": {"listChanged": False}},
-                    "serverInfo": {"name": "firekeep", "version": "1"},
+                    # version = the handshake text's content hash, so a session's
+                    # recorded serverInfo names exactly which instruction text it
+                    # received (round-2 measurement contract) — the hardcoded "1"
+                    # said nothing.
+                    "serverInfo": {"name": "firekeep", "version": GATEWAY_INSTRUCTIONS_HASH},
                     "instructions": GATEWAY_INSTRUCTIONS,
                 },
             }
@@ -283,7 +287,7 @@ class Gateway:
             backend.close()
 
 
-def run() -> int:
+def run(runtime: str | None = None) -> int:
     # The gateway's own stdio is the hop that was never configured: the BACKEND
     # pipes below are pinned to utf-8 (`Popen(..., encoding="utf-8")`), but this
     # process read `sys.stdin` and wrote `sys.stdout` at the platform default,
@@ -294,6 +298,13 @@ def run() -> int:
     # to the venv we started under, so an update's flip mid-session can never
     # mix two client versions into this process. See stdio.pin_import_paths.
     pin_import_paths()
+    # Runtime identity (each adapter renders `firekeep gateway --runtime <name>`):
+    # exported so the shim children this process spawns — the processes that make
+    # the actual HTTP calls — attach the X-Firekeep-* attribution headers
+    # (resolver._runtime_attribution). Absent on old rendered configs: no
+    # export, no headers, everything else unchanged.
+    if runtime:
+        os.environ["FIREKEEP_RUNTIME"] = runtime
     gateway = Gateway()
     try:
         for line in sys.stdin:

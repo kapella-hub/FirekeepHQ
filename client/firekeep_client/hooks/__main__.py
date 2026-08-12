@@ -35,6 +35,7 @@ Contract:
 from __future__ import annotations
 
 import json
+import os
 import sys
 
 from firekeep_client import hooklog, resolver
@@ -78,7 +79,8 @@ _BYPASS_EXEMPT = frozenset({"stop", "session_end"})
 
 def _usage() -> None:
     names = "|".join(_CORE_MODULES)
-    print(f"usage: python -m firekeep_client.hooks <{names}> [--block-exit N]", file=sys.stderr)
+    print(f"usage: python -m firekeep_client.hooks <{names}> [--block-exit N] [--runtime NAME]",
+          file=sys.stderr)
 
 
 def _parse_block_exit(rest: list[str]) -> int | None:
@@ -88,6 +90,16 @@ def _parse_block_exit(rest: list[str]) -> int | None:
                 return int(rest[i + 1])
             except ValueError:
                 return None
+    return None
+
+
+def _parse_runtime(rest: list[str]) -> str | None:
+    """`--runtime <name>` (rendered by each adapter since 0.1.41). None when
+    absent — an OLD rendered hook command carries no flag and must keep working
+    exactly as before (no runtime identity, no attribution headers)."""
+    for i, tok in enumerate(rest):
+        if tok == "--runtime" and i + 1 < len(rest):
+            return rest[i + 1]
     return None
 
 
@@ -173,6 +185,18 @@ def main(argv: list[str] | None = None) -> int:
         _usage()
         hooklog.log_failure("hooks", f"unknown or missing hook core: {core_name!r}")
         return 0
+
+    # Runtime identity (adapters render `--runtime <name>` since 0.1.41):
+    # exported before the core runs so every server call the core makes through
+    # the resolver seam carries the X-Firekeep-* attribution headers
+    # (resolver._runtime_attribution). Best-effort — attribution must never be
+    # able to break a hook.
+    try:
+        runtime = _parse_runtime(argv[1:])
+        if runtime:
+            os.environ["FIREKEEP_RUNTIME"] = runtime
+    except Exception as e:  # noqa: BLE001
+        hooklog.log_failure(core_name, f"runtime flag parse failed: {e!r}")
 
     # `/personal` as chat text: intercepted BEFORE the bypass gate below — while
     # personal mode is ON the prompt core is short-circuited, so an in-core

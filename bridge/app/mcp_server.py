@@ -103,6 +103,40 @@ def _default_agent_id(agent_id: str | None = None) -> str:
     headers = get_http_headers()
     return headers.get("x-agent-id") or agent_id or "default"
 
+
+# Living Instructions round 2 — the measurement contract
+# (docs/superpowers/specs/2026-08-11-living-instructions-design.md). Five
+# attribution headers, attached by the gateway and hook cores from client
+# 0.1.41: header name -> session field name. Trust level is exactly
+# X-Agent-Id's — an untrusted observability label, never a gate.
+_ATTRIBUTION_HEADERS: tuple[tuple[str, str], ...] = (
+    ("x-firekeep-runtime", "runtime"),
+    ("x-firekeep-client", "client_version"),
+    ("x-firekeep-instr-rendered", "instr_rendered"),
+    ("x-firekeep-instr-expected", "instr_expected"),
+    ("x-firekeep-instr-gateway", "instr_gateway"),
+)
+
+
+def _attribution_from_headers() -> dict[str, str]:
+    """The X-Firekeep-* attribution headers that arrived, keyed by field name.
+
+    Header-name matching is case-insensitive. A header that did not arrive —
+    every client before 0.1.41 — is simply absent from the result: the session
+    reads as unattributed, which is a normal state, never an error.
+    """
+    try:
+        headers = get_http_headers() or {}
+    except Exception:  # pragma: no cover — get_http_headers documents it never raises
+        headers = {}
+    lowered = {str(name).lower(): value for name, value in headers.items()}
+    out: dict[str, str] = {}
+    for header, field in _ATTRIBUTION_HEADERS:
+        value = lowered.get(header)
+        if value:
+            out[field] = str(value)
+    return out
+
 # ---------------------------------------------------------------------------
 # Replay emitter (fire-and-forget trace events)
 # ---------------------------------------------------------------------------
@@ -297,16 +331,29 @@ async def ctx_start_session(
             attributed to this session (closes the strategy-pattern feedback loop).
     """
     agent_id = _default_agent_id(agent_id)
+    attribution = _attribution_from_headers()
     mgr = await _get_manager()
-    result = await mgr.start_session(goal, agent_id=agent_id, tags=tags, project=project, briefing_id=briefing_id)
+    result = await mgr.start_session(
+        goal, agent_id=agent_id, tags=tags, project=project, briefing_id=briefing_id,
+        runtime=attribution.get("runtime"),
+        client_version=attribution.get("client_version"),
+        instr_rendered=attribution.get("instr_rendered"),
+        instr_expected=attribution.get("instr_expected"),
+        instr_gateway=attribution.get("instr_gateway"),
+    )
 
-    # Replay: trace session start
+    # Replay: trace session start. briefing_id and the attribution headers ride
+    # this payload — compute_session_eval reads them from the timeline it
+    # already loads, so this event is the only place they need to appear.
     sid = result.get("session_id", "")
     if sid:
-        await _replay_emit(
-            "session_start", sid, agent_id,
-            {"goal": goal, "tags": tags or []},
-        )
+        payload: dict = {
+            "goal": goal,
+            "tags": tags or [],
+            "briefing_id": briefing_id or "",
+        }
+        payload.update(attribution)  # only the headers that actually arrived
+        await _replay_emit("session_start", sid, agent_id, payload)
 
     return result
 

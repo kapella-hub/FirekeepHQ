@@ -44,7 +44,7 @@ def test_opencode_render_writes_local_mcp_servers(fake_home, tmp_path):
     # opencode's `mcp` shape: type=local, command is ONE array (cmd + args), enabled flag.
     assert data["mcp"]["firekeep"] == {
         "type": "local",
-        "command": [_exe(venv_bin / "firekeep"), "gateway"],
+        "command": [_exe(venv_bin / "firekeep"), "gateway", "--runtime", "opencode"],
         "enabled": True,
     }
     assert list(data["mcp"]) == ["firekeep"]

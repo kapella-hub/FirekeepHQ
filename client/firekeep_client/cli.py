@@ -20,7 +20,13 @@ from urllib.parse import urlparse
 
 from firekeep_client import __version__, pathenv, resolver, serverinit, state, updater, wizard
 from firekeep_client.adapters import get_adapter
-from firekeep_client.adapters.base import FIREKEEP_INSTRUCTIONS, INSTRUCTIONS_BEGIN, INSTRUCTIONS_END
+from firekeep_client.adapters.base import (
+    RENDERED_INSTRUCTIONS_HASH,
+    has_marked_begin,
+    read_rendered_instructions_hash,
+    rendered_block_stamp,
+    rendered_instructions_path,
+)
 from firekeep_client.adapters.codex import mcp_block_is_current
 from firekeep_client.transport import get_json, TransportError
 
@@ -669,35 +675,29 @@ def _check_current_link(home: Path | None = None) -> tuple[str, str, str] | None
 
 
 def _check_codex_adapter(venv: Path) -> list[tuple[str, str, str]]:
+    """codex-mcp only. The codex-instructions row this used to emit (an exact
+    containment check on the rendered block) is subsumed by _check_instructions,
+    which reports hash-based staleness for EVERY runtime — codex included."""
     config = Path.home() / ".codex" / "config.toml"
     instructions = Path.home() / ".codex" / "AGENTS.md"
     repair = "run `firekeep install --runtime codex`"
 
     instruction_text = ""
-    instruction_error: OSError | None = None
     try:
         if instructions.exists():
             instruction_text = instructions.read_text(encoding="utf-8")
-    except OSError as exc:
-        instruction_error = exc
-    has_instruction_block = INSTRUCTIONS_BEGIN in instruction_text
-    expected_instructions = f"{INSTRUCTIONS_BEGIN}\n{FIREKEEP_INSTRUCTIONS}{INSTRUCTIONS_END}"
-    instructions_current = expected_instructions in instruction_text
+    except OSError:
+        pass  # an unreadable AGENTS.md is _check_instructions' row to report
+    # Prefix match, line-anchored: the 0.1.41 stamped begin line and the legacy
+    # unstamped one must both count as "codex is managed here" — but prose that
+    # merely mentions the marker mid-line must not.
+    has_instruction_block = has_marked_begin(instruction_text)
 
     if not config.exists():
         if not has_instruction_block:
             return []
-        rows = [
-            ("codex-mcp", "fail", f"{config} missing while Firekeep instructions exist; {repair}"),
-        ]
-        if instructions_current:
-            rows.append(("codex-instructions", "ok", str(instructions)))
-        else:
-            rows.append((
-                "codex-instructions", "warn",
-                f"Firekeep instruction block missing or stale in {instructions}; {repair}",
-            ))
-        return rows
+        return [("codex-mcp", "fail",
+                 f"{config} missing while Firekeep instructions exist; {repair}")]
 
     try:
         config_text = config.read_text(encoding="utf-8")
@@ -714,24 +714,75 @@ def _check_codex_adapter(venv: Path) -> list[tuple[str, str, str]]:
     if not is_managed:
         return []
 
-    rows: list[tuple[str, str, str]] = []
     if not mcp_block_is_current(config_text, _venv_bin(venv)):
-        rows.append(("codex-mcp", "fail", f"stale or missing Firekeep gateway in {config}; {repair}"))
-    else:
-        rows.append(("codex-mcp", "ok", str(config)))
+        return [("codex-mcp", "fail", f"stale or missing Firekeep gateway in {config}; {repair}")]
+    return [("codex-mcp", "ok", str(config))]
 
-    if instruction_error is not None:
-        rows.append((
-            "codex-instructions", "warn",
-            f"cannot read {instructions}: {instruction_error}; {repair}",
-        ))
-    elif not instructions_current:
-        rows.append((
-            "codex-instructions", "warn",
-            f"Firekeep instruction block missing or stale in {instructions}; {repair}",
-        ))
-    else:
-        rows.append(("codex-instructions", "ok", str(instructions)))
+
+# The four shipped runtimes, in adapter order (`_selected_runtimes("all")`).
+_INSTRUCTION_RUNTIMES = ("claude", "codex", "kiro", "opencode")
+
+
+def _check_runtime_instructions(runtime: str) -> tuple[str, str, str] | None:
+    """One instruction-staleness row: on-disk block hash vs this wheel's hash.
+
+    States (named in the detail): ok (current), stale (an intact older render —
+    the stamp matches the on-disk content, or the block predates stamping),
+    edited (on-disk content contradicts its own stamp), absent (runtime present,
+    no block). None when the runtime itself shows no trace on this machine —
+    doctor must not warn a claude-only user about three runtimes they never
+    installed."""
+    path = rendered_instructions_path(runtime)
+    if path is None:
+        return None
+    # Presence evidence: the runtime's config root. For kiro the rendered file
+    # lives one level down (~/.kiro/steering/), so the root is ~/.kiro.
+    root = path.parent.parent if runtime == "kiro" else path.parent
+    try:
+        if not root.exists():
+            return None
+    except OSError:
+        return None
+    name = f"{runtime}-instructions"
+    repair = f"run `firekeep install --runtime {runtime}`"
+    on_disk = read_rendered_instructions_hash(runtime)
+    if on_disk is None:
+        return (name, "warn",
+                f"absent — no Firekeep instruction block in {path}; {repair}")
+    if on_disk == RENDERED_INSTRUCTIONS_HASH:
+        return (name, "ok", f"current (h={on_disk}) in {path}")
+    stamp = None
+    if runtime != "kiro":  # kiro's steering doc is whole-file, no stamped marker
+        try:
+            stamp = rendered_block_stamp(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError):
+            stamp = None
+    if stamp is not None and stamp != on_disk:
+        return (name, "warn",
+                f"edited — on-disk block h={on_disk} contradicts its own stamp "
+                f"h={stamp} in {path}; {repair}")
+    return (name, "warn",
+            f"stale — on-disk block h={on_disk}, this wheel renders "
+            f"h={RENDERED_INSTRUCTIONS_HASH} in {path}; {repair}")
+
+
+def _check_instructions() -> list[tuple[str, str, str]]:
+    """Per-runtime instruction-staleness rows (round-2 measurement contract).
+
+    Generalizes the codex-only containment check that used to live in
+    _check_codex_adapter: same question ("does the on-disk block match this
+    wheel?"), asked of every runtime, answered by content hash rather than
+    string containment — the same basis the X-Firekeep-Instr-* headers report."""
+    rows: list[tuple[str, str, str]] = []
+    for runtime in _INSTRUCTION_RUNTIMES:
+        try:
+            row = _check_runtime_instructions(runtime)
+        except Exception:  # noqa: BLE001 — one runtime's failure must not mask the rest
+            row = (f"{runtime}-instructions", "warn",
+                   f"could not inspect the rendered instruction file; "
+                   f"run `firekeep install --runtime {runtime}`")
+        if row is not None:
+            rows.append(row)
     return rows
 
 
@@ -889,6 +940,7 @@ def run_doctor(cfg=None) -> list[tuple[str, str, str]]:
         results.append(current_link)
     results.append(_check_venv_scripts(_venv_root()))
     results.extend(_check_codex_adapter(_venv_root()))
+    results.extend(_check_instructions())
     results.append(_check_config_perms(_config_path()))
     ca = _check_ca_expiry(cfg)
     if ca is not None:
@@ -1230,7 +1282,7 @@ def cmd_login(args) -> int:
 def cmd_gateway(args) -> int:
     from firekeep_client.gateway import run
 
-    return run()
+    return run(runtime=getattr(args, "runtime", None))
 
 
 def cmd_doctor(args) -> int:
@@ -1574,6 +1626,11 @@ def _build_parser() -> argparse.ArgumentParser:
     login_parser.set_defaults(func=cmd_login)
 
     gateway = sub.add_parser("gateway", help="run the local Firekeep MCP gateway")
+    # Rendered by each adapter as `firekeep gateway --runtime <its name>` so
+    # proxied server calls carry X-Firekeep-* attribution. Default None: an old
+    # rendered config (no flag) keeps working, with no attribution headers.
+    gateway.add_argument("--runtime", default=None,
+                         help="runtime that launched this gateway (claude|codex|kiro|opencode)")
     gateway.set_defaults(func=cmd_gateway)
 
     # `status` alias: what operators type first on an unfamiliar CLI (observed
