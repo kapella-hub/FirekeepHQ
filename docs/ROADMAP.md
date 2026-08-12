@@ -79,3 +79,16 @@ current product immediately and is the real prerequisite for rung 06's story.
    product category of their own, the outcome signal is the weakest, and the
    buyer differs from the current one. A paying customer drags it forward,
    not a roadmap.
+
+## Candidate (not yet promised publicly): Living Instructions
+
+The instruction layer that measures itself — per-instruction compliance from
+replay, fleet-authored rewrites under human verdict, briefing-delivered
+variants, validated by the frozen experiment framework. Design and the
+founding live measurement (2026-08-11 compliance baseline, six instructions,
+32 sessions):
+[`docs/superpowers/specs/2026-08-11-living-instructions-design.md`](superpowers/specs/2026-08-11-living-instructions-design.md).
+It is wiring over existing machinery, not a new subsystem. **Gate for
+publishing it as a promise on firekeep.ai: the round-1 compliance table
+exists on the Autopilot tab** — the site never promises what the dashboard
+cannot yet show.
