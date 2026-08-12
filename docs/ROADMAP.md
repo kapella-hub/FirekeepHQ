@@ -80,7 +80,7 @@ current product immediately and is the real prerequisite for rung 06's story.
    buyer differs from the current one. A paying customer drags it forward,
    not a roadmap.
 
-## Candidate (not yet promised publicly): Living Instructions
+## 3. Living Instructions (rung 05 — "the system itself"; round 1 SHIPPED)
 
 The instruction layer that measures itself — per-instruction compliance from
 replay, fleet-authored rewrites under human verdict, briefing-delivered
@@ -88,7 +88,16 @@ variants, validated by the frozen experiment framework. Design and the
 founding live measurement (2026-08-11 compliance baseline, six instructions,
 32 sessions):
 [`docs/superpowers/specs/2026-08-11-living-instructions-design.md`](superpowers/specs/2026-08-11-living-instructions-design.md).
-It is wiring over existing machinery, not a new subsystem. **Gate for
-publishing it as a promise on firekeep.ai: the round-1 compliance table
-exists on the Autopilot tab** — the site never promises what the dashboard
-cannot yet show.
+It is wiring over existing machinery, not a new subsystem.
+
+**The publishing gate held and is closed**: round 1 (`GET
+/autopilot/compliance` + the dashboard table) shipped in server v0.4.1 and
+was verified live before the rung went on firekeep.ai (2026-08-11). First
+live read: every instruction trended UP between the older and newer halves
+of the eval window (recall 44%→69%, write 31%→63%, recall-used 13%→44%,
+ctx 56%→69%) — behavior only, no quality claim; rounds 2–3 exist to test
+causation properly.
+
+**Unlocks for rounds 2–3** (rewrites + A/B): declared-prediction traffic
+from instructed clients (the 0.1.40 natural experiment), and enough session
+volume for the frozen stats to resolve an effect.

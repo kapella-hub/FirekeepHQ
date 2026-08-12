@@ -1,9 +1,12 @@
 # Living Instructions — the instruction layer that measures itself
 
-_Status: round 1 BUILT (2026-08-11) — `GET /autopilot/compliance` +
-the Living Instructions table on the dashboard's Autopilot tab, predicates
-frozen to the founding measurement below. Rounds 2–3 remain proposed. Not
-publicly promised; the roadmap gate is met once round 1 is deployed._
+_Status: round 1 SHIPPED (server v0.4.1, deployed and verified live
+2026-08-11) — `GET /autopilot/compliance` + the Living Instructions table on
+the dashboard's Autopilot tab, predicates frozen to the founding measurement
+below. Announced on firekeep.ai as ladder rung 05 the same day, after the
+gate was verified. First live read: every instruction trended up between the
+older and newer eval halves (recall 44%→69%, write 31%→63%, recall-used
+13%→44%, ctx 56%→69%) — behavior, not quality. Rounds 2–3 remain proposed._
 
 ## The observation this is built on
 
