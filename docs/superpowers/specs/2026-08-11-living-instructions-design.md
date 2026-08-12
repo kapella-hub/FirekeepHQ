@@ -6,7 +6,12 @@ the dashboard's Autopilot tab, predicates frozen to the founding measurement
 below. Announced on firekeep.ai as ladder rung 05 the same day, after the
 gate was verified. First live read: every instruction trended up between the
 older and newer eval halves (recall 44%→69%, write 31%→63%, recall-used
-13%→44%, ctx 56%→69%) — behavior, not quality. Rounds 2–3 remain proposed._
+13%→44%, ctx 56%→69%) — behavior, not quality. The round-2 MEASUREMENT
+CONTRACT shipped 2026-08-12 (server v0.4.3 + client 0.1.41, deployed and
+verified live: all rows serving `by_runtime` + `exposure`, 34 pre-0.1.41
+sessions honestly unknown/unattributed) — see "Round 2 — the measurement
+contract" below, including its two corrections. The rewrite loop (round 2
+proper) and A/B (round 3) remain proposed._
 
 ## The observation this is built on
 

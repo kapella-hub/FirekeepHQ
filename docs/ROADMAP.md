@@ -80,7 +80,7 @@ current product immediately and is the real prerequisite for rung 06's story.
    buyer differs from the current one. A paying customer drags it forward,
    not a roadmap.
 
-## 3. Living Instructions (rung 05 — "the system itself"; round 1 SHIPPED)
+## 3. Living Instructions (rung 05 — "the system itself"; round 1 + the round-2 measurement contract SHIPPED)
 
 The instruction layer that measures itself — per-instruction compliance from
 replay, fleet-authored rewrites under human verdict, briefing-delivered
@@ -98,6 +98,19 @@ of the eval window (recall 44%→69%, write 31%→63%, recall-used 13%→44%,
 ctx 56%→69%) — behavior only, no quality claim; rounds 2–3 exist to test
 causation properly.
 
+**The round-2 measurement contract shipped** in server v0.4.3 + client
+0.1.41 (2026-08-12, deployed and verified live before this line was
+written): instruction-content hashes stamped into the rendered block,
+five attribution headers, per-runtime compliance slices, and
+exposed/not-exposed/unknown states — with every pre-0.1.41 session
+honestly `unknown`, forever. Shipping it surfaced two corrections now
+recorded in the spec: the ctx row measured agent discipline all along
+(the review finding that said otherwise was wrong), and the armed
+experiment's "second channel" (Cortex MCP handshake) never reached kit
+users — 0.1.41 restores it in the same release as the receipts, so the
+exposure change is attributable, not a confound.
+
 **Unlocks for rounds 2–3** (rewrites + A/B): declared-prediction traffic
-from instructed clients (the 0.1.40 natural experiment), and enough session
+from instructed clients (the 0.1.40/0.1.41 natural experiment, its two
+exposure epochs now distinguishable by receipt), and enough session
 volume for the frozen stats to resolve an effect.
