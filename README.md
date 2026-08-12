@@ -27,6 +27,7 @@ Firekeep fixes this by giving agents durable memory, live operational awareness,
 | **Predict-then-Act Gateway** | Agents declare intent before consequential actions (`action_before` → `allow | rethink | block`), then reconcile outcomes (`action_after`). Combines a runtime policy engine (lease, file risk, path deny, session health, recent failure) with a fast-path cache for repeated low-risk actions. |
 | **Skills** | Agents author reusable "what to do when X happens" playbooks via the `skill_create` tool (client-side, with full session context); a docs→skills pipeline drafts more from wikis/runbooks under human review. Top matches are injected into the next session's briefing. (Server-side auto-synthesis exists behind `SKILL_SYNTHESIS_ENABLED` but is off by default — the CPU-only deploy can't run the generation LLM in workable time.) |
 | **Decision Board** | When a clarification needs more than a couple of questions, the agent opens a local browser board pre-populated with evidence retrieved from team memory — better questions, informed by what the team already learned. The local gateway fronts the Decision Board process and Cortex `/decision/synthesize`. |
+| **Living Instructions** | The instruction layer measures itself: a per-instruction compliance table computed deterministically from replay (did sessions recall before answering, record as they went, declare consequential actions), with trend over time, per-runtime slices, and exposure receipts — sessions carry a content hash of the instruction text that actually reached them, and anything unverifiable reports as *unknown* rather than counted. Honest about its limits by construction: it measures behavior, not whether the behavior helped. Fleet-drafted rewrites under human verdict and A/B validation are roadmap. |
 | **Auto-Evals + Pattern Discovery** | Quality metrics computed from replay traces on session completion. Pattern detection is enabled; automated promotion/validation and A/B experiment endpoints are implemented but disabled by default until a deployment has enough session volume to use them responsibly. |
 | **Replay & Explainability** | Every memory read/write, session lifecycle event, environment change, coordination action, and gateway decision is recorded as a structured trace. Inspect, narrow, and reconstruct context at any prior event. |
 | **Encrypted Secrets** | Fernet-backed vault for infrastructure credentials, API tokens, and connection strings. Distinct from memory — secrets never appear in recall. |
@@ -173,7 +174,8 @@ api_key = nxs_...
 injects the credential on every request. A manual `firekeep install --host ...`
 path remains for development and legacy servers, but join codes are the
 customer path. `firekeep doctor` verifies connectivity, authentication,
-credential expiry, TLS trust, and all installed runtime adapters.
+credential expiry, TLS trust, all installed runtime adapters, and whether each
+runtime's rendered instruction block is current, stale, hand-edited, or absent.
 
 To add a person, use **Members → Invite member** instead. A member invite is
 accepted once, creates that person's membership, and then hands the client the
@@ -276,7 +278,7 @@ works against the auth-gated stack without you pasting a key into the browser.
 | **Memory** | Recall search, active/archive browsers, one-click restore, maintenance preview/audit, store form, contributors, namespace/tag stats |
 | **Skills** | Agent-authored + doc-derived skill cards — review, activate, edit, retire |
 | **Knowledge** | Docs→skills ingestion (paste / URL) + the draft-skill approval queue |
-| **Autopilot** | The review inbox (draft/stale/re-review skills, procedure proposals, contested memory pairs, eval dead letters) + the "what changed this week" digest — read-only; it proposes and reports, never mutates |
+| **Autopilot** | The review inbox (draft/stale/re-review skills, procedure proposals, contested memory pairs, eval dead letters), the "what changed this week" digest, and the Living Instructions compliance table (per-instruction rates, trend, per-runtime slices, exposure states) — read-only; it proposes and reports, never mutates |
 | **Patterns** | Discovered strategy cards; promotion validation and experiment controls when their feature flags are enabled |
 | **Ops** | Workers, queue depths, active agents, vector store info, Discipline counter (untagged memory calls) |
 | **Policy** | Runtime policy rules for pre-edit safety checks, toggle per rule |
@@ -339,6 +341,7 @@ costs. Background auto-indexing explicitly disables AI summaries.
 - Replay traces with root-cause narrowing and per-event context reconstruction
 - Auto-evals: 10 Tier-1 quality metrics computed on session completion, trend tracking, regression detection
 - Knowledge Autopilot round 1 (visibility, never autonomous mutation): feedback-weighted recall + the `memory_feedback` tool, a Bridge session reaper so crashed sessions count as failures, contested-not-superseded handling for unconfirmed memory conflicts with human verdicts, the Autopilot review inbox + weekly digest, and a per-memory evidence ledger (`/memory/{id}/evidence`) — see [docs/guides/knowledge-autopilot.md](docs/guides/knowledge-autopilot.md)
+- Living Instructions rounds 1 + 2 (measurement): the per-instruction compliance table on the Autopilot tab (predicates frozen to a pre-registered baseline), trend over time, and the round-2 measurement contract — instruction-content hashes stamped into the rendered block, five attribution headers, per-runtime slices, and exposed/not-exposed/unknown states with everything unverifiable reported as unknown. Rewrites under human verdict and briefing-delivered A/B variants are roadmap — see the design spec in [docs/ROADMAP.md](docs/ROADMAP.md)
 - Dreaming: automated memory consolidation + person profiles (`DREAM_ENABLED`, off by default)
 - Living Procedures: skills observed as procedures with frequency/efficacy proposals under human review (`PROCEDURE_ENABLED`, off by default)
 - One degrading local MCP gateway registered by every adapter, aggregating four remote services plus client-local Symdex and Decision Board
