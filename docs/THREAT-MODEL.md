@@ -203,9 +203,14 @@ real:
   background auto-update runs detached with stderr on DEVNULL, so the client
   persists an unsigned-install marker and the next session-start briefing
   prints it once. An *invalid* signature is fatal regardless of the flag:
-  invalid is tampering evidence, absence is history. Until the operator mints
-  keys and a build pinning them ships, the machinery is inert and this
-  mitigation is **pending key mint**, not yet active in the field.
+  invalid is tampering evidence, absence is history. **Active in the field
+  since 2026-08-12:** keys minted (ID `7D6D83D1240D4A61`, private half in the
+  `FIREKEEP_SIGNING_KEY` Actions secret and offline with the operator), the
+  public key pinned from client 0.1.42, and release 0.1.42 published signed —
+  the workflow's serve-verification byte-compared the live `.minisig` against
+  the built one. `require_signed` stays default-false for one release cycle
+  (a flipped default with a misconfigured secret would stall every client's
+  updates; 0.1.42 is the production evidence the flip waits for).
 - **Downgrade/freeze window.** `latest.json` is unsigned, so a compromised host
   can still replay an older *signed* release or pin the fleet to one. It cannot
   introduce new code.
@@ -222,7 +227,7 @@ real:
 | # | Threat | State |
 |---|---|---|
 | 1 | Unauthenticated read of the vault over the network | **Fixed** — three independent layers (§5.1) |
-| 2 | Release-host compromise → arbitrary code on every dev machine | **Mitigated, pending key mint** — signed `SHA256SUMS` verified against a client-pinned Ed25519 key; residuals: TOFU first install, enforce-off default, unsigned-downgrade window (§5.6) |
+| 2 | Release-host compromise → arbitrary code on every dev machine | **Mitigated, active since 2026-08-12** — signed `SHA256SUMS` verified against the Ed25519 key pinned in client 0.1.42+; residuals: TOFU first install, enforce-off default (flip pending one cycle of production evidence), unsigned-downgrade window (§5.6) |
 | 3 | A new route under a skip-list prefix is silently public | **Partly mitigated** — prefix/exact split; no test enumerates skip-list reachability |
 | 4 | `.env` read → total compromise (VAULT_KEY, Neo4j, all keys) | **Accepted** — plaintext by design; `chmod 600` documented. Sentinel no longer mounts it. |
 | 5 | Compromised agent with a valid non-admin key poisons memory | **OPEN, unmitigated** — writes are attributed but not validated, and poisoned memories are recalled like any other |

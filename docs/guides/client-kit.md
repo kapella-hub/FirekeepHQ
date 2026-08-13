@@ -195,8 +195,8 @@ when the `FIREKEEP_SIGNING_KEY` CI secret is set — absent secret = loud UNSIGN
 garbage secret = failed release. SHA256SUMS now also lists `install.sh`/`install.ps1`, so the
 signature covers the script `firekeep update` executes: `updater.fetch_signed_sums` verifies the
 target release's sums against `signing.PINNED_PUBLIC_KEY` (`client/firekeep_client/signing.py`
-— pure-stdlib RFC 8032 verifier, EMPTY until the operator mints keys per the runbook;
-the import boundary is why it isn't `cryptography`), `updater.bootstrap_sha256` refuses a
+— pure-stdlib RFC 8032 verifier, pinned since client 0.1.42 to key `7D6D83D1240D4A61` minted
+2026-08-12 per the runbook; the import boundary is why it isn't `cryptography`), `updater.bootstrap_sha256` refuses a
 `latest.json` that disagrees with the signed entry, and the trusted comment's `version:` token
 kills cross-version replay. Verify-if-present: no pinned key or no published `.minisig` →
 warn/skip (until `[dist] require_signed = true`, default false FOR NOW); an INVALID signature

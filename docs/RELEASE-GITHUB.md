@@ -193,10 +193,11 @@ cd client && python -m pytest tests/test_e2e_bootstrap.py -m e2e -q
   through it (an em dash landed in the live store as `â€"`; the server was
   never involved). Every stdio entry point now pins stdin/stdout/stderr to
   UTF-8 with literal-LF newlines. Releases are signed: Ed25519/minisign over
-  SHA256SUMS, verified against the client's pinned key when one is minted
-  (verify-if-present until `require_signed` flips; an invalid signature is
-  always fatal), with the verified sums threaded through to the bootstrap
-  rather than fetched twice. The Windows lease gate fires again (and says why
+  SHA256SUMS, verified against the key pinned in client 0.1.42+ (minted
+  2026-08-12; verify-if-present until `require_signed` flips on production
+  evidence; an invalid signature is always fatal), with the verified sums
+  threaded through to the bootstrap rather than fetched twice. The first
+  signed release was 0.1.42, serve-verification green on first execution. The Windows lease gate fires again (and says why
   when it cannot), and gateway reconcile
   stops losing the session, the outcome, and every warning. Ships symdex
   0.2.16, whose `watch_folder` can finally see files that were added.
