@@ -1,9 +1,13 @@
 # Release Signing — key custody runbook
 
-**Status: machinery shipped, keys NOT yet minted.** Until you complete "Enabling
-signing" below, releases build UNSIGNED (with a loud CI log line), clients pin no
-key, and threat-model item #2 stays "mitigated, pending key mint". Nothing breaks
-in the meantime — that is deliberate.
+**Status: keys minted and armed (2026-08-12).** Key ID `7D6D83D1240D4A61`; the
+private half lives in the `FIREKEEP_SIGNING_KEY` Actions secret and offline at
+the operator's key directory (keep a password-manager copy too), the public half
+is pinned in `client/firekeep_client/signing.py`. Releases from client 0.1.42 on
+publish a `SHA256SUMS.minisig` that the workflow byte-verifies against the served
+copy. `require_signed` stays default-false for one release cycle — flip it (step
+5 below) only after a signed release has proven itself in production, because a
+flipped default with a misconfigured secret stalls every client's updates.
 
 ## What is signed, and what that protects
 

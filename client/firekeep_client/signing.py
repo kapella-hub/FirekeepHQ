@@ -53,11 +53,11 @@ import struct
 from dataclasses import dataclass
 
 # The minisign public key (the base64 line, or the whole two-line file) that release
-# SHA256SUMS files must be signed with. EMPTY until the operator mints keys — the
-# runbook (docs/RELEASE-SIGNING.md) is the only place this gets set from. The updater
-# reads it via the module attribute so tests (and a rotation release) can see exactly
-# one source of truth.
-PINNED_PUBLIC_KEY = ""
+# SHA256SUMS files must be signed with. Minted 2026-08-12 per docs/RELEASE-SIGNING.md
+# (key ID 7D6D83D1240D4A61; the CI secret FIREKEEP_SIGNING_KEY holds the private
+# half). The updater reads it via the module attribute so tests (and a rotation
+# release) can see exactly one source of truth.
+PINNED_PUBLIC_KEY = "RWRhSg0k0YNtfVG2DYqWZCyZaY9XRylvhxNdX3k0dseC0xoSSxnvrdh/"
 
 
 class SignatureError(Exception):

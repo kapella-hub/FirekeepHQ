@@ -264,10 +264,14 @@ build time — the right outcome, and the reason not to hard-code `docker.io` th
   kit and the URL crawler. Supersedes `cortex/docs/SECURITY_REVIEW.md`, which covers
   Cortex v0.1.0 as of 2026-03-02 and predates auth, the vault, the agent gateway and the
   crawler; that file is kept as a record of what was reviewed then, not as current state.
-  Findings marked **OPEN** in the threat model are not mitigated — the largest are the
-  unsigned `SHA256SUMS` on the client update path (release-host compromise reaches every
-  developer machine) and memory poisoning by a compromised agent holding a valid
-  non-admin key.
+  Findings marked **OPEN** in the threat model are not mitigated — the largest remaining
+  is memory poisoning by a compromised agent holding a valid non-admin key. The client
+  update path is signed as of 2026-08-12: keys minted (ID 7D6D83D1240D4A61), the public
+  key pinned in `client/firekeep_client/signing.py`, `FIREKEEP_SIGNING_KEY` set in
+  Actions — releases from client 0.1.42 on publish a verified `SHA256SUMS.minisig`.
+  Residuals stay honest: TOFU first install, `require_signed` still default-false (flip
+  planned one release after signing proves itself in production), unsigned `latest.json`
+  downgrade window — see `docs/THREAT-MODEL.md` §5.6 and `docs/RELEASE-SIGNING.md`.
 - **CI gates** (`.github/workflows/ci.yml`): `security` runs `pip-audit --strict` over
   each shipped dependency set in its own clean venv and uploads CycloneDX SBOMs;
   `secrets` runs the gitleaks binary over the working tree and full history. Both are
