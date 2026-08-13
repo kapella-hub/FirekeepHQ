@@ -13,8 +13,6 @@ import sys
 from abc import ABC, abstractmethod
 from pathlib import Path
 
-from firekeep_client import __version__
-
 SERVICES = ("cortex", "bridge", "sentinel", "relay")
 FIREKEEP_MCP_KEYS = ("firekeep",)
 FIREKEEP_ENV_KEYS = ("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS",)
