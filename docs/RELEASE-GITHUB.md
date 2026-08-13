@@ -197,7 +197,36 @@ cd client && python -m pytest tests/test_e2e_bootstrap.py -m e2e -q
   2026-08-12; verify-if-present until `require_signed` flips on production
   evidence; an invalid signature is always fatal), with the verified sums
   threaded through to the bootstrap rather than fetched twice. The first
-  signed release was 0.1.42, serve-verification green on first execution. The Windows lease gate fires again (and says why
+  signed release was 0.1.42, serve-verification green on first execution.
+
+## PyPI and the MCP registry
+
+The `pypi` job in `release.yml` publishes `firekeep-client` and
+`firekeep-symdex` to PyPI on every `client-v*` tag via **Trusted Publishing**
+(OIDC — no token secret to mint, rotate, or leak). It fails loudly on a
+missing or misconfigured publisher without touching the dist-host
+publication; `skip-existing` makes an already-published symdex version a
+no-op, since symdex bumps on its own cadence.
+
+**One-time setup (operator, on pypi.org — required BEFORE the first tag with
+this job):** log in → your account → Publishing → for EACH of
+`firekeep-client` and `firekeep-symdex`, add a *pending publisher* with:
+owner `kapella-hub`, repository `FirekeepHQ`, workflow `release.yml`,
+environment `pypi`. Also create the `pypi` environment in the GitHub repo
+settings (no reviewers needed). The first successful publish claims the
+project names; both were verified unregistered on 2026-08-13.
+
+**The MCP registry** (`registry.modelcontextprotocol.io`) is the follow-up
+once the PyPI packages exist: `server.json` at the repo root holds the draft
+entry (`io.github.kapella-hub/firekeep`, PyPI package `firekeep-client`,
+stdio transport). Publish with the `mcp-publisher` CLI — `login github`
+(device flow, proves the io.github.kapella-hub namespace), then
+`mcp-publisher publish` from the repo root after bumping `server.json`'s two
+version fields to the released client version. Ownership proof on the PyPI
+side is the `mcp-name: io.github.kapella-hub/firekeep` line already carried
+in `client/README.md` (the package README lands on the PyPI page, where the
+registry's validator reads it). The CLI's validator is the schema authority;
+if it rejects a field, trust it over the checked-in draft. The Windows lease gate fires again (and says why
   when it cannot), and gateway reconcile
   stops losing the session, the outcome, and every warning. Ships symdex
   0.2.16, whose `watch_folder` can finally see files that were added.

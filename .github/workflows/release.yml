@@ -435,3 +435,38 @@ jobs:
           else
             echo "release was built UNSIGNED (no FIREKEEP_SIGNING_KEY) — no .minisig to verify"
           fi
+
+  # --- PyPI (Trusted Publishing / OIDC) --------------------------------------
+  # Publishes firekeep-client and firekeep-symdex to PyPI so `pip install
+  # firekeep-client` works and the official MCP registry can reference a public
+  # package (server.json at the repo root; docs/RELEASE-GITHUB.md "PyPI and the
+  # MCP registry"). No token secret: PyPI must hold a Trusted Publisher for
+  # BOTH project names pointing at this repo + this workflow + environment
+  # "pypi". A missing or misconfigured publisher fails THIS job loudly without
+  # touching the dist-host publication above — the same misconfiguration ethos
+  # as release signing. skip-existing is for symdex, which bumps on its own
+  # cadence: an already-published symdex version is a no-op, not an error,
+  # while a re-tagged client version still fails (PyPI versions are immutable,
+  # and re-tagging a published client version is a mistake worth hearing about
+  # — the dist host's accumulative layout would refuse it too).
+  pypi:
+    needs: release
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build sdists + wheels
+        run: |
+          python -m pip install build
+          python -m build client -o pypi-dist
+          python -m build symdex -o pypi-dist
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: pypi-dist
+          skip-existing: true

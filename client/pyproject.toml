@@ -6,14 +6,37 @@ build-backend = "setuptools.build_meta"
 name = "firekeep-client"
 version = "0.1.42"
 description = "Firekeep portable client kit: stdio-proxy shim, hook cores, sidecar, and runtime adapters."
+readme = "README.md"
 requires-python = ">=3.10"
 license = "LicenseRef-Firekeep-BUSL-1.1"
 license-files = ["LICENSE", "NOTICE"]
+keywords = ["mcp", "model-context-protocol", "ai-agents", "agent-memory", "claude-code", "codex", "self-hosted"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development",
+]
 dependencies = [
     "mcp>=1.28,<2",
     "httpx>=0.27,<1",
     "truststore>=0.9.1",
 ]
+
+# Code intelligence is always-on when installed through the managed bootstrap
+# (which installs the firekeep-symdex wheel side by side). For pip installs it
+# is an extra, NOT a hard dependency: the gateway degrades gracefully without
+# it, and forcing tree-sitter's binary grammars on every pip consumer would
+# fight the resolution philosophy that keeps this package deliberately
+# unlocked (tests/test_requirements_lock.py).
+[project.optional-dependencies]
+symdex = ["firekeep-symdex>=0.2,<1"]
+
+[project.urls]
+Homepage = "https://firekeep.ai"
+Documentation = "https://firekeep.ai/docs.html"
+Changelog = "https://kapella-hub.github.io/firekeep-dist/latest/latest.json"
 
 [project.scripts]
 firekeep = "firekeep_client.cli:main"

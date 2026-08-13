@@ -26,6 +26,10 @@ benchmark = ["anthropic>=0.40.0", "tiktoken>=0.7.0"]
 [project.scripts]
 firekeep-symdex = "firekeep_symdex.server:main"
 
+[project.urls]
+Homepage = "https://firekeep.ai"
+Documentation = "https://firekeep.ai/docs.html"
+
 [build-system]
 requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
