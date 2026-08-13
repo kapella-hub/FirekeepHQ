@@ -157,36 +157,166 @@ class TestUpdateRefusesFinishedSessions:
         assert result["status"] == "ok"
 
 
-class TestFinishClearsEveryPointer:
-    @pytest.mark.asyncio
-    async def test_complete_clears_callers_pointer_too(self, manager, mock_redis):
-        """Completion must release the session for EVERY agent naming it.
+class TestUpdateSessionIdThreading:
+    """SessionManager.update's session_id parameter (2026-08-12).
 
-        Clearing only ``meta['agent_id']`` is what left the other agent
-        pointing at a finished session — the precondition for the lost-write
-        bug above.
-        """
+    The MCP layer threads the connection's X-Session-Id header through it so a
+    terminal writes into ITS OWN session even after a sibling terminal sharing
+    the agent_id re-pointed the shared nb:active pointer.
+    """
+
+    @pytest.mark.asyncio
+    async def test_explicit_session_id_skips_the_pointer(self, manager, mock_redis):
+        """The shared pointer must not be consulted at all when the target is
+        named — that lookup is exactly the cross-terminal clobber."""
+        mock_redis.get = AsyncMock(return_value="sess-of-terminal-a")
+        # The named session exists (the ghost-session guard refuses a named
+        # target whose hash is gone; this test is about pointer skipping, so
+        # the target must be real).
+        mock_redis.exists = AsyncMock(return_value=1)
+        result = await manager.update(
+            "plan", "- [ ] step 1", session_id="sess-mine"
+        )
+        assert result["status"] == "ok"
+        mock_redis.get.assert_not_awaited()
+        assert mock_redis.set.call_args.args[0] == "nb:session:sess-mine:plan"
+
+    @pytest.mark.asyncio
+    async def test_no_session_id_falls_back_to_pointer(self, manager, mock_redis):
+        """Backward-compat pin: header-less clients resolve via the pointer
+        exactly as before."""
+        mock_redis.get = AsyncMock(return_value="sess-ptr")
+        result = await manager.update("plan", "- [ ] step 1")
+        assert result["status"] == "ok"
+        mock_redis.get.assert_awaited_once_with("nb:active:default")
+        assert mock_redis.set.call_args.args[0] == "nb:session:sess-ptr:plan"
+
+    @pytest.mark.asyncio
+    async def test_finished_session_guard_applies_to_named_session(
+        self, manager, mock_redis
+    ):
+        """Naming the session must not sidestep the finished-session refusal."""
+        mock_redis.hget = AsyncMock(return_value="completed")
+        with pytest.raises(ValueError, match="Cannot update completed session"):
+            await manager.update("progress", "x", session_id="sess-done")
+
+
+class TestCompleteAbandonOwnership:
+    """complete/abandon refuse a session owned by another agent (2026-08-12).
+
+    The live incident this pins: two terminals on one machine shared an
+    agent_id, and Bridge keys the active-session pointer per-agent
+    (``nb:active:{agent_id}``). Terminal B's no-arg ``ctx_complete_session``
+    resolved through that shared pointer to terminal A's IN-FLIGHT session and
+    completed it — ``complete_session`` had no ownership check at all, even
+    though ``resume_session``'s docstring claimed it did. The refusal mirrors
+    resume's: same trigger (resolved meta agent_id differs from the caller),
+    same error shape (ValueError naming the owner).
+    """
+
+    @pytest.mark.asyncio
+    async def test_complete_refuses_another_agents_session(self, manager, mock_redis):
+        mock_redis.hgetall = AsyncMock(
+            return_value={"status": "active", "agent_id": "owner"}
+        )
+        with pytest.raises(ValueError, match="belongs to agent 'owner'"):
+            await manager.complete_session(
+                session_id="sess-1", outcome="done", agent_id="other"
+            )
+        # The refusal must precede every write: no status flip, no pointer
+        # deletion, no distill enqueue.
+        mock_redis._pipeline.execute.assert_not_awaited()
+        mock_redis._pipeline.hset.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_abandon_refuses_another_agents_session(self, manager, mock_redis):
+        mock_redis.hgetall = AsyncMock(
+            return_value={"status": "active", "agent_id": "owner"}
+        )
+        with pytest.raises(ValueError, match="belongs to agent 'owner'"):
+            await manager.abandon_session(session_id="sess-1", agent_id="other")
+        mock_redis._pipeline.execute.assert_not_awaited()
+        mock_redis._pipeline.hset.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_complete_refuses_via_pointer_resolution_too(
+        self, manager, mock_redis
+    ):
+        """The incident's exact shape: NO session_id argument, the shared
+        pointer resolving to somebody else's session. The refusal must fire on
+        the resolved session, not only on an explicitly named one."""
+        mock_redis.get = AsyncMock(return_value="sess-of-terminal-a")
+        mock_redis.hgetall = AsyncMock(
+            return_value={"status": "active", "agent_id": "terminal-a"}
+        )
+        with pytest.raises(ValueError, match="belongs to agent 'terminal-a'"):
+            await manager.complete_session(agent_id="terminal-b")
+
+    @pytest.mark.asyncio
+    async def test_reaper_path_passing_the_owner_still_works(
+        self, manager, mock_redis
+    ):
+        """app/reaper.py abandons as the session's OWN owner — the check must
+        let that through untouched."""
+        mock_redis.hgetall = AsyncMock(
+            return_value={"status": "active", "agent_id": "ghost"}
+        )
+        result = await manager.abandon_session(session_id="sess-1", agent_id="ghost")
+        assert result == {"status": "abandoned", "session_id": "sess-1"}
+
+
+class TestFinishClearsEveryPointer:
+    """UPDATED 2026-08-12 — the cross-agent finish this class originally
+    pinned is now REFUSED.
+
+    The original tests completed/abandoned ``sess-1`` as agent ``other`` while
+    the session's meta named ``owner``, and asserted BOTH pointers were
+    cleared. That cross-agent completion was the enabling half of a live
+    cross-terminal data-loss bug (see TestCompleteAbandonOwnership above), so
+    the scenario itself is now a ValueError and the old pins are updated
+    rather than kept: the every-pointer-cleared contract is preserved for the
+    paths that remain legal — the owner itself, and a legacy session whose
+    meta names no owner (where caller and meta agent CAN still differ).
+    """
+
+    @pytest.mark.asyncio
+    async def test_complete_clears_owner_pointer(self, manager, mock_redis):
+        """Completion by the owner must release the owner's pointer."""
         mock_redis.hgetall = AsyncMock(
             return_value={"status": "active", "agent_id": "owner"}
         )
         mock_redis.get = AsyncMock(return_value="sess-1")
         await manager.complete_session(
-            session_id="sess-1", outcome="done", agent_id="other"
+            session_id="sess-1", outcome="done", agent_id="owner"
         )
         deleted = [c.args[0] for c in mock_redis._pipeline.delete.call_args_list]
         assert "nb:active:owner" in deleted
-        assert "nb:active:other" in deleted
 
     @pytest.mark.asyncio
-    async def test_abandon_clears_callers_pointer_too(self, manager, mock_redis):
-        """Same contract on the abandon path — it had the identical shape."""
+    async def test_abandon_clears_owner_pointer(self, manager, mock_redis):
+        """Same contract on the abandon path."""
         mock_redis.hgetall = AsyncMock(
             return_value={"status": "active", "agent_id": "owner"}
         )
         mock_redis.get = AsyncMock(return_value="sess-1")
-        await manager.abandon_session(session_id="sess-1", agent_id="other")
+        await manager.abandon_session(session_id="sess-1", agent_id="owner")
         deleted = [c.args[0] for c in mock_redis._pipeline.delete.call_args_list]
         assert "nb:active:owner" in deleted
+
+    @pytest.mark.asyncio
+    async def test_ownerless_session_clears_callers_pointer(
+        self, manager, mock_redis
+    ):
+        """A legacy session with no meta agent_id is completable by anyone
+        (matching resume's `if owner and ...` guard), and the CALLER's pointer
+        must still be released — the caller-pointer-too half of the original
+        contract, on the one path where caller and meta agent still differ."""
+        mock_redis.hgetall = AsyncMock(return_value={"status": "active"})
+        mock_redis.get = AsyncMock(return_value="sess-1")
+        await manager.complete_session(
+            session_id="sess-1", outcome="done", agent_id="other"
+        )
+        deleted = [c.args[0] for c in mock_redis._pipeline.delete.call_args_list]
         assert "nb:active:other" in deleted
 
     @pytest.mark.asyncio
@@ -198,6 +328,6 @@ class TestFinishClearsEveryPointer:
             return_value={"status": "active", "agent_id": "owner"}
         )
         mock_redis.get = AsyncMock(return_value="a-different-session")
-        await manager.complete_session(session_id="sess-1", agent_id="other")
+        await manager.complete_session(session_id="sess-1", agent_id="owner")
         deleted = [c.args[0] for c in mock_redis._pipeline.delete.call_args_list]
         assert deleted == []

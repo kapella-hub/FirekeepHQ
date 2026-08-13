@@ -121,26 +121,46 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 class _StashSessionAuth(httpx.Auth):
-    """Attach X-Session-Id from the session stash onto every proxied request.
+    """Attach X-Session-Id onto every proxied request.
+
+    Source order depends on whether a tap is wired, and the split is
+    load-bearing (external review 2026-08-12, blocker). TAP-WIRED (the bridge
+    client): ONLY the tap's in-process captured id, NEVER the disk stash. The
+    stash is ONE FILE PER AGENT, so two terminals sharing an agent_id share
+    it — and on the bridge service this header outranks the server's active
+    pointer on DESTRUCTIVE tools (ctx_complete_session/ctx_abandon_session),
+    so a fresh terminal falling back to the stash would deliver its sibling's
+    live session to a completion call: the exact cross-terminal clobber this
+    design exists to kill. A tap-wired shim that captured nothing sends no
+    header; the server's pointer fallback covers the single-terminal restart
+    case, which is the only case a restarted shim can safely be in. TAP-LESS
+    (cortex/relay/sentinel clients): the disk stash remains the source — their
+    header is non-destructive attribution, and after a shim restart it is the
+    only channel. The stash stays written by the tap either way, for hook
+    cores in other processes.
 
     Per-request (not a static default header) because ctx_start_session runs
     AFTER the shim spawns and each JSON-RPC message is its own POST — a static
     default would be permanently absent/stale for the whole connection. The
     server (_resolve_identity) treats an explicit session_id="unknown" as
     absent and falls through to this header, so a no-arg memory_recall gets
-    attributed. Reads the stash fresh per request; skips injection while
-    /personal bypass is on. Never raises — a stash hiccup must not break a
-    proxied call.
+    attributed. Reads fresh per request; skips injection while /personal
+    bypass is on. Never raises — a hiccup must not break a proxied call.
     """
 
-    def __init__(self, agent: str) -> None:
+    def __init__(self, agent: str, tap: "_BridgeSessionTap | None" = None) -> None:
         self._agent = agent
+        self._tap = tap
 
     def auth_flow(self, request):
         try:
             if not is_bypassed():
-                stash = state.read_session_stash(self._agent)
-                sid = (stash or {}).get("session_id")
+                if self._tap is not None:
+                    # Tap-wired: what THIS process observed, or nothing.
+                    sid = self._tap._session_id
+                else:
+                    stash = state.read_session_stash(self._agent)
+                    sid = (stash or {}).get("session_id")
                 if sid:
                     request.headers["X-Session-Id"] = sid
         except Exception:
@@ -364,7 +384,12 @@ class RecoveringMCPClient(httpx.AsyncClient):
         return response
 
 
-def build_client(endpoint: Endpoint, *, agent: str | None = None) -> httpx.AsyncClient:
+def build_client(
+    endpoint: Endpoint,
+    *,
+    agent: str | None = None,
+    tap: "_BridgeSessionTap | None" = None,
+) -> httpx.AsyncClient:
     """httpx client with resolver-supplied auth headers + CA/verify policy.
 
     endpoint.verify is False (personal http) or a ca_path string (office https).
@@ -389,7 +414,10 @@ def build_client(endpoint: Endpoint, *, agent: str | None = None) -> httpx.Async
     # Per-request X-Session-Id injection only when the caller identity is known
     # (resolved agent). Static X-Agent-Id/X-API-Key stay as header
     # defaults; the session id is dynamic (set post-spawn) so it rides httpx.Auth.
-    auth = _StashSessionAuth(agent) if agent else None
+    # `tap` (bridge shim only) gives the Auth this process's own captured
+    # session id as its first-choice source; other services pass None and the
+    # Auth falls back to the shared disk stash.
+    auth = _StashSessionAuth(agent, tap=tap) if agent else None
     return RecoveringMCPClient(
         headers=endpoint.headers,
         verify=verify,
@@ -428,35 +456,56 @@ def _extract_session_id(result) -> str | None:
 class _BridgeSessionTap:
     """Bridge-shim frame interceptor (bridge service only): inject the stashed
     briefing_id into a ctx_start_session/resume the agent sends without one,
-    and capture the returned session_id into the stash so the per-request Auth
-    can attribute subsequent memory calls. All hooks NEVER raise and ALWAYS
-    return the (possibly-mutated-in-place) frame, so the pump forwards
-    byte-identical on any error. The `_pending` request-id map is read/written
-    synchronously (no await between check and set), so it is GIL-safe across
-    the two pump directions.
+    and capture the returned session_id so the per-request Auth can attribute
+    subsequent memory calls. The captured id lives in TWO places with distinct
+    roles: `self._session_id` (in-process, authoritative — the session THIS
+    shim directly observed starting) and the agent-keyed disk stash (shared
+    across every process of this agent_id: hook cores in other processes read
+    it, and it is the restart fallback for a shim respawned mid-session). Two
+    terminals sharing one agent_id share the FILE but never the in-memory
+    value — which is why a no-arg ctx_complete_session/ctx_abandon_session
+    gets `self._session_id` injected: without it, Bridge resolves the shared
+    nb:active:{agent_id} pointer and can complete the OTHER terminal's
+    in-flight session. When this process never captured an id, nothing is
+    injected (never the shared stash — that is the other terminal's id waiting
+    to be clobbered with); the server-side pointer fallback is the documented
+    residual. All hooks NEVER raise and ALWAYS return the
+    (possibly-mutated-in-place) frame, so the pump forwards byte-identical on
+    any error. The `_pending` request-id map is read/written synchronously (no
+    await between check and set), so it is GIL-safe across the two pump
+    directions.
 
     `ctx_get_shadow` is deliberately in no set here, `_INJECT_TOOLS` above all:
     the client cannot observe what is in the model's context, so `since` — an
     assertion that the earlier shadow is still resident there — may only ever
     be supplied by the agent itself. Keeping it out of every set makes it
     structurally impossible for `ctx_get_shadow` to be injected into, rather
-    than merely a convention someone could later "optimize" away.
+    than merely a convention someone could later "optimize" away. That
+    carve-out does NOT extend to session_id on the end tools: the session id
+    is something this client directly observed (it captured it from the start
+    response), not an assertion about the model's context.
     """
 
     # briefing_id is injected ONLY into ctx_start_session — bridge's
     # ctx_resume_session(session_id, agent_id) has no briefing_id param and
     # FastMCP rejects unexpected kwargs, so injecting it would break every
-    # resume. Both start AND resume are tracked for session_id capture.
-    _INJECT_TOOLS = frozenset({"ctx_start_session"})
-    _CAPTURE_TOOLS = frozenset({"ctx_start_session", "ctx_resume_session"})
+    # resume. The end tools get the captured in-process session_id injected
+    # when the agent omitted it. Both start AND resume are tracked for
+    # session_id capture.
     _END_TOOLS = frozenset({"ctx_complete_session", "ctx_abandon_session"})
+    _INJECT_TOOLS = frozenset({"ctx_start_session"}) | _END_TOOLS
+    _CAPTURE_TOOLS = frozenset({"ctx_start_session", "ctx_resume_session"})
 
     def __init__(self, agent: str) -> None:
         self._agent = agent
         self._pending: dict = {}
+        # Per-process authoritative session identity: the id THIS shim saw a
+        # start/resume return. Never read from the shared disk stash.
+        self._session_id: str | None = None
 
     def on_request(self, item):
-        """runtime->upstream: inject briefing_id (start only), remember id->tool."""
+        """runtime->upstream: inject briefing_id (start) / captured session_id
+        (end tools, when omitted), remember id->tool."""
         try:
             root = item.message.root
             if getattr(root, "method", None) != "tools/call":
@@ -473,18 +522,25 @@ class _BridgeSessionTap:
                 self._pending[rid] = name
             if name in self._INJECT_TOOLS:
                 args = params.get("arguments")
-                if isinstance(args, dict) and not args.get("briefing_id"):
-                    stash = state.read_session_stash(self._agent) or {}
-                    bid = stash.get("briefing_id")
-                    if bid:
-                        args["briefing_id"] = bid
+                if isinstance(args, dict):
+                    if name in self._END_TOOLS:
+                        # In-process id ONLY — the shared disk stash may hold
+                        # another terminal's session. No captured id -> inject
+                        # nothing (server pointer fallback is the residual).
+                        if self._session_id and not args.get("session_id"):
+                            args["session_id"] = self._session_id
+                    elif not args.get("briefing_id"):
+                        stash = state.read_session_stash(self._agent) or {}
+                        bid = stash.get("briefing_id")
+                        if bid:
+                            args["briefing_id"] = bid
         except Exception:
             pass
         return item
 
     def on_response(self, item):
-        """upstream->runtime: capture session_id (start/resume), or clear the
-        stash (end)."""
+        """upstream->runtime: capture session_id (start/resume) into the
+        in-process slot AND the shared stash, or clear both (end)."""
         try:
             root = item.message.root
             rid = getattr(root, "id", None)
@@ -492,10 +548,14 @@ class _BridgeSessionTap:
                 return item
             name = self._pending.pop(rid)
             if name in self._END_TOOLS:
+                self._session_id = None
                 state.clear_session_stash(self._agent)
                 return item
             sid = _extract_session_id(getattr(root, "result", None))
             if sid:
+                self._session_id = sid
+                # Keep writing the agent-keyed disk stash: hook cores in other
+                # processes still read it, and it is the restart fallback.
                 state.write_session_stash(self._agent, session_id=sid)
         except Exception:
             pass
@@ -626,16 +686,20 @@ async def serve(service, endpoint, http_client=None, stdio_streams=None,
     agent (when given) wires per-request X-Session-Id injection via
     build_client's httpx.Auth.
     """
-    client = (http_client if http_client is not None
-              else build_client(endpoint, agent=agent))
-    owns_client = http_client is None
-    # Bridge-only frame tap: inject briefing_id into ctx_start_session and
-    # capture the returned session_id into the stash (the source of the
-    # X-Session-Id header for every other shim). Other services get no tap.
+    # Bridge-only frame tap: inject briefing_id into ctx_start_session,
+    # capture the returned session_id (in-process + shared stash), and inject
+    # the captured id into a no-arg ctx_complete/abandon. Built BEFORE the
+    # client so the tap's in-memory session id is the Auth's first-choice
+    # X-Session-Id source (disk stash stays the restart/other-process
+    # fallback). Other services get no tap.
+    tap = None
     req_transform = resp_transform = None
     if service == "bridge" and agent:
         tap = _BridgeSessionTap(agent)
         req_transform, resp_transform = tap.on_request, tap.on_response
+    client = (http_client if http_client is not None
+              else build_client(endpoint, agent=agent, tap=tap))
+    owns_client = http_client is None
     try:
         async with _open_stdio(stdio_streams) as (stdio_read, stdio_write):
             async with streamable_http_client(

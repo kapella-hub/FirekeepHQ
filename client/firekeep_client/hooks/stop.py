@@ -22,15 +22,27 @@ _HOOK = "stop"
 # enqueue block for why. Matches the session-stash TTL default (12h).
 _FALLBACK_DEDUPE_TTL_SECONDS = 12 * 3600
 
+# Item 1's condition is an OBSERVABLE TEST the model can evaluate ("did I
+# receive a session_id this conversation?"), not an exhortation. The earlier
+# wording ("call ctx_complete_session") drove a model in a fresh terminal to
+# complete a session it never started: with session_id omitted, the shared
+# active pointer resolved to the SIBLING terminal's in-flight session and
+# completed it (live incident 2026-08-11). Completing only what you started or
+# resumed makes the dangerous call not happen at the source; the shim and
+# server narrow the remaining paths, but the instruction is the first line.
 _MSG = (
-    "Before ending: 1. If work is DONE call ctx_complete_session with an outcome "
-    "summary. If this session had a hard-won fix, a non-obvious root cause, or a "
-    "reusable technique, author it as a skill NOW with skill_create(trigger, "
-    "symptoms, steps, gotchas, domain) — you hold the context and a capable model; "
-    "the server does not synthesize skills for you. 2. If PAUSED leave the session "
-    "active — it persists. 3. Store non-obvious learnings with memory_learn. 4. "
-    "Update tasks (relay_task_update) and release leases (relay_release). Do NOT "
-    "skip session completion — distilled learnings improve future recall."
+    "Before ending: 1. If work is DONE and YOU started or resumed a session in "
+    "THIS conversation (you received its session_id from ctx_start_session / "
+    "ctx_resume_session), call ctx_complete_session for that session with an "
+    "outcome summary. If you started none, complete nothing — a parallel "
+    "terminal may own the active session. If this session had a hard-won fix, a "
+    "non-obvious root cause, or a reusable technique, author it as a skill NOW "
+    "with skill_create(trigger, symptoms, steps, gotchas, domain) — you hold the "
+    "context and a capable model; the server does not synthesize skills for you. "
+    "2. If PAUSED leave the session active — it persists. 3. Store non-obvious "
+    "learnings with memory_learn. 4. Update tasks (relay_task_update) and "
+    "release leases (relay_release). Do NOT skip completing a session you own — "
+    "distilled learnings improve future recall."
 )
 
 

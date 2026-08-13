@@ -271,9 +271,19 @@ class SessionManager:
         content: str,
         key: str | None = None,
         agent_id: str | None = None,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
+        """Write one component into a session.
+
+        ``session_id`` names the target session directly — the MCP layer
+        threads the connection's X-Session-Id header through it, so a terminal
+        writes into ITS OWN session even when a sibling terminal sharing the
+        same agent_id has since re-pointed the shared nb:active:{agent_id}
+        pointer. When it is None (header-less clients), resolution falls back
+        to the active pointer exactly as before.
+        """
         agent_id = agent_id or self._s.DEFAULT_AGENT_ID
-        sid = await self._r.get(self._active_key(agent_id))
+        sid = session_id or await self._r.get(self._active_key(agent_id))
         if not sid:
             raise ValueError("No active session")
 
@@ -291,6 +301,25 @@ class SessionManager:
             raise ValueError(
                 f"Cannot update {status} session {sid} — its memory was already "
                 f"distilled. Start a new session with ctx_start_session."
+            )
+        # A NAMED session that does not EXIST must refuse, not materialize.
+        # Scoped to the explicitly-named path (param or threaded header): a
+        # client-supplied name is untrusted input that can outlive a
+        # reaped-then-expired session (the client stash lives 12h; the shim's
+        # in-memory id has no TTL), and without this check the write below
+        # creates a ghost meta hash holding only updated_at — no status, no
+        # owner, no TTL — and reports ok for a write that was lost the moment
+        # it landed (external review 2026-08-12). The pointer path is
+        # server-owned state: its dangling case predates this guard and the
+        # pointer is deleted on completion, so it is not newly reachable.
+        if (
+            session_id is not None
+            and status is None
+            and not await self._r.exists(self._session_key(sid))
+        ):
+            raise ValueError(
+                f"Unknown session {sid} — it may have expired. Start a new "
+                f"session with ctx_start_session."
             )
 
         now = datetime.now(timezone.utc).isoformat()
@@ -431,6 +460,23 @@ class SessionManager:
         if not meta:
             raise ValueError(f"Session {session_id} not found")
 
+        # OWNERSHIP IS CHECKED — mirroring resume_session's refusal below.
+        # Without it, this method completed ANY session it could resolve: two
+        # terminals sharing one agent_id share one nb:active pointer, so a
+        # no-arg ctx_complete_session from terminal B resolved to and
+        # completed terminal A's in-flight session (live cross-terminal
+        # data-loss bug, 2026-08-11). A session whose meta names no owner
+        # (legacy records) is completable by anyone, as with resume. The
+        # reaper stays unaffected — it passes the session's own owner as
+        # agent_id (app/reaper.py).
+        owner = meta.get("agent_id") or ""
+        if owner and owner != agent_id:
+            raise ValueError(
+                f"Session {session_id} belongs to agent '{owner}' — refusing "
+                f"completion by '{agent_id}'. Complete it as its owner, or "
+                f"resume it first."
+            )
+
         now = datetime.now(timezone.utc).isoformat()
 
         # Read current active OUTSIDE the pipeline (fix #2)
@@ -493,6 +539,17 @@ class SessionManager:
         if not meta:
             raise ValueError(f"Session {session_id} not found")
 
+        # Same ownership refusal as complete_session above — abandonment is
+        # equally terminal (and skips distillation entirely, so a cross-agent
+        # abandon destroys MORE than a cross-agent complete). The reaper
+        # passes the session's own owner and is unaffected (app/reaper.py).
+        owner = meta.get("agent_id") or ""
+        if owner and owner != agent_id:
+            raise ValueError(
+                f"Session {session_id} belongs to agent '{owner}' — refusing "
+                f"abandonment by '{agent_id}'."
+            )
+
         now = datetime.now(timezone.utc).isoformat()
         ttl_seconds = self._s.SESSION_TTL_DAYS * 86400
 
@@ -544,9 +601,15 @@ class SessionManager:
         stolen even though the tool documents itself as resuming a PAUSED one,
         and the memory distilled at completion was attributed to the thief.
 
-        The ownership check itself was not a new idea — ``complete_session``
-        below already refuses a session belonging to someone else. This brings
-        resume into line with it.
+        ``complete_session`` and ``abandon_session`` above enforce the same
+        refusal. (This paragraph once claimed complete_session ALREADY did —
+        it did not, and that gap was the enabling half of a live
+        cross-terminal clobber on 2026-08-11: two terminals sharing one
+        agent_id share one nb:active pointer, and a no-arg
+        ctx_complete_session from terminal B resolved via the shared pointer
+        and completed terminal A's in-flight session. The checks are real
+        now, added 2026-08-12 together with X-Session-Id header precedence in
+        app/mcp_server.py.)
 
         ``takeover=True`` is the explicit hand-off: it still clears the prior
         owner's pointer (inside RESUME_SESSION_LUA, atomically), so a takeover

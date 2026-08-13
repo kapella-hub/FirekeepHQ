@@ -104,6 +104,24 @@ def _default_agent_id(agent_id: str | None = None) -> str:
     return headers.get("x-agent-id") or agent_id or "default"
 
 
+def _header_session_id() -> str | None:
+    """Read the MCP connection's X-Session-Id header. None when absent/empty.
+
+    Mirrors cortex/app/mcp_server.py's _header_identity. The header is a
+    per-connection transport property, so it names THIS terminal's session even
+    when two terminals share one agent_id — the case the shared
+    nb:active:{agent_id} pointer cannot express, and the enabling half of the
+    2026-08-11 cross-terminal clobber (a no-arg ctx_complete_session from
+    terminal B resolved via the shared pointer and completed terminal A's
+    in-flight session). Header-name matching is case-insensitive.
+    get_http_headers() never raises and returns {} outside a request context,
+    so this is safe in unit tests and stdio transports.
+    """
+    headers = get_http_headers() or {}
+    lowered = {str(name).lower(): value for name, value in headers.items()}
+    return lowered.get("x-session-id") or None
+
+
 # Living Instructions round 2 — the measurement contract
 # (docs/superpowers/specs/2026-08-11-living-instructions-design.md). Five
 # attribution headers, attached by the gateway and hook cores from client
@@ -374,14 +392,24 @@ async def ctx_update(
         agent_id: Your agent identifier.
     """
     agent_id = _default_agent_id(agent_id)
+    # The tool's public signature deliberately stays session_id-free (no
+    # adapter/instruction churn): the connection's X-Session-Id header alone
+    # scopes the write to the caller's own session. SessionManager.update
+    # falls back to the shared active pointer when it is None — every
+    # pre-header client's behavior, unchanged.
+    header_session_id = _header_session_id()
     mgr = await _get_manager()
     try:
-        result = await mgr.update(category, content, key=key, agent_id=agent_id)
+        result = await mgr.update(
+            category, content, key=key, agent_id=agent_id,
+            session_id=header_session_id,
+        )
     except ValueError as e:
         return {"error": str(e)}
 
-    # Replay: trace context update
-    session_id = await mgr.get_active_session_id(agent_id)
+    # Replay: trace context update — resolved the same way the write itself
+    # was (header first), so the event lands on the session actually written.
+    session_id = header_session_id or await mgr.get_active_session_id(agent_id)
     if session_id:
         # Context snapshots only at decision points (plan/decision categories)
         ctx_ref = None
@@ -406,7 +434,9 @@ async def ctx_update(
         and category in settings.PROACTIVE_RECALL_CATEGORIES.split(",")
     ):
         try:
-            session_id = await mgr.get_active_session_id(agent_id)
+            # session_id was already resolved above (header first, pointer as
+            # fallback) — reuse it so proactive results attach to the session
+            # the write landed in, not whatever the shared pointer names now.
             if session_id:
                 memories = await fetch_relevant_memories(
                     content,
@@ -441,7 +471,8 @@ async def ctx_get_shadow(session_id: str | None = None, agent_id: str = "default
     knowledge, progress, and scratchpad.
 
     Args:
-        session_id: Specific session to retrieve (defaults to your active session).
+        session_id: Specific session to retrieve (defaults to the connection's
+            X-Session-Id header, then your active session).
         agent_id: Your agent identifier.
         since: OPTIONAL. The `shadow_cursor` from an earlier response in THIS
             conversation. Pass it ONLY if that earlier shadow is still visible in
@@ -451,8 +482,13 @@ async def ctx_get_shadow(session_id: str | None = None, agent_id: str = "default
     """
     agent_id = _default_agent_id(agent_id)
     mgr = await _get_manager()
+    # Precedence: explicit param > connection header > active pointer (cortex's
+    # documented order). The header step keeps two terminals sharing one
+    # agent_id from restoring each other's session via the shared pointer.
     # NOTE: get_active_session_ID — verified name (session.py:332). Guard shape
     # copied from the current implementation, which uses `is None`, not falsiness.
+    if session_id is None:
+        session_id = _header_session_id()
     if session_id is None:
         session_id = await mgr.get_active_session_id(agent_id)
     if not session_id:
@@ -547,12 +583,21 @@ async def ctx_complete_session(
     future sessions can benefit from what you learned.
 
     Args:
-        session_id: Session to complete (defaults to active session).
+        session_id: Session to complete (defaults to the connection's
+            X-Session-Id header, then your active session).
         outcome: Summary of what was accomplished.
         agent_id: Your agent identifier.
         skill_worthy: Set True if this session involved a hard-won fix worth saving as a skill.
     """
     agent_id = _default_agent_id(agent_id)
+    # Precedence: explicit param > connection header > active pointer. The
+    # active pointer is shared by every terminal running under one agent_id,
+    # so a no-arg completion (nudged by the stop hook's reminder) used to
+    # resolve to — and finish — a SIBLING terminal's in-flight session. The
+    # header names the caller's own session; the pointer remains only the
+    # last-resort fallback for header-less clients.
+    if session_id is None:
+        session_id = _header_session_id()
     mgr = await _get_manager()
     try:
         result = await mgr.complete_session(session_id=session_id, outcome=outcome, agent_id=agent_id)
@@ -597,10 +642,15 @@ async def ctx_abandon_session(session_id: str | None = None, agent_id: str = "de
     Use this for sessions started by mistake or no longer relevant.
 
     Args:
-        session_id: Session to abandon (defaults to active session).
+        session_id: Session to abandon (defaults to the connection's
+            X-Session-Id header, then your active session).
         agent_id: Your agent identifier.
     """
     agent_id = _default_agent_id(agent_id)
+    # Same precedence as ctx_complete_session: explicit param > connection
+    # header > shared active pointer (the clobber-prone fallback).
+    if session_id is None:
+        session_id = _header_session_id()
     mgr = await _get_manager()
     try:
         result = await mgr.abandon_session(session_id=session_id, agent_id=agent_id)

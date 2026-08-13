@@ -1,7 +1,11 @@
-"""Per-request X-Session-Id injection: the shim attaches the current Bridge
-session id (from state's session stash, written by the bridge tap) onto every
-proxied request, so agent memory calls are attributed without the agent ever
-passing session_id — killing the untagged-calls discipline problem.
+"""Per-request X-Session-Id injection and per-process session identity: the
+shim attaches the current Bridge session id onto every proxied request — the
+bridge tap's in-process captured id first, the agent-keyed disk stash only as
+a restart/other-process fallback — so agent memory calls are attributed
+without the agent ever passing session_id. The tap also injects its captured
+id into no-arg ctx_complete_session/ctx_abandon_session, so two terminals
+sharing one agent_id can no longer complete each other's sessions via the
+server's shared active-session pointer.
 
 The header is injected per-REQUEST (httpx.Auth), not as a static default,
 because ctx_start_session happens AFTER the shim spawns and each JSON-RPC
@@ -31,11 +35,71 @@ def _req():
 
 
 def test_injects_x_session_id_when_stash_fresh(tmp_path, monkeypatch):
+    """Disk stash as the explicit FALLBACK, not the authority. Reframed: the
+    stash used to be the only session-id source, but it is one file per agent
+    — two terminals sharing an agent_id share it, so it can hold the OTHER
+    terminal's session. The tap's in-process id is now authoritative; the disk
+    read survives only for a shim with no tap wired (non-bridge services, or
+    a shim restarted mid-session whose tap never observed a start)."""
     monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
     monkeypatch.setattr(shim, "is_bypassed", lambda: False)
     state.write_session_stash("tester", session_id="sess-42")
 
-    auth = shim._StashSessionAuth("tester")
+    auth = shim._StashSessionAuth("tester")  # no tap -> disk fallback path
+    out = _run_auth_flow(auth, _req())
+
+    assert out.headers["X-Session-Id"] == "sess-42"
+
+
+def test_auth_prefers_tap_in_memory_over_disk_stash(tmp_path, monkeypatch):
+    """In-process authority: when the tap captured a session id, the auth must
+    use it even though the shared disk stash holds a DIFFERENT id (i.e. another
+    terminal's). Preferring the disk here is the deterministic-clobber trap:
+    terminal B would inject terminal A's session id on every request."""
+    monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(shim, "is_bypassed", lambda: False)
+    state.write_session_stash("tester", session_id="sess-OTHER-TERMINAL")
+
+    tap = shim._BridgeSessionTap("tester")
+    tap.on_request(_tools_call(1, "ctx_start_session", {"goal": "g"}))
+    tap.on_response(_tool_result(1, {"session_id": "sess-mine"}))
+
+    auth = shim._StashSessionAuth("tester", tap=tap)
+    out = _run_auth_flow(auth, _req())
+
+    assert out.headers["X-Session-Id"] == "sess-mine"
+
+
+def test_auth_with_tap_never_reads_disk_stash(tmp_path, monkeypatch):
+    """A tap-wired auth whose tap captured nothing sends NO header — it must
+    not fall back to the disk stash. A tap-present-but-empty shim is
+    indistinguishable from fresh-terminal-B-with-no-session, and the stash is
+    one file per agent: in the two-terminal case it holds the SIBLING's live
+    session id, which a fallback would deliver to destructive bridge tools at
+    above-pointer precedence — the exact 2026-08-11 clobber, made
+    deterministic (external review 2026-08-12, blocker). The restart cost is
+    accepted: a restarted single-terminal shim degrades to the server's
+    pointer fallback."""
+    monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(shim, "is_bypassed", lambda: False)
+    state.write_session_stash("tester", session_id="sess-OTHER-TERMINAL")
+
+    tap = shim._BridgeSessionTap("tester")  # never saw a start/resume
+    auth = shim._StashSessionAuth("tester", tap=tap)
+    out = _run_auth_flow(auth, _req())
+
+    assert "X-Session-Id" not in out.headers
+
+
+def test_tapless_auth_still_reads_disk_stash(tmp_path, monkeypatch):
+    """Tap-less clients (cortex/relay/sentinel) keep the stash fallback:
+    their header is non-destructive attribution, and after a shim restart the
+    stash is the only channel left."""
+    monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(shim, "is_bypassed", lambda: False)
+    state.write_session_stash("tester", session_id="sess-42")
+
+    auth = shim._StashSessionAuth("tester")  # no tap: non-bridge service
     out = _run_auth_flow(auth, _req())
 
     assert out.headers["X-Session-Id"] == "sess-42"
@@ -164,13 +228,20 @@ def test_tap_ignores_non_start_tool_calls(tmp_path, monkeypatch):
 
 
 def test_tap_captures_session_id_from_start_response(tmp_path, monkeypatch):
+    """Reframed for in-process authority: capture lands in the tap's OWN
+    `_session_id` (the authoritative per-process identity — never shared with
+    a second terminal's shim) AND still in the agent-keyed disk stash, which
+    hook cores in other processes read and which serves as the restart
+    fallback. The stash write is a deliberate side channel, not the source of
+    truth it used to be."""
     monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
     tap = shim._BridgeSessionTap("tester")
 
     tap.on_request(_tools_call(7, "ctx_start_session", {"goal": "g"}))
     tap.on_response(_tool_result(7, {"session_id": "sess-77", "created_at": "t"}))
 
-    assert state.read_session_stash("tester")["session_id"] == "sess-77"
+    assert tap._session_id == "sess-77"  # in-process authority
+    assert state.read_session_stash("tester")["session_id"] == "sess-77"  # shared fallback
 
 
 def test_tap_response_without_matching_request_is_ignored(tmp_path, monkeypatch):
@@ -197,14 +268,132 @@ def test_tap_malformed_response_forwards_unchanged_and_stashes_nothing(tmp_path,
 
 
 def test_tap_complete_clears_stash(tmp_path, monkeypatch):
+    """Reframed for in-process authority: a completed end tool clears BOTH the
+    tap's in-memory `_session_id` and the shared disk stash. The in-memory
+    clear matters independently — a stale in-process id would be re-injected
+    into the next end call and re-attributed onto every request; the stash
+    clear keeps the shared restart-fallback file from resurrecting a finished
+    session in other processes."""
     monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
-    state.write_session_stash("tester", session_id="sess-77")
     tap = shim._BridgeSessionTap("tester")
+    tap.on_request(_tools_call(8, "ctx_start_session", {"goal": "g"}))
+    tap.on_response(_tool_result(8, {"session_id": "sess-77"}))
+    assert tap._session_id == "sess-77"  # precondition: both stores populated
 
     tap.on_request(_tools_call(9, "ctx_complete_session", {"outcome": "done"}))
     tap.on_response(_tool_result(9, {"status": "completed"}))
 
-    assert state.read_session_stash("tester") is None
+    assert tap._session_id is None  # in-memory identity cleared
+    assert state.read_session_stash("tester") is None  # shared fallback cleared
+
+
+# --- per-process session identity: the two-terminals-one-agent_id clobber ---
+#
+# Live incident: two terminals on one machine share agent_id, hence ONE disk
+# stash file and ONE server-side nb:active:{agent_id} pointer. Terminal B's
+# no-arg ctx_complete_session resolved the shared pointer and completed
+# terminal A's in-flight session. The fix is per-PROCESS identity: each shim's
+# tap holds the session id it directly observed, injects it into no-arg end
+# calls, and never trusts the shared file for that purpose.
+
+
+def test_two_taps_sharing_agent_and_cache_keep_distinct_ids(tmp_path, monkeypatch):
+    """Two _BridgeSessionTap instances = two terminals' shims, one agent id,
+    one FIREKEEP_CACHE_DIR. Each must keep ITS OWN in-memory session id even
+    though the last writer owns the shared disk stash."""
+    monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
+    tap_a = shim._BridgeSessionTap("tester")
+    tap_b = shim._BridgeSessionTap("tester")
+
+    tap_a.on_request(_tools_call(1, "ctx_start_session", {"goal": "a"}))
+    tap_a.on_response(_tool_result(1, {"session_id": "sess-A"}))
+    tap_b.on_request(_tools_call(1, "ctx_start_session", {"goal": "b"}))
+    tap_b.on_response(_tool_result(1, {"session_id": "sess-B"}))
+
+    assert tap_a._session_id == "sess-A"
+    assert tap_b._session_id == "sess-B"
+    # The shared file necessarily holds only the last writer — that is exactly
+    # why it cannot be the authority for either process.
+    assert state.read_session_stash("tester")["session_id"] == "sess-B"
+
+
+def test_tap_b_complete_leaves_tap_a_in_process_id_intact(tmp_path, monkeypatch):
+    """Terminal B completing ITS session clears the shared stash (documented,
+    unavoidable with an agent-keyed file) but must not disturb terminal A's
+    in-process identity — A's later no-arg complete still targets sess-A."""
+    monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
+    tap_a = shim._BridgeSessionTap("tester")
+    tap_b = shim._BridgeSessionTap("tester")
+    tap_a.on_request(_tools_call(1, "ctx_start_session", {"goal": "a"}))
+    tap_a.on_response(_tool_result(1, {"session_id": "sess-A"}))
+    tap_b.on_request(_tools_call(1, "ctx_start_session", {"goal": "b"}))
+    tap_b.on_response(_tool_result(1, {"session_id": "sess-B"}))
+
+    tap_b.on_request(_tools_call(2, "ctx_complete_session", {"outcome": "done"}))
+    tap_b.on_response(_tool_result(2, {"status": "completed"}))
+
+    assert tap_b._session_id is None
+    assert tap_a._session_id == "sess-A"  # A's identity survives B's complete
+    # ...and A's no-arg complete is aimed at A's own session, not the pointer.
+    frame = _tools_call(3, "ctx_complete_session", {"outcome": "a-done"})
+    out = tap_a.on_request(frame)
+    assert out.message.root.params["arguments"]["session_id"] == "sess-A"
+
+
+def test_tap_injects_captured_session_id_into_no_arg_complete(tmp_path, monkeypatch):
+    """A ctx_complete_session the agent sends WITHOUT session_id gets this
+    process's captured id injected, so Bridge never has to resolve the shared
+    active-session pointer (which may point at another terminal's session)."""
+    monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
+    tap = shim._BridgeSessionTap("tester")
+    tap.on_request(_tools_call(1, "ctx_start_session", {"goal": "g"}))
+    tap.on_response(_tool_result(1, {"session_id": "sess-9"}))
+
+    out = tap.on_request(_tools_call(2, "ctx_complete_session", {"outcome": "done"}))
+
+    assert out.message.root.params["arguments"]["session_id"] == "sess-9"
+
+
+def test_tap_injects_captured_session_id_into_no_arg_abandon(tmp_path, monkeypatch):
+    """ctx_abandon_session is the same destructive no-arg pointer resolution
+    as complete; both end tools get the captured id."""
+    monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
+    tap = shim._BridgeSessionTap("tester")
+    tap.on_request(_tools_call(1, "ctx_resume_session", {"session_id": "sess-r"}))
+    tap.on_response(_tool_result(1, {"session_id": "sess-r"}))
+
+    out = tap.on_request(_tools_call(2, "ctx_abandon_session", {}))
+
+    assert out.message.root.params["arguments"]["session_id"] == "sess-r"
+
+
+def test_tap_no_captured_id_injects_nothing_into_complete(tmp_path, monkeypatch):
+    """No in-process capture -> no injection, even when the shared disk stash
+    holds an id (it may be the OTHER terminal's — injecting it would make the
+    clobber deterministic). The server-side pointer fallback is the documented
+    residual for this case."""
+    monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
+    state.write_session_stash("tester", session_id="sess-OTHER-TERMINAL")
+    tap = shim._BridgeSessionTap("tester")  # restarted shim: never saw a start
+
+    out = tap.on_request(_tools_call(2, "ctx_complete_session", {"outcome": "done"}))
+
+    assert "session_id" not in out.message.root.params["arguments"]
+
+
+def test_tap_does_not_override_explicit_session_id_on_complete(tmp_path, monkeypatch):
+    """An agent that names the session explicitly is exercising ownership the
+    tap must not second-guess (e.g. completing a resumed older session)."""
+    monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
+    tap = shim._BridgeSessionTap("tester")
+    tap.on_request(_tools_call(1, "ctx_start_session", {"goal": "g"}))
+    tap.on_response(_tool_result(1, {"session_id": "sess-9"}))
+
+    out = tap.on_request(_tools_call(
+        2, "ctx_complete_session", {"outcome": "done", "session_id": "sess-explicit"}
+    ))
+
+    assert out.message.root.params["arguments"]["session_id"] == "sess-explicit"
 
 
 def test_tap_never_raises_on_garbage_frame(tmp_path, monkeypatch):

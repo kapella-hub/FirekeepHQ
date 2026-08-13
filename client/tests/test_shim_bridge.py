@@ -136,7 +136,9 @@ def test_serve_builds_and_closes_its_own_client_when_none_injected(monkeypatch):
         async def aclose(self):
             closed.append(True)
 
-    def _fake_build_client(ep, *, agent=None):
+    def _fake_build_client(ep, *, agent=None, tap=None):
+        # `tap` mirrors build_client's real signature: serve() passes it
+        # unconditionally (None for non-bridge services like this cortex run).
         built.append(ep)
         return _FakeClient()
 

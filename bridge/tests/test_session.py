@@ -106,6 +106,19 @@ class TestUpdateComponent:
             await manager.update("plan", "test")
 
     @pytest.mark.asyncio
+    async def test_update_refuses_nonexistent_named_session(self, manager, mock_redis):
+        """A named session that no longer EXISTS must refuse, not materialize.
+        A stale X-Session-Id can outlive a reaped-then-expired session (the
+        client stash lives 12h; the shim's in-memory id has no TTL), and
+        before this guard the write created a ghost meta hash holding only
+        updated_at — no status, no owner, no TTL — and reported ok for a
+        write that was lost on arrival (external review 2026-08-12)."""
+        mock_redis.hget = AsyncMock(return_value=None)
+        mock_redis.exists = AsyncMock(return_value=0)
+        with pytest.raises(ValueError, match="Unknown session"):
+            await manager.update("plan", "test", session_id="sess-expired")
+
+    @pytest.mark.asyncio
     async def test_update_file_requires_key(self, manager, mock_redis):
         mock_redis.get = AsyncMock(return_value="sess-123")
         with pytest.raises(ValueError, match="key"):
@@ -273,13 +286,20 @@ class TestReplayEmission:
 
     @pytest.mark.asyncio
     async def test_complete_session_emits_replay_event(self, manager, mock_redis):
+        """UPDATED 2026-08-12: the call now passes agent_id="test-agent". It
+        used to omit it (caller defaulted to "default" while meta named
+        "test-agent") — a cross-agent completion that complete_session now
+        REFUSES, since exactly that gap let one terminal complete another's
+        in-flight session via the shared active pointer."""
         mock_redis.get = AsyncMock(return_value="sess-123")
         mock_redis.hgetall = AsyncMock(return_value={
             "goal": "test", "status": "active", "agent_id": "test-agent",
         })
 
         with patch("app.session._replay_emit", new_callable=AsyncMock) as mock_emit:
-            await manager.complete_session(session_id="sess-123", outcome="done")
+            await manager.complete_session(
+                session_id="sess-123", outcome="done", agent_id="test-agent"
+            )
 
         mock_emit.assert_awaited_once()
         call = mock_emit.await_args
@@ -290,13 +310,18 @@ class TestReplayEmission:
 
     @pytest.mark.asyncio
     async def test_abandon_session_emits_replay_event(self, manager, mock_redis):
+        """UPDATED 2026-08-12: passes agent_id="test-agent" for the same
+        reason as the completion test above — a caller/owner mismatch is now
+        an ownership refusal, not a silent cross-agent abandon."""
         mock_redis.get = AsyncMock(return_value="sess-456")
         mock_redis.hgetall = AsyncMock(return_value={
             "goal": "test", "status": "active", "agent_id": "test-agent",
         })
 
         with patch("app.session._replay_emit", new_callable=AsyncMock) as mock_emit:
-            await manager.abandon_session(session_id="sess-456")
+            await manager.abandon_session(
+                session_id="sess-456", agent_id="test-agent"
+            )
 
         mock_emit.assert_awaited_once()
         call = mock_emit.await_args

@@ -252,7 +252,9 @@ class TestCompleteSessionQueues:
         )
         mgr = SessionManager(mock_redis, Settings())
 
-        result = await mgr.complete_session(session_id="sess-1")
+        # agent_id="alice" matches the stubbed meta owner — required since the
+        # 2026-08-12 ownership refusal (a cross-agent complete now raises).
+        result = await mgr.complete_session(session_id="sess-1", agent_id="alice")
 
         assert result["status"] == "completed"
 
