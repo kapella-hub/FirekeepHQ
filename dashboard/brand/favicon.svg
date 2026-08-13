@@ -1,22 +1,30 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="Firekeep">
   <title>Firekeep</title>
   <!--
-    OPTICALLY SIZED variant, with a BAKED colour. Both of those are deliberate.
+    OPTICALLY SIZED variant of the Vault mark, with a BAKED colour. Both
+    deliberate, both inherited from the previous favicon's rules:
 
-    Optical sizing: this is not a scaled copy of mark.svg, it is a different
-    drawing of the same mark. At 16px the keep (rounded square) contributes
-    nothing but bulk — it eats the margin the flame needs, and the ember cutout
-    closes to sub-pixel and fills in, turning the mark back into the solid blob
-    the design exists to avoid. So the container is dropped, the flame fills the
-    box, and the flame/ember gap is widened relative to mark.svg.
+    Optical sizing: this is not a scaled copy of mark-ember.svg, it is a
+    different drawing of the same mark. At 16px the dark coin contributes
+    nothing but bulk — it eats the margin the padlock needs and its rim
+    closes to sub-pixel. So the coin is dropped, the padlock fills the box,
+    and the flame cut is proportionally wider than mark.svg's so it cannot
+    fill in at tab size.
 
-    Baked colour: a favicon is ALWAYS loaded standalone via <link rel="icon">.
-    There is no parent element, so there is no inherited `color`, so
-    `currentColor` resolves to BLACK — an invisible mark on a dark tab strip.
-    Verified, not assumed. This file therefore hard-codes the ember accent.
-    Use mark.svg (currentColor) for anything inlined into the DOM instead.
+    Baked colour: a favicon is ALWAYS loaded standalone via <link rel="icon">;
+    there is no parent element, no inherited `color`, and currentColor
+    resolves to BLACK. Verified on the previous mark, not assumed.
+
+    The flame cut is transparent, so the tab strip's own colour becomes the
+    fire — dark tabs get a dark flame, light tabs a light one, exactly as the
+    previous favicon's ember cutout behaved.
   -->
-  <path fill="#FF7A2F" fill-rule="evenodd" d="
-    M19.25 2.02C20.03 8.39 25.62 11.25 25.62 18.53C25.62 25.16 21.33 29.97 15.87 29.97C10.28 29.97 6.38 25.94 6.38 20.35C6.38 15.54 9.89 12.68 11.45 8.65C12.10 12.55 13.79 14.24 15.35 15.02C14.44 9.95 16.00 5.79 19.25 2.02Z
-    M17.30 15.41C17.82 18.66 20.55 20.22 20.55 23.08C20.55 25.68 18.60 27.50 16.00 27.50C13.40 27.50 11.45 25.81 11.45 23.47C11.45 21.52 12.75 20.35 13.79 18.53C14.05 20.22 14.70 21.00 15.48 21.39C15.09 19.31 15.74 17.49 17.30 15.41Z"/>
+  <defs>
+    <mask id="fk-fav-flame">
+      <rect width="32" height="32" fill="#fff"/>
+      <path fill="#000" transform="translate(7.67 13.94) scale(0.54)" d="M17.61 5.58C18.13 9.84 21.87 11.75 21.87 16.62C21.87 21.06 19.00 24.28 15.35 24.28C11.61 24.28 9.00 21.58 9.00 17.84C9.00 14.62 11.34 12.71 12.39 10.01C12.82 12.62 13.95 13.75 15.00 14.28C14.39 10.88 15.43 8.10 17.61 5.58Z"/>
+    </mask>
+  </defs>
+  <path d="M8 15.5 V11.5 A8 8 0 0 1 24 11.5 V15.5" fill="none" stroke="#FF7A2F" stroke-width="4.2" stroke-linecap="round"/>
+  <rect x="4" y="14.5" width="24" height="15" rx="4.5" fill="#FF7A2F" mask="url(#fk-fav-flame)"/>
 </svg>

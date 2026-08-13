@@ -1,8 +1,11 @@
 # Firekeep brand assets
 
-The mark is a **keep with a flame knocked out of it, and an ember left standing
-inside the flame**. Fire is what the product does — context that survives when
-the session dies — and the keep is what holds it.
+The mark is **the Vault** (adopted 2026-08-13): a round dark coin holding an
+ember padlock whose keyhole is the brand flame — the fire is the way in. Fire
+is what the product does — context that survives when the session dies — and
+the lock is what keeps it. The flame contour is unchanged from the previous
+mark (the rounded-square "keep", retired 2026-08-13): the keep retired, the
+fire did not.
 
 These files are the single source of truth for both the dashboard and the
 website. Do not redraw the mark inline in `index.html`.
@@ -27,23 +30,26 @@ assumed. Inline the SVG (or `<use>` it from an inline sprite) when you want
 `currentColor`; otherwise reach for `mark-ember.svg`.
 
 **2. `favicon.svg` is not `mark.svg` scaled down.**
-It is a different drawing of the same mark. At 16px the rounded-square keep eats
-the margin the flame needs and the ember cutout closes to sub-pixel and fills
-in, which collapses the mark back into a solid blob — and a solid blob with a
-round bottom and a pointed top is read as a *water droplet* by everyone, every
-time. The small variant drops the container, lets the flame fill the box, and
-widens the flame/ember gap. Same mark, drawn for the size.
+It is a different drawing of the same mark. At 16px the dark coin contributes
+nothing but bulk — it eats the margin the padlock needs, and its rim closes to
+sub-pixel. The small variant drops the coin, lets the padlock fill the box, and
+widens the flame cut so it cannot fill in at tab size. Same mark, drawn for
+the size.
 
-## Why one path with `fill-rule="evenodd"` instead of a `<mask>`
+## Masks and ids: who may use which
 
 A mask needs an `id`, and ids collide the moment two copies are inlined on one
-page — the second mark silently renders wrong. Each file is a single `<path>`
-with two or three subpaths and `fill-rule="evenodd"`, so it can be dropped
-anywhere, any number of times, with no id namespace at all.
+page — the second mark silently renders wrong. So the split follows how each
+file is loaded:
 
-Crossing count does the work: inside the keep only → 1 → filled; inside the
-keep and the flame → 2 → knocked out; inside all three → 3 → the ember stands
-again.
+- `mark.svg` and `lockup.svg` are made for INLINING and therefore carry **no
+  mask and no id**: the flame is an evenodd subpath nested in the body (inside
+  the body → 1 → filled; inside body and flame → 2 → knocked out), and the
+  shackle is a plain stroke.
+- `mark-ember.svg` and `favicon.svg` are always loaded standalone
+  (`<img>`, `<link rel="icon">`) — an isolated document with a private id
+  space — so they may use a `<mask>` for the flame cut. If you ever inline
+  one of them, namespace the id first.
 
 ## Colour
 

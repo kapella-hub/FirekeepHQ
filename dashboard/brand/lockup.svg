@@ -4,6 +4,9 @@
     Horizontal lockup: mark + wordmark. Clearspace on every side is half the
     mark's height (16 units) — do not crowd it.
 
+    The mark is the currentColor Vault glyph (mark.svg's geometry at half
+    scale — coinless, maskless, id-free; see mark.svg for both whys).
+
     The wordmark uses LIVE TEXT, not outlines, so it needs DM Sans present.
     On a page that self-hosts DM Sans (the dashboard does; the website should)
     this renders correctly. Where the font cannot be guaranteed, compose the
@@ -11,10 +14,12 @@
     this file and hoping. Outlining the wordmark needs a font toolchain and is
     deliberately not faked here.
   -->
-  <path fill="currentColor" fill-rule="evenodd" d="
-    M10.5 2H21.5A8.5 8.5 0 0 1 30 10.5V21.5A8.5 8.5 0 0 1 21.5 30H10.5A8.5 8.5 0 0 1 2 21.5V10.5A8.5 8.5 0 0 1 10.5 2Z
-    M17.61 5.58C18.13 9.84 21.87 11.75 21.87 16.62C21.87 21.06 19.00 24.28 15.35 24.28C11.61 24.28 9.00 21.58 9.00 17.84C9.00 14.62 11.34 12.71 12.39 10.01C12.82 12.62 13.95 13.75 15.00 14.28C14.39 10.88 15.43 8.10 17.61 5.58Z
-    M16.30 14.54C16.65 16.71 18.48 17.76 18.48 19.67C18.48 21.41 17.17 22.63 15.43 22.63C13.69 22.63 12.39 21.50 12.39 19.93C12.39 18.63 13.26 17.84 13.95 16.62C14.13 17.76 14.56 18.28 15.09 18.54C14.82 17.15 15.26 15.93 16.30 14.54Z"/>
+  <g transform="scale(0.5)">
+    <path fill="none" stroke="currentColor" stroke-width="7.5" stroke-linecap="round" d="M17 32 V24 A15 15 0 0 1 47 24 V32"/>
+    <path fill="currentColor" fill-rule="evenodd" d="
+      M18 30 H46 A8 8 0 0 1 54 38 V50 A8 8 0 0 1 46 58 H18 A8 8 0 0 1 10 50 V38 A8 8 0 0 1 18 30 Z
+      M34.18 34.65C34.70 38.91 38.44 40.82 38.44 45.69C38.44 50.13 35.57 53.35 31.92 53.35C28.18 53.35 25.57 50.65 25.57 46.91C25.57 43.69 27.91 41.78 28.96 39.08C29.39 41.69 30.52 42.82 31.57 43.35C30.96 39.95 32.00 37.17 34.18 34.65Z"/>
+  </g>
   <text x="40" y="23.2" fill="currentColor"
         font-family="'DM Sans', 'Segoe UI', system-ui, sans-serif"
         font-size="21" font-weight="700" letter-spacing="-0.5">Firekeep</text>

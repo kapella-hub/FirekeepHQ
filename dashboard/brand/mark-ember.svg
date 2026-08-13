@@ -1,16 +1,29 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="Firekeep">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Firekeep">
   <title>Firekeep</title>
   <!--
-    mark.svg with the ember accent BAKED IN, for every context that cannot
-    supply a `color`: <img src>, CSS background-image, og:image, a CMS upload,
-    a slide deck, a README badge. Identical geometry to mark.svg — only the
-    fill differs. Keep the two in sync if the path ever changes.
+    The Vault mark (2026-08-13): a dark coin, an ember padlock, and the brand
+    flame cut through the lock body as the keyhole — the fire is the way in.
+    The flame contour is IDENTICAL to the previous mark's outer flame; the
+    keep retired, the fire did not.
 
-    Use mark.svg (currentColor) when the SVG is inlined into the DOM and should
-    take the surrounding colour; use this one everywhere else.
+    Colours are BAKED IN for every context that cannot supply a `color`:
+    <img src>, CSS background-image, og:image, a CMS upload, a deck, a README
+    badge. Use mark.svg (currentColor, coinless) when the SVG is inlined into
+    the DOM and should take the surrounding colour.
+
+    The flame is a <mask> cut, not an evenodd subpath, so the body keeps its
+    rounded-rect geometry editable. Mask ids only need to be unique within a
+    DOCUMENT — this file is loaded via <img> (an isolated document), so the
+    short id is safe; if you ever inline this file, namespace the id.
   -->
-  <path fill="#FF7A2F" fill-rule="evenodd" d="
-    M10.5 2H21.5A8.5 8.5 0 0 1 30 10.5V21.5A8.5 8.5 0 0 1 21.5 30H10.5A8.5 8.5 0 0 1 2 21.5V10.5A8.5 8.5 0 0 1 10.5 2Z
-    M17.61 5.58C18.13 9.84 21.87 11.75 21.87 16.62C21.87 21.06 19.00 24.28 15.35 24.28C11.61 24.28 9.00 21.58 9.00 17.84C9.00 14.62 11.34 12.71 12.39 10.01C12.82 12.62 13.95 13.75 15.00 14.28C14.39 10.88 15.43 8.10 17.61 5.58Z
-    M16.30 14.54C16.65 16.71 18.48 17.76 18.48 19.67C18.48 21.41 17.17 22.63 15.43 22.63C13.69 22.63 12.39 21.50 12.39 19.93C12.39 18.63 13.26 17.84 13.95 16.62C14.13 17.76 14.56 18.28 15.09 18.54C14.82 17.15 15.26 15.93 16.30 14.54Z"/>
+  <defs>
+    <mask id="fk-flame-cut">
+      <rect width="64" height="64" fill="#fff"/>
+      <path fill="#000" transform="translate(20.89 27.65) scale(0.72)" d="M17.61 5.58C18.13 9.84 21.87 11.75 21.87 16.62C21.87 21.06 19.00 24.28 15.35 24.28C11.61 24.28 9.00 21.58 9.00 17.84C9.00 14.62 11.34 12.71 12.39 10.01C12.82 12.62 13.95 13.75 15.00 14.28C14.39 10.88 15.43 8.10 17.61 5.58Z"/>
+    </mask>
+  </defs>
+  <circle cx="32" cy="32" r="30" fill="#16181D"/>
+  <circle cx="32" cy="32" r="29.25" fill="none" stroke="#282C33" stroke-width="1.5"/>
+  <path d="M22 30 V26.5 A10 10 0 0 1 42 26.5 V30" fill="none" stroke="#FF7A2F" stroke-width="5" stroke-linecap="round"/>
+  <rect x="17.5" y="28" width="29" height="20.5" rx="5.5" fill="#FF7A2F" mask="url(#fk-flame-cut)"/>
 </svg>
