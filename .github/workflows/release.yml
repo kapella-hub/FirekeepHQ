@@ -440,19 +440,32 @@ jobs:
   # Publishes firekeep-client and firekeep-symdex to PyPI so `pip install
   # firekeep-client` works and the official MCP registry can reference a public
   # package (server.json at the repo root; docs/RELEASE-GITHUB.md "PyPI and the
-  # MCP registry"). No token secret: PyPI must hold a Trusted Publisher for
-  # BOTH project names pointing at this repo + this workflow + environment
-  # "pypi". A missing or misconfigured publisher fails THIS job loudly without
-  # touching the dist-host publication above — the same misconfiguration ethos
-  # as release signing. skip-existing is for symdex, which bumps on its own
-  # cadence: an already-published symdex version is a no-op, not an error,
-  # while a re-tagged client version still fails (PyPI versions are immutable,
-  # and re-tagging a published client version is a mistake worth hearing about
-  # — the dist host's accumulative layout would refuse it too).
+  # MCP registry"). No token secret: OIDC trusted publishing, ONE MATRIX LEG
+  # PER PACKAGE with its own GitHub environment ("pypi" for the client,
+  # "pypi-symdex" for symdex) — PyPI refuses two pending publishers sharing an
+  # identical (owner, repo, workflow, environment) tuple, so the environment
+  # is the disambiguator, and it also keeps each leg's OIDC token scoped to
+  # exactly one project. A missing or misconfigured publisher fails its leg
+  # loudly without touching the dist-host publication above — the same
+  # misconfiguration ethos as release signing. skip-existing only on symdex,
+  # which bumps on its own cadence: an already-published symdex version is a
+  # no-op, not an error, while a re-tagged client version still fails (PyPI
+  # versions are immutable, and re-tagging a published client version is a
+  # mistake worth hearing about).
   pypi:
     needs: release
     runs-on: ubuntu-latest
-    environment: pypi
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package_dir: client
+            environment: pypi
+            skip_existing: false
+          - package_dir: symdex
+            environment: pypi-symdex
+            skip_existing: true
+    environment: ${{ matrix.environment }}
     permissions:
       id-token: write
     steps:
@@ -460,13 +473,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Build sdists + wheels
+      - name: Build sdist + wheel
         run: |
           python -m pip install build
-          python -m build client -o pypi-dist
-          python -m build symdex -o pypi-dist
+          python -m build ${{ matrix.package_dir }} -o pypi-dist
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: pypi-dist
-          skip-existing: true
+          skip-existing: ${{ matrix.skip_existing }}

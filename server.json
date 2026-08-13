@@ -8,12 +8,12 @@
     "source": "github"
   },
   "websiteUrl": "https://firekeep.ai",
-  "version": "0.1.42",
+  "version": "0.1.43",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "firekeep-client",
-      "version": "0.1.42",
+      "version": "0.1.43",
       "transport": { "type": "stdio" },
       "runtimeHint": "uvx",
       "packageArguments": [

@@ -208,13 +208,15 @@ missing or misconfigured publisher without touching the dist-host
 publication; `skip-existing` makes an already-published symdex version a
 no-op, since symdex bumps on its own cadence.
 
-**One-time setup (operator, on pypi.org — required BEFORE the first tag with
-this job):** log in → your account → Publishing → for EACH of
-`firekeep-client` and `firekeep-symdex`, add a *pending publisher* with:
-owner `kapella-hub`, repository `FirekeepHQ`, workflow `release.yml`,
-environment `pypi`. Also create the `pypi` environment in the GitHub repo
-settings (no reviewers needed). The first successful publish claims the
-project names; both were verified unregistered on 2026-08-13.
+**One-time setup — DONE 2026-08-13:** pending publishers exist on pypi.org
+(account `kapella`) for both names — owner `kapella-hub`, repository
+`FirekeepHQ`, workflow `release.yml`, environment **`pypi`** for
+`firekeep-client` and **`pypi-symdex`** for `firekeep-symdex`. The
+environments differ ON PURPOSE: PyPI refuses two pending publishers sharing
+an identical (owner, repo, workflow, environment) tuple, and per-package
+environments keep each matrix leg's OIDC token scoped to one project. Both
+GitHub environments exist in the repo settings. The first successful publish
+claims the project names (verified unregistered 2026-08-13).
 
 **The MCP registry** (`registry.modelcontextprotocol.io`) is the follow-up
 once the PyPI packages exist: `server.json` at the repo root holds the draft
