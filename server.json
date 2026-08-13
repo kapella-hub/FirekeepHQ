@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
   "name": "io.github.kapella-hub/firekeep",
-  "description": "Self-hosted memory and continuity for AI coding agents: persistent team memory, session continuity, environment awareness, coordination, replayable traces, and instruction-compliance measurement. One stdio gateway, 104 tools; bring your own server (any Docker host).",
+  "description": "Self-hosted memory, continuity, and coordination for AI coding agents. One MCP gateway, 104 tools.",
   "status": "active",
   "repository": {
     "url": "https://github.com/kapella-hub/FirekeepHQ",
