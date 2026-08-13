@@ -86,6 +86,22 @@ env_value() {
     grep -E "^[[:space:]]*${key}=" "$envfile" 2>/dev/null | tail -n1 | cut -d= -f2- || true
 }
 
+# env_file_set <envfile> <KEY> <value>
+# Idempotently pin KEY=value: replace the existing line or append one.
+# env_value's writing half — install.sh and update.sh use the pair to keep
+# .env in step with the mode they run in (deploy/bootstrap-keys.sh carries a
+# private equivalent keyed to its $ENV_FILE global; it does not source this
+# file, so that copy stays). `|` as the sed delimiter: values written here
+# are image tags and mode flags, never text that could contain `|`.
+env_file_set() {
+    local envfile="${1:?envfile required}" key="${2:?key required}" value="${3:?value required}"
+    if grep -qE "^${key}=" "$envfile" 2>/dev/null; then
+        sed -i "s|^${key}=.*|${key}=${value}|" "$envfile"
+    else
+        printf '%s=%s\n' "$key" "$value" >> "$envfile"
+    fi
+}
+
 # auth_enforced <envfile>
 # True when this deployment will ENFORCE X-API-Key auth.
 #

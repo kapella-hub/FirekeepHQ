@@ -316,6 +316,15 @@ if [ "$PULL_MODE" -eq 1 ]; then
     docker compose pull
     docker compose up -d
 else
+    # Build mode must not build over a published release name pinned in a
+    # pre-existing .env (this installer deliberately refuses to rewrite an
+    # existing .env wholesale, so the pin survives re-installs). Same guard
+    # and rationale as update.sh's image-tag hygiene block.
+    if [ "$(env_value .env IMAGE_TAG)" != "dev" ]; then
+        env_file_set .env IMAGE_TAG dev
+        echo "NOTICE: IMAGE_TAG in .env was set to 'dev' — this is a source build;"
+        echo "        published-image installs use --pull or 'firekeep init'."
+    fi
     docker compose up -d --build
 fi
 

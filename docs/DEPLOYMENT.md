@@ -288,7 +288,13 @@ bash update.sh
 ```
 
 This runs `git pull`, rebuilds only changed images, restarts services, and
-verifies health.
+verifies health. It also pins `IMAGE_TAG=dev` in `.env` if anything else is
+there: every service names its image `ghcr.io/…:${IMAGE_TAG}`, so building from
+source under a published release tag would overwrite that immutable name with
+local code — `docker compose ps` would report a version that is not what runs,
+and a later `docker compose pull` would silently downgrade to the genuinely
+published image. `dev` never collides with a published tag, and
+`install.sh --pull` rejects it by name.
 
 ### Upgrading across the 2026-07-26 security defaults
 

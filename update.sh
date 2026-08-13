@@ -318,6 +318,38 @@ export BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 # version; falls back to the short SHA (--always) until server vX.Y.Z tags exist.
 export APP_VERSION="$(git describe --tags --match 'v[0-9]*' --always --dirty 2>/dev/null || echo 0.6.0)"
 echo "Build provenance: GIT_SHA=${GIT_SHA} BUILD_TIME=${BUILD_TIME} APP_VERSION=${APP_VERSION}"
+
+# --- Image-tag hygiene (this whole path is the build path: a bundle install
+# exec'd `firekeep init` at the top of this script and never reaches here) ---
+# Every app service carries both `image:` and `build:`, so `docker compose
+# build` tags the LOCAL build with the `image:` ref. When .env pins IMAGE_TAG
+# to a published release tag (a bundle-install leftover, or an
+# `install.sh --pull` run from a checkout), the build overwrites that
+# immutable published name with locally-built code: `docker compose ps`
+# reports a version that is not what runs, a later `docker compose pull`
+# becomes a SILENT DOWNGRADE to the genuinely published image, and the
+# `docker image prune` below deletes the superseded build — so nothing
+# survives under any name to roll back to. Found live 2026-08-12: a VPS
+# built v0.4.3 from source under the v0.4.2 label. `dev` is what
+# .env.example defines a source build to be; it can never collide with a
+# published tag, and `install.sh --pull` rejects it by name instead of
+# quietly pulling over it.
+if [ "$(env_value .env IMAGE_TAG)" != "dev" ]; then
+    env_file_set .env IMAGE_TAG dev
+    echo "############################################################"
+    echo "# NOTICE: IMAGE_TAG in .env was set to 'dev'."
+    echo "#"
+    echo "# This script builds images from the git checkout. The previous"
+    echo "# value named a published release tag, so locally built images"
+    echo "# were being written over an immutable published name — making"
+    echo "# 'docker compose ps' report the wrong version and turning a"
+    echo "# later 'docker compose pull' into a silent downgrade. Local"
+    echo "# builds are now tagged 'dev', the checkout default. To run"
+    echo "# published images instead, use 'firekeep init' (bundle) or"
+    echo "# 'install.sh --pull'."
+    echo "############################################################"
+fi
+
 docker compose build
 
 # --- Bootstrap auth keys (idempotent) ---
