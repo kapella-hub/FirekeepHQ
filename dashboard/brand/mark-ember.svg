@@ -1,29 +1,28 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Firekeep">
   <title>Firekeep</title>
   <!--
-    The Vault mark (2026-08-13): a dark coin, an ember padlock, and the brand
-    flame cut through the lock body as the keyhole — the fire is the way in.
-    The flame contour is IDENTICAL to the previous mark's outer flame; the
-    keep retired, the fire did not.
+    The Beacon (adopted 2026-08-14): a signal fire in its bowl — the fire you
+    keep LIT FOR OTHERS. Agents navigate by it. The flame contour is the same
+    brand flame that has survived every mark before it; the gap between flame
+    and bowl is deliberate (the fire is kept, not held down).
 
-    Colours are BAKED IN for every context that cannot supply a `color`:
-    <img src>, CSS background-image, og:image, a CMS upload, a deck, a README
-    badge. Use mark.svg (currentColor, coinless) when the SVG is inlined into
-    the DOM and should take the surrounding colour.
+    Colours are BAKED IN — including the flame's ember-ramp gradient — for
+    every context that cannot supply a `color`: <img src>, CSS
+    background-image, og:image, a CMS upload, a deck, a README badge. Use
+    mark.svg (currentColor) when the SVG is inlined into the DOM.
 
-    The flame is a <mask> cut, not an evenodd subpath, so the body keeps its
-    rounded-rect geometry editable. Mask ids only need to be unique within a
-    DOCUMENT — this file is loaded via <img> (an isolated document), so the
-    short id is safe; if you ever inline this file, namespace the id.
+    The gradient id only needs to be unique within a DOCUMENT — this file is
+    loaded via <img> (an isolated document), so the short id is safe; if you
+    ever inline this file, namespace the id first.
   -->
   <defs>
-    <mask id="fk-flame-cut">
-      <rect width="64" height="64" fill="#fff"/>
-      <path fill="#000" transform="translate(20.89 27.65) scale(0.72)" d="M17.61 5.58C18.13 9.84 21.87 11.75 21.87 16.62C21.87 21.06 19.00 24.28 15.35 24.28C11.61 24.28 9.00 21.58 9.00 17.84C9.00 14.62 11.34 12.71 12.39 10.01C12.82 12.62 13.95 13.75 15.00 14.28C14.39 10.88 15.43 8.10 17.61 5.58Z"/>
-    </mask>
+    <linearGradient id="fk-ember-ramp" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFA05C"/>
+      <stop offset=".6" stop-color="#FF7A2F"/>
+      <stop offset="1" stop-color="#E2620F"/>
+    </linearGradient>
   </defs>
-  <circle cx="32" cy="32" r="30" fill="#16181D"/>
-  <circle cx="32" cy="32" r="29.25" fill="none" stroke="#282C33" stroke-width="1.5"/>
-  <path d="M22 30 V26.5 A10 10 0 0 1 42 26.5 V30" fill="none" stroke="#FF7A2F" stroke-width="5" stroke-linecap="round"/>
-  <rect x="17.5" y="28" width="29" height="20.5" rx="5.5" fill="#FF7A2F" mask="url(#fk-flame-cut)"/>
+  <path d="M14 40 A18 18 0 0 0 50 40 Z" fill="#FF7A2F"/>
+  <rect x="29" y="54" width="6" height="4" rx="2" fill="#FF7A2F"/>
+  <path d="M17.61 5.58C18.13 9.84 21.87 11.75 21.87 16.62C21.87 21.06 19.00 24.28 15.35 24.28C11.61 24.28 9.00 21.58 9.00 17.84C9.00 14.62 11.34 12.71 12.39 10.01C12.82 12.62 13.95 13.75 15.00 14.28C14.39 10.88 15.43 8.10 17.61 5.58Z" fill="url(#fk-ember-ramp)" transform="translate(17.90 10.77) scale(0.92)"/>
 </svg>

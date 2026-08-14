@@ -1,30 +1,20 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="Firekeep">
   <title>Firekeep</title>
   <!--
-    OPTICALLY SIZED variant of the Vault mark, with a BAKED colour. Both
-    deliberate, both inherited from the previous favicon's rules:
+    OPTICALLY SIZED variant of the Beacon, with a BAKED colour. Both
+    deliberate, both inherited from every favicon before it:
 
-    Optical sizing: this is not a scaled copy of mark-ember.svg, it is a
-    different drawing of the same mark. At 16px the dark coin contributes
-    nothing but bulk — it eats the margin the padlock needs and its rim
-    closes to sub-pixel. So the coin is dropped, the padlock fills the box,
-    and the flame cut is proportionally wider than mark.svg's so it cannot
-    fill in at tab size.
+    Optical sizing: not a scaled copy of mark-ember.svg — a different drawing
+    of the same mark. At 16px the foot is sub-pixel (dropped), the bowl is
+    shallower so the flame gets the box, the flame is solid (the inner ember
+    cut would close up and read as noise at tab size), and the flame/bowl gap
+    is kept wide enough to survive.
 
     Baked colour: a favicon is ALWAYS loaded standalone via <link rel="icon">;
-    there is no parent element, no inherited `color`, and currentColor
-    resolves to BLACK. Verified on the previous mark, not assumed.
-
-    The flame cut is transparent, so the tab strip's own colour becomes the
-    fire — dark tabs get a dark flame, light tabs a light one, exactly as the
-    previous favicon's ember cutout behaved.
+    no parent element, no inherited `color`, currentColor resolves to BLACK.
+    Verified on the original mark, not assumed. Flat #FF7A2F — a gradient
+    would band at 16px.
   -->
-  <defs>
-    <mask id="fk-fav-flame">
-      <rect width="32" height="32" fill="#fff"/>
-      <path fill="#000" transform="translate(7.67 13.94) scale(0.54)" d="M17.61 5.58C18.13 9.84 21.87 11.75 21.87 16.62C21.87 21.06 19.00 24.28 15.35 24.28C11.61 24.28 9.00 21.58 9.00 17.84C9.00 14.62 11.34 12.71 12.39 10.01C12.82 12.62 13.95 13.75 15.00 14.28C14.39 10.88 15.43 8.10 17.61 5.58Z"/>
-    </mask>
-  </defs>
-  <path d="M8 15.5 V11.5 A8 8 0 0 1 24 11.5 V15.5" fill="none" stroke="#FF7A2F" stroke-width="4.2" stroke-linecap="round"/>
-  <rect x="4" y="14.5" width="24" height="15" rx="4.5" fill="#FF7A2F" mask="url(#fk-fav-flame)"/>
+  <path d="M6.5 21 A9.75 9.75 0 0 0 25.5 21 Z" fill="#FF7A2F"/>
+  <path d="M17.61 5.58C18.13 9.84 21.87 11.75 21.87 16.62C21.87 21.06 19.00 24.28 15.35 24.28C11.61 24.28 9.00 21.58 9.00 17.84C9.00 14.62 11.34 12.71 12.39 10.01C12.82 12.62 13.95 13.75 15.00 14.28C14.39 10.88 15.43 8.10 17.61 5.58Z" fill="#FF7A2F" transform="translate(6.43 2.94) scale(0.62)"/>
 </svg>

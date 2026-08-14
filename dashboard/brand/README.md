@@ -1,11 +1,12 @@
 # Firekeep brand assets
 
-The mark is **the Vault** (adopted 2026-08-13): a round dark coin holding an
-ember padlock whose keyhole is the brand flame — the fire is the way in. Fire
-is what the product does — context that survives when the session dies — and
-the lock is what keeps it. The flame contour is unchanged from the previous
-mark (the rounded-square "keep", retired 2026-08-13): the keep retired, the
-fire did not.
+The mark is **the Beacon** (adopted 2026-08-14): a signal fire in its bowl —
+the fire you keep lit for others, the one agents navigate by. Fire is what the
+product does — context that survives when the session dies — and the beacon is
+why you keep it: so the next session, the next agent, the next teammate can
+find it. The flame contour is unchanged through every mark before it (the
+keep, retired 2026-08-13; the Vault, retired 2026-08-14): the vessels change,
+the fire does not. The flame/bowl gap is deliberate — kept, not held down.
 
 These files are the single source of truth for both the dashboard and the
 website. Do not redraw the mark inline in `index.html`.
@@ -30,26 +31,26 @@ assumed. Inline the SVG (or `<use>` it from an inline sprite) when you want
 `currentColor`; otherwise reach for `mark-ember.svg`.
 
 **2. `favicon.svg` is not `mark.svg` scaled down.**
-It is a different drawing of the same mark. At 16px the dark coin contributes
-nothing but bulk — it eats the margin the padlock needs, and its rim closes to
-sub-pixel. The small variant drops the coin, lets the padlock fill the box, and
-widens the flame cut so it cannot fill in at tab size. Same mark, drawn for
-the size.
+It is a different drawing of the same mark. At 16px the foot is sub-pixel
+(dropped), the bowl is drawn shallower so the flame gets the box, the flame is
+solid — the inner ember cut would close up and read as noise at tab size —
+and it is flat `#FF7A2F`, because a gradient bands at 16px. Same mark, drawn
+for the size.
 
-## Masks and ids: who may use which
+## Ids: who may carry one
 
-A mask needs an `id`, and ids collide the moment two copies are inlined on one
-page — the second mark silently renders wrong. So the split follows how each
-file is loaded:
+Ids collide the moment two copies of a file are inlined on one page — the
+second copy silently renders wrong. So the split follows how each file is
+loaded:
 
-- `mark.svg` and `lockup.svg` are made for INLINING and therefore carry **no
-  mask and no id**: the flame is an evenodd subpath nested in the body (inside
-  the body → 1 → filled; inside body and flame → 2 → knocked out), and the
-  shackle is a plain stroke.
-- `mark-ember.svg` and `favicon.svg` are always loaded standalone
-  (`<img>`, `<link rel="icon">`) — an isolated document with a private id
-  space — so they may use a `<mask>` for the flame cut. If you ever inline
-  one of them, namespace the id first.
+- `mark.svg` and `lockup.svg` are made for INLINING and carry **no ids of any
+  kind** — no mask, no gradient. The flame keeps its inner ember cut as an
+  evenodd subpath (that detail is what a one-colour mark has instead of the
+  gradient), and the bowl and foot are plain paths.
+- `mark-ember.svg` is always loaded standalone (`<img>`, `og:image`) — an
+  isolated document with a private id space — so it may carry the flame's
+  ember-ramp `<linearGradient>` id. If you ever inline it, namespace the id
+  first. `favicon.svg` is flat and id-free by design.
 
 ## Colour
 
