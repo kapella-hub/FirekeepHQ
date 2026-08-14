@@ -114,3 +114,18 @@ exposure change is attributable, not a confound.
 from instructed clients (the 0.1.40/0.1.41 natural experiment, its two
 exposure epochs now distinguishable by receipt), and enough session
 volume for the frozen stats to resolve an effect.
+
+## 4. The Institution Thesis (candidate — UNPUBLISHED direction record)
+
+"Agents come and go. The Keep stays." Agent vendors sell staff; Firekeep is
+the institution that employs them — archive (inheritable household memory),
+HR (per-agent trust ledger + earned-autonomy ladder over the existing
+gateway/Brier/policy machinery), constitution (Living Instructions applied
+to domain rules), bake-offs (per-agent eval slices), premises (desktop-lite,
+possibly an appliance). Full pillar-to-machinery mapping, anti-goals (no
+doing-agent, no OAuth hub, finances LAST), sequencing, and the trust-ledger
+round-1 scope:
+[`docs/superpowers/specs/2026-08-14-institution-thesis.md`](superpowers/specs/2026-08-14-institution-thesis.md).
+Nothing from this section appears on firekeep.ai until its gate holds — the
+dashboard shows it before the site says it. First domino when work starts:
+trust ledger round 1 (visibility only, the house pattern).
