@@ -21,7 +21,7 @@ import urllib.parse
 from firekeep_client import (
     autoupdate, hooklog, resolver, state, symdexindex, transport, updater,
 )
-from firekeep_client.hooks import _mcp, never_raise
+from firekeep_client.hooks import _mcp, never_raise, runbooks
 
 _HOOK = "session_start"
 _FALLBACK = (
@@ -96,6 +96,19 @@ def run(payload: dict) -> dict:
         state.clear_session_stash(agent)
     except Exception as e:  # noqa: BLE001
         hooklog.log_failure(_HOOK, f"session stash clear failed: {e}")
+
+    # 0b. Runbook bundle handshake (Enforced Runbooks Phase B): GET
+    # /procedures/bundle -> atomic last-known-good store -> POST
+    # /procedures/bundle/ack. Its OWN REST call, deliberately independent of
+    # the briefing fetch below — a briefing failure must not cost the session
+    # its enforcement bundle and a bundle failure must not cost the briefing
+    # (spec: the bundle is "independent of the briefing (which Codex never
+    # receives)"). Not gated on FIREKEEP_BRIEFING either: that switch is about
+    # briefing verbosity, not enforcement. Fetch failure keeps last-known-good.
+    try:
+        runbooks.sync_bundle(cfg, session_id=payload.get("session_id"))
+    except Exception as e:  # noqa: BLE001 — the handshake must never cost a session
+        hooklog.log_failure(_HOOK, f"runbook bundle sync failed: {e}")
 
     # Briefing suppression: FIREKEEP_BRIEFING=off skips the server fetch entirely,
     # returning the minimal fallback. Useful when the briefing text is too verbose

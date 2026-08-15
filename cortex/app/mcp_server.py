@@ -1349,13 +1349,16 @@ async def skill_create(
         step_specs: Optional per-step matchers that turn this skill into an
             OBSERVED procedure. One entry per step, in order:
               {"text": "<the step, verbatim>",
-               "kind": "file_glob" | "unobservable",
+               "kind": "file_glob" | "command" | "unobservable",
                "pattern": "<glob, e.g. 'client/pyproject.toml'>",
                "load_bearing": true|false}
             Use "file_glob" when the step edits a file whose path you can name.
-            Use "unobservable" for anything else — asking a human, or running a
-            shell command (round 1 does not observe shell commands, so a shell
-            step must be "unobservable" even though the command is precise).
+            Use "command" when the step runs a shell command whose shape you
+            can name (pattern is a glob over the whitespace-normalized command,
+            e.g. 'git push*'); this matching catches mistakes, it is not
+            adversary-proof. Use "unobservable" for anything else — asking a
+            human, or work nothing watches (an "unobservable" step raises no
+            warning and contributes no evidence).
             Mark load_bearing=true only when skipping the step is what breaks
             things: that is what raises a warning to the next person.
             Prefer specific globs. "*.py" matches everything and is not a step.
@@ -1404,8 +1407,9 @@ async def skill_add_step_specs(skill_id: str, step_specs: list[dict]) -> str:
     spec per step in order, and send them here. REPLACES the whole list — send
     every step, not just the one you are adding, or the rest are deleted.
 
-    See skill_create's step_specs for the entry shape and the round-1 limits
-    (a shell step must be "unobservable"; a broad glob is not a step).
+    See skill_create's step_specs for the entry shape and the limits (a shell
+    step whose command you can name is kind "command"; anything unwatchable is
+    "unobservable"; a broad glob is not a step).
 
     Args:
         skill_id: The skill to compile specs onto (from skill_list or skill_recall).
@@ -1428,15 +1432,17 @@ async def skill_add_step_specs(skill_id: str, step_specs: list[dict]) -> str:
         stored = data.get("step_specs") or []
         total = len(stored)
         observable = sum(
-            1 for s in stored if isinstance(s, dict) and s.get("kind") == "file_glob"
+            1 for s in stored
+            if isinstance(s, dict) and s.get("kind") in ("file_glob", "command")
         )
         lines = [
             f"Stored {total} step spec{'' if total == 1 else 's'} on skill "
-            f"{skill_id} — {observable} of {total} observable (kind file_glob)."
+            f"{skill_id} — {observable} of {total} observable (kind file_glob "
+            f"or command)."
         ]
         if observable < total:
             lines.append(
-                "The rest are unobservable in round 1: nothing watches them, so "
+                "The rest are unobservable: nothing watches them, so "
                 "they raise no warning and contribute no evidence."
             )
         return " ".join(lines)
@@ -1544,6 +1550,7 @@ async def action_after(
     actual_changes: list[str] | None = None,
     observed_criteria_met: list[str] | None = None,
     deviation_notes: str = "",
+    exit_status: int | None = None,
 ) -> dict:
     """Report the outcome of a previously-submitted action.
 
@@ -1555,6 +1562,10 @@ async def action_after(
         actual_changes: List of file paths or artefacts that actually changed.
         observed_criteria_met: List of success criteria confirmed as met.
         deviation_notes: Optional notes on deviations from the prediction.
+        exit_status: The REAL shell exit code, when the action ran a command
+            and the harness provides it. Runbook (command-step) evidence
+            commits ONLY on success with exit_status 0 — an unknown or absent
+            exit status is not success and satisfies no runbook step.
     """
     payload: dict = {
         "action_id": action_id,
@@ -1566,9 +1577,55 @@ async def action_after(
     }
     if deviation_notes:
         payload["outcome"]["deviation_notes"] = deviation_notes
+    if exit_status is not None:
+        payload["exit_status"] = exit_status
     try:
         client = await _get_client()
         response = await client.post("/agent/action/after", json=payload)
+        response.raise_for_status()
+        return response.json()
+    except httpx.HTTPStatusError as exc:
+        return _format_error(exc)
+    except httpx.RequestError as exc:
+        return _connection_error(exc)
+
+
+@mcp.tool()
+async def runbook_ack(
+    challenge_id: str,
+    reason: str,
+    session_id: str = "unknown",
+    agent_id: str = "unknown",
+) -> dict | str:
+    """Acknowledge a runbook challenge so a challenged command may proceed.
+
+    When a command matches a runbook step in require_ack mode and a
+    load-bearing earlier step has no successful evidence, the gateway answers
+    rethink with a runbook_ack_required advisory carrying a challenge_id.
+    Calling this tool records your stated reason (it is audited) and mints a
+    ONE-USE permit, valid 10 minutes, bound to that exact command in this
+    session — then retry the SAME command. A different command, session or
+    runbook version needs a fresh challenge.
+
+    Do not ack reflexively: the challenge means the runbook's evidence says a
+    load-bearing step has not succeeded yet. Prefer running the missing step.
+    Ack only when you know why deviating is right, and say so in the reason.
+
+    Args:
+        challenge_id: The id from the runbook_ack_required advisory.
+        reason: Why proceeding without the missing step is right, one honest
+            sentence. Required; recorded for the deviation ledger.
+        session_id: Current session identifier (defaults to the connection's
+            X-Session-Id header).
+        agent_id: Agent identifier (observability label only).
+    """
+    session_id, agent_id = _resolve_identity(session_id, agent_id)
+    payload: dict = {"challenge_id": challenge_id, "reason": reason}
+    if session_id and session_id != "unknown":
+        payload["session_id"] = session_id
+    try:
+        client = await _get_client()
+        response = await client.post("/procedures/ack", json=payload)
         response.raise_for_status()
         return response.json()
     except httpx.HTTPStatusError as exc:

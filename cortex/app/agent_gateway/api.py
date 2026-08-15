@@ -34,6 +34,11 @@ def create_agent_gateway_router(get_service: Callable[[], Any]) -> APIRouter:
         body: ActionBeforeRequest,
         identity: dict = Depends(require_scope("eval:read")),
     ) -> ActionBeforeResponse:
+        # Tenancy precedes enforcement: the VERIFIED workspace/member from the
+        # auth principal, stamped AFTER validation onto PrivateAttrs no client
+        # payload can reach. `agent_id` stays an observability label.
+        body._verified_workspace = (identity or {}).get("workspace_id") or ""
+        body._verified_member = (identity or {}).get("member_id") or ""
         service = get_service()
         return await service.decide(body)
 
@@ -42,6 +47,7 @@ def create_agent_gateway_router(get_service: Callable[[], Any]) -> APIRouter:
         body: ActionAfterRequest,
         identity: dict = Depends(require_scope("eval:write")),
     ) -> ActionAfterResponse:
+        body._verified_workspace = (identity or {}).get("workspace_id") or ""
         service = get_service()
         return await service.record(body)
 

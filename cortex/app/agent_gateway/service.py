@@ -79,6 +79,14 @@ class AgentGatewayService:
     async def decide(self, req: ActionBeforeRequest) -> ActionBeforeResponse:
         action_id = f"act_{uuid.uuid4().hex[:12]}"
 
+        # The VERIFIED principal, stamped by the REST router (agent_gateway/
+        # api.py) from the auth layer — never from the client payload, never
+        # from `agent_id`. Empty on direct service calls (unit tests, legacy
+        # wiring): procedure lookups then stay machine-global, the round-1
+        # shape.
+        verified_workspace = getattr(req, "_verified_workspace", "") or ""
+        verified_member = getattr(req, "_verified_member", "") or ""
+
         # Gather signals for tier classification
         recent_failure = await self.recent_failure_check(req.action.target)
         fastpath_hit = await self.fastpath_check(req.agent_id, req.action.type, req.action.target)
@@ -127,7 +135,7 @@ class AgentGatewayService:
         pending_observation = None
         if self._procedure_observer is not None:
             pending_observation = await self._procedure_observer.plan(
-                req, action_id=action_id,
+                req, action_id=action_id, workspace=verified_workspace,
             )
             advisories.extend(pending_observation.advisories)
 
@@ -140,6 +148,26 @@ class AgentGatewayService:
             and not any(a.code == "low_confidence" for a in advisories)
         ):
             decision = "allow"
+
+        # Enforced runbooks (round 2): command-kind steps, consulted AFTER
+        # policy and after the softening above — an enforcement rethink is a
+        # real challenge and must never be softened away. Existing precedence
+        # aggregates: block over rethink over allow. plan_command() cannot
+        # raise; its pending evidence is written only once the decision
+        # settles on allow (see the commit/abort pair below), and even then it
+        # is PENDING — it commits only when the reconcile carries exit 0.
+        command_enforcement = None
+        if (self._procedure_observer is not None
+                and req.action.type == "run_command"):
+            command_enforcement = await self._procedure_observer.plan_command(
+                req, action_id=action_id, workspace=verified_workspace,
+                member=verified_member,
+            )
+            advisories.extend(command_enforcement.advisories)
+            if command_enforcement.decision == "block":
+                decision = "block"
+            elif command_enforcement.decision == "rethink" and decision != "block":
+                decision = "rethink"
 
         # Rethink counter & limit escalation
         target_key = f"{req.session_id}:{req.action.target}"
@@ -165,6 +193,13 @@ class AgentGatewayService:
                 await pending_observation.commit()
             else:
                 await pending_observation.abort(decision)
+        if command_enforcement is not None:
+            if decision == "allow":
+                # Writes the PENDING record only — evidence commits at
+                # reconcile with a real exit status of 0, never here.
+                await command_enforcement.commit()
+            else:
+                await command_enforcement.abort(decision)
 
         # Auto-reconcile defaults
         auto_reconcile = AUTO_RECONCILE_MATRIX.get(
@@ -213,6 +248,8 @@ class AgentGatewayService:
                 "adapter": req.adapter,
                 "action_type": req.action.type,
                 "target": req.action.target,
+                # Audit only (round 2): the cwd the client hook reported.
+                "cwd": getattr(req.action, "cwd", None),
             }
             ttl = get_settings().AGENT_RECONCILE_DEADLINE_SECONDS
             try:
@@ -282,6 +319,22 @@ class AgentGatewayService:
                 score = compute_prediction_match_score(pred, req.outcome)
             except Exception as exc:
                 logger.warning("score computation failed for %s: %s", req.action_id, exc)
+
+        # Enforced runbooks (round 2): settle pending command evidence.
+        # Committed ONLY on success AND a real exit_status of 0; nonzero,
+        # unknown or absent records an attempt and satisfies nothing; a
+        # reconcile that never arrives lets the pending expire on its TTL.
+        # Best-effort and cannot raise (reconcile_command's own guarantee).
+        if self._procedure_observer is not None:
+            reconcile_fn = getattr(
+                self._procedure_observer, "reconcile_command", None)
+            if reconcile_fn is not None:
+                await reconcile_fn(
+                    action_id=req.action_id,
+                    success=bool(req.outcome.success),
+                    exit_status=getattr(req, "exit_status", None),
+                    caller_workspace=getattr(req, "_verified_workspace", "") or "",
+                )
 
         # Update fastpath cache (best-effort, only if redis client is wired)
         if entry is not None and self._fastpath_redis is not None:

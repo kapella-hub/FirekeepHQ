@@ -127,6 +127,37 @@ mode; agents may propose runbooks, never arm them.
 procedures lookup/write. Index keys gain the workspace dimension. Permits and
 modes are workspace-keyed. `agent_id` appears in audit records only.
 
+## Post-implementation review, same day — five findings, all fixed
+
+The adversarial pass over the implementation (checklist = the design
+review's findings) caught one MAJOR and four minors; the fixes amend the
+contract as follows:
+
+1. **The evaluated receipt** (fixes "server-internal failure converts block
+   into an authenticated allow"): every verdict where runbook evaluation
+   GENUINELY RAN carries advisory `runbook_evaluated` (empty message, first
+   position). The client's block-mode branch lowers its exit code only on an
+   allow bearing the receipt; a bare allow — unreadable index, internal
+   exception, missing evidence scope — stays failed-closed. Feature-off IS
+   evaluated (receipt attached) so stale block bundles drain; an index that
+   cannot be READ is not (absent ≠ unreadable — `load_index_result`).
+2. **The destructive-guard print is exception-guarded** (the MAJOR): it sits
+   outside the fail-closed branch, and a hostile stderr raising there escaped
+   to `@never_raise(0)` — exiting 0 for a command block mode was about to
+   refuse.
+3. **`execution_no` joined the challenge/permit tuple**: an acked-but-unspent
+   permit minted during execution N is no longer consumable in execution
+   N+1's fresh evidence scope.
+4. **Matcher parity is byte-identical, client mirroring server**: non-string
+   commands are refused (str(None) is the matchable command "None") and the
+   normalized command is bounded at 4096 chars on both sides — an unbounded
+   client would escalate a suffix match the truncating server cannot see.
+5. **The pre→post action stack pairs by command hash**: parallel Bash calls
+   complete in arbitrary order, and a bare LIFO pop could reconcile command
+   A's exit status into command B's pending evidence. No matching entry pops
+   nothing — an expired pending satisfies nothing, the safe side. Identical
+   duplicate commands remain ambiguous: inside the mistake-catching model.
+
 ## What round 1 keeps unchanged
 
 Recognition, advisory texts, warn latch, two-phase plan/commit, the nightly

@@ -7,7 +7,11 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
-StepKind = Literal["file_glob", "unobservable"]
+StepKind = Literal["file_glob", "command", "unobservable"]
+
+# The kinds whose `pattern` is meaningful — everything else has it cleared by
+# the validator below so an unobservable step can never smuggle a matcher.
+PATTERN_KINDS = ("file_glob", "command")
 
 # Bounds the pre-edit match loop and the denormalised index. A pattern longer
 # than this is not a glob anyone wrote on purpose.
@@ -44,9 +48,9 @@ class StepSpec(BaseModel):
             self.id = uuid.uuid4().hex[:12]
         else:
             self._id_authored = True
-        if self.kind == "file_glob" and not self.pattern.strip():
-            raise ValueError("kind='file_glob' requires a non-empty pattern")
-        if self.kind != "file_glob" and self.pattern:
+        if self.kind in PATTERN_KINDS and not self.pattern.strip():
+            raise ValueError(f"kind='{self.kind}' requires a non-empty pattern")
+        if self.kind not in PATTERN_KINDS and self.pattern:
             self.pattern = ""
         return self
 

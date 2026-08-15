@@ -163,14 +163,24 @@ def _scratch_file(name: str) -> Path:
     return d / _safe_name(name)
 
 
-def push_action(session_id: str, action_id: str) -> None:
+def push_action(session_id: str, action_id: str, command_hash: str = "") -> None:
+    """Stack an action id for the post-hook to reconcile. `command_hash`
+    (review 2026-08-15): a bare LIFO stack cross-attributed exit statuses when
+    the harness ran PARALLEL Bash calls — command A's exit 0 could reconcile
+    command B's pending record, which round 2 promotes into enforcement
+    evidence. Entries are `action_id\\thash`; edits push an empty hash."""
     f = _actions_file(session_id)
     with f.open("a", encoding="utf-8") as fh:
-        fh.write(action_id + "\n")
+        fh.write(f"{action_id}\t{command_hash}\n" if command_hash
+                 else action_id + "\n")
     _private(f)
 
 
-def pop_action(session_id: str) -> str | None:
+def pop_action(session_id: str, command_hash: str = "") -> str | None:
+    """Pop the NEWEST entry whose stored hash equals `command_hash` (entries
+    without a tab are legacy/edit pushes with hash ""). No matching entry
+    returns None — never a different command's id: an unreconciled pending
+    record expires and satisfies nothing, which is the safe side."""
     f = _actions_file(session_id)
     if not f.exists():
         return None
@@ -178,13 +188,20 @@ def pop_action(session_id: str) -> str | None:
     if not lines:
         f.unlink(missing_ok=True)
         return None
-    newest = lines.pop()
+    wanted = command_hash or ""
+    taken = None
+    for i in range(len(lines) - 1, -1, -1):
+        entry_id, _, entry_hash = lines[i].partition("\t")
+        if entry_hash == wanted:
+            taken = entry_id
+            del lines[i]
+            break
     if lines:
         f.write_text("\n".join(lines) + "\n", encoding="utf-8")
         _private(f)
     else:
         f.unlink(missing_ok=True)
-    return newest
+    return taken
 
 
 def write_prestate(action_id: str, sha256: str) -> None:
@@ -429,6 +446,119 @@ def clear_session_stash(agent_id: str) -> None:
         delete_scratch(_session_stash_key(agent_id))
     except Exception:
         pass
+
+
+# --- runbook bundle store (Enforced Runbooks Phase B) ------------------------
+#
+# Spec: docs/superpowers/specs/2026-08-15-enforced-runbooks-design.md ("Bundle").
+# `GET /procedures/bundle` gives a session the command-matched runbook steps
+# ({skill_id, step_id, pattern, mode, load_bearing, fail_posture}) for the
+# caller's VERIFIED workspace. pre_tool consults this store locally on every
+# Bash call, so it sits on the hottest path in the kit: reads must never raise,
+# and a fetch failure must never cost the last-known-good copy — for a
+# block-mode runbook the stored bundle is what decides the fail-closed posture
+# while the server is unreachable.
+#
+# Written ATOMICALLY (temp file + os.replace, same directory) and keyed by the
+# workspace_id the server put in the payload; a `current` pointer names the
+# workspace of the most recent successful fetch so the read path can find the
+# bundle with no server round-trip. The pointer carries no `.json` suffix, so a
+# workspace literally named "current" cannot collide with it.
+
+_RUNBOOKS_SUBDIR = "runbooks"
+_RUNBOOK_POINTER = "current"
+RUNBOOK_BUNDLE_TTL_SECONDS = 3600.0  # spec: 1h staleness TTL
+
+
+def _runbooks_dir() -> Path:
+    d = cache_dir() / _RUNBOOKS_SUBDIR
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _write_atomic(target: Path, text: str) -> None:
+    """Temp file + os.replace in the same directory: a reader sees the old
+    complete file or the new complete file, never a partial write."""
+    tmp = target.parent / f"{target.name}.tmp-{os.getpid()}"
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        _private(tmp)
+        os.replace(tmp, target)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def write_runbook_bundle(bundle: object) -> bool:
+    """Persist a fetched bundle as last-known-good for its workspace.
+
+    Returns False — leaving any previously stored bundle UNTOUCHED — on an
+    invalid payload (not a dict; missing/non-string version or workspace_id;
+    entries not a list) or on any write failure. Never raises. Non-dict entry
+    items are dropped rather than stored. An empty `entries` list is VALID and
+    replaces the previous bundle: it is the server saying every runbook was
+    retired, which is not a failure."""
+    try:
+        if not isinstance(bundle, dict):
+            return False
+        version = bundle.get("version")
+        workspace = bundle.get("workspace_id")
+        entries = bundle.get("entries")
+        if not isinstance(version, str) or not version:
+            return False
+        if not isinstance(workspace, str) or not workspace:
+            return False
+        if not isinstance(entries, list):
+            return False
+        record = {
+            "version": version,
+            "workspace_id": workspace,
+            "entries": [e for e in entries if isinstance(e, dict)],
+            "fetched_at": time.time(),
+        }
+        d = _runbooks_dir()
+        _write_atomic(d / f"{_safe_name(workspace)}.json", json.dumps(record))
+        _write_atomic(d / _RUNBOOK_POINTER, workspace)
+        return True
+    except Exception:
+        return False
+
+
+def read_runbook_bundle(workspace_id: str | None = None) -> dict | None:
+    """Last-known-good bundle for `workspace_id` (default: the workspace of the
+    most recent successful fetch, via the pointer). None when absent, corrupt,
+    or unreadable. Never raises."""
+    try:
+        d = cache_dir() / _RUNBOOKS_SUBDIR
+        ws = workspace_id
+        if ws is None:
+            ptr = d / _RUNBOOK_POINTER
+            if not ptr.exists():
+                return None
+            ws = ptr.read_text(encoding="utf-8").strip()
+        if not ws:
+            return None
+        f = d / f"{_safe_name(ws)}.json"
+        if not f.exists():
+            return None
+        data = json.loads(f.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or not isinstance(data.get("entries"), list):
+            return None
+        return data
+    except Exception:
+        return None
+
+
+def runbook_bundle_is_stale(bundle: dict,
+                            ttl_seconds: float = RUNBOOK_BUNDLE_TTL_SECONDS) -> bool:
+    """True when the bundle's fetch is older than the staleness TTL — or when
+    its age cannot be read at all (unknown age is stale, not fresh; the
+    consequence of stale is one refetch ATTEMPT, and last-known-good survives
+    a refetch failure, so erring stale is cheap and erring fresh is not).
+    Never raises."""
+    try:
+        return (time.time() - float(bundle.get("fetched_at"))) >= ttl_seconds
+    except Exception:
+        return True
 
 
 def resolve_session_id(payload: dict, cfg=None) -> str:

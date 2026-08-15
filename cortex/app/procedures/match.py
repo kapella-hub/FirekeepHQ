@@ -57,7 +57,82 @@ def match_target(index: list[dict[str, Any]], target: str) -> list[dict[str, Any
         parts = _norm(target).split("/")
     except Exception:  # noqa: BLE001
         return []
-    return [e for e in index if _matches(e.get("pattern", ""), target, parts)]
+    # `kind` is absent on every round-1 index entry, and absent means file_glob:
+    # round 1 only ever indexed file_glob specs, so the default keeps old
+    # indexes matching byte-identically while excluding command entries here.
+    return [
+        e for e in index
+        if (e.get("kind") or "file_glob") == "file_glob"
+        and _matches(e.get("pattern", ""), target, parts)
+    ]
+
+
+# Bound on how much of one command line the matcher will look at. A runbook
+# step's pattern describes the shape of a command a human wrote; nothing it
+# needs to see lives 4KB deep in one line, and fnmatch's translated regex can
+# backtrack badly on adversarially long inputs.
+_MAX_COMMAND_CHARS = 4096
+
+
+def normalize_command(command: Any) -> str:
+    """Whitespace-normalize a command string. Never raises.
+
+    Collapses every run of whitespace (including newlines from heredocs and
+    line continuations the shell already consumed) to one space, so a pattern
+    authored as `git push*` matches however the agent wrapped the invocation.
+
+    A non-string is refused outright rather than repr'd: `str(None)` is the
+    four-character command "None", which a `N*` pattern would then match.
+    """
+    try:
+        if not isinstance(command, str):
+            return ""
+        return " ".join(command.split()).strip()[:_MAX_COMMAND_CHARS]
+    except Exception:  # noqa: BLE001 — this runs on the blocking pre-tool path
+        return ""
+
+
+def match_command(index: list[dict[str, Any]], command: str) -> list[dict[str, Any]]:
+    """Command-kind entries whose glob matches the whitespace-normalized command.
+
+    MISTAKE-CATCHING, NOT ADVERSARY-PROOF — stated here because this is the
+    definition every surface inherits it from. A glob over a normalized command
+    string recognises the command a well-meaning agent typed; it cannot see
+    through `sh -c`, aliases, env-var indirection, `$(...)`, or a path-renamed
+    binary, and it must never be sold as a control against an agent TRYING to
+    evade a runbook. Enforcement built on it manages mistakes.
+
+    CANNOT raise (same discipline as `_matches`): this is consulted on the
+    blocking pre-tool path, where a raise costs a customer's command.
+    `fnmatchcase` rather than `fnmatch`: command text has no case-folding
+    convention, and `fnmatch` would fold on Windows because it normalises as a
+    *path* — a platform-dependent match for a platform-independent string.
+    """
+    try:
+        cmd = normalize_command(command)
+        if not cmd:
+            return []
+        out: list[dict[str, Any]] = []
+        for e in index:
+            try:
+                if (e.get("kind") or "file_glob") != "command":
+                    continue
+                pattern = e.get("pattern")
+                if not isinstance(pattern, str):
+                    continue
+                p = " ".join(pattern.split()).strip()
+                # An over-long pattern was never authored on purpose
+                # (MAX_PATTERN_CHARS bounds the write path); refuse rather
+                # than spend unbounded regex time on it.
+                if not p or len(p) > 500:
+                    continue
+                if fnmatch.fnmatchcase(cmd, p):
+                    out.append(e)
+            except Exception:  # noqa: BLE001 — one hostile entry must not raise
+                continue
+        return out
+    except Exception:  # noqa: BLE001
+        return []
 
 
 def missing_load_bearing(

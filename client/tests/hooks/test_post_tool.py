@@ -48,7 +48,10 @@ class TestPostTool:
         from firekeep_client import state, transport
         from firekeep_client.hooks import post_tool
 
-        state.push_action("s", "act-b")
+        from firekeep_client.hooks import runbooks
+        # Hash-paired push (review 2026-08-15): Bash pops match on the command.
+        state.push_action("s", "act-b",
+                          command_hash=runbooks.local_command_hash("x"))
         posted = {}
         monkeypatch.setattr(transport, "post_json",
                             lambda url, body, **k: posted.update(body) or {"ok": True})

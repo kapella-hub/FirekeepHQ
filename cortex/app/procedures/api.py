@@ -9,9 +9,10 @@ TENANCY. `memory:read` is a permission, not a boundary: it is held by every
 agent key in the deployment, and these two reads returned EVERY workspace's
 triggers, step text, session ids, agent ids and edited file paths. Both are now
 scoped to the caller's own workspace, from the verified principal, the way
-`/memory/*` and the skills write path already do it. The pre-edit WARN path is
-NOT scoped — see H6 in the design doc — because the matcher index is
-machine-global and `ActionBeforeRequest` carries no principal.
+`/memory/*` and the skills write path already do it. Since round 2 (enforced
+runbooks) the ACTION path is scoped too: the gateway router stamps the
+verified workspace onto the request server-side, and every procedures
+lookup/write in decide()/record() carries it (H6 is resolved).
 """
 
 from __future__ import annotations
@@ -19,10 +20,28 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field
 
-from app.procedures import store
+from app.procedures import enforce, store
 
 logger = logging.getLogger(__name__)
+
+
+class BundleAckBody(BaseModel):
+    # EXACTLY {"version": ...} — pinned with the client (Phase B). Session
+    # attribution comes from the X-Session-Id header, never the body; an
+    # extra body field is ignored by pydantic and never read.
+    version: str = Field(min_length=1, max_length=64)
+
+
+class RunbookAckBody(BaseModel):
+    challenge_id: str = Field(min_length=1, max_length=128)
+    reason: str = Field(min_length=1, max_length=2000)
+    session_id: str = Field(default="", max_length=256)
+
+
+class ModeBody(BaseModel):
+    mode: str = Field(min_length=1, max_length=32)
 
 
 def _deployment_workspace() -> str:
@@ -56,13 +75,27 @@ def create_procedures_router(get_redis, get_vector, settings_fn) -> APIRouter:
         from auth.middleware import require_scope
         read_dep = [Depends(require_scope("memory:read"))]
         admin_dep = [Depends(require_scope("admin"))]
+        session_read_dep = [Depends(require_scope("session:read"))]
+        session_write_dep = [Depends(require_scope("session:write"))]
     except Exception:  # noqa: BLE001 — auth optional in unit tests
         read_dep, admin_dep = [], []
+        session_read_dep, session_write_dep = [], []
 
     def _caller_workspace(request: Request) -> str:
         from auth.principal import request_principal
 
         return request_principal(request).get("workspace_id") or ""
+
+    def _caller_member(request: Request) -> str:
+        from auth.principal import request_principal
+
+        return request_principal(request).get("member_id") or ""
+
+    def _session_of(request: Request, body_session: str) -> str:
+        s = (body_session or "").strip()
+        if s:
+            return s
+        return (request.headers.get("x-session-id") or "").strip()
 
     def _workspace_of(skill_id: str, coverage: dict, by_skill: dict) -> str:
         cov = coverage.get(skill_id) or {}
@@ -168,5 +201,102 @@ def create_procedures_router(get_redis, get_vector, settings_fn) -> APIRouter:
         if not await store.dismiss_proposal(r, proposal_id):
             raise HTTPException(status_code=404, detail="Proposal not found")
         return {"dismissed": proposal_id}
+
+    # ------------------------------------------------------------------
+    # Round 2 — enforced runbooks (spec 2026-08-15)
+    # ------------------------------------------------------------------
+
+    @router.get("/procedures/bundle", dependencies=session_read_dep)
+    async def get_bundle(request: Request):
+        """The session's runbook bundle: every command-kind step of the
+        caller's workspace, with its runbook's mode, load_bearing and
+        fail_posture. `version` = sha256[:12] of the canonical entry list.
+
+        Command matching is mistake-catching, not adversary-proof — the
+        client's local match on these patterns recognises the command a
+        well-meaning agent typed, nothing more.
+        """
+        r = get_redis()
+        return await enforce.build_bundle(r, _caller_workspace(request))
+
+    @router.post("/procedures/bundle/ack", dependencies=session_write_dep)
+    async def ack_bundle(body: BundleAckBody, request: Request):
+        """Record which bundle version this session holds. Coverage is
+        REPORTED, never assumed — the server enforces whatever reaches it
+        regardless of acks; a block-mode runbook whose recent sessions lack
+        acks is surfaced on the dashboard as NOT ACTIVELY ENFORCED.
+
+        Session attribution comes from the X-Session-Id header (client pin,
+        Phase B); the body is exactly {"version"}."""
+        session = _session_of(request, "")
+        if not session:
+            raise HTTPException(
+                status_code=422,
+                detail="X-Session-Id header required")
+        r = get_redis()
+        await store.record_bundle_ack(
+            r, _caller_workspace(request), session, body.version)
+        return {"recorded": True, "session_id": session,
+                "version": body.version}
+
+    @router.post("/procedures/ack", dependencies=session_write_dep)
+    async def runbook_ack(body: RunbookAckBody, request: Request):
+        """The ack half of the permit protocol: verify the challenge belongs
+        to the caller's verified workspace + session, record the reason, mint
+        the one-use permit (TTL 10 min)."""
+        session = _session_of(request, body.session_id)
+        r = get_redis()
+        result = await enforce.acknowledge(
+            r, settings_fn(), challenge_id=body.challenge_id,
+            reason=body.reason, workspace=_caller_workspace(request),
+            member=_caller_member(request), session=session,
+        )
+        if result.get("ok"):
+            return result
+        error = result.get("error") or "refused"
+        if error == "unknown_or_expired":
+            raise HTTPException(status_code=404,
+                                detail="Challenge unknown or expired")
+        if error == "session_mismatch":
+            raise HTTPException(
+                status_code=403,
+                detail="Challenge belongs to a different session")
+        raise HTTPException(status_code=422, detail=error)
+
+    @router.get("/procedures/{skill_id}/mode", dependencies=read_dep)
+    async def get_mode(skill_id: str, request: Request):
+        r = get_redis()
+        caller_ws = _caller_workspace(request)
+        index = await store.load_index(r)
+        by_skill: dict[str, list[dict]] = {}
+        for e in index:
+            by_skill.setdefault(e["skill_id"], []).append(e)
+        recorded = _workspace_of(skill_id, await store.load_coverage(r), by_skill)
+        if not _visible(recorded, caller_ws):
+            raise HTTPException(status_code=404, detail="Skill not found")
+        mode = await store.get_mode(r, caller_ws, skill_id)
+        return {"skill_id": skill_id, **mode}
+
+    @router.put("/procedures/{skill_id}/mode", dependencies=admin_dep)
+    async def put_mode(skill_id: str, body: ModeBody, request: Request):
+        """ADMIN ONLY, deliberately: the skill PATCH path cannot touch mode —
+        agents may propose runbooks, never arm them. A human sets the mode
+        from the dashboard."""
+        if body.mode not in store.ENFORCEMENT_MODES:
+            raise HTTPException(
+                status_code=422,
+                detail=f"mode must be one of {list(store.ENFORCEMENT_MODES)}")
+        r = get_redis()
+        caller_ws = _caller_workspace(request)
+        index = await store.load_index(r)
+        by_skill: dict[str, list[dict]] = {}
+        for e in index:
+            by_skill.setdefault(e["skill_id"], []).append(e)
+        recorded = _workspace_of(skill_id, await store.load_coverage(r), by_skill)
+        if not _visible(recorded, caller_ws):
+            raise HTTPException(status_code=404, detail="Skill not found")
+        record = await store.set_mode(
+            r, caller_ws, skill_id, body.mode, _caller_member(request))
+        return {"skill_id": skill_id, **record}
 
     return router
