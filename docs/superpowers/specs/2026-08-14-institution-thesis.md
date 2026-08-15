@@ -56,6 +56,56 @@ Grok Bot's answer to "can I trust it with my email?" is one perimeter and
 cute eyes. Ours is a probation period with receipts.
 _Scoping below — this is the first domino._
 
+### 2b. The Badge System — the capability broker (ADDED by same-day review)
+
+**Correction, external review 2026-08-14 — the original draft carried a
+central contradiction.** It promised autonomy *enforced* by policy while
+disclaiming ownership of the action path ("integrations are the staff's
+problem"). Both cannot hold: if the agent holds the Gmail credential and
+calls the tool directly, Firekeep can only score what the agent voluntarily
+declares (`action_before` is self-reported) — the employee can bypass the
+employer. A trust ledger without an owned action path is **advisory
+reputation, not earned autonomy**. The draft's "sixth policy rule" claim was
+wrong twice over: no enforcement point, and no vocabulary — `PolicyContext`
+is file-oriented (`file_path` is its required field,
+`cortex/app/policy/engine.py:27`); it cannot express `email.send`.
+
+The institution must own the doors and badges, not merely the personnel
+files:
+
+```
+Agent → Firekeep gateway (capability broker) → typed capabilities → third-party MCP servers
+        email.read · email.create_draft · email.send · calendar.create · finance.read_transactions
+```
+
+This is an extension of shipped architecture, not a new system: the local
+gateway already mounts named backends (4 remote + 2 local stdio), namespaces
+their tools, injects auth per call, and rewrites arguments in flight
+(`_BridgeSessionTap`). The broker adds: third-party MCP servers mounted
+BEHIND the gateway instead of registered directly in the client; a
+tool→capability taxonomy; a `PolicyContext` v2 carrying capability, resource
+and verb (draft vs send); and a policy consult on every brokered call.
+**Credentials are untouched**: the third-party servers keep their tokens
+locally (OS keychain / their own stores) exactly as they do today — Firekeep
+gates the CALL, never holds the credential. The anti-goal sharpens rather
+than falls: no cloud OAuth hub, and no credential custody at all.
+
+**Enforcement boundary, stated honestly, strongest first:**
+- *Consumer MCP-only runtimes* (Claude-Desktop-class — no shell): the
+  gateway is the complete tool surface → real enforcement. This is the
+  household profile's world, which is why the consumer story works.
+- *Shell-bearing dev runtimes*: partial — the pre-edit hook and leases
+  enforce the file path; brokered capabilities enforce what routes through
+  them; an agent with Bash can go around, so the ledger is
+  enforcement-plus-advisory there. Stated, not hidden.
+- *The owner*: can always bypass (register a tool directly in the client).
+  Correct and intended — badges bind the staff, not the building's owner.
+
+_Effort: the broker is the real cost the original draft hid — gateway
+mounting of arbitrary MCP servers + taxonomy + PolicyContext v2 + tests is
+WEEKS, not "a policy rule + config." It is also the piece that makes every
+other pillar true rather than aspirational._
+
 ### 3. The Constitution — house rules that measure themselves
 
 Living Instructions pointed at life instead of code: "draft, never send,"
@@ -134,11 +184,15 @@ lived in production.
 - **Frozen at birth**: aggregation keys and formulas pre-registered in this
   file's successor spec before the first published number, so later rounds
   compare cleanly — the Living Instructions lesson, applied from day one.
-- **Round 2 (later, gated on round-1 data)**: a sixth policy-engine rule
-  consuming the record — autonomy tiers with human-set thresholds. Round 3:
-  the consumer framing (probation ladder in the household profile).
+- **Round 2 (corrected by review): the badge system.** Not a sixth rule —
+  the capability broker of pillar 2b (gateway-mounted third-party servers,
+  capability taxonomy, action-typed PolicyContext v2, per-call policy
+  consult). The ledger measures; the broker enforces; **earned autonomy is
+  the two together and exists only where both do.** Round 3: autonomy tiers
+  — thresholds over the ledger, enforced at the broker, human-set.
 - _Estimate: round 1 is a compliance-table-shaped build — API + scan + card
-  + tests, a few days. Round 2 is a policy rule + config + tests, days._
+  + tests, a few days. Round 2 is weeks (the honest number the first draft
+  hid behind "a policy rule")._
 
 ## Gates
 

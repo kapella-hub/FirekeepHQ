@@ -119,12 +119,16 @@ volume for the frozen stats to resolve an effect.
 
 "Agents come and go. The Keep stays." Agent vendors sell staff; Firekeep is
 the institution that employs them — archive (inheritable household memory),
-HR (per-agent trust ledger + earned-autonomy ladder over the existing
-gateway/Brier/policy machinery), constitution (Living Instructions applied
-to domain rules), bake-offs (per-agent eval slices), premises (desktop-lite,
-possibly an appliance). Full pillar-to-machinery mapping, anti-goals (no
-doing-agent, no OAuth hub, finances LAST), sequencing, and the trust-ledger
-round-1 scope:
+HR (per-agent trust ledger), **the badge system** (a local capability broker:
+third-party MCP servers mounted behind the gateway, typed capabilities,
+action-typed policy — added by same-day review, which caught that a ledger
+without an owned action path is advisory reputation, not earned autonomy),
+constitution (Living Instructions applied to domain rules), bake-offs
+(per-agent eval slices), premises (desktop-lite, possibly an appliance).
+Earned autonomy = ledger (measures) + broker (enforces), together only.
+Full pillar-to-machinery mapping, enforcement boundaries stated honestly,
+anti-goals (no doing-agent, no credential custody, finances LAST),
+sequencing, and the trust-ledger round-1 scope:
 [`docs/superpowers/specs/2026-08-14-institution-thesis.md`](superpowers/specs/2026-08-14-institution-thesis.md).
 Nothing from this section appears on firekeep.ai until its gate holds — the
 dashboard shows it before the site says it. First domino when work starts:
