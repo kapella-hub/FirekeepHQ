@@ -52,13 +52,14 @@ app/
 │   ├── state.py         # Redis-backed version map + run record (CollectorState)
 │   ├── confluence.py     # Confluence Server/DC adapter + run_confluence_collector Celery task
 │   └── api.py           # GET /collectors status endpoint
-├── procedures/        # Living Procedures — a skill observed as a procedure (round 1, opt-in via PROCEDURE_ENABLED)
-│   ├── models.py        # StepSpec — self-contained per-step matcher (id/text/kind/pattern/load_bearing). Pydantic only, no I/O
-│   ├── match.py         # Pure glob matching, earlier-load-bearing-step detection, advisory text. No I/O and CANNOT raise — it runs on the blocking pre-edit path
-│   ├── store.py         # Every Redis read/write; the only module that knows a proc:* key format (index, executions, warn latch, stats, proposals)
-│   ├── observe.py       # ProcedureObserver — the recognise/advise stage called from AgentGatewayService.decide(); returns a PendingObservation whose commit() runs only once the decision settles on allow (I7). Holds NO vector client (I5)
+├── procedures/        # Living Procedures — a skill observed as a procedure (rounds 1–2, opt-in via PROCEDURE_ENABLED)
+│   ├── models.py        # StepSpec — self-contained per-step matcher (id/text/kind/pattern/load_bearing; round 2 adds kind "command"). Pydantic only, no I/O
+│   ├── match.py         # Pure glob matching (file paths AND normalized command text), earlier-load-bearing-step detection, advisory text. No I/O and CANNOT raise — it runs on the blocking pre-edit path
+│   ├── store.py         # Every Redis read/write; the only module that knows a proc:* key format (index, executions, warn latch, stats, proposals, bundle acks, modes, challenges/permits, pending evidence)
+│   ├── observe.py       # ProcedureObserver — the recognise/advise stage called from AgentGatewayService.decide(); returns a PendingObservation whose commit() runs only once the decision settles on allow (I7). Holds NO vector client (I5). Round 2: plan_command() → enforce.evaluate() for Bash steps
+│   ├── enforce.py       # Enforced Runbooks (round 2) — command verdicts (advise/require_ack/block), challenge→ack→one-use permits, success-gated evidence, and the runbook_evaluated marker a block-mode client requires before honouring an allow. Fails CLOSED via an exception-tight branch; everything scoped to the VERIFIED workspace
 │   ├── harden.py        # Nightly Celery pass: Tier A frequency + gated Tier B efficacy → proposals, never mutations
-│   └── api.py           # GET /procedures, GET /procedures/{skill_id}/executions, POST /procedures/proposals/{id}/dismiss
+│   └── api.py           # GET /procedures, GET /procedures/{skill_id}/executions, POST /procedures/proposals/{id}/dismiss; round 2: GET /procedures/bundle, POST /procedures/bundle/ack, POST /procedures/ack, GET+PUT /procedures/{skill_id}/mode (PUT admin-only — agents never arm modes)
 ├── autopilot/         # Knowledge Autopilot round 1 (docs/guides/knowledge-autopilot.md) — READ-ONLY operator surface
 │   ├── inbox.py         # Section builders: draft/stale/rereview skills, LP proposals, contested pairs, eval DLQ
 │   ├── digest.py        # Windowed activity counts (learned/archived/superseded/dreamed/drafted/feedback/GC)

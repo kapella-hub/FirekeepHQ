@@ -160,12 +160,14 @@ def test_the_cortex_guide_maps_every_procedures_module() -> None:
 def _routes() -> list[str]:
     """Every route path declared by the procedures router, read from source."""
     text = (PROCEDURES / "api.py").read_text(encoding="utf-8")
-    return sorted(set(re.findall(r"@router\.(?:get|post)\(\s*\"([^\"]+)\"", text)))
+    return sorted(set(re.findall(r"@router\.(?:get|post|put)\(\s*\"([^\"]+)\"", text)))
 
 
 def test_the_cortex_guide_lists_every_procedures_route() -> None:
+    # 7 paths: the three round-1 routes plus round 2's bundle, bundle/ack,
+    # ack, and {skill_id}/mode (GET+PUT share the mode path).
     routes = _routes()
-    assert len(routes) == 3, f"expected 3 procedures routes, found {routes}"
+    assert len(routes) == 7, f"expected 7 procedures routes, found {routes}"
     for path in routes:
         assert path in CORTEX_ENDPOINTS, (
             f"docs/guides/cortex-api-endpoints.md does not document {path}"
