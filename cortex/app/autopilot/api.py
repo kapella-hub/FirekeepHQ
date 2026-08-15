@@ -72,6 +72,8 @@ def create_autopilot_router(get_redis, get_replay_redis, get_vector, settings_fn
                 "rereview_skills", inbox_mod.rereview_skills(vector, settings)),
             "procedure_proposals": await _section(
                 "procedure_proposals", inbox_mod.procedure_proposals(redis_client, settings)),
+            "runbook_deviations": await _section(
+                "runbook_deviations", inbox_mod.runbook_deviations(redis_client, settings)),
             "contested_memories": await _section(
                 "contested_memories", inbox_mod.contested_memories(vector, settings)),
             "eval_dlq": await _section("eval_dlq", inbox_mod.eval_dlq(replay_redis)),

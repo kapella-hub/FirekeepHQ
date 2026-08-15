@@ -145,6 +145,24 @@ def stores():
     return fr.FakeRedis(decode_responses=True), fr.FakeRedis(decode_responses=True)
 
 
+def _ledger_key() -> str:
+    """The real deviation-ledger key, derived exactly as the section derives
+    it — a hardcoded workspace here would pass while the section read the
+    wrong key."""
+    from app.procedures.api import _deployment_workspace
+
+    return f"proc:deviations:{_deployment_workspace()}"
+
+
+def _deviation(days_ago=1.0, *, kind="block", skill_id="sk1", step_id="s1",
+               session="sess-1", detail=""):
+    return json.dumps({
+        "at": iso(days_ago), "kind": kind, "skill_id": skill_id,
+        "step_id": step_id, "session": session, "member": "member-owner",
+        "agent": "agent-1", "command_hash": "a" * 12, "detail": detail,
+    })
+
+
 @pytest_asyncio.fixture
 async def auth_keys():
     """Real keys with enforcement on. Two of them, because `scopes_allow` does
@@ -205,6 +223,7 @@ async def test_inbox_aggregates_every_queue(mk, stores):
         "session_id": "sess-1", "error": "qdrant timeout",
         "failure_type": "infra", "timestamp": iso(1),
     }))
+    await redis_client.lpush(_ledger_key(), _deviation(kind="block"))
 
     async with mk(_FakeVector(qdrant), redis_client, replay_redis) as c:
         resp = await c.get("/autopilot/inbox")
@@ -215,6 +234,7 @@ async def test_inbox_aggregates_every_queue(mk, stores):
     assert items["draft_skills"]["count"] == 2
     assert items["stale_skills"]["count"] == 1
     assert items["rereview_skills"]["count"] == 1
+    assert items["runbook_deviations"]["count"] == 1
     assert items["procedure_proposals"] == {
         "enabled": True, "count": 1,
         "items": [{"id": "p1", "kind": "dead_step", "skill_id": "sk1",
@@ -228,7 +248,7 @@ async def test_inbox_aggregates_every_queue(mk, stores):
         "unresolved — the whole reason a contested pair belongs in an inbox"
     )
     assert items["eval_dlq"]["count"] == 1
-    assert body["total_actionable"] == 7
+    assert body["total_actionable"] == 8
     assert "degraded" not in body
     assert body["generated_at"]
 
@@ -241,6 +261,9 @@ async def test_an_empty_deployment_reports_zero_not_an_error(mk, stores):
     assert body["total_actionable"] == 0
     assert body["items"]["draft_skills"]["count"] == 0
     assert body["items"]["eval_dlq"]["count"] == 0
+    assert body["items"]["runbook_deviations"] == {
+        "enabled": True, "count": 0, "approximate": False, "items": [],
+    }
     assert "degraded" not in body
 
 
@@ -330,9 +353,10 @@ async def test_disabled_procedures_say_so_rather_than_returning_an_empty_list(mk
     redis_client, replay_redis = stores
     async with mk(_FakeVector(_FakeQdrant()), redis_client,
                   replay_redis, settings=_Off()) as c:
-        section = (await c.get("/autopilot/inbox")).json()["items"]["procedure_proposals"]
+        items = (await c.get("/autopilot/inbox")).json()["items"]
 
-    assert section == {"enabled": False, "count": 0, "items": []}
+    assert items["procedure_proposals"] == {"enabled": False, "count": 0, "items": []}
+    assert items["runbook_deviations"] == {"enabled": False, "count": 0, "items": []}
 
 
 @pytest.mark.asyncio
@@ -369,6 +393,84 @@ async def test_contested_previews_are_bounded(mk, stores):
     async with mk(_FakeVector(qdrant), redis_client, replay_redis) as c:
         pair = (await c.get("/autopilot/inbox")).json()["items"]["contested_memories"]["pairs"][0]
     assert len(pair["text_preview"]) <= 120
+
+
+# ------------------------------------------------- runbook deviations (C) --
+
+@pytest.mark.asyncio
+async def test_deviation_rows_carry_the_triage_fields_and_nothing_more(mk, stores):
+    """The ledger record carries member/agent/command_hash; the panel row must
+    not — triage needs what happened and where, not who. Pinning the exact key
+    set is what keeps a later field addition a decision rather than a leak."""
+    redis_client, replay_redis = stores
+    await redis_client.lpush(_ledger_key(), _deviation(
+        days_ago=2, kind="block", skill_id="sk9", step_id="deploy",
+        session="sess-a"))
+    await redis_client.lpush(_ledger_key(), _deviation(
+        days_ago=1, kind="ack", detail="rollback drill, block not applicable " * 10))
+
+    async with mk(_FakeVector(_FakeQdrant()), redis_client, replay_redis) as c:
+        section = (await c.get("/autopilot/inbox")).json()["items"]["runbook_deviations"]
+
+    assert section["count"] == 2
+    assert section["approximate"] is False
+    newest, older = section["items"]
+    assert newest["kind"] == "ack", "LPUSH ledger renders newest-first"
+    assert newest["at"] == iso(1)
+    assert len(newest["detail"]) <= 120, "ack reasons are previewed, not shipped whole"
+    assert older == {"at": iso(2), "kind": "block", "skill_id": "sk9",
+                     "step_id": "deploy", "session": "sess-a", "detail": ""}
+    assert set(newest) == {"at", "kind", "skill_id", "step_id", "session", "detail"}
+
+
+@pytest.mark.asyncio
+async def test_deviation_rows_are_capped_but_the_count_is_not(mk, stores):
+    redis_client, replay_redis = stores
+    for i in range(35):
+        await redis_client.lpush(_ledger_key(), _deviation(days_ago=i))
+    async with mk(_FakeVector(_FakeQdrant()), redis_client, replay_redis) as c:
+        section = (await c.get("/autopilot/inbox")).json()["items"]["runbook_deviations"]
+    assert section["count"] == 35
+    assert len(section["items"]) == 20
+    assert section["approximate"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_full_ledger_is_reported_approximate(mk, stores, monkeypatch):
+    """MAX_DEVIATIONS is a disclosed cap — the ledger LTRIMs itself, so a full
+    read means older deviations are already gone and the count is a floor, not
+    a census."""
+    monkeypatch.setattr(proc_store, "MAX_DEVIATIONS", 5, raising=False)
+    redis_client, replay_redis = stores
+    for i in range(5):
+        await redis_client.lpush(_ledger_key(), _deviation(days_ago=i))
+    async with mk(_FakeVector(_FakeQdrant()), redis_client, replay_redis) as c:
+        section = (await c.get("/autopilot/inbox")).json()["items"]["runbook_deviations"]
+    assert section["count"] == 5
+    assert section["approximate"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_broken_ledger_read_degrades_only_the_deviation_section(mk, stores, monkeypatch):
+    """`list_deviations` promises never to raise, but the inbox's isolation
+    must not depend on another module keeping its promise — the `_section`
+    guard is what makes that promise non-load-bearing here."""
+    redis_client, replay_redis = stores
+
+    async def boom(*a, **k):
+        raise RuntimeError("ledger unreadable")
+    monkeypatch.setattr(proc_store, "list_deviations", boom, raising=False)
+
+    qdrant = _FakeQdrant([skill("d1", status="draft")])
+    async with mk(_FakeVector(qdrant), redis_client, replay_redis) as c:
+        resp = await c.get("/autopilot/inbox")
+
+    assert resp.status_code == 200, "one broken ledger must not 500 the inbox"
+    body = resp.json()
+    assert body["degraded"] == ["runbook_deviations"]
+    assert body["items"]["runbook_deviations"]["error"]
+    assert body["items"]["draft_skills"]["count"] == 1
+    assert body["total_actionable"] == 1
 
 
 # ------------------------------------------------------------------ digest --

@@ -349,6 +349,14 @@ async def evaluate(redis_client, settings, *, req, workspace: str, member: str,
                         f"will not run until they have succeeded."
                     ),
                 ))
+                # Ledger (Phase C): a refused command is a deviation the
+                # operator sees. Hash only, never the command text.
+                await store.record_deviation(redis_client, settings, workspace, {
+                    "at": _now(), "kind": "block", "skill_id": skill_id,
+                    "step_id": entry["step_id"], "session": session,
+                    "member": member, "agent": req.agent_id or "",
+                    "command_hash": chash, "detail": "",
+                })
 
         first = matches_meta[0]
         pending = {
@@ -377,6 +385,28 @@ async def evaluate(redis_client, settings, *, req, workspace: str, member: str,
         return CommandEnforcement()
 
 
+async def _attempt_deviations(redis_client, settings, workspace: str,
+                              pending: dict, matches: list[dict],
+                              detail: str) -> None:
+    """One failed_attempt ledger row per pending match (Phase C). Recorded to
+    the OWNING workspace — the operator whose runbook the attempt belonged to.
+    Hash only, never the command text; pending carries no member id, so that
+    field is genuinely empty here."""
+    for m in matches:
+        if not isinstance(m, dict):
+            continue
+        await store.record_deviation(redis_client, settings, workspace, {
+            "at": _now(), "kind": "failed_attempt",
+            "skill_id": m.get("skill") or "",
+            "step_id": m.get("step_id") or "",
+            "session": pending.get("session") or "",
+            "member": "",
+            "agent": pending.get("agent") or "",
+            "command_hash": pending.get("command_hash") or "",
+            "detail": detail,
+        })
+
+
 async def reconcile(redis_client, settings, *, action_id: str, success: bool,
                     exit_status: int | None,
                     caller_workspace: str = "") -> dict:
@@ -391,6 +421,12 @@ async def reconcile(redis_client, settings, *, action_id: str, success: bool,
         if pending is None:
             return {"status": "none"}
 
+        matches = pending.get("matches")
+        if not isinstance(matches, list) or not matches:
+            matches = [{"skill": pending.get("skill"),
+                        "step_id": pending.get("step_id"),
+                        "execution_no": pending.get("execution_no", 1)}]
+
         # Tenancy: a caller in another workspace cannot settle this evidence.
         # The pending is already consumed (GETDEL) — failing toward "satisfies
         # nothing" is the safe side.
@@ -401,6 +437,8 @@ async def reconcile(redis_client, settings, *, action_id: str, success: bool,
                 "outcome": {"success": bool(success), "exit_status": exit_status,
                             "refused": "workspace mismatch"},
             })
+            await _attempt_deviations(redis_client, settings, ws, pending,
+                                      matches, "workspace mismatch")
             return {"status": "attempt", "reason": "workspace mismatch"}
 
         real_zero = (exit_status == 0 and not isinstance(exit_status, bool))
@@ -409,6 +447,10 @@ async def reconcile(redis_client, settings, *, action_id: str, success: bool,
                 **pending, "settled": _now(),
                 "outcome": {"success": bool(success), "exit_status": exit_status},
             })
+            await _attempt_deviations(
+                redis_client, settings, ws, pending, matches,
+                "success=false" if success is not True
+                else f"exit_status={exit_status}")
             return {"status": "attempt"}
 
         index = await store.load_index(redis_client)
@@ -418,11 +460,6 @@ async def reconcile(redis_client, settings, *, action_id: str, success: bool,
             if isinstance(e, dict) and e.get("skill_id"):
                 by_skill.setdefault(e["skill_id"], []).append(e)
 
-        matches = pending.get("matches")
-        if not isinstance(matches, list) or not matches:
-            matches = [{"skill": pending.get("skill"),
-                        "step_id": pending.get("step_id"),
-                        "execution_no": pending.get("execution_no", 1)}]
         committed = 0
         for m in matches:
             skill_id = m.get("skill") or ""
@@ -494,6 +531,17 @@ async def acknowledge(redis_client, settings, *, challenge_id: str,
         "skill": challenge.get("skill"), "step_id": challenge.get("step_id"),
         "command_hash": challenge.get("command_hash"),
         "missing": challenge.get("missing"), "acked_at": _now(),
+    })
+    # Ledger (Phase C): every accepted override is a deviation on the record.
+    # No agent id on this path — the ack arrives over REST/MCP, not the
+    # gateway's action stream.
+    await store.record_deviation(redis_client, settings, workspace, {
+        "at": _now(), "kind": "ack",
+        "skill_id": challenge.get("skill") or "",
+        "step_id": challenge.get("step_id") or "",
+        "session": session, "member": member, "agent": "",
+        "command_hash": challenge.get("command_hash") or "",
+        "detail": reason,
     })
     await store.mint_permit(redis_client, challenge_id, {
         "workspace": workspace,

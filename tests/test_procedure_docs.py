@@ -164,10 +164,11 @@ def _routes() -> list[str]:
 
 
 def test_the_cortex_guide_lists_every_procedures_route() -> None:
-    # 7 paths: the three round-1 routes plus round 2's bundle, bundle/ack,
-    # ack, and {skill_id}/mode (GET+PUT share the mode path).
+    # 8 paths: the three round-1 routes plus round 2's bundle, bundle/ack,
+    # ack, {skill_id}/mode (GET+PUT share the mode path), and Phase C's
+    # deviations ledger.
     routes = _routes()
-    assert len(routes) == 7, f"expected 7 procedures routes, found {routes}"
+    assert len(routes) == 8, f"expected 8 procedures routes, found {routes}"
     for path in routes:
         assert path in CORTEX_ENDPOINTS, (
             f"docs/guides/cortex-api-endpoints.md does not document {path}"
@@ -180,6 +181,9 @@ def test_the_cortex_guide_records_the_scope_gate_on_each_route() -> None:
     cannot infer the posture from its surroundings."""
     idx = CORTEX_ENDPOINTS.find("/procedures")
     assert idx != -1
-    window = CORTEX_ENDPOINTS[idx:idx + 4000]
+    # 8000, not the original 4000: the block has grown from three bullets to
+    # eight (round 2 + Phase C), and "admin" sits in the third bullet — the
+    # window must cover the whole block or this passes/fails on prose length.
+    window = CORTEX_ENDPOINTS[idx:idx + 8000]
     assert "memory:read" in window
     assert "admin" in window

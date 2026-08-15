@@ -120,9 +120,13 @@ evaporating.
 
 `GET /autopilot/inbox` (admin) aggregates every place review work already
 accumulates — draft skills, stale skills, source-changed (`needs_rereview`)
-skills, Living Procedures proposals, contested pairs, the eval DLQ — into one
-surface with per-section fault isolation (one broken store never blanks the
-inbox). `GET /autopilot/digest?days=7` answers "what changed this week"
+skills, Living Procedures proposals, runbook deviations, contested pairs, the
+eval DLQ — into one surface with per-section fault isolation (one broken store
+never blanks the inbox). A runbook deviation is Enforced Runbooks' exception
+trail — a block that fired, a challenge an agent acknowledged, or a matched
+command that failed — kept newest-first per workspace under a disclosed
+200-entry cap (`MAX_DEVIATIONS`), so the section's `approximate` flag means
+the ledger itself has trimmed. `GET /autopilot/digest?days=7` answers "what changed this week"
 (learned/archived/superseded/dreamed/drafted/feedback/GC actions) with capped
 scans marked `approximate` when capped. The dashboard's **Autopilot** tab
 renders both, read-only — round 1 proposes and reports, it never mutates, and

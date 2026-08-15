@@ -49,6 +49,7 @@ _ACK_PREFIX = "proc:ack:"              # recorded ack reasons (audit)
 _PERMIT_PREFIX = "proc:permit:"        # one-use permits, consumed via GETDEL
 _MODE_PREFIX = "proc:mode:"            # proc:mode:{workspace}:{skill_id}
 _BUNDLE_ACK_PREFIX = "proc:bundle_acks:"  # per-workspace hash: session -> holding
+_DEVIATION_PREFIX = "proc:deviations:"  # per-workspace LIST, newest first
 
 # Spec-pinned lifetimes: challenge and permit both live 10 minutes.
 CHALLENGE_TTL_SECONDS = 600
@@ -57,6 +58,12 @@ PERMIT_TTL_SECONDS = 600
 # dashboard's "recent sessions lack acks" warning needs a horizon, and 7 days
 # covers any session that could still be running.
 BUNDLE_ACK_TTL_SECONDS = 7 * 86400
+
+# Ledger depth per workspace — a DISCLOSED cap (the endpoint docs state it):
+# the ledger is a triage/audit surface, not an archive, so LTRIM keeps the
+# newest 200 and a full ledger reads as "the most recent 200", never as the
+# whole history reported as if it were complete.
+MAX_DEVIATIONS = 200
 
 ENFORCEMENT_MODES = ("advise", "require_ack", "block")
 DEFAULT_MODE = "advise"
@@ -829,3 +836,52 @@ async def list_bundle_acks(redis_client, workspace_id: str) -> dict[str, dict]:
         return out
     except Exception:  # noqa: BLE001
         return {}
+
+
+# ---------------------------------------------------------------------------
+# Phase C — the deviation ledger (spec: "Deviation ledger")
+# ---------------------------------------------------------------------------
+
+
+async def record_deviation(redis_client, settings, workspace_id: str,
+                           record: dict) -> None:
+    """Append one deviation (block / ack / failed_attempt) to the workspace's
+    ledger, newest first. Records carry the COMMAND HASH, never the command
+    text — pending records already deliberately omit it (secrets). Losing one
+    costs an audit row, never a decision, so this never raises."""
+    try:
+        key = f"{_DEVIATION_PREFIX}{workspace_id}"
+        record.setdefault("at", _now())
+        await redis_client.lpush(key, json.dumps(record))
+        await redis_client.ltrim(key, 0, MAX_DEVIATIONS - 1)
+        # Same horizon as the execution records the deviations annotate,
+        # refreshed on every write.
+        ttl = int(getattr(settings, "PROCEDURE_EXEC_TTL_DAYS", 90)) * 86400
+        await redis_client.expire(key, ttl)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("deviation not recorded for %s: %s", workspace_id, exc)
+
+
+async def list_deviations(redis_client, workspace_id: str,
+                          limit: int = 50) -> list[dict]:
+    """Newest-first ledger read. Never raises; an undecodable or non-dict
+    entry is skipped rather than failing the whole read."""
+    try:
+        n = int(limit)
+        if n <= 0:
+            return []
+        raw = await redis_client.lrange(
+            f"{_DEVIATION_PREFIX}{workspace_id}", 0, n - 1)
+        out: list[dict] = []
+        for item in raw or []:
+            try:
+                data = json.loads(_s(item))
+            except (TypeError, ValueError):
+                continue
+            if isinstance(data, dict):
+                out.append(data)
+        return out
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("deviation ledger unreadable for %s: %s",
+                     workspace_id, exc)
+        return []

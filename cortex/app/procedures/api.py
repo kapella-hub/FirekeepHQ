@@ -159,12 +159,32 @@ def create_procedures_router(get_redis, get_vector, settings_fn) -> APIRouter:
                 "executions": exec_counts.get(skill_id, 0),
                 "steps": stats,
                 "proposals": proposals,
+                # Phase C: what the dashboard's NOT-ACTIVELY-ENFORCED
+                # derivation reads (computed CLIENT-side, never here) — the
+                # armed mode and how many indexed steps are commands.
+                "mode": (await store.get_mode(r, caller_ws, skill_id))["mode"],
+                "command_steps": sum(
+                    1 for e in by_skill.get(skill_id) or []
+                    if (e.get("kind") or "file_glob") == "command"),
             })
         rows.sort(key=lambda x: (-x["executions"], x["skill_id"]))
+        # Phase C: the coverage half of the enforcement story. A session is
+        # `current` when its acked bundle version equals the CURRENT one;
+        # everything else it acked is stale. Coverage is REPORTED, never
+        # assumed — the server enforces whatever reaches it regardless.
+        bundle_ver = (await enforce.build_bundle(r, caller_ws))["version"]
+        acks = await store.list_bundle_acks(r, caller_ws)
+        sessions_current = sum(
+            1 for a in acks.values() if a.get("version") == bundle_ver)
         return {
             "procedures": rows,
             "count": len(rows),
             "specs_total": sum(row["spec_count"] for row in rows),
+            "bundle": {
+                "version": bundle_ver,
+                "sessions_current": sessions_current,
+                "sessions_stale": len(acks) - sessions_current,
+            },
             # What the pass did, and — the point of it — WHICH closed state
             # Tier B is in. Without this a deployment where the gate is shut for
             # lack of an outcome signal is byte-identical to one where it is
@@ -298,5 +318,17 @@ def create_procedures_router(get_redis, get_vector, settings_fn) -> APIRouter:
         record = await store.set_mode(
             r, caller_ws, skill_id, body.mode, _caller_member(request))
         return {"skill_id": skill_id, **record}
+
+    @router.get("/procedures/deviations", dependencies=read_dep)
+    async def list_deviations(request: Request, limit: int = 50):
+        """The deviation ledger (Phase C): block refusals, acknowledged
+        overrides and failed attempts, newest first. The ledger keeps the
+        newest store.MAX_DEVIATIONS per workspace — a DISCLOSED cap, so a
+        full read is "the most recent 200", never the whole history. Records
+        carry the command HASH only; raw command text is never stored."""
+        r = get_redis()
+        records = await store.list_deviations(
+            r, _caller_workspace(request), limit)
+        return {"deviations": records, "count": len(records)}
 
     return router

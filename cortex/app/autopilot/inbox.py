@@ -191,6 +191,42 @@ async def procedure_proposals(redis_client, settings) -> dict[str, Any]:
     }
 
 
+async def runbook_deviations(redis_client, settings) -> dict[str, Any]:
+    """Enforced Runbooks' deviation ledger — blocks fired, challenges
+    acknowledged, matched commands that failed.
+
+    Same PROCEDURE_ENABLED gate and `enabled: false` shape as the proposals
+    section, for the same reason: a disabled subsystem and a quiet one are
+    different states with different remedies. The ledger LTRIMs itself to
+    `MAX_DEVIATIONS` (a disclosed cap), so reading that many is reading all of
+    it — and a full read means older deviations were already trimmed away,
+    which is what `approximate` exists to say. Rows deliberately drop
+    member/agent/command_hash: triage needs what happened and where, not who,
+    and the ledger stores no raw command text at all (secrets).
+    """
+    if not getattr(settings, "PROCEDURE_ENABLED", False):
+        return {"enabled": False, "count": 0, "items": []}
+
+    from app.procedures import store as proc_store
+    from app.procedures.api import _deployment_workspace
+
+    records = await proc_store.list_deviations(
+        redis_client, _deployment_workspace(), limit=proc_store.MAX_DEVIATIONS)
+    return {
+        "enabled": True,
+        "count": len(records),
+        "approximate": len(records) >= proc_store.MAX_DEVIATIONS,
+        "items": [{
+            "at": r.get("at") or "",
+            "kind": r.get("kind") or "",
+            "skill_id": r.get("skill_id") or "",
+            "step_id": r.get("step_id") or "",
+            "session": r.get("session") or "",
+            "detail": _preview(r.get("detail")),
+        } for r in records[:SECTION_ITEM_LIMIT]],
+    }
+
+
 async def eval_dlq(replay_redis) -> dict[str, Any]:
     """Sessions whose eval failed and were dead-lettered.
 

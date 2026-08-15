@@ -412,3 +412,181 @@ class TestTheClosedTierBStateReachesAHuman:
         })
         html = _render(body, {"sk1": SKILL})
         assert "efficacy verdicts are being offered" in html
+
+
+# ------------------------------------------- Phase C: enforced runbooks --
+# All Phase C wire fields (mode, command_steps, bundle, deviations) are
+# ADDITIVE AND OPTIONAL: a round-1 server sends none of them, and every case
+# above must keep passing untouched — which is why the fixtures below extend
+# ROW rather than fork it.
+
+BUNDLE = {"version": "ab12cd34ef56", "sessions_current": 0, "sessions_stale": 3}
+
+
+def _dev(i, **over):
+    # i orders newest-first, matching the wire: the ledger is LPUSH
+    # newest-first and the panel must preserve that order, not re-derive it.
+    rec = {
+        "at": "2026-08-%02dT00:00:00+00:00" % (20 - i), "kind": "block",
+        "skill_id": "sk1", "step_id": "a", "session": "s%d" % i,
+        "member": "morgan", "agent": "claude", "command_hash": "h%d" % i,
+        "detail": "d%d" % i,
+    }
+    rec.update(over)
+    return rec
+
+
+class TestModeBadge:
+    def test_each_mode_renders_its_badge(self):
+        html = _render(_body([dict(ROW, mode="advise")]), {"sk1": SKILL})
+        assert ">advise<" in html
+        html = _render(_body([dict(ROW, mode="require_ack")]), {"sk1": SKILL})
+        assert ">require_ack<" in html and "badge-yellow" in html
+        html = _render(_body([dict(ROW, mode="block")]), {"sk1": SKILL})
+        assert ">block<" in html and "badge-red" in html
+
+    def test_absent_mode_renders_no_phase_c_markup_at_all(self):
+        """THE backward-compat case: a round-1 rollup carries no mode, no
+        command_steps, no bundle, no deviations — and the card must be the
+        round-1 card, nothing more."""
+        html = _render(_body([ROW]), {"sk1": SKILL})
+        assert ">advise<" not in html
+        assert "badge-red" not in html
+        assert "setProcedureMode" not in html
+        assert "<select" not in html
+        assert "NOT ACTIVELY ENFORCED" not in html
+        assert "Deviations" not in html
+
+
+class TestNotActivelyEnforced:
+    """The chip renders exactly when mode !== advise AND command_steps > 0 AND
+    bundle.sessions_current === 0 — configuration without enforcement. Any
+    missing field means the claim cannot be made, so it is not."""
+
+    def test_the_derivation_holds(self):
+        body = dict(_body([dict(ROW, mode="block", command_steps=2)]), bundle=BUNDLE)
+        assert "NOT ACTIVELY ENFORCED" in _render(body, {"sk1": SKILL})
+
+    def test_require_ack_also_qualifies(self):
+        body = dict(_body([dict(ROW, mode="require_ack", command_steps=1)]), bundle=BUNDLE)
+        assert "NOT ACTIVELY ENFORCED" in _render(body, {"sk1": SKILL})
+
+    def test_advise_mode_is_not_enforcement_so_no_warning(self):
+        body = dict(_body([dict(ROW, mode="advise", command_steps=2)]), bundle=BUNDLE)
+        assert "NOT ACTIVELY ENFORCED" not in _render(body, {"sk1": SKILL})
+
+    def test_a_current_session_means_it_is_enforced(self):
+        body = dict(_body([dict(ROW, mode="block", command_steps=2)]),
+                    bundle=dict(BUNDLE, sessions_current=2))
+        assert "NOT ACTIVELY ENFORCED" not in _render(body, {"sk1": SKILL})
+
+    def test_no_command_steps_means_nothing_to_enforce(self):
+        body = dict(_body([dict(ROW, mode="block", command_steps=0)]), bundle=BUNDLE)
+        assert "NOT ACTIVELY ENFORCED" not in _render(body, {"sk1": SKILL})
+
+    def test_an_absent_bundle_withholds_the_claim(self):
+        """A round-1 server sends no bundle; 'not actively enforced' would then
+        be an invented fact about session state nobody reported."""
+        body = _body([dict(ROW, mode="block", command_steps=2)])
+        assert "NOT ACTIVELY ENFORCED" not in _render(body, {"sk1": SKILL})
+
+
+class TestDeviationLedger:
+    def test_rows_render_newest_first_in_wire_order(self):
+        body = dict(_body([ROW]), deviations=[_dev(0), _dev(1)])
+        html = _render(body, {"sk1": SKILL})
+        assert html.index("d0") < html.index("d1")
+        assert "2026-08-20T00:00:00+00:00" in html, (
+            "the timestamp renders RAW: no formatter is reachable from the "
+            "pure block, and an invented 'ago' is a number nobody measured"
+        )
+
+    def test_kind_and_step_id_are_shown(self):
+        body = dict(_body([ROW]), deviations=[
+            _dev(0), _dev(1, kind="ack", step_id="b", detail="hotfix, dry run skipped")])
+        html = _render(body, {"sk1": SKILL})
+        assert 'badge-red">block<' in html
+        assert "hotfix, dry run skipped" in html
+
+    def test_display_caps_at_five_with_an_honest_remainder(self):
+        body = dict(_body([ROW]), deviations=[_dev(i) for i in range(7)])
+        html = _render(body, {"sk1": SKILL})
+        for i in range(5):
+            assert "d%d" % i in html
+        assert "d5" not in html and "d6" not in html
+        assert "+2 more" in html, "the remainder is the real count, not a guess"
+
+    def test_five_or_fewer_claims_no_remainder(self):
+        body = dict(_body([ROW]), deviations=[_dev(i) for i in range(5)])
+        assert " more<" not in _render(body, {"sk1": SKILL})
+
+    def test_absent_deviations_render_no_deviation_markup(self):
+        assert "Deviations" not in _render(_body([ROW]), {"sk1": SKILL})
+
+    def test_an_empty_ledger_renders_no_deviation_markup(self):
+        body = dict(_body([ROW]), deviations=[])
+        assert "Deviations" not in _render(body, {"sk1": SKILL})
+
+    def test_another_skills_deviations_do_not_render_on_this_row(self):
+        body = dict(_body([ROW]), deviations=[_dev(0, skill_id="other")])
+        html = _render(body, {"sk1": SKILL})
+        assert "Deviations" not in html and "d0" not in html
+
+    def test_hostile_detail_is_escaped(self):
+        body = dict(_body([ROW]),
+                    deviations=[_dev(0, detail="<img src=x onerror=alert(1)>")])
+        html = _render(body, {"sk1": SKILL})
+        assert "<img" not in html
+        assert "&lt;img" in html
+
+
+class TestModeControl:
+    def test_the_control_renders_when_the_rollup_carries_a_mode(self):
+        html = _render(_body([dict(ROW, mode="require_ack")]), {"sk1": SKILL})
+        assert "setProcedureMode('sk1'" in html
+        assert '<option value="require_ack" selected>' in html
+        assert '<option value="block">' in html
+
+    def test_no_control_without_a_mode(self):
+        """A round-1 server has no mode route for the Set button to PUT to, so
+        rendering the control there would be a button that can only 404."""
+        assert "setProcedureMode" not in _render(_body([ROW]), {"sk1": SKILL})
+
+    def test_a_quote_in_a_skill_id_cannot_break_out_of_the_onclick(self):
+        row = dict(ROW, skill_id="');alert(1);//", mode="advise")
+        html = _render(_body([row]), {})
+        assert "('&#39;);alert" not in html, (
+            "an entity-only escape decodes straight back into an argument break"
+        )
+        assert "\\&#39;);alert" in html, (
+            "the quote must be JS-escaped BEFORE it is HTML-escaped"
+        )
+
+
+class TestPhaseCWiring:
+    def test_set_mode_confirms_then_puts_then_reloads(self):
+        src = DASHBOARD.read_text(encoding="utf-8")
+        m = re.search(r"function setProcedureMode\([\s\S]*?\n\}", src)
+        assert m, "setProcedureMode not found"
+        body = m.group(0)
+        assert "confirm(" in body and body.index("confirm(") < body.index("fetchJSON("), (
+            "a mode change reaches every session's hook — it must be confirmed "
+            "before anything is sent"
+        )
+        assert "'PUT'" in body
+        assert "encodeURIComponent(skillId)" in body and "/mode'" in body
+        assert "fetchJSON(" in body
+        assert not re.search(r"[^J]\bfetch\(", body), "setProcedureMode must not use bare fetch"
+        assert ".catch(" in body, "the mode route is admin-gated; 403 is reachable"
+        assert "loadProcedures()" in body
+
+    def test_load_procedures_reads_the_deviation_ledger_tolerantly(self):
+        src = DASHBOARD.read_text(encoding="utf-8")
+        m = re.search(r"function loadProcedures\(\)[\s\S]*?\n\}", src)
+        assert m, "loadProcedures not found"
+        body = m.group(0)
+        assert "/procedures/deviations?limit=50" in body
+        # rollup catch + per-skill catch + deviations catch: the deviations
+        # route does not exist on a round-1 server, and its 404 must degrade
+        # the ledger alone, never the panel.
+        assert body.count(".catch(") >= 3

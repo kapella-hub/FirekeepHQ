@@ -301,6 +301,80 @@ class TestInbox:
         assert "unavailable" in _render("renderAutopilotInbox", None)
 
 
+# ------------------------------------- inbox: runbook deviations (Phase C) --
+# Enforced Runbooks Phase C adds a "runbook_deviations" inbox section reading
+# the deviation ledger (blocks, acks, failed attempts) for the deployment's
+# own workspace. The key is OPTIONAL on the wire: an older server never sends
+# it, and a queue nobody checked must not be reported as clear.
+
+DEVIATION_SECTION = {
+    "enabled": True, "count": 2, "approximate": False, "items": [
+        {"at": "2026-08-14T10:00:00+00:00", "kind": "block", "skill_id": "sk1",
+         "step_id": "a", "session": "s1", "member": "morgan", "agent": "claude",
+         "command_hash": "deadbeef", "detail": ""},
+        {"at": "2026-08-13T09:00:00+00:00", "kind": "ack", "skill_id": "sk1",
+         "step_id": "b", "session": "s2", "member": "morgan", "agent": "claude",
+         "command_hash": "cafef00d", "detail": "hotfix, dry run skipped"},
+    ],
+}
+
+
+class TestRunbookDeviations:
+    def test_the_section_renders_kind_place_reason_and_time(self):
+        body = _inbox(items={"runbook_deviations": DEVIATION_SECTION})
+        html = _render("renderAutopilotInbox", body)
+        assert "Runbook deviations" in html
+        assert 'badge-red">block<' in html
+        assert "sk1 / a" in html
+        assert "hotfix, dry run skipped" in html
+        assert "2026-08-14T10:00:00+00:00" in html, (
+            "the timestamp renders RAW — an invented 'ago' is a number nobody "
+            "measured (the proceduresPanel precedent)"
+        )
+
+    def test_an_absent_key_is_not_listed_as_clear(self):
+        """THE backward-compat case: a server predating Phase C sends no
+        runbook_deviations key at all. Listing the section under 'Nothing
+        waiting in' would report a check nobody made."""
+        html = _render("renderAutopilotInbox", INBOX)
+        assert "Runbook deviations" not in html
+
+    def test_a_present_empty_section_is_listed_as_clear(self):
+        body = _inbox(items={"runbook_deviations": {
+            "enabled": True, "count": 0, "approximate": False, "items": []}})
+        html = _render("renderAutopilotInbox", body)
+        assert "Nothing waiting in:" in html
+        assert "Runbook deviations" in html
+
+    def test_a_disabled_deployment_is_named_as_disabled(self):
+        body = _inbox(items={"runbook_deviations": {
+            "enabled": False, "count": 0, "items": []}})
+        html = _render("renderAutopilotInbox", body)
+        assert "Runbook deviations (disabled)" in html
+
+    def test_a_truncated_section_says_how_many_are_not_shown(self):
+        body = _inbox(items={"runbook_deviations": dict(DEVIATION_SECTION, count=30)})
+        html = _render("renderAutopilotInbox", body)
+        assert "28 more not shown here." in html
+
+    def test_hostile_detail_is_escaped(self):
+        sec = json.loads(json.dumps(DEVIATION_SECTION))
+        sec["items"][1]["detail"] = "<script>alert(1)</script>"
+        body = _inbox(items={"runbook_deviations": sec})
+        html = _render("renderAutopilotInbox", body)
+        assert "<script>" not in html
+        assert "&lt;script&gt;" in html
+
+    def test_the_cta_hands_the_operator_to_the_procedures_surface(self):
+        """Read-only round 1 discipline: the row acts by handing the operator
+        to the surface that owns the action, and nothing else."""
+        body = _inbox(items={"runbook_deviations": DEVIATION_SECTION})
+        html = _render("renderAutopilotInbox", body)
+        # procedure_proposals (count 1 in the fixture) uses the same CTA, so
+        # the count pins that the deviations card carries its own.
+        assert html.count("autopilotOpen('skills')") == 2
+
+
 class TestEscaping:
     def test_hostile_skill_text_is_escaped(self):
         body = _inbox(items={"draft_skills": {"count": 1, "items": [

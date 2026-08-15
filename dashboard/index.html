@@ -5082,6 +5082,73 @@ function renderProceduresPanel(data, skillsById) {
             ? skill.step_specs : null;
         var execs = (row.executions != null) ? row.executions : 0;
 
+        // Everything below is Phase C and OPTIONAL ON THE WIRE: a round-1
+        // server sends no mode / command_steps / bundle / deviations, and every
+        // one of these strings then stays '', leaving the round-1 card intact.
+        var modeBits = '';
+        var modeCtl = '';
+        if (row.mode != null) {
+            // Colour tracks consequence: advise observes, require_ack demands
+            // a stated reason, block stops the command at the client hook.
+            var mcls = row.mode === 'block' ? ' badge-red'
+                : (row.mode === 'require_ack' ? ' badge-yellow' : '');
+            modeBits = '<span class="badge' + mcls + '" style="margin-left:6px">' + procEsc(row.mode) + '</span>';
+            // Enforcement happens in the CLIENT hook, gated on a session having
+            // acked the current instruction bundle. A non-advise mode over
+            // command steps with zero current sessions is configuration, not
+            // enforcement — the one state where the mode badge lies by
+            // omission, so it is called out on the row itself.
+            if (row.mode !== 'advise' && row.command_steps > 0
+                    && data && data.bundle && data.bundle.sessions_current === 0) {
+                modeBits += '<span class="badge badge-red" style="margin-left:6px"'
+                    + ' title="No live session has acknowledged the current instruction bundle, so no client hook out there is enforcing this mode">'
+                    + 'NOT ACTIVELY ENFORCED</span>';
+            }
+            // The control renders only when the rollup carries a mode: a
+            // round-1 server has no mode route for the Set button to PUT to.
+            var opts = ['advise', 'require_ack', 'block'].map(function(m) {
+                return '<option value="' + m + '"' + (m === row.mode ? ' selected' : '') + '>' + m + '</option>';
+            }).join('');
+            modeCtl = '<div style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:11px">'
+                + '<span class="text-dim">mode</span>'
+                + '<select style="font-size:11px">' + opts + '</select>'
+                + '<button class="btn btn-sm btn-outline" style="padding:2px 8px;font-size:10px"'
+                + ' onclick="setProcedureMode(\'' + procAttr(row.skill_id) + '\', this.parentNode.querySelector(\'select\').value)">Set</button>'
+                + '</div>';
+        }
+
+        var devs = '';
+        var allDevs = (data && Array.isArray(data.deviations)) ? data.deviations : null;
+        if (allDevs) {
+            var mine = allDevs.filter(function(d) { return d && d.skill_id === row.skill_id; });
+            if (mine.length) {
+                // Wire order is preserved: the ledger is LPUSH newest-first,
+                // and re-sorting by parsed timestamp would let one malformed
+                // record scramble the rest. The timestamp renders RAW — no
+                // formatter in the file is reachable from this pure block, and
+                // a hand-rolled "2h ago" that rounds is a number nobody
+                // measured. Records carry no command text by design (secrets).
+                var shown = mine.slice(0, 5).map(function(d) {
+                    var kcls = d.kind === 'block' ? ' badge-red'
+                        : (d.kind === 'failed_attempt' ? ' badge-yellow' : '');
+                    return '<div style="display:flex;justify-content:space-between;gap:12px;font-size:11px;padding:3px 0;border-top:1px solid var(--border-subtle)">'
+                        + '<span><span class="badge' + kcls + '">' + procEsc(d.kind || 'deviation') + '</span> '
+                        + procEsc(d.step_id || '')
+                        + (d.detail ? ' <span class="text-dim">' + procEsc(d.detail) + '</span>' : '')
+                        + '</span>'
+                        + '<span class="text-dim" style="white-space:nowrap">' + procEsc(d.at || '') + '</span>'
+                        + '</div>';
+                }).join('');
+                devs = '<div style="font-size:11px;font-weight:600;margin-top:8px">Deviations</div>' + shown;
+                if (mine.length > 5) {
+                    // The remainder is the REAL count for this skill in the
+                    // response, not a guess past the route's own limit.
+                    devs += '<div class="text-dim" style="font-size:11px;padding:3px 0">+'
+                        + procEsc(mine.length - 5) + ' more</div>';
+                }
+            }
+        }
+
         var steps = procStepRows(row, specs).map(function(s) {
             var counts = s.stats
                 ? ('observed ' + procEsc(s.stats.observed != null ? s.stats.observed : 0)
@@ -5109,11 +5176,11 @@ function renderProceduresPanel(data, skillsById) {
 
         return '<div class="card" style="padding:12px;margin-bottom:10px">'
             + '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px">'
-                + '<span style="font-weight:600;font-size:13px">' + procEsc(row.trigger || row.skill_id) + '</span>'
+                + '<span style="font-weight:600;font-size:13px">' + procEsc(row.trigger || row.skill_id) + modeBits + '</span>'
                 + '<span class="text-dim" style="font-size:11px;white-space:nowrap">' + procEsc(execs) + ' execution' + (execs === 1 ? '' : 's') + '</span>'
             + '</div>'
             + '<div class="text-dim" style="font-size:11px;margin-top:2px">' + procEsc(procCoverage(row, specs)) + '</div>'
-            + steps + props
+            + steps + props + devs + modeCtl
             + '</div>';
     }).join('');
     return head + cards;
@@ -5132,12 +5199,20 @@ function loadProcedures() {
         // list is read per procedure to render a legible card. Any failure
         // degrades that one card (id labels, unknown denominator), never the
         // panel — which is why each call has its own catch.
-        return Promise.all(rows.map(function(row) {
+        // The deviation ledger rides its own route, which a round-1 server
+        // does not have: a 404 (or any failure) here means the ledger stays
+        // absent and the panel renders exactly as round 1 did — degrading the
+        // deviations block, never the panel.
+        var deviations = fetchJSON(CONFIG.CORTEX_API + '/procedures/deviations?limit=50')
+            .then(function(d) { return (d && d.deviations) || null; })
+            .catch(function() { return null; });
+        return Promise.all([deviations].concat(rows.map(function(row) {
             return fetchJSON(CONFIG.CORTEX_API + '/skills/' + encodeURIComponent(row.skill_id))
                 .catch(function() { return null; });
-        })).then(function(skills) {
+        }))).then(function(results) {
+            if (results[0]) data.deviations = results[0];
             var byId = {};
-            skills.forEach(function(s, i) { if (s) byId[rows[i].skill_id] = s; });
+            results.slice(1).forEach(function(s, i) { if (s) byId[rows[i].skill_id] = s; });
             panel.innerHTML = renderProceduresPanel(data, byId);
         });
     }).catch(function(e) {
@@ -5163,6 +5238,23 @@ function dismissProcedureProposal(id) {
     return fetchJSON(CONFIG.CORTEX_API + '/procedures/proposals/' + encodeURIComponent(id) + '/dismiss', { method: 'POST' })
         .then(function() { toast('Proposal dismissed', 'success'); loadProcedures(); })
         .catch(function(e) { toast('Dismiss failed: ' + ((e && e.message) ? e.message : 'unknown error'), 'error'); });
+}
+
+function setProcedureMode(skillId, mode) {
+    // A mode change reaches every session's pre-tool hook on the next bundle
+    // ack, and block STOPS matching commands fleet-wide — so it is confirmed
+    // first, in words that say what block actually does.
+    var msg = mode === 'block'
+        ? 'Set mode to BLOCK? Matching commands will be stopped at the client hook in every acked session.'
+        : 'Set procedure mode to "' + mode + '"?';
+    if (!confirm(msg)) return;
+    // The mode route is admin-gated server-side, so 403 is a REACHABLE outcome
+    // here — same reasoning as the dismiss handler above.
+    return fetchJSON(CONFIG.CORTEX_API + '/procedures/' + encodeURIComponent(skillId) + '/mode', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: mode })
+    })
+        .then(function() { toast('Mode set to ' + mode, 'success'); loadProcedures(); })
+        .catch(function(e) { toast('Mode change failed: ' + ((e && e.message) ? e.message : 'unknown error'), 'error'); });
 }
 
 /* >>> autopilotPanel — extracted and executed by tests/test_dashboard_autopilot.py.
@@ -5288,6 +5380,22 @@ function apDlqRow(it) {
         + '<span style="color:var(--text-dim)">' + apEsc(it.error || '') + '</span></div>';
 }
 
+function apDeviationRow(it) {
+    // A deviation record carries NO command text by design — the ledger stores
+    // a hash because raw commands carry secrets — so the row shows what the
+    // record has: kind, where, why, when. Timestamps render raw (the
+    // proceduresPanel precedent: an "ago" that rounds is a number nobody
+    // measured).
+    return '<div style="padding:7px 0;border-top:1px solid var(--border);font-size:13px">'
+        + '<span class="badge' + (it.kind === 'block' ? ' badge-red'
+            : (it.kind === 'failed_attempt' ? ' badge-yellow' : '')) + '">'
+        + apEsc(it.kind || 'deviation') + '</span> '
+        + apEsc(it.skill_id || '') + ' / ' + apEsc(it.step_id || '')
+        + (it.detail ? '<span style="color:var(--text-dim);margin-left:8px">' + apEsc(it.detail) + '</span>' : '')
+        + (it.at ? '<span style="color:var(--text-dim);margin-left:8px">' + apEsc(it.at) + '</span>' : '')
+        + '</div>';
+}
+
 var AUTOPILOT_SECTIONS = [
     { key: 'draft_skills', title: 'Draft skills awaiting approval',
       cta: 'Open draft queue', action: "autopilotOpenSkills('draft')",
@@ -5301,6 +5409,9 @@ var AUTOPILOT_SECTIONS = [
     { key: 'procedure_proposals', title: 'Procedure proposals',
       cta: 'Open procedures', action: "autopilotOpen('skills')",
       pick: function(s) { return s.items || []; }, row: apProposalRow },
+    { key: 'runbook_deviations', title: 'Runbook deviations',
+      cta: 'Open procedures', action: "autopilotOpen('skills')",
+      pick: function(s) { return s.items || []; }, row: apDeviationRow },
     { key: 'contested_memories', title: 'Contested memories',
       cta: 'Open memory', action: "autopilotOpen('memory')",
       pick: function(s) { return s.pairs || []; }, row: apContestedRow },
@@ -5342,7 +5453,11 @@ function renderAutopilotInbox(inbox) {
     var cards = [];
     var clear = [];
     AUTOPILOT_SECTIONS.forEach(function(sec) {
-        var s = items[sec.key] || {};
+        var s = items[sec.key];
+        // A key the server never sent is a queue nobody checked, not a queue
+        // that is clear: an older server predating a section must not have it
+        // listed under "Nothing waiting in".
+        if (s == null) return;
         if (s.error) {
             cards.push(apSectionCard(sec, s,
                 '<div style="margin-top:8px;font-size:12px;color:var(--red)">Could not read this queue: '
@@ -5557,6 +5672,7 @@ window.autopilotOpenSkills = autopilotOpenSkills;
 
 window.loadProcedures = loadProcedures;
 window.dismissProcedureProposal = dismissProcedureProposal;
+window.setProcedureMode = setProcedureMode;
 
 async function loadSkills() {
     var status = $('skillStatusFilter') ? $('skillStatusFilter').value : 'active';
