@@ -25,7 +25,7 @@ app/
 ├── models.py          # Request/response Pydantic models
 ├── exceptions.py      # FirekeepCortexError hierarchy
 ├── main.py            # FastAPI app, lifespan, routes, DI, router integration
-├── mcp_server.py      # MCP server (Streamable HTTP; 29 tools — core memory (recall/learn/stream/health/handoff/feedback) + replay/eval/vault/corpus/knowledge/skills/agent-gateway feature tools)
+├── mcp_server.py      # MCP server (Streamable HTTP; 30 tools — core memory (recall/learn/stream/health/handoff/feedback) + replay/eval/vault/corpus/knowledge/skills/agent-gateway feature tools + runbook_ack)
 ├── dashboard.py       # Web dashboard router (memory browser, graph viz, DLQ)
 ├── webhooks.py        # Webhook registration and event firing
 ├── stats.py           # Memory statistics endpoint
