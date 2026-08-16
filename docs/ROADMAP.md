@@ -163,7 +163,20 @@ anchors to human members.
    update/doctor`). Symdex is the first pack and becomes **opt-in via
    `firekeep pack add symdex`** — this REVERSES the 0.1.4x always-installed
    decision, by explicit owner choice over the reviewer recommendation of
-   default-on. Migration rule when it lands: an update never removes a
+   default-on. **The rationale (stated 2026-08-15, and it is the premise
+   for the whole pack model): Personal targets GENERAL use, so no domain
+   pack is privileged — code intelligence is one peer among documents,
+   email, calendar, all delivered on demand.** A general-use product whose
+   code pack auto-installs has its identity decided by its first plugin.
+   The today's-funnel concern (current users are all coding agents) is
+   handled by SUGGESTION, not defaults: install detects a dev-shaped
+   machine and the doctor/briefing surfaces the one-line add command —
+   no new install questions, no privileged pack. Consequence: Documents
+   is the strategically important second pack (first proof Personal is
+   not a dev tool, buildable now over the existing corpus ingest); the
+   still-missing half of general-use Personal is a HOST surface a
+   non-developer actually opens (consumer MCP hosts near-term; the parked
+   Desktop bet long-term). Migration rule when it lands: an update never removes a
    capability an install already has — existing installs keep symdex;
    opt-in applies to new installs. Pack permissions are DISCLOSURE
    client-side and scoped per-pack API keys server-side; no sandboxing is
