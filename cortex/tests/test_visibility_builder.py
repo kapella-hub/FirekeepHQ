@@ -4,7 +4,7 @@ Pure condition construction — no I/O. The shape tests pin the exact
 Qdrant condition tree so an egress caller can trust 'apply the builder'
 means the same thing everywhere.
 """
-from qdrant_client.models import FieldCondition, IsEmptyCondition, MatchValue
+from qdrant_client.models import FieldCondition, IsEmptyCondition
 
 from app.db.visibility import GENERATION_GUARD, visibility_should
 
