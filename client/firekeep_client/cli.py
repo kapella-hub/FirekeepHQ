@@ -671,6 +671,23 @@ def _teardown_server(server_dir: Path) -> tuple[list[str], list[str]]:
     return removed, failed
 
 
+def _generic_orphan_warning(home: Path) -> str | None:
+    """A line to print when the config MENTIONS `[generic]` but no usable path
+    could be read from it — a corrupt or hand-mangled config.
+
+    Without this, uninstall skips generic silently, deletes ~/.firekeep, and the
+    block sits in the user's rules file with the record of its location gone."""
+    try:
+        text = (home / "config").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    if "[generic]" not in text:
+        return None
+    return ("a [generic] section is present but unreadable, so the generic runtime "
+            "was skipped — if a Firekeep instruction block remains in your MCP "
+            "client's rules file, remove it by hand")
+
+
 def cmd_uninstall(args) -> int:
     """Reverse `firekeep install`: unrender every adapter, strip the PATH entry,
     then delete ~/.firekeep. Server teardown is OPT-IN and DESTRUCTIVE (--server or
@@ -682,10 +699,18 @@ def cmd_uninstall(args) -> int:
     server_present = (server_dir / "docker-compose.yml").is_file()
     shim_dir = home / pathenv.SHIM_DIR_NAME
 
+    # Resolve the generic target BEFORE anything is removed. Its block lives in a
+    # file outside ~/.firekeep, and the only record of WHICH file is inside
+    # ~/.firekeep — which this command deletes at the end. Read it late and a
+    # config we could not parse leaves the block stranded with no way to find it.
+    generic_target = resolver.generic_agents_md()
+    generic_orphan = _generic_orphan_warning(home) if generic_target is None else None
+    runtimes = _selected_runtimes("all", include_generic=generic_target is not None)
+
     # Say exactly what will be removed BEFORE touching anything.
     print("firekeep uninstall will remove:")
-    print("  - the Firekeep MCP + hook blocks from every runtime config "
-          "(claude, codex, kiro, opencode); your own settings are left intact")
+    print(f"  - the Firekeep MCP + hook blocks from every runtime config "
+          f"({', '.join(runtimes)}); your own settings are left intact")
     print(f"  - the `firekeep` launcher and its PATH entry ({shim_dir})")
     print(f"  - {home} (venvs, config, shims, bin, logs, server bundle, snapshots)")
     if server_present:
@@ -727,12 +752,20 @@ def cmd_uninstall(args) -> int:
     # Adapters + PATH FIRST: they edit files OUTSIDE ~/.firekeep, so they must run
     # before the home (and the venv they reference) is gone. One runtime's failure
     # must never abort the rest.
-    for name in _selected_runtimes("all"):
+    for name in runtimes:
         try:
             get_adapter(name).unrender()
             removed.append(f"{name} runtime config (Firekeep block removed)")
         except Exception as exc:  # noqa: BLE001 — best-effort per runtime
             failed.append(f"{name} adapter unrender: {exc}")
+            if name == "generic" and generic_target is not None:
+                # Name the file: after ~/.firekeep is gone this line is the only
+                # remaining record of where the block is.
+                failed.append(
+                    f"the Firekeep instruction block in {generic_target} — remove it "
+                    "by hand (the config recording this path is being deleted)")
+    if generic_orphan is not None:
+        kept.append(generic_orphan)
 
     try:
         for msg in pathenv.remove_from_path(home):
