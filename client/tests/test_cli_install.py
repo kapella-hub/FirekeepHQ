@@ -398,7 +398,9 @@ def test_install_prompts_when_interactive(install_env, monkeypatch):
     # "3" is the routing answer for "it is already running", the only branch
     # where a host and key are answerable. A fresh machine is asked WHERE its
     # server is before being asked to describe it.
-    answers = iter(["Alex", "3", "203.0.113.10", ""])
+    # Trailing "" skips the last prompt: the optional "other MCP client" rules
+    # file. Blank means "no generic runtime", which is what these tests assume.
+    answers = iter(["Alex", "3", "203.0.113.10", "", ""])
     monkeypatch.setattr("builtins.input", lambda _p: next(answers))
 
     rc = cli.main(["install", "--runtime", "claude"])
@@ -499,7 +501,9 @@ def test_install_dist_base_is_written_on_the_interactive_path(install_env, monke
     # "3" is the routing answer for "it is already running", the only branch
     # where a host and key are answerable. A fresh machine is asked WHERE its
     # server is before being asked to describe it.
-    answers = iter(["Alex", "3", "203.0.113.10", ""])
+    # Trailing "" skips the last prompt: the optional "other MCP client" rules
+    # file. Blank means "no generic runtime", which is what these tests assume.
+    answers = iter(["Alex", "3", "203.0.113.10", "", ""])
     monkeypatch.setattr("builtins.input", lambda _p: next(answers))
 
     rc = cli.main(["install", "--runtime", "claude", "--dist-base", "http://gl/rel/v1"])

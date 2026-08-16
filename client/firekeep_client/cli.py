@@ -415,6 +415,11 @@ def cmd_install(args) -> int:
         # with --join; from here on there is exactly one join path.
         if plan is not None and plan.action == wizard.JOIN_WITH_CODE and plan.join_code:
             join_code = plan.join_code
+        # The wizard's generic answer becomes config here — BEFORE the render
+        # loop, which builds the generic adapter from exactly this value. The
+        # wizard itself deliberately performs nothing.
+        if plan is not None and plan.generic_agents_md:
+            resolver.set_generic_agents_md(plan.generic_agents_md)
 
         step = "create venv"
         # kit resolved BEFORE the venv step: when kit is None the process is EXECUTING

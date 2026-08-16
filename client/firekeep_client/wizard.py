@@ -60,6 +60,9 @@ class Plan(NamedTuple):
     cfg: configparser.ConfigParser
     action: str
     join_code: str = ""
+    #: Rules/AGENTS.md path for an MCP client the kit ships no adapter for, or
+    #: None when skipped. Carried, never acted on: cli.py persists it.
+    generic_agents_md: str | None = None
 
 # Default single-server shape: fixed service ports on localhost. Existing
 # path-routed configs keep their shape when the installer is re-run.
@@ -304,6 +307,22 @@ def ask_where_the_server_is(
     return (PROVISION_HERE, "")
 
 
+def _ask_generic_agents_md(ask) -> str | None:
+    """The last question, and the only discovery path for the generic runtime.
+
+    Skippable by design — most people are on one of the four, and a question you
+    must answer to get past is a worse tax than a tier you never learn about.
+    Returns the raw answer; resolving and persisting it belongs to cli.py, since
+    this module touches no filesystem."""
+    answer = ask(
+        "Also use an MCP client we don't ship an adapter for (Cursor, Windsurf, "
+        "Gemini CLI, …)? Paste the path to its rules/AGENTS.md file, or press "
+        "Enter to skip",
+        "",
+    ).strip()
+    return answer or None
+
+
 def prompt_config(
     cfg: configparser.ConfigParser,
     *,
@@ -319,7 +338,29 @@ def prompt_config(
     `agent_id` / `host` are the CLI flags: each seeds its prompt's default
     rather than suppressing it, so `--host 10.0.0.4` interactively means 'suggest this',
     while the same flag under --non-interactive (which never calls here) means 'use this'.
+
+    Wraps `_prompt_server_config` so the generic-client question is asked exactly
+    once, LAST, on every path through it — that function has three early returns,
+    and asking at each would be three chances to drift apart.
     """
+    plan = _prompt_server_config(
+        cfg, ask=ask, agent_id=agent_id, host=host, probe=probe,
+        fetch_defaults=fetch_defaults, docker=docker,
+    )
+    return plan._replace(generic_agents_md=_ask_generic_agents_md(ask))
+
+
+def _prompt_server_config(
+    cfg: configparser.ConfigParser,
+    *,
+    ask=console_ask,
+    agent_id: str | None = None,
+    host: str | None = None,
+    probe=_probe_os_trust,
+    fetch_defaults=_fetch_org_defaults,
+    docker=None,
+) -> Plan:
+    """Identity + "where is your server" — everything up to the generic question."""
     _ensure_section(cfg, "identity", {"agent_id": PLACEHOLDER_AGENT_ID})
     _ensure_section(cfg, "server", _SERVER_DEFAULTS)
     # Kept as a prompt when everything else was deleted, and that is a judgement
