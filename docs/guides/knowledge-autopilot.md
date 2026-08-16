@@ -178,6 +178,59 @@ or handshake delivered, with per-key introduction versions; everything else is
 The dashboard feature-detects both fields per response, so the table renders
 the round-1 surface unchanged against a server that does not send them.
 
+## 7. The trust ledger (round 1)
+
+`GET /autopilot/trust` (admin) aggregates the gateway declarations agents
+already make — `agent.action.predict` / `agent.action.reconcile` events in the
+`rp:events` replay stream — into a per-`agent_id` track record: declared and
+reconciled counts, reconciliation rate, prediction-match calibration and its
+trend, reversals, sessions, and window-relative first/last seen. It renders as
+the **Trust Ledger** card on the Autopilot tab. Visibility only — like the
+compliance table, it reports and never gates; the enforcement half (a capability
+broker) is round 2, and earned autonomy is the two together. The formulas are
+frozen at birth
+([`docs/superpowers/specs/2026-08-16-trust-ledger-round1-design.md`](../superpowers/specs/2026-08-16-trust-ledger-round1-design.md)
+is the pre-registration) so later rounds compare cleanly; changes arrive as new
+components, never as edits.
+
+Three frozen constants (module constants in `cortex/app/autopilot/trust.py`):
+`TRUST_WINDOW_DAYS=30` (the aggregation window, matching the eval TTL and the
+compliance window), `TRUST_SCAN_CAP=50000` (read the latest `cap+1` stream
+entries — `cap+1` returned means the window holds more than the cap, so
+`truncated: true`), and `TRUST_MIN_CALIBRATION_POINTS=5` (below this many
+*scored* predictions `calibration`/`calibration_trend` report null, labelled
+"not enough signal", never a default-bad number).
+
+The card carries its honesty contract at the surface, not just in the design:
+
+- **Behavior, not competence.** Calibration scores whether an agent's *stated
+  prediction criteria* matched what was observed, not whether the decisions were
+  good — an action with empty criteria scores a perfect 1.0, so a confidently
+  mediocre agent still scores well. `reversals` (a reconciled declaration whose
+  `outcome.success == false`) is a different dimension on purpose; neither is
+  "was it a good call."
+- **A floor on a floor.** The ledger sees only what an agent *declared* through
+  the gateway, and only what replay *captured* of that (best-effort emit,
+  approximate stream trim) — undeclared or unemitted work is invisible.
+- **`agent_id` is self-reported.** It is an observability label, not the tenancy
+  boundary (`workspace_id` is that, verified and unforgeable), so the record is
+  *per declared identity* — one actor can split its work across identities or
+  merge two under one, which is precisely why round 1 is visibility-only.
+- **Truncation nulls the biased metrics, not the counts.** Under `truncated`,
+  `reconciliation_rate`, `calibration`, `calibration_trend` and
+  `first_seen_in_window` return `null` (the card renders "—" with the reason,
+  never 0) because each needs the whole window; `declared`, `reconciled`,
+  `reversals`, `scored_predictions`, `sessions` stay lower bounds and
+  `last_seen_in_window` survives. Invalid events (blank `agent_id`/`session_id`,
+  missing `action_id`, malformed JSON, bad timestamp) are counted in a visible
+  `invalid` breakdown, never silently dropped.
+
+Deployment-global in round 1, exactly like `build_compliance` — replay events
+carry no `workspace_id`, so per-workspace scoping is a write-path change out of
+scope here; the tenancy invariant (filter on the caller's workspace, or restrict
+to a deployment superadmin and otherwise fail closed) must hold before any
+deployment serves more than one workspace.
+
 ## What unlocks round 2
 
 Auto-promotion becomes defensible when: (a) the reaper + feedback + gateway

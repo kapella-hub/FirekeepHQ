@@ -710,3 +710,53 @@ class TestComplianceAttribution:
             "headers and count as unknown, forever — nothing backfills."]
         html = _render("renderAutopilotCompliance", body)
         assert "nothing backfills" in html
+
+
+# -------------------------------------------------- trust ledger (round 1) --
+# Shape copied from cortex/app/autopilot/trust.py's real build_trust response.
+# The card is visibility-only: a null biased metric renders "—" with its
+# reason (never a measured 0), truncation shows a banner, invalids are footnoted
+# rather than dropped, and an empty ledger says so instead of inventing a row.
+
+
+def render_trust(data):
+    # Reuses the file's node-extraction harness, pointed at the ledger renderer.
+    return _render("renderAutopilotTrust", data)
+
+
+class TestTrustCard:
+    def test_rows_render_with_components(self):
+        data = {"agents": [{"agent_id": "agent-x", "declared": 214, "reconciled": 205,
+                            "reconciliation_rate": 0.96, "scored_predictions": 180,
+                            "calibration": 0.11, "calibration_trend": -0.03, "reversals": 3,
+                            "sessions": 28, "first_seen_in_window": "2026-08-01T00:00:00+00:00",
+                            "last_seen_in_window": "2026-08-16T00:00:00+00:00"}],
+                "window_days": 30, "scanned": 900, "truncated": False,
+                "invalid": {"blank_agent": 0, "blank_session": 0, "missing_action_id": 0,
+                            "malformed": 0, "bad_timestamp": 0}, "generated_at": "2026-08-16T00:00:00+00:00"}
+        html = render_trust(data)  # helper in the test that extracts renderAutopilotTrust
+        assert "agent-x" in html and "214" in html and "no agent" not in html
+
+    def test_null_calibration_shows_dash_not_zero(self):
+        data = {"agents": [{"agent_id": "a", "declared": 3, "reconciled": 2,
+                            "reconciliation_rate": None, "scored_predictions": 1,
+                            "calibration": None, "calibration_trend": None, "reversals": 0,
+                            "sessions": 1, "first_seen_in_window": None,
+                            "last_seen_in_window": "2026-08-16T00:00:00+00:00"}],
+                "window_days": 30, "scanned": 3, "truncated": False,
+                "invalid": {"blank_agent": 0, "blank_session": 0, "missing_action_id": 0,
+                            "malformed": 0, "bad_timestamp": 0}, "generated_at": "x"}
+        html = render_trust(data)
+        assert "—" in html and ">0<" not in html.split("agent")[1][:200]
+
+    def test_truncation_banner(self):
+        data = {"agents": [], "window_days": 30, "scanned": 50000, "truncated": True,
+                "invalid": {"blank_agent": 0, "blank_session": 0, "missing_action_id": 0,
+                            "malformed": 0, "bad_timestamp": 0}, "generated_at": "x"}
+        assert "truncat" in render_trust(data).lower()
+
+    def test_empty_says_no_declarations(self):
+        data = {"agents": [], "window_days": 30, "scanned": 0, "truncated": False,
+                "invalid": {"blank_agent": 0, "blank_session": 0, "missing_action_id": 0,
+                            "malformed": 0, "bad_timestamp": 0}, "generated_at": "x"}
+        assert "no agent" in render_trust(data).lower()

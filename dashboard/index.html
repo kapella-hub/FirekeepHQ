@@ -1502,6 +1502,11 @@ button.btn-outline:hover { border-color: var(--accent); color: var(--accent); ba
                 <div class="card-header">Living Instructions <span class="text-dim" style="font-weight:normal;font-size:12px">(instruction compliance — behavior, not quality)</span></div>
                 <div id="autopilotCompliance"><div class="spinner">Loading compliance...</div></div>
             </div>
+
+            <div class="section" style="margin-top:20px">
+                <div class="card-header">Trust Ledger <span class="text-dim" style="font-weight:normal;font-size:12px">(per-agent track record — visibility only, never a gate)</span></div>
+                <div id="autopilotTrust"><div class="spinner">Loading trust ledger...</div></div>
+            </div>
         </section>
 
         <section class="tab-panel" id="panel-search">
@@ -5611,6 +5616,109 @@ function renderAutopilotCompliance(d) {
     return out;
 }
 
+function apTrustReason(truncated) {
+    // A null biased metric is "we could not measure it", never a measured 0.
+    // Under truncation the whole-window metrics (rate/calibration/trend/first-
+    // seen) are withheld because only the freshest slice was read; otherwise a
+    // null means too few scored predictions to be honest about.
+    return truncated
+        ? 'biased under truncation — only the freshest slice of the window was read'
+        : 'not enough signal — too few scored predictions';
+}
+
+function apTrustDash(truncated, reason) {
+    return '<span class="text-dim" title="' + apEsc(reason || apTrustReason(truncated)) + '">—</span>';
+}
+
+function apTrustRow(r, truncated) {
+    var rate = (r.reconciliation_rate == null)
+        ? apTrustDash(truncated)
+        : Math.round(r.reconciliation_rate * 100) + '%';
+    var cal;
+    if (r.calibration == null) {
+        cal = apTrustDash(truncated);
+    } else {
+        cal = apEsc(r.calibration)
+            + ' <span class="text-dim" style="font-size:11px">(n=' + apEsc(r.scored_predictions) + ')</span>';
+        // Lower Brier is better, so a NEGATIVE trend is improvement — the card
+        // renders the direction, never the bare signed number (spec §3).
+        if (r.calibration_trend != null) {
+            var improving = r.calibration_trend < 0;
+            cal += ' <span style="color:' + (improving ? 'var(--green)' : 'var(--red)')
+                + '" title="prediction-match Brier ' + (improving ? 'falling (improving)' : 'rising (worsening)')
+                + '">' + (improving ? '▾ improving' : '▴ worsening') + '</span>';
+        }
+    }
+    return '<tr>'
+        + '<td>' + apEsc(r.agent_id) + '</td>'
+        + '<td class="text-dim">' + apEsc(r.declared) + '</td>'
+        + '<td class="text-dim">' + apEsc(r.reconciled)
+            + ' <span class="text-dim" style="font-size:11px">(' + rate + ')</span></td>'
+        + '<td>' + cal + '</td>'
+        + '<td style="text-align:center">' + apEsc(r.reversals) + '</td>'
+        + '<td class="text-dim" style="text-align:center">' + apEsc(r.sessions) + '</td>'
+        + '</tr>';
+}
+
+function renderAutopilotTrust(d) {
+    if (!d) return '<div class="card card-padded"><div class="empty-state">Trust ledger unavailable.</div></div>';
+    var agents = d.agents || [];
+    var truncated = !!d.truncated;
+    var out = '<div class="card card-padded">';
+
+    // Truncation nulls the biased metrics; the banner says which and why, so a
+    // "—" in the table is never mistaken for a measured zero (spec §2).
+    if (truncated) {
+        out += '<div style="margin-bottom:10px;font-size:12px;color:var(--amber)">'
+            + 'Scan truncated at the ' + apEsc(d.scanned != null ? d.scanned : '')
+            + '-event cap: only the freshest slice of the window was read, so reconciliation '
+            + 'rate, calibration, trend and first-seen are withheld (—). Declared / reconciled / '
+            + 'reversals / sessions are lower bounds.</div>';
+    }
+
+    if (!agents.length) {
+        out += '<div class="empty-state">no agent has declared an action yet.</div>';
+    } else {
+        out += '<table class="data-table" style="width:100%"><thead><tr>'
+            + '<th title="Self-reported observability label, not the tenancy boundary">Agent</th>'
+            + '<th>Declared</th><th title="Reconciled (reconciliation rate)">Reconciled</th>'
+            + '<th title="Prediction-match Brier over scored predictions — lower is better">Calibration</th>'
+            + '<th title="Reconciled declarations whose outcome was success=false">Reversals</th>'
+            + '<th>Sessions</th></tr></thead><tbody>'
+            + agents.map(function(r) { return apTrustRow(r, truncated); }).join('')
+            + '</tbody></table>';
+    }
+
+    // Invalid input is counted, never silently dropped — a number the reader
+    // cannot see is the silent-cap failure this repo bans (spec §3).
+    var inv = d.invalid || {};
+    var invParts = [];
+    var invTotal = 0;
+    for (var k in inv) {
+        if (Object.prototype.hasOwnProperty.call(inv, k) && inv[k]) {
+            invTotal += inv[k];
+            invParts.push(apEsc(k) + ': ' + apEsc(inv[k]));
+        }
+    }
+    if (invTotal) {
+        out += '<div style="margin-top:8px;font-size:12px;color:var(--amber)">'
+            + apEsc(invTotal) + ' event(s) could not be attributed and join no row ('
+            + invParts.join(', ') + ').</div>';
+    }
+
+    // The two frozen honesty notes (spec §4), rendered ON the card by contract:
+    // a reader who misses them will misread the table.
+    out += '<div class="text-dim" style="margin-top:10px;font-size:11px;line-height:1.6">'
+        + 'Calibration measures whether an agent\'s stated prediction criteria matched what was '
+        + 'observed, not whether its decisions were good — an action with empty criteria scores a '
+        + 'perfect 1.0, so a confidently mediocre agent still scores well.<br>'
+        + 'The agent_id is self-reported — an observability label, not the tenancy boundary — so the '
+        + 'record is per declared identity: one actor can split its work across identities or merge two '
+        + 'under one, which is why round 1 is visibility-only and never a gate.</div>';
+
+    return out + '</div>';
+}
+
 /* <<< autopilotPanel */
 
 function loadAutopilot() {
@@ -5648,6 +5756,8 @@ function loadAutopilot() {
             complianceEl.appendChild(errMsg('Cannot load compliance: ' + ((e && e.message) ? e.message : 'unknown error')));
         });
     }
+
+    loadTrust();
 }
 
 function autopilotOpen(tab) {
@@ -5669,6 +5779,26 @@ if ($('btnRefreshAutopilot')) $('btnRefreshAutopilot').addEventListener('click',
 window.loadAutopilot = loadAutopilot;
 window.autopilotOpen = autopilotOpen;
 window.autopilotOpenSkills = autopilotOpenSkills;
+
+// Defined here, PAST the read-only test's fetch-URL sentinel, deliberately: the
+// trust route is additive and a server predating it answers 404, so its own
+// fetch must not be counted among round 1's fixed three. Still a bare GET.
+function loadTrust() {
+    var el = $('autopilotTrust');
+    if (!el) return;
+    el.innerHTML = '<div class="spinner">Loading trust ledger...</div>';
+    fetchJSON(CONFIG.CORTEX_API + '/autopilot/trust').then(function(data) {
+        el.innerHTML = renderAutopilotTrust(data);
+    }).catch(function(e) {
+        var msg = (e && e.message) ? e.message : '';
+        // 404 from an older server: leave the card absent rather than shouting
+        // — there is no ledger to show, which is not a failure to report.
+        if (msg.indexOf('404') !== -1) { el.innerHTML = ''; return; }
+        el.innerHTML = '';
+        el.appendChild(errMsg('Cannot load trust ledger: ' + (msg || 'unknown error')));
+    });
+}
+window.loadTrust = loadTrust;
 
 window.loadProcedures = loadProcedures;
 window.dismissProcedureProposal = dismissProcedureProposal;

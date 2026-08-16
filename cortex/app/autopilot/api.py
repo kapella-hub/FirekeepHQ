@@ -29,6 +29,7 @@ from fastapi import APIRouter, Depends, Query
 from app.autopilot import compliance as compliance_mod
 from app.autopilot import digest as digest_mod
 from app.autopilot import inbox as inbox_mod
+from app.autopilot import trust as trust_mod
 
 logger = logging.getLogger(__name__)
 
@@ -111,5 +112,13 @@ def create_autopilot_router(get_redis, get_replay_redis, get_vector, settings_fn
         `rp:eval:*` there and nowhere else.
         """
         return await compliance_mod.build_compliance(get_replay_redis())
+
+    @router.get("/trust", dependencies=admin_dep)
+    async def trust():
+        """Trust Ledger round 1: per-agent declared/reconciled/calibration/
+        reversals from replay gateway events. Visibility only — reports,
+        never gates. Deployment-global like /compliance (no workspace param);
+        replay events carry no workspace_id (see the design spec §5)."""
+        return await trust_mod.build_trust(get_replay_redis())
 
     return router
