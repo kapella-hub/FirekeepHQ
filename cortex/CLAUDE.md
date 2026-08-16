@@ -64,7 +64,8 @@ app/
 │   ├── inbox.py         # Section builders: draft/stale/rereview skills, LP proposals, contested pairs, eval DLQ
 │   ├── digest.py        # Windowed activity counts (learned/archived/superseded/dreamed/drafted/feedback/GC)
 │   ├── compliance.py    # Living Instructions round 1 — per-instruction compliance over rp:eval:* (predicates frozen to the 2026-08-11 founding measurement)
-│   └── api.py           # GET /autopilot/inbox + /digest + /compliance (admin); per-section fault isolation
+│   ├── trust.py         # Trust Ledger round 1 — per-agent declared/reconciled/prediction-match calibration/reversals from the rp:events gateway stream (frozen formulas; reconciles attribute by action_id, not their own agent_id; visibility only)
+│   └── api.py           # GET /autopilot/inbox + /digest + /compliance + /trust (admin); per-section fault isolation
 └── dreams/            # Automated memory consolidation + person profiles (round 1 — additive only)
     ├── select.py        # Pure candidate selection + partitioning + clustering + per-synthesis member sampling (centroid-nearest), no I/O
     ├── synthesize.py     # The one LLM call for cluster insights — via app/llm.py's chat() (native /api/chat where available, so think:false is actually honoured), JSON mode
