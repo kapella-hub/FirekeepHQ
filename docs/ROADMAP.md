@@ -133,3 +133,62 @@ sequencing, and the trust-ledger round-1 scope:
 Nothing from this section appears on firekeep.ai until its gate holds — the
 dashboard shows it before the site says it. First domino when work starts:
 trust ledger round 1 (visibility only, the house pattern).
+
+## 5. Tiers and Packs (decision record, 2026-08-15 — decided, not yet built)
+
+Five decisions taken on the decision board, shaping the packaging pivot.
+The frame: **the tier answers "who governs this Keep"; deployment answers
+"where does it run"; they are orthogonal.** Tiers are never separate
+binaries or unlockable tool lists — consistent with the 2026-08 licensing
+decision (one product, BUSL, the licence is the entire boundary, nothing
+enforced technically). Never metered, at any tier: devices, agent
+identities, terminals, actions, memories, background workers. Pricing
+anchors to human members.
+
+1. **The middle tier is named Firekeep Teams** (not Pro — "Pro" reads as a
+   more powerful individual product; what is sold is shared continuity
+   between people). Personal = private continuity for one person, the
+   whole product, free. Teams = shared operating memory, per-member.
+   Enterprise = governed institutional continuity (SSO/SCIM, policy
+   hierarchy, retention/audit/legal hold), sold as an annual design-partner
+   engagement while the governance list is built — the page promises the
+   category, not the full list.
+2. **Personal Household is a reserved cheap paid SKU under Personal** —
+   the current Additional Use Grant covers one natural person, so a second
+   family member's identity is commercial use today. Grant language gets
+   amended at the next lawyer touch (LICENSING.md's own rule: lawyer
+   before first sale). Nothing is built; the licence stays the boundary.
+3. **Client capabilities become Packs behind a manifest-driven gateway
+   registry** (product name: Packs; `firekeep pack list/add/remove/
+   update/doctor`). Symdex is the first pack and becomes **opt-in via
+   `firekeep pack add symdex`** — this REVERSES the 0.1.4x always-installed
+   decision, by explicit owner choice over the reviewer recommendation of
+   default-on. Migration rule when it lands: an update never removes a
+   capability an install already has — existing installs keep symdex;
+   opt-in applies to new installs. Pack permissions are DISCLOSURE
+   client-side and scoped per-pack API keys server-side; no sandboxing is
+   claimed that does not exist. Third-party packs wait for the capability
+   broker (§4). The pack list is not announced — the system ships with
+   Symdex as proof; the cheapest honest second pack is Documents (a thin
+   local-folder-watch client over the existing corpus ingest).
+4. **Pack milestone 1 starts when the install-story stream lands** its
+   overhaul (it owns gateway.py/bootstrap/cli.py this week): manifest
+   registry replacing the LOCAL_SERVERS tuple, symdex behind it (still
+   bundled as the checksum-verified wheel — the signed supply chain
+   stays), pack list/doctor, per-pack scoped identity, hooks and
+   auto-index behind the pack boundary. The two-question install
+   experience must not regress — no new install-time questions.
+5. **Firekeep Desktop (embedded no-Docker core) is parked as explicit
+   research** — replacing Neo4j/Qdrant/Redis/Ollama with embedded
+   equivalents is a persistence-and-inference rewrite, not packaging. Off
+   the pricing page, off roadmap promises. Personal today is honestly
+   "Docker on any machine you own; laptops and desktops enrol into it."
+   A Firekeep-operated cloud is likewise a different future product
+   (multitenancy, ops, compliance, datastore licensing) and is not implied
+   by the word "cloud" anywhere.
+
+Nothing above appears on firekeep.ai until it exists to the §4 standard:
+the dashboard shows it before the site says it. Docs and CLAUDE.md keep
+describing CURRENT behaviour (symdex always-installed) until the pack
+milestone actually lands — a doc that describes the decided future as the
+present would simply be wrong.
