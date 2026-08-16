@@ -161,6 +161,33 @@ def is_bypassed(path: Path | None = None) -> bool:
         return False
 
 
+def _raw_config(path: Path | None = None) -> configparser.ConfigParser:
+    """The kit config read RAW: no migration, no rewrite, no raise.
+
+    Deliberately NOT load_config(), which raises on a missing file and — when
+    `[server]` is absent — MIGRATES: backs up, atomically rewrites, prints to
+    stderr, and can raise ConfigMigrationConflict. Merely asking "is generic
+    configured?" must never have a side effect on the user's config, and it runs
+    on every install and every uninstall.
+
+    Returns an empty parser on anything unreadable: callers treat "cannot tell"
+    as "not configured", which is the four's existing behaviour."""
+    cfg = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=(";", "#"))
+    try:
+        cfg.read(_config_path(path), encoding="utf-8")
+    except (configparser.Error, OSError, UnicodeError):
+        return configparser.ConfigParser(interpolation=None, inline_comment_prefixes=(";", "#"))
+    return cfg
+
+
+def generic_agents_md(path: Path | None = None) -> Path | None:
+    """The rules/AGENTS.md file the generic adapter manages, or None when the
+    user never opted in. Absolute and resolved; the presence of this value is
+    also what makes `generic` join the `"all"` install/uninstall fan-out."""
+    value = _raw_config(path).get("generic", "agents_md", fallback="").strip()
+    return Path(value).expanduser().resolve() if value else None
+
+
 def load_config(path: Path | None = None) -> configparser.ConfigParser:
     p = _config_path(path)
     if not p.exists():
