@@ -285,9 +285,10 @@ This is currently a private repository preparing for early access.
 
 ## License
 
-Firekeep is source-available under BUSL-1.1. Individual use is free —
-production use by one natural person in one workspace; a team of more than one
-person runs on a paid commercial subscription (write to sales@firekeep.ai).
+Firekeep is source-available under BUSL-1.1, and self-hosted production use is
+free for individuals and for teams — a workspace of any size, on infrastructure
+you control, free for teams while Firekeep is in early access. The commercial
+tier is Enterprise governance and support (write to sales@firekeep.ai).
 Each version converts to Apache-2.0 four years after its first public release.
 See [LICENSE](LICENSE) for the full grant and [docs/LICENSING.md](docs/LICENSING.md)
 for status. Symdex

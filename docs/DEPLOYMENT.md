@@ -22,7 +22,25 @@
 
 ## Fresh Installation
 
-There are two paths, and they are not interchangeable.
+Firekeep is a **server** you run once and a **client kit** on each developer
+machine. The one install command handles either or both — your answer to its
+server question decides which. Three shapes cover every case:
+
+| Shape | Run it on | Command | Result |
+|-------|-----------|---------|--------|
+| **Both**, one machine | Linux + Docker host | `curl -fsSL https://firekeep.ai/latest/install.sh \| sh` → answer **1** | Client *and* server, with this box enrolled against it. The default when Docker is present. |
+| **Client only** | Any Mac / Windows / Linux machine | the same one-liner → answer **2** (join code), **3** (address + key) or **4** (not yet) | Just the kit, pointed at a server your team already runs — or at nothing yet, finished later. |
+| **Server only** | Linux + Docker host | `firekeep init --no-self-enroll`, or `bash install.sh` from a checkout/bundle | The full stack with **no** machine enrolled — CI, a build host, a golden image. Enrol laptops afterwards. |
+
+**Both** and **Server only** are the same provisioning with one difference:
+whether the box that builds the server also becomes a client of it. A Mac or
+Windows laptop can only be a client; the server half is Linux + Docker. Enrol
+further machines with the printed `FIREKEEP_JOIN=…` one-liner or
+`deploy/firekeep-admin invite --agent <name>` (see
+[Connecting an agent from another machine](#connecting-an-agent-from-another-machine)).
+
+The two build **sources** below — the published images versus a source checkout —
+are a separate axis, and they are not interchangeable.
 
 ### As a customer — pull the published images
 

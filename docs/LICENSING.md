@@ -1,32 +1,68 @@
 # Licensing — source-available release policy
 
-_Last updated 2026-08-09._
+_Last updated 2026-08-16._
 
 **This file and the `LICENSE` it describes were written by an engineer, not a
 lawyer. Have a lawyer review the licence text before the first paid sale** —
 nothing here should be treated as vetted legal advice, particularly the
-liability cap and the trademark notice.
+liability cap, the trademark notice, and — added 2026-08-16 — the expanded
+team-use Additional Use Grant and the Enterprise commercial-licence line (see
+"Where things stand" and the decision note below).
 
 ## Where things stand
 
 `LICENSE` at the repository root is the real licence, not a placeholder.
-**Decided model: one product, source-available under BUSL-1.1.** There is no
-Solo edition, no Team edition, and no licence-key or entitlement mechanism —
-the earlier signed-entitlement system was removed in 2026-08. The licence is
-the entire boundary, and it is a legal document, not a technical one:
+**Decided model: one source-available product under BUSL-1.1, free to self-host,
+with a commercial Enterprise governance-and-support tier.** There is no
+licence-key or entitlement mechanism — the earlier signed-entitlement system was
+removed in 2026-08. The licence is the entire boundary, and it is a legal
+document, not a technical one:
 
-- The Additional Use Grant permits **free production use by one natural
-  person** in one workspace and one deployment, with unlimited personal
-  devices, agent identities, terminals, and background workers.
-- **Production use by more than one member requires a commercial licence** —
-  contact sales@firekeep.ai.
+- The Additional Use Grant permits **free self-hosted production use by an
+  individual OR a team/workspace of any size**, for their own or their
+  organization's internal use, with unlimited devices, agent identities,
+  terminals, and background workers. The team half of that grant is offered
+  **while Firekeep is in early access** — a stated, revisable stance, not a
+  perpetual promise. Any future narrowing can only affect versions first
+  distributed after early access ends; it never retracts the grant for a
+  version already released under it.
+- **Commercial licensing is reserved for the Enterprise governance and support
+  tier**, and for uses outside self-hosting — for example, offering Firekeep to
+  third parties as a hosted or managed service. Contact sales@firekeep.ai.
 - **Nothing enforces this technically.** Membership is unlimited in the
   software; there are no licence keys, no seat metering, no phone-home, and no
-  feature gates. A deployment that crosses the one-person line is out of
-  compliance with the licence terms, not degraded or locked out.
+  feature gates. A deployment that steps outside the grant is out of compliance
+  with the licence terms, not degraded or locked out.
 
 This is not an OSI Open Source licence; each version changes to Apache-2.0
 four years after its first public distribution.
+
+### Decision (2026-08-16): individuals-and-teams-free, Enterprise-commercial
+
+The Additional Use Grant previously permitted free production use by **exactly
+one natural person** in one workspace and one deployment; production use by more
+than one member required a commercial licence. That boundary has moved. The grant
+now covers a **team or workspace of any size, self-hosted, at no charge while
+Firekeep is in early access**, and the paid product is the **Enterprise
+governance and support tier** rather than a per-member seat.
+
+The rationale is the product thesis: a shared memory-and-governance layer is
+worth more the more of a team's people and agents feed it, so charging per member
+taxed the exact adoption the product depends on. The durable commercial value
+sits in the enterprise governance surface — SSO/SCIM and directory groups,
+org→workspace→member policy, retention/audit-export/legal-hold, separation of
+duties and approval chains, private plugin registries, air-gapped installs and
+SBOMs, HA/DR, and support/SLA/security-review/indemnity — most of which is still
+being built with early design partners and is **not** a shrink-wrapped, buyable
+product today. The early-access framing is what keeps the team-free grant honest:
+it is a revisable stance the licensor can narrow for future versions, and it
+never retracts the grant for a version already shipped under it.
+
+**Both the expanded team-use grant and the Enterprise commercial-licence line are
+new licence text and are explicit lawyer-review items — see the note at the top
+of this file.** They also change what the marketing site may claim: "free for
+individuals and teams, Enterprise commercial" must match this grant, not the
+older one-person wording.
 
 Pricing and trial duration are deliberately **not** decided and are not in the
 licence — they are referred to "the applicable commercial agreement" wherever
@@ -61,8 +97,11 @@ nothing false today.
 
 ## What must happen before anything is distributed
 
-1. ~~**Pick the model.**~~ **Done.** BUSL-1.1 with a one-person Additional Use
-   Grant, then Apache-2.0 after four years (above).
+1. ~~**Pick the model.**~~ **Done.** BUSL-1.1 with a self-hosted Additional Use
+   Grant free to individuals and teams (team use while Firekeep is in early
+   access), a commercial Enterprise governance-and-support tier, then Apache-2.0
+   after four years (above; expanded from the original one-person grant on
+   2026-08-16 — a lawyer-review item).
 2. ~~**Write the real licence.**~~ **Done.** `LICENSE` contains the unmodified
    BUSL-1.1 terms and its project-specific parameters. **Needs a lawyer read
    before first sale — see the note at the top of this file.**

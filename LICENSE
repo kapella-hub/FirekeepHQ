@@ -7,11 +7,24 @@ and documentation distributed in this repository. FirekeepSymdex is part of the
 Licensed Work until its standalone Core has been extracted into a separately
 licensed repository.
 
-Additional Use Grant: You may make production use of the Licensed Work without
-a commercial license only for one natural person in one Firekeep workspace on
-one deployment. That person may use any number of their own devices, client
-runtimes, agent identities, terminals, and background workers. Production use
-for more than one member requires a commercial license from Omnicron, LLC.
+Additional Use Grant: You may make production use of the Licensed Work without a
+commercial license when you self-host it on infrastructure you control for your
+own or your organization's internal use, using any number of your own devices,
+client runtimes, agent identities, terminals, and background workers. This grant
+covers both a single natural person and, while Firekeep is in early access, a
+team or workspace of any number of members.
+
+The early-access extension to teams is a stated, revisable stance, not a
+perpetual promise: Omnicron, LLC may narrow it for versions of the Licensed Work
+first distributed after the early-access period ends. Any such change applies
+only to those later versions and never retracts the grant for a version already
+distributed under it, which continues to convert to the Change License on its
+Change Date.
+
+A commercial license from Omnicron, LLC is required to obtain the Enterprise
+governance and support offering, and for any production use not permitted above
+— for example, providing the Licensed Work to third parties as a hosted or
+managed service.
 
 Change Date: The fourth anniversary of the first public distribution of each
 version of the Licensed Work.
@@ -34,11 +47,24 @@ and documentation distributed in this repository. FirekeepSymdex is part of the
 Licensed Work until its standalone Core has been extracted into a separately
 licensed repository.
 
-Additional Use Grant: You may make production use of the Licensed Work without
-a commercial license only for one natural person in one Firekeep workspace on
-one deployment. That person may use any number of their own devices, client
-runtimes, agent identities, terminals, and background workers. Production use
-for more than one member requires a commercial license from Omnicron, LLC.
+Additional Use Grant: You may make production use of the Licensed Work without a
+commercial license when you self-host it on infrastructure you control for your
+own or your organization's internal use, using any number of your own devices,
+client runtimes, agent identities, terminals, and background workers. This grant
+covers both a single natural person and, while Firekeep is in early access, a
+team or workspace of any number of members.
+
+The early-access extension to teams is a stated, revisable stance, not a
+perpetual promise: Omnicron, LLC may narrow it for versions of the Licensed Work
+first distributed after the early-access period ends. Any such change applies
+only to those later versions and never retracts the grant for a version already
+distributed under it, which continues to convert to the Change License on its
+Change Date.
+
+A commercial license from Omnicron, LLC is required to obtain the Enterprise
+governance and support offering, and for any production use not permitted above
+— for example, providing the Licensed Work to third parties as a hosted or
+managed service.
 
 Change Date: The fourth anniversary of the first public distribution of each
 version of the Licensed Work.

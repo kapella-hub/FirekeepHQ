@@ -136,6 +136,18 @@ trust ledger round 1 (visibility only, the house pattern).
 
 ## 5. Tiers and dexes (decision record, 2026-08-15 — decided, not yet built)
 
+> **Superseded in part (2026-08-16).** The tier *packaging* below (a three-way
+> Personal / Teams / Enterprise split with a per-member Teams SKU) was replaced by
+> a two-tier model: **Free** (individuals *and* teams, the whole self-hosted
+> product, no feature gates) + **Enterprise** (governance + support, commercial).
+> The Additional Use Grant was amended the same day to make **team use free while
+> Firekeep is in early access**, so decision 2's premise — "the current Additional
+> Use Grant covers one natural person, so a second family member's identity is
+> commercial use today" — is no longer true; a household is a small free workspace.
+> See `LICENSE`, `docs/LICENSING.md` §"Decision (2026-08-16)", and the live pricing
+> on firekeep.ai. The *thesis* below (tier answers "who governs", deployment answers
+> "where it runs"; never metered; dexes) still stands; the SKU list needs a rewrite.
+
 Five decisions taken on the decision board, shaping the packaging pivot.
 The frame: **the tier answers "who governs this Keep"; deployment answers
 "where does it run"; they are orthogonal.** Tiers are never separate

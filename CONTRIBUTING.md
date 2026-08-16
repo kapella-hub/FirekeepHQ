@@ -17,10 +17,13 @@ and we won't either.
 
 - You may **read, copy, modify, and redistribute** the source, and make
   **non-production** use of it freely.
-- **Production use is free for one natural person, in one Firekeep workspace,
-  on one deployment** — with unlimited devices, client runtimes, agent
-  identities, terminals, and background workers for that person. Production use
-  by more than one member requires a commercial license from Omnicron, LLC.
+- **Self-hosted production use is free for an individual or a team/workspace of
+  any size**, for your own or your organization's internal use — with unlimited
+  devices, client runtimes, agent identities, terminals, and background workers.
+  Free team use is granted while Firekeep is in early access. A commercial
+  license from Omnicron, LLC is required for the Enterprise governance and
+  support tier, or to use the Licensed Work outside self-hosting (for example,
+  offering it to third parties as a hosted service).
 - Each version **converts to Apache License 2.0** on the fourth anniversary of
   that version's first public distribution.
 
