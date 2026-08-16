@@ -137,7 +137,9 @@ is never disrupted; Windows prepends the shim dir to the `HKCU\Environment` `Pat
 `winreg` (REG_EXPAND_SZ type preserved, `WM_SETTINGCHANGE` broadcast). Idempotent (collapses
 ALL prior firekeep blocks on re-render). Opt out with `firekeep install --no-modify-path` or
 `FIREKEEP_NO_MODIFY_PATH=1` (sysadmins who manage PATH centrally). `pathenv.remove_from_path`
-is the inverse, ready for a future `firekeep uninstall` (no such command today).
+is the inverse, wired into `firekeep uninstall` (see **Removing Firekeep** below): it strips
+the marker block / registry entry and deletes the shim dir with the same idempotent
+discipline as the add.
 
 **Developers (from a checkout):**
 ```bash
@@ -281,6 +283,37 @@ signature-served class.
 **kiro legacy migration (`adapters/kiro.py`, `_migrate_legacy`):** kiro's `render()` gets the same firekeep-owned-artifact treatment as the claude adapter above: it drops every `~/.kiro/settings/mcp.json` `mcpServers` entry whose key is a kit name or `<key>_`-prefixed (covers parked `firekeep-cortex_DISABLED`-style variants), and archives `~/.kiro/agents/firekeep.json` + `~/.kiro/firekeep.env` (pre-kit manual-setup artifacts) to `.bak`. Best-effort like the claude precedent: a missing file is a silent no-op, a malformed/wrong-shaped `mcp.json` is left untouched, and no migration step may ever fail `render()` or the install; it is one-way — `unrender()` does not restore the archived artifacts.
 
 **Render stability — `write_text_if_changed` (`adapters/base.py`):** every adapter previously rewrote byte-identical content on every render, and rewriting identical bytes still moves mtime, which is not free. `firekeep update` re-execs `firekeep install`, which re-renders `~/.claude/CLAUDE.md` and `~/.claude/settings.json` — and background auto-update is ON by default, so this happens **mid-session on a customer's machine**. Those files sit in the prompt prefix: a host that re-reads a rendered instruction file because its mtime moved rebuilds that prefix and invalidates the prompt cache, re-billing the whole conversation at full rate for a zero-byte change. Whether a given host does that cannot be determined from this repo, which is exactly why touching mtime for nothing is indefensible. All rendered-file writes (including `write_json`, which delegates) now go through it. It **fails toward writing**: if the existing file cannot be read or decoded, we cannot prove it matches, so we write — failing to read is not evidence of a match — and it never skips a real change. Guarded by `client/tests/adapters/test_write_stability.py`, whose load-bearing case is `test_second_identical_claude_render_touches_no_rendered_file` (the whole-adapter check, not just the helper's unit behaviour).
+
+**Removing Firekeep (`firekeep uninstall`, `cli.cmd_uninstall`).** The exact inverse of the
+render/PATH/home wiring `firekeep install` lays down, in the order that keeps it safe:
+
+```bash
+firekeep uninstall              # confirm, then remove the client kit
+firekeep uninstall --yes        # no prompt (scripts/CI); removes the client only, NEVER data
+firekeep uninstall --server     # also tear down the server stack and DELETE ALL DATA
+```
+
+It first prints exactly what it will remove and asks to proceed (`--yes`/`-y` skips the
+prompt; a non-interactive session with no `--yes` declines rather than block on input). Then,
+in order: (1) `unrender()` on every adapter it renders — claude, codex, kiro, opencode —
+which removes only the Firekeep-owned MCP/hook blocks and leaves foreign entries intact;
+(2) `pathenv.remove_from_path` strips the shell-rc marker block / `HKCU\Environment` entry and
+deletes `~/.firekeep/shims`; (3) delete `~/.firekeep` itself — venvs, config, bin, logs,
+server bundle and worktree snapshots. The `current` alias is removed NODE-FIRST
+(`os.rmdir` on the junction / `unlink` on the POSIX symlink) before the recursive delete, so
+the tree walk never follows the reparse point into the target venv (the hazard
+`_point_current` guards). Adapters and PATH go before the home delete because they edit files
+OUTSIDE `~/.firekeep`. Nothing raises on a partial failure: each step reports what was and was
+not removed, and a leftover exits non-zero with the item named rather than a traceback.
+
+**Server teardown is opt-in and destructive.** `--server` (or, interactively, an explicit
+second opt-in when `~/.firekeep/server` exists) runs `docker compose -f
+~/.firekeep/server/docker-compose.yml down -v` BEFORE the home is deleted — the `-v` deletes
+the Neo4j graph, Qdrant vectors and Redis volumes with no undo, so it is guarded behind its
+own loud data-loss confirmation, distinct from the client-removal confirmation. A bare
+`firekeep uninstall --yes` removes the client but never opts into that data loss. If Docker is
+not installed the command prints the manual `docker compose down -v` line and continues with
+client removal rather than failing.
 
 ## Instruction attribution (client 0.1.41 — Living Instructions round 2)
 

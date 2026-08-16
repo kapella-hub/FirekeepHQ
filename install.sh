@@ -269,10 +269,15 @@ else
 fi
 export GIT_SHA="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 export BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-# --match excludes this repo's client-vX.Y.Z release tags (client/ has its own
-# release cadence -- see CLAUDE.md) so a server build never reports a client
-# version; falls back to the short SHA (--always) until server vX.Y.Z tags exist.
-export APP_VERSION="$(git describe --tags --match 'v[0-9]*' --always --dirty 2>/dev/null || echo 0.6.0)"
+# On --pull the deployed version is IMAGE_TAG_VALUE, not git-describe: the source-
+# free bundle has no git repo, so describe would fall through to 0.6.0 and the
+# provenance line would name a version nothing here runs. From source, describe
+# is correct. GIT_SHA stays whatever git yields ('unknown' in the bundle) — the
+# real SHA is baked into the pulled image and GET /version reads it from there.
+# Both branches route through provenance_app_version (deploy/lib.sh), where the
+# rule is unit-tested. IMAGE_TAG_VALUE is set only in the pull branch above; the
+# ${...:-} keeps this safe under set -u on a source build.
+export APP_VERSION="$(provenance_app_version "$PULL_MODE" "${IMAGE_TAG_VALUE:-}")"
 echo "Build provenance: GIT_SHA=${GIT_SHA} BUILD_TIME=${BUILD_TIME} APP_VERSION=${APP_VERSION}"
 
 # --- Dashboard basic auth ---
@@ -564,9 +569,9 @@ else
 fi
 
 echo ""
-echo "============================================"
-echo "  Firekeep is running!"
-echo "============================================"
+box_top 46
+printf '  ║%*s%s%*s║\n' 13 '' 'Firekeep is running!' 13 ''
+box_bot 46
 echo ""
 echo "  Dashboard:     http://${REACH_HOST}:8040${REACH_NOTE}"
 echo "  Dashboard login: ${DASHBOARD_CREDS}"
@@ -590,13 +595,20 @@ echo ""
 if auth_enforced .env; then
     echo "  Auth:          ENFORCED — every API call needs an X-API-Key header"
     echo ""
-    echo "============================================================"
     if [ -n "$ADMIN_KEY" ]; then
-        echo "  ADMIN API KEY — shown once at the START of this run, and"
-        echo "  again here because it is NOT stored anywhere on disk."
-        echo "  Put it in your password manager NOW:"
-        echo ""
-        echo "    ${ADMIN_KEY}"
+        # The single most important line of the whole install: shown once here,
+        # stored nowhere on disk. Framed (box_line interior is ASCII on purpose —
+        # see deploy/lib.sh) so it cannot be scrolled past. Interior lines are
+        # kept within the 62-column width; the key itself is nxs_ + 48 hex = 52.
+        box_top 62
+        box_line 62 "  ADMIN API KEY - shown once at the START of this run, and"
+        box_line 62 "  again here because it is NOT stored anywhere on disk."
+        box_line 62 "  Put it in your password manager NOW:"
+        box_mid 62
+        box_line 62 ""
+        box_line 62 "    ${ADMIN_KEY}"
+        box_line 62 ""
+        box_bot 62
         echo ""
         echo "  Your first authenticated call:"
         echo ""
@@ -612,7 +624,8 @@ if auth_enforced .env; then
         # Idempotent re-run: bootstrap-keys.sh found the admin key already
         # registered and minted nothing, so there is no plaintext to reprint.
         # It is unrecoverable by design (only its SHA-256 is stored) — do not
-        # imply otherwise; give the re-mint path instead.
+        # imply otherwise; give the re-mint path instead. Not boxed: the re-mint
+        # commands below run past the box width, and there is no live key to frame.
         echo "  ADMIN API KEY — already provisioned by an earlier run."
         echo ""
         echo "  It was printed once, then, and is NOT recoverable: only its"
@@ -626,7 +639,6 @@ if auth_enforced .env; then
         echo "      DEL auth:bootstrap:admin_hash"
         echo "    bash deploy/bootstrap-keys.sh"
     fi
-    echo "============================================================"
     echo ""
     echo "  The dashboard needs no key from you — its nginx injects the"
     echo "  admin-scoped DASHBOARD_API_KEY from .env on every /api/ proxy."
@@ -642,6 +654,9 @@ else
 fi
 echo ""
 echo "  Run 'bash update.sh' to update after git pull."
+echo "  Remove later: 'firekeep uninstall' takes off the client kit; add"
+echo "                --server (or run this deployment's uninstall.sh) to also"
+echo "                remove the stack and ALL its data."
 echo ""
 
 # --- Exposure warning: only when it is TRUE -------------------------------

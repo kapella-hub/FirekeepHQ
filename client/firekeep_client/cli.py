@@ -546,6 +546,181 @@ def _init_args_for_self_provision(args):
     )
 
 
+# --- uninstall: reverse the render, strip PATH, delete ~/.firekeep ------------
+
+def _confirm(prompt: str, *, assume_yes: bool) -> bool:
+    """A y/N gate. `assume_yes` (--yes) approves without asking; a session with no
+    human on the other end declines rather than block a script on input()."""
+    if assume_yes:
+        return True
+    if not wizard.is_interactive():
+        return False
+    try:
+        return input(prompt).strip().lower() in ("y", "yes")
+    except (EOFError, KeyboardInterrupt):
+        return False
+
+
+def _remove_current_link(home: Path) -> str | None:
+    """Remove the `current` alias NODE alone, never recursing through it.
+
+    Windows: `current` is a junction; a recursive delete that follows the reparse
+    point would delete the TARGET venv's files (the hazard _point_current guards).
+    os.rmdir removes only the link node. POSIX: unlink the symlink. Returns an
+    error string on failure, else None."""
+    current = home / CURRENT_LINK_NAME
+    if not (os.path.lexists(current) or current.is_symlink() or current.exists()):
+        return None
+    try:
+        if os.name == "nt":
+            os.rmdir(current)  # junction/dir-link node only, not the target
+        else:
+            current.unlink()
+        return None
+    except OSError as exc:
+        return f"{current}: {exc}"
+
+
+def _remove_home(home: Path) -> tuple[list[str], list[str]]:
+    """Delete ~/.firekeep, removing the `current` junction node FIRST so the tree
+    delete never follows it into the target venv. Returns (removed, failed)."""
+    removed: list[str] = []
+    failed: list[str] = []
+    if not (home.exists() or os.path.lexists(home)):
+        return removed, failed
+    err = _remove_current_link(home)
+    if err is not None:
+        # Refuse the recursive delete rather than risk following a live junction.
+        failed.append(
+            f"could not remove the `current` alias ({err}); left {home} in place "
+            f"so a recursive delete never follows the junction into a venv"
+        )
+        return removed, failed
+    try:
+        shutil.rmtree(home)
+        removed.append(str(home))
+    except OSError as exc:
+        failed.append(f"{home}: {exc}")
+    return removed, failed
+
+
+def _teardown_server(server_dir: Path) -> tuple[list[str], list[str]]:
+    """`docker compose down -v` on the managed bundle. DELETES ALL DATA. Never
+    raises: reports what happened. If docker is absent, names the manual command
+    and continues. Returns (removed, failed)."""
+    removed: list[str] = []
+    failed: list[str] = []
+    compose = server_dir / "docker-compose.yml"
+    docker = shutil.which("docker")
+    if docker is None:
+        failed.append(
+            "docker not found — the server stack was NOT torn down. Remove it by "
+            f"hand:\n      cd {server_dir} && docker compose down -v   # deletes all data"
+        )
+        return removed, failed
+    try:
+        subprocess.run(
+            [docker, "compose", "-f", str(compose), "down", "-v"],
+            cwd=str(server_dir), check=True, timeout=_INSTALL_TIMEOUT,
+        )
+        removed.append(f"server stack + data volumes (docker compose down -v in {server_dir})")
+    except (OSError, subprocess.SubprocessError) as exc:
+        failed.append(
+            f"docker compose down -v failed ({exc}); the stack may still be running. "
+            f"Finish by hand: cd {server_dir} && docker compose down -v"
+        )
+    return removed, failed
+
+
+def cmd_uninstall(args) -> int:
+    """Reverse `firekeep install`: unrender every adapter, strip the PATH entry,
+    then delete ~/.firekeep. Server teardown is OPT-IN and DESTRUCTIVE (--server or
+    an explicit second confirm). Never raises on a partial failure — reports what
+    was and was not removed."""
+    home = _firekeep_home()
+    assume_yes = getattr(args, "yes", False)
+    server_dir = home / "server"
+    server_present = (server_dir / "docker-compose.yml").is_file()
+    shim_dir = home / pathenv.SHIM_DIR_NAME
+
+    # Say exactly what will be removed BEFORE touching anything.
+    print("firekeep uninstall will remove:")
+    print("  - the Firekeep MCP + hook blocks from every runtime config "
+          "(claude, codex, kiro, opencode); your own settings are left intact")
+    print(f"  - the `firekeep` launcher and its PATH entry ({shim_dir})")
+    print(f"  - {home} (venvs, config, shims, bin, logs, server bundle, snapshots)")
+    if server_present:
+        print(f"  - a managed server bundle exists at {server_dir}; its running stack "
+              "and DATA are left untouched unless you opt in below")
+
+    # Client-removal confirm.
+    if not _confirm("Proceed? [y/N] ", assume_yes=assume_yes):
+        print("firekeep uninstall: aborted — nothing was removed.")
+        return 0
+
+    # Server teardown gate: OPT-IN (--server, or an explicit second confirm) and
+    # guarded by its OWN loud data-loss confirm, distinct from the client confirm
+    # above. Runs BEFORE home is deleted — the compose file lives inside it. A bare
+    # `--yes` removes the client but never opts into data loss.
+    teardown = False
+    if server_present:
+        opted_in = getattr(args, "server", False) or _confirm(
+            f"Also tear down the server stack at {server_dir}? [y/N] ", assume_yes=False,
+        )
+        if opted_in:
+            print("\n  WARNING: `docker compose down -v` DELETES ALL SERVER DATA — the "
+                  "Neo4j graph, Qdrant vectors and Redis state are gone for good, no undo.")
+            teardown = _confirm("  Type y to permanently delete all server data: ",
+                                assume_yes=assume_yes)
+
+    removed: list[str] = []
+    failed: list[str] = []
+    kept: list[str] = []
+
+    if teardown:
+        r, f = _teardown_server(server_dir)
+        removed += r
+        failed += f
+    elif server_present:
+        kept.append(f"the server stack and its data at {server_dir} "
+                    "(re-run with --server to remove it)")
+
+    # Adapters + PATH FIRST: they edit files OUTSIDE ~/.firekeep, so they must run
+    # before the home (and the venv they reference) is gone. One runtime's failure
+    # must never abort the rest.
+    for name in _selected_runtimes("all"):
+        try:
+            get_adapter(name).unrender()
+            removed.append(f"{name} runtime config (Firekeep block removed)")
+        except Exception as exc:  # noqa: BLE001 — best-effort per runtime
+            failed.append(f"{name} adapter unrender: {exc}")
+
+    try:
+        for msg in pathenv.remove_from_path(home):
+            removed.append(msg)
+    except Exception as exc:  # noqa: BLE001 — PATH cleanup is best-effort, never fatal
+        failed.append(f"PATH cleanup: {exc}")
+
+    # Delete ~/.firekeep last (junction-safe — see _remove_home).
+    r, f = _remove_home(home)
+    removed += r
+    failed += f
+
+    print("\nfirekeep uninstall:")
+    for msg in removed:
+        print(f"  removed: {msg}")
+    for msg in kept:
+        print(f"  kept: {msg}")
+    for msg in failed:
+        print(f"  NOT removed: {msg}", file=sys.stderr)
+    if failed:
+        print("\nfirekeep: some items could not be removed (above); nothing else was "
+              "touched. Re-run after resolving them.", file=sys.stderr)
+        return 1
+    print("\nfirekeep: uninstalled. Open a new terminal to drop the stale PATH entry.")
+    return 0
+
+
 # --- doctor: fail-loud preflight (health, skew, venv, perms, CA) -----------
 
 def _check_health(cfg) -> list[tuple[str, str, str]]:
@@ -1339,10 +1514,66 @@ def _server_dist_base(explicit: str | None) -> str:
     return serverinit.DEFAULT_DIST_BASE
 
 
+def _refresh_stale_bundle(root: Path, args) -> Path | None:
+    """When the managed ~/.firekeep/server cache is OLDER than server/latest,
+    re-download latest and return the new root; else None (reuse the cache).
+
+    Only ever called for the MANAGED cache (never a source checkout). A published
+    bundle moving vX -> vY between a failed init and its retry silently reused the
+    stale vX — a real dead-end (v0.4.4 kept after latest advanced to v0.4.5). A
+    transient network failure NEVER blocks init: it warns and returns None so the
+    cached bundle is reused."""
+    cached = serverinit._bundle_version(root)
+    if cached is None:
+        return None  # unversioned/malformed marker — reuse rather than guess
+    base = _server_dist_base(args.dist_base)
+    try:
+        latest = serverinit.fetch_manifest(base)
+    except serverinit.ServerInitError as exc:
+        print(f"firekeep init: could not check for a newer server bundle ({exc}); "
+              f"reusing the cached bundle {cached}.", file=sys.stderr)
+        return None
+    try:
+        # Both are vX.Y.Z tags; is_newer -> parse_version wants bare X.Y.Z.
+        stale = updater.is_newer(latest.version.lstrip("v"), cached.lstrip("v"))
+    except updater.UpdateError:
+        return None  # unparseable version (prerelease tag) — reuse, never crash init
+    if not stale:
+        return None
+    try:
+        new_root = serverinit.download_bundle(
+            base, root, version=latest.version, timeout=_INSTALL_TIMEOUT,
+        )
+    except (serverinit.ServerInitError, updater.UpdateError) as exc:
+        print(f"firekeep init: refresh to {latest.version} failed ({exc}); "
+              f"reusing the cached bundle {cached}.", file=sys.stderr)
+        return None
+    print(f"firekeep: refreshed server bundle {cached} -> {latest.version}")
+    return new_root
+
+
 def cmd_init(args) -> int:
     """Provision a server from a local checkout or the verified public bundle."""
     root = _server_source_dir(args.server_dir)
     downloaded = False
+
+    # Stale managed-cache guard. When REUSING the ~/.firekeep/server cache (no
+    # --server-dir source, no explicit --version) and the published server has
+    # moved on, refresh to latest instead of reusing a superseded bundle. A source
+    # CHECKOUT (has .git, or was passed via --server-dir) is NEVER auto-refreshed —
+    # only the managed cache is.
+    if root is not None and not args.server_dir and not args.version:
+        managed = (_firekeep_home() / "server").resolve()
+        is_managed_cache = (
+            root == managed
+            and (root / "SERVER_BUNDLE.json").is_file()
+            and not (root / ".git").exists()
+        )
+        if is_managed_cache:
+            refreshed = _refresh_stale_bundle(root, args)
+            if refreshed is not None:
+                root, downloaded = refreshed, True
+
     if root is not None and args.version and (root / "SERVER_BUNDLE.json").is_file():
         previous = serverinit.previous_bundle_path(root)
         try:
@@ -1961,6 +2192,21 @@ def _build_parser() -> argparse.ArgumentParser:
         help="identity to enrol as (defaults to the identity already in ~/.firekeep/config)",
     )
     init_parser.set_defaults(func=cmd_init)
+
+    uninstall_parser = sub.add_parser(
+        "uninstall",
+        help="remove the client kit (runtime configs, PATH entry, ~/.firekeep)",
+    )
+    uninstall_parser.add_argument(
+        "--yes", "-y", action="store_true",
+        help="skip the confirmation prompt (removes the client only, never server data)",
+    )
+    uninstall_parser.add_argument(
+        "--server", action="store_true",
+        help="also tear down the managed server stack and DELETE ALL DATA "
+             "(docker compose down -v; Neo4j/Qdrant/Redis volumes)",
+    )
+    uninstall_parser.set_defaults(func=cmd_uninstall)
 
     login_parser = sub.add_parser(
         "login", help="attach through hosted sign-in, when the server supports it"

@@ -332,3 +332,178 @@ def test_office_mode_ignores_other_flags():
 
 def test_office_mode_found_among_other_flags():
     assert _office_requested("--verbose", "--office") is True
+
+
+REPO = LIB.parents[1]
+UNINSTALL_SH = REPO / "uninstall.sh"
+
+
+# --- provenance_app_version: the --pull path reports the tag, not 0.6.0 ------
+#
+# install.sh's build-provenance line used to run `git describe ... || echo 0.6.0`
+# unconditionally. On a `--pull` install from the source-free bundle there is no
+# git repo, so it fell through to 0.6.0 and printed APP_VERSION=0.6.0 for a
+# deployment that is actually the pulled release tag (e.g. v0.4.5). The rule now
+# lives in this helper so it can be asserted directly.
+
+def _provenance(pull_mode: int, image_tag: str = "") -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [BASH, "-c",
+         f'set -euo pipefail; source "{_p(LIB)}"; '
+         f'provenance_app_version {pull_mode} {shlex.quote(image_tag)}'],
+        capture_output=True, text=True, encoding="utf-8", cwd=str(REPO),
+    )
+
+
+def test_provenance_app_version_pull_reports_the_release_tag():
+    result = _provenance(1, "v0.4.5")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "v0.4.5"
+
+
+def test_provenance_app_version_pull_is_not_the_absent_repo_fallback():
+    """The exact regression: --pull stamped APP_VERSION=0.6.0 (git-describe's
+    no-repo fallback) instead of the tag it deployed."""
+    assert _provenance(1, "v0.4.5").stdout.strip() != "0.6.0"
+
+
+def test_provenance_app_version_source_ignores_a_passed_tag():
+    """From source the version is git-describe, never the IMAGE_TAG argument: a
+    checkout's stale IMAGE_TAG must not masquerade as the built version. (This is
+    why install.sh only overrides APP_VERSION on the pull path.)"""
+    out = _provenance(0, "v9.9.9").stdout.strip()
+    assert out != "v9.9.9"
+    assert out, "the source path must always answer something (describe/SHA/0.6.0)"
+
+
+def test_install_sh_stamps_the_image_tag_into_app_version_on_pull():
+    """Guard the wiring: the helper can be correct while install.sh calls it
+    wrong. The pull branch must feed IMAGE_TAG_VALUE through provenance_app_version."""
+    text = (REPO / "install.sh").read_text(encoding="utf-8")
+    assert 'provenance_app_version "$PULL_MODE" "${IMAGE_TAG_VALUE:-}"' in text
+    # The inline `git describe ... || echo 0.6.0` must be gone from install.sh —
+    # it moved into the helper, and leaving a copy behind reopens the bug.
+    assert "git describe" not in text, "install.sh still computes APP_VERSION inline"
+
+
+# --- box-drawing helpers: borders stay aligned ------------------------------
+#
+# The closing summary frames the one-time admin key. The frame is only useful if
+# it does not tear: every rendered line must be the same display width, which
+# means the ASCII interior field must be exactly <width> columns wide and the
+# box characters must sit outside it.
+
+def _run_box(width: int, interior: list[str]) -> subprocess.CompletedProcess:
+    parts = [f"box_top {width}"]
+    parts += [f"box_line {width} {shlex.quote(text)}" for text in interior]
+    parts.append(f"box_bot {width}")
+    return subprocess.run(
+        [BASH, "-c", f'set -euo pipefail; source "{_p(LIB)}"; ' + "; ".join(parts)],
+        capture_output=True, text=True, encoding="utf-8",
+    )
+
+
+def test_box_borders_all_render_the_same_width():
+    width = 62
+    key = "nxs_" + "a" * 48  # the real admin-key shape: 52 chars
+    result = _run_box(width, ["  heading text", "", f"    {key}"])
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    # 2-space indent + 1 border + <width> interior + 1 border, counted in code
+    # points (locale-independent), so a 3-byte box char still counts as one.
+    assert lines, "box produced no output"
+    for line in lines:
+        assert len(line) == width + 4, f"border misaligned ({len(line)}): {line!r}"
+    assert lines[0].startswith("  ╔") and lines[0].endswith("╗")
+    assert lines[-1].startswith("  ╚") and lines[-1].endswith("╝")
+
+
+def test_box_line_keeps_a_52_char_key_inside_the_frame():
+    key = "nxs_" + "b" * 48
+    result = _run_box(62, [f"    {key}"])
+    assert result.returncode == 0, result.stderr
+    key_line = next(line for line in result.stdout.splitlines() if key in line)
+    assert key_line.endswith("║"), "the key overran the right border"
+    assert len(key_line) == 62 + 4
+
+
+# --- uninstall.sh: server teardown, guarded by an explicit confirmation ------
+#
+# The script removes the data volumes (docker compose down -v) -- all team
+# memory. It must refuse unless the operator confirms, exactly one of three ways:
+# typing "yes", --yes, or FIREKEEP_UNINSTALL_YES=1. `docker` is shadowed by an
+# exported shell function (a PATH stub is silently unusable under Git Bash on
+# Windows -- see test_install_no_prompts._stub_docker) so a real teardown never
+# runs and each invocation is recorded to a log the test inspects.
+
+def _run_uninstall(tmp_path, args: str = "", stdin_text: str = "",
+                   env_yes: bool = False) -> tuple[subprocess.CompletedProcess, Path]:
+    docker_log = tmp_path / "docker-invocations.log"
+    stub = (
+        f'export DOCKER_LOG="{_p(docker_log)}"; '
+        'docker() { echo "$*" >> "$DOCKER_LOG"; }; export -f docker; '
+    )
+    prefix = 'export FIREKEEP_UNINSTALL_YES=1; ' if env_yes else ""
+    result = subprocess.run(
+        [BASH, "-c", f'{prefix}{stub}bash "{_p(UNINSTALL_SH)}" {args}'],
+        input=stdin_text, capture_output=True, text=True, encoding="utf-8", timeout=60,
+    )
+    return result, docker_log
+
+
+def test_uninstall_exists_and_is_a_bash_script():
+    assert UNINSTALL_SH.is_file()
+    assert UNINSTALL_SH.read_text(encoding="utf-8").startswith("#!/usr/bin/env bash")
+
+
+def test_uninstall_refuses_without_confirmation(tmp_path):
+    """Closed stdin, no flag, no env var: it must abort and touch nothing."""
+    result, docker_log = _run_uninstall(tmp_path)  # stdin_text="" -> immediate EOF
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Aborted" in result.stdout
+    assert not docker_log.exists(), "docker was invoked despite the refusal"
+
+
+def test_uninstall_refuses_on_any_answer_other_than_yes(tmp_path):
+    # No trailing "\n": Python text-mode stdin would translate it to "\r\n" on
+    # Windows and `read` would then see "no\r". `read` captures the partial line
+    # at EOF, so a bare "no" is delivered verbatim on every platform.
+    result, docker_log = _run_uninstall(tmp_path, stdin_text="no")
+    assert result.returncode == 1
+    assert "Aborted" in result.stdout
+    assert not docker_log.exists()
+
+
+def test_uninstall_warns_about_data_loss_before_prompting(tmp_path):
+    result, _ = _run_uninstall(tmp_path)
+    out = result.stdout
+    assert "DATA LOSS WARNING" in out
+    assert "ALL TEAM MEMORY IS DELETED" in out
+    assert "deploy/backup.sh" in out, "the warning must point at the backup command"
+
+
+def test_uninstall_removes_volumes_when_confirmed_by_typing_yes(tmp_path):
+    # "yes" without a newline -- see test_uninstall_refuses_on_any_answer for why.
+    result, docker_log = _run_uninstall(tmp_path, stdin_text="yes")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert docker_log.is_file(), "docker was never invoked"
+    assert "compose down -v --remove-orphans" in docker_log.read_text(encoding="utf-8")
+
+
+def test_uninstall_yes_flag_skips_the_prompt(tmp_path):
+    result, docker_log = _run_uninstall(tmp_path, args="--yes")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "compose down -v --remove-orphans" in docker_log.read_text(encoding="utf-8")
+
+
+def test_uninstall_env_var_skips_the_prompt(tmp_path):
+    result, docker_log = _run_uninstall(tmp_path, env_yes=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "compose down -v --remove-orphans" in docker_log.read_text(encoding="utf-8")
+
+
+def test_uninstall_rejects_unknown_flags(tmp_path):
+    result, docker_log = _run_uninstall(tmp_path, args="--force")
+    assert result.returncode == 1
+    assert "Usage:" in result.stdout or "Usage:" in result.stderr
+    assert not docker_log.exists()

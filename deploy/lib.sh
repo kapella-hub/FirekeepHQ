@@ -530,3 +530,46 @@ host_path() {
         printf '%s\n' "$1"
     fi
 }
+
+# provenance_app_version <pull_mode:0|1> [image_tag]
+# The APP_VERSION stamped into the build-provenance line (and, on a source
+# build, the image build args).
+#
+# When PULLING published images the deployed version IS the release tag the
+# images were built and published under (server-release.yml bakes
+# APP_VERSION=<tag> into each image). git-describe run here would instead report
+# the source-free bundle's absent-repo fallback (0.6.0) — a version nothing
+# running actually is. From source, describe against this repo's server v-tags
+# is correct, so the pull path is the only one that must override it.
+#
+# Kept out of install.sh's inline flow so tests/test_deploy_lib.py can assert the
+# pull path reports the tag rather than the 0.6.0 fallback.
+provenance_app_version() {
+    local pull_mode="${1:?pull mode required}" image_tag="${2-}"
+    if [ "$pull_mode" -eq 1 ]; then
+        printf '%s\n' "$image_tag"
+    else
+        # --match excludes this repo's client-vX.Y.Z release tags (client/ has
+        # its own release cadence -- see CLAUDE.md) so a server build never
+        # reports a client version; falls back to the short SHA (--always) until
+        # server vX.Y.Z tags exist, then 0.6.0 outside a git repo.
+        git describe --tags --match 'v[0-9]*' --always --dirty 2>/dev/null || echo 0.6.0
+    fi
+}
+
+# --- Framed summary output (box-drawing) -------------------------------------
+# The closing installer summary prints the one-time admin key, which is stored
+# nowhere on disk; framing it makes it impossible to skim past. Bars are built
+# with printf/seq rather than hand-counted so the borders always match the
+# declared width. Interior text passed to box_line MUST stay ASCII: a box char
+# is 3 UTF-8 bytes but one column, and printf's %-*s pads by byte count, so a
+# multibyte char inside the padded field would shift the right border left. The
+# border characters themselves sit outside that field, so they are fine.
+box_bar() { printf '═%.0s' $(seq 1 "${1:?width required}"); }         # N horizontal box chars
+box_top() { printf '  ╔%s╗\n' "$(box_bar "${1:?width required}")"; }
+box_mid() { printf '  ╠%s╣\n' "$(box_bar "${1:?width required}")"; }
+box_bot() { printf '  ╚%s╝\n' "$(box_bar "${1:?width required}")"; }
+# box_line <width> <text> — one bordered interior line, text left-justified and
+# space-padded to <width> columns. Text longer than <width> overflows the right
+# border rather than truncating (callers keep interior lines within width).
+box_line() { printf '  ║%-*s║\n' "${1:?width required}" "${2-}"; }

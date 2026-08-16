@@ -115,6 +115,14 @@ clients never see it.
 
 ## Server releases
 
+Any change to a bundle-allowlist file (`install.sh`, `docker-compose.yml`,
+`update.sh`, `deploy/lib.sh`, and the rest of `BUNDLE_FILES` in
+`deploy/build_server_bundle.py`) needs a server release (a `vX.Y.Z` tag) to
+publish the new bundle — otherwise `firekeep init` keeps serving the stale one.
+The non-blocking `server-release-guard` CI job
+(`scripts/check_server_release_pending.py`) emits a `::warning::` on any PR that
+moves ahead of the latest tag without one.
+
 Publish the client containing `firekeep init` first, then tag the server:
 
 ```bash

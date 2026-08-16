@@ -362,6 +362,27 @@ jobs:
       - name: Run harness tests
         run: cd benchmarks/memory && python -m pytest tests -q
 
+  server-release-guard:
+    name: Server release pending (advisory)
+    runs-on: ubuntu-latest
+    # NON-BLOCKING. The script always exits 0 and only emits a ::warning:: when a
+    # bundle-affecting file changed since the latest vX.Y.Z tag without a new
+    # server release — so `firekeep init` would serve a stale bundle. It reminds
+    # on every PR touching install.sh/compose/deploy scripts; it never fails CI.
+    #
+    # Its own job, not a step in repo-scripts, because the diff needs the v* tags
+    # and their trees: `fetch-depth: 0` fetches both, and the default checkout
+    # fetches neither.
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Warn if the server bundle is ahead of the latest release
+        run: python scripts/check_server_release_pending.py
+
   lint:
     name: lint (ruff)
     runs-on: ubuntu-latest

@@ -39,6 +39,20 @@ def test_server_bundle_contains_deployment_surface_without_service_source(tmp_pa
     )
 
 
+def test_uninstall_script_ships_in_the_bundle(tmp_path) -> None:
+    """The teardown script (docker compose down -v) must reach a customer who
+    only ever received the source-free bundle -- otherwise the only documented
+    way to remove the stack and its data does not exist on their host."""
+    assert "uninstall.sh" in BUNDLE_FILES
+    archive, _ = build_bundle(REPO, tmp_path, "v1.2.3")
+    with tarfile.open(archive, "r:gz") as tar:
+        script = tar.extractfile("firekeep-server-v1.2.3/uninstall.sh")
+        assert script is not None
+        content = script.read()
+    assert b"\r\n" not in content, "uninstall.sh is not runnable on Linux"
+    assert b"docker compose down -v --remove-orphans" in content
+
+
 def test_server_release_workflow_publishes_bundle_to_public_dist() -> None:
     workflow = (REPO / ".github/workflows/server-release.yml").read_text(encoding="utf-8")
     assert "deploy/build_server_bundle.py" in workflow

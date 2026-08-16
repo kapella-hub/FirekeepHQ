@@ -24,6 +24,7 @@ BUNDLE_FILES = (
     "docker-compose.office.yml",
     "install.sh",
     "update.sh",
+    "uninstall.sh",
     "start.sh",
     "stop.sh",
     "LICENSE",

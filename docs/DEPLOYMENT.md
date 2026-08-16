@@ -388,6 +388,40 @@ the stack: client-kit `[server]` needs `api_key` set, and hand-rolled scripts ne
 `X-API-Key` header. Nothing degrades gracefully — an unkeyed caller gets a 401,
 by design.
 
+## Removing the server
+
+Two separate things can be removed, and they are not the same operation:
+
+- **The client kit** on a workstation — `firekeep uninstall`. This takes the kit
+  off that machine (adapters, `~/.firekeep`); it does not touch any server.
+- **The server stack and its data** — `bash uninstall.sh`, from the deployment
+  directory. This is a **destructive** teardown: it runs
+  `docker compose down -v --remove-orphans`, which removes the containers, the
+  networks, **and the four data volumes** (`neo4j_data`, `qdrant_data`,
+  `redis_data`, `ollama_data`). Every memory the team ever wrote is deleted, and
+  it cannot be undone.
+
+```bash
+cd ~/.firekeep/server          # or wherever the bundle was unpacked
+bash deploy/backup.sh          # take a backup first if you might want it back
+bash uninstall.sh              # prompts for a typed "yes" before removing anything
+```
+
+`uninstall.sh` refuses to remove anything until you type `yes` at its prompt.
+For an unattended teardown, opt out of the prompt explicitly with the `--yes`
+flag or `FIREKEEP_UNINSTALL_YES=1`:
+
+```bash
+bash uninstall.sh --yes
+# or:  FIREKEEP_UNINSTALL_YES=1 bash uninstall.sh
+```
+
+When it finishes, the deployment directory holds only configuration and can be
+deleted. To keep the knowledge but drop the stack, take a JSONL export
+(`GET /memory/export`, see [Export and backup](#export-and-backup--what-is-covered))
+or a volume backup (`bash deploy/backup.sh`) **before** running `uninstall.sh` —
+the `-v` teardown removes the volumes those tools read from.
+
 ## Operations
 
 ### What version am I running?
