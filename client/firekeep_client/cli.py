@@ -259,9 +259,23 @@ def _pip_install(python: Path, *pkgs, find_links=None) -> None:
     _run(cmd)
 
 
-def _selected_runtimes(runtime: str) -> list[str]:
+def _generic_is_configured() -> bool:
+    """Whether the user opted a generic MCP client in (`[generic] agents_md`).
+
+    Delegates to the resolver's RAW read — never resolver.load_config(), which
+    migrates and rewrites the config when `[server]` is absent. This runs on
+    every install and every uninstall; asking a question must not edit the file."""
+    return resolver.generic_agents_md() is not None
+
+
+def _selected_runtimes(runtime: str, *, include_generic: bool = False) -> list[str]:
+    """PURE: a function of its arguments only, never of the config on disk.
+
+    `generic` joins the "all" fan-out only when the caller says so, so an
+    unconfigured user gets exactly the four — the invariant test_cli_install and
+    test_cli_uninstall pin by count."""
     if runtime == "all":
-        return ["claude", "codex", "kiro", "opencode"]
+        return ["claude", "codex", "kiro", "opencode"] + (["generic"] if include_generic else [])
     return [runtime]
 
 

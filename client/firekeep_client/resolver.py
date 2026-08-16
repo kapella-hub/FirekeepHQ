@@ -188,6 +188,33 @@ def generic_agents_md(path: Path | None = None) -> Path | None:
     return Path(value).expanduser().resolve() if value else None
 
 
+def set_generic_agents_md(target: Path | str, path: Path | None = None) -> None:
+    """Persist the generic target. Round-trips the whole file through
+    ConfigParser and re-serializes every section — [server], [identity] and
+    [pins] survive; writing this section must never truncate the user's
+    connection."""
+    p = _config_path(path)
+    cfg = _raw_config(p)
+    if not cfg.has_section("generic"):
+        cfg.add_section("generic")
+    cfg.set("generic", "agents_md", str(Path(target).expanduser().resolve()))
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p, "w", encoding="utf-8") as fh:
+        cfg.write(fh)
+
+
+def clear_generic_agents_md(path: Path | None = None) -> None:
+    """Forget the generic target. No-op (and no write) when there is none, so
+    it never moves the mtime of a config it has nothing to say about."""
+    p = _config_path(path)
+    cfg = _raw_config(p)
+    if not cfg.has_section("generic"):
+        return
+    cfg.remove_section("generic")
+    with open(p, "w", encoding="utf-8") as fh:
+        cfg.write(fh)
+
+
 def load_config(path: Path | None = None) -> configparser.ConfigParser:
     p = _config_path(path)
     if not p.exists():
