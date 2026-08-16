@@ -227,7 +227,11 @@ def _vault_status(tmp_path, env_contents: str) -> str:
 
 
 def test_reports_enabled_when_key_present(tmp_path):
-    out = _vault_status(tmp_path, "VAULT_KEY=aGVsbG8td29ybGQtdGhpcy1pcy1hLWtleQ==\n")
+    # Presence-only check (vault_status_line), so an obviously-fake low-entropy
+    # value keeps the test honest AND does not trip the gitleaks secret scan the
+    # way a base64-shaped fake did (the line-pinned allowlist entry it needed
+    # went stale the moment this file grew — the fragility .gitleaksignore warns of).
+    out = _vault_status(tmp_path, "VAULT_KEY=DUMMY_VAULT_KEY_FOR_TESTS\n")
     assert "Enabled" in out
     assert "DISABLED" not in out
 

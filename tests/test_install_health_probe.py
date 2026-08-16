@@ -21,7 +21,6 @@ reverts to `${svc##*:}`, `port` becomes `/health` and `test_ports_are_numeric` f
 from __future__ import annotations
 
 import re
-import shutil
 import subprocess
 from pathlib import Path
 
