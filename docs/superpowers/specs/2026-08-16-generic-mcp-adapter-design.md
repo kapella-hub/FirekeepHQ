@@ -107,20 +107,28 @@ persist the generic target path in the kit config, and make the `"all"` fan-out 
 A generic block rendered through it would carry the wrong stamp, and doctor (`cli.py:1108-1126`)
 compares against the one global `RENDERED_INSTRUCTIONS_HASH` → a permanent false "edited/stale" warn.
 
-**Resolution — parameterize the marker engine, additively:**
-- New constant set for generic (distinct **prefix** so a generic block never aliases a four-block):
-  `GENERIC_INSTRUCTIONS = MEMORY_INSTRUCTIONS_NO_HOOKS + DECISION_INSTRUCTIONS + KNOWLEDGE_INGEST_INSTRUCTIONS`;
-  `RENDERED_GENERIC_INSTRUCTIONS_HASH = _hash12(GENERIC_INSTRUCTIONS)`;
-  `GENERIC_INSTRUCTIONS_BEGIN_PREFIX = "<!-- firekeep:generic-instructions:begin"`,
-  `GENERIC_INSTRUCTIONS_BEGIN` (stamped with the generic hash), `GENERIC_INSTRUCTIONS_END`.
-- `MEMORY_INSTRUCTIONS_NO_HOOKS` = `MEMORY_INSTRUCTIONS` with the one hook-dependent clause
+**Resolution — make the stamp content-derived** (which the code's own comment, base.py:503-509,
+already says it *should* be — `upsert_marked_block` just hardcodes the constant instead):
+- `upsert_marked_block(existing, content)` computes its begin line **from `content`** —
+  `_stamped_begin(content) = f"{INSTRUCTIONS_BEGIN_PREFIX} h={_hash12(content)} — firekeep-owned
+  block, do not edit; re-rendered by \`firekeep install\` -->"` — replacing the hardcoded
+  `INSTRUCTIONS_BEGIN` at base.py:577. For the four (content = `FIREKEEP_INSTRUCTIONS`),
+  `_hash12(content) == RENDERED_INSTRUCTIONS_HASH`, so the begin line is **byte-identical** — no
+  change to the four's rendered files (pinned by test 11 + existing `test_instruction_stamp`).
+- New text for the no-hooks runtimes:
+  `GENERIC_INSTRUCTIONS = MEMORY_INSTRUCTIONS_NO_HOOKS + "\n\n" + DECISION_INSTRUCTIONS + "\n\n" +
+  KNOWLEDGE_INGEST_INSTRUCTIONS`; `RENDERED_GENERIC_INSTRUCTIONS_HASH = _hash12(GENERIC_INSTRUCTIONS)`.
+  `MEMORY_INSTRUCTIONS_NO_HOOKS` = `MEMORY_INSTRUCTIONS` with the one hook-dependent clause
   (~base.py:405-407, *"routine single-file edits are already gated by hooks and need no declaration"*)
   **removed/reworded** — a generic client has no gate, so that line would tell it a gate exists.
-  Factor the shared sentence so the with-hooks and no-hooks memory texts differ by exactly that clause.
-- `upsert_marked_block(existing, content, *, begin=INSTRUCTIONS_BEGIN, end=INSTRUCTIONS_END)` and
-  `strip_marked_block(existing, *, begin_prefix=INSTRUCTIONS_BEGIN_PREFIX, end=INSTRUCTIONS_END)`:
-  **new keyword-only parameters that default to the four's constants**. The four call them with no
-  new args → **byte-identical**. Generic passes the generic constants.
+  Factor the shared text so the two memory variants differ by exactly that clause.
+- Generic renders `GENERIC_INSTRUCTIONS` through the **same** `upsert_marked_block` — the
+  content-derived stamp gives it `RENDERED_GENERIC_INSTRUCTIONS_HASH` automatically. The begin
+  **prefix** and `INSTRUCTIONS_END` are unchanged/shared, so `strip_marked_block` (prefix-matched)
+  removes a generic block unchanged. The collision guard (§7) keeps a generic block and a four block
+  from ever sharing a file, so a shared prefix is never ambiguous. **No parameterization of the
+  marker helpers is needed** — only the stamp *source* changes (constant → content), byte-identical
+  for the four.
 
 **Codex note (out of scope, §11):** codex is also hookless and renders `FIREKEEP_INSTRUCTIONS`
 (the with-hooks text), so it carries the same over-statement today. Reconciling codex to
