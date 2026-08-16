@@ -23,13 +23,69 @@ fi
 
 echo "[OK] Docker and Docker Compose available"
 
-# --- Prompt for config ---
+# --- Configure .env ----------------------------------------------------------
+# THIS BLOCK ASKS THE OPERATOR NOTHING, and that is the point.
+#
+# It used to open with two blocking prompts:
+#
+#     read -rp  "VPS IP address: "  VPS_IP
+#     read -rsp "Neo4j password: "  NEO4J_PASSWORD
+#
+# Both are questions this machine answers better than the person running it,
+# and an empty answer to either one aborted the install with "must not be
+# empty" — a message that names the field and not the fix. A first-time
+# installer, arriving here straight from `firekeep init` on a box they had
+# just provisioned, had no way to know that the expected VPS IP was their own
+# loopback address, or that the Neo4j password was theirs to invent and would
+# never be typed again.
+#
+# The tell was in our own CI. `.github/workflows/install-smoke.yml` — the job
+# literally named "the stranger test" — piped the answers in:
+#
+#     printf '%s\n%s\n' "127.0.0.1" "smoke-test-password" | bash install.sh
+#
+# A test that supplies the answer key cannot detect a question that should
+# never have been asked. Both values are now derived (see detect_host_ip and
+# generate_secret in deploy/lib.sh for what each one actually controls), and
+# the smoke test runs with stdin closed so this can never regress into a
+# prompt again.
+#
+# Explicit overrides, highest precedence first. Each is a real use case:
+#   --ip <addr>              a host whose routable address is not the one it
+#                            routes from (NAT'd VPS, floating IP, DNS name)
+#   --neo4j-password <pw>    restoring a backup, or a policy-managed secret
+#   FIREKEEP_VPS_IP=…        the same two, for unattended provisioning where
+#   FIREKEEP_NEO4J_PASSWORD= adding flags to a canned command line is awkward
 if [ ! -f .env ]; then
     echo ""
 
-    read -rp "VPS IP address: " VPS_IP
-    read -rsp "Neo4j password: " NEO4J_PASSWORD
-    echo
+    VPS_IP="$(flag_value ip "$@")"
+    [ -n "$VPS_IP" ] || VPS_IP="${FIREKEEP_VPS_IP:-}"
+    if [ -n "$VPS_IP" ]; then
+        echo "[OK] Host address: ${VPS_IP} (given explicitly)"
+    else
+        VPS_IP="$(detect_host_ip)"
+        if [ "$VPS_IP" = "127.0.0.1" ]; then
+            echo "[OK] Host address: 127.0.0.1 (no routable address found — loopback)"
+        else
+            echo "[OK] Host address: ${VPS_IP} (detected)"
+        fi
+        echo "     Used for the SSH target in tunnel join codes and the CORS origin."
+        echo "     Change it any time: set VPS_IP in .env, then run: bash update.sh"
+    fi
+
+    NEO4J_PASSWORD="$(flag_value neo4j-password "$@")"
+    [ -n "$NEO4J_PASSWORD" ] || NEO4J_PASSWORD="${FIREKEEP_NEO4J_PASSWORD:-}"
+    if [ -n "$NEO4J_PASSWORD" ]; then
+        echo "[OK] Neo4j password: supplied"
+    else
+        # Not a secret any human needs: Cortex reads it from .env to reach the
+        # neo4j container, and the port never leaves 127.0.0.1. Generated for
+        # exactly the same reason VAULT_KEY is generated forty lines below —
+        # this block simply predates that decision being applied consistently.
+        NEO4J_PASSWORD="$(generate_secret 24)" || exit 1
+        echo "[OK] Neo4j password generated (stored in .env, mode 0600)"
+    fi
 
     # configure_env (deploy/lib.sh) validates both answers and writes .env
     # atomically -- either it's fully configured or it doesn't exist at all,
@@ -47,13 +103,40 @@ if [ ! -f .env ]; then
     # ever leave the freshly-written secrets world-readable in between.
     chmod 600 .env
 
-    # Generate vault encryption key
+    # Generate vault encryption key.
+    #
+    # The cryptography import is the PREFERRED path, not the only one. It is
+    # absent on a stock Ubuntu/Debian VPS -- exactly the machine this installer
+    # targets -- and the fallback used to be "[SKIP] ... set VAULT_KEY manually
+    # after deploy", which means a fresh install shipped with a dead vault and a
+    # to-do the operator had no reason to believe was load-bearing. Observed on a
+    # clean ubuntu:24.04 container in the install lab.
+    #
+    # A Fernet key is simply urlsafe-base64 of 32 random bytes, so openssl can
+    # produce a real one; `tr '+/' '-_'` is the whole difference between standard
+    # and URL-safe base64, and it matters -- Fernet rejects the standard alphabet.
+    # `openssl rand -base64 32` emits exactly 44 chars including the trailing '='
+    # and no newline issues at this length, but $(...) strips any trailing
+    # newline regardless.
+    VAULT_KEY=""
     if python3 -c "from cryptography.fernet import Fernet" 2>/dev/null; then
         VAULT_KEY=$(python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+    elif command -v openssl >/dev/null 2>&1; then
+        VAULT_KEY=$(openssl rand -base64 32 | tr '+/' '-_')
+    fi
+    if [ -n "$VAULT_KEY" ]; then
         sed -i "s|^VAULT_KEY=.*|VAULT_KEY=${VAULT_KEY}|" .env
         echo "[OK] Vault encryption key generated"
     else
-        echo "[SKIP] cryptography not installed — set VAULT_KEY manually after deploy"
+        # Reachable only on a host with neither python3-cryptography NOR
+        # openssl, which is rare enough to be worth naming precisely instead of
+        # blaming "cryptography". The vault is genuinely unusable until this is
+        # set, so say that rather than filing it as a tidy-up.
+        echo "[WARN] Could not generate VAULT_KEY: this host has neither the" >&2
+        echo "       python3 'cryptography' module nor openssl. /vault/* will" >&2
+        echo "       answer 503 until you set one. Generate and add it now:" >&2
+        echo "         echo \"VAULT_KEY=\$(openssl rand -base64 32 | tr '+/' '-_')\" >> .env" >&2
+        echo "       then: bash update.sh" >&2
     fi
 
     # Office deploy: pin COMPOSE_FILE on the fresh .env so a bare
@@ -338,51 +421,32 @@ fi
 # path needs it for the re-run case. Idempotent and cheap on a fresh install.
 docker compose up -d --force-recreate dashboard
 
-# --- Wait for the model pull ---
-# cortex-api depends on `ollama: service_healthy`, NOT on ollama-pull
-# completing (docker-compose.yml has no service_completed_successfully
-# dependency wired to any app service) — so `up -d` above can return while
-# ~3.3GB of models are still downloading. The health loop below only checks
-# that cortex-api is answering HTTP, which it is; a stranger's first
-# memory_learn would then take the embed-failure path (HTTP 200,
-# status="partial", backfill-enqueued) — the write LOOKS successful and
-# isn't actually recallable yet. ollama-pull's own command echoes "Models
-# ready" as its last line on success; wait for that sentinel in its logs.
+# --- Model pull: brief wait, then hand it off ---------------------------------
+# `up -d` above returns while ~3.3GB of models may still be downloading:
+# cortex-api depends on `ollama: service_healthy`, NOT on ollama-pull completing
+# (docker-compose.yml wires no service_completed_successfully edge to any app
+# service). The health loop below only proves cortex-api answers HTTP, which it
+# does — but a first memory_learn would take the embed-failure path (HTTP 200,
+# status="partial", backfill-enqueued): a write that LOOKS successful and is not
+# yet recallable.
 #
-# The pipefail-safe way to check: NOT `docker compose logs ollama-pull |
-# grep -q ...` — under `set -o pipefail`, grep matching and closing the
-# pipe early can SIGPIPE the writer (exit 141), and pipefail would then
-# make the whole pipeline's status failure even though the match succeeded.
-# Capture the logs into a variable first and pattern-match on that instead.
-echo ""
-echo "Waiting for the model pull to finish — this can take several minutes"
-echo "on first install (~3.3GB download)..."
-MODEL_PULL_TIMEOUT_SECONDS=900
-MODEL_PULL_WAITED=0
-MODEL_PULL_READY=0
-while [ "$MODEL_PULL_WAITED" -lt "$MODEL_PULL_TIMEOUT_SECONDS" ]; do
-    pull_logs="$(docker compose logs ollama-pull 2>&1 || true)"
-    case "$pull_logs" in
-        *"Models ready"*)
-            MODEL_PULL_READY=1
-            break
-            ;;
-    esac
-    sleep 10
-    MODEL_PULL_WAITED=$((MODEL_PULL_WAITED + 10))
+# The wait, the detached watcher and the wording all live in settle_model_pull
+# (deploy/lib.sh), which explains the reasoning and — the reason it lives there
+# — can be driven by tests/test_install_no_prompts.py with a stub `docker` on
+# PATH. An installer that spawns a detached process no test ever executes is the
+# kind of thing that breaks silently in somebody else's shell.
+MODEL_PULL_BLOCKING=0
+for arg in "$@"; do
+    [ "$arg" = "--wait-for-models" ] && MODEL_PULL_BLOCKING=1
 done
-
-if [ "$MODEL_PULL_READY" -eq 1 ]; then
-    echo "[OK] models pulled"
+if [ "$MODEL_PULL_BLOCKING" -eq 1 ]; then
+    MODEL_PULL_GRACE_SECONDS=900
 else
-    # A slow link is not a broken install — warn clearly and continue rather
-    # than failing the install outright.
-    echo "WARNING: timed out after ${MODEL_PULL_TIMEOUT_SECONDS}s waiting for the model pull."
-    echo "  This usually just means a slow connection, not a broken install."
-    echo "  Check progress with: docker compose logs ollama-pull"
-    echo "  Until it finishes, memory writes will report status=\"partial\" and"
-    echo "  won't be recallable yet."
+    MODEL_PULL_GRACE_SECONDS="${FIREKEEP_MODEL_PULL_GRACE:-120}"
 fi
+# settle_model_pull lives in deploy/lib.sh so tests can drive both of its
+# branches with a stub `docker` on PATH; see tests/test_install_no_prompts.py.
+settle_model_pull "$MODEL_PULL_GRACE_SECONDS" "$MODEL_PULL_BLOCKING"
 
 # --- Health checks ---
 echo ""

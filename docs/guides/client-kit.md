@@ -2,34 +2,52 @@
 
 > Moved out of the root `CLAUDE.md`, which is a prompt prefix loaded into every
 > session. This content is reference and decision history: read it when you are
-> working on this area, not on every task. Nothing was reworded in the move.
+> working on this area, not on every task. The user-facing install walkthrough is
+> deliberately NOT here — [firekeep.ai/docs.html](https://firekeep.ai/docs.html) is
+> the single source for that; what stays here is the mechanism behind it.
 
 ## Local setup (portable client kit — `~/.firekeep` + runtime adapters)
 
 **Teammates (bare machine, nothing installed):**
 ```bash
-curl -fsSL <release-base>/latest/install.sh | sh      # macOS / Linux
-irm <release-base>/latest/install.ps1 | iex           # Windows
+curl -fsSL https://firekeep.ai/latest/install.sh | sh      # macOS / Linux
+irm https://firekeep.ai/latest/install.ps1 | iex           # Windows
 ```
+That is the only install command this repo publishes, and the walkthrough behind it —
+requirements, the server, per-runtime setup, troubleshooting — is
+[firekeep.ai/docs.html](https://firekeep.ai/docs.html), the single source. What follows is
+the engineering detail that has no home on the site.
+
+**Two hosts, one artifact, and only one of them is a dist base.** `firekeep.ai` rewrites
+exactly two paths — `/latest/install.sh` and `/latest/install.ps1` — through its download
+counter to `https://kapella-hub.github.io/firekeep-dist`. Nothing else under
+`firekeep.ai/latest/` exists: `latest.json`, `<version>/SHA256SUMS`, the wheels and the
+mirrored `uv` are fetched from the Pages base by the script the user just executed, because
+that URL is baked into it. So `FIREKEEP_DIST_BASE` is the ARTIFACT ROOT and takes the Pages
+URL; setting it to `https://firekeep.ai` breaks the very next fetch, since
+`firekeep.ai/latest/latest.json` 404s.
+
 Since client 0.1.15 the PUBLISHED bootstraps carry their own release URL — `make_release.py
---dist-base` bakes it (each release path bakes its own: GitLab CI the registry URL, the GitHub
-workflow the Pages URL) BEFORE the bootstrap hashes are computed, so `firekeep update`'s
-script-verification still holds. `FIREKEEP_DIST_BASE` still overrides when set, and the REPO
-copies keep the `__FIREKEEP_DIST_BASE_DEFAULT__` placeholder — a raw-checkout run still fails
-loudly with nowhere to fetch from. New-teammate sugar: the wizard can prefill the server
-connection from `<release-base>/latest/org-defaults.json` when `[server]` is
-unconfigured (published only via the GitLab registry from the `ORG_DEFAULTS_JSON` CI variable
-— internal hostnames never go to public GitHub Pages; absent variable = no file = plain
-prompts). Update awareness + auto-update: the `session_start` hook checks the dist host's
+--dist-base` bakes it (the GitHub release workflow bakes the Pages URL) BEFORE the bootstrap
+hashes are computed, so `firekeep update`'s script-verification still holds.
+`FIREKEEP_DIST_BASE` still overrides when set, and the REPO copies keep the
+`__FIREKEEP_DIST_BASE_DEFAULT__` placeholder — a raw-checkout run still fails loudly with
+nowhere to fetch from. New-teammate sugar: the wizard can prefill the server connection from
+`<dist-base>/latest/org-defaults.json` when `[server]` is unconfigured — internal hostnames
+never go to public GitHub Pages, so the public release path never publishes that file and
+the wizard simply asks instead. (It was published by the office `.gitlab-ci.yml` from the
+`ORG_DEFAULTS_JSON` CI variable; that pipeline is not part of this repo —
+`client/tests/test_ci_publishes_symdex.py` skips itself for exactly that reason — so today
+this branch is dormant on every live path.) Update awareness + auto-update: the `session_start` hook checks the dist host's
 `latest.json` once per day (failures cached too, 3s timeout, silent on any failure) and, when
 it's newer, background-auto-updates the client by default (client 0.1.20; opt out with
 `FIREKEEP_NO_AUTO_UPDATE` / `firekeep update --auto off` — see Background auto-update below), falling
 back to a one-line "client update available" nudge when opted out.
-`<release-base>` is **version-agnostic**. Interim client releases are cut via GitHub Actions
+
+The dist base is **version-agnostic**. Client releases are cut via GitHub Actions
 (`.github/workflows/release.yml`) and served from GitHub Pages —
-`FIREKEEP_DIST_BASE=https://kapella-hub.github.io/firekeep-dist` (see `docs/RELEASE-GITHUB.md`); the
-GitLab generic package registry root (`.../packages/generic/firekeep-client`, via `.gitlab-ci.yml`)
-remains the office path. Either way `latest/` is the stable entry point
+`FIREKEEP_DIST_BASE=https://kapella-hub.github.io/firekeep-dist` (see `docs/RELEASE-GITHUB.md`),
+the one live release path. `latest/` is the stable entry point
 (`install.sh`, `install.ps1`, `latest.json`), while every version keeps its own directory
 (`<version>/SHA256SUMS`, `<version>/uv-<target>`, `<version>/firekeep_client-<version>-py3-
 none-any.whl`), which is what lets `firekeep update --to <older>` reach that version's own
@@ -45,8 +63,38 @@ printed; `FIREKEEP_KEEP_SSL_CERT_FILE=1` opts back in) before invoking `uv`/pip 
 corporate-CA-only file left behind by a proxy workaround would otherwise break every
 NON-intercepted host; routing through the OS store instead is what MDM-managed corporate
 machines need, since the corporate interception CA lives there alongside the public roots.
-It then runs `firekeep install`, which prompts for identity and the single
-server connection, then renders every runtime adapter.
+It then runs `firekeep install`, which asks the two questions below — agent identity, then
+where the server is — chains straight into `firekeep init` when the answer is "set one up
+here", and renders every runtime adapter either way.
+
+**The two questions, and the four ways this ends (`wizard.py`, `cli.py`).** A machine with
+no `[server]` gets the routing question `Where is your Firekeep server?`, defaulted to `1`
+when the `docker` binary is present and `2` when it is not:
+1. **Set one up on this machine** → runs `firekeep init`: fetches the server bundle, runs
+   `install.sh --pull`, then mints a LOOPBACK join code locally
+   (`deploy/firekeep-admin invite --local`) and redeems it, so the box enrols itself with no
+   dashboard, tunnel or pasted key. It closes by printing the second machine's paste-ready
+   `curl -fsSL <base>/latest/install.sh | FIREKEEP_JOIN=fk_join_… sh`.
+   `firekeep init --no-self-enroll` opts out (CI, golden images).
+2. **I have a join code** → `firekeep join <code>` with the pasted code.
+3. **It is already running** → the host/api_key (or base_url/ca_path) prompts described
+   under "Install prompts" below.
+4. **Not yet** → client only; `firekeep doctor`'s no-server row (`_check_server_connection`)
+   then names the three ways to finish — `firekeep init`, `firekeep join <code>`,
+   `firekeep connect <user@host>` — because with nothing listening every other row is just
+   the same socket error four times.
+
+A machine that ALREADY has a `[server]` never sees the routing question: it gets the
+edit-in-place prompts, prefilled, so Enter-through is a no-op.
+
+Two adjacent paths that are not the install: **`firekeep connect <user@host>`** — for an
+operator who already has SSH to the box — issues an invite there and hands it to the same
+join implementation, reusing a working tunnel rather than duplicating it; and **`firekeep
+login <server-url>`**, reserved for hosted OAuth sign-in, which probes the server's
+protected-resource metadata and, on the 404 a self-hosted server returns, says so and points
+at `firekeep join <code>` instead. Adding a *person* rather than a device goes through
+**Members → Invite member**: accepted once, it creates the membership and then hands the
+client the same device-enrolment flow.
 
 **Layout (side-by-side venvs, client 0.1.35):** the kit lives at
 `~/.firekeep/venvs/<version>` — one full uv venv per installed version, provisioned AT that
@@ -226,7 +274,7 @@ signature-served class.
 
 `~/.firekeep/config` (INI, `0600`) is the single source of truth: `[identity]` holds `agent_id`, `[server]` holds the one connection/auth/TLS policy, and optional `[dist]` holds update metadata. There is no active-profile selector or per-runtime pin; every adapter reads the same server, while `FIREKEEP_AGENT_ID` remains the supported per-process identity override. `firekeep doctor` (alias since 0.1.40: `firekeep status` — what operators type first on an unfamiliar CLI, observed live before it existed) runs health + versions (a verdict-free client/cortex report; the two ship on independent tag series so equality is meaningless) + client-version (staleness vs the release manifest — the only version row that renders a verdict) + key-ACL + CA-expiry preflight. Legacy profile configs migrate automatically when they identify one unambiguous server; conflicting connections are left untouched and reported with exit code 3.
 
-**Install prompts (`firekeep_client/wizard.py`):** an interactive install asks for the agent identity and the one server connection — `host` (+ optional `api_key`) for an existing/default `kind=ports` connection, or `base_url` + `ca_path` + `api_key` when the existing/migrated connection is `kind=paths`. It never asks the user to choose a profile; Firekeep is one product, so there is no edition to ask about. Every prompt is prefilled with the current value, so Enter-through is a no-op and re-running the installer after a kit upgrade is safe. `ca_path` accepts the literal **`os`** (`resolver.OS_TRUST`) to verify TLS against the operating-system trust store instead of a CA file — the MDM-managed-corporate-CA case, where the CA lives in the OS keychain and there is no PEM to point at; the wizard offers `os` as the default automatically when a read-only TLS probe (`wizard._probe_os_trust`, best-effort — any failure just keeps the file prompt) shows the server cert verifying against the OS store, but never overrides a deliberately configured ca_path. Under the hood `transport._build_ssl_context("os")` builds a scoped `truststore` context shared by the stdlib and shim/httpx paths — still verified TLS, never a bypass — and `firekeep doctor` reports `ok` for `os` (the OS owns rotation). A ports-style connection is deliberately not offered a TLS toggle: `resolver._verify_for()` refuses `scheme=https` without both `verify_tls=true` and a `ca_path`. No TTY (CI, piped) or `--non-interactive` means no prompts; `--agent-id` and `--host` seed the prompts interactively and are written directly otherwise.
+**Install prompts (`firekeep_client/wizard.py`):** an interactive install asks for the agent identity, then routes on the four-way server question above. The connection prompts below are what answer 3 ("it is already running") and an edit-in-place re-run reach — `host` (+ optional `api_key`) for an existing/default `kind=ports` connection, or `base_url` + `ca_path` + `api_key` when the existing/migrated connection is `kind=paths`. It never asks the user to choose a profile; Firekeep is one product, so there is no edition to ask about. Every prompt is prefilled with the current value, so Enter-through is a no-op and re-running the installer after a kit upgrade is safe. `ca_path` accepts the literal **`os`** (`resolver.OS_TRUST`) to verify TLS against the operating-system trust store instead of a CA file — the MDM-managed-corporate-CA case, where the CA lives in the OS keychain and there is no PEM to point at; the wizard offers `os` as the default automatically when a read-only TLS probe (`wizard._probe_os_trust`, best-effort — any failure just keeps the file prompt) shows the server cert verifying against the OS store, but never overrides a deliberately configured ca_path. Under the hood `transport._build_ssl_context("os")` builds a scoped `truststore` context shared by the stdlib and shim/httpx paths — still verified TLS, never a bypass — and `firekeep doctor` reports `ok` for `os` (the OS owns rotation). A ports-style connection is deliberately not offered a TLS toggle: `resolver._verify_for()` refuses `scheme=https` without both `verify_tls=true` and a `ca_path`. No TTY (CI, piped) or `--non-interactive` means no prompts; `--agent-id` and `--host` seed the prompts interactively and are written directly otherwise.
 
 **Legacy-hook migration (`adapters/base.py`, `LEGACY_HOOK_MARKERS` / `LEGACY_ENV_KEYS`):** the retired bash hook layer and the retired `FIREKEEP_*_URL` env keys are treated as **firekeep-owned**, not foreign, so `render()` removes them from `~/.claude/settings.json` and `unrender()` cleans them up. Without this, a machine upgraded from the pre-kit installer fires every lifecycle event twice — once into a now-deleted shell script (a "No such file or directory" hook error at every session start), once into the real hook core. `upsert_hook_group()` collapses *all* firekeep groups for an event into the one rendered group (not just the first match) — that is what makes a both-layers-present machine converge instead of duplicating. The legacy `PreCompact` echo hook and `FIREKEEP_AGENT_ID` are intentionally left in place: both still work.
 

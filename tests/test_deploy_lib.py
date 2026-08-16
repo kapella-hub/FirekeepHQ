@@ -164,8 +164,14 @@ def test_configure_env_rejects_empty_vps_ip_and_does_not_abort_the_caller(tmp_pa
     result, envfile = _configure_env(tmp_path, "", "hunter2pass")
     assert result.returncode == 0, result.stderr  # the calling script must survive
     assert "CONFIGURE_ENV_FAILED" in result.stdout
-    assert "must not be empty" in result.stderr
-    assert not envfile.exists(), "a rejected prompt must not leave a half-written .env"
+    # Was `"must not be empty"`. install.sh no longer prompts for this -- it
+    # derives it -- so an empty value now means someone passed `--ip ""`, and
+    # the message names the fix instead of restating the rejected field. The
+    # bare "ERROR: VPS IP address must not be empty" was the last line the
+    # author saw on the cold install that prompted this whole change.
+    assert "host address is empty" in result.stderr
+    assert "--ip" in result.stderr, "the error must name the flag that sets it"
+    assert not envfile.exists(), "a rejected value must not leave a half-written .env"
 
 
 def test_configure_env_rejects_empty_neo4j_password(tmp_path):

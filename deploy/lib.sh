@@ -186,6 +186,228 @@ health_probe_hosts() {
     esac
 }
 
+# flag_value <name> "$@"
+# Echo the value of `--name <value>` or `--name=<value>` from the argument list,
+# or "" when the flag is absent. Last occurrence wins, matching how a shell
+# treats a repeated option. A flag given with no value is an error the CALLER
+# reports, because only the caller knows what the value means -- returning ""
+# here would make `--ip` (typo, no value) indistinguishable from no --ip at all.
+flag_value() {
+    local name="${1:?flag name required}"; shift
+    local found="" arg next=0
+    for arg in "$@"; do
+        if [ "$next" = 1 ]; then
+            found="$arg"; next=0; continue
+        fi
+        case "$arg" in
+            "--${name}") next=1 ;;
+            "--${name}="*) found="${arg#--${name}=}" ;;
+        esac
+    done
+    printf '%s' "$found"
+}
+
+# detect_host_ip
+# The address a REMOTE client would use to reach this host, best effort, always
+# succeeding (falls back to 127.0.0.1).
+#
+# This replaced an interactive "VPS IP address:" prompt, so it is worth being
+# precise about what the value actually does -- the prompt implied it was
+# load-bearing and it is not. Two consumers:
+#
+#   1. the default `ssh_target` baked into tunnel-transport join codes
+#      (cortex/app/enroll/api.py, cortex/app/members/api.py). Absent or wrong,
+#      the invite API answers 400 "t=tunnel requires ssh_target" and the
+#      operator passes --ssh-target explicitly. Recoverable, never silent.
+#   2. the CORS origin for cortex-api :8100, which .env.example documents as
+#      affecting nothing for the bundled dashboard (same-origin through nginx).
+#
+# So a detected-but-imperfect answer strictly beats blocking the install on a
+# question whose stakes the person answering it cannot see.
+#
+# `ip route get` is a ROUTING TABLE QUERY, not a connection: no packet leaves
+# the host, nothing is sent to 1.1.1.1, and it works with no network at all
+# (it simply returns nothing, and we fall through). Behind NAT it yields the
+# LAN address, which is the correct answer for "what would a client on my
+# network SSH to" and the best any local method can do.
+# EVERY probe below is `|| true`-guarded, and that is load-bearing rather than
+# defensive habit: install.sh runs under `set -euo pipefail`, where an
+# assignment from a failing command substitution ABORTS THE WHOLE INSTALLER.
+# Both probes fail routinely on perfectly good hosts -- `ip` is absent on
+# macOS/BSD and on minimal images, and `hostname -I` is a GNU coreutils
+# extension that BSD/busybox/Git-Bash `hostname` rejects. Under pipefail an
+# unguarded `hostname -I | tr | grep` therefore returns nonzero and kills the
+# install at the first line of configuration, having printed nothing. Caught by
+# tests/test_install_no_prompts.py, which drives this under the real options
+# rather than an interactive shell's defaults -- the earlier hand-check passed
+# precisely because it did not.
+detect_host_ip() {
+    local addr=""
+    if command -v ip >/dev/null 2>&1; then
+        addr="$( { ip -4 route get 1.1.1.1 2>/dev/null \
+            | sed -n 's/.*[[:space:]]src[[:space:]]\{1,\}\([0-9.]\{7,\}\).*/\1/p' \
+            | head -n1; } || true )"
+    fi
+    if [ -z "$addr" ] && command -v hostname >/dev/null 2>&1; then
+        addr="$( { hostname -I 2>/dev/null | tr ' ' '\n' \
+            | grep -E '^[0-9]+(\.[0-9]+){3}$' | grep -v '^127\.' | head -n1; } || true )"
+    fi
+    # Last resort before loopback: the addresses the resolver knows for this
+    # host's own name. Present on macOS and BSD, where neither probe above works.
+    if [ -z "$addr" ] && command -v getent >/dev/null 2>&1; then
+        addr="$( { getent ahostsv4 "$(hostname 2>/dev/null || echo localhost)" 2>/dev/null \
+            | awk '{print $1}' | grep -E '^[0-9]+(\.[0-9]+){3}$' \
+            | grep -v '^127\.' | head -n1; } || true )"
+    fi
+    [ -n "$addr" ] || addr="127.0.0.1"
+    printf '%s' "$addr"
+}
+
+# generate_secret [bytes]
+# Print a hex secret of <bytes> entropy (default 32 -> 64 hex chars).
+#
+# Hex, not base64, and that is deliberate: configure_env rejects `|`, `&` and
+# `\` because they corrupt its sed substitutions, and base64's alphabet
+# includes `/` and `+` which have burned other substitution paths before.
+# [0-9a-f] can never collide with any of it.
+#
+# Fails loudly rather than falling back to something weak. A predictable
+# database password is worse than an install that stops and says why -- and
+# every path here is a stock tool on any host that can already run Docker.
+generate_secret() {
+    local bytes="${1:-32}" value=""
+    # Same pipefail discipline as detect_host_ip: each generator is captured
+    # with `|| true` and then TESTED, so a tool that exists but fails (a broken
+    # openssl, a python3 that is really a stub) falls through to the next one
+    # instead of aborting the installer mid-configuration.
+    if command -v openssl >/dev/null 2>&1; then
+        value="$( { openssl rand -hex "$bytes"; } 2>/dev/null || true )"
+    fi
+    if [ -z "$value" ] && command -v python3 >/dev/null 2>&1; then
+        value="$( { python3 -c \
+            'import secrets,sys; sys.stdout.write(secrets.token_hex(int(sys.argv[1])))' \
+            "$bytes"; } 2>/dev/null || true )"
+    fi
+    if [ -z "$value" ] && [ -r /dev/urandom ] && command -v od >/dev/null 2>&1; then
+        value="$( { od -vAn -tx1 -N"$bytes" /dev/urandom | tr -d ' \n'; } 2>/dev/null || true )"
+    fi
+    if [ -n "$value" ]; then
+        printf '%s' "$value"
+        return 0
+    fi
+    echo "ERROR: no way to generate a random secret on this host (tried openssl," >&2
+    echo "       python3 and /dev/urandom). Install openssl, or supply the value:" >&2
+    echo "         bash install.sh --neo4j-password \"\$(your-generator)\"" >&2
+    return 1
+}
+
+# models_ready
+# True once the ollama-pull init container has finished both pulls.
+#
+# The pipefail-safe check: NOT `docker compose logs ollama-pull | grep -q ...` —
+# under `set -o pipefail`, grep matching and closing the pipe early can SIGPIPE
+# the writer (exit 141), and pipefail would then make the whole pipeline's
+# status failure even though the match SUCCEEDED. Capture the logs into a
+# variable first and pattern-match on that instead.
+models_ready() {
+    local logs
+    logs="$(docker compose logs ollama-pull 2>&1 || true)"
+    case "$logs" in
+        *"Models ready"*) return 0 ;;
+    esac
+    return 1
+}
+
+# settle_model_pull <grace_seconds> <blocking:0|1> [poll_seconds]
+#
+# Wait a bounded time for the ~3.3GB embedding-model pull, then either report it
+# ready, report a blocking timeout, or hand the wait to a detached watcher and
+# say plainly what is still true.
+#
+# WHY THIS NO LONGER BLOCKS BY DEFAULT. install.sh used to wait up to 900
+# seconds here, printing one line and then nothing. Two things were wrong with
+# that. The install APPEARED hung at the exact point a first-time user is least
+# able to tell a slow download from a broken product; and `firekeep init`
+# wrapped the whole script in a 600-second timeout, so on a fresh box the
+# documented happy path reported "firekeep init timed out" over a stack that was
+# working perfectly.
+#
+# The models are not needed for the stack to be UP — nothing depends on
+# ollama-pull completing (docker-compose.yml wires no
+# service_completed_successfully edge). They are needed for writes to be
+# RECALLABLE: until then a write returns HTTP 200 with status="partial" and is
+# queued for backfill. That is a real degraded state, and the fix is to NAME it
+# rather than hide it behind a progress-free wait. Cortex reports it as
+# `services.embeddings` on /health and `firekeep doctor` renders it.
+#
+# Lives here rather than inline in install.sh so it can be driven directly by
+# tests/test_install_no_prompts.py with a stub `docker` on PATH — a detached
+# process spawn that no test ever executes is exactly the kind of thing that
+# breaks silently in someone else's shell.
+settle_model_pull() {
+    local grace="${1:?grace seconds required}" blocking="${2:-0}" poll="${3:-10}"
+    local waited=0 ready=0 log="model-pull.log" watcher
+
+    echo ""
+    echo "Checking the embedding models (~3.3GB on a first install)..."
+    while [ "$waited" -lt "$grace" ]; do
+        if models_ready; then
+            ready=1
+            break
+        fi
+        sleep "$poll"
+        waited=$((waited + poll))
+    done
+
+    if [ "$ready" -eq 1 ]; then
+        echo "[OK] models ready"
+        return 0
+    fi
+    if [ "$blocking" -eq 1 ]; then
+        echo "WARNING: timed out after ${grace}s waiting for the model pull."
+        echo "  This usually just means a slow connection, not a broken install."
+        echo "  Check progress with: docker compose logs ollama-pull"
+        echo "  Until it finishes, memory writes report status=\"partial\" and are"
+        echo "  queued for backfill rather than being recallable."
+        return 0
+    fi
+
+    # Detached, so it survives this script. `firekeep init` runs install.sh as a
+    # child and reaps it; a watcher left in the same process group would go with
+    # it, and the log would simply stop mid-download with no explanation.
+    watcher='
+        for _ in $(seq 1 360); do
+            logs="$(docker compose logs ollama-pull 2>&1 || true)"
+            case "$logs" in
+                *"Models ready"*)
+                    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) models ready" >> '"$log"'
+                    exit 0
+                    ;;
+            esac
+            sleep 10
+        done
+        echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) still not ready after 1h" >> '"$log"'
+    '
+    if command -v setsid >/dev/null 2>&1; then
+        setsid bash -c "$watcher" </dev/null >>"$log" 2>&1 &
+    else
+        nohup bash -c "$watcher" </dev/null >>"$log" 2>&1 &
+    fi
+    # `disown` is a bash builtin with no `sh` equivalent; guard it so this stays
+    # runnable either way rather than dying on an unknown command at the very
+    # end of an otherwise successful install.
+    disown 2>/dev/null || true
+
+    echo "[..] models are still downloading — continuing without waiting."
+    echo "     The stack is UP and usable now. Until the pull finishes, memory"
+    echo "     writes return status=\"partial\": they are stored and queued for"
+    echo "     backfill, but not yet recallable by search."
+    echo "     Progress:  docker compose logs -f ollama-pull"
+    echo "     Or ask:    firekeep doctor   (reports 'embeddings' until ready)"
+    echo "     Blocking install instead:  bash install.sh --wait-for-models"
+    return 0
+}
+
 # configure_env <envfile> <example> <vps_ip> <neo4j_password>
 #
 # Validates the two installer prompts and atomically writes <envfile> from
@@ -208,23 +430,34 @@ configure_env() {
           vps_ip="${3-}" neo4j_password="${4-}"
     local tmp
 
+    # install.sh no longer prompts for either value -- it derives both -- so
+    # reaching these branches means a caller passed an empty --ip/--neo4j-password
+    # or an env override that expanded to nothing. Each message therefore names
+    # the FIX, not just the failed field: the old "must not be empty" was the
+    # last line a first-time installer saw before giving up.
     if [ -z "$vps_ip" ]; then
-        echo "ERROR: VPS IP address must not be empty" >&2
+        echo "ERROR: host address is empty." >&2
+        echo "       Omit --ip to let the installer detect it, or give a value:" >&2
+        echo "         bash install.sh --ip 203.0.113.10" >&2
         return 1
     fi
     if [ -z "$neo4j_password" ]; then
-        echo "ERROR: Neo4j password must not be empty" >&2
+        echo "ERROR: Neo4j password is empty." >&2
+        echo "       Omit --neo4j-password to have one generated (the normal case" >&2
+        echo "       -- nothing but the containers ever reads it), or give a value:" >&2
+        echo "         bash install.sh --neo4j-password \"\$(openssl rand -hex 24)\"" >&2
         return 1
     fi
     case "$vps_ip" in
         *'|'*|*'&'*|*'\'*)
-            echo "ERROR: VPS IP address must not contain |, & or \\" >&2
+            echo "ERROR: host address must not contain |, & or \\ (got: ${vps_ip})" >&2
             return 1
             ;;
     esac
     case "$neo4j_password" in
         *'|'*|*'&'*|*'\'*)
             echo "ERROR: Neo4j password must not contain |, & or \\" >&2
+            echo "       Omit --neo4j-password and one will be generated for you." >&2
             return 1
             ;;
     esac

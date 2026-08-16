@@ -1,0 +1,6 @@
+# Lab working directories. The dist is rebuilt from the working tree on demand,
+# the uv binaries are ~35MB each, and the run logs are transcripts of throwaway
+# containers — none of it belongs in the repo.
+.dist/
+.cache/
+.runs/

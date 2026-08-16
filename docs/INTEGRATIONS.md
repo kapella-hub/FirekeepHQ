@@ -12,13 +12,13 @@ Firekeep is MCP-native. The client-specific setup varies, but the integration mo
 
 - Instructions: root `AGENTS.md` for project rules plus a Firekeep-owned block in `~/.codex/AGENTS.md`
 - Setup: [docs/SETUP-CODEX.md](docs/SETUP-CODEX.md)
-- Install: `firekeep install --runtime codex`
+- Install: the one command at [firekeep.ai/docs.html](https://firekeep.ai/docs.html) renders every adapter, Codex's included; `firekeep install --runtime codex` is the targeted re-render/repair
 
 ### Claude Code
 
 - Project instructions: root `CLAUDE.md`
 - Setup: [docs/SETUP-CLAUDE-CODE.md](docs/SETUP-CLAUDE-CODE.md)
-- Install: `firekeep install --runtime claude` (or `./install`)
+- Install: the same one command; `firekeep install --runtime claude` (or `./install` from a checkout) is the targeted re-render/repair
 
 ## Generic MCP Clients
 

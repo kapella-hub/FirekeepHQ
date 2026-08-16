@@ -27,6 +27,8 @@ from pathlib import Path
 
 import pytest
 
+from test_deploy_lib import BASH
+
 REPO = Path(__file__).resolve().parents[1]
 SCRIPTS = ("install.sh", "update.sh")
 
@@ -34,8 +36,20 @@ SCRIPTS = ("install.sh", "update.sh")
 # stack does not publish is the other half of this defect class.
 EXPECTED_PORTS = {"8100", "8080", "8070", "8060", "8050", "8040"}
 
+# BASH comes from test_deploy_lib's resolver, NOT `shutil.which("bash")`, and the
+# difference is not cosmetic on Windows. `CreateProcess` resolves a bare `bash` to
+# the System32 WSL shim regardless of PATH order; when the WSL2 VM is busy — for
+# instance running Docker Desktop while scripts/installlab/ drives a
+# docker-in-docker install — that shim does not merely fail, it BLOCKS and then
+# returns UTF-16 text:
+#
+#   The operation timed out because a response was not received from the virtual
+#   machine or container. Error code: Bash/Service/CreateInstance/HCS_E_CONNECTION_TIMEOUT
+#
+# Six tests here went red that way with nothing wrong in install.sh. The resolver
+# finds Git Bash and VERIFIES it, which is what this file needed all along.
 pytestmark = pytest.mark.skipif(
-    shutil.which("bash") is None, reason="needs a real bash to execute the extracted expansions"
+    BASH is None, reason="needs a real bash to execute the extracted expansions"
 )
 
 
@@ -90,7 +104,7 @@ def _split_via_bash(parse_block: str, entry: str, tmp_path: Path) -> dict[str, s
         newline="\n",
     )
     out = subprocess.run(
-        ["bash", "split.sh"], cwd=tmp_path, capture_output=True, text=True, timeout=30
+        [BASH, "split.sh"], cwd=tmp_path, capture_output=True, text=True, timeout=30
     )
     assert out.returncode == 0, f"bash failed: {out.stderr}"
     parts = out.stdout.split("\n")

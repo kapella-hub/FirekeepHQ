@@ -37,15 +37,15 @@ their limitations.
 
 ### Inside Firekeep (recommended)
 
-`firekeep install` installs and registers firekeep-symdex automatically — there are no manual steps. In a developer checkout it is installed from the local `symdex/` path; in a release install it comes from the checksum-verified client wheel. Either way the client adapter renders the MCP registration for you, so there is nothing to hand-edit.
+`firekeep install` installs and registers firekeep-symdex automatically — there are no manual steps. (The kit itself comes from `curl -fsSL https://firekeep.ai/latest/install.sh | sh`; the install guide is [firekeep.ai/docs.html](https://firekeep.ai/docs.html).) In a developer checkout it is installed from the local `symdex/` path; in a release install it comes from the checksum-verified client wheel. Either way the client adapter renders the MCP registration for you, so there is nothing to hand-edit.
 
 ### Standalone use
 
 To run firekeep-symdex on its own, install it from a local checkout. **Do not `pip install firekeep-symdex` by the bare PyPI name** — that name may belong to an unrelated third party (the same supply-chain hazard the Firekeep client installer deliberately avoids). Install from the repository directory instead:
 
 ```bash
-git clone https://github.com/morganbarrett/firekeep-symdex.git
-cd firekeep-symdex
+git clone https://github.com/kapella-hub/FirekeepHQ.git   # private; requires access
+cd FirekeepHQ/symdex
 uv sync                 # or: pip install .
 ```
 
@@ -364,8 +364,8 @@ FirekeepSymdex ships with a Claude Code plugin that automatically makes Claude a
 
 ```bash
 # 1. Install FirekeepSymdex
-git clone https://github.com/morganbarrett/firekeep-symdex.git
-cd firekeep-symdex
+git clone https://github.com/kapella-hub/FirekeepHQ.git   # private; requires access
+cd FirekeepHQ/symdex
 uv sync
 
 # 2. Register as MCP server (add to ~/.claude/.mcp.json)
@@ -411,7 +411,7 @@ That's it. Every Claude Code session now gets:
 
 ## FirekeepCortex Integration
 
-When [FirekeepCortex](https://github.com/morganbarrett/firekeep-cortex) is running, firekeep-symdex gains persistent code memory:
+When [FirekeepCortex](https://firekeep.ai) — the Firekeep memory service, `cortex/` in this repository — is running, firekeep-symdex gains persistent code memory:
 
 ### Setup
 
@@ -442,8 +442,8 @@ All integration tools gracefully degrade when FirekeepCortex is unavailable -- t
 ## Development
 
 ```bash
-git clone https://github.com/morganbarrett/firekeep-symdex.git
-cd firekeep-symdex
+git clone https://github.com/kapella-hub/FirekeepHQ.git   # private; requires access
+cd FirekeepHQ/symdex
 uv sync --extra test
 uv run pytest
 ```

@@ -22,7 +22,11 @@ def test_init_runs_the_existing_server_installer(tmp_path, monkeypatch, capsys):
         lambda command, **kwargs: calls.append((command, kwargs)),
     )
 
-    assert cli.main(["init", "--server-dir", str(tmp_path), "--pull", "--office"]) == 0
+    # --no-self-enroll keeps this test on the one thing it is named for. The
+    # enrolment that now follows a successful provision has its own tests below.
+    assert cli.main([
+        "init", "--server-dir", str(tmp_path), "--pull", "--office", "--no-self-enroll",
+    ]) == 0
     command, kwargs = calls[0]
     assert command == [
         "/usr/bin/bash", str(tmp_path / "install.sh"), "--pull", "--office",

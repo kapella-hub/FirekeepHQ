@@ -48,6 +48,13 @@ with `_` or `.` and can rewrite others, which would silently corrupt a release.
 
 ## What teammates use
 
+**Users are handed `https://firekeep.ai/latest/install.sh`, never this URL.** The site
+rewrites exactly two paths — `/latest/install.sh` and `/latest/install.ps1` — through its
+download counter to the Pages base below, and the script they execute carries that base
+baked in, so everything after the first byte is fetched from here anyway. `firekeep.ai` is
+the published face; this is the artifact root. The install documentation for both is
+[firekeep.ai/docs.html](https://firekeep.ai/docs.html), the single source.
+
 `FIREKEEP_DIST_BASE` is the Pages root — **version-agnostic**, with `latest/` and `<version>/`
 path segments exactly as the bootstrap expects (no bootstrap changes needed):
 
@@ -55,18 +62,22 @@ path segments exactly as the bootstrap expects (no bootstrap changes needed):
 FIREKEEP_DIST_BASE = https://kapella-hub.github.io/firekeep-dist
 ```
 
-Install (macOS / Linux):
+Verifying a release by hand — hitting the origin directly instead of through the site
+(macOS / Linux):
 ```bash
-curl -fsSL https://kapella-hub.github.io/firekeep-dist/latest/install.sh | FIREKEEP_DIST_BASE=https://kapella-hub.github.io/firekeep-dist sh
+curl -fsSL https://kapella-hub.github.io/firekeep-dist/latest/install.sh | sh
 ```
 Windows (PowerShell):
 ```powershell
-$env:FIREKEEP_DIST_BASE='https://kapella-hub.github.io/firekeep-dist'; irm https://kapella-hub.github.io/firekeep-dist/latest/install.ps1 | iex
+irm https://kapella-hub.github.io/firekeep-dist/latest/install.ps1 | iex
 ```
 
+Passing `FIREKEEP_DIST_BASE=` alongside these has been redundant since client 0.1.15:
+`make_release.py --dist-base` bakes the base into the published bootstrap before its hash
+is computed. Set it only to reach a *different* origin — a mirror, or the install lab.
+
 The bootstrap fetches `latest/latest.json` → resolves the version → fetches
-`<version>/SHA256SUMS`, then the checksum-verified `uv` and both wheels, exactly as with
-the GitLab registry.
+`<version>/SHA256SUMS`, then the checksum-verified `uv` and both wheels.
 
 ### Why artifacts live in a second, public repo
 

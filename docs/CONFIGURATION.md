@@ -116,6 +116,33 @@ See [DEPLOYMENT.md → Access and authentication](DEPLOYMENT.md#access-and-authe
 for the first-call walkthrough and [DEPLOYMENT-OFFICE.md](DEPLOYMENT-OFFICE.md)
 for the multi-person key model.
 
+## Install-Time Overrides
+
+Not `.env` settings — flags and environment variables read by `install.sh` and
+`firekeep init` **while they run**. Listed here because they are the only
+configuration surface that has no `.env` line to discover it from.
+
+`install.sh` asks nothing by default: the host address is detected and the Neo4j
+password is generated, along with the vault key, the dashboard password and the
+service keys. These override that.
+
+| Flag | Env | Default | Description |
+|---|---|---|---|
+| `--ip <addr>` | `FIREKEEP_VPS_IP` | detected via `ip route get` | The address a remote client reaches this host at. Becomes `VPS_IP`, the default `ssh_target` in every tunnel join code, and the CORS origin. Set it when the routed address is not the reachable one (NAT, floating IP, a DNS name). Getting it wrong is recoverable — the invite API answers `400 t=tunnel requires ssh_target` and you pass `--ssh-target` explicitly. |
+| `--neo4j-password <pw>` | `FIREKEEP_NEO4J_PASSWORD` | generated (24 bytes hex) | Machine-to-machine only; nothing but the containers reads it. **It is baked into the Neo4j data volume at first boot** — editing `NEO4J_PASSWORD` in `.env` afterwards breaks the stack rather than changing it. Supply it only when restoring a backup or satisfying a secrets policy. |
+| `--wait-for-models` | — | off | Block until the ~3.3 GB Ollama pull completes instead of backgrounding it. Use when a machine must be fully ready on exit (CI, image builds). |
+| — | `FIREKEEP_MODEL_PULL_GRACE` | `120` | Seconds to wait for the model pull before handing it to a background watcher. A warm model volume finishes instantly and still reports `[OK]`. |
+| `--pull` | — | off | Use published images instead of building from a checkout. Implied by `firekeep init`. |
+| `--office` | — | off | Pin `docker-compose.office.yml` (Caddy TLS front). |
+| `--insecure-no-auth` | — | off | Disable auth. Read the banner it prints before using it. |
+
+`firekeep init` additionally takes:
+
+| Flag | Env | Default | Description |
+|---|---|---|---|
+| `--no-self-enroll` | — | self-enrol **on** | Provision only. By default `init` enrols the machine it runs on against the new server and prints a paste-ready join command for the next one. Turn it off for headless provisioning where minting a device credential into the image would be wrong. |
+| — | `FIREKEEP_SERVER_INSTALL_TIMEOUT` | `3600` | Seconds before `init` gives up on `install.sh`. Separate from `FIREKEEP_INSTALL_TIMEOUT` (600, for pip): a shared value meant the documented happy path timed out on success. |
+
 ## Model Sizing
 
 `ollama-pull` (in `docker-compose.yml`) downloads whatever `LLM_MODEL` and

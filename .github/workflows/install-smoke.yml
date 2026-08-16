@@ -1,12 +1,17 @@
 name: Install smoke (the stranger test)
 
 # The defect class this exists to catch: the stack worked on exactly one
-# machine — its author's. This runs the documented install on a clean runner
+# machine — its author's. This runs the documented install on clean runners
 # with nothing preconfigured.
-# Manual-trigger ONLY while the install is still broken. This workflow is
-# written before the fixes and is expected to fail; gating PRs on a
-# known-red check trains people to ignore it. Task 11 adds the automatic
-# triggers once it is green.
+#
+# Two jobs, because there are two installs:
+#   install-smoke   the SERVER, on one runner, from `bash install.sh`
+#   client-matrix   the CLIENT, from `curl … | sh`, on seven distros
+#
+# 2026-08-15: the server job passed for months over a broken install, because it
+# piped the two prompt answers in. It now runs with stdin closed. The lesson
+# generalises past this file — a fixture that supplies an answer cannot test
+# whether the question should have been asked.
 on:
   # Auto-triggers added 2026-07-28, once the install first went green (12/12).
   # The header above explains why they were withheld until then: gating on a
@@ -58,14 +63,31 @@ jobs:
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
           df -h /
 
-      - name: Run the documented install non-interactively
-        env:
-          # A stranger runs `bash install.sh` and answers two prompts.
-          # No flags: this must exercise the SHIPPED defaults, which since
-          # audit blocker 7 means auth enforced. Adding --insecure-no-auth
-          # here would make every assertion below test the wrong product.
-          FIREKEEP_SMOKE_VPS_IP: "127.0.0.1"
-          FIREKEEP_SMOKE_NEO4J_PASSWORD: "smoke-test-password"
+      - name: Run the documented install with NOTHING on stdin
+        # `< /dev/null` is the entire point of this step, and it is a deliberate
+        # inversion of what this job used to do.
+        #
+        # It used to pipe the answers in:
+        #
+        #   printf '%s\n%s\n' "127.0.0.1" "smoke-test-password" | bash install.sh
+        #
+        # and it passed, every time, while a real cold install on a fresh VPS
+        # (2026-08-15) died at the first prompt because the operator could not
+        # know that "VPS IP address" meant their own loopback address, or that
+        # the Neo4j password was theirs to invent and would never be typed
+        # again. A test that supplies the answer key cannot detect a question
+        # that should not exist -- and note that CI's own answer for the VPS IP
+        # was 127.0.0.1, so this suite knew the correct default while the
+        # installer refused to offer it.
+        #
+        # Closing stdin makes the SHAPE of the install the thing under test:
+        # any future `read` re-introduced into install.sh gets EOF, fails here,
+        # and cannot reach a customer. tests/test_install_no_prompts.py asserts
+        # the same property statically; this asserts it end to end.
+        #
+        # No flags, still: this must exercise the SHIPPED defaults, which since
+        # audit blocker 7 means auth enforced. Adding --insecure-no-auth here
+        # would make every assertion below test the wrong product.
         # `shell: bash` is load-bearing, not style. The DEFAULT shell for a
         # `run:` step on Linux is `bash -e {0}` -- WITHOUT pipefail. Piping
         # install.sh into `tee` moved it out of the last position, so the step's
@@ -79,9 +101,45 @@ jobs:
         # NOTE: install.log holds the one-time admin key install.sh prints. The
         # runner is destroyed after the job and nothing uploads it as an
         # artifact. Do not add an upload-artifact step for it.
+        #
+        # --wait-for-models is the one flag this job needs and a customer does
+        # not. The default install now returns as soon as the stack is up and
+        # finishes the ~3.3GB pull in the background, because blocking for 15
+        # minutes with no output is indistinguishable from a hang. CI asserts
+        # further down that a memory ROUND-TRIPS, which requires the embedding
+        # model — so this job opts back into waiting. Without it the assertion
+        # would race the download and flake.
         run: |
-          printf '%s\n%s\n' "$FIREKEEP_SMOKE_VPS_IP" "$FIREKEEP_SMOKE_NEO4J_PASSWORD" \
-            | bash install.sh 2>&1 | tee install.log
+          bash install.sh --wait-for-models < /dev/null 2>&1 | tee install.log
+
+      - name: Assert the installer asked the operator nothing
+        run: |
+          # The two prompts by name, anchored, so the SUCCESS lines the fixed
+          # installer prints ("[OK] Neo4j password generated") do not match.
+          if grep -nE '^(VPS IP address|Neo4j password):[[:space:]]*$' install.log; then
+            echo "::error::install.sh prompted for a value it can derive"
+            exit 1
+          fi
+          # And prove the derivations actually ran, rather than the prompts
+          # merely having been deleted along with the values they set.
+          grep -q '^\[OK\] Host address:' install.log \
+            || { echo "::error::no host address was derived"; exit 1; }
+          grep -q '^\[OK\] Neo4j password generated' install.log \
+            || { echo "::error::no Neo4j password was generated"; exit 1; }
+          echo "the install completed with nothing on stdin"
+
+      - name: Assert the vault was actually configured
+        run: |
+          # VAULT_KEY generation used to be gated on python3 'cryptography',
+          # which a stock Ubuntu VPS does not have -- so installs shipped a dead
+          # vault (/vault/* answering 503) and reported it as "[SKIP]", a tidy-up
+          # rather than the broken security control it was.
+          if grep -n 'SKIP.*cryptography\|Could not generate VAULT_KEY' install.log; then
+            echo "::error::the stack was installed without a VAULT_KEY"
+            exit 1
+          fi
+          grep -q '^\[OK\] Vault encryption key generated' install.log \
+            || { echo "::error::VAULT_KEY was never generated"; exit 1; }
 
       - name: Assert no unsubstituted placeholders survived in .env
         run: |
@@ -305,3 +363,61 @@ jobs:
           docker compose logs --tail 100
           free -h
           df -h /
+
+  # --------------------------------------------------------------------------
+  # The CLIENT half of the stranger test: does `curl … | sh` work on the
+  # machines we say it works on?
+  #
+  # Nothing covered this before. The server smoke above runs on one
+  # ubuntu-latest runner, and client/tests/test_bootstrap_sh.py drives the
+  # script against a local artifact server on the SAME image — so "supported
+  # platform" was an assertion in the README, not a fact anything checked.
+  # Alpine matters most: musl needs a different uv build AND musllinux wheels,
+  # and a mismatch there has shipped before (the interpreter advertised
+  # linux-gnu while the installed native modules were linux-musl, and doctor
+  # stayed green while every gateway backend crashed).
+  #
+  # `enter` is the scenario worth the runner minutes: it gives the install a
+  # real pty via util-linux `script` and answers every prompt with Enter. That
+  # is what a first-time user does, and it is the exact path that produced a
+  # valid config pointing at a server that did not exist.
+  client-matrix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv (builds the wheels the lab serves)
+        run: curl -fsSL https://astral.sh/uv/install.sh | sh
+
+      - name: Build a dist from THIS checkout
+        # Not from the published release: the point is to catch a regression
+        # before it ships, which means installing code that exists nowhere else
+        # yet. dist.py drives the real client/scripts/make_release.py, so the
+        # artifacts are built the same way the release job builds them.
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          python3 scripts/installlab/dist.py \
+            --dist-base http://dist:8000 \
+            --targets x86_64-unknown-linux-gnu,x86_64-unknown-linux-musl
+
+      - name: Cold-install on every supported distro
+        run: |
+          python3 scripts/installlab/lab.py matrix \
+            --scenarios headless,enter \
+            --targets ubuntu,debian,alpine,fedora,rocky,arch,opensuse
+
+      - name: Upload transcripts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: install-lab-transcripts
+          path: scripts/installlab/.runs/
+          retention-days: 14
+
+      - name: Tear down
+        if: always()
+        run: python3 scripts/installlab/lab.py down || true

@@ -49,167 +49,55 @@ It is a **control plane for AI coding agents** — infrastructure that sits behi
 - **Agent-agnostic.** Swap the agent client without rebuilding the underlying memory and coordination layer. Cursor has a documented manual MCP path; Aider does not currently have a shipped adapter.
 - **A2A-discoverable.** Relay publishes an [Agent-to-Agent](https://github.com/google/A2A) agent card at `/.well-known/agent.json` for capability discovery. This is discovery-only, not an A2A task-execution endpoint.
 
-## Quick Start
+## Install
 
-### Prerequisites
-
-- Any Docker host — a Linux VPS, an office server, or your own desktop (Docker
-  Desktop on macOS, or with the WSL2 backend on Windows; run the install inside
-  WSL2 there, since the installer is a bash script). **RAM:** 16 GB recommended for the full default stack (Neo4j JVM + Qdrant +
-  Redis + Ollama + 7 Python services). 8 GB is the practical floor and requires
-  a small embedding model (`EMBEDDING_MODEL=granite-embedding:30m`,
-  `EMBEDDING_DIM=384`). Below that, containers are OOM-killed while HTTP health
-  checks still pass — a failure mode that is easy to misdiagnose.
-- Docker and Docker Compose v2
-- Git
-- No public Firekeep application ports are required. A default install binds everything to `127.0.0.1`; serving
-  another machine is an explicit opt-in (see [Reaching it](#reaching-it)).
-
-### Deploy
-
-After installing the Firekeep client, provision the latest public server release:
+**[firekeep.ai/docs.html](https://firekeep.ai/docs.html) is the install guide** —
+requirements, the server, every client runtime, updating, troubleshooting. It is
+maintained there rather than duplicated here; this section is the pointer.
 
 ```bash
-firekeep init
+curl -fsSL https://firekeep.ai/latest/install.sh | sh    # macOS / Linux
+irm https://firekeep.ai/latest/install.ps1 | iex         # Windows
 ```
 
-`firekeep init` is the provisioning path. It downloads and verifies the
-source-free deployment bundle, pulls public server images, and prompts only for
-deployment values. Pin a server release with `firekeep init --version vX.Y.Z`.
-No registry account or token is needed — the release images are public.
+One command, two questions: the **agent identity** every memory, session and
+replay event is attributed to, and **where your Firekeep server is** — set one
+up on this machine with Docker, redeem a join code, point at one that is
+already running, or decide later (`firekeep doctor` then tells you how to
+finish). Setting one up here runs `firekeep init` for you; that installer asks
+nothing, and the machine enrols itself once the stack is up, so `firekeep
+doctor` is green with no dashboard, no tunnel, and no pasted key. It prints the
+paste-ready command for your second machine when it finishes.
 
-From a source checkout, `firekeep init --server-dir .` keeps the developer build
-path. The equivalent direct commands from an unpacked bundle or checkout are:
+The server needs Linux and Docker. The client bootstrap is exercised in CI on
+Ubuntu, Debian, Alpine, Fedora, Rocky, Arch and openSUSE (x86_64 and aarch64);
+macOS runs the same script but is not covered by CI.
+
+- Requirements and sizing — [firekeep.ai/docs.html#requirements](https://firekeep.ai/docs.html#requirements)
+- Server install — [firekeep.ai/docs.html#server](https://firekeep.ai/docs.html#server)
+- Connecting agents and teammates — [firekeep.ai/docs.html#connect](https://firekeep.ai/docs.html#connect)
+- Troubleshooting — [firekeep.ai/docs.html#troubleshooting](https://firekeep.ai/docs.html#troubleshooting)
+
+### From this checkout
 
 ```bash
-bash install.sh --pull  # published images
-bash install.sh         # build from source
+bash install.sh              # build the server from source
+bash install.sh --pull       # the same installer against the published images
+cd client && ./install       # the kit from this checkout (.\install.ps1 on Windows)
+firekeep install             # re-render the runtime adapters only
 ```
 
-Either way the installer prompts for your VPS IP and Neo4j password, brings up the full stack (13 containers: the Cortex API / MCP / worker / beat quartet, Bridge, Sentinel, Relay, the dashboard, the Neo4j / Qdrant / Redis / Ollama backends, and a one-shot Ollama model puller), mints your API keys, and prints MCP URLs when ready.
+`install.sh` prompts for nothing: the host address is detected and the Neo4j
+password generated (`--ip` / `--neo4j-password`, or `FIREKEEP_VPS_IP` /
+`FIREKEEP_NEO4J_PASSWORD`, override either). It returns as soon as the stack is
+up rather than blocking on the ~3.3 GB model pull — until that finishes, memory
+writes return `status="partial"` (stored and queued for backfill, not yet
+searchable) and `firekeep doctor` carries an `embeddings` WARN row saying so.
+`bash install.sh --wait-for-models` blocks instead.
 
-Among those keys is an **admin key generated only on the first bootstrap**. It
-appears in the bootstrap output and is repeated in the final summary so it is
-harder to lose; it is never written to disk. Save it in a password manager.
-
-**The install is closed by default.** `AUTH_ENABLED=true`, so protected MCP and
-REST routes need an `X-API-Key`; health and version probes remain public.
-`BIND_ADDR=127.0.0.1`, so application ports listen on loopback only. Installs
-created before the 2026-07-26 security-default change may differ. If an older
-guide now produces 401s or connection refusals, verify the current auth and
-binding settings before changing them — see
-**[docs/DEPLOYMENT.md → Access and authentication](docs/DEPLOYMENT.md#access-and-authentication)**.
-
-### Reaching it
-
-From the host, `http://localhost:8040`. From anywhere else, tunnel:
-
-```bash
-ssh -L 8040:127.0.0.1:8040 user@vps-host      # then open http://localhost:8040
-```
-
-Any private network or VPN, including Tailscale or WireGuard, can provide the
-route instead once the application is bound or proxied onto that network;
-Firekeep does not require a particular network vendor. The client only needs a
-reachable server URL and the correct TLS/auth configuration.
-
-To place the application ports on a LAN/private network or behind a TLS reverse
-proxy, set `BIND_ADDR=0.0.0.0` in `.env` and `docker compose up -d` — but read
-[the exposure warning](docs/DEPLOYMENT.md#exposing-the-stack-deliberately) first:
-Docker's published-port rules are evaluated *before* ufw's, so a host firewall
-does not contain a published port. Do not send `X-API-Key` over untrusted plain
-HTTP; use an SSH tunnel, private network, or HTTPS termination.
-
-### Connect a client
-
-The normal onboarding path is the same for Claude Code, Codex, Kiro, and
-OpenCode:
-
-1. Open the dashboard and choose **Devices → Add device**.
-2. Copy the generated macOS/Linux or PowerShell install command to the new
-   machine and run it. There are no profile, host, API-key, or runtime prompts.
-3. Restart the agent client after installation so it loads the single `firekeep` MCP entry.
-
-The command contains a single-use, 24-hour join code. The client generates its
-own credential locally, redeems the code once, writes the one `[server]`
-connection, installs every shipped adapter, and runs `firekeep doctor`. The
-plaintext credential is never returned by the server or printed by default.
-
-If the kit is already installed, use the bare code shown in the dashboard:
-
-```bash
-firekeep join fk_join_...
-```
-
-From a server shell, `deploy/firekeep-admin invite --agent laptop --json` is the
-dashboard-independent fallback. An operator who already has SSH access can use
-`firekeep connect root@<server>`; it issues the same single-use code remotely
-and then calls the same join path. A working tunnel is reused, not duplicated.
-
-The kit lives in `~/.firekeep` — one venv per version under `venvs/<version>`,
-selected by the `~/.firekeep/current` link that every rendered path routes
-through, so updates never require closing agent sessions — and prepares every
-shipped adapter by default: Claude Code, Codex, Kiro, and OpenCode. Claude gets user-scoped
-`~/.claude.json` + `~/.claude/settings.json`; the other clients receive their
-native MCP and instruction files. Each receives exactly one `firekeep` entry;
-the local gateway aggregates Cortex, Bridge, Sentinel, Relay, code intelligence,
-and the Decision Board, and reports a failed backend without taking down the
-others. Use `firekeep install --runtime <name>` only for a
-targeted re-render or repair. See [Codex setup](docs/SETUP-CODEX.md) and
-[Claude Code setup](docs/SETUP-CLAUDE-CODE.md) for client-specific details.
-
-Every runtime reads the same connection; there is no client-specific profile:
-
-```ini
-[identity]
-agent_id = alice
-
-[server]
-kind = ports
-scheme = http
-host = 127.0.0.1
-verify_tls = false
-api_key = nxs_...
-```
-
-`firekeep join` writes this connection without prompting; `firekeep-shim` then
-injects the credential on every request. A manual `firekeep install --host ...`
-path remains for development and legacy servers, but join codes are the
-customer path. `firekeep doctor` verifies connectivity, authentication,
-credential expiry, TLS trust, all installed runtime adapters, and whether each
-runtime's rendered instruction block is current, stale, hand-edited, or absent.
-
-To add a person, use **Members → Invite member** instead. A member invite is
-accepted once, creates that person's membership, and then hands the client the
-same device-enrollment flow above.
-
-`firekeep login <server-url>` is reserved for hosted OAuth sign-in. A self-hosted
-server has no authorization server, so the command directs the user to request
-a join code instead.
-
-This installs the `firekeep-client` kit into `~/.firekeep` (a versioned venv under `venvs/`, selected by the `current` link), bootstraps `~/.firekeep/config`, and prepares every shipped adapter: Claude Code, Codex, Kiro, and OpenCode. Claude gets user-scoped `~/.claude.json` + `~/.claude/settings.json` (MCP servers via `firekeep-shim`, five hook cores); the other clients receive their native MCP and instruction files. Two stdio-local servers — code intelligence (`firekeep-symdex`) and the Decision Board (`firekeep-decision`) — are installed automatically, always-on, no flag needed. Use `firekeep install --runtime <name>` only for a targeted re-render or repair.
-
-The installer prompts for the connection **and an API key**. Mint one on the
-server with `deploy/firekeep-admin keys create --agent <you>`; `firekeep-shim`
-then injects it on every request. A profile with no key against a keyed server
-fails every protected tool call. `firekeep doctor` catches this for both HTTP
-and HTTPS profiles: it asks the server
-whether it enforces auth rather than inferring from the scheme, because the
-standard personal-VPS shape is plain http to 127.0.0.1 over a tunnel against a
-keyed server — which the old scheme-based check skipped silently.
-
-### Verify
-
-On the host, open `http://localhost:8040` (or tunnel — see [Reaching it](#reaching-it)) — the dashboard shows service health, memory stats, active sessions, and live events.
-
-Or check from the command line:
-
-```bash
-curl -fsS http://127.0.0.1:8100/health                          # pre-auth, no key needed
-curl -fsS -H "X-API-Key: $KEY" http://127.0.0.1:8100/memory/stats   # keyed route
-```
-
-> For detailed installation, updating, backups, and troubleshooting, see **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**.
+Operating the server afterwards — access and authentication, the dashboard,
+backups, updates, exposing ports deliberately — is
+**[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**.
 
 ## A Real Workflow
 
@@ -246,7 +134,8 @@ Symdex and the Decision Board run **client-side** as stdio-local MCP servers (in
 The two arrows crossing that boundary are **not publicly reachable by default**.
 Out of the box the VPS side listens on loopback and requires an API key, so the
 local-machine half reaches it over an SSH tunnel, a private network, or an HTTPS
-front end you deliberately configure. See [Reaching it](#reaching-it).
+front end you deliberately configure. See
+[docs/DEPLOYMENT.md → Access and authentication](docs/DEPLOYMENT.md#access-and-authentication).
 
 | Service | What it does |
 |---------|-------------|
@@ -265,7 +154,8 @@ Shared modules (no extra containers): **Replay Engine** (structured trace log ac
 ## Dashboard
 
 Access at `http://localhost:8040` on the host, or through a tunnel from
-elsewhere ([Reaching it](#reaching-it)). It has its own basic-auth login (user
+elsewhere ([docs/DEPLOYMENT.md → Reaching the dashboard](docs/DEPLOYMENT.md#reaching-the-dashboard)).
+It has its own basic-auth login (user
 `admin`; the password is written once to `dashboard/.htpasswd.cred`). Behind
 that, nginx injects the dashboard's API key on every backend call, so the SPA
 works against the auth-gated stack without you pasting a key into the browser.
@@ -296,7 +186,7 @@ The dashboard is a zero-dependency static SPA. No build step, no npm, no framewo
 
 | Document | Contents |
 |----------|----------|
-| **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** | Installation, updating, backups, troubleshooting, local development |
+| **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** | Running a server: access and authentication, updating, backups, troubleshooting, local development (installing is [firekeep.ai/docs.html](https://firekeep.ai/docs.html)) |
 | **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)** | All environment variables, Redis DB allocation, intelligence features |
 | **[docs/MCP-TOOLS.md](docs/MCP-TOOLS.md)** | Complete MCP tools reference (104 tools across 6 logical backends, exposed to shipped clients through one local gateway) |
 | **[docs/DESIGN.md](docs/DESIGN.md)** | Full architecture specification, service contracts, integration points |

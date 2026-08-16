@@ -397,6 +397,41 @@ class VectorClient:
         """Verify connectivity to Qdrant. Raises on failure."""
         await self._client.get_collections()
 
+    async def embeddings_ready(self) -> tuple[bool, str]:
+        """Can this deployment actually embed right now? Returns (ready, detail).
+
+        Exists because "the stack is up" and "your memories are searchable" are
+        different facts, and the install used to conflate them. The ~3.3GB model
+        pull runs in the background now (install.sh), and until it finishes every
+        write returns HTTP 200 with status="partial" and is queued for backfill —
+        successful-looking, and not recallable. Something has to be able to SAY
+        that, or "partial" is discovered by a user wondering why recall is empty.
+
+        Deliberately the real embed call rather than a model-registry lookup: the
+        question is whether embedding WORKS, and a model that is listed but not
+        loadable answers that question wrong. /health caches for 10s, and the
+        one-character input hits the embed cache after the first call, so the
+        cost is one tiny request per 10s at worst.
+
+        Never raises: a health probe that can fail is a health endpoint that can
+        500, and a caller learns strictly less from an exception than from
+        (False, why).
+        """
+        try:
+            vector = await self._embed_post("ok")
+        except Exception as exc:  # noqa: BLE001 — a probe reports, it does not raise
+            detail = str(exc)
+            # The distinctive first-install shape: ollama answers, but the model
+            # is not there yet. Worth separating from "the endpoint is down",
+            # because one resolves itself and the other needs a human.
+            lowered = detail.lower()
+            if "not found" in lowered or "try pulling" in lowered or "404" in lowered:
+                return False, f"model {self._embedding_model!r} is not pulled yet"
+            return False, detail[:200]
+        if not vector:
+            return False, f"model {self._embedding_model!r} returned an empty vector"
+        return True, f"{self._embedding_model} ({len(vector)}-dim)"
+
     async def memory_count(self) -> int | None:
         """Return the number of points in the collection, or None on failure."""
         try:

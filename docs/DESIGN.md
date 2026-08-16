@@ -260,7 +260,8 @@ All services read `CORS_ORIGINS` from the shared `.env` file. Default value incl
 ```
 CORS_ORIGINS=["http://<VPS_IP>:8040"]
 ```
-The `install.sh` script sets this automatically using the prompted VPS IP. All services (Cortex, Bridge, Sentinel, Relay) use the same env var name for consistency.
+The `install.sh` script sets this automatically from the host address it detects
+(`--ip` / `FIREKEEP_VPS_IP` override it); nothing is prompted. All services (Cortex, Bridge, Sentinel, Relay) use the same env var name for consistency.
 
 ## FirekeepBridge — Configuration (NB_ prefix)
 
@@ -297,12 +298,16 @@ Code intelligence is **client-side only**. The server-side HTTP container was re
 
 ### `install.sh` (VPS)
 1. Check/install Docker + Docker Compose
-2. Clone Firekeep repo (or skip if already cloned)
+2. Run in place — from an unpacked release bundle (the customer path, downloaded
+   and checksum-verified by `firekeep init`) or a source checkout (developers)
 3. Copy `.env.example` → `.env`
-4. Prompt for required secrets: Neo4j password, API keys, VPS IP
-5. `docker-compose up -d`
-6. Wait for all health checks to pass
-7. Print status table + MCP URLs
+4. Derive what it used to prompt for: host address detected, Neo4j password and
+   `VAULT_KEY` generated, auth keys bootstrapped (`deploy/bootstrap-keys.sh`)
+5. `docker compose up -d`
+6. Grace the model pull briefly, then hand it to a detached watcher
+   (`--wait-for-models` blocks instead)
+7. Wait for health checks to pass
+8. Print status table + MCP URLs
 
 ### `update.sh` (VPS)
 1. `git pull`
@@ -312,10 +317,10 @@ Code intelligence is **client-side only**. The server-side HTTP container was re
 5. Print status
 
 ### `firekeep install` (client kit)
-1. Create a versioned venv at `~/.firekeep/venvs/<version>` (selected by the `~/.firekeep/current` link; updates provision beside the running venv and flip the link) and install the client kit — a checksum-verified wheel handed to `uv pip install` by local path (teammate bootstrap), or the local checkout (`cd client && ./install`). Never `pip install firekeep-client` by name (`firekeep-client` on PyPI is a third party's package). Public releases are served from GitHub Pages (`FIREKEEP_DIST_BASE=https://kapella-hub.github.io/firekeep-dist`, see `docs/RELEASE-GITHUB.md`).
+1. Create a versioned venv at `~/.firekeep/venvs/<version>` (selected by the `~/.firekeep/current` link; updates provision beside the running venv and flip the link) and install the client kit — a checksum-verified wheel handed to `uv pip install` by local path (teammate bootstrap), or the local checkout (`cd client && ./install`). Never `pip install firekeep-client` by name (`firekeep-client` on PyPI is a third party's package). Users are given one URL — `https://firekeep.ai/latest/install.sh` (`.ps1` on Windows) — which redirects to the artifact root the bootstrap then fetches everything else from: GitHub Pages, `FIREKEEP_DIST_BASE=https://kapella-hub.github.io/firekeep-dist` (see `docs/RELEASE-GITHUB.md`).
 2. Bootstrap `~/.firekeep/` (config skeleton `0600`, hook cores, contract fragment, CA slot)
 3. Render each runtime's native config with one absolute-path `firekeep gateway` MCP entry plus its supported hook/instruction surfaces. Re-rendering removes the six retired Firekeep entries but preserves foreign config.
-4. An interactive install runs a wizard (`firekeep_client/wizard.py`) prompting for agent identity and the one server connection (`host`/`api_key`, or `base_url`/`ca_path`/`api_key` for an existing path-routed connection), each prompt prefilled with the current value so Enter-through is a no-op. It never asks for a profile; Firekeep is one product, so there is no edition to ask about. A non-interactive/CI install (no TTY or `--non-interactive`) writes `[identity]` + `[server]` (`agent_id = CHANGEME` when no `--agent-id` is passed); run `firekeep doctor` to verify
+4. An interactive install runs a wizard (`firekeep_client/wizard.py`) asking two things: agent identity, then where the server is — set one up on this machine (chains into `firekeep init`), redeem a join code, an existing server (`host`/`api_key`, or `base_url`/`ca_path`/`api_key` for a path-routed connection), or decide later. A machine that already has a `[server]` skips the routing question and gets the connection prompts prefilled with their current values, so Enter-through is a no-op. It never asks for a profile; Firekeep is one product, so there is no edition to ask about. A non-interactive/CI install (no TTY or `--non-interactive`) writes `[identity]` + `[server]` (`agent_id = CHANGEME` when no `--agent-id` is passed); run `firekeep doctor` to verify
 
 ## Docker Compose Dependency Chain
 

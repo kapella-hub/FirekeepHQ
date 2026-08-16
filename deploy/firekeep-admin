@@ -16,8 +16,11 @@ usage() {
     cat >&2 <<'EOF'
 Usage:
   firekeep-admin invite [--agent NAME] [--expires-days N] [--json]
-      [--host HOST | --base-url URL] [--ssh-target USER@HOST]
+      [--local] [--host HOST | --base-url URL] [--ssh-target USER@HOST]
       [--ca-file PATH | --ca os] [--insecure-http] [--dist-base URL]
+
+  --local   a code for THIS machine, redeemed on THIS machine over loopback.
+            Used by `firekeep init` to enrol the server box against itself.
   firekeep-admin keys create --agent NAME [--expires-days N]
   firekeep-admin keys revoke CREDENTIAL_ID
 EOF
@@ -152,9 +155,11 @@ keys_revoke() {
 
 invite() {
     local agent="" expires_days="" output_json=0 host="" base_url="" ssh_target=""
-    local ca_file="" ca_mode="" insecure=0 dist_base="${FIREKEEP_DIST_BASE:-https://firekeep.ai}"
+    local ca_file="" ca_mode="" insecure=0 local_only=0
+    local dist_base="${FIREKEEP_DIST_BASE:-https://firekeep.ai}"
     while [ $# -gt 0 ]; do
         case "$1" in
+            --local) local_only=1; shift ;;
             --agent) agent="${2:?--agent requires a value}"; shift 2 ;;
             --expires-days) expires_days="${2:?--expires-days requires a value}"; shift 2 ;;
             --host) host="${2:?--host requires a value}"; shift 2 ;;
@@ -179,7 +184,24 @@ invite() {
     vps_ip="$(env_get VPS_IP)"
     server_user="$(env_get FIREKEEP_SSH_USER)"
     server_user="${server_user:-${SUDO_USER:-${USER:-root}}}"
-    if [ -n "$ca_file" ] || [ "$ca_mode" = "os" ]; then
+    if [ "$local_only" -eq 1 ]; then
+        # A code for THIS machine, consumed on THIS machine.
+        #
+        # Without it, the loopback branch below mints a TUNNEL code -- correct
+        # for a laptop reaching a loopback-bound server, absurd for the server
+        # box enrolling itself, which would be asked to SSH to its own address
+        # to reach a port already on its own loopback interface. That absurdity
+        # is why the box that had just finished building the server could not
+        # talk to it, and why the install's closing advice ("Dashboard ->
+        # Devices") pointed at a UI bound to an interface the user could not
+        # reach from where they were standing.
+        #
+        # transport=http is safe here in the only sense that matters: the
+        # request never leaves the loopback interface, so there is no network
+        # path on which to intercept it. This is NOT the same claim as
+        # --insecure-http over a real network, which stays gated below.
+        transport="http"; kind="ports"; host="127.0.0.1"
+    elif [ -n "$ca_file" ] || [ "$ca_mode" = "os" ]; then
         transport="tls"; kind="$([ -n "$base_url" ] && echo paths || echo ports)"
         [ -n "$host" ] || host="$vps_ip"
     elif [[ "$bind_addr" = "127.0.0.1" || "$bind_addr" = "localhost" || "$bind_addr" = "::1" ]]; then
@@ -213,7 +235,10 @@ invite() {
     [ -n "$ssh_target" ] && cmd+=(--ssh-target "$ssh_target")
     [ -n "$ca_pem_b64" ] && cmd+=(--ca-pem-b64 "$ca_pem_b64")
     [ -n "$ca_mode" ] && cmd+=(--ca "$ca_mode")
-    [ "$insecure" -eq 1 ] && cmd+=(--insecure-http)
+    # mint.py gates transport=http behind --insecure-http regardless of host, so
+    # --local has to pass it. The gate is doing its job; loopback is the one case
+    # where the answer to "is plain HTTP acceptable?" is unambiguously yes.
+    { [ "$insecure" -eq 1 ] || [ "$local_only" -eq 1 ]; } && cmd+=(--insecure-http)
     [ "$output_json" -eq 1 ] && cmd+=(--json)
     if [ "${FIREKEEP_ADMIN_DRY_RUN:-0}" = "1" ]; then
         printf '%q ' "${cmd[@]}"; echo

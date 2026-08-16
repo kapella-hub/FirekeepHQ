@@ -1,5 +1,11 @@
 # Firekeep Deployment Guide
 
+> **Installing is documented at [firekeep.ai/docs.html](https://firekeep.ai/docs.html)** —
+> that page is the single source, and it starts with one command:
+> `curl -fsSL https://firekeep.ai/latest/install.sh | sh`. This file is the
+> operations reference for a server you already run: access and authentication,
+> the dashboard, backups, updates, health, troubleshooting.
+
 ## Prerequisites
 
 - Linux VPS with Docker and Docker Compose v2
@@ -27,12 +33,19 @@ or registry token is required — the release images are public. The licence
 download gate.
 
 ```bash
-# Latest public server release (prompts only for deployment settings):
+# Latest public server release (asks nothing):
 firekeep init
 
 # Or pin a release explicitly:
 firekeep init --version v0.1.0
 ```
+
+Answering "set one up on this machine" to the client installer's server question
+runs this for you, so most people never type it. When the stack is up, `firekeep
+init` mints a loopback join code locally and redeems it, enrolling the machine
+against the server it just built — `firekeep doctor` is green with no dashboard,
+tunnel or pasted key — and prints the paste-ready command for a second machine.
+`firekeep init --no-self-enroll` skips that (CI, golden images).
 
 `firekeep init` verifies the bundle checksum before extracting it, then invokes
 `install.sh --pull`. The installer verifies the image is publicly readable
@@ -76,22 +89,40 @@ registry that is unreachable from anywhere else.
 
 1. Checks Docker and Docker Compose are installed
 2. Creates `.env` from `.env.example`
-3. Prompts for:
-   - **VPS IP** — used for CORS origins and printed in MCP URLs
-   - **Neo4j password** — required, no default
+3. Derives the two values it used to ask for — **it prompts for nothing**:
+   - **Host address** — detected (`ip route get`, falling back to `127.0.0.1`).
+     Used for the SSH target in tunnel join codes and the CORS origin. Override
+     with `--ip <addr>` or `FIREKEEP_VPS_IP`; change it later by editing `VPS_IP`
+     in `.env` and running `bash update.sh`.
+   - **Neo4j password** — generated into `.env` (mode 0600). Cortex reads it to
+     reach the container and the port never leaves `127.0.0.1`, so it is not a
+     secret anyone needs to type. Override with `--neo4j-password` or
+     `FIREKEEP_NEO4J_PASSWORD` (restoring a backup, or a policy-managed secret).
 4. Bootstraps auth keys (`deploy/bootstrap-keys.sh`) — mints `FIREKEEP_INTERNAL_KEY`, `DASHBOARD_API_KEY`, and `RELAY_INTERNAL_API_KEY` into `.env` and prints a one-time admin key. **Copy that admin key somewhere durable before the terminal scrolls; it is never written to disk.** See [DEPLOYMENT-OFFICE.md](DEPLOYMENT-OFFICE.md) for the full per-person key model.
 5. Runs `docker compose up -d --build`
-6. Waits for all services to pass health checks
-7. Prints a status table with all MCP URLs
+6. Gives the ~3.3 GB model pull a short grace period (120 s;
+   `FIREKEEP_MODEL_PULL_GRACE`), then hands it to a detached watcher instead of
+   blocking on it
+7. Waits for the services to pass health checks
+8. Prints a status table with all MCP URLs
 
 Step 4 runs *before* step 5 on purpose: auth is enforced from the first request,
 so the keys have to exist before anything is listening. The health checks in
-step 6 still pass — `/health` and `/version` are pre-auth, and the one probe
+step 7 still pass — `/health` and `/version` are pre-auth, and the one probe
 that does hit a gated path (`GET /mcp` on cortex-mcp) is satisfied by the 401.
 The 401 proves the process is up and enforcing auth — the middleware answers
 before routing, so it does not prove the `/mcp` route itself is mounted (see
 the "KNOWN DEGRADATION" comment in `install.sh` for why the stronger check
 was retired).
+
+Step 6 is why the install no longer takes half an hour, and it has one visible
+consequence. `cortex-api` depends on ollama being *healthy*, not on the model
+pull *finishing*, so until the embedding model lands a `memory_learn` returns
+HTTP 200 with `status="partial"`: the memory is stored and queued for backfill,
+but it is **not yet recallable**. `firekeep doctor` reports this as an
+`embeddings` WARN row rather than letting it look like success. Prefer the old
+behaviour — a golden image, an unattended provision — with
+`bash install.sh --wait-for-models`, which blocks for up to 15 minutes instead.
 
 The installer generates `dashboard/.htpasswd` with user `admin` and a random
 password. The password is written **once** to `dashboard/.htpasswd.cred`
@@ -207,10 +238,18 @@ request.
 
 ### Connecting an agent from another machine
 
-Open the dashboard, choose **Devices → Add device**, and paste its complete
-install command on the new machine. The join code tells the client whether to
-use an SSH tunnel, direct TLS, or explicitly insecure HTTP; the installer does
-not ask the customer to choose a network shape, profile, server, or API key.
+For the *second* machine you usually need nothing from here: `firekeep init`
+printed its paste-ready command when it finished —
+
+```bash
+curl -fsSL https://firekeep.ai/latest/install.sh | FIREKEEP_JOIN=fk_join_… sh
+```
+
+For any machine after that, open the dashboard, choose **Devices → Add device**,
+and paste the complete install command it issues. Either way the join code tells
+the client whether to use an SSH tunnel, direct TLS, or explicitly insecure HTTP;
+the installer does not ask the customer to choose a network shape, profile,
+server, or API key.
 
 On the shipped loopback configuration the code carries
 `FIREKEEP_SSH_USER@VPS_IP`, starts the required six-port SSH tunnel, and redeems

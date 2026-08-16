@@ -12,12 +12,54 @@ from __future__ import annotations
 import configparser
 import getpass
 import os
+import shutil
 import socket
 import ssl
 import sys
 import urllib.parse
+from typing import NamedTuple
 
 PLACEHOLDER_AGENT_ID = "CHANGEME"
+
+# --- the one question ---------------------------------------------------------
+#
+# What this replaced, and why. The install used to ask, unconditionally:
+#
+#     Server host (IP or hostname) [127.0.0.1]:
+#     API key (blank if AUTH_ENABLED=false):
+#
+# at the one moment in the product's life when neither can exist. There was no
+# "not yet" answer and no deferral, so a first-time user pressed Enter twice and
+# got a syntactically valid config pointing at a server that was never there --
+# and, because the config was valid, nothing downstream could tell that state
+# apart from a deliberate localhost deployment.
+#
+# One question replaces both. It is the only prompt in the product that a machine
+# genuinely cannot answer for you, because it is about your intent rather than
+# your environment.
+PROVISION_HERE = "provision"
+JOIN_WITH_CODE = "join"
+EXISTING_SERVER = "existing"
+DECIDE_LATER = "later"
+
+#: Written into [server] by the installer skeleton and removed by the first real
+#: connection write. `config_write.upsert_server` replaces the whole [server]
+#: section, so successfully joining or connecting clears this by construction --
+#: there is no second place to remember to unset it.
+UNCONFIGURED_MARKER = "configured"
+
+
+class Plan(NamedTuple):
+    """What the human said to do, for the caller to actually carry out.
+
+    The wizard deliberately performs none of it: it owns questions, cli.py owns
+    side effects. That split is what keeps the whole flow testable by handing
+    `ask` a scripted list of answers.
+    """
+
+    cfg: configparser.ConfigParser
+    action: str
+    join_code: str = ""
 
 # Default single-server shape: fixed service ports on localhost. Existing
 # path-routed configs keep their shape when the installer is re-run.
@@ -190,6 +232,78 @@ def _configure_paths(cfg, ask, probe=_probe_os_trust, fetch_defaults=_fetch_org_
     _prompt_api_key(cfg, ask)
 
 
+def _already_connected(cfg) -> bool:
+    """True when this config already points at a server someone configured.
+
+    A re-run must not re-ask the routing question of a machine that is already
+    enrolled -- `firekeep install --runtime claude` is a documented re-render
+    path, not an invitation to repoint the machine.
+    """
+    if cfg.get("server", UNCONFIGURED_MARKER, fallback="").strip().lower() == "false":
+        return False
+    if cfg.get("server", "api_key", fallback="").strip():
+        return True
+    if cfg.get("server", "base_url", fallback="").strip():
+        return True
+    host = cfg.get("server", "host", fallback="").strip()
+    return bool(host) and host != _SERVER_DEFAULTS["host"]
+
+
+def _docker_available() -> bool:
+    """Only whether the binary exists -- not whether the daemon is up.
+
+    Deliberately shallow: this picks a DEFAULT for a menu the user can override
+    in one keystroke, so being wrong is cheap, while shelling out to
+    `docker info` on every install would cost seconds and can hang on a
+    misconfigured DOCKER_HOST.
+    """
+    return shutil.which("docker") is not None
+
+
+def ask_where_the_server_is(
+    cfg, ask, *, docker=None, probe=_probe_os_trust, fetch_defaults=_fetch_org_defaults
+) -> tuple[str, str]:
+    """The single routing question. Returns (action, join_code)."""
+    has_docker = _docker_available() if docker is None else docker
+    # Default to what the machine is equipped for. A box with Docker is almost
+    # certainly the box being set up; a laptop without it is almost certainly
+    # joining something. Either way it is one keystroke to say otherwise.
+    default = "1" if has_docker else "2"
+    here = ("Set one up on this machine  (installs the server here with Docker)"
+            if has_docker else
+            "Set one up on this machine  (needs Docker, which was not found)")
+    print(
+        "\nWhere is your Firekeep server?\n"
+        f"  1  {here}\n"
+        "  2  I have a join code       (Dashboard -> Devices, or from a teammate)\n"
+        "  3  It is already running    (you know its address and have a key)\n"
+        "  4  Not yet                  (finish the client; `firekeep doctor` will\n"
+        "                               tell you how to finish the job later)",
+        file=sys.stderr,
+    )
+    answer = (ask("Choose", default) or default).strip().lower()
+
+    if answer in ("2", "join", "code", "join code"):
+        # Accepted here rather than deferred: a user who says "I have a code" has
+        # it in their clipboard right now.
+        code = ask("Paste your join code", "").strip()
+        return (JOIN_WITH_CODE, code) if code else (DECIDE_LATER, "")
+    if answer in ("3", "existing", "running", "host"):
+        if cfg.get("server", "kind", fallback="ports").strip().lower() == "paths":
+            _configure_paths(cfg, ask, probe=probe, fetch_defaults=fetch_defaults)
+        else:
+            _configure_ports(cfg, ask)
+        return (EXISTING_SERVER, "")
+    if answer in ("4", "later", "not yet", "no", "n", "skip"):
+        return (DECIDE_LATER, "")
+    # Anything else -- including "1", "here", or a fat-fingered answer while the
+    # default is 1 -- provisions here. Falling through to the ACTION the default
+    # advertises is safer than silently choosing "later" on a typo, because
+    # provisioning is visible, interruptible and re-runnable, whereas "later"
+    # looks exactly like success and is discovered hours afterwards.
+    return (PROVISION_HERE, "")
+
+
 def prompt_config(
     cfg: configparser.ConfigParser,
     *,
@@ -198,8 +312,9 @@ def prompt_config(
     host: str | None = None,
     probe=_probe_os_trust,
     fetch_defaults=_fetch_org_defaults,
-) -> configparser.ConfigParser:
-    """Walk the install prompts, mutating and returning `cfg`.
+    docker=None,
+) -> Plan:
+    """Walk the install prompts, mutating `cfg` and returning what to do next.
 
     `agent_id` / `host` are the CLI flags: each seeds its prompt's default
     rather than suppressing it, so `--host 10.0.0.4` interactively means 'suggest this',
@@ -207,6 +322,11 @@ def prompt_config(
     """
     _ensure_section(cfg, "identity", {"agent_id": PLACEHOLDER_AGENT_ID})
     _ensure_section(cfg, "server", _SERVER_DEFAULTS)
+    # Kept as a prompt when everything else was deleted, and that is a judgement
+    # call worth recording: the OS username is a good DEFAULT but a poor ANSWER.
+    # On the VPS that prompted this redesign it was `root`, and every memory,
+    # session and replay event this machine ever wrote would have been attributed
+    # to "root" with nothing downstream able to notice.
     identity = ask(
         "Agent identity (attributes every memory, session, and replay event)",
         agent_id or _default_agent_id(cfg),
@@ -214,15 +334,46 @@ def prompt_config(
     cfg.set("identity", "agent_id", identity or PLACEHOLDER_AGENT_ID)
 
     if host:
+        # An explicit --host IS the answer to the routing question.
         cfg.set("server", "kind", "ports")
         cfg.set("server", "scheme", "http")
         cfg.set("server", "verify_tls", "false")
         cfg.set("server", "host", host)
-    if cfg.get("server", "kind", fallback="ports").strip().lower() == "paths":
-        _configure_paths(cfg, ask, probe=probe, fetch_defaults=fetch_defaults)
+        # Switching a paths config to ports must DROP the paths keys, not leave
+        # them alongside. A [server] holding both `host` and `base_url` is
+        # ambiguous, and which one wins is a resolver implementation detail
+        # rather than anything the user chose. `_configure_ports` has always
+        # done this; the flag path has to as well.
+        for stale in ("base_url", "ca_path"):
+            cfg.remove_option("server", stale)
+        _prompt_api_key(cfg, ask, "API key (blank if AUTH_ENABLED=false)")
+        cfg.remove_option("server", UNCONFIGURED_MARKER)
+        return Plan(cfg, EXISTING_SERVER)
+
+    if _already_connected(cfg):
+        # A machine that already HAS a server does not need to be asked where one
+        # is -- it needs to be able to change the one it has. So it gets the
+        # familiar edit-in-place prompts, prefilled with its current values,
+        # exactly as before. The routing menu is for the state that had no
+        # representation and no way out: a client with nothing to talk to.
+        if cfg.get("server", "kind", fallback="ports").strip().lower() == "paths":
+            _configure_paths(cfg, ask, probe=probe, fetch_defaults=fetch_defaults)
+        else:
+            _configure_ports(cfg, ask)
+        cfg.remove_option("server", UNCONFIGURED_MARKER)
+        return Plan(cfg, EXISTING_SERVER)
+
+    action, code = ask_where_the_server_is(
+        cfg, ask, docker=docker, probe=probe, fetch_defaults=fetch_defaults
+    )
+    if action in (PROVISION_HERE, EXISTING_SERVER, JOIN_WITH_CODE):
+        # Each of these ends in a real connection being written -- by the server
+        # install, by join, or by the prompts just answered -- so the config is
+        # no longer "unconfigured" once the caller carries the plan out.
+        cfg.remove_option("server", UNCONFIGURED_MARKER)
     else:
-        _configure_ports(cfg, ask)
-    return cfg
+        cfg.set("server", UNCONFIGURED_MARKER, "false")
+    return Plan(cfg, action, code)
 
 
 def set_dist_base(cfg: configparser.ConfigParser, base: str) -> None:

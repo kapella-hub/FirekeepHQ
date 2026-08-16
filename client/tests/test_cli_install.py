@@ -5,7 +5,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
-from firekeep_client import cli
+from firekeep_client import cli, wizard
 
 
 class _RecordingAdapter:
@@ -244,7 +244,8 @@ def test_interactive_without_runtime_renders_all_adapters(install_env, monkeypat
     # runtime without asking the customer to predict which client they will use later.
     home, runs, rec = install_env
     monkeypatch.setattr("firekeep_client.wizard.is_interactive", lambda *a, **k: True)
-    monkeypatch.setattr("firekeep_client.wizard.prompt_config", lambda cfg, **k: cfg)
+    monkeypatch.setattr("firekeep_client.wizard.prompt_config",
+                        lambda cfg, **k: wizard.Plan(cfg, wizard.EXISTING_SERVER))
     cli.main(["install"])
     assert len(rec.calls) == 4
 
@@ -253,7 +254,8 @@ def test_explicit_runtime_renders_only_that_adapter(install_env, monkeypatch):
     # Explicit --runtime remains the targeted re-render/repair path.
     home, runs, rec = install_env
     monkeypatch.setattr("firekeep_client.wizard.is_interactive", lambda *a, **k: True)
-    monkeypatch.setattr("firekeep_client.wizard.prompt_config", lambda cfg, **k: cfg)
+    monkeypatch.setattr("firekeep_client.wizard.prompt_config",
+                        lambda cfg, **k: wizard.Plan(cfg, wizard.EXISTING_SERVER))
     cli.main(["install", "--runtime", "claude"])
     assert len(rec.calls) == 1  # only claude
 
@@ -393,7 +395,10 @@ def test_install_flags_write_config_without_a_tty(install_env, monkeypatch, caps
 
 def test_install_prompts_when_interactive(install_env, monkeypatch):
     monkeypatch.setattr(cli.wizard, "is_interactive", lambda *a: True)
-    answers = iter(["Alex", "203.0.113.10", ""])
+    # "3" is the routing answer for "it is already running", the only branch
+    # where a host and key are answerable. A fresh machine is asked WHERE its
+    # server is before being asked to describe it.
+    answers = iter(["Alex", "3", "203.0.113.10", ""])
     monkeypatch.setattr("builtins.input", lambda _p: next(answers))
 
     rc = cli.main(["install", "--runtime", "claude"])
@@ -491,7 +496,10 @@ def test_install_dist_base_is_written_on_the_interactive_path(install_env, monke
     """The interactive path is the one the bootstrap installer actually uses, so a silent
     regression there would break `firekeep update` for every real teammate while the non-interactive test stayed green."""
     monkeypatch.setattr(cli.wizard, "is_interactive", lambda *a: True)
-    answers = iter(["Alex", "203.0.113.10", ""])
+    # "3" is the routing answer for "it is already running", the only branch
+    # where a host and key are answerable. A fresh machine is asked WHERE its
+    # server is before being asked to describe it.
+    answers = iter(["Alex", "3", "203.0.113.10", ""])
     monkeypatch.setattr("builtins.input", lambda _p: next(answers))
 
     rc = cli.main(["install", "--runtime", "claude", "--dist-base", "http://gl/rel/v1"])

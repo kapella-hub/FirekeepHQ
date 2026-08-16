@@ -134,6 +134,13 @@ def mock_vector() -> AsyncMock:
     vector.upsert = AsyncMock(return_value="vec-uuid-1")
     vector.search = AsyncMock(return_value=[])
     vector._embed = AsyncMock(return_value=[0.1] * 768)
+    # Default to READY. Without this the /health probe unpacks a bare AsyncMock,
+    # raises TypeError, and lands in the defensive branch that reports
+    # "embeddings: warming (probe failed)" -- which is not a failure (warming is
+    # deliberately not degraded, so every existing assertion still passes) but
+    # would mean every health test silently exercised the error path instead of
+    # the real one. Tests that care about warming override this explicitly.
+    vector.embeddings_ready = AsyncMock(return_value=(True, "mxbai-embed-large (1024-dim)"))
     return vector
 
 

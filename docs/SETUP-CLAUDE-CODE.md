@@ -3,15 +3,29 @@
 ## Prerequisites
 
 - Claude Code installed and authenticated
-- Firekeep deployed on VPS (run `bash install.sh` first)
-- A single-use install command from Dashboard → Devices (or
-  `deploy/firekeep-admin invite --json` on the server)
+- Nothing else. No Firekeep server yet? The installer offers to set one up on
+  this machine (that path needs Docker).
 
-## Automated Setup (Recommended)
+## Setup
 
-Paste the complete install command issued for this device. It carries the join
-code into the bootstrap and asks no profile, host, API-key, identity, or runtime
-questions. On an already-installed client, use `firekeep join <code>`.
+The install guide is [firekeep.ai/docs.html](https://firekeep.ai/docs.html) — the
+single source. The one command:
+
+```bash
+curl -fsSL https://firekeep.ai/latest/install.sh | sh    # macOS / Linux
+irm https://firekeep.ai/latest/install.ps1 | iex         # Windows
+```
+
+It asks your agent identity, then where your Firekeep server is: set one up here
+(runs `firekeep init`, which also enrols this machine), redeem a join code
+(Dashboard → Devices, or `deploy/firekeep-admin invite --json` on the server),
+point at one that is already running, or decide later. Every shipped adapter is
+rendered either way, Claude Code's among them — there are no profile, host,
+API-key or runtime questions.
+
+Given a single-use install command from Dashboard → Devices, paste that instead:
+it carries the join code into the same bootstrap. On an already-installed client,
+use `firekeep join <code>`.
 
 For a checkout/development install without a join code:
 

@@ -52,9 +52,17 @@ api_key =
 
 
 def test_fresh_install_sets_identity_host_and_key():
+    # The answer sequence gained one step: a FRESH machine is now asked WHERE its
+    # server is before being asked to describe it. "3" is "it is already running",
+    # the only branch for which host and key are answerable questions -- which is
+    # the whole point of the change, since this test's own old sequence
+    # (identity, host, key) was one a first-time user could not supply.
     cfg = _cfg(SKELETON)
-    wizard.prompt_config(cfg, ask=_scripted(["Alex", "203.0.113.10", "sk-local"]))
+    plan = wizard.prompt_config(
+        cfg, ask=_scripted(["Alex", "3", "203.0.113.10", "sk-local"])
+    )
 
+    assert plan.action == wizard.EXISTING_SERVER
     assert cfg["identity"]["agent_id"] == "Alex"
     assert cfg["server"]["host"] == "203.0.113.10"
     assert cfg["server"]["api_key"] == "sk-local"
@@ -63,7 +71,7 @@ def test_fresh_install_sets_identity_host_and_key():
 
 def test_blank_ports_key_stays_absent():
     cfg = _cfg(SKELETON + "\n[dist]\nbase_url = https://releases.example\n")
-    wizard.prompt_config(cfg, ask=_scripted(["Alex", "127.0.0.1", ""]))
+    wizard.prompt_config(cfg, ask=_scripted(["Alex", "3", "127.0.0.1", ""]))
     assert "api_key" not in cfg["server"]
     assert cfg["dist"]["base_url"] == "https://releases.example"
 
@@ -163,6 +171,10 @@ def test_flags_seed_defaults_and_host_forces_ports():
 
 
 def test_existing_paths_connection_prompts_tls_shape():
+    # PATHS already carries a base_url, so this machine IS connected: it goes
+    # straight to the edit-in-place prompts rather than being asked where its
+    # server is. The routing menu exists for the state that had no way out --
+    # a client with nothing to talk to -- not for reconfiguring a working one.
     cfg = _cfg(PATHS)
     ask = _scripted(["Alex", "https://firekeep.corp", "~/.firekeep/ca.crt", "sk-hosted"])
     wizard.prompt_config(cfg, ask=ask, probe=lambda *_: False)
@@ -186,10 +198,12 @@ def test_paths_probe_never_overrides_deliberate_ca_path():
 
 
 def test_server_defaults_accept_legacy_office_payload():
+    # base_url blanked, so this is an UNCONNECTED paths config and the menu runs;
+    # "3" ("it is already running") is the branch that reaches the org prefill.
     cfg = _cfg(PATHS.replace("https://firekeep.example", ""))
     wizard.prompt_config(
         cfg,
-        ask=_scripted(["Alex", "", "", "sk"]),
+        ask=_scripted(["Alex", "3", "", "", "sk"]),
         probe=lambda *_: False,
         fetch_defaults=lambda _cfg: {
             "office": {"base_url": "https://firekeep.corp.example", "ca_path": "os"}
@@ -225,3 +239,98 @@ def test_probe_os_trust_is_false_for_non_https_and_garbage():
     assert wizard._probe_os_trust("http://plain.example") is False
     assert wizard._probe_os_trust("not a url") is False
     assert wizard._probe_os_trust("") is False
+
+
+# --- the routing question ----------------------------------------------------
+#
+# The prompts this replaced -- "Server host [127.0.0.1]" and "API key" -- were
+# asked at the one moment neither could be answered, and pressing Enter through
+# them produced a valid config pointing at nothing. These tests are about that:
+# a fresh machine must never end up silently pointed at a server that is not
+# there.
+
+
+@pytest.mark.parametrize(
+    ("answer", "expected"),
+    [
+        ("1", wizard.PROVISION_HERE),
+        ("", wizard.PROVISION_HERE),          # bare Enter, docker present
+        ("here", wizard.PROVISION_HERE),
+        ("4", wizard.DECIDE_LATER),
+        ("later", wizard.DECIDE_LATER),
+        ("n", wizard.DECIDE_LATER),
+    ],
+)
+def test_routing_answers_map_to_actions(answer, expected):
+    cfg = _cfg(SKELETON)
+    plan = wizard.prompt_config(cfg, ask=_scripted(["Alex", answer]), docker=True)
+    assert plan.action == expected
+
+
+def test_join_code_is_captured_at_the_prompt():
+    cfg = _cfg(SKELETON)
+    plan = wizard.prompt_config(
+        cfg, ask=_scripted(["Alex", "2", "fk_join_abc.def"]), docker=True
+    )
+    assert plan.action == wizard.JOIN_WITH_CODE
+    assert plan.join_code == "fk_join_abc.def"
+
+
+def test_choosing_join_but_pasting_nothing_falls_back_to_later():
+    """Not an error, and NOT a silent success. Someone who picks "I have a code"
+    and then finds they do not is in the same position as someone who picked
+    "not yet", and must get the same routing on the way out."""
+    cfg = _cfg(SKELETON)
+    plan = wizard.prompt_config(cfg, ask=_scripted(["Alex", "2", ""]), docker=True)
+    assert plan.action == wizard.DECIDE_LATER
+
+
+def test_default_is_join_when_docker_is_absent():
+    """A laptop with no Docker cannot host a server, so offering to install one
+    as the default would be an unrunnable suggestion -- which is the exact defect
+    class being fixed, not a new one to introduce."""
+    cfg = _cfg(SKELETON)
+    ask = _scripted(["Alex", "", "fk_join_x.y"])
+    plan = wizard.prompt_config(cfg, ask=ask, docker=False)
+    assert plan.action == wizard.JOIN_WITH_CODE
+    assert next(default for prompt, default in ask.seen if prompt == "Choose") == "2"
+
+
+def test_deferring_marks_the_config_unconfigured():
+    """The sentinel is what lets doctor tell "never set up" apart from
+    "deliberate localhost". Without it, host=127.0.0.1 is all doctor can see."""
+    cfg = _cfg(SKELETON)
+    wizard.prompt_config(cfg, ask=_scripted(["Alex", "4"]), docker=True)
+    assert cfg["server"][wizard.UNCONFIGURED_MARKER] == "false"
+
+
+@pytest.mark.parametrize("answer", ["1", "2", "3"])
+def test_every_answer_that_leads_to_a_connection_clears_the_sentinel(answer):
+    cfg = _cfg(SKELETON)
+    wizard.prompt_config(
+        cfg,
+        ask=_scripted(["Alex", answer, "fk_join_a.b", "sk"]),
+        docker=True,
+    )
+    assert wizard.UNCONFIGURED_MARKER not in cfg["server"]
+
+
+def test_a_fresh_machine_is_never_asked_for_a_key_it_cannot_have():
+    """The regression guard for the original report. Accepting every default on a
+    bare machine must not surface either of the two unanswerable prompts."""
+    cfg = _cfg(SKELETON)
+    ask = _scripted([])
+    wizard.prompt_config(cfg, ask=ask, docker=True)
+    asked = [prompt for prompt, _ in ask.seen]
+    assert not any(p.startswith("API key") for p in asked), asked
+    assert not any(p.startswith("Server host") for p in asked), asked
+
+
+def test_a_connected_machine_is_not_asked_where_its_server_is():
+    """`firekeep install --runtime claude` is a documented re-render, not an
+    invitation to repoint the machine."""
+    cfg = _cfg(SKELETON.replace("127.0.0.1", "10.0.0.4"))
+    ask = _scripted([])
+    wizard.prompt_config(cfg, ask=ask, docker=True)
+    assert not any(prompt == "Choose" for prompt, _ in ask.seen)
+    assert cfg["server"]["host"] == "10.0.0.4"

@@ -14,6 +14,7 @@ import ssl
 import stat
 import subprocess
 import sys
+import types
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
@@ -71,6 +72,17 @@ def cmd_version(args) -> int:
 
 # --- install: venv, pip, ~/.firekeep bootstrap, adapter render -----------------
 
+# `configured = false` is the sentinel that makes "never set up" a REPRESENTABLE
+# state. Without it this skeleton is a complete, syntactically valid [server]
+# block pointing at 127.0.0.1: resolver.resolve() succeeds, health checks run,
+# and a machine that was never connected to anything is indistinguishable from a
+# deliberate localhost deployment. `agent_id` had a CHANGEME sentinel for exactly
+# this reason and the server connection had none, which is why doctor could only
+# report four socket errors instead of "you have no server".
+#
+# It clears itself: config_write.upsert_server replaces the whole [server]
+# section, so the first successful join/connect drops the key with no second
+# place to remember to unset it.
 _CONFIG_SKELETON = """\
 [identity]
 agent_id = CHANGEME
@@ -81,6 +93,7 @@ scheme = http
 host = 127.0.0.1
 verify_tls = false
 api_key =
+configured = false
 """
 
 
@@ -191,6 +204,22 @@ def _truthy_env(name: str) -> bool:
 # but pip installs legitimately take minutes on slow links).
 _INSTALL_TIMEOUT = float(os.environ.get("FIREKEEP_INSTALL_TIMEOUT", "600"))
 
+# Provisioning a SERVER is a different order of magnitude from installing a
+# wheel, and sharing _INSTALL_TIMEOUT with it was a real defect, not a rough
+# edge: `firekeep init` wrapped the whole of install.sh in 600s while that
+# script pulls four service images, starts thirteen containers, and warms
+# ~3.3GB of Ollama models -- ten to twenty minutes on a fresh VPS with a fast
+# link. The documented happy path therefore timed out on success, printing
+# "firekeep init timed out" over a stack that was still legitimately working.
+#
+# One hour, still bounded (a hung install must never wait forever), and
+# separately overridable. FIREKEEP_INSTALL_TIMEOUT stays honoured as a floor so
+# anyone who already raised it for slow links keeps that behaviour.
+_SERVER_INSTALL_TIMEOUT = max(
+    float(os.environ.get("FIREKEEP_SERVER_INSTALL_TIMEOUT", "3600")),
+    _INSTALL_TIMEOUT,
+)
+
 
 def _run(cmd, **kwargs) -> None:
     kwargs.setdefault("timeout", _INSTALL_TIMEOUT)
@@ -283,12 +312,14 @@ def _apply_flags(cfg, args) -> bool:
     return touched
 
 
-def _configure(args) -> bool:
+def _configure(args) -> tuple[bool, wizard.Plan | None]:
     """Build ~/.firekeep/config, interactively when there's a human to ask.
 
-    Returns True if the config still holds the CHANGEME placeholder afterwards — the caller
-    prints the hand-edit NEXT STEPS only in that case. A teammate who answered the prompts
-    should never be told to go edit the file they just filled in."""
+    Returns (needs_edit, plan). `needs_edit` is True if the config still holds the
+    CHANGEME placeholder afterwards — the caller prints the hand-edit NEXT STEPS only
+    in that case. A teammate who answered the prompts should never be told to go edit
+    the file they just filled in. `plan` is what the human asked for at the routing
+    question, or None on the non-interactive path, where there was nobody to ask."""
     path = _config_path()
     cfg = resolver.load_config(path)
     interactive = wizard.is_interactive() and not getattr(args, "non_interactive", False)
@@ -299,9 +330,10 @@ def _configure(args) -> bool:
     if getattr(args, "runtime", None) is None:
         args.runtime = "all"
 
+    plan: wizard.Plan | None = None
     if interactive:
         print("firekeep: configuring ~/.firekeep/config (Enter accepts the [default])")
-        wizard.prompt_config(
+        plan = wizard.prompt_config(
             cfg,
             agent_id=getattr(args, "agent_id", None),
             host=getattr(args, "host", None),
@@ -311,12 +343,21 @@ def _configure(args) -> bool:
         changed = True
     else:
         changed = _apply_flags(cfg, args)
+        # No human to route, so the skeleton's `configured = false` stands unless
+        # a flag supplied a real connection. That is the honest record of a
+        # headless install: the kit is here, nothing is connected yet, and
+        # doctor will say exactly that instead of reporting four socket errors.
+        if getattr(args, "host", None):
+            cfg.remove_option("server", wizard.UNCONFIGURED_MARKER)
 
     if changed:
         with open(path, "w", encoding="utf-8") as handle:
             cfg.write(handle)
 
-    return cfg.get("identity", "agent_id", fallback="").strip() == wizard.PLACEHOLDER_AGENT_ID
+    needs_edit = (
+        cfg.get("identity", "agent_id", fallback="").strip() == wizard.PLACEHOLDER_AGENT_ID
+    )
+    return needs_edit, plan
 
 
 def cmd_install(args) -> int:
@@ -335,7 +376,11 @@ def cmd_install(args) -> int:
         if join_code:
             # The code carries every answer. A TTY must not re-enable prompts.
             args.non_interactive = True
-        needs_edit = _configure(args)
+        needs_edit, plan = _configure(args)
+        # A code typed at the routing question is the same thing as one passed
+        # with --join; from here on there is exactly one join path.
+        if plan is not None and plan.action == wizard.JOIN_WITH_CODE and plan.join_code:
+            join_code = plan.join_code
 
         step = "create venv"
         # kit resolved BEFORE the venv step: when kit is None the process is EXECUTING
@@ -448,15 +493,57 @@ def cmd_install(args) -> int:
         print(f"firekeep: {msg}")
     if join_result:
         return join_result
+
+    # The routing answer becomes an ACTION here, not advice. "Set one up on this
+    # machine" used to be something the user had to discover was spelled
+    # `firekeep init` -- a command named by no output anywhere in the product.
+    if plan is not None and plan.action == wizard.PROVISION_HERE:
+        print("\nfirekeep: setting up the server on this machine "
+              "(`firekeep init`) — this takes a few minutes.\n")
+        return cmd_init(_init_args_for_self_provision(args))
+
     if needs_edit:
         print("firekeep: NEXT STEPS — edit ~/.firekeep/config: set agent_id (currently "
               "CHANGEME) and complete the [server] connection values. "
               "Open a new terminal (or `source` your shell rc), then run `firekeep doctor`. "
               "Config changes apply on next agent start.")
+    elif plan is not None and plan.action == wizard.DECIDE_LATER:
+        # Deliberately NOT "run firekeep doctor" alone. Doctor is a diagnosis, and
+        # this user already knows the diagnosis -- they chose it. Give them the
+        # three commands so the answer is on screen when they come back.
+        print("firekeep: NEXT STEPS — the client kit is installed, but it is not "
+              "connected to a server yet. When you are ready:\n"
+              "  • Run one here:      firekeep init\n"
+              "  • Join your team's:  firekeep join <code>\n"
+              "  • Over SSH:          firekeep connect <user@host>\n"
+              "`firekeep doctor` will repeat this until one of them is done.")
     else:
         print("firekeep: NEXT STEPS — open a new terminal (or `source` your shell rc), "
               "then run `firekeep doctor`. Config changes apply on next agent start.")
     return 0
+
+
+def _init_args_for_self_provision(args):
+    """Build the argparse-shaped object cmd_init expects.
+
+    A namespace rather than re-entering the parser: this is an internal hand-off
+    with no command line to parse, and constructing it explicitly keeps every
+    field cmd_init reads visible in one place instead of depending on parser
+    defaults that a future flag could quietly change.
+    """
+    return types.SimpleNamespace(
+        server_dir=None,
+        version=None,
+        dist_base=getattr(args, "dist_base", None),
+        pull=False,
+        office=False,
+        # Carried through so the identity answered at the prompt survives
+        # enrolment; see _finish_server_provision for what happens without it.
+        agent_id=getattr(args, "agent_id", None),
+        # Chosen at an interactive prompt, so the box is one the human is sitting
+        # at: enrol it and hand them the line for their next machine.
+        self_enroll=True,
+    )
 
 
 # --- doctor: fail-loud preflight (health, skew, venv, perms, CA) -----------
@@ -480,6 +567,67 @@ def _check_health(cfg) -> list[tuple[str, str, str]]:
         except (TransportError, resolver.ConfigError, OSError) as exc:
             out.append((svc, "fail", f"{_ep_url(svc, cfg)}: {exc}"))
     return out
+
+
+def _no_server_at_all(health: list[tuple[str, str, str]]) -> bool:
+    """True when EVERY service failed at the connection layer.
+
+    One service down is an outage. All of them refusing at the socket is not an
+    outage — it is "there is no server here", and that is a completely different
+    sentence to say to a user.
+    """
+    if not health or any(status != "fail" for _, status, _ in health):
+        return False
+    # Connection-layer signatures across platforms and transports. An HTTP
+    # status (4xx/5xx) means something ANSWERED, which is not this case.
+    markers = (
+        "connection refused", "actively refused", "no route to host",
+        "name or service not known", "nodename nor servname",
+        "temporary failure in name resolution", "getaddrinfo",
+        "network is unreachable", "timed out", "connection reset",
+        "no address associated",
+    )
+    return all(
+        any(marker in detail.lower() for marker in markers)
+        for _, _, detail in health
+    )
+
+
+def _check_server_connection(cfg, health: list[tuple[str, str, str]]):
+    """The row that says WHERE YOU ARE, not merely what failed.
+
+    This exists because the only text in the entire diagnostic that named
+    `firekeep join` / `firekeep connect` lived inside `_check_api_key`, whose
+    guidance branch is reached only after a SUCCESSFUL HTTP round-trip that
+    returns 401/403. With no server, the request dies at the socket, the branch
+    is skipped, and the advice was structurally suppressed in precisely the
+    situation it was written for — a first install. What the user saw instead
+    was four identical [FAIL] rows whose entire content was an OS socket error.
+
+    Runs FIRST and reports once, so the four rows below it read as detail rather
+    than as four separate problems.
+    """
+    if not _no_server_at_all(health):
+        return None
+    try:
+        host = cfg.get("server", "host", fallback="").strip()
+    except Exception:  # noqa: BLE001 — a malformed config is other checks' row
+        host = ""
+    local = host in ("", "127.0.0.1", "localhost", "::1", "[::1]")
+    where = (
+        "This machine has a Firekeep client but no server to talk to."
+        if local
+        else f"No Firekeep server is answering at {host}."
+    )
+    return (
+        "server", "fail",
+        f"{where} Pick the one that describes you:\n"
+        "      • Run the server on THIS machine:      firekeep init\n"
+        "      • Join a server your team already has: firekeep join <code>\n"
+        "        (get a code from Dashboard -> Devices -> Add device)\n"
+        "      • Set one up over SSH on another box:  firekeep connect <user@host>\n"
+        "      The four rows below are the same fact, once per service.",
+    )
 
 
 def _ep_url(svc, cfg) -> str:
@@ -524,6 +672,43 @@ def _check_versions(cfg) -> tuple[str, str, str]:
         # OSError: see _check_health's comment -- an unverifiable ca_path
         # raises ssl.SSLError, not TransportError. Unreachable, not fatal.
         return ("versions", "warn", f"cortex /version unreachable: {exc}")
+
+
+def _check_embeddings(cfg) -> tuple[str, str, str] | None:
+    """Report the gap between "the stack is up" and "your memories are findable".
+
+    Since install.sh stopped blocking on the ~3.3GB model pull, a freshly
+    installed server is genuinely usable while embeddings are still warming —
+    and in that window `memory_learn` returns HTTP 200 with status="partial",
+    stores the memory, queues it for backfill, and does NOT make it recallable.
+    That is a successful-looking write with a surprising consequence, which is
+    precisely the kind of state that has to be named somewhere the user already
+    looks rather than discovered later by wondering why recall is empty.
+
+    WARN, never FAIL: nothing is broken and nothing needs doing. Silent when the
+    server does not report the field at all, so an older server produces no row
+    rather than a scary unknown.
+    """
+    try:
+        ep = resolver.resolve("cortex", cfg=cfg)
+        payload = get_json(f"{ep.rest_base}/health", headers=ep.headers, verify=ep.verify)
+    except (TransportError, resolver.ConfigError, OSError):
+        return None  # unreachable is _check_health's row, not ours
+    if not isinstance(payload, dict):
+        return None
+    row = (payload.get("services") or {}).get("embeddings")
+    if not isinstance(row, dict):
+        return None
+    status = str(row.get("status", ""))
+    detail = str(row.get("detail", "") or "")
+    if status == "connected":
+        return ("embeddings", "ok", detail or "ready")
+    return (
+        "embeddings", "warn",
+        f"still warming ({detail or 'model not loaded yet'}) — memories you write "
+        "now are STORED and queued for backfill, but not searchable until this "
+        "finishes. Nothing to do; watch it with: docker compose logs -f ollama-pull",
+    )
 
 
 def _check_agent_id(cfg) -> tuple[str, str, str] | None:
@@ -924,8 +1109,23 @@ def run_doctor(cfg=None) -> list[tuple[str, str, str]]:
     # ConfigError/TransportError/OSError and returns a tuple rather than
     # raising, so one check's failure can never mask or short-circuit the
     # rest -- doctor always runs the full suite and reports everything.
-    results.extend(_check_health(cfg))
+    # Health runs first but is REPORTED second: _check_server_connection reads
+    # its results to distinguish "no server exists" from "a service is down",
+    # and that distinction belongs at the top of the output, not buried under
+    # four socket errors.
+    health = _check_health(cfg)
+    no_server = _check_server_connection(cfg, health)
+    if no_server is not None:
+        results.append(no_server)
+    results.extend(health)
     results.append(_check_versions(cfg))
+    # Skipped entirely when nothing is reachable: the routing row above already
+    # said the one useful thing, and adding "embeddings unknown" under it would
+    # be noise on top of a diagnosis.
+    if no_server is None:
+        embeddings = _check_embeddings(cfg)
+        if embeddings is not None:
+            results.append(embeddings)
     client_version = _check_client_version(cfg)
     if client_version is not None:
         results.append(client_version)
@@ -1199,11 +1399,13 @@ def cmd_init(args) -> int:
     if args.office:
         command.append("--office")
     try:
-        subprocess.run(command, cwd=root, check=True, timeout=_INSTALL_TIMEOUT)
+        subprocess.run(command, cwd=root, check=True, timeout=_SERVER_INSTALL_TIMEOUT)
     except subprocess.TimeoutExpired:
         print(
-            f"firekeep init timed out after {_INSTALL_TIMEOUT:.0f}s "
-            "(override with FIREKEEP_INSTALL_TIMEOUT).",
+            f"firekeep init timed out after {_SERVER_INSTALL_TIMEOUT / 60:.0f} minutes "
+            "(override with FIREKEEP_SERVER_INSTALL_TIMEOUT, in seconds).\n"
+            "The stack may still be starting. Check it before re-running:\n"
+            f"  cd {root} && docker compose ps",
             file=sys.stderr,
         )
         return 1
@@ -1217,11 +1419,126 @@ def cmd_init(args) -> int:
     except OSError as exc:
         print(f"firekeep init could not start the server installer: {exc}", file=sys.stderr)
         return 1
-    print(
-        "firekeep: server provisioned. Use Dashboard -> Devices -> Add device, "
-        "then run `firekeep join <code>` on each client machine."
-    )
+    return _finish_server_provision(root, bash, args)
+
+
+def _mint_code(bash: str, root: Path, *flags: str) -> str:
+    """Ask the server for a join code. Returns "" on any failure.
+
+    Runs `deploy/firekeep-admin invite`, which mints through
+    `docker compose exec cortex-api python -m app.enroll.mint` and therefore
+    needs NO credential on the server box -- it is already inside the trust
+    boundary. Failure is never fatal: the stack is up and every manual path
+    still works, so this can only ever add convenience.
+    """
+    admin = root / "deploy" / "firekeep-admin"
+    if not admin.is_file():
+        return ""
+    try:
+        done = subprocess.run(
+            [bash, str(admin), "invite", "--json", *flags],
+            cwd=root, capture_output=True, text=True, timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if done.returncode != 0:
+        return ""
+    try:
+        import json as _json
+        payload = _json.loads(done.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return ""
+    code = payload.get("code", "") if isinstance(payload, dict) else ""
+    return code if isinstance(code, str) and code.startswith("fk_join_") else ""
+
+
+def _finish_server_provision(root: Path, bash: str, args) -> int:
+    """Close the loop the install used to leave open.
+
+    What this replaced:
+
+        firekeep: server provisioned. Use Dashboard -> Devices -> Add device,
+        then run `firekeep join <code>` on each client machine.
+
+    Every word of that was true and it was unreachable. The dashboard binds to
+    127.0.0.1 by default and its password lives in `dashboard/.htpasswd.cred`,
+    so the prescribed next action required an SSH tunnel, a file read and a
+    browser -- from the machine the user was already standing on, three minutes
+    after installing a client kit on it.
+    """
+    if not getattr(args, "self_enroll", False):
+        print("firekeep: server provisioned. Add devices from Dashboard -> Devices, "
+              "or run: deploy/firekeep-admin invite --agent <name>")
+        return 0
+
+    print("\nfirekeep: enrolling this machine against the server it just built…")
+    code = _mint_code(bash, root, "--local", "--agent", _default_device_label())
+    if not code:
+        # Explicitly NOT a failure of the install. Say what worked, what did not,
+        # and the exact command to finish by hand.
+        print(
+            "firekeep: the server is running, but this machine could not enrol "
+            "itself automatically.\n"
+            "  Finish by hand:  cd " + str(root) + " && "
+            "deploy/firekeep-admin invite --local --agent this-machine\n"
+            "  then:            firekeep join <the code it prints>",
+            file=sys.stderr,
+        )
+        return 0
+
+    from firekeep_client.join import join
+    # Pass the identity EXPLICITLY. join._agent_id ranks the server's
+    # `suggested_agent_id` above the local config, which is right when a
+    # teammate redeems an invite an admin named the device in -- and wrong here,
+    # where the person answered "Agent identity" at a prompt thirty seconds ago.
+    # Without this the lab produced `agent_id=4dcd94c5792e-4dcd94c5792e`, the
+    # container's hostname doubled, silently replacing what the user typed.
+    rc = join(code, agent_id=getattr(args, "agent_id", None) or _configured_agent_id())
+    if rc != 0:
+        print("firekeep: the server is running, but enrolment failed (above). "
+              "Retry with: deploy/firekeep-admin invite --local --agent this-machine",
+              file=sys.stderr)
+        return 0
+
+    print("\nfirekeep: this machine is connected. Check it with: firekeep doctor")
+
+    # A second code, for the laptop. This one is a TUNNEL code (the server is
+    # loopback-bound), which is the shape `firekeep join` already knows how to
+    # redeem over SSH -- so the next machine needs no browser either.
+    second = _mint_code(bash, root, "--agent", "workstation-1")
+    if second:
+        base = _server_dist_base(getattr(args, "dist_base", None))
+        print(
+            "\n  To add your laptop or another machine, run THIS on it "
+            "(the code is single-use and expires):\n\n"
+            f"    curl -fsSL {base}/latest/install.sh | FIREKEEP_JOIN={second} sh\n\n"
+            "  For any machine after that:  deploy/firekeep-admin invite --agent <name>"
+        )
     return 0
+
+
+def _configured_agent_id() -> str | None:
+    """The identity already in ~/.firekeep/config, or None if it is unset/placeholder."""
+    try:
+        cfg = resolver.load_config(_config_path())
+        value = cfg.get("identity", "agent_id", fallback="").strip()
+    except (resolver.ConfigError, OSError):
+        return None
+    return value or None if value != wizard.PLACEHOLDER_AGENT_ID else None
+
+
+def _default_device_label() -> str:
+    """A device name that means something in a device list six months from now."""
+    import socket
+    try:
+        name = socket.gethostname().split(".")[0].strip()
+    except OSError:
+        name = ""
+    # The minter validates against ^[A-Za-z0-9_.-]{1,64}$; a hostname with any
+    # other character would fail the invite rather than the install, which is a
+    # confusing place to discover it.
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "-", name)[:64].strip("-")
+    return safe or "server"
 
 
 def _oauth_metadata_url(server_url: str) -> str:
@@ -1292,7 +1609,16 @@ def cmd_doctor(args) -> int:
         print(f"firekeep: {exc}", file=sys.stderr)
         return 3
     except resolver.ConfigError as exc:
+        # No config at all — the one state where doctor has nothing to check and
+        # every remedy is the same. `firekeep version` already names the fix
+        # here; doctor, the command the installer TELLS you to run, did not.
         print(f"firekeep: {exc}", file=sys.stderr)
+        print(
+            "firekeep: no usable config at ~/.firekeep/config. Re-run the "
+            "installer to write one:\n"
+            "  firekeep install",
+            file=sys.stderr,
+        )
         return 1
     rc = 0
     marks = {"ok": "OK", "warn": "WARN", "fail": "FAIL"}
@@ -1616,6 +1942,23 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     init_parser.add_argument(
         "--office", action="store_true", help="enable the TLS reverse-proxy deployment"
+    )
+    # Default ON: the overwhelmingly common case is a person at a shell on the box
+    # they are provisioning, and leaving that machine unable to talk to the server
+    # it just built is the defect this whole flow exists to fix. --no-self-enroll
+    # covers headless provisioning (CI, Ansible, a golden image) where minting a
+    # device credential into the image would be wrong.
+    init_parser.add_argument(
+        "--self-enroll", action="store_true", default=True,
+        help="enrol this machine against the new server and print a join code for the next one (default)",
+    )
+    init_parser.add_argument(
+        "--no-self-enroll", action="store_false", dest="self_enroll",
+        help="provision only; mint no credentials for this machine",
+    )
+    init_parser.add_argument(
+        "--agent-id", metavar="NAME",
+        help="identity to enrol as (defaults to the identity already in ~/.firekeep/config)",
     )
     init_parser.set_defaults(func=cmd_init)
 

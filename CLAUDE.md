@@ -46,23 +46,33 @@ These are shared libraries imported by multiple services (not standalone contain
 
 ## Commands
 
-### Deploy to VPS (first time)
+### Install (firekeep.ai is the single source)
+`https://firekeep.ai/docs.html` is the install documentation. In-repo copies are
+links, not walkthroughs — the one command it hands a user is:
 ```bash
-bash install.sh
+curl -fsSL https://firekeep.ai/latest/install.sh | sh      # macOS / Linux
+irm https://firekeep.ai/latest/install.ps1 | iex           # Windows
 ```
+It asks two things: agent identity, then where the server is (set one up here /
+join code / already running / not yet). "Set one up here" runs `firekeep init`,
+which provisions the server and self-enrols the machine, so `firekeep doctor` is
+green with no dashboard or pasted key.
 
-### Update VPS deployment
+### Deploy the server from this checkout
 ```bash
-bash update.sh
+bash install.sh          # build from source
+bash install.sh --pull   # published images
+bash update.sh           # update an existing deployment
 ```
+`install.sh` prompts for nothing — host address detected, Neo4j password
+generated (`--ip` / `--neo4j-password`, `FIREKEEP_VPS_IP` /
+`FIREKEEP_NEO4J_PASSWORD` override). It returns before the ~3.3GB model pull
+finishes: until then memory writes return `status="partial"` and `firekeep
+doctor` shows an `embeddings` WARN. `bash install.sh --wait-for-models` blocks.
 
 ### Install the client kit on a workstation
 The kit installs to `~/.firekeep` (standalone CPython + config, `0600`) and renders the
-adapters for every runtime. Teammates on a bare machine:
-```bash
-curl -fsSL <release-base>/latest/install.sh | sh      # macOS / Linux
-irm <release-base>/latest/install.ps1 | iex           # Windows
-```
+adapters for every runtime. Teammates on a bare machine use the one-liner above.
 From a checkout: `cd client && ./install` (`.\install.ps1` on Windows), then
 `firekeep install` to re-render adapters only. `firekeep update` re-execs the bootstrap,
 which installs each release side-by-side at `~/.firekeep/venvs/<version>` and flips the

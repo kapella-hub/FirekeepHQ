@@ -33,6 +33,12 @@ curl -fsSL https://firekeep.ai/latest/install.sh | sh    # macOS / Linux
 irm https://firekeep.ai/latest/install.ps1 | iex         # Windows
 ```
 
+It asks two things: the agent identity your memories, sessions and replay
+events are attributed to, and where your server is — set one up on this
+machine (Docker), redeem a join code, point at one that is already running, or
+decide later. The full guide is
+[firekeep.ai/docs.html](https://firekeep.ai/docs.html).
+
 Installing from PyPI works too and gives you the same CLI and gateway:
 
 ```bash

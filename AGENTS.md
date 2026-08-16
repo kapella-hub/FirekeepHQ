@@ -2,6 +2,20 @@
 
 Codex reads this file automatically for work in this repository.
 
+## Installing Firekeep
+
+`https://firekeep.ai/docs.html` is the single source for install documentation;
+this repository links to it rather than repeating it. The one command:
+
+```bash
+curl -fsSL https://firekeep.ai/latest/install.sh | sh    # macOS / Linux
+irm https://firekeep.ai/latest/install.ps1 | iex         # Windows
+```
+
+It asks for an agent identity, then where the server is (set one up here / join
+code / already running / not yet). If you are writing install instructions
+anywhere in this repo, write a link and that command — not a walkthrough.
+
 ## Repository expectations
 
 - Firekeep is a multi-service repo. Before changing behavior, identify which service owns it: `cortex/`, `bridge/`, `sentinel/`, `relay/`, `symdex/` (client-side stdio code-intelligence package shipped via the client kit — not a server-side docker service), `dashboard/`, or a shared module such as `replay/`, `auth/`, `vault/`, `corpus/`.

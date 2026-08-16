@@ -18,15 +18,25 @@ OpenAI documents both behaviors:
 ## Prerequisites
 
 - Codex CLI or Codex IDE extension installed and authenticated
-- Firekeep already deployed on a VPS
-- A single-use install command from Dashboard → Devices (or
-  `deploy/firekeep-admin invite --json` on the server)
+- Nothing else. No Firekeep server yet? The installer offers to set one up on
+  this machine (that path needs Docker).
 
-## Recommended: Join once, render every adapter
+## Recommended: install once, render every adapter
 
-Paste the complete install command issued for this device. It installs the kit,
-redeems the code without prompts, and renders Claude Code, Codex, Kiro, and
-OpenCode together. If the kit is already present, run:
+The install guide is [firekeep.ai/docs.html](https://firekeep.ai/docs.html) — the
+single source. The one command:
+
+```bash
+curl -fsSL https://firekeep.ai/latest/install.sh | sh    # macOS / Linux
+irm https://firekeep.ai/latest/install.ps1 | iex         # Windows
+```
+
+It asks your agent identity, then where your Firekeep server is (set one up here
+/ join code / already running / not yet), and renders Claude Code, Codex, Kiro
+and OpenCode together. A single-use install command from Dashboard → Devices
+(or `deploy/firekeep-admin invite --json` on the server) can be pasted instead —
+it carries the join code into the same bootstrap and redeems it without prompts.
+If the kit is already present, run:
 
 ```bash
 firekeep join fk_join_...

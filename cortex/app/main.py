@@ -1174,6 +1174,26 @@ async def health(
             logger.warning("Qdrant health check failed: %s", exc)
             services["qdrant"] = ServiceStatus(status="disconnected", detail="Service unreachable")
 
+        # Embeddings. NOT folded into the `qdrant` row: Qdrant being reachable
+        # and the embedding model being loadable are independent facts, and
+        # merging them is how "the stack is up" came to imply "your memories are
+        # searchable" when the ~3.3GB model pull now finishes in the background.
+        #
+        # Reported as "warming" rather than "disconnected" so it does NOT drag
+        # the overall status to degraded on a first install. This is a real
+        # transient state on the documented happy path, and a red health page
+        # five minutes after a successful install teaches people to ignore the
+        # health page.
+        try:
+            embeddings_ok, embeddings_detail = await vector.embeddings_ready()
+            services["embeddings"] = ServiceStatus(
+                status="connected" if embeddings_ok else "warming",
+                detail=embeddings_detail,
+            )
+        except Exception as exc:  # noqa: BLE001 — defence in depth; the probe already swallows
+            logger.warning("Embedding health check failed: %s", exc)
+            services["embeddings"] = ServiceStatus(status="warming", detail="probe failed")
+
         # Uptime
         uptime_seconds: float | None = None
         try:
@@ -1185,7 +1205,16 @@ async def health(
         # Memory count from Qdrant
         memory_count = await vector.memory_count()
 
-        all_connected = all(s.status == "connected" for s in services.values())
+        # "warming" is deliberately NOT degraded. It is a transient state on the
+        # documented happy path (the model pull finishes in the background since
+        # install.sh stopped blocking on it), it resolves without intervention,
+        # and a health page that goes red minutes after a successful install is
+        # a health page people learn to ignore. The `embeddings` row still says
+        # exactly what is true, and `firekeep doctor` surfaces it as a WARN with
+        # the honest consequence — writes are stored and queued, not searchable.
+        all_connected = all(
+            s.status in ("connected", "warming") for s in services.values()
+        )
         result = HealthResponse(
             status="ok" if all_connected else "degraded",
             services=services,

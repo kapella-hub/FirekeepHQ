@@ -68,19 +68,22 @@ Every session makes the next one better:
 ## Get Started
 
 ```bash
-# Your machine first (macOS / Linux; fetches a checksum-verified kit):
-curl -fsSL https://kapella-hub.github.io/firekeep-dist/latest/install.sh | sh
-# Windows:
-#   irm https://kapella-hub.github.io/firekeep-dist/latest/install.ps1 | iex
-
-# Then provision the server — downloads the published release bundle and
-# pulls the public images; no source checkout or registry account needed:
-firekeep init
-
-# Developers: from a checkout, `bash install.sh` builds from source and
-# `cd client && ./install` installs the kit locally; `firekeep install`
-# re-renders the client adapters on their own.
+curl -fsSL https://firekeep.ai/latest/install.sh | sh    # macOS / Linux
+irm https://firekeep.ai/latest/install.ps1 | iex         # Windows
 ```
+
+One command, and it asks two things: the agent identity your work is attributed
+to, and where your Firekeep server is — set one up on this machine (Docker),
+redeem a join code, point at one that is already running, or decide later.
+Choosing the first runs `firekeep init`, which downloads the published release
+bundle, pulls the public images (no source checkout or registry account needed),
+and enrols this machine against the server it just built.
+
+The install guide — requirements, the server, every runtime, troubleshooting —
+is [firekeep.ai/docs.html](https://firekeep.ai/docs.html). Developers: from a
+checkout, `bash install.sh` builds from source and `cd client && ./install`
+installs the kit locally; `firekeep install` re-renders the client adapters on
+their own.
 
 Next time you open Claude Code, it has memory, safety, and learning — automatically.
 
