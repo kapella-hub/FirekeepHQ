@@ -310,7 +310,7 @@ and in `store_chunks`, pass `point_id=corpus_point_id(workspace_id or "", chunk.
 - [ ] **Step 2:** `git add` both files, run BOTH full suites (`cd cortex && python -m pytest tests/ -q` with output redirect + `echo "exit: $?"`; repo root `python -m pytest tests/ -q`) — green, honest exit capture (never `| tail` alone).
 - [ ] **Step 3:** Commit: `feat(corpus): Docdex Phase V — visibility, identity, authz, generation gate (spec §4)`. Push.
 - [ ] **Step 4:** Restore the foreign work: three-way merge each backup over the new HEAD (`git merge-file <working-copy-from-backup> <base-at-old-HEAD> <new-HEAD-version>` — LF-normalize first, the `tr -d '\r'` lesson), leaving the foreign diffs uncommitted in the working tree, byte-equivalent to before (verify with `git diff --stat`).
-- [ ] **Step 5:** Deploy to the VPS **through the runbook**: `gh run list --workflow CI` (green on the commit) → `ssh root@srv1143982 'cd /opt/Firekeep && nohup bash update.sh > /tmp/fk-update.log 2>&1 &'` → poll `/version` + `/health`. This is dogfood observation material for the deploy runbook.
+- [ ] **Step 5:** Deploy to the VPS **through the deploy runbook skill** (its steps hold the host details; do not inline the hostname here — `test_forbidden_tokens` bans it from the tree): confirm CI green on the commit, run `update.sh` over SSH per the runbook, poll `/version` + `/health`. This is dogfood observation material for the deploy runbook.
 
 ## Self-review notes
 

@@ -36,7 +36,9 @@ def create_streaming_router(
 
         async def event_generator():
             async for event in rag_engine.recall_streaming(
-                query, workspace_id=principal["workspace_id"]
+                query,
+                workspace_id=principal["workspace_id"],
+                member_id=principal["member_id"],
             ):
                 event_type = event["type"]
                 data = json.dumps(event["data"], default=str)

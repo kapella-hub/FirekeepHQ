@@ -32,6 +32,7 @@ from qdrant_client.models import (
     VectorParams,
 )
 
+from app.db.visibility import GENERATION_GUARD, visibility_should
 from app.exceptions import VectorStoreError
 
 if TYPE_CHECKING:
@@ -66,7 +67,8 @@ _PROMOTED_PAYLOAD_KEYS = {
 # or because they were just promoted (_PROMOTED_PAYLOAD_KEYS). Single source of
 # truth: extend _PROMOTED_PAYLOAD_KEYS and this set updates automatically.
 _EXCLUDED_FROM_NESTED_METADATA = (
-    {"source", "tags", "domain", "timestamp"} | _PROMOTED_PAYLOAD_KEYS
+    {"source", "tags", "domain", "timestamp", "visibility", "committed"}
+    | _PROMOTED_PAYLOAD_KEYS
 )
 
 # Views ``list_memories`` accepts. "available" is everything recall can still
@@ -522,11 +524,16 @@ class VectorClient:
                 break
             offset = next_offset
 
-    def _list_filter(self, view: str, namespace: str | None) -> Filter | None:
+    def _list_filter(
+        self, view: str, namespace: str | None, member_id: str | None = None
+    ) -> Filter:
         """Build the lifecycle/namespace filter shared by both list_memories legs.
 
-        ``view="all"`` with no namespace yields None — byte-identical to the
-        pre-lifecycle behaviour, so the default listing is untouched.
+        Always includes the visibility egress conditions (Docdex §4.4): the
+        ``should`` group admits legacy/workspace chunks plus the caller's own
+        private ones (none when ``member_id`` is absent — fail closed), and
+        ``GENERATION_GUARD`` excludes never-committed corpus generations.
+        Memory points carry neither field, so they pass both.
         """
         must: list[FieldCondition] = []
         must_not: list[FieldCondition] = []
@@ -542,9 +549,12 @@ class VectorClient:
             must.append(
                 FieldCondition(key="namespace", match=MatchAny(any=[namespace]))
             )
-        if not must and not must_not:
-            return None
-        return Filter(must=must or None, must_not=must_not or None)
+        must_not.append(GENERATION_GUARD)
+        return Filter(
+            must=must or None,
+            should=visibility_should(member_id),
+            must_not=must_not,
+        )
 
     @staticmethod
     def _list_row(point: Any, score: float | None, view: str) -> dict:
@@ -591,11 +601,16 @@ class VectorClient:
         query: str | None = None,
         namespace: str | None = None,
         view: str = "all",
+        member_id: str | None = None,
     ) -> list[dict]:
         """List memories with optional search.
 
         If query is provided, do semantic search. Otherwise scroll through points.
         If namespace is provided, filter by domain.
+
+        ``member_id`` is the caller's VERIFIED member identity: member-private
+        corpus chunks are listed only for their owner (Docdex §4.4). None —
+        every pre-existing caller — lists no private chunks (fail closed).
 
         ``view`` selects the lifecycle slice: "all" (default, unfiltered),
         "available" (everything recall can still reach) or "archived" (the
@@ -611,7 +626,7 @@ class VectorClient:
             )
 
         effective_limit = min(limit, 100)
-        query_filter = self._list_filter(view, namespace)
+        query_filter = self._list_filter(view, namespace, member_id)
 
         try:
             if query:
@@ -641,7 +656,13 @@ class VectorClient:
             logger.error("Failed to list memories: %s", exc)
             return []
 
-    async def upsert(self, text: str, metadata: dict[str, Any], namespace: str = "default") -> str:
+    async def upsert(
+        self,
+        text: str,
+        metadata: dict[str, Any],
+        namespace: str = "default",
+        point_id: str | None = None,
+    ) -> str:
         """Embed text and upsert into Qdrant.
 
         Args:
@@ -652,13 +673,16 @@ class VectorClient:
                       like /memory/contributors can filter/group on them.
                       Other keys are stored under 'metadata'.
             namespace: Tenant namespace for multi-tenant isolation.
+            point_id: caller-scoped identity (corpus uses source-scoped IDs so
+                      identical text never collapses across sources/members —
+                      Docdex §4.2); None keeps text-derived dedup for memories.
 
         Returns:
             The generated point ID as a string.
         """
         try:
             vector = await self._embed(text)
-            point_id = str(uuid.uuid5(FIREKEEP_UUID_NAMESPACE, text))
+            point_id = point_id or str(uuid.uuid5(FIREKEEP_UUID_NAMESPACE, text))
 
             ts = metadata.get(
                 "timestamp",
@@ -687,6 +711,26 @@ class VectorClient:
                     )
                     for k in _PROMOTED_PAYLOAD_KEYS
                 },
+                # Docdex §4.1: corpus stamps `visibility` and the shared
+                # visibility filter matches it at the TOP level. Promoted only
+                # when present — memory writes carry none, and absence is the
+                # legacy meaning the filter honors, so no default is stamped.
+                **(
+                    {"visibility": metadata["visibility"]}
+                    if "visibility" in metadata
+                    else {}
+                ),
+                # Generation gate (Docdex §4.5): `committed` matches at the TOP
+                # level too — GENERATION_GUARD excludes never-committed corpus
+                # chunks from recall, and it looks top-level. Without this
+                # promotion the flag lands only in nested metadata and the guard
+                # is a no-op, leaving a mid-ingest generation fully recallable.
+                # Present-only, like visibility — memory writes carry none.
+                **(
+                    {"committed": metadata["committed"]}
+                    if "committed" in metadata
+                    else {}
+                ),
                 "metadata": {
                     k: v
                     for k, v in metadata.items()
@@ -788,6 +832,7 @@ class VectorClient:
         project: str | None = None,
         workspace_id: str | None = None,
         score_threshold: float | None = None,
+        member_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """Embed query and search Qdrant for similar vectors.
 
@@ -800,6 +845,10 @@ class VectorClient:
                 ``"default"``, scopes to exactly that namespace. Tenancy is
                 ``workspace_id``'s job, not this argument's — see
                 ``namespace_condition``.
+            member_id: The caller's VERIFIED member identity. Member-private
+                corpus chunks match only for their owner (Docdex §4.4); None
+                — every non-corpus caller — matches no private chunks
+                (fail closed).
 
         Returns:
             List of dicts with id, score, text, and metadata.
@@ -866,13 +915,15 @@ class VectorClient:
                     match=MatchValue(value="draft"),
                 )
             )
-            query_filter = (
-                Filter(
-                    must=filter_conditions or None,
-                    must_not=must_not_conditions or None,
-                )
-                if filter_conditions or must_not_conditions
-                else None
+            # Docdex §4.4 egress: at least one visibility branch must match
+            # (legacy-absent, workspace, or the caller's own private chunks),
+            # and a never-committed corpus generation matches for no one.
+            # Memory points carry neither field, so they are unaffected.
+            must_not_conditions.append(GENERATION_GUARD)
+            query_filter = Filter(
+                must=filter_conditions or None,
+                should=visibility_should(member_id),
+                must_not=must_not_conditions,
             )
 
             results = await self._client.query_points(

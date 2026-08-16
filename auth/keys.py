@@ -58,6 +58,15 @@ SCOPES = {
     # ordinary work; creating or destroying one is administration, and the blast
     # radius is not symmetric.
     "vault:read",
+    # Per-dex write/delete scopes for reserved corpus source prefixes (Docdex
+    # §4.3). A `docdex:`-prefixed source name is writable/deletable only by a
+    # key carrying `dex:docdex` (or `admin`) — so a generic `memory:write` key
+    # cannot claim or overwrite a member's document source. MUST stay in sync
+    # with `corpus.store.KNOWN_DEX_IDS` (the prefix table derives `dex:<id>`
+    # from it); `tests/test_dex_scopes_mintable.py` fails if they drift, and
+    # `create_key` rejects any scope absent here — an unlisted dex scope is
+    # therefore unmintable, which silently blocks the legitimate dex client.
+    "dex:docdex",
     "admin",
 }
 ENROLLABLE_SCOPES: frozenset[str] = frozenset(SCOPES - {"admin", "*"})

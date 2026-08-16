@@ -2,15 +2,19 @@
 
 The pipeline is staged (SP0 A4, defect #7):
 1. Chunk the content
-2. Store new chunks in Qdrant, tagged with a per-run ingest_id
-3. Delete the previous generation (everything for this source EXCEPT the
-   new ingest_id) — only after every new chunk is committed
-4. Record source metadata in Redis, last
+2. Store new chunks in Qdrant, written gated (``committed: False``) and
+   tagged with a per-run ingest_id
+3. Commit the generation — one payload flip recall's GENERATION_GUARD
+   honors (Docdex spec §4.5 option (a))
+4. Delete the previous generation (everything for this source EXCEPT the
+   new ingest_id) — only after the new generation is live
+5. Record source metadata in Redis, last
 
 A mid-ingest failure therefore leaves the old generation fully live and the
-source metadata unchanged; the partial new generation is swept by the next
-successful ingest of the same source. The exception propagates to the caller
-(a boundary may retry or fail loudly — never silently).
+source metadata unchanged; the partial new generation is uncommitted —
+invisible to recall — until the next successful ingest of the same source
+sweeps it. The exception propagates to the caller (a boundary may retry or
+fail loudly — never silently).
 
 The async LLM entity extraction path was removed (2026-05-27) — audit
 found 0 entities ever extracted in production. Qdrant chunk path is
@@ -27,6 +31,7 @@ from corpus.chunker import chunk_content
 from corpus.config import get_corpus_settings
 from corpus.models import Chunk, ChunkMetadata
 from corpus.store import (
+    commit_generation,
     delete_source_chunks,
     store_chunks,
     track_source,
@@ -43,6 +48,8 @@ async def ingest_document(
     redis_client=None,
     workspace_id: str | None = None,
     member_id: str | None = None,
+    visibility: str = "workspace",
+    metadata: dict[str, str] | None = None,
     # Legacy params accepted but ignored (no longer used)
     neo4j_driver=None,
     llm_base_url: str = "",
@@ -56,6 +63,11 @@ async def ingest_document(
     all, so every corpus and knowledge ingest wrote ``workspace_id=null`` and
     the chunks were invisible to ``memory_recall``, which filters on the
     caller's workspace — see ``corpus.store.store_chunks`` for the measurement.
+
+    ``visibility`` scopes every chunk ("workspace" default, "member" =
+    ingesting member only) and ``metadata`` is the API-bounded client dict;
+    both ride the principal's path into ``store_chunks`` and ``visibility``
+    also lands on the Redis source record (Docdex §4.1).
 
     Returns a dict matching IngestionResult fields. The entities_extracted
     field is always 0 — entity extraction was removed.
@@ -84,10 +96,11 @@ async def ingest_document(
             "extraction_status": "skipped",
         }
 
-    # 2. Stage new chunks FIRST (SP0 A4). Old chunks stay live until the
-    #    full new generation is committed. Identical chunk text upserts over
-    #    the old point (same uuid5 id) and inherits its lifecycle via
-    #    _merge_lifecycle, gaining this run's ingest_id.
+    # 2. Stage new chunks FIRST (SP0 A4), written gated (committed: False).
+    #    Old chunks stay live until the new generation is committed. Point ids
+    #    are source+run scoped (corpus_point_id — Docdex §4.2), so staging
+    #    never overwrites the previous generation's points; the sweep below
+    #    removes them.
     ingest_id = str(uuid.uuid4())
     chunks_stored = 0
     if vector_client:
@@ -107,11 +120,18 @@ async def ingest_document(
             chunks_stored = await store_chunks(
                 chunk_objects, vector_client, ingest_id=ingest_id,
                 workspace_id=workspace_id, member_id=member_id,
+                visibility=visibility, client_metadata=metadata,
             )
+            # 3. Commit: the staged generation goes live in ONE payload flip
+            #    (spec §4.5 option (a)). Recall's GENERATION_GUARD excludes
+            #    committed: False, so a failure anywhere before this line
+            #    leaves the new generation unrecallable, not half-visible.
+            await commit_generation(vector_client, source_name, ingest_id)
         except Exception:
             # Fail loudly. Old chunks are still intact and source metadata is
             # unchanged; the partial new generation (tagged with this
-            # ingest_id) is swept by the next successful ingest of this source.
+            # ingest_id) stays uncommitted and is swept by the next successful
+            # ingest of this source.
             logger.exception(
                 "Staged ingest of '%s' failed — old content preserved, "
                 "source metadata unchanged (ingest_id=%s)",
@@ -120,17 +140,23 @@ async def ingest_document(
             )
             raise
 
-        # 3. Delete the previous generation only now that every new chunk is
-        #    committed. The filter excludes points carrying this ingest_id.
+        # 4. Delete the previous generation only now that the new one is
+        #    committed and live. The filter excludes points carrying this
+        #    ingest_id.
         await delete_source_chunks(
             source_name, vector_client, exclude_ingest_id=ingest_id
         )
 
-    # 4. Track source in Redis — last, only after the swap completed.
+    # 5. Track source in Redis — last, only after the swap completed. The
+    #    principal's tenancy is stamped on the record too: corpus/api.py's
+    #    list/delete authz reads it (Docdex §4.3).
     await track_source(
         source_name, source_type,
         chunk_count=len(raw_chunks),
         redis_client=redis_client,
+        visibility=visibility,
+        workspace_id=workspace_id,
+        member_id=member_id,
     )
 
     return {

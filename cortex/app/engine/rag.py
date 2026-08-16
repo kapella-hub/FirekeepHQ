@@ -266,9 +266,14 @@ class RAGEngine:
         query: ContextQuery,
         *,
         workspace_id: str | None = None,
+        member_id: str | None = None,
         unattributed_graph: str = "admit",
     ) -> RecallResponse:
         """Retrieve, merge, score, and format memory context for an LLM.
+
+        ``member_id`` is the caller's VERIFIED member identity, threaded into
+        the vector leg so member-private corpus chunks surface only for their
+        owner (Docdex §4.4); None recalls no private chunks (fail closed).
 
         ``unattributed_graph`` decides what a graph row that names NO vector
         memory means for a scoped request: ``"admit"`` (the default, and what
@@ -292,7 +297,7 @@ class RAGEngine:
         include_archived = bool(getattr(query, "include_archived", False))
 
         vector_results, graph_results, vector_degraded = await self._dual_retrieve(
-            query, workspace_id=workspace_id
+            query, workspace_id=workspace_id, member_id=member_id
         )
 
         vector_entries = self._normalize_vector(vector_results)
@@ -401,7 +406,11 @@ class RAGEngine:
     # ------------------------------------------------------------------
 
     async def recall_streaming(
-        self, query: ContextQuery, *, workspace_id: str | None = None
+        self,
+        query: ContextQuery,
+        *,
+        workspace_id: str | None = None,
+        member_id: str | None = None,
     ) -> AsyncGenerator[dict, None]:
         """Yield recall results progressively.
 
@@ -415,7 +424,9 @@ class RAGEngine:
         # Fire both searches concurrently, yield results as each completes
         async def _vector_search() -> tuple[str, list[dict[str, Any]]]:
             try:
-                results = await self._search_vector(query, workspace_id=workspace_id)
+                results = await self._search_vector(
+                    query, workspace_id=workspace_id, member_id=member_id
+                )
                 return "vector", results
             except Exception:
                 logger.exception("Vector search failed in streaming recall")
@@ -503,7 +514,11 @@ class RAGEngine:
     # ------------------------------------------------------------------
 
     async def _search_vector(
-        self, query: ContextQuery, *, workspace_id: str | None = None
+        self,
+        query: ContextQuery,
+        *,
+        workspace_id: str | None = None,
+        member_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """The one workspace-filtered vector path for regular and SSE recall."""
         return await self._vector.search(
@@ -515,10 +530,15 @@ class RAGEngine:
             project=query.project,
             workspace_id=workspace_id,
             score_threshold=self._settings.RECALL_SCORE_FLOOR,
+            member_id=member_id,
         )
 
     async def _dual_retrieve(
-        self, query: ContextQuery, *, workspace_id: str | None = None
+        self,
+        query: ContextQuery,
+        *,
+        workspace_id: str | None = None,
+        member_id: str | None = None,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
         """Run vector and graph queries concurrently.
 
@@ -534,7 +554,7 @@ class RAGEngine:
             for attempt in range(1, attempts + 1):
                 try:
                     results = await self._search_vector(
-                        query, workspace_id=workspace_id
+                        query, workspace_id=workspace_id, member_id=member_id
                     )
                     return results, False
                 except Exception:

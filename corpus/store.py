@@ -21,11 +21,20 @@ from corpus.models import Chunk
 
 logger = logging.getLogger(__name__)
 
-CORPUS_UUID_NS = uuid.UUID("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+# Copied verbatim from cortex/app/db/vector.py's FIREKEEP_UUID_NAMESPACE:
+# corpus is a shared lib and MUST NOT import cortex, but corpus points live
+# in the same collection, so the two constants must stay byte-equal —
+# pinned by corpus/tests/test_point_identity.py.
+FIREKEEP_UUID_NAMESPACE = uuid.UUID("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
 
 # Redis key prefix for source tracking
 _SOURCE_KEY_PREFIX = "corpus:source:"
 _SOURCE_INDEX_KEY = "corpus:source_index"  # Sorted set: source_name scored by ingested_at
+
+# Dex ids whose `<dex>:`-prefixed source names are reserved (Docdex §4.3).
+# corpus/api.py derives its scope gate from this set, so the record's `dex`
+# field and the gate can never disagree.
+KNOWN_DEX_IDS = frozenset({"docdex"})
 
 
 # ---------------------------------------------------------------------------
@@ -40,9 +49,44 @@ def _slug(name: str) -> str:
     return s.strip("-")
 
 
+def source_dex(source_name: str) -> str:
+    """The dex id claimed by a source name's `<dex>:` prefix, or "".
+
+    Exact match against KNOWN_DEX_IDS: a bare "docdex" (no colon) is an
+    ordinary name, not a claim on the reserved namespace.
+    """
+    prefix, sep, _ = source_name.partition(":")
+    return prefix if sep and prefix in KNOWN_DEX_IDS else ""
+
+
+def dex_source_prefix(source_id: str) -> str:
+    """The reserved name prefix for one Docdex client source (spec §3).
+
+    Docdex names each synced file ``docdex:<source_id>:<sha256(relpath)>``;
+    the bulk delete route removes every TRACKED source under this prefix.
+    The trailing colon is load-bearing: without it source_id "src1" would
+    also match "src10"'s files.
+    """
+    return f"docdex:{source_id}:"
+
+
 # ---------------------------------------------------------------------------
 # Qdrant: chunks (via VectorClient)
 # ---------------------------------------------------------------------------
+
+
+def corpus_point_id(workspace_id: str, source_name: str,
+                    ingest_id: str, chunk_index: int) -> str:
+    """Source-scoped identity: identical text across sources/members must
+    NEVER share a point (uuid5(text) did; deleting one member's source
+    then deleted the other's chunk — spec §4.2).
+
+    The ``corpus|`` domain prefix separates this id space from memory points
+    (which are ``uuid5(text)`` in the same namespace) by CONSTRUCTION rather
+    than by accident: a memory whose text happened to equal
+    ``"ws|name|ingest|idx"`` can no longer collide with a corpus point."""
+    raw = f"corpus|{workspace_id}|{source_name}|{ingest_id}|{chunk_index}"
+    return str(uuid.uuid5(FIREKEEP_UUID_NAMESPACE, raw))
 
 
 async def store_chunks(
@@ -51,6 +95,8 @@ async def store_chunks(
     ingest_id: str | None = None,
     workspace_id: str | None = None,
     member_id: str | None = None,
+    visibility: str = "workspace",
+    client_metadata: dict[str, str] | None = None,
 ) -> int:
     """Store chunks into the shared firekeep_memory collection via VectorClient.
 
@@ -71,6 +117,13 @@ async def store_chunks(
             backfill healed it on the next restart, which made the damage window
             "until someone restarts cortex-api" rather than permanent — a
             migration is not a substitute for stamping at write time.
+        visibility: chunk scope (Docdex §4.1) — stamped EXPLICITLY on every
+            new write ("workspace" default); absence keeps its legacy meaning
+            (pre-Phase-V point) that the visibility filter honors.
+        client_metadata: the API-bounded client dict; rides into the nested
+            payload metadata, but server stamps below always win a collision
+            (reserved keys are rejected at the API boundary — this guards the
+            non-HTTP callers too).
     """
     if not chunks:
         return 0
@@ -79,12 +132,23 @@ async def store_chunks(
     for chunk in chunks:
         source_slug = _slug(chunk.metadata.source_name)
         metadata = {
+            # Client metadata first: the server stamps below must win every
+            # key collision.
+            **(client_metadata or {}),
             "source": "corpus",
             "domain": chunk.metadata.source_type,
             "tags": ["corpus", chunk.metadata.source_type, source_slug],
             "source_name": chunk.metadata.source_name,
             "chunk_index": chunk.metadata.chunk_index,
             "total_chunks": chunk.metadata.total_chunks,
+            # `upsert` promotes this to the top-level payload key the
+            # visibility filter matches on.
+            "visibility": visibility,
+            # Generation gate (spec §4.5 option (a)): written gated;
+            # commit_generation flips the whole run live in ONE set_payload at
+            # swap completion, and recall's GENERATION_GUARD excludes anything
+            # still False — a mid-ingest failure leaves nothing recallable.
+            "committed": False,
         }
         if ingest_id:
             metadata["ingest_id"] = ingest_id
@@ -95,11 +159,67 @@ async def store_chunks(
             metadata["workspace_id"] = workspace_id
         if member_id:
             metadata["member_id"] = member_id
-        await vector_client.upsert(text=chunk.content, metadata=metadata)
+        await vector_client.upsert(
+            text=chunk.content,
+            metadata=metadata,
+            point_id=corpus_point_id(
+                workspace_id or "",
+                chunk.metadata.source_name,
+                ingest_id or "",
+                chunk.metadata.chunk_index,
+            ),
+        )
         count += 1
 
     logger.info("Stored %d corpus chunks via VectorClient", count)
     return count
+
+
+async def commit_generation(
+    vector_client,
+    source_name: str,
+    ingest_id: str,
+) -> None:
+    """Flip a staged generation live: ONE set_payload over (source_name, ingest_id).
+
+    Spec §4.5 option (a): chunks are written ``committed: False`` and recall
+    excludes them (GENERATION_GUARD), so the staged swap becomes atomic to
+    recall — this call is the commit point. A failure anywhere before it
+    leaves the new generation unrecallable and the old one fully live; the
+    ingest_id condition keeps the flip from resurrecting an earlier run's
+    orphaned generation of the same source.
+
+    VectorClient has no set-payload-by-filter wrapper and corpus cannot
+    import cortex, so this reaches the raw Qdrant client the way
+    cortex/app/workspace_migration.py does. A stand-in without the raw
+    handle (bare recording fakes) gets no commit — its chunks stay gated,
+    which fails CLOSED at recall, never open.
+    """
+    from qdrant_client.models import Filter, FieldCondition, MatchValue
+
+    raw_client = getattr(vector_client, "_client", None)
+    if raw_client is None:
+        return
+    await raw_client.set_payload(
+        collection_name=vector_client._collection,
+        payload={"committed": True},
+        points=Filter(
+            must=[
+                FieldCondition(key="source", match=MatchValue(value="corpus")),
+                FieldCondition(
+                    key="metadata.source_name", match=MatchValue(value=source_name)
+                ),
+                FieldCondition(
+                    key="metadata.ingest_id", match=MatchValue(value=ingest_id)
+                ),
+            ]
+        ),
+    )
+    logger.info(
+        "Committed corpus generation for source '%s' (ingest %s)",
+        source_name,
+        ingest_id,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +232,9 @@ async def track_source(
     source_type: str,
     chunk_count: int,
     redis_client=None,
+    visibility: str = "workspace",
+    workspace_id: str | None = None,
+    member_id: str | None = None,
 ) -> None:
     """Record source metadata in Redis for listing and management.
 
@@ -119,6 +242,12 @@ async def track_source(
     stages the new generation, swaps out the old one, then calls this last —
     re-ingestion is idempotent from the caller's point of view even though
     the underlying Qdrant swap is stage-then-delete, not delete-then-store.
+
+    ``workspace_id`` / ``member_id`` are the ingesting principal's tenancy,
+    stamped server-side (never client-asserted — Docdex §4.3). Empty means a
+    pre-ownership record; corpus/api.py's authz treats those as the
+    single-workspace legacy world. ``dex`` records which reserved namespace
+    (if any) the name claims.
     """
     if redis_client is None:
         return
@@ -128,6 +257,10 @@ async def track_source(
         "name": source_name,
         "source_type": source_type,
         "chunks": chunk_count,
+        "visibility": visibility,
+        "workspace_id": workspace_id or "",
+        "member_id": member_id or "",
+        "dex": source_dex(source_name),
         "last_ingested": now.isoformat(),
     })
     key = f"{_SOURCE_KEY_PREFIX}{source_name}"
@@ -237,3 +370,37 @@ async def delete_source(
         "chunks_deleted": "all",
         "entities_deleted": "all",  # Kept for API response compatibility
     }
+
+
+async def delete_dex_source(
+    source_id: str,
+    source_names: list[str],
+    delete_one,
+) -> dict:
+    """Bulk-remove a dex client source: one exact-name delete per tracked record.
+
+    ``source_names`` is the caller's ALREADY-AUTHORIZED deletion set, derived
+    from the tracked source records — bounded by what was actually ingested,
+    never a Qdrant prefix query ("one bounded bulk operation", Docdex §3).
+    ``delete_one`` is the wired single-source delete (chunks + tracking),
+    called ``delete_one(source_name=...)``.
+
+    Chunk counts are reported only when the per-source delete returns real
+    numbers; today ``delete_source`` reports "all", so the honest answer is
+    "unknown" — never a fabricated count.
+    """
+    counts: list = []
+    for name in source_names:
+        result = await delete_one(source_name=name)
+        counts.append(
+            result.get("chunks_deleted") if isinstance(result, dict) else None
+        )
+    chunks: int | str = (
+        sum(counts) if counts and all(isinstance(c, int) for c in counts)
+        else "unknown"
+    )
+    logger.info(
+        "Bulk-deleted %d corpus sources for dex source '%s'",
+        len(source_names), source_id,
+    )
+    return {"deleted_sources": len(source_names), "deleted_chunks": chunks}

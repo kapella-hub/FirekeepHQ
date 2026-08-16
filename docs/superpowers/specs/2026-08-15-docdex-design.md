@@ -188,16 +188,28 @@ merely its first beneficiary.
    prefix is writable only by a docdex-scoped credential (each dex's
    scoped key carries its dex id; the §5-record "per-dex scoped
    identity" made concrete).
-4. **One shared visibility-filter builder, applied at every egress
-   (review #4).** Not just both recall paths: `GET /corpus/sources` and
-   the `corpus_sources` MCP tool (source names ARE private data — other
-   members must not see private filenames), the dashboard memory/source
-   listings (`dashboard.py` reads Qdrant directly), memory lifecycle
-   reads, and transfer/export. One builder function, consumed
-   everywhere corpus text or identifying metadata leaves the server; a
-   new egress path that skips it is the bug class the builder exists to
-   prevent. Callers with no member identity get no private chunks —
-   fail closed.
+4. **One shared visibility-filter builder, applied at every
+   member-principal egress (review #4; operator surfaces named at build
+   time).** Not just both recall paths: `GET /corpus/sources` and the
+   `corpus_sources` MCP tool (source names ARE private data — other
+   members must not see private filenames), and memory lifecycle reads.
+   One builder function, consumed everywhere corpus text or identifying
+   metadata leaves the server to a MEMBER principal; a new egress path
+   that skips it is the bug class the builder exists to prevent.
+   Callers with no member identity get no private chunks — fail closed.
+   **Amendment (Phase V, as built, corrected by the post-build review):**
+   `/memory/export` is an admin-only OPERATOR surface and does not consume
+   the builder — member-private hides from other *members*, not from the
+   server operator. The dashboard memory browser was intended the same
+   way, but as built it calls `list_memories` without a `member_id`, and
+   the builder is applied unconditionally there — so member-private and
+   uncommitted corpus chunks are HIDDEN from the dashboard browser too.
+   That is fail-closed (it hides more, never less) and left as built: an
+   operator who needs those chunks reads Qdrant directly, which the threat
+   boundary already says they can. Regular (non-corpus) memories are
+   unaffected — they carry no `visibility`, so the legacy branch admits
+   them. A future member-facing dashboard would pass the viewer's
+   `member_id` and see exactly their own private chunks.
 5. **Honest generation semantics (review #5).** The staged re-ingest is
    NOT atomic to recall: new chunks are upserted individually before the
    old generation is deleted, so mixed generations are recallable
@@ -211,6 +223,10 @@ merely its first beneficiary.
    preferred and assumed by I7's test; (b) is the documented fallback if
    (a)'s recall-path cost measures badly.** Docdex does not build its
    reliability story on an atomicity the corpus does not have.
+   **Shipped (Phase V): option (a).** Chunks are written
+   `committed: false`; `commit_generation` flips the whole run live in
+   one `set_payload` at swap completion; recall excludes uncommitted
+   chunks via the shared `GENERATION_GUARD`. Fallback (b) is dead.
 
 ## 5. Invariants
 
@@ -334,3 +350,37 @@ class; (10) indexed documents are untrusted input — I7, and I4 softened
 to corpus replicas. Reviewer's verdict accepted: the product choices
 hold; every gap was an inherited corpus assumption, which is why Phase V
 grew from one change to five.
+
+**Post-build review (same day, adversarial replay over the full diff) —
+four CONFIRMED-BROKEN, all fixed before commit:** (A) the `/knowledge/*`
+router is a SECOND corpus front door Phase V had not gated — a member key
+could enumerate (`GET /knowledge/sources`), overwrite (generation-sweep)
+and hijack another member's private source via `POST /knowledge/ingest`,
+and a generic key could claim a reserved `docdex:` name. Fixed: both
+knowledge handlers now enforce the same `require_dex_scope` +
+`source_visible` rules as the corpus router, through shared helpers.
+(B) the committed-generation gate was a production no-op — `store_chunks`
+put `committed:False` in NESTED metadata while `GENERATION_GUARD` matches
+TOP-level, so an uncommitted generation stayed fully recallable; the
+suite missed it because every fake sat on one side of the store↔upsert
+seam. Fixed: `upsert` promotes `committed` to top level (like
+`visibility`), and a new seam-crossing test drives real `upsert`.
+(C) `dex:docdex` was enforced but absent from `auth.keys.SCOPES`, so
+`create_key` could never mint the legitimate dex credential — the gate
+would block the dex client itself. Fixed: scope added, with a drift guard
+(`test_dex_scopes_mintable.py`) tying `KNOWN_DEX_IDS` to `SCOPES`.
+(D) the `_do_ingest` shim in `main.py` didn't forward `visibility`/`metadata`,
+so every real `POST /corpus/ingest` would 500. Fixed in the shim.
+
+**Accepted residuals (SUSPICIOUS, not fixed — recorded so they are
+choices):** pre-Phase-V corpus points keep their `uuid5(text)` ids and
+are NOT migrated — safe because they are all `visibility` absent
+(workspace), and the cross-member collision requires two *member-private*
+writes, which only Docdex creates and none exist yet; a migration lands
+with the first real member-private corpus data. The overwrite check
+answers 403 (not 404) on a name-taken-but-not-visible source — a weak
+existence oracle, but the reserved name is `docdex:<128-bit>:<sha256>`,
+unguessable without the listing that is now blocked, so the oracle
+reveals nothing actionable. Corpus point identity and memory identity now
+share one uuid5 namespace separated by a `corpus|` domain prefix — by
+construction, not by luck.

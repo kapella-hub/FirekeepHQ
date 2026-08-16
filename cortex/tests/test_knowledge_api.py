@@ -37,6 +37,85 @@ def client(mock_vector, mock_redis):
     return TestClient(_make_app(mock_vector, mock_redis))
 
 
+def _principal(scopes, member="m-bob", ws="ws1"):
+    return {"workspace_id": ws, "member_id": member, "scopes": list(scopes)}
+
+
+# --- The knowledge router is a SECOND corpus front door (review, claims 1 & 3):
+# it must enforce the same reserved-prefix and visibility rules as /corpus/*. ---
+
+def test_generic_key_cannot_claim_docdex_source_via_knowledge(client):
+    """A plain memory:write key must not claim a reserved docdex: name here —
+    the corpus router blocks it, and this door was the bypass."""
+    with patch("auth.principal.request_principal",
+               return_value=_principal(["memory:write"])):
+        resp = client.post("/knowledge/ingest",
+                           json={"content": "x", "source_name": "docdex:s1:abc",
+                                 "source_type": "wiki"})
+    assert resp.status_code == 403
+
+
+def test_dex_scoped_key_may_ingest_docdex_via_knowledge(client):
+    with (
+        patch("auth.principal.request_principal",
+              return_value=_principal(["memory:write", "dex:docdex"])),
+        patch("app.knowledge.api.ingest_knowledge_document", new=AsyncMock()) as core,
+        patch("corpus.api.get_corpus_sources", new=AsyncMock(return_value=[])),
+    ):
+        resp = client.post("/knowledge/ingest",
+                           json={"content": "x", "source_name": "docdex:s1:abc",
+                                 "source_type": "wiki"})
+    assert resp.status_code == 202
+    core.assert_awaited_once()
+
+
+def test_cannot_overwrite_another_members_private_source_via_knowledge(client):
+    """Bob (dex-scoped, so the prefix check passes) still cannot overwrite —
+    and thereby generation-sweep — Alice's private source through this door."""
+    alice_private = {"name": "docdex:s1:abc", "workspace_id": "ws1",
+                     "member_id": "m-alice", "visibility": "member"}
+    with (
+        patch("auth.principal.request_principal",
+              return_value=_principal(["memory:write", "dex:docdex"], member="m-bob")),
+        patch("corpus.api.get_corpus_sources",
+              new=AsyncMock(return_value=[alice_private])),
+        patch("app.knowledge.api.ingest_knowledge_document", new=AsyncMock()) as core,
+    ):
+        resp = client.post("/knowledge/ingest",
+                           json={"content": "x", "source_name": "docdex:s1:abc",
+                                 "source_type": "wiki"})
+    assert resp.status_code == 403
+    core.assert_not_awaited()
+
+
+def test_sources_hides_another_members_private_source(client, mock_vector):
+    """A private source's NAME is private data — /knowledge/sources filters it
+    exactly like /corpus/sources. The review found it returned every record."""
+    sources = [
+        {"name": "docdex:s1:abc", "source_type": "wiki", "chunks": 3,
+         "workspace_id": "ws1", "member_id": "m-alice", "visibility": "member"},
+        {"name": "Team Runbook", "source_type": "wiki", "chunks": 5,
+         "workspace_id": "ws1", "visibility": "workspace"},
+    ]
+
+    async def _scroll(collection_name, scroll_filter, limit, with_payload, with_vectors):
+        return ([], None)
+    mock_vector._client.scroll = AsyncMock(side_effect=_scroll)
+
+    with (
+        patch("auth.principal.request_principal",
+              return_value=_principal(["memory:read"], member="m-bob")),
+        patch("corpus.api.get_corpus_sources", new=AsyncMock(return_value=sources)),
+        patch("app.knowledge.api.get_ingest_status", new=AsyncMock(return_value=None)),
+    ):
+        resp = client.get("/knowledge/sources")
+
+    assert resp.status_code == 200
+    names = {s["name"] for s in resp.json()["sources"]}
+    assert "docdex:s1:abc" not in names, "Alice's private source name leaked to Bob"
+    assert "Team Runbook" in names
+
+
 def test_ingest_delegates_and_returns_202(client):
     with patch("app.knowledge.api.ingest_knowledge_document", new=AsyncMock()) as mock_core:
         resp = client.post("/knowledge/ingest",

@@ -766,6 +766,7 @@ async def lifespan(app: FastAPI):
             async def _do_ingest(
                 content, source_name, source_type,
                 workspace_id=None, member_id=None,
+                visibility="workspace", metadata=None,
             ):
                 return await _ingest_doc(
                     content=content,
@@ -775,6 +776,8 @@ async def lifespan(app: FastAPI):
                     redis_client=_redis,
                     workspace_id=workspace_id,
                     member_id=member_id,
+                    visibility=visibility,
+                    metadata=metadata,
                 )
 
             async def _do_sources():
@@ -1236,7 +1239,11 @@ async def memory_recall(
     from auth.principal import request_principal
 
     principal = request_principal(request)
-    result = await engine.recall(query, workspace_id=principal["workspace_id"])
+    result = await engine.recall(
+        query,
+        workspace_id=principal["workspace_id"],
+        member_id=principal["member_id"],
+    )
     result.request_id = _get_request_id(request)
     result.namespace = query.namespace
 

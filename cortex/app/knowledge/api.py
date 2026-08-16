@@ -223,6 +223,25 @@ def create_knowledge_router() -> APIRouter:
         from auth.principal import request_principal
 
         principal = request_principal(request)
+
+        # This is a second corpus front door. Enforce the SAME rules the
+        # corpus router does (Docdex §4.3/§4.4): a reserved `docdex:` name
+        # needs the dex scope, and an existing source only the caller may see
+        # can be overwritten (which generation-sweeps its chunks) only by an
+        # authorized principal. Reserved-prefix check is name-only and always
+        # safe; the overwrite check needs the tracked listing.
+        corpus_api.require_dex_scope(req.source_name, principal)
+        if corpus_api.get_corpus_sources is not None:
+            existing = next(
+                (r for r in await corpus_api.get_corpus_sources()
+                 if r.get("name") == req.source_name),
+                None,
+            )
+            if existing is not None and not corpus_api.source_visible(existing, principal):
+                raise HTTPException(
+                    status_code=403,
+                    detail="source belongs to another member",
+                )
         try:
             await ingest_knowledge_document(
                 req.content, req.source_name, req.source_type, vector=vector, redis=redis_client,
@@ -263,6 +282,7 @@ def create_knowledge_router() -> APIRouter:
 
     @router.get("/sources", response_model=KnowledgeSourcesResponse)
     async def sources(
+        request: Request,
         vector: VectorClient = Depends(get_vector),
         redis_client=Depends(get_redis),
     ) -> KnowledgeSourcesResponse:
@@ -275,6 +295,17 @@ def create_knowledge_router() -> APIRouter:
         except Exception as exc:
             logger.exception("Failed to list corpus sources")
             raise HTTPException(status_code=500, detail=str(exc))
+
+        # A source NAME is private data (Docdex §4.4). This is a corpus egress
+        # surface, so it filters exactly like /corpus/sources: another member's
+        # private source is not listed. The review found it returned every
+        # record — name, member_id, workspace_id — to any member key.
+        from auth.principal import request_principal
+
+        principal = request_principal(request)
+        corpus_sources = [
+            r for r in corpus_sources if corpus_api.source_visible(r, principal)
+        ]
 
         settings = get_settings()
         result: list[dict] = []
