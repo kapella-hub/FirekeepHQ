@@ -99,6 +99,23 @@ Operating the server afterwards — access and authentication, the dashboard,
 backups, updates, exposing ports deliberately — is
 **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**.
 
+### Removing it
+
+```bash
+firekeep uninstall            # remove the client kit from this machine
+firekeep uninstall --server   # also tear down the server + ALL its data
+```
+
+`firekeep uninstall` removes only what the kit installed — the Firekeep blocks
+in each runtime's config (your own settings stay intact), the launcher and its
+PATH entry, and `~/.firekeep` — and asks first (`--yes` skips the prompt). It
+never touches a server you set up. `--server` additionally runs `docker compose
+down -v` on the stack this machine provisioned, deleting the Neo4j/Qdrant/Redis
+volumes — every memory, session and secret, permanently — behind a separate
+data-loss confirmation that a plain uninstall or `--yes` can never trigger. Back
+up first ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#removing-the-server)) if you
+might want the data back.
+
 ## A Real Workflow
 
 Here's what happens when an agent uses Firekeep:
