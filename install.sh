@@ -10,10 +10,28 @@ echo ""
 
 # --- Check Docker ---
 if ! command -v docker &>/dev/null; then
-    echo "Docker not found. Installing..."
-    curl -fsSL https://get.docker.com | sh
-    sudo usermod -aG docker "$USER"
-    echo "Docker installed. You may need to log out and back in for group changes."
+    case "$(uname -s)" in
+        Linux)
+            echo "Docker not found. Installing..."
+            curl -fsSL https://get.docker.com | sh
+            sudo usermod -aG docker "$USER"
+            echo "Docker installed. You may need to log out and back in for group changes."
+            ;;
+        *)
+            # macOS, or Windows under Git Bash / WSL. get.docker.com is a
+            # Linux-only convenience script and `usermod` does not exist here,
+            # so auto-install would fail confusingly. Docker Desktop is the
+            # supported path -- it runs the SAME Linux containers this stack is,
+            # so everything below is unchanged once `docker` is on PATH.
+            echo "ERROR: Docker not found." >&2
+            echo "       On macOS or Windows, install Docker Desktop, start it," >&2
+            echo "       then re-run this command:" >&2
+            echo "         https://www.docker.com/products/docker-desktop/" >&2
+            echo "       (Firekeep's server is a Docker Compose stack; Docker" >&2
+            echo "       Desktop runs it the same as any Linux host would.)" >&2
+            exit 1
+            ;;
+    esac
 fi
 
 if ! docker compose version &>/dev/null; then
@@ -125,7 +143,7 @@ if [ ! -f .env ]; then
         VAULT_KEY=$(openssl rand -base64 32 | tr '+/' '-_')
     fi
     if [ -n "$VAULT_KEY" ]; then
-        sed -i "s|^VAULT_KEY=.*|VAULT_KEY=${VAULT_KEY}|" .env
+        sed_i "s|^VAULT_KEY=.*|VAULT_KEY=${VAULT_KEY}|" .env
         echo "[OK] Vault encryption key generated"
     else
         # Reachable only on a host with neither python3-cryptography NOR
@@ -172,7 +190,7 @@ if [ ! -f .env ]; then
     # hand-edited .env.example that dropped the key entirely.
     if no_auth_requested "$@"; then
         if grep -qE '^[[:space:]]*AUTH_ENABLED=' .env; then
-            sed -i "s|^[[:space:]]*AUTH_ENABLED=.*|AUTH_ENABLED=false|" .env
+            sed_i "s|^[[:space:]]*AUTH_ENABLED=.*|AUTH_ENABLED=false|" .env
         else
             echo "AUTH_ENABLED=false" >> .env
         fi

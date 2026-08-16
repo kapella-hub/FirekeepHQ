@@ -105,12 +105,12 @@ fi
 # difference: Neo4j store-format upgrades are ONE-WAY, so a bumped neo4j pin
 # turns `docker compose up` into an irreversible migration of the customer's
 # data. It is the reason the images are digest-pinned at all.
-DATASTORE_BEFORE="$(grep -hoE '^\s+image:\s*(neo4j|redis|qdrant/qdrant|ollama/ollama)[^ ]*'     docker-compose.yml 2>/dev/null | sed 's/^ *image: *//' | sort || true)"
+DATASTORE_BEFORE="$(grep -hoE '^[[:space:]]+image:[[:space:]]*(neo4j|redis|qdrant/qdrant|ollama/ollama)[^ ]*'     docker-compose.yml 2>/dev/null | sed 's/^ *image: *//' | sort || true)"
 
 echo "Pulling latest changes..."
 git pull
 
-DATASTORE_AFTER="$(grep -hoE '^\s+image:\s*(neo4j|redis|qdrant/qdrant|ollama/ollama)[^ ]*'     docker-compose.yml 2>/dev/null | sed 's/^ *image: *//' | sort || true)"
+DATASTORE_AFTER="$(grep -hoE '^[[:space:]]+image:[[:space:]]*(neo4j|redis|qdrant/qdrant|ollama/ollama)[^ ]*'     docker-compose.yml 2>/dev/null | sed 's/^ *image: *//' | sort || true)"
 
 # --- Backup before anything is rebuilt or recreated -----------------------
 # update.sh used to `git pull` and restart with no backup at all. On a stack

@@ -8,13 +8,17 @@
 
 ## Prerequisites
 
-- Linux VPS with Docker and Docker Compose v2
+- Any host with Docker — Linux, or Docker Desktop on Windows/Mac — and Docker
+  Compose v2
 - **RAM:** 16 GB recommended for the full default stack (Neo4j JVM + Qdrant +
   Redis + Ollama + 7 Python services). 8 GB is the practical floor and requires
   a small embedding model (`EMBEDDING_MODEL=granite-embedding:30m`,
   `EMBEDDING_DIM=384`). Below that, containers are OOM-killed while HTTP health
   checks still pass — a failure mode that is easy to misdiagnose. (See
-  "Resource Limits" below for the full breakdown.)
+  "Resource Limits" below for the full breakdown.) On **Docker Desktop**
+  (Windows/macOS) the stack runs inside a VM allocated a fraction of host RAM by
+  default — raise Docker Desktop → Settings → Resources → Memory to at least
+  16 GB, or a 16 GB machine lands the stack on the floor above.
 - **No open ports required.** A default install binds its app ports (8040-8100)
   to `127.0.0.1` and is reachable only from the host. Serving a laptop or a
   teammate is an explicit opt-in — see
@@ -28,14 +32,17 @@ server question decides which. Three shapes cover every case:
 
 | Shape | Run it on | Command | Result |
 |-------|-----------|---------|--------|
-| **Both**, one machine | Linux + Docker host | `curl -fsSL https://firekeep.ai/latest/install.sh \| sh` → answer **1** | Client *and* server, with this box enrolled against it. The default when Docker is present. |
+| **Both**, one machine | Any host with Docker — Linux, or Docker Desktop on Windows/Mac | `curl -fsSL https://firekeep.ai/latest/install.sh \| sh` → answer **1** | Client *and* server, with this box enrolled against it. The default when Docker is present. |
 | **Client only** | Any Mac / Windows / Linux machine | the same one-liner → answer **2** (join code), **3** (address + key) or **4** (not yet) | Just the kit, pointed at a server your team already runs — or at nothing yet, finished later. |
-| **Server only** | Linux + Docker host | `firekeep init --no-self-enroll`, or `bash install.sh` from a checkout/bundle | The full stack with **no** machine enrolled — CI, a build host, a golden image. Enrol laptops afterwards. |
+| **Server only** | Any host with Docker — Linux, or Docker Desktop on Windows/Mac | `firekeep init --no-self-enroll`, or `bash install.sh` from a checkout/bundle | The full stack with **no** machine enrolled — CI, a build host, a golden image. Enrol laptops afterwards. |
 
 **Both** and **Server only** are the same provisioning with one difference:
-whether the box that builds the server also becomes a client of it. A Mac or
-Windows laptop can only be a client; the server half is Linux + Docker. Enrol
-further machines with the printed `FIREKEEP_JOIN=…` one-liner or
+whether the box that builds the server also becomes a client of it. The server
+is a Docker Compose stack, so it runs anywhere Docker + Compose v2 do — a Linux
+server or VPS, or Docker Desktop on a Windows or Mac workstation. On Windows the
+one-command setup runs under WSL2 or Git Bash (Docker Desktop's own Linux
+backend). Linux is tested on every commit; Windows and macOS are hand-checked on Docker
+Desktop. Enrol further machines with the printed `FIREKEEP_JOIN=…` one-liner or
 `deploy/firekeep-admin invite --agent <name>` (see
 [Connecting an agent from another machine](#connecting-an-agent-from-another-machine)).
 

@@ -48,7 +48,15 @@ IFS=' ' read -r -a REDIS <<< "${BOOTSTRAP_REDIS_CMD:-docker compose exec -T redi
 
 # --- helpers ---------------------------------------------------------------
 
-sha256() { printf '%s' "$1" | sha256sum | awk '{print $1}'; }
+# sha256sum is GNU coreutils; macOS ships `shasum -a 256` instead. Prefer the
+# GNU tool where present (Linux, the CI-tested path), fall back on macOS/BSD.
+sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        printf '%s' "$1" | sha256sum | awk '{print $1}'
+    else
+        printf '%s' "$1" | shasum -a 256 | awk '{print $1}'
+    fi
+}
 
 mint_key() { echo "nxs_$(openssl rand -hex 24)"; }
 
@@ -57,9 +65,18 @@ now_iso() { date -u +"%Y-%m-%dT%H:%M:%S+00:00"; }
 # `|| true`: grep exits 1 on no-match, which set -e -o pipefail would fatal.
 env_get() { { grep -E "^$1=" "$ENV_FILE" 2>/dev/null || true; } | head -n1 | cut -d= -f2-; }
 
+# Portable in-place sed: BSD/macOS sed would consume the script as a -i backup
+# suffix and corrupt the file. Temp-file behaves identically everywhere.
+# bootstrap-keys.sh does not source deploy/lib.sh, so it carries its own copy.
+sed_i() {
+    local script="${1:?}" f="${2:?}" tmp
+    tmp="$(mktemp "${f}.XXXXXX")" || return 1
+    if sed "$script" "$f" >"$tmp"; then mv "$tmp" "$f"; else rm -f "$tmp"; return 1; fi
+}
+
 env_set() {
     if grep -qE "^$1=" "$ENV_FILE" 2>/dev/null; then
-        sed -i "s|^$1=.*|$1=$2|" "$ENV_FILE"
+        sed_i "s|^$1=.*|$1=$2|" "$ENV_FILE"
     else
         printf '%s=%s\n' "$1" "$2" >> "$ENV_FILE"
     fi

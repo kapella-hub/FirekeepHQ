@@ -2,6 +2,24 @@
 # Shared helpers for install.sh / update.sh. Sourced, never executed directly.
 # Kept separate so tests/test_deploy_lib.py can drive them via bash.
 
+# sed_i <sed-script> <file>
+# Portable in-place sed. BSD/macOS sed REQUIRES a backup-suffix argument
+# immediately after -i and otherwise consumes the sed script as that suffix --
+# so `sed -i "s|a|b|" f` silently corrupts the file on macOS while working on
+# Linux. Routing every in-place edit through a temp file behaves identically on
+# GNU, BSD/macOS and busybox. mktemp yields mode 0600, which is exactly what
+# .env (the only sensitive target) needs; install.sh re-asserts 600 regardless.
+sed_i() {
+    local script="${1:?sed script required}" f="${2:?file required}" tmp
+    tmp="$(mktemp "${f}.XXXXXX")" || return 1
+    if sed "$script" "$f" >"$tmp"; then
+        mv "$tmp" "$f"
+    else
+        rm -f "$tmp"
+        return 1
+    fi
+}
+
 # vault_status_line <envfile>
 # Echo the installer summary line for Vault, based on whether VAULT_KEY is
 # actually set in the given .env. Never claims a security control is on
@@ -96,7 +114,7 @@ env_value() {
 env_file_set() {
     local envfile="${1:?envfile required}" key="${2:?key required}" value="${3:?value required}"
     if grep -qE "^${key}=" "$envfile" 2>/dev/null; then
-        sed -i "s|^${key}=.*|${key}=${value}|" "$envfile"
+        sed_i "s|^${key}=.*|${key}=${value}|" "$envfile"
     else
         printf '%s=%s\n' "$key" "$value" >> "$envfile"
     fi
@@ -472,8 +490,8 @@ configure_env() {
     chmod 600 "$tmp"
 
     cat "$example" > "$tmp"
-    sed -i "s|YOUR_VPS_IP_HERE|${vps_ip}|g" "$tmp"
-    sed -i "s|^NEO4J_PASSWORD=.*|NEO4J_PASSWORD=${neo4j_password}|" "$tmp"
+    sed_i "s|YOUR_VPS_IP_HERE|${vps_ip}|g" "$tmp"
+    sed_i "s|^NEO4J_PASSWORD=.*|NEO4J_PASSWORD=${neo4j_password}|" "$tmp"
 
     # A placeholder that survives here silently breaks the briefing fan-in,
     # so fail loudly rather than deploying a half-configured .env.

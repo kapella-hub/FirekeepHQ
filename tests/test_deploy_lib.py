@@ -160,6 +160,48 @@ def test_configure_env_leaves_confluence_pat_vault_key_untouched(tmp_path):
     assert "VAULT_KEY=" in content.splitlines()[3]  # the real VAULT_KEY= line, untouched
 
 
+def _run_sed_i(tmp_path, script: str, file_content: str):
+    """Drives the portable sed_i helper through bash under set -euo pipefail,
+    the way install.sh sources and calls it. Returns (result, target_path)."""
+    target = tmp_path / ".env"
+    target.write_text(file_content, encoding="utf-8")
+    bash = (
+        f'set -euo pipefail; source "{_p(LIB)}"; '
+        f'sed_i {shlex.quote(script)} "{_p(target)}"'
+    )
+    result = subprocess.run([BASH, "-c", bash], capture_output=True, text=True)
+    return result, target
+
+
+def test_sed_i_edits_in_place_without_corrupting_other_lines(tmp_path):
+    """sed_i replaces the targeted line and leaves the rest byte-for-byte.
+    Why it exists: `sed -i "s|..|..|" f` consumes the script as a backup-suffix
+    argument on BSD/macOS sed and corrupts the file, so the same installer that
+    works on Linux would mangle .env on a Mac. sed_i routes through a temp file
+    so the call behaves identically on GNU, BSD/macOS and busybox."""
+    result, target = _run_sed_i(
+        tmp_path,
+        "s|^VAULT_KEY=.*|VAULT_KEY=generated|",
+        "NEO4J_PASSWORD=keep\nVAULT_KEY=\nBIND_ADDR=127.0.0.1\n",
+    )
+    assert result.returncode == 0, result.stderr
+    content = target.read_text(encoding="utf-8")
+    assert content == "NEO4J_PASSWORD=keep\nVAULT_KEY=generated\nBIND_ADDR=127.0.0.1\n"
+
+
+@skip_unless_chmod_enforced
+def test_sed_i_result_is_not_world_readable(tmp_path):
+    """The only file sed_i edits in anger is .env (Neo4j password, Fernet
+    VAULT_KEY). mktemp yields mode 0600, so the rewritten file must never widen
+    to world-readable, whatever the original file's mode was."""
+    _, target = _run_sed_i(
+        tmp_path,
+        "s|^VAULT_KEY=.*|VAULT_KEY=generated|",
+        "VAULT_KEY=\n",
+    )
+    assert (target.stat().st_mode & 0o777) == 0o600
+
+
 def test_configure_env_rejects_empty_vps_ip_and_does_not_abort_the_caller(tmp_path):
     result, envfile = _configure_env(tmp_path, "", "hunter2pass")
     assert result.returncode == 0, result.stderr  # the calling script must survive
