@@ -37,7 +37,7 @@ OUTSIDER_DEX = {**OUTSIDER, "scopes": ["dex:docdex", "memory:write"]}
 _SRC1_WS1 = {"docdex:src1:f1", "docdex:src1:f2", "docdex:src1:f3"}
 
 
-async def _seed_bulk(h: Harness) -> None:
+async def _seed_bulk(h: Harness) -> None:  # noqa: F811
     r = h.redis
     for f in ("f1", "f2", "f3"):
         await track_source(f"docdex:src1:{f}", "document", 2, redis_client=r,
@@ -61,11 +61,11 @@ async def _seed_bulk(h: Harness) -> None:
                        workspace_id="ws1", member_id="m-alice")
 
 
-async def _tracked_names(h: Harness) -> set[str]:
+async def _tracked_names(h: Harness) -> set[str]:  # noqa: F811
     return {r["name"] for r in await list_sources(redis_client=h.redis)}
 
 
-def _qdrant_deleted_names(h: Harness) -> list[str]:
+def _qdrant_deleted_names(h: Harness) -> list[str]:  # noqa: F811
     """The exact metadata.source_name each Qdrant delete filtered on."""
     names = []
     for call in h.vector.delete_by_filter.call_args_list:
@@ -93,7 +93,7 @@ class TestDexSourcePrefix:
 
 class TestBulkDelete:
     @pytest.mark.asyncio
-    async def test_multi_file_source_removed_in_one_call(self, h):
+    async def test_multi_file_source_removed_in_one_call(self, h):  # noqa: F811
         await _seed_bulk(h)
         h.act_as(ALICE_DEX)
         resp = await h.delete("/corpus/dex-sources/src1")
@@ -110,7 +110,7 @@ class TestBulkDelete:
                 "docdex:src1:zz", "team-wiki"} <= remaining
 
     @pytest.mark.asyncio
-    async def test_deletes_are_exact_names_from_tracked_records(self, h):
+    async def test_deletes_are_exact_names_from_tracked_records(self, h):  # noqa: F811
         await _seed_bulk(h)
         h.act_as(ALICE_DEX)
         resp = await h.delete("/corpus/dex-sources/src1")
@@ -120,7 +120,7 @@ class TestBulkDelete:
         assert sorted(_qdrant_deleted_names(h)) == sorted(_SRC1_WS1)
 
     @pytest.mark.asyncio
-    async def test_bulk_delete_is_workspace_bounded(self, h):
+    async def test_bulk_delete_is_workspace_bounded(self, h):  # noqa: F811
         await _seed_bulk(h)
         h.act_as(OUTSIDER_DEX)
         resp = await h.delete("/corpus/dex-sources/src1")
@@ -138,7 +138,7 @@ class TestBulkDelete:
 
 class TestBulkDeleteAuthz:
     @pytest.mark.asyncio
-    async def test_generic_credential_403(self, h):
+    async def test_generic_credential_403(self, h):  # noqa: F811
         await _seed_bulk(h)
         h.act_as(BOB)
         resp = await h.delete("/corpus/dex-sources/src1")
@@ -153,7 +153,7 @@ class TestBulkDeleteAuthz:
         assert _SRC1_WS1 <= await _tracked_names(h)
 
     @pytest.mark.asyncio
-    async def test_dex_scoped_non_owner_still_blocked_by_ownership(self, h):
+    async def test_dex_scoped_non_owner_still_blocked_by_ownership(self, h):  # noqa: F811
         await _seed_bulk(h)
         h.act_as(DEXBOT)
         resp = await h.delete("/corpus/dex-sources/src1")
@@ -162,7 +162,7 @@ class TestBulkDeleteAuthz:
         assert _SRC1_WS1 <= await _tracked_names(h)
 
     @pytest.mark.asyncio
-    async def test_admin_can_bulk_delete(self, h):
+    async def test_admin_can_bulk_delete(self, h):  # noqa: F811
         await _seed_bulk(h)
         h.act_as(ADMIN)
         resp = await h.delete("/corpus/dex-sources/src1")
@@ -170,7 +170,7 @@ class TestBulkDeleteAuthz:
         assert resp.json()["deleted_sources"] == 3
 
     @pytest.mark.asyncio
-    async def test_cross_workspace_indistinguishable_from_missing(self, h):
+    async def test_cross_workspace_indistinguishable_from_missing(self, h):  # noqa: F811
         await _seed_bulk(h)
         h.act_as(OUTSIDER_DEX)  # ws2; src2 exists only in ws1
         other_ws = await h.delete("/corpus/dex-sources/src2")

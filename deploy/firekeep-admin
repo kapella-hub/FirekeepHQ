@@ -7,7 +7,7 @@ set -euo pipefail
 #   firekeep-admin keys create --agent NAME [--expires-days N]
 #   firekeep-admin keys revoke CREDENTIAL_ID
 
-NON_ADMIN_SCOPES='["memory:read","memory:write","session:read","session:write","replay:read","relay:read","relay:write","eval:read","eval:write","vault:read"]'
+NON_ADMIN_SCOPES='["memory:read","memory:write","session:read","session:write","replay:read","relay:read","relay:write","eval:read","eval:write","vault:read","dex:docdex"]'
 API_URL="${FIREKEEP_API_URL:-http://localhost:8100}"
 ENV_FILE="${ENV_FILE:-.env}"
 IFS=' ' read -r -a REDIS <<< "${BOOTSTRAP_REDIS_CMD:-docker compose exec -T redis redis-cli -n 7}"

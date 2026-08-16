@@ -49,12 +49,15 @@ class TestScopes:
             # retrieve a credential without holding a key-minting scope. WRITE and
             # DELETE on the vault stay admin-only.
             "vault:read",
+            # Per-dex reserved-prefix write scope (Docdex §4.3): a `docdex:`
+            # corpus source is writable only by a key carrying this (or admin).
+            "dex:docdex",
             "admin",
         }
         assert SCOPES == expected
 
     def test_scope_count(self):
-        assert len(SCOPES) == 11
+        assert len(SCOPES) == 12
 
 
 @pytest.fixture
