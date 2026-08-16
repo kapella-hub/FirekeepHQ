@@ -65,6 +65,9 @@ async def scan_gateway_events(replay_redis, window_days: int = TRUST_WINDOW_DAYS
         except (json.JSONDecodeError, TypeError):
             invalid["malformed"] += 1
             continue
+        if not isinstance(payload, dict):  # valid JSON, but "null"/a scalar/a list
+            invalid["malformed"] += 1
+            continue
         action_id = payload.get("action_id")
         if not action_id:
             invalid["missing_action_id"] += 1
@@ -135,8 +138,12 @@ def build_rows(events: list[dict], truncated: bool) -> list[dict]:
         row["reconciled"] += 1
         row["sessions"].add(e["session_id"])
         row["ts"].append(e["ts"])
-        outcome = e["payload"].get("outcome") or {}
-        if outcome.get("success") is False:
+        # `outcome` is a dict in the current reconcile schema, but real stream
+        # events in the window are heterogeneous — older ones carry a STRING
+        # outcome, and `... or {}` leaves a non-empty string intact (truthy).
+        # Guard by type, the way the predict loop already guards `prediction`.
+        outcome = e["payload"].get("outcome")
+        if isinstance(outcome, dict) and outcome.get("success") is False:
             row["reversals"] += 1
         match = e["payload"].get("prediction_match_score")
         if conf is not None and match is not None:

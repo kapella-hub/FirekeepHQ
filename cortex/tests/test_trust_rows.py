@@ -149,3 +149,17 @@ def test_trend_survives_tied_timestamps():
              [_reconcile("a", f"p{i}", T0, match=0.6) for i in range(10)]
     row = trust.build_rows(events, truncated=False)[0]
     assert row["calibration_trend"] is not None  # not None despite the tie
+
+
+def test_string_outcome_does_not_crash():
+    """Real stream data is heterogeneous: an older reconcile can carry a
+    STRING outcome (not a dict). It must not raise, and must not count as a
+    reversal. (Production 500 caught on the first deploy — 'str' has no .get)."""
+    events = [_predict("a", "p1", T0, confidence=0.5),
+              {"event_type": "agent.action.reconcile", "agent_id": "a",
+               "session_id": "s", "action_id": "p1", "ts": T0,
+               "payload": {"action_id": "p1", "outcome": "success",  # str, not dict
+                           "prediction_match_score": 0.5}}]
+    row = trust.build_rows(events, truncated=False)[0]
+    assert row["reconciled"] == 1
+    assert row["reversals"] == 0  # a str outcome is not success==False

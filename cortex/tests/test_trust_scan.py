@@ -100,3 +100,16 @@ async def test_remaining_invalid_branches(r):
     assert invalid["blank_session"] == 1
     assert invalid["missing_action_id"] == 1
     assert invalid["bad_timestamp"] == 1
+
+
+@pytest.mark.asyncio
+async def test_non_dict_payload_counted_malformed(r):
+    """Valid JSON that is not an object (a bare null/scalar/list) is malformed,
+    not a crash on payload.get."""
+    now_ms = 1_800_000_000_000
+    await r.xadd("rp:events", {"event_type": "agent.action.predict", "agent_id": "a",
+                               "session_id": "s", "payload": "null",  # valid JSON, not a dict
+                               "timestamp": "2026-08-16T00:00:00+00:00"}, id=f"{now_ms}-0")
+    events, _, _, invalid = await trust.scan_gateway_events(r, window_days=3650, cap=100)
+    assert events == []
+    assert invalid["malformed"] == 1
