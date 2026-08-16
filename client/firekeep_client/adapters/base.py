@@ -446,6 +446,31 @@ FIREKEEP_INSTRUCTIONS = (
 )
 
 
+# The same protocol for a runtime with NO hook surface (`--runtime generic`: any
+# MCP client the kit ships no bespoke adapter for). It differs from
+# FIREKEEP_INSTRUCTIONS by exactly one clause — the sentence excusing routine
+# single-file edits from action_before "because hooks already gate them". A
+# generic client has no pre-edit gate, so that line would assert a safety net
+# that is not there. Everything else in the protocol applies unchanged.
+#
+# Expressed as a .replace() of the one clause rather than two hand-maintained
+# texts ON PURPOSE: any future edit to MEMORY_INSTRUCTIONS lands in both
+# variants automatically, and the test asserting the two differ catches the day
+# the clause is reworded and the replace silently stops matching.
+#
+# NOTE: codex is also hookless and still renders FIREKEEP_INSTRUCTIONS, so it
+# carries the same over-statement today. Reconciling it is a separate change —
+# folding it in here would move codex's rendered bytes.
+MEMORY_INSTRUCTIONS_NO_HOOKS = MEMORY_INSTRUCTIONS.replace(
+    "; routine single-file edits\nare already gated by hooks and need no declaration.",
+    ".",
+)
+
+GENERIC_INSTRUCTIONS = (
+    f"{MEMORY_INSTRUCTIONS_NO_HOOKS}\n\n{DECISION_INSTRUCTIONS}\n\n{KNOWLEDGE_INGEST_INSTRUCTIONS}"
+)
+
+
 # Short form for the MCP `initialize` handshake. Since the gateway collapsed the
 # per-service shims, the ONLY handshake text an agent ever receives is
 # GATEWAY_INSTRUCTIONS below (gateway.py discards backend `instructions=` during
@@ -499,6 +524,22 @@ def _hash12(text: str) -> str:
 # covers the handshake text served fresh from the running wheel every session.
 RENDERED_INSTRUCTIONS_HASH = _hash12(FIREKEEP_INSTRUCTIONS)
 GATEWAY_INSTRUCTIONS_HASH = _hash12(GATEWAY_INSTRUCTIONS)
+# Same definition for the hook-free text. Doctor compares a rendered block
+# against the hash for ITS runtime — a generic block checked against the four's
+# hash would read "edited" forever.
+RENDERED_GENERIC_INSTRUCTIONS_HASH = _hash12(GENERIC_INSTRUCTIONS)
+
+def _stamped_begin(content: str) -> str:
+    """The BEGIN marker line for a block, stamped with the hash of the CONTENT it
+    wraps. The comment below says the stamp must be a pure function of the
+    content; this makes it one for every caller, not just the four's constant.
+    `_stamped_begin(FIREKEEP_INSTRUCTIONS) is INSTRUCTIONS_BEGIN` by
+    construction — the four's rendered bytes cannot drift from this."""
+    return (
+        f"{INSTRUCTIONS_BEGIN_PREFIX} h={_hash12(content)}"
+        " — firekeep-owned block, do not edit; re-rendered by `firekeep install` -->"
+    )
+
 
 # The stamped BEGIN marker: h= the hash of the content it wraps. Deliberately
 # NO v= (wheel version): the stamp must be a pure function of the CONTENT, or
@@ -507,10 +548,7 @@ GATEWAY_INSTRUCTIONS_HASH = _hash12(GATEWAY_INSTRUCTIONS)
 # prefix, the exact cost write_text_if_changed's docstring calls indefensible
 # (external review 2026-08-12). Which wheel rendered it is recoverable from
 # the hash; version attribution rides X-Firekeep-Client, not the file.
-INSTRUCTIONS_BEGIN = (
-    f"{INSTRUCTIONS_BEGIN_PREFIX} h={RENDERED_INSTRUCTIONS_HASH}"
-    " — firekeep-owned block, do not edit; re-rendered by `firekeep install` -->"
-)
+INSTRUCTIONS_BEGIN = _stamped_begin(FIREKEEP_INSTRUCTIONS)
 
 
 def _line_anchored_find(text: str, needle: str, start: int = 0) -> int:
@@ -573,8 +611,13 @@ def upsert_marked_block(existing: str, content: str) -> str:
     preserved byte-for-byte on both sides. Idempotent: rendering twice yields
     the same file. A legacy UNSTAMPED block (pre-0.1.41 begin line) is found by
     the same prefix match and replaced by the stamped block — the migration
-    path needs no separate code."""
-    block = f"{INSTRUCTIONS_BEGIN}\n{content}{INSTRUCTIONS_END}\n"
+    path needs no separate code.
+
+    The begin line is stamped from `content`, not from the module constant, so a
+    runtime rendering a different text (generic's hook-free variant) carries ITS
+    hash rather than the four's. For content == FIREKEEP_INSTRUCTIONS the line is
+    byte-identical to INSTRUCTIONS_BEGIN."""
+    block = f"{_stamped_begin(content)}\n{content}{INSTRUCTIONS_END}\n"
     bounds = _find_marked_block(existing)
     if bounds is not None:
         begin, end = bounds

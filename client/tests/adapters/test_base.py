@@ -153,3 +153,37 @@ def test_hook_command_unquoted_when_no_spaces(tmp_path):
     venv_bin = tmp_path / "venv" / "bin"
     cmd = base.hook_command(venv_bin, "stop")
     assert not cmd.startswith('"')
+
+
+# --- content-derived block stamp + the hook-free instruction variant ----------
+
+
+def test_upsert_marked_block_is_byte_identical_for_four_content():
+    """Byte-for-byte regression pin: the four render FIREKEEP_INSTRUCTIONS, whose
+    hash IS RENDERED_INSTRUCTIONS_HASH, so the content-derived stamp must equal
+    the old hardcoded INSTRUCTIONS_BEGIN line."""
+    from firekeep_client.adapters import base
+
+    out = base.upsert_marked_block("", base.FIREKEEP_INSTRUCTIONS)
+    assert out.splitlines()[0] == base.INSTRUCTIONS_BEGIN
+
+
+def test_upsert_marked_block_stamps_generic_content_with_generic_hash():
+    from firekeep_client.adapters import base
+
+    out = base.upsert_marked_block("", base.GENERIC_INSTRUCTIONS)
+    assert f"h={base.RENDERED_GENERIC_INSTRUCTIONS_HASH}" in out.splitlines()[0]
+    assert base.RENDERED_GENERIC_INSTRUCTIONS_HASH != base.RENDERED_INSTRUCTIONS_HASH
+
+
+def test_generic_instructions_omit_the_hooks_gating_clause():
+    """A generic client has no pre-edit gate, so the with-hooks text would tell it
+    a gate exists that does not. Everything else in the protocol survives."""
+    from firekeep_client.adapters import base
+
+    # Proves the .replace() landed — a silent no-op would leave the two equal and
+    # every other assertion here would still pass.
+    assert base.MEMORY_INSTRUCTIONS_NO_HOOKS != base.MEMORY_INSTRUCTIONS
+    assert "gated by hooks" not in base.GENERIC_INSTRUCTIONS
+    assert "memory_recall" in base.GENERIC_INSTRUCTIONS
+    assert "decision_board" in base.GENERIC_INSTRUCTIONS
