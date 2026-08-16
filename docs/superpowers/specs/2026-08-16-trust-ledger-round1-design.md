@@ -1,7 +1,7 @@
 # Trust Ledger — round 1 (design, pre-registered 2026-08-16)
 
-**Status: approved design (four decisions taken on the decision board), not
-yet built.** The Institution Thesis's first domino
+**Status: approved design (four decisions taken on the decision board, one
+amendment pass), not yet built.** The Institution Thesis's first domino
 ([`2026-08-14-institution-thesis.md`](2026-08-14-institution-thesis.md),
 pillar 2, ROADMAP §4). Visibility only — the house pattern of Autopilot
 round 1 and Living Instructions round 1: **it reports, it never gates.** No
@@ -17,12 +17,12 @@ applied from day one.
 ## 1. What it measures
 
 A per-agent employment record built from the declarations agents already
-make: the gateway takes a declared prediction with stated confidence
+make: the gateway takes a declared action with optional stated prediction
 (`action_before`), reconciles the outcome (`action_after`), and those become
 `agent.action.predict` / `agent.action.reconcile` events in replay. The
 ledger aggregates them per `agent_id` into a track record — "214 declared
-actions, reconciled 96%, calibration 0.11 and improving, 3 reversals, 28
-sessions."
+actions, reconciled 96%, prediction-match calibration 0.11 over 180 scored
+predictions and improving, 3 reversals, 28 sessions."
 
 **No single trust score (decision 1).** The card shows the honest
 components, never a headline number. A composite gets treated as a gate, and
@@ -30,108 +30,157 @@ round 1 is visibility-only — publishing the one number people would gate on,
 before the broker can enforce anything, is exactly the contradiction the
 2026-08-14 review caught. Components only.
 
-## 2. Data source — the event stream, not the evals
+## 2. Data source — the event stream, and its honest coverage
 
 The aggregation keys on `agent_id`, and the load-bearing fact is where that
 key lives: **every replay event carries `agent_id` as a required field**
 (`replay/models.py` — `agent_id: str = Field(..., min_length=1)`; the emit
-path stamps it), whereas **`EvalResult` does NOT carry `agent_id`** (it has
-`session_id`, `runtime`, `outcome`, `has_failures`, `brier_score` — but no
-agent). So a per-agent ledger cannot come from `rp:eval:*` the way the
-compliance table does; it comes from the gateway events in the global
-`rp:events` stream.
+path stamps it), whereas **`EvalResult` carries only a session-level
+`agents: list[str]`** (`evals/models.py`) — it has no *event-level*
+attribution, so a session's metrics cannot be partitioned among the agents
+that produced them. That, precisely, is why the per-agent ledger cannot come
+from `rp:eval:*` the way the compliance table does; it comes from the gateway
+events in the global `rp:events` stream, where each event names its agent.
 
-**One bounded windowed scan**, the compliance.py discipline moved one layer
-down: `XRANGE rp:events` over the last `TRUST_WINDOW_DAYS` (default 30, to
-match the eval TTL and the compliance window), filtered to
-`agent.action.predict` and `agent.action.reconcile`, grouped by the
-`agent_id` field. The two gateway event types are a small fraction of the
-stream (most events are memory reads/writes), so the scan reads far more than
-it keeps — acceptable for round 1 at current volume, and the scan is **capped
-and the cap disclosed** (`TRUST_SCAN_CAP`, the `scan_evals` `truncated` bool
-precedent): a truncated scan reports a floor, never a census, and says so.
-A per-type or per-agent index is a round-2 change if volume demands it — not
-a claim made now.
+**What it therefore measures: replay-captured gateway actions, not every
+gateway action.** Emission is best-effort — the gateway wraps `replay_emitter`
+in try/except and logs a warning on failure (`agent_gateway/service.py`), and
+the stream is trimmed with an approximate `maxlen` (`emitter.py` `xadd
+approximate=True`). Either half of a predict/reconcile pair can be lost or
+trimmed. The ledger reports what replay captured, and the card says so — it
+is a floor on *declared* activity, itself already a floor on *actual*
+activity (§4).
+
+**One bounded scan with honest truncation.** Read the **latest
+`TRUST_SCAN_CAP + 1`** stream entries within the window (`TRUST_WINDOW_DAYS`,
+default 30, matching the eval TTL and compliance window), newest first,
+filtered to `agent.action.predict` / `agent.action.reconcile`. If `cap + 1`
+entries come back, the window holds more than the cap — **`truncated: true`**,
+and the read is only the freshest slice. Truncation's effect is asymmetric
+and stated exactly (correcting an earlier "everything is a floor" claim,
+which was wrong):
+
+- **Lower bounds under truncation** (still meaningful): `declared`,
+  `reconciled`, `reversals`, `scored_predictions`, `sessions` — we saw at
+  least this many.
+- **Biased under truncation → returned `null`**: `reconciliation_rate`,
+  `calibration`, `calibration_trend`, `first_seen_in_window` — each depends
+  on having the *whole* window (an unread older slice moves the rate, the
+  Brier, the trend split, and the earliest timestamp). `last_seen_in_window`
+  survives (we read the newest). A per-type or per-agent index that would let
+  the full window be read cheaply is a round-2 change if volume demands it —
+  not a claim made now.
 
 ## 3. Frozen aggregation (per `agent_id`, deployment-global)
 
-For each `agent_id` seen in the window (deployment-wide — see §5 on why
-round 1 is not workspace-scoped):
+**The declaration cohort is the unit.** A `declared` action is an
+`agent.action.predict` whose **predict timestamp falls inside the window**.
+Every derived metric — reconciliations, reversals, calibration, trend — is
+computed only over reconciles **paired by `action_id` to a declaration in
+that cohort**, attributed to the *declaring* agent. A reconcile whose
+`action_id` has no in-window declared predict is outside the cohort and
+counts toward no agent. This is what keeps `reconciliation_rate` ≤ 100%: a
+reconcile inside the window whose declaration fell just outside it is not
+counted. `action_id` is globally unique, so pairing is unambiguous; a
+reconcile is attributed to the agent that *declared*, never to its own
+(possibly divergent) `agent_id`.
+
+For each `agent_id` with a declaration in the cohort:
 
 | Field | Frozen definition |
 |---|---|
-| `declared` | count of `agent.action.predict` events |
-| `reconciled` | count of `agent.action.reconcile` events |
-| `reconciliation_rate` | `reconciled / declared` (null when `declared == 0`) |
-| `calibration` | Brier over reconcile events PAIRED to their predict by `action_id` — the exact `evals.scorers.brier_score` computation (`compute.py` does it per session; the ledger does it per agent across the window). Null below `TRUST_MIN_DECLARATIONS` (default 5) paired points — a Brier over one or two actions is noise, not calibration. |
-| `calibration_trend` | Brier(newer half of the window) minus Brier(older half), split at the window midpoint — mirrors the compliance table's older-half→newer-half trend. Null when either half is below the min. **Lower Brier is better**, so a NEGATIVE trend is improvement; the card renders the direction, never a bare signed number. |
-| `reversals` | count of reconcile events with `outcome.success == false` (decision 2) — the agent declared an action, reconciled it, and it failed. Direct from the event, no threshold to tune. |
-| `sessions` | distinct `session_id` across the agent's events |
-| `first_seen` / `last_seen` | min / max event timestamp |
+| `declared` | count of in-window `predict` events (INCLUDING declarations whose `prediction` is null — `action_before` emits a predict for every declaration; `agent_gateway/service.py` writes `prediction: null` when none was stated) |
+| `reconciled` | count of cohort reconciles (paired by `action_id` to this agent's in-window declarations) |
+| `reconciliation_rate` | `reconciled / declared` — null when `declared == 0`, and null when `truncated` (§2) |
+| `scored_predictions` | count of cohort reconciles whose declaration carried a NON-null `prediction` and that produced a `prediction_match_score` — the Brier's actual sample size (the `calibration_n` the card shows) |
+| `calibration` | **prediction-match** Brier over `scored_predictions`, the exact `evals.scorers.brier_score` input. **It scores stated `success_criteria` / `expected_changes` matches (`reconciler.compute_prediction_match_score`), NOT `outcome.success`** — and an action with empty criteria AND empty expected-changes scores 1.0 even if it failed. So calibration and `reversals` are DIFFERENT dimensions on purpose. Null below `TRUST_MIN_CALIBRATION_POINTS` (default 5) scored predictions, and null when `truncated`. |
+| `calibration_trend` | Brier(newer half) minus Brier(older half), split at the window's time midpoint — mirrors the compliance table's older→newer trend. Null when either half is below the min, or when `truncated`. **Lower Brier is better**, so a NEGATIVE trend is improvement; the card renders the direction, never a bare signed number. |
+| `reversals` | count of cohort reconciles with `outcome.success == false` (decision 2) — the agent declared it, reconciled it, it failed. Direct from the event, no threshold. Distinct from calibration (above). |
+| `sessions` | distinct `session_id` across the agent's cohort events (lower bound when `truncated`) |
+| `first_seen_in_window` / `last_seen_in_window` | min / max event timestamp WITHIN the window (explicitly window-relative, not lifetime). `first_seen_in_window` is null when `truncated`; `last_seen_in_window` survives. |
 
-**Unknowns stay unknown.** An `agent_id` with no `predict` events has **no
-record**, not a bad one — it is simply absent from the table. An agent with
-declarations but fewer than `TRUST_MIN_DECLARATIONS` paired points shows
-counts and reversals but a null calibration, labelled "not enough signal",
-never a default-bad number.
+**Unknowns stay unknown.** An `agent_id` with no in-window declaration has
+**no record**, not a bad one — it is simply absent. An agent with fewer than
+`TRUST_MIN_CALIBRATION_POINTS` scored predictions shows counts and reversals
+but a null `calibration`, labelled "not enough signal", never a default-bad
+number.
+
+**Invalid input is counted, not silently dropped.** A blank `agent_id` or
+`session_id`, a missing `action_id`, malformed event JSON, or an
+unparseable timestamp does not join any agent's row; instead it increments a
+visible top-level `invalid` breakdown (`{blank_agent, blank_session,
+missing_action_id, malformed, bad_timestamp}`). A number the reader cannot
+see is the silent-cap failure this repo bans.
 
 ## 4. The honest limits (frozen notes, rendered on the card)
 
 Each is a first-class note, the Living Instructions "adapter is a transport
 class" discipline — a reader who misses these will misread the table:
 
-- **Behavior, not competence.** Calibration measures whether stated
-  confidence matched outcomes, not whether the decisions were good. A
-  perfectly calibrated agent can be confidently, consistently mediocre.
+- **Behavior, not competence.** Calibration measures whether *stated
+  prediction criteria* matched observed criteria/changes, not whether the
+  decisions were good — and empty criteria score a perfect 1.0. A
+  well-formed, confidently mediocre agent scores well here.
 - **Declared actions only.** The ledger sees what an agent *declared* via the
-  gateway. Undeclared work is invisible — so the record is a floor on
-  activity, and an agent that declares nothing is unmeasured, not trusted.
+  gateway, and only what replay *captured* of that (§2). Undeclared or
+  unemitted work is invisible — the record is a floor on a floor, and an
+  agent that declares nothing is unmeasured, not trusted.
 - **`agent_id` is self-reported (decision 3).** It is an observability label,
   not the tenancy boundary (`workspace_id` is that, verified and unforgeable
   — root `CLAUDE.md`). A single actor can split its work across identities or
   merge two under one, and the ledger cannot tell. The record is *per
-  declared identity*, and the note says so — which is precisely why round 1
-  is visibility-only: you do not gate autonomy on a spoofable key.
+  declared identity* — which is precisely why round 1 is visibility-only: you
+  do not gate autonomy on a spoofable key.
 - **Deployment-global, not workspace-scoped (round 1).** The rows are every
-  agent in the deployment, not the caller's workspace only — see §5 for why.
-- **Reversal = a failed declared action**, not "a wrong decision." A
-  correctly-abandoned plan and a crash both reconcile as `success=false`.
-- **Windowed and capped.** Only the last `TRUST_WINDOW_DAYS`, and a truncated
-  scan is a floor — stated on the response, never hidden.
+  agent in the deployment, not the caller's workspace only — see §5 and the
+  tenancy invariant.
+- **Reversal ≠ miscalibration ≠ wrong decision.** `reversals` counts
+  `outcome.success == false`; `calibration` scores stated-criteria match. A
+  correctly-abandoned plan and a crash both reconcile as `success=false`; a
+  failed action with empty criteria still scores 1.0 on calibration. Two
+  honest dimensions, neither of them "was it a good call."
+- **Windowed, capped, truncation-aware.** Only the last `TRUST_WINDOW_DAYS`;
+  under truncation the biased metrics are `null`, not a guessed floor (§2).
 
-## 5. Tenancy and surface
+## 5. Tenancy, the invariant, and the surface
 
 - **Deployment-global in round 1, exactly like the compliance table.**
   `build_compliance(replay_redis)` takes no principal and scans all
   `rp:eval:*` deployment-wide; the trust ledger matches it. The honest reason
   it is NOT workspace-scoped: **replay events carry no `workspace_id`** — the
   emit path stamps `agent_id` and `session_id`, not the tenancy key — so
-  scoping per workspace would require threading `workspace_id` onto every
+  per-workspace scoping would require threading `workspace_id` onto every
   replay event, a write-path change out of scope for a read-only round 1. On
   the single-workspace deployment — which is every deployment today
   (`FIREKEEP_WORKSPACE_ID` is one env var; the Living Procedures H6 WARN-path
-  gap is the same shape) — deployment-global IS the one workspace, so nothing
-  leaks in practice. Multi-workspace scoping is a named later-round item, not
-  a silent gap. The admin gate is the access boundary meanwhile: only an admin
-  key reads the table.
+  gap is the same shape) — deployment-global IS the one workspace.
+- **Tenancy invariant (must hold before multi-workspace ships):** the day a
+  single deployment serves more than one workspace, EITHER replay events must
+  gain a `workspace_id` and this endpoint must filter on the caller's, OR the
+  endpoint must be restricted to a deployment-level superadmin and otherwise
+  fail closed. Shipping multi-workspace with this endpoint unchanged would
+  leak one workspace's agent activity to another workspace's admin. Safe today
+  (single-workspace); recorded here so it cannot be forgotten when that
+  changes.
 - **`GET /autopilot/trust`** (admin, additive) — `{agents: [<row>...],
-  window_days, scanned, truncated, generated_at}`, rows sorted by
+  window_days, scanned, truncated, invalid, generated_at}`, rows sorted by
   `(-declared, agent_id)`. Admin-scoped like the rest of the Autopilot
-  operator surface (`/autopilot/inbox`, `/autopilot/compliance`), and it takes
-  no workspace parameter — matching `build_compliance`.
+  operator surface (`/autopilot/inbox`, `/autopilot/compliance`); no workspace
+  parameter, matching `build_compliance`.
 - **Dashboard**: a Trust Ledger card on the Autopilot tab beside the
   compliance table, same honesty-note treatment. Pure render function behind
   the extraction sentinels (the `proceduresPanel` / compliance precedent) so
-  it is testable under node without a browser. Absent/empty → "no agent has
-  declared an action yet", never an invented row.
+  it is testable under node without a browser. Truncation shows a banner; a
+  null biased-metric renders as "—" with the reason, never 0. Absent/empty →
+  "no agent has declared an action yet", never an invented row.
 
 ## 6. Config (frozen constants)
 
 | Var | Default | Purpose |
 |---|---|---|
 | `TRUST_WINDOW_DAYS` | 30 | Aggregation window; matches the eval TTL and compliance window |
-| `TRUST_SCAN_CAP` | 50000 | Max stream entries read per request; on hit, `truncated: true` and the rows are a floor |
-| `TRUST_MIN_DECLARATIONS` | 5 | Paired points below which calibration/trend report null ("not enough signal"), mirroring `PROCEDURE_MIN_EXECUTIONS`/`OWM_PRIOR_N` |
+| `TRUST_SCAN_CAP` | 50000 | Read the latest cap+1 stream entries; `cap+1` returned ⇒ `truncated: true` and the biased metrics null |
+| `TRUST_MIN_CALIBRATION_POINTS` | 5 | Scored-prediction count below which `calibration`/`calibration_trend` report null ("not enough signal") — applies to PAIRED SCORED predictions, not raw declarations |
 
 No feature flag: the endpoint is admin-gated and read-only-additive, exactly
 like `/autopilot/compliance`, which ships always-on. A deployment with no
@@ -140,38 +189,67 @@ declarations renders an empty table, not an error.
 ## 7. Module and testing
 
 - **`cortex/app/autopilot/trust.py`** — the bounded scan + aggregation, the
-  `compliance.py` mold: pure functions over fetched events (`build_rows`),
-  one async `scan_gateway_events(replay_redis, window, cap)` returning
-  `(events, scanned, truncated)`, one `build_trust(replay_redis)` (no
-  workspace param — §5). No writes, no new event types, no LLM.
+  `compliance.py` mold: `scan_gateway_events(replay_redis, window_days, cap)`
+  returning `(events, scanned, truncated, invalid)`; pure `build_rows(events)`
+  over fetched events; `build_trust(replay_redis)` (no workspace param — §5).
+  No writes, no new event types, no LLM.
 - **Route** on the existing autopilot router (`cortex/app/autopilot/api.py`),
-  admin dep, no workspace parameter (§5 — deployment-global like compliance).
-- **Tests**: the frozen formulas pinned by literal fixtures — declared/
-  reconciled counts, reconciliation rate with `declared==0` → null, Brier
-  paired-by-action_id matches `scorers.brier_score` on the same input, trend
-  sign (improvement = negative), reversal counts `success==false` only,
-  distinct-session and first/last-seen, min-declarations null-out, truncation
-  flag on cap, and unknown-stays-unknown (no record for zero declarations).
-   Dashboard card
-  render tests under node behind the sentinels. Docs-guard: config table in
-  the guide matches the code defaults (the `test_procedure_docs.py` pattern).
+  admin dep, no workspace parameter.
+- **Tests — the frozen formulas and every amendment boundary pinned by
+  literal fixtures:**
+  - cohort cutoff: a declaration just OUTSIDE the window with a reconcile
+    inside → not counted; `reconciliation_rate` never exceeds 100%.
+  - cap vs cap+1: exactly `cap` entries → not truncated; `cap+1` → truncated
+    and the four biased metrics null while counts/sessions stay lower bounds.
+  - asymmetric loss: predict-without-reconcile and reconcile-without-predict
+    each handled (the orphan reconcile is outside the cohort; the unreconciled
+    declaration lowers the rate, does not error).
+  - `calibration` equals `scorers.brier_score` on the same paired input;
+    `scored_predictions` counts only non-null-prediction pairs; empty-criteria
+    action scores 1.0 and is visible as such.
+  - trend sign (improvement = negative), midpoint split, null below the min.
+  - `reversals` counts `success==false` only, independent of calibration.
+  - distinct-session, window-relative first/last-seen, first null under
+    truncation and last surviving.
+  - invalid inputs (blank agent/session, missing action_id, malformed JSON,
+    bad timestamp) increment the visible `invalid` breakdown, join no row.
+  - cross-agent `action_id` pairing attributes to the declaring agent.
+  - unknown-stays-unknown (no record for zero declarations).
+  - Dashboard card render tests under node behind the sentinels.
+  - Docs-guard: the config table in the guide matches the code defaults (the
+    `test_procedure_docs.py` pattern).
 
 ## 8. Out of scope for round 1 (stated)
 
 No composite score; no gating, promotion, or autonomy tiers (round 3, and
-only at the broker); no cross-workspace/global view; no per-type or per-agent
-replay index (round 2 if volume demands); no LLM judgement of decision
-quality; no write path or stored snapshot (compute on demand — decision 4).
-The capability broker (pillar 2b) that turns this from advisory reputation
-into earned autonomy is round 2, and its effort is weeks, not days — the
-honest number the thesis's first draft hid.
+only at the broker); **one deployment-wide operator view — no per-workspace
+slice and no cross-deployment rollup** (the tenancy invariant, §5, is the
+prerequisite for the workspace slice); no per-type or per-agent replay index
+(round 2 if volume demands); no LLM judgement of decision quality; no write
+path or stored snapshot (compute on demand — decision 4). The capability
+broker (pillar 2b) that turns this from advisory reputation into earned
+autonomy is round 2, and its effort is weeks, not days — the honest number
+the thesis's first draft hid.
 
 ## 9. Decision trail
 
 Four decisions, decision board 2026-08-16, all as recommended: (1)
 components only, no composite score; (2) reversal = `outcome.success ==
-false` on a reconciled declared action; (3) key on `agent_id`, workspace-
-scoped, spoofability a first-class honesty note; (4) compute on demand,
-read-only. Data-source correction found during design and folded in: the
-aggregation keys on the event stream's `agent_id`, not `rp:eval:*`, because
-`EvalResult` carries no `agent_id`.
+false` on a reconciled declared action; (3) key on `agent_id` (deployment-
+global — see §5; the board option's "workspace-scoped" phrasing was corrected
+to match the compliance precedent and the replay events' actual fields);
+(4) compute on demand, read-only.
+
+**Amendment pass (same day, user review — six contract fixes, all folded
+in):** (1) the declaration cohort makes `reconciliation_rate` ≤ 100% by
+pairing on in-window predicts; (2) "replay-captured actions, not all actions"
+stated, and truncation nulls the biased metrics (rate/calibration/trend/
+first_seen) instead of calling them floors; (3) `scored_predictions`/
+`calibration_n` exposed, `TRUST_MIN_DECLARATIONS` → `TRUST_MIN_CALIBRATION_
+POINTS`, and calibration relabeled "prediction-match" with the empty-criteria-
+scores-1.0 caveat stated; (4) three textual contradictions fixed —
+`EvalResult` has `agents` but no event-level attribution, decision 3 no longer
+says "workspace-scoped", §8 says "one deployment-wide view" not "no global
+view"; (5) window-relative `first_seen`/`last_seen`, visible `invalid` counts,
+declared-vs-scored distinction; (6) the tenancy invariant recorded for the
+multi-workspace future.
