@@ -134,7 +134,7 @@ Nothing from this section appears on firekeep.ai until its gate holds — the
 dashboard shows it before the site says it. First domino when work starts:
 trust ledger round 1 (visibility only, the house pattern).
 
-## 5. Tiers and Packs (decision record, 2026-08-15 — decided, not yet built)
+## 5. Tiers and dexes (decision record, 2026-08-15 — decided, not yet built)
 
 Five decisions taken on the decision board, shaping the packaging pivot.
 The frame: **the tier answers "who governs this Keep"; deployment answers
@@ -158,38 +158,63 @@ anchors to human members.
    family member's identity is commercial use today. Grant language gets
    amended at the next lawyer touch (LICENSING.md's own rule: lawyer
    before first sale). Nothing is built; the licence stays the boundary.
-3. **Client capabilities become Packs behind a manifest-driven gateway
-   registry** (product name: Packs; `firekeep pack list/add/remove/
-   update/doctor`). Symdex is the first pack and becomes **opt-in via
-   `firekeep pack add symdex`** — this REVERSES the 0.1.4x always-installed
+3. **Client capabilities become dexes behind a manifest-driven gateway
+   registry** (product name: **dexes**, renamed from "Packs" 2026-08-15
+   to keep the family inline with symdex; `firekeep dex list/add/remove/
+   update/doctor`). **The naming rule, load-bearing:** a dex names what
+   it indexes, and nothing gets the -dex suffix unless it is genuinely an
+   index — a dex gives the Keep UNDERSTANDING of a domain. The day a
+   capability cannot honestly be called an index (it sends, moves,
+   spends), it belongs to the capability broker (§4), not the dex family;
+   the name enforces the thesis's understanding/action boundary. Symdex
+   is the first dex and becomes **opt-in via `firekeep dex add symdex`** — this REVERSES the 0.1.4x always-installed
    decision, by explicit owner choice over the reviewer recommendation of
    default-on. **The rationale (stated 2026-08-15, and it is the premise
-   for the whole pack model): Personal targets GENERAL use, so no domain
-   pack is privileged — code intelligence is one peer among documents,
+   for the whole dex model): Personal targets GENERAL use, so no domain
+   dex is privileged — code intelligence is one peer among documents,
    email, calendar, all delivered on demand.** A general-use product whose
-   code pack auto-installs has its identity decided by its first plugin.
+   code dex auto-installs has its identity decided by its first plugin.
    The today's-funnel concern (current users are all coding agents) is
    handled by SUGGESTION, not defaults: install detects a dev-shaped
    machine and the doctor/briefing surfaces the one-line add command —
-   no new install questions, no privileged pack. Consequence: Documents
-   is the strategically important second pack (first proof Personal is
+   no new install questions, no privileged dex. Consequence: Documents
+   is the strategically important second dex (first proof Personal is
    not a dev tool, buildable now over the existing corpus ingest); the
    still-missing half of general-use Personal is a HOST surface a
    non-developer actually opens (consumer MCP hosts near-term; the parked
    Desktop bet long-term). Migration rule when it lands: an update never removes a
    capability an install already has — existing installs keep symdex;
-   opt-in applies to new installs. Pack permissions are DISCLOSURE
-   client-side and scoped per-pack API keys server-side; no sandboxing is
-   claimed that does not exist. Third-party packs wait for the capability
-   broker (§4). The pack list is not announced — the system ships with
-   Symdex as proof; the cheapest honest second pack is Documents (a thin
-   local-folder-watch client over the existing corpus ingest).
-4. **Pack milestone 1 starts when the install-story stream lands** its
+   opt-in applies to new installs. Dex permissions are DISCLOSURE
+   client-side and scoped per-dex API keys server-side; no sandboxing is
+   claimed that does not exist. Third-party dexes wait for the capability
+   broker (§4). The dex list is not announced — the system ships with
+   Symdex as proof; the second dex is **Docdex** (documents), designed
+   2026-08-15:
+   [`docs/superpowers/specs/2026-08-15-docdex-design.md`](superpowers/specs/2026-08-15-docdex-design.md)
+   — per-folder visibility default PRIVATE (one general server change: a
+   corpus `visibility` flag enforced as a hard recall filter), scheduled
+   scan, md/txt/pdf/docx, delete-on-sync, and NO agent-callable folder
+   tools (folder selection is a privacy decision, so the tool is absent,
+   not guarded).
+   **The SDK ladder (decided 2026-08-15)** — user-built dexes arrive in
+   this order, each rung gated by the one before: (1) milestone-1
+   manifest + registry, designed as if public; (2) Docdex ships as
+   consumer #2 and proves the contract; (3) dev-mode side-loading
+   (`firekeep dex add --local`, unsigned, loudly marked in doctor — the
+   owner's machine already runs the owner's code, so this adds honesty,
+   not risk); (4) the published **dex kit** (SDK docs + shared lib,
+   extracted from what two real dexes proved — publishing earlier would
+   freeze guesses); (5) signed third-party submission ONLY after the
+   capability broker can govern what a submitted dex may touch — a
+   marketplace is a security product, and accepting third-party code
+   that reads personal files without an enforcement point is disclosure
+   theater.
+4. **Dex milestone 1 starts when the install-story stream lands** its
    overhaul (it owns gateway.py/bootstrap/cli.py this week): manifest
    registry replacing the LOCAL_SERVERS tuple, symdex behind it (still
    bundled as the checksum-verified wheel — the signed supply chain
-   stays), pack list/doctor, per-pack scoped identity, hooks and
-   auto-index behind the pack boundary. The two-question install
+   stays), dex list/doctor, per-dex scoped identity, hooks and
+   auto-index behind the dex boundary. The two-question install
    experience must not regress — no new install-time questions.
 5. **Firekeep Desktop (embedded no-Docker core) is parked as explicit
    research** — replacing Neo4j/Qdrant/Redis/Ollama with embedded
@@ -202,6 +227,6 @@ anchors to human members.
 
 Nothing above appears on firekeep.ai until it exists to the §4 standard:
 the dashboard shows it before the site says it. Docs and CLAUDE.md keep
-describing CURRENT behaviour (symdex always-installed) until the pack
+describing CURRENT behaviour (symdex always-installed) until the dex
 milestone actually lands — a doc that describes the decided future as the
 present would simply be wrong.
