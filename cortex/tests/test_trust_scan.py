@@ -52,7 +52,7 @@ async def test_cap_vs_cap_plus_one(r):
 @pytest.mark.asyncio
 async def test_invalid_counted_not_dropped(r):
     now_ms = 1_800_000_000_000
-    # blank agent, and malformed payload
+    # An unattributable PREDICT (blank agent) and a malformed reconcile payload.
     await r.xadd("rp:events", {"event_type": "agent.action.predict", "agent_id": "",
                                "session_id": "s", "payload": json.dumps({"action_id": "p"}),
                                "timestamp": "2026-08-16T00:00:00+00:00"}, id=f"{now_ms}-0")
@@ -61,8 +61,24 @@ async def test_invalid_counted_not_dropped(r):
                                "timestamp": "2026-08-16T00:00:00+00:00"}, id=f"{now_ms+1}-0")
     events, _, _, invalid = await trust.scan_gateway_events(r, window_days=3650, cap=100)
     assert events == []
-    assert invalid["blank_agent"] == 1
+    assert invalid["unattributed_predict"] == 1
     assert invalid["malformed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_blank_agent_reconcile_is_kept_for_pairing(r):
+    """A reconcile's OWN agent_id is irrelevant — it is attributed to the
+    declaring agent by action_id in build_rows. The gateway emits agent_id=""
+    on a reconcile whose predict RECORD expired; keeping it recovered ~99% of
+    real reconciliations that the ledger had been discarding (measured live)."""
+    now_ms = 1_800_000_000_000
+    await r.xadd("rp:events", {"event_type": "agent.action.reconcile", "agent_id": "",
+                               "session_id": "", "payload": json.dumps({"action_id": "p1"}),
+                               "timestamp": "2026-08-16T00:00:00+00:00"}, id=f"{now_ms}-0")
+    events, _, _, invalid = await trust.scan_gateway_events(r, window_days=3650, cap=100)
+    assert len(events) == 1  # kept, not rejected
+    assert events[0]["event_type"] == "agent.action.reconcile"
+    assert invalid["unattributed_predict"] == 0
 
 
 @pytest.mark.asyncio
@@ -83,11 +99,13 @@ async def test_out_of_window_events_excluded(r):
 
 
 @pytest.mark.asyncio
-async def test_remaining_invalid_branches(r):
-    """blank_session, missing_action_id, bad_timestamp each counted, none joins."""
+async def test_missing_action_id_and_bad_timestamp_counted(r):
+    """missing_action_id and bad_timestamp each counted; a PREDICT with a blank
+    session is NOT invalid (a real agent declared it) — it is kept, and its
+    blank session simply does not contribute to the session count."""
     now_ms = 1_800_000_000_000
     await r.xadd("rp:events", {"event_type": "agent.action.predict", "agent_id": "a",
-                               "session_id": "", "payload": json.dumps({"action_id": "p"}),
+                               "session_id": "", "payload": json.dumps({"action_id": "keep"}),
                                "timestamp": "2026-08-16T00:00:00+00:00"}, id=f"{now_ms}-0")
     await r.xadd("rp:events", {"event_type": "agent.action.predict", "agent_id": "a",
                                "session_id": "s", "payload": json.dumps({}),  # no action_id
@@ -96,8 +114,7 @@ async def test_remaining_invalid_branches(r):
                                "session_id": "s", "payload": json.dumps({"action_id": "p"}),
                                "timestamp": "not-a-timestamp"}, id=f"{now_ms+2}-0")
     events, _, _, invalid = await trust.scan_gateway_events(r, window_days=3650, cap=100)
-    assert events == []
-    assert invalid["blank_session"] == 1
+    assert {e["action_id"] for e in events} == {"keep"}  # blank-session predict kept
     assert invalid["missing_action_id"] == 1
     assert invalid["bad_timestamp"] == 1
 

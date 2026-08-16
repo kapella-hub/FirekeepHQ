@@ -83,7 +83,18 @@ counts toward no agent. This is what keeps `reconciliation_rate` ≤ 100%: a
 reconcile inside the window whose declaration fell just outside it is not
 counted. `action_id` is globally unique, so pairing is unambiguous; a
 reconcile is attributed to the agent that *declared*, never to its own
-(possibly divergent) `agent_id`.
+`agent_id` — **which is therefore IRRELEVANT to a reconcile**, and often
+empty in practice: the gateway resolves a reconcile's agent from the
+short-lived `ag:predict:{action_id}` record (~300s TTL), and once that has
+expired it emits the reconcile with `agent_id=""` and `session_id=""` while
+the predict *event* still lives in the 30-day stream. Round 1's first live
+read proved this concrete: **99% of blank-agent reconciles (3941/3942)
+paired to an in-window attributed predict**, so rejecting them at the scan —
+which the first build did — discarded almost every real reconciliation and
+undercounted every agent's rate to near-zero. The scan therefore keeps a
+reconcile regardless of its own `agent_id`/`session_id`; only a **predict**
+requires a non-empty `agent_id`, because the predict IS the declaration
+being attributed (§ "Invalid input" below).
 
 For each `agent_id` with a declaration in the cohort:
 
@@ -105,12 +116,18 @@ For each `agent_id` with a declaration in the cohort:
 but a null `calibration`, labelled "not enough signal", never a default-bad
 number.
 
-**Invalid input is counted, not silently dropped.** A blank `agent_id` or
-`session_id`, a missing `action_id`, malformed event JSON, or an
-unparseable timestamp does not join any agent's row; instead it increments a
-visible top-level `invalid` breakdown (`{blank_agent, blank_session,
-missing_action_id, malformed, bad_timestamp}`). A number the reader cannot
-see is the silent-cap failure this repo bans.
+**Invalid input is counted, not silently dropped.** An event the ledger
+genuinely cannot use increments a visible top-level `invalid` breakdown
+(`{unattributed_predict, missing_action_id, malformed, bad_timestamp}`)
+rather than joining any agent's row. The four causes: malformed event JSON,
+a payload that is valid JSON but not an object, a missing `action_id` (a
+predict cannot be keyed, a reconcile cannot pair), an unparseable timestamp,
+and — **predict only** — a blank `agent_id` (`unattributed_predict`: a
+declaration with no agent to attribute it to). A blank `session_id` is NOT
+invalid: a predict with one is a real declaration (kept; it just does not
+contribute to the session count), and a reconcile with one is the common
+expired-record case above (kept; paired by `action_id`). A number the reader
+cannot see is the silent-cap failure this repo bans.
 
 ## 4. The honest limits (frozen notes, rendered on the card)
 
@@ -211,9 +228,12 @@ declarations renders an empty table, not an error.
   - `reversals` counts `success==false` only, independent of calibration.
   - distinct-session, window-relative first/last-seen, first null under
     truncation and last surviving.
-  - invalid inputs (blank agent/session, missing action_id, malformed JSON,
-    bad timestamp) increment the visible `invalid` breakdown, join no row.
-  - cross-agent `action_id` pairing attributes to the declaring agent.
+  - invalid inputs (unattributed predict, missing action_id, malformed/
+    non-dict JSON, bad timestamp) increment the visible `invalid` breakdown,
+    join no row; a blank-session PREDICT and a blank-agent/session RECONCILE
+    are KEPT (the latter recovered by action_id pairing).
+  - cross-agent `action_id` pairing attributes to the declaring agent,
+    including a reconcile whose own `agent_id`/`session_id` is empty.
   - unknown-stays-unknown (no record for zero declarations).
   - Dashboard card render tests under node behind the sentinels.
   - Docs-guard: the config table in the guide matches the code defaults (the
@@ -253,3 +273,24 @@ says "workspace-scoped", §8 says "one deployment-wide view" not "no global
 view"; (5) window-relative `first_seen`/`last_seen`, visible `invalid` counts,
 declared-vs-scored distinction; (6) the tenancy invariant recorded for the
 multi-workspace future.
+
+**Second amendment (same day, from the FIRST live production read — the
+frozen formula corrected before any number is published).** The first deploy
+read `/autopilot/trust` against real replay data and exposed a correctness
+bug: the scan rejected any gateway event with a blank `agent_id`, counting
+3193 as invalid — but those were all `agent.action.reconcile` events whose
+agent the gateway could not resolve (expired predict record), and a
+reconcile's own `agent_id` is irrelevant because it is attributed to the
+declaring agent by `action_id`. 99% (3941/3942) paired to a real in-window
+predict, so the ledger had been discarding almost every reconciliation and
+reporting near-zero rates (agents that "never reconciled" actually reconciled
+fine). Fix: the scan keeps a reconcile regardless of its `agent_id`/
+`session_id`; only a predict requires a non-empty `agent_id`; blank sessions
+no longer count toward the session set. The `invalid` breakdown became
+`{unattributed_predict, missing_action_id, malformed, bad_timestamp}` (blank
+`agent_id`/`session_id` dropped as rejection reasons). Also fixed the same
+pass: a production 500 when a real reconcile's payload `outcome` was a string
+not a dict — guarded by `isinstance`, plus a non-dict-payload guard in the
+scan. The lesson (second time this class bit, after the corpus store): a scan
+over HISTORICAL production data must carry the legacy and malformed shapes in
+its fixtures, not only the current schema.

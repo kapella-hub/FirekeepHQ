@@ -732,7 +732,7 @@ class TestTrustCard:
                             "sessions": 28, "first_seen_in_window": "2026-08-01T00:00:00+00:00",
                             "last_seen_in_window": "2026-08-16T00:00:00+00:00"}],
                 "window_days": 30, "scanned": 900, "truncated": False,
-                "invalid": {"blank_agent": 0, "blank_session": 0, "missing_action_id": 0,
+                "invalid": {"unattributed_predict": 0, "missing_action_id": 0,
                             "malformed": 0, "bad_timestamp": 0}, "generated_at": "2026-08-16T00:00:00+00:00"}
         html = render_trust(data)  # helper in the test that extracts renderAutopilotTrust
         assert "agent-x" in html and "214" in html and "no agent" not in html
@@ -744,19 +744,19 @@ class TestTrustCard:
                             "sessions": 1, "first_seen_in_window": None,
                             "last_seen_in_window": "2026-08-16T00:00:00+00:00"}],
                 "window_days": 30, "scanned": 3, "truncated": False,
-                "invalid": {"blank_agent": 0, "blank_session": 0, "missing_action_id": 0,
+                "invalid": {"unattributed_predict": 0, "missing_action_id": 0,
                             "malformed": 0, "bad_timestamp": 0}, "generated_at": "x"}
         html = render_trust(data)
         assert "—" in html and ">0<" not in html.split("agent")[1][:200]
 
     def test_truncation_banner(self):
         data = {"agents": [], "window_days": 30, "scanned": 50000, "truncated": True,
-                "invalid": {"blank_agent": 0, "blank_session": 0, "missing_action_id": 0,
+                "invalid": {"unattributed_predict": 0, "missing_action_id": 0,
                             "malformed": 0, "bad_timestamp": 0}, "generated_at": "x"}
         assert "truncat" in render_trust(data).lower()
 
     def test_empty_says_no_declarations(self):
         data = {"agents": [], "window_days": 30, "scanned": 0, "truncated": False,
-                "invalid": {"blank_agent": 0, "blank_session": 0, "missing_action_id": 0,
+                "invalid": {"unattributed_predict": 0, "missing_action_id": 0,
                             "malformed": 0, "bad_timestamp": 0}, "generated_at": "x"}
         assert "no agent" in render_trust(data).lower()

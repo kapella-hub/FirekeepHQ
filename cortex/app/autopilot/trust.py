@@ -24,7 +24,7 @@ _GATEWAY_TYPES = {"agent.action.predict", "agent.action.reconcile"}
 
 
 def _empty_invalid() -> dict[str, int]:
-    return {"blank_agent": 0, "blank_session": 0, "missing_action_id": 0,
+    return {"unattributed_predict": 0, "missing_action_id": 0,
             "malformed": 0, "bad_timestamp": 0}
 
 
@@ -52,14 +52,8 @@ async def scan_gateway_events(replay_redis, window_days: int = TRUST_WINDOW_DAYS
         etype = fields.get("event_type", "")
         if etype not in _GATEWAY_TYPES:
             continue
-        agent = fields.get("agent_id", "")
-        session = fields.get("session_id", "")
-        if not agent:
-            invalid["blank_agent"] += 1
-            continue
-        if not session:
-            invalid["blank_session"] += 1
-            continue
+        # payload / action_id / timestamp are required of BOTH event types —
+        # a reconcile pairs by action_id, a predict is keyed by it.
         try:
             payload = json.loads(fields.get("payload", "{}"))
         except (json.JSONDecodeError, TypeError):
@@ -75,6 +69,20 @@ async def scan_gateway_events(replay_redis, window_days: int = TRUST_WINDOW_DAYS
         ts = _parse_ts(fields.get("timestamp"))
         if ts is None:
             invalid["bad_timestamp"] += 1
+            continue
+        agent = fields.get("agent_id", "")
+        session = fields.get("session_id", "")
+        # A reconcile's OWN agent_id and session are irrelevant: it is
+        # attributed to the DECLARING agent by action_id pairing in build_rows,
+        # and the gateway legitimately emits agent_id="" / session_id="" on a
+        # reconcile whose short-lived predict RECORD (ag:predict:{id}, ~300s
+        # TTL) has expired — while its predict EVENT still lives in the 30-day
+        # stream. Rejecting those here discarded ~99% of real reconciliations
+        # (measured live) and undercounted every agent's rate. Only a PREDICT
+        # needs a non-empty agent_id, because the predict IS the declaration
+        # being attributed; without one it cannot join any agent's row.
+        if etype == "agent.action.predict" and not agent:
+            invalid["unattributed_predict"] += 1
             continue
         events.append({"event_type": etype, "agent_id": agent,
                        "session_id": session, "action_id": action_id,
@@ -115,7 +123,8 @@ def build_rows(events: list[dict], truncated: bool) -> list[dict]:
             declared[e["action_id"]] = (agent, conf)
             row = _row(agent)
             row["declared"] += 1
-            row["sessions"].add(e["session_id"])
+            if e["session_id"]:
+                row["sessions"].add(e["session_id"])
             row["ts"].append(e["ts"])
 
     reconciled_ids: set[str] = set()
@@ -136,7 +145,8 @@ def build_rows(events: list[dict], truncated: bool) -> list[dict]:
         agent, conf = owner
         row = _row(agent)
         row["reconciled"] += 1
-        row["sessions"].add(e["session_id"])
+        if e["session_id"]:  # a reconcile's session is often "" (expired record)
+            row["sessions"].add(e["session_id"])
         row["ts"].append(e["ts"])
         # `outcome` is a dict in the current reconcile schema, but real stream
         # events in the window are heterogeneous — older ones carry a STRING

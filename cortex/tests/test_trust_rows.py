@@ -163,3 +163,23 @@ def test_string_outcome_does_not_crash():
     row = trust.build_rows(events, truncated=False)[0]
     assert row["reconciled"] == 1
     assert row["reversals"] == 0  # a str outcome is not success==False
+
+
+def test_blank_agent_reconcile_credited_to_declarer():
+    """A reconcile with a blank agent_id/session (expired predict record) is
+    attributed to the DECLARING agent by action_id, and its blank session does
+    not pollute the session count. This recovers reconciliations the ledger
+    was discarding (measured live: ~99% of blank reconciles pair)."""
+    events = [
+        _predict("declarer", "p1", T0, confidence=0.8),
+        {"event_type": "agent.action.reconcile", "agent_id": "", "session_id": "",
+         "action_id": "p1", "ts": T0,
+         "payload": {"action_id": "p1", "outcome": {"success": True},
+                     "prediction_match_score": 0.8}},
+    ]
+    rows = trust.build_rows(events, truncated=False)
+    assert [r["agent_id"] for r in rows] == ["declarer"]
+    row = rows[0]
+    assert row["reconciled"] == 1  # recovered, not dropped
+    assert row["reconciliation_rate"] == 1.0
+    assert row["sessions"] == 1  # the predict's session only; blank not added
