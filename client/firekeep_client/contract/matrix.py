@@ -17,10 +17,10 @@ T19 ownership reconciliation (see `firekeep_client.sidecar`'s module docstring),
 lifecycle is owned by the HOOK CORES wherever the runtime has lifecycle hooks — Claude Code
 AND kiro (the kiro adapter wires all five hook cores inline, incl. session_start/stop which
 register/deregister presence; T23 landed after T19's decision, making kiro hook-capable).
-Only codex is truly MCP-only: its presence path is the SIDECAR, which nothing auto-starts
-yet — a codex user must run `firekeep-sidecar` manually until autostart lands (tracked).
-Convention per row = delivery mechanism per runtime: claude/kiro="hook",
-codex="sidecar (manual today)".
+codex and generic are the MCP-only runtimes: their presence path is the SIDECAR, which
+nothing auto-starts yet — such a user must run `firekeep-sidecar` manually until autostart
+lands (tracked). Convention per row = delivery mechanism per runtime: claude/kiro="hook",
+codex/generic="sidecar (manual today)".
 
 MOSTLY hand-authored, which is a known hazard: a cell that describes the kit can drift
 away from the kit and nothing notices (it did -- see `_precompact_claude`). Where a cell's
@@ -40,7 +40,12 @@ from __future__ import annotations
 # import here to paper over it.
 from firekeep_client.adapters.claude import CLAUDE_HOOKS
 
-RUNTIMES = ("claude", "kiro", "codex", "opencode")
+# `generic` is any MCP client the kit ships no bespoke adapter for
+# (firekeep_client/adapters/generic.py). Its column is the FLOOR: the MCP tools
+# and the instruction protocol, and nothing that rides a hook — a client we know
+# nothing about exposes no hook surface to wire. It is listed last because it is
+# what a runtime degrades TO, not a peer of the four.
+RUNTIMES = ("claude", "kiro", "codex", "opencode", "generic")
 
 
 def _precompact_claude(hooks: tuple[tuple[str, str, str | None, int], ...]) -> str:
@@ -71,23 +76,25 @@ def _precompact_claude(hooks: tuple[tuple[str, str, str | None, int], ...]) -> s
 # model context — opencode has no systemMessage channel.
 MATRIX: dict[str, dict[str, str]] = {
     "briefing": {"claude": "hook", "kiro": "agentSpawn hook", "codex": "manual/memory_recall",
-                 "opencode": "plugin (first event, console log only)"},
+                 "opencode": "plugin (first event, console log only)",
+                 "generic": "none (MCP only)"},
     "presence": {"claude": "hook", "kiro": "hook", "codex": "sidecar (manual today)",
-                 "opencode": "plugin hooks"},
+                 "opencode": "plugin hooks", "generic": "sidecar (manual today)"},
     # kiro (validated 2.12.1): the fs_write pre-edit hook FIRES (the agent-gateway before-call
     # runs + records), but kiro does not enforce its own exit-2 block — so it is advisory, not
     # a hard gate. See firekeep_client/adapters/kiro.py + docs/KIRO-VALIDATION.md.
     "pre_edit_block": {"claude": "guaranteed", "kiro": "advisory (fires, non-blocking on 2.12.1)", "codex": "none",
-                       "opencode": "guaranteed (plugin throw, validated 1.14.22)"},
+                       "opencode": "guaranteed (plugin throw, validated 1.14.22)",
+                       "generic": "none"},
     # Only Claude exposes a compaction event; the other three runtimes have no
     # such lifecycle hook to wire, so this degrades honestly rather than silently.
     # The claude cell is DERIVED from the adapter that renders the hook (see
     # _precompact_claude) so it cannot claim a hook the kit does not render; the
     # other three are hand-authored because there is nothing to derive them from.
     "precompact": {"claude": _precompact_claude(CLAUDE_HOOKS), "kiro": "none",
-                   "codex": "none", "opencode": "none"},
+                   "codex": "none", "opencode": "none", "generic": "none"},
     "reconcile": {"claude": "hooks", "kiro": "kiro pre/post hooks", "codex": "self-reported",
-                  "opencode": "plugin pre/post hooks"},
+                  "opencode": "plugin pre/post hooks", "generic": "self-reported"},
     # Personal / bypass mode: the is_bypassed() gate (marker + FIREKEEP_BYPASS) works on
     # every runtime; only the /personal slash command is claude-specific. kiro/codex
     # toggle via the `firekeep personal` CLI (or `! firekeep personal`), or FIREKEEP_BYPASS at launch.
@@ -96,6 +103,7 @@ MATRIX: dict[str, dict[str, str]] = {
         "kiro": "firekeep personal CLI + FIREKEEP_BYPASS (no /personal command)",
         "codex": "firekeep personal CLI + FIREKEEP_BYPASS (sidecar honors the gate)",
         "opencode": "firekeep personal CLI + FIREKEEP_BYPASS (no /personal command)",
+        "generic": "firekeep personal CLI + FIREKEEP_BYPASS (no /personal command)",
     },
 }
 

@@ -175,3 +175,18 @@ def test_bypass_is_claude_only_slash_command():
     assert "no /personal command" in capabilities("kiro")["bypass"]
     assert "/personal command" not in capabilities("codex")["bypass"]
     assert "no /personal command" in capabilities("opencode")["bypass"]
+    assert "no /personal command" in capabilities("generic")["bypass"]
+
+
+def test_generic_column_is_honestly_degraded():
+    """The floor tier: MCP tools and the instruction protocol, nothing that
+    rides a hook — because a client we ship no adapter for exposes none. Every
+    cell here must UNDERSTATE rather than overstate; this file's whole hazard is
+    a cell that claims a capability the kit cannot deliver."""
+    caps = capabilities("generic")
+    assert caps["briefing"] == "none (MCP only)"
+    assert caps["pre_edit_block"] == "none"
+    assert caps["precompact"] == "none"
+    assert caps["presence"] == "sidecar (manual today)"
+    assert caps["reconcile"] == "self-reported"
+    assert "no /personal command" in caps["bypass"]
