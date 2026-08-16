@@ -364,6 +364,17 @@ def _configure(args) -> tuple[bool, wizard.Plan | None]:
         if getattr(args, "host", None):
             cfg.remove_option("server", wizard.UNCONFIGURED_MARKER)
 
+    # ORDERING IS LOAD-BEARING: this must land BEFORE the render loop, which
+    # builds `generic` from the persisted path (get_adapter takes no argument).
+    # Persist afterwards and the first `--agents-md` run renders print-only and
+    # drops the flag. Written through the same cfg round trip, so [server] and
+    # [identity] survive.
+    if getattr(args, "runtime", None) == "generic" and getattr(args, "agents_md", None):
+        if not cfg.has_section("generic"):
+            cfg.add_section("generic")
+        cfg.set("generic", "agents_md", str(Path(args.agents_md).expanduser().resolve()))
+        changed = True
+
     if changed:
         with open(path, "w", encoding="utf-8") as handle:
             cfg.write(handle)
@@ -375,6 +386,14 @@ def _configure(args) -> tuple[bool, wizard.Plan | None]:
 
 
 def cmd_install(args) -> int:
+    # argparse cannot express "--agents-md only with --runtime generic", so the
+    # check is manual — and it happens FIRST, before anything is created: a flag
+    # we would otherwise ignore must fail visibly, not leave the user believing
+    # a rules file is being managed.
+    if getattr(args, "agents_md", None) and getattr(args, "runtime", None) != "generic":
+        print("firekeep: --agents-md is only valid with --runtime generic", file=sys.stderr)
+        return 2
+
     # Fail-loud per step: a teammate's FIRST command must never dump a raw
     # traceback or hang unbounded (the <5 min onboarding promise).
     step = "bootstrap ~/.firekeep"
@@ -461,7 +480,7 @@ def cmd_install(args) -> int:
         # embedded paths stay literally identical across flips) and keeps
         # runtime configs from pinning a venv that GC will remove.
         venv_bin = _venv_bin(_venv_root(home))
-        for name in _selected_runtimes(args.runtime):
+        for name in _selected_runtimes(args.runtime, include_generic=_generic_is_configured()):
             step = f"render {name} adapter"
             get_adapter(name).render(venv_bin=venv_bin)
 
@@ -2123,8 +2142,17 @@ def _build_parser() -> argparse.ArgumentParser:
     # An unset runtime prepares every shipped adapter. Explicit --runtime (or the
     # bootstrap's FIREKEEP_RUNTIME) remains available for a targeted re-render.
     inst.add_argument(
-        "--runtime", choices=["claude", "codex", "kiro", "opencode", "all"], default=None
+        "--runtime",
+        choices=["claude", "codex", "kiro", "opencode", "generic", "all"],
+        default=None,
     )
+    # `generic` is any MCP client the kit ships no bespoke adapter for: it prints
+    # a paste-in gateway snippet, and --agents-md points it at that client's
+    # rules file so the protocol is installed as text too. Persisting the path is
+    # also what makes generic join later installs/uninstalls.
+    inst.add_argument("--agents-md", metavar="PATH",
+                      help="rules/AGENTS.md file the generic runtime manages "
+                           "(only with --runtime generic)")
     # Config answers. Interactively each SEEDS its prompt's default; with
     # --non-interactive (or no TTY) each is written straight to the config.
     inst.add_argument("--agent-id", help="identity attributed to memories/sessions")
@@ -2233,7 +2261,8 @@ def _build_parser() -> argparse.ArgumentParser:
     # proxied server calls carry X-Firekeep-* attribution. Default None: an old
     # rendered config (no flag) keeps working, with no attribution headers.
     gateway.add_argument("--runtime", default=None,
-                         help="runtime that launched this gateway (claude|codex|kiro|opencode)")
+                         help="runtime that launched this gateway "
+                              "(claude|codex|kiro|opencode|generic)")
     gateway.set_defaults(func=cmd_gateway)
 
     # `status` alias: what operators type first on an unfamiliar CLI (observed
