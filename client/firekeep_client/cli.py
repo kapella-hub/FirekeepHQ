@@ -22,6 +22,7 @@ from urllib.parse import urlparse
 from firekeep_client import __version__, pathenv, resolver, serverinit, state, updater, wizard
 from firekeep_client.adapters import get_adapter
 from firekeep_client.adapters.base import (
+    RENDERED_GENERIC_INSTRUCTIONS_HASH,
     RENDERED_INSTRUCTIONS_HASH,
     has_marked_begin,
     read_rendered_instructions_hash,
@@ -553,6 +554,11 @@ def cmd_install(args) -> int:
     else:
         print("firekeep: NEXT STEPS — open a new terminal (or `source` your shell rc), "
               "then run `firekeep doctor`. Config changes apply on next agent start.")
+    # Discovery: nothing else in the product tells a Cursor/Windsurf/Zed user
+    # that a runtime for them exists.
+    hint = _generic_hint()
+    if hint is not None:
+        print(hint)
     return 0
 
 
@@ -1112,8 +1118,29 @@ def _check_codex_adapter(venv: Path) -> list[tuple[str, str, str]]:
     return [("codex-mcp", "ok", str(config))]
 
 
-# The four shipped runtimes, in adapter order (`_selected_runtimes("all")`).
-_INSTRUCTION_RUNTIMES = ("claude", "codex", "kiro", "opencode")
+# The shipped runtimes, in adapter order (`_selected_runtimes("all")`), plus
+# generic — which contributes a row ONLY when the user configured it, so an
+# unconfigured user's doctor output is unchanged.
+_INSTRUCTION_RUNTIMES = ("claude", "codex", "kiro", "opencode", "generic")
+
+
+def _expected_instructions_hash(runtime: str) -> str:
+    """The hash THIS runtime's block should carry. Generic renders the hook-free
+    text, so checking it against the four's hash would report a correct file as
+    'edited' forever."""
+    if runtime == "generic":
+        return RENDERED_GENERIC_INSTRUCTIONS_HASH
+    return RENDERED_INSTRUCTIONS_HASH
+
+
+def _generic_hint() -> str | None:
+    """One line pointing a user on an unsupported MCP client at the generic
+    runtime — the only discovery path for someone who never runs the wizard.
+    None once `[generic]` exists: they already know."""
+    if _generic_is_configured():
+        return None
+    return ("Using another MCP client (Cursor, Windsurf, Gemini CLI, …)? "
+            "`firekeep install --runtime generic --agents-md <path>`")
 
 
 def _check_runtime_instructions(runtime: str) -> tuple[str, str, str] | None:
@@ -1127,22 +1154,37 @@ def _check_runtime_instructions(runtime: str) -> tuple[str, str, str] | None:
     installed."""
     path = rendered_instructions_path(runtime)
     if path is None:
-        return None
-    # Presence evidence: the runtime's config root. For kiro the rendered file
-    # lives one level down (~/.kiro/steering/), so the root is ~/.kiro.
-    root = path.parent.parent if runtime == "kiro" else path.parent
-    try:
-        if not root.exists():
-            return None
-    except OSError:
-        return None
+        return None  # unknown runtime, or generic never opted into
     name = f"{runtime}-instructions"
     repair = f"run `firekeep install --runtime {runtime}`"
+    if runtime == "generic":
+        # The presence gate splits here. For the four, "no trace on disk" means
+        # a runtime this user never installed — silence is right. For generic,
+        # `[generic] agents_md` IS the user telling us they installed it, so a
+        # vanished target is a BROKEN state to report, not an absence to hide.
+        repair = f"run `firekeep install --runtime generic --agents-md {path}`"
+        try:
+            missing = not path.exists()
+        except OSError:
+            missing = True
+        if missing:
+            return (name, "warn",
+                    f"target {path} is missing — {repair}")
+    else:
+        # Presence evidence: the runtime's config root. For kiro the rendered
+        # file lives one level down (~/.kiro/steering/), so the root is ~/.kiro.
+        root = path.parent.parent if runtime == "kiro" else path.parent
+        try:
+            if not root.exists():
+                return None
+        except OSError:
+            return None
+    expected = _expected_instructions_hash(runtime)
     on_disk = read_rendered_instructions_hash(runtime)
     if on_disk is None:
         return (name, "warn",
                 f"absent — no Firekeep instruction block in {path}; {repair}")
-    if on_disk == RENDERED_INSTRUCTIONS_HASH:
+    if on_disk == expected:
         return (name, "ok", f"current (h={on_disk}) in {path}")
     stamp = None
     if runtime != "kiro":  # kiro's steering doc is whole-file, no stamped marker
@@ -1156,7 +1198,7 @@ def _check_runtime_instructions(runtime: str) -> tuple[str, str, str] | None:
                 f"h={stamp} in {path}; {repair}")
     return (name, "warn",
             f"stale — on-disk block h={on_disk}, this wheel renders "
-            f"h={RENDERED_INSTRUCTIONS_HASH} in {path}; {repair}")
+            f"h={expected} in {path}; {repair}")
 
 
 def _check_instructions() -> list[tuple[str, str, str]]:
@@ -1890,6 +1932,9 @@ def cmd_doctor(args) -> int:
         print(f"[{marks[status]}] {name}: {detail}")
         if status == "fail":
             rc = 1
+    hint = _generic_hint()
+    if hint is not None:
+        print(hint)
     return rc
 
 

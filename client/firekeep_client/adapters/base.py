@@ -688,6 +688,11 @@ def rendered_instructions_path(runtime_name: str) -> Path | None:
         # XDG_CONFIG_HOME resolution — duplicating it here would drift.
         from firekeep_client.adapters.opencode import _config_dir
         return _config_dir() / "AGENTS.md"
+    if runtime_name == "generic":
+        # The only runtime whose path the USER chose, so it comes from the kit
+        # config rather than a fixed location. None = never opted in.
+        from firekeep_client.resolver import generic_agents_md  # lazy: cycle
+        return generic_agents_md()
     return None
 
 
