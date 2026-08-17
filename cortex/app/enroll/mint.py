@@ -100,7 +100,11 @@ async def mint_invite(
     )
     code = encode_prepared_join(ticket, record, ca_mode=ca_mode)
     dist = dist_base.rstrip("/")
-    sh_command = f"curl -fsSL {dist}/latest/install.sh | FIREKEEP_JOIN={code} sh"
+    # Extensionless /latest/install, not /latest/install.sh: Hostinger's edge WAF
+    # 403s any URL path ending in .sh (2026-08-17). The branded dist (firekeep.ai)
+    # rewrites /latest/install -> the same script; a custom dist_base must serve
+    # the extensionless path too.
+    sh_command = f"curl -fsSL {dist}/latest/install | FIREKEEP_JOIN={code} sh"
     ps_command = (
         f"$env:FIREKEEP_JOIN='{code}'; irm {dist}/latest/install.ps1 | iex"
     )

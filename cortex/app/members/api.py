@@ -153,7 +153,7 @@ def create_members_router(
             "tid": tid,
             "member_id": record["member_id"],
             "expires_at": record["expires_at"],
-            "install_command_sh": f"curl -fsSL {dist}/latest/install.sh | FIREKEEP_JOIN={code} sh",
+            "install_command_sh": f"curl -fsSL {dist}/latest/install | FIREKEEP_JOIN={code} sh",
             "install_command_powershell": (
                 f"$env:FIREKEEP_JOIN='{code}'; irm {dist}/latest/install.ps1 | iex"
             ),
