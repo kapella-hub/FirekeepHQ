@@ -460,3 +460,79 @@ def test_empty_llm_memory_fields_are_treated_as_malformed(cfg_env):
     out = nightshift.run(call_tool=rec, post_json=_llm_ok(junk), get_json=_get_ok)
     assert out["failed"] == 1
     assert not rec.named("memory_learn")  # junk never becomes a live memory
+
+
+# --------------------------------------------------------------------------- #
+# Ollama needs its NATIVE endpoint to disable thinking. Its OpenAI-compatible  #
+# /v1 honours no thinking control, so a qwen3 model (the shipped default) burns #
+# the whole token budget "thinking" and returns nothing — measured >4min then  #
+# empty. /api/chat with think:false turns the same call into 34s of clean JSON. #
+# --------------------------------------------------------------------------- #
+
+
+def _ollama_get(url, **kw):
+    # This host IS Ollama: the Ollama-only /api/version answers, /models lists one.
+    if url.endswith("/api/version"):
+        return {"version": "0.x"}
+    return {"data": [{"id": "m"}]}
+
+
+def test_ollama_backend_uses_native_chat_with_thinking_disabled(cfg_env, monkeypatch):
+    monkeypatch.delenv("FIREKEEP_NIGHTSHIFT_LLM_BASE", raising=False)
+    rec = _Recorder({"relay_task_list": {"tasks": [_task()], "count": 1}})
+    posted = []
+
+    def post_json(url, body, *, headers, timeout=None, verify=True):
+        posted.append((url, body))
+        return {"message": {"content": json.dumps(_SYNTH)}}  # native /api/chat shape
+
+    out = nightshift.run(call_tool=rec, post_json=post_json, get_json=_ollama_get)
+    assert out["distilled"] == 1                 # native response shape was parsed
+    url, body = posted[0]
+    assert url.endswith("/api/chat")             # NOT /v1/chat/completions
+    assert body.get("think") is False
+    assert body.get("format") == "json"
+    assert rec.named("memory_learn")
+
+
+def test_non_ollama_backend_stays_on_openai_v1(cfg_env, monkeypatch):
+    """LM Studio 404s /api/version, so it keeps the OpenAI /v1 path unchanged — no
+    native think:false, a field it would not accept."""
+    monkeypatch.setenv("FIREKEEP_NIGHTSHIFT_LLM_BASE", "http://127.0.0.1:1234/v1")
+    rec = _Recorder({"relay_task_list": {"tasks": [_task()], "count": 1}})
+    posted = []
+
+    def get_json(url, **kw):
+        if url.endswith("/api/version"):
+            raise nightshift.transport.TransportError("404 not found")
+        return {"data": [{"id": "m"}]}
+
+    def post_json(url, body, *, headers, timeout=None, verify=True):
+        posted.append((url, body))
+        return {"choices": [{"message": {"content": json.dumps(_SYNTH)}}]}
+
+    out = nightshift.run(call_tool=rec, post_json=post_json, get_json=get_json)
+    assert out["distilled"] == 1
+    url, body = posted[0]
+    assert url.endswith("/chat/completions")
+    assert "think" not in body                   # untouched OpenAI body
+
+
+def test_ollama_model_without_thinking_retries_without_think_not_deferred(cfg_env, monkeypatch):
+    """A non-thinking Ollama model rejects `think` with a 400. That is a permanent
+    mismatch, not the transient loss a TransportError normally signals — Night Shift
+    drops the field and retries rather than deferring the whole shift."""
+    monkeypatch.delenv("FIREKEEP_NIGHTSHIFT_LLM_BASE", raising=False)
+    rec = _Recorder({"relay_task_list": {"tasks": [_task()], "count": 1}})
+    bodies = []
+
+    def post_json(url, body, *, headers, timeout=None, verify=True):
+        bodies.append(dict(body))
+        if body.get("think") is not None:
+            raise nightshift.transport.TransportError('400 "model does not support thinking"')
+        return {"message": {"content": json.dumps(_SYNTH)}}
+
+    out = nightshift.run(call_tool=rec, post_json=post_json, get_json=_ollama_get)
+    assert out["distilled"] == 1
+    assert out["deferred"] == 0                   # NOT treated as a transient loss
+    assert "think" in bodies[0] and "think" not in bodies[1]

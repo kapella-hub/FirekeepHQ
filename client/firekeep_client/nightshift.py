@@ -79,8 +79,11 @@ def _llm_model() -> str:
     return os.environ.get("FIREKEEP_NIGHTSHIFT_LLM_MODEL") or _DEFAULT_LLM_MODEL
 
 
-def _detect_llm_base(get_json: Callable[..., Any]) -> tuple[str, list[str]] | None:
-    """Resolve the backend to use as `(base, model_ids)`, or None if none answered.
+def _detect_llm_base(
+    get_json: Callable[..., Any],
+) -> tuple[str, list[str], str | None] | None:
+    """Resolve the backend as `(base, model_ids, ollama_native_root)`, or None if
+    none answered.
 
     An EXPLICIT base is probed and nothing else: a typo must fail loudly rather than
     silently fall through to a different engine than the operator named. With no
@@ -89,6 +92,9 @@ def _detect_llm_base(get_json: Callable[..., Any]) -> tuple[str, list[str]] | No
     The model list comes back from the same probe rather than a second round trip.
     An unreadable shape degrades to `[]`, which callers must treat as "cannot tell"
     — never as "no models".
+
+    `ollama_native_root` is the Ollama native API root when the base turns out to be
+    an Ollama server (else None) — see `_ollama_native_root` for why that path exists.
     """
     if os.environ.get("FIREKEEP_NIGHTSHIFT_LLM_BASE"):
         bases = [_llm_base()]
@@ -103,8 +109,33 @@ def _detect_llm_base(get_json: Callable[..., Any]) -> tuple[str, list[str]] | No
             models = [str(m["id"]) for m in (resp or {}).get("data") or [] if m.get("id")]
         except Exception:  # noqa: BLE001
             models = []
-        return base, models
+        return base, models, _ollama_native_root(base, get_json)
     return None
+
+
+def _ollama_native_root(base: str, get_json: Callable[..., Any]) -> str | None:
+    """If `base` is an Ollama server, return its native API root (the base with a
+    trailing `/v1` stripped); else None.
+
+    This exists because of a measured, load-bearing asymmetry: Ollama's
+    OpenAI-compatible `/v1` endpoint honours NO thinking control — not the `/no_think`
+    soft switch, not a top-level `think`, not `chat_template_kwargs.enable_thinking`.
+    A qwen3-class reasoning model asked for JSON there thinks until it exhausts the
+    token budget and returns empty content (measured >4min, then nothing — the same
+    silent whitespace-burn the cortex dream path hit). Its NATIVE `/api/chat` DOES
+    honour `think: false`, which turns that same call into 34s of clean JSON. Since
+    the shipped default model is a qwen3, Night Shift is broken-by-default on Ollama
+    without this.
+
+    Detection is a probe of the Ollama-only `/api/version`: LM Studio 404s it and so
+    stays on `/v1`, where its own reasoning handling applies.
+    """
+    root = base[:-len("/v1")].rstrip("/") if base.rstrip("/").endswith("/v1") else base.rstrip("/")
+    try:
+        get_json(f"{root}/api/version", headers={}, timeout=5.0)
+    except Exception:  # noqa: BLE001 — not Ollama (LM Studio 404s) or unreachable
+        return None
+    return root
 
 
 def _model_available(model: str, models: list[str]) -> bool:
@@ -195,26 +226,64 @@ def _evidence(sid: str, task: dict, get_json: Callable[..., Any]) -> str:
     return "\n\n".join(parts)
 
 
+def _content_of(resp: Any) -> str:
+    """Pull the assistant text from either chat response shape: OpenAI `/v1`
+    (`choices[0].message.content`) or Ollama native `/api/chat`
+    (`message.content`). Raises so the caller's malformed-reply retry fires."""
+    if isinstance(resp, dict):
+        choices = resp.get("choices")
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            msg = choices[0].get("message")
+            if isinstance(msg, dict) and isinstance(msg.get("content"), str):
+                return msg["content"]
+        msg = resp.get("message")
+        if isinstance(msg, dict) and isinstance(msg.get("content"), str):
+            return msg["content"]
+    raise ValueError("no assistant content in LLM response")
+
+
 def _synthesize(sid: str, assigner: str, evidence: str,
-                post_json: Callable[..., Any], base: str) -> dict:
-    """One LLM distillation with a single retry on malformed output."""
-    body = {
-        "model": _llm_model(),
-        "temperature": 0.2,
-        "messages": [
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content":
-                f"Session {sid} by agent {assigner}. Evidence:\n\n{evidence}"},
-        ],
-    }
+                post_json: Callable[..., Any], base: str,
+                native: str | None = None) -> dict:
+    """One LLM distillation with a single retry on malformed output.
+
+    On Ollama (`native` set) the call goes to the NATIVE `/api/chat` with
+    `think: false` + `format: "json"` — the only shape that keeps a reasoning model
+    from thinking the whole budget away (see `_ollama_native_root`). Everything else
+    speaks OpenAI `/v1/chat/completions` unchanged.
+    """
+    messages = [
+        {"role": "system", "content": _SYSTEM_PROMPT},
+        {"role": "user", "content":
+            f"Session {sid} by agent {assigner}. Evidence:\n\n{evidence}"},
+    ]
+    if native:
+        url = f"{native}/api/chat"
+        body: dict[str, Any] = {"model": _llm_model(), "messages": messages,
+                                "stream": False, "think": False, "format": "json",
+                                "options": {"temperature": 0.2}}
+    else:
+        url = f"{base}/chat/completions"
+        body = {"model": _llm_model(), "temperature": 0.2, "messages": messages}
+
     last_error: Exception | None = None
     for _attempt in (1, 2):
-        resp = post_json(f"{base}/chat/completions", body,
-                         headers={"Content-Type": "application/json"},
-                         timeout=_LLM_TIMEOUT)
         try:
-            text = resp["choices"][0]["message"]["content"]
-            return _extract_json(text)
+            resp = post_json(url, body, headers={"Content-Type": "application/json"},
+                             timeout=_LLM_TIMEOUT)
+        except transport.TransportError as e:
+            # A non-thinking Ollama model rejects `think` with a 400. That is a
+            # permanent model mismatch, NOT the transient loss the caller treats a
+            # TransportError as (which would defer the whole shift) — drop the field
+            # and retry this attempt against the same model.
+            if native and body.get("think") is not None and "think" in str(e).lower():
+                body = {k: v for k, v in body.items() if k != "think"}
+                hooklog.log_failure(
+                    "nightshift", f"model rejects think:false, retrying without it: {e}")
+                continue
+            raise
+        try:
+            return _extract_json(_content_of(resp))
         except (KeyError, IndexError, TypeError, ValueError) as e:
             last_error = e
             hooklog.log_failure("nightshift", f"malformed LLM reply (attempt): {e!r}")
@@ -272,7 +341,7 @@ def run(max_tasks: int = _DEFAULT_MAX_TASKS, dry_run: bool = False, *,
     # name is an LM Studio identifier, so autodetecting Ollama and firing a chat call
     # would fail deep in the run with a bare 404. Lenient by design: an empty list
     # means the backend told us nothing readable, not that it has no models.
-    base, models = detected
+    base, models, native = detected
     if models and not _model_available(_llm_model(), models):
         out["error"] = (f"model '{_llm_model()}' is not loaded at {base}; available: "
                         f"{', '.join(sorted(models))} — set FIREKEEP_NIGHTSHIFT_LLM_MODEL")
@@ -316,7 +385,7 @@ def run(max_tasks: int = _DEFAULT_MAX_TASKS, dry_run: bool = False, *,
                     continue
                 try:
                     _synthesize(sid, assigner, _evidence(sid, task, get_json),
-                                post_json, base)
+                                post_json, base, native)
                     out["distilled"] += 1
                 except transport.TransportError:
                     out["deferred"] += 1
@@ -366,7 +435,7 @@ def run(max_tasks: int = _DEFAULT_MAX_TASKS, dry_run: bool = False, *,
                 try:
                     synth = _synthesize(sid, assigner,
                                         _evidence(sid, task, get_json), post_json,
-                                        base)
+                                        base, native)
                 except transport.TransportError as e:
                     # TRANSIENT (server restarting, model unloaded): leave the
                     # task pending for the next shift and stop this one.
