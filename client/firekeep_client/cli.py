@@ -476,20 +476,25 @@ def cmd_install(args) -> int:
         else:
             _pip_install(python, str(kit))
 
-        # Symdex is an always-on client MCP server (like firekeep-decision). From a
-        # CHECKOUT, install its sibling source dir BY LOCAL PATH — never
-        # `pip install firekeep-symdex` (that name may belong to a third party on PyPI,
-        # the same hazard as firekeep-client). RELEASE installs receive the
-        # checksum-verified symdex wheel from the bootstrap, so there is nothing to do
-        # here when running from the installed venv (kit is None).
+        # The dex wheels are always installed, whether or not the registry has them
+        # turned on — registration gates ACTIVITY, not installation. From a
+        # CHECKOUT, install each sibling source dir BY LOCAL PATH — never
+        # `pip install firekeep-symdex` / `firekeep-docdex` (those names may belong
+        # to a third party on PyPI, the same hazard as firekeep-client). RELEASE
+        # installs receive the checksum-verified wheels from the bootstrap, so there
+        # is nothing to do here when running from the installed venv (kit is None).
+        # A missing sibling is fatal rather than skipped: a kit built from half a
+        # checkout would install cleanly and then have a dead `firekeep docdex`,
+        # dead tools and a doctor row nobody can explain.
         if kit is not None:
-            step = "pip install symdex (local checkout dir)"
-            symdex_dir = kit.parent / "symdex"
-            if not (symdex_dir / "pyproject.toml").is_file():
-                raise RuntimeError(
-                    f"symdex source not found at {symdex_dir} — incomplete checkout"
-                )
-            _pip_install(python, str(symdex_dir))
+            for dex_name in ("symdex", "docdex"):
+                step = f"pip install {dex_name} (local checkout dir)"
+                dex_dir = kit.parent / dex_name
+                if not (dex_dir / "pyproject.toml").is_file():
+                    raise RuntimeError(
+                        f"{dex_name} source not found at {dex_dir} — incomplete checkout"
+                    )
+                _pip_install(python, str(dex_dir))
 
         step = "lock down config permissions"
         state._private(_config_path())  # lock down the key-bearing config
@@ -1091,14 +1096,16 @@ def _check_venv_scripts(venv: Path, is_windows: bool | None = None) -> tuple[str
     return ("venv-scripts", "ok", str(bindir))
 
 
-def _check_dexes() -> tuple[str, str, str]:
-    """Which domain indexes this machine has registered.
+def _check_dexes() -> list[tuple[str, str, str]]:
+    """Which domain indexes this machine has registered, and how they are doing.
 
-    "ok" whether or not any are: a dex is a suggestion, never a default
+    Always one `dexes` row, plus a per-dex row for any registered dex that has
+    local state worth reporting (docdex today). The `dexes` row is "ok" whether
+    or not any are registered: a dex is a suggestion, never a default
     (ROADMAP §5), so the empty state is an OFFER, not a finding. The one fault
-    this row can report is a REGISTERED dex whose wheel is gone — the gateway
-    mounts a backend that cannot start, and the only symptom the user sees is
-    tools that quietly stopped existing.
+    IT can report is a REGISTERED dex whose wheel is gone — the gateway mounts a
+    backend that cannot start, and the only symptom the user sees is tools that
+    quietly stopped existing.
 
     Deliberately says nothing about _check_venv_scripts' wanted list, which is
     unchanged: the wheels are always installed and checksum-verified, and
@@ -1106,15 +1113,94 @@ def _check_dexes() -> tuple[str, str, str]:
     """
     registered = dexes.registered()
     if not registered:
-        return ("dexes", "ok",
-                "none registered — add code intelligence with `firekeep dex add symdex`")
+        return [("dexes", "ok",
+                 "none registered — add code intelligence with `firekeep dex add symdex`")]
     names = ", ".join(m.name for m in registered)
     missing = [m.name for m in registered if not dexes.is_installed(m)]
     if missing:
-        return ("dexes", "warn",
-                f"{names} (registered) — but no wheel for {', '.join(missing)} in this "
-                f"venv; re-run the installer, or `firekeep dex remove {missing[0]}`")
-    return ("dexes", "ok", f"{names} (registered)")
+        rows = [("dexes", "warn",
+                 f"{names} (registered) — but no wheel for {', '.join(missing)} in this "
+                 f"venv; re-run the installer, or `firekeep dex remove {missing[0]}`")]
+    else:
+        rows = [("dexes", "ok", f"{names} (registered)")]
+    if any(m.name == "docdex" for m in registered):
+        rows.append(_check_docdex())
+    return rows
+
+
+def _check_docdex() -> tuple[str, str, str]:
+    """Docdex's own accounting, read entirely from disk.
+
+    No server call, deliberately: doctor is what people run when the SERVER is
+    the thing that is broken, and a row that needed the server to answer would
+    hang exactly when it is most needed. Everything below comes from
+    `sources.json` plus one small state file per source.
+
+    A real import rather than `dexes.is_installed`'s `find_spec`: this row is
+    about to USE the modules, so it should fail on what it will actually do —
+    a wheel whose spec resolves but whose import raises (a half-written install,
+    a broken dependency) is a machine where nothing syncs and nothing says why.
+    """
+    try:
+        from firekeep_docdex import sources, state as docdex_state
+    except Exception:  # noqa: BLE001 - any import failure means the same thing
+        return ("docdex", "fail", "wheel not importable — reinstall via bootstrap")
+    try:
+        registered = sources.list_sources()
+        if not registered:
+            return ("docdex", "ok",
+                    "0 sources · last sync never · 0 pending deletes · 0 failures "
+                    "— add a folder with `firekeep docdex add <path>`")
+        pending = failures = 0
+        ages: list[float] = []
+        never = False
+        for src in registered:
+            source_state = docdex_state.read_state(src.id)
+            counts = source_state.counts()
+            pending += counts["pending_deletes"]
+            failures += counts["failures"]
+            age = _iso_age_seconds(source_state.last_sync_at)
+            if age is None:
+                never = True
+            else:
+                ages.append(age)
+        # The STALEST source, not the freshest. A row reporting "just now"
+        # because one of five folders synced would hide the four that did not,
+        # and staleness is the only thing this number is asked for.
+        when = "never" if never or not ages else _humanize_age(max(ages))
+        detail = (f"{_count(len(registered), 'source')} · last sync {when} · "
+                  f"{_count(pending, 'pending delete')} · {_count(failures, 'failure')}")
+    except Exception as exc:  # noqa: BLE001 - a check never breaks the doctor run
+        return ("docdex", "warn", f"cannot read docdex state: {exc}")
+    return ("docdex", "warn" if pending or failures else "ok", detail)
+
+
+def _count(number: int, noun: str) -> str:
+    return f"{number} {noun}" if number == 1 else f"{number} {noun}s"
+
+
+def _iso_age_seconds(iso: str | None) -> float | None:
+    """Seconds since an ISO-8601 instant, or None when there isn't one.
+
+    None also covers an unparseable value: "never" is the honest reading of a
+    timestamp nobody can interpret, and it is the conservative one — it reports
+    staleness rather than hiding it."""
+    if not iso:
+        return None
+    try:
+        when = datetime.fromisoformat(iso)
+    except (TypeError, ValueError):
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return max(0.0, (datetime.now(timezone.utc) - when).total_seconds())
+
+
+def _humanize_age(seconds: float) -> str:
+    for size, unit in ((86400.0, "d"), (3600.0, "h"), (60.0, "m")):
+        if seconds >= size:
+            return f"{int(seconds // size)}{unit} ago"
+    return "just now"
 
 
 def _check_current_link(home: Path | None = None) -> tuple[str, str, str] | None:
@@ -1471,7 +1557,7 @@ def run_doctor(cfg=None) -> list[tuple[str, str, str]]:
     if current_link is not None:
         results.append(current_link)
     results.append(_check_venv_scripts(_venv_root()))
-    results.append(_check_dexes())
+    results.extend(_check_dexes())
     results.extend(_check_codex_adapter(_venv_root()))
     results.extend(_check_instructions())
     results.append(_check_config_perms(_config_path()))
@@ -1644,6 +1730,60 @@ def cmd_dex(args) -> int:
           f"firekeep: the wheel stays installed — `firekeep dex add {name}` brings it "
           f"back. Takes effect on the next agent session.")
     return 0
+
+
+def cmd_docdex(args) -> int:
+    """`firekeep docdex add|list|sync|remove` — the bridge onto the docdex wheel.
+
+    A translator, not an implementation: it turns this CLI's positional-choices
+    shape into the wheel's own argv and delegates to `firekeep_docdex.cli.main`,
+    so `firekeep docdex sync` and `firekeep-docdex sync` cannot mean two
+    different things.
+
+    The import is LAZY and stays that way. docdex is an optional sibling wheel
+    (and drags pypdf/python-docx behind it); a module-level import would take
+    out every OTHER firekeep command on a kit that does not have it, and would
+    break the stdlib-only client spine besides.
+
+    Registration is NOT checked. Folder control is a human's, and it works
+    whether or not `firekeep dex add docdex` has been run — registration gates
+    the background sync trigger and the doctor accounting, never a person's
+    ability to say which of their own folders the Keep may read.
+    """
+    action = getattr(args, "action", None) or "list"
+    target = (getattr(args, "target", None) or "").strip()
+
+    # Answered here rather than by the wheel's parser: this CLI's `target` is one
+    # positional serving two commands, so argparse cannot require it per action.
+    if action == "add" and not target:
+        print("firekeep: `firekeep docdex add` needs a folder path", file=sys.stderr)
+        return 2
+    if action == "remove" and not target:
+        print("firekeep: `firekeep docdex remove` needs a source id — "
+              "`firekeep docdex list` shows them", file=sys.stderr)
+        return 2
+
+    try:
+        from firekeep_docdex import cli as docdex_cli
+    except ImportError:
+        print("firekeep: docdex is not installed — reinstall with the bootstrap "
+              "or `firekeep dex add docdex` on a bundled install", file=sys.stderr)
+        return 1
+
+    argv = [action]
+    if action in ("add", "remove"):
+        argv.append(target)
+    if action == "add" and getattr(args, "shared", False):
+        argv.append("--shared")
+    if action == "sync" and getattr(args, "source", None):
+        argv += ["--source", args.source]
+    try:
+        # `prog` so the wheel's usage and error lines name what the user typed.
+        return docdex_cli.main(argv, prog="firekeep docdex")
+    except SystemExit as exc:
+        # argparse inside the wheel exits rather than returns. `firekeep` must
+        # hand back an int from every command — dispatch is what calls sys.exit.
+        return int(exc.code or 0)
 
 
 def cmd_personal(args) -> int:
@@ -2392,6 +2532,18 @@ def _build_parser() -> argparse.ArgumentParser:
     dex.add_argument("action", nargs="?", choices=["list", "add", "remove"], default="list")
     dex.add_argument("name", nargs="?", help="dex name (symdex, docdex)")
     dex.set_defaults(func=cmd_dex)
+
+    docdex = sub.add_parser(
+        "docdex", help="folders of documents indexed into the Keep (add/list/sync/remove)")
+    docdex.add_argument("action", nargs="?",
+                        choices=["list", "add", "sync", "remove"], default="list")
+    docdex.add_argument("target", nargs="?",
+                        help="folder path (add) or source id (remove)")
+    docdex.add_argument("--shared", action="store_true",
+                        help="share the folder with your workspace (add; default: "
+                             "private to you, even on a shared Keep)")
+    docdex.add_argument("--source", metavar="ID", help="sync one source by id")
+    docdex.set_defaults(func=cmd_docdex)
 
     personal = sub.add_parser(
         "personal",

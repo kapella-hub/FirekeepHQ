@@ -63,23 +63,60 @@ def test_install_has_no_with_symdex_flag():
         parser.parse_args(["install", "--with-symdex"])
 
 
+def _checkout(tmp_path, monkeypatch, *, dexes=("symdex", "docdex")):
+    """A monorepo checkout: the kit dir plus whichever sibling dex dirs exist."""
+    kit = tmp_path / "client"
+    kit.mkdir(parents=True, exist_ok=True)
+    (kit / "pyproject.toml").write_text("[project]\nname='firekeep-client'\n")
+    for name in dexes:
+        sibling = tmp_path / name
+        sibling.mkdir(exist_ok=True)
+        (sibling / "pyproject.toml").write_text(f"[project]\nname='firekeep-{name}'\n")
+    monkeypatch.setattr(cli, "_kit_dir", lambda: kit)
+    return kit
+
+
 def test_checkout_install_uses_local_symdex_dir(install_env, monkeypatch, tmp_path):
     # From a checkout, symdex installs from the sibling dir BY PATH, never by name.
     calls = []
     monkeypatch.setattr(cli, "_pip_install", lambda py, *pkgs, **k: calls.append(pkgs))
-    kit = tmp_path / "client"
-    kit.mkdir(parents=True)
-    (kit / "pyproject.toml").write_text("[project]\nname='firekeep-client'\n")
-    symdex = tmp_path / "symdex"
-    symdex.mkdir()
-    (symdex / "pyproject.toml").write_text("[project]\nname='firekeep-symdex'\n")
-    monkeypatch.setattr(cli, "_kit_dir", lambda: kit)
+    _checkout(tmp_path, monkeypatch)
 
     rc = cli.main(["install", "--runtime", "claude"])
     assert rc == 0
     installed = [p for pkgs in calls for p in pkgs]
-    assert str(symdex) in installed
+    assert str(tmp_path / "symdex") in installed
     assert "firekeep-symdex" not in installed  # NEVER by name
+
+
+def test_checkout_install_uses_local_docdex_dir(install_env, monkeypatch, tmp_path):
+    """The docdex twin. `firekeep-docdex` is an unclaimed name on PyPI, which is
+    exactly the hazard `firekeep-client` and `firekeep-symdex` already guard
+    against — a bare name would resolve to whatever a stranger uploads there."""
+    calls = []
+    monkeypatch.setattr(cli, "_pip_install", lambda py, *pkgs, **k: calls.append(pkgs))
+    _checkout(tmp_path, monkeypatch)
+
+    rc = cli.main(["install", "--runtime", "claude"])
+    assert rc == 0
+    installed = [p for pkgs in calls for p in pkgs]
+    assert str(tmp_path / "docdex") in installed
+    assert "firekeep-docdex" not in installed  # NEVER by name
+
+
+def test_checkout_install_fails_loudly_without_the_docdex_dir(
+    install_env, monkeypatch, tmp_path, capsys
+):
+    """Same shape as symdex's: a checkout missing a sibling dex dir is an
+    incomplete checkout, and a silent skip would ship a kit whose `firekeep
+    docdex` and doctor rows are dead with no explanation."""
+    monkeypatch.setattr(cli, "_pip_install", lambda py, *pkgs, **k: None)
+    _checkout(tmp_path, monkeypatch, dexes=("symdex",))
+
+    assert cli.main(["install", "--runtime", "claude"]) == 1
+    err = capsys.readouterr().err
+    assert "docdex source not found" in err
+    assert "incomplete checkout" in err
 
 
 def test_install_bootstraps_home_and_config(install_env):
@@ -108,6 +145,7 @@ def test_install_creates_venv_and_pip_installs_client(install_env):
     assert venv_cmds, "expected a venv-provision invocation"
     assert Path(venv_cmds[0][-1]) == home / "venvs" / "1.2.3"
     assert "firekeep-symdex" not in blob
+    assert "firekeep-docdex" not in blob
     # The client kit must be installed from the LOCAL kit directory (the dir
     # holding client/pyproject.toml), never resolved as a bare name against
     # PyPI — "firekeep-client" on PyPI is owned by a third party.

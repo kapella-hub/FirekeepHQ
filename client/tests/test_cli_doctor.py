@@ -1,12 +1,22 @@
 import configparser
+import importlib.util
 import os
+import sys
 import textwrap
 import types
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 from firekeep_client import __version__, cli, resolver, transport, updater
 from firekeep_client.adapters import get_adapter
+
+# The docdex doctor rows read the wheel's own sources/state modules. In a
+# monorepo checkout it may not be pip-installed; its sibling source dir is
+# stdlib-only at those modules, so a path fallback lets the rows be tested
+# against the REAL reader rather than a stub of it.
+if importlib.util.find_spec("firekeep_docdex") is None:  # pragma: no cover
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "docdex" / "src"))
 
 SERVER = textwrap.dedent("""\
     [identity]
@@ -745,7 +755,8 @@ def dexes_home(tmp_path, monkeypatch):
 
 def test_dexes_row_offers_symdex_when_nothing_is_registered(dexes_home):
     dexes_home.write_registry({})
-    name, status, detail = cli._check_dexes()
+    (row,) = cli._check_dexes()
+    name, status, detail = row
     assert (name, status) == ("dexes", "ok")
     assert "none registered" in detail
     assert "firekeep dex add symdex" in detail
@@ -753,7 +764,8 @@ def test_dexes_row_offers_symdex_when_nothing_is_registered(dexes_home):
 
 def test_dexes_row_names_what_is_registered(dexes_home):
     dexes_home.add("symdex")
-    name, status, detail = cli._check_dexes()
+    (row,) = cli._check_dexes()
+    name, status, detail = row
     assert (name, status) == ("dexes", "ok")
     assert "symdex" in detail and "registered" in detail
 
@@ -761,7 +773,8 @@ def test_dexes_row_names_what_is_registered(dexes_home):
 def test_dexes_row_warns_when_a_registered_dex_has_no_wheel(dexes_home, monkeypatch):
     dexes_home.add("symdex")
     monkeypatch.setattr(dexes_home, "is_installed", lambda manifest: False)
-    name, status, detail = cli._check_dexes()
+    (row,) = cli._check_dexes()
+    name, status, detail = row
     assert (name, status) == ("dexes", "warn")
     assert "symdex" in detail
 
@@ -779,6 +792,142 @@ def test_run_doctor_includes_the_dexes_row(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_check_ca_expiry", lambda cfg: None)
     results = cli.run_doctor(cfg)
     assert [n for n, _, _ in results].count("dexes") == 1
+
+
+# --- docdex accounting (Task C3) ---------------------------------------------
+#
+# A SECOND row, appended only when docdex is registered. It is read entirely
+# from disk — sources.json plus one state file per source — because doctor is
+# something people run when the server is the thing that is broken, and a check
+# that needs the server to answer "is the server reachable?" answers nothing.
+
+
+def _docdex_source(tmp_path, name="notes"):
+    from firekeep_docdex import sources
+
+    folder = tmp_path / name
+    folder.mkdir(exist_ok=True)
+    return sources.add(folder)
+
+
+@pytest.fixture
+def docdex_home(dexes_home, tmp_path):
+    dexes_home.add("docdex")
+    return tmp_path
+
+
+def test_no_docdex_row_when_the_dex_is_not_registered(dexes_home):
+    dexes_home.add("symdex")
+    assert [name for name, _, _ in cli._check_dexes()] == ["dexes"]
+
+
+def test_docdex_row_reports_an_empty_registry_and_offers_the_first_folder(docdex_home):
+    rows = cli._check_dexes()
+    name, status, detail = rows[-1]
+    assert (name, status) == ("docdex", "ok")
+    assert "0 sources" in detail
+    assert "firekeep docdex add" in detail
+
+
+def test_docdex_row_counts_sources_and_reports_staleness(docdex_home, tmp_path):
+    from firekeep_docdex import state
+
+    first = _docdex_source(tmp_path, "notes")
+    _docdex_source(tmp_path, "runbooks")
+    st = state.read_state(first.id)
+    st.last_sync_at = state.now()
+    st.last_walk_completed = True
+    state.write_state(first.id, st)
+
+    name, status, detail = cli._check_dexes()[-1]
+    assert (name, status) == ("docdex", "ok")
+    assert "2 sources" in detail
+    # The STALEST source, not the freshest: a row that reported "just now"
+    # because one of five folders synced would hide the four that never did.
+    assert "never" in detail
+
+
+def test_docdex_row_warns_on_pending_deletes(docdex_home, tmp_path):
+    from firekeep_docdex import state
+
+    src = _docdex_source(tmp_path)
+    st = state.read_state(src.id)
+    state.record_ingested(st, "a.md", "cafe")
+    state.mark_pending_delete(st, "a.md")
+    state.write_state(src.id, st)
+
+    name, status, detail = cli._check_dexes()[-1]
+    assert (name, status) == ("docdex", "warn")
+    assert "1 pending delete" in detail
+
+
+def test_docdex_row_warns_on_failures(docdex_home, tmp_path):
+    from firekeep_docdex import state
+
+    src = _docdex_source(tmp_path)
+    st = state.read_state(src.id)
+    state.record_failure(st, "a.md", "cafe", "503 busy")
+    state.write_state(src.id, st)
+
+    name, status, detail = cli._check_dexes()[-1]
+    assert (name, status) == ("docdex", "warn")
+    assert "1 failure" in detail
+
+
+def test_docdex_row_fails_when_the_wheel_is_gone(docdex_home, monkeypatch):
+    """Registered but not importable is the state where nothing syncs and
+    nothing says why — the one docdex fault doctor can see without a server."""
+    monkeypatch.setitem(sys.modules, "firekeep_docdex", None)
+    name, status, detail = cli._check_dexes()[-1]
+    assert (name, status) == ("docdex", "fail")
+    assert detail == "wheel not importable — reinstall via bootstrap"
+
+
+def test_docdex_row_makes_no_server_call(docdex_home, tmp_path, monkeypatch):
+    """Doctor stays offline and fast. Building a wire client here would make
+    the row hang on exactly the machine whose server is down."""
+    from firekeep_docdex import wire
+
+    _docdex_source(tmp_path)
+    monkeypatch.setattr(wire, "Client", _never_called)
+    monkeypatch.setattr(cli, "get_json", _never_called)
+    name, status, _ = cli._check_dexes()[-1]
+    assert (name, status) == ("docdex", "ok")
+
+
+def _never_called(*_a, **_kw):
+    raise AssertionError("doctor must not talk to the server here")
+
+
+def test_docdex_row_survives_an_unreadable_sources_file(docdex_home, tmp_path):
+    """A corrupt registry costs the numbers, never the doctor run."""
+    from firekeep_docdex import sources
+
+    _docdex_source(tmp_path)
+    sources.sources_path().write_text("{ not json", encoding="utf-8")
+    name, status, _ = cli._check_dexes()[-1]
+    assert name == "docdex" and status in ("ok", "warn")
+
+
+def test_run_doctor_includes_the_docdex_row_once_registered(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path, monkeypatch, SERVER)
+    from firekeep_client import dexes
+
+    monkeypatch.setattr(dexes, "is_installed", lambda manifest: True)
+    dexes.add("docdex")
+    monkeypatch.setattr(cli, "_check_health", lambda cfg: [])
+    monkeypatch.setattr(cli, "_check_versions", lambda cfg: ("versions", "ok", ""))
+    monkeypatch.setattr(cli, "_check_api_key", lambda cfg: None)
+    monkeypatch.setattr(cli, "_check_venv_scripts",
+                        lambda venv, is_windows=None: ("venv-scripts", "ok", ""))
+    monkeypatch.setattr(cli, "_check_codex_adapter", lambda venv: [])
+    monkeypatch.setattr(cli, "_check_instructions", lambda: [])
+    monkeypatch.setattr(cli, "_check_config_perms",
+                        lambda config, is_windows=None: ("config-perms", "ok", ""))
+    monkeypatch.setattr(cli, "_check_ca_expiry", lambda cfg: None)
+    names = [n for n, _, _ in cli.run_doctor(cfg)]
+    assert names.count("dexes") == 1
+    assert names.count("docdex") == 1
 
 
 def test_venv_scripts_still_wants_every_bundled_wheel(tmp_path):
