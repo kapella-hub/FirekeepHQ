@@ -455,22 +455,22 @@ echo "firekeep: provisioning Python ${PYTHON_VERSION} into venvs/${V}"
 mkdir -p "${VENVS}"
 "${BIN}/uv" venv "${TARGET_VENV}" --python "${PYTHON_VERSION}" --python-preference only-managed --clear     || die "could not provision Python ${PYTHON_VERSION}"
 
-# --- 7. install the wheel BY LOCAL FILE PATH, never a URL --------------------
-echo "firekeep: installing ${wheel_name}"
-"${BIN}/uv" pip install --python "${TARGET_VENV}" --reinstall "${BIN}/${wheel_name}"     || die "wheel install failed"
-
-# --- 7b. symdex wheel: ALWAYS installed (fetched + verified in 5b) -----------
-# Symdex is an always-on client MCP server (like firekeep-decision).
-echo "firekeep: installing ${symdex_wheel}"
-"${BIN}/uv" pip install --python "${TARGET_VENV}" --reinstall "${BIN}/${symdex_wheel}"     || die "symdex wheel install failed"
-
-# --- 7c. docdex wheel: ALWAYS installed (fetched + verified in 5c) -----------
+# --- 7. install ALL wheels BY LOCAL FILE PATH, in ONE resolution -------------
+# One `uv pip install` for the client + every dex wheel, never one per wheel.
+# This is load-bearing, found the hard way on the 1.0.0 release: docdex's wheel
+# declares `firekeep-client>=0.1.48`, and `--reinstall` reinstalls the ENTIRE
+# resolution set — so a separate docdex step re-resolved firekeep-client from
+# the INDEX and silently replaced the local wheel just installed in step 7 with
+# whatever PyPI's newest happened to be (a fresh 1.0.0 install shipped 0.1.48).
+# With all three local files in one request, each local wheel IS the resolution
+# for its own name; only genuine third-party deps come from the index.
+#
 # Every dex wheel ships with every install; REGISTRATION (~/.firekeep/dexes.json)
 # is what decides whether a dex does anything. Gating the INSTALL instead would
 # put a second, unverified download path in front of a user who later opts in —
 # the signed supply chain is the thing that must not become optional.
-echo "firekeep: installing ${docdex_wheel}"
-"${BIN}/uv" pip install --python "${TARGET_VENV}" --reinstall "${BIN}/${docdex_wheel}"     || die "docdex wheel install failed"
+echo "firekeep: installing ${wheel_name} + ${symdex_wheel} + ${docdex_wheel}"
+"${BIN}/uv" pip install --python "${TARGET_VENV}" --reinstall "${BIN}/${wheel_name}" "${BIN}/${symdex_wheel}" "${BIN}/${docdex_wheel}"     || die "wheel install failed"
 
 # --- 7d. the install must have produced a runnable firekeep -------------------
 # Provisioning can succeed while producing something unusable (a wheel for the

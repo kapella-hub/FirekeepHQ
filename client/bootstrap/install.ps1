@@ -476,24 +476,23 @@ New-Item -ItemType Directory -Force -Path $Venvs | Out-Null
 & $Uv venv $TargetVenv --python $PythonVersion --python-preference only-managed --clear
 if ($LASTEXITCODE -ne 0) { Die "could not provision Python $PythonVersion" }
 
-# --- 6. install the wheel BY LOCAL FILE PATH, never a URL --------------------
-Write-Host "firekeep: installing $WheelName"
-& $Uv pip install --python $TargetVenv --reinstall $WheelPath
-if ($LASTEXITCODE -ne 0) { Die "wheel install failed" }
-
-# --- 6b. symdex wheel: ALWAYS installed (fetched + verified in 4b) -----------
-Write-Host "firekeep: installing $SymdexWheel"
-& $Uv pip install --python $TargetVenv --reinstall $SymdexPath
-if ($LASTEXITCODE -ne 0) { Die "symdex wheel install failed" }
-
-# --- 6c. docdex wheel: ALWAYS installed (fetched + verified in 4c) -----------
+# --- 6. install ALL wheels BY LOCAL FILE PATH, in ONE resolution -------------
+# One `uv pip install` for the client + every dex wheel, never one per wheel.
+# Load-bearing, found the hard way on the 1.0.0 release (mirrors install.sh §7):
+# docdex's wheel declares `firekeep-client>=0.1.48`, and `--reinstall`
+# reinstalls the ENTIRE resolution set — a separate docdex step re-resolved
+# firekeep-client from the INDEX and silently replaced the local wheel with
+# whatever PyPI's newest happened to be. With all three local files in one
+# request, each local wheel IS the resolution for its own name; only genuine
+# third-party deps come from the index.
+#
 # Every dex wheel ships with every install; REGISTRATION (~/.firekeep/dexes.json)
 # is what decides whether a dex does anything. Gating the INSTALL instead would
 # put a second, unverified download path in front of a user who later opts in —
 # the signed supply chain is the thing that must not become optional.
-Write-Host "firekeep: installing $DocdexWheel"
-& $Uv pip install --python $TargetVenv --reinstall $DocdexPath
-if ($LASTEXITCODE -ne 0) { Die "docdex wheel install failed" }
+Write-Host "firekeep: installing $WheelName + $SymdexWheel + $DocdexWheel"
+& $Uv pip install --python $TargetVenv --reinstall $WheelPath $SymdexPath $DocdexPath
+if ($LASTEXITCODE -ne 0) { Die "wheel install failed" }
 
 # --- 6d. the install must have produced a runnable firekeep -------------------
 # Mirrors install.sh section 7d. Provisioning can succeed while producing

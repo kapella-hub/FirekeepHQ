@@ -29,16 +29,24 @@ def test_install_ps1_installs_docdex_wheel_by_path_not_name():
 def test_both_bootstraps_verify_the_docdex_wheel_before_installing_it():
     """The wheel becomes code that runs on this machine — it must go through the SAME
     verifier as uv and the client wheel, on a LOCAL file, before `uv pip install` sees it."""
+    # The install expression is the COMBINED one-resolution form deliberately:
+    # a separate `pip install docdex.whl` step re-resolves docdex's
+    # `firekeep-client>=…` dependency from the INDEX under --reinstall and
+    # silently replaces the local client wheel with PyPI's newest (the 1.0.0
+    # release shipped 0.1.48 that way). Asserting the combined line here keeps
+    # anyone from "simplifying" it back into three steps.
     sh = (BOOT / "install.sh").read_text()
     assert 'verify_against_sums "${BIN}/${docdex_wheel}" "${docdex_wheel}"' in sh
-    assert sh.index('verify_against_sums "${BIN}/${docdex_wheel}"') < sh.rindex(
-        'pip install --python "${TARGET_VENV}" --reinstall "${BIN}/${docdex_wheel}"'
-    )
+    combined_sh = ('pip install --python "${TARGET_VENV}" --reinstall '
+                   '"${BIN}/${wheel_name}" "${BIN}/${symdex_wheel}" "${BIN}/${docdex_wheel}"')
+    assert combined_sh in sh
+    assert sh.index('verify_against_sums "${BIN}/${docdex_wheel}"') < sh.rindex(combined_sh)
     ps = (BOOT / "install.ps1").read_text()
     assert "Verify-AgainstSums $DocdexPath $DocdexWheel" in ps
-    assert ps.index("Verify-AgainstSums $DocdexPath $DocdexWheel") < ps.rindex(
-        "& $Uv pip install --python $TargetVenv --reinstall $DocdexPath"
-    )
+    combined_ps = ("& $Uv pip install --python $TargetVenv --reinstall "
+                   "$WheelPath $SymdexPath $DocdexPath")
+    assert combined_ps in ps
+    assert ps.index("Verify-AgainstSums $DocdexPath $DocdexWheel") < ps.rindex(combined_ps)
 
 
 def test_both_bootstraps_die_when_the_release_lists_no_docdex_wheel():
