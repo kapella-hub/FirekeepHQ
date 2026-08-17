@@ -3,7 +3,6 @@ keep a sync from deleting or resurrecting something it should not."""
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
 import pytest
 
