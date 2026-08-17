@@ -483,11 +483,25 @@ async def validate_key_by_hash(key_hash: str, redis_client=None) -> dict[str, An
                 return None
         except (ValueError, TypeError):
             pass
+    scopes = json.loads(data.get("scopes", "[]"))
+    if data.get("enrolled_via"):
+        # Enrolled credentials track the CURRENT member ceiling, not their
+        # mint-day one. The enrollment path never narrows — every enrolled key
+        # is stamped the full ENROLLABLE_SCOPES of its day (enroll/store.py),
+        # so the stored list is a snapshot of a contract, not a choice. Without
+        # this union, every scope the product adds later (dex:docdex was the
+        # live case, 2026-08-17: a pre-Phase-V workstation's first docdex sync
+        # 403'd on the reserved prefix) is silently missing from every key
+        # minted before it, forever. Admin-minted keys never carry
+        # `enrolled_via` and keep exactly their minted scopes — deliberate
+        # narrowing still works, and the union cannot add `admin` or `*`
+        # (excluded from ENROLLABLE_SCOPES by construction).
+        scopes = sorted(set(scopes) | ENROLLABLE_SCOPES)
     return {
         "workspace_id": data.get("workspace_id") or deployment_workspace_id(),
         "member_id": data.get("member_id") or deployment_owner_member_id(),
         "credential_id": data.get("credential_id") or data.get("key_id", key_hash[:16]),
-        "scopes": json.loads(data.get("scopes", "[]")),
+        "scopes": scopes,
         "authenticated": True,
     }
 
