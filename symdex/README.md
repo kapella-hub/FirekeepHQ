@@ -37,7 +37,7 @@ their limitations.
 
 ### Inside Firekeep (recommended)
 
-`firekeep install` installs and registers firekeep-symdex automatically — there are no manual steps. (The kit itself comes from `curl -fsSL https://firekeep.ai/latest/install.sh | sh`; the install guide is [firekeep.ai/docs.html](https://firekeep.ai/docs.html).) In a developer checkout it is installed from the local `symdex/` path; in a release install it comes from the checksum-verified client wheel. Either way the client adapter renders the MCP registration for you, so there is nothing to hand-edit.
+`firekeep install` installs and registers firekeep-symdex automatically — there are no manual steps. (The kit itself comes from `curl -fsSL https://firekeep.ai/latest/install | sh`; the install guide is [firekeep.ai/docs.html](https://firekeep.ai/docs.html).) In a developer checkout it is installed from the local `symdex/` path; in a release install it comes from the checksum-verified client wheel. Either way the client adapter renders the MCP registration for you, so there is nothing to hand-edit.
 
 ### Standalone use
 

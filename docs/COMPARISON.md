@@ -107,7 +107,7 @@ Only `trial+` patterns with `procedural` or `risk` category appear in briefings.
 | Policy rules | 5 (lease, file risk, path deny, session health, recent failure) |
 | Eval metrics | 10 Tier 1 (auto) + optional Tier 2 (LLM-judged) |
 | Auth scopes | 10 per-tool scopes |
-| Setup time | One command — `curl -fsSL https://firekeep.ai/latest/install.sh \| sh` — which offers to install the server on the same machine |
+| Setup time | One command — `curl -fsSL https://firekeep.ai/latest/install \| sh` — which offers to install the server on the same machine |
 | Protocol | MCP (HTTP + client-stdio); A2A discovery-only (`/.well-known/agent.json`) |
 | Infrastructure | Neo4j, Qdrant, Redis, Ollama — all self-hosted, zero cloud dependency |
 

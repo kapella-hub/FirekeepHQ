@@ -29,7 +29,7 @@ environment under `~/.firekeep`, verifies Ed25519-signed releases, renders
 every runtime adapter, and keeps itself updated:
 
 ```bash
-curl -fsSL https://firekeep.ai/latest/install.sh | sh    # macOS / Linux
+curl -fsSL https://firekeep.ai/latest/install | sh    # macOS / Linux
 irm https://firekeep.ai/latest/install.ps1 | iex         # Windows
 ```
 

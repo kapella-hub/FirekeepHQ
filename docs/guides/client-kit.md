@@ -10,7 +10,7 @@
 
 **Teammates (bare machine, nothing installed):**
 ```bash
-curl -fsSL https://firekeep.ai/latest/install.sh | sh      # macOS / Linux
+curl -fsSL https://firekeep.ai/latest/install | sh      # macOS / Linux
 irm https://firekeep.ai/latest/install.ps1 | iex           # Windows
 ```
 That is the only install command this repo publishes, and the walkthrough behind it —

@@ -207,7 +207,7 @@ hand-added environment value, so reapply it after each re-render.
 `agent_id` **is** prompted at install: an interactive `firekeep install` asks for the agent identity (defaulting to the configured value, else your OS username), then where the server is — set one up on this machine, redeem a join code, one that is already running, or not yet — writing `[identity]` and `[server]` in `~/.firekeep/config`. It does **not** ask for a profile or which client to prepare (Firekeep is one product, so there is no edition to ask about): without `--runtime`, every shipped adapter (Claude Code, Codex, Kiro, OpenCode) is rendered; `--runtime <name>` is the targeted re-render/repair path. Hitting Enter through every prompt keeps the current values, so re-running the installer after a kit upgrade is safe. With no TTY (CI, `./install < /dev/null`) or with `--non-interactive`, nothing is prompted and the config skeleton is written as before; `--agent-id` and `--host` supply the answers for scripted installs.
 
 The client kit installs from a release, not a repo checkout:
-`curl -fsSL https://firekeep.ai/latest/install.sh | sh` (`irm
+`curl -fsSL https://firekeep.ai/latest/install | sh` (`irm
 https://firekeep.ai/latest/install.ps1 | iex` on Windows). The published bootstrap carries
 its own artifact root, so there is no `FIREKEEP_DIST_BASE` to pass. It brings its own
 Python. The install guide is [firekeep.ai/docs.html](https://firekeep.ai/docs.html).

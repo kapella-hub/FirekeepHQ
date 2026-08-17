@@ -8,7 +8,7 @@ Codex reads this file automatically for work in this repository.
 this repository links to it rather than repeating it. The one command:
 
 ```bash
-curl -fsSL https://firekeep.ai/latest/install.sh | sh    # macOS / Linux
+curl -fsSL https://firekeep.ai/latest/install | sh    # macOS / Linux
 irm https://firekeep.ai/latest/install.ps1 | iex         # Windows
 ```
 

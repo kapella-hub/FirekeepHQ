@@ -68,7 +68,7 @@ Every session makes the next one better:
 ## Get Started
 
 ```bash
-curl -fsSL https://firekeep.ai/latest/install.sh | sh    # macOS / Linux
+curl -fsSL https://firekeep.ai/latest/install | sh    # macOS / Linux
 irm https://firekeep.ai/latest/install.ps1 | iex         # Windows
 ```
 

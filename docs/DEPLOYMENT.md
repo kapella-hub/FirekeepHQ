@@ -2,7 +2,7 @@
 
 > **Installing is documented at [firekeep.ai/docs.html](https://firekeep.ai/docs.html)** —
 > that page is the single source, and it starts with one command:
-> `curl -fsSL https://firekeep.ai/latest/install.sh | sh`. This file is the
+> `curl -fsSL https://firekeep.ai/latest/install | sh`. This file is the
 > operations reference for a server you already run: access and authentication,
 > the dashboard, backups, updates, health, troubleshooting.
 
@@ -32,7 +32,7 @@ server question decides which. Three shapes cover every case:
 
 | Shape | Run it on | Command | Result |
 |-------|-----------|---------|--------|
-| **Both**, one machine | Any host with Docker — Linux, or Docker Desktop on Windows/Mac | `curl -fsSL https://firekeep.ai/latest/install.sh \| sh` → answer **1** | Client *and* server, with this box enrolled against it. The default when Docker is present. |
+| **Both**, one machine | Any host with Docker — Linux, or Docker Desktop on Windows/Mac | `curl -fsSL https://firekeep.ai/latest/install \| sh` → answer **1** | Client *and* server, with this box enrolled against it. The default when Docker is present. |
 | **Client only** | Any Mac / Windows / Linux machine | the same one-liner → answer **2** (join code), **3** (address + key) or **4** (not yet) | Just the kit, pointed at a server your team already runs — or at nothing yet, finished later. |
 | **Server only** | Any host with Docker — Linux, or Docker Desktop on Windows/Mac | `firekeep init --no-self-enroll`, or `bash install.sh` from a checkout/bundle | The full stack with **no** machine enrolled — CI, a build host, a golden image. Enrol laptops afterwards. |
 
@@ -267,7 +267,7 @@ For the *second* machine you usually need nothing from here: `firekeep init`
 printed its paste-ready command when it finished —
 
 ```bash
-curl -fsSL https://firekeep.ai/latest/install.sh | FIREKEEP_JOIN=fk_join_… sh
+curl -fsSL https://firekeep.ai/latest/install | FIREKEEP_JOIN=fk_join_… sh
 ```
 
 For any machine after that, open the dashboard, choose **Devices → Add device**,

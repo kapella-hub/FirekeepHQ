@@ -50,7 +50,7 @@ These are shared libraries imported by multiple services (not standalone contain
 `https://firekeep.ai/docs.html` is the install documentation. In-repo copies are
 links, not walkthroughs — the one command it hands a user is:
 ```bash
-curl -fsSL https://firekeep.ai/latest/install.sh | sh      # macOS / Linux
+curl -fsSL https://firekeep.ai/latest/install | sh      # macOS / Linux
 irm https://firekeep.ai/latest/install.ps1 | iex           # Windows
 ```
 It asks two things: agent identity, then where the server is (set one up here /

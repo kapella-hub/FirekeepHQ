@@ -56,7 +56,7 @@ requirements, the server, every client runtime, updating, troubleshooting. It is
 maintained there rather than duplicated here; this section is the pointer.
 
 ```bash
-curl -fsSL https://firekeep.ai/latest/install.sh | sh    # macOS / Linux
+curl -fsSL https://firekeep.ai/latest/install | sh    # macOS / Linux
 irm https://firekeep.ai/latest/install.ps1 | iex         # Windows
 ```
 

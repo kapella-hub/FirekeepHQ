@@ -48,7 +48,7 @@ with `_` or `.` and can rewrite others, which would silently corrupt a release.
 
 ## What teammates use
 
-**Users are handed `https://firekeep.ai/latest/install.sh`, never this URL.** The site
+**Users are handed `https://firekeep.ai/latest/install`, never this URL.** The site
 rewrites exactly two paths — `/latest/install.sh` and `/latest/install.ps1` — through its
 download counter to the Pages base below, and the script they execute carries that base
 baked in, so everything after the first byte is fetched from here anyway. `firekeep.ai` is

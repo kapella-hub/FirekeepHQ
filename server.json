@@ -20,7 +20,7 @@
         {
           "type": "positional",
           "value": "gateway",
-          "description": "Run the local Firekeep MCP gateway. Firekeep is self-hosted, and the kit plus a server come from one command: `curl -fsSL https://firekeep.ai/latest/install.sh | sh` (Windows: `irm https://firekeep.ai/latest/install.ps1 | iex`). It asks for an agent identity, then where your server is — set one up on this machine, redeem a join code, point at one already running, or decide later. Install documentation: https://firekeep.ai/docs.html"
+          "description": "Run the local Firekeep MCP gateway. Firekeep is self-hosted, and the kit plus a server come from one command: `curl -fsSL https://firekeep.ai/latest/install | sh` (Windows: `irm https://firekeep.ai/latest/install.ps1 | iex`). It asks for an agent identity, then where your server is — set one up on this machine, redeem a join code, point at one already running, or decide later. Install documentation: https://firekeep.ai/docs.html"
         }
       ]
     }
