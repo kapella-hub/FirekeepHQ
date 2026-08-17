@@ -1530,6 +1530,95 @@ def cmd_night_shift(args) -> int:
     return 0
 
 
+def _dex_state(manifest, registry) -> str:
+    """The one word `dex list` prints for a dex. Ordered by what a user needs to
+    be told first: a registered dex whose wheel is gone is a BROKEN state (its
+    backend will fail to start), not merely an unregistered one."""
+    registered = manifest.name in registry
+    if not dexes.is_installed(manifest):
+        return "registered (wheel missing!)" if registered else "not installed"
+    return "registered" if registered else "available"
+
+
+def cmd_dex(args) -> int:
+    """Manage dexes — the domain indexes the Keep understands.
+
+    Registration gates ACTIVITY, not installation: the wheels arrive bundled and
+    checksum-verified with every release either way, and this only decides
+    whether the gateway mounts them and whether their background work runs.
+    That is why `remove` never uninstalls anything and `add` never downloads
+    anything — the only thing that changes is a line in ~/.firekeep/dexes.json.
+    """
+    action = getattr(args, "action", None) or "list"
+    registry = dexes.read_registry()
+
+    if action == "list":
+        print("firekeep dexes — the domain indexes this Keep understands\n")
+        for manifest in dexes.KNOWN_DEXES.values():
+            print(f"  {manifest.name}  [{_dex_state(manifest, registry)}]  "
+                  f"indexes {manifest.indexes}")
+            print(f"      {manifest.description}")
+        # Names in the file with no manifest here: a hand-edited entry, or a dex
+        # from a newer client after a rollback. The gateway ignores them; a
+        # `list` that hid them would be lying about the file it reports on.
+        for name in sorted(set(registry) - set(dexes.KNOWN_DEXES)):
+            print(f"  {name}  [unknown to this client — ignored]")
+        if not registry:
+            # The suggestion-not-default funnel (ROADMAP §5): absence is a
+            # choice, so this is an offer, never a warning.
+            print("\nfirekeep: none registered — add code intelligence with "
+                  "`firekeep dex add symdex`")
+        else:
+            print("\nfirekeep: `firekeep dex add|remove <name>` changes this; it takes "
+                  "effect on the next agent session.")
+        return 0
+
+    name = (getattr(args, "name", None) or "").strip()
+    if not name:
+        print(f"firekeep: `firekeep dex {action}` needs a dex name "
+              f"({', '.join(dexes.KNOWN_DEXES)})", file=sys.stderr)
+        return 2
+    manifest = dexes.KNOWN_DEXES.get(name)
+    if manifest is None:
+        print(f"firekeep: unknown dex '{name}' — this client knows "
+              f"{', '.join(dexes.KNOWN_DEXES)}", file=sys.stderr)
+        return 1
+
+    if action == "add":
+        if name in registry:
+            print(f"firekeep: {name} is already registered — nothing to do.")
+            return 0
+        # Prove the code is there BEFORE writing the entry. Registering a dex
+        # whose wheel is absent trades a clear error now for a silent missing
+        # tool next session, which is the harder failure to diagnose by far.
+        if not dexes.is_installed(manifest):
+            print(f"firekeep: cannot register {name} — its wheel is not in this venv "
+                  f"(no module '{manifest.import_probe}').\n"
+                  f"  Release install: re-run the installer "
+                  f"(https://firekeep.ai/docs.html) to fetch the bundled, "
+                  f"checksum-verified wheel.\n"
+                  f"  From a checkout: `cd client && ./install`.",
+                  file=sys.stderr)
+            return 1
+        dexes.add(name)
+        print(f"firekeep: registered {name} — {manifest.title} will index "
+              f"{manifest.indexes} for this Keep.\n"
+              f"firekeep: takes effect on the next agent session.")
+        return 0
+
+    # remove — deliberately does NOT probe the wheel: the machine most likely to
+    # need this is one whose dex is broken.
+    if name not in registry:
+        print(f"firekeep: {name} is not registered — nothing to do.")
+        return 0
+    dexes.remove(name)
+    print(f"firekeep: removed {name} — {manifest.title} no longer runs, and nothing "
+          f"here will index {manifest.indexes} any more.\n"
+          f"firekeep: the wheel stays installed — `firekeep dex add {name}` brings it "
+          f"back. Takes effect on the next agent session.")
+    return 0
+
+
 def cmd_personal(args) -> int:
     """Toggle Firekeep personal (bypass) mode for THIS session.
 
@@ -2269,6 +2358,13 @@ def _build_parser() -> argparse.ArgumentParser:
                       help="do not put a `firekeep` launcher on PATH (also via "
                            "FIREKEEP_NO_MODIFY_PATH)")
     inst.set_defaults(func=cmd_install)
+
+    # Positional-choices rather than nested subparsers — the `personal` shape
+    # below, and the only sub-command pattern this package uses.
+    dex = sub.add_parser("dex", help="manage dexes — domain indexes the Keep understands")
+    dex.add_argument("action", nargs="?", choices=["list", "add", "remove"], default="list")
+    dex.add_argument("name", nargs="?", help="dex name (symdex, docdex)")
+    dex.set_defaults(func=cmd_dex)
 
     personal = sub.add_parser(
         "personal",

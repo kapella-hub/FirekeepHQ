@@ -26,6 +26,7 @@ must never cost you the session.
 from __future__ import annotations
 
 import datetime
+import importlib.util
 import json
 import os
 from dataclasses import dataclass
@@ -153,6 +154,20 @@ def registered() -> list[DexManifest]:
     nothing to mount for a dex whose shape we do not know."""
     entries = read_registry()
     return [m for name, m in KNOWN_DEXES.items() if name in entries]
+
+
+def is_installed(manifest: DexManifest) -> bool:
+    """True when this dex's wheel is importable in THIS venv.
+
+    `find_spec` rather than an import: the point is to prove the code is present
+    without paying for (or being broken by) importing it — symdex drags
+    tree-sitter, docdex drags pypdf. Never raises; a probe that cannot answer
+    means 'absent', which is the safe direction: `dex add` refuses rather than
+    registering a dex whose backend would fail to start next session."""
+    try:
+        return importlib.util.find_spec(manifest.import_probe) is not None
+    except (ImportError, ValueError, TypeError):
+        return False
 
 
 def _manifest(name: str) -> DexManifest:
