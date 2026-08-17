@@ -45,6 +45,7 @@ secrets.
 | `FIREKEEP_DOCDEX_MAX_FILE_MB` | 25 raw | File skipped, counted in the summary, its existing replica left alone |
 | `FIREKEEP_DOCDEX_MAX_EXTRACT_KB` | 400 extracted | Truncated at the cap, `truncated: true` in state, shown by `list` |
 | `FIREKEEP_DOCDEX_SYNC_INTERVAL_HOURS` | 6 | — |
+| `FIREKEEP_DOCDEX_INGEST_TIMEOUT_SECONDS` | 180 | Per-request ingest budget — the server embeds synchronously, so large documents need real time. A timeout aborts the run with an honest message (never "unreachable"); what landed is kept and the rest retries next sync |
 
 ## The threat boundary, stated precisely
 

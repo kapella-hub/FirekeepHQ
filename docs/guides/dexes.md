@@ -307,6 +307,7 @@ documented default rather than silently disabling a cap the docs promise.
 | `FIREKEEP_DOCDEX_MAX_FILE_MB` | 25 (raw bytes) | File skipped and counted. Skipped is not deleted: an oversize file keeps any replica it already has |
 | `FIREKEEP_DOCDEX_MAX_EXTRACT_KB` | 400 (extracted text) | Truncated at the cap on a byte boundary, flagged `truncated` in state, shown by `list` |
 | `FIREKEEP_DOCDEX_SYNC_INTERVAL_HOURS` | 6 | Staleness threshold for the background trigger below |
+| `FIREKEEP_DOCDEX_INGEST_TIMEOUT_SECONDS` | 180 | Per-request ingest budget — the server embeds synchronously, so a document near the extract cap needs real time on a CPU Keep. A timeout aborts the run with an honest “timed out” message (never “unreachable”); what landed is kept, the rest retries next sync |
 
 ### The threat boundary, stated precisely
 

@@ -520,3 +520,43 @@ def test_main_never_raises_into_a_detached_process(tmp_path, monkeypatch, client
 
     monkeypatch.setattr(sync, "_make_client", boom)
     assert sync.main(["--all", "--quiet"]) == 1
+
+
+# --- timeouts are not outages (found on the first real dogfood sync) --------
+
+
+def _timed_out(*_a, **_kw):
+    raise transport.TransportError("POST http://keep.test:8100/corpus/ingest timed out after 180.0s")
+
+
+def test_a_timeout_aborts_with_an_honest_message_not_unreachable(tmp_path, client, server):
+    """The first dogfood sync hit a healthy server (80ms health checks) whose
+    CPU embedding of one large document outlived the transport's 10s default —
+    and reported it "unreachable". A timeout must still abort (a hung server
+    costs one timeout, never one per file) but must SAY timeout, name the
+    escape hatch, and never claim the server is down."""
+    sources.add(_folder(tmp_path, "docs", {"big.md": "content"}))
+    server.post_hook = lambda *_a: _timed_out()
+    summary = sync.run_sync(all_sources=True, client=client)
+    warning = " ".join(summary["sources"][0]["warnings"])
+    assert "timed out" in warning
+    assert "unreachable" not in warning
+    assert "FIREKEEP_DOCDEX_INGEST_TIMEOUT_SECONDS" in warning
+    assert summary["aborted"]
+
+
+def test_the_ingest_timeout_is_generous_and_env_overridable(monkeypatch):
+    """Corpus ingest embeds synchronously server-side; the hook path's 10s
+    transport default is the wrong budget for it. 180s default, env override,
+    and the sync client actually carries it to the wire."""
+    monkeypatch.delenv("FIREKEEP_DOCDEX_INGEST_TIMEOUT_SECONDS", raising=False)
+    assert sync._ingest_timeout() == 180
+    seen = {}
+    monkeypatch.setattr(sync.wire, "Client",
+                        lambda *a, **kw: seen.update(kw) or object())
+    sync._make_client()
+    assert seen["timeout"] == 180.0  # the budget actually reaches the wire client
+    monkeypatch.setenv("FIREKEEP_DOCDEX_INGEST_TIMEOUT_SECONDS", "600")
+    assert sync._ingest_timeout() == 600
+    monkeypatch.setenv("FIREKEEP_DOCDEX_INGEST_TIMEOUT_SECONDS", "not-a-number")
+    assert sync._ingest_timeout() == 180  # env_int's typo rule: fall back, never disable

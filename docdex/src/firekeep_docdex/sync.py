@@ -48,8 +48,9 @@ _SUMMARY_COUNTERS = (
 )
 
 # Per-file outcomes that actually wrote something into the in-memory state.
-# "unreachable" is deliberately absent: it records nothing, so a run that only
-# ever hit an outage must not persist a state file it did not earn.
+# A server-loss abort (_ServerLost) is deliberately not an outcome: it records
+# nothing, so a run that only ever hit an outage must not persist a state file
+# it did not earn.
 _MUTATING_OUTCOMES = frozenset({"ingested", "zero", "failed"})
 
 
@@ -127,15 +128,56 @@ def _bypassed() -> bool:
     return resolver.is_bypassed()
 
 
+def _ingest_timeout() -> int:
+    """`FIREKEEP_DOCDEX_INGEST_TIMEOUT_SECONDS`, default 180.
+
+    The transport's 10s default is tuned for the hook path and is simply wrong
+    for corpus ingest: the server chunks and EMBEDS the document synchronously,
+    and a document near the 400KB extract cap on a CPU-embedding Keep takes
+    well over 10s. Found on the first real dogfood sync (2026-08-17): a
+    perfectly healthy server was reported "unreachable" because one large
+    file's ingest outlived the default."""
+    from firekeep_docdex import env_int
+
+    return env_int("FIREKEEP_DOCDEX_INGEST_TIMEOUT_SECONDS", 180)
+
+
 def _make_client() -> wire.Client:
-    return wire.Client()
+    return wire.Client(timeout=float(_ingest_timeout()))
 
 
-def _unreachable(err: Exception) -> bool:
-    """A transport failure with no HTTP status never reached the server:
-    connection refused, DNS, TLS, timeout. That is an outage, and the honest
-    response is to stop the run rather than mark 5000 files failed."""
-    return getattr(err, "status", None) is None
+class _ServerLost(RuntimeError):
+    """The SERVER (not the document) is the problem — stop the run.
+
+    Carries the honest, already-worded abort message. Raised instead of
+    threading outcome tokens because the message depends on WHICH way the
+    server was lost, and only the code holding the exception knows."""
+
+
+def _abort_reason(err: Exception, *, deleting: bool = False) -> str | None:
+    """The run-stopping message for a transport failure, or None to treat it
+    as a per-file failure.
+
+    A response WITH an HTTP status reached the server: that is a per-file
+    problem (recorded, retried by the seen/ingested split), never an abort.
+    No status splits two honest ways:
+
+      * "timed out" — the request outlived even the generous ingest timeout.
+        Could be a very large document on a busy server, could be an outage;
+        we cannot tell from here, and saying "unreachable" when health checks
+        answer in 80ms is a lie (the first dogfood sync told exactly that lie).
+        Still an abort — a hung server must cost one timeout, not one per file.
+      * anything else — refused, DNS, TLS: the server is genuinely
+        unreachable, and stopping beats marking 5000 files failed."""
+    if getattr(err, "status", None) is not None:
+        return None
+    tail = ("remaining deletions stay pending" if deleting
+            else "what landed is kept; the rest retries next sync")
+    if "timed out" in str(err):
+        return (f"a request timed out after {_ingest_timeout()}s — a large document "
+                f"on a busy server, or an outage — sync aborted, {tail} "
+                f"(raise FIREKEEP_DOCDEX_INGEST_TIMEOUT_SECONDS if your documents are large)")
+    return f"the server is unreachable — sync aborted, {tail}"
 
 
 def _gone(err: Exception) -> bool:
@@ -222,11 +264,12 @@ def _sync_locked(src: sources.Source, summary: dict, client: wire.Client) -> dic
             aborted = gate
             break
         for rel in work[start:start + BATCH_SIZE]:
-            outcome = _sync_one(src, rel, walk.files[rel], current, summary, client)
-            changed = changed or outcome in _MUTATING_OUTCOMES
-            if outcome == "unreachable":
-                aborted = "the server is unreachable — sync aborted, nothing further attempted"
+            try:
+                outcome = _sync_one(src, rel, walk.files[rel], current, summary, client)
+            except _ServerLost as lost:
+                aborted = str(lost)
                 break
+            changed = changed or outcome in _MUTATING_OUTCOMES
         if aborted:
             break
 
@@ -287,8 +330,9 @@ def _sync_one(src, rel: str, digest: str, current, summary: dict, client) -> str
         client.ingest(src.id, rel, text, visibility=src.visibility,
                       mtime=_mtime(src.root / rel))
     except Exception as e:  # noqa: BLE001 — a per-file failure is data
-        if _unreachable(e):
-            return "unreachable"
+        reason = _abort_reason(e)
+        if reason is not None:
+            raise _ServerLost(reason) from e
         state.record_failure(current, rel, digest, str(e))
         summary["failed"] += 1
         return "failed"
@@ -325,9 +369,9 @@ def _apply_deletions(src, walk, current, summary: dict, client) -> tuple[bool, s
         try:
             client.delete_file(src.id, rel)
         except Exception as e:  # noqa: BLE001
-            if _unreachable(e):
-                return changed, ("the server is unreachable — sync aborted, "
-                                 "remaining deletions stay pending")
+            reason = _abort_reason(e, deleting=True)
+            if reason is not None:
+                return changed, reason
             if not _gone(e):
                 # The tombstone survives in state and `list` shows it, so the
                 # replica is retried rather than quietly abandoned. The count
