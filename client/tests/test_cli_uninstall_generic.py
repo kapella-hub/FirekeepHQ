@@ -11,8 +11,6 @@ Fixture shape mirrors tests/test_cli_uninstall.py.
 """
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 from firekeep_client import cli, resolver
 from firekeep_client.adapters import base
