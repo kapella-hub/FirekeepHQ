@@ -1,9 +1,12 @@
 # firekeep-docdex
 
-The documents dex. A human tells Firekeep which folders it may understand;
+The documents dex for [Firekeep](https://firekeep.ai) — persistent, shared
+memory for AI agents. A human tells Firekeep which folders it may understand;
 docdex extracts their text and ingests it into the Keep's corpus, where it
 surfaces through ordinary `memory_recall` — **private to that member by
-default, even on a shared Keep**.
+default, even on a shared Keep**. Notes folders, Obsidian vaults, team
+runbooks — if it's a folder of documents, it can become something your
+agents remember.
 
 ```bash
 firekeep docdex add ~/Notes              # private to me (default)
@@ -13,8 +16,15 @@ firekeep docdex sync [--source <id>]     # force a scan now
 firekeep docdex remove <id>              # delete the source AND its corpus replicas
 ```
 
-No MCP server, no resident daemon, no new recall surface. Design and
-invariants: `docs/superpowers/specs/2026-08-15-docdex-design.md`.
+No MCP server, no resident daemon, no new recall surface.
+
+## Installing
+
+The [managed Firekeep install](https://firekeep.ai/docs.html) already ships
+this wheel — nothing to do beyond `firekeep dex add docdex`. Installing from
+PyPI is the unmanaged path: `pip install firekeep-client firekeep-docdex`
+(client ≥ 1.0.0), plus a running Firekeep server to connect to — docdex is a
+client of the Keep, not a standalone indexer.
 
 ## What it indexes
 
@@ -68,7 +78,7 @@ at least one active source; folder commands work either way. Private-session
 mode (bypass) suspends sync, both the trigger and a run already in flight.
 
 Full per-runtime coverage table, registry model and troubleshooting:
-[`docs/guides/dexes.md`](../docs/guides/dexes.md).
+[firekeep.ai/dexes.html](https://firekeep.ai/dexes.html).
 
 ## Development
 
