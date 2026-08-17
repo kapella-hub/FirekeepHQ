@@ -26,7 +26,8 @@ from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
 
-from .extract import _env_int, is_supported
+from . import env_int
+from .extract import is_supported
 
 DEFAULT_MAX_FILES = 5000
 DEFAULT_MAX_FILE_MB = 25
@@ -71,11 +72,11 @@ class WalkResult:
 
 
 def max_files() -> int:
-    return _env_int("FIREKEEP_DOCDEX_MAX_FILES", DEFAULT_MAX_FILES)
+    return env_int("FIREKEEP_DOCDEX_MAX_FILES", DEFAULT_MAX_FILES)
 
 
 def max_file_bytes() -> int:
-    return _env_int("FIREKEEP_DOCDEX_MAX_FILE_MB", DEFAULT_MAX_FILE_MB) * 1024 * 1024
+    return env_int("FIREKEEP_DOCDEX_MAX_FILE_MB", DEFAULT_MAX_FILE_MB) * 1024 * 1024
 
 
 def normalize_relpath(rel: str) -> str:

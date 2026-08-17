@@ -15,7 +15,23 @@ from typing import Any
 
 __version__ = "0.1.0"
 
-__all__ = ["__version__", "docdex_dir", "firekeep_home", "read_json", "write_atomic"]
+__all__ = [
+    "__version__", "docdex_dir", "env_int", "firekeep_home", "read_json", "write_atomic",
+]
+
+
+def env_int(name: str, default: int) -> int:
+    """A disclosed cap read from the environment.
+
+    Anything unparseable or non-positive falls back to the documented default:
+    a typo in an env var must not silently disable a cap the docs promise.
+    """
+    raw = os.environ.get(name, "")
+    try:
+        value = int(raw.strip())
+    except (AttributeError, ValueError):
+        return default
+    return value if value > 0 else default
 
 
 def firekeep_home() -> Path:

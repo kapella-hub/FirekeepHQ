@@ -14,8 +14,9 @@ Two rules hold the whole module together:
 """
 from __future__ import annotations
 
-import os
 from pathlib import Path
+
+from . import env_int
 
 SUPPORTED_SUFFIXES = frozenset({".md", ".txt", ".pdf", ".docx"})
 
@@ -27,19 +28,7 @@ def is_supported(path: str | Path) -> bool:
 
 
 def max_extract_bytes() -> int:
-    return _env_int("FIREKEEP_DOCDEX_MAX_EXTRACT_KB", DEFAULT_MAX_EXTRACT_KB) * 1024
-
-
-def _env_int(name: str, default: int) -> int:
-    """A cap read from the environment. Anything unparseable or non-positive
-    falls back to the documented default — a typo in an env var must not
-    silently disable a cap the docs promise."""
-    raw = os.environ.get(name, "")
-    try:
-        value = int(raw.strip())
-    except (AttributeError, ValueError):
-        return default
-    return value if value > 0 else default
+    return env_int("FIREKEEP_DOCDEX_MAX_EXTRACT_KB", DEFAULT_MAX_EXTRACT_KB) * 1024
 
 
 def truncate(text: str) -> tuple[str, bool]:

@@ -133,3 +133,81 @@ def docs(tmp_path_factory):
     (d / "sample.docx").write_bytes(_docx(["Docx paragraph one.", "Docx paragraph two."]))
     (d / "notes.rtf").write_text("unsupported", encoding="utf-8")
     return d
+
+
+# --- the fake server --------------------------------------------------------
+#
+# Every server call in the suite goes through this. It records the EXACT wire
+# call — url, body, headers, verify — so the wire tests can assert shapes
+# byte-for-byte, and it lets a test program a failure at a chosen call index.
+
+
+class FakeServer:
+    def __init__(self):
+        self.posts: list[dict] = []
+        self.deletes: list[dict] = []
+        self.post_hook = None    # (index, url, body) -> response | None
+        self.delete_hook = None  # (index, url) -> response | None
+
+    def post(self, url, body, *, headers, verify, timeout=None):
+        self.posts.append({"url": url, "body": body, "headers": headers, "verify": verify})
+        if self.post_hook is not None:
+            result = self.post_hook(len(self.posts) - 1, url, body)
+            if result is not None:
+                return result
+        return {
+            "source_name": body.get("source_name"), "chunks_stored": 1,
+            "entities_extracted": 0, "relationships_extracted": 0,
+            "entity_types_discovered": [], "extraction_status": "skipped",
+        }
+
+    def delete(self, url, *, headers, verify, timeout=None):
+        self.deletes.append({"url": url, "headers": headers, "verify": verify})
+        if self.delete_hook is not None:
+            result = self.delete_hook(len(self.deletes) - 1, url)
+            if result is not None:
+                return result
+        return {"deleted_sources": 1, "deleted_chunks": "all"}
+
+    @property
+    def ingested_names(self) -> list[str]:
+        return [p["body"]["source_name"] for p in self.posts]
+
+
+@pytest.fixture
+def server():
+    return FakeServer()
+
+
+@pytest.fixture
+def endpoint():
+    from firekeep_client import resolver
+
+    # verify=False here is not a docdex choice: it is what the resolver itself
+    # produces for `scheme = http`, and docdex only ever passes `ep.verify`
+    # through. The TLS decision has exactly one home, and it is not this wheel.
+    return resolver.Endpoint(
+        mcp_url="http://keep.test:8080/mcp",
+        rest_base="http://keep.test:8100",
+        headers={"X-Agent-Id": "tester", "X-API-Key": "k3y"},
+        verify=False,
+    )
+
+
+@pytest.fixture
+def client(endpoint, server):
+    from firekeep_docdex import wire
+
+    return wire.Client(endpoint, post=server.post, delete=server.delete)
+
+
+@pytest.fixture
+def configured(firekeep_home):
+    """A real kit config, so the resolver seam is exercised for real rather
+    than only through a hand-built Endpoint."""
+    (firekeep_home / "config").write_text(
+        "[server]\nkind = ports\nscheme = http\nhost = keep.test\napi_key = k3y\n"
+        "\n[identity]\nagent_id = tester\n",
+        encoding="utf-8",
+    )
+    return firekeep_home

@@ -57,9 +57,11 @@ class SourceState:
 
 
 def state_dir() -> Path:
-    d = docdex_dir() / "state"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    # Deliberately does NOT create the directory: asking where a file WOULD be
+    # must not bring it into existence, or "has this source ever synced?"
+    # answers itself wrongly. `write_atomic` creates the parent when there is
+    # finally something to write.
+    return docdex_dir() / "state"
 
 
 def state_path(source_id: str) -> Path:
