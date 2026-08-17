@@ -28,7 +28,14 @@
 
 Firekeep is a **server** you run once and a **client kit** on each developer
 machine. The one install command handles either or both — your answer to its
-server question decides which. Three shapes cover every case:
+server question decides which. The kit renders native adapters for Claude Code,
+Codex, kiro and OpenCode, plus a `generic` "any MCP client" tier
+(`firekeep install --runtime generic --agents-md <path>`, or one skippable wizard
+question) for editors it ships no bespoke adapter for — Cursor, Windsurf, Gemini
+CLI. The generic tier gets the MCP tools and the on-connect instructions but
+**not** the hook-driven lifecycle automation (no auto-briefing, pre-edit block,
+stop→learn, checkpoint or presence); see
+[the client-kit guide](guides/client-kit.md). Three shapes cover every case:
 
 | Shape | Run it on | Command | Result |
 |-------|-----------|---------|--------|

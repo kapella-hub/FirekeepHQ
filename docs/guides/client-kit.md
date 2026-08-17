@@ -145,6 +145,7 @@ discipline as the add.
 ```bash
 cd client && ./install              # POSIX; .\install.ps1 on Windows
 firekeep install --runtime claude      # re-render one runtime: claude | codex | kiro | opencode | all
+firekeep install --runtime generic --agents-md ~/.cursor/rules   # any other MCP client: print gateway snippet + manage that rules file
 # firekeep-symdex (stdio-local code intelligence) now installs automatically — no flag needed
 firekeep install --non-interactive --agent-id ci-bot --host 10.0.0.4   # scripted/fleet
 ```
@@ -377,8 +378,59 @@ substring-matched the expected block) to every instruction surface. A stale row 
 sessions on that runtime are exposed to whatever the old block carried, not what the wheel
 would render; the repair is the usual `firekeep install --runtime <name>`.
 
+## The generic runtime — any MCP client (`--runtime generic`)
+
+The four adapters each know a native config file to write. The **generic** runtime
+(`adapters/generic.py`) is the honest floor for every OTHER MCP client — Cursor,
+Windsurf, Gemini CLI, anything that speaks MCP but ships no bespoke adapter. It is purely
+**additive**: the four adapters render byte-identical whether or not generic is configured.
+
+**Selecting it.** Explicitly —
+```bash
+firekeep install --runtime generic --agents-md ~/.cursor/rules
+```
+— or via one optional, skippable wizard question, asked LAST on every install path
+(`wizard._ask_generic_agents_md`): *"Also use an MCP client we don't ship an adapter for
+(Cursor, Windsurf, Gemini CLI, …)? Paste the path to its rules/AGENTS.md file, or press
+Enter to skip."* Enter opts out; a path is persisted to `[generic] agents_md` in
+`~/.firekeep/config`, and that persisted section is what makes generic rejoin later
+`firekeep install`/`uninstall` runs (`cli._selected_runtimes` fans generic into "all" only
+when it exists). `--agents-md` is valid ONLY with `--runtime generic` — argparse can't
+express that, so cli.py rejects the combination explicitly.
+
+**What it delivers.** `render()` PRINTS a paste-in MCP-server JSON snippet — the firekeep
+gateway `command`+`args` (the same `shim_servers()` entry the native adapters wire) — for
+the user to drop into their client's own MCP config. The cognitive protocol still reaches
+the agent regardless, because the **gateway handshake** (`GATEWAY_INSTRUCTIONS`) is served
+fresh on every MCP `initialize`. When `--agents-md` points at a rules file, generic ALSO
+upserts a marker-delimited **hook-free** instruction block (`GENERIC_INSTRUCTIONS` =
+`MEMORY_INSTRUCTIONS_NO_HOOKS` + decision + knowledge-ingest — the memory text with the
+"already gated by hooks" clause dropped) into it, with the same marker discipline the
+claude/opencode blocks use. A collision guard refuses BEFORE any write if `--agents-md`
+names a file one of the four already owns (every block shares one BEGIN prefix, so two
+adapters on one file would overwrite each other on alternate renders).
+
+**The honest degraded tier — the whole point, never blurred.** A generic client exposes no
+hooks Firekeep can wire, so generic gets the MCP tools + on-connect instructions and
+**nothing that rides a hook**: no session-start auto-briefing, no blocking pre-edit policy
+gate, no stop→learn, no pre-compaction checkpoint, no hook-driven presence (the sidecar is
+the intended presence owner, but nothing auto-starts it — a generic user runs
+`firekeep-sidecar` by hand, exactly as on Codex). Codex is the precedent for a hookless
+runtime; the difference is that generic owns no native config file at all, which is why its
+config half is print-only. Nothing here enforces anything, and the docs and site must never
+imply it does.
+
+**Contract matrix has a generic column.** `contract/matrix.py`'s `RUNTIMES` lists `generic`
+last — it is what a runtime degrades TO, not a peer of the four — and every capability row
+carries its cell (`briefing: none (MCP only)`, `pre_edit_block: none`, `precompact: none`,
+`presence: sidecar (manual today)`, `bypass: firekeep personal CLI + FIREKEEP_BYPASS`).
+`firekeep doctor` adds a per-runtime staleness row for the generic block ONLY when
+`[generic] agents_md` is configured, comparing the on-disk block against
+`RENDERED_GENERIC_INSTRUCTIONS_HASH` (the hook-free text's OWN hash — checked against the
+four's hash it would read "edited" forever).
+
 ## Session Hooks (client kit — `firekeep_client.hooks`)
-The five bash hooks are retired; the adapter wires stdlib Python hook cores at install (Claude `settings.json`, kiro inline hooks, OpenCode via a rendered JS plugin bridge; Codex has no hook surface):
+The five bash hooks are retired; the adapter wires stdlib Python hook cores at install (Claude `settings.json`, kiro inline hooks, OpenCode via a rendered JS plugin bridge; Codex and the generic runtime have no hook surface):
 - `session_start` (SessionStart / kiro agentSpawn) — thin fetch-and-print of Cortex `GET /briefing` (server-side aggregator; auth via the resolver) plus local presence registration. Replaces the 610-line briefing assembly and structurally kills its `$SESSION_ID`-unbound + shell-injection bugs. Also stashes the server-minted `briefing_id` into the session stash (`state.write_session_stash`, `session_current_{agent}`) for the bridge shim's identity tap. Runs the once-a-day client-update check (`_update_nudge`): when a newer release exists it spawns the detached background auto-update (on by default — see Background auto-update above) and appends a one-line "updating in background" notice (or the manual "run: firekeep update" nudge when opted out). Finally calls `symdexindex.index_nudge` to background-index the workspace for symdex when the staleness policy says so (see Symdex auto-index below) — silent in every declining case, since a line on every start is the nag it replaces.
 
 **Identity auto-injection (client 0.1.17):** the shim attaches `X-Session-Id` on every proxied request WITHOUT the agent passing `session_id` — killing the untagged-calls discipline problem structurally rather than nagging about it, and closing the briefing_id→session A/B join mechanically. Mechanism (all client-side; cortex/bridge unchanged — `_resolve_identity` already special-cases `session_id="unknown"` to fall through to the header): (1) the **bridge** shim runs a `_BridgeSessionTap` on both pump directions — it injects the stashed `briefing_id` into a `ctx_start_session`/`ctx_resume_session` the agent sends without one, and captures the returned `session_id` into the session stash (clearing it on `ctx_complete_session`/`ctx_abandon_session`); (2) **every** shim's httpx client carries `_StashSessionAuth`, which reads the stash per-request and sets `X-Session-Id` when a fresh id exists and `/personal` bypass is off. The stash is keyed by `{agent}` with a self-enforced TTL (`FIREKEEP_SESSION_STASH_TTL_HOURS`, default 12 — `reap_stale` does not sweep `scratch/`). Lifecycle: `session_start` clears the stash UNCONDITIONALLY at the top (a new session never inherits a crashed one's id, even if the briefing fetch fails) then writes `briefing_id` if present; the bridge tap clears it on `ctx_complete_session`/`ctx_abandon_session` (server-authoritative session end); the TTL backstops a crash. `stop` deliberately does NOT clear the stash — the `Stop` event fires every assistant turn, not at session end, so clearing there would drop attribution for turns 2..N. briefing_id is injected ONLY into `ctx_start_session` (not `ctx_resume_session`, whose bridge signature has no such param — FastMCP would reject the kwarg and break resume); both start and resume are tracked for session_id capture. Injection is a DEFAULT, not an override: an explicit agent-supplied `session_id`/`briefing_id` still wins server-side. First-turn pre-`ctx_start_session` calls stay `"unknown"` (correct — the discipline metric won't hit zero). The pump transform never raises, forwards byte-identical on error, and is GIL-safe (synchronous, no await between the pending-map check and set). **Concurrency limitation (known):** the stash is one machine-global slot per agent identity, so two concurrent sessions under the SAME identity (two Claude windows as the same person) are last-writer-wins — window B's `ctx_start_session` overwrites the slot and window A's still-running shims then attach B's `session_id` to A's calls (active mis-attribution of replay/eval joins, not merely missing headers). Consistent with Bridge's own one-active-session-per-`agent_id` model; the supported partition for genuinely concurrent work remains a distinct `FIREKEEP_AGENT_ID` per terminal (it flows into the stash key, the shim headers, and Bridge sessions coherently). A true fix (per-runtime-session stash keying) needs the shim to know its runtime session id — a follow-up. NOT changed here: `state.resolve_session_id`'s precedence (what `/agent/action/before` + evals key by) — a distinct attribution concern deferred to its own task.
