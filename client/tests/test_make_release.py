@@ -58,6 +58,17 @@ def test_write_sums_format_matches_what_the_bootstrap_greps(tmp_path):
     assert b"\r\n" not in dest.read_bytes()
 
 
+def _dex_wheels(tmp_path, symdex_version="0.2.13", docdex_version="0.1.0"):
+    """The two always-on dex wheels a valid release dir carries (both guarded in
+    main()). Their versions are independent of the client tag and of each other —
+    0.2.13 / 0.1.0 here against a 1.2.3 release, which is the real shape."""
+    symdex = tmp_path / f"firekeep_symdex-{symdex_version}-py3-none-any.whl"
+    symdex.write_bytes(b"symdex")
+    docdex = tmp_path / f"firekeep_docdex-{docdex_version}-py3-none-any.whl"
+    docdex.write_bytes(b"docdex")
+    return symdex, docdex
+
+
 def _populate_dist_dir(tmp_path, version="1.2.3", wheel_content=b"xyz",
                         uv_targets=("uv-x86_64-unknown-linux-gnu",
                                     "uv-aarch64-apple-darwin",
@@ -79,9 +90,8 @@ def test_main_happy_path_writes_a_complete_manifest_and_sums(tmp_path):
     or the sums filter regresses, this is where it would be caught — before the artifacts are
     published and teammates' installers start fetching them."""
     wheel, sh, ps1, uv_paths = _populate_dist_dir(tmp_path)
-    # A valid release dir now also carries the always-on symdex wheel (guarded in main()).
-    symdex = tmp_path / "firekeep_symdex-0.2.13-py3-none-any.whl"
-    symdex.write_bytes(b"symdex")
+    # A valid release dir now also carries the always-on dex wheels (guarded in main()).
+    symdex, docdex = _dex_wheels(tmp_path)
 
     rc = make_release.main(["make_release.py", "1.2.3", str(tmp_path)])
 
@@ -104,7 +114,8 @@ def test_main_happy_path_writes_a_complete_manifest_and_sums(tmp_path):
     sums_path = tmp_path / "SHA256SUMS"
     assert sums_path.is_file()
     lines = sums_path.read_text().splitlines()
-    expected_names = {p.name for p in uv_paths} | {wheel.name, symdex.name, sh.name, ps1.name}
+    expected_names = {p.name for p in uv_paths} | {
+        wheel.name, symdex.name, docdex.name, sh.name, ps1.name}
     assert len(lines) == len(expected_names)
 
     # Exact line format: "<hex><two spaces><basename>", no directory component. This is a
@@ -132,6 +143,7 @@ def test_main_happy_path_writes_a_complete_manifest_and_sums(tmp_path):
         assert by_name[p.name] == hashlib.sha256(p.read_bytes()).hexdigest()
     assert by_name[wheel.name] == hashlib.sha256(wheel.read_bytes()).hexdigest()
     assert by_name[symdex.name] == hashlib.sha256(symdex.read_bytes()).hexdigest()
+    assert by_name[docdex.name] == hashlib.sha256(docdex.read_bytes()).hexdigest()
     assert by_name[sh.name] == manifest["bootstrap_sha256"]
     assert by_name[ps1.name] == manifest["bootstrap_ps1_sha256"]
 
@@ -194,16 +206,17 @@ def test_main_fails_loudly_on_a_version_tag_mismatch(tmp_path):
     assert not (tmp_path / "latest.json").exists()
 
 
-def test_symdex_wheel_included_in_sums(tmp_path):
-    """Symdex is an always-on part of the distribution; the bootstrap reads its wheel name from
-    SHA256SUMS and fetches it. The existing sums glob already picks up any `.whl`, so a present
-    symdex wheel must be checksummed alongside the client wheel. Its version is independent of
-    the client tag (0.2.13 here against a 1.2.3 release)."""
+def test_dex_wheels_included_in_sums(tmp_path):
+    """Both dexes are always-on parts of the distribution; the bootstrap reads each wheel
+    name from SHA256SUMS and fetches it. The existing sums glob already picks up any `.whl`,
+    so both must be checksummed alongside the client wheel. Their versions are independent
+    of the client tag (0.2.13 / 0.1.0 here against a 1.2.3 release)."""
     _populate_dist_dir(tmp_path)
-    (tmp_path / "firekeep_symdex-0.2.13-py3-none-any.whl").write_bytes(b"symdex")
+    symdex, docdex = _dex_wheels(tmp_path)
     make_release.main(["make_release.py", "1.2.3", str(tmp_path)])
     sums = (tmp_path / "SHA256SUMS").read_text()
-    assert "firekeep_symdex-0.2.13-py3-none-any.whl" in sums
+    assert symdex.name in sums
+    assert docdex.name in sums
 
 
 def test_missing_symdex_wheel_fails_loud(tmp_path):
@@ -212,8 +225,22 @@ def test_missing_symdex_wheel_fails_loud(tmp_path):
     uniqueness is validated at build time here (NOT a match to the client `version`), so a
     missing wheel must hard-fail before any manifest is written."""
     _populate_dist_dir(tmp_path)
-    assert not list(tmp_path.glob("firekeep_symdex-*.whl"))
+    _dex_wheels(tmp_path)
+    next(tmp_path.glob("firekeep_symdex-*.whl")).unlink()
     with pytest.raises(SystemExit, match="firekeep_symdex"):
+        make_release.main(["make_release.py", "1.2.3", str(tmp_path)])
+    assert not (tmp_path / "latest.json").exists()
+
+
+def test_missing_docdex_wheel_fails_loud(tmp_path):
+    """Same contract for the second dex, asserted independently: with symdex PRESENT the
+    build must still fail, and must name docdex. A shared 'some dex is missing' check would
+    pass this while shipping a release whose bootstrap dies at the docdex fetch."""
+    _populate_dist_dir(tmp_path)
+    _dex_wheels(tmp_path)
+    next(tmp_path.glob("firekeep_docdex-*.whl")).unlink()
+    assert list(tmp_path.glob("firekeep_symdex-*.whl"))
+    with pytest.raises(SystemExit, match="firekeep_docdex"):
         make_release.main(["make_release.py", "1.2.3", str(tmp_path)])
     assert not (tmp_path / "latest.json").exists()
 
@@ -237,8 +264,7 @@ def test_dist_base_is_baked_before_hashing(tmp_path):
     for p in (tmp_path / "install.sh", tmp_path / "install.ps1"):
         p.unlink()
     sh, ps1 = _scripts_with_placeholder(tmp_path)
-    symdex = tmp_path / "firekeep_symdex-0.2.13-py3-none-any.whl"
-    symdex.write_bytes(b"symdex")
+    _dex_wheels(tmp_path)
 
     rc = make_release.main(["make_release.py", "1.2.3", str(tmp_path),
                             "--dist-base", "https://reg.example/firekeep-client/"])
@@ -268,7 +294,7 @@ def test_dist_base_normalizes_bootstraps_to_lf_on_windows(tmp_path):
     sh.write_bytes(b'#!/bin/sh\r\nDIST_BASE_DEFAULT="__FIREKEEP_DIST_BASE_DEFAULT__"\r\n')
     ps1 = tmp_path / "install.ps1"
     ps1.write_bytes(b"# ps\r\n$DistBaseDefault = '__FIREKEEP_DIST_BASE_DEFAULT__'\r\n")
-    (tmp_path / "firekeep_symdex-0.2.13-py3-none-any.whl").write_bytes(b"symdex")
+    _dex_wheels(tmp_path)
 
     make_release.main([
         "make_release.py", "1.2.3", str(tmp_path),
@@ -284,8 +310,7 @@ def test_dist_base_requires_the_placeholder(tmp_path):
     make_release have drifted — fail the release loudly, never publish a
     bootstrap that silently ignores the intended default."""
     _populate_dist_dir(tmp_path)  # writes scripts WITHOUT the placeholder
-    symdex = tmp_path / "firekeep_symdex-0.2.13-py3-none-any.whl"
-    symdex.write_bytes(b"symdex")
+    _dex_wheels(tmp_path)
     with pytest.raises(SystemExit, match="placeholder"):
         make_release.main(["make_release.py", "1.2.3", str(tmp_path),
                            "--dist-base", "https://reg.example"])
@@ -296,8 +321,7 @@ def test_without_dist_base_nothing_is_baked(tmp_path):
     for p in (tmp_path / "install.sh", tmp_path / "install.ps1"):
         p.unlink()
     sh, ps1 = _scripts_with_placeholder(tmp_path)
-    symdex = tmp_path / "firekeep_symdex-0.2.13-py3-none-any.whl"
-    symdex.write_bytes(b"symdex")
+    _dex_wheels(tmp_path)
     rc = make_release.main(["make_release.py", "1.2.3", str(tmp_path)])
     assert rc == 0
     assert "__FIREKEEP_DIST_BASE_DEFAULT__" in sh.read_text()
@@ -323,7 +347,7 @@ def _signed_dist_dir(tmp_path, monkeypatch, version="1.2.3"):
     for p in (tmp_path / "install.sh", tmp_path / "install.ps1"):
         p.unlink()
     sh, ps1 = _scripts_with_signing_placeholder(tmp_path)
-    (tmp_path / "firekeep_symdex-0.2.13-py3-none-any.whl").write_bytes(b"symdex")
+    _dex_wheels(tmp_path)
     pub_text, sec_text = signing.generate_keypair()
     monkeypatch.setenv(make_release.SIGNING_KEY_ENV, sec_text)
     return sh, ps1, pub_text, sec_text
@@ -372,7 +396,7 @@ def test_unsigned_release_is_loud_but_not_fatal(tmp_path, monkeypatch, capsys):
     """Releases must keep working before the operator mints keys — but an unsigned
     build must never look like an oversight in the CI log."""
     _populate_dist_dir(tmp_path)
-    (tmp_path / "firekeep_symdex-0.2.13-py3-none-any.whl").write_bytes(b"symdex")
+    _dex_wheels(tmp_path)
     rc = make_release.main(["make_release.py", "1.2.3", str(tmp_path)])
     assert rc == 0
     assert not (tmp_path / "SHA256SUMS.minisig").exists()
@@ -384,7 +408,7 @@ def test_unusable_signing_key_fails_the_release(tmp_path, monkeypatch):
     """A set-but-garbage secret must never fall back to shipping unsigned — that would
     turn a CI secret misconfiguration into a silent loss of the security property."""
     _populate_dist_dir(tmp_path)
-    (tmp_path / "firekeep_symdex-0.2.13-py3-none-any.whl").write_bytes(b"symdex")
+    _dex_wheels(tmp_path)
     monkeypatch.setenv(make_release.SIGNING_KEY_ENV, "not a key")
     with pytest.raises(SystemExit, match="unusable"):
         make_release.main(["make_release.py", "1.2.3", str(tmp_path)])
@@ -395,7 +419,7 @@ def test_signing_requires_the_bootstrap_placeholder(tmp_path, monkeypatch):
     and make_release drifted — fail the release, never publish a script that silently
     cannot verify what it installs."""
     _populate_dist_dir(tmp_path)  # scripts WITHOUT the signing placeholder
-    (tmp_path / "firekeep_symdex-0.2.13-py3-none-any.whl").write_bytes(b"symdex")
+    _dex_wheels(tmp_path)
     _pub, sec_text = signing.generate_keypair()
     monkeypatch.setenv(make_release.SIGNING_KEY_ENV, sec_text)
     with pytest.raises(SystemExit, match="placeholder"):

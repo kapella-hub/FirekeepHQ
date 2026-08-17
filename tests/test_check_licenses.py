@@ -239,11 +239,12 @@ def test_collect_attribution_falls_back_to_project_url_homepage():
 
 def test_attribution_exclude_covers_bootstrap_and_first_party_names():
     """pip/setuptools/wheel (venv bootstrap tooling, present regardless of
-    what was requested) and firekeep-client/firekeep-symdex (this repo's own
-    proprietary packages, which install their own name into whatever venv
-    installs them) must never appear in a NOTICE — they are not third-party
-    attribution material."""
-    for name in ("pip", "setuptools", "wheel", "firekeep-client", "firekeep-symdex"):
+    what was requested) and firekeep-client/firekeep-symdex/firekeep-docdex
+    (this repo's own proprietary packages, which install their own name into
+    whatever venv installs them) must never appear in a NOTICE — they are not
+    third-party attribution material."""
+    for name in ("pip", "setuptools", "wheel",
+                 "firekeep-client", "firekeep-symdex", "firekeep-docdex"):
         assert name in ATTRIBUTION_EXCLUDE
 
 
@@ -271,6 +272,7 @@ def test_dependency_gate_excludes_first_party_busl_packages(monkeypatch, capsys)
     output = capsys.readouterr().out
     assert "firekeep-client" not in output
     assert "firekeep-symdex" not in output
+    assert "firekeep-docdex" not in output
 
 
 def test_dependency_gate_still_denies_third_party_busl(monkeypatch, capsys):

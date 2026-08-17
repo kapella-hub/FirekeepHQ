@@ -24,12 +24,12 @@ pytestmark = [
 ]
 
 CLIENT = Path(__file__).resolve().parents[1]
-# The symdex package lives beside client/ in the monorepo. install.sh step 7b / install.ps1
-# step 6b hard-require a firekeep_symdex-*.whl entry in the release SHA256SUMS (they die
-# "release is incomplete" otherwise), so the release fixture below MUST build and serve it
-# alongside the client wheel — a symdex-less release is exactly the broken shape those steps
-# refuse to install.
-SYMDEX = CLIENT.parent / "symdex"
+# The dex packages live beside client/ in the monorepo. install.sh steps 7b/7c and
+# install.ps1 steps 6b/6c hard-require a firekeep_symdex-*.whl AND a firekeep_docdex-*.whl
+# entry in the release SHA256SUMS (they die "release is incomplete" otherwise), so the
+# release fixture below MUST build and serve both alongside the client wheel — a
+# dex-less release is exactly the broken shape those steps refuse to install.
+DEXES = (CLIENT.parent / "symdex", CLIENT.parent / "docdex")
 
 
 def _run_bootstrap(args, env, **kwargs):
@@ -90,15 +90,16 @@ def release(tmp_path):
     dist.mkdir()
     subprocess.run(["python3", "-m", "build", "--wheel", "--outdir", str(dist), str(CLIENT)],
                    check=True, capture_output=True)
-    # The symdex wheel is not optional: install.sh step 7b / install.ps1 step 6b read its name
-    # straight out of SHA256SUMS and die "release is incomplete" if it is missing, and A4's
-    # coming make_release.py presence guard will refuse to build a release without it. Build it
-    # into the SAME dist dir BEFORE make_release runs — make_release checksums every *.whl it
-    # finds there, so this both feeds SHA256SUMS the required firekeep_symdex- entry AND satisfies
-    # A4's guard. (make_release's own count check globs firekeep_client-*.whl specifically, so a
-    # second wheel here does not trip it.)
-    subprocess.run(["python3", "-m", "build", "--wheel", "--outdir", str(dist), str(SYMDEX)],
-                   check=True, capture_output=True)
+    # The dex wheels are not optional: the bootstraps read each name straight out of
+    # SHA256SUMS and die "release is incomplete" if either is missing, and make_release.py's
+    # presence guards refuse to build a release without them. Build them into the SAME dist
+    # dir BEFORE make_release runs — it checksums every *.whl it finds there, so this both
+    # feeds SHA256SUMS the required firekeep_symdex-/firekeep_docdex- entries AND satisfies
+    # those guards. (make_release's own count check globs firekeep_client-*.whl specifically,
+    # so the extra wheels here do not trip it.)
+    for dex in DEXES:
+        subprocess.run(["python3", "-m", "build", "--wheel", "--outdir", str(dist), str(dex)],
+                       check=True, capture_output=True)
     uv = shutil.which("uv")
     if uv is None:
         pytest.skip("uv not installed on the runner; CI installs it in the e2e job")
@@ -122,7 +123,8 @@ def release(tmp_path):
     (served / VERSION).mkdir()
     for name in ("install.sh", "install.ps1", "latest.json"):
         shutil.copy(dist / name, served / "latest" / name)
-    for pattern in ("firekeep_client-*.whl", "firekeep_symdex-*.whl", "uv-*"):
+    for pattern in ("firekeep_client-*.whl", "firekeep_symdex-*.whl",
+                    "firekeep_docdex-*.whl", "uv-*"):
         for p in dist.glob(pattern):
             shutil.copy(p, served / VERSION / p.name)
     shutil.copy(dist / "SHA256SUMS", served / VERSION / "SHA256SUMS")
@@ -316,8 +318,8 @@ def test_bootstrap_dies_on_a_tampered_wheel_and_never_creates_the_venv(release, 
     no longer match the hash the release actually published. install.sh must die with a
     checksum error and must not create venvs/<V> at all — verification happens strictly
     before `uv venv` is invoked, not just before `uv pip install`. And `current` must never
-    have been created: the flip is the LAST act of a successful install (after both wheels
-    verify and install), so a failed install leaves nothing for a session to launch through."""
+    have been created: the flip is the LAST act of a successful install (after every
+    bundled wheel verifies and installs), so a failed install leaves nothing for a session to launch through."""
     vdir = release["served"] / release["version"]
     wheel = next(vdir.glob("firekeep_client-*.whl"))
     original = wheel.read_bytes()

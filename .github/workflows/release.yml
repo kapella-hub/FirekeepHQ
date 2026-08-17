@@ -1,9 +1,11 @@
 # Client release — GitHub port of the .gitlab-ci.yml `client-release` job.
 #
-# Triggered by a `client-v<X.Y.Z>` tag. Builds the client + symdex wheels, mirrors
-# the pinned uv binaries, runs make_release.py (SHA256SUMS + latest.json), and
-# publishes to the `gh-pages` branch in the exact layout the bootstrap fetches:
-#   <version>/  -> firekeep_client-*.whl, firekeep_symdex-*.whl, uv-*, SHA256SUMS
+# Triggered by a `client-v<X.Y.Z>` tag. Builds the client + dex wheels (symdex,
+# docdex), mirrors the pinned uv binaries, runs make_release.py (SHA256SUMS +
+# latest.json), and publishes to the `gh-pages` branch in the exact layout the
+# bootstrap fetches:
+#   <version>/  -> firekeep_client-*.whl, firekeep_symdex-*.whl,
+#                  firekeep_docdex-*.whl, uv-*, SHA256SUMS
 #                  (+ SHA256SUMS.minisig on signed builds; + install.sh/install.ps1,
 #                   which the sums list — a version dir must serve what its sums name)
 #   latest/     -> install.sh, install.ps1, latest.json (+ signing.pub on signed builds)
@@ -129,10 +131,10 @@ jobs:
       # end to end.
       - name: Install e2e prerequisites (uv + build)
         run: |
-          # `python3 -m build` -- test_e2e_bootstrap.py:91,100 shell out to it to
-          # produce the client and symdex wheels the bootstrap then installs. Not
-          # implied by `pip install pytest`, so the suite would fail at fixture
-          # setup rather than skip.
+          # `python3 -m build` -- test_e2e_bootstrap.py shells out to it to produce
+          # the client and both dex wheels the bootstrap then installs. Not implied
+          # by `pip install pytest`, so the suite would fail at fixture setup rather
+          # than skip.
           python -m pip install build
           curl -fsSL https://astral.sh/uv/install.sh | sh
 
@@ -171,12 +173,13 @@ jobs:
           grep -q "^__version__ = \"${VERSION}\"$" client/firekeep_client/__init__.py \
             || { echo "tag ${GITHUB_REF_NAME} != firekeep_client.__version__"; exit 1; }
 
-      - name: Build client + symdex wheels
+      - name: Build client + dex wheels
         run: |
           python -m pip install build
           mkdir -p dist
           (cd client && python -m build --wheel --outdir ../dist)
           (cd symdex && python -m build --wheel --outdir ../dist)
+          (cd docdex && python -m build --wheel --outdir ../dist)
 
       - name: Fresh-wheel MCP compatibility smoke
         run: |
@@ -316,7 +319,8 @@ jobs:
           # load-bearing and cannot be dropped, so the fix for "listed but not
           # served" is to serve them: a version directory whose sums describe
           # files it does not carry is a sums file that lies about its own tree.
-          cp dist/firekeep_client-*.whl dist/firekeep_symdex-*.whl dist/uv-* \
+          cp dist/firekeep_client-*.whl dist/firekeep_symdex-*.whl \
+             dist/firekeep_docdex-*.whl dist/uv-* \
              dist/SHA256SUMS dist/install.sh dist/install.ps1 "gh/${VERSION}/"
           # The signature rides with its SHA256SUMS. Conditional because unsigned
           # builds (no FIREKEEP_SIGNING_KEY secret yet) produce no .minisig — the
@@ -437,21 +441,23 @@ jobs:
           fi
 
   # --- PyPI (Trusted Publishing / OIDC) --------------------------------------
-  # Publishes firekeep-client and firekeep-symdex to PyPI so `pip install
+  # Publishes firekeep-client, firekeep-symdex and firekeep-docdex to PyPI so `pip install
   # firekeep-client` works and the official MCP registry can reference a public
   # package (server.json at the repo root; docs/RELEASE-GITHUB.md "PyPI and the
   # MCP registry"). No token secret: OIDC trusted publishing, ONE MATRIX LEG
   # PER PACKAGE with its own GitHub environment ("pypi" for the client,
-  # "pypi-symdex" for symdex) — PyPI refuses two pending publishers sharing an
-  # identical (owner, repo, workflow, environment) tuple, so the environment
-  # is the disambiguator, and it also keeps each leg's OIDC token scoped to
-  # exactly one project. A missing or misconfigured publisher fails its leg
+  # "pypi-symdex" for symdex, "pypi-docdex" for docdex) — PyPI refuses two
+  # pending publishers sharing an identical (owner, repo, workflow, environment)
+  # tuple, so the environment is the disambiguator, and it also keeps each leg's
+  # OIDC token scoped to exactly one project. Each environment must exist in this
+  # repo's settings BEFORE the tag, and each name must have a pending publisher on
+  # PyPI. A missing or misconfigured publisher fails its leg
   # loudly without touching the dist-host publication above — the same
-  # misconfiguration ethos as release signing. skip-existing only on symdex,
-  # which bumps on its own cadence: an already-published symdex version is a
-  # no-op, not an error, while a re-tagged client version still fails (PyPI
-  # versions are immutable, and re-tagging a published client version is a
-  # mistake worth hearing about).
+  # misconfiguration ethos as release signing. skip-existing only on the DEX
+  # legs, which bump on their own cadences: an already-published symdex/docdex
+  # version is a no-op, not an error, while a re-tagged client version still
+  # fails (PyPI versions are immutable, and re-tagging a published client
+  # version is a mistake worth hearing about).
   pypi:
     needs: release
     runs-on: ubuntu-latest
@@ -464,6 +470,9 @@ jobs:
             skip_existing: false
           - package_dir: symdex
             environment: pypi-symdex
+            skip_existing: true
+          - package_dir: docdex
+            environment: pypi-docdex
             skip_existing: true
     environment: ${{ matrix.environment }}
     permissions:

@@ -18,6 +18,7 @@ Layout produced (mirrors .github/workflows/release.yml's `gh/` tree):
     <out>/<version>/uv-<target>         <- one per platform under test
     <out>/<version>/firekeep_client-<v>-py3-none-any.whl
     <out>/<version>/firekeep_symdex-<v>-py3-none-any.whl
+    <out>/<version>/firekeep_docdex-<v>-py3-none-any.whl
     <out>/<version>/install.sh          <- same baked bytes, for `firekeep update`
     <out>/<version>/install.ps1
     <out>/server/latest/server.json     <- what `firekeep init` reads
@@ -94,21 +95,27 @@ def project_version(pyproject: Path) -> str:
     raise SystemExit(f"lab: no version in {pyproject}")
 
 
-def build_wheels(staging: Path) -> tuple[Path, Path]:
-    """Build both wheels from the working tree with uv."""
+def build_wheels(staging: Path) -> tuple[Path, Path, Path]:
+    """Build every bundled wheel from the working tree with uv.
+
+    All three ship in a release: the client plus both dex wheels, which
+    make_release.py refuses to assemble a release without.
+    """
     uv = shutil.which("uv")
     if not uv:
         raise SystemExit("lab: uv is not on PATH — install it (https://astral.sh/uv)")
-    for project in ("client", "symdex"):
+    for project in ("client", "symdex", "docdex"):
         run([uv, "build", "--wheel", "--out-dir", str(staging), str(REPO / project)])
     client = sorted(staging.glob("firekeep_client-*.whl"))
     symdex = sorted(staging.glob("firekeep_symdex-*.whl"))
-    if len(client) != 1 or len(symdex) != 1:
+    docdex = sorted(staging.glob("firekeep_docdex-*.whl"))
+    if len(client) != 1 or len(symdex) != 1 or len(docdex) != 1:
         raise SystemExit(
             f"lab: expected exactly one wheel each, got client={[p.name for p in client]} "
-            f"symdex={[p.name for p in symdex]} — clear {staging} and retry"
+            f"symdex={[p.name for p in symdex]} docdex={[p.name for p in docdex]} "
+            f"— clear {staging} and retry"
         )
-    return client[0], symdex[0]
+    return client[0], symdex[0], docdex[0]
 
 
 def fetch_uv(target: str) -> Path:
@@ -159,7 +166,7 @@ def build(
         shutil.rmtree(out)
     staging.mkdir(parents=True)
 
-    client_wheel, symdex_wheel = build_wheels(staging)
+    client_wheel, symdex_wheel, docdex_wheel = build_wheels(staging)
     version = project_version(REPO / "client" / "pyproject.toml")
     expected = f"firekeep_client-{version}-py3-none-any.whl"
     if client_wheel.name != expected:
@@ -216,6 +223,7 @@ def build(
     print(f"\nlab: dist built at {out}")
     print(f"lab:   client   {version}")
     print(f"lab:   symdex   {symdex_wheel.name}")
+    print(f"lab:   docdex   {docdex_wheel.name}")
     print(f"lab:   server   {server_tag}")
     print(f"lab:   base     {dist_base}")
     print(f"lab:   targets  {', '.join(targets)}")

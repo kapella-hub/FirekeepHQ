@@ -37,9 +37,9 @@ What is guarded here
    recursive delete that follows the reparse point guts the TARGET venv
    (ancient 5.1 builds recursed into it — probed live). Only ``.gc`` corpses
    may be recursively deleted.
-4. The flip happens only AFTER both wheels are verified and installed, so an
-   install that dies early leaves ``current`` — and every live session —
-   exactly as it was.
+4. The flip happens only AFTER every bundled wheel (client + symdex + docdex)
+   is verified and installed, so an install that dies early leaves ``current``
+   — and every live session — exactly as it was.
 5. The constraint stays DOCUMENTED in the scripts. The original "POSIX unlink
    is safe" rationale survived long enough to be believed because nothing
    recorded why it was wrong; the rename design reads as strictly better and
@@ -195,9 +195,11 @@ class TestTheFlipHappensOnlyAfterTheWheels:
     same style as the verify-before-venv orderings in test_bootstrap_ps1.py.
     Both scripts also have an EARLIER flip on the idempotent fast path (no wheels
     are installed there — the venv already passed its health probe), so these
-    anchor on the LAST flip, the one that concludes a full provision."""
+    anchor on the LAST flip, the one that concludes a full provision. `rindex`
+    on the install line is what keeps them honest as bundled wheels are added:
+    the flip must follow the LAST install, not merely the first."""
 
-    def test_sh_flip_follows_both_wheel_installs(self):
+    def test_sh_flip_follows_every_wheel_install(self):
         flip = SH.rindex('point_current "${TARGET_VENV}"')
         last_install = SH.rindex("pip install")
         assert last_install < flip, (
@@ -226,7 +228,7 @@ class TestTheFlipHappensOnlyAfterTheWheels:
             "the hand-off would hand off to the OLD version (or to nothing)"
         )
 
-    def test_ps1_flip_follows_both_wheel_installs(self):
+    def test_ps1_flip_follows_every_wheel_install(self):
         flip = PS1.rindex("Set-CurrentJunction $TargetVenv")
         last_install = PS1.rindex("pip install")
         assert last_install < flip, (
@@ -311,19 +313,22 @@ class TestReviewHardening:
         repair of the running version), --clear destroys the selected venv — so
         every network fetch and every checksum must complete FIRST. The first
         draft fetched the symdex wheel AFTER provisioning: a download failure
-        there stranded `current` on a gutted venv with nothing to fall back to."""
-        sh_symdex_fetch = SH.index('fetch "${VBASE}/${symdex_wheel}"')
+        there stranded `current` on a gutted venv with nothing to fall back to.
+        Docdex is bundled the same way and inherits the same ordering — one
+        bundled wheel fetched below the clear is enough to reopen the hole."""
         sh_provision = SH.index('uv" venv "${TARGET_VENV}"')
-        assert sh_symdex_fetch < sh_provision, (
-            "install.sh fetches the symdex wheel after `uv venv --clear` — a "
-            "network failure would strand `current` on a gutted venv"
-        )
-        ps_symdex_fetch = PS1.index('Invoke-WebRequest -UseBasicParsing -Uri "$VBase/$SymdexWheel"')
+        for wheel in ("symdex", "docdex"):
+            assert SH.index(f'fetch "${{VBASE}}/${{{wheel}_wheel}}"') < sh_provision, (
+                f"install.sh fetches the {wheel} wheel after `uv venv --clear` — a "
+                "network failure would strand `current` on a gutted venv"
+            )
         ps_provision = PS1.index("venv $TargetVenv --python $PythonVersion")
-        assert ps_symdex_fetch < ps_provision, (
-            "install.ps1 fetches the symdex wheel after `uv venv --clear` — a "
-            "network failure would strand `current` on a gutted venv"
-        )
+        for wheel in ("Symdex", "Docdex"):
+            fetch = f'Invoke-WebRequest -UseBasicParsing -Uri "$VBase/${wheel}Wheel"'
+            assert PS1.index(fetch) < ps_provision, (
+                f"install.ps1 fetches the {wheel.lower()} wheel after `uv venv --clear` "
+                "— a network failure would strand `current` on a gutted venv"
+            )
 
     def test_ps1_in_use_guard_excludes_its_own_ancestry(self):
         """`firekeep update` WAITS on the bootstrap (foreground child), so the

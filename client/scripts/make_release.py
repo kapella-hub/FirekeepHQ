@@ -185,15 +185,18 @@ def main(argv: list[str]) -> int:
             raise SystemExit(f"{SIGNING_KEY_ENV} is set but unusable: {exc}")
         pub_b64 = signing.public_key_text(key.key_id, key.public_key).splitlines()[1]
         bake_signing_pub(out_dir, pub_b64)
-    symdex_wheels = list(out_dir.glob("firekeep_symdex-*.whl"))
-    if len(symdex_wheels) != 1:
-        # Symdex is an always-on part of the distribution; the bootstrap reads its name
-        # from SHA256SUMS and fetches it. A missing/duplicate wheel would ship a release
-        # the installer cannot complete. Its version is independent of the client tag, so
-        # this validates presence + uniqueness, NOT a match to `version`.
-        raise SystemExit(
-            f"expected exactly one firekeep_symdex-*.whl in {out_dir}, found {len(symdex_wheels)}"
-        )
+    # Every dex wheel is an always-on part of the distribution; the bootstrap reads each
+    # name from SHA256SUMS and fetches it, dying "release is incomplete" when one is
+    # absent. A missing/duplicate wheel here would ship a release the installer cannot
+    # complete. Dex versions are independent of the client tag AND of each other, so this
+    # validates presence + uniqueness, NOT a match to `version`. Checked one dex at a
+    # time so the failure names the wheel that is actually wrong.
+    for dex in ("firekeep_symdex", "firekeep_docdex"):
+        dex_wheels = list(out_dir.glob(f"{dex}-*.whl"))
+        if len(dex_wheels) != 1:
+            raise SystemExit(
+                f"expected exactly one {dex}-*.whl in {out_dir}, found {len(dex_wheels)}"
+            )
     manifest = build_manifest(version, install_sh, install_ps1)
     _write_text_lf(out_dir / "latest.json", json.dumps(manifest, indent=2) + "\n")
     # This SHA256SUMS is now the wheel's ONLY integrity check (latest.json carries no

@@ -207,17 +207,19 @@ function Get-VenvVersion($VenvPath) {
 }
 
 # The fast path's health probe must prove the venv is COMPLETE, not merely that
-# the client package imports. An install killed between the client wheel and the
-# symdex wheel leaves a venv whose python happily reports $V — accepting that
+# the client package imports. An install killed between the client wheel and
+# either dex wheel leaves a venv whose python happily reports $V — accepting that
 # would flip `current` to a half-installed venv and, worse, keep taking the fast
 # path on every later run, so the breakage would never route back through the
-# full provision that repairs it. firekeep.exe + both package imports is the
-# same bar the full path's runnable check enforces before it ever flips.
+# full provision that repairs it. firekeep.exe + every bundled package's import
+# is the same bar the full path's runnable check enforces before it ever flips.
+# Every wheel this script always installs belongs here; a wheel added to the
+# install steps but not to this probe is a half-install the fast path accepts.
 function Test-VenvComplete($VenvPath) {
     if (-not (Test-Path (Join-Path $VenvPath 'Scripts\firekeep.exe'))) { return $false }
     $Py = Join-Path $VenvPath 'Scripts\python.exe'
     if (-not (Test-Path $Py)) { return $false }
-    & $Py -I -c "import firekeep_client, firekeep_symdex" 2>$null | Out-Null
+    & $Py -I -c "import firekeep_client, firekeep_symdex, firekeep_docdex" 2>$null | Out-Null
     return ($LASTEXITCODE -eq 0)
 }
 
@@ -386,6 +388,24 @@ try {
 }
 Verify-AgainstSums $SymdexPath $SymdexWheel
 
+# --- 4c. the docdex wheel, same hoist and the same reasoning as 4b -----------
+# Docdex (the documents dex) is bundled exactly like symdex: name and hash read
+# from SHA256SUMS, fetched to a local file, verified — all of it above the
+# --clear, because ONE bundled wheel fetched below that line is enough to strand
+# `current` on a gutted venv. It versions independently of the client AND of
+# symdex, so the release names the exact wheel and this script never guesses it.
+$DocdexMatch = Select-String -Path $SumsPath -Pattern 'firekeep_docdex-[0-9][^ ]*\.whl' | Select-Object -First 1
+if (-not $DocdexMatch) { Die "SHA256SUMS lists no firekeep_docdex wheel - release is incomplete" }
+$DocdexWheel = $DocdexMatch.Matches[0].Value
+Write-Host "firekeep: fetching $DocdexWheel"
+$DocdexPath = Join-Path $Bin $DocdexWheel
+try {
+    Invoke-WebRequest -UseBasicParsing -Uri "$VBase/$DocdexWheel" -OutFile $DocdexPath
+} catch {
+    Die "download failed: $VBase/$DocdexWheel"
+}
+Verify-AgainstSums $DocdexPath $DocdexWheel
+
 # --- 5. standalone CPython + venv at its FINAL versioned path ----------------
 # venvs/<V> is fresh on a normal update (the running install lives in a DIFFERENT
 # versioned dir, or in the legacy ~/.firekeep/venv), so live sessions are never in
@@ -466,8 +486,17 @@ Write-Host "firekeep: installing $SymdexWheel"
 & $Uv pip install --python $TargetVenv --reinstall $SymdexPath
 if ($LASTEXITCODE -ne 0) { Die "symdex wheel install failed" }
 
-# --- 6c. the install must have produced a runnable firekeep -------------------
-# Mirrors install.sh section 7c. Provisioning can succeed while producing
+# --- 6c. docdex wheel: ALWAYS installed (fetched + verified in 4c) -----------
+# Every dex wheel ships with every install; REGISTRATION (~/.firekeep/dexes.json)
+# is what decides whether a dex does anything. Gating the INSTALL instead would
+# put a second, unverified download path in front of a user who later opts in —
+# the signed supply chain is the thing that must not become optional.
+Write-Host "firekeep: installing $DocdexWheel"
+& $Uv pip install --python $TargetVenv --reinstall $DocdexPath
+if ($LASTEXITCODE -ne 0) { Die "docdex wheel install failed" }
+
+# --- 6d. the install must have produced a runnable firekeep -------------------
+# Mirrors install.sh section 7d. Provisioning can succeed while producing
 # something unusable (a wheel that installs but provides no exe, a truncated
 # interpreter). Checked at the venv's REAL path and BEFORE the flip: a broken
 # build must never become `current`, and a session started mid-install must
@@ -477,8 +506,8 @@ if (-not (Test-Path (Join-Path $TargetVenv 'Scripts\firekeep.exe'))) {
 }
 
 # --- 7. flip `current`, hand off to the wizard, GC ----------------------------
-# The flip happens ONLY after both wheels verified and installed — an install
-# that dies earlier leaves `current` (and every live session) exactly as it was.
+# The flip happens ONLY after every bundled wheel verified and installed — an
+# install that dies earlier leaves `current` (and every live session) as it was.
 # The wizard then re-renders shims and adapters through `current`, which is also
 # what migrates a legacy install's rendered paths off ~/.firekeep/venv.
 # See the file-header note: no stdin trap and no /dev/tty equivalent needed on this path.

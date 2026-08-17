@@ -108,14 +108,16 @@ venv_version() {
 
 # The fast path's health probe must prove the venv is COMPLETE, not merely that
 # the client package imports. An install killed between the client wheel and
-# the symdex wheel leaves a venv whose python happily reports ${V} — accepting
+# either dex wheel leaves a venv whose python happily reports ${V} — accepting
 # that would flip `current` to a half-installed venv and keep taking the fast
 # path on every later run, so the breakage would never route back through the
-# full provision that repairs it. bin/firekeep + both package imports is the
-# same bar the full path's 7c runnable check enforces before it ever flips.
+# full provision that repairs it. bin/firekeep + every bundled package's import
+# is the same bar the full path's 7d runnable check enforces before it flips.
+# Every wheel this script always installs belongs here; a wheel added to the
+# install steps but not to this probe is a half-install the fast path accepts.
 venv_complete() {
     [ -x "$1/bin/firekeep" ] || return 1
-    "$1/bin/python" -I -c 'import firekeep_client, firekeep_symdex' 2>/dev/null || return 1
+    "$1/bin/python" -I -c 'import firekeep_client, firekeep_symdex, firekeep_docdex' 2>/dev/null || return 1
     return 0
 }
 
@@ -401,6 +403,18 @@ echo "firekeep: fetching ${symdex_wheel}"
 fetch "${VBASE}/${symdex_wheel}" "${BIN}/${symdex_wheel}"
 verify_against_sums "${BIN}/${symdex_wheel}" "${symdex_wheel}"
 
+# --- 5c. the docdex wheel, same hoist and the same reasoning as 5b -----------
+# Docdex (the documents dex) is bundled exactly like symdex: name and hash read
+# from SHA256SUMS, fetched to a local file, verified — all of it above the
+# --clear, because ONE bundled wheel fetched below that line is enough to strand
+# `current` on a gutted venv. It versions independently of the client AND of
+# symdex, so the release names the exact wheel and this script never guesses it.
+docdex_wheel="$(grep -oE 'firekeep_docdex-[0-9][^ ]*\.whl' "${BIN}/SHA256SUMS" | head -1)"
+[ -n "${docdex_wheel}" ] || die "SHA256SUMS lists no firekeep_docdex wheel — release is incomplete"
+echo "firekeep: fetching ${docdex_wheel}"
+fetch "${VBASE}/${docdex_wheel}" "${BIN}/${docdex_wheel}"
+verify_against_sums "${BIN}/${docdex_wheel}" "${docdex_wheel}"
+
 # --- 6. standalone CPython + venv AT ITS FINAL VERSIONED PATH ----------------
 #
 # HISTORY, and the constraint this layout is built around. 0.1.26 tried
@@ -450,7 +464,15 @@ echo "firekeep: installing ${wheel_name}"
 echo "firekeep: installing ${symdex_wheel}"
 "${BIN}/uv" pip install --python "${TARGET_VENV}" --reinstall "${BIN}/${symdex_wheel}"     || die "symdex wheel install failed"
 
-# --- 7c. the install must have produced a runnable firekeep -------------------
+# --- 7c. docdex wheel: ALWAYS installed (fetched + verified in 5c) -----------
+# Every dex wheel ships with every install; REGISTRATION (~/.firekeep/dexes.json)
+# is what decides whether a dex does anything. Gating the INSTALL instead would
+# put a second, unverified download path in front of a user who later opts in —
+# the signed supply chain is the thing that must not become optional.
+echo "firekeep: installing ${docdex_wheel}"
+"${BIN}/uv" pip install --python "${TARGET_VENV}" --reinstall "${BIN}/${docdex_wheel}"     || die "docdex wheel install failed"
+
+# --- 7d. the install must have produced a runnable firekeep -------------------
 # Provisioning can succeed while producing something unusable (a wheel for the
 # wrong platform, a truncated interpreter). Checked at the venv's REAL path and
 # BEFORE the flip: a broken build must never become `current`, and a session
@@ -461,7 +483,7 @@ if [ ! -x "${TARGET_VENV}/bin/firekeep" ]; then
     die "install completed but ${TARGET_VENV}/bin/firekeep is not executable — the wheel did not provide it"
 fi
 
-# --- 7d. flip `current` — the new venv is complete and verified ---------------
+# --- 7e. flip `current` — the new venv is complete and verified ---------------
 # Only now does anything observable change. An install that died in any earlier
 # step left `current` (and every live session) exactly as it was.
 point_current "${TARGET_VENV}"
