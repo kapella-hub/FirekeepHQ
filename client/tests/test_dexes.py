@@ -198,3 +198,151 @@ def test_registered_ignores_names_it_does_not_know(registry_home):
     crash the gateway — it has no manifest, so there is nothing to mount."""
     dexes.write_registry({"symdex": {}, "webdex": {}})
     assert [m.name for m in dexes.registered()] == ["symdex"]
+
+
+# --------------------------------------------------------------------------- #
+# ensure_migrated — the migration rule (Task A3)                                #
+# --------------------------------------------------------------------------- #
+
+CONFIGURED = """\
+[identity]
+agent_id = tester
+
+[server]
+kind = ports
+scheme = http
+host = 10.0.0.5
+verify_tls = false
+"""
+
+# A pre-[server] profile config — the shape resolver.load_config MIGRATES (backs
+# up, rewrites, prints). ensure_migrated must never trigger that.
+LEGACY_PROFILES = """\
+[active]
+profile = personal
+
+[personal]
+kind = ports
+scheme = http
+host = 198.51.100.7
+verify_tls = false
+agent_id = mogan
+"""
+
+
+def _write_config(home, text):
+    path = home / "config"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+class TestMigration:
+    """An update never removes a capability an install already has (ROADMAP §5),
+    and a fresh install grows no third question (the two-question promise). One
+    deterministic rule serves both."""
+
+    def test_configured_machine_grandfathers_symdex(self, registry_home):
+        _write_config(registry_home, CONFIGURED)
+        dexes.ensure_migrated()
+        assert list(dexes.read_registry()) == ["symdex"]
+
+    def test_fresh_machine_opts_in_by_writing_an_empty_registry(self, registry_home):
+        dexes.ensure_migrated()
+        assert dexes.registry_path().exists()
+        assert dexes.read_registry() == {}
+
+    def test_existing_registry_is_never_touched(self, registry_home):
+        """Including — especially — an EMPTY one: a user who removed symdex on a
+        configured machine must not have it grandfathered back on next start."""
+        _write_config(registry_home, CONFIGURED)
+        path = dexes.registry_path()
+        path.write_text("{}", encoding="utf-8")  # deliberately unformatted
+        before = path.read_bytes()
+
+        dexes.ensure_migrated()
+        assert path.read_bytes() == before
+
+    def test_a_user_choice_of_docdex_only_survives_migration(self, registry_home):
+        _write_config(registry_home, CONFIGURED)
+        dexes.write_registry({"docdex": {}})
+        dexes.ensure_migrated()
+        assert list(dexes.read_registry()) == ["docdex"]
+
+    def test_migration_never_rewrites_the_users_config(self, registry_home):
+        """The reason `_raw_config` and not `load_config`: load_config MIGRATES a
+        profile-era config (backup + atomic rewrite + stderr, and it can raise
+        ConfigMigrationConflict). Asking 'is this machine configured?' must not
+        have a side effect on the config — it runs at every gateway start."""
+        path = _write_config(registry_home, LEGACY_PROFILES)
+        before = path.read_bytes()
+
+        dexes.ensure_migrated()
+        assert path.read_bytes() == before
+        assert "[server]" not in path.read_text(encoding="utf-8")
+
+    def test_migration_never_raises(self, registry_home, monkeypatch):
+        _write_config(registry_home, CONFIGURED)
+        monkeypatch.setattr(dexes, "write_registry", _boom)
+        dexes.ensure_migrated()  # must not raise
+        log = (registry_home / "logs" / "hooks.log").read_text(encoding="utf-8")
+        assert "migration failed during gateway" in log
+
+    def test_the_failure_log_names_the_caller(self, registry_home, monkeypatch):
+        _write_config(registry_home, CONFIGURED)
+        monkeypatch.setattr(dexes, "write_registry", _boom)
+        dexes.ensure_migrated(installing=True)
+        log = (registry_home / "logs" / "hooks.log").read_text(encoding="utf-8")
+        assert "migration failed during install" in log
+
+
+def _boom(entries):
+    raise OSError("read-only home")
+
+
+# --------------------------------------------------------------------------- #
+# The two call sites                                                            #
+# --------------------------------------------------------------------------- #
+
+
+def test_gateway_startup_migrates(registry_home):
+    """The load fallback: an update that never re-ran `firekeep install` must
+    still find symdex mounted on its first session."""
+    from firekeep_client.gateway import Gateway
+
+    _write_config(registry_home, CONFIGURED)
+    assert "symdex" in [b.name for b in Gateway().backends]
+    assert list(dexes.read_registry()) == ["symdex"]
+
+
+@pytest.fixture
+def install_env(registry_home, monkeypatch):
+    """The minimum stubbing that lets cmd_install run in-process: no venv, no
+    pip, no adapter render, no PATH edits (mirrors tests/test_cli_install.py)."""
+    from firekeep_client import cli
+
+    class _Adapter:
+        def render(self, *, venv_bin):
+            pass
+
+    monkeypatch.setattr("firekeep_client.state._private", lambda p: None)
+    monkeypatch.setattr(cli, "_run", lambda cmd, **kw: None)
+    monkeypatch.setattr(cli, "_kit_dir", lambda: None)  # "running from the installed venv"
+    monkeypatch.setattr(cli, "get_adapter", lambda name: _Adapter())
+    monkeypatch.setattr(cli.pathenv, "ensure_on_path", lambda home, venv_bin, **kw: [])
+    return cli
+
+
+def test_install_on_a_fresh_machine_leaves_the_registry_empty(install_env, registry_home):
+    """THE ordering guard. `_bootstrap_home` writes a config SKELETON that
+    already carries a `[server]` section — so if ensure_migrated ran after it,
+    every fresh install would look 'configured' and grandfather symdex, and the
+    opt-in this milestone exists for would never once happen."""
+    assert install_env.main(["install", "--runtime", "claude", "--non-interactive"]) == 0
+    assert dexes.registry_path().exists()  # migration ran...
+    assert dexes.read_registry() == {}     # ...and seeded nothing
+
+
+def test_install_on_a_configured_machine_grandfathers_symdex(install_env, registry_home):
+    _write_config(registry_home, CONFIGURED)
+    assert install_env.main(["install", "--runtime", "claude", "--non-interactive"]) == 0
+    assert list(dexes.read_registry()) == ["symdex"]

@@ -19,7 +19,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-from firekeep_client import __version__, pathenv, resolver, serverinit, state, updater, wizard
+from firekeep_client import (
+    __version__,
+    dexes,
+    pathenv,
+    resolver,
+    serverinit,
+    state,
+    updater,
+    wizard,
+)
 from firekeep_client.adapters import get_adapter
 from firekeep_client.adapters.base import (
     RENDERED_GENERIC_INSTRUCTIONS_HASH,
@@ -401,6 +410,15 @@ def cmd_install(args) -> int:
     join_code = getattr(args, "join", None) or os.environ.get("FIREKEEP_JOIN", "").strip()
     join_result = 0
     try:
+        # Seed the dex registry FIRST — before _bootstrap_home, and the ordering
+        # is load-bearing, not stylistic. _bootstrap_home writes a config
+        # SKELETON that already carries a [server] section, so a migration
+        # running after it would read every fresh machine as an existing
+        # install, grandfather symdex, and the opt-in this registry exists for
+        # would never once happen. Never raises; asks nothing (ROADMAP §5: no
+        # new install-time questions).
+        dexes.ensure_migrated(installing=True)
+
         home = _firekeep_home()
         _bootstrap_home(home)
 
