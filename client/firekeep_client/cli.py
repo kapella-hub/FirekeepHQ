@@ -1855,7 +1855,7 @@ def _finish_server_provision(root: Path, bash: str, args) -> int:
         print(
             "\n  To add your laptop or another machine, run THIS on it "
             "(the code is single-use and expires):\n\n"
-            f"    curl -fsSL {base}/latest/install.sh | FIREKEEP_JOIN={second} sh\n\n"
+            f"    curl -fsSL {base}/latest/install | FIREKEEP_JOIN={second} sh\n\n"
             "  For any machine after that:  deploy/firekeep-admin invite --agent <name>"
         )
     return 0
