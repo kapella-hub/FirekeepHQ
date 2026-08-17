@@ -14,13 +14,22 @@ only wires it up:
     test_import_boundary.py) is widened so decision/server.py may `import
     mcp` (it does, lazily inside main()) while remaining banned from `httpx`
     and server packages — verified here against the REAL tree.
+
+CONTRACT UPDATE (dex registry milestone 1, Task A2): `LOCAL_SERVERS =
+("symdex", "decision")` is gone. Decision is CORE infrastructure, not a dex —
+it indexes nothing — so it keeps its unconditional mount under the new name
+`CORE_LOCAL_SERVERS = ("decision",)`. Symdex moved behind the registry
+(`dexes.registered()`), which is the whole point of the milestone; the
+assertions below were updated rather than deleted, because what they pin —
+decision is always mounted, and all of it rides ONE gateway MCP key — is
+exactly what must not change.
 """
 import json
 import sys
 
 from firekeep_client.adapters import get_adapter
 from firekeep_client.adapters.base import FIREKEEP_MCP_KEYS, shim_servers
-from firekeep_client.gateway import LOCAL_SERVERS
+from firekeep_client.gateway import CORE_LOCAL_SERVERS
 
 from tests.test_import_boundary import CLIENT_PKG, find_violations
 
@@ -39,13 +48,15 @@ def _exe(path):
 
 def test_decision_is_behind_the_one_gateway_key():
     assert FIREKEEP_MCP_KEYS == ("firekeep",)
-    assert "decision" in LOCAL_SERVERS
+    assert "decision" in CORE_LOCAL_SERVERS
 
 
-def test_adapters_register_one_gateway_for_decision_and_symdex(tmp_path):
+def test_adapters_register_one_gateway_for_every_local_server(tmp_path):
     venv_bin = tmp_path / "Scripts"
     servers = shim_servers(venv_bin)
-    assert LOCAL_SERVERS == ("symdex", "decision")
+    # Decision is the ONLY unconditional local mount now. Symdex is a dex and
+    # arrives via dexes.registered() — see tests/test_gateway.py.
+    assert CORE_LOCAL_SERVERS == ("decision",)
     assert servers == {"firekeep": (_exe(venv_bin / "firekeep"), ["gateway"])}
 
 

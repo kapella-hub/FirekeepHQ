@@ -21,12 +21,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from firekeep_client import dexes
 from firekeep_client.adapters.base import GATEWAY_INSTRUCTIONS, GATEWAY_INSTRUCTIONS_HASH
 from firekeep_client.stdio import force_utf8_stdio, pin_import_paths
 
 
 REMOTE_SERVICES = ("cortex", "bridge", "sentinel", "relay")
-LOCAL_SERVERS = ("symdex", "decision")
+# What used to be LOCAL_SERVERS = ("symdex", "decision"). Decision is CORE
+# infrastructure, not a dex — it indexes nothing, so nobody would ever want it
+# off, and it stays unconditional. Symdex moved behind the dex registry
+# (firekeep_client.dexes), which is what makes a second dex a data change rather
+# than an edit to this file.
+CORE_LOCAL_SERVERS = ("decision",)
 STATUS_TOOL = {
     "name": "firekeep_gateway_status",
     "description": (
@@ -185,10 +191,22 @@ class Backend:
 
 class Gateway:
     def __init__(self) -> None:
+        # Seed the registry before reading it. This is the load fallback that
+        # covers an update which never re-ran `firekeep install`: without it, an
+        # existing install's first post-update session would find no dexes.json
+        # and silently lose symdex. Never raises; a machine whose registry
+        # cannot be seeded simply mounts no dexes.
+        dexes.ensure_migrated()
         shim = _console_script("firekeep-shim")
         self.backends = [
             *(Backend(name, [shim, "--service", name]) for name in REMOTE_SERVICES),
-            *(Backend(name, [_console_script(f"firekeep-{name}")]) for name in LOCAL_SERVERS),
+            *(Backend(name, [_console_script(f"firekeep-{name}")])
+              for name in CORE_LOCAL_SERVERS),
+            # Only dexes that HAVE an MCP server to mount. An ingest-client dex
+            # (docdex) is registered for lifecycle, doctor and its sync trigger,
+            # and contributes no backend here.
+            *(Backend(m.name, [_console_script(m.console_script)])
+              for m in dexes.registered() if m.kind == "mcp-stdio"),
         ]
         self.protocol_version = "2025-03-26"
         self.routes: dict[str, Backend] = {}

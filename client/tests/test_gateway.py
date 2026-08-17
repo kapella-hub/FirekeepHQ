@@ -3,7 +3,14 @@ from __future__ import annotations
 import json
 import sys
 
-from firekeep_client.gateway import Backend, Gateway, STATUS_TOOL
+from firekeep_client import dexes
+from firekeep_client.gateway import (
+    CORE_LOCAL_SERVERS,
+    REMOTE_SERVICES,
+    Backend,
+    Gateway,
+    STATUS_TOOL,
+)
 
 
 class FakeBackend:
@@ -126,6 +133,56 @@ for line in sys.stdin:
         assert called["result"]["content"][0]["text"] == "called"
     finally:
         backend.close()
+
+
+class TestRegistryDrivenBackends:
+    """Dex registry milestone 1 (Task A2): the local leg of `Gateway.backends` is
+    no longer a hardcoded tuple. Decision stays core (it indexes nothing, so it
+    is not a dex); every dex mounts only while registered, and only if its
+    manifest says there is an MCP server to mount at all."""
+
+    @staticmethod
+    def _names(gateway):
+        return [backend.name for backend in gateway.backends]
+
+    def test_empty_registry_mounts_no_dex_but_keeps_decision(self):
+        dexes.write_registry({})
+        names = self._names(Gateway())
+        assert names == [*REMOTE_SERVICES, *CORE_LOCAL_SERVERS]
+        assert "symdex" not in names
+
+    def test_registered_symdex_mounts_its_console_script(self):
+        dexes.write_registry({"symdex": {"source": "bundled"}})
+        gateway = Gateway()
+        assert self._names(gateway) == [*REMOTE_SERVICES, *CORE_LOCAL_SERVERS, "symdex"]
+        symdex = gateway.backends[-1]
+        assert len(symdex.command) == 1
+        # Lowercased: _console_script's shutil.which fallback returns the
+        # PATHEXT casing on Windows (".EXE"), which says nothing about the
+        # manifest — the console_script NAME is what this pins.
+        assert symdex.command[0].lower().endswith(
+            ("firekeep-symdex", "firekeep-symdex.exe")
+        )
+
+    def test_ingest_client_dexes_mount_nothing(self):
+        """docdex has no MCP server (spec §2) — `kind` is exactly the field that
+        says so. Registering it must drive lifecycle/doctor/sync and leave the
+        gateway's inventory untouched."""
+        dexes.write_registry({"docdex": {"source": "bundled"}})
+        names = self._names(Gateway())
+        assert "docdex" not in names
+        assert names == [*REMOTE_SERVICES, *CORE_LOCAL_SERVERS]
+
+    def test_unknown_registry_entries_are_ignored(self):
+        dexes.write_registry({"webdex": {}})
+        assert self._names(Gateway()) == [*REMOTE_SERVICES, *CORE_LOCAL_SERVERS]
+
+    def test_backends_are_never_empty(self):
+        """gateway.discover() sizes a ThreadPoolExecutor from len(self.backends),
+        which raises on 0. Four remote services plus decision are unconditional,
+        so no guard is needed there — this is the assertion that keeps it true."""
+        dexes.write_registry({})
+        assert len(Gateway().backends) >= 5
 
 
 class TestConsoleScriptResolution:
