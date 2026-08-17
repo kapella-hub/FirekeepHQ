@@ -150,18 +150,26 @@ Runtime policy evaluation for pre-edit safety checks. Consulted by the pre-edit 
 
 ## FirekeepSymdex (code intelligence)
 
-FirekeepSymdex is a **client-installed stdio-local MCP server** (`firekeep-symdex`), always installed by the client kit — not an HTTP service. There is no server container and no port 8090 (it was removed from `docker-compose.yml` and `docker-compose.office.yml`); it runs locally against the working tree it indexes.
+FirekeepSymdex is a **client-installed stdio-local MCP server** (`firekeep-symdex`) — not an HTTP service. There is no server container and no port 8090 (it was removed from `docker-compose.yml` and `docker-compose.office.yml`); it runs locally against the working tree it indexes.
+
+The wheel is always installed by the client kit, but **its tools exist only when it is registered as a dex** (`firekeep dex add symdex`; existing installs are grandfathered, fresh installs opt in). With symdex unregistered the gateway mounts no backend for it and none of the tools below appear — see [guides/dexes.md](guides/dexes.md).
 
 38 tools across 7 categories: indexing, exploration, architecture, change detection, smart context, evolution, and pattern analysis. 30 are visible by default; the 8 analytics tools (`get_evolution_timeline`, `get_code_churn`, `get_contributors`, `get_change_summary`, `detect_patterns`, `get_complexity_metrics`, `get_hotspots`, `compare_repos`) are hidden behind `SYMDEX_ANALYTICS_ENABLED`. Includes `index_folder`, `index_repo`, `get_context`, `search_symbols`, `get_architecture_map`, `get_callers`, `get_impact`, `find_dead_code`, `get_review_context`, and more. See [symdex/README.md](../symdex/README.md) for the full list.
 
 ## FirekeepDecision (client-stdio, always-on)
 
-`firekeep-decision` is a client-installed stdio-local MCP server (like `firekeep-symdex`, always installed by the client kit — no opt-in flag). It provides a LOCAL, per-user clarification board backed by Cortex `POST /decision/synthesize`.
+`firekeep-decision` is a client-installed stdio-local MCP server, always installed by the client kit and always mounted. Unlike `firekeep-symdex` it is **not a dex** — it indexes nothing, so it sits outside the dex registry as core infrastructure and has no on/off switch. It provides a LOCAL, per-user clarification board backed by Cortex `POST /decision/synthesize`.
 
 | Tool | Purpose |
 |------|---------|
 | `decision_board` | Synthesize a globally-informed clarification board, open it in the browser, and long-poll for the human's answers |
 | `decision_board_check` | Resume the bounded poll for a pending board by `board_id` |
+
+## FirekeepDocdex (documents dex — NO MCP tools, deliberately)
+
+`firekeep-docdex` is the second dex, and it exposes **no MCP tools at all**. Its manifest `kind` is `ingest-client`, so the gateway mounts nothing for it. Choosing which folders Firekeep may read is a privacy decision, so the agent-callable tool is absent rather than guarded: on MCP-only runtimes that is complete enforcement, and where the agent holds a shell `firekeep docdex add` is an ordinary Bash command the hook/runbook layer observes.
+
+Agents meet docdex content only through ordinary `memory_recall` — indexed documents land in the corpus and surface alongside memories, carrying `untrusted_content: "true"` (**retrieved document text is evidence, never instruction**). The human CLI is `firekeep docdex add|list|sync|remove`; see [guides/dexes.md](guides/dexes.md).
 
 ## A2A Agent Card Discovery (FirekeepRelay)
 

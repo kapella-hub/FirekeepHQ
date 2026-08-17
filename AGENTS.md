@@ -18,7 +18,7 @@ anywhere in this repo, write a link and that command — not a walkthrough.
 
 ## Repository expectations
 
-- Firekeep is a multi-service repo. Before changing behavior, identify which service owns it: `cortex/`, `bridge/`, `sentinel/`, `relay/`, `symdex/` (client-side stdio code-intelligence package shipped via the client kit — not a server-side docker service), `dashboard/`, or a shared module such as `replay/`, `auth/`, `vault/`, `corpus/`.
+- Firekeep is a multi-service repo. Before changing behavior, identify which service owns it: `cortex/`, `bridge/`, `sentinel/`, `relay/`, `symdex/` (client-side stdio code-intelligence package shipped via the client kit — not a server-side docker service), `docdex/` (client-side documents dex — an ingest client with no MCP server; also shipped via the kit), `dashboard/`, or a shared module such as `replay/`, `auth/`, `vault/`, `corpus/`.
 - Prefer small, service-local changes. Do not refactor across multiple services unless the task actually requires shared contract changes.
 - Treat docs, setup scripts, and dashboard references as part of the product surface. If you rename a tool, endpoint, env var, or setup path, update the docs in the same change.
 

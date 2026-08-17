@@ -95,14 +95,18 @@ With the MCP config above, Codex can use:
 - Bridge for session persistence
 - Sentinel for environment awareness
 - Relay for coordination
-- Symdex for code intelligence (stdio-local, always installed)
-- Decision Board (`firekeep-decision`, stdio-local, always installed) for structured human clarification — see below
+- Symdex for code intelligence (stdio-local; the wheel is always installed, and it is mounted when registered as a dex — `firekeep dex add symdex`, see [guides/dexes.md](guides/dexes.md))
+- Decision Board (`firekeep-decision`, stdio-local, always installed — it is core infrastructure, not a dex) for structured human clarification — see below
+
+Docdex (documents) is available here too, but note the coverage: Codex has no
+hook surface, so **nothing syncs automatically** — run `firekeep docdex sync`
+yourself after `firekeep docdex add <folder>`. See [guides/dexes.md](guides/dexes.md).
 
 ## Decision Board (`firekeep-decision`)
 
 > When a clarification needs more than a couple of questions, call `decision_board(context, draft_questions)` instead of asking the questions inline.
 
-`firekeep-decision` is a local backend behind the gateway, like Symdex; both are always installed. Two tools:
+`firekeep-decision` is a local backend behind the gateway, like Symdex. Both wheels are always installed; Decision is core and always mounted, while Symdex mounts only when registered as a dex. Two tools:
 
 - `decision_board(context, draft_questions=[])` — asks Cortex to synthesize a board (retrieved evidence + suggested answers per question), opens it in the browser, and waits for the human's answers. Returns the answers (markdown) if submitted in time, else `{status: "pending", board_id, next}`.
 - `decision_board_check(board_id)` — call with the `board_id` from a pending response to collect the answers once submitted; `{status: "pending", ...}` if still waiting, `{status: "unknown"}` if the id isn't recognized.
@@ -143,5 +147,6 @@ Presence/heartbeat/snapshot/exit lifecycle is *intended* to be owned by the `fir
 
 ### Symdex tools fail in Codex
 
-- Confirm you ran `firekeep install --runtime codex` (Symdex is always installed and stdio-local — it is not routed through `firekeep-shim` or exposed over HTTP)
+- Confirm `firekeep dex list` shows `symdex [registered]` — the wheel is always installed, but the gateway mounts it only when it is registered (`firekeep dex add symdex`, effective on the next session)
+- Confirm you ran `firekeep install --runtime codex` (Symdex is stdio-local — it is not routed through `firekeep-shim` or exposed over HTTP)
 - Run the `firekeep_gateway_status` MCP tool; it reports Symdex separately if that backend failed

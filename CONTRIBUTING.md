@@ -33,7 +33,7 @@ a substitute for it.
 Some components are planned to move to Apache-2.0 (the client kit, runtime
 adapters, protocol-facing SDKs, and a standalone Symdex Core). Until that
 happens, **everything in this repository is BUSL-licensed**, including
-`client/` and `symdex/`. Don't assume otherwise from a directory name.
+`client/`, `symdex/` and `docdex/`. Don't assume otherwise from a directory name.
 
 ### 1.1 The CLA is required
 
@@ -109,6 +109,7 @@ cd bridge   && pytest tests/ -v
 cd sentinel && pytest tests/ -v
 cd relay    && pytest tests/ -v
 cd symdex   && pytest tests/ -v
+cd docdex   && pytest tests/ -q                # not yet a CI job — run it locally
 cd client   && python -m pytest tests -q
 python -m pytest tests -q                      # repo-level guards, from root
 python -m pytest replay/tests auth/tests vault/tests corpus/tests -v
@@ -156,9 +157,9 @@ uv pip compile <svc>/requirements.txt --python-platform linux \
 ```
 
 `--python-platform linux` is load-bearing: the lock is generated on your machine
-but must install into the pinned `python:3.11.15-slim` base. **`client/` and
-`symdex/` are deliberately NOT locked** — they ship as wheels into users'
-virtualenvs, and pinning transitive dependencies would force them on every
+but must install into the pinned `python:3.11.15-slim` base. **`client/`,
+`symdex/` and `docdex/` are deliberately NOT locked** — they ship as wheels into
+users' virtualenvs, and pinning transitive dependencies would force them on every
 consumer. `tests/test_requirements_lock.py` asserts they stay unlocked.
 
 **Image pinning.** Every `image:` and `FROM` is pinned by **tag *and* digest**,

@@ -6,7 +6,7 @@ kiro-cli 2.12.1 finding (the hook fires but the exit-2 block is not enforced).
 
 Usage: python client/scripts/validate_kiro.py
 Env:   KIRO_CLI overrides the binary path.
-Exit:  0 if `agent validate` passes and firekeep-symdex is present, else 1.
+Exit:  0 if `agent validate` passes and the `firekeep` gateway entry is rendered, else 1.
 """
 from __future__ import annotations
 
@@ -58,7 +58,12 @@ def main() -> int:
 
     servers = sorted(json.loads(agent.read_text(encoding="utf-8")).get("mcpServers", {}))
     print(f"[rendered servers] {servers}")
-    symdex_ok = "firekeep-symdex" in servers  # always-on since the client-consolidation change
+    # ONE entry since the gateway consolidation: `firekeep`. Per-service and per-dex
+    # keys (`firekeep-cortex`, `firekeep-symdex`, ...) are retired — the gateway
+    # fronts the remote shims, the Decision Board and whichever dexes the registry
+    # has (`firekeep dex add symdex`), so what a rendered agent file can assert is
+    # that the gateway entry is there, not which backends sit behind it.
+    gateway_ok = "firekeep" in servers
 
     hooks = json.loads(agent.read_text(encoding="utf-8")).get("hooks", {})
     pre = (hooks.get("preToolUse") or [{}])[0]
@@ -66,9 +71,9 @@ def main() -> int:
     print("[blocking] ADVISORY on kiro-cli 2.12.1 — hook fires but exit-2 is not enforced; "
           "see docs/KIRO-VALIDATION.md for the manual re-validation probe.")
 
-    ok = rc == 0 and symdex_ok
+    ok = rc == 0 and gateway_ok
     print(f"\n[result] {'PASS' if ok else 'FAIL'} "
-          f"(agent validate rc={rc}, firekeep-symdex present={symdex_ok})")
+          f"(agent validate rc={rc}, firekeep gateway present={gateway_ok})")
     return 0 if ok else 1
 
 

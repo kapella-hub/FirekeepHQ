@@ -66,13 +66,17 @@ Firekeep is not a roadmap. It is a running system.
 
 ### Client-side (stdio, installed with the kit)
 
-Two always-on local MCP backends run next to the agent behind the single
-`firekeep` stdio gateway, not on the VPS:
+Local MCP backends run next to the agent behind the single `firekeep` stdio
+gateway, not on the VPS. The Decision Board is core and always mounted; the
+**dexes** — the domain indexes the Keep understands — mount when registered
+(`firekeep dex add symdex`), and their wheels ship with every release either
+way:
 
 | Server | Purpose |
 |--------|---------|
-| **FirekeepSymdex** (`firekeep-symdex`) | Code intelligence via tree-sitter AST parsing — 38 tools (30 visible, 8 analytics hidden) across 12 languages. Token savings depend entirely on the task — see [Symdex token savings](#symdex-token-savings-measured) for the measured figures and their scopes. Must be local to the working tree it indexes, so it ships client-side (no VPS container) |
-| **FirekeepDecision** (`firekeep-decision`) | Globally-informed local clarification board — synthesizes clarifying questions from the whole team's memory (Cortex `POST /decision/synthesize`) and answers them in the human's browser |
+| **FirekeepDecision** (`firekeep-decision`, core) | Globally-informed local clarification board — synthesizes clarifying questions from the whole team's memory (Cortex `POST /decision/synthesize`) and answers them in the human's browser |
+| **FirekeepSymdex** (`firekeep-symdex`, code dex) | Code intelligence via tree-sitter AST parsing — 38 tools (30 visible, 8 analytics hidden) across 12 languages. Token savings depend entirely on the task — see [Symdex token savings](#symdex-token-savings-measured) for the measured figures and their scopes. Must be local to the working tree it indexes, so it ships client-side (no VPS container) |
+| **FirekeepDocdex** (`firekeep-docdex`, documents dex) | Folders a human registers, extracted to text and ingested into the corpus so they surface through ordinary recall — private to that member by default, even on a shared Keep. No MCP tools at all: folder selection is human-only by construction |
 
 ### Shared infrastructure
 

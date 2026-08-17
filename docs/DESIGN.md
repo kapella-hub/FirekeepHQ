@@ -11,7 +11,7 @@ Firekeep is a unified deployment repository that consolidates five Firekeep serv
 ### Deployment Topology
 
 - **VPS (docker-compose):** FirekeepCortex, FirekeepBridge, FirekeepSentinel, FirekeepRelay, Dashboard, infrastructure (Neo4j, Qdrant, Redis, Ollama)
-- **Local (client kit):** FirekeepSymdex (`firekeep-symdex`) and the Decision Board (`firekeep-decision`) — always-installed stdio MCP servers that run next to the agent for fast local file access
+- **Local (client kit):** the Decision Board (`firekeep-decision`) — an always-installed, always-mounted stdio MCP server that runs next to the agent for fast local file access — plus the **dexes**, the domain indexes the Keep understands: FirekeepSymdex (`firekeep-symdex`, code) and FirekeepDocdex (`firekeep-docdex`, documents). Both dex wheels are always installed; the dex registry (`~/.firekeep/dexes.json`, `firekeep dex add|remove`) decides which of them are active — see [guides/dexes.md](guides/dexes.md)
 
 ## Repository Structure
 
@@ -286,7 +286,7 @@ Renamed from CortexBridge. All `CB_` prefixed env vars become `NB_`.
 
 ## FirekeepSymdex — Local (stdio) only
 
-Code intelligence is **client-side only**. The server-side HTTP container was removed from both `docker-compose.yml` and `docker-compose.office.yml` — a VPS/K8s box has no developer working tree to index, so it was vestigial. Symdex ships as a local process behind the one `firekeep` stdio gateway, installed automatically by the client kit (no opt-in flag — the `--with-symdex` flag was removed).
+Code intelligence is **client-side only**. The server-side HTTP container was removed from both `docker-compose.yml` and `docker-compose.office.yml` — a VPS/K8s box has no developer working tree to index, so it was vestigial. Symdex ships as a local process behind the one `firekeep` stdio gateway; its wheel is installed automatically by the client kit (the `--with-symdex` flag was removed), and the **dex registry** decides whether the gateway mounts it — `firekeep dex add symdex`, with existing installs grandfathered and fresh installs opting in ([guides/dexes.md](guides/dexes.md)).
 
 - Runs as `firekeep-symdex` from the client-kit venv console script; the gateway starts and fronts it
 - Direct local file access, near-zero latency; must be local to the working tree it indexes

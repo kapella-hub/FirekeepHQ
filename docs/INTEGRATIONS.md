@@ -55,7 +55,7 @@ Minimum useful combination:
 Full platform experience:
 
 - add Sentinel for environment awareness
-- code intelligence (`firekeep-symdex`) is already installed automatically as a client-stdio server — no HTTP endpoint to register
+- code intelligence (`firekeep-symdex`) ships with the kit as a client-stdio server — no HTTP endpoint to register; the gateway mounts it once it is registered as a dex (`firekeep dex add symdex` — see [guides/dexes.md](guides/dexes.md))
 
 ## Integration Tiers
 

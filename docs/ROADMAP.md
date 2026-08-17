@@ -134,7 +134,7 @@ Nothing from this section appears on firekeep.ai until its gate holds — the
 dashboard shows it before the site says it. First domino when work starts:
 trust ledger round 1 (visibility only, the house pattern).
 
-## 5. Tiers and dexes (decision record, 2026-08-15 — decided, not yet built)
+## 5. Tiers and dexes (decision record, 2026-08-15 — decided; dex milestone 1 + Docdex BUILT 2026-08-17, see [`docs/guides/dexes.md`](guides/dexes.md))
 
 > **Superseded in part (2026-08-16).** The tier *packaging* below (a three-way
 > Personal / Teams / Enterprise split with a per-member Teams SKU) was replaced by
@@ -308,6 +308,9 @@ necessarily dexes).
 
 Nothing above appears on firekeep.ai until it exists to the §4 standard:
 the dashboard shows it before the site says it. Docs and CLAUDE.md keep
-describing CURRENT behaviour (symdex always-installed) until the dex
-milestone actually lands — a doc that describes the decided future as the
-present would simply be wrong.
+describing CURRENT behaviour, never the decided future as the present.
+**Milestone 1 and Docdex have landed** (2026-08-17): the registry,
+`firekeep dex list/add/remove`, symdex behind it with grandfathering, and
+docdex as consumer #2 are all on `main` and documented in
+[`docs/guides/dexes.md`](guides/dexes.md). Everything from Chatdex on is
+still future and stays out of the docs until it ships.

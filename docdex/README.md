@@ -60,10 +60,15 @@ readable root. An unplugged USB drive deletes nothing.
 ## Sync trigger
 
 "Sync on the next supported session start", not "scheduled". The
-`session_start` hook fires it on hook-bearing runtimes (Claude Code, Codex,
-Kiro, OpenCode). An MCP-only host gets **no** automatic sync — run
-`firekeep docdex sync`. Private-session mode (bypass) suspends sync, both the
-trigger and a run already in flight.
+`session_start` hook fires it on hook-bearing runtimes — **Claude Code, kiro
+and OpenCode**. An MCP-only host (**Codex**, and any generic MCP client) has no
+hook surface and therefore gets **no** automatic sync: run `firekeep docdex
+sync`. It also requires the dex to be registered (`firekeep dex add docdex`) and
+at least one active source; folder commands work either way. Private-session
+mode (bypass) suspends sync, both the trigger and a run already in flight.
+
+Full per-runtime coverage table, registry model and troubleshooting:
+[`docs/guides/dexes.md`](../docs/guides/dexes.md).
 
 ## Development
 

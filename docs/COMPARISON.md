@@ -100,7 +100,7 @@ Only `trial+` patterns with `procedural` or `risk` category appear in briefings.
 |--------|-------|
 | Services | 4 server-side + 2 client-stdio MCP servers + 7 shared modules |
 | Docker containers | 13 |
-| MCP tools | 102 across 6 servers (cortex 27, bridge 7, sentinel 3, relay 25, symdex 38, decision 2) |
+| MCP tools | 102 across 6 backends behind one gateway (cortex 27, bridge 7, sentinel 3, relay 25, symdex 38, decision 2). Symdex's 38 are present when it is registered as a dex; docdex, the documents dex, exposes none by design |
 | REST endpoints | 60+ |
 | Tests | Automated suites across all services and the client kit |
 | Pattern detectors | 6 (memory-first, file hotspot, tool sequence, memory usage, duration, failure mode) |

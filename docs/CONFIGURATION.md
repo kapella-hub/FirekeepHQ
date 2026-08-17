@@ -179,6 +179,7 @@ baked into the collection at creation.
 | `AUTH_` | Auth |
 | `ENROLL_` | Single-use client enrollment |
 | `FIREKEEP_SYMDEX_` | FirekeepSymdex (client-side stdio server only — not a server `.env` prefix; e.g. `FIREKEEP_SYMDEX_MAX_FILES`) |
+| `FIREKEEP_DOCDEX_` | FirekeepDocdex (client-side only; the disclosed caps `FIREKEEP_DOCDEX_MAX_FILES`, `_MAX_FILE_MB`, `_MAX_EXTRACT_KB`, `_SYNC_INTERVAL_HOURS` — defaults and breach behaviour in [guides/dexes.md](guides/dexes.md)) |
 
 ## Service Ports
 
@@ -195,7 +196,7 @@ baked into the collection at creation.
 | 6379 | Redis | Redis (localhost) |
 | 11434 | Ollama | HTTP (localhost) |
 
-Two local MCP backends ship in the client kit and bind no port: `firekeep-symdex` (code intelligence) and `firekeep-decision` (the Decision Board, backed by Cortex `POST /decision/synthesize`). Both are always installed and started behind the single `firekeep` stdio gateway.
+Local MCP backends ship in the client kit and bind no port: `firekeep-decision` (the Decision Board, backed by Cortex `POST /decision/synthesize`) and `firekeep-symdex` (code intelligence). Both wheels are always installed. Decision is core and always started behind the single `firekeep` stdio gateway; symdex is a **dex** and is started only when registered (`firekeep dex add symdex`). The third client-side package, `firekeep-docdex`, is also always installed but has no MCP server at all — it is an ingest client driven by `firekeep docdex …` and a background sync. See [guides/dexes.md](guides/dexes.md).
 
 ### Binding and exposure
 

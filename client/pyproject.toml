@@ -24,12 +24,15 @@ dependencies = [
     "truststore>=0.9.1",
 ]
 
-# Code intelligence is always-on when installed through the managed bootstrap
-# (which installs the firekeep-symdex wheel side by side). For pip installs it
-# is an extra, NOT a hard dependency: the gateway degrades gracefully without
-# it, and forcing tree-sitter's binary grammars on every pip consumer would
-# fight the resolution philosophy that keeps this package deliberately
-# unlocked (tests/test_requirements_lock.py).
+# The managed bootstrap always installs the firekeep-symdex wheel side by side
+# (whether the dex registry then MOUNTS it is a separate question — see
+# firekeep_client/dexes.py). For pip installs it is an extra, NOT a hard
+# dependency: the gateway degrades gracefully without it, and forcing
+# tree-sitter's binary grammars on every pip consumer would fight the
+# resolution philosophy that keeps this package deliberately unlocked
+# (tests/test_requirements_lock.py). firekeep-docdex is deliberately NOT an
+# extra here — it depends on firekeep-client, so an extra would be a cycle;
+# pip users install it directly.
 [project.optional-dependencies]
 symdex = ["firekeep-symdex>=0.2,<1"]
 

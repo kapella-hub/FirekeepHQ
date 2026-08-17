@@ -1,6 +1,6 @@
 # Firekeep
 
-Unified cognitive stack for AI agents. Consolidates four server services (Cortex, Bridge, Sentinel, Relay) plus a dashboard into one deployable unit; code intelligence (Symdex) ships client-side in the kit.
+Unified cognitive stack for AI agents. Consolidates four server services (Cortex, Bridge, Sentinel, Relay) plus a dashboard into one deployable unit; the dexes — the domain indexes the Keep understands (Symdex for code, Docdex for documents) — ship client-side in the kit behind a registry ([`docs/guides/dexes.md`](docs/guides/dexes.md)).
 
 ## Architecture
 
@@ -10,7 +10,8 @@ Unified cognitive stack for AI agents. Consolidates four server services (Cortex
 | FirekeepBridge | `bridge/` | 8070 | Session context persistence across compressions |
 | FirekeepSentinel | `sentinel/` | 8060 | Environment observer (collectors + webhook intake). **Docker collector is opt-in** — `NS_DOCKER_COLLECTOR_ENABLED=false` by default, and `docker-compose.yml` no longer bind-mounts `/var/run/docker.sock` or the repo root (`./:/watch:ro`). Reaching the Docker API is root on the host: a caller can `POST /containers/create` with a host bind mount, and `:ro` restricts the socket *file*, not the API. The old repo-root mount also put `.env` — `NEO4J_PASSWORD`, `VAULT_KEY`, minted API keys — inside a service with a published, unauthenticated port. Neither mount did anything by default (the collector makes one call, `GET /containers/json`; git/file watches come from Redis + `NS_WATCH_PATHS`, both empty). To opt in, set the flag and restore the mount per the comments in the compose `sentinel:` block — preferably behind a read-only socket proxy. Guarded by `sentinel/tests/test_docker_collector_optin.py`. |
 | FirekeepRelay | `relay/` | 8050 | Agent-to-agent communication (pub/sub + bulletin board) |
-| FirekeepSymdex | `symdex/` | stdio (local, client-installed) | Code intelligence (tree-sitter AST parsing). **CLIENT-SIDE ONLY** — it must be local to the codebase it indexes, so it ships as the standalone `firekeep-symdex` stdio MCP server (`firekeep_symdex.server:main`), an **always-installed** client MCP server (bundled checksum-verified wheel installed by the bootstrap, or from the local `symdex/` dir on a checkout install) — joining `firekeep-decision` as always-on (the old `firekeep install --with-symdex` opt-in flag is retired). The server-side HTTP container was removed from both `docker-compose.yml` and `docker-compose.office.yml` (a VPS/K8s box has no developer working tree to index — it was vestigial). 8 analytics tools (`get_evolution_timeline`, `get_code_churn`, `get_contributors`, `get_change_summary`, `detect_patterns`, `get_complexity_metrics`, `get_hotspots`, `compare_repos`) require indexed repos and are hidden by default (`SYMDEX_ANALYTICS_ENABLED=false`). Per-index file ceiling via `FIREKEEP_SYMDEX_MAX_FILES` (default 1500). `list_repos` exposes indexed-repo inventory. (Sentinel's git collector still best-effort POSTs to `SYMDEX_URL` on commit activity; with no server symdex it fails fast into a swallowed debug log — harmless, and the seam a team would reuse if it ever re-adds a server symdex.) |
+| FirekeepSymdex | `symdex/` | stdio (local, client-installed) | Code intelligence (tree-sitter AST parsing). **CLIENT-SIDE ONLY** — it must be local to the codebase it indexes, so it ships as the standalone `firekeep-symdex` stdio MCP server (`firekeep_symdex.server:main`). The wheel is still **always installed** — bundled and checksum-verified by the bootstrap, or from the local `symdex/` dir on a checkout install — but **MOUNTING is dex-registry-driven**: the gateway starts it only when the registry has it (`firekeep dex add symdex`). Existing installs are grandfathered by the migration rule; fresh installs opt in. `firekeep-decision` is NOT a dex (it indexes nothing) and stays core and unconditional; the old `firekeep install --with-symdex` flag is retired. See [`docs/guides/dexes.md`](docs/guides/dexes.md). The server-side HTTP container was removed from both `docker-compose.yml` and `docker-compose.office.yml` (a VPS/K8s box has no developer working tree to index — it was vestigial). 8 analytics tools (`get_evolution_timeline`, `get_code_churn`, `get_contributors`, `get_change_summary`, `detect_patterns`, `get_complexity_metrics`, `get_hotspots`, `compare_repos`) require indexed repos and are hidden by default (`SYMDEX_ANALYTICS_ENABLED=false`). Per-index file ceiling via `FIREKEEP_SYMDEX_MAX_FILES` (default 1500). `list_repos` exposes indexed-repo inventory. (Sentinel's git collector still best-effort POSTs to `SYMDEX_URL` on commit activity; with no server symdex it fails fast into a swallowed debug log — harmless, and the seam a team would reuse if it ever re-adds a server symdex.) |
+| FirekeepDocdex | `docdex/` | none (client-side ingest client) | Documents dex. **CLIENT-SIDE ONLY, and NO MCP server** — manifest `kind: ingest-client`, so the gateway mounts nothing for it; the registry entry gates its session-start background sync and the doctor row instead. A human registers folders (`firekeep docdex add ~/Notes`, `--shared` for the workspace, default private to the member); a sync extracts `.md`/`.txt`/`.pdf`/`.docx` (no OCR) and ingests into the EXISTING corpus — no new server component. Ships as the `firekeep-docdex` wheel, bundled and checksum-verified exactly like symdex; registration (`firekeep dex add docdex`) gates activity, not installation. Disclosed caps, deletion semantics (a completed walk is the only source of deletions), the member-private threat boundary and the per-runtime sync coverage are all in [`docs/guides/dexes.md`](docs/guides/dexes.md). |
 | Dashboard | `dashboard/` | 8040 | Unified web UI (static SPA) |
 
 ## Infrastructure (VPS, localhost-only ports)
@@ -86,7 +87,9 @@ running sessions keep their old venv until GC proves nothing holds it.
 
 Everything else about the kit — the five hook cores, night shift, personal mode, symdex
 auto-index, PATH handling, release signing — is in
-[`docs/guides/client-kit.md`](docs/guides/client-kit.md).
+[`docs/guides/client-kit.md`](docs/guides/client-kit.md); the dex registry
+(`firekeep dex list/add/remove`, the grandfathering rule) and docdex
+(`firekeep docdex add <folder>`) are in [`docs/guides/dexes.md`](docs/guides/dexes.md).
 
 ### Run all services
 ```bash
@@ -100,6 +103,7 @@ cd bridge && pytest tests/ -v
 cd sentinel && pytest tests/ -v
 cd relay && pytest tests/ -v
 cd symdex && pytest tests/ -v
+cd docdex && pytest tests/ -v
 ```
 
 ## Agent Guidance: Secrets vs Operational Facts
@@ -132,6 +136,7 @@ reference material does not need to be.
 |---|---|
 | Office Kubernetes deployment | [`docs/guides/deployment-office-kubernetes.md`](docs/guides/deployment-office-kubernetes.md) |
 | The client kit — install, hooks, night shift, personal mode | [`docs/guides/client-kit.md`](docs/guides/client-kit.md) |
+| Dexes — the registry, symdex, docdex | [`docs/guides/dexes.md`](docs/guides/dexes.md) |
 | Memory, recall, corpus and vault | [`docs/guides/memory-and-recall.md`](docs/guides/memory-and-recall.md) |
 | Skills, docs→skills and collectors | [`docs/guides/knowledge-and-skills.md`](docs/guides/knowledge-and-skills.md) |
 | Knowledge Autopilot — feedback, reaper, contested, inbox | [`docs/guides/knowledge-autopilot.md`](docs/guides/knowledge-autopilot.md) |
@@ -192,8 +197,8 @@ importing each service's modules.
 Hashes put pip in `--require-hashes` mode implicitly — every requirement must be pinned
 and hashed, and a re-uploaded artifact fails the build rather than installing.
 
-**`client/` and `symdex/` are deliberately NOT locked.** They ship as wheels into a
-user's virtualenv; pinning a library's transitive dependencies forces them on every
+**`client/`, `symdex/` and `docdex/` are deliberately NOT locked.** They ship as wheels
+into a user's virtualenv; pinning a library's transitive dependencies forces them on every
 consumer and fights the bootstrap's own resolution. `tests/test_requirements_lock.py`
 asserts they stay unlocked.
 

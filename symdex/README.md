@@ -13,7 +13,7 @@ accuracy point estimate was 4.42 versus 4.45 for raw-file context, which does no
 statistical equivalence. See [`benchmarks/README.md`](benchmarks/README.md) for both scopes and
 their limitations.
 
-> **Inside Firekeep**, firekeep-symdex is installed and registered automatically by `firekeep install` as one of six always-on client MCP servers (`firekeep-cortex`, `firekeep-bridge`, `firekeep-sentinel`, `firekeep-relay`, `firekeep-decision`, `firekeep-symdex`). It runs as a **local stdio server** against your working tree — there is no server-side container and no `--with-symdex` opt-in flag. The standalone install steps below are for running firekeep-symdex on its own, outside Firekeep.
+> **Inside Firekeep**, firekeep-symdex is the **code dex** — one of the domain indexes the Keep understands. Its wheel is always installed (bundled and checksum-verified by the bootstrap; there is no `--with-symdex` flag any more), and the **dex registry** decides whether it runs: `firekeep dex add symdex` registers it, and the single local `firekeep` gateway then starts it as a **local stdio server** against your working tree. Existing installs are grandfathered across the update and need no action; fresh installs opt in. There is no server-side container. See [`docs/guides/dexes.md`](../docs/guides/dexes.md). The standalone install steps below are for running firekeep-symdex on its own, outside Firekeep.
 
 ## Features
 
