@@ -444,6 +444,15 @@ button.btn-outline:hover { border-color: var(--accent); color: var(--accent); ba
 .score-pct { font-family: var(--font-mono); font-size: 12px; font-weight: 600; min-width: 36px; text-align: right; }
 .source-badge { font-family: var(--font-mono); font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; padding: 2px 8px; border-radius: 10px; }
 .source-badge.graph { background: var(--violet-muted); color: var(--violet); }
+/* Memory graph — a self-contained, 3D-projected force layout of the knowledge graph. */
+.mg-sub { color: var(--text-dim); font-weight: 400; font-size: 12px; margin-left: 8px; letter-spacing: 0; }
+.mg-card { position: relative; padding: 0; overflow: hidden; height: 400px; cursor: grab; background: radial-gradient(130% 110% at 50% -10%, rgba(255,122,47,.07), rgba(10,11,14,.42) 62%); }
+.mg-card:active { cursor: grabbing; }
+.mg-canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+.mg-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; padding: 24px; color: var(--text-dim); font-size: 13px; }
+.mg-empty[hidden] { display: none; }  /* beat .mg-empty's own display:flex, which ties with the UA [hidden] rule and wins on source order */
+.mg-tip { position: absolute; z-index: 3; pointer-events: none; transform: translate(-50%, calc(-100% - 12px)); padding: 5px 9px; border-radius: 7px; background: rgba(10,11,14,.94); border: 1px solid var(--border); color: var(--text); font-size: 12px; max-width: 240px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; box-shadow: 0 6px 20px rgba(0,0,0,.45); }
+.mg-legend { position: absolute; bottom: 10px; right: 14px; font-family: var(--mono, ui-monospace, monospace); font-size: 9.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--text-dim); opacity: .7; pointer-events: none; }
 .source-badge.vector { background: var(--accent-muted); color: var(--accent); }
 
 /* Events */
@@ -802,6 +811,15 @@ button.btn-outline:hover { border-color: var(--accent); color: var(--accent); ba
                     <div class="card stat-card" data-goto="events"><div class="stat-value" id="statEvents">--</div><div class="stat-label">Events Stored</div></div>
                     <div class="card stat-card" data-goto="relay"><div class="stat-value" id="statBulletins">--</div><div class="stat-label">Relay Bulletins</div></div>
                     <div class="card stat-card" data-goto="memory"><div class="stat-value" id="statMemories">--</div><div class="stat-label">Memories Stored</div></div>
+                </div>
+            </div>
+            <div class="section">
+                <div class="card-header">Memory Graph <span class="mg-sub" id="mgCount"></span></div>
+                <div class="card mg-card" id="mgCard">
+                    <canvas id="memoryGraph" class="mg-canvas" aria-label="3D view of the knowledge graph"></canvas>
+                    <div class="mg-empty" id="mgEmpty" hidden>The knowledge graph is empty — nodes appear here as memories connect.</div>
+                    <div class="mg-tip" id="mgTip" hidden></div>
+                    <div class="mg-legend">drag to rotate</div>
                 </div>
             </div>
             <div class="section"><div id="overviewPresence" class="presence-row"></div></div>
@@ -2308,7 +2326,7 @@ function refreshOverview() {
     }
 
     renderHealthGrid(); loadQuickStats(); loadOverviewEvents(); loadOverviewMemories(); loadOverviewPresence();
-    initFirekeepPulse(); startHeroClock(); setTimeout(updateHeroSummary, 1300);
+    initFirekeepPulse(); initMemoryGraph(); startHeroClock(); setTimeout(updateHeroSummary, 1300);
     setTimeout(function() { $('refreshIndicator').textContent = 'Last: ' + new Date().toLocaleTimeString(); }, 2000);
 }
 
@@ -2392,6 +2410,224 @@ function initFirekeepPulse() {
         }
         window._pulseRAF = requestAnimationFrame(loop);
     } catch (e) { /* pulse is decorative — never let it break the hero */ }
+}
+
+// -- Memory Graph: a self-contained 3D view of the Neo4j knowledge graph.
+//    No external libraries (CSP is script-src 'self') — custom perspective
+//    projection, painter's-order depth sort, atmospheric fade, auto-rotation +
+//    drag-to-rotate. Seeded on a Fibonacci sphere, lightly force-relaxed, then
+//    frozen so only the camera moves. Fail-quiet, HiDPI, honors reduced-motion. --
+var _mgState = null;
+
+function initMemoryGraph(force) {
+    var canvas = document.getElementById('memoryGraph');
+    if (!canvas || !canvas.getContext) return;
+    // Build once and leave it running — re-init only on an explicit refresh, so
+    // the periodic overview poll never yanks the camera back to its start pose.
+    if (!force && _mgState && _mgState.raf) return;
+    safeFetch(CONFIG.CORTEX_API + '/dashboard/api/graph?limit=80')
+        .then(function (r) { return r.json(); })
+        .then(function (g) {
+            renderMemoryGraph(canvas,
+                (g && Array.isArray(g.nodes)) ? g.nodes : [],
+                (g && Array.isArray(g.edges)) ? g.edges : []);
+        })
+        .catch(function () { renderMemoryGraph(canvas, [], []); });
+}
+
+function renderMemoryGraph(canvas, rawNodes, rawEdges) {
+    try {
+        var emptyEl = document.getElementById('mgEmpty');
+        var countEl = document.getElementById('mgCount');
+        var tipEl = document.getElementById('mgTip');
+
+        // Cap for legibility + a stable frame budget; index by id.
+        // The snapshot puts the human content in `name` and the Neo4j node kind
+        // (Domain/Action/Concept/…) in `label` — so the tooltip reads `name`.
+        var nodes = rawNodes.slice(0, 70).map(function (n, i) {
+            return {
+                id: (n.id != null ? String(n.id) : 'n' + i),
+                label: String(n.name != null ? n.name : (n.label != null ? n.label : '#' + i)),
+                type: String(n.label != null ? n.label : (n.type || n.kind || '')), deg: 0
+            };
+        });
+        var byId = {};
+        nodes.forEach(function (n, i) { n._i = i; byId[n.id] = n; });
+
+        // Edges → index pairs; drop dangling/self edges; tally degree.
+        var edges = [];
+        rawEdges.forEach(function (e) {
+            var s = byId[e.source != null ? String(e.source) : ''];
+            var t = byId[e.target != null ? String(e.target) : ''];
+            if (s && t && s !== t) { edges.push([s._i, t._i]); s.deg++; t.deg++; }
+        });
+
+        if (emptyEl) emptyEl.hidden = nodes.length > 0;
+        if (countEl) countEl.textContent = nodes.length ? (nodes.length + ' nodes · ' + edges.length + ' links') : '';
+
+        var ctx = canvas.getContext('2d');
+        var prevAy = _mgState ? _mgState.ay : 0.5, prevAx = _mgState ? _mgState.ax : -0.32;  // keep the view across a forced refresh
+        if (_mgState && _mgState.raf) cancelAnimationFrame(_mgState.raf);
+        if (_mgState && _mgState.teardown) _mgState.teardown();
+        if (!nodes.length) { _mgState = null; if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height); return; }
+
+        // Seed on a Fibonacci sphere — an even, attractive 3D cloud out of the box.
+        var R = 150, GA = Math.PI * (3 - Math.sqrt(5));
+        nodes.forEach(function (n, i) {
+            var y = 1 - (i / Math.max(1, nodes.length - 1)) * 2, rad = Math.sqrt(Math.max(0, 1 - y * y)), th = GA * i;
+            n.x = Math.cos(th) * rad * R; n.y = y * R; n.z = Math.sin(th) * rad * R;
+            n.vx = 0; n.vy = 0; n.vz = 0;
+        });
+        // Light relaxation so linked nodes clump, without wrecking the even spread.
+        for (var s = 0; s < 45; s++) stepMemoryForces(nodes, edges);
+
+        var css = getComputedStyle(document.documentElement);
+        var ember = (css.getPropertyValue('--pulse') || '#FF9147').trim();
+        var reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+        var st = {
+            nodes: nodes, edges: edges, ctx: ctx, canvas: canvas, ember: ember, tip: tipEl,
+            ay: prevAy, ax: prevAx, spin: reduced ? 0 : 0.0022,
+            dragging: false, lastX: 0, lastY: 0, mouseX: null, mouseY: null, hover: -1,
+            w: 0, h: 0, raf: 0
+        };
+        _mgState = st;
+
+        function size() {
+            var dpr = window.devicePixelRatio || 1;
+            var w = canvas.clientWidth || (canvas.parentNode && canvas.parentNode.clientWidth) || 640;
+            var h = canvas.clientHeight || 400;
+            canvas.width = Math.max(1, Math.floor(w * dpr));
+            canvas.height = Math.max(1, Math.floor(h * dpr));
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            st.w = w; st.h = h;
+        }
+        size();
+        st._rz = function () { try { size(); } catch (e) {} };
+        window.addEventListener('resize', st._rz);
+
+        function relPt(e) {
+            var r = canvas.getBoundingClientRect(), s = (e.touches && e.touches[0]) || e;
+            return { x: s.clientX - r.left, y: s.clientY - r.top };
+        }
+        function onDown(e) { st.dragging = true; var p = relPt(e); st.lastX = p.x; st.lastY = p.y; }
+        function onMove(e) {
+            var p = relPt(e);
+            if (st.dragging) {
+                st.ay += (p.x - st.lastX) * 0.008;
+                st.ax = Math.max(-1.3, Math.min(1.3, st.ax + (p.y - st.lastY) * 0.008));
+                st.lastX = p.x; st.lastY = p.y;
+            } else { st.mouseX = p.x; st.mouseY = p.y; }
+        }
+        function onUp() { st.dragging = false; }
+        canvas.onmousedown = onDown;
+        canvas.ontouchstart = function (e) { onDown(e); };
+        canvas.ontouchmove = function (e) { onMove(e); if (st.dragging) e.preventDefault(); };
+        canvas.ontouchend = onUp;
+        window.addEventListener('mousemove', onMove);
+        window.addEventListener('mouseup', onUp);
+        st.teardown = function () {
+            window.removeEventListener('mousemove', onMove);
+            window.removeEventListener('mouseup', onUp);
+            window.removeEventListener('resize', st._rz);
+        };
+
+        function project(n) {
+            var cay = Math.cos(st.ay), say = Math.sin(st.ay);
+            var x1 = n.x * cay + n.z * say, z1 = -n.x * say + n.z * cay;
+            var cax = Math.cos(st.ax), sax = Math.sin(st.ax);
+            var y2 = n.y * cax - z1 * sax, z2 = n.y * sax + z1 * cax;
+            var p = 460 / (460 + z2 + 240);          // perspective foreshortening
+            return { x: st.w / 2 + x1 * p * 1.4, y: st.h / 2 + y2 * p * 1.4, z: z2, p: p };
+        }
+
+        function frame() {
+            var w = st.w, h = st.h, i, n, pj = new Array(st.nodes.length);
+            ctx.clearRect(0, 0, w, h);
+            if (!st.dragging && st.spin) st.ay += st.spin;
+            for (i = 0; i < st.nodes.length; i++) pj[i] = project(st.nodes[i]);
+
+            st.hover = -1;
+            if (st.mouseX != null && !st.dragging) {
+                var best = 16 * 16, bi = -1;
+                for (i = 0; i < pj.length; i++) {
+                    var dx = pj[i].x - st.mouseX, dy = pj[i].y - st.mouseY, d2 = dx * dx + dy * dy;
+                    if (d2 < best) { best = d2; bi = i; }
+                }
+                st.hover = bi;
+            }
+
+            for (i = 0; i < st.edges.length; i++) {
+                var a = pj[st.edges[i][0]], b = pj[st.edges[i][1]], dep = (a.p + b.p) / 2;
+                var lit = (st.hover >= 0 && (st.edges[i][0] === st.hover || st.edges[i][1] === st.hover));
+                ctx.strokeStyle = lit ? mgEmberAlpha(st.ember, 0.55) : 'rgba(150,162,180,' + (0.05 + dep * 0.10).toFixed(3) + ')';
+                ctx.lineWidth = lit ? 1.3 : Math.max(0.4, dep * 0.9);
+                ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+            }
+
+            var order = pj.map(function (p, idx) { return idx; }).sort(function (u, v) { return pj[u].z - pj[v].z; });
+            for (var k = 0; k < order.length; k++) {
+                i = order[k]; n = st.nodes[i];
+                var p = pj[i], far = Math.max(0, Math.min(1, (p.p - 0.52) / 0.5));
+                var rr = Math.max(1.3, (2.2 + Math.min(6, (n.deg || 0) * 0.9)) * p.p * 1.15);
+                var hovered = (i === st.hover);
+                ctx.beginPath(); ctx.arc(p.x, p.y, rr, 0, 6.2832);
+                ctx.shadowColor = st.ember; ctx.shadowBlur = hovered ? 16 : 4 + far * 6;
+                ctx.fillStyle = mgEmberAlpha(st.ember, hovered ? 1 : 0.35 + far * 0.6);
+                ctx.fill(); ctx.shadowBlur = 0;
+                if (hovered) { ctx.strokeStyle = 'rgba(255,255,255,0.85)'; ctx.lineWidth = 1.2; ctx.stroke(); }
+            }
+
+            if (st.tip) {
+                if (st.hover >= 0) {
+                    var hp = pj[st.hover], hn = st.nodes[st.hover];
+                    st.tip.hidden = false;
+                    st.tip.textContent = (hn.type ? hn.type + ' · ' : '') + (hn.label || hn.id);
+                    st.tip.style.left = Math.round(hp.x) + 'px';
+                    st.tip.style.top = Math.round(hp.y) + 'px';
+                } else { st.tip.hidden = true; }
+            }
+            st.raf = requestAnimationFrame(frame);
+        }
+        st.raf = requestAnimationFrame(frame);
+    } catch (e) { /* the graph is decorative — never break the overview */ }
+}
+
+// One force tick: pairwise repulsion + edge springs + centering, then damp.
+// O(n^2), but node count is capped so it stays cheap.
+function stepMemoryForces(nodes, edges) {
+    var i, j, n = nodes.length, a, b;
+    for (i = 0; i < n; i++) {
+        a = nodes[i];
+        for (j = i + 1; j < n; j++) {
+            b = nodes[j];
+            var dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+            var d2 = dx * dx + dy * dy + dz * dz + 0.1, d = Math.sqrt(d2), f = 900 / d2;
+            var ux = dx / d, uy = dy / d, uz = dz / d;
+            a.vx += ux * f; a.vy += uy * f; a.vz += uz * f;
+            b.vx -= ux * f; b.vy -= uy * f; b.vz -= uz * f;
+        }
+    }
+    for (i = 0; i < edges.length; i++) {
+        var s = nodes[edges[i][0]], t = nodes[edges[i][1]];
+        var ex = t.x - s.x, ey = t.y - s.y, ez = t.z - s.z, el = Math.sqrt(ex * ex + ey * ey + ez * ez) + 0.001;
+        var k = (el - 78) * 0.02, vx = ex / el, vy = ey / el, vz = ez / el;
+        s.vx += vx * k; s.vy += vy * k; s.vz += vz * k;
+        t.vx -= vx * k; t.vy -= vy * k; t.vz -= vz * k;
+    }
+    for (i = 0; i < n; i++) {
+        var p = nodes[i];
+        p.vx -= p.x * 0.004; p.vy -= p.y * 0.004; p.vz -= p.z * 0.004;
+        p.x += p.vx; p.y += p.vy; p.z += p.vz;
+        p.vx *= 0.80; p.vy *= 0.80; p.vz *= 0.80;
+    }
+}
+
+// Ember accent → rgba() at a given alpha (accepts #rgb or #rrggbb).
+function mgEmberAlpha(hex, a) {
+    var h = (hex || '#FF9147').replace('#', '');
+    if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+    return 'rgba(' + parseInt(h.substr(0, 2), 16) + ',' + parseInt(h.substr(2, 2), 16) + ',' + parseInt(h.substr(4, 2), 16) + ',' + a + ')';
 }
 
 function loadOverviewPresence() {
@@ -3688,7 +3924,7 @@ $('btnRefreshScope') && $('btnRefreshScope').addEventListener('click', loadScope
 $('btnScopeBack') && $('btnScopeBack').addEventListener('click', function() { $('scopeDetailSection').style.display = 'none'; loadScope(); });
 
 // ===================== Event listeners =====================
-$('btnRefreshOverview').addEventListener('click', refreshOverview);
+$('btnRefreshOverview').addEventListener('click', function () { refreshOverview(); initMemoryGraph(true); });
 $('btnRecall').addEventListener('click', recallMemory);
 $('learnForm').addEventListener('submit', learnMemory);
 $('btnRefreshSessions').addEventListener('click', loadSessions);
