@@ -317,6 +317,21 @@ def test_the_prog_name_follows_how_it_was_invoked(capsys):
     assert "firekeep docdex" in _out(capsys)
 
 
+@pytest.mark.parametrize("argv", [
+    ["list"],
+    ["add", "/no/such/folder"],
+    ["remove", "0" * 32],
+])
+def test_every_message_names_the_command_the_user_typed(argv, capsys):
+    """Not just argparse's usage line: the suggestions inside these messages
+    are commands, and `firekeep-docdex list` is not a thing a user who typed
+    `firekeep docdex` necessarily has."""
+    cli.main(argv, prog="firekeep docdex")
+    out = _out(capsys)
+    assert out.strip()
+    assert "firekeep-docdex" not in out
+
+
 def test_the_console_script_points_at_this_module():
     """The declaration in pyproject.toml is what makes `firekeep-docdex` exist
     on PATH — and what the detached background spawn and the bootstrap both

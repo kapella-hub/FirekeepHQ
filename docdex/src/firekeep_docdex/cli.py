@@ -36,6 +36,15 @@ _VISIBILITY = {
 }
 
 
+def _me(args) -> str:
+    """How the user reached this code — `firekeep-docdex` or `firekeep docdex`.
+
+    Every message a person reads is prefixed with it, and every command this
+    output suggests is spelled with it, so nothing here ever tells someone to
+    run a command in a form they do not have."""
+    return getattr(args, "prog", None) or "firekeep-docdex"
+
+
 def _client() -> wire.Client:
     """The ONE place this CLI reaches for a server connection.
 
@@ -56,19 +65,19 @@ def cmd_add(args) -> int:
     try:
         src = sources.add(args.path, shared=args.shared)
     except ValueError as exc:
-        print(f"firekeep-docdex: {exc}", file=sys.stderr)
+        print(f"{_me(args)}: {exc}", file=sys.stderr)
         return 1
-    print(f"firekeep-docdex: added {src.path}\n"
+    print(f"{_me(args)}: added {src.path}\n"
           f"  id {src.id}\n"
           f"  {_VISIBILITY.get(src.visibility, src.visibility)}\n"
-          f"  indexed on the next sync — `firekeep docdex sync` runs one now.")
+          f"  indexed on the next sync — `{_me(args)} sync` runs one now.")
     if not _dex_registered():
         # Folder control is human-only and works whether or not the dex is
         # registered; the BACKGROUND sync does not. A human who adds a folder
         # and never registers gets silence, so the nudge belongs here, once,
         # rather than in a doctor row they may never run.
-        print("firekeep-docdex: docdex is not registered on this machine, so "
-              "nothing syncs it automatically — `firekeep dex add docdex`.")
+        print(f"{_me(args)}: docdex is not registered on this machine, so "
+              f"nothing syncs it automatically — `firekeep dex add docdex`.")
     return 0
 
 
@@ -89,14 +98,14 @@ def _dex_registered() -> bool:
 def cmd_list(args) -> int:
     registered = sources.list_sources()
     if not registered:
-        print("firekeep-docdex: no folders registered — add one with "
-              "`firekeep docdex add <path>`")
+        print(f"{_me(args)}: no folders registered — add one with "
+              f"`{_me(args)} add <path>`")
         return 0
 
-    print("firekeep docdex — the folders this machine indexes into the Keep\n")
+    print(f"{_me(args)} — the folders this machine indexes into the Keep\n")
     for src in registered:
-        counts = state.read_state(src.id).counts()
         st = state.read_state(src.id)
+        counts = st.counts()
         print(f"  {src.id}")
         print(f"      {src.path}")
         print(f"      {_VISIBILITY.get(src.visibility, src.visibility)} · "
@@ -167,14 +176,14 @@ def cmd_sync(args) -> int:
     try:
         client = _client()
     except Exception as exc:  # noqa: BLE001 - an unconfigured kit is not a crash
-        print(f"firekeep-docdex: {_unreachable(exc)}", file=sys.stderr)
+        print(f"{_me(args)}: {_unreachable(exc)}", file=sys.stderr)
         return 1
     try:
         result = sync.run_sync(
             args.source, all_sources=not args.source, quiet=args.quiet, client=client
         )
     except ValueError as exc:
-        print(f"firekeep-docdex: {exc}", file=sys.stderr)
+        print(f"{_me(args)}: {exc}", file=sys.stderr)
         return 1
     return 0 if result["ok"] else 1
 
@@ -184,8 +193,8 @@ def cmd_sync(args) -> int:
 
 def cmd_remove(args) -> int:
     if sources.get(args.source_id) is None:
-        print(f"firekeep-docdex: unknown source: {args.source_id}\n"
-              f"  `firekeep docdex list` shows the ids.", file=sys.stderr)
+        print(f"{_me(args)}: unknown source: {args.source_id}\n"
+              f"  `{_me(args)} list` shows the ids.", file=sys.stderr)
         return 1
     try:
         client = _client()
@@ -194,19 +203,19 @@ def cmd_remove(args) -> int:
         # server is not, and a source left ACTIVE would keep uploading a folder
         # they have already said should be gone.
         sources.remove_mark(args.source_id)
-        print(f"firekeep-docdex: {_unreachable(exc)}\n"
+        print(f"{_me(args)}: {_unreachable(exc)}\n"
               f"  the source is marked for removal and will be deleted on the "
               f"next sync.", file=sys.stderr)
         return 1
 
     summary = sync.remove_source(args.source_id, client=client)
     if summary["status"] == "removed":
-        print(f"firekeep-docdex: removed {args.source_id} — "
+        print(f"{_me(args)}: removed {args.source_id} — "
               f"{_plural(summary['deleted'], 'corpus source')} deleted. "
               f"The folder on disk is untouched.")
         return 0
     for warning in summary["warnings"]:
-        print(f"firekeep-docdex: {warning}", file=sys.stderr)
+        print(f"{_me(args)}: {warning}", file=sys.stderr)
     return 1
 
 
@@ -259,13 +268,14 @@ def main(argv: list[str] | None = None, *, prog: str = "firekeep-docdex") -> int
     if getattr(args, "func", None) is None:
         parser.print_usage(sys.stderr)
         return 2
+    args.prog = prog
     try:
         return args.func(args)
     except Exception as exc:  # noqa: BLE001 - a traceback is not a user interface
         from firekeep_client import hooklog
 
         hooklog.log_failure("docdex", f"{args.action} failed: {exc}")
-        print(f"firekeep-docdex: {args.action} failed: {exc}", file=sys.stderr)
+        print(f"{prog}: {args.action} failed: {exc}", file=sys.stderr)
         return 1
 
 
