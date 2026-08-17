@@ -723,3 +723,79 @@ def test_status_is_an_alias_for_doctor():
     status_args = parser.parse_args(["status"])
     assert status_args.func is doctor_args.func
     assert status_args.func is cli.cmd_doctor
+
+
+# --- dexes (dex registry milestone 1, Task A5) --------------------------------
+#
+# One row, and it is "ok" whether or not any dex is registered: absence is a
+# CHOICE, not a fault (ROADMAP §5's suggestion-not-default funnel). The one
+# state that IS a fault is a dex registered on a machine whose wheel is gone —
+# the gateway will mount a backend that cannot start, and the user's only
+# evidence is tools that quietly stopped existing.
+
+
+@pytest.fixture
+def dexes_home(tmp_path, monkeypatch):
+    from firekeep_client import dexes
+
+    monkeypatch.setenv("FIREKEEP_CONFIG", str(tmp_path / "config"))
+    monkeypatch.setattr(dexes, "is_installed", lambda manifest: True)
+    return dexes
+
+
+def test_dexes_row_offers_symdex_when_nothing_is_registered(dexes_home):
+    dexes_home.write_registry({})
+    name, status, detail = cli._check_dexes()
+    assert (name, status) == ("dexes", "ok")
+    assert "none registered" in detail
+    assert "firekeep dex add symdex" in detail
+
+
+def test_dexes_row_names_what_is_registered(dexes_home):
+    dexes_home.add("symdex")
+    name, status, detail = cli._check_dexes()
+    assert (name, status) == ("dexes", "ok")
+    assert "symdex" in detail and "registered" in detail
+
+
+def test_dexes_row_warns_when_a_registered_dex_has_no_wheel(dexes_home, monkeypatch):
+    dexes_home.add("symdex")
+    monkeypatch.setattr(dexes_home, "is_installed", lambda manifest: False)
+    name, status, detail = cli._check_dexes()
+    assert (name, status) == ("dexes", "warn")
+    assert "symdex" in detail
+
+
+def test_run_doctor_includes_the_dexes_row(tmp_path, monkeypatch):
+    """A check run_doctor never appends is a check nobody runs."""
+    cfg = _cfg(tmp_path, monkeypatch, SERVER)
+    monkeypatch.setattr(cli, "_check_health", lambda cfg: [])
+    monkeypatch.setattr(cli, "_check_versions", lambda cfg: ("versions", "ok", ""))
+    monkeypatch.setattr(cli, "_check_api_key", lambda cfg: None)
+    monkeypatch.setattr(cli, "_check_venv_scripts", lambda venv, is_windows=None: ("venv-scripts", "ok", ""))
+    monkeypatch.setattr(cli, "_check_codex_adapter", lambda venv: [])
+    monkeypatch.setattr(cli, "_check_instructions", lambda: [])
+    monkeypatch.setattr(cli, "_check_config_perms", lambda config, is_windows=None: ("config-perms", "ok", ""))
+    monkeypatch.setattr(cli, "_check_ca_expiry", lambda cfg: None)
+    results = cli.run_doctor(cfg)
+    assert [n for n, _, _ in results].count("dexes") == 1
+
+
+def test_venv_scripts_still_wants_every_bundled_wheel(tmp_path):
+    """Registration gates MOUNTING, not installation. The wheels stay
+    always-installed and checksum-verified, so removing a dex from the registry
+    must not make its missing console script acceptable — that would hide a
+    broken venv behind a preference."""
+    from firekeep_client import dexes
+
+    venv = tmp_path / "venv"
+    bindir = venv / "bin"
+    bindir.mkdir(parents=True)
+    for name in ("python", "firekeep", "firekeep-shim", "firekeep-sidecar",
+                 "firekeep-decision"):
+        (bindir / name).touch()
+    dexes.write_registry({})  # symdex deliberately NOT registered
+
+    _, status, detail = cli._check_venv_scripts(venv, is_windows=False)
+    assert status == "fail"
+    assert "firekeep-symdex" in detail

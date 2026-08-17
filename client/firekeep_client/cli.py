@@ -1091,6 +1091,32 @@ def _check_venv_scripts(venv: Path, is_windows: bool | None = None) -> tuple[str
     return ("venv-scripts", "ok", str(bindir))
 
 
+def _check_dexes() -> tuple[str, str, str]:
+    """Which domain indexes this machine has registered.
+
+    "ok" whether or not any are: a dex is a suggestion, never a default
+    (ROADMAP §5), so the empty state is an OFFER, not a finding. The one fault
+    this row can report is a REGISTERED dex whose wheel is gone — the gateway
+    mounts a backend that cannot start, and the only symptom the user sees is
+    tools that quietly stopped existing.
+
+    Deliberately says nothing about _check_venv_scripts' wanted list, which is
+    unchanged: the wheels are always installed and checksum-verified, and
+    registration gates mounting only.
+    """
+    registered = dexes.registered()
+    if not registered:
+        return ("dexes", "ok",
+                "none registered — add code intelligence with `firekeep dex add symdex`")
+    names = ", ".join(m.name for m in registered)
+    missing = [m.name for m in registered if not dexes.is_installed(m)]
+    if missing:
+        return ("dexes", "warn",
+                f"{names} (registered) — but no wheel for {', '.join(missing)} in this "
+                f"venv; re-run the installer, or `firekeep dex remove {missing[0]}`")
+    return ("dexes", "ok", f"{names} (registered)")
+
+
 def _check_current_link(home: Path | None = None) -> tuple[str, str, str] | None:
     """Health of the `current` alias under the side-by-side layout.
 
@@ -1445,6 +1471,7 @@ def run_doctor(cfg=None) -> list[tuple[str, str, str]]:
     if current_link is not None:
         results.append(current_link)
     results.append(_check_venv_scripts(_venv_root()))
+    results.append(_check_dexes())
     results.extend(_check_codex_adapter(_venv_root()))
     results.extend(_check_instructions())
     results.append(_check_config_perms(_config_path()))
