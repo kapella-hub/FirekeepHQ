@@ -237,6 +237,75 @@ anchors to human members.
    (multitenancy, ops, compliance, datastore licensing) and is not implied
    by the word "cloud" anywhere.
 
+### The dex build order (decision record, 2026-08-17)
+
+The family sequence after Docdex, decided by the owner. Each dex proves
+exactly one new architectural layer; none introduces five risks at once.
+The arc: **code → personal history → external world.**
+
+1. **Docdex — build now** (unchanged; the sequence above stands: registry
+   → symdex behind it → Docdex as consumer #2). Its design already
+   handles the hard parts — private-by-default folders, shared team
+   folders, deletion, untrusted content, scoped credentials, human-only
+   source selection. Nothing interrupts this sequence.
+2. **Chatdex — design next, pre-register after Docdex ships.** Indexes
+   user-selected conversation exports and transcripts: ChatGPT history,
+   Claude history, agent session exports, Markdown/JSON transcripts,
+   eventually Slack/Teams/Discord exports. This is the strongest
+   first-run feature after Docdex because it solves the **empty-install
+   problem** better than waiting for organic learning: ten minutes after
+   installation the Keep can answer "have I considered this before?",
+   "what did I decide about this project?", "which agent suggested this
+   approach?", "what preferences have I repeatedly expressed?" — and
+   continue in one agent a conversation begun in another. Hard
+   requirements: user-authored statements distinguished from
+   model-generated ones, agent/model identity preserved,
+   conversation-and-message timestamps, source provenance, deletion when
+   an imported source is removed, and a LOWER trust level for model
+   claims than user-authored facts. Reuses Docdex's ingestion,
+   visibility, and deletion infrastructure.
+3. **Webdex — the first monetized dex (renamed from "Watchdex").** The
+   naming rule of decision 3 applied to ourselves: a dex names what it
+   indexes; "watch" is a behavior, the WEB is the indexed domain. Webdex
+   indexes selected public pages and their historical snapshots; Apify
+   Actors perform read-only acquisition — the Actor fetches, Webdex
+   normalizes, compares, stores, and explains. Paid in-app capabilities:
+   watch-this-page, price/availability monitoring, product/property
+   tracking, company/competitor monitoring, news and regulatory-source
+   monitoring, refresh frequency, additional active watches. The ideal
+   first Firekeep Store purchase ("Firekeep watches what matters and
+   remembers every meaningful change") — and deliberately THIRD, because
+   it introduces remote execution, data-egress disclosure, entitlements,
+   quotas, billing, scheduling, and failure economics simultaneously.
+4. **Calendardex.** Events, participants, commitments, recurring
+   patterns; powers the daily briefing ("you meet Acme tomorrow; last
+   time you promised a revised proposal — Docdex has the draft, Chatdex
+   the pricing decision"). Works for one person and a team. The boundary
+   stays clean: reading and understanding calendars is Calendardex;
+   creating, moving, or canceling events is a brokered Calendar
+   capability (§4), never the dex.
+5. **Maildex — possibly the most valuable, deliberately late.** Email
+   introduces OAuth and credential custody, very-high-volume sync,
+   threads and attachments, retention/deletion expectations,
+   member-private vs shared messages, prompt injection inside retrieved
+   mail, and a dangerous send/read ambiguity. Maildex may UNDERSTAND
+   messages and drafts; sending, forwarding, deleting, or moving mail
+   belongs to a separate brokered capability pack.
+6. **Peopledex — later, and derived, not imported.** Not an address-book
+   importer: it combines references from Chatdex, Maildex, Calendardex,
+   Docdex, and Firekeep sessions to answer "who is Sarah and what are we
+   working on?", "who usually makes this decision?", "which relationships
+   have gone quiet?". Identity resolution and incorrect merges are the
+   risk that makes it late.
+
+**Explicitly not building:** *Apifydex* (Apify is an execution provider,
+not an indexed domain); *Actiondex* (violates the understanding/action
+boundary by name); *Financedex* (valuable but high-stakes — after
+credential custody, provenance, confirmation, and broker systems mature);
+a broad *Everythingdex* (destroys provenance and makes permissions
+incomprehensible); thin per-API wrapper dexes (integrations are not
+necessarily dexes).
+
 Nothing above appears on firekeep.ai until it exists to the §4 standard:
 the dashboard shows it before the site says it. Docs and CLAUDE.md keep
 describing CURRENT behaviour (symdex always-installed) until the dex
