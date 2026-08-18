@@ -339,3 +339,16 @@ def test_missing_env_file_warns_but_still_produces_a_backup(tmp_path):
     assert (backup_dir / "manifest.json").is_file()
     assert not (backup_dir / "env").exists()
     assert "WARNING" in result.stdout + result.stderr
+
+
+def test_backup_cron_normalizes_perms_for_the_serving_container():
+    """cortex-api runs uid 1000; on stock cloud images host uid/gid 1000 is a
+    REAL user, so archives are granted to a dedicated numeric gid via compose
+    `group_add` instead (first live verify, 2026-08-18: 0600 root-owned
+    manifests made every backup read as unindexed). The script and compose
+    must agree on the variable, or the grant silently targets two gids."""
+    script = Path(_p("deploy/backup-cron.sh")).read_text(encoding="utf-8")
+    assert 'FIREKEEP_BACKUP_GID:-63719' in script
+    assert "chgrp -R" in script and "chmod 0640" not in script.split("chgrp")[0]
+    compose = Path(_p("docker-compose.yml")).read_text(encoding="utf-8")
+    assert '"${FIREKEEP_BACKUP_GID:-63719}"' in compose

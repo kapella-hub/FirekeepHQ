@@ -242,6 +242,17 @@ services:
         # personal `update.sh` unbuildable off-lab (2026-07-18 VPS deploy failure).
         REGISTRY: ${REGISTRY:-docker.io/library}
     restart: unless-stopped
+    # The backup-archive group (spec 2026-08-18 §3, found on the first live
+    # verify): this container runs uid 1000, and on stock cloud images host
+    # uid/gid 1000 is a REAL user (`ubuntu`) — so archives cannot simply be
+    # chowned 1000 without handing that host user VAULT_KEY. Instead
+    # backup-cron.sh writes archives 0640 root:${FIREKEEP_BACKUP_GID} and this
+    # supplementary gid — a bare number, no host group required — is what lets
+    # the read-only /backups mount below actually be read. Host users stay
+    # blocked; override the gid in .env only if 63719 collides with a real
+    # group on your host (backup-cron reads the same variable).
+    group_add:
+      - "${FIREKEEP_BACKUP_GID:-63719}"
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     # BIND_ADDR is the HOST interface every published app port binds to, and it
     # defaults to loopback: a default install is reachable only from the machine

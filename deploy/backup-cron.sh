@@ -120,6 +120,27 @@ cat > "$manifest_tmp" <<EOF
 EOF
 mv "$manifest_tmp" "$BACKUP_DIR/manifest.json"
 
+# --- 3b. Permissions the serving container can live with ---------------------
+# cortex-api runs uid 1000, and on stock cloud images host uid/gid 1000 is a
+# REAL user (`ubuntu` here) — found on the first live verify, when the 0600
+# root-owned manifest made every backup read as unindexed and the admin
+# download 404. So: a dedicated numeric gid (no host group needed), granted to
+# the container via compose `group_add`. Files 0640 root:GID, dirs 0750 — the
+# host's uid-1000 user reads nothing, the container reads everything, and the
+# tars stop being world-readable on the host as a bonus. Normalized over EVERY
+# backup dir each run (perms only — rotation's never-touch-unindexed rule is
+# about deletion, and an unlistable dir would vanish from `firekeep backup
+# list`, which is its own kind of data loss).
+BACKUP_GID="${FIREKEEP_BACKUP_GID:-63719}"
+if chgrp -R "$BACKUP_GID" "$BACKUPS_ROOT" 2>/dev/null; then
+    chmod 0750 "$BACKUPS_ROOT"
+    find "$BACKUPS_ROOT" -mindepth 1 -maxdepth 1 -type d -name 'firekeep-backup-*' -exec chmod 0750 {} \;
+    find "$BACKUPS_ROOT" -mindepth 2 -maxdepth 2 -type f -exec chmod 0640 {} \;
+else
+    echo "WARNING: could not chgrp $BACKUP_GID (not root?) — the status endpoint" >&2
+    echo "         and 'firekeep backup pull' may not be able to read this backup." >&2
+fi
+
 # --- 4. Retention ------------------------------------------------------------
 # The plan is computed by a pure function (backup_retention_plan in lib.sh,
 # table-tested); this half only executes it — and re-checks manifest.json on
