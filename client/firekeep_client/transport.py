@@ -1,6 +1,8 @@
 """stdlib-only HTTP transport for the hook cores. NOT used by shim.py (which
-needs mcp+httpx). All calls here are one-shot request/response -- no SSE or
-other streaming.
+needs mcp+httpx). Every JSON call here is one-shot request/response -- no SSE
+or other streaming. `get_file` is the one exception and is deliberately narrow:
+it streams a response body to a file for `firekeep backup pull`, whose archives
+are gigabytes and must never be read into memory.
 
 verify=False builds an unverified SSL context. It is used for plain HTTP and
 for exactly one HTTPS bootstrap: GET /enroll/anchor, whose returned CA bytes
@@ -11,12 +13,21 @@ the resolver's TLS guard and never weaken verification.
 from __future__ import annotations
 
 import json
+import os
 import ssl
+import tempfile
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Any
 
 DEFAULT_TIMEOUT = 10.0
+# A separate, far larger default for `get_file`: DEFAULT_TIMEOUT is urllib's
+# per-socket-operation timeout, and a multi-gigabyte archive over a home uplink
+# spends legitimate minutes between reads. Applying the JSON budget to it would
+# abort every real download.
+DEFAULT_FILE_TIMEOUT = 300.0
+_CHUNK = 1024 * 256
 
 
 class TransportError(Exception):
@@ -90,6 +101,35 @@ def _parse_sse_body(text: str, *, url: str) -> Any:
     return frames[-1]
 
 
+def _as_transport_error(exc: Exception, *, method: str, url: str, timeout: float):
+    """The ONE translation from urllib's exception zoo into TransportError.
+
+    Shared by `_request` and `get_file` so a streamed download reports failure
+    in exactly the wording and with exactly the `.status` a JSON call does --
+    `backup link` reads `.status == 403` to tell "this key is not admin" from
+    "the server is down", and that distinction must not depend on which
+    transport function happened to make the call.
+    """
+    if isinstance(exc, urllib.error.HTTPError):
+        raw = exc.read() or b""
+        detail = raw.decode("utf-8", "replace")[:500] if raw else exc.reason
+        response_is_json = False
+        if raw:
+            try:
+                json.loads(raw.decode("utf-8"))
+                response_is_json = True
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                pass
+        return TransportError(
+            f"{method} {url} failed: {exc.code} {detail}",
+            status=exc.code,
+            response_is_json=response_is_json,
+        )
+    if isinstance(exc, TimeoutError):
+        return TransportError(f"{method} {url} timed out after {timeout}s")
+    return TransportError(f"{method} {url} unreachable: {exc.reason}")
+
+
 def _request(url, *, method, headers, body=None, timeout=DEFAULT_TIMEOUT, verify=True) -> Any:
     req_headers = dict(headers or {})
     req_headers.setdefault("Accept", "application/json")
@@ -103,25 +143,8 @@ def _request(url, *, method, headers, body=None, timeout=DEFAULT_TIMEOUT, verify
         with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
             raw = resp.read()
             content_type = resp.headers.get("Content-Type", "")
-    except urllib.error.HTTPError as e:
-        raw = e.read() or b""
-        detail = raw.decode("utf-8", "replace")[:500] if raw else e.reason
-        response_is_json = False
-        if raw:
-            try:
-                json.loads(raw.decode("utf-8"))
-                response_is_json = True
-            except (UnicodeDecodeError, json.JSONDecodeError):
-                pass
-        raise TransportError(
-            f"{method} {url} failed: {e.code} {detail}",
-            status=e.code,
-            response_is_json=response_is_json,
-        ) from e
-    except TimeoutError as e:
-        raise TransportError(f"{method} {url} timed out after {timeout}s") from e
-    except urllib.error.URLError as e:
-        raise TransportError(f"{method} {url} unreachable: {e.reason}") from e
+    except (urllib.error.URLError, TimeoutError) as e:
+        raise _as_transport_error(e, method=method, url=url, timeout=timeout) from e
     if not raw:
         return None
     try:
@@ -142,3 +165,59 @@ def get_json(url, *, headers, timeout=DEFAULT_TIMEOUT, verify=True) -> Any:
 
 def post_json(url, body, *, headers, timeout=DEFAULT_TIMEOUT, verify=True) -> Any:
     return _request(url, method="POST", headers=headers, body=body, timeout=timeout, verify=verify)
+
+
+def get_file(url, dest, *, headers, timeout=DEFAULT_FILE_TIMEOUT, verify=True) -> int:
+    """Stream a GET response body into `dest`; return the bytes written.
+
+    Same TLS context, same TransportError contract, same header handling as
+    `get_json` -- only the body handling differs. Three properties the one
+    caller (`firekeep backup pull`) depends on:
+
+      * The bytes land under a TEMPORARY name in dest's own directory and are
+        moved into place with `os.replace` only after the stream completes. A
+        download interrupted halfway therefore leaves NO file at `dest` rather
+        than a short one, which matters because there is no resume: the
+        manifest's sha256 is the only thing standing between a truncated
+        archive and a restore that fails at the worst possible moment, and a
+        half-file that never appears cannot be mistaken for a whole one.
+      * The temp file is created in dest's directory (never the system temp
+        dir), so `os.replace` is a rename within one filesystem and cannot
+        fall back to a copy -- and a 3GB archive is never written twice.
+      * Nothing is buffered in memory beyond one chunk.
+    """
+    dest = Path(dest)
+    req_headers = dict(headers or {})
+    req_headers.setdefault("Accept", "application/octet-stream")
+    req = urllib.request.Request(url, headers=req_headers, method="GET")
+    ctx = _build_ssl_context(verify)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    temp_name = ""
+    try:
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+            written = 0
+            with tempfile.NamedTemporaryFile(
+                dir=dest.parent, prefix=f".{dest.name}.", suffix=".part", delete=False,
+            ) as handle:
+                temp_name = handle.name
+                while True:
+                    chunk = resp.read(_CHUNK)
+                    if not chunk:
+                        break
+                    handle.write(chunk)
+                    written += len(chunk)
+                handle.flush()
+                os.fsync(handle.fileno())
+        os.replace(temp_name, dest)
+        temp_name = ""
+        return written
+    except (urllib.error.URLError, TimeoutError) as e:
+        raise _as_transport_error(e, method="GET", url=url, timeout=timeout) from e
+    except OSError as e:
+        raise TransportError(f"GET {url} could not be written to {dest}: {e}") from e
+    finally:
+        if temp_name:
+            try:
+                Path(temp_name).unlink(missing_ok=True)
+            except OSError:
+                pass

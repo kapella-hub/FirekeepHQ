@@ -21,6 +21,7 @@ from urllib.parse import urlparse
 
 from firekeep_client import (
     __version__,
+    backups,
     dexes,
     pathenv,
     resolver,
@@ -1786,6 +1787,15 @@ def cmd_docdex(args) -> int:
         return int(exc.code or 0)
 
 
+def cmd_backup(args) -> int:
+    """`firekeep backup status|list|link|pull|restore` — dispatch only.
+
+    Every behaviour lives in `firekeep_client.backups`; this stays a translator
+    for the same reason `cmd_docdex` does — the CLI's positional-choices shape
+    is a parser detail, not a feature."""
+    return backups.run(args)
+
+
 def cmd_personal(args) -> int:
     """Toggle Firekeep personal (bypass) mode for THIS session.
 
@@ -2544,6 +2554,19 @@ def _build_parser() -> argparse.ArgumentParser:
                              "private to you, even on a shared Keep)")
     docdex.add_argument("--source", metavar="ID", help="sync one source by id")
     docdex.set_defaults(func=cmd_docdex)
+
+    backup = sub.add_parser(
+        "backup",
+        help="Keep snapshots on the server — status, list, link, pull, guided restore")
+    backup.add_argument("action", nargs="?",
+                        choices=["status", "list", "link", "pull", "restore"],
+                        default="status")
+    backup.add_argument("--dest", metavar="DIR",
+                        help="where `pull` writes (default ~/FirekeepBackups)")
+    backup.add_argument("--key", metavar="KEY",
+                        help="deployment ADMIN key for `link` (prompts when omitted; "
+                             "required with no TTY)")
+    backup.set_defaults(func=cmd_backup)
 
     personal = sub.add_parser(
         "personal",
