@@ -31,6 +31,7 @@ from app.embedding_admin import create_embedding_router
 from app.engine.rag import RAGEngine
 from app.lifecycle import create_lifecycle_router
 from app.ops import create_ops_router
+from app.ops_backups import create_ops_backups_router
 from app.exceptions import (
     GraphConnectionError,
     LLMExtractionError,
@@ -343,6 +344,11 @@ def _register_feature_routers(app: FastAPI) -> None:
         redis_client=app.state.redis_client,
     ))
     app.include_router(create_ops_router())
+    # Backup status (member) + download (admin), over the read-only ./backups
+    # mount. Unconditional: the status half is what makes a stale or missing
+    # backup visible in doctor and on the dashboard, and a visibility feature
+    # behind a flag is off exactly on the deployments that needed it.
+    app.include_router(create_ops_backups_router())
 
     _register_admin_surface_routers(app)
 

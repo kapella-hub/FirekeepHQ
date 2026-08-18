@@ -428,6 +428,20 @@ services:
       PROCEDURE_SCHEDULE_HOURS: ${PROCEDURE_SCHEDULE_HOURS:-24}
     env_file:
       - .env
+    volumes:
+      # The nightly archives deploy/backup-cron.sh writes, read-only, so
+      # GET /ops/backups can report their age and GET /ops/backups/{stamp}/{file}
+      # can stream one to an admin (see cortex/app/ops_backups.py).
+      #
+      # Threat note, stated because the house standard demands it (the sentinel
+      # docker-socket removal is the precedent): this widens nothing. cortex-api
+      # already holds VAULT_KEY in its environment and every member's data in the
+      # stores it reads and writes; a read-only view of ARCHIVES OF THAT SAME DATA
+      # adds no new class of exposure to a compromised cortex. What it is not is a
+      # write path — rotation and the snapshot itself stay on the host, where a
+      # human can read them in shell, and `:ro` means a compromised container
+      # cannot delete the backups it can see.
+      - ./backups:/backups:ro
     depends_on:
       neo4j:
         condition: service_healthy
