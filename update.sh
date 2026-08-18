@@ -377,6 +377,19 @@ echo ""
 echo "Refreshing dashboard (bind-mounted static files)..."
 docker compose up -d --force-recreate dashboard
 
+# --- Schedule the nightly backup (idempotent) ---
+# Here as well as in install.sh, and that is the important half: every
+# deployment already in the field predates this feature, and update.sh is the
+# only code path that reaches them. Re-running it never accumulates a second
+# line — the helper greps the old one out first.
+echo ""
+if BACKUP_LOG="$(install_backup_cron "$(pwd)")"; then
+    echo "[OK] Nightly backup scheduled: 04:30 daily, keeping 7 nightly + 4 weekly"
+    echo "     Log: ${BACKUP_LOG}   Archives: $(pwd)/backups"
+else
+    echo "[WARN] The nightly backup could not be scheduled (see above)." >&2
+fi
+
 # --- Prune old images ---
 echo ""
 echo "Pruning old images..."

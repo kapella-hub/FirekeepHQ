@@ -567,6 +567,21 @@ if [ "$FAILED" -eq 1 ]; then
     exit 1
 fi
 
+# --- Schedule the nightly backup ---
+# Measured on the live deployment 2026-08-18: one backup existed, taken by
+# update.sh before v1.0.0, and nothing was scheduled. A customer must never
+# discover their backup story during the disaster, so the schedule lands with
+# the install rather than waiting to be asked for.
+echo ""
+if BACKUP_LOG="$(install_backup_cron "$(pwd)")"; then
+    echo "[OK] Nightly backup scheduled: 04:30 daily, keeping 7 nightly + 4 weekly"
+    echo "     Log: ${BACKUP_LOG}   Archives: $(pwd)/backups"
+else
+    echo "[WARN] The nightly backup could not be scheduled (see above). Everything" >&2
+    echo "       else is installed; run 'bash deploy/backup-cron.sh' by hand until" >&2
+    echo "       it is." >&2
+fi
+
 # --- Print status ---
 VPS_IP=$(grep "^VPS_IP=" .env | cut -d= -f2)
 

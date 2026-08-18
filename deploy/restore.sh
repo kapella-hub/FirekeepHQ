@@ -54,4 +54,58 @@ for archive in "$BACKUP_DIR"/*.tar.gz; do
     echo "    ok"
 done
 
+# --- .env: the half of a restore the volumes cannot carry --------------------
+# Archives taken by deploy/backup-cron.sh contain the deployment's .env as
+# `env`. Restoring it is what makes bare-metal recovery actually work: VAULT_KEY
+# lives there, and without it every secret in the restored Redis is
+# undecryptable ciphertext. Archives predating that feature have no `env` file,
+# which is normal and says nothing.
+#
+# Overwriting an EXISTING .env is the dangerous direction, not the missing one:
+# it swaps VAULT_KEY under a deployment whose vault is already populated. So it
+# takes a second, differently-worded confirmation, and the file being replaced
+# is kept beside it either way.
+if [ -f "$BACKUP_DIR/env" ]; then
+    echo ""
+    if [ -f "$REPO_ROOT/.env" ]; then
+        echo "This backup contains a .env, and $REPO_ROOT/.env already exists."
+        echo "Replacing it swaps VAULT_KEY — every secret encrypted under the"
+        echo "current key becomes unreadable. The current file will be kept as"
+        echo "  .env.pre-restore.<timestamp>"
+        RESTORE_ENV=0
+        if [ "$ASSUME_YES" = "--yes" ]; then
+            RESTORE_ENV=1
+        else
+            printf "Type 'restore-env' to replace it (anything else keeps yours): "
+            # `|| true`: at EOF (closed stdin, a piped answer with no trailing
+            # newline) read exits nonzero having still assigned the partial
+            # line, and under `set -e` that would abort the script AFTER the
+            # volumes were already restored — the worst possible place to stop.
+            env_reply=""
+            read -r env_reply || true
+            [ "$env_reply" = "restore-env" ] && RESTORE_ENV=1
+        fi
+        if [ "$RESTORE_ENV" -eq 1 ]; then
+            cp "$REPO_ROOT/.env" "$REPO_ROOT/.env.pre-restore.$(date -u +%Y%m%dT%H%M%SZ)"
+            cp "$BACKUP_DIR/env" "$REPO_ROOT/.env"
+            chmod 600 "$REPO_ROOT/.env"
+            echo "  .env restored from the archive (previous copy kept alongside)"
+        else
+            echo "  Keeping the existing .env. The archived one is at:"
+            echo "    $BACKUP_DIR/env"
+        fi
+    else
+        cp "$BACKUP_DIR/env" "$REPO_ROOT/.env"
+        chmod 600 "$REPO_ROOT/.env"
+        echo "[OK] .env restored from the archive (mode 0600) — VAULT_KEY and the"
+        echo "     Neo4j password came back with it."
+    fi
+fi
+
 echo "[OK] Restore complete. Start the stack with: docker compose up -d"
+# Nightly archives are taken with --exclude-models, so the model store is empty
+# after a restore. Without this line the first `up -d` looks like a broken
+# restore rather than a 3.3GB download.
+echo "     Model weights are not in nightly archives: the ollama-pull service"
+echo "     re-downloads them (~3.3GB) on the first 'up'. Until it finishes,"
+echo "     memory writes return status=\"partial\"."

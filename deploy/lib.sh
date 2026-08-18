@@ -699,6 +699,75 @@ $sorted
 EOF
 }
 
+# --- Scheduling the nightly backup -------------------------------------------
+
+# _backup_cron_log_path <repo_root>
+# Where the cron line appends its output. /var/log when this user can write
+# there (the deployment case: install.sh/update.sh run as root on the VPS),
+# otherwise inside the checkout. Never a path the cron line cannot append to —
+# a `>>` into an unwritable file makes cron fail the job nightly and mail the
+# error to a mailbox nobody reads, which looks exactly like a backup that ran.
+_backup_cron_log_path() {
+    local repo_root="${1:?repo root required}"
+    if [ -w /var/log ]; then
+        printf '%s\n' "/var/log/firekeep-backup.log"
+    else
+        printf '%s\n' "${repo_root}/backup-cron.log"
+    fi
+}
+
+# install_backup_cron <repo_root> [log_path]
+# Idempotently install the 04:30 nightly-backup cron line for THIS user.
+#
+# 04:30 is deliberate: it is after the 03:30 night-shift cron, so the two never
+# contend for backup.sh's 1-3 minute quiesce window.
+#
+# grep-out + append, not "append if missing": a deployment that installed the
+# line under an older schedule, an older log path or a different checkout path
+# must end up with ONE line — the current one — rather than accumulating a new
+# variant on every update. Everything that is not ours is passed through
+# untouched; this edits a table it does not own, and losing somebody's certbot
+# renewal to a backup job would be a poor trade.
+#
+# Returns nonzero (having said why) rather than aborting the caller. Both
+# call sites run under `set -euo pipefail`, and a host with no crontab must not
+# have its install taken down by a scheduling convenience.
+install_backup_cron() {
+    local repo_root="${1:?repo root required}" log_path="${2-}"
+    [ -n "$log_path" ] || log_path="$(_backup_cron_log_path "$repo_root")"
+    local line="30 4 * * * cd ${repo_root} && bash deploy/backup-cron.sh >> ${log_path} 2>&1"
+
+    if ! command -v crontab >/dev/null 2>&1; then
+        echo "WARNING: no crontab on this host — the nightly backup was NOT scheduled." >&2
+        echo "         Schedule this line yourself, or run it by hand:" >&2
+        echo "           $line" >&2
+        return 1
+    fi
+
+    local existing filtered
+    existing="$(crontab -l 2>/dev/null || true)"
+    filtered=""
+    if [ -n "$existing" ]; then
+        filtered="$(printf '%s\n' "$existing" | grep -v 'deploy/backup-cron.sh' || true)"
+    fi
+
+    # Two branches rather than one, because `printf '%s\n' "$filtered"` on an
+    # empty table emits a blank first line, and some crond builds reject a
+    # crontab that starts with one.
+    if [ -n "$filtered" ]; then
+        printf '%s\n%s\n' "$filtered" "$line" | crontab - || {
+            echo "WARNING: could not write the crontab — nightly backup NOT scheduled." >&2
+            return 1
+        }
+    else
+        printf '%s\n' "$line" | crontab - || {
+            echo "WARNING: could not write the crontab — nightly backup NOT scheduled." >&2
+            return 1
+        }
+    fi
+    printf '%s\n' "$log_path"
+}
+
 # --- Framed summary output (box-drawing) -------------------------------------
 # The closing installer summary prints the one-time admin key, which is stored
 # nowhere on disk; framing it makes it impossible to skim past. Bars are built
