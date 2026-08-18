@@ -223,6 +223,37 @@ def test_list_prints_one_line_per_backup_including_unindexed(
     assert "unindexed" in out
 
 
+def test_list_renders_explicit_nulls_rather_than_the_word_none(
+        configured, monkeypatch, capsys):
+    """The endpoint emits `mode` and `total_bytes` as explicit JSON nulls on an
+    unindexed entry rather than omitting the keys (confirmed against S3). A
+    `.get(key, default)` reader would sail past that and print "None" — these
+    columns must degrade to a dash."""
+    payload = {"enabled": True, "policy": POLICY, "backups": [
+        {"stamp": "20260816-201500", "age_seconds": 200_000.0,
+         "mode": None, "total_bytes": None, "indexed": False},
+    ]}
+    monkeypatch.setattr(backups, "get_json", _status_only(payload))
+    assert cli.main(["backup", "list"]) == 0
+    out = _out(capsys)
+    assert "None" not in out
+    assert "unindexed" in out
+
+
+def test_status_is_honest_about_a_directory_that_exists_but_is_empty(
+        configured, monkeypatch, capsys):
+    """`enabled: true` with no backups is a REACHABLE state — the mount is
+    there but the first nightly has not run. It must read as "nothing has been
+    backed up", not as a healthy empty list."""
+    payload = {"enabled": True, "policy": POLICY, "backups": []}
+    monkeypatch.setattr(backups, "get_json", _status_only(payload))
+    assert cli.main(["backup", "status"]) == 0
+    out = _out(capsys)
+    assert "nothing has been backed up yet" in out
+    # ...and NOT the "no backups directory" aside, which is the other cause.
+    assert "no backups directory" not in out
+
+
 # --- link -------------------------------------------------------------------
 
 

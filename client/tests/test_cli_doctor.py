@@ -1108,3 +1108,15 @@ def test_run_doctor_includes_the_backup_row(tmp_path, monkeypatch):
     rows = {n: (s, d) for n, s, d in cli.run_doctor(cfg)}
     assert "backup" in rows
     assert rows["backup"][0] == "ok"
+
+
+def test_backup_row_fails_when_the_directory_exists_but_is_empty(tmp_path, monkeypatch):
+    """`enabled: true` with an empty list is reachable — the ./backups mount is
+    there but no nightly has run yet. That is still "one disk holds
+    everything", so it earns the same red row as a missing directory."""
+    _cfg(tmp_path, monkeypatch, SERVER)
+    monkeypatch.setattr(backups, "get_json",
+                        lambda url, **kw: _backup_payload(enabled=True))
+    _, status, detail = cli._check_backup()
+    assert status == "fail"
+    assert "one disk holds everything" in detail
