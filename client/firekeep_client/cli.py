@@ -1176,6 +1176,19 @@ def _check_docdex() -> tuple[str, str, str]:
     return ("docdex", "warn" if pending or failures else "ok", detail)
 
 
+def _check_backup(cfg=None, *, reachable: bool = True) -> tuple[str, str, str]:
+    """Is anything but one disk holding this Keep?
+
+    The whole row is `backups.doctor_row()`; it lives there so the CLI, the
+    `status` command and this check cannot drift about what "stale" means. The
+    only thing added here is the promise doctor makes to every check: it
+    returns a row, never raises, and never costs more than its budget."""
+    try:
+        return backups.doctor_row(cfg, reachable=reachable)
+    except Exception as exc:  # noqa: BLE001 - a check never breaks the doctor run
+        return ("backup", "warn", f"cannot determine backup state: {exc}")
+
+
 def _count(number: int, noun: str) -> str:
     return f"{number} {noun}" if number == 1 else f"{number} {noun}s"
 
@@ -1545,6 +1558,11 @@ def run_doctor(cfg=None) -> list[tuple[str, str, str]]:
         embeddings = _check_embeddings(cfg)
         if embeddings is not None:
             results.append(embeddings)
+    # Always present, even when nothing is reachable — unlike the embeddings row
+    # above, which is skipped as noise on top of a diagnosis. A MISSING backup row
+    # reads as "backups are fine", and "one disk holds everything" is the single
+    # fact here whose silence is expensive. Its own 5s budget bounds the cost.
+    results.append(_check_backup(cfg, reachable=no_server is None))
     client_version = _check_client_version(cfg)
     if client_version is not None:
         results.append(client_version)

@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
-from firekeep_client import __version__, cli, resolver, transport, updater
+from firekeep_client import __version__, backups, cli, resolver, transport, updater
 from firekeep_client.adapters import get_adapter
 
 # The docdex doctor rows read the wheel's own sources/state modules. In a
@@ -948,3 +948,163 @@ def test_venv_scripts_still_wants_every_bundled_wheel(tmp_path):
     _, status, detail = cli._check_venv_scripts(venv, is_windows=False)
     assert status == "fail"
     assert "firekeep-symdex" in detail
+
+
+# --- backup (Keep backup, Task C2) -------------------------------------------
+#
+# The row exists because a Keep whose only copy lives on one disk is one disk
+# failure from gone, and nobody types `firekeep backup status` to find that out
+# — they find out during the disaster. So doctor says it unprompted, and the
+# three states it distinguishes are the three that change what you would do:
+# fine, a nightly was missed, and there has never been a backup at all.
+#
+# These stub `backups.get_json` rather than `cli.get_json`: the row's whole body
+# is `backups.doctor_row`, and that is deliberate — `firekeep backup status` and
+# this row must never drift about what "stale" means.
+
+BACKUP_POLICY = "nightly 04:30 · keep 7 nightly + 4 weekly"
+
+
+def _backup_payload(*entries, enabled=True):
+    return {"enabled": enabled, "policy": BACKUP_POLICY, "backups": list(entries)}
+
+
+def _backup_entry(stamp="20260818-043000", age=3600.0, indexed=True):
+    return {"stamp": stamp, "age_seconds": age, "mode": "cold",
+            "total_bytes": 412_000_000, "indexed": indexed}
+
+
+def test_backup_row_is_ok_when_a_nightly_ran_recently(tmp_path, monkeypatch):
+    _cfg(tmp_path, monkeypatch, SERVER)
+    monkeypatch.setattr(backups, "get_json",
+                        lambda url, **kw: _backup_payload(_backup_entry()))
+    name, status, detail = cli._check_backup()
+    assert (name, status) == ("backup", "ok")
+    assert "1h ago" in detail
+    assert BACKUP_POLICY in detail
+
+
+def test_backup_row_warns_when_the_newest_is_older_than_36h(tmp_path, monkeypatch):
+    """36h, not 24: one missed nightly is the signal, and a tighter threshold
+    would cry wolf every time a box was off for an evening."""
+    _cfg(tmp_path, monkeypatch, SERVER)
+    monkeypatch.setattr(backups, "get_json",
+                        lambda url, **kw: _backup_payload(_backup_entry(age=40 * 3600)))
+    _, status, detail = cli._check_backup()
+    assert status == "warn"
+    assert "stale" in detail
+
+
+def test_backup_row_stays_ok_just_under_the_threshold(tmp_path, monkeypatch):
+    _cfg(tmp_path, monkeypatch, SERVER)
+    monkeypatch.setattr(backups, "get_json",
+                        lambda url, **kw: _backup_payload(_backup_entry(age=35 * 3600)))
+    assert cli._check_backup()[1] == "ok"
+
+
+def test_backup_row_fails_when_there_has_never_been_a_backup(tmp_path, monkeypatch):
+    """The only red row this check can produce, and it earns it: nothing else
+    in doctor means "one disk failure from gone"."""
+    _cfg(tmp_path, monkeypatch, SERVER)
+    monkeypatch.setattr(backups, "get_json",
+                        lambda url, **kw: _backup_payload(enabled=False))
+    _, status, detail = cli._check_backup()
+    assert status == "fail"
+    assert "one disk holds everything" in detail
+
+
+def test_backup_row_warns_when_only_unindexed_backups_exist(tmp_path, monkeypatch):
+    """A pre-feature or ad-hoc backup dir has no manifest, so nothing about it
+    can be verified and `pull` will not touch it. That is not "backed up"."""
+    _cfg(tmp_path, monkeypatch, SERVER)
+    monkeypatch.setattr(
+        backups, "get_json",
+        lambda url, **kw: _backup_payload(_backup_entry(indexed=False)))
+    _, status, detail = cli._check_backup()
+    assert status == "warn"
+    assert "none indexed" in detail or "not run yet" in detail
+
+
+def test_backup_row_degrades_instead_of_blocking_when_the_server_is_down(
+        tmp_path, monkeypatch):
+    """Doctor is what people run when the SERVER is the broken thing. This row
+    reports that and moves on — it never raises into the run."""
+    _cfg(tmp_path, monkeypatch, SERVER)
+
+    def boom(url, **kw):
+        raise transport.TransportError("connection refused")
+
+    monkeypatch.setattr(backups, "get_json", boom)
+    name, status, detail = cli._check_backup()
+    assert (name, status) == ("backup", "warn")
+    assert "connection refused" in detail
+
+
+def test_backup_row_spends_no_budget_when_nothing_is_reachable(tmp_path, monkeypatch):
+    """When doctor has already concluded there is no server, this row must not
+    re-prove it — but it must still be PRINTED, because a missing backup row
+    reads as "backups are fine"."""
+    _cfg(tmp_path, monkeypatch, SERVER)
+
+    def never(url, **kw):
+        raise AssertionError("no server call may be made when nothing is reachable")
+
+    monkeypatch.setattr(backups, "get_json", never)
+    name, status, detail = cli._check_backup(reachable=False)
+    assert (name, status) == ("backup", "warn")
+    assert "no Firekeep server is reachable" in detail
+
+
+def test_backup_row_holds_a_five_second_budget(tmp_path, monkeypatch):
+    """Every second here is a second added to a command someone runs while
+    something is already wrong."""
+    _cfg(tmp_path, monkeypatch, SERVER)
+    seen = {}
+
+    def capture(url, **kw):
+        seen.update(kw)
+        return _backup_payload(_backup_entry())
+
+    monkeypatch.setattr(backups, "get_json", capture)
+    cli._check_backup()
+    assert seen["timeout"] == backups.DOCTOR_TIMEOUT == 5.0
+
+
+def test_backup_row_discloses_a_stored_admin_key(tmp_path, monkeypatch):
+    """A deployment ADMIN key sitting on a laptop is worth saying out loud
+    wherever the user already looks — it opens every archive on the server."""
+    _cfg(tmp_path, monkeypatch, SERVER)
+    backups.store_admin_key("nxs_admin_key")
+    monkeypatch.setattr(backups, "get_json",
+                        lambda url, **kw: _backup_payload(_backup_entry()))
+    _, _, detail = cli._check_backup()
+    assert "admin key stored on this machine" in detail
+    assert "nxs_admin_key" not in detail  # disclosed, never printed
+
+
+def test_backup_row_reports_the_last_pull_on_this_machine(tmp_path, monkeypatch):
+    _cfg(tmp_path, monkeypatch, SERVER)
+    monkeypatch.setattr(backups, "get_json",
+                        lambda url, **kw: _backup_payload(_backup_entry()))
+    assert "last pull here: never" in cli._check_backup()[2]
+
+
+def test_run_doctor_includes_the_backup_row(tmp_path, monkeypatch):
+    """A check run_doctor never appends is a check nobody runs."""
+    cfg = _cfg(tmp_path, monkeypatch, SERVER)
+    monkeypatch.setattr(backups, "get_json",
+                        lambda url, **kw: _backup_payload(_backup_entry()))
+    monkeypatch.setattr(cli, "_check_health", lambda cfg: [])
+    monkeypatch.setattr(cli, "_check_versions", lambda cfg: ("versions", "ok", ""))
+    monkeypatch.setattr(cli, "_check_embeddings", lambda cfg: None)
+    monkeypatch.setattr(cli, "_check_api_key", lambda cfg: None)
+    monkeypatch.setattr(cli, "_check_venv_scripts",
+                        lambda venv, is_windows=None: ("venv-scripts", "ok", ""))
+    monkeypatch.setattr(cli, "_check_codex_adapter", lambda venv: [])
+    monkeypatch.setattr(cli, "_check_instructions", lambda: [])
+    monkeypatch.setattr(cli, "_check_config_perms",
+                        lambda config, is_windows=None: ("config-perms", "ok", ""))
+    monkeypatch.setattr(cli, "_check_ca_expiry", lambda cfg: None)
+    rows = {n: (s, d) for n, s, d in cli.run_doctor(cfg)}
+    assert "backup" in rows
+    assert rows["backup"][0] == "ok"

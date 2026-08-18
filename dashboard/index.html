@@ -813,6 +813,16 @@ button.btn-outline:hover { border-color: var(--accent); color: var(--accent); ba
                     <div class="card stat-card" data-goto="memory"><div class="stat-value" id="statMemories">--</div><div class="stat-label">Memories Stored</div></div>
                 </div>
             </div>
+            <!-- Backups: read-only, and deliberately so in round 1. No restore
+                 button and no download button — a raw volume tar carries every
+                 member's private corpus and the server's .env (VAULT_KEY), so
+                 fetching one is an ADMIN-key operation that belongs at a
+                 terminal (`firekeep backup pull`), not one click away in a
+                 browser tab someone left open. -->
+            <div class="section">
+                <div class="card-header">Backups <span class="mg-sub" id="backupPolicy"></span></div>
+                <div class="card" id="backupCard"><div class="spinner">Loading...</div></div>
+            </div>
             <div class="section">
                 <div class="card-header">Memory Graph <span class="mg-sub" id="mgCount"></span></div>
                 <div class="card mg-card" id="mgCard">
@@ -2325,7 +2335,7 @@ function refreshOverview() {
         _overviewFirstLoad = false;
     }
 
-    renderHealthGrid(); loadQuickStats(); loadOverviewEvents(); loadOverviewMemories(); loadOverviewPresence();
+    renderHealthGrid(); loadQuickStats(); loadOverviewEvents(); loadOverviewMemories(); loadOverviewPresence(); loadBackups();
     initFirekeepPulse(); initMemoryGraph(); startHeroClock(); setTimeout(updateHeroSummary, 1300);
     setTimeout(function() { $('refreshIndicator').textContent = 'Last: ' + new Date().toLocaleTimeString(); }, 2000);
 }
@@ -2786,6 +2796,68 @@ function loadQuickStats() {
     safeFetch(CONFIG.CORTEX_API + '/memory/stats').then(function(r) { return r.json(); }).then(function(d) {
         $('statMemories').textContent = d.total_memories || d.count || d.total || '0';
     }).catch(function() { $('statMemories').textContent = '--'; });
+}
+
+// -- Backups: the one place an owner sees, without asking, whether anything but
+//    a single disk is holding this Keep. Fail-quiet like the memory-graph card:
+//    an older server with no /ops/backups route must leave the rest of the
+//    overview untouched. `enabled: false` is rendered as what it MEANS ("no
+//    backups yet, here is when the first one runs"), never as a blank card or an
+//    error — the honest empty state is the whole point of the row. --
+function _backupAge(seconds) {
+    if (typeof seconds !== 'number' || !isFinite(seconds) || seconds < 0) return '--';
+    if (seconds < 3600) return Math.floor(seconds / 60) + 'm ago';
+    if (seconds < 86400) return Math.floor(seconds / 3600) + 'h ago';
+    return Math.floor(seconds / 86400) + 'd ago';
+}
+
+function _backupBytes(n) {
+    if (typeof n !== 'number' || !isFinite(n) || n <= 0) return '--';
+    var units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'], i = 0;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+    return (i === 0 ? String(Math.round(n)) : n.toFixed(1)) + ' ' + units[i];
+}
+
+function _backupTile(value, label) {
+    return el('div', { className: 'card stat-card' }, [
+        el('div', { className: 'stat-value', textContent: value }),
+        el('div', { className: 'stat-label', textContent: label })
+    ]);
+}
+
+function loadBackups() {
+    var c = $('backupCard'); if (!c) return;
+    var policyEl = $('backupPolicy');
+    fetchJSON(CONFIG.CORTEX_API + '/ops/backups').then(function (d) {
+        var list = (d && Array.isArray(d.backups)) ? d.backups : [];
+        var indexed = list.filter(function (b) { return b && b.indexed; });
+        if (policyEl) policyEl.textContent = (d && d.policy) ? d.policy : '';
+        clear(c);
+        if (!list.length) {
+            c.appendChild(empty('No backups yet — the nightly snapshot runs at 04:30 server time.'));
+            return;
+        }
+        var newest = indexed.length ? indexed[0] : null;
+        var total = list.reduce(function (sum, b) {
+            return sum + ((b && typeof b.total_bytes === 'number') ? b.total_bytes : 0);
+        }, 0);
+        c.appendChild(el('div', { className: 'grid-4' }, [
+            _backupTile(newest ? _backupAge(newest.age_seconds) : 'unindexed', 'Last backup'),
+            _backupTile(String(list.length), 'Kept'),
+            _backupTile(_backupBytes(total), 'Total size'),
+            _backupTile(newest && newest.mode ? newest.mode : '--', 'Snapshot mode')
+        ]));
+        var note = newest
+            ? ('newest ' + newest.stamp + (indexed.length < list.length
+                ? ' · ' + (list.length - indexed.length) + ' unindexed (rotation never deletes those)' : ''))
+            : 'no indexed backup yet — the nightly wrapper has not run';
+        var noteEl = el('div', { textContent: note });
+        noteEl.style.cssText = 'font-size:0.82rem;color:var(--text-dim);margin-top:10px;';
+        c.appendChild(noteEl);
+    }).catch(function () {
+        clear(c);
+        c.appendChild(empty('Could not load backup status'));
+    });
 }
 
 function loadOverviewEvents() {
