@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Shared helpers for install.sh / update.sh. Sourced, never executed directly.
-# Kept separate so tests/test_deploy_lib.py can drive them via bash.
+# Shared helpers for install.sh / update.sh (and the deploy/ scripts they call).
+# Sourced, never executed directly. Kept separate so tests/test_deploy_lib.py and
+# tests/test_backup_cron.py can drive them via bash.
 
 # sed_i <sed-script> <file>
 # Portable in-place sed. BSD/macOS sed REQUIRES a backup-suffix argument
@@ -573,6 +574,129 @@ provenance_app_version() {
         # server vX.Y.Z tags exist, then 0.6.0 outside a git repo.
         git describe --tags --match 'v[0-9]*' --always --dirty 2>/dev/null || echo 0.6.0
     fi
+}
+
+# --- Backup retention (spec §2.4) --------------------------------------------
+#
+# Pure, and that is the whole point. Retention is the only part of the nightly
+# backup that DELETES, and a deletion that turns out to be wrong is not
+# recoverable by definition -- the thing that would have recovered it is what was
+# deleted. So the policy answers "which of these directories survive" with no
+# filesystem access at all, and tests/test_backup_cron.py drives it as a table of
+# dates. backup-cron.sh does the rm, and re-checks manifest.json presence itself
+# before every one of them.
+
+# _backup_stamp_day <dirname>
+# Echo YYYY-MM-DD for a `firekeep-backup-20260818T043000Z` directory name, or
+# fail. Failing is meaningful: an unparsable name is one rotation cannot reason
+# about, and the caller keeps it.
+_backup_stamp_day() {
+    local name="${1:-}" digits
+    name="${name#firekeep-backup-}"
+    digits="${name:0:8}"
+    case "$digits" in
+        [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]) ;;
+        *) return 1 ;;
+    esac
+    printf '%s-%s-%s\n' "${digits:0:4}" "${digits:4:2}" "${digits:6:2}"
+}
+
+# _backup_day_epoch <YYYY-MM-DD|YYYYMMDD>
+# Seconds since epoch at UTC midnight of that day. GNU `date -d` first (every
+# Linux host this runs on, and Git Bash where the tests run); BSD/macOS `date -j`
+# second so a developer on a Mac gets an answer rather than a silent keep-all.
+_backup_day_epoch() {
+    local day="${1:-}"
+    case "$day" in
+        [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9])
+            day="${day:0:4}-${day:4:2}-${day:6:2}" ;;
+    esac
+    date -u -d "$day" +%s 2>/dev/null \
+        || date -u -j -f '%Y-%m-%d' "$day" +%s 2>/dev/null \
+        || return 1
+}
+
+# _backup_iso_week <YYYY-MM-DD>
+# ISO year-week (`%G-%V`), the grouping key for the weekly tier. Deliberately
+# ISO rather than "every 7th day from today": a week boundary that moves with
+# the run date makes which archive survives depend on when rotation happened.
+_backup_iso_week() {
+    local day="${1:-}"
+    date -u -d "$day" +%G-%V 2>/dev/null \
+        || date -u -j -f '%Y-%m-%d' "$day" +%G-%V 2>/dev/null \
+        || return 1
+}
+
+# backup_retention_plan <today> <entry>...
+#   entry := <dirname>:<indexed 0|1>     (indexed == has manifest.json)
+#   echoes one `<keep|delete> <dirname> <reason>` line per entry
+#
+# The policy, in the order the rules apply:
+#   1. no manifest.json  -> KEEP, always. update.sh's ad-hoc pre-update backups
+#      and everything predating this feature are not ours to rotate; deleting a
+#      directory we did not write is how a customer loses the one archive they
+#      had. Reported as `unindexed` by the status endpoint rather than tidied.
+#   2. undatable name    -> KEEP. Rotation cannot reason about it, so it does not
+#      get to act on it.
+#   3. <= 7 days old     -> KEEP (the nightly tier).
+#   4. newest of its ISO week, <= 28 days old -> KEEP (the weekly tier).
+#   5. anything else     -> DELETE.
+backup_retention_plan() {
+    local today="${1:?today (YYYY-MM-DD) required}"; shift
+    local today_epoch seen_weeks=" " entry stamp indexed day epoch age week
+
+    today_epoch="$(_backup_day_epoch "$today")" || {
+        echo "ERROR: backup_retention_plan cannot parse today='$today'" >&2
+        return 1
+    }
+
+    # Newest first, so the FIRST entry seen in a week is that week's survivor.
+    # Stamps are fixed-width and numeric, so a plain reverse string sort is a
+    # reverse chronological sort.
+    local sorted
+    sorted="$(printf '%s\n' "$@" | sort -r)"
+
+    while IFS= read -r entry; do
+        [ -n "$entry" ] || continue
+        stamp="${entry%:*}"
+        indexed="${entry##*:}"
+
+        if [ "$indexed" != "1" ]; then
+            printf 'keep %s unindexed\n' "$stamp"
+            continue
+        fi
+        if ! day="$(_backup_stamp_day "$stamp")"; then
+            printf 'keep %s undatable\n' "$stamp"
+            continue
+        fi
+        if ! epoch="$(_backup_day_epoch "$day")"; then
+            printf 'keep %s undatable\n' "$stamp"
+            continue
+        fi
+        age=$(( (today_epoch - epoch) / 86400 ))
+        if [ "$age" -le 7 ]; then
+            printf 'keep %s nightly\n' "$stamp"
+            continue
+        fi
+        if ! week="$(_backup_iso_week "$day")"; then
+            printf 'keep %s undatable\n' "$stamp"
+            continue
+        fi
+        case "$seen_weeks" in
+            *" $week "*)
+                printf 'delete %s superseded-within-week\n' "$stamp"
+                continue
+                ;;
+        esac
+        seen_weeks="$seen_weeks$week "
+        if [ "$age" -le 28 ]; then
+            printf 'keep %s weekly\n' "$stamp"
+        else
+            printf 'delete %s beyond-retention\n' "$stamp"
+        fi
+    done <<EOF
+$sorted
+EOF
 }
 
 # --- Framed summary output (box-drawing) -------------------------------------

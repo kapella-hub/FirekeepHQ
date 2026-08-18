@@ -17,10 +17,40 @@ cd "$REPO_ROOT"
 
 PREFIX="$(compose_project_prefix)"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-OUT_DIR="${1:-$REPO_ROOT/backups}/firekeep-backup-$STAMP"
+
+# Options and the output directory are parsed in one pass, so `backup.sh --hot`
+# and `backup.sh <dir> --exclude-models` both mean what they look like. The
+# previous `${1:-...}` took the first argument as the directory whatever it was,
+# which quietly turned a leading flag into a directory named `--hot`.
+HOT=0
+EXCLUDE_MODELS=0
+OUT_BASE=""
+for arg in "$@"; do
+    case "$arg" in
+        --hot) HOT=1 ;;
+        --exclude-models) EXCLUDE_MODELS=1 ;;
+        -*)
+            echo "ERROR: unknown option: $arg" >&2
+            echo "Usage: bash deploy/backup.sh [output-dir] [--hot] [--exclude-models]" >&2
+            exit 2
+            ;;
+        *) [ -n "$OUT_BASE" ] || OUT_BASE="$arg" ;;
+    esac
+done
+
+OUT_DIR="${OUT_BASE:-$REPO_ROOT/backups}/firekeep-backup-$STAMP"
 mkdir -p "$OUT_DIR"
 
 VOLUMES="neo4j_data qdrant_data redis_data ollama_data"
+# --exclude-models drops ~3.3GB of model weights from every archive. Safe by
+# construction rather than by judgement: the compose stack's `ollama-pull`
+# service re-populates the model store on `docker compose up -d`, so a
+# weights-less restore self-heals on first start (spec §2.1). Kept OFF by
+# default so a hand-run `backup.sh` still captures the whole stack; the nightly
+# wrapper is what turns it on.
+if [ "$EXCLUDE_MODELS" -eq 1 ]; then
+    VOLUMES="neo4j_data qdrant_data redis_data"
+fi
 
 # Services whose volumes are being WRITTEN while they run. Tarring a live store
 # is not a backup: Neo4j Community has no online-backup facility (that is an
@@ -33,11 +63,6 @@ VOLUMES="neo4j_data qdrant_data redis_data ollama_data"
 # at pull time and read-only afterwards, so there is no torn write to capture
 # and no reason to make the outage longer than it has to be.
 QUIESCE_SERVICES="neo4j qdrant redis"
-
-HOT=0
-for arg in "$@"; do
-    [ "$arg" = "--hot" ] && HOT=1
-done
 
 STOPPED=""
 # Restart on ANY exit path, including a failure mid-backup or a Ctrl-C. A backup
