@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "firekeep-client"
-version = "1.0.0"
-description = "Firekeep portable client kit: stdio-proxy shim, hook cores, sidecar, and runtime adapters."
+version = "1.0.1"
+description = "Client for Firekeep, the self-hosted operating layer for connected AI agents."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "LicenseRef-Firekeep-BUSL-1.1"
 license-files = ["LICENSE", "NOTICE"]
-keywords = ["mcp", "model-context-protocol", "ai-agents", "agent-memory", "claude-code", "codex", "self-hosted"]
+keywords = ["mcp", "model-context-protocol", "ai-agents", "agent-memory", "agent-continuity", "agent-coordination", "claude-code", "codex", "self-hosted"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -40,9 +40,12 @@ symdex = ["firekeep-symdex>=0.2,<1"]
 Homepage = "https://firekeep.ai"
 Documentation = "https://firekeep.ai/docs.html"
 Changelog = "https://kapella-hub.github.io/firekeep-dist/latest/latest.json"
+Source = "https://github.com/kapella-hub/FirekeepHQ"
+"MCP Registry" = "https://registry.modelcontextprotocol.io/v0.1/servers/io.github.kapella-hub%2Ffirekeep/versions/latest"
 
 [project.scripts]
 firekeep = "firekeep_client.cli:main"
+firekeep-client = "firekeep_client.cli:main"
 firekeep-shim = "firekeep_client.shim:main"
 firekeep-sidecar = "firekeep_client.sidecar:main"
 firekeep-decision = "firekeep_client.decision.server:main"

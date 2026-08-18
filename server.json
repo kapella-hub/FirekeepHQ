@@ -1,26 +1,39 @@
 {
-  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.kapella-hub/firekeep",
-  "description": "Self-hosted memory, continuity, and coordination for AI coding agents. One MCP gateway, 104 tools.",
-  "status": "active",
+  "title": "Firekeep",
+  "description": "Self-hosted operating layer for AI agents: knowledge, continuity, coordination, and governance.",
+  "icons": [
+    {
+      "src": "https://firekeep.ai/brand/mark-ember.svg",
+      "mimeType": "image/svg+xml",
+      "sizes": ["any"]
+    }
+  ],
   "repository": {
     "url": "https://github.com/kapella-hub/FirekeepHQ",
     "source": "github"
   },
   "websiteUrl": "https://firekeep.ai",
-  "version": "0.1.43",
+  "version": "1.0.1",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "firekeep-client",
-      "version": "0.1.43",
+      "version": "1.0.1",
       "transport": { "type": "stdio" },
       "runtimeHint": "uvx",
       "packageArguments": [
         {
           "type": "positional",
           "value": "gateway",
-          "description": "Run the local Firekeep MCP gateway. Firekeep is self-hosted, and the kit plus a server come from one command: `curl -fsSL https://firekeep.ai/latest/install | sh` (Windows: `irm https://firekeep.ai/latest/install.ps1 | iex`). It asks for an agent identity, then where your server is — set one up on this machine, redeem a join code, point at one already running, or decide later. Install documentation: https://firekeep.ai/docs.html"
+          "description": "Run Firekeep's local MCP gateway. Install and connect a self-hosted Keep first: https://firekeep.ai/docs.html."
+        },
+        {
+          "type": "named",
+          "name": "--runtime",
+          "value": "generic",
+          "description": "Identify Registry-launched connections as generic MCP clients; hook-driven lifecycle automation is not implied."
         }
       ]
     }

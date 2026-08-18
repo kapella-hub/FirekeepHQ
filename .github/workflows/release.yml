@@ -14,17 +14,11 @@
 # every customer installs the same artifacts.
 #
 # ARTIFACTS GO TO A SEPARATE PUBLIC REPO: kapella-hub/firekeep-dist, served at
-# https://kapella-hub.github.io/firekeep-dist. This repo is PRIVATE, and GitHub
-# Pages cannot serve from a private repo on a non-Enterprise plan — the release
-# path had been pointed at Pages on THIS repo, which could never have worked.
-#
-# Making this repo public was the alternative and is the wrong trade: it would
-# publish the server source (Cortex's memory pipeline, the pattern engine, the
-# eval machinery), which is the actual product. The client wheel is `py3-none-any`
-# and contains only `firekeep_client*` — no server code — and the Free Tier is
-# deliberately gratis, so its source is readable by anyone who installs it either
-# way. Nothing is protected by gating the download; integrity is what matters
-# there, and SHA256SUMS already provides it.
+# https://kapella-hub.github.io/firekeep-dist. The product source is public now;
+# the split remains useful because it keeps accumulated binary release history
+# out of the source repository and scopes the artifact-publishing deploy key to
+# one replaceable distribution channel. Download access is not the licence
+# boundary; integrity is what matters here, and SHA256SUMS provides it.
 #
 # Cross-repo write uses a deploy key scoped to firekeep-dist alone
 # (FIREKEEP_DIST_DEPLOY_KEY). The built-in GITHUB_TOKEN cannot do this: its write
@@ -63,6 +57,10 @@ env:
   # --clear; pip install --python --reinstall) verified against 0.8.17 on
   # Alpine 3.20, Ubuntu 24.04 and Windows before this bump.
   UV_VERSION: "0.8.17"
+  # Official MCP Registry publisher. Pinned + checksum-verified because this
+  # binary receives an OIDC token that can publish under the kapella-hub namespace.
+  MCP_PUBLISHER_VERSION: "v1.8.1"
+  MCP_PUBLISHER_LINUX_AMD64_SHA256: "a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc"
 
 jobs:
   # ci.yml triggers on `push: branches:[main]` and `pull_request` ONLY, so a
@@ -112,8 +110,26 @@ jobs:
 
       - name: Release-path guards
         # These specifically cover what a release depends on being correct:
-        # published URLs, the manifest builder, and the bootstrap contracts.
-        run: python -m pytest -q tests/test_release_urls.py client/tests/test_make_release.py
+        # published URLs, package/licence metadata, the public MCP Registry
+        # manifest, the manifest builder, and the bootstrap contracts. Registry
+        # checks belong here, before PyPI's immutable upload—not in the later
+        # Registry job where a failure would strand the client version.
+        run: >-
+          python -m pytest -q
+          tests/test_release_urls.py
+          tests/test_package_licence_consistency.py
+          tests/test_mcp_registry_manifest.py
+          client/tests/test_make_release.py
+
+      - name: Validate MCP Registry manifest with pinned publisher
+        run: |
+          archive="mcp-publisher_linux_amd64.tar.gz"
+          curl -fsSLo "${archive}" \
+            "https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}/${archive}"
+          echo "${MCP_PUBLISHER_LINUX_AMD64_SHA256}  ${archive}" | sha256sum -c -
+          tar -xzf "${archive}" mcp-publisher
+          chmod +x mcp-publisher
+          ./mcp-publisher validate server.json
 
       # THE GATE THAT EXISTS BECAUSE 0.1.2 SHIPPED A BOOTSTRAP THAT WIPED ITS OWN
       # VENV AT THE WIZARD STEP. docs/RELEASE-GITHUB.md mandates running it before
@@ -491,3 +507,146 @@ jobs:
         with:
           packages-dir: pypi-dist
           skip-existing: ${{ matrix.skip_existing }}
+
+  # --- Official MCP Registry -------------------------------------------------
+  # Separate from the PyPI matrix on purpose. A registry retry must never rerun
+  # firekeep-client's immutable PyPI upload (whose skip-existing is correctly
+  # false). The Registry is also immutable per version, so a rerun first verifies
+  # an existing exact version and skips publication only when the bytes agree.
+  mcp-registry:
+    needs: pypi
+    runs-on: ubuntu-latest
+    environment: mcp-registry-publish
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify MCP Registry release metadata
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#client-v}"
+          python - "${VERSION}" <<'PY'
+          import json
+          import sys
+
+          expected = sys.argv[1]
+          data = json.load(open("server.json", encoding="utf-8"))
+          packages = [p for p in data.get("packages", []) if p.get("identifier") == "firekeep-client"]
+          assert data.get("$schema") == "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json"
+          assert "status" not in data, "status is Registry-owned metadata"
+          assert data.get("version") == expected
+          assert len(packages) == 1 and packages[0].get("version") == expected
+          PY
+
+      - name: Wait for firekeep-client on PyPI
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#client-v}"
+          visible=""
+          for attempt in $(seq 1 60); do
+            if curl -fsS "https://pypi.org/pypi/firekeep-client/${VERSION}/json" -o pypi.json \
+              && python - "${VERSION}" <<'PY'
+          import json
+          import sys
+
+          expected = sys.argv[1]
+          info = json.load(open("pypi.json", encoding="utf-8"))["info"]
+          assert info["version"] == expected
+          assert "mcp-name: io.github.kapella-hub/firekeep" in info.get("description", "")
+          PY
+            then
+              visible=1
+              break
+            fi
+            echo "PyPI has not exposed firekeep-client ${VERSION} with its ownership marker yet (${attempt}/60)"
+            sleep 10
+          done
+          [ -n "${visible}" ] || { echo "::error::firekeep-client ${VERSION} was not visible on PyPI within 10 minutes"; exit 1; }
+
+      - name: Install pinned MCP Registry publisher
+        shell: bash
+        run: |
+          archive="mcp-publisher_linux_amd64.tar.gz"
+          curl -fsSLo "${archive}" \
+            "https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}/${archive}"
+          echo "${MCP_PUBLISHER_LINUX_AMD64_SHA256}  ${archive}" | sha256sum -c -
+          tar -xzf "${archive}" mcp-publisher
+          chmod +x mcp-publisher
+          ./mcp-publisher --help >/dev/null
+
+      - name: Validate MCP Registry manifest
+        run: ./mcp-publisher validate server.json
+
+      - name: Check exact MCP Registry version
+        id: registry-version
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#client-v}"
+          URL="https://registry.modelcontextprotocol.io/v0.1/servers/io.github.kapella-hub%2Ffirekeep/versions/${VERSION}"
+          code="$(curl -sS -o registry-existing.json -w '%{http_code}' "${URL}")"
+          case "${code}" in
+            200)
+              python - <<'PY'
+          import json
+
+          expected = json.load(open("server.json", encoding="utf-8"))
+          actual = json.load(open("registry-existing.json", encoding="utf-8"))["server"]
+          assert actual == expected, "Registry already has this immutable version with different metadata"
+          PY
+              echo "exists=true" >> "${GITHUB_OUTPUT}"
+              ;;
+            404)
+              echo "exists=false" >> "${GITHUB_OUTPUT}"
+              ;;
+            *)
+              echo "::error::Registry exact-version lookup returned HTTP ${code}"
+              exit 1
+              ;;
+          esac
+
+      - name: Authenticate to MCP Registry
+        if: steps.registry-version.outputs.exists != 'true'
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish to MCP Registry
+        if: steps.registry-version.outputs.exists != 'true'
+        shell: bash
+        run: |
+          set +e
+          ./mcp-publisher publish server.json
+          publish_status=$?
+          set -e
+          if [ "${publish_status}" -ne 0 ]; then
+            VERSION="${GITHUB_REF_NAME#client-v}"
+            URL="https://registry.modelcontextprotocol.io/v0.1/servers/io.github.kapella-hub%2Ffirekeep/versions/${VERSION}"
+            code="$(curl -sS -o registry-after-error.json -w '%{http_code}' "${URL}")"
+            [ "${code}" = "200" ] || exit "${publish_status}"
+            echo "publisher returned ${publish_status}, but the immutable version exists; final verification will decide"
+          fi
+
+      - name: Verify official MCP Registry publication
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#client-v}"
+          URL="https://registry.modelcontextprotocol.io/v0.1/servers/io.github.kapella-hub%2Ffirekeep/versions/${VERSION}"
+          served=""
+          for attempt in $(seq 1 60); do
+            if curl -fsS "${URL}" -o registry-live.json \
+              && python - <<'PY'
+          import json
+
+          expected = json.load(open("server.json", encoding="utf-8"))
+          response = json.load(open("registry-live.json", encoding="utf-8"))
+          assert response["server"] == expected
+          assert response["_meta"]["io.modelcontextprotocol.registry/official"]["status"] == "active"
+          PY
+            then
+              served=1
+              break
+            fi
+            echo "Registry has not served the exact verified version yet (${attempt}/60)"
+            sleep 10
+          done
+          [ -n "${served}" ] || { echo "::error::Registry did not serve verified Firekeep ${VERSION} within 10 minutes"; exit 1; }

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Regenerate NOTICE (root, client/, symdex/) from the actual dependency set.
+"""Regenerate NOTICE (root, client/, symdex/, docdex/) from the actual dependency set.
 
-Builds one throwaway venv per shipped component -- exactly the three targets
+Builds one throwaway venv per shipped component -- exactly the four targets
 scripts/check_licenses.py is already gated against in CI (see
 .github/workflows/ci.yml's `licenses` job) -- installs each component's base
 dependencies into its own clean environment (never the ambient interpreter,
@@ -9,7 +9,7 @@ which accumulates packages from unrelated projects), runs both
 `check_licenses.py --attributions` (which licence each package carries) and
 `check_licenses.py --license-texts` (that licence's actual bundled text,
 where locatable) inside each venv to read what actually got installed, and
-merges the results into NOTICE -- written identically to all three of
+merges the results into NOTICE -- written identically to all four of
 NOTICE_PATHS, not just the repo root, since PEP 639 license-files globs
 can't reach outside a package's own directory.
 
@@ -37,24 +37,25 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CHECK_LICENSES = REPO_ROOT / "scripts" / "check_licenses.py"
 
-# NOTICE is vendored into three places, all with identical content: PEP 639
+# NOTICE is vendored into four places, all with identical content: PEP 639
 # `license-files` globs cannot reach outside a package's own directory (the
 # same constraint documented in docs/LICENSING.md for LICENSE itself), so
-# client/ and symdex/ each need their own copy for it to land in their
+# client/, symdex/, and docdex/ each need their own copy for it to land in their
 # wheel's METADATA, and the root copy is what COPY NOTICE . in the root
-# Dockerfile puts into the shipped server image. Writing all three from one
+# Dockerfile puts into the shipped server image. Writing all four from one
 # generator (rather than hand-copying, the way LICENSE is kept in sync
 # today) is what keeps them from drifting apart.
 NOTICE_PATHS = [
     REPO_ROOT / "NOTICE",
     REPO_ROOT / "client" / "NOTICE",
     REPO_ROOT / "symdex" / "NOTICE",
+    REPO_ROOT / "docdex" / "NOTICE",
 ]
 
 # (component label, install args passed to `pip install`) -- mirrors the
-# `licenses` CI job's three venvs exactly: cortex/requirements.txt covers
-# bridge/relay/sentinel too (their deps are a subset of it); client/ and
-# symdex/ are the two packages shipped to every customer as wheels. Base
+# `licenses` CI job's four venvs exactly: cortex/requirements.txt covers
+# bridge/relay/sentinel too (their deps are a subset of it); client/, symdex/,
+# and docdex/ are the three packages shipped to every customer as wheels. Base
 # installs only (no [all]/[test]/[anthropic]/[gemini]/[benchmark] extras) --
 # base is what a customer's `pip install` actually resolves.
 COMPONENTS: list[tuple[str, str, list[str]]] = [
@@ -73,6 +74,11 @@ COMPONENTS: list[tuple[str, str, list[str]]] = [
         "symdex",
         ["-q", str(REPO_ROOT / "symdex")],
     ),
+    (
+        "Docdex (firekeep-docdex)",
+        "docdex",
+        ["-q", str(REPO_ROOT / "docdex")],
+    ),
 ]
 
 
@@ -89,6 +95,24 @@ def _read_jsonl(result: subprocess.CompletedProcess) -> list[dict]:
             continue
         records.append(json.loads(line))
     return records
+
+
+def _source_control_safe_text(text: str) -> str:
+    """Normalize upstream licence whitespace without changing its words.
+
+    Some bundled RST licence files use a bare ``=======`` heading, which Git
+    flags as a merge-conflict marker when the generated NOTICE is added. Other
+    upstream files carry trailing spaces. Strip only trailing whitespace and
+    indent marker-shaped lines by one space so the legal text remains readable
+    and complete while ``git diff --check`` can still guard the generated file.
+    """
+    lines = []
+    for line in text.splitlines():
+        line = line.rstrip()
+        if line.startswith(("<<<<<<<", "=======", ">>>>>>>")):
+            line = f" {line}"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def build_venv_and_collect(tmpdir: Path, label: str, name: str, pip_args: list[str]) -> list[dict]:
@@ -166,9 +190,10 @@ def render_notice(component_records: list[tuple[str, list[dict]]]) -> str:
         "",
         "This file covers Python dependencies installed into the shipped",
         "server image (cortex/requirements.txt, which also covers bridge,",
-        "relay, and sentinel) and the two client wheels distributed to every",
-        "customer (firekeep-client, firekeep-symdex). It does not cover the",
-        "bundled datastore container images (Neo4j, Redis, Qdrant, Ollama) —",
+        "relay, and sentinel) and the three client wheels distributed to every",
+        "customer (firekeep-client, firekeep-symdex, firekeep-docdex). It does not",
+        "cover the bundled datastore container images (Neo4j, Redis, Qdrant,",
+        "Ollama) —",
         "see docs/THIRD-PARTY-DATASTORES.md for those.",
         "",
         "Below, each dependency is identified by name, version, and the",
@@ -182,10 +207,11 @@ def render_notice(component_records: list[tuple[str, list[dict]]]) -> str:
         f"Generated {datetime.now(timezone.utc).strftime('%Y-%m-%d')} by "
         "scripts/generate_notice.py. Regenerate after any dependency change;",
         "do not hand-edit the package list or the appendix below. This exact",
-        "file is vendored, unchanged, at client/NOTICE and symdex/NOTICE too",
+        "file is vendored, unchanged, at client/NOTICE, symdex/NOTICE, and",
+        "docdex/NOTICE too",
         "(PEP 639 license-files globs cannot reach outside a package's own",
         "directory, so each wheel needs its own copy to carry it) — the",
-        "generator writes all three from this one render, so they cannot",
+        "generator writes all four from this one render, so they cannot",
         "drift apart.",
         "",
     ]
@@ -240,10 +266,13 @@ def render_notice(component_records: list[tuple[str, list[dict]]]) -> str:
         "The texts below are read directly from each dependency's own"
     )
     lines.append(
-        "installed licence file(s) — not retyped, summarised, or"
+        "installed licence file(s), with whitespace-only normalization for"
     )
     lines.append(
-        "paraphrased. Reproduced to satisfy the obligations that naming a"
+        "safe source control — not retyped, summarised, or paraphrased."
+    )
+    lines.append(
+        "Reproduced to satisfy the obligations that naming a"
     )
     lines.append(
         "licence in the section above does not discharge: MIT/BSD-style"
@@ -273,7 +302,7 @@ def render_notice(component_records: list[tuple[str, list[dict]]]) -> str:
                 continue
             lines.append(f"--- {rec['name']} {rec['version']} ---")
             lines.append("")
-            lines.append(text)
+            lines.append(_source_control_safe_text(text))
             lines.append("")
 
     if no_text_found:

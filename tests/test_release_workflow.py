@@ -12,9 +12,8 @@ producing a broken or invisible result:
    ship a wheel whose own tests never executed.
 
 2. **Nothing confirmed the artifacts were served.** The last action was
-   ``git push``. Pages being disabled, the site build failing on size, or the
-   repo being private (it is) all leave the job green and the clients fetching
-   nothing.
+   ``git push``. Pages being disabled or the site build failing on size both
+   leave the job green and the clients fetching nothing.
 
 3. **Re-running an older tag rewrote the ``latest/`` pointer backwards**, and
    nothing repairs the fleet afterwards: ``is_newer("0.1.20", "0.1.23")`` is
@@ -315,3 +314,52 @@ class TestTheWorkflowIsValidToGitHub:
         """GitHub falls back to the file PATH as the display name when it cannot
         read `name:` -- which is how the breakage was spotted."""
         assert wf.get("name"), "release.yml declares no name:"
+
+
+class TestMCPRegistryPublication:
+    """The public Registry entry must follow, never race, the immutable package."""
+
+    @pytest.fixture()
+    def job(self, wf) -> dict:
+        assert "mcp-registry" in wf["jobs"]
+        return wf["jobs"]["mcp-registry"]
+
+    def test_registry_waits_for_pypi(self, job):
+        needs = job.get("needs")
+        needs = [needs] if isinstance(needs, str) else (needs or [])
+        assert "pypi" in needs
+
+    def test_registry_and_licence_contracts_gate_immutable_uploads(self, wf):
+        test_job = wf["jobs"]["test"]
+        test_runs = "\n".join(step.get("run", "") for step in test_job["steps"])
+        assert "tests/test_mcp_registry_manifest.py" in test_runs
+        assert "tests/test_package_licence_consistency.py" in test_runs
+        assert "mcp-publisher validate server.json" in test_runs
+        assert "sha256sum -c" in test_runs
+
+        pypi_needs = wf["jobs"]["pypi"].get("needs")
+        pypi_needs = [pypi_needs] if isinstance(pypi_needs, str) else (pypi_needs or [])
+        assert "release" in pypi_needs
+        release_needs = wf["jobs"]["release"].get("needs")
+        release_needs = [release_needs] if isinstance(release_needs, str) else (release_needs or [])
+        assert "test" in release_needs
+
+    def test_registry_uses_oidc_with_minimum_permissions(self, job):
+        assert job.get("permissions") == {"contents": "read", "id-token": "write"}
+        runs = "\n".join(step.get("run", "") for step in job["steps"])
+        assert "login github-oidc" in runs
+
+    def test_registry_publisher_is_pinned_and_verified(self, wf, job):
+        assert wf["env"].get("MCP_PUBLISHER_VERSION")
+        assert wf["env"].get("MCP_PUBLISHER_LINUX_AMD64_SHA256")
+        runs = "\n".join(step.get("run", "") for step in job["steps"])
+        assert "sha256sum -c" in runs
+        assert "mcp-publisher validate server.json" in runs
+
+    def test_registry_publish_is_separate_and_live_verified(self, job):
+        names = [step.get("name", "") for step in job["steps"]]
+        assert "Publish to MCP Registry" in names
+        assert names[-1] == "Verify official MCP Registry publication"
+        verify = job["steps"][-1].get("run", "")
+        assert "registry.modelcontextprotocol.io" in verify
+        assert 'response["server"] == expected' in verify

@@ -26,7 +26,7 @@ import pytest
 REPO = Path(__file__).resolve().parents[1]
 
 # Every directory that builds a wheel handed to a customer.
-SHIPPED_PACKAGES = ("client", "symdex")
+SHIPPED_PACKAGES = ("client", "symdex", "docdex")
 
 EXPECTED_LICENCE = "LicenseRef-Firekeep-BUSL-1.1"
 
@@ -99,9 +99,35 @@ def test_readme_licence_section_does_not_contradict_metadata(pkg: str) -> None:
 
 
 def test_root_licence_file_is_busl() -> None:
-    """/LICENSE is the document both wheels point at via `license-files`."""
+    """/LICENSE is the document all three wheels point at via `license-files`."""
     text = (REPO / "LICENSE").read_text(encoding="utf-8")
     head = "\n".join(text.splitlines()[:40])
     assert "Business Source License 1.1" in head
     assert "Additional Use Grant:" in head
     assert "Change License: Apache License, Version 2.0" in head
+
+
+def test_notice_copies_match_and_cover_every_shipped_wheel() -> None:
+    notice_paths = [REPO / "NOTICE", *(REPO / pkg / "NOTICE" for pkg in SHIPPED_PACKAGES)]
+    contents = [path.read_bytes() for path in notice_paths]
+    assert all(content == contents[0] for content in contents[1:])
+
+    text = contents[0].decode("utf-8")
+    assert "Client kit (firekeep-client)" in text
+    assert "Symdex (firekeep-symdex)" in text
+    assert "Docdex (firekeep-docdex)" in text
+    assert all(line == line.rstrip() for line in text.splitlines())
+    assert not any(
+        line.startswith(("<<<<<<< ", ">>>>>>> ")) or line == "======="
+        for line in text.splitlines()
+    )
+
+
+def test_client_readme_states_the_current_early_access_team_grant() -> None:
+    """PyPI's long description must not resurrect the retired one-person grant."""
+    text = (REPO / "client/README.md").read_text(encoding="utf-8")
+    section = _licence_section(text)
+    assert section is not None
+    assert "individuals and teams while Firekeep is in early access" in section
+    assert "Teams of more than one person run on a paid" not in section
+    assert "production use by one natural person" not in section

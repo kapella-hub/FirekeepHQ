@@ -1,11 +1,12 @@
 # firekeep-client
 
-The portable client kit for [Firekeep](https://firekeep.ai) — a **self-hosted
-control plane for AI coding agents**: persistent team memory, session
-continuity, environment awareness, agent coordination, and replayable decision
-traces. Every capability is an MCP tool behind one local `firekeep` gateway;
-shipped adapters configure Claude Code, Codex, Kiro, and OpenCode, and any
-MCP-capable client can connect.
+The portable client kit for [Firekeep](https://firekeep.ai) — the **self-hosted
+operating layer for connected AI agents**. It carries durable knowledge,
+working context, procedures, coordination, and replayable evidence across
+sessions, models, machines, and teammates. Agent-facing MCP tools are exposed
+through one local `firekeep` gateway. Shipped adapters configure Claude Code,
+Codex, Kiro, and OpenCode; other MCP clients can connect through the generic
+configuration path, without hook-driven lifecycle automation.
 
 mcp-name: io.github.kapella-hub/firekeep
 
@@ -24,9 +25,10 @@ managed installer always installs both wheels; `firekeep dex list|add|remove`
 decides which of them actually run. Existing installs keep symdex across an
 update; a fresh install opts in with `firekeep dex add symdex`.
 
-**Firekeep is self-hosted — this package needs a server to talk to.** Each
-team runs its own server on any Docker host, with per-key authentication.
-There is no hosted endpoint. Server install:
+**Firekeep is self-hosted — this package needs a server to talk to.** A person
+or team runs its own server, with per-key authentication. Current server images
+target `linux/amd64`: use an x86-64 Linux host, or Docker Desktop with amd64
+container support on Windows or Mac. There is no hosted endpoint. Server install:
 [firekeep.ai/docs.html](https://firekeep.ai/docs.html#server).
 
 ## Install
@@ -40,10 +42,11 @@ curl -fsSL https://firekeep.ai/latest/install | sh    # macOS / Linux
 irm https://firekeep.ai/latest/install.ps1 | iex         # Windows
 ```
 
-It asks two things: the agent identity your memories, sessions and replay
-events are attributed to, and where your server is — set one up on this
-machine (Docker), redeem a join code, point at one that is already running, or
-decide later. The full guide is
+It asks two required questions: the agent identity your memories, sessions and
+replay events are attributed to, and where your server is — set one up on this
+machine, redeem a join code, point at one that is already running, or decide
+later. It then offers a skippable prompt for another MCP client's rules file.
+The full guide is
 [firekeep.ai/docs.html](https://firekeep.ai/docs.html).
 
 Installing from PyPI works too and gives you the same CLI and gateway:
@@ -89,7 +92,8 @@ written the connection:
 
 ## License
 
-BUSL-1.1 (source-available). Free for individual use — production use by one
-natural person in one workspace. Teams of more than one person run on a paid
-commercial subscription (sales@firekeep.ai). Each version converts to
-Apache-2.0 four years after its first public release.
+BUSL-1.1 (source-available). The Additional Use Grant permits free self-hosted
+production use by individuals and teams while Firekeep is in early access.
+Commercial licensing covers Firekeep Enterprise and hosted or managed use
+outside that grant (sales@firekeep.ai). Each version converts to Apache-2.0
+four years after its first public release.

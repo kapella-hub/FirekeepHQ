@@ -1,8 +1,8 @@
 # Firekeep
 
-**Persistent memory, live environment awareness, and replayable decision traces for AI coding agents — fully self-hosted.**
+**Your agents need more than memory. They need a Keep.**
 
-Firekeep is a **self-hosted control plane for AI coding agents**. It gives Claude Code, Codex, Kiro, OpenCode, and other MCP-capable clients persistent memory, session continuity, environment awareness, agent coordination, and replayable traces. The server stack and its default inference path are local; optional connectors and Symdex AI providers contact third-party services only when you configure them.
+Firekeep is the **self-hosted operating layer for connected AI agents**. It carries durable knowledge, working context, procedures, coordination, and replayable evidence across sessions, models, machines, and teammates. It connects through MCP today: shipped adapters configure Claude Code, Codex, Kiro, and OpenCode, while other MCP clients can use the generic configuration path. The server stack and its default inference path are local; optional connectors and Symdex AI providers contact third-party services only when you configure them.
 
 **[Website](https://firekeep.ai) · [Live demo](https://firekeep.ai/?demo=1#cross-runtime-demo) · [Install guide](https://firekeep.ai/docs.html#server) · [Case study](https://firekeep.ai/case-study.html) · [Concepts](https://firekeep.ai/agents-md-vs-memory.html)**
 
@@ -10,7 +10,7 @@ Firekeep is a **self-hosted control plane for AI coding agents**. It gives Claud
 
 ## The Problem
 
-AI coding agents are powerful, but each session starts with partial amnesia. They lose context, re-read files, miss environment state, and struggle to explain why they made a decision earlier in the workflow. When something goes wrong, there is often no reliable trace to inspect. When multiple agents work in the same codebase, coordination becomes fragile.
+AI agents are powerful, but each session starts with partial amnesia. They lose context, repeat discovery, miss operational state, and struggle to explain why they made an earlier decision. When something goes wrong, there is often no reliable trace to inspect. When multiple agents or teammates share a project, coordination becomes fragile.
 
 Firekeep fixes this by giving agents durable memory, live operational awareness, and shared coordination infrastructure.
 
@@ -40,10 +40,10 @@ Firekeep fixes this by giving agents durable memory, live operational awareness,
 
 Firekeep is not another chatbot wrapper or prompt orchestration layer.
 
-It is a **control plane for AI coding agents** — infrastructure that sits behind your existing tools and makes them better.
+It is an **operating layer for connected AI agents** — infrastructure that sits behind your existing tools and makes them better.
 
 - **Self-hosted by default.** The server, datastores, embeddings, and default generation model run on your infrastructure. Third-party egress occurs only when you opt into a connector or external Symdex AI provider.
-- **Built for coding agents.** Not general-purpose AI. Every feature is designed for the workflow of code reading, editing, testing, and deploying.
+- **Deep where the work happens.** Coding is the strongest shipped workflow, with Symdex for code intelligence. It is not the product boundary: Docdex brings selected document folders into the same Keep, and the shared continuity, coordination, governance, and evidence layers are domain-independent.
 - **Persistence + observability.** Most agent tools focus on making the agent smarter in the moment. Firekeep focuses on what happens *between* sessions and *after* things go wrong.
 - **MCP-native.** Four remote services and two client-local backends expose [Model Context Protocol](https://modelcontextprotocol.io/) tools through one local `firekeep` stdio gateway. Shipped adapters configure Claude Code, Codex, Kiro, and OpenCode; other MCP clients can be configured manually.
 - **Agent-agnostic.** Swap the agent client without rebuilding the underlying memory and coordination layer. Cursor has a documented manual MCP path; Aider does not currently have a shipped adapter.
@@ -60,7 +60,7 @@ curl -fsSL https://firekeep.ai/latest/install | sh    # macOS / Linux
 irm https://firekeep.ai/latest/install.ps1 | iex         # Windows
 ```
 
-One command, two questions: the **agent identity** every memory, session and
+One command, two required questions: the **agent identity** every memory, session and
 replay event is attributed to, and **where your Firekeep server is** — set one
 up on this machine with Docker, redeem a join code, point at one that is
 already running, or decide later (`firekeep doctor` then tells you how to
@@ -69,7 +69,11 @@ nothing, and the machine enrols itself once the stack is up, so `firekeep
 doctor` is green with no dashboard, no tunnel, and no pasted key. It prints the
 paste-ready command for your second machine when it finishes.
 
-The server needs Linux and Docker. The client bootstrap is exercised in CI on
+The installer then offers one skippable prompt for another MCP client's rules
+file; the four shipped adapters are rendered either way.
+
+Current server images target `linux/amd64`: run them on an x86-64 Linux host,
+or through Docker Desktop with amd64 container support. The client bootstrap is exercised in CI on
 Ubuntu, Debian, Alpine, Fedora, Rocky, Arch and openSUSE (x86_64 and aarch64);
 macOS runs the same script but is not covered by CI.
 
@@ -205,7 +209,7 @@ The dashboard is a zero-dependency static SPA. No build step, no npm, no framewo
 |----------|----------|
 | **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** | Running a server: access and authentication, updating, backups, troubleshooting, local development (installing is [firekeep.ai/docs.html](https://firekeep.ai/docs.html)) |
 | **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)** | All environment variables, Redis DB allocation, intelligence features |
-| **[docs/MCP-TOOLS.md](docs/MCP-TOOLS.md)** | Complete MCP tools reference (104 tools across 6 logical backends, exposed to shipped clients through one local gateway) |
+| **[docs/MCP-TOOLS.md](docs/MCP-TOOLS.md)** | Complete MCP tools reference across the server and registered client-local backends; visible inventory varies by dex registration and feature flags |
 | **[docs/DESIGN.md](docs/DESIGN.md)** | Full architecture specification, service contracts, integration points |
 | **[docs/COMPARISON.md](docs/COMPARISON.md)** | Feature-by-feature comparison vs. base Claude Code |
 | **[docs/SETUP-CODEX.md](docs/SETUP-CODEX.md)** | Codex integration guide |
@@ -268,7 +272,7 @@ costs. Background auto-indexing explicitly disables AI summaries.
 
 ### Promised (the two roadmap rungs published on firekeep.ai)
 - **Linked instances** — multiple Firekeep servers sharing knowledge across an organisation, so what one team learns is recallable by another
-- **Domain profiles** — separate experiences (coding today; documents and research ahead) as profiles of the same client kit over one shared brain: never separate products, never separate memory stores
+- **Domain profiles** — separate experiences (coding and documents today; research ahead) as profiles of the same client kit over one shared brain: never separate products, never separate memory stores
 
 The decision record behind both — profiles-not-clients, the linkage-layer
 prerequisite, outcome-signal gating, sequencing — is
@@ -283,7 +287,7 @@ prerequisite, outcome-signal gating, sequencing — is
 
 Firekeep is in active development and used daily. The core implementations — memory, sessions, environment monitoring, coordination, replay, the client kit, and Symdex — are covered by more than 4,000 passing automated tests in the current repository. The architecture is designed for a single-host deployment.
 
-This is currently a private repository preparing for early access.
+This public, source-available repository is in early access.
 
 ## License
 

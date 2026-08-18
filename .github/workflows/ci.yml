@@ -304,8 +304,9 @@ jobs:
     # clean venv -- installing them into one shared environment (or one
     # `pip install` invocation) would merge the results and mean nothing.
     # cortex/requirements.txt covers bridge/relay/sentinel too (their deps
-    # are subsets of it). client/ and symdex/ are the two packages shipped
-    # to every customer as wheels (firekeep-client, firekeep-symdex) and were
+    # are subsets of it). client/, symdex/, and docdex/ are the three packages
+    # shipped to every customer as wheels (firekeep-client, firekeep-symdex,
+    # firekeep-docdex) and were
     # never scanned before this -- symdex in particular pulls
     # tree-sitter-language-pack, a bundle of many third-party grammars the
     # gate had never seen. Base installs only (no [all]/[test] extras) --
@@ -332,6 +333,11 @@ jobs:
           python -m venv /tmp/venv-symdex
           /tmp/venv-symdex/bin/pip install -q ./symdex
           /tmp/venv-symdex/bin/python scripts/check_licenses.py
+      - name: Gate docdex (firekeep-docdex wheel) dependencies
+        run: |
+          python -m venv /tmp/venv-docdex
+          /tmp/venv-docdex/bin/pip install -q ./docdex
+          /tmp/venv-docdex/bin/python scripts/check_licenses.py
 
   benchmarks:
     name: benchmarks (LongMemEval harness)

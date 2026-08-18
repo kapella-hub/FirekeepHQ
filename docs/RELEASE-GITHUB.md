@@ -8,10 +8,11 @@ no separate enterprise or corporate edition/channel.
 
 ## How a release is cut
 
-1. Bump the version in **three** markers:
+1. Bump the version in **four** release surfaces:
    - `client/pyproject.toml` → `version = "X.Y.Z"`
    - `client/firekeep_client/__init__.py` → `__version__ = "X.Y.Z"`
    - `client/tests/test_package.py` → `assert firekeep_client.__version__ == "X.Y.Z"`
+   - `server.json` → both the top-level and `firekeep-client` package versions
    The `client-release` workflow guards the first two against the tag (a mismatch fails
    the workflow); `test_package.py` enforces the third, so a mismatch there fails the
    test run rather than the release.
@@ -23,10 +24,12 @@ no separate enterprise or corporate edition/channel.
    git tag client-vX.Y.Z
    git push origin client-vX.Y.Z
    ```
-3. The `client-release` workflow builds the client + symdex wheels, mirrors the pinned
+3. The `client-release` workflow builds the client + dex wheels, mirrors the pinned
    `uv` binaries, runs `make_release.py` (SHA256SUMS + latest.json), and publishes to the
    `gh-pages` branch — **accumulatively**, so old `<version>/` dirs survive for
-   `firekeep update --to`.
+   `firekeep update --to`. It then publishes all three wheels to PyPI and, only
+   after PyPI exposes the client package and ownership marker, publishes and
+   verifies the immutable version in the official MCP Registry.
 
 ## One-time setup — DONE (2026-07-29)
 
@@ -77,27 +80,19 @@ Passing `FIREKEEP_DIST_BASE=` alongside these has been redundant since client 0.
 is computed. Set it only to reach a *different* origin — a mirror, or the install lab.
 
 The bootstrap fetches `latest/latest.json` → resolves the version → fetches
-`<version>/SHA256SUMS`, then the checksum-verified `uv` and both wheels.
+`<version>/SHA256SUMS`, then the checksum-verified `uv`, client and both dex wheels.
 
 ### Why artifacts live in a second, public repo
 
 `kapella-hub/firekeep-dist` is **public** and holds nothing but a `gh-pages`
-branch of release artifacts. This repo — the product source — stays **private**.
+branch of release artifacts. The product source is public too; the split remains
+because it keeps accumulated binary history away from the source tree and gives
+the artifact channel its own narrowly scoped deploy key. The constraints are:
 
-A previous version of this document justified publishing with *"Artifacts carry no
-secrets; the repo is public."* That was false: this repo is private, and Pages
-cannot serve from a private repo on a non-Enterprise plan, so the release path was
-pointed at a channel that could never have worked. The three constraints that
-forced the split:
-
-1. **Pages needs a public repo.** Not available for a private one below Enterprise.
-2. **Making *this* repo public was the wrong fix.** It would publish the server —
-   Cortex's memory pipeline, the pattern engine, the eval machinery — which is the
-   actual product. The client wheel is `py3-none-any` and packages only
-   `firekeep_client*`, no server code, so its source is readable by anyone who
-   installs it either way. **Gating the
-   download protects nothing.** The property that matters for artifacts is
-   integrity, not secrecy, and `SHA256SUMS` already provides it.
+1. **Artifacts are an append-only distribution tree.** Old version directories
+   must remain available for `firekeep update --to`, without bloating source history.
+2. **Download access is not the licence boundary.** The property that matters for
+   these public artifacts is integrity, and signed `SHA256SUMS` provides it.
 3. **The bootstraps fetch unauthenticated** — no `Authorization` header in either
    script — so a token- or SSO-gated origin returns login HTML and `updater.py`
    fails with `malformed manifest`. Any private channel needs new client code on
@@ -220,37 +215,40 @@ cd client && python -m pytest tests/test_e2e_bootstrap.py -m e2e -q
 
 ## PyPI and the MCP registry
 
-The `pypi` job in `release.yml` publishes `firekeep-client` and
-`firekeep-symdex` to PyPI on every `client-v*` tag via **Trusted Publishing**
+The `pypi` job in `release.yml` publishes `firekeep-client`, `firekeep-symdex`,
+and `firekeep-docdex` to PyPI on every `client-v*` tag via **Trusted Publishing**
 (OIDC — no token secret to mint, rotate, or leak). It fails loudly on a
 missing or misconfigured publisher without touching the dist-host
 publication; `skip-existing` makes an already-published symdex version a
 no-op, since symdex bumps on its own cadence.
 
-**One-time setup — DONE 2026-08-13:** pending publishers exist on pypi.org
-(account `kapella`) for both names — owner `kapella-hub`, repository
+**One-time setup — DONE 2026-08-13:** trusted publishers exist on pypi.org
+(account `kapella`) for all three names — owner `kapella-hub`, repository
 `FirekeepHQ`, workflow `release.yml`, environment **`pypi`** for
-`firekeep-client` and **`pypi-symdex`** for `firekeep-symdex`. The
+`firekeep-client`, **`pypi-symdex`** for `firekeep-symdex`, and
+**`pypi-docdex`** for `firekeep-docdex`. The
 environments differ ON PURPOSE: PyPI refuses two pending publishers sharing
 an identical (owner, repo, workflow, environment) tuple, and per-package
-environments keep each matrix leg's OIDC token scoped to one project. Both
-GitHub environments exist in the repo settings. The first successful publish
-claims the project names (verified unregistered 2026-08-13).
+environments keep each matrix leg's OIDC token scoped to one project. All three
+GitHub environments exist in the repo settings.
 
-**The MCP registry** (`registry.modelcontextprotocol.io`) is the follow-up
-once the PyPI packages exist: `server.json` at the repo root holds the draft
-entry (`io.github.kapella-hub/firekeep`, PyPI package `firekeep-client`,
-stdio transport). Publish with the `mcp-publisher` CLI — `login github`
-(device flow, proves the io.github.kapella-hub namespace), then
-`mcp-publisher publish` from the repo root after bumping `server.json`'s two
-version fields to the released client version. Ownership proof on the PyPI
-side is the `mcp-name: io.github.kapella-hub/firekeep` line already carried
-in `client/README.md` (the package README lands on the PyPI page, where the
-registry's validator reads it). The CLI's validator is the schema authority;
-if it rejects a field, trust it over the checked-in draft. The Windows lease gate fires again (and says why
-  when it cannot), and gateway reconcile
-  stops losing the session, the outcome, and every warning. Ships symdex
-  0.2.16, whose `watch_folder` can finally see files that were added.
+The separate `mcp-registry` job waits for the complete PyPI matrix, then polls
+PyPI until the exact `firekeep-client` version and its
+`mcp-name: io.github.kapella-hub/firekeep` ownership marker are visible. It
+downloads a checksum-pinned `mcp-publisher`, validates `server.json`,
+authenticates with GitHub OIDC, publishes once, and polls the Registry's exact
+version endpoint until the complete manifest is served as active. A rerun first
+compares an existing immutable version and skips publication only when it is
+identical. The `mcp-registry-publish` GitHub environment is tag-restricted; no
+dedicated Registry secret exists.
+
+If Registry publication fails after PyPI succeeds, rerun only the failed jobs;
+the exact-version preflight makes that retry safe without repeating the client
+upload. Never retag or try to overwrite a PyPI or Registry version. If an
+immutable Registry entry itself is wrong, deprecate it and release the next
+patch (for example, `1.0.2`). A machine that needs to retreat while that happens
+can run `firekeep update --to 1.0.0`.
+
 - **0.1.33** — Uncommitted work becomes recoverable: destructive git commands
   (`git checkout --`, `git restore`) snapshot the dirty tree locally before
   running — `firekeep restore --list|--apply` reads it back, and snapshots
