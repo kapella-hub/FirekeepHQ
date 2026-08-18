@@ -254,6 +254,27 @@ class TestDownloadIsAdminOnly:
         assert "VAULT_KEY" not in resp.text
 
     @pytest.mark.asyncio
+    async def test_member_key_403s_before_the_path_is_resolved(
+        self, redis, member_key, backups_dir
+    ):
+        """Even for a stamp that does not exist, a member key gets 403 and not
+        404 — the scope dependency runs before the handler body.
+
+        This is load-bearing for the client, not pedantry: `firekeep backup
+        link` tells "this key lacks admin" apart from "the server is unreachable"
+        by branching on 401/403. A 404 leaking out of this route for an
+        under-scoped caller would degrade that to a generic failure at exactly
+        the moment someone is setting up disaster recovery. It would also answer
+        an existence question to a caller with no right to ask it.
+        """
+        async with _client(_app(redis)) as c:
+            resp = await c.get(
+                "/ops/backups/20991231T235959Z/manifest.json",
+                headers={"X-API-Key": member_key},
+            )
+        assert resp.status_code == 403, resp.text
+
+    @pytest.mark.asyncio
     async def test_admin_key_streams_the_bytes(self, redis, admin_key, backups_dir):
         _make_backup(backups_dir, "20260818T043000Z", payload=b"the-real-tarball")
         async with _client(_app(redis)) as c:
