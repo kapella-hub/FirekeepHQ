@@ -137,6 +137,7 @@ reference material does not need to be.
 | Office Kubernetes deployment | [`docs/guides/deployment-office-kubernetes.md`](docs/guides/deployment-office-kubernetes.md) |
 | The client kit — install, hooks, night shift, personal mode | [`docs/guides/client-kit.md`](docs/guides/client-kit.md) |
 | Dexes — the registry, symdex, docdex | [`docs/guides/dexes.md`](docs/guides/dexes.md) |
+| Backup and restore — nightly snapshots, `firekeep backup`, the disaster runbook | [`docs/guides/backup-and-restore.md`](docs/guides/backup-and-restore.md) |
 | Memory, recall, corpus and vault | [`docs/guides/memory-and-recall.md`](docs/guides/memory-and-recall.md) |
 | Skills, docs→skills and collectors | [`docs/guides/knowledge-and-skills.md`](docs/guides/knowledge-and-skills.md) |
 | Knowledge Autopilot — feedback, reaper, contested, inbox | [`docs/guides/knowledge-autopilot.md`](docs/guides/knowledge-autopilot.md) |

@@ -473,6 +473,13 @@ request — it identifies the exact code, which a version number alone does not.
 
 ### Backups
 
+> **Backups are automatic since v1.0.1** — a nightly cold snapshot at 04:30
+> server time with manifests, retention (7 nightly + 4 weekly) and `.env`
+> included, plus `firekeep backup pull` for the off-box copy. The full story,
+> including the disaster runbook, is in
+> [`docs/guides/backup-and-restore.md`](guides/backup-and-restore.md). The
+> commands below are the underlying manual tools, still available.
+
 ```bash
 bash deploy/backup.sh                 # writes ./backups/firekeep-backup-<timestamp>/
 bash deploy/backup.sh /mnt/backups    # or somewhere else
