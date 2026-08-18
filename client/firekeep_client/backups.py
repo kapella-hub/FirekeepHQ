@@ -451,7 +451,7 @@ def action_pull(args) -> int:
     stamp = str(newest["stamp"])
     target = dest_root / pull_dir_name(stamp)
     print(f"firekeep backup pull: newest indexed backup is {stamp} "
-          f"({humanize_age(newest.get('age_seconds'))}) → {target}")
+          f"({humanize_age(newest.get('age_seconds'))}) -> {target}")
     headers = _admin_headers(ep, key)
 
     try:

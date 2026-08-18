@@ -2724,6 +2724,17 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None) -> int:
+    # Never let an unencodable glyph kill a command. Windows consoles and
+    # pipes default to cp1252, where the kit's em-dashes happen to encode but
+    # e.g. an arrow does not — and the first `backup pull` crashed MID-DOWNLOAD
+    # on exactly that (2026-08-18). errors="replace" keeps each stream's own
+    # encoding (native rendering where it works) and degrades the odd glyph to
+    # '?' instead of a UnicodeEncodeError halfway through an operation.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, OSError):
+            pass  # exotic stream (test double, closed pipe) — leave it alone
     parser = _build_parser()
     args = parser.parse_args(argv)
     func = getattr(args, "func", None)
