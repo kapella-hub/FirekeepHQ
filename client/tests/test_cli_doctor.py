@@ -739,7 +739,9 @@ def test_status_is_an_alias_for_doctor():
 # --- dexes (dex registry milestone 1, Task A5) --------------------------------
 #
 # One row, and it is "ok" whether or not any dex is registered: absence is a
-# CHOICE, not a fault (ROADMAP §5's suggestion-not-default funnel). The one
+# CHOICE, not a fault. Since ROADMAP §5's 2026-08-19 amendment (symdex + docdex
+# register themselves) an empty registry has exactly one cause — the user
+# emptied it — so the row names the way back instead of making an offer. The one
 # state that IS a fault is a dex registered on a machine whose wheel is gone —
 # the gateway will mount a backend that cannot start, and the user's only
 # evidence is tools that quietly stopped existing.
@@ -754,13 +756,32 @@ def dexes_home(tmp_path, monkeypatch):
     return dexes
 
 
-def test_dexes_row_offers_symdex_when_nothing_is_registered(dexes_home):
+def test_dexes_row_frames_an_empty_registry_as_the_off_switch(dexes_home):
+    """Was `..._offers_symdex_when_nothing_is_registered`, back when an empty
+    registry was the SHIPPED default and the row was an invitation. Default-on
+    (ROADMAP §5, 2026-08-19) makes that state unreachable except by choice, so
+    the row now says whose choice it was and how to undo it."""
     dexes_home.write_registry({})
     (row,) = cli._check_dexes()
     name, status, detail = row
     assert (name, status) == ("dexes", "ok")
     assert "none registered" in detail
+    assert "you removed them" in detail
     assert "firekeep dex add symdex" in detail
+    assert "firekeep dex add docdex" in detail
+
+
+def test_the_empty_registry_repair_is_a_command_that_exists(dexes_home):
+    """`firekeep dex add` takes ONE name — a copy-pasteable `dex add symdex
+    docdex` would be a usage error dressed up as a repair."""
+    dexes_home.write_registry({})
+    (row,) = cli._check_dexes()
+    assert "dex add symdex docdex" not in row[2]
+
+    args = cli._build_parser().parse_args(["dex", "add", "symdex"])
+    assert args.name == "symdex"
+    with pytest.raises(SystemExit):
+        cli._build_parser().parse_args(["dex", "add", "symdex", "docdex"])
 
 
 def test_dexes_row_names_what_is_registered(dexes_home):

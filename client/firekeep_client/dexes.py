@@ -228,21 +228,29 @@ def remove(name: str) -> DexManifest:
 def ensure_migrated(*, installing: bool = False) -> None:
     """Seed the registry once, deterministically, asking the user nothing.
 
-    The rule (plan Task A3), in full:
+    The rule, in full — two lines now, where there used to be three:
 
-      * `dexes.json` exists  -> do nothing, ever. The user's choices are theirs.
-      * absent + a config with a `[server]` section -> this machine is an
-        EXISTING install, which had symdex mounted unconditionally. Grandfather
-        it: `{"symdex": ...}`. An update must never remove a capability an
-        install already has (ROADMAP §5).
-      * absent + no `[server]` -> a fresh machine. Write `{}`: dexes are a
-        suggestion, not a default, and the two-question install must not grow a
-        third question.
+      * `dexes.json` exists -> do nothing, ever. The user's choices are theirs:
+        someone who ran `firekeep dex remove symdex` keeps it removed, across
+        every update, forever.
+      * absent -> write BOTH `{"symdex": ..., "docdex": ...}`. Fresh machine or
+        long-configured one, the answer is the same.
 
-    Reads the config through `resolver._raw_config` and NEVER `load_config`:
-    load_config raises on a missing file and, when `[server]` is absent, backs
-    up and REWRITES the user's config. Merely asking "has this machine been
-    configured?" must not migrate anything.
+    The second line used to fork on whether the config had a `[server]` section:
+    an existing install grandfathered symdex (an update must never remove a
+    capability an install already has), and a fresh one got `{}` — dexes were "a
+    suggestion, not a default", and the two-question install must not grow a
+    third question. The owner reversed that half (ROADMAP §5, amendment of
+    2026-08-19 evening): the original reviewer recommendation of DEFAULT-ON
+    stands vindicated, so Firekeep understands your code and your documents out
+    of the box, and `firekeep dex` survives as the OFF-switch rather than as
+    ceremony. Note what that makes of the first line: default-on is only
+    defensible while removal STICKS, so "exists -> untouched" is now the rule
+    carrying the weight, not the footnote.
+
+    maildex is deliberately not in the default set. A connector with no account
+    indexes nothing, so registering it here would buy a doctor row and no mail;
+    `firekeep maildex add` registers it at the moment it becomes real.
 
     Called from `cmd_install` (installing=True) and from gateway startup, which
     is what covers an update that never re-ran install. `installing` does not
@@ -256,7 +264,6 @@ def ensure_migrated(*, installing: bool = False) -> None:
     try:
         if registry_path().exists():
             return
-        configured = resolver._raw_config().has_section("server")
-        write_registry({"symdex": _stamp()} if configured else {})
+        write_registry({"symdex": _stamp(), "docdex": _stamp()})
     except Exception as exc:  # noqa: BLE001 — seeding must not break start-up
         hooklog.log_failure(_LOG, f"registry migration failed during {caller}: {exc}")

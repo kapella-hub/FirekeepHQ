@@ -264,23 +264,48 @@ def _write_config(home, text):
 
 
 class TestMigration:
-    """An update never removes a capability an install already has (ROADMAP §5),
-    and a fresh install grows no third question (the two-question promise). One
-    deterministic rule serves both."""
+    """Default-on, and the off-switch sticks (ROADMAP §5, amendment of
+    2026-08-19 evening — REVERSING the suggestion-not-default rule these tests
+    used to pin: a fresh machine no longer gets `{}`, and the configured/fresh
+    fork is gone entirely). One deterministic rule, two lines: no dexes.json
+    means symdex + docdex; a dexes.json means whatever the user made it."""
 
-    def test_configured_machine_grandfathers_symdex(self, registry_home):
+    def test_configured_machine_gets_both_dexes(self, registry_home):
+        """Was `test_configured_machine_grandfathers_symdex`, which asserted
+        symdex ALONE. Grandfathering symdex is now a special case of the general
+        rule rather than its own branch — an update still never removes a
+        capability an install already has; it adds docdex alongside."""
         _write_config(registry_home, CONFIGURED)
         dexes.ensure_migrated()
-        assert list(dexes.read_registry()) == ["symdex"]
+        assert sorted(dexes.read_registry()) == ["docdex", "symdex"]
 
-    def test_fresh_machine_opts_in_by_writing_an_empty_registry(self, registry_home):
+    def test_fresh_machine_gets_both_dexes(self, registry_home):
+        """Was `test_fresh_machine_opts_in_by_writing_an_empty_registry`. The
+        reversal in one assertion: Firekeep understands your code and your
+        documents out of the box, with no third install question asked to get
+        there."""
         dexes.ensure_migrated()
-        assert dexes.registry_path().exists()
-        assert dexes.read_registry() == {}
+        assert sorted(dexes.read_registry()) == ["docdex", "symdex"]
+
+    def test_the_default_set_stops_at_symdex_and_docdex(self, registry_home):
+        """maildex is NOT default-on: a connector with no account indexes
+        nothing, so it would buy a doctor row and no mail. `firekeep maildex
+        add` is what registers it."""
+        dexes.ensure_migrated()
+        assert "maildex" not in dexes.read_registry()
+
+    def test_the_seeded_entries_are_stamped_like_any_other(self, registry_home):
+        """Seeded entries are ordinary registry entries — `dex remove` and the
+        doctor rows must not be able to tell them from hand-added ones."""
+        dexes.ensure_migrated()
+        for entry in dexes.read_registry().values():
+            assert entry["source"] == "bundled"
+            assert entry["added_at"].endswith("Z")
 
     def test_existing_registry_is_never_touched(self, registry_home):
-        """Including — especially — an EMPTY one: a user who removed symdex on a
-        configured machine must not have it grandfathered back on next start."""
+        """Including — especially — an EMPTY one. This is the line default-on
+        rests on: a default nobody can turn off is not a default, it is a
+        mandate."""
         _write_config(registry_home, CONFIGURED)
         path = dexes.registry_path()
         path.write_text("{}", encoding="utf-8")  # deliberately unformatted
@@ -289,17 +314,36 @@ class TestMigration:
         dexes.ensure_migrated()
         assert path.read_bytes() == before
 
-    def test_a_user_choice_of_docdex_only_survives_migration(self, registry_home):
+    def test_a_removed_symdex_stays_removed(self, registry_home):
+        """The off-switch, over an update: someone who ran `firekeep dex remove
+        symdex` must not find it back on next start just because the default set
+        now names it."""
         _write_config(registry_home, CONFIGURED)
         dexes.write_registry({"docdex": {}})
         dexes.ensure_migrated()
         assert list(dexes.read_registry()) == ["docdex"]
 
+    def test_a_removed_docdex_stays_removed(self, registry_home):
+        dexes.write_registry({"symdex": {}})
+        dexes.ensure_migrated()
+        assert list(dexes.read_registry()) == ["symdex"]
+
+    def test_migration_does_not_read_the_config_at_all(self, registry_home, monkeypatch):
+        """The configured-vs-fresh fork is gone, so nothing here has any business
+        opening the config — and a rule that cannot read it cannot regrow the
+        `load_config` hazard the old one had to route around."""
+        monkeypatch.setattr(dexes.resolver, "_raw_config", _boom_config)
+        dexes.ensure_migrated()
+        assert sorted(dexes.read_registry()) == ["docdex", "symdex"]
+
     def test_migration_never_rewrites_the_users_config(self, registry_home):
-        """The reason `_raw_config` and not `load_config`: load_config MIGRATES a
-        profile-era config (backup + atomic rewrite + stderr, and it can raise
-        ConfigMigrationConflict). Asking 'is this machine configured?' must not
-        have a side effect on the config — it runs at every gateway start."""
+        """Seeding the registry runs at every gateway start, so it must leave a
+        profile-era config exactly as it found it. It no longer reads the config
+        at all, which is the strongest form of that — but the guard stays: this
+        is the outcome that mattered, and the old rule reached it the harder way
+        (`_raw_config`, never `load_config`, because load_config MIGRATES —
+        backup + atomic rewrite + stderr, and it can raise
+        ConfigMigrationConflict)."""
         path = _write_config(registry_home, LEGACY_PROFILES)
         before = path.read_bytes()
 
@@ -326,6 +370,10 @@ def _boom(entries):
     raise OSError("read-only home")
 
 
+def _boom_config():
+    raise AssertionError("ensure_migrated must not read the config")
+
+
 # --------------------------------------------------------------------------- #
 # The two call sites                                                            #
 # --------------------------------------------------------------------------- #
@@ -333,12 +381,14 @@ def _boom(entries):
 
 def test_gateway_startup_migrates(registry_home):
     """The load fallback: an update that never re-ran `firekeep install` must
-    still find symdex mounted on its first session."""
+    still find symdex mounted on its first session. docdex is registered too but
+    mounts nothing — it is an `ingest-client`, so its entry drives the sync
+    trigger and the doctor row, never a backend."""
     from firekeep_client.gateway import Gateway
 
     _write_config(registry_home, CONFIGURED)
     assert "symdex" in [b.name for b in Gateway().backends]
-    assert list(dexes.read_registry()) == ["symdex"]
+    assert sorted(dexes.read_registry()) == ["docdex", "symdex"]
 
 
 @pytest.fixture
@@ -359,17 +409,27 @@ def install_env(registry_home, monkeypatch):
     return cli
 
 
-def test_install_on_a_fresh_machine_leaves_the_registry_empty(install_env, registry_home):
-    """THE ordering guard. `_bootstrap_home` writes a config SKELETON that
-    already carries a `[server]` section — so if ensure_migrated ran after it,
-    every fresh install would look 'configured' and grandfather symdex, and the
-    opt-in this milestone exists for would never once happen."""
+def test_install_on_a_fresh_machine_registers_both_dexes(install_env, registry_home):
+    """Was `..._leaves_the_registry_empty`, and it was THE ordering guard —
+    `_bootstrap_home` writes a config SKELETON carrying a `[server]` section, so
+    a migration running after it read every fresh machine as 'configured'. The
+    fork it guarded is gone (ROADMAP §5, 2026-08-19: default-on), which makes
+    the ordering unobservable and the outcome the same either way. What is worth
+    pinning now is that `firekeep install` leaves a machine understanding code
+    and documents without being asked a third question."""
     assert install_env.main(["install", "--runtime", "claude", "--non-interactive"]) == 0
-    assert dexes.registry_path().exists()  # migration ran...
-    assert dexes.read_registry() == {}     # ...and seeded nothing
+    assert sorted(dexes.read_registry()) == ["docdex", "symdex"]
 
 
-def test_install_on_a_configured_machine_grandfathers_symdex(install_env, registry_home):
+def test_install_on_a_configured_machine_registers_both_dexes(install_env, registry_home):
     _write_config(registry_home, CONFIGURED)
     assert install_env.main(["install", "--runtime", "claude", "--non-interactive"]) == 0
-    assert list(dexes.read_registry()) == ["symdex"]
+    assert sorted(dexes.read_registry()) == ["docdex", "symdex"]
+
+
+def test_install_leaves_a_users_registry_alone(install_env, registry_home):
+    """`firekeep install` is also what a re-render and an update run, so it is
+    the likeliest way a removed dex would come back."""
+    dexes.write_registry({"docdex": {}})
+    assert install_env.main(["install", "--runtime", "claude", "--non-interactive"]) == 0
+    assert list(dexes.read_registry()) == ["docdex"]

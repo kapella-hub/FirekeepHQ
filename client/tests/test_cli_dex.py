@@ -1,7 +1,11 @@
-"""`firekeep dex list|add|remove` — the suggestion-not-default funnel (ROADMAP §5).
+"""`firekeep dex list|add|remove` — the off-switch (ROADMAP §5).
 
-Failing-first for dex registry milestone 1 Task A4. Two things these pin that
-are easy to get wrong: `add` must PROVE the wheel is importable before writing a
+Originally the suggestion-not-default FUNNEL: nothing was registered until a
+person asked for it. The 2026-08-19 amendment reversed the default (symdex +
+docdex register themselves) and left the command doing the same job from the
+other side — it is now how you turn a dex OFF, and how you put one back.
+
+Two things these pin that are easy to get wrong: `add` must PROVE the wheel is importable before writing a
 registry entry (otherwise the next session mounts a backend that cannot start,
 and the user's evidence is a silent missing tool), and every mutation must say
 that it takes effect on the NEXT agent session — the gateway reads the registry
@@ -79,9 +83,16 @@ def test_add_maildex_without_the_wheel_registers_nothing(dex_home, capsys, monke
     assert dexes.read_registry() == {}
 
 
-def test_list_suggests_symdex_when_nothing_is_registered(dex_home, capsys):
+def test_list_frames_an_empty_registry_as_the_off_switch(dex_home, capsys):
+    """Was `..._suggests_symdex_when_nothing_is_registered`. symdex and docdex
+    now register themselves (ROADMAP §5, 2026-08-19), so an empty registry is
+    something the user did, and `list` says so and names the way back — the same
+    sentence `firekeep doctor` prints, from the same constant."""
     cli.main(["dex", "list"])
-    assert "firekeep dex add symdex" in _out(capsys)
+    out = _out(capsys)
+    assert cli.EMPTY_REGISTRY_HINT in out
+    assert "you removed them" in out
+    assert "firekeep dex add symdex" in out and "firekeep dex add docdex" in out
 
 
 def test_list_is_honest_about_a_missing_wheel(dex_home, capsys, monkeypatch):

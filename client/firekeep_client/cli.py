@@ -138,6 +138,17 @@ def _venv_python(venv: Path) -> Path:
 VENVS_DIR_NAME = "venvs"
 CURRENT_LINK_NAME = "current"
 
+# What `firekeep doctor` and `firekeep dex list` say about an EMPTY registry.
+# One string in one place because the two must not drift: they describe the same
+# state, and since ROADMAP §5's 2026-08-19 amendment (symdex + docdex register
+# themselves) that state has exactly one cause — the user turned them off. Named
+# per command, because `firekeep dex add` takes ONE name; a copy-pasteable
+# `dex add symdex docdex` would be a usage error dressed as a repair.
+EMPTY_REGISTRY_HINT = (
+    "none registered (you removed them) — restore with `firekeep dex add symdex`, "
+    "then `firekeep dex add docdex`"
+)
+
 
 def _current_link(home: Path | None = None) -> Path:
     return (home if home is not None else _firekeep_home()) / CURRENT_LINK_NAME
@@ -412,13 +423,13 @@ def cmd_install(args) -> int:
     join_code = getattr(args, "join", None) or os.environ.get("FIREKEEP_JOIN", "").strip()
     join_result = 0
     try:
-        # Seed the dex registry FIRST — before _bootstrap_home, and the ordering
-        # is load-bearing, not stylistic. _bootstrap_home writes a config
-        # SKELETON that already carries a [server] section, so a migration
-        # running after it would read every fresh machine as an existing
-        # install, grandfather symdex, and the opt-in this registry exists for
-        # would never once happen. Never raises; asks nothing (ROADMAP §5: no
-        # new install-time questions).
+        # Seed the dex registry: symdex + docdex on any machine that has no
+        # dexes.json yet, and nothing at all on one that has (ROADMAP §5,
+        # 2026-08-19 — default-on, with `firekeep dex` as the off-switch). The
+        # ordering against _bootstrap_home used to be load-bearing, back when
+        # the rule read the config's [server] section to tell a fresh machine
+        # from an existing one; it no longer reads the config at all. Never
+        # raises; asks nothing (no new install-time questions).
         dexes.ensure_migrated(installing=True)
 
         home = _firekeep_home()
@@ -1104,11 +1115,13 @@ def _check_dexes() -> list[tuple[str, str, str]]:
 
     Always one `dexes` row, plus a per-dex row for any registered dex that has
     local state worth reporting (docdex and maildex today). The `dexes` row is "ok" whether
-    or not any are registered: a dex is a suggestion, never a default
-    (ROADMAP §5), so the empty state is an OFFER, not a finding. The one fault
-    IT can report is a REGISTERED dex whose wheel is gone — the gateway mounts a
-    backend that cannot start, and the only symptom the user sees is tools that
-    quietly stopped existing.
+    or not any are registered. Since ROADMAP §5's 2026-08-19 amendment every
+    fresh and every migrated install starts with symdex + docdex registered, so
+    an EMPTY registry can only mean the user emptied it — still a choice, still
+    not a finding, but the row now reads as the off-switch it is rather than as
+    an offer nobody took up. The one fault it can report is a REGISTERED dex
+    whose wheel is gone — the gateway mounts a backend that cannot start, and
+    the only symptom the user sees is tools that quietly stopped existing.
 
     Deliberately says nothing about _check_venv_scripts' wanted list, which is
     unchanged: the wheels are always installed and checksum-verified, and
@@ -1116,8 +1129,7 @@ def _check_dexes() -> list[tuple[str, str, str]]:
     """
     registered = dexes.registered()
     if not registered:
-        return [("dexes", "ok",
-                 "none registered — add code intelligence with `firekeep dex add symdex`")]
+        return [("dexes", "ok", EMPTY_REGISTRY_HINT)]
     names = ", ".join(m.name for m in registered)
     missing = [m.name for m in registered if not dexes.is_installed(m)]
     if missing:
@@ -1745,10 +1757,10 @@ def cmd_dex(args) -> int:
         for name in sorted(set(registry) - set(dexes.KNOWN_DEXES)):
             print(f"  {name}  [unknown to this client — ignored]")
         if not registry:
-            # The suggestion-not-default funnel (ROADMAP §5): absence is a
-            # choice, so this is an offer, never a warning.
-            print("\nfirekeep: none registered — add code intelligence with "
-                  "`firekeep dex add symdex`")
+            # Absence is still a choice — but since symdex + docdex register
+            # themselves (ROADMAP §5, 2026-08-19) it is a choice the user MADE,
+            # so this names the way back rather than making an offer.
+            print(f"\nfirekeep: {EMPTY_REGISTRY_HINT}")
         else:
             print("\nfirekeep: `firekeep dex add|remove <name>` changes this; it takes "
                   "effect on the next agent session.")
