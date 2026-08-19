@@ -37,9 +37,9 @@ What is guarded here
    recursive delete that follows the reparse point guts the TARGET venv
    (ancient 5.1 builds recursed into it — probed live). Only ``.gc`` corpses
    may be recursively deleted.
-4. The flip happens only AFTER every bundled wheel (client + symdex + docdex)
-   is verified and installed, so an install that dies early leaves ``current``
-   — and every live session — exactly as it was.
+4. The flip happens only AFTER every bundled wheel (client + symdex + docdex
+   + maildex) is verified and installed, so an install that dies early leaves
+   ``current`` — and every live session — exactly as it was.
 5. The constraint stays DOCUMENTED in the scripts. The original "POSIX unlink
    is safe" rationale survived long enough to be believed because nothing
    recorded why it was wrong; the rename design reads as strictly better and
@@ -314,16 +314,17 @@ class TestReviewHardening:
         every network fetch and every checksum must complete FIRST. The first
         draft fetched the symdex wheel AFTER provisioning: a download failure
         there stranded `current` on a gutted venv with nothing to fall back to.
-        Docdex is bundled the same way and inherits the same ordering — one
-        bundled wheel fetched below the clear is enough to reopen the hole."""
+        Docdex and maildex are bundled the same way and inherit the same
+        ordering — one bundled wheel fetched below the clear is enough to
+        reopen the hole."""
         sh_provision = SH.index('uv" venv "${TARGET_VENV}"')
-        for wheel in ("symdex", "docdex"):
+        for wheel in ("symdex", "docdex", "maildex"):
             assert SH.index(f'fetch "${{VBASE}}/${{{wheel}_wheel}}"') < sh_provision, (
                 f"install.sh fetches the {wheel} wheel after `uv venv --clear` — a "
                 "network failure would strand `current` on a gutted venv"
             )
         ps_provision = PS1.index("venv $TargetVenv --python $PythonVersion")
-        for wheel in ("Symdex", "Docdex"):
+        for wheel in ("Symdex", "Docdex", "Maildex"):
             fetch = f'Invoke-WebRequest -UseBasicParsing -Uri "$VBase/${wheel}Wheel"'
             assert PS1.index(fetch) < ps_provision, (
                 f"install.ps1 fetches the {wheel.lower()} wheel after `uv venv --clear` "

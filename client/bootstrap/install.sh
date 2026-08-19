@@ -108,7 +108,7 @@ venv_version() {
 
 # The fast path's health probe must prove the venv is COMPLETE, not merely that
 # the client package imports. An install killed between the client wheel and
-# either dex wheel leaves a venv whose python happily reports ${V} — accepting
+# any dex wheel leaves a venv whose python happily reports ${V} — accepting
 # that would flip `current` to a half-installed venv and keep taking the fast
 # path on every later run, so the breakage would never route back through the
 # full provision that repairs it. bin/firekeep + every bundled package's import
@@ -117,7 +117,7 @@ venv_version() {
 # install steps but not to this probe is a half-install the fast path accepts.
 venv_complete() {
     [ -x "$1/bin/firekeep" ] || return 1
-    "$1/bin/python" -I -c 'import firekeep_client, firekeep_symdex, firekeep_docdex' 2>/dev/null || return 1
+    "$1/bin/python" -I -c 'import firekeep_client, firekeep_symdex, firekeep_docdex, firekeep_maildex' 2>/dev/null || return 1
     return 0
 }
 
@@ -415,6 +415,19 @@ echo "firekeep: fetching ${docdex_wheel}"
 fetch "${VBASE}/${docdex_wheel}" "${BIN}/${docdex_wheel}"
 verify_against_sums "${BIN}/${docdex_wheel}" "${docdex_wheel}"
 
+# --- 5d. the maildex wheel, same hoist and the same reasoning as 5b/5c -------
+# Maildex (the mail dex) is bundled exactly like symdex and docdex: name and
+# hash read from SHA256SUMS, fetched to a local file, verified — all of it above
+# the --clear, because ONE bundled wheel fetched below that line is enough to
+# strand `current` on a gutted venv. It versions independently of the client and
+# of the other dexes, so the release names the exact wheel and this script never
+# guesses it.
+maildex_wheel="$(grep -oE 'firekeep_maildex-[0-9][^ ]*\.whl' "${BIN}/SHA256SUMS" | head -1)"
+[ -n "${maildex_wheel}" ] || die "SHA256SUMS lists no firekeep_maildex wheel — release is incomplete"
+echo "firekeep: fetching ${maildex_wheel}"
+fetch "${VBASE}/${maildex_wheel}" "${BIN}/${maildex_wheel}"
+verify_against_sums "${BIN}/${maildex_wheel}" "${maildex_wheel}"
+
 # --- 6. standalone CPython + venv AT ITS FINAL VERSIONED PATH ----------------
 #
 # HISTORY, and the constraint this layout is built around. 0.1.26 tried
@@ -462,15 +475,17 @@ mkdir -p "${VENVS}"
 # resolution set — so a separate docdex step re-resolved firekeep-client from
 # the INDEX and silently replaced the local wheel just installed in step 7 with
 # whatever PyPI's newest happened to be (a fresh 1.0.0 install shipped 0.1.48).
-# With all three local files in one request, each local wheel IS the resolution
-# for its own name; only genuine third-party deps come from the index.
+# With all four local files in one request, each local wheel IS the resolution
+# for its own name; only genuine third-party deps come from the index. Every dex
+# added to the bundle joins THIS line — never a step of its own, whatever the
+# ordering argument for it looks like.
 #
 # Every dex wheel ships with every install; REGISTRATION (~/.firekeep/dexes.json)
 # is what decides whether a dex does anything. Gating the INSTALL instead would
 # put a second, unverified download path in front of a user who later opts in —
 # the signed supply chain is the thing that must not become optional.
-echo "firekeep: installing ${wheel_name} + ${symdex_wheel} + ${docdex_wheel}"
-"${BIN}/uv" pip install --python "${TARGET_VENV}" --reinstall "${BIN}/${wheel_name}" "${BIN}/${symdex_wheel}" "${BIN}/${docdex_wheel}"     || die "wheel install failed"
+echo "firekeep: installing ${wheel_name} + ${symdex_wheel} + ${docdex_wheel} + ${maildex_wheel}"
+"${BIN}/uv" pip install --python "${TARGET_VENV}" --reinstall "${BIN}/${wheel_name}" "${BIN}/${symdex_wheel}" "${BIN}/${docdex_wheel}" "${BIN}/${maildex_wheel}"     || die "wheel install failed"
 
 # --- 7d. the install must have produced a runnable firekeep -------------------
 # Provisioning can succeed while producing something unusable (a wheel for the

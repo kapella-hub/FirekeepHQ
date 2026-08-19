@@ -58,15 +58,18 @@ def test_write_sums_format_matches_what_the_bootstrap_greps(tmp_path):
     assert b"\r\n" not in dest.read_bytes()
 
 
-def _dex_wheels(tmp_path, symdex_version="0.2.13", docdex_version="0.1.0"):
-    """The two always-on dex wheels a valid release dir carries (both guarded in
+def _dex_wheels(tmp_path, symdex_version="0.2.13", docdex_version="0.1.0",
+                maildex_version="0.1.0"):
+    """The three always-on dex wheels a valid release dir carries (each guarded in
     main()). Their versions are independent of the client tag and of each other —
-    0.2.13 / 0.1.0 here against a 1.2.3 release, which is the real shape."""
+    0.2.13 / 0.1.0 / 0.1.0 here against a 1.2.3 release, which is the real shape."""
     symdex = tmp_path / f"firekeep_symdex-{symdex_version}-py3-none-any.whl"
     symdex.write_bytes(b"symdex")
     docdex = tmp_path / f"firekeep_docdex-{docdex_version}-py3-none-any.whl"
     docdex.write_bytes(b"docdex")
-    return symdex, docdex
+    maildex = tmp_path / f"firekeep_maildex-{maildex_version}-py3-none-any.whl"
+    maildex.write_bytes(b"maildex")
+    return symdex, docdex, maildex
 
 
 def _populate_dist_dir(tmp_path, version="1.2.3", wheel_content=b"xyz",
@@ -91,7 +94,7 @@ def test_main_happy_path_writes_a_complete_manifest_and_sums(tmp_path):
     published and teammates' installers start fetching them."""
     wheel, sh, ps1, uv_paths = _populate_dist_dir(tmp_path)
     # A valid release dir now also carries the always-on dex wheels (guarded in main()).
-    symdex, docdex = _dex_wheels(tmp_path)
+    symdex, docdex, maildex = _dex_wheels(tmp_path)
 
     rc = make_release.main(["make_release.py", "1.2.3", str(tmp_path)])
 
@@ -115,7 +118,7 @@ def test_main_happy_path_writes_a_complete_manifest_and_sums(tmp_path):
     assert sums_path.is_file()
     lines = sums_path.read_text().splitlines()
     expected_names = {p.name for p in uv_paths} | {
-        wheel.name, symdex.name, docdex.name, sh.name, ps1.name}
+        wheel.name, symdex.name, docdex.name, maildex.name, sh.name, ps1.name}
     assert len(lines) == len(expected_names)
 
     # Exact line format: "<hex><two spaces><basename>", no directory component. This is a
@@ -144,6 +147,7 @@ def test_main_happy_path_writes_a_complete_manifest_and_sums(tmp_path):
     assert by_name[wheel.name] == hashlib.sha256(wheel.read_bytes()).hexdigest()
     assert by_name[symdex.name] == hashlib.sha256(symdex.read_bytes()).hexdigest()
     assert by_name[docdex.name] == hashlib.sha256(docdex.read_bytes()).hexdigest()
+    assert by_name[maildex.name] == hashlib.sha256(maildex.read_bytes()).hexdigest()
     assert by_name[sh.name] == manifest["bootstrap_sha256"]
     assert by_name[ps1.name] == manifest["bootstrap_ps1_sha256"]
 
@@ -207,16 +211,17 @@ def test_main_fails_loudly_on_a_version_tag_mismatch(tmp_path):
 
 
 def test_dex_wheels_included_in_sums(tmp_path):
-    """Both dexes are always-on parts of the distribution; the bootstrap reads each wheel
+    """Every dex is an always-on part of the distribution; the bootstrap reads each wheel
     name from SHA256SUMS and fetches it. The existing sums glob already picks up any `.whl`,
-    so both must be checksummed alongside the client wheel. Their versions are independent
-    of the client tag (0.2.13 / 0.1.0 here against a 1.2.3 release)."""
+    so all of them must be checksummed alongside the client wheel. Their versions are
+    independent of the client tag (0.2.13 / 0.1.0 / 0.1.0 against a 1.2.3 release)."""
     _populate_dist_dir(tmp_path)
-    symdex, docdex = _dex_wheels(tmp_path)
+    symdex, docdex, maildex = _dex_wheels(tmp_path)
     make_release.main(["make_release.py", "1.2.3", str(tmp_path)])
     sums = (tmp_path / "SHA256SUMS").read_text()
     assert symdex.name in sums
     assert docdex.name in sums
+    assert maildex.name in sums
 
 
 def test_missing_symdex_wheel_fails_loud(tmp_path):
@@ -241,6 +246,20 @@ def test_missing_docdex_wheel_fails_loud(tmp_path):
     next(tmp_path.glob("firekeep_docdex-*.whl")).unlink()
     assert list(tmp_path.glob("firekeep_symdex-*.whl"))
     with pytest.raises(SystemExit, match="firekeep_docdex"):
+        make_release.main(["make_release.py", "1.2.3", str(tmp_path)])
+    assert not (tmp_path / "latest.json").exists()
+
+
+def test_missing_maildex_wheel_fails_loud(tmp_path):
+    """And the third, asserted the same independent way: with symdex and docdex PRESENT
+    the build must still fail, and the message must name maildex — otherwise a release
+    ships whose bootstrap dies at the maildex fetch on a stranger's machine instead."""
+    _populate_dist_dir(tmp_path)
+    _dex_wheels(tmp_path)
+    next(tmp_path.glob("firekeep_maildex-*.whl")).unlink()
+    assert list(tmp_path.glob("firekeep_symdex-*.whl"))
+    assert list(tmp_path.glob("firekeep_docdex-*.whl"))
+    with pytest.raises(SystemExit, match="firekeep_maildex"):
         make_release.main(["make_release.py", "1.2.3", str(tmp_path)])
     assert not (tmp_path / "latest.json").exists()
 

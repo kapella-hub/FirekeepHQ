@@ -277,13 +277,13 @@ def test_ps1_guards_every_network_fetch_with_try_catch():
         return any(marker in line for marker in fetch_markers)
 
     fetch_indices = [i for i, line in enumerate(lines) if is_fetch_line(line)]
-    # 1 Invoke-RestMethod (latest/latest.json, to resolve the version) + 6 Invoke-WebRequest
-    # (this version's SHA256SUMS, its best-effort .minisig, uv.exe, the wheel, and the two
-    # always-on dex wheels — symdex and docdex) = 7. Was 6 before docdex joined the bundle,
-    # 5 before release signing added the .minisig fetch, 4 before symdex gained its own
-    # fetch-to-a-local-file step, and 3 before the main wheel did (C2's fix) rather than
-    # being installed straight from a URL.
-    assert len(fetch_indices) == 7, "expected exactly 7 network fetches; update this test if that changes"
+    # 1 Invoke-RestMethod (latest/latest.json, to resolve the version) + 7 Invoke-WebRequest
+    # (this version's SHA256SUMS, its best-effort .minisig, uv.exe, the wheel, and the three
+    # always-on dex wheels — symdex, docdex and maildex) = 8. Was 7 before maildex joined the
+    # bundle, 6 before docdex did, 5 before release signing added the .minisig fetch, 4 before
+    # symdex gained its own fetch-to-a-local-file step, and 3 before the main wheel did (C2's
+    # fix) rather than being installed straight from a URL.
+    assert len(fetch_indices) == 8, "expected exactly 8 network fetches; update this test if that changes"
 
     for idx in fetch_indices:
         fetch_line = lines[idx].strip()

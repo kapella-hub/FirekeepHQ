@@ -38,9 +38,9 @@ import pytest
 REPO = Path(__file__).resolve().parents[1]
 SERVICES = ("cortex", "bridge", "sentinel", "relay")
 
-# Only these four build an image from a requirements file. client/, symdex/ and
-# docdex/ are WHEELS installed into a user's virtualenv: pinning a library's
-# transitive deps is wrong and would fight the bootstrap's own resolution.
+# Only these four build an image from a requirements file. client/, symdex/,
+# docdex/ and maildex/ are WHEELS installed into a user's virtualenv: pinning a
+# library's transitive deps is wrong and would fight the bootstrap's own resolution.
 
 packaging_specifiers = pytest.importorskip(
     "packaging.specifiers", reason="needs packaging for specifier matching"
@@ -162,13 +162,13 @@ def test_dockerfile_installs_the_lock_not_the_txt(service: str, dockerfile: str)
 
 
 def test_only_image_services_are_locked() -> None:
-    """client/, symdex/ and docdex/ ship as WHEELS and must NOT be locked.
+    """client/, symdex/, docdex/ and maildex/ ship as WHEELS and must NOT be locked.
 
     Pinning a library's transitive dependencies forces them on every consumer and
     fights the bootstrap's own resolution. Recorded as a test so a future
     well-meaning sweep does not "finish the job".
     """
-    for pkg in ("client", "symdex", "docdex"):
+    for pkg in ("client", "symdex", "docdex", "maildex"):
         assert not (REPO / pkg / "requirements.lock").exists(), (
             f"{pkg}/requirements.lock should not exist — it is a wheel, not an image"
         )

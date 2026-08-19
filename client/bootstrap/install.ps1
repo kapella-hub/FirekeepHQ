@@ -208,7 +208,7 @@ function Get-VenvVersion($VenvPath) {
 
 # The fast path's health probe must prove the venv is COMPLETE, not merely that
 # the client package imports. An install killed between the client wheel and
-# either dex wheel leaves a venv whose python happily reports $V — accepting that
+# any dex wheel leaves a venv whose python happily reports $V — accepting that
 # would flip `current` to a half-installed venv and, worse, keep taking the fast
 # path on every later run, so the breakage would never route back through the
 # full provision that repairs it. firekeep.exe + every bundled package's import
@@ -219,7 +219,7 @@ function Test-VenvComplete($VenvPath) {
     if (-not (Test-Path (Join-Path $VenvPath 'Scripts\firekeep.exe'))) { return $false }
     $Py = Join-Path $VenvPath 'Scripts\python.exe'
     if (-not (Test-Path $Py)) { return $false }
-    & $Py -I -c "import firekeep_client, firekeep_symdex, firekeep_docdex" 2>$null | Out-Null
+    & $Py -I -c "import firekeep_client, firekeep_symdex, firekeep_docdex, firekeep_maildex" 2>$null | Out-Null
     return ($LASTEXITCODE -eq 0)
 }
 
@@ -406,6 +406,25 @@ try {
 }
 Verify-AgainstSums $DocdexPath $DocdexWheel
 
+# --- 4d. the maildex wheel, same hoist and the same reasoning as 4b/4c -------
+# Maildex (the mail dex) is bundled exactly like symdex and docdex: name and
+# hash read from SHA256SUMS, fetched to a local file, verified — all of it above
+# the --clear, because ONE bundled wheel fetched below that line is enough to
+# strand `current` on a gutted venv. It versions independently of the client and
+# of the other dexes, so the release names the exact wheel and this script never
+# guesses it.
+$MaildexMatch = Select-String -Path $SumsPath -Pattern 'firekeep_maildex-[0-9][^ ]*\.whl' | Select-Object -First 1
+if (-not $MaildexMatch) { Die "SHA256SUMS lists no firekeep_maildex wheel - release is incomplete" }
+$MaildexWheel = $MaildexMatch.Matches[0].Value
+Write-Host "firekeep: fetching $MaildexWheel"
+$MaildexPath = Join-Path $Bin $MaildexWheel
+try {
+    Invoke-WebRequest -UseBasicParsing -Uri "$VBase/$MaildexWheel" -OutFile $MaildexPath
+} catch {
+    Die "download failed: $VBase/$MaildexWheel"
+}
+Verify-AgainstSums $MaildexPath $MaildexWheel
+
 # --- 5. standalone CPython + venv at its FINAL versioned path ----------------
 # venvs/<V> is fresh on a normal update (the running install lives in a DIFFERENT
 # versioned dir, or in the legacy ~/.firekeep/venv), so live sessions are never in
@@ -482,16 +501,17 @@ if ($LASTEXITCODE -ne 0) { Die "could not provision Python $PythonVersion" }
 # docdex's wheel declares `firekeep-client>=0.1.48`, and `--reinstall`
 # reinstalls the ENTIRE resolution set — a separate docdex step re-resolved
 # firekeep-client from the INDEX and silently replaced the local wheel with
-# whatever PyPI's newest happened to be. With all three local files in one
+# whatever PyPI's newest happened to be. With all four local files in one
 # request, each local wheel IS the resolution for its own name; only genuine
-# third-party deps come from the index.
+# third-party deps come from the index. Every dex added to the bundle joins THIS
+# line — never a step of its own, whatever the ordering argument for it looks like.
 #
 # Every dex wheel ships with every install; REGISTRATION (~/.firekeep/dexes.json)
 # is what decides whether a dex does anything. Gating the INSTALL instead would
 # put a second, unverified download path in front of a user who later opts in —
 # the signed supply chain is the thing that must not become optional.
-Write-Host "firekeep: installing $WheelName + $SymdexWheel + $DocdexWheel"
-& $Uv pip install --python $TargetVenv --reinstall $WheelPath $SymdexPath $DocdexPath
+Write-Host "firekeep: installing $WheelName + $SymdexWheel + $DocdexWheel + $MaildexWheel"
+& $Uv pip install --python $TargetVenv --reinstall $WheelPath $SymdexPath $DocdexPath $MaildexPath
 if ($LASTEXITCODE -ne 0) { Die "wheel install failed" }
 
 # --- 6d. the install must have produced a runnable firekeep -------------------

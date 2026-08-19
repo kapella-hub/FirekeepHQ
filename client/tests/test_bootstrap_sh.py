@@ -71,24 +71,29 @@ def artifact_server(tmp_path):
     wheel_name = f"firekeep_client-{VERSION}-py3-none-any.whl"
     wheel = vdir / wheel_name
     wheel.write_bytes(b"stub wheel bytes\n")
-    # install.sh steps 7b/7c hard-require a firekeep_symdex AND a firekeep_docdex entry in
-    # SHA256SUMS (each dies "release is incomplete" without one) and fetch+verify them like
-    # the client wheel. Both dexes version independently of the client; the stub uv's `pip
-    # install` ignores the contents.
+    # install.sh steps 5b/5c/5d hard-require a firekeep_symdex, a firekeep_docdex AND a
+    # firekeep_maildex entry in SHA256SUMS (each dies "release is incomplete" without one)
+    # and fetch+verify them like the client wheel. Every dex versions independently of the
+    # client; the stub uv's `pip install` ignores the contents.
     symdex_name = "firekeep_symdex-0.1.0-py3-none-any.whl"
     symdex = vdir / symdex_name
     symdex.write_bytes(b"stub symdex wheel bytes\n")
     docdex_name = "firekeep_docdex-0.1.0-py3-none-any.whl"
     docdex = vdir / docdex_name
     docdex.write_bytes(b"stub docdex wheel bytes\n")
+    maildex_name = "firekeep_maildex-0.1.0-py3-none-any.whl"
+    maildex = vdir / maildex_name
+    maildex.write_bytes(b"stub maildex wheel bytes\n")
 
     digest_uv = hashlib.sha256(uv.read_bytes()).hexdigest()
     digest_wheel = hashlib.sha256(wheel.read_bytes()).hexdigest()
     digest_symdex = hashlib.sha256(symdex.read_bytes()).hexdigest()
     digest_docdex = hashlib.sha256(docdex.read_bytes()).hexdigest()
+    digest_maildex = hashlib.sha256(maildex.read_bytes()).hexdigest()
     (vdir / "SHA256SUMS").write_text(
         f"{digest_uv}  uv-{target}\n{digest_wheel}  {wheel_name}\n"
         f"{digest_symdex}  {symdex_name}\n{digest_docdex}  {docdex_name}\n"
+        f"{digest_maildex}  {maildex_name}\n"
     )
 
     (root / "latest" / "latest.json").write_text(json.dumps({
@@ -236,16 +241,19 @@ def test_install_sh_distinguishes_a_missing_sums_entry_from_a_mismatch(tmp_path,
     _assert_nothing_provisioned(tmp_path)
 
 
-def test_install_sh_refuses_a_release_that_lists_no_docdex_wheel(tmp_path, artifact_server):
-    """Both dex wheels are always installed, so a release missing either one is a
-    release this installer cannot complete. It must SAY the release is incomplete and
-    stop — not install a half-kit whose gateway then fails to mount what the registry
-    says is there. Dropping the docdex line leaves uv, the client wheel and symdex
-    intact, so the run gets all the way to the docdex lookup before dying."""
+@pytest.mark.parametrize("dex", ["firekeep_docdex", "firekeep_maildex"])
+def test_install_sh_refuses_a_release_that_lists_no_dex_wheel(tmp_path, artifact_server, dex):
+    """Every dex wheel is always installed, so a release missing any one of them is a
+    release this installer cannot complete. It must SAY the release is incomplete, NAME
+    the wheel, and stop — not install a half-kit whose gateway then fails to mount what
+    the registry says is there. Each dex is dropped on its own so a shared 'some dex is
+    missing' check cannot pass while the bootstrap dies at a different fetch: dropping
+    one line leaves uv, the client wheel and every other dex intact, so the run reaches
+    that dex's lookup before dying."""
     sums = _sums_path(artifact_server)
     sums.write_text("".join(
         f"{line}\n" for line in sums.read_text().splitlines()
-        if "firekeep_docdex-" not in line
+        if f"{dex}-" not in line
     ))
     proc = subprocess.run(
         ["sh", str(BOOTSTRAP)], capture_output=True, text=True,
@@ -255,7 +263,7 @@ def test_install_sh_refuses_a_release_that_lists_no_docdex_wheel(tmp_path, artif
     )
     assert proc.returncode != 0
     assert "release is incomplete" in proc.stderr, proc.stderr
-    assert "firekeep_docdex" in proc.stderr, proc.stderr
+    assert dex in proc.stderr, proc.stderr
     _assert_nothing_provisioned(tmp_path)
 
 

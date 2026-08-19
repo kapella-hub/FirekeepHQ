@@ -1,11 +1,11 @@
 # Client release — GitHub port of the .gitlab-ci.yml `client-release` job.
 #
 # Triggered by a `client-v<X.Y.Z>` tag. Builds the client + dex wheels (symdex,
-# docdex), mirrors the pinned uv binaries, runs make_release.py (SHA256SUMS +
+# docdex, maildex), mirrors the pinned uv binaries, runs make_release.py (SHA256SUMS +
 # latest.json), and publishes to the `gh-pages` branch in the exact layout the
 # bootstrap fetches:
 #   <version>/  -> firekeep_client-*.whl, firekeep_symdex-*.whl,
-#                  firekeep_docdex-*.whl, uv-*, SHA256SUMS
+#                  firekeep_docdex-*.whl, firekeep_maildex-*.whl, uv-*, SHA256SUMS
 #                  (+ SHA256SUMS.minisig on signed builds; + install.sh/install.ps1,
 #                   which the sums list — a version dir must serve what its sums name)
 #   latest/     -> install.sh, install.ps1, latest.json (+ signing.pub on signed builds)
@@ -196,6 +196,7 @@ jobs:
           (cd client && python -m build --wheel --outdir ../dist)
           (cd symdex && python -m build --wheel --outdir ../dist)
           (cd docdex && python -m build --wheel --outdir ../dist)
+          (cd maildex && python -m build --wheel --outdir ../dist)
 
       - name: Fresh-wheel MCP compatibility smoke
         run: |
@@ -336,7 +337,7 @@ jobs:
           # served" is to serve them: a version directory whose sums describe
           # files it does not carry is a sums file that lies about its own tree.
           cp dist/firekeep_client-*.whl dist/firekeep_symdex-*.whl \
-             dist/firekeep_docdex-*.whl dist/uv-* \
+             dist/firekeep_docdex-*.whl dist/firekeep_maildex-*.whl dist/uv-* \
              dist/SHA256SUMS dist/install.sh dist/install.ps1 "gh/${VERSION}/"
           # The signature rides with its SHA256SUMS. Conditional because unsigned
           # builds (no FIREKEEP_SIGNING_KEY secret yet) produce no .minisig — the
@@ -457,12 +458,12 @@ jobs:
           fi
 
   # --- PyPI (Trusted Publishing / OIDC) --------------------------------------
-  # Publishes firekeep-client, firekeep-symdex and firekeep-docdex to PyPI so `pip install
-  # firekeep-client` works and the official MCP registry can reference a public
-  # package (server.json at the repo root; docs/RELEASE-GITHUB.md "PyPI and the
-  # MCP registry"). No token secret: OIDC trusted publishing, ONE MATRIX LEG
-  # PER PACKAGE with its own GitHub environment ("pypi" for the client,
-  # "pypi-symdex" for symdex, "pypi-docdex" for docdex) — PyPI refuses two
+  # Publishes firekeep-client, firekeep-symdex, firekeep-docdex and firekeep-maildex to
+  # PyPI so `pip install firekeep-client` works and the official MCP registry can
+  # reference a public package (server.json at the repo root; docs/RELEASE-GITHUB.md
+  # "PyPI and the MCP registry"). No token secret: OIDC trusted publishing, ONE MATRIX LEG
+  # PER PACKAGE with its own GitHub environment ("pypi" for the client, "pypi-symdex"
+  # for symdex, "pypi-docdex" for docdex, "pypi-maildex" for maildex) — PyPI refuses two
   # pending publishers sharing an identical (owner, repo, workflow, environment)
   # tuple, so the environment is the disambiguator, and it also keeps each leg's
   # OIDC token scoped to exactly one project. Each environment must exist in this
@@ -470,7 +471,7 @@ jobs:
   # PyPI. A missing or misconfigured publisher fails its leg
   # loudly without touching the dist-host publication above — the same
   # misconfiguration ethos as release signing. skip-existing only on the DEX
-  # legs, which bump on their own cadences: an already-published symdex/docdex
+  # legs, which bump on their own cadences: an already-published dex
   # version is a no-op, not an error, while a re-tagged client version still
   # fails (PyPI versions are immutable, and re-tagging a published client
   # version is a mistake worth hearing about).
@@ -489,6 +490,9 @@ jobs:
             skip_existing: true
           - package_dir: docdex
             environment: pypi-docdex
+            skip_existing: true
+          - package_dir: maildex
+            environment: pypi-maildex
             skip_existing: true
     environment: ${{ matrix.environment }}
     permissions:

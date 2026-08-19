@@ -191,7 +191,7 @@ def main(argv: list[str]) -> int:
     # complete. Dex versions are independent of the client tag AND of each other, so this
     # validates presence + uniqueness, NOT a match to `version`. Checked one dex at a
     # time so the failure names the wheel that is actually wrong.
-    for dex in ("firekeep_symdex", "firekeep_docdex"):
+    for dex in ("firekeep_symdex", "firekeep_docdex", "firekeep_maildex"):
         dex_wheels = list(out_dir.glob(f"{dex}-*.whl"))
         if len(dex_wheels) != 1:
             raise SystemExit(

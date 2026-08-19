@@ -24,12 +24,13 @@ pytestmark = [
 ]
 
 CLIENT = Path(__file__).resolve().parents[1]
-# The dex packages live beside client/ in the monorepo. install.sh steps 7b/7c and
-# install.ps1 steps 6b/6c hard-require a firekeep_symdex-*.whl AND a firekeep_docdex-*.whl
-# entry in the release SHA256SUMS (they die "release is incomplete" otherwise), so the
-# release fixture below MUST build and serve both alongside the client wheel — a
-# dex-less release is exactly the broken shape those steps refuse to install.
-DEXES = (CLIENT.parent / "symdex", CLIENT.parent / "docdex")
+# The dex packages live beside client/ in the monorepo. install.sh steps 5b/5c/5d and
+# install.ps1 steps 4b/4c/4d hard-require a firekeep_symdex-*.whl, a firekeep_docdex-*.whl
+# AND a firekeep_maildex-*.whl entry in the release SHA256SUMS (they die "release is
+# incomplete" otherwise), so the release fixture below MUST build and serve all of them
+# alongside the client wheel — a dex-less release is exactly the broken shape those steps
+# refuse to install.
+DEXES = (CLIENT.parent / "symdex", CLIENT.parent / "docdex", CLIENT.parent / "maildex")
 
 
 def _run_bootstrap(args, env, **kwargs):
@@ -91,12 +92,12 @@ def release(tmp_path):
     subprocess.run(["python3", "-m", "build", "--wheel", "--outdir", str(dist), str(CLIENT)],
                    check=True, capture_output=True)
     # The dex wheels are not optional: the bootstraps read each name straight out of
-    # SHA256SUMS and die "release is incomplete" if either is missing, and make_release.py's
+    # SHA256SUMS and die "release is incomplete" if any is missing, and make_release.py's
     # presence guards refuse to build a release without them. Build them into the SAME dist
     # dir BEFORE make_release runs — it checksums every *.whl it finds there, so this both
-    # feeds SHA256SUMS the required firekeep_symdex-/firekeep_docdex- entries AND satisfies
-    # those guards. (make_release's own count check globs firekeep_client-*.whl specifically,
-    # so the extra wheels here do not trip it.)
+    # feeds SHA256SUMS the required firekeep_symdex-/firekeep_docdex-/firekeep_maildex-
+    # entries AND satisfies those guards. (make_release's own count check globs
+    # firekeep_client-*.whl specifically, so the extra wheels here do not trip it.)
     for dex in DEXES:
         subprocess.run(["python3", "-m", "build", "--wheel", "--outdir", str(dist), str(dex)],
                        check=True, capture_output=True)
@@ -124,7 +125,7 @@ def release(tmp_path):
     for name in ("install.sh", "install.ps1", "latest.json"):
         shutil.copy(dist / name, served / "latest" / name)
     for pattern in ("firekeep_client-*.whl", "firekeep_symdex-*.whl",
-                    "firekeep_docdex-*.whl", "uv-*"):
+                    "firekeep_docdex-*.whl", "firekeep_maildex-*.whl", "uv-*"):
         for p in dist.glob(pattern):
             shutil.copy(p, served / VERSION / p.name)
     shutil.copy(dist / "SHA256SUMS", served / VERSION / "SHA256SUMS")
