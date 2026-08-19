@@ -74,7 +74,9 @@ doctor` shows an `embeddings` WARN. `bash install.sh --wait-for-models` blocks.
 
 ### Install the client kit on a workstation
 The kit installs to `~/.firekeep` (standalone CPython + config, `0600`) and renders the
-adapters for every runtime — Claude Code, Codex, kiro, OpenCode, plus a `generic` "any MCP
+adapters for every runtime — Claude Code, Codex, kiro, OpenCode, Claude Desktop (the consumer
+app: auto-mounted into `claude_desktop_config.json` when its config dir exists — the generic
+tier with the friction removed, no hooks), plus a `generic` "any MCP
 client" tier (`--runtime generic --agents-md <path>`, or one skippable wizard question) that
 prints a paste-in gateway snippet and delivers the MCP tools + on-connect instructions but no
 hook-driven lifecycle (no auto-briefing / pre-edit-block / stop→learn / checkpoint / presence).
@@ -161,7 +163,7 @@ When adding, removing, or renaming MCP tools, REST endpoints, env vars, or confi
 - `docker-compose.yml` — env vars
 - `docs/guides/<area>.md` — the feature guide for the area you changed (config tables and
   behaviour notes moved there; several tests assert the documented default matches the code)
-- `client/firekeep_client/adapters/*` + `client/firekeep_client/cli.py` — native-config render + installer next-steps output (runtimes: claude, codex, kiro, opencode, and the `generic` "any MCP client" tier; keep the per-runtime degradation columns in `client/firekeep_client/contract/matrix.py` honest)
+- `client/firekeep_client/adapters/*` + `client/firekeep_client/cli.py` — native-config render + installer next-steps output (runtimes: claude, codex, kiro, opencode, claude-desktop, and the `generic` "any MCP client" tier; keep the per-runtime degradation columns in `client/firekeep_client/contract/matrix.py` honest)
 - `dashboard/index.html` — UI references
 - `CLAUDE.md` — documentation
 

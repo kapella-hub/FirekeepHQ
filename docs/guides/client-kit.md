@@ -144,7 +144,7 @@ discipline as the add.
 **Developers (from a checkout):**
 ```bash
 cd client && ./install              # POSIX; .\install.ps1 on Windows
-firekeep install --runtime claude      # re-render one runtime: claude | codex | kiro | opencode | all
+firekeep install --runtime claude      # re-render one runtime: claude | codex | kiro | opencode | claude-desktop | all
 firekeep install --runtime generic --agents-md ~/.cursor/rules   # any other MCP client: print gateway snippet + manage that rules file
 # the dex wheels (firekeep-symdex, firekeep-docdex) install automatically — no flag needed;
 # whether they MOUNT is the dex registry's call: `firekeep dex add symdex`
@@ -297,7 +297,8 @@ firekeep uninstall --server     # also tear down the server stack and DELETE ALL
 
 It first prints exactly what it will remove and asks to proceed (`--yes`/`-y` skips the
 prompt; a non-interactive session with no `--yes` declines rather than block on input). Then,
-in order: (1) `unrender()` on every adapter it renders — claude, codex, kiro, opencode —
+in order: (1) `unrender()` on every adapter it renders — claude, codex, kiro, opencode, plus
+claude-desktop when the app's config dir exists —
 which removes only the Firekeep-owned MCP/hook blocks and leaves foreign entries intact;
 (2) `pathenv.remove_from_path` strips the shell-rc marker block / `HKCU\Environment` entry and
 deletes `~/.firekeep/shims`; (3) delete `~/.firekeep` itself — venvs, config, bin, logs,
@@ -354,13 +355,13 @@ line — never by appending a second block, whose next render swallowed everythi
 orphan and appendix.
 
 **`--runtime` where the process knows it.** Each adapter renders its MCP entry as
-`firekeep gateway --runtime <claude|codex|kiro|opencode>`, and the hook dispatcher takes the
+`firekeep gateway --runtime <claude|codex|kiro|opencode|claude-desktop>`, and the hook dispatcher takes the
 same flag — the two places a kit process actually knows which runtime it serves, which is
 the only honest place to attach the label (the server guessing from traffic shape would be
 inference dressed as fact).
 
 **Five wire headers.** The gateway attaches them to every proxied call and the hook cores to
-their server calls: `X-Firekeep-Runtime` (claude|codex|kiro|opencode), `X-Firekeep-Client`
+their server calls: `X-Firekeep-Runtime` (claude|codex|kiro|opencode|claude-desktop), `X-Firekeep-Client`
 (wheel version), `X-Firekeep-Instr-Rendered` (a re-hash of the on-disk block at process
 start, or `absent` — the client re-hashes what is actually on disk rather than trusting its
 own stamp, so a hand-edited block reports its true hash), `X-Firekeep-Instr-Expected` (the
@@ -420,6 +421,44 @@ the intended presence owner, but nothing auto-starts it — a generic user runs
 runtime; the difference is that generic owns no native config file at all, which is why its
 config half is print-only. Nothing here enforces anything, and the docs and site must never
 imply it does.
+
+## Claude Desktop (`--runtime claude-desktop`) — the first non-coding host
+
+Claude Desktop (the consumer chat app, not Claude Code) runs local stdio MCP servers from
+one documented config file, so it gets a bespoke adapter
+(`adapters/claude_desktop.py`) that is exactly **the generic tier with the friction
+removed**: the same gateway entry generic prints for pasting is *written* into
+`claude_desktop_config.json` (`%APPDATA%\Claude\` on Windows, `~/Library/Application
+Support/Claude/` on macOS, `$XDG_CONFIG_HOME/Claude/` elsewhere). The payoff is the
+memory boundary crossing out of coding tools: a decision made chatting with Claude
+Desktop is recallable in Claude Code the next morning, and vice versa — same Keep, same
+tools, same member identity.
+
+**Detection, not ceremony.** The plain install fan-out (`firekeep install`, no
+`--runtime`) mounts it only when the app's config directory exists
+(`app_present()`) — machines that never ran Claude Desktop get no orphan config
+written for another vendor's app. Explicit `--runtime claude-desktop` bypasses the
+gate for a user installing Firekeep ahead of the app. Uninstall removes only the
+`firekeep` key from `mcpServers` and never deletes the file — it belongs to the app.
+
+**JSON forces parse-and-set, and the corrupt case is the one that matters.** JSON has
+no marker-block syntax, so the adapter parses the config, sets `mcpServers.firekeep`,
+and re-serializes — every other key survives at the value level. A file that does not
+parse is REFUSED loudly and left byte-identical (the install loop has no per-runtime
+catch, so the refusal must not raise): clobbering a consumer app's config because we
+could not read it would be the worst outcome an install can produce. The restart nag
+("restart the app to load Firekeep") prints only when the file actually changed —
+render re-runs on every `firekeep update`, and a nag for a byte-identical write would
+train users to ignore it.
+
+**Capabilities: the generic column, by construction.** No hooks (the app exposes no
+hook surface), no instruction file (it reads no rules file the kit could own — the
+protocol's only channel is the gateway handshake, which every runtime gets), presence
+via the manually-started sidecar, and `firekeep doctor` gains a `claude-desktop-mcp`
+row that is silent unless the config exists *and* mentions firekeep — doctor never
+warns about a runtime the user never installed. The matrix column
+(`contract/matrix.py`) pins every cell to the generic value; the day a cell claims
+more, either Claude Desktop grew hooks or the cell is lying.
 
 **Contract matrix has a generic column.** `contract/matrix.py`'s `RUNTIMES` lists `generic`
 last — it is what a runtime degrades TO, not a peer of the four — and every capability row

@@ -403,6 +403,7 @@ session.
 | kiro | `agentSpawn` hook | **automatic** when stale |
 | OpenCode | rendered JS plugin bridge | **automatic** when stale |
 | Codex | MCP only — no hook surface | **none** — run `firekeep docdex sync` |
+| Claude Desktop | MCP only — no hook surface | **none** — run `firekeep docdex sync` |
 | generic (any MCP client) | MCP only — no hook surface | **none** — run `firekeep docdex sync` |
 
 An OS-level scheduler (Task Scheduler / launchd / systemd timer) is round 2, and
