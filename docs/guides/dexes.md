@@ -490,6 +490,63 @@ Not built, not implied, and deliberately named so nobody has to discover it:
 - **Provenance-linked derivative deletion** (see I4 above).
 - **Encryption from the server operator** (see the threat boundary above).
 
+## Maildex — the email dex (round 1, client 1.1.0)
+
+Registry consumer #3, `kind: ingest-client` on the docdex chassis, **pure
+stdlib** (no third-party dependencies at all). A human connects a mailbox
+read-only; recent mail surfaces through ordinary recall, always private to
+that member. Design record with the full invariant set:
+[`docs/superpowers/specs/2026-08-19-maildex-design.md`](../superpowers/specs/2026-08-19-maildex-design.md).
+
+```
+firekeep maildex add imap.gmail.com you@example.com   # prompts for an app password
+firekeep maildex list
+firekeep maildex sync [--account <id>]
+firekeep maildex remove <id>                          # deletes replicas AND the vault key
+```
+
+The invariants, each structural rather than promised:
+
+- **M1 — always member-private.** No `--shared` flag exists; every chunk is
+  `visibility: "member"` with no code path that writes anything else.
+- **M2 — read-only, server-enforced.** Every mailbox open is IMAP `EXAMINE`
+  (`select(readonly=True)`), every fetch `BODY.PEEK[]` — even the `\Seen`
+  flag is never set, and no mutating IMAP verb or SMTP exists anywhere in
+  the wheel. A source-level guard test enumerates the connection methods the
+  package may touch and fails the build on any addition.
+- **M3 — the app password lives only in the Keep's vault** (`maildex.<id>`,
+  member-owned: written under your dex scope, readable by you and admin
+  only, invisible in teammates' vault listings, deleted with the account).
+  The client keeps nothing on disk; each sync retrieves it into memory for
+  the duration of the connection. Revoke at the provider or `vault_delete`
+  — either alone suffices.
+- **M4 — email is untrusted input, the archetype.** Every chunk carries
+  `untrusted_content`; retrieved mail is evidence, never instruction.
+- **M5 — the round-1 deletion gap, disclosed.** `remove` bulk-deletes the
+  account's replicas immediately. What round 1 does NOT do: mirror
+  provider-side deletions — **mail expunged at your provider stays in the
+  corpus** until you `remove` and re-`add` the mailbox (or round 2's
+  expunge sync ships). `list` restates this every time.
+- **M7 — UIDVALIDITY honored**: a provider-side folder rebuild re-baselines
+  that folder; no silent gaps, no duplicate floods.
+
+Caps, disclosed (env-overridable): 90-day backfill
+(`FIREKEEP_MAILDEX_BACKFILL_DAYS`) · 500 messages/sync
+(`..._MAX_PER_SYNC`, continues from the watermark next run) · 200 KB
+extracted/message (`..._MAX_MESSAGE_KB`, truncated + flagged) · 180 s
+ingest budget (`..._INGEST_TIMEOUT_SECONDS`, the docdex timed-out ≠
+unreachable semantics) · attachments are NOT ingested (filenames listed in
+metadata only) · folders default to INBOX + Sent (`add --folders`
+overrides; a folder the server does not have is skipped and said, not
+fatal). TLS is stdlib default verification with **no insecure flag** —
+a self-signed IMAP endpoint needs its CA in the trust store or
+`SSL_CERT_FILE`. Sync-on-session-start coverage matches docdex's table;
+`FIREKEEP_NO_AUTO_SYNC` suspends both background syncs with one switch.
+
+Out of scope for round 1, stated: OAuth (Gmail API / MS Graph — after the
+capability broker), provider-deletion mirroring (M5), attachment content,
+shared mail, POP3, threading beyond In-Reply-To metadata.
+
 ## Troubleshooting
 
 **"symdex tools disappeared after an update."** Check `firekeep dex list`. An
