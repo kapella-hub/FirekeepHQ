@@ -11,7 +11,8 @@ CAN drift between the two sides —
   `firekeep` for every other command;
 * the human CLI works whether or not maildex is REGISTERED as a dex — registration
   gates the background trigger and the doctor accounting, never a human's control over
-  their own mailboxes.
+  their own mailboxes — and `add` registers it on the way past, so that gate is never
+  something a person has to find out about.
 
 Unlike test_cli_docdex, this suite delegates to a STUB rather than the real wheel: the
 client must not import `firekeep_maildex` outside the lazy block, and the wheel is not
@@ -223,3 +224,105 @@ def test_the_human_cli_works_when_maildex_is_registered(maildex_home, delegated)
     dexes.add("maildex")
     assert cli.main(["maildex", "list"]) == 0
     assert delegated
+
+
+# --- add registers the dex (ROADMAP §5, 2026-08-19: ceremony retired) --------
+#
+# maildex is deliberately not in the default set symdex and docdex are now in:
+# a connector with no account indexes nothing. Connecting the account is the
+# moment it stops being inert, so that is where the registration goes — nobody
+# should have to learn what a dex is to get the mail they just connected.
+
+
+def test_add_registers_the_dex(maildex_home, delegated):
+    assert dexes.read_registry() == {}
+    assert cli.main(["maildex", "add", "imap.example.com", "you@example.com"]) == 0
+    assert "maildex" in dexes.read_registry()
+
+
+def test_add_registers_before_it_delegates(maildex_home, monkeypatch):
+    """The ordering is what makes the wheel's own 'not registered, nothing syncs
+    automatically' nudge disappear: the wheel asks the live registry at the end
+    of its `add`, so registering afterwards would print the nudge and then make
+    it false."""
+    seen: list = []
+    package = types.ModuleType("firekeep_maildex")
+    module = types.ModuleType("firekeep_maildex.cli")
+    module.main = lambda argv, **kw: seen.append(dict(dexes.read_registry())) or 0
+    package.cli = module
+    monkeypatch.setitem(sys.modules, "firekeep_maildex", package)
+    monkeypatch.setitem(sys.modules, "firekeep_maildex.cli", module)
+
+    assert cli.main(["maildex", "add", "imap.example.com", "you@example.com"]) == 0
+    assert "maildex" in seen[0]
+
+
+def test_add_says_it_registered_once(maildex_home, delegated, capsys):
+    """On the run that changes something, and not on the ones that do not — a
+    line repeated on every `add` is noise about a fact already acted on."""
+    cli.main(["maildex", "add", "imap.example.com", "you@example.com"])
+    assert "registered maildex" in _out(capsys)
+
+    cli.main(["maildex", "add", "imap.example.com", "other@example.com"])
+    assert "registered maildex" not in _out(capsys)
+
+
+def test_add_keeps_the_original_stamp_on_a_second_account(maildex_home, delegated):
+    cli.main(["maildex", "add", "imap.example.com", "you@example.com"])
+    first = dexes.read_registry()["maildex"]["added_at"]
+    cli.main(["maildex", "add", "imap.example.com", "other@example.com"])
+    assert dexes.read_registry()["maildex"]["added_at"] == first
+
+
+def test_add_leaves_other_dexes_alone(maildex_home, delegated):
+    dexes.add("symdex")
+    cli.main(["maildex", "add", "imap.example.com", "you@example.com"])
+    assert sorted(dexes.read_registry()) == ["maildex", "symdex"]
+
+
+def test_list_and_sync_do_not_register(maildex_home, delegated):
+    """Only connecting a mailbox is consent to index one. Reading the accounts
+    you already have, or syncing them by hand, is not — and a `sync` that
+    registered would quietly re-enable the background job someone turned off."""
+    assert cli.main(["maildex", "list"]) == 0
+    assert cli.main(["maildex", "sync"]) == 0
+    assert dexes.read_registry() == {}
+
+
+def test_remove_does_not_register(maildex_home, delegated):
+    assert cli.main(["maildex", "remove", "abc123"]) == 0
+    assert dexes.read_registry() == {}
+
+
+def test_a_usage_error_registers_nothing(maildex_home, capsys):
+    """`maildex add` with a missing positional never reaches the wheel, so it
+    must not leave a registration behind either."""
+    assert cli.main(["maildex", "add", "imap.example.com"]) == 2
+    assert dexes.read_registry() == {}
+
+
+def test_a_missing_wheel_registers_nothing(maildex_home, monkeypatch, capsys):
+    """Registering a dex whose wheel is absent buys a doctor `warn` row and a
+    backend that cannot start — the exact state `firekeep dex add` refuses to
+    create."""
+    monkeypatch.setitem(sys.modules, "firekeep_maildex", None)
+    assert cli.main(["maildex", "add", "imap.example.com", "you@example.com"]) == 1
+    assert NOT_INSTALLED in _out(capsys)
+    assert dexes.read_registry() == {}
+
+
+def test_a_registry_that_cannot_be_written_does_not_block_the_account(
+    maildex_home, delegated, monkeypatch, capsys
+):
+    """A read-only home costs the BACKGROUND sync, which one command repairs. It
+    must not cost the human the thing they actually asked for — unlike `firekeep
+    dex add`, where writing the registry IS the whole job."""
+    def _boom(entries):
+        raise OSError("read-only home")
+
+    monkeypatch.setattr(dexes, "write_registry", _boom)
+    assert cli.main(["maildex", "add", "imap.example.com", "you@example.com"]) == 0
+    assert delegated[0][0] == ["add", "imap.example.com", "you@example.com"]
+    out = _out(capsys)
+    assert "could not register maildex" in out
+    assert "firekeep dex add maildex" in out  # names the repair

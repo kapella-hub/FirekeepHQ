@@ -1866,6 +1866,32 @@ def cmd_docdex(args) -> int:
         return int(exc.code or 0)
 
 
+def _register_maildex() -> None:
+    """Register maildex, if it is not already, on the way into `maildex add`.
+
+    Says so exactly once — on the run that changes something. A line printed on
+    every subsequent `add` would be noise about a fact the user already acted on.
+
+    Never fatal. Connecting a mailbox is the thing the human asked for, and a
+    registry that cannot be written (a read-only home, a full disk) must not take
+    that down with it — it costs the BACKGROUND sync, which is recoverable with
+    one command, and the account still lands. So this reports and continues where
+    `firekeep dex add` would exit non-zero: there, writing the registry IS the
+    whole job.
+    """
+    try:
+        if "maildex" in dexes.read_registry():
+            return
+        dexes.add("maildex")
+    except OSError as exc:
+        print(f"firekeep: could not register maildex ({exc}) — the account below "
+              f"is still added, but nothing will sync it in the background until "
+              f"`firekeep dex add maildex` succeeds", file=sys.stderr)
+        return
+    print("firekeep: registered maildex — mail from the account below is indexed "
+          "for you (and only you) from the next agent session.")
+
+
 def cmd_maildex(args) -> int:
     """`firekeep maildex add|list|sync|remove` — the bridge onto the maildex wheel.
 
@@ -1881,10 +1907,15 @@ def cmd_maildex(args) -> int:
     module-level import would take out every OTHER firekeep command on a kit that
     does not have it, and would break the stdlib-only client spine besides.
 
-    Registration is NOT checked. Mailbox control is a human's, and it works whether or
-    not `firekeep dex add maildex` has been run — registration gates the background
-    sync trigger and the doctor accounting, never a person's ability to say which of
-    their own mailboxes the Keep may read.
+    Registration is never REQUIRED. Mailbox control is a human's, and every action
+    here works whether or not maildex is a registered dex — registration gates the
+    background sync trigger and the doctor accounting, never a person's ability to
+    say which of their own mailboxes the Keep may read. `add` goes one step further
+    and registers it for them (ROADMAP §5, 2026-08-19: no ceremony). maildex is not
+    default-on the way symdex and docdex are, because a connector with no account
+    indexes nothing — connecting the account is exactly the moment it stops being
+    inert, so that is where the registration belongs. `firekeep dex remove maildex`
+    still turns it off, and leaves the account alone.
     """
     action = getattr(args, "action", None) or "list"
     target = (getattr(args, "target", None) or "").strip()
@@ -1911,6 +1942,7 @@ def cmd_maildex(args) -> int:
 
     argv = [action]
     if action == "add":
+        _register_maildex()
         argv += [target, username]
         folders = getattr(args, "folders", None)
         if folders:
