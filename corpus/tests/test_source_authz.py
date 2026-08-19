@@ -155,7 +155,8 @@ class TestSourceDex:
     def test_scope_table_matches_the_dex_ids(self):
         # The plan's table, derived from the store's dex ids so the record's
         # `dex` field and the API gate can never disagree.
-        assert corpus_api._DEX_SCOPE_PREFIXES == {"docdex:": "dex:docdex"}
+        assert corpus_api._DEX_SCOPE_PREFIXES == {
+            "docdex:": "dex:docdex", "maildex:": "dex:maildex"}
 
 
 # ---------------------------------------------------------------------------
