@@ -51,7 +51,7 @@ _METADATA_MAX_JSON_CHARS = 2048
 class IngestRequest(BaseModel):
     content: str = Field(..., min_length=1, description="Document text to ingest")
     source_name: str = Field(default="Untitled", max_length=500)
-    source_type: str = Field(default="text", pattern=r"^(text|wiki|jira|api-doc|document)$")
+    source_type: str = Field(default="text", pattern=r"^(text|wiki|jira|api-doc|document|email)$")
     visibility: Literal["workspace", "member"] = "workspace"
     metadata: dict[str, str] = Field(default_factory=dict)
 

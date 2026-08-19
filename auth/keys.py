@@ -67,6 +67,7 @@ SCOPES = {
     # `create_key` rejects any scope absent here — an unlisted dex scope is
     # therefore unmintable, which silently blocks the legitimate dex client.
     "dex:docdex",
+    "dex:maildex",
     "admin",
 }
 ENROLLABLE_SCOPES: frozenset[str] = frozenset(SCOPES - {"admin", "*"})

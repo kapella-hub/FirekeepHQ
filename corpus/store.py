@@ -34,7 +34,7 @@ _SOURCE_INDEX_KEY = "corpus:source_index"  # Sorted set: source_name scored by i
 # Dex ids whose `<dex>:`-prefixed source names are reserved (Docdex §4.3).
 # corpus/api.py derives its scope gate from this set, so the record's `dex`
 # field and the gate can never disagree.
-KNOWN_DEX_IDS = frozenset({"docdex"})
+KNOWN_DEX_IDS = frozenset({"docdex", "maildex"})
 
 
 # ---------------------------------------------------------------------------

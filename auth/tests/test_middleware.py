@@ -52,12 +52,13 @@ class TestScopes:
             # Per-dex reserved-prefix write scope (Docdex §4.3): a `docdex:`
             # corpus source is writable only by a key carrying this (or admin).
             "dex:docdex",
+            "dex:maildex",
             "admin",
         }
         assert SCOPES == expected
 
     def test_scope_count(self):
-        assert len(SCOPES) == 12
+        assert len(SCOPES) == 13
 
 
 @pytest.fixture
