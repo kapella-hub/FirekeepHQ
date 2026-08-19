@@ -51,6 +51,29 @@ replay payload so deliberate vs pushed recall stays sliceable; the frozen
 founding predicates themselves do not change, and "recalled knowledge used"
 remains the honest judge — it is the number this feature exists to move.
 
+## Prior Art — the Keep answers a declared goal (server v1.2.0 + client 1.2.1)
+
+The third push surface, closing the loop the owner named: "someone on the team
+builds something, someone else asks to build something similar — Firekeep
+should know." The moment an agent declares a goal (`ctx_start_session`),
+Bridge assembles a `prior_art` block into the tool's response: a raw recall
+against the goal (`trigger: "prior-art"`, the 0.55 raw-score floor — same
+calibration as proactive recall, same reason: the normalized score is 1.0 by
+construction) plus up to 3 OTHER agents' in-flight session goals, unfiltered
+on purpose (a wrong omission costs more than a short list at team scale).
+Fail-open with a 2.5s budget: session creation is never hostage to it.
+
+Measured motivation: "build a backup and restore system for our server"
+recalls the Keep Backup release memory at raw 0.63 — above the floor — so
+distilled sessions (night-shift's output) are exactly the fuel this runs on.
+The instruction layer adds the pull-side twin: before building something
+substantial, check `memory_recall` + symdex `get_similar_symbols` — the
+compliance table measures whether agents actually do.
+
+Coverage note: works for every runtime (it rides the MCP tool response, not
+hooks). The code-level push (post-tool "you just wrote a near-duplicate of an
+existing function") is deliberately round 2 — it needs care to not be a nag.
+
 ## Intelligence Features (Cortex)
 
 - **Memory types**: `reference` (no age decay by default), `procedural` (180d), `episodic` (90d), `transient` (14d). Direct learns default to episodic unless the caller supplies a type; the sleep-cycle LLM classifies knowledge extracted from raw event streams.

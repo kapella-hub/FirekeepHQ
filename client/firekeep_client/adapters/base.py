@@ -374,6 +374,11 @@ the session.
 - Operational or repeated-failure task → also `skill_recall(task)`. The
   session-start briefing only ever matched your ORIGINAL goal, never what the user
   asked on turn 7.
+- About to BUILD something substantial (a feature, a module, a big function) →
+  check prior art first: `memory_recall` for what the team already built, and
+  `get_similar_symbols`/`search_symbols` for code that already does it. Ten
+  seconds of checking beats a day of parallel reinvention; `ctx_start_session`'s
+  `prior_art` block is the same check done for you at the moment you declare a goal.
 - Your own earlier plan or decisions missing from context (after compaction) →
   `ctx_get_shadow` before asking the user to repeat themselves. Pass
   `since=<shadow_cursor>` ONLY if the earlier shadow is still visible in your
