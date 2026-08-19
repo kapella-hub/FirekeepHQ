@@ -78,6 +78,19 @@ MATRIX: dict[str, dict[str, str]] = {
     "briefing": {"claude": "hook", "kiro": "agentSpawn hook", "codex": "manual/memory_recall",
                  "opencode": "plugin (first event, console log only)",
                  "generic": "none (MCP only)"},
+    # Proactive recall (firekeep_client.promptrecall): fires only where the runtime
+    # hands the prompt TEXT to a hook, because there is nothing to embed otherwise.
+    # Claude Code's UserPromptSubmit and kiro's userPromptSubmit both carry `prompt`.
+    # codex and generic are MCP-only — the gateway never sees a prompt to intercept.
+    # opencode IS hook-capable, and still "none": its bridge maps `session.idle`,
+    # which carries no prompt text at all. That distinction is the reason this row's
+    # "none" cells state their cause rather than sharing one word — a reader
+    # deciding whether opencode support is a wiring job or a protocol limit gets the
+    # answer from the cell. For all four non-claude/kiro runtimes the session-start
+    # briefing remains the only push.
+    "proactive_recall": {"claude": "per-prompt push", "kiro": "per-prompt push",
+                         "codex": "none (no hooks)", "opencode": "none (no prompt text)",
+                         "generic": "none (no hooks)"},
     "presence": {"claude": "hook", "kiro": "hook", "codex": "sidecar (manual today)",
                  "opencode": "plugin hooks", "generic": "sidecar (manual today)"},
     # kiro (validated 2.12.1): the fs_write pre-edit hook FIRES (the agent-gateway before-call
@@ -109,6 +122,7 @@ MATRIX: dict[str, dict[str, str]] = {
 
 LABELS = {
     "briefing": "Pre-flight briefing (GET /briefing)",
+    "proactive_recall": "Proactive recall (memory pushed per prompt)",
     "presence": "Presence / heartbeat / snapshots / exit",
     "pre_edit_block": "Guaranteed pre-edit blocking",
     "precompact": "PreCompact save",

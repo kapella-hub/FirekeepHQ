@@ -8,7 +8,8 @@ what is never queried at all, what is filtered out, what is never shown twice, a
 that every failure path is silent rather than loud.
 
 The transport is always faked. Nothing here touches a network, and the fake is
-what pins the request contract (task/top_k/trigger) the server is built against.
+what pins the request contract (task / top_k / format / trigger) the server is
+built against.
 """
 from __future__ import annotations
 
@@ -27,7 +28,7 @@ def client_env(tmp_path, monkeypatch):
     """A tmp ~/.firekeep, mirroring tests/hooks/conftest.py's fixture of the same
     name. Defined here rather than imported because promptrecall is a top-level
     module, not a hook core — this file must be runnable without the hooks package's
-    conftest, and the last two classes exercise the hook wiring on the same env."""
+    conftest, and TestPromptHookIntegration exercises the wiring on the same env."""
     cfg = tmp_path / "config"
     cfg.write_text(textwrap.dedent("""\
         [identity]
@@ -399,6 +400,67 @@ class TestFailOpen:
         fake_recall.fails(RuntimeError("boom"))
         promptrecall.nudge(_cfg(), {"prompt": REAL_PROMPT})
         assert "| prompt |" in self._log(client_env)
+
+
+class TestPromptHookIntegration:
+    """The wiring: one systemMessage, relay first, and {} only when BOTH are quiet."""
+
+    def _patch_relay(self, monkeypatch, *, tasks=None):
+        from firekeep_client.hooks import _mcp
+        rows = tasks or []
+
+        def fake_get(url, **k):
+            if "/tasks" in url:
+                return {"count": len(rows), "tasks": rows}
+            if "/sessions" in url:
+                return {"sessions": [{"session_id": "s1", "goal": "g"}]}
+            return {}
+
+        monkeypatch.setattr(transport, "get_json", fake_get)
+        monkeypatch.setattr(_mcp, "call_tool", lambda *a, **k: {})
+
+    def test_recall_only_still_returns_a_system_message(self, client_env, monkeypatch,
+                                                        fake_recall):
+        from firekeep_client.hooks import prompt
+        self._patch_relay(monkeypatch)
+        fake_recall.returns(_source("the docdex ingest timeout fix", 0.88, mid="m1"))
+        msg = prompt.run({"prompt": REAL_PROMPT})["systemMessage"]
+        assert msg.startswith("[firekeep recall]")
+        assert "[relay]" not in msg
+
+    def test_both_merge_into_one_message_with_relay_first(self, client_env, monkeypatch,
+                                                          fake_recall):
+        from firekeep_client.hooks import prompt
+        self._patch_relay(monkeypatch, tasks=[{"id": "task-1", "title": "fix ingress"}])
+        fake_recall.returns(_source("the docdex ingest timeout fix", 0.88, mid="m1"))
+        msg = prompt.run({"prompt": REAL_PROMPT})["systemMessage"]
+        assert msg.startswith("[relay] ")
+        assert "- fix ingress [task-1]" in msg
+        assert msg.index("[relay]") < msg.index("[firekeep recall]")
+        assert "the docdex ingest timeout fix" in msg
+
+    def test_relay_only_is_unchanged(self, client_env, monkeypatch, fake_recall):
+        from firekeep_client.hooks import prompt
+        self._patch_relay(monkeypatch, tasks=[{"id": "task-1", "title": "fix ingress"}])
+        fake_recall.returns()
+        msg = prompt.run({"prompt": REAL_PROMPT})["systemMessage"]
+        assert msg.startswith("[relay] ")
+        assert "firekeep recall" not in msg
+
+    def test_both_quiet_returns_empty_dict(self, client_env, monkeypatch, fake_recall):
+        from firekeep_client.hooks import prompt
+        self._patch_relay(monkeypatch)
+        fake_recall.returns()
+        assert prompt.run({"prompt": REAL_PROMPT}) == {}
+
+    def test_a_dead_cortex_never_costs_the_relay_inbox(self, client_env, monkeypatch,
+                                                       fake_recall):
+        from firekeep_client.hooks import prompt
+        self._patch_relay(monkeypatch, tasks=[{"id": "task-1", "title": "fix ingress"}])
+        fake_recall.fails(transport.TransportError("unreachable: Connection refused"))
+        msg = prompt.run({"prompt": REAL_PROMPT})["systemMessage"]
+        assert "- fix ingress [task-1]" in msg
+        assert "firekeep recall" not in msg
 
 
 def test_seen_list_is_stored_as_json(client_env):

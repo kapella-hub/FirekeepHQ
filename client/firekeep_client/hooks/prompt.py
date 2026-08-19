@@ -1,4 +1,5 @@
-"""UserPromptSubmit core — poll tasks + tasks-channel, heartbeat, 5th snapshot.
+"""UserPromptSubmit core — poll tasks + tasks-channel, heartbeat, 5th snapshot,
+proactive recall.
 
 Ports scripts/multi-agent-poll.sh: poll pending tasks (Relay GET /tasks REST) and
 the 'tasks' channel (relay_get_messages MCP), refresh presence heartbeat with the
@@ -10,13 +11,26 @@ tasks only re-render when the set actually changes, and everything is one compac
 line per item, duplicates collapsed. The raw-JSON-every-prompt behavior this
 replaces re-injected the same five stale messages into context on every single
 user message (field complaint, 2026-07-14).
+
+The same discipline governs the newest addition, proactive recall
+(`firekeep_client.promptrecall`): the prompt is embedded against team memory and
+the few relevant, not-yet-seen memories join THIS systemMessage after the relay
+content — or, far more often, nothing does. Both halves are optional, so the hook
+returns {} only when both are silent.
 """
 from __future__ import annotations
 
 import hashlib
 import urllib.parse
 
-from firekeep_client import hooklog, resolver, state, transport, worktree_snapshot
+from firekeep_client import (
+    hooklog,
+    promptrecall,
+    resolver,
+    state,
+    transport,
+    worktree_snapshot,
+)
 from firekeep_client.hooks import _git, _mcp, never_raise
 
 _HOOK = "prompt"
@@ -170,7 +184,19 @@ def run(payload: dict) -> dict:
     except Exception as e:  # noqa: BLE001
         hooklog.log_failure(_HOOK, f"snapshot failed: {e}")
 
-    if not inbox:
+    # 6. Proactive recall: embed THIS prompt against team memory and inject the
+    # few genuinely relevant, not-yet-seen memories (firekeep_client.promptrecall).
+    # Same news-only discipline as everything above it, and the same channel — the
+    # user sees what the model was handed. Bounded and fail-open: nudge() never
+    # raises and returns "" for every failure mode, so a slow or dead cortex costs
+    # the hook nothing but its own timeout.
+    recall_block = promptrecall.nudge(cfg, payload)
+
+    if not inbox and not recall_block:
         return {}
-    body = "\n".join(inbox)
-    return {"systemMessage": f"[relay] {body}"}
+    parts = []
+    if inbox:
+        parts.append("[relay] " + "\n".join(inbox))
+    if recall_block:
+        parts.append(recall_block)
+    return {"systemMessage": "\n\n".join(parts)}

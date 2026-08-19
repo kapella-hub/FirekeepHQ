@@ -11,7 +11,8 @@ from firekeep_client.contract.matrix import (
     render_matrix,
 )
 
-CAPS = {"briefing", "presence", "pre_edit_block", "precompact", "reconcile", "bypass"}
+CAPS = {"briefing", "proactive_recall", "presence", "pre_edit_block", "precompact",
+        "reconcile", "bypass"}
 
 # Captured at import, before any test swaps the adapter's table out from under it.
 REAL_CLAUDE_HOOKS = claude.CLAUDE_HOOKS
@@ -143,6 +144,24 @@ def test_presence_hook_for_hook_capable_sidecar_for_mcp_only():
     assert capabilities("opencode")["presence"] == "plugin hooks"
 
 
+def test_proactive_recall_fires_only_where_the_runtime_delivers_prompt_text():
+    """Pushed recall needs the prompt TEXT — no text, nothing to embed.
+
+    Claude Code and kiro both hand `prompt` to their submit hook, so both push on
+    every prompt. The other three do not, and their cells name the DIFFERENT
+    reasons on purpose: codex and generic are MCP-only (no hook surface at all),
+    while opencode is hook-capable and still cannot do this, because its bridge
+    maps `session.idle`, an event that carries no prompt. Collapsing those into one
+    "none" would tell a reader that opencode support is a wiring job when it is a
+    protocol limit — the overstatement this file exists to prevent, inverted.
+    """
+    assert capabilities("claude")["proactive_recall"] == "per-prompt push"
+    assert capabilities("kiro")["proactive_recall"] == "per-prompt push"
+    assert capabilities("codex")["proactive_recall"] == "none (no hooks)"
+    assert capabilities("opencode")["proactive_recall"] == "none (no prompt text)"
+    assert capabilities("generic")["proactive_recall"] == "none (no hooks)"
+
+
 def test_reconcile_levels():
     assert capabilities("claude")["reconcile"] == "hooks"
     assert capabilities("kiro")["reconcile"] == "kiro pre/post hooks"
@@ -185,6 +204,7 @@ def test_generic_column_is_honestly_degraded():
     a cell that claims a capability the kit cannot deliver."""
     caps = capabilities("generic")
     assert caps["briefing"] == "none (MCP only)"
+    assert caps["proactive_recall"] == "none (no hooks)"
     assert caps["pre_edit_block"] == "none"
     assert caps["precompact"] == "none"
     assert caps["presence"] == "sidecar (manual today)"
