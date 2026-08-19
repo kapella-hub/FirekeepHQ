@@ -312,6 +312,23 @@ applied to the send/read ambiguity. Full-OAuth Maildex remains a
 post-broker milestone. Calendardex (read-only ICS) is queued next on the
 same chassis, pending the owner's word.
 
+**Amendment (2026-08-19 evening, owner decision — the simplification):**
+the dex FAMILY retires as a user-facing concept; the machinery stays. The
+original reviewer recommendation of default-on stands vindicated over the
+suggestion-not-default override: a fresh install now registers **symdex +
+docdex automatically** — "Firekeep understands your code and your documents
+out of the box" — and `firekeep dex` survives as the off-switch, not as
+ceremony. Docdex goes universal (`.html`, `.eml`, conversation-shaped
+`.json`, alongside md/txt/pdf/docx), which absorbs the file-shaped core of
+Chatdex (drop an exported AI-conversation folder into docdex; the cold
+start is solved without a new dex) — with the honest caveat that
+user-vs-model provenance TYPING, the part that made Chatdex its own design,
+is deferred, not delivered. Maildex stays shipped and supported
+(`firekeep maildex add` auto-registers the dex — no ceremony there either)
+but the family stops expanding: **Calendardex and Webdex are parked**, the
+roadmap-of-names comes off firekeep.ai, and the registry becomes invisible
+plumbing (mounting, doctor, grandfathering, uninstallability — all kept).
+
 **Explicitly not building:** *Apifydex* (Apify is an execution provider,
 not an indexed domain); *Actiondex* (violates the understanding/action
 boundary by name); *Financedex* (valuable but high-stakes — after
