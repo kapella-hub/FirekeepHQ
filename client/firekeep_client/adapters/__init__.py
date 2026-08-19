@@ -19,6 +19,9 @@ def get_adapter(name: str) -> Adapter:
     if name == "opencode":
         from firekeep_client.adapters.opencode import OpencodeAdapter
         return OpencodeAdapter()
+    if name == "claude-desktop":
+        from firekeep_client.adapters.claude_desktop import ClaudeDesktopAdapter
+        return ClaudeDesktopAdapter()
     if name == "generic":
         # The target file (if any) lives in the kit config, not in the render
         # loop's signature — resolver, never cli: adapters -> cli would be a cycle.
@@ -26,4 +29,4 @@ def get_adapter(name: str) -> Adapter:
         from firekeep_client.resolver import generic_agents_md
         return GenericAdapter(agents_md=generic_agents_md())
     raise ValueError(
-        f"unknown adapter: {name!r} (expected claude|codex|kiro|opencode|generic)")
+        f"unknown adapter: {name!r} (expected claude|codex|kiro|opencode|claude-desktop|generic)")

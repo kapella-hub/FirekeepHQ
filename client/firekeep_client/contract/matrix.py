@@ -45,7 +45,13 @@ from firekeep_client.adapters.claude import CLAUDE_HOOKS
 # and the instruction protocol, and nothing that rides a hook — a client we know
 # nothing about exposes no hook surface to wire. It is listed last because it is
 # what a runtime degrades TO, not a peer of the four.
-RUNTIMES = ("claude", "kiro", "codex", "opencode", "generic")
+#
+# `claude-desktop` (the consumer chat app, not Claude Code) sits AT that floor
+# on purpose: it has a bespoke adapter only because its config path is known —
+# every capability cell is the generic value, because the app exposes no hook
+# surface. If a cell here ever claims more than generic's, either Claude
+# Desktop grew hooks or the cell is lying.
+RUNTIMES = ("claude", "kiro", "codex", "opencode", "claude-desktop", "generic")
 
 
 def _precompact_claude(hooks: tuple[tuple[str, str, str | None, int], ...]) -> str:
@@ -77,6 +83,7 @@ def _precompact_claude(hooks: tuple[tuple[str, str, str | None, int], ...]) -> s
 MATRIX: dict[str, dict[str, str]] = {
     "briefing": {"claude": "hook", "kiro": "agentSpawn hook", "codex": "manual/memory_recall",
                  "opencode": "plugin (first event, console log only)",
+                 "claude-desktop": "none (MCP only)",
                  "generic": "none (MCP only)"},
     # Proactive recall (firekeep_client.promptrecall): fires only where the runtime
     # hands the prompt TEXT to a hook, because there is nothing to embed otherwise.
@@ -90,14 +97,17 @@ MATRIX: dict[str, dict[str, str]] = {
     # briefing remains the only push.
     "proactive_recall": {"claude": "per-prompt push", "kiro": "per-prompt push",
                          "codex": "none (no hooks)", "opencode": "none (no prompt text)",
+                         "claude-desktop": "none (no hooks)",
                          "generic": "none (no hooks)"},
     "presence": {"claude": "hook", "kiro": "hook", "codex": "sidecar (manual today)",
-                 "opencode": "plugin hooks", "generic": "sidecar (manual today)"},
+                 "opencode": "plugin hooks", "claude-desktop": "sidecar (manual today)",
+                 "generic": "sidecar (manual today)"},
     # kiro (validated 2.12.1): the fs_write pre-edit hook FIRES (the agent-gateway before-call
     # runs + records), but kiro does not enforce its own exit-2 block — so it is advisory, not
     # a hard gate. See firekeep_client/adapters/kiro.py + docs/KIRO-VALIDATION.md.
     "pre_edit_block": {"claude": "guaranteed", "kiro": "advisory (fires, non-blocking on 2.12.1)", "codex": "none",
                        "opencode": "guaranteed (plugin throw, validated 1.14.22)",
+                       "claude-desktop": "none",
                        "generic": "none"},
     # Only Claude exposes a compaction event; the other three runtimes have no
     # such lifecycle hook to wire, so this degrades honestly rather than silently.
@@ -105,9 +115,11 @@ MATRIX: dict[str, dict[str, str]] = {
     # _precompact_claude) so it cannot claim a hook the kit does not render; the
     # other three are hand-authored because there is nothing to derive them from.
     "precompact": {"claude": _precompact_claude(CLAUDE_HOOKS), "kiro": "none",
-                   "codex": "none", "opencode": "none", "generic": "none"},
+                   "codex": "none", "opencode": "none", "claude-desktop": "none",
+                   "generic": "none"},
     "reconcile": {"claude": "hooks", "kiro": "kiro pre/post hooks", "codex": "self-reported",
-                  "opencode": "plugin pre/post hooks", "generic": "self-reported"},
+                  "opencode": "plugin pre/post hooks", "claude-desktop": "self-reported",
+                  "generic": "self-reported"},
     # Personal / bypass mode: the is_bypassed() gate (marker + FIREKEEP_BYPASS) works on
     # every runtime; only the /personal slash command is claude-specific. kiro/codex
     # toggle via the `firekeep personal` CLI (or `! firekeep personal`), or FIREKEEP_BYPASS at launch.
@@ -116,6 +128,7 @@ MATRIX: dict[str, dict[str, str]] = {
         "kiro": "firekeep personal CLI + FIREKEEP_BYPASS (no /personal command)",
         "codex": "firekeep personal CLI + FIREKEEP_BYPASS (sidecar honors the gate)",
         "opencode": "firekeep personal CLI + FIREKEEP_BYPASS (no /personal command)",
+        "claude-desktop": "firekeep personal CLI + FIREKEEP_BYPASS (no /personal command)",
         "generic": "firekeep personal CLI + FIREKEEP_BYPASS (no /personal command)",
     },
 }

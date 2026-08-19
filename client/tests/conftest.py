@@ -99,6 +99,12 @@ def _isolate_firekeep_home(tmp_path, monkeypatch):
     monkeypatch.setenv("FIREKEEP_CONFIG", str(tmp_path / "_isolated" / "config"))
     monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path / "_isolated" / "cache"))
     monkeypatch.setenv("FIREKEEP_LOG_DIR", str(tmp_path / "_isolated" / "logs"))
+    # The claude-desktop adapter resolves its config from APPDATA on Windows —
+    # the ONE adapter path the HOME/USERPROFILE monkeypatching the cli suites
+    # already do does not cover. Without this, an install fan-out test on a
+    # Windows dev machine with Claude Desktop installed would detect the REAL
+    # app (app_present) and write the developer's real claude_desktop_config.json.
+    monkeypatch.setenv("APPDATA", str(tmp_path / "_isolated" / "appdata"))
     # Runtime attribution (0.1.41) is env-triggered and process-cached. An ambient
     # FIREKEEP_RUNTIME (or one exported by code under test — gateway.run and the
     # hook dispatcher SET os.environ, which monkeypatch cannot see) must never

@@ -291,14 +291,30 @@ def _generic_is_configured() -> bool:
     return resolver.generic_agents_md() is not None
 
 
-def _selected_runtimes(runtime: str, *, include_generic: bool = False) -> list[str]:
+def _claude_desktop_present() -> bool:
+    """Whether Claude Desktop appears installed (its config dir exists).
+
+    Gates the "all" fan-out for install AND uninstall: install must not write
+    another vendor's consumer-app config onto machines that never ran the app,
+    and uninstall has nothing to clean where nothing was written. Lazy import —
+    cli must stay importable without every adapter module."""
+    from firekeep_client.adapters.claude_desktop import app_present
+    return app_present()
+
+
+def _selected_runtimes(runtime: str, *, include_generic: bool = False,
+                       include_claude_desktop: bool = False) -> list[str]:
     """PURE: a function of its arguments only, never of the config on disk.
 
     `generic` joins the "all" fan-out only when the caller says so, so an
     unconfigured user gets exactly the four — the invariant test_cli_install and
-    test_cli_uninstall pin by count."""
+    test_cli_uninstall pin by count. `claude-desktop` likewise: its flag is
+    computed at the call site from claude_desktop.app_present(), so a machine
+    that never ran Claude Desktop gets no config written for it."""
     if runtime == "all":
-        return ["claude", "codex", "kiro", "opencode"] + (["generic"] if include_generic else [])
+        return (["claude", "codex", "kiro", "opencode"]
+                + (["claude-desktop"] if include_claude_desktop else [])
+                + (["generic"] if include_generic else []))
     return [runtime]
 
 
@@ -523,7 +539,9 @@ def cmd_install(args) -> int:
         # embedded paths stay literally identical across flips) and keeps
         # runtime configs from pinning a venv that GC will remove.
         venv_bin = _venv_bin(_venv_root(home))
-        for name in _selected_runtimes(args.runtime, include_generic=_generic_is_configured()):
+        for name in _selected_runtimes(args.runtime,
+                                       include_generic=_generic_is_configured(),
+                                       include_claude_desktop=_claude_desktop_present()):
             step = f"render {name} adapter"
             get_adapter(name).render(venv_bin=venv_bin)
 
@@ -747,7 +765,8 @@ def cmd_uninstall(args) -> int:
     # config we could not parse leaves the block stranded with no way to find it.
     generic_target = resolver.generic_agents_md()
     generic_orphan = _generic_orphan_warning(home) if generic_target is None else None
-    runtimes = _selected_runtimes("all", include_generic=generic_target is not None)
+    runtimes = _selected_runtimes("all", include_generic=generic_target is not None,
+                                  include_claude_desktop=_claude_desktop_present())
 
     # Say exactly what will be removed BEFORE touching anything.
     print("firekeep uninstall will remove:")
@@ -1361,9 +1380,36 @@ def _check_codex_adapter(venv: Path) -> list[tuple[str, str, str]]:
     return [("codex-mcp", "ok", str(config))]
 
 
+def _check_claude_desktop_adapter(venv: Path) -> list[tuple[str, str, str]]:
+    """claude-desktop-mcp: silent unless the app's config exists AND mentions us.
+
+    Mirrors _check_codex_adapter's philosophy — doctor must not warn a user
+    about a runtime they never installed. A present-but-unmanaged config is a
+    user who chose not to mount Firekeep there; also silence. No instructions
+    row exists for this runtime: Claude Desktop reads no rules file, so the
+    protocol's only channel is the gateway handshake."""
+    from firekeep_client.adapters.claude_desktop import config_path, mcp_entry_is_current
+    config = config_path()
+    if not config.exists():
+        return []
+    try:
+        text = config.read_text(encoding="utf-8")
+    except OSError as exc:
+        return [("claude-desktop-mcp", "fail", f"cannot read {config}: {exc}")]
+    if '"firekeep"' not in text:
+        return []
+    repair = "run `firekeep install --runtime claude-desktop`"
+    if not mcp_entry_is_current(text, _venv_bin(venv)):
+        return [("claude-desktop-mcp", "fail",
+                 f"stale Firekeep gateway entry in {config}; {repair}")]
+    return [("claude-desktop-mcp", "ok", str(config))]
+
+
 # The shipped runtimes, in adapter order (`_selected_runtimes("all")`), plus
 # generic — which contributes a row ONLY when the user configured it, so an
-# unconfigured user's doctor output is unchanged.
+# unconfigured user's doctor output is unchanged. claude-desktop is absent on
+# purpose: it renders no instruction file (rendered_instructions_path returns
+# None for it), so there is no block to hash-check.
 _INSTRUCTION_RUNTIMES = ("claude", "codex", "kiro", "opencode", "generic")
 
 
@@ -1639,6 +1685,7 @@ def run_doctor(cfg=None) -> list[tuple[str, str, str]]:
     results.append(_check_venv_scripts(_venv_root()))
     results.extend(_check_dexes())
     results.extend(_check_codex_adapter(_venv_root()))
+    results.extend(_check_claude_desktop_adapter(_venv_root()))
     results.extend(_check_instructions())
     results.append(_check_config_perms(_config_path()))
     ca = _check_ca_expiry(cfg)
@@ -2686,7 +2733,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # bootstrap's FIREKEEP_RUNTIME) remains available for a targeted re-render.
     inst.add_argument(
         "--runtime",
-        choices=["claude", "codex", "kiro", "opencode", "generic", "all"],
+        choices=["claude", "codex", "kiro", "opencode", "claude-desktop", "generic", "all"],
         default=None,
     )
     # `generic` is any MCP client the kit ships no bespoke adapter for: it prints
