@@ -27,6 +27,24 @@ class Settings(BaseSettings):
     PROACTIVE_RECALL_MIN_SCORE: float = 0.35  # raw-cosine scale, matches Cortex RECALL_SCORE_FLOOR
     PROACTIVE_RECALL_CATEGORIES: str = "plan,progress"
 
+    # Prior art at the moment of intent (app/prior_art.py) — ctx_start_session
+    # answers a declared goal with what the team already built and who is
+    # mid-flight on something similar.
+    PRIOR_ART_ENABLED: bool = True
+    PRIOR_ART_TOP_K: int = 3
+    # Raw-cosine floor, HIGHER than PROACTIVE_RECALL_MIN_SCORE on purpose. That
+    # one feeds the shadow, which the agent reads only when it goes looking;
+    # this one is pushed unasked into the first thing an agent reads in a
+    # session, so a weak match costs attention at the moment attention is most
+    # expensive. Applied to metadata.raw_score — never to `score`, which
+    # _min_max_normalize pins to 1.0 by construction (cortex/app/main.py).
+    PRIOR_ART_MIN_SCORE: float = 0.55
+    PRIOR_ART_IN_FLIGHT_MAX: int = 3
+    # One deadline for both legs together. Session creation has already
+    # committed by the time this runs, so the only thing at stake is how long
+    # the agent waits for its own session id.
+    PRIOR_ART_TIMEOUT_SECONDS: float = 2.5
+
     # Crashed-session reaper (app/reaper.py). A session whose agent died without
     # calling ctx_complete_session sits status="active" forever — no TTL, never
     # distilled, never evaluated. OWM treats a Bridge "abandoned" session as an

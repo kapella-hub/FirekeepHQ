@@ -17,6 +17,59 @@ Server-side pre-flight aggregator that consolidates the checks the retired `brie
 
 **Session targeting (cross-terminal clobber fix, 2026-08-12 — `bridge/app/mcp_server.py::_header_session_id`).** `ctx_complete_session`, `ctx_abandon_session`, `ctx_get_shadow` and `ctx_update` resolve their target session with the precedence **explicit param > `X-Session-Id` connection header > active pointer** (mirroring Cortex's `_resolve_identity`; `ctx_update`'s public tool signature is unchanged — the header threads through a new optional `SessionManager.update(session_id=)`). `complete_session`/`abandon_session` additionally refuse a session whose owner differs from the caller, mirroring `resume_session` (whose docstring used to *claim* this check existed — it did not, and a parallel terminal sharing the machine's agent_id completed a sibling's in-flight session on 2026-08-11 via the shared `nb:active:{agent_id}` pointer). The client side is load-bearing: the shim's bridge client sources `X-Session-Id` **only** from what its own process observed (never the shared per-agent disk stash — a fresh terminal falling back to it would deliver its sibling's live session to a destructive call), injects that id into no-arg complete/abandon, and the stop-hook's completion nudge instructs completing only a session the model itself started or resumed. Honest residual: a no-arg, no-header complete from a terminal that never started a session still resolves via the shared pointer, and ownership cannot distinguish same-agent siblings — narrowed to a case the instruction layer now tells models not to create, not eliminated. A header-named session that no longer exists refuses (`Unknown session`) instead of materializing a ghost hash.
 
+## Prior art at the moment of intent (Bridge — `bridge/app/prior_art.py`)
+
+`ctx_start_session` is the only call in the stack that knows what an agent is
+about to do *before* it does it, and the whole memory product otherwise waits to
+be asked. That is the failure this closes: an agent that does not know the team
+has already built the thing has no trigger to call `memory_recall`, so the
+knowledge stays retrievable and never retrieved — the same shape as the "deploy
+to my vps" incident that produced the MCP `instructions` block. Declaring a goal
+*is* the trigger, so the answer is pushed into the tool result rather than
+offered.
+
+Two legs run concurrently under one deadline (`NB_PRIOR_ART_TIMEOUT_SECONDS`,
+2.5s). **Team memory** POSTs `/memory/recall` on Cortex with the goal text,
+`format: "raw"`, the internal key, and `trigger: "prior-art"` — the marker that
+lets the compliance measurement separate pushed recall from deliberate recall
+(the `prompt-hook` precedent). Matches are filtered on `metadata.raw_score`
+against `NB_PRIOR_ART_MIN_SCORE` (0.55), never on `score`, which
+`_min_max_normalize` pins to 1.0 for the best entry in any result set — a floor
+on that number filters nothing, measured live (see `cortex/app/main.py`). The
+floor sits *above* proactive recall's 0.35 on purpose: that one feeds the
+shadow, which an agent reads when it goes looking, while this one is pushed
+unasked into the first thing it reads in a session. **In flight now** lists
+Bridge's own `active` sessions belonging to OTHER agents, newest first, capped at
+three, with no similarity filtering at all — teams are small, a wrong omission
+costs a duplicated week and a wrong inclusion costs one line.
+
+The response gains `prior_art: {memories, in_flight}` and `prior_art_text`, the
+rendered block, always together and only when non-empty. Bridge tools return
+dicts (FastMCP serialises them), so `prior_art_text` *is* the rendered text an
+agent reads; it leads with the instruction rather than the data, because a block
+that merely listed matches is a fact a model is free to skim:
+
+```
+[prior art] the team may have been here before — recall before building:
+- Shipped Keep Backup end-to-end... (raw 0.63)
+in flight right now: agent-x — "harden backup retention" (2h ago)
+```
+
+**Fail-open is structural, not defensive.** Assembly runs strictly *after*
+`start_session` has committed, so nothing in it can cost the caller the session
+it asked for; each leg swallows its own errors and returns `[]`, so a dead
+Cortex still yields the in-flight line; both are wrapped in `asyncio.wait_for`
+(httpx's own timeout applies per phase, so a host that accepts and then stalls
+can spend it twice); nothing found returns `{}` rather than empty lists, making
+"nothing to say" and "Cortex was down" the same shape on the wire; and the call
+site has a final `try/except` under all of it. Bridge already carried
+`NB_FIREKEEP_API_URL` and `NB_FIREKEEP_API_KEY` (the SP1a internal key) for
+proactive recall and the eval trigger — no new compose env. `NB_PRIOR_ART_ENABLED`
+gates it. Guards: `bridge/tests/test_prior_art.py` (23 tests, including the
+byte-exact trigger, the pinned block, and a hanging Cortex bounded by the
+deadline); the suite's `disable_prior_art` autouse fixture keeps every other
+session-start test off the network.
+
 ## Shadow Residency Contract (Bridge — Phase C, `bridge/app/residency.py`)
 `ctx_get_shadow()` with no argument is a FULL restore, byte-identical to what it has always returned. **That is the default and it is always correct.** A caller may opt into a delta by passing back `since=<shadow_cursor>` — the opaque cursor from an earlier response in the SAME conversation — which asserts exactly one thing: *the earlier shadow is still visible in my context*. `residency.py` is pure functions, no I/O; the wiring is in `mcp_server.py`'s `ctx_get_shadow`.
 

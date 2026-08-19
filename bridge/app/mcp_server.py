@@ -22,6 +22,7 @@ except ImportError as exc:
         return {}
 
 from app.config import get_settings
+from app.prior_art import assemble_prior_art, render_prior_art
 from app.proactive_recall import fetch_relevant_memories
 from app.redis_client import get_redis, close_redis
 from app.session import SessionManager
@@ -347,6 +348,12 @@ async def ctx_start_session(
         briefing_id: Optional id minted by the server-side GET /briefing endpoint.
             Stored on the session so the pre-flight A/B tip-shown recording can be
             attributed to this session (closes the strategy-pattern feedback loop).
+
+    Returns the new session id, and — when there is anything to say — `prior_art`
+    (what the team already built, plus who is mid-flight on similar work) with
+    `prior_art_text`, the block written for you to read. Treat it as a recall
+    trigger, not a summary: the entries are one-line summaries of longer
+    memories, so call `memory_recall` before rebuilding anything it names.
     """
     agent_id = _default_agent_id(agent_id)
     attribution = _attribution_from_headers()
@@ -372,6 +379,32 @@ async def ctx_start_session(
         }
         payload.update(attribution)  # only the headers that actually arrived
         await _replay_emit("session_start", sid, agent_id, payload)
+
+    # Prior art — pushed at the moment of intent, AFTER the session exists.
+    # Ordering is the whole safety argument: `result` is already a created
+    # session by the time anything here runs, so no failure below can cost the
+    # caller the session it asked for. assemble_prior_art swallows its own
+    # errors and returns {} — the try/except is the floor under that floor.
+    if sid and settings.PRIOR_ART_ENABLED:
+        try:
+            prior_art = await assemble_prior_art(
+                goal,
+                mgr=mgr,
+                agent_id=agent_id,
+                api_url=settings.FIREKEEP_API_URL,
+                api_key=settings.FIREKEEP_API_KEY,
+                top_k=settings.PRIOR_ART_TOP_K,
+                min_score=settings.PRIOR_ART_MIN_SCORE,
+                in_flight_max=settings.PRIOR_ART_IN_FLIGHT_MAX,
+                timeout=settings.PRIOR_ART_TIMEOUT_SECONDS,
+            )
+            if prior_art:
+                block = render_prior_art(prior_art)
+                if block:
+                    result["prior_art"] = prior_art
+                    result["prior_art_text"] = block
+        except Exception as exc:
+            logger.info("Prior art skipped for session %s (non-fatal): %s", sid, exc)
 
     return result
 
