@@ -4,6 +4,53 @@
 > session. This content is reference and decision history: read it when you are
 > working on this area, not on every task. Nothing was reworded in the move.
 
+## Proactive Recall — pushed memory at every prompt (client 1.0.3)
+
+Why it exists: the live compliance table measured fleet-wide "recall before
+you answer" at 46% and "recalled knowledge used" at 35% — the Keep was
+accumulating faster than it was consulted, because recall was pull-based and
+the one push (the session-start briefing) matches only the session's original
+goal. Design record:
+[`docs/superpowers/specs/2026-08-18-proactive-recall-design.md`](../superpowers/specs/2026-08-18-proactive-recall-design.md).
+
+On every user prompt, the prompt hook sends the prompt text to
+`POST /memory/recall` (`top_k: 3`, `format: "raw"`, `trigger: "prompt-hook"`)
+and injects the few genuinely relevant, not-yet-seen memories as a
+`[firekeep recall]` system message — or, far more often, injects nothing.
+The noise discipline (this hook's own field-complaint history):
+
+- Prompts under 24 collapsed characters or starting with `/` are skipped.
+- The relevance floor reads **`metadata.raw_score`** (cosine / graph blend),
+  NEVER `MemorySource.score` — the normalized score's best entry is exactly
+  1.0 by construction (measured 2026-08-06: a knitting-patterns nonsense
+  query scored 1.0), so flooring on it would admit noise on every prompt.
+  Sources without `raw_score`, and `degraded: true` (graph-only) responses,
+  inject nothing — unknown relevance fails dark, not loud. The same rules
+  the Bridge briefing's `proactive_recall` consumer already applies.
+- `format: "raw"` is load-bearing: synthesized recall runs an LLM pass that
+  cannot fit the hook's 2.5s budget (SP0 C6's lesson, reused).
+- Per-session dedupe: an injected memory id is not injected again (scratch,
+  12h TTL); at most 3 per prompt, one trimmed line each.
+- Fail-open: any error or timeout logs to hooklog and injects nothing.
+
+| Knob | Default |
+|---|---|
+| `FIREKEEP_NO_RECALL_PUSH` / `[recall] push = false` | on by default |
+| `FIREKEEP_RECALL_PUSH_MIN_SCORE` | 0.55 (raw scale) |
+| `FIREKEEP_RECALL_PUSH_TIMEOUT_SECONDS` | 2.5 |
+
+Coverage, honest (`contract/matrix.py` row `proactive_recall`): per-prompt on
+Claude Code and Kiro; none on Codex (no hooks), OpenCode (bridge delivers no
+prompt text) and generic MCP — for those, the session-start briefing remains
+the only push.
+
+**Measurement note (round-2 contract precedent):** a pushed recall raises
+"recall before you answer" mechanically from this release's exposure date.
+The `trigger` field on `ContextQuery` is carried into the `memory_read`
+replay payload so deliberate vs pushed recall stays sliceable; the frozen
+founding predicates themselves do not change, and "recalled knowledge used"
+remains the honest judge — it is the number this feature exists to move.
+
 ## Intelligence Features (Cortex)
 
 - **Memory types**: `reference` (no age decay by default), `procedural` (180d), `episodic` (90d), `transient` (14d). Direct learns default to episodic unless the caller supplies a type; the sleep-cycle LLM classifies knowledge extracted from raw event streams.
