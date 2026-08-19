@@ -1,12 +1,12 @@
 [project]
 name = "firekeep-docdex"
-version = "0.1.1"
+version = "0.2.0"
 description = "Firekeep docdex: the documents dex — folders of documents indexed into the Keep's corpus"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "LicenseRef-Firekeep-BUSL-1.1"
 license-files = ["LICENSE", "NOTICE"]
-keywords = ["mcp", "ai-agents", "agent-memory", "documents", "rag", "knowledge-base", "markdown", "obsidian", "pdf", "claude-code", "self-hosted"]
+keywords = ["mcp", "ai-agents", "agent-memory", "documents", "rag", "knowledge-base", "markdown", "obsidian", "pdf", "html", "email", "chatgpt-export", "claude-code", "self-hosted"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
