@@ -19,7 +19,8 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 
-from corpus.store import KNOWN_DEX_IDS, delete_dex_source, dex_source_prefix
+from corpus.store import (KNOWN_DEX_IDS, delete_dex_source, dex_source_prefix,
+                          dex_source_prefixes)
 
 logger = logging.getLogger(__name__)
 
@@ -322,13 +323,25 @@ def create_corpus_router() -> APIRouter:
         from auth.principal import request_principal
 
         principal = request_principal(request)
-        prefix = dex_source_prefix(source_id)
-        _require_dex_scope(prefix, principal)
-
-        records = [
-            r for r in await get_corpus_sources()
-            if (r.get("name") or "").startswith(prefix)
-        ]
+        # Derive the owning dex from the tracked records rather than assuming
+        # docdex (the hardcoding deleted nothing on Maildex's first live
+        # remove). No records under ANY known dex prefix answers 404 exactly
+        # like a cross-workspace id — the no-existence-oracle rule — and the
+        # scope check then runs against the dex the records actually belong to.
+        prefixes = dex_source_prefixes(source_id)
+        all_sources = await get_corpus_sources()
+        matched = {
+            dex: [r for r in all_sources if (r.get("name") or "").startswith(pfx)]
+            for dex, pfx in prefixes.items()
+        }
+        matched = {dex: recs for dex, recs in matched.items() if recs}
+        if len(matched) > 1:
+            # 128-bit ids make this unreachable except by deliberate crafting.
+            raise HTTPException(status_code=409, detail="source id matches multiple dexes")
+        if not matched:
+            raise HTTPException(status_code=404, detail="Unknown source")
+        dex, records = next(iter(matched.items()))
+        _require_dex_scope(prefixes[dex], principal)
         mine = [r for r in records if _in_caller_workspace(r, principal)]
         if not mine:
             # Cross-workspace and nonexistent answer identically — the

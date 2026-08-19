@@ -201,3 +201,33 @@ class TestDeleteDexSourceCounts:
 
         result = await delete_dex_source("s", ["a"], alltext)
         assert result == {"deleted_sources": 1, "deleted_chunks": "unknown"}
+
+
+class TestBulkDeleteDerivesTheDex:
+    """The route hardcoded docdex and Maildex's first live `remove` deleted
+    nothing (2026-08-19): three tracked maildex sources, a correct call, zero
+    deletions. The dex is now derived from the tracked records — same URL, so
+    docdex clients in the field keep working (every test above passes
+    unedited) — and the scope check runs against the derived dex."""
+
+    @pytest.mark.asyncio
+    async def test_maildex_source_bulk_deletes(self, h):  # noqa: F811
+        r = h.redis
+        for m in ("m1", "m2", "m3"):
+            await track_source(f"maildex:acct9:{m}", "email", 1, redis_client=r,
+                              workspace_id="ws1", member_id="m-alice")
+        ident = dict(ALICE_DEX)
+        ident["scopes"] = ["dex:maildex", "memory:write"]
+        h.act_as(ident)
+        resp = await h.delete("/corpus/dex-sources/acct9")
+        assert resp.status_code == 200
+        assert resp.json()["deleted_sources"] == 3
+
+    @pytest.mark.asyncio
+    async def test_docdex_scope_cannot_delete_a_maildex_source(self, h):  # noqa: F811
+        r = h.redis
+        await track_source("maildex:acct8:m1", "email", 1, redis_client=r,
+                          workspace_id="ws1", member_id="m-alice")
+        h.act_as(ALICE_DEX)  # docdex-scoped only
+        resp = await h.delete("/corpus/dex-sources/acct8")
+        assert resp.status_code == 403

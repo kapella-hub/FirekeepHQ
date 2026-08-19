@@ -70,6 +70,19 @@ def dex_source_prefix(source_id: str) -> str:
     return f"docdex:{source_id}:"
 
 
+def dex_source_prefixes(source_id: str) -> dict[str, str]:
+    """Every known dex's reserved prefix for one source id.
+
+    The bulk-delete route cannot know which dex a bare ``{source_id}`` path
+    segment belongs to — hardcoding docdex there is exactly how Maildex's
+    first live `remove` deleted nothing (2026-08-19). The route derives the
+    dex from the TRACKED records instead: source ids are 128-bit random, so
+    a cross-dex collision cannot occur, and the same URL keeps serving the
+    docdex clients already in the field.
+    """
+    return {dex: f"{dex}:{source_id}:" for dex in sorted(KNOWN_DEX_IDS)}
+
+
 # ---------------------------------------------------------------------------
 # Qdrant: chunks (via VectorClient)
 # ---------------------------------------------------------------------------
