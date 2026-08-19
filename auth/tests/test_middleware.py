@@ -129,4 +129,5 @@ class TestAnonymousIdentity:
         assert "*" not in scopes
         assert "admin" not in scopes
         assert "vault:read" not in scopes
-        assert scopes == SCOPES - {"admin", "vault:read"}
+        assert not any(s.startswith("dex:") for s in scopes)  # member-owned vault writes need identity
+        assert scopes == {s for s in SCOPES if not s.startswith("dex:")} - {"admin", "vault:read"}

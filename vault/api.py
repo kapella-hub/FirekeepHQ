@@ -9,6 +9,31 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from auth.middleware import require_any_scope, require_scope
+from corpus.store import KNOWN_DEX_IDS
+
+# Dex-prefixed vault keys (`maildex.<account>`) are MEMBER secrets, not
+# administration: a mailbox app password belongs to the member who connected
+# the mailbox, and the admin-only write posture (correct for ops secrets)
+# would otherwise make every connector dex impossible without handing members
+# admin. The corpus reserved-prefix pattern, applied to the vault: a key under
+# `<dexid>.` is writable by a caller holding `dex:<dexid>` (every enrolled
+# member, via the ceiling), and readable/deletable ONLY by the member who
+# created it (or admin) — `vault:read` alone must never read a teammate's
+# mail password, and listings hide other members' dex keys the same way
+# corpus listings hide private source names. Found live on Maildex's first
+# e2e (2026-08-19): `add` stored nothing because members could not write.
+
+
+def _dex_of(key: str) -> str | None:
+    head, sep, rest = key.partition(".")
+    if sep and rest and head in KNOWN_DEX_IDS:
+        return head
+    return None
+
+
+def _is_admin(identity: dict) -> bool:
+    scopes = identity.get("scopes") or []
+    return "admin" in scopes or "*" in scopes
 from vault.store import delete_secret, list_secrets, retrieve_secret, store_secret
 
 logger = logging.getLogger(__name__)
@@ -57,13 +82,32 @@ def create_vault_router() -> APIRouter:
 
     router = APIRouter(prefix="/vault", tags=["vault"])
 
-    # admin only: creating a secret is administration, not use.
+    # admin for ordinary keys (creating a secret is administration, not use);
+    # dex-prefixed keys are member-writable under the dex scope — see the
+    # module note above.
     @router.post("/secrets")
     async def store_vault_secret(
         req: StoreSecretRequest,
-        identity: dict = Depends(require_scope("admin")),
+        identity: dict = Depends(
+            require_any_scope("admin", *(f"dex:{d}" for d in sorted(KNOWN_DEX_IDS)))
+        ),
     ) -> SecretMetadata:
         """Store an encrypted secret. Returns metadata only (no value)."""
+        if not _is_admin(identity):
+            dex = _dex_of(req.key)
+            if dex is None:
+                raise HTTPException(status_code=403, detail=(
+                    "Insufficient scope: requires 'admin' — only keys under a "
+                    "dex prefix (e.g. 'maildex.<id>') are member-writable"))
+            if f"dex:{dex}" not in (identity.get("scopes") or []):
+                raise HTTPException(status_code=403, detail=(
+                    f"Insufficient scope: requires 'dex:{dex}' or 'admin'"))
+            existing = await retrieve_secret(req.key)
+            if existing is not None and existing.get("created_by") != identity.get("member_id"):
+                # Another member's secret. Refusing the overwrite is what keeps
+                # a teammate from swapping your mailbox password for theirs.
+                raise HTTPException(status_code=403, detail=(
+                    f"Secret '{req.key}' belongs to another member"))
         try:
             result = await store_secret(
                 key=req.key,
@@ -94,15 +138,29 @@ def create_vault_router() -> APIRouter:
 
         if result is None:
             raise HTTPException(status_code=404, detail=f"Secret '{key}' not found")
+        if _dex_of(key) is not None and not _is_admin(identity)                 and result.get("created_by") != identity.get("member_id"):
+            # vault:read must never read a teammate's connector secret; 404
+            # rather than 403 so the route is no existence oracle at all.
+            raise HTTPException(status_code=404, detail=f"Secret '{key}' not found")
         return SecretResponse(**result)
 
-    # admin only: destroying a credential is irreversible for its holders.
+    # admin for ordinary keys (destroying a credential is irreversible for
+    # its holders); a dex key's owner may delete their own.
     @router.delete("/secrets/{key}")
     async def delete_vault_secret(
         key: str,
-        identity: dict = Depends(require_scope("admin")),
+        identity: dict = Depends(
+            require_any_scope("admin", *(f"dex:{d}" for d in sorted(KNOWN_DEX_IDS)))
+        ),
     ) -> dict[str, Any]:
         """Delete a secret by key."""
+        if not _is_admin(identity):
+            dex = _dex_of(key)
+            owned = None
+            if dex is not None and f"dex:{dex}" in (identity.get("scopes") or []):
+                owned = await retrieve_secret(key)
+            if owned is None or owned.get("created_by") != identity.get("member_id"):
+                raise HTTPException(status_code=404, detail=f"Secret '{key}' not found")
         try:
             success = await delete_secret(key)
         except ValueError as e:
@@ -123,6 +181,13 @@ def create_vault_router() -> APIRouter:
         """List all secrets with metadata (no values)."""
         try:
             secrets = await list_secrets(category=category, limit=limit)
+            if not _is_admin(identity):
+                member = identity.get("member_id")
+                secrets = [
+                    s for s in secrets
+                    if _dex_of(str(s.get("key") or "")) is None
+                    or s.get("created_by") == member
+                ]
             return {"secrets": secrets, "count": len(secrets)}
         except RuntimeError as e:
             raise HTTPException(status_code=503, detail=str(e))

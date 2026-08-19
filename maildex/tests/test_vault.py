@@ -127,3 +127,34 @@ def test_the_vault_module_writes_nothing_to_disk(firekeep_home, fake_vault):
     vault.retrieve(ACCOUNT, call_tool=fake_vault)
     vault.delete(ACCOUNT, call_tool=fake_vault)
     assert sorted(p.name for p in firekeep_home.rglob("*")) == before
+
+
+class TestStoreVerifiesInBand:
+    """MCP tools fail with a 200 and an error STRING (the night-shift lesson);
+    the first live e2e stored a password into a refusal message and printed
+    success. store() now requires the positive confirmation."""
+
+    def test_inband_refusal_raises_vault_refused(self):
+        import pytest
+        from firekeep_maildex import vault
+
+        def refusing(_svc, _tool, _args, **_kw):
+            return "Error: Insufficient scope: requires 'admin'. Suggestion: ..."
+        with pytest.raises(vault.VaultRefused):
+            vault.store("acct1", "pw", call_tool=refusing)
+
+    def test_inband_unconfirmed_raises_vault_error(self):
+        import pytest
+        from firekeep_maildex import vault
+
+        def weird(_svc, _tool, _args, **_kw):
+            return "OK maybe?"
+        with pytest.raises(vault.VaultError):
+            vault.store("acct1", "pw", call_tool=weird)
+
+    def test_positive_confirmation_is_success(self):
+        from firekeep_maildex import vault
+
+        def confirming(_svc, _tool, _args, **_kw):
+            return "Secret 'maildex.acct1' stored securely in the vault."
+        vault.store("acct1", "pw", call_tool=confirming)  # no raise

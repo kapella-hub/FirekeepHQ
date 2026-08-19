@@ -61,7 +61,11 @@ def _request(identity: dict | None = None) -> Request:
 #: that split is that reading a decrypted secret needs A KEY, and the derived
 #: ANONYMOUS_SCOPES would otherwise have granted the new scope automatically --
 #: reopening precisely the hole this file exists to guard.
-WITHHELD_FROM_ANONYMOUS = {"admin", "vault:read"}
+# Dex scopes joined the withheld set 2026-08-19: they authorize writing
+# MEMBER-OWNED vault secrets (`maildex.<id>` app passwords), and an
+# identity-bearing write from a caller who never presented a key is the
+# audit-blocker-7 class with a new door.
+WITHHELD_FROM_ANONYMOUS = {"admin", "vault:read", "dex:docdex", "dex:maildex"}
 
 
 class TestAnonymousScopeSet:

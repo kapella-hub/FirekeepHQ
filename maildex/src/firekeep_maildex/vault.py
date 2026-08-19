@@ -108,15 +108,29 @@ def retrieve(account_id: str, *, call_tool=None) -> str:
 
 
 def store(account_id: str, password: str, *, call_tool=None) -> None:
-    """Put the app password in the vault. The ONE place it is ever sent."""
+    """Put the app password in the vault. The ONE place it is ever sent.
+
+    The RESULT is inspected, not just the call's survival: the Keep's MCP
+    tools report failures IN-BAND as a result string with a clean HTTP 200
+    (the night-shift `_relay_ok` lesson). The first live e2e proved the cost
+    of missing that here — `add` verified the mailbox, "stored" the password
+    into a refusal message, printed success, and the first sync found an
+    empty vault. Success is the tool's positive confirmation and nothing
+    else."""
     if not password:
         raise ValueError("refusing to store an empty password")
-    _call("vault_store", {
+    result = _call("vault_store", {
         "key": vault_key(account_id),
         "value": password,
         "description": "maildex IMAP app password",
         "category": "maildex",
     }, call_tool=call_tool)
+    text = result if isinstance(result, str) else str(result)
+    if "stored securely" in text:
+        return
+    if _REFUSED.search(text):
+        raise VaultRefused(text[:300])
+    raise VaultError(f"the vault did not confirm the store: {text[:300]}")
 
 
 def delete(account_id: str, *, call_tool=None) -> None:

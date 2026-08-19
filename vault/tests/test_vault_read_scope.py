@@ -150,24 +150,29 @@ class TestRequireAnyScope:
 
 
 class TestWriteStaysAdminOnly:
-    """The asymmetry is the point. A read scope that also permitted writes would
-    let any teammate silently replace a shared credential."""
+    """The asymmetry is still the point — narrowed, not dropped (2026-08-19).
 
-    def test_store_and_delete_still_demand_admin(self):
+    Ordinary keys keep the admin-only write posture: a read scope that also
+    permitted writes would let any teammate silently replace a shared
+    credential. What changed for Maildex: keys under a KNOWN dex prefix are
+    member secrets, writable under `dex:<id>` with in-body ownership checks —
+    the full behavioral contract lives in test_dex_member_keys.py. This pin
+    asserts the SHAPE: both write routes gate on require_any_scope over admin
+    plus exactly the dex scopes, and the in-body admin/dex branching exists.
+    """
+
+    def test_write_routes_gate_on_admin_or_dex_scopes(self):
         import inspect
 
         from vault import api as vault_api
         src = inspect.getsource(vault_api.create_vault_router)
-        # Locate each route's decorator and the gate on the following lines.
-        for route, gate in (
-            ('@router.post("/secrets")', 'require_scope("admin")'),
-            ('@router.delete("/secrets/{key}")', 'require_scope("admin")'),
-        ):
+        for route in ('@router.post("/secrets")', '@router.delete("/secrets/{key}")'):
             i = src.find(route)
             assert i != -1, f"route {route} not found"
-            window = src[i:i + 400]
-            assert gate in window, f"{route} no longer demands admin"
-            assert "require_any_scope" not in window, (
-                f"{route} was widened to a read scope — a teammate could overwrite "
-                f"or destroy a shared credential"
-            )
+            window = src[i:i + 700]
+            assert 'require_any_scope("admin"' in window, (
+                f"{route} no longer starts its gate at admin")
+            assert 'f"dex:{d}"' in window and "KNOWN_DEX_IDS" in window, (
+                f"{route} gate is not derived from the dex-id table")
+            assert "_is_admin(identity)" in window, (
+                f"{route} lost its in-body admin/dex branching")

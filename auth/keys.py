@@ -172,7 +172,14 @@ async def _resolve_key_id(key_id: str) -> list[tuple[str, dict[str, Any]]]:
 # secrets would re-open the hole audit blocker 7 closed, on any default
 # AUTH_ENABLED=false box. Reading a secret requires presenting a key, always.
 # Guarded by tests/test_auth_scopes.py.
-ANONYMOUS_SCOPES: tuple[str, ...] = tuple(sorted(SCOPES - {"admin", "*", "vault:read"}))
+# Dex scopes are subtracted too (2026-08-19): they now authorize writing
+# MEMBER-OWNED vault secrets (a mailbox password under `maildex.<id>`), and a
+# member-owned secret written by a caller who never presented a key is the
+# audit-blocker-7 class with a new door. An auth-disabled box keeps its open
+# memory surfaces; identity-bearing writes require identity, always.
+ANONYMOUS_SCOPES: tuple[str, ...] = tuple(sorted(
+    SCOPES - {"admin", "*", "vault:read"} - {s for s in SCOPES if s.startswith("dex:")}
+))
 
 _ANONYMOUS_IDENTITY = anonymous_principal()
 
