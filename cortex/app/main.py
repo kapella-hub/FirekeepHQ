@@ -1314,6 +1314,8 @@ async def memory_recall(
         payload={
             "query": query.task[:200],
             "top_k": query.top_k,
+            # None for deliberate calls; "prompt-hook" for pushed recall.
+            "trigger": query.trigger,
             "result_count": len(result.sources),
             # `top_score` is RecallResponse.score, which is max() over scores
             # that have been through _min_max_normalize -- so it is exactly 1.0

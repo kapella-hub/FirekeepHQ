@@ -25,6 +25,14 @@ class ContextQuery(BaseModel):
     task: str = Field(..., min_length=1, max_length=2000)
     tags: list[Annotated[str, Field(max_length=100)]] = Field(default=[], max_length=20)
     top_k: int = Field(default=5, ge=1, le=100)
+    # Who initiated this recall — absent means a deliberate agent/tool call;
+    # "prompt-hook" marks the client's pushed per-prompt recall (Proactive
+    # Recall, 2026-08-18). Carried into the memory_read replay event so the
+    # compliance measurement can slice deliberate vs pushed recall: a pushed
+    # recall raises "recall before you answer" mechanically, and an exposure
+    # change that cannot be attributed would confound the frozen predicates'
+    # trend (the 0.1.41 round-2 contract precedent).
+    trigger: str | None = Field(default=None, max_length=32)
     # Category scope, and OPTIONAL BY DEFAULT — see `db/vector.namespace_condition`.
     # Omitting it searches every namespace the caller's workspace_id permits;
     # naming one scopes to exactly that one, `"default"` included. This field

@@ -805,3 +805,21 @@ class TestRecallAccessCounts:
         )
         assert resp.status_code == 200
         mock_redis._pipeline.hincrby.assert_not_called()
+
+
+class TestRecallTrigger:
+    """Proactive Recall (2026-08-18): the optional `trigger` field marks pushed
+    recalls so the exposure change is attributable in replay — and its absence
+    must behave exactly as before (the existing recall suite passes unedited)."""
+
+    def test_trigger_absent_is_none(self):
+        from app.models import ContextQuery
+        q = ContextQuery(task="how do we deploy")
+        assert q.trigger is None
+
+    def test_trigger_accepted_and_bounded(self):
+        from app.models import ContextQuery
+        import pydantic, pytest
+        assert ContextQuery(task="t", trigger="prompt-hook").trigger == "prompt-hook"
+        with pytest.raises(pydantic.ValidationError):
+            ContextQuery(task="t", trigger="x" * 33)
