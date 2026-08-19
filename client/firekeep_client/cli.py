@@ -23,6 +23,7 @@ from firekeep_client import (
     __version__,
     backups,
     dexes,
+    maildexsync,
     pathenv,
     resolver,
     serverinit,
@@ -480,7 +481,8 @@ def cmd_install(args) -> int:
         # The dex wheels are always installed, whether or not the registry has them
         # turned on — registration gates ACTIVITY, not installation. From a
         # CHECKOUT, install each sibling source dir BY LOCAL PATH — never
-        # `pip install firekeep-symdex` / `firekeep-docdex` (those names may belong
+        # `pip install firekeep-symdex` / `firekeep-docdex` / `firekeep-maildex`
+        # (those names may belong
         # to a third party on PyPI, the same hazard as firekeep-client). RELEASE
         # installs receive the checksum-verified wheels from the bootstrap, so there
         # is nothing to do here when running from the installed venv (kit is None).
@@ -488,7 +490,7 @@ def cmd_install(args) -> int:
         # checkout would install cleanly and then have a dead `firekeep docdex`,
         # dead tools and a doctor row nobody can explain.
         if kit is not None:
-            for dex_name in ("symdex", "docdex"):
+            for dex_name in ("symdex", "docdex", "maildex"):
                 step = f"pip install {dex_name} (local checkout dir)"
                 dex_dir = kit.parent / dex_name
                 if not (dex_dir / "pyproject.toml").is_file():
@@ -1101,7 +1103,7 @@ def _check_dexes() -> list[tuple[str, str, str]]:
     """Which domain indexes this machine has registered, and how they are doing.
 
     Always one `dexes` row, plus a per-dex row for any registered dex that has
-    local state worth reporting (docdex today). The `dexes` row is "ok" whether
+    local state worth reporting (docdex and maildex today). The `dexes` row is "ok" whether
     or not any are registered: a dex is a suggestion, never a default
     (ROADMAP §5), so the empty state is an OFFER, not a finding. The one fault
     IT can report is a REGISTERED dex whose wheel is gone — the gateway mounts a
@@ -1126,6 +1128,8 @@ def _check_dexes() -> list[tuple[str, str, str]]:
         rows = [("dexes", "ok", f"{names} (registered)")]
     if any(m.name == "docdex" for m in registered):
         rows.append(_check_docdex())
+    if any(m.name == "maildex" for m in registered):
+        rows.append(_check_maildex())
     return rows
 
 
@@ -1174,6 +1178,51 @@ def _check_docdex() -> tuple[str, str, str]:
     except Exception as exc:  # noqa: BLE001 - a check never breaks the doctor run
         return ("docdex", "warn", f"cannot read docdex state: {exc}")
     return ("docdex", "warn" if pending or failures else "ok", detail)
+
+
+def _check_maildex() -> tuple[str, str, str]:
+    """Maildex's own accounting, read entirely from disk.
+
+    Offline for the same reason `_check_docdex` is: doctor is what people run when
+    the SERVER is the broken thing, and a row that needed the server to answer would
+    hang exactly when it is most needed.
+
+    Read through `maildexsync`'s path helpers rather than by importing
+    `firekeep_maildex`, which is where this row parts company with docdex's. That
+    wheel is the one that holds a mailbox app password in memory for the length of a
+    sync; `firekeep doctor` has no business loading it to count accounts, and
+    `dexes.is_installed`'s find_spec answers the only question the import would have
+    answered here — is the code there at all.
+    """
+    manifest = dexes.KNOWN_DEXES["maildex"]
+    if not dexes.is_installed(manifest):
+        return ("maildex", "fail", "wheel not importable — reinstall via bootstrap")
+    try:
+        accounts = maildexsync.active_account_ids()
+        if not accounts:
+            return ("maildex", "ok",
+                    "0 accounts · last sync never · 0 failures — connect a mailbox "
+                    "with `firekeep maildex add <host> <username>`")
+        failures = 0
+        ages: list[float] = []
+        never = False
+        now = datetime.now(timezone.utc).timestamp()
+        for account_id in accounts:
+            failures += maildexsync.read_failure_count(account_id)
+            at = maildexsync.read_last_sync(account_id)
+            if at is None:
+                never = True
+            else:
+                ages.append(max(0.0, now - at))
+        # The STALEST account, not the freshest — same reason as docdex's row: a
+        # "just now" earned by one of three mailboxes would hide the two that
+        # have not synced at all, and staleness is the only thing this is asked for.
+        when = "never" if never or not ages else _humanize_age(max(ages))
+        detail = (f"{_count(len(accounts), 'account')} · last sync {when} · "
+                  f"{_count(failures, 'failure')}")
+    except Exception as exc:  # noqa: BLE001 - a check never breaks the doctor run
+        return ("maildex", "warn", f"cannot read maildex state: {exc}")
+    return ("maildex", "warn" if failures else "ok", detail)
 
 
 def _check_backup(cfg=None, *, reachable: bool = True) -> tuple[str, str, str]:
@@ -1799,6 +1848,71 @@ def cmd_docdex(args) -> int:
     try:
         # `prog` so the wheel's usage and error lines name what the user typed.
         return docdex_cli.main(argv, prog="firekeep docdex")
+    except SystemExit as exc:
+        # argparse inside the wheel exits rather than returns. `firekeep` must
+        # hand back an int from every command — dispatch is what calls sys.exit.
+        return int(exc.code or 0)
+
+
+def cmd_maildex(args) -> int:
+    """`firekeep maildex add|list|sync|remove` — the bridge onto the maildex wheel.
+
+    The same translator shape as `cmd_docdex`, for the same reason: `firekeep maildex
+    sync` and `firekeep-maildex sync` must not be able to mean two different things.
+
+    The app password is deliberately NOT part of this argv. `add` takes an IMAP host
+    and a username; the wheel prompts for the password itself and stores it in the
+    Keep's vault (spec M3). A secret passed as an argument is a secret in every
+    process listing and shell history on the machine.
+
+    The import is LAZY and stays that way. maildex is an optional sibling wheel; a
+    module-level import would take out every OTHER firekeep command on a kit that
+    does not have it, and would break the stdlib-only client spine besides.
+
+    Registration is NOT checked. Mailbox control is a human's, and it works whether or
+    not `firekeep dex add maildex` has been run — registration gates the background
+    sync trigger and the doctor accounting, never a person's ability to say which of
+    their own mailboxes the Keep may read.
+    """
+    action = getattr(args, "action", None) or "list"
+    target = (getattr(args, "target", None) or "").strip()
+    username = (getattr(args, "username", None) or "").strip()
+
+    # Answered here rather than by the wheel's parser: this CLI's `target` is one
+    # positional serving two commands, so argparse cannot require it per action.
+    if action == "add" and not (target and username):
+        print("firekeep: `firekeep maildex add` needs an IMAP host and a username — "
+              "e.g. `firekeep maildex add imap.example.com you@example.com`",
+              file=sys.stderr)
+        return 2
+    if action == "remove" and not target:
+        print("firekeep: `firekeep maildex remove` needs an account id — "
+              "`firekeep maildex list` shows them", file=sys.stderr)
+        return 2
+
+    try:
+        from firekeep_maildex import cli as maildex_cli
+    except ImportError:
+        print("firekeep: maildex is not installed — reinstall with the bootstrap "
+              "or `firekeep dex add maildex` on a bundled install", file=sys.stderr)
+        return 1
+
+    argv = [action]
+    if action == "add":
+        argv += [target, username]
+        folders = getattr(args, "folders", None)
+        if folders:
+            argv += ["--folders", *folders]
+        backfill_days = getattr(args, "backfill_days", None)
+        if backfill_days is not None:
+            argv += ["--backfill-days", str(backfill_days)]
+    elif action == "remove":
+        argv.append(target)
+    elif action == "sync" and getattr(args, "account", None):
+        argv += ["--account", args.account]
+    try:
+        # `prog` so the wheel's usage and error lines name what the user typed.
+        return maildex_cli.main(argv, prog="firekeep maildex")
     except SystemExit as exc:
         # argparse inside the wheel exits rather than returns. `firekeep` must
         # hand back an int from every command — dispatch is what calls sys.exit.
@@ -2558,7 +2672,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # below, and the only sub-command pattern this package uses.
     dex = sub.add_parser("dex", help="manage dexes — domain indexes the Keep understands")
     dex.add_argument("action", nargs="?", choices=["list", "add", "remove"], default="list")
-    dex.add_argument("name", nargs="?", help="dex name (symdex, docdex)")
+    dex.add_argument("name", nargs="?", help="dex name (symdex, docdex, maildex)")
     dex.set_defaults(func=cmd_dex)
 
     docdex = sub.add_parser(
@@ -2572,6 +2686,21 @@ def _build_parser() -> argparse.ArgumentParser:
                              "private to you, even on a shared Keep)")
     docdex.add_argument("--source", metavar="ID", help="sync one source by id")
     docdex.set_defaults(func=cmd_docdex)
+
+    maildex = sub.add_parser(
+        "maildex",
+        help="mailboxes indexed into the Keep, read-only (add/list/sync/remove)")
+    maildex.add_argument("action", nargs="?",
+                         choices=["list", "add", "sync", "remove"], default="list")
+    maildex.add_argument("target", nargs="?",
+                         help="IMAP host (add) or account id (remove)")
+    maildex.add_argument("username", nargs="?", help="mailbox username (add)")
+    maildex.add_argument("--folders", nargs="+", metavar="FOLDER",
+                         help="folders to index (add; default: INBOX and Sent)")
+    maildex.add_argument("--backfill-days", type=int, metavar="N",
+                         help="how far back the first sync reaches (add; default 90)")
+    maildex.add_argument("--account", metavar="ID", help="sync one account by id")
+    maildex.set_defaults(func=cmd_maildex)
 
     backup = sub.add_parser(
         "backup",

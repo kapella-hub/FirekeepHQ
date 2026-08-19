@@ -58,6 +58,30 @@ def test_docdex_manifest_is_an_ingest_client_dex():
     assert m.description
 
 
+def test_maildex_manifest_is_an_ingest_client_dex():
+    """Registry consumer #3, on the docdex chassis (maildex spec §1): no MCP
+    server, so `kind` is what tells the gateway there is nothing to mount."""
+    m = dexes.KNOWN_DEXES["maildex"]
+    assert m.id == "firekeep.maildex"
+    assert m.name == "maildex"
+    assert m.title == "Maildex"
+    assert m.indexes == "email"
+    assert m.kind == "ingest-client"
+    assert m.console_script == "firekeep-maildex"
+    assert m.import_probe == "firekeep_maildex"
+    assert m.description
+
+
+def test_the_maildex_register_states_the_two_invariants_a_person_must_know():
+    """M1 (always member-private) and M2 (no send capability) are the two facts
+    that decide whether connecting a mailbox is acceptable, so they belong in the
+    one line `firekeep dex list` prints — not only in the guide."""
+    description = dexes.KNOWN_DEXES["maildex"].description.lower()
+    assert "private" in description
+    assert "read-only" in description
+    assert "send" in description
+
+
 def test_manifest_name_is_the_registry_key_everywhere():
     """DexManifest.name IS the registry key (plan: type consistency). A manifest
     whose name drifts from its dict key would make add()/remove()/registered()
@@ -189,7 +213,10 @@ def test_registered_is_empty_without_a_file(registry_home):
 
 
 def test_registered_returns_manifests_in_known_order(registry_home):
-    dexes.write_registry({"docdex": {}, "symdex": {}})
+    # Written scrambled (and stored sorted): the order comes from KNOWN_DEXES,
+    # never from the file, so the gateway mounts in a defined order whatever a
+    # hand-edited registry happens to list first.
+    dexes.write_registry({name: {} for name in reversed(list(dexes.KNOWN_DEXES))})
     assert [m.name for m in dexes.registered()] == list(dexes.KNOWN_DEXES)
 
 

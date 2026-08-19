@@ -1,5 +1,6 @@
 import configparser
 import importlib.util
+import json
 import os
 import sys
 import textwrap
@@ -928,6 +929,138 @@ def test_run_doctor_includes_the_docdex_row_once_registered(tmp_path, monkeypatc
     names = [n for n, _, _ in cli.run_doctor(cfg)]
     assert names.count("dexes") == 1
     assert names.count("docdex") == 1
+
+
+# --- maildex accounting (maildex plan Task I) --------------------------------
+#
+# The docdex row's twin, with one deliberate difference: it reads the files
+# itself instead of importing the wheel. maildex is the module that holds a
+# mailbox app password in memory for the length of a sync, and `firekeep doctor`
+# has no business loading it to count accounts.
+
+
+@pytest.fixture
+def maildex_home(dexes_home, tmp_path):
+    dexes_home.add("maildex")
+    return tmp_path
+
+
+def _write_accounts(tmp_path, entries):
+    path = tmp_path / "maildex" / "accounts.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(entries), encoding="utf-8")
+
+
+def _write_maildex_state(tmp_path, account_id, **fields):
+    path = tmp_path / "maildex" / "state" / f"{account_id}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"version": 1, **fields}), encoding="utf-8")
+
+
+def _account(username="you@example.com"):
+    return {"host": "imap.example.com", "port": 993, "username": username,
+            "folders": ["INBOX", "Sent"], "backfill_days": 90}
+
+
+def test_no_maildex_row_when_the_dex_is_not_registered(dexes_home):
+    dexes_home.add("symdex")
+    assert [name for name, _, _ in cli._check_dexes()] == ["dexes"]
+
+
+def test_maildex_row_offers_the_first_mailbox_when_none_is_connected(maildex_home):
+    name, status, detail = cli._check_dexes()[-1]
+    assert (name, status) == ("maildex", "ok")
+    assert "0 accounts" in detail
+    assert "firekeep maildex add" in detail
+
+
+def test_maildex_row_counts_accounts_and_reports_the_stalest(maildex_home, tmp_path):
+    _write_accounts(tmp_path, {"a" * 32: _account(), "b" * 32: _account("other@x")})
+    _write_maildex_state(tmp_path, "a" * 32,
+                         last_sync_at=datetime.now(timezone.utc).isoformat())
+
+    name, status, detail = cli._check_dexes()[-1]
+    assert (name, status) == ("maildex", "ok")
+    assert "2 accounts" in detail
+    # The STALEST account, not the freshest: "just now" earned by one of two
+    # mailboxes would hide the one that has never synced at all.
+    assert "last sync never" in detail
+
+
+def test_maildex_row_warns_on_ingest_failures(maildex_home, tmp_path):
+    _write_accounts(tmp_path, {"a" * 32: _account()})
+    _write_maildex_state(
+        tmp_path, "a" * 32,
+        last_sync_at=datetime.now(timezone.utc).isoformat(),
+        messages={"1": {"uid": 1}, "2": {"uid": 2, "error": "503 busy"}},
+    )
+
+    name, status, detail = cli._check_dexes()[-1]
+    assert (name, status) == ("maildex", "warn")
+    assert "1 failure" in detail
+
+
+def test_maildex_row_fails_when_the_wheel_is_gone(maildex_home, monkeypatch):
+    """Registered but not installed is the state where nothing syncs and nothing
+    says why — the one maildex fault doctor can see without a server."""
+    from firekeep_client import dexes
+
+    monkeypatch.setattr(dexes, "is_installed",
+                        lambda manifest: manifest.name != "maildex")
+    name, status, detail = cli._check_dexes()[-1]
+    assert (name, status) == ("maildex", "fail")
+    assert detail == "wheel not importable — reinstall via bootstrap"
+
+
+def test_maildex_row_never_imports_the_wheel(maildex_home, tmp_path, monkeypatch):
+    """A `None` entry in sys.modules makes any import of it raise. The row must
+    still answer — proof it reads the files rather than loading the module that
+    handles the password."""
+    monkeypatch.setitem(sys.modules, "firekeep_maildex", None)
+    _write_accounts(tmp_path, {"a" * 32: _account()})
+
+    name, status, detail = cli._check_dexes()[-1]
+    assert (name, status) == ("maildex", "ok")
+    assert "1 account" in detail
+
+
+def test_maildex_row_makes_no_server_call(maildex_home, tmp_path, monkeypatch):
+    """Doctor stays offline and fast: the row must not hang on exactly the
+    machine whose server is down."""
+    _write_accounts(tmp_path, {"a" * 32: _account()})
+    monkeypatch.setattr(cli, "get_json", _never_called)
+    name, status, _ = cli._check_dexes()[-1]
+    assert (name, status) == ("maildex", "ok")
+
+
+def test_maildex_row_survives_an_unreadable_accounts_file(maildex_home, tmp_path):
+    """A corrupt registry costs the numbers, never the doctor run."""
+    path = tmp_path / "maildex" / "accounts.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{ not json", encoding="utf-8")
+    name, status, _ = cli._check_dexes()[-1]
+    assert name == "maildex" and status in ("ok", "warn")
+
+
+def test_run_doctor_includes_the_maildex_row_once_registered(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path, monkeypatch, SERVER)
+    from firekeep_client import dexes
+
+    monkeypatch.setattr(dexes, "is_installed", lambda manifest: True)
+    dexes.add("maildex")
+    monkeypatch.setattr(cli, "_check_health", lambda cfg: [])
+    monkeypatch.setattr(cli, "_check_versions", lambda cfg: ("versions", "ok", ""))
+    monkeypatch.setattr(cli, "_check_api_key", lambda cfg: None)
+    monkeypatch.setattr(cli, "_check_venv_scripts",
+                        lambda venv, is_windows=None: ("venv-scripts", "ok", ""))
+    monkeypatch.setattr(cli, "_check_codex_adapter", lambda venv: [])
+    monkeypatch.setattr(cli, "_check_instructions", lambda: [])
+    monkeypatch.setattr(cli, "_check_config_perms",
+                        lambda config, is_windows=None: ("config-perms", "ok", ""))
+    monkeypatch.setattr(cli, "_check_ca_expiry", lambda cfg: None)
+    names = [n for n, _, _ in cli.run_doctor(cfg)]
+    assert names.count("dexes") == 1
+    assert names.count("maildex") == 1
 
 
 def test_venv_scripts_still_wants_every_bundled_wheel(tmp_path):

@@ -19,8 +19,8 @@ import platform
 import urllib.parse
 
 from firekeep_client import (
-    autoupdate, docdexsync, hooklog, resolver, state, symdexindex, transport,
-    updater,
+    autoupdate, docdexsync, hooklog, maildexsync, resolver, state, symdexindex,
+    transport, updater,
 )
 from firekeep_client.hooks import _mcp, never_raise, runbooks
 
@@ -160,10 +160,13 @@ def run(payload: dict) -> dict:
     except Exception as e:  # noqa: BLE001
         hooklog.log_failure(_HOOK, f"scratch write failed: {e}")
 
-    # 4. Auto-index this workspace for symdex, and sync the folders a human gave
-    #    docdex (both detached; see those modules' docstrings for why neither can
-    #    be inline, and why symdex's replaces the old plugin hook's
-    #    ACTION-REQUIRED nag). Each is silent unless it has something to say.
+    # 4. Auto-index this workspace for symdex, sync the folders a human gave
+    #    docdex, and sync the mailboxes a human gave maildex (all detached; see
+    #    those modules' docstrings for why none can be inline, and why symdex's
+    #    replaces the old plugin hook's ACTION-REQUIRED nag). Each is silent
+    #    unless it has something to say, and the ingest dexes go last, in
+    #    registry order — the briefing is what the user is waiting to read.
     return {"systemMessage": rendered + _update_nudge(cfg) + _unsigned_notice()
             + symdexindex.index_nudge(cfg, payload)
-            + docdexsync.sync_nudge(cfg)}
+            + docdexsync.sync_nudge(cfg)
+            + maildexsync.sync_nudge(cfg)}

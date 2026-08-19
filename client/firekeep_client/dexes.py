@@ -85,6 +85,19 @@ KNOWN_DEXES: dict[str, DexManifest] = {
             "Private to you by default, even on a shared Keep."
         ),
     ),
+    "maildex": DexManifest(
+        id="firekeep.maildex",
+        name="maildex",
+        title="Maildex",
+        indexes="email",
+        kind="ingest-client",
+        console_script="firekeep-maildex",
+        import_probe="firekeep_maildex",
+        description=(
+            "Email — a mailbox you connect read-only, recent mail extracted into "
+            "recall. Always private to you: never shared, and it cannot send."
+        ),
+    ),
 }
 
 

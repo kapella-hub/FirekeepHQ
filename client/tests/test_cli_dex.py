@@ -56,6 +56,29 @@ def test_list_carries_what_each_dex_indexes_and_why(dex_home, capsys):
     assert dexes.KNOWN_DEXES["docdex"].description.split("—")[0].strip() in out
 
 
+def test_list_carries_maildex_and_what_it_indexes(dex_home, capsys):
+    """A new dex must reach `dex list` with no change to the command: the list
+    is KNOWN_DEXES, and a dex a person cannot see is a dex nobody turns on."""
+    cli.main(["dex", "list"])
+    out = _out(capsys)
+    lines = {line.split()[0]: line for line in out.splitlines() if line.strip()}
+    assert "email" in lines["maildex"]
+    assert "available" in lines["maildex"]
+
+
+def test_add_maildex_registers_it(dex_home, capsys):
+    assert cli.main(["dex", "add", "maildex"]) == 0
+    assert list(dexes.read_registry()) == ["maildex"]
+    assert "next agent session" in _out(capsys)
+
+
+def test_add_maildex_without_the_wheel_registers_nothing(dex_home, capsys, monkeypatch):
+    monkeypatch.setattr(dexes, "is_installed", lambda manifest: False)
+    assert cli.main(["dex", "add", "maildex"]) == 1
+    assert "firekeep_maildex" in _out(capsys)
+    assert dexes.read_registry() == {}
+
+
 def test_list_suggests_symdex_when_nothing_is_registered(dex_home, capsys):
     cli.main(["dex", "list"])
     assert "firekeep dex add symdex" in _out(capsys)

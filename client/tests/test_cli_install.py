@@ -63,7 +63,7 @@ def test_install_has_no_with_symdex_flag():
         parser.parse_args(["install", "--with-symdex"])
 
 
-def _checkout(tmp_path, monkeypatch, *, dexes=("symdex", "docdex")):
+def _checkout(tmp_path, monkeypatch, *, dexes=("symdex", "docdex", "maildex")):
     """A monorepo checkout: the kit dir plus whichever sibling dex dirs exist."""
     kit = tmp_path / "client"
     kit.mkdir(parents=True, exist_ok=True)
@@ -102,6 +102,35 @@ def test_checkout_install_uses_local_docdex_dir(install_env, monkeypatch, tmp_pa
     installed = [p for pkgs in calls for p in pkgs]
     assert str(tmp_path / "docdex") in installed
     assert "firekeep-docdex" not in installed  # NEVER by name
+
+
+def test_checkout_install_uses_local_maildex_dir(install_env, monkeypatch, tmp_path):
+    """The third wheel, same rule: `firekeep-maildex` is an unclaimed name on
+    PyPI, so a bare name would resolve to whatever a stranger uploads there —
+    into a venv that is about to be handed a mailbox password."""
+    calls = []
+    monkeypatch.setattr(cli, "_pip_install", lambda py, *pkgs, **k: calls.append(pkgs))
+    _checkout(tmp_path, monkeypatch)
+
+    rc = cli.main(["install", "--runtime", "claude"])
+    assert rc == 0
+    installed = [p for pkgs in calls for p in pkgs]
+    assert str(tmp_path / "maildex") in installed
+    assert "firekeep-maildex" not in installed  # NEVER by name
+
+
+def test_checkout_install_fails_loudly_without_the_maildex_dir(
+    install_env, monkeypatch, tmp_path, capsys
+):
+    """A kit built from half a checkout would install cleanly and then have a
+    dead `firekeep maildex` and a doctor row nobody can explain."""
+    monkeypatch.setattr(cli, "_pip_install", lambda py, *pkgs, **k: None)
+    _checkout(tmp_path, monkeypatch, dexes=("symdex", "docdex"))
+
+    assert cli.main(["install", "--runtime", "claude"]) == 1
+    err = capsys.readouterr().err
+    assert "maildex source not found" in err
+    assert "incomplete checkout" in err
 
 
 def test_checkout_install_fails_loudly_without_the_docdex_dir(
@@ -146,6 +175,7 @@ def test_install_creates_venv_and_pip_installs_client(install_env):
     assert Path(venv_cmds[0][-1]) == home / "venvs" / "1.2.3"
     assert "firekeep-symdex" not in blob
     assert "firekeep-docdex" not in blob
+    assert "firekeep-maildex" not in blob
     # The client kit must be installed from the LOCAL kit directory (the dir
     # holding client/pyproject.toml), never resolved as a bare name against
     # PyPI — "firekeep-client" on PyPI is owned by a third party.
