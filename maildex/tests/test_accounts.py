@@ -137,10 +137,26 @@ def test_folders_default_to_inbox_and_sent():
     assert account.folders == ("INBOX", "Sent")
 
 
-def test_folders_accept_a_comma_separated_string_from_the_cli():
+def test_folders_accept_a_comma_separated_string():
     account = accounts.add("imap.example.com", "me@example.com",
                            folders="INBOX, Archive ,Work/2026")
     assert account.folders == ("INBOX", "Archive", "Work/2026")
+
+
+def test_folders_accept_the_list_the_client_bridge_builds():
+    """`firekeep maildex add --folders INBOX Archive` arrives as a list — the
+    bridge's own option is `nargs="+"`, and it forwards the values verbatim."""
+    account = accounts.add("imap.example.com", "me@example.com",
+                           folders=["INBOX", "[Gmail]/Sent Mail"])
+    assert account.folders == ("INBOX", "[Gmail]/Sent Mail")
+
+
+def test_folders_accept_the_two_spellings_mixed():
+    """Somebody who types `--folders INBOX,Archive Work` is not making a
+    mistake worth a parse error."""
+    account = accounts.add("imap.example.com", "me@example.com",
+                           folders=["INBOX,Archive", "Work"])
+    assert account.folders == ("INBOX", "Archive", "Work")
 
 
 def test_duplicate_folders_are_collapsed():

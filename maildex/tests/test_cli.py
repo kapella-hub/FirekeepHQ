@@ -105,6 +105,19 @@ def test_add_honours_folders_and_backfill(typed):
     assert account.backfill_days == 30
 
 
+def test_add_accepts_the_argv_the_firekeep_bridge_builds(typed):
+    """`client/firekeep_client/cli.py::cmd_maildex` does
+    `argv += ["--folders", *folders]` off its own `nargs="+"` option, so a
+    single-value `--folders` here would fail with "unrecognized arguments" on
+    every multi-folder add through `firekeep maildex`."""
+    assert cli.main(["add", "imap.example.com", "me@example.com",
+                     "--folders", "INBOX", "[Gmail]/Sent Mail",
+                     "--backfill-days", "30"], prog="firekeep maildex") == 0
+    account = accounts.list_accounts()[0]
+    assert account.folders == ("INBOX", "[Gmail]/Sent Mail")
+    assert account.backfill_days == 30
+
+
 def test_a_vault_refusal_rolls_the_registration_back(typed, fake_vault, capsys):
     """A mailbox registered with no secret can never sync, and its failure
     message would be about a missing vault key rather than about what actually

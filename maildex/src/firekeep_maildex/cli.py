@@ -273,8 +273,13 @@ def _build_parser(prog: str) -> argparse.ArgumentParser:
     add.add_argument("username", help="usually your email address")
     add.add_argument("--port", type=int, default=accounts.DEFAULT_PORT,
                      help=f"IMAP over TLS (default {accounts.DEFAULT_PORT})")
-    add.add_argument("--folders", default=None,
-                     help=f"comma-separated (default {','.join(accounts.DEFAULT_FOLDERS)})")
+    # `nargs="+"` because the `firekeep maildex` bridge builds
+    # `["--folders", *folders]` from its own `nargs="+"` option. Commas inside
+    # any element are split too, so `--folders INBOX Archive` and
+    # `--folders INBOX,Archive` both mean the same two folders.
+    add.add_argument("--folders", nargs="+", metavar="FOLDER", default=None,
+                     help=f"folders to index, space- or comma-separated "
+                          f"(default {' '.join(accounts.DEFAULT_FOLDERS)})")
     add.add_argument("--backfill-days", type=int, default=None,
                      help=f"how far back to index on the first sync "
                           f"(default {accounts.DEFAULT_BACKFILL_DAYS})")

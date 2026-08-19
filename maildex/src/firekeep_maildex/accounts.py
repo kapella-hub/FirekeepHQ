@@ -105,19 +105,27 @@ def _now() -> str:
 def normalize_folders(folders) -> tuple[str, ...]:
     """Trim, drop blanks, de-duplicate, preserve the order the human typed.
 
-    Duplicates are not harmless: the same folder listed twice would be
-    EXAMINEd twice per sync and burn the per-sync message budget on messages
-    already ingested.
+    Accepts BOTH spellings, and splits commas inside list elements as well as
+    inside a bare string. `firekeep maildex add --folders INBOX Archive` arrives
+    as a list (the client bridge's `nargs="+"`), while somebody typing
+    `firekeep-maildex add --folders INBOX,Archive` means the same thing — and a
+    person who mixes them (`--folders INBOX,Archive Work`) is not making a
+    mistake worth a parse error.
+
+    Duplicates are not harmless: the same folder listed twice would be EXAMINEd
+    twice per sync and burn the per-sync message budget on messages already
+    ingested.
     """
     if folders is None:
         return DEFAULT_FOLDERS
     if isinstance(folders, str):
-        folders = folders.split(",")
+        folders = [folders]
     out: list[str] = []
     for raw in folders:
-        name = str(raw).strip()
-        if name and name not in out:
-            out.append(name)
+        for part in str(raw).split(","):
+            name = part.strip()
+            if name and name not in out:
+                out.append(name)
     return tuple(out) or DEFAULT_FOLDERS
 
 
