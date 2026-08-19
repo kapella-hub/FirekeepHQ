@@ -1,0 +1,50 @@
+[project]
+name = "firekeep-maildex"
+version = "0.1.0"
+description = "Firekeep maildex: the email dex — a mailbox connected read-only and indexed into the Keep's corpus, private to one member"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "LicenseRef-Firekeep-BUSL-1.1"
+license-files = ["LICENSE", "NOTICE"]
+keywords = ["mcp", "ai-agents", "agent-memory", "email", "imap", "rag", "knowledge-base", "claude-code", "self-hosted"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Communications :: Email",
+    "Topic :: Text Processing :: Indexing",
+]
+dependencies = [
+    # The ONLY dependency, and deliberately so (spec §3). Everything maildex
+    # needs beyond the resolver/transport seam is in the standard library —
+    # `imaplib` for the protocol, `email` for parsing, `html.parser` for the
+    # text stripper. A mail client that pulls a third-party MIME or IMAP
+    # library widens the attack surface of the one dex whose input is, by
+    # definition, attacker-supplied (M4).
+    #
+    # The floor is 1.0.3: `firekeep maildex`, the dex registry and the doctor
+    # rows are what make this wheel usable, and they only exist from there.
+    "firekeep-client>=1.0.3,<2",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[project.scripts]
+firekeep-maildex = "firekeep_maildex.cli:main"
+
+[project.urls]
+Homepage = "https://firekeep.ai"
+Documentation = "https://firekeep.ai/docs.html"
+Changelog = "https://kapella-hub.github.io/firekeep-dist/latest/latest.json"
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/firekeep_maildex"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
