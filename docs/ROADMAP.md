@@ -298,6 +298,20 @@ The arc: **code → personal history → external world.**
    have gone quiet?". Identity resolution and incorrect merges are the
    risk that makes it late.
 
+**Amendment (2026-08-19, owner decision):** Maildex round 1 moves ahead of
+Chatdex and Webdex, which shift right. What changed since the order above was
+recorded: the docdex chassis proved member-private ingest (I1, measured live),
+the deletion lifecycle, the `untrusted_content` boundary, caps discipline, and
+the vault holds connector secrets — most of the reasons Maildex was "late".
+What did NOT change: OAuth token custody still waits for the broker, so round
+1 is **IMAP read-only with an app-specific password stored in the server
+vault** (never on client disk), INBOX + Sent, 90-day backfill then
+incremental, member-private always (no sharing flag exists), and no send
+capability exists anywhere in the wheel — the docdex structural answer
+applied to the send/read ambiguity. Full-OAuth Maildex remains a
+post-broker milestone. Calendardex (read-only ICS) is queued next on the
+same chassis, pending the owner's word.
+
 **Explicitly not building:** *Apifydex* (Apify is an execution provider,
 not an indexed domain); *Actiondex* (violates the understanding/action
 boundary by name); *Financedex* (valuable but high-stakes — after
