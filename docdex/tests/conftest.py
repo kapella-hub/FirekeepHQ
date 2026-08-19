@@ -117,16 +117,25 @@ def _docx(paragraphs: list[str]) -> bytes:
     return buf.getvalue()
 
 
+# Text fixtures live on disk (real markup, real MIME, real export shapes — the
+# things a regex-based extractor gets wrong are exactly the things a hand-typed
+# inline string quietly omits). `.htm` is written from the same bytes as
+# `.html`: the alias must go through the identical path or it is not an alias.
+_TEXT_FIXTURES = (
+    "sample.md", "sample.txt", "sample.html", "sample.eml", "broken.eml",
+    "chatgpt.json", "claude.json", "config.json",
+)
+
+
 @pytest.fixture(scope="session")
 def docs(tmp_path_factory):
     """A directory of one real file per supported format, plus the honest-zero
-    scanned PDF and an unsupported file."""
+    scanned PDF, a declined `.json`, and an unsupported file."""
     d = tmp_path_factory.mktemp("docs")
-    (d / "sample.md").write_text(
-        (FIXTURES / "sample.md").read_text(encoding="utf-8"), encoding="utf-8"
-    )
-    (d / "sample.txt").write_text(
-        (FIXTURES / "sample.txt").read_text(encoding="utf-8"), encoding="utf-8"
+    for name in _TEXT_FIXTURES:
+        (d / name).write_text((FIXTURES / name).read_text(encoding="utf-8"), encoding="utf-8")
+    (d / "sample.htm").write_text(
+        (FIXTURES / "sample.html").read_text(encoding="utf-8"), encoding="utf-8"
     )
     (d / "sample.pdf").write_bytes(_pdf(["Hello from a real PDF page.", "Second page text."]))
     (d / "scanned.pdf").write_bytes(_pdf([None]))

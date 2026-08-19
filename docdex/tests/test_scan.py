@@ -115,6 +115,20 @@ def test_unsupported_files_are_counted_not_indexed(tmp_path):
     assert result.unsupported == 2
 
 
+def test_the_walk_picks_up_every_supported_suffix(tmp_path):
+    """The walk's filter is `extract.is_supported`, so widening the format set
+    widens the walk with no change here — this pins that it actually does.
+    To REVERSE a format, remove it from `extract.SUPPORTED_SUFFIXES` and from
+    this list together."""
+    names = {f"f{i}{suffix}": "x" for i, suffix in enumerate(
+        [".md", ".txt", ".pdf", ".docx", ".html", ".htm", ".eml", ".json"]
+    )}
+    names["skip.rtf"] = "x"
+    result = scan.walk(_tree(tmp_path / "src", names))
+    assert len(result.files) == 8
+    assert result.unsupported == 1
+
+
 def test_default_excludes(tmp_path):
     root = _tree(tmp_path / "src", {
         "keep.md": "keep",

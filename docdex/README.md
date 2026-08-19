@@ -28,9 +28,22 @@ client of the Keep, not a standalone indexer.
 
 ## What it indexes
 
-`.md`, `.txt`, `.pdf`, `.docx` (case-insensitive). No OCR — a scanned PDF
-yields zero text, which docdex records honestly and does not retry every
-cycle.
+`.md`, `.txt`, `.pdf`, `.docx`, `.html`/`.htm`, `.eml`, and conversation-shaped
+`.json` (case-insensitive). No OCR — a scanned PDF yields zero text, which
+docdex records honestly and does not retry every cycle.
+
+`.eml` is a saved message read as a document: a Subject/From/To/Date header
+block, then the `text/plain` body (HTML stripped as the fallback), with
+attachments listed by NAME only — their content is never decoded or indexed.
+
+`.json` is indexed **only when it is a conversation export** — a ChatGPT
+`mapping` tree, a ChatGPT `conversations.json`, or a `[{role, content}, ...]`
+list. Anything else (a lock file, a config, a data dump) is skipped with a
+stated reason and counted as skipped-unsupported, not as a failure: a generic
+JSON dump is noise in recall, not a document. Turns carry their role in the
+extracted text (`user:` / `assistant:`) but are **not typed as claims** —
+nothing downstream can tell what a person asserted from what a model
+generated. Typed user-vs-model provenance is deferred, not delivered.
 
 Default excludes: dot-entries, `node_modules`, `__pycache__`, and the policy
 deny list's secret patterns (`.env*`, `*.key`, `*.pem`, `*id_rsa*`). That is

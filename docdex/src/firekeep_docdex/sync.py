@@ -51,7 +51,7 @@ _SUMMARY_COUNTERS = (
 # A server-loss abort (_ServerLost) is deliberately not an outcome: it records
 # nothing, so a run that only ever hit an outage must not persist a state file
 # it did not earn.
-_MUTATING_OUTCOMES = frozenset({"ingested", "zero", "failed"})
+_MUTATING_OUTCOMES = frozenset({"ingested", "zero", "unsupported", "failed"})
 
 
 class LockBusy(Exception):
@@ -314,6 +314,14 @@ def _batch_gate(source_id: str) -> str | None:
 
 def _sync_one(src, rel: str, digest: str, current, summary: dict, client) -> str:
     text, error = extract.extract(src.root / rel)
+    if extract.is_unsupported(error):
+        # Declined, not failed: a .json that is not a conversation export gets
+        # counted with the files the walk never picked up, and recorded as SEEN
+        # so it leaves the retry set. Calling it a failure would put a
+        # `package-lock.json` in the failure count of every sync forever.
+        state.record_seen_only(current, rel, digest)
+        summary["skipped_unsupported"] += 1
+        return "unsupported"
     if error is not None:
         state.record_failure(current, rel, digest, error)
         summary["failed"] += 1

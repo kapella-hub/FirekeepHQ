@@ -1,0 +1,8 @@
+[
+  {"role": "user", "content": "What is the rollback plan for the widget rotation?"},
+  {"role": "assistant", "content": [
+    {"type": "text", "text": "Keep the previous key active for one hour."},
+    {"type": "text", "text": "Roll back by re-pointing the fleet at it."}
+  ]},
+  {"role": "user", "content": "And if the fleet is already drained?"}
+]

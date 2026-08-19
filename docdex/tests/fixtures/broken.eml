@@ -1,0 +1,10 @@
+From: Someone <someone@example.com>
+Subject: Truncated in transit
+Date: Wed, 19 Aug 2026 03:00:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="NEVER-APPEARS"
+
+Content-Type: text/plain; charset="x-not-a-real-charset"
+Content-Transfer-Encoding: base64
+
+!!!! this is not base64 !!!!

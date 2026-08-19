@@ -233,6 +233,42 @@ def test_unsupported_files_are_counted_not_sent(tmp_path, client, server):
     assert len(server.posts) == 1
 
 
+def test_a_declined_json_is_skipped_not_failed(tmp_path, client, server):
+    """A `.json` the walk picks up but the extractor declines joins the files
+    the walk never picked up. Counting it as a failure would put every
+    `package-lock.json` in the failure count of every sync forever."""
+    src = sources.add(_folder(tmp_path, files={
+        "a.md": "alpha", "config.json": '{"name": "svc", "version": "1"}',
+    }))
+    summary = sync.run_sync(src.id, client=client)["sources"][0]
+    assert summary["status"] == "synced"
+    assert (summary["failed"], summary["skipped_unsupported"]) == (0, 1)
+    assert server.ingested_names and len(server.posts) == 1
+
+
+def test_a_declined_json_leaves_the_retry_set(tmp_path, client, server):
+    """Recorded as SEEN, so the next sync does not re-read it — the same
+    treatment the scanned PDF's honest zero gets."""
+    src = sources.add(_folder(tmp_path, files={"config.json": '{"a": 1}'}))
+    sync.run_sync(src.id, client=client)
+    recorded = state.read_state(src.id).files["config.json"]
+    assert recorded.seen_hash and recorded.ingested_hash is None
+    assert recorded.error is None
+
+    second = sync.run_sync(src.id, client=client)["sources"][0]
+    assert second["skipped_unsupported"] == 0  # not re-extracted
+    assert second["failed"] == 0
+
+
+def test_a_conversation_export_is_ingested_like_any_document(tmp_path, client, server, docs):
+    src = sources.add(_folder(tmp_path, files={
+        "chat.json": (docs / "chatgpt.json").read_text(encoding="utf-8"),
+    }))
+    summary = sync.run_sync(src.id, client=client)["sources"][0]
+    assert summary["ingested"] == 1
+    assert "How do I rotate the widget key?" in server.posts[0]["body"]["content"]
+
+
 # --- the seen/ingested split, end to end ------------------------------------
 
 

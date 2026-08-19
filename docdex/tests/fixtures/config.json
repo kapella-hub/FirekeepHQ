@@ -1,0 +1,7 @@
+{
+  "name": "widget-service",
+  "version": "3.2.1",
+  "dependencies": {"widgetctl": "^2.0.0", "fleetd": "~1.4.9"},
+  "scripts": {"build": "widgetctl build", "test": "pytest"},
+  "keywords": ["widget", "fleet", "rotation"]
+}

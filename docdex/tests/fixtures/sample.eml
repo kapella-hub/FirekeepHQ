@@ -1,0 +1,31 @@
+From: Priya Raman <priya@example.com>
+To: Team Platform <platform@example.com>
+Subject: Invoice 4417 and the rotation window
+Date: Tue, 18 Aug 2026 09:14:02 +0100
+Message-ID: <4417.rotation@example.com>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="OUTER"
+
+--OUTER
+Content-Type: multipart/alternative; boundary="INNER"
+
+--INNER
+Content-Type: text/plain; charset="utf-8"
+
+Invoice 4417 is approved. The rotation window is Thursday 22:00 UTC.
+
+--INNER
+Content-Type: text/html; charset="utf-8"
+
+<html><body><p>Invoice 4417 is <b>approved</b>.</p></body></html>
+
+--INNER--
+
+--OUTER
+Content-Type: application/pdf; name="invoice-4417.pdf"
+Content-Disposition: attachment; filename="invoice-4417.pdf"
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQKdGhpcyBpcyBub3QgcmVhbGx5IGEgcGRmCg==
+
+--OUTER--
