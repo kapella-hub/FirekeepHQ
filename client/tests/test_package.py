@@ -7,7 +7,7 @@ from pathlib import Path
 def test_package_imports_and_exposes_frozen_version():
     import firekeep_client
 
-    assert firekeep_client.__version__ == "1.1.0"
+    assert firekeep_client.__version__ == "1.2.0"
 
 
 def test_frozen_module_layout_is_present():

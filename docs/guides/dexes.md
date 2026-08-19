@@ -492,7 +492,7 @@ Not built, not implied, and deliberately named so nobody has to discover it:
 
 ## Maildex — the email dex (round 1, client 1.1.0)
 
-Registry consumer #3, `kind: ingest-client` on the docdex chassis, **pure
+Registered automatically by `firekeep maildex add` (no ceremony). Registry consumer #3, `kind: ingest-client` on the docdex chassis, **pure
 stdlib** (no third-party dependencies at all). A human connects a mailbox
 read-only; recent mail surfaces through ordinary recall, always private to
 that member. Design record with the full invariant set:
