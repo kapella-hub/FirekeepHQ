@@ -50,7 +50,7 @@ class TestContextQuery:
     def test_serialization_roundtrip(self):
         q = ContextQuery(task="Fix login bug", tags=["auth"], top_k=3)
         data = q.model_dump()
-        assert data == {"task": "Fix login bug", "tags": ["auth"], "top_k": 3, "namespace": None, "include_archived": False, "project": None, "token_budget": 600, "format": "synthesized"}
+        assert data == {"task": "Fix login bug", "tags": ["auth"], "top_k": 3, "namespace": None, "include_archived": False, "project": None, "token_budget": 600, "format": "synthesized", "trigger": None}
         q2 = ContextQuery.model_validate(data)
         assert q2 == q
 
