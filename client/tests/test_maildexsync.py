@@ -367,14 +367,31 @@ def test_failure_count_is_zero_without_a_state_file(maildex_home):
 
 
 def test_failure_count_counts_messages_carrying_an_error(maildex_home):
+    """Keys are `<folder>|<uidvalidity>|<uid>` (M7 keeps generations apart), and
+    the number this reader produces must equal the wheel's own
+    `AccountState.counts()["failures"]` — truthy `error`, nothing else."""
     path = maildexsync.state_file(ACCOUNT_A)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"messages": {
-        "1": {"uid": 1, "ingested_at": "2026-08-19T00:00:00+00:00"},
-        "2": {"uid": 2, "error": "503 busy"},
-        "3": {"uid": 3, "error": None},
+        "INBOX|900|1": {"ingested_at": "2026-08-19T00:00:00+00:00", "error": None},
+        "INBOX|900|2": {"ingested_at": None, "error": "503 busy"},
+        "Sent|31|9": {"ingested_at": "2026-08-19T00:00:00+00:00", "error": None},
     }}), encoding="utf-8")
     assert maildexsync.read_failure_count(ACCOUNT_A) == 1
+
+
+def test_an_unparsed_message_is_not_a_failure(maildex_home):
+    """The terminal half of the seen/ingested split: broken MIME and image-only
+    mail carry a `note` with no `error`, because the same bytes parse the same
+    way in six hours. Counting those would make doctor warn forever about mail
+    nothing will ever retry."""
+    path = maildexsync.state_file(ACCOUNT_A)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"messages": {
+        "INBOX|900|1": {"ingested_at": None, "error": None,
+                        "note": "no text parts"},
+    }}), encoding="utf-8")
+    assert maildexsync.read_failure_count(ACCOUNT_A) == 0
 
 
 @pytest.mark.parametrize("junk", ["{not json", "[]", '{"messages": 3}', "{}"])
