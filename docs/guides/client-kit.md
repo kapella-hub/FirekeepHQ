@@ -460,6 +460,47 @@ warns about a runtime the user never installed. The matrix column
 (`contract/matrix.py`) pins every cell to the generic value; the day a cell claims
 more, either Claude Desktop grew hooks or the cell is lying.
 
+## Gateway toolsets (`FIREKEEP_TOOLSET`, client 1.4.0) — and the ChatGPT tunnel
+
+The gateway can serve a **curated surface** instead of the full ~90 tools. Two env
+vars, read once at gateway start:
+
+- `FIREKEEP_TOOLSET=<preset>` — a named preset. One ships: **`chat`** =
+  `memory_recall`, `memory_learn`, `memory_feedback`, `skill_recall`, `skill_list`,
+  and the seven `ctx_*` session tools (prior art rides `ctx_start_session`).
+- `FIREKEEP_TOOLS_ALLOW=<comma,list>` — an explicit allowlist; wins over the preset.
+
+The rules are load-bearing. Filtering happens at the **routing layer**
+(`Gateway.discover()` skips excluded tools when building both the advertised list and
+`routes`), so an excluded tool is invisible AND uncallable (-32601) — enforcement,
+not decoration. An **unknown preset fails closed**: the gateway refuses to start
+rather than fall back to the full surface, because this gateway can sit behind a
+tunnel reachable from a consumer chat host and a typo must not open ninety tools.
+Unset env is byte-identical to the unfiltered gateway (pinned by test). The always-on
+`firekeep_gateway_status` tool reports `toolset` and `tools_filtered`, so narrowing
+is disclosed, never silent. A preset also swaps the `initialize` handshake text: the
+chat preset serves `CHAT_INSTRUCTIONS` (its own hash in `serverInfo.version`), which
+may only name tools the preset carries — the default text instructs agents to call
+`vault_retrieve` and `decision_board`, and an instruction to call a tool that errors
+is worse than no instruction (`test_gateway_toolset` pins the subset mechanically).
+An explicit allowlist keeps the default text: the operator overrode the preset and
+owns the mismatch.
+
+**The founding consumer: ChatGPT via OpenAI's Secure MCP Tunnel.** `tunnel-client`
+runs on the Keep host as a systemd service, makes outbound-only HTTPS to OpenAI's
+control plane, and spawns `run-gateway.sh` — which exports `FIREKEEP_TOOLSET=chat`
+inside the exec'd script (inheritance-proof) and runs
+`firekeep gateway --runtime chatgpt`. The Keep stays tailnet-private: no public
+port, no OAuth server. Requests transit OpenAI's control plane (a disclosed trust
+statement), identity is the host machine's enrollment, and every call lands in
+replay as `runtime: chatgpt` — which is also the memory-poisoning mitigation:
+`memory_learn` stays in the preset because a chat that cannot save a decision loses
+half its value, and chatgpt-authored memories stay auditable and purgeable as a
+class. Recipe, prerequisites and operations: `deploy/chatgpt-tunnel/README.md`;
+design record: `docs/superpowers/specs/2026-08-19-chatgpt-tunnel-design.md`. The
+standards-based public `/mcp` + OAuth endpoint (what Claude web/mobile connectors
+would need) is deliberately NOT built — its own future decision.
+
 **Contract matrix has a generic column.** `contract/matrix.py`'s `RUNTIMES` lists `generic`
 last — it is what a runtime degrades TO, not a peer of the four — and every capability row
 carries its cell (`briefing: none (MCP only)`, `pre_edit_block: none`, `precompact: none`,

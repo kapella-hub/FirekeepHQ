@@ -76,7 +76,10 @@ doctor` shows an `embeddings` WARN. `bash install.sh --wait-for-models` blocks.
 The kit installs to `~/.firekeep` (standalone CPython + config, `0600`) and renders the
 adapters for every runtime — Claude Code, Codex, kiro, OpenCode, Claude Desktop (the consumer
 app: auto-mounted into `claude_desktop_config.json` when its config dir exists — the generic
-tier with the friction removed, no hooks), plus a `generic` "any MCP
+tier with the friction removed, no hooks), ChatGPT (server-side: OpenAI Secure MCP Tunnel →
+`firekeep gateway --runtime chatgpt` under `FIREKEEP_TOOLSET=chat`, a curated 12-tool surface
+enforced at the gateway's routing layer — see `deploy/chatgpt-tunnel/` and
+[`docs/guides/client-kit.md`](docs/guides/client-kit.md) "Gateway toolsets"), plus a `generic` "any MCP
 client" tier (`--runtime generic --agents-md <path>`, or one skippable wizard question) that
 prints a paste-in gateway snippet and delivers the MCP tools + on-connect instructions but no
 hook-driven lifecycle (no auto-briefing / pre-edit-block / stop→learn / checkpoint / presence).

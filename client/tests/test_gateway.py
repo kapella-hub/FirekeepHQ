@@ -74,6 +74,8 @@ def test_gateway_advertises_reachable_tools_and_diagnostic_status_only():
         },
         "tool_count": 1,
         "plan_filtering": False,
+        "toolset": None,
+        "tools_filtered": 0,
     }
 
 

@@ -516,6 +516,36 @@ instead of asking inline. If it returns pending, keep calling decision_board_che
 until the human answers.
 """
 
+# The handshake text for the `chat` toolset (gateway.py, FIREKEEP_TOOLSET=chat —
+# the ChatGPT tunnel surface). NOT derived from MCP_SERVER_INSTRUCTIONS by
+# replace(): that text instructs agents to call vault_retrieve, vault_store,
+# skill_create, action_before and decision_board — none of which the chat preset
+# serves, and an instruction to call a tool that errors is worse than no
+# instruction. This variant may only name tools the preset carries;
+# test_gateway_toolset pins that mechanically (every tool-shaped name mentioned
+# here must be in CHAT_TOOLSET).
+CHAT_INSTRUCTIONS = """\
+Firekeep — persistent team memory, reachable from this chat.
+
+Recall BEFORE answering, and treat not knowing as the trigger: if the user names
+a host, IP, path, service or convention you cannot name from the current
+conversation ("my VPS", "our server"), or uses history words ("again", "still",
+"last time", "how did we"), call memory_recall(task=<their request>) first.
+Never claim you don't know about the user's own systems before calling it once.
+For operational or repeated-failure tasks, also check skill_recall(task).
+
+Working on something across turns? ctx_start_session(goal) opens a session — its
+response includes prior art: what the team already built or decided near your
+goal. ctx_update as you go, ctx_complete_session(outcome) when done.
+
+memory_learn the moment something worth keeping is decided or fixed (include
+what failed first). Never store secrets — no passwords, tokens or keys in
+memory.
+
+When recalled knowledge shaped what you DID, call memory_feedback(memory_ids,
+useful) with a one-line comment — only for knowledge you acted on.
+"""
+
 
 def _hash12(text: str) -> str:
     """sha256(text utf-8), first 12 hex chars — the contract's hash shape."""
@@ -529,6 +559,9 @@ def _hash12(text: str) -> str:
 # covers the handshake text served fresh from the running wheel every session.
 RENDERED_INSTRUCTIONS_HASH = _hash12(FIREKEEP_INSTRUCTIONS)
 GATEWAY_INSTRUCTIONS_HASH = _hash12(GATEWAY_INSTRUCTIONS)
+# Same contract for the chat-toolset handshake: a session's recorded
+# serverInfo.version names exactly which instruction text it received.
+CHAT_INSTRUCTIONS_HASH = _hash12(CHAT_INSTRUCTIONS)
 # Same definition for the hook-free text. Doctor compares a rendered block
 # against the hash for ITS runtime — a generic block checked against the four's
 # hash would read "edited" forever.

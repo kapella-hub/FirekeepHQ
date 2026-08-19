@@ -22,7 +22,12 @@ from pathlib import Path
 from typing import Any
 
 from firekeep_client import dexes
-from firekeep_client.adapters.base import GATEWAY_INSTRUCTIONS, GATEWAY_INSTRUCTIONS_HASH
+from firekeep_client.adapters.base import (
+    CHAT_INSTRUCTIONS,
+    CHAT_INSTRUCTIONS_HASH,
+    GATEWAY_INSTRUCTIONS,
+    GATEWAY_INSTRUCTIONS_HASH,
+)
 from firekeep_client.stdio import force_utf8_stdio, pin_import_paths
 
 
@@ -41,6 +46,56 @@ STATUS_TOOL = {
     ),
     "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
 }
+
+
+# Named toolsets (FIREKEEP_TOOLSET). A toolset narrows the gateway to a curated
+# surface for hosts where the full ~90 tools are wrong — the ChatGPT tunnel is
+# the founding case: a consumer chat surface, prompt-injection-rich, that still
+# deserves recall, sessions (prior art rides ctx_start_session) and the one
+# write that makes chat valuable (memory_learn — the poisoning risk is carried
+# by replay attribution, runtime: chatgpt, not prevented). Excluded outright:
+# vault, corpus ingest, relay, backup, dex/code tools.
+TOOLSET_PRESETS: dict[str, frozenset[str]] = {
+    "chat": frozenset({
+        "memory_recall", "memory_learn", "memory_feedback",
+        "skill_recall", "skill_list",
+        "ctx_start_session", "ctx_update", "ctx_complete_session",
+        "ctx_abandon_session", "ctx_list_sessions", "ctx_resume_session",
+        "ctx_get_shadow",
+    }),
+}
+
+# A preset that narrows the tool surface also narrows the handshake text: the
+# default GATEWAY_INSTRUCTIONS instructs agents to call vault_retrieve and
+# decision_board, which the chat preset does not serve. An explicit
+# FIREKEEP_TOOLS_ALLOW keeps the default text — the operator overrode the
+# preset and owns the mismatch.
+_PRESET_INSTRUCTIONS: dict[str, tuple[str, str]] = {
+    "chat": (CHAT_INSTRUCTIONS, CHAT_INSTRUCTIONS_HASH),
+}
+
+
+def _active_toolset() -> tuple[str | None, frozenset[str] | None]:
+    """(label, allowlist) from the environment.
+
+    FIREKEEP_TOOLS_ALLOW (explicit comma-list) wins over FIREKEEP_TOOLSET.
+    An UNKNOWN preset refuses to start rather than falling back to the full
+    surface: this gateway may sit behind a tunnel reachable from a consumer
+    chat host, and a typo must fail closed, not open ~90 tools."""
+    allow = os.environ.get("FIREKEEP_TOOLS_ALLOW", "").strip()
+    if allow:
+        names = frozenset(n.strip() for n in allow.split(",") if n.strip())
+        return "allowlist", names
+    preset = os.environ.get("FIREKEEP_TOOLSET", "").strip()
+    if not preset:
+        return None, None
+    if preset not in TOOLSET_PRESETS:
+        raise SystemExit(
+            f"firekeep gateway: unknown FIREKEEP_TOOLSET {preset!r} "
+            f"(valid: {', '.join(sorted(TOOLSET_PRESETS))}); refusing to start "
+            "rather than serve the full tool surface"
+        )
+    return preset, TOOLSET_PRESETS[preset]
 
 
 def _console_script(name: str) -> str:
@@ -210,17 +265,27 @@ class Gateway:
         ]
         self.protocol_version = "2025-03-26"
         self.routes: dict[str, Backend] = {}
+        # Fail-closed at construction: an unknown preset never serves a request.
+        self.toolset_label, self.toolset = _active_toolset()
+        self.tools_filtered = 0
 
     def discover(self) -> list[dict[str, Any]]:
         with ThreadPoolExecutor(max_workers=len(self.backends)) as pool:
             list(pool.map(lambda backend: backend.discover(self.protocol_version), self.backends))
         self.routes = {}
+        self.tools_filtered = 0
         tools = [STATUS_TOOL]
         for backend in self.backends:
             for tool in backend.tools:
                 name = str(tool["name"])
                 if name in self.routes or name == STATUS_TOOL["name"]:
                     backend.state = f"degraded: duplicate tool name {name}"
+                    continue
+                # Toolset filter at the ROUTING layer: an excluded tool never
+                # enters self.routes, so it is invisible in tools/list AND a
+                # tools/call for it returns -32601 — enforcement, not decoration.
+                if self.toolset is not None and name not in self.toolset:
+                    self.tools_filtered += 1
                     continue
                 self.routes[name] = backend
                 tools.append(tool)
@@ -231,6 +296,9 @@ class Gateway:
             "backends": {backend.name: backend.state for backend in self.backends},
             "tool_count": len(self.routes),
             "plan_filtering": False,
+            # Disclosure: a narrowed surface must say so. null when unfiltered.
+            "toolset": self.toolset_label,
+            "tools_filtered": self.tools_filtered,
         }
 
     def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
@@ -241,6 +309,9 @@ class Gateway:
             return None
         if method == "initialize":
             self.protocol_version = params.get("protocolVersion") or self.protocol_version
+            instructions, instructions_hash = _PRESET_INSTRUCTIONS.get(
+                self.toolset_label or "", (GATEWAY_INSTRUCTIONS, GATEWAY_INSTRUCTIONS_HASH)
+            )
             return {
                 "jsonrpc": "2.0",
                 "id": request_id,
@@ -250,9 +321,9 @@ class Gateway:
                     # version = the handshake text's content hash, so a session's
                     # recorded serverInfo names exactly which instruction text it
                     # received (round-2 measurement contract) — the hardcoded "1"
-                    # said nothing.
-                    "serverInfo": {"name": "firekeep", "version": GATEWAY_INSTRUCTIONS_HASH},
-                    "instructions": GATEWAY_INSTRUCTIONS,
+                    # said nothing. A preset that swaps the text swaps the hash.
+                    "serverInfo": {"name": "firekeep", "version": instructions_hash},
+                    "instructions": instructions,
                 },
             }
         if method == "ping":
