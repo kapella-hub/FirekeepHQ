@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import http.client
 import os
 import re
 import shutil
@@ -1736,7 +1737,13 @@ def _send_doctor_report(results: list[tuple[str, str, str]]) -> str:
         # public collection endpoint, not a call to the user's own server.
         post_json(DOCTOR_REPORT_URL, body, headers={})
         return "firekeep: anonymous report sent (check names + status only — see firekeep.ai/privacy.html)"
-    except (TransportError, OSError) as exc:
+    except (TransportError, OSError, http.client.HTTPException) as exc:
+        # http.client.HTTPException (IncompleteRead, BadStatusLine, ...) is
+        # NOT an OSError -- it's raised deep inside urlopen()'s response read
+        # (transport._request), and without this clause a truncated response
+        # from a hostile proxy or captive portal would escape as an
+        # unhandled traceback AFTER doctor's own results already printed,
+        # discarding the exit code the fail rows above earned.
         return f"firekeep: report NOT sent ({exc}) — doctor results above are unaffected"
 
 
