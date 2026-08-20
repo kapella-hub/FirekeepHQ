@@ -369,3 +369,43 @@ def test_truncate_never_splits_a_character(monkeypatch):
 ])
 def test_every_supported_format_is_recognized(docs, name):
     assert extract.is_supported(docs / name)
+
+
+class TestEmptyFiles:
+    """A zero-byte file is the honest zero — ("", None), final — for every
+    format. The counter-behavior this pins against: handing an empty stream to
+    python-docx/pypdf raises package errors that read like corruption, and six
+    empty .docx on the first real OneDrive source sat as permanent failures
+    WARN-ing in doctor forever (found 2026-08-19)."""
+
+    def test_empty_docx_is_the_honest_zero(self, tmp_path):
+        p = tmp_path / "Document 1.docx"
+        p.touch()
+        assert extract.extract(p) == ("", None)
+
+    def test_empty_pdf_is_the_honest_zero(self, tmp_path):
+        p = tmp_path / "blank.pdf"
+        p.touch()
+        assert extract.extract(p) == ("", None)
+
+    def test_empty_md_is_the_honest_zero(self, tmp_path):
+        p = tmp_path / "notes.md"
+        p.touch()
+        assert extract.extract(p) == ("", None)
+
+    def test_unsupported_empty_file_still_reports_unsupported(self, tmp_path):
+        # The suffix gate stays FIRST: an empty .xyz is skipped-unsupported,
+        # not silently swallowed by the zero-byte path.
+        p = tmp_path / "thing.xyz"
+        p.touch()
+        text, err = extract.extract(p)
+        assert text == "" and err is not None and "file type" in err
+
+    def test_an_empty_named_directory_is_still_an_error(self, tmp_path):
+        # A directory's st_size is 0 on Windows — the first version of the
+        # zero-byte check swallowed directories as honest zeros; is_file()
+        # is what keeps test_a_directory_is_an_error_not_a_crash true.
+        d = tmp_path / "empty.md"
+        d.mkdir()
+        text, err = extract.extract(d)
+        assert text == "" and err is not None

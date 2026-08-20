@@ -115,6 +115,14 @@ def extract(path: str | Path) -> tuple[str, str | None]:
     if suffix not in SUPPORTED_SUFFIXES:
         return "", f"{UNSUPPORTED_PREFIX}file type '{p.suffix or p.name}'"
     try:
+        if p.is_file() and p.stat().st_size == 0:
+            # A zero-byte file is the honest zero, final, for EVERY format —
+            # not a failure to retry. Empty just-created Office documents and
+            # OneDrive folders produce them routinely, and handing an empty
+            # stream to python-docx/pypdf raises package errors that read like
+            # corruption: six empty .docx on the first real OneDrive source
+            # sat as permanent "failures" WARN-ing in doctor forever.
+            return "", None
         if suffix in (".md", ".txt"):
             return _text(p), None
         if suffix == ".pdf":
