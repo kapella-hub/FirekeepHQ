@@ -324,10 +324,34 @@ jobs:
           fi
           mkdir -p "gh/${VERSION}" gh/latest
 
-          # The versioned copy is UNCONDITIONAL: `firekeep update --to <older>`
-          # resolves that version's own wheel and SHA256SUMS from here, so every
-          # release must land in its own directory even when re-run.
+          # A PUBLISHED VERSION DIRECTORY IS IMMUTABLE. If gh/${VERSION}/ already
+          # carries a SHA256SUMS, a prior run of this tag published it — this is
+          # a RERUN, and the served release is the release. The rerun's rebuild
+          # is discarded in favor of the published artifacts (copied back over
+          # dist/ so every later step — the verify's byte-compare, the PyPI and
+          # registry legs — speaks about the bytes clients actually fetch).
           #
+          # This replaced the old UNCONDITIONAL copy, which made reruns
+          # structurally unable to pass verification: each rerun re-signed
+          # (minisign trusted-comments carry timestamps, so every signature
+          # differs), overwrote the served release, and then byte-compared its
+          # fresh signature against a CDN still propagating the previous one —
+          # three consecutive reruns of client-v1.4.1 lost that race on
+          # 2026-08-20, each one mutating an already-served "immutable" release
+          # to do it. The mcp-registry job below always had the
+          # compare-existing-and-skip rule; this step now honours the same
+          # doctrine. (The original rationale for "unconditional" — every
+          # release must land in its own directory even when re-run — is
+          # presence, which this preserves.)
+          if [ -f "gh/${VERSION}/SHA256SUMS" ]; then
+            echo "::notice::${VERSION} is already published to firekeep-dist — reusing the served release; this rerun re-signs and overwrites nothing."
+            cp "gh/${VERSION}/"firekeep_client-*.whl "gh/${VERSION}/"firekeep_symdex-*.whl \
+               "gh/${VERSION}/"firekeep_docdex-*.whl "gh/${VERSION}/"firekeep_maildex-*.whl \
+               "gh/${VERSION}/SHA256SUMS" "gh/${VERSION}/install.sh" "gh/${VERSION}/install.ps1" dist/
+            if [ -f "gh/${VERSION}/SHA256SUMS.minisig" ]; then
+              cp "gh/${VERSION}/SHA256SUMS.minisig" dist/
+            fi
+          else
           # The bootstraps are published under <version>/ TOO (not only latest/):
           # make_release lists install.sh/install.ps1 in <version>/SHA256SUMS
           # because the signature over that file is what anchors the script
@@ -345,6 +369,7 @@ jobs:
           # [dist] require_signed flips.
           if [ -f dist/SHA256SUMS.minisig ]; then
             cp dist/SHA256SUMS.minisig "gh/${VERSION}/"
+          fi
           fi
 
           # The latest/ pointer is GUARDED. Re-running an older tag's workflow
