@@ -47,10 +47,14 @@ for archive in "$BACKUP_DIR"/*.tar.gz; do
     full="${PREFIX}_${vol}"
     echo "  ${full}..."
     docker volume create "$full" >/dev/null
+    # Pinned tag+digest — same pin as deploy/backup.sh; this container writes
+    # every datastore volume during a disaster restore, the worst possible
+    # moment to run whatever a floating tag resolves to that day.
     docker run --rm \
         -v "${full}:/to" \
         -v "$(host_path "$BACKUP_DIR"):/from:ro" \
-        alpine sh -c "rm -rf /to/* /to/..?* /to/.[!.]* 2>/dev/null; tar xzf /from/$(basename "$archive") -C /to"
+        alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b \
+        sh -c "rm -rf /to/* /to/..?* /to/.[!.]* 2>/dev/null; tar xzf /from/$(basename "$archive") -C /to"
     echo "    ok"
 done
 

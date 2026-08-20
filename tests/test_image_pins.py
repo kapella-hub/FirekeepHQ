@@ -913,3 +913,27 @@ def test_first_party_images_are_actually_present():
         f"expected the 7 built services to name published images, found "
         f"{len(first_party)} — see tests/test_server_release.py"
     )
+
+
+def test_deploy_script_docker_run_images_are_digest_pinned():
+    """`docker run` in deploy shell scripts must pin tag AND digest.
+
+    The compose/Dockerfile guards above never saw these: deploy/backup.sh ran a
+    bare `alpine` helper, so the 2026-08-19 nightly backup pulled whatever
+    alpine:latest resolved to that night — an unreviewed image mounted over
+    every datastore volume, and restore.sh ran the same image with WRITE access
+    during disaster recovery. Scans every deploy/*.sh for image references on
+    `docker run` invocations (the image is the first non-flag token, possibly
+    on a continuation line) and requires the `name:tag@sha256:<64hex>` form.
+    """
+    pattern = re.compile(r"^\s*([a-z0-9][a-z0-9._/-]*):([A-Za-z0-9._-]+)@sha256:([0-9a-f]+)\s")
+    bare_image = re.compile(r"^\s*(alpine|busybox|ubuntu|debian|python|redis|nginx)(:[A-Za-z0-9._-]+)?\s")
+    offenders = []
+    for script in sorted((REPO / "deploy").glob("*.sh")):
+        for lineno, line in enumerate(script.read_text(encoding="utf-8").splitlines(), 1):
+            if bare_image.match(line) and not pattern.match(line):
+                offenders.append(f"{script.name}:{lineno}: {line.strip()[:80]}")
+    assert not offenders, (
+        "unpinned image in deploy scripts (want name:tag@sha256:<digest>):\n  "
+        + "\n  ".join(offenders)
+    )

@@ -116,10 +116,15 @@ for vol in $VOLUMES; do
         continue
     fi
     echo "  ${full}..."
+    # Pinned tag+digest like every other image in the repo (root CLAUDE.md,
+    # "Image pinning"): the 2026-08-19 nightly pulled whatever alpine:latest
+    # resolved to that night, which put an unreviewed image in the path that
+    # reads every datastore volume. The digest is the multi-platform index.
     if docker run --rm \
         -v "${full}:/from:ro" \
         -v "$(host_path "$OUT_DIR"):/to" \
-        alpine tar czf "/to/${vol}.tar.gz" -C /from . ; then
+        alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b \
+        tar czf "/to/${vol}.tar.gz" -C /from . ; then
         # Trust the ARTIFACT, not the exit code. A bind mount that resolves
         # somewhere unexpected lets tar exit 0 having written into the void --
         # observed on Docker Desktop, where the host side of the mount landed
