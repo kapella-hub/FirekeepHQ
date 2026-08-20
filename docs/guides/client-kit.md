@@ -510,6 +510,41 @@ carries its cell (`briefing: none (MCP only)`, `pre_edit_block: none`, `precompa
 `RENDERED_GENERIC_INSTRUCTIONS_HASH` (the hook-free text's OWN hash — checked against the
 four's hash it would read "edited" forever).
 
+## Anonymous install reporting (`firekeep doctor --report`, client 1.5.0)
+
+Closes a gap a 2026-08-20 audit named precisely: nothing about install success or
+failure ever reached anywhere but the local terminal — not the bootstrap's `die()`
+messages, not `firekeep doctor`'s own findings, not a background auto-update failure
+(which runs fully detached with `stdout`/`stderr` to `DEVNULL` and leaves no trace at
+all). `doctor --report` is the minimal, explicit fix the audit's own recommendation
+called for: *"a minimal anonymous success ping, explicit and optional"* — never a
+beacon fired by default from every install, which would contradict `SECURITY.md`'s
+*"there is no Firekeep-operated service holding your data."*
+
+**No persisted opt-in exists on purpose.** There is no `[telemetry]` config section;
+plain `firekeep doctor` behaves exactly as before and makes no network call to
+firekeep.ai. `--report` is per-invocation — typing it is the entire consent
+mechanism, so there is no standing setting that could be flipped once and forgotten.
+
+**The redaction is structural, not a scrub.** `run_doctor()` returns
+`(name, status, detail)` tuples; `_redact_for_report` drops `detail` — the field that
+carries paths, hostnames, and config values — by never reading it, rather than
+attempting to strip secrets out of free text after the fact. The POST body is
+`{"client_version": ..., "checks": [{"id": ..., "status": ...}, ...]}`, nothing else.
+A failed send (`TransportError`/`OSError`) never changes doctor's exit code or hides
+the rows already printed; the flag adds one extra line, always.
+
+**Server side is a static-site PHP collector** (`doctor-report.php` in
+firekeep-site, mirroring `dl-counter.php`'s exact privacy discipline: no IP, no
+User-Agent, no identifier — two reports from the same machine are indistinguishable
+from two different machines, on purpose). It validates the exact expected shape
+(semver client_version, check ids matching `^[a-z0-9_-]{1,40}$`, status in
+`{ok,warn,fail}`, capped array length) and silently rejects anything else rather than
+logging arbitrary text. Aggregation is human-run, on demand
+(`firekeep-site/scripts/doctor-report-stats.sh`) — nothing schedules it, no dashboard
+reads it, matching the download counter's own precedent. Disclosed at
+[firekeep.ai/privacy.html](https://firekeep.ai/privacy.html).
+
 ## Session Hooks (client kit — `firekeep_client.hooks`)
 The five bash hooks are retired; the adapter wires stdlib Python hook cores at install (Claude `settings.json`, kiro inline hooks, OpenCode via a rendered JS plugin bridge; Codex and the generic runtime have no hook surface):
 - `session_start` (SessionStart / kiro agentSpawn) — thin fetch-and-print of Cortex `GET /briefing` (server-side aggregator; auth via the resolver) plus local presence registration. Replaces the 610-line briefing assembly and structurally kills its `$SESSION_ID`-unbound + shell-injection bugs. Also stashes the server-minted `briefing_id` into the session stash (`state.write_session_stash`, `session_current_{agent}`) for the bridge shim's identity tap. Runs the once-a-day client-update check (`_update_nudge`): when a newer release exists it spawns the detached background auto-update (on by default — see Background auto-update above) and appends a one-line "updating in background" notice (or the manual "run: firekeep update" nudge when opted out). Finally calls `symdexindex.index_nudge` to background-index the workspace for symdex when the staleness policy says so (see Symdex auto-index below), then `docdexsync.sync_nudge` to background-sync the folders a human registered with docdex when those are stale (only when the dex is registered AND at least one source exists — see [`dexes.md`](dexes.md)) — both detached, and both silent in every declining case, since a line on every start is the nag it replaces.

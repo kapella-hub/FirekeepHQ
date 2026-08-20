@@ -41,7 +41,7 @@ from firekeep_client.adapters.base import (
     rendered_instructions_path,
 )
 from firekeep_client.adapters.codex import mcp_block_is_current
-from firekeep_client.transport import get_json, TransportError
+from firekeep_client.transport import get_json, post_json, TransportError
 
 
 def _config_path() -> Path:
@@ -1701,6 +1701,45 @@ def run_doctor(cfg=None) -> list[tuple[str, str, str]]:
     return results
 
 
+# --- doctor --report: opt-in, per-invocation, redacted -----------------------
+#
+# Design record: firekeep.ai/privacy.html discloses this exact mechanism.
+# There is deliberately NO persisted config toggle (no [telemetry] section) —
+# every send is one explicit act (typing --report on this one command), never
+# a standing "always send" setting that could be flipped once and forgotten.
+# Nothing about doctor's automatic behavior changes; without the flag this
+# code path is never reached and no network call to firekeep.ai happens.
+DOCTOR_REPORT_URL = "https://firekeep.ai/doctor-report.php"
+
+
+def _redact_for_report(results: list[tuple[str, str, str]]) -> dict:
+    """Check name + status ONLY. The third tuple element — `detail`, the
+    human-readable message doctor prints locally — is dropped entirely and
+    never touches this function's return value. `detail` is where paths,
+    hostnames, and config contents live (see e.g. `_check_health`'s
+    `f"{_ep_url(svc, cfg)}: {exc}"` and `_check_config_perms`'s literal path),
+    so the redaction is structural — no field to forget to strip — rather
+    than a scrub applied after the fact."""
+    return {
+        "client_version": __version__,
+        "checks": [{"id": name, "status": status} for name, status, _detail in results],
+    }
+
+
+def _send_doctor_report(results: list[tuple[str, str, str]]) -> str:
+    """POST the redacted summary; return one line describing what happened.
+    Never raises — a failed report must never affect doctor's own exit code
+    or hide the check results already printed above it."""
+    body = _redact_for_report(results)
+    try:
+        # No auth headers: this is an anonymous, unauthenticated report to a
+        # public collection endpoint, not a call to the user's own server.
+        post_json(DOCTOR_REPORT_URL, body, headers={})
+        return "firekeep: anonymous report sent (check names + status only — see firekeep.ai/privacy.html)"
+    except (TransportError, OSError) as exc:
+        return f"firekeep: report NOT sent ({exc}) — doctor results above are unaffected"
+
+
 def cmd_restore(args) -> int:
     """Browse or restore local snapshots of uncommitted work.
 
@@ -2480,6 +2519,8 @@ def cmd_doctor(args) -> int:
     hint = _generic_hint()
     if hint is not None:
         print(hint)
+    if getattr(args, "report", False):
+        print(_send_doctor_report(results))
     return rc
 
 
@@ -2908,6 +2949,16 @@ def _build_parser() -> argparse.ArgumentParser:
     doc = sub.add_parser(
         "doctor", aliases=["status"],
         help="preflight health / skew / perm checks",
+    )
+    # Opt-in, per-invocation, no persisted setting — see cmd_doctor and
+    # _redact_for_report. Off unless this exact flag is typed; doctor's own
+    # output and exit code are unaffected either way.
+    doc.add_argument(
+        "--report", action="store_true",
+        help="also send an ANONYMOUS report (check names + pass/warn/fail "
+             "status and your client version only — never messages, paths, "
+             "or hostnames) to firekeep.ai. Off by default; see "
+             "firekeep.ai/privacy.html.",
     )
     doc.set_defaults(func=cmd_doctor)
 

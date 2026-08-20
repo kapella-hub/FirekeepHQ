@@ -169,7 +169,18 @@ class TestEndToEnd:
         await emit("session_end", session_id, "agent",
                     {"outcome": "partial"}, outcome="partial")
 
-        # Compute eval
+        # Compute eval with CORTEX's scorers — this is the one test proving the
+        # replay stream and the eval layer agree on event shape. `app` is
+        # cortex's package, not an installed distribution, and this suite runs
+        # from the repo root (CLAUDE.md's documented invocation), so the path
+        # is added explicitly. It had never actually executed anywhere: CI's
+        # shared-modules job has no Redis (the fixture skips), and every local
+        # run failed on this import since the initial commit.
+        import sys
+        from pathlib import Path
+        cortex_dir = str(Path(__file__).resolve().parents[2] / "cortex")
+        if cortex_dir not in sys.path:
+            sys.path.insert(0, cortex_dir)
         from app.evals.scorers import compute_tier1_metrics
         timeline = await get_session_timeline(r, session_id, limit=100)
         events = timeline["events"]

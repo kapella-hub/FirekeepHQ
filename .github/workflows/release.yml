@@ -425,6 +425,50 @@ jobs:
           echo "::error::could not push to gh-pages after 3 attempts"
           exit 1
 
+      # Attach the same dist/ artifacts as GitHub Release assets on
+      # firekeep-dist, whose per-asset download_count is the durable install
+      # counter two prior audits (2026-08-02, 2026-08-09) recommended and
+      # neither got built — firekeep-dist had zero Releases before this.
+      # Pages above remains the actual distribution channel; this step only
+      # adds a second, cleaner counting surface over the identical files.
+      #
+      # Cross-repo write needs a token with Contents:write on firekeep-dist
+      # specifically. FIREKEEP_DIST_DEPLOY_KEY (used above) is SSH-only, or
+      # GITHUB_TOKEN cannot reach a different repository at all. Until
+      # FIREKEEP_DIST_RELEASE_TOKEN exists as a repo secret (a fine-grained
+      # PAT scoped to kapella-hub/firekeep-dist, Contents: read+write —
+      # create at github.com/settings/personal-access-tokens/new), this step
+      # warns and exits 0 rather than failing the release: asset counters
+      # are a nice-to-have, never a release blocker.
+      #
+      # Idempotent like the Pages publish above: a rerun of an
+      # already-released tag must not attempt to recreate it (gh release
+      # create fails loudly on a duplicate) — checked first, skipped with a
+      # notice.
+      - name: Publish GitHub Release assets on firekeep-dist (download counters)
+        env:
+          GH_TOKEN: ${{ secrets.FIREKEEP_DIST_RELEASE_TOKEN }}
+        run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::warning::FIREKEEP_DIST_RELEASE_TOKEN is not set — skipping the GitHub Release asset publish (Pages above already serves this version normally). See this step's comment in release.yml for the one-time setup."
+            exit 0
+          fi
+          TAG="client-v${VERSION}"
+          if gh release view "${TAG}" --repo kapella-hub/firekeep-dist >/dev/null 2>&1; then
+            echo "::notice::${TAG} is already released on firekeep-dist — skipping (rerun)."
+            exit 0
+          fi
+          assets=(dist/firekeep_client-*.whl dist/firekeep_symdex-*.whl \
+                  dist/firekeep_docdex-*.whl dist/firekeep_maildex-*.whl \
+                  dist/uv-* dist/SHA256SUMS dist/install.sh dist/install.ps1)
+          if [ -f dist/SHA256SUMS.minisig ]; then
+            assets+=(dist/SHA256SUMS.minisig)
+          fi
+          gh release create "${TAG}" "${assets[@]}" \
+            --repo kapella-hub/firekeep-dist \
+            --title "client v${VERSION}" \
+            --notes "Firekeep client ${VERSION}. Install: https://firekeep.ai/docs.html"
+
       # The workflow's last act used to be `git push`, so NOTHING at any layer
       # ever confirmed the artifacts were actually SERVED. Pages can be disabled,
       # the site build can fail on size, or the repo can be private (it is) --
