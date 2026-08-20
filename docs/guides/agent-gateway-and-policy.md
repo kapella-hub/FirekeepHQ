@@ -26,7 +26,7 @@ Predict-then-act surface for any agent runtime. Wraps consequential actions in a
 **Adapters:** Claude Code via paired Pre+Post hooks; MCP-capable agents (Codex/Kiro/Cursor) via the two new MCP tools; custom Python via two HTTP calls.
 **Config:** `AGENT_GATEWAY_ENABLED`, `AGENT_PREDICTION_CONFIDENCE_THRESHOLD`, `AGENT_RECONCILE_DEADLINE_SECONDS`, `AGENT_RETHINK_MAX_LOOPS`, `AGENT_FASTPATH_MIN_SAMPLES`, `AGENT_FASTPATH_MIN_SUCCESS_RATE`, `AGENT_FASTPATH_CACHE_TTL_SECONDS`.
 
-See `docs/superpowers/specs/2026-05-25-agent-gateway-predict-then-act-design.md`.
+Designed in the 2026-05-25 predict-then-act design review (the spec file itself is no longer retained).
 
 ## FirekeepDecision (Decision Board) — SP4
 Path B: a LOCAL, per-user clarification board — not a team-visible shared surface (contrast with Relay's task/bulletin board). Served by the client kit's own stdio MCP server, `firekeep-decision` (`client/firekeep_client/decision/server.py`), not cortex-mcp.

@@ -5,7 +5,8 @@ operating layer for connected AI agents**. It carries durable knowledge,
 working context, procedures, coordination, and replayable evidence across
 sessions, models, machines, and teammates. Agent-facing MCP tools are exposed
 through one local `firekeep` gateway. Shipped adapters configure Claude Code,
-Codex, Kiro, and OpenCode; other MCP clients can connect through the generic
+Claude Desktop (auto-detected when the app's config dir exists), Codex, Kiro,
+and OpenCode; other MCP clients can connect through the generic
 configuration path, without hook-driven lifecycle automation.
 
 mcp-name: io.github.kapella-hub/firekeep
@@ -17,13 +18,16 @@ aggregates your team server's services (memory, sessions, environment,
 coordination) plus the Decision Board and whichever **dexes** — the domain
 indexes the Keep understands — you have registered, the lifecycle hook cores,
 the runtime adapters, and the `firekeep` CLI (`install`, `join`, `doctor`,
-`update`, `dex`, `docdex`).
+`update`, `dex`, `docdex`, `maildex`).
 
-Two dexes ship today: `firekeep-symdex` (code intelligence) and
-`firekeep-docdex` (folders of documents indexed into the Keep's corpus). The
-managed installer always installs both wheels; `firekeep dex list|add|remove`
-decides which of them actually run. Existing installs keep symdex across an
-update; a fresh install opts in with `firekeep dex add symdex`.
+Three dexes ship today: `firekeep-symdex` (code intelligence),
+`firekeep-docdex` (folders of documents indexed into the Keep's corpus), and
+`firekeep-maildex` (email over read-only IMAP, always member-private,
+registered with `firekeep maildex add`). The managed installer always installs
+all three wheels; `firekeep dex list|add|remove` decides which of them
+actually run. Symdex and docdex are registered by default — since client 1.2.0
+an absent registry is seeded with both (default-on), `firekeep dex remove` is
+the off-switch, and removals stick across updates.
 
 **Firekeep is self-hosted — this package needs a server to talk to.** A person
 or team runs its own server, with per-key authentication. Current server images

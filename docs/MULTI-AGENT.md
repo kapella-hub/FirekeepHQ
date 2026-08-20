@@ -115,7 +115,7 @@ This is simpler than multi-terminal coordination and sufficient for most tasks. 
 
 > When a clarification needs more than a couple of questions, call `decision_board(context, draft_questions)` instead of asking the questions inline.
 
-This is a LOCAL, per-user clarification surface — distinct from the Relay task/bulletin board above, which is team-visible. It's served by its own always-on stdio MCP server, `firekeep-decision`: stdio-local like `firekeep-symdex`, both wheels installed unconditionally, but Decision is core infrastructure with no switch while symdex mounts only when registered as a dex (`firekeep dex add symdex` — see [guides/dexes.md](guides/dexes.md)).
+This is a LOCAL, per-user clarification surface — distinct from the Relay task/bulletin board above, which is team-visible. It's served by its own always-on stdio MCP server, `firekeep-decision`: stdio-local like `firekeep-symdex`, wheels installed unconditionally, but Decision is core infrastructure with no switch while symdex mounts only when registered as a dex (registered by default; `firekeep dex remove symdex` is the off-switch — see [guides/dexes.md](guides/dexes.md)).
 
 - `decision_board(context, draft_questions=[])` — asks Cortex to synthesize a board (evidence + suggested answers per question, pulled from a memory recall across all teammates' knowledge), opens it in your browser, and waits for your answers. Returns the answers (markdown) once submitted, or `{status: "pending", board_id, board_url, next}` if you haven't answered yet — `board_url` lets you open the board manually if the auto-open failed.
 - `decision_board_check(board_id)` — call with the `board_id` from a pending response to collect the answers once you've submitted them.

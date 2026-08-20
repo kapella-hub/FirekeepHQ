@@ -106,7 +106,7 @@ yourself after `firekeep docdex add <folder>`. See [guides/dexes.md](guides/dexe
 
 > When a clarification needs more than a couple of questions, call `decision_board(context, draft_questions)` instead of asking the questions inline.
 
-`firekeep-decision` is a local backend behind the gateway, like Symdex. Both wheels are always installed; Decision is core and always mounted, while Symdex mounts only when registered as a dex. Two tools:
+`firekeep-decision` is a local backend behind the gateway, like Symdex. Both are always installed; Decision is core and always mounted, while Symdex mounts only when registered as a dex (which it is by default). Two tools:
 
 - `decision_board(context, draft_questions=[])` — asks Cortex to synthesize a board (retrieved evidence + suggested answers per question), opens it in the browser, and waits for the human's answers. Returns the answers (markdown) if submitted in time, else `{status: "pending", board_id, next}`.
 - `decision_board_check(board_id)` — call with the `board_id` from a pending response to collect the answers once submitted; `{status: "pending", ...}` if still waiting, `{status: "unknown"}` if the id isn't recognized.

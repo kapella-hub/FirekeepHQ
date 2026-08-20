@@ -196,7 +196,7 @@ baked into the collection at creation.
 | 6379 | Redis | Redis (localhost) |
 | 11434 | Ollama | HTTP (localhost) |
 
-Local MCP backends ship in the client kit and bind no port: `firekeep-decision` (the Decision Board, backed by Cortex `POST /decision/synthesize`) and `firekeep-symdex` (code intelligence). Both wheels are always installed. Decision is core and always started behind the single `firekeep` stdio gateway; symdex is a **dex** and is started only when registered (`firekeep dex add symdex`). The third client-side package, `firekeep-docdex`, is also always installed but has no MCP server at all — it is an ingest client driven by `firekeep docdex …` and a background sync. See [guides/dexes.md](guides/dexes.md).
+Local MCP backends ship in the client kit and bind no port: `firekeep-decision` (the Decision Board, backed by Cortex `POST /decision/synthesize`) and `firekeep-symdex` (code intelligence). Both are always installed. Decision is core and always started behind the single `firekeep` stdio gateway; symdex is a **dex** and is started only when registered — which it is by default since client 1.2.0 (`firekeep dex remove symdex` is the off-switch). The other client-side packages, `firekeep-docdex` and `firekeep-maildex`, are also always installed but have no MCP server at all — ingest clients driven by `firekeep docdex …` / `firekeep maildex …` and a background sync. See [guides/dexes.md](guides/dexes.md).
 
 ### Binding and exposure
 

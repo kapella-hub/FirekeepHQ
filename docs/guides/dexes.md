@@ -103,28 +103,28 @@ probe — the machine most likely to need it is one whose dex is broken.
 Both are idempotent, and both print **"takes effect on the next agent session"**:
 the gateway reads the registry once, at startup.
 
-### The migration rule
+### The seeding rule
 
 **An update never removes a capability an install already has.** The rule is
 deterministic and asks the user nothing (the two-question install must not grow
-a third question):
+a third question). Since client 1.2.0 there is exactly one behavior:
 
-| Registry file | Config | Result |
-|---|---|---|
-| exists | — | untouched, forever. Your choices are yours |
-| absent | has a `[server]` section | **existing install** → `{"symdex": …}` written (grandfathered) |
-| absent | no `[server]` | **fresh machine** → `{}` written (opt in) |
+- **Registry file absent** → `{"symdex", "docdex"}` written, unconditionally.
+  Default-on; no probe of the config, no existing-vs-fresh distinction.
+- **Registry file exists** → untouched, forever. Your choices are yours — a
+  dex removed with `firekeep dex remove` stays removed across every update.
+  **Removals stick**; `remove` is the off-switch.
+
+(The 2026-08-19 simplification replaced the earlier two-row migration, which
+forked on whether the config carried a `[server]` section to distinguish
+grandfathered installs from fresh ones. The fork — and the careful
+`_raw_config`-before-`_bootstrap_home` ordering it required — is gone; the
+seed no longer reads the config at all.)
 
 `ensure_migrated()` runs from `firekeep install` *and* from gateway startup —
 the second call is what covers an update that never re-ran install, without
-which an existing install's first post-update session would silently lose
-symdex. It reads the config through `resolver._raw_config()` and never
-`load_config`, because `load_config` backs up and rewrites a config with no
-`[server]` section: merely asking "has this machine been configured?" must not
-migrate anything. Ordering inside `cmd_install` is load-bearing — the seed runs
-*before* `_bootstrap_home`, which writes a config skeleton that already carries a
-`[server]` section and would otherwise make every fresh machine read as an
-existing install.
+which an existing install's first post-update session would silently lose its
+dexes.
 
 It never raises. A registry that cannot be seeded leaves `read_registry()`
 returning `{}` — a degraded session, not a dead one.
@@ -178,9 +178,11 @@ background auto-index are documented in
 and [`docs/MCP-TOOLS.md`](../MCP-TOOLS.md); what changed with the registry is
 only *whether it mounts*:
 
-- **Existing installs**: grandfathered — symdex keeps working across the update,
-  with no action.
-- **Fresh installs**: opt in with `firekeep dex add symdex`.
+- **Registered by default** (default-on): since client 1.2.0 an absent registry
+  is seeded with symdex (and docdex) automatically — symdex works with no
+  action, on fresh installs and across updates alike.
+- `firekeep dex remove symdex` is the off-switch, and the removal sticks: an
+  existing registry is never touched by later updates.
 - The wheel is installed either way. `firekeep doctor`'s `venv-scripts` wanted
   list is unchanged and still expects `firekeep-symdex` on disk.
 
@@ -550,10 +552,11 @@ shared mail, POP3, threading beyond In-Reply-To metadata.
 
 ## Troubleshooting
 
-**"symdex tools disappeared after an update."** Check `firekeep dex list`. An
-existing install should have been grandfathered; if the registry says
-`available` rather than `registered`, run `firekeep dex add symdex` — and note
-that it takes effect on the **next** agent session, not this one.
+**"symdex tools disappeared after an update."** Check `firekeep dex list`.
+Symdex is registered by default, so if the registry says `available` rather
+than `registered` it was removed on this machine (or the registry predates
+default-on) — run `firekeep dex add symdex`, and note that it takes effect on
+the **next** agent session, not this one.
 
 **`firekeep dex add <name>` fails with "its wheel is not in this venv".** The
 bundled wheel did not land. Re-run the installer (release install) or

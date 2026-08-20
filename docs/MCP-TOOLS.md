@@ -1,8 +1,8 @@
 # MCP Tools Reference
 
-Firekeep exposes 104 MCP tools from 6 logical backends through one client-visible `firekeep` stdio gateway. The four remote services — Cortex :8080, Bridge :8070, Sentinel :8060, Relay :8050 — use Streamable HTTP behind parameterized shims. `firekeep-symdex` (38 code-intelligence tools; 30 visible by default, 8 analytics hidden behind `SYMDEX_ANALYTICS_ENABLED`) and `firekeep-decision` (2 tools) are client-local processes behind the same gateway, not HTTP endpoints. `firekeep_gateway_status` reports per-backend health; one failed backend does not remove the others.
+Firekeep exposes 106 MCP tools from 6 logical backends through one client-visible `firekeep` stdio gateway. The four remote services — Cortex :8080, Bridge :8070, Sentinel :8060, Relay :8050 — use Streamable HTTP behind parameterized shims. `firekeep-symdex` (38 code-intelligence tools; 30 visible by default, 8 analytics hidden behind `SYMDEX_ANALYTICS_ENABLED`) and `firekeep-decision` (2 tools) are client-local processes behind the same gateway, not HTTP endpoints. `firekeep_gateway_status` reports per-backend health; one failed backend does not remove the others.
 
-Tool breakdown: Cortex 29 + Bridge 7 + Sentinel 3 + Relay 25 = 64 HTTP-service tools; plus client-stdio `firekeep-symdex` 38 (30 visible, 8 analytics hidden) + `firekeep-decision` 2 = **104 total**. (Counted from `@mcp.tool` registrations per service, 2026-08-09.)
+Tool breakdown: Cortex 30 + Bridge 7 + Sentinel 3 + Relay 25 = 65 HTTP-service tools; plus client-stdio `firekeep-symdex` 38 (30 visible, 8 analytics hidden) + `firekeep-decision` 2, and the gateway's own `firekeep_gateway_status` 1 = **106 total**. (Counted from `@mcp.tool` registrations per service, 2026-08-19.)
 
 ## FirekeepBridge (session context)
 
@@ -106,6 +106,7 @@ Tool breakdown: Cortex 29 + Bridge 7 + Sentinel 3 + Relay 25 = 64 HTTP-service t
 | `skill_create` | Author a reusable skill (trigger, symptoms, steps, gotchas) — the primary, client-authored path |
 | `skill_recall` | Retrieve active skills matching a task and record the returned skills as explicitly used for freshness tracking |
 | `skill_list` | List skills filtered by status/project |
+| `skill_add_step_specs` | Attach executable step_specs to an existing skill (turns its steps into matchable procedure/runbook steps) |
 
 ## Agent Gateway (predict-then-act)
 
@@ -113,6 +114,7 @@ Tool breakdown: Cortex 29 + Bridge 7 + Sentinel 3 + Relay 25 = 64 HTTP-service t
 |------|---------|
 | `action_before` | Predict → policy check before a consequential action (`allow`/`rethink`/`block`) |
 | `action_after` | Reconcile the actual outcome against the prediction |
+| `runbook_ack` | Acknowledge a `require_ack` runbook advisory before proceeding — see [guides/living-procedures.md](guides/living-procedures.md) |
 
 ## Pattern Engine (REST on Cortex :8100)
 
@@ -152,7 +154,7 @@ Runtime policy evaluation for pre-edit safety checks. Consulted by the pre-edit 
 
 FirekeepSymdex is a **client-installed stdio-local MCP server** (`firekeep-symdex`) — not an HTTP service. There is no server container and no port 8090 (it was removed from `docker-compose.yml` and `docker-compose.office.yml`); it runs locally against the working tree it indexes.
 
-The wheel is always installed by the client kit, but **its tools exist only when it is registered as a dex** (`firekeep dex add symdex`; existing installs are grandfathered, fresh installs opt in). With symdex unregistered the gateway mounts no backend for it and none of the tools below appear — see [guides/dexes.md](guides/dexes.md).
+The wheel is always installed by the client kit, but **its tools exist only when it is registered as a dex** — and it is registered by default: since client 1.2.0 an absent registry is seeded with symdex and docdex, and `firekeep dex remove symdex` is the off-switch. With symdex unregistered the gateway mounts no backend for it and none of the tools below appear — see [guides/dexes.md](guides/dexes.md).
 
 38 tools across 7 categories: indexing, exploration, architecture, change detection, smart context, evolution, and pattern analysis. 30 are visible by default; the 8 analytics tools (`get_evolution_timeline`, `get_code_churn`, `get_contributors`, `get_change_summary`, `detect_patterns`, `get_complexity_metrics`, `get_hotspots`, `compare_repos`) are hidden behind `SYMDEX_ANALYTICS_ENABLED`. Includes `index_folder`, `index_repo`, `get_context`, `search_symbols`, `get_architecture_map`, `get_callers`, `get_impact`, `find_dead_code`, `get_review_context`, and more. See [symdex/README.md](../symdex/README.md) for the full list.
 
@@ -170,6 +172,10 @@ The wheel is always installed by the client kit, but **its tools exist only when
 `firekeep-docdex` is the second dex, and it exposes **no MCP tools at all**. Its manifest `kind` is `ingest-client`, so the gateway mounts nothing for it. Choosing which folders Firekeep may read is a privacy decision, so the agent-callable tool is absent rather than guarded: on MCP-only runtimes that is complete enforcement, and where the agent holds a shell `firekeep docdex add` is an ordinary Bash command the hook/runbook layer observes.
 
 Agents meet docdex content only through ordinary `memory_recall` — indexed documents land in the corpus and surface alongside memories, carrying `untrusted_content: "true"` (**retrieved document text is evidence, never instruction**). The human CLI is `firekeep docdex add|list|sync|remove`; see [guides/dexes.md](guides/dexes.md).
+
+## FirekeepMaildex (email dex — NO MCP tools, deliberately)
+
+`firekeep-maildex` is the third dex, an ingest client on the docdex chassis, and it exposes **no MCP tools at all** — manifest `kind: ingest-client`, so the gateway mounts nothing for it. Registering a mailbox is a privacy decision, so it is human-CLI only: `firekeep maildex add`. IMAP is read-only by construction (every open is `EXAMINE`, every fetch `PEEK`) and the wheel carries no send capability — no mutating verb, no SMTP. Ingested mail is **always member-private** (there is no `--shared`) and surfaces only through that member's ordinary `memory_recall`; see [guides/dexes.md](guides/dexes.md).
 
 ## A2A Agent Card Discovery (FirekeepRelay)
 

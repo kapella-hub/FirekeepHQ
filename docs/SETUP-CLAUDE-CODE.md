@@ -61,9 +61,9 @@ The Firekeep Claude integration is user-scoped and venv-relocation-proof: the ho
 
 The gateway starts parameterized shims for the four remote Streamable-HTTP
 services, injecting TLS and auth from `[server]`, plus the local Decision Board
-and every **dex** registered on this machine — Symdex among them, when
-`firekeep dex add symdex` has been run (existing installs are grandfathered
-across the update; see [guides/dexes.md](guides/dexes.md)). A failed backend
+and every **dex** registered on this machine — Symdex among them, registered by
+default (since client 1.2.0 an absent registry is seeded with symdex and docdex;
+`firekeep dex remove` is the off-switch — see [guides/dexes.md](guides/dexes.md)). A failed backend
 removes only its tools; use `firekeep_gateway_status` to see which one failed.
 
 ### Hooks (`.claude/settings.json`)

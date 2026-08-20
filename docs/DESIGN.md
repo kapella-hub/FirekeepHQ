@@ -286,7 +286,7 @@ Renamed from CortexBridge. All `CB_` prefixed env vars become `NB_`.
 
 ## FirekeepSymdex — Local (stdio) only
 
-Code intelligence is **client-side only**. The server-side HTTP container was removed from both `docker-compose.yml` and `docker-compose.office.yml` — a VPS/K8s box has no developer working tree to index, so it was vestigial. Symdex ships as a local process behind the one `firekeep` stdio gateway; its wheel is installed automatically by the client kit (the `--with-symdex` flag was removed), and the **dex registry** decides whether the gateway mounts it — `firekeep dex add symdex`, with existing installs grandfathered and fresh installs opting in ([guides/dexes.md](guides/dexes.md)).
+Code intelligence is **client-side only**. The server-side HTTP container was removed from both `docker-compose.yml` and `docker-compose.office.yml` — a VPS/K8s box has no developer working tree to index, so it was vestigial. Symdex ships as a local process behind the one `firekeep` stdio gateway; its wheel is installed automatically by the client kit (the `--with-symdex` flag was removed), and the **dex registry** decides whether the gateway mounts it — registered by default (since client 1.2.0 an absent registry is seeded with symdex and docdex; `firekeep dex remove` is the off-switch) ([guides/dexes.md](guides/dexes.md)).
 
 - Runs as `firekeep-symdex` from the client-kit venv console script; the gateway starts and fronts it
 - Direct local file access, near-zero latency; must be local to the working tree it indexes

@@ -160,7 +160,7 @@ versioned venv and a legacy `venv/` alike.
 **Updating (render-free since client 0.1.35):** `firekeep update` (`--check` to report only,
 `--to X.Y.Z` to pin or roll back). It re-execs the bootstrap rather than pip-installing over
 itself, so install and update are one code path — and the bootstrap provisions `venvs/<V>`
-beside whatever is running, checksum-verifies and installs both wheels into it, and only
+beside whatever is running, checksum-verifies and installs the wheels into it, and only
 then flips `current`. **Updates no longer require closing sessions.** Live sessions keep
 executing their old venv untouched — their open handles pin the real files, not the link —
 and everything launched afterwards gets the new version. That retires both defects of the
@@ -382,10 +382,10 @@ would render; the repair is the usual `firekeep install --runtime <name>`.
 
 ## The generic runtime — any MCP client (`--runtime generic`)
 
-The four adapters each know a native config file to write. The **generic** runtime
+The five adapters each know a native config file to write. The **generic** runtime
 (`adapters/generic.py`) is the honest floor for every OTHER MCP client — Cursor,
 Windsurf, Gemini CLI, anything that speaks MCP but ships no bespoke adapter. It is purely
-**additive**: the four adapters render byte-identical whether or not generic is configured.
+**additive**: the five adapters render byte-identical whether or not generic is configured.
 
 **Selecting it.** Explicitly —
 ```bash
@@ -531,7 +531,7 @@ See `docs/MULTI-AGENT.md` for the full workflow guide.
 Existing `relay_claim`/`relay_release` remain as backward-compatible aliases.
 
 ## Dexes (client kit — `firekeep_client.dexes`)
-The kit's domain indexes — symdex (code) and docdex (documents) — are no longer a hardcoded `LOCAL_SERVERS = ("symdex", "decision")` tuple in `gateway.py`. Both wheels still arrive with every release, checksum-verified by the bootstrap and always installed; what changed is that **registration in `~/.firekeep/dexes.json` gates ACTIVITY, not installation**. The gateway now mounts `CORE_LOCAL_SERVERS = ("decision",)` — the Decision Board is core infrastructure, not a dex, because it indexes nothing — plus every registered dex whose manifest `kind` is `mcp-stdio`; an `ingest-client` dex (docdex) mounts nothing and uses its registry entry to drive the session-start sync trigger and the doctor row instead. `firekeep dex list|add|remove` is the surface, and the migration rule keeps updates safe: a machine with a configured `[server]` and no registry file is grandfathered to `{"symdex": …}`, a fresh machine gets `{}` and opts in — no new install questions. The full model, the manifest schema, docdex's CLI, caps, threat boundary and per-runtime sync coverage: [`dexes.md`](dexes.md).
+The kit's domain indexes — symdex (code), docdex (documents) and maildex (email) — are no longer a hardcoded `LOCAL_SERVERS = ("symdex", "decision")` tuple in `gateway.py`. All three wheels still arrive with every release, checksum-verified by the bootstrap and always installed; what changed is that **registration in `~/.firekeep/dexes.json` gates ACTIVITY, not installation**. The gateway now mounts `CORE_LOCAL_SERVERS = ("decision",)` — the Decision Board is core infrastructure, not a dex, because it indexes nothing — plus every registered dex whose manifest `kind` is `mcp-stdio`; an `ingest-client` dex (docdex, maildex) mounts nothing and uses its registry entry to drive the session-start sync trigger and the doctor row instead. `firekeep dex list|add|remove` is the surface, and the seeding rule keeps updates safe: since client 1.2.0 a machine with no registry file is seeded with `{"symdex", "docdex"}` unconditionally — default-on, with `firekeep dex remove` as the off-switch; an existing `dexes.json` is never touched, so removals stick — no new install questions. The full model, the manifest schema, docdex's CLI, caps, threat boundary and per-runtime sync coverage: [`dexes.md`](dexes.md).
 
 ## Symdex auto-index (client kit — `firekeep_client.symdexindex`)
 Background workspace indexing from the `session_start` hook core. **ON by default**; opt out with `FIREKEEP_NO_AUTO_INDEX=1` or `[symdex] auto_index = false` in `~/.firekeep/config`. (The trigger itself is not registry-gated — with symdex unregistered the gateway mounts no backend, so an index it builds is one no tool reads; register with `firekeep dex add symdex`.)

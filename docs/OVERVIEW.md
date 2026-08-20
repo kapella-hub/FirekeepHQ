@@ -6,9 +6,10 @@
 
 ## What It Does
 
-Firekeep sits behind your AI coding agent (shipped adapters for Claude Code, Codex, Kiro, OpenCode; any MCP client works) and gives it superpowers:
+Firekeep sits behind your AI coding agent (shipped adapters for Claude Code, Claude Desktop, Codex, Kiro, OpenCode; any MCP client works) and gives it superpowers:
 
 - **Remembers everything.** What worked, what failed, what your business does — across sessions.
+- **Understands what you point it at.** Code (symdex), registered document folders (docdex), and email (maildex — read-only IMAP, always member-private, `firekeep maildex add`) all land in the same recall.
 - **Stops unsafe edits.** Policy engine blocks risky file changes before they happen.
 - **Gets smarter over time.** Recall is re-ranked by recorded session outcomes and by agent feedback on knowledge that was actually acted on. Genuine conflicts surface as contested pairs for a human verdict; every review queue lands in one Autopilot inbox with a weekly digest.
 - **Coordinates multiple agents.** File locks, task queues, direct messages. No more agents overwriting each other.
@@ -31,7 +32,7 @@ Your Agent ── stdio ──► local Firekeep gateway ── MCP ──► Fi
                  Corpus    Warn      A/B Testing
 ```
 
-**4 core services + dashboard. 13 containers. 6 logical MCP backends, 104 tools, one client-visible gateway. One `docker compose up`.**
+**4 core services + dashboard. 13 containers. 6 logical MCP backends, 106 tools, one client-visible gateway. One `docker compose up`.**
 
 ---
 

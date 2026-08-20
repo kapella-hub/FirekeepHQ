@@ -12,7 +12,7 @@ flipped default with a misconfigured secret stalls every client's updates.
 ## What is signed, and what that protects
 
 Every release publishes `<version>/SHA256SUMS`, which checksums the `uv`
-binaries, both wheels, **and both bootstrap scripts**. Signing that one file with
+binaries, every shipped wheel, **and both bootstrap scripts**. Signing that one file with
 an Ed25519 key (a detached, minisign-format `SHA256SUMS.minisig`) transitively
 covers everything the update path executes:
 
@@ -30,7 +30,7 @@ On the `firekeep update` path the verified bytes are **threaded through, not
 re-fetched**: the client writes the signature-verified `SHA256SUMS` to a private
 (0600) file and hands its path to the bootstrap as `FIREKEEP_SUMS_FILE`; the
 bootstrap then makes **no** `SHA256SUMS`/`.minisig` network fetch at all and
-verifies `uv` + both wheels against exactly the bytes the client verified. (The
+verifies `uv` + the wheels against exactly the bytes the client verified. (The
 two-fetch split this closes: the client's fetch and the bootstrap's used to be
 separate requests, trivially distinguishable by user agent, so a malicious host
 could serve honest bytes to the verifier and attacker bytes to the installer.)
