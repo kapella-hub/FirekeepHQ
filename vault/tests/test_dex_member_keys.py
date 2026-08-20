@@ -35,8 +35,10 @@ def app(monkeypatch):
             return application.state.identity
         return dep
 
+    # require_any_scope is the only gate vault/api.py holds — the require_scope
+    # patch that used to sit beside this line targeted an import the module
+    # carried but never used (removed 2026-08-19 with the ruff cleanup).
     monkeypatch.setattr(vault_api, "require_any_scope", fake_gate)
-    monkeypatch.setattr(vault_api, "require_scope", lambda *_s: fake_gate())
     application.include_router(vault_api.create_vault_router())
     return application
 

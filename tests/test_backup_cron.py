@@ -19,8 +19,6 @@ import os
 import subprocess
 from pathlib import Path
 
-import pytest
-
 from test_backup_restore import _run_with_docker_stub
 from test_deploy_lib import BASH, LIB, _p, skip_unless_chmod_enforced
 

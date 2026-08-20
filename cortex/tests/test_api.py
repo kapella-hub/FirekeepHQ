@@ -818,8 +818,10 @@ class TestRecallTrigger:
         assert q.trigger is None
 
     def test_trigger_accepted_and_bounded(self):
+        import pydantic
+        import pytest
+
         from app.models import ContextQuery
-        import pydantic, pytest
         assert ContextQuery(task="t", trigger="prompt-hook").trigger == "prompt-hook"
         with pytest.raises(pydantic.ValidationError):
             ContextQuery(task="t", trigger="x" * 33)

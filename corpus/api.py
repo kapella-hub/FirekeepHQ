@@ -19,8 +19,7 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 
-from corpus.store import (KNOWN_DEX_IDS, delete_dex_source, dex_source_prefix,
-                          dex_source_prefixes)
+from corpus.store import KNOWN_DEX_IDS, delete_dex_source, dex_source_prefixes
 
 logger = logging.getLogger(__name__)
 

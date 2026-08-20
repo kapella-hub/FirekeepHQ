@@ -33,3 +33,11 @@
 tests/test_deploy_lib.py:generic-api-key:224
 client/tests/test_resolver.py:generic-api-key:39
 client/tests/test_resolver.py:generic-api-key:126
+#
+# A fixture in the prior-art suite (bridge), added in f0fac44: a fake API key
+# a unit test passes through to assert the header lands. The value was reworded
+# in the working tree the same day CI flagged it (so no dir-form entry is
+# needed), but the historical blob is immutable — this entry is what keeps the
+# full-history scan green without rewriting published history. Per the lesson
+# above, the literal is not reproduced here.
+f0fac44daba8249dbc57cddbd4d5a33aecdc8b96:bridge/tests/test_prior_art.py:generic-api-key:96

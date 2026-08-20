@@ -235,18 +235,17 @@ class TestVaultRouter:
         # reference. The patch must be live while the router is CONSTRUCTED,
         # because the dependency is captured at decoration time.
         # The gate itself is covered by test_vault_routes_refuse_anonymous below.
-        # BOTH gate factories must be stubbed. The read routes moved to
-        # require_any_scope("vault:read", "admin") on 2026-07-29; patching only
-        # require_scope left those two routes on the real gate, which correctly
-        # 403'd the anonymous caller -- so these router tests failed for an auth
-        # reason while claiming to test router behaviour.
+        # require_any_scope is now the ONLY gate factory vault/api.py holds:
+        # every route moved onto it (reads 2026-07-29, writes with the dex-key
+        # work), and the unused require_scope import was removed 2026-08-19 —
+        # patching a name the module no longer has is an AttributeError, which
+        # is exactly what caught the stale second patch here.
         def _ident(*_a, **_k):
             # A dependency FACTORY: returns the callable FastAPI will depend on.
             return lambda: {"agent_id": "test-admin", "scopes": ["*"],
                             "authenticated": True}
 
-        with patch("vault.api.require_scope", _ident), \
-             patch("vault.api.require_any_scope", _ident):
+        with patch("vault.api.require_any_scope", _ident):
             router = create_vault_router()
         app.include_router(router)
         self.app = app

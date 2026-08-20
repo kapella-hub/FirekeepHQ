@@ -89,14 +89,18 @@ class TestFetchTeamMemories:
     async def test_sends_the_internal_key(self):
         client = _recall_client({"sources": []})
 
+        # A fixture value shaped so no secret scanner pattern-matches it — the
+        # original "internal-key-123" tripped gitleaks' generic-api-key rule
+        # and broke the CI secrets gate for three runs.
+        fake_key = "not a real credential"
         with patch("app.prior_art.httpx.AsyncClient", return_value=client):
             await fetch_team_memories(
                 "harden the backup retention policy",
                 api_url="http://cortex:8100",
-                api_key="internal-key-123",
+                api_key=fake_key,
             )
 
-        assert client.post.call_args.kwargs["headers"]["X-API-Key"] == "internal-key-123"
+        assert client.post.call_args.kwargs["headers"]["X-API-Key"] == fake_key
 
     @pytest.mark.asyncio
     async def test_skips_sources_without_a_raw_score(self):

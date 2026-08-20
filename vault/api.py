@@ -8,8 +8,9 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from auth.middleware import require_any_scope, require_scope
+from auth.middleware import require_any_scope
 from corpus.store import KNOWN_DEX_IDS
+from vault.store import delete_secret, list_secrets, retrieve_secret, store_secret
 
 # Dex-prefixed vault keys (`maildex.<account>`) are MEMBER secrets, not
 # administration: a mailbox app password belongs to the member who connected
@@ -34,7 +35,7 @@ def _dex_of(key: str) -> str | None:
 def _is_admin(identity: dict) -> bool:
     scopes = identity.get("scopes") or []
     return "admin" in scopes or "*" in scopes
-from vault.store import delete_secret, list_secrets, retrieve_secret, store_secret
+
 
 logger = logging.getLogger(__name__)
 
@@ -156,8 +157,16 @@ def create_vault_router() -> APIRouter:
         """Delete a secret by key."""
         if not _is_admin(identity):
             dex = _dex_of(key)
+            if dex is None:
+                # An ORDINARY key: the caller lacks authority categorically, and
+                # saying so reveals nothing (403 regardless of existence). The
+                # 404 below is reserved for dex keys, where "exists but is
+                # another member's" must stay indistinguishable from "absent".
+                raise HTTPException(status_code=403, detail=(
+                    "Insufficient scope: requires 'admin' — only keys under a "
+                    "dex prefix (e.g. 'maildex.<id>') are member-deletable"))
             owned = None
-            if dex is not None and f"dex:{dex}" in (identity.get("scopes") or []):
+            if f"dex:{dex}" in (identity.get("scopes") or []):
                 owned = await retrieve_secret(key)
             if owned is None or owned.get("created_by") != identity.get("member_id"):
                 raise HTTPException(status_code=404, detail=f"Secret '{key}' not found")
