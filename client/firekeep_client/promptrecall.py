@@ -181,15 +181,32 @@ def _source_id(source: dict) -> str:
     return "sha:" + hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:16]
 
 
+def trim_line(text: object) -> str:
+    """Collapse whitespace and cap at MAX_LINE_CHARS with a visible ellipsis.
+
+    Exported because the prompt hook's two older neighbours — relay task titles
+    and channel message bodies — render server-supplied strings into the SAME
+    systemMessage and had no cap at all: a hostile fixture drove that hook to
+    28,418 characters from one task and one message (measured 2026-08-21). They
+    share this function rather than re-declaring 200, so the budget stays one
+    number in one place.
+
+    Callers keep identifiers (task id, sender) OUTSIDE the trim: the point is to
+    hand over a pointer, not to lose the handle that fetches the full text.
+    """
+    if not isinstance(text, str):
+        return ""
+    collapsed = " ".join(text.split())
+    if len(collapsed) > MAX_LINE_CHARS:
+        return collapsed[:MAX_LINE_CHARS - 3] + "..."
+    return collapsed
+
+
 def _line(source: dict, score: float) -> str:
     """One collapsed, trimmed line. The score shown is the one that was actually
     thresholded (`_relevance`), never the normalized rank — a displayed number the
     filter did not use would misdescribe why the memory is on screen."""
-    content = source.get("content")
-    text = " ".join(content.split()) if isinstance(content, str) else ""
-    if len(text) > MAX_LINE_CHARS:
-        text = text[:MAX_LINE_CHARS - 3] + "..."
-    return f"- {text} (score {score:.2f})"
+    return f"- {trim_line(source.get('content'))} (score {score:.2f})"
 
 
 def select(sources, *, seen, floor: float) -> list[tuple[str, str]]:
