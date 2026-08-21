@@ -76,12 +76,38 @@ def _precompact_claude(hooks: tuple[tuple[str, str, str | None, int], ...]) -> s
 # (firekeep_client/adapters/opencode.py). VALIDATED live on opencode 1.14.22
 # (2026-07-18, docs/OPENCODE-VALIDATION.md): pre-edit block is a HARD gate (the
 # write tool aborted with the policy reason), prompt-core inbox surfaced, stop
-# fired on session.deleted. Caveats: session.created publishes before plugins
+# fired on session.deleted. Caveat: session.created publishes before plugins
 # subscribe in `run` mode (bridge fires session_start from its first hook
-# instead), and briefing/inbox text lands in opencode's console log, NOT the
-# model context — opencode has no systemMessage channel.
+# instead).
+#
+# CORRECTION (2026-08-21) — this comment used to say opencode's briefing lands
+# in the console "NOT the model context" BECAUSE it has no systemMessage
+# channel. That reasoning was wrong, and the rows below inherited the error.
+#
+# Firekeep's dict hook cores all return {"systemMessage": ...}. On Claude Code
+# `systemMessage` is shown to the HUMAN; the channel that reaches the model is
+# `hookSpecificOutput.additionalContext`, which appears nowhere in this client.
+# Measured in one session by comparing every SessionStart hook attachment: the
+# three emitting `additionalContext` were verbatim in the model's context, the
+# two emitting `systemMessage` (Firekeep's pre-flight briefing, the symdex
+# banner) were absent. Claude Code's own docs are explicit — "To surface a
+# message to the user on any platform, return systemMessage" — while for
+# SessionStart and UserPromptSubmit "Claude Code adds plain-text stdout as
+# context that Claude can see and act on".
+#
+# So claude and opencode are in the SAME position for briefing and proactive
+# recall: the text reaches the human, not the model. opencode was never the
+# degraded one. The cells below say so; the fix is a separate change (switch
+# the two cores that HAVE a model-facing channel to additionalContext), and
+# until it lands this matrix must not claim a delivery that does not happen.
+#
+# kiro is marked unverified rather than corrected: its channel is a different
+# mechanism (agentSpawn) and nobody has run the same measurement on it. Do not
+# assume it shares Claude Code's semantics; measure before changing the cell.
 MATRIX: dict[str, dict[str, str]] = {
-    "briefing": {"claude": "hook", "kiro": "agentSpawn hook", "codex": "manual/memory_recall",
+    "briefing": {"claude": "hook (human-visible only)",
+                 "kiro": "agentSpawn hook (delivery unverified)",
+                 "codex": "manual/memory_recall",
                  "opencode": "plugin (first event, console log only)",
                  "claude-desktop": "none (MCP only)",
                  "generic": "none (MCP only)"},
@@ -95,7 +121,8 @@ MATRIX: dict[str, dict[str, str]] = {
     # deciding whether opencode support is a wiring job or a protocol limit gets the
     # answer from the cell. For all four non-claude/kiro runtimes the session-start
     # briefing remains the only push.
-    "proactive_recall": {"claude": "per-prompt push", "kiro": "per-prompt push",
+    "proactive_recall": {"claude": "per-prompt push (human-visible only)",
+                         "kiro": "per-prompt push (delivery unverified)",
                          "codex": "none (no hooks)", "opencode": "none (no prompt text)",
                          "claude-desktop": "none (no hooks)",
                          "generic": "none (no hooks)"},
