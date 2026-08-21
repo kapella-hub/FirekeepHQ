@@ -27,9 +27,14 @@ import copy
 import json
 
 import pytest
-from jsonschema import Draft202012Validator
 
-from firekeep_client.gateway import _slim_schema
+# A REAL validator is the point of this file: the type-array collapse is only
+# safe if it validates identically, and asserting that against a hand-rolled
+# checker would prove nothing. jsonschema is not a client runtime dep, so the
+# stdlib-only `client` job skips; `client-transport` installs it and runs it.
+Draft202012Validator = pytest.importorskip("jsonschema").Draft202012Validator
+
+from firekeep_client.gateway import _slim_schema  # noqa: E402
 
 
 # A field shape lifted verbatim from the live gateway (memory_recall.namespace).

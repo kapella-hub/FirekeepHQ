@@ -160,7 +160,8 @@ def test_output_stays_within_the_stdout_budget(client_env, monkeypatch, capsys):
     being hygiene and start being the thing that keeps this affordable.
     """
     _, out = _run(monkeypatch, capsys, "session_start")
-    emitted = json.dumps(out)
-    # Dual channel roughly doubles the STDOUT bytes; only one copy reaches the
-    # model, so the meaningful figure is additionalContext, not the envelope.
+    # Dual channel roughly doubles the STDOUT bytes, but only one copy reaches
+    # the model, so the meaningful figure is additionalContext -- not the
+    # envelope. (The identity of the two copies is asserted above; the hostile
+    # -fixture ceilings live in test_output_budget.py.)
     assert len(out["hookSpecificOutput"]["additionalContext"]) <= 3_500

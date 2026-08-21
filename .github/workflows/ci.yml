@@ -57,13 +57,19 @@ jobs:
           # Keep them in a separate matrix entry so the stdlib-only client job
           # above remains an honest import-boundary check.
           - name: client-transport
-            install: pip install -e ./client pytest
+            install: pip install -e ./client pytest jsonschema
             # test_stdio_encoding.py is here as well as in the stdlib-only job: two of
             # its entry-point cases (shim, decision.server) import anyio, so they
             # importorskip up there. Without this they would be skipped in one job and
             # absent from the other — never actually run, on the very fix that stops
             # the Windows client corrupting every non-ASCII string it writes.
-            test: cd client && python -m pytest tests/test_shim_*.py tests/test_stdio_encoding.py -q
+            # test_decision_poll_ceiling.py and test_gateway_schema_slimming.py join for
+            # the same reason: the first imports anyio (transitively, via mcp), the second
+            # needs a REAL jsonschema validator to prove the type-array collapse validates
+            # identically. Both importorskip in the stdlib-only job. jsonschema is nobody's
+            # runtime dep -- hence the explicit install above, rather than adding it to the
+            # client wheel and pushing it onto every customer to satisfy a test.
+            test: cd client && python -m pytest tests/test_shim_*.py tests/test_stdio_encoding.py tests/test_decision_poll_ceiling.py tests/test_gateway_schema_slimming.py -q
           # Root tests/ — deploy scripts, provenance, backup/restore, the support
           # bundle, and the install/update health-probe guard. NOTHING RAN THESE
           # IN CI: the `licenses` and `forbidden-tokens` jobs each invoke one

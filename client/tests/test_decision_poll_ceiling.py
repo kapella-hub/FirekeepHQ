@@ -30,7 +30,12 @@ from __future__ import annotations
 
 import pytest
 
-from firekeep_client.decision import server as decision_server
+# firekeep_client.decision.server imports anyio (transitively, via mcp). The
+# stdlib-only `client` CI job installs neither, so skip there and run for real
+# in `client-transport`, which lists this file explicitly.
+pytest.importorskip("anyio")
+
+from firekeep_client.decision import server as decision_server  # noqa: E402
 
 
 # The tightest per-call ceiling we have actually measured on a shipped host:
