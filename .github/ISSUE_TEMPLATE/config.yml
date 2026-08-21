@@ -1,0 +1,19 @@
+# Blank issues stay enabled — a rigid form is worse than a report that does not
+# fit one. What this file is really for is the first link: a public issue is the
+# wrong place for a vulnerability, and SECURITY.md asking politely does nothing
+# at the moment someone is already on the "New issue" screen.
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability (do not open a public issue)
+    url: https://github.com/kapella-hub/FirekeepHQ/security/advisories/new
+    about: >-
+      Report privately here, or email security@firekeep.ai. Please do not file a
+      public issue — see SECURITY.md for scope, targets and what to include.
+  - name: Installation and operations documentation
+    url: https://firekeep.ai/docs.html
+    about: Install, connect, and day-to-day operation, including troubleshooting.
+  - name: Run the diagnostics first
+    url: https://firekeep.ai/docs.html#usage
+    about: >-
+      `firekeep doctor` checks the whole chain and usually names the repair
+      command itself. Its output is also what a good bug report starts with.

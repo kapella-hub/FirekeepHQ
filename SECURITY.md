@@ -98,10 +98,24 @@ overstates its own maturity is itself a security problem:
 1. ~~Confirm `security@firekeep.ai` is actually monitored.~~ **Resolved
    2026-08-09**: the mailbox exists on the domain's mail service and is read by
    the maintainer, alongside `sales@firekeep.ai`.
-2. **Confirm the SLA targets are ones a solo maintainer can actually hit**, and
-   lower them if not. A missed published deadline is worse than a modest one.
-3. **Decide the advisory channel** — GitHub Security Advisories on a private repo
-   reach nobody; customers likely need direct notification.
-4. **Re-date and re-scope `cortex/docs/SECURITY_REVIEW.md`**, which covers one of
-   four services as of 2026-03-02 and predates auth, the vault and the crawler.
-   `docs/THREAT-MODEL.md` supersedes it; the old file is kept as a record.
+2. ~~Confirm the SLA targets are ones a solo maintainer can actually hit.~~
+   **Reviewed 2026-08-20, kept as written.** Three business days to acknowledge
+   an email, ten to assess, thirty to fix a Critical or High from assessment —
+   these are deliberately unambitious, and the paragraph under the table already
+   says they are targets rather than a contract and that a slip is announced
+   before it happens, not after. Lowering them further would buy nothing except
+   looking unserious. Revisit if a real report ever misses one.
+3. ~~Decide the advisory channel.~~ **Resolved 2026-08-20 by the repository
+   going public.** The premise of this item was that GitHub Security Advisories
+   on a private repo reach nobody. `kapella-hub/FirekeepHQ` is public, so
+   advisories are now a real channel with CVE issuance and automatic Dependabot
+   notification to anyone consuming the packages. Advisories are published
+   there, and the release notes for the fixing version link to them. Direct
+   email to known deployments remains the belt-and-braces path for anything
+   Critical, because a self-hosted operator who does not watch the repo will
+   never see an advisory.
+4. ~~Re-date and re-scope `cortex/docs/SECURITY_REVIEW.md`.~~ **Resolved
+   2026-08-20**: the file now opens with a superseded banner naming its scope
+   (Cortex only), its date (2026-03-02), and everything shipped since that it
+   predates. It is kept as a record of what was reviewed then;
+   `docs/THREAT-MODEL.md` is current state.

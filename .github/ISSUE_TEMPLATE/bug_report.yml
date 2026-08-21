@@ -1,0 +1,54 @@
+name: Bug report
+description: Something behaves differently than documented.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        **Security issue?** Stop and report it privately instead — see the link
+        on the previous screen or email `security@firekeep.ai`.
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: "`firekeep doctor` output"
+      description: >-
+        Paste the whole thing. It reports client and server versions, which
+        checks fail, and the state of every surface — which is most of the
+        diagnosis. It prints no secrets; the connection row shows a host, so
+        redact that if it is sensitive.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-actual
+    attributes:
+      label: What you expected, and what happened
+      description: >-
+        Include the exact command or tool call, and the real error text rather
+        than a summary of it.
+    validations:
+      required: true
+
+  - type: input
+    id: runtime
+    attributes:
+      label: Agent runtime
+      description: Claude Code, Codex, Kiro, OpenCode, Claude Desktop, or another MCP client.
+    validations:
+      required: false
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      description: "e.g. Ubuntu 24.04, Windows 11, macOS 15"
+    validations:
+      required: false
+
+  - type: markdown
+    attributes:
+      value: >-
+        Firekeep is self-hosted, so we cannot look at your deployment — what you
+        paste here is all we have to work from. Thank you for the detail.

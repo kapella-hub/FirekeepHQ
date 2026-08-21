@@ -1,5 +1,32 @@
 # FirekeepCortex Security Review
 
+> ## ⚠️ SUPERSEDED — a historical record, not current state
+>
+> **Read [`docs/THREAT-MODEL.md`](../../docs/THREAT-MODEL.md) instead.** That
+> document covers all four services, the dashboard, the client kit and the URL
+> crawler, and is maintained.
+>
+> This review is kept because deleting it would erase the record of what was
+> actually examined in March 2026 — but it is accurate only about that moment,
+> and its silence about anything below must not be read as approval:
+>
+> | | |
+> |---|---|
+> | **Scope** | **FirekeepCortex only** — one of four services. Bridge, Sentinel and Relay were never in scope here. |
+> | **Version** | v0.1.0 |
+> | **Dated** | 2026-03-02 |
+>
+> **It predates every one of these**, all of which carry security surface it
+> could not have assessed: the auth layer and scope model (`auth/`), the
+> encrypted vault (`vault/`), the agent gateway and policy engine, the knowledge
+> crawler and its SSRF guard, the corpus and its member-private visibility
+> filter, the client kit's signed update path, the dex family (symdex, docdex,
+> maildex) and their credential handling, backup/restore, and the enrolled-member
+> scope ceiling.
+>
+> Re-scoped and re-dated 2026-08-20 per `SECURITY.md`'s "Before first sale"
+> item 4.
+
 **Date:** 2026-03-02
 **Reviewer:** security-appsec
 **Scope:** Full application security review of FirekeepCortex v0.1.0
