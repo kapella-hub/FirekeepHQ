@@ -56,7 +56,23 @@ _DEFAULT_SYNTH_TIMEOUT = 30.0
 _INGEST_TIMEOUT_HEADROOM = 15.0
 # Bounded long-poll ceiling — kept under the MCP tool-call ceiling so a single
 # decision_board / decision_board_check call returns before the runtime times out.
-_DEFAULT_POLL_SECONDS = 24.0
+#
+# This is a TOKEN-COST setting as much as a latency one. Every expiry costs the
+# agent one more model turn, and a model turn re-sends the whole conversation:
+# measured 2026-08-21 across 5 sessions and 13 boards, 197 poll-only turns cost
+# 93.5M raw token units / 9.8M price-weighted — ~49,800 weighted tokens per
+# poll. Raising the ceiling is free when the human is responsive, because the
+# loop below returns the instant an answer lands; it only ever bounds the
+# UNANSWERED case.
+#
+# 50s, not more, because the ceiling has to survive the most constrained host
+# rather than the one we happen to run on. Claude Code resolves a per-call
+# timeout of ~27.8h for STDIO servers (the gateway's path) but 60s for REMOTE
+# HTTP/SSE servers — which is the path deploy/chatgpt-tunnel/ takes. 60s is the
+# tightest ceiling we can actually name, so this sits 10s under it.
+# DECISION_POLL_SECONDS overrides for an operator who knows their host.
+# Guarded by tests/test_decision_poll_ceiling.py.
+_DEFAULT_POLL_SECONDS = 50.0
 # Poll granularity — MUST be a real ``await anyio.sleep`` (never a blocking wait),
 # so the event loop stays responsive.
 _POLL_INTERVAL = 0.5

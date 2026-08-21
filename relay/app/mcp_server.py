@@ -31,6 +31,20 @@ logger = logging.getLogger(__name__)
 #
 # Keep it SHORT. It is sent once per session, not per request, but it competes for
 # attention with everything else in the handshake.
+# REACHABILITY (measured 2026-08-21): the shipped client kit does NOT receive
+# this string. Every runtime mounts exactly one MCP entry -- the local gateway
+# (FIREKEEP_MCP_KEYS = ("firekeep",), client/firekeep_client/adapters/base.py) --
+# and the gateway discards each backend's `initialize` result and reads only
+# tools/list (client/firekeep_client/gateway.py, Backend.start / Backend.discover).
+# What a kit agent actually receives in its system prompt is the gateway's own
+# GATEWAY_INSTRUCTIONS.
+#
+# So this text reaches ONLY a hand-configured client connected straight to this
+# service's port (docs/INTEGRATIONS.md). That is a real audience and the reason
+# the string stays -- but it means editing it changes nothing for any kit user.
+# Adding behaviour here is the same trap adapters/base.py records having cost a
+# release: a paragraph added where no runtime could see it. If you need an agent
+# to do something, put it in GATEWAY_INSTRUCTIONS.
 _INSTRUCTIONS = """Firekeep -- persistent team memory for agents.
 
 Recall BEFORE answering, and treat not knowing as the trigger: if the user names a
@@ -718,7 +732,21 @@ async def relay_who_is_online(include_idle: bool = True) -> dict:
 # ---------------------------------------------------------------------------
 
 _SCOPE_ASK_POLL_INTERVAL_SECONDS = 2
-_SCOPE_ASK_POLL_ITERATIONS = 12  # 12 * 2s = 24s — stays under MCP client timeout ceilings (D-S17)
+# 25 * 2s = 50s. Raised from 12 (24s) on 2026-08-21 for the same reason as the
+# decision board's own ceiling (client/firekeep_client/decision/server.py): each
+# expiry costs the agent another model turn, and a model turn re-sends the whole
+# conversation. Measured across 5 local sessions, poll-only turns cost ~49,800
+# price-weighted tokens EACH — the payload is ~90 tokens and the other 99.8% is
+# context re-send. Doubling the window halves that, and costs nothing when the
+# human is responsive: the loop below returns as soon as an answer lands, so the
+# ceiling only ever bounds the UNANSWERED case.
+#
+# 50s and not more, because it must clear the tightest ceiling in the chain, not
+# the loosest: Claude Code allows ~27.8h per call to a STDIO server (the
+# gateway) but 60s to a REMOTE HTTP/SSE one (the ChatGPT tunnel), and the shim
+# in front of this allows 300s (SSE_READ_TIMEOUT). 60s binds; this sits 10s
+# under it. Guarded by relay/tests/test_scope_poll_ceiling.py.
+_SCOPE_ASK_POLL_ITERATIONS = 25
 
 
 @mcp.tool()
