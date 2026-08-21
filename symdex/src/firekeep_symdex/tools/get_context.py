@@ -1,9 +1,10 @@
 """Smart context budgeting tool."""
 
+import json
 import time
 from typing import Optional
 
-from ..storage import IndexStore, score_symbol, record_savings, estimate_savings, cost_avoided
+from ..storage import IndexStore, score_symbol, record_savings, estimate_savings
 from ._utils import resolve_repo, resolve_call_targets
 
 
@@ -68,7 +69,7 @@ def _find_file_imports(index, file_path: str) -> list[str]:
 
 def get_context(
     repo: str,
-    budget_tokens: int = 4000,
+    budget_tokens: int = 8000,
     focus: Optional[str] = None,
     kind: Optional[str] = None,
     include_deps: bool = False,
@@ -76,9 +77,22 @@ def get_context(
 ) -> dict:
     """Get the most relevant symbols that fit within a token budget.
 
+    The budget counts the WHOLE entry — source plus the id/kind/name/file/line/
+    signature/summary envelope — not just source bytes. Before 2026-08-21 it
+    counted source only and a default call on a 938-file index returned 74,218
+    tokens while reporting "99.9% of 4,000"; the same call now returns 4,128
+    tokens at a budget it actually respects.
+
+    The default rose 4000 -> 8000 in the same change, and the two belong
+    together: correct accounting makes each entry cost more, so holding the old
+    default would have quietly halved what a caller got back. Measured on the
+    same index, `focus="memory recall"` returned 17 symbols before the fix and
+    returns 17 symbols at 8000 after it — the same breadth, now honestly priced.
+
     Args:
         repo: Repository identifier (owner/repo or just repo name).
-        budget_tokens: Max tokens to include (default 4000).
+        budget_tokens: Max tokens to include (default 8000). Counts the entire
+            serialized entry, not just source.
         focus: Optional search query to focus context on.
         kind: Optional symbol kind filter.
         include_deps: When True and focus is set, also include direct
@@ -166,12 +180,47 @@ def get_context(
                 if entry_sym
             ]
 
+    def _envelope_tokens(sym, tag=None) -> int:
+        """Cost of everything in an entry EXCEPT its source.
+
+        Charged because it is not free: measured on the live 938-file index
+        (2026-08-21), a no-focus call returned 681 symbols whose envelopes were
+        93.5% of a 261,510-character payload, against a budget that counted only
+        `source` and therefore reported 99.9% utilisation of 4,000 tokens.
+
+        Computed from the symbol dict alone, with no content read, so the budget
+        check can still happen BEFORE `get_symbol_content` — charging the real
+        entry after fetching source would mean one disk read per REJECTED
+        candidate, and the smallest-first sort walks thousands of them.
+
+        `estimated_tokens` is measured with a placeholder: its own digit count
+        shifts the envelope by a character or two, which is far inside the
+        `byte_length // 4` approximation used for source.
+        """
+        envelope = {
+            "id": sym.get("id", ""),
+            "kind": sym.get("kind", ""),
+            "name": sym.get("name", ""),
+            "file": sym.get("file", ""),
+            "line": sym.get("line", 0),
+            "signature": sym.get("signature", ""),
+            "summary": sym.get("summary", ""),
+            "source": "",
+            "estimated_tokens": 0,
+        }
+        if tag:
+            envelope["context_type"] = tag
+        return len(json.dumps(envelope, separators=(",", ":"), default=str)) // 4
+
     # Helper to add a symbol to the output
-    def _try_add(sym, tag=None):
+    def _try_add(sym, tag=None, force=False):
         nonlocal tokens_used, raw_bytes_total
         byte_length = sym.get("byte_length", 0)
         byte_offset = sym.get("byte_offset", 0)
-        estimated_tokens = byte_length // 4 or 1
+        # The WHOLE entry, not just its source. `estimated_tokens` is what the
+        # eviction path refunds (see _evict_contained), so charging and
+        # refunding stay the same quantity.
+        estimated_tokens = max(1, byte_length // 4 + _envelope_tokens(sym, tag))
         file_path = sym.get("file", "")
 
         # Skip if this symbol is entirely contained within an already-included symbol
@@ -192,7 +241,7 @@ def get_context(
                 symbols_out[i]["estimated_tokens"] for i in to_evict
             )
 
-        if tokens_used - evictable_tokens + estimated_tokens > budget_tokens:
+        if not force and tokens_used - evictable_tokens + estimated_tokens > budget_tokens:
             return False
 
         source = store.get_symbol_content(owner, name, sym["id"])
@@ -249,9 +298,28 @@ def get_context(
                         included_ids.add(dep_id)
                         deps_included += 1
 
+    # Floor: never return an EMPTY result merely because the budget was too
+    # small for one entry. Charging the envelope made that reachable — a symbol
+    # whose source alone used to fit exactly no longer does — and an empty
+    # `symbols` list reads to an agent as "this repo has no relevant code",
+    # which is a false negative, not a saving. False negatives on "does this
+    # already exist" are the one failure mode a code index must never produce.
+    #
+    # The first candidate is the right one to force: relevance-sorted under
+    # `focus`, smallest-first without it. The overshoot is DISCLOSED rather than
+    # hidden, so a caller that genuinely cannot afford it can see what happened
+    # and narrow instead of guessing.
+    budget_floor_applied = False
+    if not symbols_out:
+        for sym in candidates:
+            if _try_add(sym, force=True):
+                included_ids.add(sym["id"])
+                budget_floor_applied = True
+                break
+
     # Token savings
     tokens_saved = estimate_savings(raw_bytes_total, tokens_used * 4)
-    total_saved = record_savings(tokens_saved)
+    record_savings(tokens_saved)
 
     elapsed = (time.perf_counter() - start) * 1000
 
@@ -261,10 +329,15 @@ def get_context(
         "tokens_budget": budget_tokens,
         "budget_utilization": round(tokens_used / budget_tokens * 100, 1) if budget_tokens else 0,
         "total_symbols_available": len(index.symbols),
-        "tokens_saved": tokens_saved,
-        "total_tokens_saved": total_saved,
-        **cost_avoided(tokens_saved, total_saved),
     }
+    if budget_floor_applied:
+        # Say so, and say what to do about it.
+        meta["budget_floor_applied"] = True
+        meta["note"] = (
+            "budget_tokens was too small for any single symbol; returned the "
+            "best-matching one anyway so this is not mistaken for 'no results'. "
+            "Raise budget_tokens or narrow with focus=."
+        )
     if include_deps:
         meta["deps_included"] = deps_included
 
@@ -288,8 +361,8 @@ TOOL_DEF = {
                     },
                     "budget_tokens": {
                             "type": "integer",
-                            "description": "Max tokens to include (default 4000)",
-                            "default": 4000
+                            "description": "Max tokens to include (default 8000). Counts the whole entry — source plus signature/summary/metadata — not just source bytes",
+                            "default": 8000
                     },
                     "focus": {
                             "type": "string",

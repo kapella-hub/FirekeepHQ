@@ -57,7 +57,13 @@ def _dedup_lines(items: list[str]) -> list[str]:
 
 
 def _task_line(task: dict) -> str:
-    title = str(task.get("title") or task.get("description") or task.get("id") or "task")
+    # The title is server-supplied free text with no length contract, so it is
+    # trimmed to promptrecall's shared line budget. The id and creator stay
+    # OUTSIDE the trim: a title over 200 chars is already a description, and the
+    # id is how the agent asks relay_task_list for the rest. Pointer, not payload.
+    title = promptrecall.trim_line(
+        task.get("title") or task.get("description") or task.get("id") or "task"
+    )
     tid = str(task.get("id") or "")
     creator = str(task.get("creator") or task.get("created_by") or "")
     line = f"- {title}"
@@ -122,7 +128,8 @@ def run(payload: dict) -> dict:
             if ts <= last_seen or str(m.get("sender") or "") == agent:
                 continue
             sender = str(m.get("sender") or "?")
-            content = " ".join(str(m.get("content") or "").split())
+            # Same contract as _task_line: trim the body, keep the sender.
+            content = promptrecall.trim_line(m.get("content"))
             fresh.append(f"- {content} — {sender}")
         if newest > last_seen:
             state.write_scratch(seen_key, repr(newest))

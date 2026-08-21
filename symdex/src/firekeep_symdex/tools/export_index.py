@@ -5,7 +5,7 @@ import time
 from collections import defaultdict
 from typing import Optional
 
-from ..storage import IndexStore, record_savings, estimate_savings, cost_avoided
+from ..storage import IndexStore, record_savings, estimate_savings
 from ._utils import resolve_repo
 
 
@@ -75,7 +75,7 @@ def export_index(
     export_bytes = len(content.encode("utf-8")) if isinstance(content, str) else len(content)
     raw_bytes = sum(s.get("byte_length", 0) for s in index.symbols)
     tokens_saved = estimate_savings(raw_bytes, export_bytes)
-    total_saved = record_savings(tokens_saved)
+    record_savings(tokens_saved)
 
     elapsed = (time.perf_counter() - start) * 1000
 
@@ -89,9 +89,6 @@ def export_index(
             "timing_ms": round(elapsed, 1),
             "export_bytes": export_bytes,
             "raw_bytes": raw_bytes,
-            "tokens_saved": tokens_saved,
-            "total_tokens_saved": total_saved,
-            **cost_avoided(tokens_saved, total_saved),
         },
     }
 

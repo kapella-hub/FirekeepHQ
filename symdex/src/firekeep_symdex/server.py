@@ -15,6 +15,86 @@ logger = logging.getLogger(__name__)
 
 from .tools import discover_tools
 
+# Every tool result is re-sent on every remaining turn of the session, so
+# serialization whitespace is not paid once — it is paid once per remaining
+# turn. Measured on the live index (2026-08-21), `indent=2` inflated results
+# 19.6-23.5% for zero information gain: JSON parses identically either way and
+# no model reads an indented object more accurately. The only thing the
+# whitespace bought was readability of a raw wire log, and the debug log
+# already gives that. Guarded by tests/test_wire_economy.py.
+_COMPACT = (",", ":")
+
+# Hard backstop against a result no context window can hold. Measured on the
+# live 938-file index (2026-08-21), `export_index` returns 525,879 tokens —
+# 262.9% of a 200k window — so that call cannot succeed; it ends the session
+# that made it. This is NOT a token budget: `find_dead_code` (49,454 tok) and
+# `get_import_graph` (32,006 tok) are expensive but usable and must keep
+# working. Whether they deserve narrowing of their own is a separate judgment.
+#
+# The ceiling REFUSES rather than truncates. Cutting the payload and sending the
+# prefix would be shorter and is deliberately not done: a truncated index or
+# file tree makes the agent believe a symbol does not exist, and a false
+# negative on "does this already exist" defeats the entire point of a code
+# index. A refusal cannot cause that. Guarded by tests/test_result_ceiling.py.
+_DEFAULT_MAX_RESULT_TOKENS = 120_000
+
+# Narrowing levers, in the order worth trying. Only those a tool actually
+# accepts are ever suggested — advice to pass `path_prefix` to a tool with no
+# such parameter sends the agent into a retry loop, which is worse than the
+# problem it was meant to solve.
+_NARROWING_PARAMS = (
+    "path_prefix", "file_path", "focus", "kind", "limit", "max_results",
+    "budget_tokens", "include_summaries", "include_signatures", "include_tests",
+    "format",
+)
+
+
+def _max_result_chars() -> int:
+    """Ceiling in characters. `FIREKEEP_SYMDEX_MAX_RESULT_TOKENS` overrides."""
+    raw = os.environ.get("FIREKEEP_SYMDEX_MAX_RESULT_TOKENS", "")
+    try:
+        tokens = int(raw)
+    except (TypeError, ValueError):
+        tokens = _DEFAULT_MAX_RESULT_TOKENS
+    if tokens <= 0:
+        tokens = _DEFAULT_MAX_RESULT_TOKENS
+    return tokens * 4
+
+
+def _narrowing_for(tool_name: str | None) -> list[str]:
+    """The narrowing parameters this specific tool accepts."""
+    tool = _TOOLS.get(tool_name or "")
+    if not tool:
+        return []
+    try:
+        params = inspect.signature(tool["handler"]).parameters
+    except (TypeError, ValueError):
+        return []
+    return [p for p in _NARROWING_PARAMS if p in params]
+
+
+def _wire(payload: dict, tool_name: str | None = None) -> str:
+    """Serialize a tool result for the wire. The single funnel for all tools."""
+    text = json.dumps(payload, separators=_COMPACT, default=str)
+    ceiling = _max_result_chars()
+    if len(text) <= ceiling:
+        return text
+
+    narrow = _narrowing_for(tool_name)
+    refusal = {
+        "error": (
+            "Result too large to return. Nothing was truncated — a partial "
+            "index would read as 'this does not exist', so the call is refused "
+            "instead. Re-run it narrowed."
+        ),
+        "tool": tool_name,
+        "result_tokens": len(text) // 4,
+        "max_result_tokens": ceiling // 4,
+    }
+    if narrow:
+        refusal["narrow_with"] = narrow
+    return json.dumps(refusal, separators=_COMPACT, default=str)
+
 # Build the tool registry once at import time.
 _TOOLS = discover_tools()
 
@@ -42,7 +122,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
     tool = _TOOLS.get(name)
     if not tool:
-        return [TextContent(type="text", text=json.dumps({"error": f"Unknown tool: {name}"}, indent=2))]
+        return [TextContent(type="text", text=_wire({"error": f"Unknown tool: {name}"}))]
 
     try:
         handler = tool["handler"]
@@ -55,11 +135,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         else:
             result = handler(**arguments)
 
-        return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+        return [TextContent(type="text", text=_wire(result, tool_name=name))]
 
     except Exception as e:
         logger.exception("Tool %s failed: %s", name, e)
-        return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
+        return [TextContent(type="text", text=_wire({"error": str(e)}, tool_name=name))]
 
 
 async def run_server():

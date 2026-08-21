@@ -174,8 +174,11 @@ class TestCompareRepos:
 
         assert "_meta" in result
         assert "timing_ms" in result["_meta"]
-        assert "tokens_saved" in result["_meta"]
-        assert "cost_avoided" in result["_meta"]
+        # The savings counters moved off the wire to ~/.code-index/_savings.json
+        # (2026-08-21) — they cost ~93 tok per call and no agent decision
+        # depended on them. See tests/test_wire_economy.py.
+        assert "tokens_saved" not in result["_meta"]
+        assert "cost_avoided" not in result["_meta"]
 
     def test_symbol_entry_fields(self, two_repos):
         from firekeep_symdex.tools.compare_repos import compare_repos
@@ -316,7 +319,10 @@ class TestExportIndex:
         result = export_index("nonexistent/repo", storage_path=tmp_storage)
         assert "error" in result
 
-    def test_meta_includes_token_savings(self, single_repo):
+    def test_meta_keeps_the_sizing_fields_and_drops_the_savings_counters(self, single_repo):
+        """export_bytes/raw_bytes stay — an agent narrows on those. The savings
+        counters do not: they moved to ~/.code-index/_savings.json on
+        2026-08-21. See tests/test_wire_economy.py."""
         from firekeep_symdex.tools.export_index import export_index
         result = export_index("acme/webapp", format="markdown", storage_path=single_repo)
 
@@ -324,8 +330,8 @@ class TestExportIndex:
         assert "timing_ms" in meta
         assert "export_bytes" in meta
         assert "raw_bytes" in meta
-        assert "tokens_saved" in meta
-        assert "cost_avoided" in meta
+        assert "tokens_saved" not in meta
+        assert "cost_avoided" not in meta
 
     def test_symbol_and_file_counts(self, single_repo):
         from firekeep_symdex.tools.export_index import export_index

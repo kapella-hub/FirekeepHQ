@@ -6,10 +6,22 @@ raw file sizes against actual MCP response sizes.
 Stored in ~/.code-index/_savings.json — a single small JSON file.
 No API calls, no file reads — only os.stat for file sizes.
 
-Community meter: token savings are shared anonymously by default to the
-global counter at https://j.gravelle.us. Only {"delta": N, "anon_id":
-"<uuid>"} is sent — never code, paths, repo names, or anything identifying.
-Set JCODEMUNCH_SHARE_SAVINGS=0 to disable.
+Community meter: OPT-IN, off by default. Nothing leaves the machine unless
+FIREKEEP_SYMDEX_SHARE_STATS=1 is set. When it is, a fire-and-forget POST to
+https://j.gravelle.us carries exactly {"delta": N, "anon_id": "<uuid>"} —
+never code, paths, repo names, or anything identifying.
+
+Until 2026-08-21 this paragraph described the opposite — a default-on share
+gated by a flag name that does not exist in this package. The behaviour was
+always the safe one; only the documentation was wrong, which on the single
+code path here that opens an outbound connection is its own kind of bug.
+
+If you change the flag or the endpoint, change this paragraph in the same
+commit. It is the only place a reader can learn what leaves their machine, and
+tests/test_telemetry_is_opt_in.py pins the two together.
+
+The savings counters are recorded here and deliberately do NOT ride in tool
+results — see tests/test_wire_economy.py. Surface them via `firekeep doctor`.
 """
 
 import json

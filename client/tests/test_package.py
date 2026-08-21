@@ -7,7 +7,27 @@ from pathlib import Path
 def test_package_imports_and_exposes_frozen_version():
     import firekeep_client
 
-    assert firekeep_client.__version__ == "1.5.1"
+    assert firekeep_client.__version__ == "1.5.2"
+
+
+def test_the_version_pins_agree():
+    """The version lives in three places; drift between them is a real bug.
+
+    pyproject's version names the venv directory the bootstrap installs into
+    (~/.firekeep/venvs/<version>), and the side-by-side update contract depends
+    on that directory being NEW for a new release. If pyproject and __init__
+    disagree, the installed tree and the code reporting its own identity are
+    describing different releases.
+    """
+    pyproject = tomllib.loads(
+        (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+    )
+    import firekeep_client
+
+    assert pyproject["project"]["version"] == firekeep_client.__version__, (
+        "pyproject.toml and firekeep_client.__version__ disagree — bump both, "
+        "and this test's literal above, in the same commit"
+    )
 
 
 def test_frozen_module_layout_is_present():

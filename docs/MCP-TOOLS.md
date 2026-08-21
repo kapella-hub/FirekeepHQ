@@ -49,7 +49,7 @@ Tool breakdown: Cortex 30 + Bridge 7 + Sentinel 3 + Relay 25 = 65 HTTP-service t
 | `relay_deregister` | Deregister agent presence |
 | `relay_who_is_online` | List online agents with status |
 | `scope_start` | Open a scope-clarification session |
-| `scope_ask` | Post a screen and long-poll (~24s) for the human's answer |
+| `scope_ask` | Post a screen and long-poll (~50s) for the human's answer |
 | `scope_post` | Post a screen without blocking (async) |
 | `scope_check` | Poll a scope session for new answers |
 | `scope_complete` | Close a scope-clarification session |

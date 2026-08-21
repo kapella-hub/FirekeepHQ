@@ -68,7 +68,7 @@ async def recall_with_code(
     repo: str,
     tags: Optional[list[str]] = None,
     top_k: int = 5,
-    budget_tokens: int = 4000,
+    budget_tokens: int = 8000,
     storage_path: Optional[str] = None,
 ) -> dict:
     """Recall memories from FirekeepCortex and cross-reference with the code index.
@@ -85,7 +85,9 @@ async def recall_with_code(
         repo: Repository identifier (``owner/repo`` or just repo name).
         tags: Optional tags passed to FirekeepCortex recall.
         top_k: Maximum number of memories to request.
-        budget_tokens: Token budget for code context.
+        budget_tokens: Token budget for code context (default 8000).
+            Passed straight to get_context, whose budget counts the whole
+            entry rather than source bytes alone (see that tool).
         storage_path: Custom storage path for the code index.
 
     Returns:
@@ -212,8 +214,8 @@ TOOL_DEF = {
                     },
                     "budget_tokens": {
                             "type": "integer",
-                            "description": "Token budget for code context (default 4000)",
-                            "default": 4000
+                            "description": "Token budget for code context (default 8000). Counts the whole entry, not just source bytes",
+                            "default": 8000
                     }
             },
             "required": [

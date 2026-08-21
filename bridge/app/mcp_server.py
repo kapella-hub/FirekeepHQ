@@ -75,6 +75,20 @@ async def _lifespan(server):
 #
 # Keep it SHORT. It is sent once per session, not per request, but it competes for
 # attention with everything else in the handshake.
+# REACHABILITY (measured 2026-08-21): the shipped client kit does NOT receive
+# this string. Every runtime mounts exactly one MCP entry -- the local gateway
+# (FIREKEEP_MCP_KEYS = ("firekeep",), client/firekeep_client/adapters/base.py) --
+# and the gateway discards each backend's `initialize` result and reads only
+# tools/list (client/firekeep_client/gateway.py, Backend.start / Backend.discover).
+# What a kit agent actually receives in its system prompt is the gateway's own
+# GATEWAY_INSTRUCTIONS.
+#
+# So this text reaches ONLY a hand-configured client connected straight to this
+# service's port (docs/INTEGRATIONS.md). That is a real audience and the reason
+# the string stays -- but it means editing it changes nothing for any kit user.
+# Adding behaviour here is the same trap adapters/base.py records having cost a
+# release: a paragraph added where no runtime could see it. If you need an agent
+# to do something, put it in GATEWAY_INSTRUCTIONS.
 _INSTRUCTIONS = """Firekeep -- persistent team memory for agents.
 
 Recall BEFORE answering, and treat not knowing as the trigger: if the user names a

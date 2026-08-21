@@ -162,7 +162,7 @@ class TestSuggestSymbols:
             assert len(r["relevance_reason"]) > 0
 
     def test_meta_envelope(self, tmp_path):
-        """Response should include _meta with timing and token savings."""
+        """Response should include _meta with timing and the fields an agent acts on."""
         from firekeep_symdex.tools.suggest_symbols import suggest_symbols
 
         _make_index(tmp_path, SYMBOLS, REFERENCES)
@@ -172,8 +172,11 @@ class TestSuggestSymbols:
         meta = result["_meta"]
         assert "timing_ms" in meta
         assert "total_symbols" in meta
-        assert "tokens_saved" in meta
-        assert "total_tokens_saved" in meta
+        # Savings counters moved off the wire on 2026-08-21; `truncated` and
+        # `total_symbols` are the two an agent actually acts on and they stay.
+        assert "tokens_saved" not in meta
+        assert "total_tokens_saved" not in meta
+        assert "truncated" in meta
 
     def test_repo_not_found(self, tmp_path):
         """Should return error for unknown repo."""
