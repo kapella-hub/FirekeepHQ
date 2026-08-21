@@ -354,60 +354,28 @@ src/firekeep_symdex/
 \-- summarizer/            # AI-powered symbol summaries (optional)
 ```
 
-## Claude Code Plugin (Automatic Coding Intelligence)
+## Automatic coding intelligence (client kit)
 
-FirekeepSymdex ships with a Claude Code plugin that automatically makes Claude a better coder — no manual tool calls needed. It primes every session with architecture context and reminds Claude to check callers before edits.
+Symdex primes sessions with architecture context and keeps its index fresh
+without any manual tool calls — and that is handled by the **Firekeep client
+kit**, not by anything you install separately.
 
-> **In Firekeep**, `firekeep install` already registers firekeep-symdex — skip steps 1–2 below (they are for standalone use). The hand-written `.mcp.json` and the hardcoded `.venv/Scripts/firekeep-symdex.exe` path are only needed when running symdex outside the client kit.
+`firekeep install` registers symdex behind the local `firekeep gateway`, and
+the kit's `session_start` hook keeps the index current in the background
+(`client/firekeep_client/symdexindex.py`): it builds an index when one is
+absent, then refreshes on a new commit or once a day, whichever comes first.
+Nothing to register per project.
 
-### Quick Start (standalone)
+Whether symdex's tools appear at all is a registry decision — on a fresh
+machine symdex is registered by default; `firekeep dex remove symdex` is the
+off-switch. See [Dexes](https://firekeep.ai/dexes.html).
 
-```bash
-# 1. Install FirekeepSymdex
-git clone https://github.com/kapella-hub/FirekeepHQ.git   # private; requires access
-cd FirekeepHQ/symdex
-uv sync
-
-# 2. Register as MCP server (add to ~/.claude/.mcp.json)
-{
-  "mcpServers": {
-    "firekeep-symdex": {
-      "command": "<path-to-repo>/.venv/Scripts/firekeep-symdex.exe",
-      "args": []
-    }
-  }
-}
-
-# 3. Install the plugin (inside Claude Code, run):
-/plugin marketplace add <path-to-repo>/claude-plugin
-```
-
-Then, for each project you want intelligence on:
-
-```
-# In Claude Code, just say:
-"Index this project with index_folder"
-```
-
-That's it. Every Claude Code session now gets:
-- **Architecture priming** — Claude calls `get_architecture_map` and `extract_conventions` at session start
-- **Caller awareness** — advisory reminder to check `get_callers`/`get_impact` before modifying public APIs
-- **Self-review** — run `/symdex:self-review` after changes to validate callers and conventions
-
-### What the Plugin Does
-
-| Hook | When | What |
-|------|------|------|
-| SessionStart | Every conversation | Checks if project is indexed, primes Claude with architecture + conventions + coding guidelines |
-| PreToolUse | Every Edit/Write | Injects advisory reminder to check callers before structural changes |
-
-| Skill | Invocation | What |
-|-------|------------|------|
-| Self-review | `/symdex:self-review` | Validates recent changes against callers, dependencies, and conventions |
-
-### Overhead
-
-~3-5k tokens for session priming + ~80 tokens per edit reminder. For a typical 10-edit session, roughly 5% of context window — in exchange for cross-file awareness, convention adherence, and fewer broken references.
+> **A retired Claude Code plugin used to live here.** It shipped a SessionStart
+> hook that could only PRINT `ACTION REQUIRED: call index_folder` — a bash hook
+> has no MCP client, so it could never index anything itself, only ask the
+> agent to. The background indexer above replaced it, and the plugin directory
+> has been removed. If you added it as a marketplace from a checkout, remove it
+> with `/plugin marketplace remove firekeep-symdex`.
 
 ## FirekeepCortex Integration
 

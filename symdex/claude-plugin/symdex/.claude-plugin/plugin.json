@@ -1,9 +1,0 @@
-{
-  "name": "symdex",
-  "version": "1.0.0",
-  "description": "Automatic code comprehension for Claude Code via FirekeepSymdex — primes sessions with architecture context and injects caller awareness before edits",
-  "author": {
-    "name": "FirekeepSymdex"
-  },
-  "keywords": ["code-intelligence", "comprehension", "callers", "impact-analysis"]
-}

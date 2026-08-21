@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "firekeep",
+  "version": "1.0.0",
+  "description": "Install and connect Firekeep — self-hosted persistent memory for AI agents — on this machine, then verify it with the product's own doctor.",
+  "author": {
+    "name": "Omnicron, LLC",
+    "url": "https://firekeep.ai"
+  },
+  "homepage": "https://firekeep.ai",
+  "repository": "https://github.com/kapella-hub/FirekeepHQ",
+  "license": "LicenseRef-Firekeep-BUSL-1.1",
+  "keywords": ["memory", "persistent-memory", "self-hosted", "mcp", "install", "agent-memory"]
+}

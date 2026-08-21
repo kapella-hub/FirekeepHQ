@@ -1,2 +1,0 @@
-# Bash scripts must have LF line endings, even on Windows
-scripts/*.sh text eol=lf

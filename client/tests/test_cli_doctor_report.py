@@ -16,8 +16,6 @@ import re
 import textwrap
 import types
 
-import pytest
-
 from firekeep_client import cli, resolver
 from firekeep_client.transport import TransportError
 

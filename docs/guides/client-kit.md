@@ -545,6 +545,51 @@ logging arbitrary text. Aggregation is human-run, on demand
 reads it, matching the download counter's own precedent. Disclosed at
 [firekeep.ai/privacy.html](https://firekeep.ai/privacy.html).
 
+## The install skill (`skills/install-firekeep/`, 2026-08-20)
+
+A portable Agent Skill that lets someone's existing coding agent install Firekeep
+for them. It wraps the real commands — it does not reimplement the installer.
+
+**Why the repo itself is the plugin.** `.claude-plugin/` holds BOTH manifests
+(`marketplace.json` and `plugin.json`) and `skills/` sits at the repo root. That
+placement is doing three jobs at once: `/plugin marketplace add
+kapella-hub/FirekeepHQ` resolves because marketplace.json is at the repository
+root (the retired symdex plugin buried its own in a subdirectory, so its
+published install line required a checkout); `skills/<name>/SKILL.md` at a public
+repo root is the convention **skills.sh auto-indexes**, which has no submission
+process at all; and the file is directly `curl`-able for agents with no plugin
+system, served at `firekeep.ai/install-firekeep/SKILL.md`.
+
+**Frontmatter is restricted to the agentskills.io spec's six fields**
+(`name`, `description`, `license`, `compatibility`, `metadata`, `allowed-tools`)
+even though Claude Code accepts ~20 more. This is not stylistic: claude.ai
+uploads, the Skills API and `package_skill.py` reject any other key with a HARD
+error (`Unexpected key(s) in SKILL.md frontmatter`), so one Claude-Code-only
+convenience field would silently cost every other destination. Pinned by
+`test_skill_frontmatter_uses_only_portable_spec_fields`.
+
+**The safety design is structural, not prose.** The skill directs agents to
+`firekeep install --non-interactive`, which **cannot provision a server**:
+`_configure` returns `plan=None` off the interactive path, and the provisioning
+call is guarded by `plan is not None and plan.action == PROVISION_HERE`. This
+matters because the interactive wizard's default answer is `1` (provision here)
+on any machine with Docker — an agent answering that question by accident would
+stand up Neo4j/Qdrant/Redis/Ollama unasked. Provisioning is therefore reachable
+only through an explicit, separately-gated `firekeep init`, which the skill
+requires human confirmation for — and says plainly that this is a request, not
+an enforcement, because no instruction file can compel a model.
+
+**Guards** (`client/tests/test_install_skill_contract.py`, 18 tests): every
+`firekeep <subcommand>` and flag named in the prose is parsed out and checked
+against the real argparse parser; doctor output the skill teaches agents to
+recognize is checked against `cli.py`'s actual string; the non-interactive
+safety property is asserted at source level (deliberately not by running a real
+install — a test that fails by provisioning a server is not worth running); the
+retired symdex plugin is asserted gone with no live doc still advertising it;
+and the firekeep.ai copy is diffed against the repo copy whenever the site
+checkout is present, since a second copy in a separate repo with a manual deploy
+is exactly the shape that drifts.
+
 ## Session Hooks (client kit — `firekeep_client.hooks`)
 The five bash hooks are retired; the adapter wires stdlib Python hook cores at install (Claude `settings.json`, kiro inline hooks, OpenCode via a rendered JS plugin bridge; Codex and the generic runtime have no hook surface):
 - `session_start` (SessionStart / kiro agentSpawn) — thin fetch-and-print of Cortex `GET /briefing` (server-side aggregator; auth via the resolver) plus local presence registration. Replaces the 610-line briefing assembly and structurally kills its `$SESSION_ID`-unbound + shell-injection bugs. Also stashes the server-minted `briefing_id` into the session stash (`state.write_session_stash`, `session_current_{agent}`) for the bridge shim's identity tap. Runs the once-a-day client-update check (`_update_nudge`): when a newer release exists it spawns the detached background auto-update (on by default — see Background auto-update above) and appends a one-line "updating in background" notice (or the manual "run: firekeep update" nudge when opted out). Finally calls `symdexindex.index_nudge` to background-index the workspace for symdex when the staleness policy says so (see Symdex auto-index below), then `docdexsync.sync_nudge` to background-sync the folders a human registered with docdex when those are stale (only when the dex is registered AND at least one source exists — see [`dexes.md`](dexes.md)) — both detached, and both silent in every declining case, since a line on every start is the nag it replaces.
@@ -571,7 +616,7 @@ The kit's domain indexes — symdex (code), docdex (documents) and maildex (emai
 ## Symdex auto-index (client kit — `firekeep_client.symdexindex`)
 Background workspace indexing from the `session_start` hook core. **ON by default**; opt out with `FIREKEEP_NO_AUTO_INDEX=1` or `[symdex] auto_index = false` in `~/.firekeep/config`. (The trigger itself is not registry-gated — with symdex unregistered the gateway mounts no backend, so an index it builds is one no tool reads; register with `firekeep dex add symdex`.)
 
-**What it replaces.** `symdex/claude-plugin/symdex/scripts/ensure-indexed.sh` (a SessionStart hook) only ever PRINTED `ACTION REQUIRED: call index_folder`. A bash hook has no MCP client, and symdex's only entry point was the stdio server `firekeep-symdex = firekeep_symdex.server:main`, so the script could not index even in principle — it could only ask the agent to. Sessions that ignored the ask left the repo unindexed while the hook kept reporting the problem as though reporting were a fix (the same hope-vs-guarantee failure as the pre-0.1.17 untagged-calls nagging and the decision-board instruction that lived only in one repo's CLAUDE.md). A registered marketplace in a dev's `~/.claude/settings.json` may still point at a retired checkout of that plugin; its legacy `.mcp.json` key differs from `firekeep-symdex`, so a future `.mcp.json` would silently fall through to its local-file branch.
+**What it replaces.** `symdex/claude-plugin/symdex/scripts/ensure-indexed.sh` (a SessionStart hook) only ever PRINTED `ACTION REQUIRED: call index_folder`. A bash hook has no MCP client, and symdex's only entry point was the stdio server `firekeep-symdex = firekeep_symdex.server:main`, so the script could not index even in principle — it could only ask the agent to. Sessions that ignored the ask left the repo unindexed while the hook kept reporting the problem as though reporting were a fix (the same hope-vs-guarantee failure as the pre-0.1.17 untagged-calls nagging and the decision-board instruction that lived only in one repo's CLAUDE.md). **The plugin directory was DELETED 2026-08-20** (`symdex/claude-plugin/`), along with the live `/plugin marketplace add` instruction in `symdex/README.md` — which mattered more than it looks: that README is the PyPI long description for the published `firekeep-symdex` wheel, and `symdex/pyproject.toml` excludes `claude-plugin/` from both wheel and sdist, so the published package page told every PyPI user to add a marketplace directory their install did not contain. A dev who registered it from a checkout can drop it with `/plugin marketplace remove firekeep-symdex`. (An earlier version of this paragraph blamed the hook's dead HTTP branch on a `.mcp.json` key that "differs from `firekeep-symdex`" — that was wrong: the script read exactly that key. It fell through because it required a `url` field, which a stdio entry never has. Right conclusion, wrong cause.) The repo's plugin surface is now the install skill below.
 
 **The missing seam: `python -m firekeep_symdex.reindex <path> [--incremental]`** (`symdex/src/firekeep_symdex/reindex.py`, symdex 0.2.14) — a headless one-shot index a hook can actually spawn, and a human can run verbatim to reproduce what the hook did. Deliberately `-m` rather than a console script (resolvable from `sys.executable` alone, no PATH dependency, no shim to keep in sync). Exit codes are an interface: `0` success, `1` indexing reported failure, `2` unexpected exception — always with a JSON line on stdout, because a detached caller can see nothing else. `use_ai_summaries` defaults **False** here (the MCP tool defaults True, which bills an Anthropic/Gemini key per index — a background index the user did not ask for must not spend money).
 
