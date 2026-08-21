@@ -98,6 +98,60 @@ def _active_toolset() -> tuple[str | None, frozenset[str] | None]:
     return preset, TOOLSET_PRESETS[preset]
 
 
+def _slim_schema(schema: Any) -> Any:
+    """Collapse Pydantic's ``X | None`` rendering into JSON Schema's type array.
+
+    Pydantic emits an optional field as
+    ``{"anyOf": [{"type": "X"}, {"type": "null"}]}`` — 43 characters where
+    ``{"type": ["X", "null"]}`` is 24, for the same meaning. Measured on the
+    live gateway (2026-08-21): 66 such fields across 98 tools. Tool definitions
+    sit in the cached prompt prefix, so on a runtime WITHOUT tool deferral that
+    is bytes re-sent every turn for the life of the session.
+
+    Only the exact two-branch ``[T, null]`` shape collapses, and only into the
+    type-array form. Dropping the null branch outright would be shorter and is
+    deliberately NOT done: it would make an explicit ``null`` invalid where the
+    server accepts it, which is a behaviour change wearing a token saving's
+    clothes. ``tests/test_gateway_schema_slimming.py`` proves the equivalence
+    against a real validator rather than asserting it.
+
+    Never raises. A backend may serve any shape it likes, and a schema this
+    cannot parse must reach the model unmodified rather than take the surface
+    down — the same failure isolation the rest of the gateway is built on.
+    """
+    try:
+        return _slim(schema)
+    except Exception:  # noqa: BLE001 - pass-through beats a broken tool surface
+        return schema
+
+
+def _slim(node: Any) -> Any:
+    if isinstance(node, list):
+        return [_slim(item) for item in node]
+    if not isinstance(node, dict):
+        return node
+
+    branches = node.get("anyOf")
+    if isinstance(branches, list) and len(branches) == 2:
+        nulls = [b for b in branches if b == {"type": "null"}]
+        others = [b for b in branches if isinstance(b, dict) and b != {"type": "null"}]
+        # Exactly one null branch and one non-null branch whose own `type` is a
+        # plain string. Anything richer (a nested anyOf, a branch with no type,
+        # a $ref) is left alone: this collapse is only provably lossless for
+        # the simple shape, and "left alone" costs bytes, not correctness.
+        if len(nulls) == 1 and len(others) == 1 and isinstance(others[0].get("type"), str):
+            collapsed = {k: v for k, v in node.items() if k != "anyOf"}
+            # The branch's own keywords (items, additionalProperties, ...) come
+            # with it; the field's siblings (default, description) stay put.
+            for key, value in others[0].items():
+                if key != "type":
+                    collapsed.setdefault(key, value)
+            collapsed["type"] = [others[0]["type"], "null"]
+            return {k: _slim(v) for k, v in collapsed.items()}
+
+    return {k: _slim(v) for k, v in node.items()}
+
+
 def _console_script(name: str) -> str:
     suffix = ".exe" if os.name == "nt" else ""
     filename = f"{name}{suffix}"
@@ -288,6 +342,11 @@ class Gateway:
                     self.tools_filtered += 1
                     continue
                 self.routes[name] = backend
+                # Slim the ADVERTISED schema only. Routing, calls and the
+                # upstream's own validation are untouched: _slim_schema returns
+                # new objects and the backend's tool dict is left as served.
+                if isinstance(tool.get("inputSchema"), dict):
+                    tool = {**tool, "inputSchema": _slim_schema(tool["inputSchema"])}
                 tools.append(tool)
         return tools
 
