@@ -70,6 +70,71 @@ _CORE_MODULES = {
 _INT_CORES = frozenset({"pre_tool", "post_tool"})
 _DICT_CORES = frozenset({"session_start", "stop", "session_end", "prompt", "precompact"})
 
+# Cores whose text must reach the MODEL, and the Claude Code event name that
+# carries it.
+#
+# `systemMessage` is shown to the human; the channel that reaches the model is
+# `hookSpecificOutput.additionalContext`. Measured 2026-08-21 by comparing every
+# SessionStart hook attachment in one session: the three hooks emitting
+# additionalContext were verbatim in the model's context, the two emitting
+# systemMessage (Firekeep's pre-flight briefing, the symdex banner) were absent.
+# Claude Code's docs say the same thing from the other side — "To surface a
+# message to the user on any platform, return systemMessage", against "for
+# SessionStart and UserPromptSubmit Claude Code adds plain-text stdout as
+# context that Claude can see and act on".
+#
+# The text was always written for the model: the briefing opens "You are
+# agent-...", proactive recall pushes memories for the agent to act on, and the
+# bypass notice says "you should NOT use firekeep_* tools" — an instruction a
+# human reader cannot follow. All of it was landing in the terminal.
+#
+# ONLY these two events. `stop`, `precompact` and `session_end` are absent
+# because nobody has verified those events accept model-facing context, and
+# emitting a plausible-looking shape at an event that ignores it would leave the
+# text exactly where it started while looking fixed — which is how this bug
+# happened the first time.
+_MODEL_CONTEXT_EVENTS = {
+    "session_start": "SessionStart",
+    "prompt": "UserPromptSubmit",
+}
+
+# ONLY the runtime whose channel has actually been measured. kiro, opencode and
+# the rest use different mechanisms; handing them a Claude Code-shaped payload
+# would be the same guess in a new place. An OLD rendered hook command carries
+# no `--runtime` at all and must keep working unchanged.
+_MODEL_CONTEXT_RUNTIMES = frozenset({"claude"})
+
+
+def _with_model_context(result: dict, core_name: str, runtime: str | None) -> dict:
+    """Add the model-facing channel alongside the human-facing one.
+
+    Dual channel on purpose: only `additionalContext` enters the context window,
+    so keeping `systemMessage` costs no model tokens and is what lets the human
+    see what their agent was just handed.
+
+    Never raises — a hook that cannot decorate its output must still emit it.
+    """
+    try:
+        event = _MODEL_CONTEXT_EVENTS.get(core_name)
+        if not event or runtime not in _MODEL_CONTEXT_RUNTIMES:
+            return result
+        if not isinstance(result, dict) or result.get("hookSpecificOutput"):
+            return result
+        text = result.get("systemMessage")
+        # Only promote text destined for a reader. A core returning control
+        # fields (decision/reason) is not describing something to inject.
+        if not isinstance(text, str) or not text.strip():
+            return result
+        return {
+            **result,
+            "hookSpecificOutput": {
+                "hookEventName": event,
+                "additionalContext": text,
+            },
+        }
+    except Exception:  # noqa: BLE001 — decoration must never break a hook
+        return result
+
 # Cores that must run even while personal mode is ON, because they self-handle
 # bypass and own end-of-session cleanup: `stop` clears the personal marker
 # itself, and `session_end` must be free to decline comms without the dispatcher
@@ -191,12 +256,23 @@ def main(argv: list[str] | None = None) -> int:
     # the resolver seam carries the X-Firekeep-* attribution headers
     # (resolver._runtime_attribution). Best-effort — attribution must never be
     # able to break a hook.
+    runtime: str | None = None
     try:
         runtime = _parse_runtime(argv[1:])
         if runtime:
             os.environ["FIREKEEP_RUNTIME"] = runtime
     except Exception as e:  # noqa: BLE001
         hooklog.log_failure(core_name, f"runtime flag parse failed: {e!r}")
+
+    def _emit(result: dict) -> None:
+        """The ONE place a dict core's output reaches stdout.
+
+        Routed through _with_model_context so every message a core produces —
+        briefing, recall push, personal-mode notice, migration refusal — takes
+        the same channel decision. Four separate print sites is how one of them
+        silently keeps the old behaviour.
+        """
+        print(json.dumps(_with_model_context(result, core_name, runtime)))
 
     # `/personal` as chat text: intercepted BEFORE the bypass gate below — while
     # personal mode is ON the prompt core is short-circuited, so an in-core
@@ -206,7 +282,7 @@ def main(argv: list[str] | None = None) -> int:
         payload = _read_payload(core_name)
         personal_msg = _personal_text_command(payload)
         if personal_msg is not None:
-            print(json.dumps({"systemMessage": personal_msg}))
+            _emit({"systemMessage": personal_msg})
             return 0
 
     # Personal / bypass mode: Firekeep goes dormant for this session. Checked LIVE
@@ -219,7 +295,7 @@ def main(argv: list[str] | None = None) -> int:
         if core_name not in _BYPASS_EXEMPT and resolver.is_bypassed():
             if core_name in _INT_CORES:
                 return 0  # allow the edit; no policy/gateway call reaches the server
-            print(json.dumps({"systemMessage": _BYPASS_MSG}))  # session_start / prompt
+            _emit({"systemMessage": _BYPASS_MSG})  # session_start / prompt
             return 0
     except Exception as e:  # noqa: BLE001 — a gate failure must never break the session
         hooklog.log_failure(core_name, f"bypass check failed: {e!r}")
@@ -238,11 +314,11 @@ def main(argv: list[str] | None = None) -> int:
 
         # dict core (session_start/stop/prompt).
         if result:
-            print(json.dumps(result))
+            _emit(result)
         return 0
     except resolver.ConfigMigrationConflict as e:
         hooklog.log_failure(core_name, f"config migration refused: {e}")
-        print(json.dumps({"systemMessage": str(e)}))
+        _emit({"systemMessage": str(e)})
         return 0
     except Exception as e:  # noqa: BLE001 — the dispatcher itself must never raise.
         hooklog.log_failure(core_name, f"dispatcher crashed: {e!r}")
