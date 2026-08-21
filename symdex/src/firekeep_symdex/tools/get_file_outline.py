@@ -4,7 +4,7 @@ import os
 import time
 from typing import Optional
 
-from ..storage import IndexStore, record_savings, estimate_savings, cost_avoided
+from ..storage import IndexStore, record_savings, estimate_savings
 from ..parser import build_symbol_tree
 from ._utils import resolve_repo, maybe_refresh_files
 
@@ -73,7 +73,7 @@ def get_file_outline(
         pass
     response_bytes = sum(s.get("byte_length", 0) for s in file_symbols)
     tokens_saved = estimate_savings(raw_bytes, response_bytes)
-    total_saved = record_savings(tokens_saved)
+    record_savings(tokens_saved)
 
     return {
         "repo": f"{owner}/{name}",
@@ -83,9 +83,6 @@ def get_file_outline(
         "_meta": {
             "timing_ms": round(elapsed, 1),
             "symbol_count": len(symbols_output),
-            "tokens_saved": tokens_saved,
-            "total_tokens_saved": total_saved,
-            **cost_avoided(tokens_saved, total_saved),
         },
     }
 

@@ -5,7 +5,7 @@ import time
 from typing import Optional
 
 from ..parser.languages import LANGUAGE_REGISTRY
-from ..storage import IndexStore, record_savings, estimate_savings, cost_avoided, score_symbol
+from ..storage import IndexStore, record_savings, estimate_savings, score_symbol
 from ._utils import resolve_repo
 
 
@@ -92,7 +92,7 @@ def search_symbols(
                 pass
         response_bytes += sym.get("byte_length", 0)
     tokens_saved = estimate_savings(raw_bytes, response_bytes)
-    total_saved = record_savings(tokens_saved)
+    record_savings(tokens_saved)
 
     elapsed = (time.perf_counter() - start) * 1000
 
@@ -105,9 +105,6 @@ def search_symbols(
             "timing_ms": round(elapsed, 1),
             "total_symbols": len(index.symbols),
             "truncated": len(results) > max_results,
-            "tokens_saved": tokens_saved,
-            "total_tokens_saved": total_saved,
-            **cost_avoided(tokens_saved, total_saved),
         },
     }
 

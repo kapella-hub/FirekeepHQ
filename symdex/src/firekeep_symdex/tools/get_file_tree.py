@@ -4,7 +4,7 @@ import os
 import time
 from typing import Optional
 
-from ..storage import IndexStore, record_savings, estimate_savings, cost_avoided
+from ..storage import IndexStore, record_savings, estimate_savings
 from ._utils import resolve_repo
 
 
@@ -64,7 +64,7 @@ def get_file_tree(
             pass
     response_bytes = len(str(tree).encode())
     tokens_saved = estimate_savings(raw_bytes, response_bytes)
-    total_saved = record_savings(tokens_saved)
+    record_savings(tokens_saved)
 
     return {
         "repo": f"{owner}/{name}",
@@ -73,9 +73,6 @@ def get_file_tree(
         "_meta": {
             "timing_ms": round(elapsed, 1),
             "file_count": len(files),
-            "tokens_saved": tokens_saved,
-            "total_tokens_saved": total_saved,
-            **cost_avoided(tokens_saved, total_saved),
         },
     }
 

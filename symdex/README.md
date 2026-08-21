@@ -304,8 +304,19 @@ get_callers repo="my-project" symbol_id="db.py::connect#function"
 ### Smart context budgeting
 
 ```
-get_context repo="my-project" focus="authentication" budget_tokens=4000 include_deps=true
+get_context repo="my-project" focus="authentication" budget_tokens=8000 include_deps=true
 ```
+
+`budget_tokens` (default 8000) counts the **whole entry** — the source plus the
+id/kind/name/file/line/signature/summary envelope around it — not just the source
+bytes. Before 2026-08-21 it counted source only, so a default call on a 938-file
+index returned 74,218 tokens while reporting "99.9% of 4,000"; the same call now
+returns ~4,100 tokens at a budget it actually respects.
+
+If the budget is too small for even one symbol, `get_context` returns the
+best-matching one anyway and sets `_meta.budget_floor_applied` — an empty result
+would read as "this repo has no relevant code", which is a false negative rather
+than a saving.
 
 ### Code evolution (FirekeepTime)
 

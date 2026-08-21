@@ -5,7 +5,7 @@ import os
 import time
 from typing import Optional
 
-from ..storage import IndexStore, record_savings, estimate_savings, cost_avoided as _cost_avoided
+from ..storage import IndexStore, record_savings, estimate_savings
 from ._utils import resolve_repo, get_file_imports, maybe_refresh_files
 
 
@@ -100,10 +100,7 @@ def get_symbol(
     except OSError:
         pass
     tokens_saved = estimate_savings(raw_bytes, symbol.get("byte_length", 0))
-    total_saved = record_savings(tokens_saved)
-    meta["tokens_saved"] = tokens_saved
-    meta["total_tokens_saved"] = total_saved
-    meta.update(_cost_avoided(tokens_saved, total_saved))
+    record_savings(tokens_saved)
 
     elapsed = (time.perf_counter() - start) * 1000
 
@@ -215,16 +212,14 @@ def get_symbols(
                 pass
         response_bytes += symbol.get("byte_length", 0)
     tokens_saved = estimate_savings(raw_bytes, response_bytes)
-    total_saved = record_savings(tokens_saved)
+    record_savings(tokens_saved)
 
     elapsed = (time.perf_counter() - start) * 1000
 
     result = {
         "symbols": symbols,
         "errors": errors,
-        "_meta": _make_meta(elapsed, symbol_count=len(symbols),
-                            tokens_saved=tokens_saved, total_tokens_saved=total_saved,
-                            **_cost_avoided(tokens_saved, total_saved)),
+        "_meta": _make_meta(elapsed, symbol_count=len(symbols)),
     }
 
     if include_imports and "error" not in result:
