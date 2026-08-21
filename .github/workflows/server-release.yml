@@ -275,7 +275,17 @@ jobs:
         run: |
           BASE="https://kapella-hub.github.io/firekeep-dist"
           EXPECT_LATEST="${{ steps.publish_bundle.outputs.expect_latest }}"
-          for i in $(seq 1 60); do
+          # 150 x 10s = 25 minutes, raised from 60 (10 min) on 2026-08-21 after BOTH
+          # release workflows went red while having published perfectly.
+          # MEASURED, not guessed: a Pages build on firekeep-dist takes ~11 minutes
+          # (client-v1.5.2's ran 16:48:52 -> 16:59:44), so the old 10-minute ceiling
+          # lost by ~52 seconds. Worse, Pages builds SERIALIZE per repository: the
+          # v1.2.1 bundle pushed at 16:59:59 could not start building until the
+          # client's build finished, queued at 17:00:01 and was still building when
+          # verify gave up at 17:10:06. Cutting a client and a server release together
+          # -- the normal shape of a full ship -- therefore guaranteed the second one
+          # failed. The window has to clear one full build PLUS one queued behind it.
+          for i in $(seq 1 150); do
             got="$(curl -fsS "${BASE}/server/latest/server.json" 2>/dev/null \
                    | python -c "import json,sys;print(json.load(sys.stdin).get('version',''))" 2>/dev/null || echo '')"
             versioned="$(curl -fsS "${BASE}/server/${TAG}/server.json" 2>/dev/null \
@@ -295,5 +305,5 @@ jobs:
             fi
             sleep 10
           done
-          echo "::error::public server bundle ${TAG} was not fully served within 10 minutes (latest=${got}, expected_latest=${EXPECT_LATEST})"
+          echo "::error::public server bundle ${TAG} was not fully served within 25 minutes (latest=${got}, expected_latest=${EXPECT_LATEST})"
           exit 1

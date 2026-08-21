@@ -481,19 +481,29 @@ jobs:
         run: |
           BASE="https://kapella-hub.github.io/firekeep-dist"
           manifest_ok=""
-          for i in $(seq 1 60); do
+          # 150 x 10s = 25 minutes, raised from 60 (10 min) on 2026-08-21 after BOTH
+          # release workflows went red while having published perfectly.
+          # MEASURED, not guessed: a Pages build on firekeep-dist takes ~11 minutes
+          # (client-v1.5.2's ran 16:48:52 -> 16:59:44), so the old 10-minute ceiling
+          # lost by ~52 seconds. Worse, Pages builds SERIALIZE per repository: the
+          # v1.2.1 bundle pushed at 16:59:59 could not start building until the
+          # client's build finished, queued at 17:00:01 and was still building when
+          # verify gave up at 17:10:06. Cutting a client and a server release together
+          # -- the normal shape of a full ship -- therefore guaranteed the second one
+          # failed. The window has to clear one full build PLUS one queued behind it.
+          for i in $(seq 1 150); do
             got="$(curl -fsS "${BASE}/latest/latest.json" 2>/dev/null \
                    | python -c "import json,sys;print(json.load(sys.stdin).get('version',''))" 2>/dev/null || echo '')"
             if [ "$got" = "${VERSION}" ]; then
               manifest_ok=1
               break
             fi
-            [ -n "$got" ] && echo "  serving ${got}, waiting for ${VERSION} (${i}/24)" \
-                          || echo "  not served yet (${i}/24)"
+            [ -n "$got" ] && echo "  serving ${got}, waiting for ${VERSION} (${i}/150)" \
+                          || echo "  not served yet (${i}/150)"
             sleep 10
           done
           if [ -z "$manifest_ok" ]; then
-            echo "::error::${BASE}/latest/latest.json did not serve ${VERSION} within 10 minutes."
+            echo "::error::${BASE}/latest/latest.json did not serve ${VERSION} within 25 minutes."
             echo "::error::If this is the first release: GitHub Pages is not enabled, or cannot be."
             echo "::error::Pages requires a PUBLIC repo (or GitHub Enterprise). See docs/RELEASE-GITHUB.md."
             exit 1
@@ -507,13 +517,13 @@ jobs:
           # merely fetching 200 would pass against a stale or foreign file.
           if [ -f dist/SHA256SUMS.minisig ]; then
             sig_ok=""
-            for i in $(seq 1 60); do
+            for i in $(seq 1 150); do
               if curl -fsS "${BASE}/${VERSION}/SHA256SUMS.minisig" -o served.minisig 2>/dev/null \
                  && cmp -s served.minisig dist/SHA256SUMS.minisig; then
                 sig_ok=1
                 break
               fi
-              echo "  ${VERSION}/SHA256SUMS.minisig not served yet (${i}/24)"
+              echo "  ${VERSION}/SHA256SUMS.minisig not served yet (${i}/150)"
               sleep 10
             done
             if [ -z "$sig_ok" ]; then
