@@ -95,17 +95,26 @@ def _precompact_claude(hooks: tuple[tuple[str, str, str | None, int], ...]) -> s
 # SessionStart and UserPromptSubmit "Claude Code adds plain-text stdout as
 # context that Claude can see and act on".
 #
-# So claude and opencode are in the SAME position for briefing and proactive
-# recall: the text reaches the human, not the model. opencode was never the
-# degraded one. The cells below say so; the fix is a separate change (switch
-# the two cores that HAVE a model-facing channel to additionalContext), and
-# until it lands this matrix must not claim a delivery that does not happen.
+# FIXED in the same series: hooks/__main__.py now emits BOTH channels for the
+# two events Claude Code documents as accepting model-facing context —
+# session_start (SessionStart) and prompt (UserPromptSubmit). Verified on the
+# real rendered command line: hookEventName SessionStart, 2,265 characters of
+# briefing in additionalContext, systemMessage retained so the human still sees
+# it. The claude cells below are therefore true again — but they were wrong for
+# as long as this comment's first half describes, which is why the history
+# stays here rather than being tidied away.
 #
-# kiro is marked unverified rather than corrected: its channel is a different
-# mechanism (agentSpawn) and nobody has run the same measurement on it. Do not
-# assume it shares Claude Code's semantics; measure before changing the cell.
+# Still human-only, deliberately: stop, precompact and session_end. Claude Code
+# does not document a model-facing channel for those events and nobody has
+# measured one; emitting a plausible-looking shape at an event that ignores it
+# would put the text back where it started while looking fixed.
+#
+# kiro stays marked unverified: its channel is a different mechanism
+# (agentSpawn), nobody has run the same measurement on it, and the fix above is
+# scoped to the claude runtime for exactly that reason. Do not assume it shares
+# Claude Code's semantics; measure before changing the cell.
 MATRIX: dict[str, dict[str, str]] = {
-    "briefing": {"claude": "hook (human-visible only)",
+    "briefing": {"claude": "hook",
                  "kiro": "agentSpawn hook (delivery unverified)",
                  "codex": "manual/memory_recall",
                  "opencode": "plugin (first event, console log only)",
@@ -121,7 +130,7 @@ MATRIX: dict[str, dict[str, str]] = {
     # deciding whether opencode support is a wiring job or a protocol limit gets the
     # answer from the cell. For all four non-claude/kiro runtimes the session-start
     # briefing remains the only push.
-    "proactive_recall": {"claude": "per-prompt push (human-visible only)",
+    "proactive_recall": {"claude": "per-prompt push",
                          "kiro": "per-prompt push (delivery unverified)",
                          "codex": "none (no hooks)", "opencode": "none (no prompt text)",
                          "claude-desktop": "none (no hooks)",

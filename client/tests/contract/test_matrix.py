@@ -155,16 +155,19 @@ def test_proactive_recall_fires_only_where_the_runtime_delivers_prompt_text():
     "none" would tell a reader that opencode support is a wiring job when it is a
     protocol limit — the overstatement this file exists to prevent, inverted.
 
-    The claude/kiro cells carry a DELIVERY qualifier as of 2026-08-21. The push
-    happens — the hook fires, the recall runs — but Firekeep's cores emit
+    The claude cell briefly read "per-prompt push (human-visible only)". That was
+    true for a few commits: the push happened, but Firekeep's cores emitted
     `systemMessage`, which Claude Code shows to the human rather than adding to
-    the model's context (measured; see the note above MATRIX). A bare
-    "per-prompt push" claimed a delivery that does not occur, which is this
-    file's own failure mode in its original direction. kiro says "unverified"
-    because nobody has run the measurement there, and guessing either way would
-    be the same mistake.
+    the model's context. hooks/__main__.py now emits `additionalContext` too, so
+    the plain claim is true again — and it is worth knowing the claim was once
+    false, because this file's failure mode is claiming a delivery that does not
+    occur, and it did exactly that for months before anyone measured.
+
+    kiro keeps "(delivery unverified)": nobody has run the measurement there, and
+    the fix is scoped to the claude runtime for that reason. Guessing either way
+    would be the same mistake in a new place.
     """
-    assert capabilities("claude")["proactive_recall"] == "per-prompt push (human-visible only)"
+    assert capabilities("claude")["proactive_recall"] == "per-prompt push"
     assert capabilities("kiro")["proactive_recall"] == "per-prompt push (delivery unverified)"
     assert capabilities("codex")["proactive_recall"] == "none (no hooks)"
     assert capabilities("opencode")["proactive_recall"] == "none (no prompt text)"
