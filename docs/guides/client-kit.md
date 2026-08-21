@@ -560,6 +560,22 @@ repo root is the convention **skills.sh auto-indexes**, which has no submission
 process at all; and the file is directly `curl`-able for agents with no plugin
 system, served at `firekeep.ai/install-firekeep/SKILL.md`.
 
+**It is not Claude-only, and that was verified rather than assumed.** The file
+is the portable spec format; only the destination directory differs per agent —
+`~/.claude/skills/<name>/SKILL.md` for Claude Code, `~/.codex/skills/<name>/SKILL.md`
+for Codex (whose own built-in skills use the same `name`/`description`/`license`/
+`metadata` fields, and which the ChatGPT desktop app shares host configuration
+with). Proven end-to-end on 2026-08-20: copied into `~/.codex/skills/`, Codex
+listed `install-firekeep` among its skills, and when told *"I want my agent to
+remember things across sessions"* — Firekeep never named — it selected the
+skill, answered `firekeep doctor` as the first command, and reproduced the
+provisioning gate unprompted ("only if you choose a local server, Docker is
+running, and you explicitly approve after being told it provisions a
+multi-container stack"). That is the description's retrieval quality and the
+safety design both confirmed in a different vendor's agent. Cursor, Gemini CLI
+and ordinary ChatGPT conversations have no skills mechanism at all — they get
+MCP (`--runtime generic`) and, for ChatGPT, the tunnel recipe.
+
 **Frontmatter is restricted to the agentskills.io spec's six fields**
 (`name`, `description`, `license`, `compatibility`, `metadata`, `allowed-tools`)
 even though Claude Code accepts ~20 more. This is not stylistic: claude.ai
