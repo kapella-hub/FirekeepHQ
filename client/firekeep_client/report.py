@@ -42,7 +42,8 @@ INSTALL_STAGES = (
 )
 BOOTSTRAP_STAGES = (
     "detect-platform", "fetch-manifest", "verify-checksum", "provision-python",
-    "create-venv", "install-wheels", "runnable-check", "flip-current", "handoff",
+    "fetch-wheels", "create-venv", "install-wheels", "runnable-check",
+    "flip-current", "handoff",
 )
 CONNECTIVITY_STAGES = ("cortex", "bridge", "sentinel", "relay", "server",
                        "embeddings", "backup")

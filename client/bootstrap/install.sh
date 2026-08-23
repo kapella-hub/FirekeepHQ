@@ -69,8 +69,12 @@ fi
 
 report_failure() {
     # Enum-only, fire-and-forget (spec decision 6): never affects the exit
-    # path, never prints, 2s ceiling. Every value below is a fixed literal or
-    # a shell variable this script itself set from a closed set — no command
+    # path, never prints, 2s ceiling. Every field is a fixed literal or a
+    # shell variable this script itself set from a closed set, with ONE
+    # exception: REPORT_CLIENT can carry the resolved version string, which
+    # is untrusted (parsed from latest.json / operator-supplied). It is not
+    # escaped, so it is shape-gated at the assignment site instead — only
+    # digits-and-dots reach this function, never arbitrary text. No command
     # output, path, or error text is ever interpolated.
     [ "${REPORT_CONSENT}" = "1" ] || return 0
     [ -n "${REPORT_OS}" ] || return 0
@@ -323,7 +327,16 @@ else
     V="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${BIN}/latest.json")"
     [ -n "${V}" ] || die "latest.json has no version"
 fi
-REPORT_CLIENT="${V}"
+# Shape-gated, not escaped: V is untrusted (parsed from latest.json, or an
+# operator-supplied FIREKEEP_VERSION) and lands in the report payload
+# unescaped, so only a value that is ALREADY digits-and-dots is accepted —
+# anything else (empty, or containing any other character) leaves
+# REPORT_CLIENT at its "unknown-bootstrap" default rather than risking
+# malformed JSON or an injected field.
+case "${V}" in
+    ""|*[!0-9.]*) : ;;
+    *) REPORT_CLIENT="${V}" ;;
+esac
 VBASE="${BASE}/${V}"
 wheel_name="firekeep_client-${V}-py3-none-any.whl"
 TARGET_VENV="${VENVS}/${V}"
@@ -358,9 +371,11 @@ fi
 if [ "$(venv_version "${TARGET_VENV}")" = "${V}" ] && venv_complete "${TARGET_VENV}" && [ -z "${FIREKEEP_FORCE_REINSTALL:-}" ]; then
     echo "firekeep: venvs/${V} is already provisioned - selecting it and re-rendering \
 adapters. Set FIREKEEP_FORCE_REINSTALL=1 to force a full reinstall." >&2
+    REPORT_STAGE="flip-current"; REPORT_ERROR="other"
     point_current "${TARGET_VENV}"
     # `|| wizard_exit=$?` keeps a failing wizard from killing the script under
     # `set -e` before the GC sweep runs; its exit code is still propagated.
+    REPORT_STAGE="handoff"; REPORT_ERROR="other"
     wizard_exit=0
     if ( : < /dev/tty ) 2>/dev/null; then
         if [ -n "${FIREKEEP_JOIN:-}" ]; then
@@ -459,6 +474,7 @@ chmod +x "${BIN}/uv"
 # to a local file and verify it with the SAME helper as uv, BEFORE the venv even exists, so a
 # tampered wheel never reaches `uv pip install` and never gets the chance to become the
 # PreToolUse hook that runs before every Edit on this machine.
+REPORT_STAGE="fetch-wheels"; REPORT_ERROR="other"
 echo "firekeep: fetching ${wheel_name}"
 fetch "${VBASE}/${wheel_name}" "${BIN}/${wheel_name}"
 verify_against_sums "${BIN}/${wheel_name}" "${wheel_name}"
