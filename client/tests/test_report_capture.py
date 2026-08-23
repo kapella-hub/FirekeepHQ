@@ -78,3 +78,19 @@ def test_log_failure_without_exc_emits_nothing(monkeypatch):
     calls = _capture_emits(monkeypatch)
     hooklog.log_failure("stop", "just a message")
     assert calls == []
+
+
+def test_never_raise_crash_emits_runtime_event(monkeypatch):
+    """A hook core's run() crashing must emit — the dispatcher's own crash
+    handler never sees it, since never_raise swallows it first (review fix:
+    6 of 7 runtime stages had no emitting path before this)."""
+    calls = _capture_emits(monkeypatch)
+    from firekeep_client import hooks
+
+    def _boom(payload):
+        raise PermissionError(errno.EACCES, "x")
+    _boom.__module__ = "firekeep_client.hooks.pre_tool"
+
+    result = hooks.never_raise(0)(_boom)({})
+    assert result == 0
+    assert len(calls) == 1 and calls[0][:2] == ("runtime", "pre-tool")
