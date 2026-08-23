@@ -87,3 +87,21 @@ def test_ask_consent_never_reasks(monkeypatch):
     cfg = _cfg("[report]\nfailures = false\n")
     monkeypatch.setattr(builtins, "input", lambda prompt="": pytest.fail("re-asked"))
     assert report.ask_consent(cfg) is False
+
+
+def test_ask_consent_keyboard_interrupt_records_nothing(monkeypatch):
+    cfg = _cfg()
+    monkeypatch.setattr("sys.stdin", type("T", (), {"isatty": lambda self: True})())
+    def raise_keyboard_interrupt(prompt=""):
+        raise KeyboardInterrupt
+    monkeypatch.setattr(builtins, "input", raise_keyboard_interrupt)
+    assert report.ask_consent(cfg) is False
+    assert report.has_answer(cfg) is False
+
+
+def test_is_enabled_load_config_failure(monkeypatch):
+    """When resolver.load_config raises, is_enabled(None) fails closed to False."""
+    def raise_error():
+        raise RuntimeError("config read failed")
+    monkeypatch.setattr("firekeep_client.resolver.load_config", raise_error)
+    assert report.is_enabled(None) is False

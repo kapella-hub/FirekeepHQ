@@ -215,9 +215,12 @@ def has_answer(cfg) -> bool:
 
 
 def record_consent(cfg, value: bool) -> None:
-    if not cfg.has_section("report"):
-        cfg.add_section("report")
-    cfg.set("report", "failures", "true" if value else "false")
+    try:
+        if not cfg.has_section("report"):
+            cfg.add_section("report")
+        cfg.set("report", "failures", "true" if value else "false")
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def ask_consent(cfg) -> bool:
