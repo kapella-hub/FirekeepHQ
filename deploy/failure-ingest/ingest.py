@@ -74,10 +74,16 @@ _STAGES_BY_KIND = {
 # --- Server-only vocabulary (source of truth: firekeep-site/failure-report.php) ---
 # unknown-bootstrap is legal ONLY for install + these two pre-version stages.
 PRE_VERSION_STAGES = ("detect-platform", "fetch-manifest")
-_CLIENT_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
+# All three regexes below are matched with .fullmatch(), never .match(): a
+# bare $ (no /D-style flag in Python's re) matches just before ONE trailing
+# newline even under .match(), so "a"*32 + "\n" would otherwise pass the id
+# check -- the exact anchor gotcha failure-report.php's /D exists to
+# prevent, reachable here via a crafted log line. fullmatch is the actual
+# guarantee, so the patterns below carry no ^/$ of their own.
+_CLIENT_VERSION_RE = re.compile(r"\d+\.\d+\.\d+")
 
-_ID_RE = re.compile(r"^[0-9a-f]{32}$")
-_TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+_ID_RE = re.compile(r"[0-9a-f]{32}")
+_TS_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 
 # Outer sealed-segment line shape written by failure-report.php:
 # {"ts": ..., "first": ..., "id": ..., "e": {...validated event...}}
@@ -117,18 +123,25 @@ def _validate_e(e, outer_id: str) -> bool:
     if e["py"] not in PY_BUCKETS:
         return False
 
+    # Shape only -- deliberately NOT checked against allowed-versions.txt.
+    # That file is server-side runtime state on the collector host (mutated
+    # out-of-band, not an embeddable closed vocabulary), so it's out of
+    # scope for this box's independent re-validation. A client version this
+    # box accepts as well-formed may still have been rejected by the
+    # collector itself; the boundary here is shape plus downstream context
+    # (Sentinel, not this script, is where that distinction would matter).
     client = e["client"]
     if not isinstance(client, str):
         return False
     if client == "unknown-bootstrap":
         if kind != "install" or stage not in PRE_VERSION_STAGES:
             return False
-    elif not _CLIENT_VERSION_RE.match(client):
+    elif not _CLIENT_VERSION_RE.fullmatch(client):
         return False
 
     if "id" in e:
         e_id = e["id"]
-        if not isinstance(e_id, str) or not _ID_RE.match(e_id) or e_id != outer_id:
+        if not isinstance(e_id, str) or not _ID_RE.fullmatch(e_id) or e_id != outer_id:
             return False
 
     if "exit" in e:
@@ -161,11 +174,11 @@ def validate_line(raw: str) -> dict | None:
         return None
 
     ts, first, line_id, e = obj["ts"], obj["first"], obj["id"], obj["e"]
-    if not isinstance(ts, str) or not _TS_RE.match(ts):
+    if not isinstance(ts, str) or not _TS_RE.fullmatch(ts):
         return None
     if not isinstance(first, bool):
         return None
-    if not isinstance(line_id, str) or not _ID_RE.match(line_id):
+    if not isinstance(line_id, str) or not _ID_RE.fullmatch(line_id):
         return None
     if not _validate_e(e, line_id):
         return None

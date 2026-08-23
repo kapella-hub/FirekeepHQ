@@ -30,6 +30,24 @@ def test_validate_line_rejects_smuggled_text():
     assert ingest.validate_line(json.dumps({"e": {}})) is None
 
 
+def test_validate_line_rejects_trailing_newline_smuggle():
+    """Python's bare $ (no /D-style flag) matches just before ONE trailing
+    newline even under .match() -- the exact anchor gotcha
+    failure-report.php's /D exists to prevent. id, ts, and client must all
+    be rejected when smuggling a trailing "\\n" past their regex."""
+    bad_id = json.loads(json.dumps(GOOD))
+    bad_id["id"] = bad_id["id"] + "\n"
+    assert ingest.validate_line(json.dumps(bad_id)) is None
+
+    bad_ts = json.loads(json.dumps(GOOD))
+    bad_ts["ts"] = bad_ts["ts"] + "\n"
+    assert ingest.validate_line(json.dumps(bad_ts)) is None
+
+    bad_client = json.loads(json.dumps(GOOD))
+    bad_client["e"]["client"] = bad_client["e"]["client"] + "\n"
+    assert ingest.validate_line(json.dumps(bad_client)) is None
+
+
 def test_aggregate_one_event_per_signature_with_count():
     lines = [dict(GOOD, first=(i == 0)) for i in range(5)]
     out = ingest.aggregate(lines, segment="failures.20260822T120000Z-1.log")

@@ -99,6 +99,13 @@ the marker refreshes. That's intentional simplicity, not an oversight — treat
 a stream of these as "still broken," not as N separate incidents, and file a
 Sentinel-side alert-dedup rule if the repetition becomes noisy in practice.
 
+**Blind spot:** if the collector ping keeps succeeding but `POST /events` to
+Sentinel itself fails on every pull (Sentinel down, bad key, wrong URL), the
+inbox never goes empty — segments just pile up in `inbox/` — so this
+watchdog condition never trips either; that failure mode is visible today
+only in the cron log (`process_inbox`'s per-segment stderr line), not as a
+Sentinel event.
+
 ## Manual runs
 
 ```sh
