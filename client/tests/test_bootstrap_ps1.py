@@ -274,6 +274,13 @@ def test_ps1_guards_every_network_fetch_with_try_catch():
     fetch_markers = ("Invoke-WebRequest", "Invoke-RestMethod")
 
     def is_fetch_line(line):
+        # The failure-report POST (field-failure reporting, spec decision 6) is
+        # fire-and-forget telemetry, not one of the bootstrap's own required artifact
+        # downloads — it deliberately swallows every failure with an empty catch
+        # (mirrors install.sh's report_failure(), which bypasses fetch() entirely and
+        # never die()s) so it is excluded from this per-fetch Die-guard sweep.
+        if "failure-report.php" in line:
+            return False
         return any(marker in line for marker in fetch_markers)
 
     fetch_indices = [i for i, line in enumerate(lines) if is_fetch_line(line)]
