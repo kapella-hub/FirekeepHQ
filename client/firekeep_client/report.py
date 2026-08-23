@@ -10,12 +10,15 @@ cli._send_doctor_report).
 from __future__ import annotations
 
 import errno as _errno
+import json
 import os
 import socket
 import ssl
 import subprocess
 import sys
+import time
 import uuid
+from pathlib import Path
 
 from firekeep_client import resolver
 from firekeep_client.transport import TransportError
@@ -246,3 +249,175 @@ def ask_consent(cfg) -> bool:
         return True
     except Exception:  # noqa: BLE001
         return False
+
+
+def _report_dir() -> Path:
+    override = os.environ.get("FIREKEEP_REPORT_DIR", "").strip()
+    return Path(override) if override else Path.home() / ".firekeep"
+
+
+def _spool_path() -> Path:
+    return _report_dir() / "report-spool.jsonl"
+
+
+def _recent_path() -> Path:
+    return _report_dir() / "report-recent.json"
+
+
+def _post(url, body, timeout):
+    """Seam for tests. transport.post_json raises TransportError on failure."""
+    from firekeep_client.transport import post_json
+    return post_json(url, body, headers={}, timeout=timeout)
+
+
+def _append_spool(event: dict | None) -> None:
+    """One O_APPEND single-line write — the only way ANYTHING enters the spool
+    (emit and merge-back both use it; there is no whole-file rewrite in the
+    protocol, so a concurrent append can never be corrupted)."""
+    if event is None:
+        return
+    try:
+        path = _spool_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists() and path.stat().st_size > 2 * SPOOL_MAX_BYTES:
+            return  # flush is broken entirely; never grow unbounded
+        line = json.dumps(event, separators=(",", ":")) + "\n"
+        fd = os.open(str(path), os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
+        try:
+            os.write(fd, line.encode("utf-8"))
+        finally:
+            os.close(fd)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _dedup_key(event: dict) -> str:
+    return "|".join(str(event.get(k, "")) for k in
+                    ("kind", "stage", "error", "runtime", "dex", "backend"))
+
+
+def _recently_sent(event: dict) -> bool:
+    """A hot failing hook must not fill the spool with copies: identical enum
+    tuples are emitted at most once per 24h. Best-effort only."""
+    try:
+        now = time.time()
+        path = _recent_path()
+        recent = {}
+        if path.exists():
+            recent = {k: v for k, v in json.loads(path.read_text()).items()
+                      if now - v < 86400}
+        key = _dedup_key(event)
+        if key in recent:
+            return True
+        recent[key] = now
+        path.write_text(json.dumps(recent), encoding="utf-8")
+        return False
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def emit(kind, stage, *, error=None, exc=None, exit_code=None,
+         runtime=None, dex=None, backend=None, cfg=None) -> None:
+    """Record a failure. Never raises, never blocks meaningfully (spool append
+    + one ~2s flush attempt). Spool FIRST: the highest-value report is an
+    install failure on a machine that may have no network right now."""
+    try:
+        if not is_enabled(cfg):
+            return
+        event = build_event(kind, stage, error=error, exc=exc, exit_code=exit_code,
+                            runtime=runtime, dex=dex, backend=backend)
+        if event is None or _recently_sent(event):
+            return
+        _append_spool(event)
+        flush(cfg=cfg)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _read_events(path: Path) -> list[dict]:
+    out = []
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+                if isinstance(ev, dict) and isinstance(ev.get("id"), str):
+                    out.append(ev)
+            except json.JSONDecodeError:
+                continue  # torn line from a crash mid-append: skip, never poison
+    except OSError:
+        pass
+    return out
+
+
+def _claim(path: Path) -> Path | None:
+    """Atomic rename = exactly one owner. Failure means someone else won."""
+    target = path.parent / f"report-spool.sending.{os.getpid()}.{uuid.uuid4().hex[:8]}"
+    try:
+        os.rename(path, target)
+        return target
+    except OSError:
+        return None
+
+
+def _adoptable_claims() -> list[Path]:
+    """Claims whose owner died: older than STALE_CLAIM_SECONDS. Adoption is
+    itself by rename, so racing adopters resolve to exactly one winner."""
+    out = []
+    try:
+        now = time.time()
+        for candidate in _report_dir().glob("report-spool.sending.*"):
+            try:
+                if now - candidate.stat().st_mtime > STALE_CLAIM_SECONDS:
+                    adopted = _claim(candidate)
+                    if adopted is not None:
+                        out.append(adopted)
+            except OSError:
+                continue
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
+def _merge_back(events: list[dict]) -> None:
+    """Per-line appends of the newest <= cap events — never a rewrite."""
+    for event in events[-SPOOL_MAX_EVENTS:]:
+        _append_spool(event)
+
+
+def flush(cfg=None, timeout=FLUSH_TIMEOUT) -> None:
+    """Send everything spooled. Never raises. At-least-once: truncation is
+    ack-driven; replays are absorbed by the collector's dedup ring."""
+    try:
+        if not is_enabled(cfg):
+            return
+        claims = _adoptable_claims()
+        spool = _spool_path()
+        if spool.exists():
+            fresh = _claim(spool)
+            if fresh is not None:
+                claims.append(fresh)
+        for claim_path in claims:
+            events = _read_events(claim_path)[-SPOOL_MAX_EVENTS:]
+            try:
+                claim_path.unlink()
+            except OSError:
+                pass
+            if not events:
+                continue
+            try:
+                resp = _post(REPORT_URL, {"events": events}, timeout)
+            except Exception:  # noqa: BLE001 — TransportError, OSError, HTTPException
+                _merge_back(events)
+                continue
+            if not isinstance(resp, dict):
+                _merge_back(events)
+                continue
+            acked = set(resp.get("accepted") or []) | set(resp.get("rejected") or [])
+            leftover = [e for e in events if e["id"] not in acked]
+            if leftover:
+                _merge_back(leftover)
+    except Exception:  # noqa: BLE001
+        pass
