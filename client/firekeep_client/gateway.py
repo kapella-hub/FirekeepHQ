@@ -447,6 +447,10 @@ def run(runtime: str | None = None) -> int:
     # to the venv we started under, so an update's flip mid-session can never
     # mix two client versions into this process. See stdio.pin_import_paths.
     pin_import_paths()
+    # Flush point 2 (spec): the gateway mounts on EVERY runtime — including
+    # codex/claude-desktop/generic, which have no hooks — making spool
+    # delivery coverage uniform.
+    report.flush()
     # Runtime identity (each adapter renders `firekeep gateway --runtime <name>`):
     # exported so the shim children this process spawns — the processes that make
     # the actual HTTP calls — attach the X-Firekeep-* attribution headers

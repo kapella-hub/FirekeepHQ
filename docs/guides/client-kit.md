@@ -504,7 +504,11 @@ would need) is deliberately NOT built — its own future decision.
 **Contract matrix has a generic column.** `contract/matrix.py`'s `RUNTIMES` lists `generic`
 last — it is what a runtime degrades TO, not a peer of the four — and every capability row
 carries its cell (`briefing: none (MCP only)`, `pre_edit_block: none`, `precompact: none`,
-`presence: sidecar (manual today)`, `bypass: firekeep personal CLI + FIREKEEP_BYPASS`).
+`presence: sidecar (manual today)`, `bypass: firekeep personal CLI + FIREKEEP_BYPASS`). The
+`failure_report_flush` row covers the field-failure spool's three catch-up points (CLI
+start, gateway start, session_start hook where the runtime has one) — claude/kiro/opencode
+get all three or their hook-shaped equivalent, codex/generic/claude-desktop get whichever
+subset their hook surface allows; emit() itself always attempts an immediate send first.
 `firekeep doctor` adds a per-runtime staleness row for the generic block ONLY when
 `[generic] agents_md` is configured, comparing the on-disk block against
 `RENDERED_GENERIC_INSTRUCTIONS_HASH` (the hook-free text's OWN hash — checked against the

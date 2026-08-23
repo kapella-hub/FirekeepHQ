@@ -3089,6 +3089,10 @@ def main(argv=None) -> int:
             pass  # exotic stream (test double, closed pipe) — leave it alone
     parser = _build_parser()
     args = parser.parse_args(argv)
+    # Field-failure spool flush (spec, flush point 1): the commands a
+    # failed-install user retries are exactly these. is_enabled + empty-spool
+    # make the common case one stat call; never raises, ~2s worst case.
+    report.flush()
     func = getattr(args, "func", None)
     if func is None:
         parser.print_help()
