@@ -10,17 +10,12 @@ cli._send_doctor_report).
 from __future__ import annotations
 
 import errno as _errno
-import json
-import os
 import socket
 import ssl
 import subprocess
 import sys
-import time
 import uuid
-from pathlib import Path
 
-from firekeep_client import resolver
 from firekeep_client.transport import TransportError
 
 REPORT_URL = "https://firekeep.ai/failure-report.php"
@@ -107,9 +102,12 @@ def detect_os() -> str:
     if sys.platform == "darwin":
         return "darwin"
     if sys.platform.startswith("linux"):
-        import platform as _platform
-        libc, _ = _platform.libc_ver()
-        return "linux-gnu" if libc == "glibc" else "linux-musl"
+        try:
+            import platform as _platform
+            libc, _ = _platform.libc_ver()
+            return "linux-gnu" if libc == "glibc" else "linux-musl"
+        except Exception:  # noqa: BLE001 — libc_ver can raise in frozen/container envs
+            return ""
     return ""
 
 
