@@ -20,6 +20,11 @@ import time
 import uuid
 from pathlib import Path
 
+if os.name == "nt":
+    import msvcrt
+else:
+    msvcrt = None  # POSIX: O_APPEND's seek+write is one atomic syscall; no lock needed
+
 from firekeep_client import resolver
 from firekeep_client.transport import TransportError
 
@@ -273,7 +278,15 @@ def _post(url, body, timeout):
 def _append_spool(event: dict | None) -> None:
     """One O_APPEND single-line write — the only way ANYTHING enters the spool
     (emit and merge-back both use it; there is no whole-file rewrite in the
-    protocol, so a concurrent append can never be corrupted)."""
+    protocol). On POSIX, O_APPEND's seek+write is a single atomic kernel
+    syscall, so concurrent appenders can never corrupt each other. On
+    Windows the CRT implements O_APPEND as a separate seek-then-write that is
+    NOT atomic across processes — measured to silently drop ~13% of lines
+    under two concurrent appenders — so there the write is additionally
+    serialized with a short, non-blocking msvcrt byte-range lock on byte 0 of
+    the file. If the lock can't be acquired within the ~500ms ceiling, the
+    event is DROPPED rather than blocked: 'never blocks meaningfully' wins
+    over guaranteed delivery."""
     if event is None:
         return
     try:
@@ -282,9 +295,29 @@ def _append_spool(event: dict | None) -> None:
         if path.exists() and path.stat().st_size > 2 * SPOOL_MAX_BYTES:
             return  # flush is broken entirely; never grow unbounded
         line = json.dumps(event, separators=(",", ":")) + "\n"
+        data = line.encode("utf-8")
         fd = os.open(str(path), os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
         try:
-            os.write(fd, line.encode("utf-8"))
+            if msvcrt is None:
+                os.write(fd, data)
+            else:
+                os.lseek(fd, 0, os.SEEK_SET)  # locking() locks from the current position
+                locked = False
+                for _ in range(20):  # ~500ms ceiling (20 * 25ms)
+                    try:
+                        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                        locked = True
+                        break
+                    except OSError:
+                        time.sleep(0.025)
+                if not locked:
+                    return  # contended past the ceiling; drop, don't block
+                try:
+                    os.lseek(fd, 0, os.SEEK_END)
+                    os.write(fd, data)
+                finally:
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
         finally:
             os.close(fd)
     except Exception:  # noqa: BLE001
@@ -347,7 +380,12 @@ def _read_events(path: Path) -> list[dict]:
                     out.append(ev)
             except json.JSONDecodeError:
                 continue  # torn line from a crash mid-append: skip, never poison
-    except OSError:
+    except (OSError, UnicodeDecodeError, ValueError):
+        # A decode failure here must not abort flush() before the caller's
+        # claim_path.unlink() — an exception propagating out of _read_events
+        # would leave the claim file orphaned, unadoptable until it goes
+        # stale, and unmerged in the meantime. Return what we have (possibly
+        # nothing) and let flush() unlink and move on.
         pass
     return out
 

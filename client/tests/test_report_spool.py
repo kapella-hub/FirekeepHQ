@@ -137,3 +137,40 @@ def test_two_process_flush_empties_spool_exactly(report_dir):
         assert p.wait(30) == 0
     assert _events(report_dir) == []
     assert list(report_dir.glob("report-spool.sending.*")) == []
+
+
+def test_concurrent_append_no_lost_lines(report_dir):
+    """Windows CRT's O_APPEND is a seek-then-write, not one atomic syscall
+    (unlike POSIX): two processes racing _append_spool can each seek to a
+    stale end-of-file and clobber each other's line. This must be serialized
+    (msvcrt byte-range lock on Windows) so every appended line survives.
+    Per-process count kept comfortably under the 2xSPOOL_MAX_BYTES circuit
+    breaker (~417 lines total at this event's ~157 bytes/line) so a
+    legitimate cap-drop can't be mistaken for the race this guards against."""
+    import subprocess
+    import sys
+    per_proc = 175
+    worker = (
+        "from firekeep_client import report\n"
+        f"for _ in range({per_proc}):\n"
+        "    report._append_spool(report.build_event('install', 'create-venv', error='other'))\n"
+    )
+    env = dict(os.environ, FIREKEEP_REPORT_DIR=str(report_dir),
+               FIREKEEP_FAILURE_REPORT="1")
+    procs = [subprocess.Popen([sys.executable, "-c", worker], env=env)
+             for _ in range(2)]
+    for p in procs:
+        assert p.wait(30) == 0
+    assert len(_events(report_dir)) == per_proc * 2
+
+
+def test_append_spool_circuit_breaker_drops_when_oversized(report_dir):
+    """A spool already past 2xSPOOL_MAX_BYTES means flush is broken entirely
+    (spec 'never grow unbounded'); _append_spool must refuse to make it
+    worse rather than append on top of it."""
+    spool = _spool(report_dir)
+    spool.parent.mkdir(parents=True, exist_ok=True)
+    spool.write_bytes(b"x" * (2 * report.SPOOL_MAX_BYTES + 1))
+    before = spool.stat().st_size
+    report._append_spool(report.build_event("install", "create-venv", error="other"))
+    assert spool.stat().st_size == before
