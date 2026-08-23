@@ -12,8 +12,10 @@ the resolver's TLS guard and never weaken verification.
 """
 from __future__ import annotations
 
+import errno
 import json
 import os
+import socket
 import ssl
 import tempfile
 import urllib.error
@@ -37,6 +39,7 @@ class TransportError(Exception):
         *,
         status: int | None = None,
         response_is_json: bool = False,
+        category: str | None = None,
     ) -> None:
         super().__init__(msg)
         self.status = status
@@ -44,6 +47,30 @@ class TransportError(Exception):
         # the current route's structured "unknown ticket" 404.  Keep the body
         # in the human-readable message as before; expose only its format here.
         self.response_is_json = response_is_json
+        # Structured failure class assigned AT WRAP TIME (field-failure spec,
+        # "The mapper's input contract"): the report mapper consumes only
+        # (category, status) and never re-traverses causes or reads messages.
+        self.category = category
+
+
+_CATEGORY_ERRNOS = {
+    errno.ECONNREFUSED: "connection-refused",
+    errno.ENETUNREACH: "network-unreachable",
+    errno.EHOSTUNREACH: "network-unreachable",
+}
+
+
+def _failure_category(exc: Exception) -> str | None:
+    reason = getattr(exc, "reason", exc)
+    if isinstance(reason, ssl.SSLCertVerificationError):
+        return "tls-verify-failed"
+    if isinstance(reason, socket.gaierror):
+        return "dns-failure"
+    if isinstance(reason, TimeoutError):
+        return "timeout"
+    if isinstance(reason, OSError):
+        return _CATEGORY_ERRNOS.get(reason.errno)
+    return None
 
 
 def _build_ssl_context(verify: bool | str | ssl.SSLContext) -> ssl.SSLContext | None:
@@ -126,8 +153,10 @@ def _as_transport_error(exc: Exception, *, method: str, url: str, timeout: float
             response_is_json=response_is_json,
         )
     if isinstance(exc, TimeoutError):
-        return TransportError(f"{method} {url} timed out after {timeout}s")
-    return TransportError(f"{method} {url} unreachable: {exc.reason}")
+        return TransportError(f"{method} {url} timed out after {timeout}s",
+                              category="timeout")
+    return TransportError(f"{method} {url} unreachable: {exc.reason}",
+                          category=_failure_category(exc))
 
 
 def _request(url, *, method, headers, body=None, timeout=DEFAULT_TIMEOUT, verify=True) -> Any:
