@@ -79,3 +79,51 @@ def test_aggregate_per_pull_ceiling():
     out = ingest.aggregate(lines, segment="s")
     assert len(out) == ingest.PER_PULL_CEILING + 1
     assert "folded" in out[-1]["summary"]  # no silent truncation
+
+
+def _write_segment(inbox: Path, name: str = "failures.20260822T120000Z-1.log") -> Path:
+    seg = inbox / name
+    seg.write_text(json.dumps(GOOD) + "\n", encoding="utf-8")
+    return seg
+
+
+def test_process_inbox_moves_segment_to_done_only_on_202(tmp_path, monkeypatch):
+    """A segment moves from inbox/ to done/ ONLY after post_events succeeds
+    (a 202 from Sentinel) -- spec step 3, README 'Durability model' point 2."""
+    inbox = tmp_path / "inbox"
+    done = tmp_path / "done"
+    inbox.mkdir()
+    seg = _write_segment(inbox)
+
+    posted = []
+    monkeypatch.setattr(ingest, "post_events",
+                        lambda events, url, key, timeout=10: posted.append(events))
+
+    processed = ingest.process_inbox(inbox, done, "http://sentinel.example", "key")
+
+    assert processed == 1
+    assert posted and len(posted[0]) == 1
+    assert not seg.exists()
+    assert (done / seg.name).exists()
+    assert list(inbox.glob("failures.*.log")) == []
+
+
+def test_process_inbox_leaves_segment_in_inbox_on_failed_post(tmp_path, monkeypatch):
+    """A failing POST (network blip, non-202, Sentinel down) leaves the
+    segment in inbox/ untouched for the next cron tick to retry -- nothing
+    silently dropped, nothing moved on a failure."""
+    inbox = tmp_path / "inbox"
+    done = tmp_path / "done"
+    inbox.mkdir()
+    seg = _write_segment(inbox)
+
+    def raising_post(events, url, key, timeout=10):
+        raise RuntimeError("POST /events returned 500, expected 202")
+    monkeypatch.setattr(ingest, "post_events", raising_post)
+
+    processed = ingest.process_inbox(inbox, done, "http://sentinel.example", "key")
+
+    assert processed == 0
+    assert seg.exists()                      # still in inbox
+    assert not (done / seg.name).exists()     # never moved
+    assert [p.name for p in inbox.glob("failures.*.log")] == [seg.name]

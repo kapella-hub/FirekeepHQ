@@ -431,9 +431,17 @@ def _merge_back(events: list[dict]) -> None:
         _append_spool(event)
 
 
-def flush(cfg=None, timeout=FLUSH_TIMEOUT) -> None:
+def flush(cfg=None, timeout=None) -> None:
     """Send everything spooled. Never raises. At-least-once: truncation is
-    ack-driven; replays are absorbed by the collector's dedup ring."""
+    ack-driven; replays are absorbed by the collector's dedup ring.
+
+    timeout defaults to FLUSH_TIMEOUT, read here rather than bound as the
+    parameter's default value -- a default is evaluated once at import time,
+    which would make FLUSH_TIMEOUT unmonkeypatchable for any caller (emit()
+    included) that doesn't pass timeout explicitly. Same live-read seam as
+    REPORT_URL above."""
+    if timeout is None:
+        timeout = FLUSH_TIMEOUT
     try:
         if not is_enabled(cfg):
             return

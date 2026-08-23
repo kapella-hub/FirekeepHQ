@@ -238,12 +238,15 @@ logging it; `client` values outside the allowlist are rejected the same way,
 closing the one open string the schema would otherwise carry; a per-signature mail
 budget (5 immediate mails per rolling hour, overflow deferred to a digest) bounds
 what an attacker can do with the outbound mail side effect; state is a single
-`flock()`'d critical section with atomic temp-file+rename writes; and both the
-active log and the sealed-segment total are size- and count-capped, so an
-unauthenticated unlimited write endpoint cannot fill the disk that also holds the
-support mailboxes. **Residual, accepted:** the data is low-integrity by
-construction — an attacker can fabricate failure patterns or bury a real one in
-noise — so every event that reaches Sentinel is labelled `integrity: "unverified"`
+`flock()`'d critical section with atomic temp-file+rename writes; and disk growth
+is bounded at every layer — the active log seals on size OR age (4MB or 6h,
+whichever comes first), the sealed-segment total is byte-capped (oldest segments
+dropped past 256MB), and the dedup ring is count-capped (trimmed back to its cap
+once it grows past 2x) — so an unauthenticated unlimited write endpoint cannot
+fill the disk that also holds the support mailboxes. **Residual, accepted:** the
+data is low-integrity by construction — an attacker can fabricate failure
+patterns or bury a real one in noise — so every event that reaches Sentinel is
+labelled `integrity: "unverified"`
 in `details`, and any dashboard or agent-facing summary treats it as a signal to
 corroborate, not to act on directly.
 

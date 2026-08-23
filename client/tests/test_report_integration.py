@@ -1,9 +1,11 @@
 """End-to-end: emit -> spool -> flush -> HTTP -> strict validation, with the
 same vocabulary tables the PHP collector (Task 10) enforces."""
+import contextlib
 import errno
 import json
 import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import time
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 
 import pytest
 
@@ -79,3 +81,43 @@ def test_no_consent_sends_nothing(collector, tmp_path, monkeypatch):
     monkeypatch.setattr(report, "REPORT_URL", f"http://127.0.0.1:{port}/")
     report.emit("install", "create-venv", error="other")
     assert received == []
+
+
+def test_hanging_collector_bounds_emit_and_leaves_event_spooled(tmp_path, monkeypatch):
+    """'Never blocks meaningfully' (report.py's own module docstring): a
+    collector that accepts the connection but never responds must not hang
+    emit() past FLUSH_TIMEOUT, and the never-acked event must stay in the
+    spool for the next flush to retry rather than being silently dropped.
+    ThreadingHTTPServer (not the shared `collector` fixture's plain
+    HTTPServer) so shutdown() doesn't itself block on the still-sleeping
+    handler thread."""
+    HANG_SECONDS = 5.0
+    SHORT_TIMEOUT = 0.2
+
+    class HangingHandler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            time.sleep(HANG_SECONDS)  # never responds within the client's timeout
+            with contextlib.suppress(Exception):
+                self.send_response(200)
+
+        def log_message(self, *a):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), HangingHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        monkeypatch.setenv("FIREKEEP_REPORT_DIR", str(tmp_path))
+        monkeypatch.setenv("FIREKEEP_FAILURE_REPORT", "1")
+        monkeypatch.setattr(report, "REPORT_URL", f"http://127.0.0.1:{server.server_port}/")
+        monkeypatch.setattr(report, "FLUSH_TIMEOUT", SHORT_TIMEOUT)
+
+        start = time.monotonic()
+        report.emit("install", "create-venv", error="other")
+        elapsed = time.monotonic() - start
+    finally:
+        server.shutdown()
+
+    assert elapsed < 2.0                                       # bounded, never waits for the hang
+    assert (tmp_path / "report-spool.jsonl").exists()           # never acked -> stays spooled

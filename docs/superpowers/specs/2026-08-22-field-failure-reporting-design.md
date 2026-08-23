@@ -799,6 +799,38 @@ here, before collection begins:
   move re-POSTs (at-least-once, deterministic `details.batch` key present),
   and no sequence of crashes loses a segment.
 
+**Consciously narrowed.** Three areas are deliberately not covered by an
+automated local test, and each has a compensating control instead of being
+silently untested:
+
+- **`failure-report.php`'s own behavior under concurrency.** There is no
+  local PHP test harness in this repo, so the multi-process locking and the
+  mail-injection defenses (CR/LF stripping into `mail_line`, the budget
+  check inside the same `flock`-held section) are verified by code review
+  against the `flock`/`mail_line` structure, not by a local test that spins
+  up PHP workers. Compensating control: the endpoint's real behavior —
+  concurrent requests, no double mail for one signature, no lost counts — is
+  exercised by post-deploy live probes against the actual Hostinger
+  deployment (`task-10-report.md`'s `php -l` + live-request checks), not by
+  anything that runs in CI.
+- **Stale-claim adoption under racing adopters.** The spool tests prove a
+  single adoption (one orphaned `sending.<pid>` file, one adopter) rather
+  than simulating N racing flushers contending for the same stale claim.
+  Compensating control: the adoption mechanism is a single `os.rename` —
+  atomic at the filesystem level — so the "exactly one winner" property is
+  argued structurally from that primitive rather than demonstrated by a
+  race-injection test; the single-adoption test still proves the rename
+  path itself is correct.
+- **The ps1 consent prompt under a real Windows console.** `client/tests/test_bootstrap_consent_pty.py`
+  covers the POSIX prompt end-to-end under a real `pty`, but Windows has no
+  stdlib ConPTY binding and the client test suite is deliberately
+  stdlib-only (repo dependency-locking policy), so the equivalent assertion
+  for `install.ps1`'s `Read-Host` branch cannot run in CI. Compensating
+  control: the literal-grep cross-language enum test still covers the
+  ps1 script's vocabulary, and exercising the real interactive prompt is a
+  manual checklist item in the plan's final verification step, run once
+  before each release that touches the consent block.
+
 ## Risks
 
 - **Opt-out-at-the-prompt is a judgement call.** It is defensible because the
