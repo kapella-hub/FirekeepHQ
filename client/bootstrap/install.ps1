@@ -82,7 +82,16 @@ $ReportArch = switch ($env:PROCESSOR_ARCHITECTURE) {
     default { 'other' }
 }
 $ReportClient = 'unknown-bootstrap'
-if ($env:FIREKEEP_NO_FAILURE_REPORT) {
+# Tracked so the restore block at the end only clears FIREKEEP_REPORT_CONSENT
+# if THIS script set it — a value inherited from the caller's session stays
+# untouched.
+$ReportConsentWasPreset = [bool]$env:FIREKEEP_REPORT_CONSENT
+if ($ReportConsentWasPreset) {
+    # Already answered — a cmd_update re-exec carrying the recorded config
+    # answer, or an inherited env from a parent shell. Never re-ask, never
+    # re-export.
+    $ReportConsent = ($env:FIREKEEP_REPORT_CONSENT -eq '1')
+} elseif ($env:FIREKEEP_NO_FAILURE_REPORT) {
     # opted out: never ask, never send
 } elseif ($env:FIREKEEP_FAILURE_REPORT) {
     $ReportConsent = $true
@@ -668,6 +677,7 @@ Remove-StaleVenvs
 # captured above anyway so nothing here can launder it.
 if (-not $HadUvNativeTls) { Remove-Item Env:UV_NATIVE_TLS -ErrorAction SilentlyContinue }
 if ($RemovedSslCertFile) { $env:SSL_CERT_FILE = $OrigSslCertFile }
+if (-not $ReportConsentWasPreset) { Remove-Item Env:FIREKEEP_REPORT_CONSENT -ErrorAction SilentlyContinue }
 $env:PSModulePath = $OrigPSModulePath
 
 exit $FirekeepExit

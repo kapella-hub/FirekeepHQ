@@ -366,11 +366,15 @@ def _apply_flags(cfg, args) -> bool:
         touched = True
     pre = os.environ.get("FIREKEEP_REPORT_CONSENT", "").strip()
     if getattr(args, "report_failures", False):
+        # Explicit flag: an explicit user action may overwrite a recorded answer.
         report.record_consent(cfg, True)
         touched = True
-    elif pre in ("0", "1"):
+    elif pre in ("0", "1") and not report.has_answer(cfg):
         # The bootstrap asked before provisioning (spec decision 6); the
-        # non-interactive hand-off must not lose the human's answer.
+        # non-interactive hand-off must not lose the human's answer. But never
+        # overwrite an ALREADY-recorded answer — a re-render, an update's
+        # re-exec, or a non-interactive run relaying a pre-set env must not
+        # rewrite a "no" a human already gave.
         report.record_consent(cfg, pre == "1")
         touched = True
     return touched
@@ -2637,8 +2641,24 @@ def _write_verified_sums(text: str) -> Path:
     return path
 
 
+def _report_consent_env_value(cfg) -> str | None:
+    """The FIREKEEP_REPORT_CONSENT value to hand a bootstrap re-exec, so an
+    interactive `firekeep update` never re-asks a question already answered
+    (spec: "re-renders, updates and non-interactive runs never ask and never
+    rewrite a recorded answer"). Reads the recorded config answer directly —
+    not report.is_enabled, which also folds in this SESSION's env overrides
+    and personal-mode bypass, neither of which belongs in what we tell the
+    NEXT process was already decided. None when no answer is recorded: the
+    bootstrap's own prompt is then the first interactive opportunity, which
+    is acceptable."""
+    if not report.has_answer(cfg):
+        return None
+    return "1" if cfg.get("report", "failures", fallback="").strip().lower() == "true" else "0"
+
+
 def _exec_bootstrap(script: Path, version: str | None, base: str,
-                    *, sums_file: "Path | None" = None) -> None:
+                    *, sums_file: "Path | None" = None,
+                    report_consent: str | None = None) -> None:
     """Hand this process over to the bootstrap script.
 
     POSIX: a true execve — the bootstrap replaces us. Windows: a FOREGROUND child we
@@ -2658,6 +2678,10 @@ def _exec_bootstrap(script: Path, version: str | None, base: str,
     the bootstrap verifies artifacts against the SAME bytes the client verified, never a
     second network fetch. When absent, any inherited FIREKEEP_SUMS_FILE is dropped — a
     stale or caller-set file must not masquerade as this update's verified sums.
+
+    `report_consent` ("1"/"0"/None, from _report_consent_env_value) is handed through as
+    FIREKEEP_REPORT_CONSENT so the bootstrap's own consent block (which treats a pre-set
+    value as already-answered) never re-asks a question this machine already answered.
     """
     env = dict(os.environ)
     env["FIREKEEP_DIST_BASE"] = base
@@ -2667,6 +2691,8 @@ def _exec_bootstrap(script: Path, version: str | None, base: str,
         env["FIREKEEP_SUMS_FILE"] = str(sums_file)
     else:
         env.pop("FIREKEEP_SUMS_FILE", None)
+    if report_consent is not None:
+        env["FIREKEEP_REPORT_CONSENT"] = report_consent
     # Hand the CLIENT'S pinned signing key to the bootstrap's own best-effort
     # minisign check (it otherwise trusts whatever key the HOST baked into the
     # script — circular on the update path). The bootstrap already accepts
@@ -2829,7 +2855,8 @@ def cmd_update(args) -> int:
         return 1
 
     print(f"firekeep: updating {__version__} -> {target}")
-    _exec_bootstrap(script, target, base, sums_file=sums_file)
+    _exec_bootstrap(script, target, base, sums_file=sums_file,
+                     report_consent=_report_consent_env_value(cfg))
     return 0  # POSIX never reaches this (execve replaced the image)
 
 

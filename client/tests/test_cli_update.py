@@ -25,16 +25,18 @@ def update_env(tmp_path, monkeypatch):
     monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path / "cache"))
     execs = []
     handed = []
+    consents = []
     monkeypatch.setattr(
         cli, "_exec_bootstrap",
-        lambda script, version, base, sums_file=None: (
-            execs.append((script, version, base)), handed.append(sums_file)))
+        lambda script, version, base, sums_file=None, report_consent=None: (
+            execs.append((script, version, base)), handed.append(sums_file),
+            consents.append(report_consent)))
     # Neutral signing default: no pinned key -> silent skip. Keeps these tests
     # network-free even after the operator pins a real key in signing.py; the
     # signing-specific wiring tests below override this per-test.
     monkeypatch.setattr(cli.updater, "fetch_signed_sums",
                         lambda base, version, **kw: updater.SignedSums(None, False, None))
-    return {"home": home, "execs": execs, "handed": handed}
+    return {"home": home, "execs": execs, "handed": handed, "consents": consents}
 
 
 def test_update_auto_off_writes_config_and_does_not_update(update_env, monkeypatch):
@@ -134,6 +136,29 @@ def test_update_downloads_bootstrap_and_execs_it(update_env, monkeypatch):
     _script, version, base = update_env["execs"][0]
     assert version == "9.9.9"
     assert base == "http://gl/rel"
+
+
+def test_update_hands_the_recorded_report_consent_to_the_bootstrap(update_env, monkeypatch):
+    """Spec: 're-renders, updates and non-interactive runs never ask and never
+    rewrite a recorded answer'. An interactive `firekeep update` must relay a
+    machine's already-recorded [report] answer through FIREKEEP_REPORT_CONSENT
+    so the re-exec'd bootstrap's own consent block never re-asks."""
+    _manifest(monkeypatch, "9.9.9")
+    monkeypatch.setattr(cli.updater, "download", _fake_download())
+    cfg_path = update_env["home"] / "config"
+    # The fixture's config is the LEGACY [active]/[personal] shape, migrated to
+    # a single [server] section on first load -- force that migration first so
+    # appending [report] below lands in the post-migration file, not one about
+    # to be rewritten out from under it.
+    from firekeep_client import resolver as _resolver
+    _resolver.load_config(cfg_path)
+    with open(cfg_path, "a", encoding="utf-8") as fh:
+        fh.write("[report]\nfailures = false\n")
+
+    rc = cli.main(["update"])
+
+    assert rc == 0
+    assert update_env["consents"] == ["0"]
 
 
 def test_update_to_pins_a_version_and_allows_rollback(update_env, monkeypatch):

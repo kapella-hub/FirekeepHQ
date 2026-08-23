@@ -50,7 +50,13 @@ REPORT_ERROR="other"
 REPORT_OS=""
 REPORT_ARCH=""
 REPORT_CLIENT="unknown-bootstrap"
-if [ -n "${FIREKEEP_NO_FAILURE_REPORT:-}" ]; then
+if [ -n "${FIREKEEP_REPORT_CONSENT:-}" ]; then
+    # Already answered — a cmd_update re-exec carrying the recorded config
+    # answer, or an inherited env from a parent shell. Never re-ask, never
+    # re-export: re-exporting an unchanged value is harmless, but this branch
+    # exists precisely so a recorded "no" is never asked again.
+    REPORT_CONSENT="${FIREKEEP_REPORT_CONSENT}"
+elif [ -n "${FIREKEEP_NO_FAILURE_REPORT:-}" ]; then
     REPORT_CONSENT=0
 elif [ -n "${FIREKEEP_FAILURE_REPORT:-}" ]; then
     REPORT_CONSENT=1
