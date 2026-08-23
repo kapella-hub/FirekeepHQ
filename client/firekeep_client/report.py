@@ -10,12 +10,14 @@ cli._send_doctor_report).
 from __future__ import annotations
 
 import errno as _errno
+import os
 import socket
 import ssl
 import subprocess
 import sys
 import uuid
 
+from firekeep_client import resolver
 from firekeep_client.transport import TransportError
 
 REPORT_URL = "https://firekeep.ai/failure-report.php"
@@ -171,3 +173,73 @@ def build_event(kind, stage, *, error=None, exc=None, exit_code=None,
         return event
     except Exception:  # noqa: BLE001 — a broken builder must never cost a command
         return None
+
+
+_FALSEY = ("", "0", "false", "no", "off")
+
+CONSENT_PROMPT = (
+    "Send anonymous failure reports to firekeep.ai? When an install step fails, a\n"
+    "connection to your own Keep fails, or a Firekeep background task errors,\n"
+    "Firekeep sends category codes only — what failed, the error class, OS family,\n"
+    "versions. Never paths, messages, addresses, or any persistent device, account\n"
+    "or session identifier. Ongoing until you turn it off\n"
+    "([report] failures = false). [Y/n] "
+)
+
+
+def is_enabled(cfg=None) -> bool:
+    """Tri-state consent gate (spec Decision 1). Deliberately does NOT mirror
+    autoupdate.is_enabled: a missing [report] section means NOT ENROLLED, so a
+    machine that was never shown the prompt (headless install, join-code
+    onboarding, every upgrade of the existing base) never reports. Personal
+    mode silences everything ('nothing ... sent to the server')."""
+    try:
+        if os.environ.get("FIREKEEP_NO_FAILURE_REPORT", "").strip().lower() not in _FALSEY:
+            return False
+        if resolver.is_bypassed():
+            return False
+        if os.environ.get("FIREKEEP_FAILURE_REPORT", "").strip().lower() not in _FALSEY:
+            return True
+        if cfg is None:
+            cfg = resolver.load_config()
+        return cfg.get("report", "failures", fallback="").strip().lower() == "true"
+    except Exception:  # noqa: BLE001 — any doubt means OFF (fail closed)
+        return False
+
+
+def has_answer(cfg) -> bool:
+    try:
+        return cfg.get("report", "failures", fallback="").strip() != ""
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def record_consent(cfg, value: bool) -> None:
+    if not cfg.has_section("report"):
+        cfg.add_section("report")
+    cfg.set("report", "failures", "true" if value else "false")
+
+
+def ask_consent(cfg) -> bool:
+    """Ask once; record only a real answer. EOF and Ctrl-C record NOTHING —
+    deliberately not wizard.console_ask, whose EOF-takes-the-default would
+    silently enroll (spec, 'Where the asks live'). Returns True iff an answer
+    was recorded into cfg (caller persists)."""
+    try:
+        if has_answer(cfg):
+            return False
+        pre = os.environ.get("FIREKEEP_REPORT_CONSENT", "").strip()
+        if pre in ("0", "1"):
+            record_consent(cfg, pre == "1")
+            return True
+        if not sys.stdin.isatty():
+            return False
+        try:
+            answer = input(CONSENT_PROMPT).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return False
+        record_consent(cfg, answer in ("", "y", "yes"))
+        return True
+    except Exception:  # noqa: BLE001
+        return False
