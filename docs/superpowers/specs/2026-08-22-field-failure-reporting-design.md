@@ -70,6 +70,20 @@ their owner opts in. That is the honest trade; silence is never enrollment.
 - *Interactive `firekeep doctor`* with `[report]` absent — asks the same
   question once, records the answer, never re-asks. This is the migration path
   for the existing installed base and for machines first set up headless.
+  The interaction is specified precisely because its edge cases are the consent
+  model: the prompt appears **after** the diagnostic output (never delaying or
+  interleaving the rows the user asked for); the answer applies to **future**
+  failures only — connectivity failures the asking run itself observed are not
+  retroactively emitted; **EOF or Ctrl-C leaves `[report]` absent** and
+  preserves doctor's own exit code. That last property rules out the existing
+  prompt helper: `wizard.console_ask` deliberately converts EOF into the
+  default answer (wizard.py:95 — right for the install wizard, silent
+  enrollment here), so the consent ask uses its own reader in which only a
+  typed answer or a real Enter counts. The `status` alias runs the same
+  command and behaves identically — one code path, no spelling-dependent
+  surprises. `doctor --report` changes nothing about any of this: the flag is
+  consent for that one summary only, never writes `[report]`, and the failure-
+  channel ask fires (or not) exactly as it would without the flag.
 - *Headless / CI / join-code* — never prompted, stays off. Explicit opt-in:
   `FIREKEEP_FAILURE_REPORT=1` (env, session-scoped, does not write config) or
   `firekeep install --report-failures` (writes `true`).
@@ -87,9 +101,16 @@ wording is the load-bearing element of an opt-out design:
 > Send anonymous failure reports to firekeep.ai? When an install step fails, a
 > connection to your own Keep fails, or a Firekeep background task errors,
 > Firekeep sends category codes only — what failed, the error class, OS family,
-> versions. Never paths, messages, addresses, or anything that identifies you
-> or this machine. Ongoing until you turn it off (`[report] failures = false`).
-> [Y/n]
+> versions. Never paths, messages, addresses, or any persistent device, account
+> or session identifier. Ongoing until you turn it off
+> (`[report] failures = false`). [Y/n]
+
+The wording claims exactly what the system guarantees and no more. "Anything
+that identifies you or this machine" would overclaim: the hosting layer
+processes IPs like any web server, and a low-cardinality field combination is
+not categorically indistinguishable (decision 3, Privacy). What we can promise
+absolutely — and do — is that no path, message, address, or persistent
+device/account/session identifier is ever *included*.
 
 **2. Payload: structured fields only. No free text, ever.** This is the load
 bearing decision. `_redact_for_report` in `client/firekeep_client/cli.py` drops
@@ -260,10 +281,17 @@ Two existing steps interpolate a name (`render {name} adapter`,
 separate enum field (`runtime`, `dex`) — never an interpolated string.
 
 `stage` (install, bootstrap) — slugified the same way from the bootstraps' own
-die-sites: `fetch-manifest`, `verify-checksum`, `provision-python`,
-`create-venv`, `install-wheels`, `runnable-check`, `flip-current`, `handoff`.
-(Exact slugs pinned at build time from the scripts' actual step labels; the
-cross-language grep test is the guard.)
+die-sites: `detect-platform`, `fetch-manifest`, `verify-checksum`,
+`provision-python`, `create-venv`, `install-wheels`, `runnable-check`,
+`flip-current`, `handoff`. (Exact slugs pinned at build time from the scripts'
+actual step labels; the cross-language grep test is the guard.) The first two
+stages fail **before the bootstrap knows the target version** — platform
+detection (`die "unsupported platform"`) and the `latest.json` fetch both
+precede version resolution (`install.sh:244-255`) — so events from those
+stages carry the fixed `client` sentinel `unknown-bootstrap` (below). Baking
+an "attempted version" into the script at publish time was considered and
+rejected: the checkout-served copy would carry a stale literal, and the
+templating step is a moving part whose failure mode is a lying field.
 
 `stage` (connectivity) — the doctor check id: `cortex`, `bridge`, `sentinel`,
 `relay`, `server` (the all-services-down row from `_check_server_connection` —
@@ -312,14 +340,36 @@ or distro version string, which would narrow a machine.
 
 `client` — must match a **released version allowlist** the deploy publishes
 beside the collector (a one-line-per-version file updated on every release; the
-site already knows its releases). Shape-checked with the anchored `/D` regex
-first, then membership. Unknown version → the event is rejected. This closes
-the one dimension that let an attacker mint unbounded signatures.
+site already knows its releases), **plus the single fixed literal
+`unknown-bootstrap`**, accepted only for `kind: install` with a pre-resolution
+bootstrap stage (`detect-platform`, `fetch-manifest`) — the closed value for
+failures that happen before any version exists to name. Everything else:
+shape-checked with the anchored `/D` regex first, then membership. Unknown
+version, or `unknown-bootstrap` outside its two stages → the event is
+rejected. This closes the one dimension that let an attacker mint unbounded
+signatures. (A pinned `FIREKEEP_VERSION` install reports the pinned value; the
+allowlist membership check is what keeps that user-supplied string honest.)
 
 `py` — bucketed to a fixed vocabulary: `3.9` … `3.14`, else `other`. Never the
 raw `platform.python_version()` string (which can be `3.11.0rc1`, `3.11.0+`,
 PyPy forms — precisely the odd environments we want to *see*, as `other`+os
 rather than lose to a strict regex reject).
+
+**Per-kind fields — a strict tagged union.** The base fields above are common
+to every event; the remaining fields are legal only where a capture point
+produces them, and the collector validates the union strictly — a field
+present on a kind/stage that does not allow it, a required field missing, or
+an out-of-range value rejects the event:
+
+| field | values | legal only for |
+|---|---|---|
+| `exit` | integer 0–255 (process exit codes; anything else → field omitted client-side, rejected server-side) | `kind: install` |
+| `runtime` | `claude` \| `codex` \| `kiro` \| `opencode` \| `claude-desktop` \| `generic` | `stage: render-adapter` |
+| `dex` | `symdex` \| `docdex` \| `maildex` | `stage: pip-install-dex` |
+| `backend` | `cortex` \| `bridge` \| `sentinel` \| `relay` | `kind: runtime`, `stage: gateway-call` |
+
+The log line's `e` object carries this same union, so the two wire formats
+(POST body, log line) stay one schema.
 
 ## Client
 
@@ -330,9 +380,15 @@ def emit(kind: str, **fields) -> None:
     """Record a failure. Never raises, never blocks meaningfully."""
 ```
 
-**Consent gate first.** `emit` is a no-op unless `report.is_enabled(cfg)` —
-explicit `true` or env opt-in, per decision 1. There is no spool-but-hold: an
-un-consented event is never written anywhere.
+**Consent gate first — and the personal-mode gate beside it.** `emit` is a
+no-op unless `report.is_enabled(cfg)` — explicit `true` or env opt-in, per
+decision 1. There is no spool-but-hold: an un-consented event is never written
+anywhere. Additionally, both `emit` and every flush point are no-ops while
+`resolver.is_bypassed()` is true: personal mode promises "nothing logged,
+recalled, or sent to the server" (`docs/guides/client-kit.md`), and consent to
+failure reporting does not survive that stronger, later promise. Same single
+gate every other sender consults; it fails toward not-bypassed, so a bug here
+cannot silently stop reporting.
 
 **Spool first, send second.** `emit` appends to `~/.firekeep/report-spool.jsonl`
 and *then* attempts a flush with a short timeout (~2s). This ordering is the
@@ -359,17 +415,40 @@ all — the flagship report had no delivery path. Flush now happens, batched, at
 3. The `session_start` hook's daily pass (alongside `autoupdate`,
    `symdexindex`, `docdexsync`, `maildexsync`), as before.
 
-All three are guarded by is_enabled + spool-nonempty, so the common case costs
-one stat call. The matrix gains an honest per-runtime row for this channel.
+All three are guarded by is_enabled + not-bypassed + spool-nonempty, so the
+common case costs one stat call. The matrix gains an honest per-runtime row for
+this channel.
 
-**Spool concurrency — claim by rename.** Concurrent sessions (two windows
-opening at once; gateway + CLI) must not double-send or drop events. A flusher
-claims the spool by atomic rename to `report-spool.sending.<pid>`, sends from
-the claimed file, deletes it on full acknowledgement, and merges it back on
-failure. `emit` keeps appending to a fresh `report-spool.jsonl` untouched by
-the flush. No locks, works on Windows and POSIX, kills both the
-whole-spool-duplication race and the read-then-truncate lost-event window. A
-two-process concurrency test is required alongside the single-process one.
+**Spool concurrency — claim by rename, with crash recovery.** Concurrent
+sessions (two windows opening at once; gateway + CLI) must not double-send or
+drop events. A flusher claims the spool by atomic rename to
+`report-spool.sending.<pid>`, sends from the claimed file, deletes it on full
+acknowledgement, and merges it back on failure. `emit` keeps appending to a
+fresh `report-spool.jsonl` untouched by the flush. No locks, works on Windows
+and POSIX, kills both the whole-spool-duplication race and the
+read-then-truncate lost-event window.
+
+Two protocol details rename alone does not give you, specified because a crash
+mid-flush must not strand or corrupt anything:
+
+- *Stale-claim adoption.* A process killed after claiming leaves
+  `report-spool.sending.<pid>` orphaned forever. At flush start, any
+  `report-spool.sending.*` older than 10 minutes is adopted — by atomically
+  renaming it to the adopter's own claim name, so when two flushers race for
+  the same stale claim exactly one rename wins and the other sees ENOENT and
+  moves on. Adopted events are sent (or merged back) like any claim; a replay
+  of events the dead process had already delivered is absorbed by the
+  collector's dedup ring.
+- *Merge is per-line append, never rewrite.* Merging a failed claim back into
+  a spool that `emit` is concurrently appending to uses the same primitive
+  `emit` uses — one O_APPEND single-line write per unacknowledged event, cap
+  enforced — then deletes the claim file. There is no whole-file rewrite
+  anywhere in the protocol, so there is nothing a concurrent append can
+  corrupt; a crash mid-merge leaves a (now smaller) stale claim for the next
+  adoption pass.
+
+A two-process concurrency test and a kill-mid-flush recovery test are required
+alongside the single-process one.
 
 **Wire shape.** One POST per flush: `{"events": [...]}`, at most 64 events /
 32KB (the spool caps guarantee this fits the collector's body cap). Response:
@@ -446,22 +525,37 @@ an existing directory that does not exist).
   and not re-counted. Beyond the ring, a duplicate may count twice — disclosed;
   counters are approximate.
 - **Log line schema** (a second wire format, specified as such):
-  `{"ts": "<UTC ISO>", "first": true|false, "id": "…", "e": {kind, stage,
-  error, exit, os, arch, client, py}}`. The `first` flag is stamped at append
+  `{"ts": "<UTC ISO>", "first": true|false, "id": "…", "e": {…}}`, where `e`
+  is exactly the tagged union from the Event schema — base fields plus only
+  the per-kind fields legal for that event. The `first` flag is stamped at append
   time by the PHP — the mailer already computed novelty, and stamping it makes
   the log the single source of truth so the VPS stays stateless about novelty
   (two independently-derived novelty states would diverge the first time state
   resets, and nobody could say which was right).
 - **Sealed segments, not self-rotation.** Inside the lock: when the active
   `failures.log` exceeds 4MB **or** its first line is older than 6h, it is
-  renamed to `failures.<generation>.log` (monotonic counter in the state file)
-  and a fresh active file begins. Sealed segments are immutable; the puller
-  fetches and deletes them (below) and never touches the active file. Total
-  sealed bytes are capped at 256MB — if the VPS stops pulling, oldest segments
-  are dropped and the drop is counted in the digest. This keeps the
-  disk-safety property (an unauthenticated unlimited write endpoint must not
-  fill the disk that also holds the support mailboxes) without the
-  offset-vs-rotation data-loss interaction of the first draft.
+  renamed to `failures.<UTC-timestamp>-<generation>.log` — the timestamp plus
+  a monotonic counter from the state file, so a reset or rebuilt state file
+  cannot re-mint a name a previous generation already used — and a fresh
+  active file begins. Sealed segments are immutable; the puller fetches and
+  deletes them (below) and never touches the active file. Total sealed bytes
+  are capped at 256MB — if the VPS stops pulling, oldest segments are dropped
+  and the drop is counted in the digest. This keeps the disk-safety property
+  (an unauthenticated unlimited write endpoint must not fill the disk that
+  also holds the support mailboxes) without the offset-vs-rotation data-loss
+  interaction of the first draft.
+- **The empty batch is the maintenance ping.** `{"events": []}` is a valid
+  request: it enters the same locked critical section, runs the seal-by-age
+  check and the digest check, appends nothing, and returns collector health —
+  `{"accepted": [], "rejected": [], "sealed": <count>, "active_bytes": <n>}`.
+  This exists because the seal and digest checks otherwise run only when a
+  report happens to arrive: one failure followed by weeks of silence would
+  leave a segment unsealed (and unpullable) indefinitely. The VPS cron sends
+  the ping at the start of every run, before listing segments — sealing under
+  the collector's own lock (an ssh-side `mv` racing PHP's flock is exactly
+  the kind of cross-process race this file exists to avoid), and giving the
+  watchdog an unambiguous health signal (Alerting). Harmless from anyone
+  else's hands: it writes nothing and reveals only counts.
 - `signatures.json` is itself bounded: at most 4096 signatures,
   oldest-evicted. The same cannot-fill-the-disk reasoning the log has applies
   to every state file the endpoint grows.
@@ -497,21 +591,39 @@ Signature = `kind|stage|error|os|client`, hashed. State in
 through hPanel — and PHP has `exec`, `shell_exec`, `popen` and `proc_open`
 disabled. `mail()` is available and `sendmail`/`msmtp` exist, so mail works.
 (Re-verify on the host before building; see Architecture.) The digest
-self-triggers on inbound traffic instead, which also means no digest on a day
-with nothing to report. That is the correct behaviour, not a workaround — but
-it makes a collector outage look identical to silence, so the VPS cron (which
-*does* run on real cron) raises a Sentinel `warning` event when it has fetched
-nothing for 7 days: the watchdog lives on the side that can keep time.
+self-triggers on inbound traffic instead — where "traffic" includes the VPS's
+maintenance ping (Collector), so seal and digest checks run at least once per
+cron interval even through weeks of report silence. No digest on a day with
+nothing to report remains the correct behaviour, not a workaround. The
+watchdog lives on the side that can keep time, and the ping makes it
+unambiguous: the VPS cron raises a Sentinel `warning` when the **ping itself
+fails** for 7 days (collector down — previously indistinguishable from a
+healthy quiet week), and separately notes ping-healthy-nothing-fetched as the
+true quiet it is.
 
 ## VPS ingest
 
 A cron job on the VPS host (not inside a container — no key mounting):
 
-1. Over the existing outbound ssh path: list sealed segments, fetch each fully,
-   verify byte count, **delete the remote segment after verified fetch**. No
-   byte offsets, no reading files being written, nothing to misalign. A
-   segment is ingested exactly once because fetch-then-delete is the handoff.
-2. **Re-validate every field of every line against the same enum tables** the
+1. Send the maintenance ping (Collector) — seals any age-ripe segment under
+   the collector's lock and reports health for the watchdog.
+2. Over the existing outbound ssh path: list sealed segments, fetch each into
+   a **durable local inbox** (`/var/lib/firekeep/failure-inbox/`, write +
+   fsync, named by segment name — a refetch overwrites idempotently), and
+   **delete the remote segment only after the local copy is durably
+   verified**. A crash between local write and remote delete refetches the
+   same immutable bytes; nothing is lost and nothing new is minted. No byte
+   offsets, no reading files being written, nothing to misalign.
+3. Ingest from the inbox; move each segment file to `done/` only after its
+   Sentinel POST succeeds. The Hostinger→VPS hop is therefore exactly-once
+   per segment; the **VPS→Sentinel hop is honestly at-least-once** — a crash
+   after Sentinel accepts but before the `done/` move re-POSTs that segment's
+   aggregates, and Sentinel's `xadd` does not dedup. Each aggregate event
+   carries a deterministic key in `details.batch`
+   (`"<segment-name>|<signature-hash>"`) so the dashboard view and any later
+   consumer can collapse replays; counters remain approximate by design
+   (decision 7), and this hop is one of the documented reasons why.
+4. **Re-validate every field of every line against the same enum tables** the
    collector uses, discarding non-conforming lines. This is not belt-and-braces
    politeness: the data on hop 3 flows from a shared PHP host (lower trust)
    into an authenticated tailnet ingest that feeds agent context
@@ -519,13 +631,13 @@ A cron job on the VPS host (not inside a container — no key mounting):
    carries as its largest open finding. The Hostinger log is untrusted input.
    `summary` and `event_type` are composed on the VPS purely from
    re-validated enum values; no string from the log is ever forwarded.
-3. **Aggregate before POSTing:** one Sentinel event per (signature, pull) with
+5. **Aggregate before POSTing:** one Sentinel event per (signature, pull) with
    a `count`, not one per log line. Sentinel's event stream is a single
    `XADD … maxlen≈10000` shared by every collector; a flood posted line-by-line
    would evict the entire environment history. Per-pull ceiling of 500 events;
    any remainder collapses into one summary event that says how much was
    folded. No silent truncation.
-4. POST to a **new authenticated route on Sentinel**: `POST /events` on the
+6. POST to a **new authenticated route on Sentinel**: `POST /events` on the
    tailnet (`http://100.91.3.51:8060`), which does not exist today —
    Sentinel's `/events` is GET-only and its only write path is the MCP
    `tools/call` surface. The route: guarded by the existing auth middleware
@@ -549,8 +661,9 @@ first draft's `warn` (Sentinel rejects it; the vocabulary is
 out as a Relay `alerts` broadcast plus a Cortex webhook — the mail path is the
 alerting channel; the Sentinel path is the analytics channel). All event
 dimensions land structurally in `details`
-(`{kind, stage, error, os, arch, client, py, first, count}`), so the dashboard
-view reads fields, never parses summary text.
+(`{kind, stage, error, os, arch, client, py, first, count, batch}`, plus any
+union fields present), so the dashboard view reads fields, never parses
+summary text.
 
 This buys a property worth naming: `sentinel_get_events` is an existing MCP
 tool, so once reports land in Sentinel an agent can be asked "what is breaking
@@ -628,9 +741,12 @@ here, before collection begins:
   `SSLCertVerificationError`, ECONNREFUSED, HTTP statuses — asserting
   `category`/`status` mapping, never message parsing.
 - Endpoint: rejects unknown enum values (including unlisted `client`
-  versions), rejects non-JSON content type, rejects malformed shapes and
-  oversized bodies, writes no IP, seals at the ceiling and by age, acks and
-  dedups by id, survives concurrent requests (state intact, no double mail for
+  versions, `unknown-bootstrap` outside its two stages, and union fields on a
+  kind/stage that does not allow them), rejects non-JSON content type,
+  rejects malformed shapes and oversized bodies, writes no IP, seals at the
+  ceiling and by age, acks and dedups by id, answers the empty-batch
+  maintenance ping (runs the seal/digest checks, returns health, appends
+  nothing), survives concurrent requests (state intact, no double mail for
   one signature, no lost counts — a real multi-process test), and strips
   CR/LF from anything reaching mail composition (embedded-newline payloads).
 - Client discipline: `emit` never raises and never changes an exit code, proven
@@ -638,13 +754,31 @@ here, before collection begins:
   garbage.
 - Spool: capped, survives an offline machine, claim-rename protocol proven
   with two concurrent flushers (no duplication, no lost events), accepted ids
-  removed exactly once.
+  removed exactly once, and a kill-mid-flush test proving stale-claim
+  adoption: the orphaned `sending.<pid>` file is adopted exactly once by
+  racing flushers and its events are neither stranded nor merged unsafely.
 - Consent: `is_enabled` is False with no config, no section, and empty
   section; env off-switch wins over config true; prompt writes exactly once
-  and non-interactive re-runs never write.
+  and non-interactive re-runs never write; the doctor ask on EOF/Ctrl-C
+  leaves `[report]` absent and doctor's exit code unchanged; with
+  `resolver.is_bypassed()` true, `emit` writes nothing and no flush point
+  sends (personal-mode promise upheld).
+- Real-terminal acceptance: drive both bootstraps under a real PTY (POSIX
+  `pty`; ConPTY on Windows) covering Enter (default yes recorded), explicit
+  no, EOF (consent absent, install proceeds), headless (no controlling tty →
+  no prompt, no `[report]` written), a forced provisioning failure (the POST
+  fires only when consent was recorded first), and the answer persisting
+  through the wizard handoff into `~/.firekeep/config`. The literal-grep test
+  alone cannot prove any of this, and the existing bootstrap e2e deliberately
+  detaches its controlling terminal (`test_e2e_bootstrap.py:36`) precisely to
+  avoid the interactive branch — so the prompt path currently has zero
+  coverage by construction.
 - VPS ingest: discards non-conforming log lines; aggregates; respects the
-  per-pull ceiling; novelty comes from the `first` flag, never recomputed;
-  segment fetch-verify-delete is exactly-once under a killed-mid-pull retry.
+  per-pull ceiling; novelty comes from the `first` flag, never recomputed; the
+  inbox protocol proven under kill-and-retry at every step boundary — a crash
+  before remote delete refetches idempotently, a crash before the `done/`
+  move re-POSTs (at-least-once, deterministic `details.batch` key present),
+  and no sequence of crashes loses a segment.
 
 ## Risks
 
@@ -710,3 +844,19 @@ aggregation (trust boundary, stream eviction, Relay/webhook fan-out);
 the `TransportError.category` mapper contract; `warning` not `warn`;
 `info`/`warning` not `error` severities; the full `privacy.html` enumeration;
 and retention as a ship gate.
+
+Second review pass, same day, nine further findings addressed: the consent
+prompt no longer overclaims anonymity (persistent-identifier phrasing);
+pre-version bootstrap failures get `detect-platform` and the closed
+`unknown-bootstrap` client sentinel; the doctor ask is fully specified
+(after output, future-only, EOF/Ctrl-C leaves consent absent — the wizard's
+EOF-takes-the-default helper is explicitly ruled out — `status` alias
+identical, `--report` never durable); `resolver.is_bypassed()` gates emit and
+every flush (personal-mode promise); stale-claim adoption and per-line-append
+merge give the spool crash recovery; the empty-batch maintenance ping seals
+sparse-traffic segments under the collector's lock and disambiguates the
+watchdog; the pull uses a durable inbox with delete-after-durable-fetch,
+collision-resistant segment names, and an honestly at-least-once Sentinel hop
+with deterministic `details.batch` keys; the event schema is a strict tagged
+union (`exit` bounded, `runtime`/`dex`/`backend` scoped); and real-PTY
+acceptance tests cover the prompt paths the terminal-detached e2e cannot.
