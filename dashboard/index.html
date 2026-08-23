@@ -3421,6 +3421,13 @@ function renderEventItem(ev) {
         el('span', { className: 'event-source-badge', textContent: ev.source || ev.service || '--' }),
         el('span', { className: 'event-time', textContent: relTime(ev.timestamp || ev.created_at) })
     ]);
+    // Field-failure events come from an unauthenticated public collector (spec:
+    // docs/superpowers/specs/2026-08-22-field-failure-reporting-design.md, "VPS
+    // ingest") — low-integrity by construction, so the source is labelled rather
+    // than presented as equivalent to an authenticated collector's data.
+    if (ev.source === 'firekeep.ai/failure-report') {
+        top.appendChild(badge('unverified field telemetry', 'badge-dim'));
+    }
     if (ev.tags && ev.tags.length) {
         ev.tags.forEach(function(t) { top.appendChild(el('span', { className: 'event-tag-chip', textContent: t })); });
     }

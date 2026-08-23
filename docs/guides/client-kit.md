@@ -505,10 +505,8 @@ would need) is deliberately NOT built — its own future decision.
 last — it is what a runtime degrades TO, not a peer of the four — and every capability row
 carries its cell (`briefing: none (MCP only)`, `pre_edit_block: none`, `precompact: none`,
 `presence: sidecar (manual today)`, `bypass: firekeep personal CLI + FIREKEEP_BYPASS`). The
-`failure_report_flush` row covers the field-failure spool's three catch-up points (CLI
-start, gateway start, session_start hook where the runtime has one) — claude/kiro/opencode
-get all three or their hook-shaped equivalent, codex/generic/claude-desktop get whichever
-subset their hook surface allows; emit() itself always attempts an immediate send first.
+`failure_report_flush` row is the per-runtime coverage table for the field-failure channel —
+see "Field failure reporting" below for what the row means and the full picture.
 `firekeep doctor` adds a per-runtime staleness row for the generic block ONLY when
 `[generic] agents_md` is configured, comparing the on-disk block against
 `RENDERED_GENERIC_INSTRUCTIONS_HASH` (the hook-free text's OWN hash — checked against the
@@ -548,6 +546,104 @@ logging arbitrary text. Aggregation is human-run, on demand
 (`firekeep-site/scripts/doctor-report-stats.sh`) — nothing schedules it, no dashboard
 reads it, matching the download counter's own precedent. Disclosed at
 [firekeep.ai/privacy.html](https://firekeep.ai/privacy.html).
+
+## Field failure reporting (client kit — `firekeep_client.report`)
+
+A second, separate channel from the one above: `doctor --report` is a one-shot,
+per-invocation opt-in the user types; **field failure reporting is ongoing**, sends
+itself when an install step, a connectivity check against the user's own Keep, or a
+background hook/gateway task fails, and needs a durable consent decision rather than
+a flag typed each time. Full design record, including the Event schema, the
+collector and the VPS ingest pipeline:
+`docs/superpowers/specs/2026-08-22-field-failure-reporting-design.md`.
+
+**Consent is tri-state, and the third state is the point.** `[report] failures` in
+`~/.firekeep/config` is `true` (enrolled), `false` (declined), or **absent — NOT
+enrolled**, which is the default and stays the default until a human answers a
+prompt or an explicit opt-in fires. This deliberately does not mirror
+`autoupdate.is_enabled`'s "missing section means on": a headless install, a
+join-code install, `firekeep update`, and background auto-update all run
+non-interactively, and mirroring autoupdate's default would have silently enrolled
+every one of them plus the entire pre-existing installed base with no prompt ever
+having been shown. `report.is_enabled(cfg)` returns `True` only for an explicit
+recorded `true` or the env opt-in below; `FIREKEEP_NO_FAILURE_REPORT` wins as off
+over everything, including personal mode's own gate (see below).
+
+Three surfaces ask, and only these three ever write `[report]`:
+
+1. **The bootstrap install** (`install.sh` / `install.ps1`) asks over `/dev/tty`
+   before any failure-prone step runs — no TTY means no prompt and no reporting,
+   ever, for that run. The answer rides through as `FIREKEEP_REPORT_CONSENT` so the
+   Python-side hand-off (`cli._apply_flags`) writes the same decision rather than
+   asking a second time.
+2. **`firekeep install`** (interactive, from a checkout or a re-render) asks during
+   `configure-config`, via the same prompt text.
+3. **`firekeep doctor`** (alias `firekeep status`) asks once, after its diagnostic
+   rows print — never before or interleaved with them — when `[report]` is still
+   absent. This is the migration path for machines set up before this channel
+   existed or set up headless. The answer applies to *future* failures only;
+   connectivity failures the same doctor run just observed are not retroactively
+   reported. **EOF or Ctrl-C at this prompt leaves `[report]` absent** and never
+   touches doctor's own exit code — deliberately not `wizard.console_ask`, whose
+   EOF-takes-the-default behavior would have silently enrolled here.
+
+Non-interactive opt-in, for CI and fleet installs that will never see a TTY:
+`FIREKEEP_FAILURE_REPORT=1` (env, session-scoped, never writes config) or
+`firekeep install --report-failures` (writes `true` durably). `FIREKEEP_NO_FAILURE_REPORT`
+(any non-empty, non-falsey value) forces the channel off regardless of config or the
+other env var.
+
+**Payload is closed enums only, never free text.** Every field — `kind`, `stage`,
+`error`, `os`, `arch`, `client`, `py`, and the per-kind tagged-union fields
+(`exit`/`runtime`/`dex`/`backend`) — is drawn from a fixed vocabulary in
+`report.py`; an event with any value outside its vocabulary is dropped client-side
+before it is ever written to disk. No path, message, hostname, address, or
+persistent device/account/session identifier is ever a candidate field — there is
+no scrubber, because there is no field to scrub from.
+
+**Three flush points, one per place a runtime can be observed running.**
+`emit()` always attempts an immediate send first; the flush points below are the
+catch-up path for whatever that immediate attempt couldn't deliver (offline
+machine, transient failure). The `failure_report_flush` row in
+`contract/matrix.py` is the source of truth — mirror it exactly, don't restate it
+from memory:
+
+| Runtime | Flush coverage |
+|---|---|
+| claude | CLI + gateway + session_start hook |
+| kiro | CLI + gateway + agentSpawn hook (delivery unverified) |
+| codex | CLI + gateway (no hooks) |
+| opencode | CLI + gateway + plugin (first event) |
+| claude-desktop | gateway only (no CLI habit, no hooks) |
+| generic | CLI + gateway (no hooks) |
+
+CLI start and gateway start are universal (every runtime has a CLI and every
+runtime mounts the gateway), which is what makes coverage honest even on the two
+runtimes with no lifecycle hooks at all — including a machine whose *install*
+failed, where no hook has ever run.
+
+**Spool: `~/.firekeep/report-spool.jsonl`** (override via `FIREKEEP_REPORT_DIR` for
+tests/tooling), one JSON object per line, `O_APPEND`-written. Capped at 64 events /
+32KB with oldest events dropped, so a machine offline for a month cannot grow the
+file unbounded. A flush claims the spool by atomic rename to
+`report-spool.sending.<pid>.<random>`, sends from the claim, deletes it on full
+acknowledgement, and merges unacknowledged events back with the same per-line
+append — a claim orphaned by a killed process is adopted by the next flush once it
+is older than 10 minutes. On POSIX the append is a single atomic kernel syscall; on
+Windows, where the CRT's O_APPEND is not atomic across processes, the write is
+additionally serialized with a short non-blocking `msvcrt` lock (event dropped, not
+blocked, past a ~500ms contention ceiling). A local dedup marker
+(`~/.firekeep/report-recent.json`) drops an event identical in every field to one
+already sent in the last 24h, so a hot failing hook cannot fill the spool with
+copies.
+
+**Personal mode silences this channel completely, even with consent recorded.**
+Both `emit()` and every flush point additionally gate on `resolver.is_bypassed()`
+being false — personal mode's promise is "nothing logged, recalled, or sent to the
+server," and a `true` in `[report]` from before personal mode was enabled does not
+survive that stronger, later guarantee. Same gate every other sender in the kit
+consults, and it fails toward not-bypassed, so a bug in the gate itself cannot
+silently disable reporting.
 
 ## The install skill (`skills/install-firekeep/`, 2026-08-20)
 

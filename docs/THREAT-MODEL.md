@@ -222,6 +222,50 @@ real:
   sums itself and hands the verified bytes through `FIREKEEP_SUMS_FILE`, which
   is strictly stronger than re-checking a re-fetch.
 
+### 5.7 The field-failure reporting channel
+
+Two new surfaces, both covered in full in
+`docs/superpowers/specs/2026-08-22-field-failure-reporting-design.md` (see its Review
+record for the load-bearing design changes and the "Implementation pass (2026-08-23)"
+note for where the build deviated from the first draft).
+
+**The public collector, `failure-report.php` on firekeep.ai, is deliberately
+unauthenticated** — installing software cannot hold a credential before it has
+successfully installed. Mitigations: every field is validated against a fixed enum
+table (`client` against a released-version allowlist, everything else against
+closed vocabularies) and an unrecognised value rejects that event rather than
+logging it; `client` values outside the allowlist are rejected the same way,
+closing the one open string the schema would otherwise carry; a per-signature mail
+budget (5 immediate mails per rolling hour, overflow deferred to a digest) bounds
+what an attacker can do with the outbound mail side effect; state is a single
+`flock()`'d critical section with atomic temp-file+rename writes; and both the
+active log and the sealed-segment total are size- and count-capped, so an
+unauthenticated unlimited write endpoint cannot fill the disk that also holds the
+support mailboxes. **Residual, accepted:** the data is low-integrity by
+construction — an attacker can fabricate failure patterns or bury a real one in
+noise — so every event that reaches Sentinel is labelled `integrity: "unverified"`
+in `details`, and any dashboard or agent-facing summary treats it as a signal to
+corroborate, not to act on directly.
+
+**Outbound mail composition is its own attack surface**, one the earlier
+`doctor-report.php` review never had to consider because that endpoint sends no
+mail. Recipients and subject are fixed, never derived from a request; every
+report-derived value that reaches the mail body is stripped of CR/LF before
+composition, closing the embedded-newline header-injection class the same file's
+comments document elsewhere; and the novelty/digest logic that decides *whether*
+to mail is itself budgeted and lock-guarded (above), so the mail path cannot be
+used to force unbounded outbound mail even before body composition is reached.
+
+**The VPS→Sentinel hop inside the ingest pipeline (`deploy/failure-ingest/`) is
+honestly at-least-once, not exactly-once.** The loop that POSTs each aggregated
+signature to Sentinel and then moves the source segment to `done/` is unguarded
+against a crash mid-batch: a process killed after some POSTs succeed but before
+the segment moves leaves it in `inbox/` for a full retry on the next cron tick,
+re-sending every signature in it. Nothing on the VPS side deduplicates that
+replay — `details.batch` (`"<segment-name>|<signature-hash>"`) is the
+deterministic key any downstream consumer (the dashboard view, a future aggregate
+reader) must use to collapse it, because Sentinel's own `XADD` does not dedup.
+
 ## 6. Threats, ranked
 
 | # | Threat | State |
@@ -235,6 +279,7 @@ real:
 | 7 | Lateral movement inside the Docker network | **Accepted** — single trust zone (§3) |
 | 8 | Dependency CVE in a shipped wheel | **Now scanned** — `pip-audit` per dependency set in CI |
 | 9 | Prompt injection reaching a tool call | **OPEN, out of our control** — the runtime's boundary, not ours; the gateway is advisory (§5.4) |
+| 10 | Unauthenticated field-failure collector fabricates/floods failure data | **Mitigated, residual accepted** — enum-value validation, released-version allowlist, mail budget, locked state, sealed caps (§5.7); data stays low-integrity by construction and is labelled `integrity: "unverified"` downstream |
 
 Threat 5 deserves emphasis because it is the one the product's own design creates:
 Firekeep exists to make agents act on stored memory. Anything that can write a
