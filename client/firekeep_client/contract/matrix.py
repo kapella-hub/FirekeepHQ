@@ -167,6 +167,21 @@ MATRIX: dict[str, dict[str, str]] = {
         "claude-desktop": "firekeep personal CLI + FIREKEEP_BYPASS (no /personal command)",
         "generic": "firekeep personal CLI + FIREKEEP_BYPASS (no /personal command)",
     },
+    # Field-failure spool flush (docs/superpowers/specs/2026-08-22-field-failure-
+    # reporting-design.md): report.emit() ALWAYS attempts an immediate send first —
+    # this row is only about the SPOOL's daily catch-up, i.e. what happens to an
+    # event emit() couldn't send right away. Three flush points, so every runtime
+    # gets at least one: CLI start (cli.main) and the gateway's own start
+    # (gateway.run) are universal; session_start's hook is the third, present only
+    # where the runtime wires SessionStart/agentSpawn.
+    "failure_report_flush": {
+        "claude": "CLI + gateway + session_start hook",
+        "kiro": "CLI + gateway + agentSpawn hook (delivery unverified)",
+        "codex": "CLI + gateway (no hooks)",
+        "opencode": "CLI + gateway + plugin (first event)",
+        "claude-desktop": "gateway only (no CLI habit, no hooks)",
+        "generic": "CLI + gateway (no hooks)",
+    },
 }
 
 LABELS = {
@@ -177,6 +192,7 @@ LABELS = {
     "precompact": "PreCompact save",
     "reconcile": "Action reconcile (before/after)",
     "bypass": "Personal / bypass mode",
+    "failure_report_flush": "failure-report flush (emit always attempts an immediate send)",
 }
 
 

@@ -282,9 +282,14 @@ separate enum field (`runtime`, `dex`) — never an interpolated string.
 
 `stage` (install, bootstrap) — slugified the same way from the bootstraps' own
 die-sites: `detect-platform`, `fetch-manifest`, `verify-checksum`,
-`provision-python`, `create-venv`, `install-wheels`, `runnable-check`,
-`flip-current`, `handoff`. (Exact slugs pinned at build time from the scripts'
-actual step labels; the cross-language grep test is the guard.) The first two
+`provision-python`, `fetch-wheels`, `create-venv`, `install-wheels`,
+`runnable-check`, `flip-current`, `handoff`. **Amended (implementation pass):**
+`fetch-wheels` — downloading and checksum-verifying the client/dex wheels — is
+its own stage between `provision-python` and `create-venv`, not folded into
+`provision-python` as the first draft of this schema implied; the two die at
+genuinely different points in both bootstraps. (Exact slugs pinned at build
+time from the scripts' actual step labels; the cross-language grep test is the
+guard.) The first two
 stages fail **before the bootstrap knows the target version** — platform
 detection (`die "unsupported platform"`) and the `latest.json` fetch both
 precede version resolution (`install.sh:244-255`) — so events from those
@@ -444,8 +449,22 @@ mid-flush must not strand or corrupt anything:
   `emit` uses — one O_APPEND single-line write per unacknowledged event, cap
   enforced — then deletes the claim file. There is no whole-file rewrite
   anywhere in the protocol, so there is nothing a concurrent append can
-  corrupt; a crash mid-merge leaves a (now smaller) stale claim for the next
-  adoption pass.
+  corrupt in principle; a crash mid-merge leaves a (now smaller) stale claim
+  for the next adoption pass. **Amended (implementation pass): the atomicity
+  behind that claim is platform-split, and the first draft stated it as if it
+  held uniformly.** On POSIX, O_APPEND's seek-plus-write is one atomic kernel
+  syscall, so two processes appending concurrently can never interleave a
+  torn line — the claim holds with no further mechanism. On Windows, the CRT
+  implements O_APPEND as a *separate* seek then write, which is **not**
+  atomic across processes; measured under two concurrent appenders, this
+  silently dropped 12.7% of lines. `report.py` therefore additionally
+  serializes every Windows append with a short, non-blocking `msvcrt`
+  byte-range lock on byte 0 of the spool file (bounded retries, ~500ms
+  ceiling; on contention past that ceiling the event is dropped rather than
+  the write blocking) — a mechanism this section did not originally
+  disclose, because the "nothing a concurrent append can corrupt" framing
+  was written as a cross-platform kernel-syscall property when it is only
+  true on POSIX by construction.
 
 A two-process concurrency test and a kill-mid-flush recovery test are required
 alongside the single-process one.
@@ -780,6 +799,38 @@ here, before collection begins:
   move re-POSTs (at-least-once, deterministic `details.batch` key present),
   and no sequence of crashes loses a segment.
 
+**Consciously narrowed.** Three areas are deliberately not covered by an
+automated local test, and each has a compensating control instead of being
+silently untested:
+
+- **`failure-report.php`'s own behavior under concurrency.** There is no
+  local PHP test harness in this repo, so the multi-process locking and the
+  mail-injection defenses (CR/LF stripping into `mail_line`, the budget
+  check inside the same `flock`-held section) are verified by code review
+  against the `flock`/`mail_line` structure, not by a local test that spins
+  up PHP workers. Compensating control: the endpoint's real behavior —
+  concurrent requests, no double mail for one signature, no lost counts — is
+  exercised by post-deploy live probes against the actual Hostinger
+  deployment (`task-10-report.md`'s `php -l` + live-request checks), not by
+  anything that runs in CI.
+- **Stale-claim adoption under racing adopters.** The spool tests prove a
+  single adoption (one orphaned `sending.<pid>` file, one adopter) rather
+  than simulating N racing flushers contending for the same stale claim.
+  Compensating control: the adoption mechanism is a single `os.rename` —
+  atomic at the filesystem level — so the "exactly one winner" property is
+  argued structurally from that primitive rather than demonstrated by a
+  race-injection test; the single-adoption test still proves the rename
+  path itself is correct.
+- **The ps1 consent prompt under a real Windows console.** `client/tests/test_bootstrap_consent_pty.py`
+  covers the POSIX prompt end-to-end under a real `pty`, but Windows has no
+  stdlib ConPTY binding and the client test suite is deliberately
+  stdlib-only (repo dependency-locking policy), so the equivalent assertion
+  for `install.ps1`'s `Read-Host` branch cannot run in CI. Compensating
+  control: the literal-grep cross-language enum test still covers the
+  ps1 script's vocabulary, and exercising the real interactive prompt is a
+  manual checklist item in the plan's final verification step, run once
+  before each release that touches the consent block.
+
 ## Risks
 
 - **Opt-out-at-the-prompt is a judgement call.** It is defensible because the
@@ -860,3 +911,47 @@ collision-resistant segment names, and an honestly at-least-once Sentinel hop
 with deterministic `details.batch` keys; the event schema is a strict tagged
 union (`exit` bounded, `runtime`/`dex`/`backend` scoped); and real-PTY
 acceptance tests cover the prompt paths the terminal-detached e2e cannot.
+
+**Implementation pass (2026-08-23).** Executed against this spec end to end
+(client, sentinel, deploy tooling, and the firekeep-site collector). Material
+deviations from the text above, each amended in place where it matters and
+named here as one list for anyone diffing spec against build:
+
+- **`fetch-wheels` is its own bootstrap stage**, not folded into
+  `provision-python` — wheel download/verify dies at a different point than
+  Python provisioning in both bootstraps (Event schema, above).
+- **The spool append's atomicity claim was platform-split, not uniform.**
+  POSIX's O_APPEND is a single atomic kernel syscall; Windows' CRT O_APPEND is
+  seek-then-write and is not — measured at 12.7% line loss under concurrent
+  appenders unlocked, closed with a bounded, non-blocking `msvcrt` byte-0 lock
+  that drops the event on a ~500ms contention timeout rather than blocking
+  (Client, above).
+- **The collector never acks an unwritten event**, and the mail budget is a
+  true rolling hour, not a fixed window. The first implementation of
+  `failure-report.php` acked ids before confirming the log write/seal/state
+  writes had succeeded, and used a fixed `mail_window_start`/`mail_count` pair
+  that could admit more than the budget across a window boundary; both are
+  fixed (Collector, above covers the corrected mail-budget behaviour;
+  `failure-report.php`'s own commit history in the site repo has the fix).
+- **The VPS→Sentinel hop's honesty needed a sharper description than "at
+  least once."** It is at-least-once specifically because the storage loop
+  that POSTs each aggregate to Sentinel and then moves the segment to `done/`
+  is unguarded against a mid-batch failure — a crash after some POSTs succeed
+  but before the segment moves leaves it in `inbox/` for a full retry next
+  run. `details.batch` (`"<segment-name>|<signature-hash>"`) is the key any
+  downstream consumer — the dashboard view, a future aggregate reader — needs
+  to dedup those replays; nothing on the VPS side does that collapsing itself.
+- **The privacy bullet enumerates the union fields**, not just the base
+  event shape — `runtime`/`dex`/`backend`/`exit` are each named as fixed
+  category values, not summarized as "and a few more enums" (Privacy,
+  above; `privacy.html` in the site repo carries the actual enumerated text).
+- **The VPS-side re-validation regexes are `.fullmatch()`, not `^...$` with
+  `.match()`.** Python's bare `$` matches before a single trailing newline
+  even under `.match()`, so an `id`/`ts`/`client` value carrying a trailing
+  `\n` would have passed the independent re-validation in `ingest.py` — the
+  same class of anchoring bug the PHP collector's own `/D` flag exists to
+  close (VPS ingest, above; `deploy/failure-ingest/ingest.py`).
+- **The privacy page's effective date is bumped at deploy, not in this
+  branch.** The page carries a comment marking where the date changes when
+  the site is actually deployed, rather than a speculative date landing with
+  code that has not shipped yet.

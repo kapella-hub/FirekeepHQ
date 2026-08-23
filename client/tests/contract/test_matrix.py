@@ -12,7 +12,7 @@ from firekeep_client.contract.matrix import (
 )
 
 CAPS = {"briefing", "proactive_recall", "presence", "pre_edit_block", "precompact",
-        "reconcile", "bypass"}
+        "reconcile", "bypass", "failure_report_flush"}
 
 # Captured at import, before any test swaps the adapter's table out from under it.
 REAL_CLAUDE_HOOKS = claude.CLAUDE_HOOKS

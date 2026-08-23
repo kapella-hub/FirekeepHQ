@@ -347,7 +347,13 @@ def prompt_config(
         cfg, ask=ask, agent_id=agent_id, host=host, probe=probe,
         fetch_defaults=fetch_defaults, docker=docker,
     )
-    return plan._replace(generic_agents_md=_ask_generic_agents_md(ask))
+    plan = plan._replace(generic_agents_md=_ask_generic_agents_md(ask))
+    # Field-failure consent (spec decision 1): asked once, only when unanswered.
+    # ask_consent uses its own EOF-safe reader — NOT console_ask, whose
+    # EOF-takes-the-default would silently enroll.
+    from firekeep_client import report
+    report.ask_consent(cfg)
+    return plan
 
 
 def _prompt_server_config(

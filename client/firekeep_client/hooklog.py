@@ -16,7 +16,7 @@ def _log_path() -> Path:
     return Path(override) / "hooks.log" if override else LOG_PATH
 
 
-def log_failure(hook: str, message: str) -> None:
+def log_failure(hook: str, message: str, exc: Exception | None = None) -> None:
     try:
         path = _log_path()
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -27,3 +27,12 @@ def log_failure(hook: str, message: str) -> None:
             fh.write(f"{ts} | {h} | {m}\n")
     except Exception:
         pass
+    # Field-failure seam (spec, capture point 3): the hook cores already route
+    # every caught failure through here — the dispatcher's own handler sees
+    # only UNCAUGHT crashes. Class only; the free-text message stays local.
+    if exc is not None:
+        try:
+            from firekeep_client import report
+            report.emit("runtime", str(hook).replace("_", "-"), exc=exc)
+        except Exception:
+            pass

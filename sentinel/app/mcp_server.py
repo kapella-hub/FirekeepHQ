@@ -6,8 +6,10 @@ import asyncio
 import logging
 
 from fastmcp import FastMCP
+from pydantic import ValidationError
 
 from app.config import get_settings
+from app.models import EventIngest
 from app.redis_client import get_redis
 from app.store import get_events, get_event_count, push_event, trim_by_age
 from app.collectors.docker import run_docker_collector, get_collector as get_docker_collector
@@ -356,6 +358,41 @@ async def _events(request: StarletteRequest) -> StarletteJSONResponse:
     except Exception as e:
         logger.error("GET /events failed: %s", e)
         return StarletteJSONResponse({"error": str(e)}, status_code=500)
+
+
+@mcp.custom_route("/events", methods=["POST"], name="events_post")
+async def _events_post(request: StarletteRequest) -> StarletteJSONResponse:
+    """Authenticated ingest for the VPS failure puller (field-failure spec,
+    'VPS ingest'). Accepts one EventIngest object or a list of them.
+    Validation errors return 4xx -- NEVER swallowed into a default (the
+    Literal-degrade gotcha this codebase has been bitten by before)."""
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 — malformed body, not a server error
+        return StarletteJSONResponse({"error": "invalid JSON body"}, status_code=400)
+
+    items = body if isinstance(body, list) else [body]
+    if len(items) > 1000:
+        return StarletteJSONResponse({"error": "too many events (max 1000)"}, status_code=400)
+
+    parsed: list[EventIngest] = []
+    for item in items:
+        if not isinstance(item, dict):
+            return StarletteJSONResponse({"error": "each event must be an object"}, status_code=422)
+        try:
+            parsed.append(EventIngest(**item))
+        except ValidationError as exc:
+            return StarletteJSONResponse({"error": str(exc)[:2000]}, status_code=422)
+
+    await _ensure_collectors()
+    redis = await get_redis()
+    settings = get_settings()
+    for ev in parsed:
+        await push_event(
+            redis, ev.source, ev.event_type, ev.summary,
+            ev.details, ev.severity, ev.tags, maxlen=settings.EVENT_MAXLEN,
+        )
+    return StarletteJSONResponse({"stored": len(parsed)}, status_code=202)
 
 
 @mcp.custom_route("/version", methods=["GET"], name="version")

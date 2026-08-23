@@ -68,6 +68,113 @@ if (-not $env:FIREKEEP_DIST_BASE) {
 }
 $Base = $env:FIREKEEP_DIST_BASE.TrimEnd('/')
 
+# --- field-failure consent (spec decision 6): asked before anything can fail --
+# Tri-state, mirrors install.sh: unanswered (Ctrl-C, closed console, headless) exports
+# nothing and reports nothing. The answer rides FIREKEEP_REPORT_CONSENT into the wizard
+# hand-off so the machine is asked exactly once.
+$ReportConsent = $false
+$ReportStage = 'detect-platform'
+$ReportError = 'other'
+$ReportOs = 'windows'
+$ReportArch = switch ($env:PROCESSOR_ARCHITECTURE) {
+    'AMD64' { 'x86_64' }
+    'ARM64' { 'arm64' }
+    default { 'other' }
+}
+$ReportClient = 'unknown-bootstrap'
+# Tracked so the restore block at the end only clears FIREKEEP_REPORT_CONSENT
+# if THIS script set it — a value inherited from the caller's session stays
+# untouched.
+$ReportConsentWasPreset = [bool]$env:FIREKEEP_REPORT_CONSENT
+if ($ReportConsentWasPreset) {
+    # Already answered — a cmd_update re-exec carrying the recorded config
+    # answer, or an inherited env from a parent shell. Never re-ask, never
+    # re-export.
+    $ReportConsent = ($env:FIREKEEP_REPORT_CONSENT -eq '1')
+} elseif ($env:FIREKEEP_NO_FAILURE_REPORT) {
+    # opted out: never ask, never send
+} elseif ($env:FIREKEEP_FAILURE_REPORT) {
+    $ReportConsent = $true
+    $env:FIREKEEP_REPORT_CONSENT = '1'
+} elseif ([Environment]::UserInteractive -and -not [Console]::IsInputRedirected) {
+    try {
+        $Answer = Read-Host ("Send anonymous failure reports to firekeep.ai? Category codes only - " +
+            "what failed, error class, OS family, versions; never paths, messages, " +
+            "addresses, or any persistent identifier [Y/n]")
+        if ($Answer -eq '' -or $Answer -match '^(?i)y(es)?$') {
+            $ReportConsent = $true; $env:FIREKEEP_REPORT_CONSENT = '1'
+        } else {
+            $ReportConsent = $false; $env:FIREKEEP_REPORT_CONSENT = '0'
+        }
+    } catch {
+        # ^C / closed console: unanswered — export nothing, send nothing
+    }
+}
+
+function Send-FailureReport {
+    # Enum-only, fire-and-forget (spec decision 6): never affects the exit path,
+    # never throws past its own catch, never interpolates command output or error
+    # text. $ReportClient can carry the resolved version string — untrusted, so it
+    # is shape-gated at the assignment site (digits-and-dots only) rather than escaped.
+    if (-not $ReportConsent -or -not $ReportOs) { return }
+    $Id = [guid]::NewGuid().ToString('N')
+    $Payload = @{ events = @(@{
+        id = $Id; kind = 'install'; stage = $ReportStage; error = $ReportError
+        os = $ReportOs; arch = $ReportArch; client = $ReportClient; py = "$PythonVersion"
+    }) } | ConvertTo-Json -Depth 4 -Compress
+    try {
+        Invoke-RestMethod -UseBasicParsing -Uri 'https://firekeep.ai/failure-report.php' -Method Post `
+            -ContentType 'application/json' -Body $Payload -TimeoutSec 2 | Out-Null
+    } catch { }
+}
+
+# Best-effort classification of a failed web request into the closed error
+# vocabulary (report.ERRORS) — structural signals only (exception type, socket/web
+# status), never exception message text. Unrecognised shapes fall through to
+# 'other', same as the bare `case` default on the POSIX side. Windows PowerShell
+# 5.1's web cmdlets throw System.Net.WebException; PowerShell 7's HttpClient-backed
+# cmdlets throw HttpRequestException/TaskCanceledException wrapping a SocketException.
+function Get-WebErrorClass($ErrorRecord) {
+    $Exc = $ErrorRecord.Exception
+    if ($Exc -is [System.Net.WebException]) {
+        switch ($Exc.Status) {
+            'Timeout'               { return 'timeout' }
+            'NameResolutionFailure' { return 'dns-failure' }
+            'ConnectFailure'        { return 'connection-refused' }
+            'TrustFailure'          { return 'tls-verify-failed' }
+            'SecureChannelFailure'  { return 'tls-verify-failed' }
+        }
+        return 'other'
+    }
+    $Inner = $Exc.InnerException
+    while ($Inner) {
+        if ($Inner -is [System.Net.Sockets.SocketException]) {
+            switch ($Inner.SocketErrorCode) {
+                'HostNotFound'       { return 'dns-failure' }
+                'ConnectionRefused'  { return 'connection-refused' }
+                'TimedOut'           { return 'timeout' }
+                'NetworkUnreachable' { return 'network-unreachable' }
+            }
+        }
+        if ($Inner -is [System.Security.Authentication.AuthenticationException]) { return 'tls-verify-failed' }
+        $Inner = $Inner.InnerException
+    }
+    if ($Exc -is [System.Threading.Tasks.TaskCanceledException] -or $Exc -is [System.TimeoutException]) {
+        return 'timeout'
+    }
+    return 'other'
+}
+
+# Redefine Die: the bare version above got the DIST_BASE check to here (before
+# Send-FailureReport existed to call). This SECOND definition overrides it for
+# every later call — mirrors install.sh's two-definition die()/report_failure() split.
+function Die($msg) {
+    Send-FailureReport
+    [Console]::Error.WriteLine("firekeep: $msg")
+    $env:PSModulePath = $OrigPSModulePath
+    exit 1
+}
+
 # --- TLS trust for corporate networks (mirrors install.sh; see its comment) --
 # Unlike the POSIX side (`curl | sh` runs in a child shell), the documented
 # `irm <url> | iex` invocation runs this script IN the caller's PowerShell session, so
@@ -168,14 +275,21 @@ function Remove-StaleVenvs {
 if ($env:FIREKEEP_VERSION) {
     $V = $env:FIREKEEP_VERSION
 } else {
+    $ReportStage = 'fetch-manifest'; $ReportError = 'other'
     try {
         $Manifest = Invoke-RestMethod -UseBasicParsing -Uri "$Base/latest/latest.json"
     } catch {
+        $ReportError = Get-WebErrorClass $_
         Die "download failed: $Base/latest/latest.json"
     }
     $V = $Manifest.version
     if (-not $V) { Die "latest.json has no version" }
 }
+# Shape-gated, not escaped (mirrors install.sh): $V is untrusted (parsed from
+# latest.json, or an operator-supplied FIREKEEP_VERSION) and lands in the report
+# payload unescaped, so only a value that is ALREADY digits-and-dots is accepted —
+# anything else leaves $ReportClient at its 'unknown-bootstrap' default.
+if ($V -match '^[0-9.]+$') { $ReportClient = $V }
 $VBase = "$Base/$V"
 $WheelName = "firekeep_client-$V-py3-none-any.whl"
 $TargetVenv = Join-Path $Venvs $V
@@ -245,7 +359,9 @@ if ($Installed -or $env:FIREKEEP_JOIN) {
 # forces the full path without changing the non-interactive hand-off.
 if (((Get-VenvVersion $TargetVenv) -eq $V) -and (Test-VenvComplete $TargetVenv) -and -not $env:FIREKEEP_FORCE_REINSTALL) {
     Write-Host "firekeep: venvs/$V is already provisioned - selecting it and re-rendering adapters. Set FIREKEEP_FORCE_REINSTALL=1 to force a full reinstall."
+    $ReportStage = 'flip-current'; $ReportError = 'other'
     Set-CurrentJunction $TargetVenv
+    $ReportStage = 'handoff'; $ReportError = 'other'
     & $FirekeepExe install --dist-base $Base @RuntimeArgs @JoinArgs @NonInteractiveArgs
     $FirekeepExit = $LASTEXITCODE
     Remove-StaleVenvs
@@ -264,6 +380,7 @@ if (((Get-VenvVersion $TargetVenv) -eq $V) -and (Test-VenvComplete $TargetVenv) 
 # FIREKEEP_VERSION, the shape only the client's hand-off produces; a manual
 # `irm | iex` run sets neither and fetches as before. Set-but-unusable is fatal —
 # a silent fallback to the network would BE the vulnerability.
+$ReportStage = 'verify-checksum'; $ReportError = 'other'
 $SumsPath = Join-Path $Bin 'SHA256SUMS'
 $SumsHanded = $false
 if ($env:FIREKEEP_SUMS_FILE -and $env:FIREKEEP_VERSION) {
@@ -281,6 +398,7 @@ if ($env:FIREKEEP_SUMS_FILE -and $env:FIREKEEP_VERSION) {
     try {
         Invoke-WebRequest -UseBasicParsing -Uri "$VBase/SHA256SUMS" -OutFile $SumsPath
     } catch {
+        $ReportError = Get-WebErrorClass $_
         Die "download failed: $VBase/SHA256SUMS"
     }
 }
@@ -344,12 +462,14 @@ function Verify-AgainstSums($File, $Name) {
 # This binary is fetched over unauthenticated HTTP and then RUN. The checksum is the only
 # thing standing between this machine and someone else's code. Windows is not the soft
 # target: verify before it is moved into place or invoked, same as the POSIX side.
+$ReportStage = 'provision-python'; $ReportError = 'other'
 $Target = 'x86_64-pc-windows-msvc'
 Write-Host "firekeep: fetching uv ($Target)"
 $UvTmp = Join-Path $Bin 'uv.tmp.exe'
 try {
     Invoke-WebRequest -UseBasicParsing -Uri "$VBase/uv-$Target.exe" -OutFile $UvTmp
 } catch {
+    $ReportError = Get-WebErrorClass $_
     Die "download failed: $VBase/uv-$Target.exe"
 }
 Verify-AgainstSums $UvTmp "uv-$Target.exe"
@@ -361,11 +481,13 @@ Move-Item -Force $UvTmp $Uv
 # NO hash checking at all — that was the hole C2 lived in. Fetch to a local file and verify
 # it with the SAME helper as uv.exe, BEFORE the venv even exists, so a tampered wheel never
 # reaches `uv pip install`.
+$ReportStage = 'fetch-wheels'; $ReportError = 'other'
 Write-Host "firekeep: fetching $WheelName"
 $WheelPath = Join-Path $Bin $WheelName
 try {
     Invoke-WebRequest -UseBasicParsing -Uri "$VBase/$WheelName" -OutFile $WheelPath
 } catch {
+    $ReportError = Get-WebErrorClass $_
     Die "download failed: $VBase/$WheelName"
 }
 Verify-AgainstSums $WheelPath $WheelName
@@ -384,6 +506,7 @@ $SymdexPath = Join-Path $Bin $SymdexWheel
 try {
     Invoke-WebRequest -UseBasicParsing -Uri "$VBase/$SymdexWheel" -OutFile $SymdexPath
 } catch {
+    $ReportError = Get-WebErrorClass $_
     Die "download failed: $VBase/$SymdexWheel"
 }
 Verify-AgainstSums $SymdexPath $SymdexWheel
@@ -402,6 +525,7 @@ $DocdexPath = Join-Path $Bin $DocdexWheel
 try {
     Invoke-WebRequest -UseBasicParsing -Uri "$VBase/$DocdexWheel" -OutFile $DocdexPath
 } catch {
+    $ReportError = Get-WebErrorClass $_
     Die "download failed: $VBase/$DocdexWheel"
 }
 Verify-AgainstSums $DocdexPath $DocdexWheel
@@ -421,9 +545,12 @@ $MaildexPath = Join-Path $Bin $MaildexWheel
 try {
     Invoke-WebRequest -UseBasicParsing -Uri "$VBase/$MaildexWheel" -OutFile $MaildexPath
 } catch {
+    $ReportError = Get-WebErrorClass $_
     Die "download failed: $VBase/$MaildexWheel"
 }
 Verify-AgainstSums $MaildexPath $MaildexWheel
+
+$ReportStage = 'create-venv'; $ReportError = 'other'
 
 # --- 5. standalone CPython + venv at its FINAL versioned path ----------------
 # venvs/<V> is fresh on a normal update (the running install lives in a DIFFERENT
@@ -511,6 +638,7 @@ if ($LASTEXITCODE -ne 0) { Die "could not provision Python $PythonVersion" }
 # put a second, unverified download path in front of a user who later opts in —
 # the signed supply chain is the thing that must not become optional.
 Write-Host "firekeep: installing $WheelName + $SymdexWheel + $DocdexWheel + $MaildexWheel"
+$ReportStage = 'install-wheels'; $ReportError = 'other'
 & $Uv pip install --python $TargetVenv --reinstall $WheelPath $SymdexPath $DocdexPath $MaildexPath
 if ($LASTEXITCODE -ne 0) { Die "wheel install failed" }
 
@@ -520,6 +648,7 @@ if ($LASTEXITCODE -ne 0) { Die "wheel install failed" }
 # interpreter). Checked at the venv's REAL path and BEFORE the flip: a broken
 # build must never become `current`, and a session started mid-install must
 # never resolve to it.
+$ReportStage = 'runnable-check'; $ReportError = 'other'
 if (-not (Test-Path (Join-Path $TargetVenv 'Scripts\firekeep.exe'))) {
     Die "install completed but venvs/$V\Scripts\firekeep.exe does not exist - the wheel did not provide it"
 }
@@ -531,7 +660,9 @@ if (-not (Test-Path (Join-Path $TargetVenv 'Scripts\firekeep.exe'))) {
 # what migrates a legacy install's rendered paths off ~/.firekeep/venv.
 # See the file-header note: no stdin trap and no /dev/tty equivalent needed on this path.
 # @RuntimeArgs = --runtime <FIREKEEP_RUNTIME> when set, else empty for all adapters.
+$ReportStage = 'flip-current'; $ReportError = 'other'
 Set-CurrentJunction $TargetVenv
+$ReportStage = 'handoff'; $ReportError = 'other'
 & $FirekeepExe install --dist-base $Base @RuntimeArgs @JoinArgs @NonInteractiveArgs
 $FirekeepExit = $LASTEXITCODE
 
@@ -546,6 +677,7 @@ Remove-StaleVenvs
 # captured above anyway so nothing here can launder it.
 if (-not $HadUvNativeTls) { Remove-Item Env:UV_NATIVE_TLS -ErrorAction SilentlyContinue }
 if ($RemovedSslCertFile) { $env:SSL_CERT_FILE = $OrigSslCertFile }
+if (-not $ReportConsentWasPreset) { Remove-Item Env:FIREKEEP_REPORT_CONSENT -ErrorAction SilentlyContinue }
 $env:PSModulePath = $OrigPSModulePath
 
 exit $FirekeepExit

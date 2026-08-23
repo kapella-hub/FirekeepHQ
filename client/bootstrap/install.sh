@@ -40,6 +40,65 @@ fi
 fetched from a release (curl -fsSL <base>/latest/install.sh | FIREKEEP_DIST_BASE=<base> sh)"
 BASE="${FIREKEEP_DIST_BASE%/}"
 
+# --- field-failure consent (asked BEFORE anything can fail; spec decision 6) --
+# Tri-state: unanswered (EOF, headless) exports nothing and reports nothing.
+# The answer rides FIREKEEP_REPORT_CONSENT into the wizard hand-off so the
+# machine is asked exactly once.
+REPORT_CONSENT=0
+REPORT_STAGE="detect-platform"
+REPORT_ERROR="other"
+REPORT_OS=""
+REPORT_ARCH=""
+REPORT_CLIENT="unknown-bootstrap"
+if [ -n "${FIREKEEP_REPORT_CONSENT:-}" ]; then
+    # Already answered — a cmd_update re-exec carrying the recorded config
+    # answer, or an inherited env from a parent shell. Never re-ask, never
+    # re-export: re-exporting an unchanged value is harmless, but this branch
+    # exists precisely so a recorded "no" is never asked again.
+    REPORT_CONSENT="${FIREKEEP_REPORT_CONSENT}"
+elif [ -n "${FIREKEEP_NO_FAILURE_REPORT:-}" ]; then
+    REPORT_CONSENT=0
+elif [ -n "${FIREKEEP_FAILURE_REPORT:-}" ]; then
+    REPORT_CONSENT=1
+    export FIREKEEP_REPORT_CONSENT=1
+elif ( : < /dev/tty ) 2>/dev/null; then
+    printf '%s' "Send anonymous failure reports to firekeep.ai? Category codes only — what \
+failed, error class, OS family, versions; never paths, messages, addresses, or \
+any persistent identifier. [Y/n] " > /dev/tty
+    if IFS= read -r report_answer < /dev/tty; then
+        case "${report_answer}" in
+            ""|y|Y|yes|YES|Yes) REPORT_CONSENT=1; export FIREKEEP_REPORT_CONSENT=1 ;;
+            *)                  REPORT_CONSENT=0; export FIREKEEP_REPORT_CONSENT=0 ;;
+        esac
+    fi   # read failure = EOF: leave unanswered — export NOTHING, report nothing
+fi
+
+report_failure() {
+    # Enum-only, fire-and-forget (spec decision 6): never affects the exit
+    # path, never prints, 2s ceiling. Every field is a fixed literal or a
+    # shell variable this script itself set from a closed set, with ONE
+    # exception: REPORT_CLIENT can carry the resolved version string, which
+    # is untrusted (parsed from latest.json / operator-supplied). It is not
+    # escaped, so it is shape-gated at the assignment site instead — only
+    # digits-and-dots reach this function, never arbitrary text. No command
+    # output, path, or error text is ever interpolated.
+    [ "${REPORT_CONSENT}" = "1" ] || return 0
+    [ -n "${REPORT_OS}" ] || return 0
+    rf_id="$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"
+    [ ${#rf_id} -eq 32 ] || return 0
+    rf_payload="{\"events\":[{\"id\":\"${rf_id}\",\"kind\":\"install\",\"stage\":\"${REPORT_STAGE}\",\"error\":\"${REPORT_ERROR}\",\"os\":\"${REPORT_OS}\",\"arch\":\"${REPORT_ARCH}\",\"client\":\"${REPORT_CLIENT}\",\"py\":\"${PYTHON_VERSION}\"}]}"
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsS --max-time 2 -H 'Content-Type: application/json' \
+            -d "${rf_payload}" "https://firekeep.ai/failure-report.php" >/dev/null 2>&1 || true
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q -T 2 --header='Content-Type: application/json' \
+            --post-data="${rf_payload}" -O /dev/null "https://firekeep.ai/failure-report.php" 2>/dev/null || true
+    fi
+    return 0
+}
+
+die() { echo "firekeep: $*" >&2; report_failure; exit 1; }
+
 # --- TLS trust for corporate networks (real-machine failure, 2026-07-13) -----
 # uv trusts its own bundled roots by default; UV_NATIVE_TLS=1 switches every uv
 # invocation below (venv provisioning AND both pip installs) to the OS trust store,
@@ -58,7 +117,16 @@ fi
 fetch() {
     # $1 = url, $2 = dest. curl first (present on macOS), wget fallback (minimal Linux).
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL "$1" -o "$2" || die "download failed: $1"
+        curl -fsSL "$1" -o "$2" || {
+            rf_rc=$?
+            case "${rf_rc}" in
+                6) REPORT_ERROR="dns-failure" ;;
+                7) REPORT_ERROR="connection-refused" ;;
+                28) REPORT_ERROR="timeout" ;;
+                35|60) REPORT_ERROR="tls-verify-failed" ;;
+            esac
+            die "download failed: $1"
+        }
     elif command -v wget >/dev/null 2>&1; then
         wget -qO "$2" "$1" || die "download failed: $1"
     else
@@ -231,12 +299,23 @@ if [ "${os}" = "Linux" ]; then
         libc=musl
     fi
 fi
+case "${os}" in
+    Darwin) REPORT_OS="darwin" ;;
+    Linux)  [ "${libc}" = "musl" ] && REPORT_OS="linux-musl" || REPORT_OS="linux-gnu" ;;
+    *)      REPORT_OS="" ;;  # not in the enum (darwin/linux-gnu/linux-musl) — report_failure's
+            # `[ -n "${REPORT_OS}" ]` guard skips sending rather than emitting a bad literal
+esac
+case "${arch}" in
+    x86_64|amd64)    REPORT_ARCH="x86_64" ;;
+    aarch64|arm64)   REPORT_ARCH="arm64" ;;
+    *)               REPORT_ARCH="other" ;;
+esac
 case "${os}-${arch}" in
     Darwin-arm64)  target=aarch64-apple-darwin ;;
     Darwin-x86_64) target=x86_64-apple-darwin ;;
     Linux-x86_64)  target="x86_64-unknown-linux-${libc}" ;;
     Linux-aarch64) target="aarch64-unknown-linux-${libc}" ;;
-    *) die "unsupported platform ${os}-${arch}" ;;
+    *) REPORT_ERROR="unsupported-platform"; die "unsupported platform ${os}-${arch}" ;;
 esac
 
 mkdir -p "${BIN}"
@@ -249,10 +328,21 @@ mkdir -p "${BIN}"
 if [ -n "${FIREKEEP_VERSION:-}" ]; then
     V="${FIREKEEP_VERSION}"
 else
+    REPORT_STAGE="fetch-manifest"; REPORT_ERROR="other"
     fetch "${BASE}/latest/latest.json" "${BIN}/latest.json"
     V="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${BIN}/latest.json")"
     [ -n "${V}" ] || die "latest.json has no version"
 fi
+# Shape-gated, not escaped: V is untrusted (parsed from latest.json, or an
+# operator-supplied FIREKEEP_VERSION) and lands in the report payload
+# unescaped, so only a value that is ALREADY digits-and-dots is accepted —
+# anything else (empty, or containing any other character) leaves
+# REPORT_CLIENT at its "unknown-bootstrap" default rather than risking
+# malformed JSON or an injected field.
+case "${V}" in
+    ""|*[!0-9.]*) : ;;
+    *) REPORT_CLIENT="${V}" ;;
+esac
 VBASE="${BASE}/${V}"
 wheel_name="firekeep_client-${V}-py3-none-any.whl"
 TARGET_VENV="${VENVS}/${V}"
@@ -287,9 +377,11 @@ fi
 if [ "$(venv_version "${TARGET_VENV}")" = "${V}" ] && venv_complete "${TARGET_VENV}" && [ -z "${FIREKEEP_FORCE_REINSTALL:-}" ]; then
     echo "firekeep: venvs/${V} is already provisioned - selecting it and re-rendering \
 adapters. Set FIREKEEP_FORCE_REINSTALL=1 to force a full reinstall." >&2
+    REPORT_STAGE="flip-current"; REPORT_ERROR="other"
     point_current "${TARGET_VENV}"
     # `|| wizard_exit=$?` keeps a failing wizard from killing the script under
     # `set -e` before the GC sweep runs; its exit code is still propagated.
+    REPORT_STAGE="handoff"; REPORT_ERROR="other"
     wizard_exit=0
     if ( : < /dev/tty ) 2>/dev/null; then
         if [ -n "${FIREKEEP_JOIN:-}" ]; then
@@ -319,6 +411,7 @@ fi
 # only the client's hand-off produces — so a manual `curl | sh` run (which sets
 # neither) fetches exactly as before. Set-but-unusable is fatal, never a silent
 # fallback to the network: the fallback IS the vulnerability.
+REPORT_STAGE="verify-checksum"; REPORT_ERROR="other"
 SUMS_HANDED=""
 if [ -n "${FIREKEEP_SUMS_FILE:-}" ] && [ -n "${FIREKEEP_VERSION:-}" ]; then
     [ -r "${FIREKEEP_SUMS_FILE}" ] || die "FIREKEEP_SUMS_FILE is set but not readable: ${FIREKEEP_SUMS_FILE}"
@@ -373,6 +466,7 @@ verify_against_sums() {
 # --- 4. uv, checksum-verified BEFORE we execute it ---------------------------
 # This binary is fetched over unauthenticated HTTP inside the office network and then run.
 # The checksum is the only thing between a teammate and someone else's code.
+REPORT_STAGE="provision-python"; REPORT_ERROR="other"
 echo "firekeep: fetching uv (${target})"
 fetch "${VBASE}/uv-${target}" "${BIN}/uv.tmp"
 verify_against_sums "${BIN}/uv.tmp" "uv-${target}"
@@ -386,6 +480,7 @@ chmod +x "${BIN}/uv"
 # to a local file and verify it with the SAME helper as uv, BEFORE the venv even exists, so a
 # tampered wheel never reaches `uv pip install` and never gets the chance to become the
 # PreToolUse hook that runs before every Edit on this machine.
+REPORT_STAGE="fetch-wheels"; REPORT_ERROR="other"
 echo "firekeep: fetching ${wheel_name}"
 fetch "${VBASE}/${wheel_name}" "${BIN}/${wheel_name}"
 verify_against_sums "${BIN}/${wheel_name}" "${wheel_name}"
@@ -466,6 +561,7 @@ verify_against_sums "${BIN}/${maildex_wheel}" "${maildex_wheel}"
 # shim discovery finds first.
 echo "firekeep: provisioning Python ${PYTHON_VERSION} into venvs/${V}"
 mkdir -p "${VENVS}"
+REPORT_STAGE="create-venv"; REPORT_ERROR="other"
 "${BIN}/uv" venv "${TARGET_VENV}" --python "${PYTHON_VERSION}" --python-preference only-managed --clear     || die "could not provision Python ${PYTHON_VERSION}"
 
 # --- 7. install ALL wheels BY LOCAL FILE PATH, in ONE resolution -------------
@@ -485,6 +581,7 @@ mkdir -p "${VENVS}"
 # put a second, unverified download path in front of a user who later opts in —
 # the signed supply chain is the thing that must not become optional.
 echo "firekeep: installing ${wheel_name} + ${symdex_wheel} + ${docdex_wheel} + ${maildex_wheel}"
+REPORT_STAGE="install-wheels"; REPORT_ERROR="other"
 "${BIN}/uv" pip install --python "${TARGET_VENV}" --reinstall "${BIN}/${wheel_name}" "${BIN}/${symdex_wheel}" "${BIN}/${docdex_wheel}" "${BIN}/${maildex_wheel}"     || die "wheel install failed"
 
 # --- 7d. the install must have produced a runnable firekeep -------------------
@@ -494,6 +591,7 @@ echo "firekeep: installing ${wheel_name} + ${symdex_wheel} + ${docdex_wheel} + $
 # started mid-install must never resolve to it. The wizard hand-off is the very
 # next act, so checking now converts a confusing exit 127 into a diagnosis at
 # the point of failure.
+REPORT_STAGE="runnable-check"; REPORT_ERROR="other"
 if [ ! -x "${TARGET_VENV}/bin/firekeep" ]; then
     die "install completed but ${TARGET_VENV}/bin/firekeep is not executable — the wheel did not provide it"
 fi
@@ -501,6 +599,7 @@ fi
 # --- 7e. flip `current` — the new venv is complete and verified ---------------
 # Only now does anything observable change. An install that died in any earlier
 # step left `current` (and every live session) exactly as it was.
+REPORT_STAGE="flip-current"; REPORT_ERROR="other"
 point_current "${TARGET_VENV}"
 
 # --- 8. hand off to the wizard ----------------------------------------------
@@ -522,6 +621,7 @@ point_current "${TARGET_VENV}"
 # local testing. In a subshell only the subshell dies, so the probe just returns false.
 # `|| wizard_exit=$?` keeps a failing wizard from killing the script under
 # `set -e` before the GC sweep runs; its exit code is still propagated.
+REPORT_STAGE="handoff"; REPORT_ERROR="other"
 wizard_exit=0
 if ( : < /dev/tty ) 2>/dev/null; then
     if [ -n "${FIREKEEP_JOIN:-}" ]; then

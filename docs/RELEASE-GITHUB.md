@@ -30,6 +30,14 @@ no separate enterprise or corporate edition/channel.
    `firekeep update --to`. It then publishes all three wheels to PyPI and, only
    after PyPI exposes the client package and ownership marker, publishes and
    verifies the immutable version in the official MCP Registry.
+4. **Append the new version to `failure-stats/allowed-versions.txt` on the site
+   host** (firekeep-site repo's deploy flow, not this repo's CI — see
+   `docs/superpowers/specs/2026-08-22-field-failure-reporting-design.md`,
+   "Collector"). `failure-report.php`'s `client` field is checked against this
+   allowlist; a release whose version is missing there has every one of its field
+   failure reports rejected (only the fixed `unknown-bootstrap` sentinel still
+   gets through, for the two pre-manifest bootstrap stages). One version per line,
+   appended — never rewritten — so old still-supported releases stay accepted.
 
 ## One-time setup — DONE (2026-07-29)
 

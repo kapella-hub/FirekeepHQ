@@ -45,7 +45,7 @@ def never_raise(default: Any) -> Callable[[F], F]:
                 from firekeep_client import resolver
                 if isinstance(e, resolver.ConfigMigrationConflict):
                     raise
-                hooklog.log_failure(hook_name, f"run() crashed: {e!r}")
+                hooklog.log_failure(hook_name, f"run() crashed: {e!r}", exc=e)
                 if isinstance(default, dict):
                     return dict(default)
                 if isinstance(default, list):

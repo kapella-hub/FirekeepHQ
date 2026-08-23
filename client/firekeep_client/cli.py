@@ -26,6 +26,7 @@ from firekeep_client import (
     dexes,
     maildexsync,
     pathenv,
+    report,
     resolver,
     serverinit,
     state,
@@ -363,6 +364,19 @@ def _apply_flags(cfg, args) -> bool:
     if getattr(args, "dist_base", None):
         wizard.set_dist_base(cfg, args.dist_base)
         touched = True
+    pre = os.environ.get("FIREKEEP_REPORT_CONSENT", "").strip()
+    if getattr(args, "report_failures", False):
+        # Explicit flag: an explicit user action may overwrite a recorded answer.
+        report.record_consent(cfg, True)
+        touched = True
+    elif pre in ("0", "1") and not report.has_answer(cfg):
+        # The bootstrap asked before provisioning (spec decision 6); the
+        # non-interactive hand-off must not lose the human's answer. But never
+        # overwrite an ALREADY-recorded answer — a re-render, an update's
+        # re-exec, or a non-interactive run relaying a pre-set env must not
+        # rewrite a "no" a human already gave.
+        report.record_consent(cfg, pre == "1")
+        touched = True
     return touched
 
 
@@ -423,6 +437,33 @@ def _configure(args) -> tuple[bool, wizard.Plan | None]:
         cfg.get("identity", "agent_id", fallback="").strip() == wizard.PLACEHOLDER_AGENT_ID
     )
     return needs_edit, plan
+
+
+_STEP_SLUGS = {
+    "bootstrap ~/.firekeep": "bootstrap-home",
+    "configure ~/.firekeep/config": "configure-config",
+    "create venv": "create-venv",
+    "pip install firekeep-client": "pip-install-client",
+    "lock down config permissions": "lock-config-perms",
+    "select this version (current link)": "select-version",
+    "render runtime adapters": "render-adapters",
+    "add firekeep to PATH": "add-to-path",
+    "join Firekeep server": "join-server",
+}
+
+
+def _stage_slug(step: str) -> tuple[str, dict]:
+    """cmd_install `step` string -> (stage slug, union extras). The two
+    interpolated steps become a fixed slug + an enum field — never an
+    interpolated string (spec, Event schema). Unmapped -> ("", {}), which
+    build_event drops; the exhaustiveness test keeps this table current."""
+    if step in _STEP_SLUGS:
+        return _STEP_SLUGS[step], {}
+    if step.startswith("render ") and step.endswith(" adapter"):
+        return "render-adapter", {"runtime": step[len("render "):-len(" adapter")]}
+    if step.startswith("pip install ") and step.endswith(" (local checkout dir)"):
+        return "pip-install-dex", {"dex": step[len("pip install "):-len(" (local checkout dir)")]}
+    return "", {}
 
 
 def cmd_install(args) -> int:
@@ -569,12 +610,16 @@ def cmd_install(args) -> int:
     except resolver.ConfigMigrationConflict as exc:
         print(f"firekeep: install stopped: {exc}", file=sys.stderr)
         return 3
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
+        slug, extra = _stage_slug(step)
+        report.emit("install", slug, exc=exc, exit_code=1, **extra)
         print(f"firekeep: install failed at '{step}': timed out after "
               f"{_INSTALL_TIMEOUT:.0f}s (override with FIREKEEP_INSTALL_TIMEOUT)",
               file=sys.stderr)
         return 1
     except Exception as exc:  # noqa: BLE001 - installer surface, fail loud not raw
+        slug, extra = _stage_slug(step)
+        report.emit("install", slug, exc=exc, exit_code=1, **extra)
         print(f"firekeep: install failed at '{step}': {exc}", file=sys.stderr)
         return 1
 
@@ -868,6 +913,7 @@ def _check_health(cfg) -> list[tuple[str, str, str]]:
     # TransportError. A doctor check must never let that escape uncaught and
     # crash the whole preflight before later checks get to run.
     out = []
+    failures: list[tuple[str, str]] = []
     for svc in resolver.SERVICES:
         try:
             ep = resolver.resolve(svc, cfg=cfg)
@@ -875,6 +921,15 @@ def _check_health(cfg) -> list[tuple[str, str, str]]:
             out.append((svc, "ok", ep.rest_base))
         except (TransportError, resolver.ConfigError, OSError) as exc:
             out.append((svc, "fail", f"{_ep_url(svc, cfg)}: {exc}"))
+            failures.append((svc, report.map_error(exc)))
+    # All services down is ONE fact ("no Keep reachable"), reported as the
+    # `server` stage; a partial failure is per-service signal (spec, stage
+    # (connectivity)). _ep_url is never read by the report path.
+    if failures and len(failures) == len(resolver.SERVICES):
+        report.emit("connectivity", "server", error=failures[0][1], cfg=cfg)
+    else:
+        for svc, category in failures:
+            report.emit("connectivity", svc, error=category, cfg=cfg)
     return out
 
 
@@ -1705,9 +1760,11 @@ def run_doctor(cfg=None) -> list[tuple[str, str, str]]:
 # --- doctor --report: opt-in, per-invocation, redacted -----------------------
 #
 # Design record: firekeep.ai/privacy.html discloses this exact mechanism.
-# There is deliberately NO persisted config toggle (no [telemetry] section) —
+# For DOCTOR --REPORT there is deliberately NO persisted config toggle —
 # every send is one explicit act (typing --report on this one command), never
 # a standing "always send" setting that could be flipped once and forgotten.
+# The separate field-failure channel (report.py) has its own consented
+# [report] section and its own disclosure; typing --report never writes it.
 # Nothing about doctor's automatic behavior changes; without the flag this
 # code path is never reached and no network call to firekeep.ai happens.
 DOCTOR_REPORT_URL = "https://firekeep.ai/doctor-report.php"
@@ -2526,6 +2583,23 @@ def cmd_doctor(args) -> int:
     hint = _generic_hint()
     if hint is not None:
         print(hint)
+    # One-time consent ask — the migration path for machines installed before
+    # this channel existed (spec, 'Where the asks live'). After the rows, never
+    # delaying them; EOF/^C record nothing and rc is already decided above.
+    # Fires on both spellings (`doctor` and the `status` alias) — one code path.
+    try:
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            path = _config_path()
+            # _raw_config, not load_config: the ask only touches [report] and
+            # must never trigger load_config's [server] migration/validation
+            # as a side effect of running doctor.
+            cfg = resolver._raw_config(path)
+            if report.ask_consent(cfg):
+                with open(path, "w", encoding="utf-8") as handle:
+                    cfg.write(handle)
+                state._private(path)
+    except Exception:  # noqa: BLE001 — the ask must never affect doctor
+        pass
     if getattr(args, "report", False):
         print(_send_doctor_report(results))
     return rc
@@ -2567,8 +2641,24 @@ def _write_verified_sums(text: str) -> Path:
     return path
 
 
+def _report_consent_env_value(cfg) -> str | None:
+    """The FIREKEEP_REPORT_CONSENT value to hand a bootstrap re-exec, so an
+    interactive `firekeep update` never re-asks a question already answered
+    (spec: "re-renders, updates and non-interactive runs never ask and never
+    rewrite a recorded answer"). Reads the recorded config answer directly —
+    not report.is_enabled, which also folds in this SESSION's env overrides
+    and personal-mode bypass, neither of which belongs in what we tell the
+    NEXT process was already decided. None when no answer is recorded: the
+    bootstrap's own prompt is then the first interactive opportunity, which
+    is acceptable."""
+    if not report.has_answer(cfg):
+        return None
+    return "1" if cfg.get("report", "failures", fallback="").strip().lower() == "true" else "0"
+
+
 def _exec_bootstrap(script: Path, version: str | None, base: str,
-                    *, sums_file: "Path | None" = None) -> None:
+                    *, sums_file: "Path | None" = None,
+                    report_consent: str | None = None) -> None:
     """Hand this process over to the bootstrap script.
 
     POSIX: a true execve — the bootstrap replaces us. Windows: a FOREGROUND child we
@@ -2588,6 +2678,10 @@ def _exec_bootstrap(script: Path, version: str | None, base: str,
     the bootstrap verifies artifacts against the SAME bytes the client verified, never a
     second network fetch. When absent, any inherited FIREKEEP_SUMS_FILE is dropped — a
     stale or caller-set file must not masquerade as this update's verified sums.
+
+    `report_consent` ("1"/"0"/None, from _report_consent_env_value) is handed through as
+    FIREKEEP_REPORT_CONSENT so the bootstrap's own consent block (which treats a pre-set
+    value as already-answered) never re-asks a question this machine already answered.
     """
     env = dict(os.environ)
     env["FIREKEEP_DIST_BASE"] = base
@@ -2597,6 +2691,8 @@ def _exec_bootstrap(script: Path, version: str | None, base: str,
         env["FIREKEEP_SUMS_FILE"] = str(sums_file)
     else:
         env.pop("FIREKEEP_SUMS_FILE", None)
+    if report_consent is not None:
+        env["FIREKEEP_REPORT_CONSENT"] = report_consent
     # Hand the CLIENT'S pinned signing key to the bootstrap's own best-effort
     # minisign check (it otherwise trusts whatever key the HOST baked into the
     # script — circular on the update path). The bootstrap already accepts
@@ -2759,7 +2855,8 @@ def cmd_update(args) -> int:
         return 1
 
     print(f"firekeep: updating {__version__} -> {target}")
-    _exec_bootstrap(script, target, base, sums_file=sums_file)
+    _exec_bootstrap(script, target, base, sums_file=sums_file,
+                     report_consent=_report_consent_env_value(cfg))
     return 0  # POSIX never reaches this (execve replaced the image)
 
 
@@ -2805,6 +2902,10 @@ def _build_parser() -> argparse.ArgumentParser:
     inst.add_argument("--no-modify-path", action="store_true",
                       help="do not put a `firekeep` launcher on PATH (also via "
                            "FIREKEEP_NO_MODIFY_PATH)")
+    inst.add_argument("--report-failures", action="store_true",
+                      dest="report_failures",
+                      help="enable anonymous failure reporting without prompting "
+                           "(headless/CI opt-in; see firekeep.ai/privacy.html)")
     inst.set_defaults(func=cmd_install)
 
     # Positional-choices rather than nested subparsers — the `personal` shape
@@ -3015,6 +3116,10 @@ def main(argv=None) -> int:
             pass  # exotic stream (test double, closed pipe) — leave it alone
     parser = _build_parser()
     args = parser.parse_args(argv)
+    # Field-failure spool flush (spec, flush point 1): the commands a
+    # failed-install user retries are exactly these. is_enabled + empty-spool
+    # make the common case one stat call; never raises, ~2s worst case.
+    report.flush()
     func = getattr(args, "func", None)
     if func is None:
         parser.print_help()
