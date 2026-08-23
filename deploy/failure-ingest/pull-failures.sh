@@ -3,9 +3,18 @@
 # delete remote after verified local write -> ingest.py -> done/.
 # Cron: */30 * * * * /opt/firekeep/failure-ingest/pull-failures.sh
 set -eu
-HOST="u784952002@82.180.175.177"      # the documented Hostinger ssh endpoint
-PORT=65002
-REMOTE="domains/firekeep.ai/failure-stats"
+
+# HOST/PORT/REMOTE identify the Hostinger ssh endpoint that runs
+# failure-report.php (firekeep-site repo). Never hard-coded here -- see
+# README.md "Where HOST/PORT/REMOTE come from" -- sourced from a root-only
+# env file when present, and always overridable from the environment (e.g.
+# the crontab line itself, same pattern as FIREKEEP_INTERNAL_KEY below).
+ENV_FILE="${FIREKEEP_INGEST_ENV_FILE:-/etc/firekeep/failure-ingest.env}"
+[ -r "${ENV_FILE}" ] && . "${ENV_FILE}"
+: "${HOST:?HOST is not set -- see deploy/failure-ingest/README.md 'Where HOST/PORT/REMOTE come from'}"
+: "${PORT:?PORT is not set -- see deploy/failure-ingest/README.md 'Where HOST/PORT/REMOTE come from'}"
+: "${REMOTE:?REMOTE is not set -- see deploy/failure-ingest/README.md 'Where HOST/PORT/REMOTE come from'}"
+
 BASE="/var/lib/firekeep/failure-ingest"
 INBOX="${BASE}/inbox"; DONE="${BASE}/done"; mkdir -p "${INBOX}" "${DONE}"
 

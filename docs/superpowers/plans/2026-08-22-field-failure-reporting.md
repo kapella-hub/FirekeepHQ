@@ -2503,8 +2503,8 @@ Write these four functions fully (the test file above pins validate_line/aggrega
 # delete remote after verified local write -> ingest.py -> done/.
 # Cron: */30 * * * * /opt/firekeep/failure-ingest/pull-failures.sh
 set -eu
-HOST="u784952002@82.180.175.177"      # the documented Hostinger ssh endpoint
-PORT=65002
+HOST="<ssh-user>@<hostinger-endpoint>"      # sourced from /etc/firekeep/failure-ingest.env, never hard-coded
+PORT=<port>
 REMOTE="domains/firekeep.ai/failure-stats"
 BASE="/var/lib/firekeep/failure-ingest"
 INBOX="${BASE}/inbox"; DONE="${BASE}/done"; mkdir -p "${INBOX}" "${DONE}"
