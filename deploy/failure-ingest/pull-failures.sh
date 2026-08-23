@@ -10,7 +10,12 @@ set -eu
 # env file when present, and always overridable from the environment (e.g.
 # the crontab line itself, same pattern as FIREKEEP_INTERNAL_KEY below).
 ENV_FILE="${FIREKEEP_INGEST_ENV_FILE:-/etc/firekeep/failure-ingest.env}"
+# set -a is load-bearing: ingest.py reads FIREKEEP_INTERNAL_KEY from its own
+# process environment, and a plain `.` leaves sourced vars shell-local — the
+# key never reached the child and every POST 401'd (found live, first deploy).
+set -a
 [ -r "${ENV_FILE}" ] && . "${ENV_FILE}"
+set +a
 : "${HOST:?HOST is not set -- see deploy/failure-ingest/README.md 'Where HOST/PORT/REMOTE come from'}"
 : "${PORT:?PORT is not set -- see deploy/failure-ingest/README.md 'Where HOST/PORT/REMOTE come from'}"
 : "${REMOTE:?REMOTE is not set -- see deploy/failure-ingest/README.md 'Where HOST/PORT/REMOTE come from'}"
