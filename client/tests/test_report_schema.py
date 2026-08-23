@@ -93,7 +93,6 @@ def test_transport_error_category_assigned_at_wrap_time():
     assert _as_transport_error(TimeoutError(), method="GET", url="https://x", timeout=1).category == "timeout"
 
 
-@pytest.mark.xfail(reason="cli wiring lands in Task 4", strict=True)
 def test_install_stages_cover_every_cmd_install_step():
     """A new install step with no mapping must FAIL here, not land in 'other'
     (spec: Testing, 'Enum exhaustiveness')."""

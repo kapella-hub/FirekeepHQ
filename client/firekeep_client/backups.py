@@ -650,6 +650,14 @@ def doctor_row(cfg=None, *, reachable: bool = True) -> tuple[str, str, str]:
     try:
         payload = fetch_status(cfg, timeout=DOCTOR_TIMEOUT)
     except BackupError as exc:
+        # Field-failure seam (spec, capture point 2 — doctor connectivity):
+        # BackupError is a message-only wrapper (`raise BackupError(str(exc))
+        # from exc`), so the classifiable original is __cause__, not exc
+        # itself. Local import avoids a module-load cycle with report ->
+        # resolver. Never pass the row's detail text near the event.
+        from firekeep_client import report
+        report.emit("connectivity", "backup",
+                    error=report.map_error(exc.__cause__ or exc), cfg=cfg)
         return ("backup", "warn",
                 f"cannot ask the server about backups ({exc}){linked}")
     listed = entries(payload)

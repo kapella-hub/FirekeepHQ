@@ -321,7 +321,7 @@ def main(argv: list[str] | None = None) -> int:
         _emit({"systemMessage": str(e)})
         return 0
     except Exception as e:  # noqa: BLE001 — the dispatcher itself must never raise.
-        hooklog.log_failure(core_name, f"dispatcher crashed: {e!r}")
+        hooklog.log_failure(core_name, f"dispatcher crashed: {e!r}", exc=e)
         return 0
 
 

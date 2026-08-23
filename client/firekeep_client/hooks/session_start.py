@@ -96,7 +96,7 @@ def run(payload: dict) -> dict:
     try:
         state.clear_session_stash(agent)
     except Exception as e:  # noqa: BLE001
-        hooklog.log_failure(_HOOK, f"session stash clear failed: {e}")
+        hooklog.log_failure(_HOOK, f"session stash clear failed: {e}", exc=e)
 
     # 0b. Runbook bundle handshake (Enforced Runbooks Phase B): GET
     # /procedures/bundle -> atomic last-known-good store -> POST
@@ -109,7 +109,7 @@ def run(payload: dict) -> dict:
     try:
         runbooks.sync_bundle(cfg, session_id=payload.get("session_id"))
     except Exception as e:  # noqa: BLE001 — the handshake must never cost a session
-        hooklog.log_failure(_HOOK, f"runbook bundle sync failed: {e}")
+        hooklog.log_failure(_HOOK, f"runbook bundle sync failed: {e}", exc=e)
 
     # Briefing suppression: FIREKEEP_BRIEFING=off skips the server fetch entirely,
     # returning the minimal fallback. Useful when the briefing text is too verbose
@@ -135,9 +135,9 @@ def run(payload: dict) -> dict:
                 try:
                     state.write_session_stash(agent, briefing_id=data["briefing_id"])
                 except Exception as e:  # noqa: BLE001
-                    hooklog.log_failure(_HOOK, f"session stash write failed: {e}")
+                    hooklog.log_failure(_HOOK, f"session stash write failed: {e}", exc=e)
         except Exception as e:  # noqa: BLE001 — availability over enforcement
-            hooklog.log_failure(_HOOK, f"GET /briefing failed: {e}")
+            hooklog.log_failure(_HOOK, f"GET /briefing failed: {e}", exc=e)
 
     # 2. Register presence with Relay (best-effort).
     try:
@@ -147,7 +147,7 @@ def run(payload: dict) -> dict:
             args["session_id"] = sid
         _mcp.call_tool("relay", "relay_register", args, cfg=cfg)
     except Exception as e:  # noqa: BLE001
-        hooklog.log_failure(_HOOK, f"relay_register failed: {e}")
+        hooklog.log_failure(_HOOK, f"relay_register failed: {e}", exc=e)
 
     # 3. Pin the registration epoch for stop.py's <5s race guard (unconditional,
     #    mirrors briefing.sh writing the reg timestamp on every start). Shared
@@ -158,7 +158,7 @@ def run(payload: dict) -> dict:
     try:
         state.mark_registered(agent)
     except Exception as e:  # noqa: BLE001
-        hooklog.log_failure(_HOOK, f"scratch write failed: {e}")
+        hooklog.log_failure(_HOOK, f"scratch write failed: {e}", exc=e)
 
     # 4. Auto-index this workspace for symdex, sync the folders a human gave
     #    docdex, and sync the mailboxes a human gave maildex (all detached; see

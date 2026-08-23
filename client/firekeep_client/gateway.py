@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from firekeep_client import dexes
+from firekeep_client import dexes, report
 from firekeep_client.adapters.base import (
     CHAT_INSTRUCTIONS,
     CHAT_INSTRUCTIONS_HASH,
@@ -417,6 +417,7 @@ class Gateway:
                 )
             except Exception as exc:
                 backend.state = f"unavailable: {exc}"
+                report.emit("runtime", "gateway-call", exc=exc, backend=backend.name)
                 return self._error(request_id, -32000, f"{backend.name} unavailable: {exc}")
             response["id"] = request_id
             return response
@@ -460,6 +461,7 @@ def run(runtime: str | None = None) -> int:
                 message = json.loads(line)
                 response = gateway.handle(message)
             except Exception as exc:
+                report.emit("runtime", "gateway-dispatch", exc=exc)
                 response = Gateway._error(None, -32603, f"gateway error: {exc}")
             if response is not None:
                 sys.stdout.write(json.dumps(response, separators=(",", ":")) + "\n")

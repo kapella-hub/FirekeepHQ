@@ -26,6 +26,7 @@ from firekeep_client import (
     dexes,
     maildexsync,
     pathenv,
+    report,
     resolver,
     serverinit,
     state,
@@ -425,6 +426,33 @@ def _configure(args) -> tuple[bool, wizard.Plan | None]:
     return needs_edit, plan
 
 
+_STEP_SLUGS = {
+    "bootstrap ~/.firekeep": "bootstrap-home",
+    "configure ~/.firekeep/config": "configure-config",
+    "create venv": "create-venv",
+    "pip install firekeep-client": "pip-install-client",
+    "lock down config permissions": "lock-config-perms",
+    "select this version (current link)": "select-version",
+    "render runtime adapters": "render-adapters",
+    "add firekeep to PATH": "add-to-path",
+    "join Firekeep server": "join-server",
+}
+
+
+def _stage_slug(step: str) -> tuple[str, dict]:
+    """cmd_install `step` string -> (stage slug, union extras). The two
+    interpolated steps become a fixed slug + an enum field — never an
+    interpolated string (spec, Event schema). Unmapped -> ("", {}), which
+    build_event drops; the exhaustiveness test keeps this table current."""
+    if step in _STEP_SLUGS:
+        return _STEP_SLUGS[step], {}
+    if step.startswith("render ") and step.endswith(" adapter"):
+        return "render-adapter", {"runtime": step[len("render "):-len(" adapter")]}
+    if step.startswith("pip install ") and step.endswith(" (local checkout dir)"):
+        return "pip-install-dex", {"dex": step[len("pip install "):-len(" (local checkout dir)")]}
+    return "", {}
+
+
 def cmd_install(args) -> int:
     # argparse cannot express "--agents-md only with --runtime generic", so the
     # check is manual — and it happens FIRST, before anything is created: a flag
@@ -569,12 +597,16 @@ def cmd_install(args) -> int:
     except resolver.ConfigMigrationConflict as exc:
         print(f"firekeep: install stopped: {exc}", file=sys.stderr)
         return 3
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
+        slug, extra = _stage_slug(step)
+        report.emit("install", slug, exc=exc, exit_code=1, **extra)
         print(f"firekeep: install failed at '{step}': timed out after "
               f"{_INSTALL_TIMEOUT:.0f}s (override with FIREKEEP_INSTALL_TIMEOUT)",
               file=sys.stderr)
         return 1
     except Exception as exc:  # noqa: BLE001 - installer surface, fail loud not raw
+        slug, extra = _stage_slug(step)
+        report.emit("install", slug, exc=exc, exit_code=1, **extra)
         print(f"firekeep: install failed at '{step}': {exc}", file=sys.stderr)
         return 1
 
@@ -868,6 +900,7 @@ def _check_health(cfg) -> list[tuple[str, str, str]]:
     # TransportError. A doctor check must never let that escape uncaught and
     # crash the whole preflight before later checks get to run.
     out = []
+    failures: list[tuple[str, str]] = []
     for svc in resolver.SERVICES:
         try:
             ep = resolver.resolve(svc, cfg=cfg)
@@ -875,6 +908,15 @@ def _check_health(cfg) -> list[tuple[str, str, str]]:
             out.append((svc, "ok", ep.rest_base))
         except (TransportError, resolver.ConfigError, OSError) as exc:
             out.append((svc, "fail", f"{_ep_url(svc, cfg)}: {exc}"))
+            failures.append((svc, report.map_error(exc)))
+    # All services down is ONE fact ("no Keep reachable"), reported as the
+    # `server` stage; a partial failure is per-service signal (spec, stage
+    # (connectivity)). _ep_url is never read by the report path.
+    if failures and len(failures) == len(resolver.SERVICES):
+        report.emit("connectivity", "server", error=failures[0][1], cfg=cfg)
+    else:
+        for svc, category in failures:
+            report.emit("connectivity", svc, error=category, cfg=cfg)
     return out
 
 
