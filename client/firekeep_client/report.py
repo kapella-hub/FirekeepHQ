@@ -246,7 +246,12 @@ def ask_consent(cfg) -> bool:
         if not sys.stdin.isatty():
             return False
         try:
-            answer = input(CONSENT_PROMPT).strip().lower()
+            # Prompt printed explicitly (not passed to input()) so it is visible
+            # even to a caller/test that replaces input() outright and would
+            # otherwise never echo it — the real terminal experience is
+            # unchanged since input() still writes nothing further before it reads.
+            print(CONSENT_PROMPT, end="", flush=True)
+            answer = input().strip().lower()
         except (EOFError, KeyboardInterrupt):
             print()
             return False

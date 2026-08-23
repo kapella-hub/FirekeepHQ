@@ -364,6 +364,15 @@ def _apply_flags(cfg, args) -> bool:
     if getattr(args, "dist_base", None):
         wizard.set_dist_base(cfg, args.dist_base)
         touched = True
+    pre = os.environ.get("FIREKEEP_REPORT_CONSENT", "").strip()
+    if getattr(args, "report_failures", False):
+        report.record_consent(cfg, True)
+        touched = True
+    elif pre in ("0", "1"):
+        # The bootstrap asked before provisioning (spec decision 6); the
+        # non-interactive hand-off must not lose the human's answer.
+        report.record_consent(cfg, pre == "1")
+        touched = True
     return touched
 
 
@@ -1747,9 +1756,11 @@ def run_doctor(cfg=None) -> list[tuple[str, str, str]]:
 # --- doctor --report: opt-in, per-invocation, redacted -----------------------
 #
 # Design record: firekeep.ai/privacy.html discloses this exact mechanism.
-# There is deliberately NO persisted config toggle (no [telemetry] section) —
+# For DOCTOR --REPORT there is deliberately NO persisted config toggle —
 # every send is one explicit act (typing --report on this one command), never
 # a standing "always send" setting that could be flipped once and forgotten.
+# The separate field-failure channel (report.py) has its own consented
+# [report] section and its own disclosure; typing --report never writes it.
 # Nothing about doctor's automatic behavior changes; without the flag this
 # code path is never reached and no network call to firekeep.ai happens.
 DOCTOR_REPORT_URL = "https://firekeep.ai/doctor-report.php"
@@ -2568,6 +2579,23 @@ def cmd_doctor(args) -> int:
     hint = _generic_hint()
     if hint is not None:
         print(hint)
+    # One-time consent ask — the migration path for machines installed before
+    # this channel existed (spec, 'Where the asks live'). After the rows, never
+    # delaying them; EOF/^C record nothing and rc is already decided above.
+    # Fires on both spellings (`doctor` and the `status` alias) — one code path.
+    try:
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            path = _config_path()
+            # _raw_config, not load_config: the ask only touches [report] and
+            # must never trigger load_config's [server] migration/validation
+            # as a side effect of running doctor.
+            cfg = resolver._raw_config(path)
+            if report.ask_consent(cfg):
+                with open(path, "w", encoding="utf-8") as handle:
+                    cfg.write(handle)
+                state._private(path)
+    except Exception:  # noqa: BLE001 — the ask must never affect doctor
+        pass
     if getattr(args, "report", False):
         print(_send_doctor_report(results))
     return rc
@@ -2847,6 +2875,10 @@ def _build_parser() -> argparse.ArgumentParser:
     inst.add_argument("--no-modify-path", action="store_true",
                       help="do not put a `firekeep` launcher on PATH (also via "
                            "FIREKEEP_NO_MODIFY_PATH)")
+    inst.add_argument("--report-failures", action="store_true",
+                      dest="report_failures",
+                      help="enable anonymous failure reporting without prompting "
+                           "(headless/CI opt-in; see firekeep.ai/privacy.html)")
     inst.set_defaults(func=cmd_install)
 
     # Positional-choices rather than nested subparsers — the `personal` shape
