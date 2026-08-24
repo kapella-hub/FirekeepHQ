@@ -375,10 +375,14 @@ def create_patterns_router(get_replay_redis) -> APIRouter:
 
             ds = await get_dataset(r, exp.dataset_id)
             if ds and ds.metrics_summary:
-                baseline = ds.metrics_summary.get("success_rate", 0.5)
-                try:
-                    result["recommended_sample_size"] = minimum_sample_size(baseline_rate=baseline)
-                except Exception:
+                baseline = ds.metrics_summary.get("success_rate")
+                if isinstance(baseline, (int, float)):
+                    try:
+                        result["recommended_sample_size"] = minimum_sample_size(
+                            baseline_rate=baseline)
+                    except Exception:
+                        result["recommended_sample_size"] = None
+                else:
                     result["recommended_sample_size"] = None
 
             return {"experiment": result}

@@ -401,10 +401,12 @@ class TestRecentFailureRule:
         from app.patterns.models import SessionFeatures
 
         features = [
-            SessionFeatures(session_id=f"s{i}", outcome="failure", file_paths=["src/buggy.py"])
+            SessionFeatures(session_id=f"s{i}", outcome="failure",
+                            outcome_source="task_result", file_paths=["src/buggy.py"])
             for i in range(3)
         ] + [
-            SessionFeatures(session_id="s10", outcome="success", file_paths=["src/buggy.py"]),
+            SessionFeatures(session_id="s10", outcome="success",
+                            outcome_source="task_result", file_paths=["src/buggy.py"]),
         ]
 
         with patch("app.patterns.store.get_all_features", new_callable=AsyncMock, return_value=features):
@@ -418,10 +420,14 @@ class TestRecentFailureRule:
         from app.patterns.models import SessionFeatures
 
         features = [
-            SessionFeatures(session_id="s1", outcome="success", file_paths=["src/good.py"]),
-            SessionFeatures(session_id="s2", outcome="success", file_paths=["src/good.py"]),
-            SessionFeatures(session_id="s3", outcome="success", file_paths=["src/good.py"]),
-            SessionFeatures(session_id="s4", outcome="failure", file_paths=["src/good.py"]),
+            SessionFeatures(session_id="s1", outcome="success",
+                            outcome_source="task_result", file_paths=["src/good.py"]),
+            SessionFeatures(session_id="s2", outcome="success",
+                            outcome_source="task_result", file_paths=["src/good.py"]),
+            SessionFeatures(session_id="s3", outcome="success",
+                            outcome_source="task_result", file_paths=["src/good.py"]),
+            SessionFeatures(session_id="s4", outcome="failure",
+                            outcome_source="task_result", file_paths=["src/good.py"]),
         ]
 
         with patch("app.patterns.store.get_all_features", new_callable=AsyncMock, return_value=features):
@@ -455,6 +461,31 @@ class TestRecentFailureRule:
             rule = RecentFailureRule(get_replay_redis=lambda: MagicMock())
             action, risk, reason = await rule.evaluate(PolicyContext(file_path="src/main.py"))
             assert action == "allow"
+
+
+@pytest.mark.asyncio
+async def test_unknown_sessions_do_not_dilute_recent_file_failure_rate():
+    from app.patterns.models import SessionFeatures
+    graded_failures = [
+        SessionFeatures(
+            session_id=f"g{i}", outcome="failure",
+            outcome_source="task_result", file_paths=["src/buggy.py"])
+        for i in range(3)
+    ]
+    unknown = [
+        SessionFeatures(session_id=f"u{i}", file_paths=["src/buggy.py"])
+        for i in range(17)
+    ]
+    with patch(
+        "app.patterns.store.get_all_features",
+        new_callable=AsyncMock,
+        return_value=graded_failures + unknown,
+    ):
+        rule = RecentFailureRule(get_replay_redis=lambda: MagicMock())
+        action, _, reason = await rule.evaluate(
+            PolicyContext(file_path="src/buggy.py"))
+    assert action == "warn"
+    assert "3/3" in reason
 
 
 # ---------------------------------------------------------------------------

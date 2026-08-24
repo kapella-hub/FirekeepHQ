@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 
 import redis.asyncio as aioredis
 
-from app.patterns.models import PatternCard, SessionFeatures
+from app.patterns.models import PatternCard, SessionFeatures, graded_only
 from app.patterns.store import get_all_features, get_patterns
 
 logger = logging.getLogger(__name__)
@@ -35,12 +35,13 @@ def _pattern_id(pattern_type: str, key: str) -> str:
     return f"pat_{pattern_type}_{h}"
 
 
-def _success_rate(features: list[SessionFeatures]) -> float:
-    """Compute success rate for a list of features."""
-    if not features:
-        return 0.0
-    successes = sum(1 for f in features if f.outcome == "success")
-    return successes / len(features)
+def _success_rate(features: list[SessionFeatures]) -> float | None:
+    """Compute success rate over graded features only. None if nothing graded."""
+    graded = graded_only(features)
+    if not graded:
+        return None
+    successes = sum(1 for f in graded if f.outcome == "success")
+    return successes / len(graded)
 
 
 # ---------------------------------------------------------------------------
@@ -364,31 +365,35 @@ async def analyze_patterns(
         List of PatternCards sorted by confidence descending.
     """
     all_features = await get_all_features(replay_redis)
+    graded_features = graded_only(all_features)
 
-    if len(all_features) < min_sessions:
+    if len(graded_features) < min_sessions:
         logger.debug(
-            "Not enough sessions for pattern analysis (%d < %d)",
-            len(all_features), min_sessions,
+            "Not enough graded sessions for pattern analysis (%d < %d)",
+            len(graded_features), min_sessions,
         )
         return []
 
-    baseline_rate = _success_rate(all_features)
+    baseline_rate = _success_rate(graded_features)
+    if baseline_rate is None:
+        return []
+
     patterns: list[PatternCard] = []
 
     # Run each detector
-    p = _detect_memory_first(all_features, baseline_rate)
+    p = _detect_memory_first(graded_features, baseline_rate)
     if p:
         patterns.append(p)
 
-    patterns.extend(_detect_file_hotspot(all_features, baseline_rate))
-    patterns.extend(_detect_tool_sequence(all_features, baseline_rate))
+    patterns.extend(_detect_file_hotspot(graded_features, baseline_rate))
+    patterns.extend(_detect_tool_sequence(graded_features, baseline_rate))
 
-    p = _detect_memory_usage(all_features, baseline_rate)
+    p = _detect_memory_usage(graded_features, baseline_rate)
     if p:
         patterns.append(p)
 
-    patterns.extend(_detect_duration(all_features, baseline_rate))
-    patterns.extend(_detect_failure_mode(all_features, baseline_rate))
+    patterns.extend(_detect_duration(graded_features, baseline_rate))
+    patterns.extend(_detect_failure_mode(graded_features, baseline_rate))
 
     # Set last_matched_at on all newly discovered patterns
     now = datetime.now(timezone.utc)
@@ -422,5 +427,5 @@ async def analyze_patterns(
     # Sort by confidence descending
     patterns.sort(key=lambda p: p.confidence, reverse=True)
 
-    logger.info("Pattern analysis found %d patterns from %d sessions", len(patterns), len(all_features))
+    logger.info("Pattern analysis found %d patterns from %d graded sessions", len(patterns), len(graded_features))
     return patterns

@@ -168,9 +168,12 @@ class RecentFailureRule(PolicyRule):
         try:
             r: aioredis.Redis = self._get_redis()
             from app.patterns.store import get_all_features
+            from app.patterns.models import graded_only
 
-            # Check recent sessions for failures involving this file
-            features = await get_all_features(r, limit=20)
+            # Check recent sessions for failures involving this file. Rates
+            # count graded evidence only -- an unknown-outcome session must
+            # not dilute (or inflate) a real failure rate.
+            features = graded_only(await get_all_features(r, limit=20))
             if not features:
                 return ("allow", 0.0, "")
 

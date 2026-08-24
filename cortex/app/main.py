@@ -552,8 +552,11 @@ def _register_feature_routers(app: FastAPI) -> None:
             """Return True if the target has recent failures in the pattern store."""
             try:
                 from app.patterns.store import get_all_features
+                from app.patterns.models import graded_only
                 r = getattr(app.state, "replay_redis", None) or app.state.redis_client
-                features = await get_all_features(r, limit=20)
+                # Rates count graded evidence only (outcome truth, 2026-08-23);
+                # mirrors RecentFailureRule in app.policy.rules.
+                features = graded_only(await get_all_features(r, limit=20))
                 if not features:
                     return False
                 target_norm = target.replace("\\", "/")

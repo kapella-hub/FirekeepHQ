@@ -9,9 +9,10 @@ import json
 import logging
 import re
 
+import redis
 import redis.asyncio as aioredis
 
-from app.patterns.models import Dataset, Experiment, PatternCard, SessionFeatures
+from app.patterns.models import Dataset, Experiment, PatternCard, SessionFeatures, graded_only
 from app.patterns.lifecycle import apply_lifecycle
 
 logger = logging.getLogger(__name__)
@@ -39,15 +40,40 @@ async def store_features(
     features: SessionFeatures,
     ttl_days: int = 30,
 ) -> bool:
-    """Store extracted features for a session. Returns True on success."""
-    try:
-        key = f"{_FEATURE_PREFIX}{features.session_id}"
-        data = features.model_dump_json()
-        await r.set(key, data, ex=ttl_days * 86400)
+    """Store extracted features for a session. Returns True on success.
 
-        ts = features.created_at.timestamp()
-        await r.zadd(_FEATURE_INDEX, {features.session_id: ts})
-        return True
+    Grade-dominant (D9e): a stalled ungraded writer, or any later legacy
+    re-extract of a session an upgrade already graded, must not regress
+    stored provenance from task_result back to legacy. Guarded by the same
+    WATCH/MULTI CAS shape as app.evals.store.store_eval.
+    """
+    key = f"{_FEATURE_PREFIX}{features.session_id}"
+    data = features.model_dump_json()
+    ttl = ttl_days * 86400
+    incoming_graded = features.outcome_source == "task_result"
+    try:
+        for _attempt in range(8):
+            try:
+                async with r.pipeline() as pipe:
+                    await pipe.watch(key)
+                    existing_raw = await pipe.get(key)
+                    if existing_raw and not incoming_graded:
+                        try:
+                            existing = SessionFeatures.model_validate_json(existing_raw)
+                            if existing.outcome_source == "task_result":
+                                await pipe.unwatch()
+                                return False        # never regress graded -> legacy
+                        except Exception:
+                            pass
+                    pipe.multi()
+                    pipe.set(key, data, ex=ttl)
+                    pipe.zadd(_FEATURE_INDEX, {features.session_id: features.created_at.timestamp()})
+                    await pipe.execute()
+                    return True
+            except redis.WatchError:
+                continue
+        logger.warning("Failed to store features for %s: CAS exhausted after 8 attempts", features.session_id)
+        return False
     except Exception as e:
         logger.warning("Failed to store features for %s: %s", features.session_id, e)
         return False
@@ -274,18 +300,17 @@ async def record_tip_shown(
     data = json.dumps({"pattern_ids": pattern_ids, "group": group})
     await r.set(key, data, ex=_DEFAULT_TTL)
 
-    # Also update the SessionFeatures if they exist
-    feature_key = f"{_FEATURE_PREFIX}{session_id}"
-    raw = await r.get(feature_key)
-    if raw:
-        try:
-            features = SessionFeatures.model_validate_json(raw)
-            features.tips_shown = pattern_ids
-            await r.set(feature_key, features.model_dump_json(), ex=_DEFAULT_TTL)
-        except Exception as e:
-            logger.debug("Failed to update features for %s: %s", session_id, e)
+    # NOTE (outcome truth, 2026-08-23, round-6 finding 3): this used to also
+    # rewrite the session's SessionFeatures record (tips_shown field) here.
+    # DELETED: nothing reads SessionFeatures.tips_shown (repo-wide search
+    # confirms only the field def and this writer touched it), and the
+    # rewrite read a whole legacy features object and wrote it back --
+    # clobbering a concurrent graded write even under XX+KEEPTTL, bypassing
+    # store_features' grade-dominance guard (D9e).
 
-    # Increment times_shown on each pattern
+    # Increment times_shown on each pattern. xx=True, keepttl=True (D11):
+    # this is bookkeeping, not a reason to refresh a card's 30-day life or
+    # resurrect one that expired between the GET and this SET.
     for pid in pattern_ids:
         pk = f"{_PATTERN_PREFIX}{pid}"
         raw = await r.get(pk)
@@ -293,7 +318,7 @@ async def record_tip_shown(
             try:
                 card = PatternCard.model_validate_json(raw)
                 card.times_shown += 1
-                await r.set(pk, card.model_dump_json(), ex=_DEFAULT_TTL)
+                await r.set(pk, card.model_dump_json(), xx=True, keepttl=True)
             except Exception as e:
                 logger.debug("Failed to update pattern %s: %s", pid, e)
 
@@ -349,8 +374,9 @@ async def compute_tip_effectiveness(
     below closes. None -> no remap (unchanged behavior).
     """
     try:
-        # Load all features
+        # Load all features -- rates below may only count graded evidence.
         features = await get_all_features(r, limit=500)
+        features = graded_only(features)
         if len(features) < 5:
             return []
 
@@ -435,9 +461,13 @@ async def compute_tip_effectiveness(
             pattern.success_without_tip = success_without
             pattern.tip_lift = tip_lift
 
-            # Persist updated stats
+            # Persist updated stats. xx=True, keepttl=True (D11): the
+            # dashboard calls GET /patterns/effectiveness on load, so a bare
+            # ex=_DEFAULT_TTL here gave fabricated-era cards a fresh 30 days
+            # per visit; xx also keeps this update-only so a card that
+            # expired between the GET and this SET stays gone.
             pk = f"{_PATTERN_PREFIX}{pid}"
-            await r.set(pk, pattern.model_dump_json(), ex=_DEFAULT_TTL)
+            await r.set(pk, pattern.model_dump_json(), xx=True, keepttl=True)
 
             entry = {
                 "id": pid,
@@ -546,6 +576,7 @@ async def materialize_dataset(r: aioredis.Redis, dataset: Dataset) -> Dataset:
     matched: list[str] = []
     success_count = 0
     failure_count = 0
+    unknown_count = 0
     total_duration = 0
     duration_count = 0
 
@@ -571,26 +602,39 @@ async def materialize_dataset(r: aioredis.Redis, dataset: Dataset) -> Dataset:
             if not goal_re.search(tag_str):
                 continue
 
-        # Outcome filter
-        if dataset.outcome_filter and f.outcome != dataset.outcome_filter:
+        # An outcome-filtered dataset admits only measured task-result
+        # provenance. A fabricated legacy "success" is excluded from
+        # membership entirely, not relabeled inside the filtered cohort.
+        if dataset.outcome_filter and (
+            f.outcome_source != "task_result"
+            or f.outcome != dataset.outcome_filter
+        ):
             continue
 
         matched.append(f.session_id)
-        if f.outcome == "success":
+        if f.outcome_source == "task_result" and f.outcome == "success":
             success_count += 1
-        else:
+        elif f.outcome_source == "task_result" and f.outcome == "failure":
             failure_count += 1
+        else:
+            unknown_count += 1
         if f.duration_ms is not None:
             total_duration += f.duration_ms
             duration_count += 1
 
+    graded_count = success_count + failure_count
     dataset.session_ids = matched
     dataset.session_count = len(matched)
     dataset.metrics_summary = {
         "success_count": success_count,
         "failure_count": failure_count,
-        "success_rate": round(success_count / len(matched), 3) if matched else 0,
-        "avg_duration_ms": round(total_duration / duration_count) if duration_count else 0,
+        "unknown_count": unknown_count,
+        "success_rate": (
+            round(success_count / graded_count, 3) if graded_count else None
+        ),
+        "avg_duration_ms": (
+            round(total_duration / duration_count) if duration_count else 0
+        ),
     }
 
     await store_dataset(r, dataset)

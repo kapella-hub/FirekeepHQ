@@ -10,9 +10,18 @@ import os
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
+import fakeredis.aioredis
 import pytest
+import pytest_asyncio
 
 from app.patterns.models import PatternCard, SessionFeatures, Dataset, Experiment
+
+
+@pytest_asyncio.fixture
+async def rr():
+    r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    yield r
+    await r.aclose()
 
 # Gate experiment/dataset/statistics tests behind the feature flag
 _EXPERIMENTS_ENABLED = os.environ.get("PATTERN_EXPERIMENTS_ENABLED", "false").lower() == "true"
@@ -40,7 +49,7 @@ class TestSessionFeatures:
     def test_creation_defaults(self):
         f = SessionFeatures(session_id="s1")
         assert f.session_id == "s1"
-        assert f.outcome == "success"
+        assert f.outcome == "unknown"
         assert f.event_count == 0
         assert f.memory_reads == 0
         assert f.memory_writes == 0
@@ -155,8 +164,13 @@ def _make_features(
     n_failure: int = 5,
     memory_first_success: bool = True,
     files: list[str] | None = None,
+    outcome_source: str = "task_result",
 ) -> list[SessionFeatures]:
-    """Create a list of mock SessionFeatures for testing."""
+    """Create a list of mock SessionFeatures for testing.
+
+    Defaults to outcome_source="task_result" -- these fixtures stand in for
+    graded experimental evidence in the detector/analyzer tests below.
+    """
     features = []
 
     for i in range(n_success):
@@ -164,6 +178,7 @@ def _make_features(
         features.append(SessionFeatures(
             session_id=f"success_{i}",
             outcome="success",
+            outcome_source=outcome_source,
             event_count=10,
             duration_ms=5000 + i * 1000,
             tool_sequence=seq,
@@ -182,6 +197,7 @@ def _make_features(
         features.append(SessionFeatures(
             session_id=f"failure_{i}",
             outcome="failure",
+            outcome_source=outcome_source,
             event_count=8,
             duration_ms=15000 + i * 1000,
             tool_sequence=seq,
@@ -196,6 +212,183 @@ def _make_features(
         ))
 
     return features
+
+
+# ---------------------------------------------------------------------------
+# Outcome truth: provenance + graded_only (2026-08-23)
+# ---------------------------------------------------------------------------
+
+
+class TestGradedProvenance:
+    def test_defaults_mean_legacy_and_unknown(self):
+        from app.patterns.models import SessionFeatures
+        f = SessionFeatures(session_id="s")
+        assert f.outcome == "unknown" and f.outcome_source == "legacy"
+
+    def test_old_cached_json_parses_as_legacy(self):
+        from app.patterns.models import SessionFeatures, graded_only
+        old = SessionFeatures.model_validate_json(
+            '{"session_id": "s", "outcome": "success"}')
+        assert old.outcome_source == "legacy"
+        assert graded_only([old]) == []
+
+    def test_graded_only_keeps_real_grades(self):
+        from app.patterns.models import SessionFeatures, graded_only
+        real = SessionFeatures(session_id="a", outcome="failure",
+                               outcome_source="task_result")
+        fab = SessionFeatures(session_id="b", outcome="success")  # legacy default
+        unk = SessionFeatures(session_id="c", outcome="unknown",
+                              outcome_source="task_result")  # graded "partial"
+        assert graded_only([real, fab, unk]) == [real]
+
+
+@pytest.mark.asyncio
+async def test_extractor_stamps_grade_and_provenance(monkeypatch):
+    """A REAL extractor call; reader import is function-local — patch
+    replay.reader, not the extractor module."""
+    import replay.reader as reader_mod
+    from app.evals.models import EvalResult
+    from app.patterns.extractor import extract_session_features
+
+    async def fake_summary(*a, **k):
+        return {"event_count": 2, "duration_ms": 10}
+
+    async def fake_timeline(*a, **k):
+        return {"events": [
+            {"event_type": "memory_read", "outcome": None, "payload": {}, "tags": []},
+            {"event_type": "session_end", "outcome": "success", "payload": {}, "tags": []},
+        ]}
+
+    monkeypatch.setattr(reader_mod, "get_session_summary", fake_summary)
+    monkeypatch.setattr(reader_mod, "get_session_timeline", fake_timeline)
+
+    graded = await extract_session_features(
+        None, "s1",
+        eval_result=EvalResult(session_id="s1", trigger="session_complete",
+                               task_result="success",
+                               task_result_source="self_reported"))
+    assert graded.outcome == "success" and graded.outcome_source == "task_result"
+
+    ungraded = await extract_session_features(None, "s1", eval_result=None)
+    assert ungraded.outcome == "unknown" and ungraded.outcome_source == "legacy"
+
+
+def test_success_rate_is_none_when_nothing_is_graded():
+    from app.patterns.analyzer import _success_rate
+    from app.patterns.models import SessionFeatures
+    assert _success_rate([SessionFeatures(session_id=str(i)) for i in range(6)]) is None
+
+
+@pytest.mark.asyncio
+async def test_effectiveness_does_not_extend_card_ttl(rr):
+    """D11: the dashboard calls GET /patterns/effectiveness on load; before
+    this change the persist used ex=_DEFAULT_TTL, giving fabricated-era cards
+    a fresh 30 days per visit. KEEPTTL preserves the remaining TTL."""
+    from app.patterns.models import PatternCard, SessionFeatures
+    from app.patterns.store import (
+        _PATTERN_PREFIX, compute_tip_effectiveness, record_tip_shown,
+        store_features, store_patterns,
+    )
+    await store_patterns(rr, [PatternCard(id="p1")])
+    for i in range(6):
+        await store_features(rr, SessionFeatures(
+            session_id=f"s{i}", outcome="success",
+            outcome_source="task_result"))
+    await record_tip_shown(rr, "s0", ["p1"], group="treatment")
+    key = f"{_PATTERN_PREFIX}p1"
+    await rr.expire(key, 1000)
+    before = await rr.pttl(key)
+    await compute_tip_effectiveness(rr)
+    after = await rr.pttl(key)
+    assert 0 < after <= before
+
+
+@pytest.mark.asyncio
+async def test_outcome_filtered_datasets_exclude_legacy(rr):
+    """'Success only' membership must not include fabricated legacy successes."""
+    from app.patterns.models import SessionFeatures, Dataset
+    from app.patterns.store import store_features, materialize_dataset
+    await store_features(rr, SessionFeatures(session_id="leg", outcome="success"))  # legacy
+    await store_features(rr, SessionFeatures(session_id="grd", outcome="success",
+                                             outcome_source="task_result"))
+    ds = Dataset(id="d1", name="n", outcome_filter="success")
+    out = await materialize_dataset(rr, ds)
+    assert out.session_ids == ["grd"]
+    assert out.metrics_summary["success_count"] == 1
+    assert out.metrics_summary.get("unknown_count", 0) == 0     # legacy filtered, not counted
+
+
+@pytest.mark.asyncio
+async def test_unfiltered_dataset_reports_unknown_instead_of_fabricated_success(rr):
+    from app.patterns.models import Dataset, SessionFeatures
+    from app.patterns.store import materialize_dataset, store_features
+    await store_features(rr, SessionFeatures(session_id="u1", outcome="success"))
+    await store_features(rr, SessionFeatures(session_id="u2", outcome="unknown"))
+    out = await materialize_dataset(rr, Dataset(id="d2", name="all"))
+    assert set(out.session_ids) == {"u1", "u2"}
+    assert out.metrics_summary == {
+        "success_count": 0,
+        "failure_count": 0,
+        "unknown_count": 2,
+        "success_rate": None,
+        "avg_duration_ms": 0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_ungraded_features_never_overwrite_graded(rr):
+    """D9e: store_features is dominance-guarded — a stalled ungraded writer
+    (or any later legacy re-extract) must not regress a graded record."""
+    from app.patterns.models import SessionFeatures
+    from app.patterns.store import store_features
+    from app.patterns.store import get_all_features
+    assert await store_features(rr, SessionFeatures(
+        session_id="s", outcome="failure", outcome_source="task_result")) is True
+    assert await store_features(rr, SessionFeatures(session_id="s")) is False  # legacy refused
+    # re-read: still the graded record
+    feats = {f.session_id: f for f in await get_all_features(rr)}
+    assert feats["s"].outcome == "failure" and feats["s"].outcome_source == "task_result"
+
+
+@pytest.mark.asyncio
+async def test_stale_legacy_feature_writer_retries_then_loses(
+    rr, monkeypatch
+):
+    """Force graded state to appear after the legacy writer's WATCH/read and
+    before EXEC. Its retry must observe provenance and refuse the regression."""
+    import redis
+    from app.patterns.models import SessionFeatures
+    from app.patterns.store import (
+        _FEATURE_INDEX, _FEATURE_PREFIX, get_all_features, store_features)
+
+    graded = SessionFeatures(
+        session_id="race", outcome="success", outcome_source="task_result")
+    legacy = SessionFeatures(session_id="race")
+    key = f"{_FEATURE_PREFIX}race"
+    real_pipeline = rr.pipeline
+    state = {"raced": False}
+
+    def racing_pipeline(*args, **kwargs):
+        pipe = real_pipeline(*args, **kwargs)
+        real_execute = pipe.execute
+
+        async def execute(*ea, **ek):
+            if not state["raced"]:
+                state["raced"] = True
+                await rr.set(key, graded.model_dump_json(), ex=86400)
+                await rr.zadd(
+                    _FEATURE_INDEX, {"race": graded.created_at.timestamp()})
+                raise redis.WatchError("graded writer won")
+            return await real_execute(*ea, **ek)
+
+        pipe.execute = execute
+        return pipe
+
+    monkeypatch.setattr(rr, "pipeline", racing_pipeline)
+    assert await store_features(rr, legacy) is False
+    stored = {f.session_id: f for f in await get_all_features(rr)}["race"]
+    assert (stored.outcome, stored.outcome_source) == (
+        "success", "task_result")
 
 
 class TestDetectors:
@@ -310,6 +503,7 @@ class TestAnalyzerRealisticData:
             features.append(SessionFeatures(
                 session_id=f"real_success_{i}",
                 outcome="success",
+                outcome_source="task_result",
                 event_count=15 + i * 3,
                 duration_ms=30000 + i * 5000,
                 tool_sequence=["memory_read", "memory_read", "file_edit", "memory_write", "file_edit"],
@@ -328,6 +522,7 @@ class TestAnalyzerRealisticData:
             features.append(SessionFeatures(
                 session_id=f"real_failure_{i}",
                 outcome="failure",
+                outcome_source="task_result",
                 event_count=20 + i * 2,
                 duration_ms=120000 + i * 10000,
                 tool_sequence=["file_edit", "file_edit", "error_handler", "file_edit", "error_handler"],
@@ -1074,9 +1269,9 @@ class TestDatasetStorage:
         from app.patterns.store import materialize_dataset
 
         features = [
-            SessionFeatures(session_id="s1", outcome="success", tags=["debug"]),
-            SessionFeatures(session_id="s2", outcome="failure", tags=["debug"]),
-            SessionFeatures(session_id="s3", outcome="success", tags=["feature"]),
+            SessionFeatures(session_id="s1", outcome="success", outcome_source="task_result", tags=["debug"]),
+            SessionFeatures(session_id="s2", outcome="failure", outcome_source="task_result", tags=["debug"]),
+            SessionFeatures(session_id="s3", outcome="success", outcome_source="task_result", tags=["feature"]),
         ]
 
         mock_redis = AsyncMock()
@@ -1228,11 +1423,13 @@ class TestStatistics:
             features.append(SessionFeatures(
                 session_id=f"trt_{i}",
                 outcome="success" if i < 40 else "failure",
+                outcome_source="task_result",
             ))
         for i in range(50):
             features.append(SessionFeatures(
                 session_id=f"ctl_{i}",
                 outcome="success" if i < 20 else "failure",
+                outcome_source="task_result",
             ))
 
         tip_groups = {}
@@ -1260,8 +1457,8 @@ class TestStatistics:
         from app.patterns.statistics import compute_experiment_results
 
         features = [
-            SessionFeatures(session_id="s1", outcome="success"),
-            SessionFeatures(session_id="s2", outcome="failure"),
+            SessionFeatures(session_id="s1", outcome="success", outcome_source="task_result"),
+            SessionFeatures(session_id="s2", outcome="failure", outcome_source="task_result"),
         ]
         tip_groups = {
             "s1": {"pattern_ids": ["pat_x"], "group": "treatment"},
@@ -1287,11 +1484,13 @@ class TestStatistics:
             features.append(SessionFeatures(
                 session_id=f"trt_{i}",
                 outcome="success" if i < 20 else "failure",
+                outcome_source="task_result",
             ))
         for i in range(40):
             features.append(SessionFeatures(
                 session_id=f"ctl_{i}",
                 outcome="success" if i < 19 else "failure",
+                outcome_source="task_result",
             ))
 
         tip_groups = {}

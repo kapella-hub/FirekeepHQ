@@ -256,6 +256,12 @@ async def compute_session_eval(
                 if count >= 5 and (count % 5 == 0 if count <= 20 else count % 10 == 0):
                     from app.patterns.analyzer import analyze_patterns
                     from app.patterns.store import store_patterns
+                    # KNOWN-DEAD, LEFT DEAD (outcome truth D11): the lifecycle import
+                    # below has never resolved (promote_all_patterns lives in store.py),
+                    # so this auto-analyze/promote block never runs — and reviving it
+                    # would rewrite EVERY stored card (promote_all_patterns stores all
+                    # cards back even when analysis returns []), resurrecting
+                    # fabricated-era cards. Revival needs card provenance — PR3.
                     from app.patterns.lifecycle import promote_all_patterns
                     patterns = await analyze_patterns(replay_redis)
                     if patterns:

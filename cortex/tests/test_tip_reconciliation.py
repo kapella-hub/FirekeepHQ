@@ -23,9 +23,11 @@ pytestmark = pytest.mark.asyncio
 
 async def _seed(r):
     # >= 5 features required (compute returns [] below that threshold)
-    await store_features(r, SessionFeatures(session_id="sess-win", outcome="success"))
+    await store_features(r, SessionFeatures(session_id="sess-win", outcome="success",
+                                             outcome_source="task_result"))
     for i in range(4):
-        await store_features(r, SessionFeatures(session_id=f"f{i}", outcome="failure"))
+        await store_features(r, SessionFeatures(session_id=f"f{i}", outcome="failure",
+                                                 outcome_source="task_result"))
     await store_patterns(r, [PatternCard(id="pat1", description="memory-first")])
     # Tip recorded under a BRIEFING_ID (32-hex), not the session_id — the live
     # strategy_tips_section path.
@@ -65,7 +67,8 @@ async def test_direct_session_keyed_logs_pass_through():
     r = fakeredis.aioredis.FakeRedis(decode_responses=True)
     try:
         await _seed(r)  # seeds a briefing-keyed tip; add a session-keyed one too
-        await store_features(r, SessionFeatures(session_id="direct-win", outcome="success"))
+        await store_features(r, SessionFeatures(session_id="direct-win", outcome="success",
+                                                 outcome_source="task_result"))
         await record_tip_shown(r, "direct-win", ["pat1"], group="treatment")
         results = await compute_tip_effectiveness(
             r, briefing_to_session={"bf_briefing_1": "sess-win"},
@@ -95,10 +98,13 @@ async def test_remap_does_not_overwrite_authentic_session_keyed_entry(monkeypatc
 
     r = fakeredis.aioredis.FakeRedis(decode_responses=True)
     try:
-        await store_features(r, SessionFeatures(session_id="sess-collide", outcome="success"))
-        await store_features(r, SessionFeatures(session_id="sess-treat", outcome="success"))
+        await store_features(r, SessionFeatures(session_id="sess-collide", outcome="success",
+                                                 outcome_source="task_result"))
+        await store_features(r, SessionFeatures(session_id="sess-treat", outcome="success",
+                                                 outcome_source="task_result"))
         for i in range(4):
-            await store_features(r, SessionFeatures(session_id=f"g{i}", outcome="failure"))
+            await store_features(r, SessionFeatures(session_id=f"g{i}", outcome="failure",
+                                                     outcome_source="task_result"))
         await store_patterns(r, [PatternCard(id="pat1", description="d")])
 
         fake_tip_groups = {
@@ -206,11 +212,16 @@ async def test_d6_ab_control_survives_reconciliation():
     briefing_id) is still classified as control after the remap."""
     r = fakeredis.aioredis.FakeRedis(decode_responses=True)
     try:
-        await store_features(r, SessionFeatures(session_id="sess-t", outcome="success"))  # treatment
-        await store_features(r, SessionFeatures(session_id="sess-c", outcome="failure"))  # control
-        await store_features(r, SessionFeatures(session_id="n1", outcome="failure"))
-        await store_features(r, SessionFeatures(session_id="n2", outcome="success"))
-        await store_features(r, SessionFeatures(session_id="n3", outcome="failure"))
+        await store_features(r, SessionFeatures(session_id="sess-t", outcome="success",
+                                                 outcome_source="task_result"))  # treatment
+        await store_features(r, SessionFeatures(session_id="sess-c", outcome="failure",
+                                                 outcome_source="task_result"))  # control
+        await store_features(r, SessionFeatures(session_id="n1", outcome="failure",
+                                                 outcome_source="task_result"))
+        await store_features(r, SessionFeatures(session_id="n2", outcome="success",
+                                                 outcome_source="task_result"))
+        await store_features(r, SessionFeatures(session_id="n3", outcome="failure",
+                                                 outcome_source="task_result"))
         await store_patterns(r, [PatternCard(id="pat1", description="d")])
         await record_tip_shown(r, "bf_t", ["pat1"], group="treatment")
         await record_tip_shown(r, "bf_c", ["pat1"], group="control")  # withheld
@@ -224,3 +235,124 @@ async def test_d6_ab_control_survives_reconciliation():
         assert entry["ab_test"]["control_sessions"] == 1   # control classification survived remap
     finally:
         await r.aclose()
+
+
+# ---------------------------------------------------------------------------
+# KEEPTTL: neither persist site refreshes or resurrects card TTLs (D11/D9e)
+# ---------------------------------------------------------------------------
+
+import fakeredis.aioredis
+import pytest_asyncio
+
+
+@pytest_asyncio.fixture
+async def rr():
+    r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    yield r
+    await r.aclose()
+
+
+@pytest.mark.asyncio
+async def test_record_tip_shown_does_not_extend_or_resurrect_the_card(rr):
+    """D11: the times_shown counter is bookkeeping — it must never renew a
+    card's 30-day life NOR resurrect an expired card (xx=True). The features
+    rewrite is DELETED, so the feature record is untouched here (finding 3)."""
+    from app.patterns.models import PatternCard, SessionFeatures
+    from app.patterns.store import (record_tip_shown, _PATTERN_PREFIX,
+                                     _FEATURE_PREFIX)
+    card = PatternCard(id="p1", description="d", recommendation="r")
+    await rr.set(f"{_PATTERN_PREFIX}p1", card.model_dump_json(), ex=1000)
+    await rr.set(f"{_FEATURE_PREFIX}s1",
+                 SessionFeatures(session_id="s1").model_dump_json(), ex=1000)
+    card_before = await rr.pttl(f"{_PATTERN_PREFIX}p1")
+    feature_before = await rr.pttl(f"{_FEATURE_PREFIX}s1")
+    feature_raw = await rr.get(f"{_FEATURE_PREFIX}s1")
+    await record_tip_shown(rr, "s1", ["p1"])
+    ttl = await rr.pttl(f"{_PATTERN_PREFIX}p1")
+    assert 0 < ttl <= card_before, f"card TTL={ttl} (a bare <= would accept -1)"
+    # the feature record's TTL is unchanged because record_tip_shown no longer
+    # rewrites it at all
+    feature_after = await rr.pttl(f"{_FEATURE_PREFIX}s1")
+    assert 0 < feature_after <= feature_before
+    assert await rr.get(f"{_FEATURE_PREFIX}s1") == feature_raw
+
+
+@pytest.mark.asyncio
+async def test_record_tip_shown_does_not_resurrect_after_get_set_race(
+    rr, monkeypatch
+):
+    """Deterministically expire the card after record_tip_shown's GET and
+    immediately before its SET. Bare KEEPTTL would recreate TTL=-1; XX must
+    leave it absent."""
+    from app.patterns.models import PatternCard
+    from app.patterns.store import record_tip_shown, _PATTERN_PREFIX
+    key = f"{_PATTERN_PREFIX}p1"
+    await rr.set(key, PatternCard(id="p1").model_dump_json(), ex=1000)
+    real_set = rr.set
+    seen = []
+
+    async def expiring_set(name, value, *args, **kwargs):
+        if name == key and kwargs.get("keepttl"):
+            seen.append(dict(kwargs))
+            await rr.delete(key)
+        return await real_set(name, value, *args, **kwargs)
+
+    monkeypatch.setattr(rr, "set", expiring_set)
+    await record_tip_shown(rr, "s1", ["p1"])
+    assert seen == [{"xx": True, "keepttl": True}]
+    assert await rr.exists(key) == 0
+
+
+@pytest.mark.asyncio
+async def test_effectiveness_does_not_extend_or_resurrect(rr):
+    """compute_tip_effectiveness's card persist uses xx=True, keepttl=True."""
+    from app.patterns.models import PatternCard, SessionFeatures
+    from app.patterns.store import (store_features, record_tip_shown,
+                                     compute_tip_effectiveness, _PATTERN_PREFIX)
+    card = PatternCard(id="p1", description="d", recommendation="r")
+    await rr.set(f"{_PATTERN_PREFIX}p1", card.model_dump_json(), ex=1000)
+    # >=5 graded features, some shown p1, so compute reaches the persist
+    for i in range(6):
+        sid = f"s{i}"
+        await store_features(rr, SessionFeatures(
+            session_id=sid, outcome="success", outcome_source="task_result"))
+        if i < 3:
+            await record_tip_shown(rr, sid, ["p1"], group="treatment")
+        elif i < 5:
+            await record_tip_shown(rr, sid, ["p1"], group="control")
+    before = await rr.pttl(f"{_PATTERN_PREFIX}p1")
+    await compute_tip_effectiveness(rr)
+    ttl = await rr.pttl(f"{_PATTERN_PREFIX}p1")
+    assert 0 < ttl <= before, f"card TTL={ttl}"
+
+
+@pytest.mark.asyncio
+async def test_effectiveness_does_not_resurrect_after_get_set_race(
+    rr, monkeypatch
+):
+    """Delete the card after get_patterns loaded it but before the stats SET."""
+    from app.patterns.models import PatternCard, SessionFeatures
+    from app.patterns.store import (
+        _PATTERN_PREFIX, compute_tip_effectiveness, record_tip_shown,
+        store_features, store_patterns,
+    )
+    key = f"{_PATTERN_PREFIX}p1"
+    await store_patterns(rr, [PatternCard(id="p1")])
+    for i in range(6):
+        await store_features(rr, SessionFeatures(
+            session_id=f"r{i}", outcome="success",
+            outcome_source="task_result"))
+    await record_tip_shown(rr, "r0", ["p1"], group="treatment")
+    real_set = rr.set
+    seen = []
+
+    async def expiring_set(name, value, *args, **kwargs):
+        if name == key and kwargs.get("keepttl"):
+            seen.append(dict(kwargs))
+            await rr.delete(key)
+        return await real_set(name, value, *args, **kwargs)
+
+    monkeypatch.setattr(rr, "set", expiring_set)
+    await compute_tip_effectiveness(rr)
+    assert seen == [{"xx": True, "keepttl": True}]
+    assert await rr.exists(key) == 0

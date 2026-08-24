@@ -93,16 +93,20 @@ async def extract_session_features(
         tool_success_rate = (success_count / total_with_outcome) if total_with_outcome > 0 else 0.0
         failure_rate = (failure_count / total_with_outcome) if total_with_outcome > 0 else 0.0
 
-        # Determine session outcome
-        if eval_result:
-            session_outcome = eval_result.outcome or ("failure" if eval_result.has_failures else "success")
-        else:
-            session_outcome = "failure" if failure_count > success_count else "success"
+        # Outcome truth (2026-08-23): graded task_result projected through
+        # the shared binary_outcome — never invented from silence or event
+        # counts. eval_result is a VALIDATED EvalResult, so a non-None
+        # task_result implies the recognized source pair.
+        from app.evals.models import binary_outcome
+        tr = getattr(eval_result, "task_result", None) if eval_result else None
+        session_outcome = binary_outcome(tr)
+        outcome_source = "task_result" if tr is not None else "legacy"
 
         return SessionFeatures(
             session_id=session_id,
             duration_ms=summary.get("duration_ms"),
-            outcome=session_outcome if session_outcome in ("success", "failure") else "success",
+            outcome=session_outcome,
+            outcome_source=outcome_source,
             event_count=event_count,
             tool_sequence=tool_sequence,
             tool_type_counts=tool_type_counts,

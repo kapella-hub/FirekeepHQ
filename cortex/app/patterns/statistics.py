@@ -9,7 +9,7 @@ from __future__ import annotations
 import math
 import logging
 
-from app.patterns.models import Experiment, SessionFeatures
+from app.patterns.models import Experiment, SessionFeatures, graded_only
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +150,8 @@ def compute_experiment_results(
     Returns:
         Updated experiment with statistical results.
     """
+    features = graded_only(features)
+
     treatment_success = 0
     treatment_total = 0
     control_success = 0

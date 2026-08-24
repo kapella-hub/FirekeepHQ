@@ -13,7 +13,11 @@ class SessionFeatures(BaseModel):
 
     session_id: str
     duration_ms: int | None = None
-    outcome: Literal["success", "failure"] = "success"
+    outcome: Literal["success", "failure", "unknown"] = "unknown"
+    # Provenance of `outcome` (outcome truth, 2026-08-23). The default MUST
+    # mean legacy/ungraded: ~30d of cached records carry a fabricated
+    # outcome="success" indistinguishable by value.
+    outcome_source: Literal["task_result", "legacy"] = "legacy"
     event_count: int = 0
     tool_sequence: list[str] = []
     tool_type_counts: dict[str, int] = {}
@@ -27,6 +31,14 @@ class SessionFeatures(BaseModel):
     tags: list[str] = []
     tips_shown: list[str] = []  # pattern IDs that were shown in this session's briefing
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+def graded_only(features: list["SessionFeatures"]) -> list["SessionFeatures"]:
+    """Features with a real grade — the only population any rate may count."""
+    return [
+        f for f in features
+        if f.outcome_source == "task_result" and f.outcome in ("success", "failure")
+    ]
 
 
 class PatternCard(BaseModel):
