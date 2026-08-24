@@ -148,33 +148,27 @@ def _claim_contention_rate(events: list[dict]) -> float | None:
     return round(contended / len(claim_events), 4)
 
 
-def _failure_rate(events: list[dict]) -> float:
-    """Rate of events with outcome=failure.
+def _failure_rate(events: list[dict]) -> float | None:
+    """Rate of events with outcome=failure; None when nothing carries one.
 
-    NOTE the denominator, and read `outcome_event_count` beside this number.
-    Only events CARRYING an outcome are counted, so `0.0` means "no failures
-    among the events that reported one" — which includes the case where nothing
-    reported one at all. Measured on the live deployment: a typical session
-    emits ~48 events of which exactly ONE carries an outcome (Bridge's own
-    session-completion call, which reports its own success), so this metric
-    reads 0.0 for essentially every session in the deployment.
-
-    Deliberately NOT changed to return None like `_tool_success_rate` does on
-    the same input: `owm.session_success` and the Living Procedures Tier B gate
-    both key off this value, and flipping it to None repoints two shipped
-    signals — that is its own measurement pass, not a fix in passing (see the
-    root CLAUDE.md's OWM section). `_outcome_event_count` is added instead so a
-    READER can tell an informative 0.0 from a vacuous one.
+    SUPERSEDES the 2026-08-06 decision that pinned this at 0.0 on no-outcome
+    input "because owm.session_success and the Living Procedures Tier B gate
+    both key off it": since 2026-08-23 (outcome truth) both grade from the
+    EvalResult task-grade pair, nothing load-bearing reads this metric, and
+    the asymmetry with _tool_success_rate is resolved — an empty population
+    answers "cannot tell", not "no failures". Read `outcome_event_count`
+    beside this number; policy's SessionHealthRule defaults an absent metric
+    to 0.0 (allow), the correct no-signal posture.
     """
     with_outcome = [e for e in events if e.get("outcome")]
     if not with_outcome:
-        return 0.0
+        return None
     failures = sum(1 for e in with_outcome if e["outcome"] == "failure")
     return round(failures / len(with_outcome), 4)
 
 
 def _outcome_event_count(events: list[dict]) -> float:
-    """How many events actually carried an outcome — the denominator above.
+    """How many events actually carried an outcome.
 
     Exists because `failure_rate` and `tool_success_rate` are unreadable without
     it: both are ratios over this population, and the population is ~1 in

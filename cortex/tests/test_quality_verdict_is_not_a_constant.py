@@ -30,11 +30,14 @@ the same failure class as the dashboard health check that painted 404 green.
 
 WHAT IS AND IS NOT FIXED
 ------------------------
-`_failure_rate` still returns 0.0 on no-outcome input, deliberately:
-`owm.session_success` and the Living Procedures Tier B gate both key off it, and
-flipping it to None repoints two shipped signals. That is its own measurement
-pass. What is added is `outcome_event_count`, so a READER can distinguish an
-informative 0.0 from a vacuous one -- and the briefing now does.
+As of 2026-08-23 (outcome truth), `_failure_rate` returns None on no-outcome
+input too, symmetric with `_tool_success_rate` -- SUPERSEDING the note that
+stood here through 2026-08-22: `owm.session_success` and the Living
+Procedures Tier B gate used to key off this value, so flipping it to None
+would have repointed two shipped signals. Both now grade from the recognized
+`task_result` pair instead, so nothing load-bearing reads this metric and the
+asymmetry is resolved. `outcome_event_count` still exists so a READER can
+distinguish an informative 0.0 from an absent metric.
 
 `TestTheOldBranchWouldFailThis` reproduces the pre-change branch against the
 live numbers and asserts it produces the reassuring string, so this file cannot
@@ -156,16 +159,15 @@ class TestTheCounterItself:
         ]
         assert compute_tier1_metrics(events)["outcome_event_count"] == 1.0
 
-    def test_it_is_zero_when_nothing_reports_an_outcome(self):
-        """The case that makes failure_rate's 0.0 vacuous."""
+    def test_it_is_absent_when_nothing_reports_an_outcome(self):
+        """Outcome truth (2026-08-23): grading moved to the task_result pair;
+        nothing keys off failure_rate and the documented asymmetry is
+        resolved -- both ratios say 'cannot tell' on an empty population."""
         events = [{"event_type": "memory_read"} for _ in range(48)]
         m = compute_tier1_metrics(events)
         assert m["outcome_event_count"] == 0.0
-        assert m["failure_rate"] == 0.0, "unchanged on purpose -- OWM keys off it"
-        assert "tool_success_rate" not in m, (
-            "the asymmetry this fix documents: one scorer says 'cannot tell', "
-            "the other says 'fine'"
-        )
+        assert "failure_rate" not in m
+        assert "tool_success_rate" not in m
 
     def test_an_empty_falsy_outcome_does_not_count(self):
         assert compute_tier1_metrics(
