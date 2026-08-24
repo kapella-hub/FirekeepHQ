@@ -273,10 +273,15 @@ class TestOutcomeSignal:
         with (
             patch("app.mcp_server._get_manager") as mock_get,
             patch("app.mcp_server.get_http_headers", return_value={}),
+            patch("app.mcp_server._verified_member_id", return_value="member-alice"),
             patch("app.mcp_server._trigger_eval", new_callable=AsyncMock),
             patch("app.mcp_server._replay_emit", new_callable=AsyncMock) as emit,
         ):
             mgr = AsyncMock()
+            mgr.get_active_session_id = AsyncMock(return_value="s1")
+            mgr.get_session_data = AsyncMock(
+                return_value={"owner_member": "member-alice"}
+            )
             mgr.abandon_session = AsyncMock(
                 return_value={"status": "abandoned", "session_id": "s1"}
             )

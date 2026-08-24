@@ -327,6 +327,7 @@ class TestToolsUseHeaderSession:
         p1, p2, p3, p4 = self._completion_patches({"x-session-id": "sess-hdr"})
         with patch("app.mcp_server._get_manager") as mock_get, p1, p2, p3, p4:
             mgr = AsyncMock()
+            mgr.get_session_data = AsyncMock(return_value={"owner_member": ""})
             mgr.abandon_session = AsyncMock(
                 return_value={"status": "abandoned", "session_id": "sess-hdr"}
             )
@@ -342,6 +343,7 @@ class TestToolsUseHeaderSession:
         p1, p2, p3, p4 = self._completion_patches({"x-session-id": "sess-hdr"})
         with patch("app.mcp_server._get_manager") as mock_get, p1, p2, p3, p4:
             mgr = AsyncMock()
+            mgr.get_session_data = AsyncMock(return_value={"owner_member": ""})
             mgr.abandon_session = AsyncMock(
                 return_value={"status": "abandoned", "session_id": "sess-param"}
             )
@@ -352,18 +354,23 @@ class TestToolsUseHeaderSession:
 
     @pytest.mark.asyncio
     async def test_abandon_no_header_no_param_still_resolves_via_pointer(self):
+        """Public fallback behavior is unchanged; only resolution moved up —
+        the tool now resolves the active pointer itself and passes that exact
+        frozen SID to abandon_session, rather than passing None through."""
         from app.mcp_server import ctx_abandon_session
 
         p1, p2, p3, p4 = self._completion_patches({})
         with patch("app.mcp_server._get_manager") as mock_get, p1, p2, p3, p4:
             mgr = AsyncMock()
+            mgr.get_active_session_id = AsyncMock(return_value="sess-ptr")
+            mgr.get_session_data = AsyncMock(return_value={"owner_member": ""})
             mgr.abandon_session = AsyncMock(
                 return_value={"status": "abandoned", "session_id": "sess-ptr"}
             )
             mock_get.return_value = mgr
             await ctx_abandon_session()
 
-        assert mgr.abandon_session.call_args.kwargs["session_id"] is None
+        assert mgr.abandon_session.call_args.kwargs["session_id"] == "sess-ptr"
 
     # ------------------------------------------------------------------
     # ctx_update — public signature unchanged; the header threads through a

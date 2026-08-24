@@ -64,9 +64,16 @@ class TestMCPTools:
     @pytest.mark.asyncio
     async def test_ctx_abandon(self):
         from app.mcp_server import ctx_abandon_session
-        with patch("app.mcp_server._get_manager") as mock_get:
+        with (
+            patch("app.mcp_server._get_manager") as mock_get,
+            patch("app.mcp_server.after_abandon", new=AsyncMock()),
+        ):
             mgr = AsyncMock()
-            mgr.abandon_session = AsyncMock(return_value={"status": "abandoned"})
+            mgr.get_active_session_id = AsyncMock(return_value="s1")
+            mgr.get_session_data = AsyncMock(return_value={"owner_member": ""})
+            mgr.abandon_session = AsyncMock(
+                return_value={"status": "abandoned", "session_id": "s1"}
+            )
             mock_get.return_value = mgr
             result = await ctx_abandon_session()
             assert result["status"] == "abandoned"
@@ -76,10 +83,11 @@ class TestMCPTools:
         from app.mcp_server import ctx_abandon_session
         with patch("app.mcp_server._get_manager") as mock_get:
             mgr = AsyncMock()
-            mgr.abandon_session = AsyncMock(side_effect=ValueError("No active session"))
+            mgr.get_active_session_id = AsyncMock(return_value=None)
             mock_get.return_value = mgr
             result = await ctx_abandon_session()
             assert "error" in result
+            mgr.abandon_session.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_ctx_resume_catches_value_error(self):

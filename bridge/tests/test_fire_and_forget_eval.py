@@ -83,6 +83,8 @@ class TestFireAndForgetEval:
             patch("app.mcp_server._replay_emit", new=AsyncMock()),
         ):
             mgr = AsyncMock()
+            mgr.get_active_session_id = AsyncMock(return_value="s1")
+            mgr.get_session_data = AsyncMock(return_value={"owner_member": ""})
             mgr.abandon_session = AsyncMock(
                 return_value={"status": "abandoned", "session_id": "s1"}
             )
@@ -136,6 +138,14 @@ class TestEvalTriggerContract:
 
         assert ok is True
         assert captured["params"] == {"trigger": "session_complete"}
+
+        with patch.object(httpx, "AsyncClient", lambda **k: _Client()):
+            ok = await mcp_server._trigger_eval("http://cortex", "s1", task_result="failure")
+
+        assert ok is True
+        assert captured["params"] == {
+            "trigger": "session_complete", "task_result": "failure",
+        }
 
     @pytest.mark.asyncio
     async def test_a_4xx_is_logged_at_error_not_warning(self, caplog):

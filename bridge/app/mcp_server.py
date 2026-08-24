@@ -9,7 +9,7 @@ import logging
 from fastmcp import FastMCP
 
 try:
-    from fastmcp.server.dependencies import get_http_headers
+    from fastmcp.server.dependencies import get_http_headers, get_http_request
 except ImportError as exc:
     logging.getLogger(__name__).error(
         "fastmcp get_http_headers unavailable — header-based identity DISABLED; "
@@ -21,11 +21,15 @@ except ImportError as exc:
         """Fallback used when fastmcp does not provide get_http_headers."""
         return {}
 
+    def get_http_request(*_args, **_kwargs):
+        """Fallback used when fastmcp does not provide get_http_request."""
+        raise RuntimeError("get_http_request unavailable")
+
 from app.config import get_settings
 from app.prior_art import assemble_prior_art, render_prior_art
 from app.proactive_recall import fetch_relevant_memories
 from app.redis_client import get_redis, close_redis
-from app.session import SessionManager
+from app.session import SessionManager, TASK_RESULTS
 from app.shadow import assemble_shadow
 from app import residency
 
@@ -137,6 +141,28 @@ def _header_session_id() -> str | None:
     return lowered.get("x-session-id") or None
 
 
+# Outcome truth (PR1) — self-reported grade limits, mirrored in
+# SessionManager.complete_session's docstring (app/session.py).
+_MAX_EVIDENCE_ITEMS = 10
+_MAX_EVIDENCE_CHARS = 300
+
+
+def _verified_member_id() -> str | None:
+    """The authenticated member behind this request, or None when unknowable.
+
+    FirekeepKeyAuthMiddleware (installed on /mcp in __main__) validates
+    X-API-Key and attaches the verified identity to scope['state'];
+    principal_from_scope also handles the auth-disabled case (anonymous owner
+    principal). Outside an authenticated HTTP context (in-memory tests, auth
+    enabled but identity missing) this returns None — and a None principal
+    can never authorize a bound public terminal operation (D13)."""
+    try:
+        from auth.principal import principal_from_scope
+        return principal_from_scope(get_http_request().scope).get("member_id")
+    except Exception:
+        return None
+
+
 # Living Instructions round 2 — the measurement contract
 # (docs/superpowers/specs/2026-08-11-living-instructions-design.md). Five
 # attribution headers, attached by the gateway and hook cores from client
@@ -241,8 +267,18 @@ def _atexit_cleanup() -> None:
 atexit.register(_atexit_cleanup)
 
 
-async def _trigger_eval(api_url: str, session_id: str, max_retries: int = 3):
-    """Trigger eval computation on Cortex with retry. Fire-and-forget."""
+async def _trigger_eval(
+    api_url: str, session_id: str, max_retries: int = 3,
+    *, task_result: str | None = None,
+):
+    """Trigger eval computation on Cortex with retry. Fire-and-forget.
+
+    D8: task_result rides as a HINT for the compute path — it survives a lost
+    replay emit (the eval trigger and the replay emit are two independent
+    fire-and-forget effects, so either can fail alone), and Cortex honors it
+    only under eval:grade. It is best effort, never authoritative: computed
+    eval grading still derives from persisted session state, not this param.
+    """
     import httpx
     headers: dict[str, str] = {}
     if settings.FIREKEEP_API_KEY:
@@ -251,10 +287,13 @@ async def _trigger_eval(api_url: str, session_id: str, max_retries: int = 3):
     for attempt in range(max_retries):
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
+                params: dict[str, str] = {"trigger": "session_complete"}
+                if task_result is not None:
+                    params["task_result"] = task_result
                 resp = await client.post(
                     f"{api_url}/evals/sessions/{session_id}/compute",
                     headers=headers,
-                    params={"trigger": "session_complete"},
+                    params=params,
                 )
                 if resp.status_code < 400:  # 2xx success
                     return True
@@ -379,6 +418,7 @@ async def ctx_start_session(
         instr_rendered=attribution.get("instr_rendered"),
         instr_expected=attribution.get("instr_expected"),
         instr_gateway=attribution.get("instr_gateway"),
+        owner_member=_verified_member_id(),
     )
 
     # Replay: trace session start. briefing_id and the attribution headers ride
@@ -622,6 +662,7 @@ async def ctx_get_shadow(session_id: str | None = None, agent_id: str = "default
 async def ctx_complete_session(
     session_id: str | None = None, outcome: str | None = None,
     agent_id: str = "default", skill_worthy: bool = False,
+    task_result: str | None = None, task_evidence: list[str] | None = None,
 ) -> dict:
     """Mark the current session as completed and save learnings to long-term memory.
 
@@ -632,9 +673,15 @@ async def ctx_complete_session(
     Args:
         session_id: Session to complete (defaults to the connection's
             X-Session-Id header, then your active session).
-        outcome: Summary of what was accomplished.
+        outcome: Summary of what was accomplished (free text — prose, not the grade).
         agent_id: Your agent identifier.
         skill_worthy: Set True if this session involved a hard-won fix worth saving as a skill.
+        task_result: Structured self-grade of the TASK itself: "success" (the goal
+            was verifiably achieved), "partial" (real progress, goal not reached),
+            or "failure". Omit when genuinely unsure — an honest absence beats a
+            guessed grade. Accepted only from the session's verified owner.
+        task_evidence: Up to 10 short verifiable claims backing the grade
+            (tests run, commands that passed, files changed). Ignored without a grade.
     """
     agent_id = _default_agent_id(agent_id)
     # Precedence: explicit param > connection header > active pointer. The
@@ -645,28 +692,61 @@ async def ctx_complete_session(
     # last-resort fallback for header-less clients.
     if session_id is None:
         session_id = _header_session_id()
+
+    # Spec D1: coerce invalid VALUES, never fail. (Wrong TYPES are rejected by
+    # FastMCP validation pre-function; wire-tested.)
+    graded = task_result if task_result in TASK_RESULTS else None
+    evidence = [
+        e.strip()[:_MAX_EVIDENCE_CHARS]
+        for e in (task_evidence or []) if isinstance(e, str) and e.strip()
+    ][:_MAX_EVIDENCE_ITEMS] if graded else []
+
     mgr = await _get_manager()
     try:
-        result = await mgr.complete_session(session_id=session_id, outcome=outcome, agent_id=agent_id)
-    except ValueError as e:
+        result = await mgr.complete_session(
+            session_id=session_id, outcome=outcome, agent_id=agent_id,
+            task_result=graded, task_evidence=evidence,
+            verified_member=_verified_member_id(),
+        )
+    except (ValueError, RuntimeError) as e:
         return {"error": str(e)}
 
     sid = result["session_id"]
+    # Task 1 (SessionManager.complete_session) returns the stored winner —
+    # never reconstruct authority from this call's own input. A re-grade that
+    # lost the CAS still reports back the ALREADY-STORED grade below, not
+    # what this caller submitted.
+    authoritative_grade = result.get("task_result")
+    authoritative_source = result.get("task_result_source")
+    if (
+        authoritative_grade not in TASK_RESULTS
+        or authoritative_source != "self_reported"
+    ):
+        authoritative_grade = None
+        authoritative_source = None
+        result["task_result"] = None
+        result["task_result_source"] = None
 
-    # Replay: trace session end
+    # Replay: trace session end. Spec D3 — the emit kwarg carries the GRADE,
+    # or None (event carries no outcome) when ungraded. The old hard-coded
+    # outcome="success" meant "the RPC worked" and fed every downstream
+    # success metric; see docs/superpowers/specs/2026-08-23-outcome-truth-design.md.
+    payload: dict = {"outcome": outcome or "", "distilled": False}
+    if authoritative_grade and authoritative_source:
+        payload["task_result"] = authoritative_grade
+        payload["task_result_source"] = authoritative_source
     await _replay_emit(
-        "session_end", sid, agent_id,
-        {"outcome": outcome or "", "distilled": False},
-        outcome="success",
-    )
+        "session_end", sid, agent_id, payload, outcome=authoritative_grade)
 
     # D1: distillation is enqueued by SessionManager.complete_session and
     # drained by the distill worker with retry/backoff. No inline distillation.
     result["distillation"] = "queued"
 
     # Auto-eval: detached fire-and-forget (SP0 D5) — completion must return
-    # as soon as the session state + distill enqueue are committed.
-    _spawn_background(_trigger_eval(settings.FIREKEEP_API_URL, sid))
+    # as soon as the session state + distill enqueue are committed. The
+    # authoritative grade rides along as a hint (D8) — see _trigger_eval.
+    _spawn_background(_trigger_eval(
+        settings.FIREKEEP_API_URL, sid, task_result=authoritative_grade))
     # "dispatched", not "scheduled": the call is detached by design (SP0 D5 —
     # completion returns as soon as session state + distill enqueue commit),
     # so this response CANNOT know whether the eval computed. It said
@@ -678,6 +758,12 @@ async def ctx_complete_session(
     # Skill synthesis: trigger async (fire-and-forget)
     skill_ok = await _trigger_skill_evaluate(settings.FIREKEEP_API_URL, sid, skill_worthy)
     result["skill_synthesis_triggered"] = skill_ok
+
+    if task_result is not None and task_result not in TASK_RESULTS:
+        result["task_result_note"] = (
+            f"ignored invalid task_result {task_result!r}; "
+            f"expected one of {', '.join(TASK_RESULTS)}"
+        )
 
     return result
 
@@ -698,15 +784,43 @@ async def ctx_abandon_session(session_id: str | None = None, agent_id: str = "de
     # header > shared active pointer (the clobber-prone fallback).
     if session_id is None:
         session_id = _header_session_id()
+
     mgr = await _get_manager()
     try:
-        result = await mgr.abandon_session(session_id=session_id, agent_id=agent_id)
+        # Resolve and FREEZE one SID before touching the manager's mutating
+        # call — explicit > header (above) > active-pointer, read here
+        # rather than left for SessionManager.abandon_session to resolve
+        # later. owner_member is immutable (Task 1: written once, in
+        # start_session), so reading it here and checking it before the
+        # manager call below is authorization-safe: it cannot change between
+        # this read and that call. Legacy-unbound sessions (no owner_member)
+        # keep today's label-only behavior — an explicit D13 residual.
+        resolved_sid = session_id
+        if resolved_sid is None:
+            resolved_sid = await mgr.get_active_session_id(agent_id)
+        if not resolved_sid:
+            raise ValueError("No active session")
+
+        data = await mgr.get_session_data(resolved_sid)
+        if not data:
+            raise ValueError(f"Session {resolved_sid} not found")
+        owner_member = data.get("owner_member") or ""
+        if owner_member and _verified_member_id() != owner_member:
+            raise ValueError(
+                f"Session {resolved_sid} belongs to a different verified owner")
+
+        # SessionManager.abandon_session and the reaper (app/reaper.py) are
+        # UNCHANGED — this preflight is the only gate on the public tool, and
+        # it always passes the resolved SID explicitly, never None, so no
+        # later re-resolution of the pointer can race past this check.
+        result = await mgr.abandon_session(
+            session_id=resolved_sid, agent_id=agent_id)
     except ValueError as e:
         return {"error": str(e)}
 
     # Replay: trace session abandoned, then auto-eval. Shared with the reaper —
     # see after_abandon's docstring for why these two effects are not optional.
-    sid = result.get("session_id", session_id or "")
+    sid = result.get("session_id", resolved_sid)
     if sid:
         await after_abandon(sid, agent_id)
 
@@ -750,7 +864,10 @@ async def ctx_resume_session(
     agent_id = _default_agent_id(agent_id)
     mgr = await _get_manager()
     try:
-        await mgr.resume_session(session_id, agent_id=agent_id, takeover=takeover)
+        await mgr.resume_session(
+            session_id, agent_id=agent_id, takeover=takeover,
+            verified_member=_verified_member_id(),
+        )
     except ValueError as e:
         return {"error": str(e)}
 
