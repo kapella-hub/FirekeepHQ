@@ -345,21 +345,22 @@ class TestAPerStepVerdictNeedsAPerStepSignal:
 class _Eval:
     def __init__(self, data):
         self._data = data
+        self.task_result = data.get("task_result")
+        self.task_result_source = data.get("task_result_source")
 
     def model_dump(self):
         return self._data
 
 
 def _clean_session(monkeypatch):
-    """A session that carries an outcome-bearing event and a 0.0 failure rate —
-    the shape spec F1 says effectively every session in the deployment has."""
-    async def _timeline(rr, sid, **kw):
-        return {"events": [{"outcome": "success"}]}
-
+    """A genuinely graded successful session; abandoned still overrides it."""
     async def _get_eval(rr, sid):
-        return _Eval({"metrics": {"failure_rate": 0.0}, "outcome": None})
+        return _Eval({
+            "metrics": {},
+            "task_result": "success",
+            "task_result_source": "self_reported",
+        })
 
-    monkeypatch.setattr("replay.reader.get_session_timeline", _timeline)
     monkeypatch.setattr("app.evals.store.get_eval", _get_eval)
 
 

@@ -250,43 +250,62 @@ async def test_executions_older_than_the_window_are_ignored(r, monkeypatch):
 class _Eval:
     def __init__(self, data):
         self._data = data
+        self.task_result = data.get("task_result")
+        self.task_result_source = data.get("task_result_source")
 
     def model_dump(self):
         return self._data
 
 
 @pytest.mark.asyncio
-async def test_i4_a_session_with_no_outcome_bearing_event_is_excluded(monkeypatch):
-    """_failure_rate returns 0.0 when nothing carries an outcome, and 0.0 reads
-    as success — so the eval must not even be consulted."""
-    asked: list = []
-
-    async def _timeline(rr, sid, **kw):
-        return {"events": [{"outcome": None}, {"outcome": ""}]}
-
+async def test_a_graded_eval_resolves_without_any_timeline_read(monkeypatch):
+    from unittest.mock import AsyncMock
     async def _get_eval(rr, sid):
-        asked.append(sid)
-        return _Eval({"metrics": {"failure_rate": 0.0}, "outcome": None})
-
-    monkeypatch.setattr("replay.reader.get_session_timeline", _timeline)
+        return _Eval({"metrics": {}, "task_result": "success",
+                      "task_result_source": "self_reported"})
+    find = AsyncMock()
     monkeypatch.setattr("app.evals.store.get_eval", _get_eval)
-
-    assert await harden._resolve_outcome(object(), "sess") is None
-    assert asked == []
+    monkeypatch.setattr("app.evals.compute.find_terminal_grade", find)
+    assert await harden._resolve_outcome(object(), "sess") is True
+    find.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_i4_one_outcome_bearing_event_admits_the_session(monkeypatch):
-    async def _timeline(rr, sid, **kw):
-        return {"events": [{"outcome": "success"}]}
+async def test_no_recognized_tail_evidence_means_no_recompute(monkeypatch):
+    computed: list = []
 
     async def _get_eval(rr, sid):
-        return _Eval({"metrics": {"failure_rate": 0.0}, "outcome": None})
+        return _Eval({"metrics": {"failure_rate": 0.0}, "task_result": None})
 
-    monkeypatch.setattr("replay.reader.get_session_timeline", _timeline)
+    async def _find(rr, sid):
+        return (None, None)
+
+    async def _compute(rr, sid, **kw):
+        computed.append(sid)
+
     monkeypatch.setattr("app.evals.store.get_eval", _get_eval)
+    monkeypatch.setattr("app.evals.compute.find_terminal_grade", _find)
+    monkeypatch.setattr("app.evals.compute.compute_session_eval", _compute)
+    assert await harden._resolve_outcome(object(), "sess") is None
+    assert computed == []
 
-    assert await harden._resolve_outcome(object(), "sess") is True
+
+@pytest.mark.asyncio
+async def test_recognized_tail_evidence_triggers_one_recompute(monkeypatch):
+    async def _get_eval(rr, sid):
+        return _Eval({"metrics": {}, "task_result": None})
+
+    async def _find(rr, sid):
+        return ("failure", "self_reported")
+
+    async def _compute(rr, sid, **kw):
+        return _Eval({"metrics": {}, "task_result": "failure",
+                      "task_result_source": "self_reported"})
+
+    monkeypatch.setattr("app.evals.store.get_eval", _get_eval)
+    monkeypatch.setattr("app.evals.compute.find_terminal_grade", _find)
+    monkeypatch.setattr("app.evals.compute.compute_session_eval", _compute)
+    assert await harden._resolve_outcome(object(), "sess") is False
 
 
 @pytest.mark.asyncio

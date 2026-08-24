@@ -70,40 +70,29 @@ async def _resolve_outcome(replay_r, session_id: str,
                            bridge_status: str | None = None) -> bool | None:
     """True/False when the session's outcome is knowable, None to exclude it.
 
-    Excludes on ANY doubt: no replay events, no outcome-bearing event (I4 —
-    _failure_rate returns 0.0 in that case, which reads as success), an eval
-    that cannot be computed, or session_success's ambiguous middle band.
-
-    `bridge_status` is what makes `abandoned` count: `session_success` treats it
-    as failure regardless of metrics, which is exactly the case F1 describes —
-    every edit succeeded mechanically, `failure_rate` is 0.0, and the human
-    walked away. I4 still runs first, so an abandoned session that carries no
-    outcome-bearing replay event at all is still excluded (§6, H7).
+    Outcome truth (2026-08-23): the grade lives on the EvalResult pair. The
+    old I4 pre-gate is GONE — it read the oldest-1000 window, where the one
+    outcome-bearing event never appears for a >1000-event session, excluding
+    exactly the long sessions Tier B most needs. An ungraded STORED eval
+    triggers one recompute only when find_terminal_grade (snapshot-scanned,
+    shared normalizer) finds a RECOGNIZED pair — result-only payloads cannot
+    loop futile recomputes; the store's first-graded-wins rule persists the
+    upgrade (spec D9/D10).
     """
     if replay_r is None or not session_id:
         return None
     try:
-        from replay.reader import get_session_timeline
-
-        timeline = await get_session_timeline(replay_r, session_id, limit=1000)
-        events = (timeline or {}).get("events") or []
-        # I4 is checked BEFORE the eval is fetched, not after: an eval whose
-        # failure_rate is 0.0 because nothing carried an outcome is
-        # indistinguishable from a genuinely clean session once you have it.
-        if not any(e.get("outcome") for e in events):
-            return None
-
         from app.evals.store import get_eval
 
         ev = await get_eval(replay_r, session_id)
-        if ev is None:
-            # The evals router's own docstring records a live incident where
-            # every stored eval was trigger="manual" and 12 days stale against
-            # 54 completed sessions — a pass that only READ evals would have
-            # almost no sample.
+        needs_compute = ev is None
+        if ev is not None and getattr(ev, "task_result", None) is None:
+            from app.evals.compute import find_terminal_grade
+            needs_compute = (await find_terminal_grade(replay_r, session_id))[0] is not None
+        if needs_compute:
             from app.evals.compute import compute_session_eval
-
-            ev = await compute_session_eval(replay_r, session_id, trigger="manual")
+            fresh = await compute_session_eval(replay_r, session_id, trigger="manual")
+            ev = fresh or ev
         if ev is None:
             return None
 
