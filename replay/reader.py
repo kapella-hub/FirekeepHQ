@@ -71,6 +71,26 @@ async def _get_session_event_ids(
     return event_ids, total
 
 
+async def get_session_event_ids(
+    r: aioredis.Redis,
+    session_id: str,
+    *,
+    limit: int = 5000,
+) -> list[str]:
+    """The newest `limit` event IDs for a session, oldest-first — ONE zrange.
+
+    The grade lift (find_terminal_grade) snapshots this once and hydrates it
+    locally in backward windows. A single ID snapshot is snapshot-stable
+    against concurrent appends (the list is fixed) and immune to missing
+    bodies (callers iterate IDs, not hydrated events) — the two hazards that
+    sank live rank-relative paging."""
+    if limit <= 0:
+        return []
+    idx_key = f"{_SESSION_IDX_PREFIX}{session_id}"
+    ids = await r.zrange(idx_key, -limit, -1)
+    return [i.decode() if isinstance(i, bytes) else i for i in ids]
+
+
 # ---------------------------------------------------------------------------
 # Public query functions
 # ---------------------------------------------------------------------------
@@ -168,27 +188,37 @@ async def get_event(r: aioredis.Redis, event_id: str) -> dict[str, Any] | None:
 
 
 async def get_event_batch(r: aioredis.Redis, event_ids: list[str]) -> list[dict[str, Any]]:
-    """Get multiple events by ID using the event_id → stream_id index."""
+    """Get multiple events by ID using the event_id → stream_id index.
+
+    One MGET resolves all event_id → stream_id lookups, then one
+    non-transactional pipeline of exact XRANGEs hydrates the bodies — a 5k
+    grade scan makes ~2 round trips per window instead of ~2 per event.
+    Preserves request order and duplicate/missing-ID behavior exactly.
+    """
     if not event_ids:
         return []
 
+    unique_ids = list(dict.fromkeys(event_ids))
+    stream_ids = await r.mget(
+        [f"{_EVENT_IDX_PREFIX}{event_id}" for event_id in unique_ids])
+
+    indexed = [
+        (event_id, stream_id)
+        for event_id, stream_id in zip(unique_ids, stream_ids, strict=True)
+        if stream_id
+    ]
+    async with r.pipeline(transaction=False) as pipe:
+        for _, stream_id in indexed:
+            pipe.xrange(_STREAM_KEY, min=stream_id, max=stream_id, count=1)
+        rows = await pipe.execute()
+
     found: dict[str, dict[str, Any]] = {}
-
-    # Fast path: use indexes
-    for eid in event_ids:
-        if eid in found:
-            continue
-        eid_key = f"{_EVENT_IDX_PREFIX}{eid}"
-        stream_id = await r.get(eid_key)
-        if stream_id:
-            entries = await r.xrange(_STREAM_KEY, min=stream_id, max=stream_id, count=1)
-            if entries:
-                sid, fields = entries[0]
-                if fields.get("id") == eid:
-                    found[eid] = _parse_event(sid, fields)
-
-    # Return in requested order
-    return [found[eid] for eid in event_ids if eid in found]
+    for (event_id, _), entries in zip(indexed, rows, strict=True):
+        if entries:
+            stream_id, fields = entries[0]
+            if fields.get("id") == event_id:
+                found[event_id] = _parse_event(stream_id, fields)
+    return [found[event_id] for event_id in event_ids if event_id in found]
 
 
 async def get_session_summary(

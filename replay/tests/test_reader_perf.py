@@ -17,7 +17,7 @@ import redis.asyncio as aioredis
 
 from replay.config import ReplaySettings
 from replay.emitter import close_emitter, emit, init_emitter
-from replay.reader import get_event, get_event_batch, get_session_timeline
+from replay.reader import get_event, get_event_batch, get_session_event_ids, get_session_timeline
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +154,26 @@ class TestGetEventBatchBenchmark:
         # Verify correct events returned in order
         result_ids = [e["id"] for e in results]
         assert result_ids == targets
+
+    @pytest.mark.asyncio
+    async def test_grade_scan_hydrates_5000_bodies_under_ten_seconds(
+        self, setup_emitter
+    ):
+        r = setup_emitter
+        await _emit_n_events(5000, session_id="grade-scan")  # seed: not timed
+        ids = await get_session_event_ids(r, "grade-scan", limit=5000)
+        assert len(ids) == 5000
+
+        hydrated = []
+        started = time.monotonic()
+        for end in range(len(ids), 0, -200):
+            hydrated.extend(await get_event_batch(
+                r, ids[max(0, end - 200):end]))
+        elapsed = time.monotonic() - started
+
+        assert len(hydrated) == 5000
+        assert {event["id"] for event in hydrated} == set(ids)
+        assert elapsed < 10.0, f"5k hydration took {elapsed:.2f}s"
 
 
 class TestColdStartIndexRebuild:
