@@ -6,14 +6,20 @@ than a hedge:
   Tier A — frequency. Needs no outcome signal. "This procedure ran 41 times;
            step 3 was skipped in 24 of them" is true and useful on day one.
   Tier B — efficacy verdicts. Gated on executions whose sessions have a KNOWABLE
-           outcome AND on that outcome actually DISCRIMINATING. Measured on this
-           repo, _failure_rate is 0.0 for a session no event marked as failing,
-           and the reconcile emit now stamps post_tool's `success`, which
-           defaults to True — so effectively every session reads as a success.
-           Counting knowable outcomes alone therefore opens the gate on a signal
-           that separates nothing, and the efficacy comparison degenerates into
-           a Beta-prior artefact of bucket size: it proposes deleting steps that
-           were never once associated with a failure, "confidently, with
+           outcome AND on that outcome actually DISCRIMINATING. The outcome
+           signal is the session's recognized grade pair — `task_result` and
+           `task_result_source` on the EvalResult — resolved via `session_success`
+           in `_resolve_outcome`, not a heuristic over per-event success flags.
+           The old I4 pre-gate, which read only the oldest-1000-event window and
+           so excluded exactly the long sessions Tier B most needs, is gone: a
+           stored ungraded eval is recomputed only when `find_terminal_grade`
+           (snapshot-scanned, shared normalizer) finds a recognized pair, so a
+           result-only payload cannot loop on futile recomputes. Even with a
+           real grade, counting knowable outcomes alone would open the gate on a
+           signal that separates nothing whenever a bucket of sessions all graded
+           the same way, and the efficacy comparison would degenerate into a
+           Beta-prior artefact of bucket size: it would propose deleting steps
+           that were never once associated with a failure, "confidently, with
            statistics" (spec §F1 consequence 2). Both halves are required.
            Closed is the correct state; it reports WHICH closed state it is in.
 

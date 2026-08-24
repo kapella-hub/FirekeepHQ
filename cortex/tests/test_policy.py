@@ -488,6 +488,42 @@ async def test_unknown_sessions_do_not_dilute_recent_file_failure_rate():
     assert "3/3" in reason
 
 
+@pytest.mark.asyncio
+async def test_graded_partial_sessions_do_not_dilute_recent_file_failure_rate():
+    """graded_only excludes on outcome too, not just outcome_source: a session
+    graded outcome_source="task_result" but outcome="unknown" (a completed,
+    verified-owner session whose task result was never resolved to
+    success/failure -- a graded *partial*) must be excluded from the
+    denominator exactly like a legacy-unknown session, neither raising nor
+    lowering the failure ratio. Pins the behavior against a future refactor
+    that narrows the filter to a bare `outcome_source == "task_result"` check,
+    which would let 17 unknown-graded sessions dilute 3/3 down to 3/20 and
+    flip this decision from warn to allow."""
+    from app.patterns.models import SessionFeatures
+    graded_failures = [
+        SessionFeatures(
+            session_id=f"g{i}", outcome="failure",
+            outcome_source="task_result", file_paths=["src/buggy.py"])
+        for i in range(3)
+    ]
+    graded_partial = [
+        SessionFeatures(
+            session_id=f"p{i}", outcome="unknown",
+            outcome_source="task_result", file_paths=["src/buggy.py"])
+        for i in range(17)
+    ]
+    with patch(
+        "app.patterns.store.get_all_features",
+        new_callable=AsyncMock,
+        return_value=graded_failures + graded_partial,
+    ):
+        rule = RecentFailureRule(get_replay_redis=lambda: MagicMock())
+        action, _, reason = await rule.evaluate(
+            PolicyContext(file_path="src/buggy.py"))
+    assert action == "warn"
+    assert "3/3" in reason
+
+
 # ---------------------------------------------------------------------------
 # Compound engine integration tests
 # ---------------------------------------------------------------------------

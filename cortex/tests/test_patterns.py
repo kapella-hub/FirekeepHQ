@@ -351,6 +351,21 @@ async def test_ungraded_features_never_overwrite_graded(rr):
 
 
 @pytest.mark.asyncio
+async def test_graded_feature_upgrades_legacy(rr):
+    """D9e, upgrade direction: a graded write for a session that already has a
+    legacy record must win — grade-dominance blocks legacy-over-graded (above),
+    but graded-over-legacy is exactly the upgrade it exists to allow."""
+    from app.patterns.models import SessionFeatures
+    from app.patterns.store import store_features
+    from app.patterns.store import get_all_features
+    assert await store_features(rr, SessionFeatures(session_id="s")) is True  # legacy
+    assert await store_features(rr, SessionFeatures(
+        session_id="s", outcome="failure", outcome_source="task_result")) is True
+    feats = {f.session_id: f for f in await get_all_features(rr)}
+    assert feats["s"].outcome == "failure" and feats["s"].outcome_source == "task_result"
+
+
+@pytest.mark.asyncio
 async def test_stale_legacy_feature_writer_retries_then_loses(
     rr, monkeypatch
 ):

@@ -467,7 +467,7 @@ class SessionManager:
         return await self._r.get(self._active_key(agent_id))
 
     # ------------------------------------------------------------------
-    # Complete (fix #2 — read outside pipeline)
+    # Complete (WATCH/MULTI CAS — read inside the watched section)
     # ------------------------------------------------------------------
 
     async def complete_session(
