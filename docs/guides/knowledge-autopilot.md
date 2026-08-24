@@ -13,6 +13,44 @@ consequence: *"If every execution succeeds, then skipping any step correlates
 with success, every step looks dead, and the pass proposes deleting the entire
 procedure — confidently, with statistics."*
 
+**Update, 2026-08-23 (outcome truth PR1) — the signal itself changed, not
+just its consumers.** Appended here rather than folded into the paragraph
+above, because that paragraph is the measurement that justified round 1's
+caution and stays true as a record of the state that shaped it.
+`ctx_complete_session` now accepts an optional structured self-grade —
+`task_result` (`"success"` / `"partial"` / `"failure"`) plus up to 10
+`task_evidence` claims — and both terminal replay events (`session_end` from
+the tool layer, `session.completed` from `SessionManager`, independent
+channels that fail independently) carry the same atomic `(task_result,
+task_result_source)` pair rather than either one alone. The grade is
+principal-bound: it is accepted only from the session's verified owner
+(`owner_member`, written once at `start_session` and never reassigned), and a
+caller's `agent_id` label is explicitly NOT terminal authority on its own —
+`ctx_complete_session`, the public `ctx_abandon_session`, and
+`ctx_resume_session`'s `takeover=True` all refuse a cross-member attempt
+before any state changes, even though a label match alone used to be
+sufficient. The trusted reaper path is unchanged: it calls
+`SessionManager.abandon_session` directly with the session's own label owner
+as `agent_id`, bypassing the public tool's member check entirely, because it
+is Bridge's own machinery reclaiming an idle session on the system's
+authority, not a caller claiming ownership. Only Bridge can submit a grade
+hint on the eval-compute route — `eval:grade` is a service-only scope, minted
+onto exactly one credential (`FIREKEEP_BRIDGE_KEY`), rejected outright by
+`create_key`, and excluded from every enrollable and anonymous scope union.
+The store is first-graded-wins (a WATCH/MULTI CAS in both
+`app.evals.store.store_eval` and `SessionManager.complete_session` — a
+stalled writer's late commit can never overwrite an already-graded record),
+and a legacy record, a sourceless grade, or a session that never graded at
+all resolves as `unknown`, never as a guessed "success" — see the OWM bullet
+in [`memory-and-recall.md`](memory-and-recall.md) and
+[`replay-evals-patterns.md`](replay-evals-patterns.md) for the full
+mechanism. This closes the signal gap that motivated round 1's caution, but
+it does not by itself unlock round 2: most sessions still complete with no
+grade at all (an honest absence beats a guessed one, by the tool's own
+contract), so both outcome classes still need to actually accumulate before
+promotion criteria can trust them — see "What unlocks round 2" below, now
+readable against a real signal instead of a degenerate one.
+
 So round 1 ships **attribution and visibility, no autonomous mutation**:
 
 | Shipped | Deliberately NOT shipped (yet) |

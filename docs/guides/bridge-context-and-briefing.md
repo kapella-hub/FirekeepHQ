@@ -17,6 +17,101 @@ Server-side pre-flight aggregator that consolidates the checks the retired `brie
 
 **Session targeting (cross-terminal clobber fix, 2026-08-12 — `bridge/app/mcp_server.py::_header_session_id`).** `ctx_complete_session`, `ctx_abandon_session`, `ctx_get_shadow` and `ctx_update` resolve their target session with the precedence **explicit param > `X-Session-Id` connection header > active pointer** (mirroring Cortex's `_resolve_identity`; `ctx_update`'s public tool signature is unchanged — the header threads through a new optional `SessionManager.update(session_id=)`). `complete_session`/`abandon_session` additionally refuse a session whose owner differs from the caller, mirroring `resume_session` (whose docstring used to *claim* this check existed — it did not, and a parallel terminal sharing the machine's agent_id completed a sibling's in-flight session on 2026-08-11 via the shared `nb:active:{agent_id}` pointer). The client side is load-bearing: the shim's bridge client sources `X-Session-Id` **only** from what its own process observed (never the shared per-agent disk stash — a fresh terminal falling back to it would deliver its sibling's live session to a destructive call), injects that id into no-arg complete/abandon, and the stop-hook's completion nudge instructs completing only a session the model itself started or resumed. Honest residual: a no-arg, no-header complete from a terminal that never started a session still resolves via the shared pointer, and ownership cannot distinguish same-agent siblings — narrowed to a case the instruction layer now tells models not to create, not eliminated. A header-named session that no longer exists refuses (`Unknown session`) instead of materializing a ghost hash.
 
+## Principal-bound task grading (outcome truth PR1, 2026-08-23 — `bridge/app/session.py`, `mcp_server.py`)
+
+`ctx_complete_session` gained two optional params: `task_result` (`"success"`
+/ `"partial"` / `"failure"` — the TASK's grade, not the RPC's) and
+`task_evidence` (up to 10 short verifiable claims backing it — tests run,
+commands that passed, files changed). **Coercion, not rejection, for a bad
+VALUE (spec D1):** a `task_result` outside `TASK_RESULTS` (`"success",
+"partial", "failure"`) is silently dropped to `None` rather than failing the
+call — an agent's typo must not cost it the whole completion — and the
+response's `task_result_note` names the ignored value so the mistake stays
+visible. A bad TYPE is a different boundary entirely: FastMCP validates the
+tool's parameter types before the function body ever runs (wire-tested), so a
+non-string `task_result` or a non-list `task_evidence` is rejected at the
+transport, never reaching the coercion logic — only VALUES within the right
+type get the forgiving treatment. `task_evidence` items are stripped, capped
+at 300 characters each, truncated to 10 items, and dropped entirely whenever
+`task_result` didn't survive coercion — evidence for a grade that isn't
+stored is not stored either.
+
+**`owner_member` is immutable — written once, at `start_session`, from the
+verified caller's identity, never reassigned by any later call.** It is what
+makes a self-reported grade authoritative rather than a courtesy: label
+matching (`agent_id`) is NOT terminal authority by itself — two terminals can
+share an `agent_id`, and a copied or guessed label used to be sufficient to
+act on somebody else's session (the cross-terminal clobber the Session
+targeting section above already documents). `complete_session` and the public
+`ctx_abandon_session` both refuse OUTRIGHT — before any state mutates — when a
+session's `owner_member` is non-empty and the caller's verified identity does
+not match it, and `ctx_resume_session` refuses a cross-member `takeover=True`
+the same way: **the explicit flag does not override the principal check**,
+because a takeover is a hand-off between IDENTITIES, and nothing in this PR
+grants one member the authority to hand off another member's session to
+itself. There is no owner-authorized handoff flow yet: today a cross-member
+takeover has no path at all, deliberate over-refusal rather than a mechanism
+that might be wrong.
+
+**The trusted reaper path is byte-identical and deliberately bypasses this
+check.** `bridge/app/reaper.py` calls `SessionManager.abandon_session`
+directly with the session's own label owner as `agent_id` — never through the
+public `ctx_abandon_session` tool, so the `verified_member` preflight never
+runs. This is correct, not a gap: the reaper is Bridge's own trusted
+machinery reclaiming an idle session on the system's authority, not an
+external caller claiming ownership it may not have, which is exactly the
+threat the principal check exists to stop.
+
+**Legacy-unbound terminal residual (disclosed, D13).** A session created
+before this PR has an empty `owner_member` and falls through to the
+pre-outcome-truth, label-only behavior on every terminal call: any caller
+presenting the matching `agent_id` label can complete, abandon, or take it
+over, exactly as before this PR shipped. Narrowed, not eliminated — every
+session an identity-aware client creates FROM NOW ON is bound at birth; the
+residual is sessions that predate binding.
+
+**First-graded-wins, and re-completion reports the AUTHORITATIVE stored
+grade, never the caller's own submission.** `complete_session` reads the
+existing grade INSIDE the same WATCH/MULTI transaction that would write a new
+one — the label check, the `owner_member` check, the existing-grade read and
+the active-pointer cleanup decision all re-run together on every CAS retry —
+so a session with a valid stored grade (`owner_member` non-empty, a
+recognized `task_result`, `task_result_source == "self_reported"`) keeps it:
+a later caller's submitted grade is silently NOT stored, and the tool's
+response carries back the value that was ALREADY on record
+(`task_result_dropped` explains why when it differs from what was submitted),
+never reconstructing authority from the caller's own input.
+`evals/store.py::store_eval` mirrors the same first-graded-wins CAS shape one
+layer down for the computed `EvalResult`, and `patterns/store.py::store_features`
+mirrors it a second time, grade-dominant, for the feature record — see
+`replay-evals-patterns.md`.
+
+**Disclosed: this guarantees one authoritative grade and safe pointer
+cleanup, NOT exactly-once side effects (D13, pre-existing, not expanded
+here).** Two authorized completions of the SAME session (a genuine retry
+after a WatchError, or two racing clients that both hold a valid principal)
+can each eventually commit — each queues its own distill job and fires its
+own `session.completed` replay event, both carrying the identical
+authoritative grade. At-least-once, not exactly-once; nothing in this PR
+turns that into an outbox pattern, and a consumer downstream of the replay
+stream or the distill queue must already tolerate a duplicate for the same
+`session_id`.
+
+**The grade also rides as a trigger-borne HINT, honored only under
+`eval:grade`.** Bridge's auto-eval trigger (`_trigger_eval`) posts the
+authoritative grade as a `task_result` query param on `POST
+/evals/sessions/{id}/compute` — best effort, and never itself authoritative:
+the compute route only accepts the hint from a caller presenting the
+service-only `eval:grade` scope (`_hint_authorized` in
+`cortex/app/evals/api.py`, checked against the enforced identity first, then
+— because auth-disabled mode returns the anonymous identity — against the
+presented key directly), which is minted onto exactly one credential
+(`FIREKEEP_BRIDGE_KEY`) and rejected outright by `create_key` for every other
+caller. An unauthorized or absent hint is not an error: `compute_session_eval`
+falls back to `find_terminal_grade`'s own scan of the replay trace, so the
+grade is still found even when the hint is dropped — the hint only saves a
+scan, it is never the only path to a correct grade.
+
 ## Prior art at the moment of intent (Bridge — `bridge/app/prior_art.py`)
 
 `ctx_start_session` is the only call in the stack that knows what an agent is
