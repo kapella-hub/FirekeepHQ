@@ -37,20 +37,26 @@ def test_efficacy_converges_with_evidence():
 
 
 def test_abandoned_session_is_failure_regardless_of_metrics():
-    ev = {"outcome": "success", "metrics": {"failure_rate": 0.0}}
+    ev = {"task_result": "success", "task_result_source": "self_reported"}
     assert session_success(ev, "abandoned") is False
 
 
-def test_failure_rate_thresholds():
-    assert session_success({"metrics": {"failure_rate": 0.1}}, "completed") is True
-    assert session_success({"metrics": {"failure_rate": 0.7}}, "completed") is False
-    # ambiguous middle band: excluded from the join rather than guessed
-    assert session_success({"metrics": {"failure_rate": 0.35}}, "completed") is None
+def test_grades_come_from_the_recognized_pair_only():
+    g = {"task_result_source": "self_reported"}
+    assert session_success({"task_result": "success", **g}, "completed") is True
+    assert session_success({"task_result": "failure", **g}, "completed") is False
+    assert session_success({"task_result": "partial", **g}, "completed") is None
 
 
-def test_missing_failure_rate_falls_back_to_eval_outcome():
-    assert session_success({"outcome": "success", "metrics": {}}, None) is True
-    assert session_success({"outcome": "failure", "metrics": {}}, None) is False
+def test_a_sourceless_grade_is_not_evidence():
+    assert session_success({"task_result": "success"}, "completed") is None
+    assert session_success({"task_result": "success",
+                            "task_result_source": "vibes"}, "completed") is None
+
+
+def test_legacy_records_are_unknown_never_success():
+    legacy = {"outcome": "success", "metrics": {"failure_rate": 0.0}}
+    assert session_success(legacy, "completed") is None
     assert session_success({"metrics": {}}, None) is None
 
 
@@ -125,8 +131,8 @@ def _timeline(events_by_sid):
 @pytest.mark.asyncio
 async def test_run_pass_joins_reads_to_outcomes_and_writes_payloads():
     evals = {
-        "s-good": {"outcome": "success", "metrics": {"failure_rate": 0.0}},
-        "s-bad": {"outcome": "failure", "metrics": {"failure_rate": 0.9}},
+        "s-good": {"task_result": "success", "task_result_source": "self_reported"},
+        "s-bad": {"task_result": "failure", "task_result_source": "self_reported"},
     }
     events = {
         "s-good": [{"event_type": "memory_read",
@@ -154,7 +160,7 @@ async def test_run_pass_joins_reads_to_outcomes_and_writes_payloads():
 @pytest.mark.asyncio
 async def test_run_pass_counts_a_session_once_per_memory():
     """One session recalling the same memory five times is ONE observation."""
-    evals = {"s1": {"outcome": "success", "metrics": {"failure_rate": 0.0}}}
+    evals = {"s1": {"task_result": "success", "task_result_source": "self_reported"}}
     events = {"s1": [
         {"event_type": "memory_read", "payload": {"memory_ids": ["m1"]}},
         {"event_type": "memory_read", "payload": {"memory_ids": ["m1", "m1"]}},
@@ -168,7 +174,7 @@ async def test_run_pass_counts_a_session_once_per_memory():
 
 @pytest.mark.asyncio
 async def test_run_pass_skips_dangling_index_and_legacy_events():
-    evals = {"s1": {"outcome": "success", "metrics": {"failure_rate": 0.0}}}
+    evals = {"s1": {"task_result": "success", "task_result_source": "self_reported"}}
     events = {
         "s1": [{"event_type": "memory_read", "payload": {"query": "old event, no ids"}}],
         "s-expired": [{"event_type": "memory_read", "payload": {"memory_ids": ["mX"]}}],
@@ -183,7 +189,7 @@ async def test_run_pass_skips_dangling_index_and_legacy_events():
 
 @pytest.mark.asyncio
 async def test_run_pass_excludes_ambiguous_sessions():
-    evals = {"s-mid": {"metrics": {"failure_rate": 0.35}}}
+    evals = {"s-mid": {"task_result": "partial", "task_result_source": "self_reported"}}
     events = {"s-mid": [{"event_type": "memory_read", "payload": {"memory_ids": ["m1"]}}]}
     v = _vector()
     out = await run_pass(_redis_with(evals, ["s-mid"]), v, _settings(),
@@ -193,7 +199,7 @@ async def test_run_pass_excludes_ambiguous_sessions():
 
 @pytest.mark.asyncio
 async def test_run_pass_bridge_abandoned_overrides_good_metrics():
-    evals = {"s1": {"outcome": "success", "metrics": {"failure_rate": 0.0}}}
+    evals = {"s1": {"task_result": "success", "task_result_source": "self_reported"}}
     events = {"s1": [{"event_type": "memory_read", "payload": {"memory_ids": ["m1"]}}]}
     v = _vector()
     await run_pass(_redis_with(evals, ["s1"]), v, _settings(),
@@ -204,7 +210,7 @@ async def test_run_pass_bridge_abandoned_overrides_good_metrics():
 
 @pytest.mark.asyncio
 async def test_run_pass_survives_a_set_payload_error(caplog):
-    evals = {"s1": {"outcome": "success", "metrics": {"failure_rate": 0.0}}}
+    evals = {"s1": {"task_result": "success", "task_result_source": "self_reported"}}
     events = {"s1": [{"event_type": "memory_read", "payload": {"memory_ids": ["gone", "m2"]}}]}
     v = _vector()
     async def boom(collection_name, payload, points):
@@ -228,7 +234,7 @@ async def test_stale_scored_memories_reset_to_neutral():
     its OWM keys DELETED (back to neutral) — otherwise a bad week becomes a
     permanent, self-reinforcing penalty (recall downrank -> never recalled ->
     never earns recovery evidence)."""
-    evals = {"s1": {"outcome": "success", "metrics": {"failure_rate": 0.0}}}
+    evals = {"s1": {"task_result": "success", "task_result_source": "self_reported"}}
     events = {"s1": [{"event_type": "memory_read", "payload": {"memory_ids": ["m1"]}}]}
     v = _vector(stale_scored_ids=("m1", "m-old"))
     out = await run_pass(_redis_with(evals, ["s1"]), v, _settings(),
@@ -245,7 +251,7 @@ async def test_corpus_and_skill_points_are_never_scored():
     """Corpus chunks and skills surface through the same vector search, so their
     ids land in memory_ids — but outcome-scoring playbooks/documents by ambient
     session failure is meaningless and pollutes their payloads."""
-    evals = {"s1": {"outcome": "success", "metrics": {"failure_rate": 0.0}}}
+    evals = {"s1": {"task_result": "success", "task_result_source": "self_reported"}}
     events = {"s1": [{"event_type": "memory_read",
                       "payload": {"memory_ids": ["m1", "sk1", "c1"]}}]}
     v = _vector(point_types={
@@ -265,7 +271,7 @@ async def test_single_agent_contribution_is_capped_per_memory():
     """One identity's failing loop (CI bot, 30 bad sessions overnight) must not
     be able to bury a shared memory: per (memory, agent) observations cap at
     OWM_AGENT_CAP."""
-    evals = {f"s{i}": {"outcome": "failure", "metrics": {"failure_rate": 1.0}}
+    evals = {f"s{i}": {"task_result": "failure", "task_result_source": "self_reported"}
              for i in range(10)}
     events = {f"s{i}": [{"event_type": "memory_read", "agent_id": "ci-bot",
                          "payload": {"memory_ids": ["m1"]}}] for i in range(10)}

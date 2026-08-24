@@ -16,13 +16,13 @@ evidence accumulates. Results land on the Qdrant payload (``owm_efficacy``,
     bit-identical; persistently misleading memories age out faster).
 
 Session success is DETERMINISTIC, no LLM, no statistics beyond the shrinkage:
-Bridge ``abandoned`` is a failure regardless of metrics; otherwise the eval
-``failure_rate`` decides (<= OWM_SUCCESS_MAX_FAILURE_RATE succeeds,
->= OWM_FAILURE_MIN_FAILURE_RATE fails, the ambiguous middle band is EXCLUDED
-from the join rather than guessed); with no failure_rate metric, the eval's own
-outcome field is used. Runs as a nightly Celery pass (confluence-collector
-registration pattern); the whole pass is idempotent — recomputed from scratch
-every run over the eval window, so drift self-heals.
+Bridge ``abandoned`` is a failure regardless of grade; otherwise the recognized
+(task_result, task_result_source) pair decides (2026-08-23, outcome truth) —
+"success"/"failure" pass through, and "partial", a sourceless grade, or an
+absent/legacy record are EXCLUDED from the join rather than guessed. Runs as a
+nightly Celery pass (confluence-collector registration pattern); the whole
+pass is idempotent — recomputed from scratch every run over the eval window,
+so drift self-heals.
 """
 from __future__ import annotations
 
@@ -32,10 +32,9 @@ import logging
 import time
 from typing import Callable
 
-logger = logging.getLogger(__name__)
+from app.evals.models import recognized_grade_pair
 
-_SUCCESS_MAX_FR = 0.2   # failure_rate at or below -> session succeeded
-_FAILURE_MIN_FR = 0.5   # failure_rate at or above -> session failed
+logger = logging.getLogger(__name__)
 
 
 def compute_efficacy(successes: int, n: int, prior_n: int = 5) -> float:
@@ -44,21 +43,23 @@ def compute_efficacy(successes: int, n: int, prior_n: int = 5) -> float:
 
 
 def session_success(eval_data: dict, bridge_status: str | None) -> bool | None:
-    """True/False when the session's outcome is knowable, None to exclude it."""
+    """True/False when the session's outcome is knowable, None to exclude it.
+
+    2026-08-23 (outcome truth): grades come from the recognized
+    (task_result, task_result_source) pair, replacing the failure_rate
+    heuristic whose 0.0 was produced by Bridge's hard-coded completion stamp.
+    This function reads RAW stored eval JSON, so it checks the pair itself
+    (D2c): a sourceless grade is not evidence. "partial" and ungraded/legacy
+    records return None — excluded rather than guessed. Bridge `abandoned`
+    still overrides: a walked-away session is a failure regardless of grade.
+    """
     if bridge_status == "abandoned":
         return False
-    metrics = eval_data.get("metrics") or {}
-    fr = metrics.get("failure_rate")
-    if isinstance(fr, (int, float)):
-        if fr <= _SUCCESS_MAX_FR:
-            return True
-        if fr >= _FAILURE_MIN_FR:
-            return False
-        return None  # ambiguous middle band: no guessing
-    outcome = eval_data.get("outcome")
-    if outcome == "success":
+    tr, _src = recognized_grade_pair(
+        eval_data.get("task_result"), eval_data.get("task_result_source"))
+    if tr == "success":
         return True
-    if outcome == "failure":
+    if tr == "failure":
         return False
     return None
 
