@@ -9,11 +9,24 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+import redis
 import redis.asyncio as aioredis
 
 from app.config import Settings
 
 logger = logging.getLogger(__name__)
+
+# Recognized task-completion grades (outcome truth, PR1). Bridge is the
+# storage layer of record for this tuple — mcp_server.py imports it rather
+# than redefining it, so "what counts as a grade" has exactly one home.
+TASK_RESULTS = ("success", "partial", "failure")
+
+# complete_session's WATCH/MULTI CAS loop (below) retries this many times on
+# WatchError before giving up. Contention here means another authorized
+# completer committed between our read and our EXEC — a few retries resolve
+# it; exhaustion after 8 means something is pathologically hot, not a normal
+# race.
+_COMPLETE_CAS_RETRIES = 8
 
 # --------------------------------------------------------------------------
 # Replay emitter (best-effort, mirrors cortex/app/main.py:_replay_emit)
@@ -195,6 +208,7 @@ class SessionManager:
         instr_rendered: str | None = None,
         instr_expected: str | None = None,
         instr_gateway: str | None = None,
+        owner_member: str | None = None,
     ) -> dict[str, str]:
         agent_id = agent_id or self._s.DEFAULT_AGENT_ID
         now = datetime.now(timezone.utc).isoformat()
@@ -221,6 +235,11 @@ class SessionManager:
             "goal": goal,
             "status": "active",
             "agent_id": agent_id,
+            # Written ONCE, here, and never again (outcome truth, PR1). This is
+            # the verified-member binding complete_session and resume_session
+            # check before honoring a grade or a cross-member takeover; no
+            # other code path may write this field.
+            "owner_member": owner_member or "",
             "project": project or "",
             "briefing_id": briefing_id or "",
             # Living Instructions round 2 attribution (the five X-Firekeep-*
@@ -414,6 +433,10 @@ class SessionManager:
         return {
             **meta,
             "tags": json.loads(meta.get("tags", "[]")),
+            # task_result / task_result_source stay as the plain strings
+            # already in meta (possibly "") — only task_evidence is stored
+            # JSON-encoded and needs decoding.
+            "task_evidence": json.loads(meta.get("task_evidence") or "[]"),
             "plan": plan,
             "decisions": decisions,
             "files": files,
@@ -448,41 +471,77 @@ class SessionManager:
     # ------------------------------------------------------------------
 
     async def complete_session(
-        self, session_id: str | None = None, outcome: str | None = None, agent_id: str | None = None
-    ) -> dict[str, str]:
+        self,
+        session_id: str | None = None,
+        outcome: str | None = None,
+        agent_id: str | None = None,
+        *,
+        task_result: str | None = None,
+        task_evidence: list | None = None,
+        verified_member: str | None = None,
+    ) -> dict[str, Any]:
+        """Complete a session and return the session's AUTHORITATIVE grade.
+
+        Outcome truth (PR1): a session's grade means the TASK succeeded, not
+        that this RPC succeeded, so a completion attempt must not be able to
+        stomp a grade that is already on record, and a caller must not be
+        able to grade — or take over — a session it does not verifiably own.
+
+        OWNERSHIP IS STILL CHECKED first (label match, mirroring
+        resume_session — see that method's docstring for the live
+        cross-terminal clobber this originally fixed; the reaper is
+        unaffected, it passes the session's own owner as agent_id). ON TOP of
+        that, a session with a non-empty ``owner_member`` (set once, in
+        start_session) refuses completion by anyone whose verified_member
+        does not match — this is what makes the grade authoritative: only the
+        verified owner's FIRST self-reported grade is ever stored, and no one
+        else can overwrite or launder a different one in.
+
+        The label check, the owner_member check, the existing-grade read and
+        the active-pointer staleness decision all happen INSIDE one
+        WATCH/MULTI transaction, re-run on every retry:
+          - Reading meta via ``pipe.hgetall`` (not ``self._r.hgetall``) after
+            ``pipe.watch(session_key)`` is what makes the eventual EXEC fail
+            if another completion commits first — the fix #2 "read outside
+            the pipeline" pattern this method used to follow is exactly
+            backwards for a CAS; here the read has to be INSIDE the watched
+            section or two racing completions could each believe they own the
+            first-grade write.
+          - The active-pointer keys are watched and read the same way
+            (``pipe.watch`` + ``pipe.mget``, not a pre-pipeline
+            ``self._r.get`` loop) so a concurrent start/resume that repoints
+            one of them between our read and our EXEC aborts our transaction
+            instead of letting a stale DEL delete the NEW session's pointer.
+          - The distill enqueue rides the SAME MULTI as the "queued" state
+            commit and the first grade write (final-review fix, unchanged
+            from before this PR): a crash between a separate state-write and
+            enqueue used to be able to strand a session at
+            distillation="queued" forever.
+
+        First grade wins: existing_grade is authoritative only when
+        owner_member is non-empty, the stored task_result is a recognized
+        TASK_RESULTS value, AND task_result_source == "self_reported" — an
+        unbound session's stray task_result pair, or a sourceless one, is
+        never treated as authority, and a bound session with a real grade
+        keeps it (the submitted grade is silently dropped, not stored,
+        reported back only via task_result_dropped).
+
+        Retry exhaustion (_COMPLETE_CAS_RETRIES attempts, all WatchError)
+        raises RuntimeError before any emit or enqueue — no half-committed
+        state.
+
+        This guarantees one authoritative grade and safe pointer cleanup, NOT
+        exactly-once side effects: two authorized callers can each eventually
+        commit after a WatchError retry, each queueing a distill job / firing
+        a session.completed event with the same authoritative grade. That
+        at-least-once behavior predates this PR (D13) and is not expanded
+        into an outbox here.
+        """
         agent_id = agent_id or self._s.DEFAULT_AGENT_ID
         if session_id is None:
             session_id = await self._r.get(self._active_key(agent_id))
         if not session_id:
             raise ValueError("No active session")
-
-        meta = await self._r.hgetall(self._session_key(session_id))
-        if not meta:
-            raise ValueError(f"Session {session_id} not found")
-
-        # OWNERSHIP IS CHECKED — mirroring resume_session's refusal below.
-        # Without it, this method completed ANY session it could resolve: two
-        # terminals sharing one agent_id share one nb:active pointer, so a
-        # no-arg ctx_complete_session from terminal B resolved to and
-        # completed terminal A's in-flight session (live cross-terminal
-        # data-loss bug, 2026-08-11). A session whose meta names no owner
-        # (legacy records) is completable by anyone, as with resume. The
-        # reaper stays unaffected — it passes the session's own owner as
-        # agent_id (app/reaper.py).
-        owner = meta.get("agent_id") or ""
-        if owner and owner != agent_id:
-            raise ValueError(
-                f"Session {session_id} belongs to agent '{owner}' — refusing "
-                f"completion by '{agent_id}'. Complete it as its owner, or "
-                f"resume it first."
-            )
-
-        now = datetime.now(timezone.utc).isoformat()
-
-        # Read current active OUTSIDE the pipeline (fix #2)
-        stale_pointers = await self._stale_active_pointers(
-            session_id, meta.get("agent_id"), agent_id
-        )
 
         # Final-review fix: the distill job is XADD'd inside the SAME
         # transaction pipeline as the "queued" state commit. Previously the
@@ -493,34 +552,135 @@ class SessionManager:
         # distill_worker.enqueue_distillation exactly.
         from app.distill_worker import QUEUE_KEY  # lazy: avoids import cycle
 
-        async with self._r.pipeline(transaction=True) as pipe:
-            pipe.hset(self._session_key(session_id), mapping={
-                "status": "completed",
-                "updated_at": now,
-                "outcome": outcome or "",
-                "distillation": "queued",
-            })
-            for key in stale_pointers:
-                pipe.delete(key)
-            pipe.xadd(QUEUE_KEY, {
-                "session_id": session_id,
-                "attempts": "0",
-                "next_attempt_at": str(time.time()),
-            })
-            await pipe.execute()
+        now = datetime.now(timezone.utc).isoformat()
+        submitted_grade = task_result if task_result in TASK_RESULTS else None
+        session_key = self._session_key(session_id)
+        label_owner = ""
+        owner_member = ""
+        write_grade = False
+        authoritative_grade: str | None = None
+
+        for _attempt in range(_COMPLETE_CAS_RETRIES):
+            try:
+                async with self._r.pipeline(transaction=True) as pipe:
+                    await pipe.watch(session_key)
+                    meta = await pipe.hgetall(session_key)
+                    if not meta:
+                        await pipe.unwatch()
+                        raise ValueError(f"Session {session_id} not found")
+
+                    label_owner = meta.get("agent_id") or ""
+                    if label_owner and label_owner != agent_id:
+                        await pipe.unwatch()
+                        raise ValueError(
+                            f"Session {session_id} belongs to agent '{label_owner}'"
+                        )
+
+                    owner_member = meta.get("owner_member") or ""
+                    if owner_member and verified_member != owner_member:
+                        await pipe.unwatch()
+                        raise ValueError(
+                            f"Session {session_id} belongs to a different "
+                            f"verified owner"
+                        )
+
+                    candidate = submitted_grade if owner_member else None
+                    existing_grade = meta.get("task_result") or ""
+                    if (
+                        not owner_member
+                        or existing_grade not in TASK_RESULTS
+                        or meta.get("task_result_source") != "self_reported"
+                    ):
+                        existing_grade = ""
+                    write_grade = bool(candidate) and not existing_grade
+                    authoritative_grade = (
+                        candidate if write_grade else existing_grade or None
+                    )
+
+                    pointer_keys = [
+                        self._active_key(a)
+                        for a in dict.fromkeys(
+                            a for a in (label_owner, agent_id) if a)
+                    ]
+                    if pointer_keys:
+                        # A start/resume may repoint one after this read.
+                        # WATCHing it makes that invalidate EXEC instead of
+                        # letting our stale transaction delete the new
+                        # session's pointer.
+                        await pipe.watch(*pointer_keys)
+                        pointer_values = await pipe.mget(pointer_keys)
+                        stale_pointers = [
+                            key for key, value in zip(
+                                pointer_keys, pointer_values, strict=True)
+                            if value == session_id
+                        ]
+                    else:
+                        stale_pointers = []
+
+                    mapping = {
+                        "status": "completed",
+                        "updated_at": now,
+                        "outcome": outcome or "",
+                        "distillation": "queued",
+                    }
+                    if write_grade:
+                        mapping.update({
+                            "task_result": candidate,
+                            "task_result_source": "self_reported",
+                            "task_evidence": json.dumps(task_evidence or []),
+                        })
+                    pipe.multi()
+                    pipe.hset(session_key, mapping=mapping)
+                    for key in stale_pointers:
+                        pipe.delete(key)
+                    pipe.xadd(QUEUE_KEY, {
+                        "session_id": session_id,
+                        "attempts": "0",
+                        "next_attempt_at": str(time.time()),
+                    })
+                    await pipe.execute()
+                    # State/grade correctness, not exactly-once effects:
+                    # another authorized completion may retry and also
+                    # commit, producing a duplicate queue row/event with this
+                    # same authoritative grade (D13).
+                    break
+            except redis.WatchError:
+                continue
+        else:
+            raise RuntimeError(
+                f"Session {session_id} completion contended repeatedly; retry"
+            )
 
         # D1: TTL is deliberately NOT set here. The distill worker applies the
         # 7-day TTL only after confirmed distillation success or DLQ move —
         # a failing distillation must never let the session keys expire first.
 
+        completed_payload: dict[str, Any] = {"outcome": outcome or ""}
+        if authoritative_grade:
+            completed_payload.update({
+                "task_result": authoritative_grade,
+                "task_result_source": "self_reported",
+            })
         await _replay_emit(
             event_type="session.completed",
             session_id=session_id,
-            agent_id=meta.get("agent_id") or "unknown",
-            payload={"outcome": outcome or ""},
+            agent_id=label_owner or "unknown",
+            payload=completed_payload,
         )
 
-        return {"status": "completed", "session_id": session_id}
+        result: dict[str, Any] = {
+            "status": "completed",
+            "session_id": session_id,
+            "task_result": authoritative_grade,
+            "task_result_source": "self_reported" if authoritative_grade else None,
+        }
+        if submitted_grade and not owner_member:
+            result["task_result_dropped"] = (
+                "pre-upgrade session has no verified owner binding"
+            )
+        elif submitted_grade and not write_grade:
+            result["task_result_dropped"] = "session already has a stored grade"
+        return result
 
     # ------------------------------------------------------------------
     # Abandon (fix #2 — read outside pipeline)
@@ -588,8 +748,21 @@ class SessionManager:
         agent_id: str | None = None,
         *,
         takeover: bool = False,
+        verified_member: str | None = None,
     ) -> dict[str, Any]:
         """Resume a session and make it the caller's active one.
+
+        BOUND-OWNER REFUSAL (outcome truth, PR1): a session with a non-empty
+        ``owner_member`` (set once, in start_session) refuses ANY resume by a
+        caller whose ``verified_member`` does not match — even an explicit
+        ``takeover=True``. This runs immediately after the ``hgetall``,
+        before the status check and before any Lua/HSET/pointer effect, so a
+        cross-member attempt mutates nothing. A SAME-member caller may still
+        take over the agent LABEL (``agent_id``) without this touching
+        ``owner_member`` — the binding is per-member, not per-label. A
+        session whose meta has no ``owner_member`` (legacy, pre-upgrade)
+        skips this check entirely and falls through to the label-only
+        behavior below, unchanged.
 
         OWNERSHIP IS CHECKED (audit finding). This method previously read the
         session's status and nothing else, then unconditionally rewrote
@@ -619,6 +792,13 @@ class SessionManager:
         meta = await self._r.hgetall(self._session_key(session_id))
         if not meta:
             raise ValueError(f"Session {session_id} not found")
+
+        owner_member = meta.get("owner_member") or ""
+        if owner_member and verified_member != owner_member:
+            raise ValueError(
+                f"Session {session_id} belongs to a different verified owner"
+            )
+
         if meta.get("status") in ("completed", "abandoned"):
             raise ValueError(f"Cannot resume {meta['status']} session")
 

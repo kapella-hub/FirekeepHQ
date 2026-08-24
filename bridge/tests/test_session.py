@@ -9,6 +9,8 @@ import pytest
 from app.config import Settings
 from app.session import SessionManager
 
+SID = "sess-1"
+
 
 @pytest.fixture
 def settings():
@@ -173,6 +175,35 @@ class TestResumeSession:
         mock_redis.hgetall = AsyncMock(return_value={"status": "completed"})
         with pytest.raises(ValueError, match="Cannot resume"):
             await manager.resume_session("sess-done")
+
+
+@pytest.mark.asyncio
+async def test_cross_member_takeover_of_bound_session_is_refused(manager, mock_redis):
+    mock_redis.hgetall = AsyncMock(return_value={
+        "status": "paused", "agent_id": "alice-agent",
+        "owner_member": "member-alice"})
+    with pytest.raises(ValueError, match="verified owner"):
+        await manager.resume_session(
+            SID, agent_id="mallory-agent", takeover=True,
+            verified_member="member-mallory")
+    mock_redis.eval.assert_not_awaited()
+    mock_redis.hset.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_same_member_may_take_over_label_without_rebinding_owner(
+    manager, mock_redis
+):
+    mock_redis.hgetall = AsyncMock(return_value={
+        "status": "paused", "agent_id": "old-label",
+        "owner_member": "member-alice"})
+    result = await manager.resume_session(
+        SID, agent_id="new-label", takeover=True,
+        verified_member="member-alice")
+    assert result["status"] == "active"
+    mapping = mock_redis.hset.await_args.kwargs["mapping"]
+    assert mapping["agent_id"] == "new-label"
+    assert "owner_member" not in mapping
 
 
 class TestListSessions:

@@ -65,6 +65,28 @@ def mock_redis():
     mock_pipe.__aenter__ = AsyncMock(return_value=mock_pipe)
     mock_pipe.__aexit__ = AsyncMock(return_value=False)
     mock_pipe.execute = AsyncMock(return_value=[])
+
+    # complete_session's WATCH/MULTI CAS (outcome truth, PR1) reads session
+    # meta and active-pointer values THROUGH the pipe — required for real
+    # Redis WATCH semantics (see app/session.py complete_session). A bare
+    # AsyncMock().hgetall(...) auto-vivifies as truthy garbage, not the dict a
+    # test configured on `r.hgetall` (bridge/tests/test_outcome_truth_storage.py
+    # uses two real fakeredis clients instead, precisely to get true WATCH
+    # behavior). Aliasing these two pipe reads back to the top-level
+    # r.hgetall/r.get — looked up at CALL time, so both a full
+    # `r.hgetall = AsyncMock(...)` reassignment and a `.return_value = ...`
+    # mutation are honored — lets every pre-existing test that configures
+    # mock_redis.hgetall/mock_redis.get keep modeling complete_session's read
+    # path correctly without per-test changes.
+    async def _pipe_hgetall(*args, **kwargs):
+        return await r.hgetall(*args, **kwargs)
+
+    async def _pipe_mget(keys, *args, **kwargs):
+        return [await r.get(k) for k in keys]
+
+    mock_pipe.hgetall = AsyncMock(side_effect=_pipe_hgetall)
+    mock_pipe.mget = AsyncMock(side_effect=_pipe_mget)
+
     r.pipeline = MagicMock(return_value=mock_pipe)
     r._pipeline = mock_pipe
 
