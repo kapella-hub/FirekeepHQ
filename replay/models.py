@@ -38,6 +38,7 @@ EventType = Literal[
     "release",
     "coordination",
     "webhook",
+    "memory_feedback",
 ]
 
 EventOutcome = Literal["success", "failure", "partial"]

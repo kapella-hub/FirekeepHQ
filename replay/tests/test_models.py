@@ -109,7 +109,7 @@ class TestTraceEvent:
         valid_types = [
             "session_start", "session_end", "memory_read", "memory_write",
             "ctx_update", "env_change", "claim", "release",
-            "coordination", "webhook",
+            "coordination", "webhook", "memory_feedback",
         ]
         for et in valid_types:
             event = TraceEvent(session_id="s", agent_id="a", event_type=et)
