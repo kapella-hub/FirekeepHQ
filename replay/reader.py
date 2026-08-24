@@ -71,6 +71,11 @@ async def _get_session_event_ids(
     return event_ids, total
 
 
+# ---------------------------------------------------------------------------
+# Public query functions
+# ---------------------------------------------------------------------------
+
+
 async def get_session_event_ids(
     r: aioredis.Redis,
     session_id: str,
@@ -89,11 +94,6 @@ async def get_session_event_ids(
     idx_key = f"{_SESSION_IDX_PREFIX}{session_id}"
     ids = await r.zrange(idx_key, -limit, -1)
     return [i.decode() if isinstance(i, bytes) else i for i in ids]
-
-
-# ---------------------------------------------------------------------------
-# Public query functions
-# ---------------------------------------------------------------------------
 
 
 async def get_session_timeline(

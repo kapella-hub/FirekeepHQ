@@ -37,6 +37,33 @@ async def setup_emitter(redis_client):
     await close_emitter()
 
 
+class _CallCountingRedis:
+    """Proxy that records every Redis command invoked through it.
+
+    Used to assert get_session_event_ids performs exactly ONE round trip (a
+    single zrange). That single-call shape is the actual source of
+    snapshot-stability: with only one Redis interaction, there is no gap
+    between two calls for a concurrent append to land in. A reimplementation
+    as a multi-call/paged read (e.g. a ZCARD probe, or ZRANGE issued across
+    pages) would reopen that TOCTOU window — this proxy catches it directly
+    by recording more than one call, rather than relying on timing."""
+
+    def __init__(self, real):
+        self._real = real
+        self.calls: list[str] = []
+
+    def __getattr__(self, name):
+        attr = getattr(self._real, name)
+        if not callable(attr):
+            return attr
+
+        async def _spy(*args, **kwargs):
+            self.calls.append(name)
+            return await attr(*args, **kwargs)
+
+        return _spy
+
+
 @pytest.mark.asyncio
 async def test_ids_are_newest_last_and_bounded(setup_emitter):
     r = setup_emitter
@@ -55,20 +82,32 @@ async def test_ids_are_newest_last_and_bounded(setup_emitter):
 
 
 @pytest.mark.asyncio
-async def test_snapshot_is_stable_under_appends(setup_emitter):
-    """Round-6 finding 2: a live rank-relative window would shift under
-    appends and skip the grade; the ID snapshot does not."""
+async def test_snapshot_is_a_single_atomic_redis_call(setup_emitter):
+    """D5/D7 ship gate: get_session_event_ids must be exactly ONE Redis
+    round trip (a single zrange), not a multi-call/paged read.
+
+    That single-call shape is what makes the snapshot stable against
+    concurrent appends (round-6 finding 2): with only one Redis interaction
+    there is no interleaving point for a writer to land in between. A prior
+    version of this test only asserted outcomes (`len(snap) == 10`, a live
+    re-read differs from the snapshot) — both true the instant the snapshot
+    list was assigned, and both still true under a TOCTOU-broken
+    multi-call reimplementation, so neither caught a regression. Asserting
+    the call count does: it fails the moment someone reintroduces a second
+    round trip (a ZCARD probe, or ZRANGE issued in pages)."""
     r = setup_emitter
     from replay.emitter import emit
     from replay.reader import get_session_event_ids
     for i in range(10):
         await emit("ctx_update", "s", "agent", {"i": str(i)})
-    snap = await get_session_event_ids(r, "s", limit=10)
-    for i in range(200):                              # heavy concurrent appends
-        await emit("memory_read", "s", "agent", {"j": str(i)})
-    # the snapshot still names the original 10 events, unshifted
-    assert await get_session_event_ids(r, "s", limit=10) != snap  # live read moved
-    assert len(snap) == 10                            # our captured list did not
+
+    spy = _CallCountingRedis(r)
+    ids = await get_session_event_ids(spy, "s", limit=10)
+
+    assert len(ids) == 10
+    assert spy.calls == ["zrange"], (
+        f"expected exactly one zrange call and nothing else, got {spy.calls}"
+    )
 
 
 @pytest.mark.asyncio
