@@ -1,6 +1,11 @@
 """Tests for the auto-eval system — models and Tier 1 scorers."""
 
+import json
+from unittest.mock import AsyncMock
+
+import fakeredis.aioredis
 import pytest
+import pytest_asyncio
 
 from app.evals.models import EvalResult, EvalSummary
 from app.evals.scorers import compute_tier1_metrics
@@ -25,6 +30,70 @@ def _make_events(specs: list[dict]) -> list[dict]:
             "agent_id": "default",
         })
     return events
+
+
+@pytest_asyncio.fixture
+async def rr():
+    r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    yield r
+    await r.aclose()
+
+
+async def _compute(monkeypatch, events, *, id_events=None, task_result_hint=None,
+                   replay_redis=None, webhook_sink=None):
+    """Drive compute_session_eval with patched replay readers.
+
+    id_events models the session-tail SNAPSHOT as an ordered (oldest→newest)
+    list of (event_id, event_or_None); None means the body is MISSING from
+    get_event_batch (trimmed/expired) — the snapshot ID stays but hydration
+    omits it. This exercises find_terminal_grade's real shape: snapshot the
+    IDs once, hydrate backward in windows.
+
+    replay_redis defaults to a fresh fakeredis so store_eval actually persists
+    (under the authoritative-store rule an unstored candidate returns None)."""
+    import replay.reader as reader_mod
+    from app.evals import compute as compute_mod
+
+    owned_redis = replay_redis is None
+    if owned_redis:
+        import fakeredis.aioredis
+        replay_redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    pairs = list(id_events or [])
+    id_to_ev = {i: ev for i, ev in pairs if ev is not None}
+
+    async def fake_summary(*a, **k):
+        return {"event_count": max(len(events), 1), "duration_ms": 1000,
+                "agents": ["default"]}
+
+    async def fake_timeline(*a, **k):
+        return {"events": events}
+
+    async def fake_ids(r, sid, *, limit=5000):
+        return [i for i, _ in pairs][-limit:]
+
+    async def fake_batch(r, ids):
+        return [id_to_ev[i] for i in ids if i in id_to_ev]
+
+    monkeypatch.setattr(reader_mod, "get_session_summary", fake_summary)
+    monkeypatch.setattr(reader_mod, "get_session_timeline", fake_timeline)
+    monkeypatch.setattr(reader_mod, "get_session_event_ids", fake_ids)
+    monkeypatch.setattr(reader_mod, "get_event_batch", fake_batch)
+    # Keep every test in-process: the production webhook client targets the
+    # compose hostname `redis`, which is deliberately unreachable here.
+    from unittest.mock import AsyncMock
+    import app.webhooks as webhooks_mod
+    sink = webhook_sink if webhook_sink is not None else AsyncMock()
+    webhook_redis = AsyncMock()
+    monkeypatch.setattr(compute_mod.aioredis, "from_url",
+                        lambda *a, **k: webhook_redis)
+    monkeypatch.setattr(webhooks_mod, "fire_webhooks", sink)
+    try:
+        return await compute_mod.compute_session_eval(
+            replay_redis=replay_redis, session_id="s1",
+            task_result_hint=task_result_hint)
+    finally:
+        if owned_redis:
+            await replay_redis.aclose()
 
 
 # ---------------------------------------------------------------------------
@@ -229,16 +298,33 @@ async def test_compute_includes_brier_score_when_predict_events_present(monkeypa
     async def fake_get_session_timeline(*args, **kwargs):
         return {"events": fake_events}
 
-    async def fake_store_eval(*args, **kwargs):
-        return None
+    async def fake_ids(*args, **kwargs):
+        return []
+
+    async def fake_batch(*args, **kwargs):
+        return []
+
+    saved = {}
+
+    async def fake_store_eval(_r, result):
+        saved["result"] = result
+        return True
+
+    async def fake_get_eval(_r, _sid):
+        return saved.get("result")
 
     # Patch replay reader functions used inside compute_session_eval
     monkeypatch.setattr(reader_mod, "get_session_summary", fake_get_session_summary)
     monkeypatch.setattr(reader_mod, "get_session_timeline", fake_get_session_timeline)
+    monkeypatch.setattr(reader_mod, "get_session_event_ids", fake_ids)
+    monkeypatch.setattr(reader_mod, "get_event_batch", fake_batch)
 
-    # Patch store_eval so we don't need Redis
-    import app.evals.store as store_mod
-    monkeypatch.setattr(store_mod, "store_eval", fake_store_eval)
+    # Patch store_eval/get_eval so we don't need Redis
+    monkeypatch.setattr(compute_mod, "store_eval", fake_store_eval)
+    monkeypatch.setattr(compute_mod, "get_eval", fake_get_eval)
+    monkeypatch.setattr(
+        compute_mod.aioredis, "from_url", lambda *a, **k: AsyncMock())
+    monkeypatch.setattr("app.webhooks.fire_webhooks", AsyncMock())
 
     # Also disable pattern extraction and webhooks side effects
     monkeypatch.setenv("EVAL_LLM_ENABLED", "false")
@@ -251,3 +337,334 @@ async def test_compute_includes_brier_score_when_predict_events_present(monkeypa
     assert result is not None, "compute_session_eval returned None unexpectedly"
     # (0.9 - 1.0)^2 + (0.3 - 0.0)^2 = 0.01 + 0.09 = 0.10 / 2 = 0.05
     assert result.metrics.get("brier_score") == pytest.approx(0.05, abs=1e-4)
+
+
+# ---------------------------------------------------------------------------
+# Outcome truth (2026-08-23): normalizers, snapshot-scanned grade lift,
+# first-graded-wins store, authoritative downstream.
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizers:
+    def test_pair_normalizer(self):
+        from app.evals.models import recognized_grade_pair
+        assert recognized_grade_pair("success", "self_reported") == ("success", "self_reported")
+        assert recognized_grade_pair("success", None) == (None, None)
+        assert recognized_grade_pair("success", "vibes") == (None, None)
+        assert recognized_grade_pair("amazing", "self_reported") == (None, None)
+
+    def test_binary_outcome_projection(self):
+        from app.evals.models import binary_outcome
+        assert binary_outcome("success") == "success"
+        assert binary_outcome("failure") == "failure"
+        assert binary_outcome("partial") == "unknown"
+        assert binary_outcome(None) == "unknown"
+
+    def test_before_validator_normalizes_invalid_literals_without_raising(self):
+        """mode='after' would never run: Literal field validation raises
+        first. The before-validator normalizes the RAW mapping (verified
+        under Pydantic 2.12.5)."""
+        from app.evals.models import EvalResult
+        m = EvalResult(session_id="s", trigger="manual",
+                       task_result="amazing", task_result_source="self_reported")
+        assert m.task_result is None and m.task_result_source is None
+        m = EvalResult(session_id="s", trigger="manual",
+                       task_result="success", task_result_source="vibes")
+        assert m.task_result is None and m.task_result_source is None
+        m = EvalResult(session_id="s", trigger="manual", task_result="success")
+        assert m.task_result is None and m.task_result_source is None
+        raw = ('{"session_id": "s", "trigger": "manual", '
+               '"task_result": "amazing", "task_result_source": 3}')
+        m = EvalResult.model_validate_json(raw)     # junk stored record parses
+        assert m.task_result is None
+
+    def test_grade_from_events_reads_both_terminal_channels(self):
+        from app.evals.models import grade_from_events
+        ok = {"task_result": "success", "task_result_source": "self_reported"}
+        assert grade_from_events(
+            [{"event_type": "session.completed", "payload": ok}]) == ("success", "self_reported")
+        assert grade_from_events(
+            [{"event_type": "session.completed",
+              "payload": {"task_result": "success"}}]) == (None, None)
+        assert grade_from_events(
+            [{"event_type": "ctx_update", "payload": ok}]) == (None, None)
+
+    def test_grade_from_events_tolerates_a_non_dict_payload(self):
+        """Round-6 finding 6: a non-empty list/string payload must degrade to
+        (None, None), not raise into the eval catch-all and DLQ the whole
+        computation — `p = payload or {}` keeps a truthy non-dict, so the
+        isinstance guard is load-bearing."""
+        from app.evals.models import grade_from_events
+        assert grade_from_events(
+            [{"event_type": "session_end", "payload": ["not", "a", "dict"]}]) == (None, None)
+        assert grade_from_events(
+            [{"event_type": "session_end", "payload": "junk"}]) == (None, None)
+
+
+class TestTaskResultLifting:
+    @pytest.mark.asyncio
+    async def test_hint_wins_and_survives_a_lost_emit(self, monkeypatch):
+        result = await _compute(monkeypatch, _make_events([{"type": "memory_read"}]),
+                                id_events=[], task_result_hint="failure")
+        assert result.task_result == "failure"
+        assert result.task_result_source == "self_reported"
+        assert result.outcome == "failure"
+
+    @pytest.mark.asyncio
+    async def test_lift_finds_the_grade_under_post_completion_noise(self, monkeypatch):
+        """D7: the graded session_end sits early, then 250 newer events. The
+        snapshot names all of them; hydrating backward in windows finds the
+        grade in a later window."""
+        grade_ev = {"event_type": "session_end",
+                    "payload": {"task_result": "success",
+                                "task_result_source": "self_reported"}}
+        # oldest→newest: the grade, then 250 noise events (all newer)
+        pairs = [("g", grade_ev)] + [
+            (f"n{i}", {"event_type": "memory_read", "payload": {}}) for i in range(250)]
+        result = await _compute(monkeypatch, _make_events([{"type": "memory_read"}]),
+                                id_events=pairs)
+        assert result.task_result == "success"
+
+    @pytest.mark.asyncio
+    async def test_lift_walks_past_a_hole_of_missing_bodies(self, monkeypatch):
+        """Finding 6: some IDs in the newest window have NO body (trimmed /
+        expired). Iterating IDs (not hydrated events) must keep walking to the
+        grade; a hydrated-count terminator would stop early."""
+        grade_ev = {"event_type": "session_end",
+                    "payload": {"task_result": "failure",
+                                "task_result_source": "self_reported"}}
+        # grade oldest; then 50 present noise; then 200 MISSING bodies (newest)
+        pairs = ([("g", grade_ev)]
+                 + [(f"n{i}", {"event_type": "memory_read", "payload": {}})
+                    for i in range(50)]
+                 + [(f"m{i}", None) for i in range(200)])
+        result = await _compute(monkeypatch, _make_events([{"type": "memory_read"}]),
+                                id_events=pairs)
+        assert result.task_result == "failure"
+
+    @pytest.mark.asyncio
+    async def test_append_after_snapshot_cannot_shift_the_scan(self, monkeypatch, rr):
+        """Capture IDs once, then append 300 newer IDs while the first window
+        hydrates. The frozen list still reaches the original terminal grade."""
+        from app.evals import compute as compute_mod
+        from replay import reader as reader_mod
+
+        grade = {"event_type": "session_end", "payload": {
+            "task_result": "success", "task_result_source": "self_reported"}}
+        frozen = ["grade"] + [f"old-{i}" for i in range(250)]
+        bodies = {"grade": grade, **{
+            f"old-{i}": {"event_type": "memory_read", "payload": {}}
+            for i in range(250)}}
+        calls = {"ids": 0, "batches": 0}
+
+        async def snapshot(*args, **kwargs):
+            calls["ids"] += 1
+            return list(frozen)
+
+        async def hydrate(r, ids):
+            calls["batches"] += 1
+            if calls["batches"] == 1:
+                # Mutate the live backing set after the snapshot. A second
+                # rank-relative read would now shift; this implementation has none.
+                frozen.extend(f"new-{i}" for i in range(300))
+            return [bodies[i] for i in ids if i in bodies]
+
+        monkeypatch.setattr(reader_mod, "get_session_event_ids", snapshot)
+        monkeypatch.setattr(reader_mod, "get_event_batch", hydrate)
+        assert await compute_mod.find_terminal_grade(rr, "s1") == (
+            "success", "self_reported")
+        assert calls["ids"] == 1
+
+    @pytest.mark.asyncio
+    async def test_ungraded_session_reads_unknown_not_success(self, monkeypatch):
+        result = await _compute(monkeypatch,
+                                _make_events([{"type": "session_end"}]), id_events=[])
+        assert result.task_result is None
+        assert result.outcome == "unknown"
+
+
+class TestRaceSafeStore:
+    @pytest.mark.asyncio
+    async def test_graded_replaces_ungraded_but_nothing_else(self, rr):
+        from app.evals.models import EvalResult
+        from app.evals.store import store_eval, get_eval
+        ungraded = EvalResult(session_id="s1", trigger="session_complete")
+        graded = EvalResult(session_id="s1", trigger="manual",
+                            task_result="success", task_result_source="self_reported")
+        assert await store_eval(rr, ungraded) is True
+        assert await store_eval(rr, ungraded) is False           # idempotent
+        assert await store_eval(rr, graded) is True              # upgrade
+        assert (await get_eval(rr, "s1")).task_result == "success"
+        regraded = EvalResult(session_id="s1", trigger="manual",
+                              task_result="failure", task_result_source="self_reported")
+        assert await store_eval(rr, regraded) is False           # first-graded-wins
+
+    @pytest.mark.asyncio
+    async def test_an_ungraded_writer_can_never_clobber_a_grade(self, rr):
+        """D9a: the ungraded path writes ONLY via SET NX — under ANY
+        interleaving it cannot overwrite."""
+        from app.evals.models import EvalResult
+        from app.evals.store import store_eval, get_eval
+        graded = EvalResult(session_id="s2", trigger="session_complete",
+                            task_result="failure", task_result_source="self_reported")
+        assert await store_eval(rr, graded) is True
+        assert await store_eval(rr, EvalResult(session_id="s2", trigger="manual")) is False
+        assert (await get_eval(rr, "s2")).task_result == "failure"
+
+    @pytest.mark.asyncio
+    async def test_concurrent_mixed_writers_leave_a_graded_record(self, rr):
+        """D9b (round-5): the time-limited claim is GONE — WATCH/MULTI CAS.
+        Gather ungraded + graded writers for one session; postconditions hold
+        under any scheduling: the final record is graded, and exactly one
+        graded writer reports True."""
+        import asyncio
+        from app.evals.models import EvalResult
+        from app.evals.store import store_eval, get_eval
+
+        def _u(): return EvalResult(session_id="sc", trigger="session_complete")
+        def _g(tag): return EvalResult(session_id="sc", trigger="manual",
+                                       task_result=tag,
+                                       task_result_source="self_reported")
+        results = await asyncio.gather(
+            store_eval(rr, _u()), store_eval(rr, _g("success")),
+            store_eval(rr, _u()), store_eval(rr, _g("failure")),
+            store_eval(rr, _u()),
+        )
+        final = await get_eval(rr, "sc")
+        assert final.task_result in ("success", "failure")     # a grade won
+        assert sum(1 for i, ok in enumerate(results)
+                   if ok and i in (1, 3)) == 1                  # one graded True
+
+    @pytest.mark.asyncio
+    async def test_a_stale_watcher_retries_and_observes_the_competing_grade(
+        self, rr, monkeypatch
+    ):
+        """D9b: a graded writer whose WATCHed key changed under it must
+        EXEC-fail and RETRY (re-read → re-decide), never overwrite from a
+        stale read — the successor-lock-deletion class the old fixed-TTL claim
+        reintroduced. Wrap rr.pipeline so the FIRST execute() raises
+        WatchError; before raising, inject the competing grade. The retry must
+        re-read it, lose first-graded-wins, and return False."""
+        import redis
+        from app.evals.models import EvalResult
+        from app.evals.store import store_eval, get_eval
+
+        real_pipeline = rr.pipeline
+        state = {"failed": False, "pipelines": 0}
+        competitor = EvalResult(
+            session_id="sw", trigger="manual", task_result="failure",
+            task_result_source="self_reported")
+
+        def flaky_pipeline(*a, **k):
+            state["pipelines"] += 1
+            pipe = real_pipeline(*a, **k)
+            real_execute = pipe.execute
+
+            async def once_failing_execute(*ea, **ek):
+                if not state["failed"]:
+                    state["failed"] = True
+                    # A second client won between this pipeline's WATCH/read
+                    # and EXEC. Use the unwrapped client SET to make that fact real.
+                    await rr.set("rp:eval:sw", competitor.model_dump_json(), ex=86400)
+                    raise redis.WatchError("simulated concurrent change")
+                return await real_execute(*ea, **ek)
+
+            pipe.execute = once_failing_execute
+            return pipe
+
+        monkeypatch.setattr(rr, "pipeline", flaky_pipeline)
+        graded = EvalResult(session_id="sw", trigger="session_complete",
+                            task_result="success", task_result_source="self_reported")
+        assert await store_eval(rr, graded) is False    # competing grade already won
+        assert state["failed"] is True                  # the first EXEC did fail
+        assert state["pipelines"] >= 2                  # it re-read on a fresh pipeline
+        assert (await get_eval(rr, "sw")).task_result == "failure"
+
+
+class TestAuthoritativeDownstream:
+    @pytest.mark.asyncio
+    async def test_a_rejected_write_yields_the_stored_record(self, monkeypatch, rr):
+        from app.evals.models import EvalResult
+        from app.evals.store import store_eval
+        graded = EvalResult(session_id="s1", trigger="session_complete",
+                            task_result="success", task_result_source="self_reported")
+        assert await store_eval(rr, graded) is True
+        result = await _compute(monkeypatch, _make_events([{"type": "memory_read"}]),
+                                id_events=[], replay_redis=rr)
+        assert result.task_result == "success"                    # the STORED record
+
+    @pytest.mark.asyncio
+    async def test_no_persisted_record_aborts_downstream(self, monkeypatch, rr):
+        """D9c: store False + reload None (infra failure) must NOT let the
+        candidate drive features/webhooks/the response."""
+        import app.evals.compute as compute_mod
+        extracted: list = []
+
+        async def _no_store(r, result, **kw):
+            return False
+
+        async def _no_get(r, sid):
+            return None
+
+        async def _spy_extract(*a, **kw):
+            extracted.append(1)
+
+        monkeypatch.setattr(compute_mod, "store_eval", _no_store)
+        monkeypatch.setattr(compute_mod, "get_eval", _no_get)
+        monkeypatch.setattr("app.patterns.extractor.extract_session_features",
+                            _spy_extract, raising=False)
+        fired = AsyncMock()
+        result = await _compute(
+            monkeypatch, _make_events([{"type": "memory_read"}]),
+            id_events=[], replay_redis=rr, webhook_sink=fired)
+        assert result is None
+        assert extracted == []
+        fired.assert_not_awaited()
+        dlq = json.loads(await rr.get("rp:eval_dlq:s1"))
+        assert dlq["failure_type"] == "store"
+
+    @pytest.mark.asyncio
+    async def test_superseded_candidate_webhook_uses_stored_winner(
+        self, monkeypatch, rr
+    ):
+        """D9f: accepted-ungraded → graded upgrade before the final read.
+        Both webhook payloads must carry the complete stored pair."""
+        from app.evals import compute as compute_mod
+        from app.evals.models import EvalResult
+        from app.evals.store import store_eval
+
+        winner = EvalResult(
+            session_id="s1", trigger="manual", task_result="success",
+            task_result_source="self_reported", outcome="success")
+        real_get = compute_mod.get_eval
+        reads = {"n": 0}
+
+        async def superseding_get(r, sid):
+            reads["n"] += 1
+            if reads["n"] == 1:
+                assert await store_eval(r, winner) is True
+            return await real_get(r, sid)
+
+        fired = AsyncMock()
+        monkeypatch.setattr(compute_mod, "get_eval", superseding_get)
+        result = await _compute(
+            monkeypatch, _make_events([{"type": "memory_read"}]),
+            id_events=[], replay_redis=rr, webhook_sink=fired)
+        assert result.task_result == "success"
+        assert fired.await_count == 2
+        for call in fired.await_args_list:
+            payload = call.args[2]
+            assert (payload["task_result"], payload["task_result_source"]) == (
+                "success", "self_reported")
+
+    @pytest.mark.asyncio
+    async def test_unreadable_final_authority_suppresses_webhooks(
+        self, monkeypatch, rr, caplog
+    ):
+        from app.evals import compute as compute_mod
+        fired = AsyncMock()
+        monkeypatch.setattr(compute_mod, "get_eval", AsyncMock(return_value=None))
+        await _compute(monkeypatch, _make_events([{"type": "memory_read"}]),
+                       id_events=[], replay_redis=rr, webhook_sink=fired)
+        fired.assert_not_awaited()
+        assert "authoritative eval unreadable" in caplog.text

@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import redis
 import redis.asyncio as aioredis
 
 from app.evals.models import EvalResult, EvalSummary
@@ -22,15 +23,52 @@ async def store_eval(r: aioredis.Redis, result: EvalResult, ttl_days: int = 30) 
     """Store an eval result. Returns True on success, False if already exists or on error."""
     try:
         key = f"{_EVAL_PREFIX}{result.session_id}"
-
-        # Idempotency: don't overwrite existing eval
-        existing = await r.exists(key)
-        if existing:
-            logger.debug("Eval already exists for session %s, skipping", result.session_id)
-            return False
-
         data = result.model_dump_json()
-        await r.set(key, data, ex=ttl_days * 86400)
+        ttl = ttl_days * 86400
+
+        if result.task_result is None:
+            # D9a: ungraded writers are NX-create-only — no overwrite path
+            # exists for them, under any interleaving.
+            created = await r.set(key, data, ex=ttl, nx=True)
+            if not created:
+                logger.debug("Eval already exists for session %s, skipping",
+                             result.session_id)
+                return False
+        else:
+            # D9b: graded writes are first-graded-wins via WATCH/MULTI CAS.
+            # A time-limited claim is NOT a correctness primitive (a writer
+            # stalling past its TTL lets a successor acquire, then the first
+            # writer overwrites from a stale read and deletes the successor's
+            # lock — the fencing problem relay/app/leases.py already solves).
+            # Here the decision (replace only a missing-or-ungraded record)
+            # and the write are ONE atomic transaction, so a stale writer's
+            # EXEC fails and it retries — no window, nothing to fence.
+            for _attempt in range(8):
+                try:
+                    async with r.pipeline() as pipe:
+                        await pipe.watch(key)
+                        existing_raw = await pipe.get(key)
+                        if existing_raw:
+                            try:
+                                existing = EvalResult.model_validate_json(existing_raw)
+                                if existing.task_result is not None:
+                                    await pipe.unwatch()
+                                    logger.debug(
+                                        "Graded eval already stored for %s, keeping it",
+                                        result.session_id)
+                                    return False
+                            except Exception:
+                                pass  # unparseable stored record: graded wins
+                        pipe.multi()
+                        pipe.set(key, data, ex=ttl)
+                        await pipe.execute()
+                        break
+                except redis.WatchError:
+                    continue          # the key changed under us; re-read and retry
+            else:
+                logger.warning("store_eval CAS exhausted retries for %s",
+                               result.session_id)
+                return False
 
         # Update the eval index (sorted set, score = timestamp)
         ts = result.created_at.timestamp()

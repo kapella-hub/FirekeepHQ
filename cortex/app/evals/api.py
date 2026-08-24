@@ -54,6 +54,13 @@ def create_evals_router(get_replay_redis) -> APIRouter:
             pattern=r"^[a-z_]{1,32}$",
             description="Who asked: 'manual' (a human) or 'session_complete' (Bridge).",
         ),
+        task_result: str | None = Query(
+            default=None,
+            pattern=r"^(success|partial|failure)$",
+            description="Structured task grade from the completing caller "
+                        "(spec D8: survives a lost session_end emit; honored "
+                        "only with the eval:grade scope).",
+        ),
         identity: dict = Depends(require_any_scope("eval:write", "admin")),
     ) -> dict[str, Any]:
         """Trigger eval computation for a session.
@@ -88,7 +95,8 @@ def create_evals_router(get_replay_redis) -> APIRouter:
         used to be, so a stored eval records who actually asked for it and the
         "all evals are manual" signal above stays diagnosable.
         """
-        result = await compute_session_eval(r, session_id, trigger=trigger)
+        result = await compute_session_eval(r, session_id, trigger=trigger,
+                                            task_result_hint=task_result)
         if not result:
             raise HTTPException(status_code=404, detail="No replay events for this session or computation failed")
         return result.model_dump(mode="json")

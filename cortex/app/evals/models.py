@@ -3,7 +3,47 @@
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+_GRADES = ("success", "partial", "failure")
+_RECOGNIZED_SOURCES = ("self_reported",)
+_GRADE_EVENT_TYPES = ("session_end", "session.completed")
+
+
+def recognized_grade_pair(
+    task_result: object, task_result_source: object,
+) -> tuple[str, str] | tuple[None, None]:
+    """The (grade, source) pair is atomic (spec D2): both recognized, or neither.
+
+    The ONLY grade-validity check in cortex — every consumer imports this."""
+    if task_result in _GRADES and task_result_source in _RECOGNIZED_SOURCES:
+        return task_result, task_result_source  # type: ignore[return-value]
+    return None, None
+
+
+def binary_outcome(task_result: str | None) -> str:
+    """Project a grade onto the binary feature space: success/failure pass
+    through; partial and None are 'unknown' (binary-ambiguous, excluded)."""
+    return task_result if task_result in ("success", "failure") else "unknown"
+
+
+def grade_from_events(events: list[dict]) -> tuple[str | None, str | None]:
+    """Last recognized grade pair on a TERMINAL event (session_end from the
+    tool layer, session.completed from SessionManager — redundant channels
+    that fail independently, spec D7). Junk degrades to (None, None)."""
+    task_result: str | None = None
+    task_result_source: str | None = None
+    for e in events:
+        if e.get("event_type") not in _GRADE_EVENT_TYPES:
+            continue
+        p = e.get("payload")
+        if not isinstance(p, dict):   # round-6 finding 6: a non-empty non-dict
+            continue                  # payload must degrade, not raise on .get
+        tr, src = recognized_grade_pair(p.get("task_result"),
+                                        p.get("task_result_source"))
+        if tr:
+            task_result, task_result_source = tr, src
+    return task_result, task_result_source
 
 
 class EvalResult(BaseModel):
@@ -46,6 +86,24 @@ class EvalResult(BaseModel):
     # Failure analysis (only if session had failures)
     failure_event_ids: list[str] = []
     has_failures: bool = False
+
+    # Structured task grade (outcome truth, 2026-08-23). The pair is atomic;
+    # the BEFORE-validator normalizes the raw mapping because Literal field
+    # validation would raise before an after-validator ever ran — a junk
+    # stored record must parse as ungraded, not fail wholesale.
+    task_result: Literal["success", "partial", "failure"] | None = None
+    task_result_source: Literal["self_reported"] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _atomic_grade_pair(cls, data):
+        if isinstance(data, dict) and ("task_result" in data or "task_result_source" in data):
+            data = dict(data)
+            tr, src = recognized_grade_pair(data.get("task_result"),
+                                            data.get("task_result_source"))
+            data["task_result"] = tr
+            data["task_result_source"] = src
+        return data
 
 
 class EvalSummary(BaseModel):

@@ -13,11 +13,43 @@ import redis.asyncio as aioredis
 
 from app.evals.models import EvalResult
 from app.evals.scorers import brier_score, compute_tier1_metrics
-from app.evals.store import store_eval
+from app.evals.store import get_eval, store_eval
 
 logger = logging.getLogger(__name__)
 
 _EVAL_DLQ_PREFIX = "rp:eval_dlq:"
+_GRADE_SCAN_MAX = 5000  # one-shot snapshot cap; disclosed in spec D7
+
+
+_GRADE_HYDRATE_WINDOW = 200
+
+
+async def find_terminal_grade(
+    replay_redis, session_id: str,
+) -> tuple[str | None, str | None]:
+    """Newest recognized grade pair, via a ONE-SHOT ID snapshot + local
+    backward hydration.
+
+    Snapshot-first is load-bearing on two counts (round-6 finding 2 + round-5
+    finding 6): (a) a live rank-relative window read is not stable — events
+    appended between page reads shift negative ranks, so a later page can
+    repeat a prior page and skip the grade; (b) get_event_batch omits IDs
+    whose bodies were trimmed/expired. Capturing the ID list ONCE fixes (a)
+    (the list can't shift), and walking IDs in windows (not hydrated events)
+    fixes (b) (a window with missing bodies is walked past)."""
+    from app.evals.models import grade_from_events
+    from replay.reader import get_session_event_ids, get_event_batch
+
+    ids = await get_session_event_ids(replay_redis, session_id,
+                                      limit=_GRADE_SCAN_MAX)
+    # walk newest-first in windows; ids is oldest->newest
+    for end in range(len(ids), 0, -_GRADE_HYDRATE_WINDOW):
+        window = ids[max(0, end - _GRADE_HYDRATE_WINDOW):end]
+        events = await get_event_batch(replay_redis, window)
+        tr, src = grade_from_events(events)
+        if tr:
+            return tr, src
+    return None, None
 
 
 async def _record_eval_failure(
@@ -35,7 +67,7 @@ async def _record_eval_failure(
         data = json.dumps({
             "session_id": session_id,
             "error": str(error_msg)[:500],
-            "failure_type": failure_type,  # "infra" or "scoring"
+            "failure_type": failure_type,  # "infra", "scoring", or "store"
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
         await replay_redis.set(key, data, ex=86400 * 7)  # Keep for 7 days
@@ -47,7 +79,7 @@ async def compute_session_eval(
     replay_redis: aioredis.Redis,
     session_id: str,
     trigger: Literal["session_complete", "session_abandon", "manual"] = "session_complete",
-    outcome: str | None = None,
+    task_result_hint: str | None = None,
 ) -> EvalResult | None:
     """Compute and store eval metrics for a session.
 
@@ -115,6 +147,13 @@ async def compute_session_eval(
             if e.get("outcome") == "failure"
         ]
 
+        from app.evals.models import recognized_grade_pair
+        task_result, task_result_source = recognized_grade_pair(
+            task_result_hint, "self_reported")
+        if task_result is None:
+            task_result, task_result_source = await find_terminal_grade(
+                replay_redis, session_id)
+
         # Attribution (Living Instructions round 2): read from the
         # session_start event in the timeline this function ALREADY loaded —
         # no new I/O. A session from a client that predates 0.1.41 carries no
@@ -178,7 +217,9 @@ async def compute_session_eval(
             metrics=metrics,
             event_count=event_count,
             duration_ms=summary.get("duration_ms"),
-            outcome=outcome or ("failure" if failure_event_ids else "success"),
+            outcome=task_result or ("failure" if failure_event_ids else "unknown"),
+            task_result=task_result,
+            task_result_source=task_result_source,
             failure_event_ids=failure_event_ids,
             has_failures=bool(failure_event_ids),
             runtime=runtime,
@@ -189,7 +230,20 @@ async def compute_session_eval(
         )
 
         # Store
-        await store_eval(replay_redis, result)
+        stored = await store_eval(replay_redis, result)
+        if not stored:
+            # The store kept a different record, or persistence failed. The
+            # candidate must not drive features/webhooks/the response unless
+            # something authoritative exists (spec D9b/c).
+            authoritative = await get_eval(replay_redis, session_id)
+            if authoritative is None:
+                await _record_eval_failure(
+                    replay_redis, session_id,
+                    "store_eval rejected and no authoritative record readable",
+                    failure_type="store",
+                )
+                return None
+            result = authoritative
 
         # Extract features for pattern analysis (best-effort)
         try:
@@ -222,18 +276,38 @@ async def compute_session_eval(
             cortex_redis = aioredis.from_url(cortex_redis_url)
             try:
                 from app.webhooks import fire_webhooks
-                _trigger_to_event = {"session_complete": "session.completed", "session_abandon": "session.abandoned"}
-                session_event = _trigger_to_event.get(trigger)
-                if session_event:
-                    await fire_webhooks(cortex_redis, session_event, {
-                        "session_id": session_id, "outcome": result.outcome,
-                        "event_count": result.event_count, "has_failures": result.has_failures,
+                # D9f: webhook DELIVERY ORDER is not authoritative — the eval
+                # store (GET /evals/sessions/{id}) is the sole truth, and a
+                # consumer must re-fetch on session_id, never infer grade
+                # order from arrival order. Re-read right here so a
+                # superseded computation still emits the current
+                # authoritative grade, not the stale one it computed.
+                latest = await get_eval(replay_redis, session_id)
+                if latest is None:
+                    logger.error(
+                        "Suppressing eval webhooks for %s: authoritative eval unreadable",
+                        session_id,
+                    )
+                else:
+                    result = latest
+                    pair = {
+                        "task_result": latest.task_result,
+                        "task_result_source": latest.task_result_source,
+                    }
+                    _trigger_to_event = {"session_complete": "session.completed", "session_abandon": "session.abandoned"}
+                    session_event = _trigger_to_event.get(trigger)
+                    if session_event:
+                        await fire_webhooks(cortex_redis, session_event, {
+                            "session_id": session_id, "outcome": latest.outcome,
+                            "event_count": latest.event_count, "has_failures": latest.has_failures,
+                            **pair,
+                        })
+                    await fire_webhooks(cortex_redis, "eval.computed", {
+                        "session_id": session_id, "outcome": latest.outcome,
+                        "event_count": latest.event_count, "has_failures": latest.has_failures,
+                        "metric_count": len(latest.metrics),
+                        **pair,
                     })
-                await fire_webhooks(cortex_redis, "eval.computed", {
-                    "session_id": session_id, "outcome": result.outcome,
-                    "event_count": result.event_count, "has_failures": result.has_failures,
-                    "metric_count": len(metrics),
-                })
             finally:
                 await cortex_redis.aclose()
         except Exception:

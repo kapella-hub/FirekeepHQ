@@ -47,25 +47,36 @@ ATTRIBUTED_PAYLOAD = {
 
 
 async def _compute(monkeypatch, events, agents=("default",)):
+    import fakeredis.aioredis
     import replay.reader as reader_mod
+    from unittest.mock import AsyncMock
     from app.evals import compute as compute_mod
 
     async def fake_summary(*args, **kwargs):
-        return {
-            "event_count": max(len(events), 1),
-            "duration_ms": 1000,
-            "agents": list(agents),
-        }
+        return {"event_count": max(len(events), 1), "duration_ms": 1000,
+                "agents": list(agents)}
 
     async def fake_timeline(*args, **kwargs):
         return {"events": events}
 
+    async def fake_ids(*args, **kwargs):
+        return []
+
+    async def fake_batch(*args, **kwargs):
+        return []
+
     monkeypatch.setattr(reader_mod, "get_session_summary", fake_summary)
     monkeypatch.setattr(reader_mod, "get_session_timeline", fake_timeline)
-    return await compute_mod.compute_session_eval(
-        replay_redis=None,  # type: ignore[arg-type]
-        session_id="s1",
-    )
+    monkeypatch.setattr(reader_mod, "get_session_event_ids", fake_ids)
+    monkeypatch.setattr(reader_mod, "get_event_batch", fake_batch)
+    monkeypatch.setattr(compute_mod.aioredis, "from_url",
+                        lambda *a, **k: AsyncMock())
+    monkeypatch.setattr("app.webhooks.fire_webhooks", AsyncMock())
+    r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    try:
+        return await compute_mod.compute_session_eval(r, "s1")
+    finally:
+        await r.aclose()
 
 
 @pytest.mark.asyncio
