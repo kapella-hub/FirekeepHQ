@@ -27,15 +27,18 @@ OUT1="$(bash deploy/bootstrap-keys.sh)"
 echo "$OUT1" | grep -q '\[MINTED\] FIREKEEP_INTERNAL_KEY'  || { echo "FAIL: internal key not minted";  echo "$OUT1"; exit 1; }
 echo "$OUT1" | grep -q '\[MINTED\] DASHBOARD_API_KEY' || { echo "FAIL: dashboard key not minted"; echo "$OUT1"; exit 1; }
 echo "$OUT1" | grep -q '\[MINTED\] RELAY_INTERNAL_API_KEY' || { echo "FAIL: relay key not minted"; echo "$OUT1"; exit 1; }
+echo "$OUT1" | grep -q '\[MINTED\] FIREKEEP_BRIDGE_KEY'  || { echo "FAIL: bridge key not minted";  echo "$OUT1"; exit 1; }
 echo "$OUT1" | grep -q 'ADMIN API KEY'                  || { echo "FAIL: admin key not printed";    echo "$OUT1"; exit 1; }
-echo "$OUT1" | grep -q '4 key(s) minted'                || { echo "FAIL: expected 4 mints";         echo "$OUT1"; exit 1; }
+echo "$OUT1" | grep -q '5 key(s) minted'                || { echo "FAIL: expected 5 mints";         echo "$OUT1"; exit 1; }
 grep -qE '^FIREKEEP_INTERNAL_KEY=nxs_[0-9a-f]{48}$'  "$ENV_FILE" || { echo "FAIL: .env internal key malformed";  exit 1; }
 grep -qE '^DASHBOARD_API_KEY=nxs_[0-9a-f]{48}$' "$ENV_FILE" || { echo "FAIL: .env dashboard key malformed"; exit 1; }
 grep -qE '^RELAY_INTERNAL_API_KEY=nxs_[0-9a-f]{48}$' "$ENV_FILE" || { echo "FAIL: .env relay key malformed"; exit 1; }
+grep -qE '^FIREKEEP_BRIDGE_KEY=nxs_[0-9a-f]{48}$' "$ENV_FILE" || { echo "FAIL: .env bridge key malformed"; exit 1; }
 grep -qE '^FIREKEEP_WORKSPACE_ID=workspace-[0-9a-f]{32}$' "$ENV_FILE" || { echo "FAIL: workspace id missing/malformed"; exit 1; }
 grep -qE '^FIREKEEP_OWNER_MEMBER_ID=member-[0-9a-f]{32}$' "$ENV_FILE" || { echo "FAIL: owner member id missing/malformed"; exit 1; }
 INTERNAL_KEY_1="$(grep '^FIREKEEP_INTERNAL_KEY=' "$ENV_FILE" | cut -d= -f2-)"
 RELAY_KEY_1="$(grep '^RELAY_INTERNAL_API_KEY=' "$ENV_FILE" | cut -d= -f2-)"
+BRIDGE_KEY_1="$(grep '^FIREKEEP_BRIDGE_KEY=' "$ENV_FILE" | cut -d= -f2-)"
 WORKSPACE_ID="$(grep '^FIREKEEP_WORKSPACE_ID=' "$ENV_FILE" | cut -d= -f2-)"
 OWNER_MEMBER_ID="$(grep '^FIREKEEP_OWNER_MEMBER_ID=' "$ENV_FILE" | cut -d= -f2-)"
 
@@ -74,7 +77,7 @@ NXS_IN_OUTPUT="$(echo "$OUT1" | grep -oE 'nxs_[0-9a-f]{48}' | sort -u | wc -l)"
 }
 # ...and it must be the ADMIN key specifically, not one of the .env-backed
 # ones leaking out.
-for v in FIREKEEP_INTERNAL_KEY DASHBOARD_API_KEY RELAY_INTERNAL_API_KEY; do
+for v in FIREKEEP_INTERNAL_KEY DASHBOARD_API_KEY RELAY_INTERNAL_API_KEY FIREKEEP_BRIDGE_KEY; do
     val="$(grep "^${v}=" "$ENV_FILE" | cut -d= -f2-)"
     [ "$CAPTURED" != "$val" ] || { echo "FAIL: capture returned $v, not the admin key"; exit 1; }
 done
@@ -88,6 +91,8 @@ INTERNAL_KEY_2="$(grep '^FIREKEEP_INTERNAL_KEY=' "$ENV_FILE" | cut -d= -f2-)"
 [ "$INTERNAL_KEY_1" = "$INTERNAL_KEY_2" ] || { echo "FAIL: internal key rotated"; exit 1; }
 RELAY_KEY_2="$(grep '^RELAY_INTERNAL_API_KEY=' "$ENV_FILE" | cut -d= -f2-)"
 [ "$RELAY_KEY_1" = "$RELAY_KEY_2" ] || { echo "FAIL: relay key rotated"; exit 1; }
+BRIDGE_KEY_2="$(grep '^FIREKEEP_BRIDGE_KEY=' "$ENV_FILE" | cut -d= -f2-)"
+[ "$BRIDGE_KEY_1" = "$BRIDGE_KEY_2" ] || { echo "FAIL: bridge key rotated"; exit 1; }
 
 # The other half of the capture contract: an idempotent re-run mints nothing,
 # so there is NO plaintext to find. install.sh must get an empty string here
@@ -103,7 +108,7 @@ DBSIZE2="$(docker exec "$CONTAINER" redis-cli -n 7 DBSIZE)"
 [ "$DBSIZE1" = "$DBSIZE2" ] || { echo "FAIL: DBSIZE changed $DBSIZE1 -> $DBSIZE2"; exit 1; }
 
 # --- Layout check: the REAL validator accepts the bootstrapped key -----------
-"$PYTHON_BIN" - "$INTERNAL_KEY_1" "$RELAY_KEY_1" "$WORKSPACE_ID" "$OWNER_MEMBER_ID" <<'PY'
+"$PYTHON_BIN" - "$INTERNAL_KEY_1" "$RELAY_KEY_1" "$WORKSPACE_ID" "$OWNER_MEMBER_ID" "$BRIDGE_KEY_1" <<'PY'
 import asyncio, sys
 import redis.asyncio as aioredis
 from auth import middleware
@@ -132,10 +137,24 @@ async def main():
     assert set(relay["scopes"]) == {"session:write"}, relay
     assert "admin" not in relay["scopes"] and "*" not in relay["scopes"], relay
 
+    # Bridge's dedicated key (Task 5): the only credential in the fleet
+    # carrying eval:grade, a SERVICE_ONLY_SCOPES member no admin-minted key
+    # can ever hold.
+    bridge = await middleware.validate_key(sys.argv[5])
+    assert bridge is not None, "validate_key rejected the bootstrapped bridge key"
+    assert bridge["workspace_id"] == sys.argv[3], bridge
+    assert bridge["member_id"] == sys.argv[4], bridge
+    assert "agent_id" not in bridge, bridge
+    assert set(bridge["scopes"]) == {
+        "memory:write", "session:read", "eval:read", "eval:write", "eval:grade",
+    }, bridge
+    assert "admin" not in bridge["scopes"] and "*" not in bridge["scopes"], bridge
+
     assert await middleware.validate_key("nxs_" + "0" * 48) is None, "bogus key accepted"
     assert ident["credential_id"] != __import__("hashlib").sha256(sys.argv[1].encode()).hexdigest()[:16]
     print(f"validate_key OK: member_id={ident['member_id']} scopes={sorted(ident['scopes'])}")
     print(f"validate_key OK: member_id={relay['member_id']} scopes={sorted(relay['scopes'])}")
+    print(f"validate_key OK: member_id={bridge['member_id']} scopes={sorted(bridge['scopes'])}")
     await r.aclose()
 
 asyncio.run(main())

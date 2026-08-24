@@ -132,7 +132,7 @@ registry that is unreachable from anywhere else.
      reach the container and the port never leaves `127.0.0.1`, so it is not a
      secret anyone needs to type. Override with `--neo4j-password` or
      `FIREKEEP_NEO4J_PASSWORD` (restoring a backup, or a policy-managed secret).
-4. Bootstraps auth keys (`deploy/bootstrap-keys.sh`) — mints `FIREKEEP_INTERNAL_KEY`, `DASHBOARD_API_KEY`, and `RELAY_INTERNAL_API_KEY` into `.env` and prints a one-time admin key. **Copy that admin key somewhere durable before the terminal scrolls; it is never written to disk.** See [DEPLOYMENT-OFFICE.md](DEPLOYMENT-OFFICE.md) for the full per-person key model.
+4. Bootstraps auth keys (`deploy/bootstrap-keys.sh`) — mints `FIREKEEP_INTERNAL_KEY`, `DASHBOARD_API_KEY`, `RELAY_INTERNAL_API_KEY`, and `FIREKEEP_BRIDGE_KEY` (bridge's own dedicated credential, the only one carrying the service-only `eval:grade` scope) into `.env` and prints a one-time admin key. **Copy that admin key somewhere durable before the terminal scrolls; it is never written to disk.** See [DEPLOYMENT-OFFICE.md](DEPLOYMENT-OFFICE.md) for the full per-person key model.
 5. Runs `docker compose up -d --build`
 6. Gives the ~3.3 GB model pull a short grace period (120 s;
    `FIREKEEP_MODEL_PULL_GRACE`), then hands it to a detached watcher instead of
@@ -191,7 +191,7 @@ printf 'admin:%s\n' "$(printf '%s' "$DASH_PASS" | openssl passwd -6 -stdin)" > d
 chmod 0644 dashboard/.htpasswd
 echo "dashboard password: $DASH_PASS"   # save this now -- it is not stored anywhere else
 
-# Bootstrap auth keys (mints FIREKEEP_INTERNAL_KEY / DASHBOARD_API_KEY / RELAY_INTERNAL_API_KEY into .env)
+# Bootstrap auth keys (mints FIREKEEP_INTERNAL_KEY / DASHBOARD_API_KEY / RELAY_INTERNAL_API_KEY / FIREKEEP_BRIDGE_KEY into .env)
 docker compose up -d redis
 bash deploy/bootstrap-keys.sh
 

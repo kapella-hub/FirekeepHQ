@@ -47,8 +47,9 @@ cd /path/to/Firekeep
 echo 'COMPOSE_FILE=docker-compose.yml:docker-compose.office.yml' >> .env
 echo 'FIREKEEP_OFFICE_MODE=true' >> .env
 bash deploy/bootstrap-keys.sh        # idempotent — safe to re-run any time
-# -> writes FIREKEEP_INTERNAL_KEY=, DASHBOARD_API_KEY= and RELAY_INTERNAL_API_KEY= into .env
-# -> registers internal + dashboard + relay-internal + admin key hashes in Redis DB 7
+# -> writes FIREKEEP_INTERNAL_KEY=, DASHBOARD_API_KEY=, RELAY_INTERNAL_API_KEY=
+#    and FIREKEEP_BRIDGE_KEY= into .env
+# -> registers internal + dashboard + relay-internal + bridge + admin key hashes in Redis DB 7
 # -> prints the ADMIN key plaintext ONCE. Save it in a password manager NOW.
 chmod 600 .env                       # bootstrap-keys.sh writes live keys here
 sed -i 's/^AUTH_ENABLED=.*/AUTH_ENABLED=true/' .env

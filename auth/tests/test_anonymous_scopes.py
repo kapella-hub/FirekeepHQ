@@ -65,7 +65,7 @@ def _request(identity: dict | None = None) -> Request:
 # MEMBER-OWNED vault secrets (`maildex.<id>` app passwords), and an
 # identity-bearing write from a caller who never presented a key is the
 # audit-blocker-7 class with a new door.
-WITHHELD_FROM_ANONYMOUS = {"admin", "vault:read", "dex:docdex", "dex:maildex"}
+WITHHELD_FROM_ANONYMOUS = {"admin", "vault:read", "dex:docdex", "dex:maildex", "eval:grade"}
 
 
 class TestAnonymousScopeSet:

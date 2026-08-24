@@ -37,7 +37,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi import HTTPException
 
-from app.evals.api import create_evals_router
+from app.evals.api import _hint_authorized, create_evals_router
 
 
 def _route(path_suffix: str, method: str):
@@ -138,3 +138,74 @@ def test_trigger_is_a_parameter_not_a_hardcoded_literal():
         _route("/sessions/{session_id}/compute", "POST").endpoint
     ).parameters
     assert "trigger" in params
+
+
+# ---------------------------------------------------------------------------
+# eval:grade — the task_result hint gate (Task 5, D8)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("scopes", "header", "direct", "expected"),
+    [
+        (["eval:write", "eval:grade"], None, None, True),
+        (["eval:write"], None, None, False),
+        (["admin"], None, None, False),
+        (["*"], None, None, False),
+        (["eval:write"], "nxs_bridge",
+         {"scopes": ["eval:grade"]}, True),
+    ],
+)
+async def test_grade_hint_authorization_matrix(
+    monkeypatch, scopes, header, direct, expected
+):
+    request = SimpleNamespace(headers={"X-API-Key": header} if header else {})
+    validate = AsyncMock(return_value=direct)
+    monkeypatch.setattr("app.evals.api.validate_key", validate)
+    assert await _hint_authorized(
+        {"scopes": scopes}, request, "s1") is expected
+
+
+@pytest.mark.asyncio
+async def test_invalid_direct_key_logs_unauthorized_once(monkeypatch, caplog):
+    monkeypatch.setattr("app.evals.api.validate_key", AsyncMock(return_value=None))
+    request = SimpleNamespace(headers={"X-API-Key": "wrong"})
+    assert not await _hint_authorized({"scopes": []}, request, "s1")
+    assert caplog.text.count("eval:grade") == 1
+
+
+@pytest.mark.asyncio
+async def test_auth_store_outage_is_distinct_and_fail_closed(monkeypatch, caplog):
+    monkeypatch.setattr(
+        "app.evals.api.validate_key",
+        AsyncMock(side_effect=ConnectionError("DB 7 down")),
+    )
+    request = SimpleNamespace(headers={"X-API-Key": "nxs_bridge"})
+    assert not await _hint_authorized({"scopes": []}, request, "s1")
+    assert "auth store" in caplog.text
+    assert "Re-run deploy/bootstrap-keys.sh" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("authorized", "expected"), [(False, None), (True, "success")])
+async def test_compute_route_drops_or_forwards_hint_exactly_once(
+    monkeypatch, caplog, authorized, expected
+):
+    endpoint = _route("/sessions/{session_id}/compute", "POST").endpoint
+    authorize = AsyncMock(return_value=authorized)
+    computed = AsyncMock(return_value=SimpleNamespace(
+        model_dump=lambda mode="python": {"session_id": "s1"}))
+    monkeypatch.setattr("app.evals.api._hint_authorized", authorize)
+    monkeypatch.setattr("app.evals.api.compute_session_eval", computed)
+    request = SimpleNamespace(headers={"X-API-Key": "nxs_bridge"})
+
+    await endpoint(
+        session_id="s1", request=request, r=object(),
+        trigger="session_complete", task_result="success",
+        identity={"scopes": ["eval:write"]},
+    )
+
+    assert computed.await_args.kwargs["task_result_hint"] == expected
+    authorize.assert_awaited_once()
+    assert "task_result hint" not in caplog.text  # helper owns all logging

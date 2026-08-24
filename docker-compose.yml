@@ -437,6 +437,10 @@ services:
       PROCEDURE_INDEX_CACHE_SECONDS: ${PROCEDURE_INDEX_CACHE_SECONDS:-30}
       PROCEDURE_MAX_SPECS: ${PROCEDURE_MAX_SPECS:-50}
       PROCEDURE_SCHEDULE_HOURS: ${PROCEDURE_SCHEDULE_HOURS:-24}
+      # Task 5 confused-deputy pin: env_file imports the WHOLE .env, so
+      # cortex-api would otherwise inherit the eval:grade-carrying bridge key.
+      # Mirrors the FIREKEEP_API_KEY pin on cortex-mcp below.
+      FIREKEEP_BRIDGE_KEY: ""
     env_file:
       - .env
     volumes:
@@ -536,6 +540,10 @@ services:
       PROCEDURE_INDEX_CACHE_SECONDS: ${PROCEDURE_INDEX_CACHE_SECONDS:-30}
       PROCEDURE_MAX_SPECS: ${PROCEDURE_MAX_SPECS:-50}
       PROCEDURE_SCHEDULE_HOURS: ${PROCEDURE_SCHEDULE_HOURS:-24}
+      # Task 5 confused-deputy pin: env_file imports the WHOLE .env. cortex-mcp
+      # already pins FIREKEEP_API_KEY empty above for the same reason; this is
+      # the eval:grade-carrying bridge key, not the caller-forwarding one.
+      FIREKEEP_BRIDGE_KEY: ""
     env_file:
       - .env
     depends_on:
@@ -671,6 +679,10 @@ services:
       PROCEDURE_INDEX_CACHE_SECONDS: ${PROCEDURE_INDEX_CACHE_SECONDS:-30}
       PROCEDURE_MAX_SPECS: ${PROCEDURE_MAX_SPECS:-50}
       PROCEDURE_SCHEDULE_HOURS: ${PROCEDURE_SCHEDULE_HOURS:-24}
+      # Task 5 confused-deputy pin: env_file imports the WHOLE .env, so
+      # cortex-worker would otherwise inherit the eval:grade-carrying bridge key.
+      # Mirrors the FIREKEEP_API_KEY pin on cortex-mcp above.
+      FIREKEEP_BRIDGE_KEY: ""
     env_file:
       - .env
     depends_on:
@@ -771,6 +783,10 @@ services:
       PROCEDURE_INDEX_CACHE_SECONDS: ${PROCEDURE_INDEX_CACHE_SECONDS:-30}
       PROCEDURE_MAX_SPECS: ${PROCEDURE_MAX_SPECS:-50}
       PROCEDURE_SCHEDULE_HOURS: ${PROCEDURE_SCHEDULE_HOURS:-24}
+      # Task 5 confused-deputy pin: env_file imports the WHOLE .env, so
+      # cortex-beat would otherwise inherit the eval:grade-carrying bridge key.
+      # Mirrors the FIREKEEP_API_KEY pin on cortex-mcp above.
+      FIREKEEP_BRIDGE_KEY: ""
     env_file:
       - .env
     depends_on:
@@ -812,9 +828,13 @@ services:
       NB_MCP_HOST: "0.0.0.0"
       NB_MCP_PORT: "8070"
       NB_FIREKEEP_API_URL: http://cortex-api:8000
-      # SP1a: internal service key (minted by deploy/bootstrap-keys.sh;
-      # scopes memory:write/session:read/eval:read/eval:write — NOT admin)
-      NB_FIREKEEP_API_KEY: ${FIREKEEP_INTERNAL_KEY:-}
+      # Task 5: bridge's OWN dedicated key (minted by deploy/bootstrap-keys.sh;
+      # scopes memory:write/session:read/eval:read/eval:write/eval:grade — NOT
+      # admin), not the shared FIREKEEP_INTERNAL_KEY. eval:grade is
+      # SERVICE_ONLY_SCOPES: it authorizes the task_result grade hint on
+      # POST /evals/sessions/{id}/compute (cortex/app/evals/api.py) and no
+      # other credential in the fleet carries it.
+      NB_FIREKEEP_API_KEY: ${FIREKEEP_BRIDGE_KEY:-}
       NB_FIREKEEP_NAMESPACE: ${NB_FIREKEEP_NAMESPACE:-default}
       RP_REDIS_URL: redis://redis:6379/6
       AUTH_ENABLED: ${AUTH_ENABLED:-true}
@@ -865,6 +885,10 @@ services:
       RP_REDIS_URL: redis://redis:6379/6
       AUTH_ENABLED: ${AUTH_ENABLED:-true}
       AUTH_REDIS_URL: redis://redis:6379/7
+      # Task 5 confused-deputy pin: env_file imports the WHOLE .env, so
+      # sentinel would otherwise inherit the eval:grade-carrying bridge key.
+      # Mirrors the FIREKEEP_API_KEY pin on cortex-mcp above.
+      FIREKEEP_BRIDGE_KEY: ""
     env_file:
       - .env
     # Both former mounts are removed from the default install. Neither did
@@ -937,6 +961,10 @@ services:
       RP_REDIS_URL: redis://redis:6379/6
       AUTH_ENABLED: ${AUTH_ENABLED:-true}
       AUTH_REDIS_URL: redis://redis:6379/7
+      # Task 5 confused-deputy pin: env_file imports the WHOLE .env, so
+      # relay would otherwise inherit the eval:grade-carrying bridge key.
+      # Mirrors the FIREKEEP_API_KEY pin on cortex-mcp above.
+      FIREKEEP_BRIDGE_KEY: ""
     env_file:
       - .env
     depends_on:

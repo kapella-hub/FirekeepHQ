@@ -5,14 +5,49 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from auth.middleware import require_any_scope, require_scope
+from auth.middleware import require_any_scope, require_scope, validate_key
 
 from app.evals.compute import compute_session_eval
 from app.evals.store import get_eval, get_eval_summary
 
 logger = logging.getLogger(__name__)
+
+
+async def _hint_authorized(identity: dict, request: Request, session_id: str) -> bool:
+    """eval:grade on the enforced identity, or — because the disabled-mode
+    FastAPI scope dependency returns the anonymous identity and ignores presented keys
+    entirely (auth/asgi.py; validate_key at auth/asgi.py:25) — direct
+    validation of the presented X-API-Key. Mirrors the vault doctrine:
+    service-only assertions stay authenticated even with enforcement off
+    (D8d). Never raises. Does ALL of its own logging and distinguishes an
+    UNAUTHORIZED caller (the actionable 'mint the key' ERROR) from an auth-
+    store OUTAGE (an infra ERROR) — the CALLER logs nothing, so an outage no
+    longer also emits the misleading 'rerun bootstrap' line (round-6 small)."""
+    if "eval:grade" in (identity.get("scopes") or []):
+        return True
+    api_key = request.headers.get("X-API-Key")
+    if api_key:
+        try:
+            direct = await validate_key(api_key)   # module binding is testable
+            if direct and "eval:grade" in (direct.get("scopes") or []):
+                return True
+        except Exception:
+            logger.exception(
+                "eval:grade check could not reach the auth store for session "
+                "%s; hint dropped fail-closed (INFRA, not a credential or "
+                "minting problem — do NOT rerun bootstrap for this)", session_id)
+            return False
+    # Genuinely unauthorized: the actionable message (ERROR, not WARNING — a
+    # silent WARNING here cost 12 days once).
+    logger.error(
+        "task_result hint for session %s without eval:grade (enforced "
+        "scopes=%s) — hint DROPPED. Grade still lands via the terminal-event "
+        "lift when the emit succeeded. Re-run deploy/bootstrap-keys.sh "
+        "(update.sh does) to mint FIREKEEP_BRIDGE_KEY.",
+        session_id, identity.get("scopes"))
+    return False
 
 
 def create_evals_router(get_replay_redis) -> APIRouter:
@@ -48,6 +83,7 @@ def create_evals_router(get_replay_redis) -> APIRouter:
     @router.post("/sessions/{session_id}/compute")
     async def compute_eval(
         session_id: str,
+        request: Request,
         r=Depends(get_replay_redis),
         trigger: str = Query(
             default="manual",
@@ -95,6 +131,10 @@ def create_evals_router(get_replay_redis) -> APIRouter:
         used to be, so a stored eval records who actually asked for it and the
         "all evals are manual" signal above stays diagnosable.
         """
+        if task_result is not None and not await _hint_authorized(
+                identity, request, session_id):
+            task_result = None   # D8c: dropped; _hint_authorized logged why
+
         result = await compute_session_eval(r, session_id, trigger=trigger,
                                             task_result_hint=task_result)
         if not result:

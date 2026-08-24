@@ -81,6 +81,18 @@ class TestEnrolledCeiling:
         assert "*" not in identity["scopes"]
 
     @pytest.mark.asyncio
+    async def test_the_ceiling_never_adds_service_only_scopes(self, redis):
+        """Same mechanism, service-only case: ENROLLABLE_SCOPES excludes
+        SERVICE_ONLY_SCOPES by construction, so the retroactive union can never
+        hand an old enrolled credential `eval:grade` — that scope is minted
+        exclusively onto the dedicated Bridge credential by
+        deploy/bootstrap-keys.sh."""
+        await _store(redis, "nxs_g", _record(["vault:read"], enrolled_via="tid10"))
+        identity = await keys.validate_key("nxs_g", redis_client=redis)
+        assert "eval:grade" not in identity["scopes"]
+        assert set(identity["scopes"]) & keys.SERVICE_ONLY_SCOPES == set()
+
+    @pytest.mark.asyncio
     async def test_enrolled_scopes_are_sorted_and_deduplicated(self, redis):
         """Deterministic output: downstream code compares and logs scope lists;
         a set-ordered list would churn on every read."""

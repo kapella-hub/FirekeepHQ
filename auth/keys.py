@@ -69,8 +69,19 @@ SCOPES = {
     "dex:docdex",
     "dex:maildex",
     "admin",
+    # Service-only (Task 5): honored exclusively by
+    # POST /evals/sessions/{id}/compute's task_result hint, and minted only
+    # onto the dedicated Bridge credential by deploy/bootstrap-keys.sh — never
+    # enrollable, never anonymous, never retro-granted to an old enrolled
+    # credential. See SERVICE_ONLY_SCOPES below.
+    "eval:grade",
 }
-ENROLLABLE_SCOPES: frozenset[str] = frozenset(SCOPES - {"admin", "*"})
+# Scopes a SERVICE key may carry but no member credential ever receives:
+# not enrollable, not anonymous, never unioned onto old enrolled credentials
+# (the keys.py:495 union adds ENROLLABLE_SCOPES, which excludes these by
+# construction — same mechanism that keeps `admin` out).
+SERVICE_ONLY_SCOPES: frozenset[str] = frozenset({"eval:grade"})
+ENROLLABLE_SCOPES: frozenset[str] = frozenset(SCOPES - {"admin", "*"} - SERVICE_ONLY_SCOPES)
 # NOTE: memory:*/session:*/relay:* are not yet demanded by any route —
 # reserved for SP4 per-route enforcement. Do not delete (SP1a §4.2).
 # twin:read was removed 2026-07: the twin module is deleted; the scope dangled.
@@ -177,8 +188,12 @@ async def _resolve_key_id(key_id: str) -> list[tuple[str, dict[str, Any]]]:
 # member-owned secret written by a caller who never presented a key is the
 # audit-blocker-7 class with a new door. An auth-disabled box keeps its open
 # memory surfaces; identity-bearing writes require identity, always.
+# SERVICE_ONLY_SCOPES is subtracted too (Task 5): eval:grade is minted onto
+# exactly one dedicated Bridge credential, never granted to a caller who
+# presented no key at all.
 ANONYMOUS_SCOPES: tuple[str, ...] = tuple(sorted(
     SCOPES - {"admin", "*", "vault:read"} - {s for s in SCOPES if s.startswith("dex:")}
+    - SERVICE_ONLY_SCOPES
 ))
 
 _ANONYMOUS_IDENTITY = anonymous_principal()
@@ -314,6 +329,14 @@ async def create_key(
     invalid = set(scopes) - SCOPES - {"*"}
     if invalid:
         raise ValueError(f"Invalid scopes: {invalid}")
+
+    service_only = set(scopes) & SERVICE_ONLY_SCOPES
+    if service_only:
+        raise ValueError(
+            f"Scopes {sorted(service_only)} are service-only: minted exclusively "
+            f"by deploy/bootstrap-keys.sh onto dedicated service credentials, "
+            f"never onto member keys."
+        )
 
     api_key = generate_api_key()
     key_hash = _hash_key(api_key)

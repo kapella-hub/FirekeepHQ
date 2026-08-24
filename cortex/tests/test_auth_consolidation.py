@@ -20,11 +20,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from auth import keys
 from auth.api import create_auth_router
 from auth.asgi import FirekeepKeyAuthMiddleware
-from auth.keys import SCOPES
+from auth.keys import ENROLLABLE_SCOPES
 from vault.api import create_vault_router
 
 # Mirrors the NON_ADMIN_SCOPES constant in deploy/firekeep-admin (teammate keys).
-NON_ADMIN_SCOPES = sorted(SCOPES - {"admin"})
+# ENROLLABLE_SCOPES, not SCOPES - {"admin"}: the latter would now include the
+# service-only eval:grade scope, which create_key rejects outright.
+NON_ADMIN_SCOPES = sorted(ENROLLABLE_SCOPES)
 
 SKIP_PATHS = ("/health", "/version", "/docs", "/redoc", "/openapi.json", "/dashboard")
 
@@ -313,3 +315,23 @@ class TestMainWiring:
         src = inspect.getsource(main_mod)
         assert "Auth init failed (non-critical" not in src
         assert "FATAL-LOUD" in src  # marker comment on the new init block
+
+
+@pytest.mark.asyncio
+async def test_initialized_key_store_remains_usable_with_enforcement_off(redis):
+    """The eval:grade route gate's fallback (app/evals/api.py _hint_authorized)
+    depends on validate_key still consulting DB 7 when enforcement is disabled —
+    cortex initializes the DB-7 auth client regardless of AUTH_ENABLED
+    (app/main.py:714-724). A source inspection of main.py is not enough to pin
+    that behavior; this exercises it end to end."""
+    await keys.init_auth(redis_client=redis, enabled=True)
+    created = await keys.create_key("auth-off-probe", ["eval:write"])
+    await keys.init_auth(redis_client=redis, enabled=False)
+    try:
+        identity = await keys.validate_key(created["api_key"])
+        assert identity is not None
+        assert identity["credential_id"] == created["credential_id"]
+        assert keys._AUTH_ENABLED is False
+        assert keys._redis is redis
+    finally:
+        await keys.init_auth(redis_client=None, enabled=False)

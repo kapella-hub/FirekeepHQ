@@ -269,6 +269,7 @@ GOT="$(run_capture <<EOF
 [MINTED] FIREKEEP_INTERNAL_KEY  (agent_id=firekeep-internal scopes=["memory:write","session:read","eval:read","eval:write"])
 [MINTED] DASHBOARD_API_KEY  (agent_id=firekeep-dashboard scopes=["*"])
 [MINTED] RELAY_INTERNAL_API_KEY  (agent_id=firekeep-relay scopes=["session:write"])
+[MINTED] FIREKEEP_BRIDGE_KEY  (agent_id=firekeep-bridge scopes=["memory:write","session:read","eval:read","eval:write","eval:grade"])
 
 ============================================================
   ADMIN API KEY — shown ONCE, not written to disk.
@@ -279,7 +280,7 @@ GOT="$(run_capture <<EOF
   Use it with deploy/firekeep-admin to issue teammate keys.
 ============================================================
 
-bootstrap-keys: done (4 key(s) minted)
+bootstrap-keys: done (5 key(s) minted)
 EOF
 )"
 check "fresh run -> captures the admin key" "$FAKE_ADMIN_KEY" "$GOT"
@@ -291,6 +292,7 @@ GOT="$(run_capture <<'EOF'
 [OK] FIREKEEP_INTERNAL_KEY already provisioned
 [OK] DASHBOARD_API_KEY already provisioned
 [OK] RELAY_INTERNAL_API_KEY already provisioned
+[OK] FIREKEEP_BRIDGE_KEY already provisioned
 [OK] admin key already provisioned (key_id 0123456789abcdef)
 
 bootstrap-keys: done (0 key(s) minted)
@@ -499,6 +501,21 @@ case "$BOOTSTRAP" in
     *'ensure_env_key RELAY_INTERNAL_API_KEY firekeep-relay '"'"'["session:write"]'"'"*)
         pass "relay key is scoped to session:write only" ;;
     *) fail "relay key is scoped to session:write only" ;;
+esac
+
+# --- bootstrap-keys.sh must mint Bridge's dedicated eval:grade key ----------
+# Task 5: eval:grade is service-only and reaches exactly one credential,
+# minted via ensure_env_key (never a hand-rolled echo — see the constraint
+# recorded at bootstrap-keys.sh:192-200 about install.sh's single-nxs_-token
+# admin-key capture).
+case "$BOOTSTRAP" in
+    *'ensure_env_key FIREKEEP_BRIDGE_KEY'*) pass "mints FIREKEEP_BRIDGE_KEY" ;;
+    *) fail "mints FIREKEEP_BRIDGE_KEY" ;;
+esac
+case "$BOOTSTRAP" in
+    *'ensure_env_key FIREKEEP_BRIDGE_KEY firekeep-bridge '"'"'["memory:write","session:read","eval:read","eval:write","eval:grade"]'"'"*)
+        pass "bridge key carries exactly the internal scopes plus eval:grade" ;;
+    *) fail "bridge key carries exactly the internal scopes plus eval:grade" ;;
 esac
 
 # --- vault_status_line must not claim a control that is not serving ----------

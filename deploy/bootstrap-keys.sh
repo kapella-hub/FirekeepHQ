@@ -21,7 +21,17 @@ set -euo pipefail
 #      auth was off by default: _persist_to_bridge is best-effort and swallows
 #      the failure, so with auth ON the decisions would have silently stopped
 #      persisting with nothing but a warning in relay's log. Plaintext -> .env.
-#   4. Admin key — the owner's key. Scopes: ["*"]. Plaintext printed ONCE,
+#   4. FIREKEEP_BRIDGE_KEY — Bridge's own dedicated credential (Task 5). Scopes:
+#      memory:write, session:read, eval:read, eval:write, eval:grade. The last
+#      scope is SERVICE-ONLY (auth/keys.py SERVICE_ONLY_SCOPES): it authorizes
+#      the task_result grade hint on POST /evals/sessions/{id}/compute
+#      (cortex/app/evals/api.py _hint_authorized) and is minted onto this ONE
+#      credential — never onto FIREKEEP_INTERNAL_KEY, never mintable through
+#      POST /auth/keys (create_key rejects it outright). docker-compose.yml
+#      wires it to ONLY the bridge service (NB_FIREKEEP_API_KEY:
+#      ${FIREKEEP_BRIDGE_KEY:-}) and blanks it explicitly in every other
+#      env_file: .env service. Plaintext -> .env.
+#   5. Admin key — the owner's key. Scopes: ["*"]. Plaintext printed ONCE,
 #      never written to disk.
 #
 # Redis layout replicates auth/keys.py create_key() EXACTLY:
@@ -187,8 +197,9 @@ fi
 ensure_env_key FIREKEEP_INTERNAL_KEY  firekeep-internal  '["memory:write","session:read","eval:read","eval:write"]'
 ensure_env_key DASHBOARD_API_KEY firekeep-dashboard '["*"]'
 ensure_env_key RELAY_INTERNAL_API_KEY firekeep-relay '["session:write"]'
+ensure_env_key FIREKEEP_BRIDGE_KEY firekeep-bridge '["memory:write","session:read","eval:read","eval:write","eval:grade"]'
 
-# --- 4: owner admin key (printed once, never stored) -------------------------
+# --- 5: owner admin key (printed once, never stored) -------------------------
 #
 # NOTE for anyone adding a key above: mint it through ensure_env_key, never a
 # hand-rolled echo. ensure_env_key prints only the VAR NAME, device_id and

@@ -374,9 +374,10 @@ else
 fi
 
 # .env holds NEO4J_PASSWORD, the Fernet VAULT_KEY (decrypts every vault
-# secret), and — after bootstrap-keys.sh below — FIREKEEP_INTERNAL_KEY and the
-# admin-scoped DASHBOARD_API_KEY. Unconditional (not just in the fresh-.env
-# branch above): a manually-created .env (the docs' "Manual Installation"
+# secret), and — after bootstrap-keys.sh below — FIREKEEP_INTERNAL_KEY,
+# FIREKEEP_BRIDGE_KEY (bridge's own dedicated credential, the only one
+# carrying eval:grade) and the admin-scoped DASHBOARD_API_KEY. Unconditional
+# (not just in the fresh-.env branch above): a manually-created .env (the docs' "Manual Installation"
 # path, or one left 0644 by a pre-fix installer run) is covered here too,
 # right before bootstrap-keys.sh writes live keys into it.
 if [ -f .env ]; then

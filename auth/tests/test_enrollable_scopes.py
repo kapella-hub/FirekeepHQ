@@ -6,14 +6,15 @@ import json
 import re
 from pathlib import Path
 
-from auth.keys import ENROLLABLE_SCOPES, SCOPES
+from auth.keys import ENROLLABLE_SCOPES, SCOPES, SERVICE_ONLY_SCOPES
 
 
 def test_enrollable_scope_ceiling():
-    assert ENROLLABLE_SCOPES == frozenset(SCOPES - {"admin", "*"})
+    assert ENROLLABLE_SCOPES == frozenset(SCOPES - {"admin", "*"} - SERVICE_ONLY_SCOPES)
     assert "vault:read" in ENROLLABLE_SCOPES
     assert "admin" not in ENROLLABLE_SCOPES
     assert "*" not in ENROLLABLE_SCOPES
+    assert "eval:grade" in SCOPES and "eval:grade" not in ENROLLABLE_SCOPES
 
 
 def test_admin_shell_scope_literal_matches():

@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from auth.keys import AmbiguousKeyIdError
+from auth.keys import AmbiguousKeyIdError, SERVICE_ONLY_SCOPES
 from auth.middleware import (
     create_key,
     list_keys,
@@ -121,7 +121,16 @@ def create_auth_router() -> APIRouter:
     async def list_scopes(
         identity: dict = Depends(require_scope("admin")),
     ) -> dict[str, Any]:
-        """List all available scopes."""
-        return {"scopes": sorted(SCOPES)}
+        """List all available scopes.
+
+        "scopes" is what an admin can mint via POST /auth/keys; "service_only"
+        lists scopes that exist and gate real routes but are minted exclusively
+        by deploy/bootstrap-keys.sh onto dedicated service credentials — an
+        admin key can see them here without being able to create them.
+        """
+        return {
+            "scopes": sorted(SCOPES - SERVICE_ONLY_SCOPES),
+            "service_only": sorted(SERVICE_ONLY_SCOPES),
+        }
 
     return router

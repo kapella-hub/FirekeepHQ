@@ -19,15 +19,16 @@ assert lines[0] == "POST http://localhost:8100/auth/keys", lines[0]
 body = json.loads(lines[1])
 assert body["agent_id"] == "alice", body
 
-from auth.keys import SCOPES
-expected = SCOPES - {"admin"}
+from auth.keys import ENROLLABLE_SCOPES
+expected = ENROLLABLE_SCOPES
 got = set(body["scopes"])
 assert "admin" not in got, "teammate key must never carry admin"
 assert "*" not in got, "teammate key must never be wildcard"
 assert "twin:read" not in got, "twin:read is retired"
 assert "eval:write" in got, "eval:write required for POST /agent/action/after"
-assert got == expected, f"drifted from SCOPES-{{admin}}: extra={got-expected} missing={expected-got}"
-print(f"DRY-RUN OK: {len(got)} non-admin scopes match auth.middleware.SCOPES")
+assert "eval:grade" not in got, "eval:grade is service-only, never a teammate scope"
+assert got == expected, f"drifted from ENROLLABLE_SCOPES: extra={got-expected} missing={expected-got}"
+print(f"DRY-RUN OK: {len(got)} non-admin scopes match auth.keys.ENROLLABLE_SCOPES")
 '
 
 # --expires-days is threaded into the body

@@ -54,11 +54,14 @@ class TestScopes:
             "dex:docdex",
             "dex:maildex",
             "admin",
+            # Service-only: honored exclusively by POST /evals/sessions/{id}/compute's
+            # task_result hint, minted only onto the dedicated Bridge credential.
+            "eval:grade",
         }
         assert SCOPES == expected
 
     def test_scope_count(self):
-        assert len(SCOPES) == 13
+        assert len(SCOPES) == 14
 
 
 @pytest.fixture
@@ -125,9 +128,16 @@ class TestAnonymousIdentity:
         vault:read is withheld for the same reason admin is: it decrypts secrets,
         and ANONYMOUS_SCOPES is derived from SCOPES, so a new scope is granted to
         unauthenticated callers automatically unless subtracted by name."""
+        from auth.keys import SERVICE_ONLY_SCOPES
+
         scopes = set(_ANONYMOUS_IDENTITY["scopes"])
         assert "*" not in scopes
         assert "admin" not in scopes
         assert "vault:read" not in scopes
+        assert "eval:grade" not in scopes
         assert not any(s.startswith("dex:") for s in scopes)  # member-owned vault writes need identity
-        assert scopes == {s for s in SCOPES if not s.startswith("dex:")} - {"admin", "vault:read"}
+        assert scopes == (
+            {s for s in SCOPES if not s.startswith("dex:")}
+            - {"admin", "vault:read"}
+            - SERVICE_ONLY_SCOPES
+        )

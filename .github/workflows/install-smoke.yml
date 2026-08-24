@@ -298,7 +298,7 @@ jobs:
         # logged a warning and dropped the decision, with nothing user-visible.
         run: |
           rc=0
-          for var in FIREKEEP_INTERNAL_KEY DASHBOARD_API_KEY RELAY_INTERNAL_API_KEY; do
+          for var in FIREKEEP_INTERNAL_KEY DASHBOARD_API_KEY RELAY_INTERNAL_API_KEY FIREKEEP_BRIDGE_KEY; do
             val="$(grep "^${var}=" .env | cut -d= -f2- || true)"
             if [ -z "$val" ]; then
               echo "::error::${var} is empty or absent in .env after install"

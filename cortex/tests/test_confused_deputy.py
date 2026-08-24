@@ -23,7 +23,9 @@ import app.mcp_server as mcp_mod
 from app.mcp_server import _CallerKeyAuth, vault_retrieve
 from auth import keys
 
-NON_ADMIN_SCOPES = sorted(keys.SCOPES - {"admin"})
+# ENROLLABLE_SCOPES, not SCOPES - {"admin"}: the latter would now include the
+# service-only eval:grade scope, which create_key rejects outright.
+NON_ADMIN_SCOPES = sorted(keys.ENROLLABLE_SCOPES)
 # bootstrap-keys.sh mints the internal key with EXACTLY this set (spec §4.2).
 INTERNAL_KEY_SCOPES = ["memory:write", "session:read", "eval:read", "eval:write"]
 
