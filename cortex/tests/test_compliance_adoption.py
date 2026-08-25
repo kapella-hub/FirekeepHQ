@@ -23,7 +23,11 @@ other half of the guard.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
+
+import fakeredis.aioredis as fr
+import pytest
 
 from app.autopilot import compliance as comp
 
@@ -36,7 +40,7 @@ FROZEN_KEYS = (
 
 
 def rec(sid, *, task_result=None, task_result_source=None, experiment_group=None,
-        days_ago=1.0, **metrics):
+        failure_event_ids=None, days_ago=1.0, **metrics):
     r: dict = {
         "session_id": sid,
         "created_at": (NOW - timedelta(days=days_ago)).isoformat(),
@@ -49,6 +53,8 @@ def rec(sid, *, task_result=None, task_result_source=None, experiment_group=None
         r["task_result_source"] = task_result_source
     if experiment_group is not None:
         r["experiment_group"] = experiment_group
+    if failure_event_ids is not None:
+        r["failure_event_ids"] = failure_event_ids
     return r
 
 
@@ -195,3 +201,149 @@ def test_empty_evals_yields_empty_arm_split_not_error():
     row = rows_by_key([])["grade_self_reported"]
     assert row["by_experiment_group"] == {}
     assert row["rate"] is None
+
+
+# ---------------------------------------------------- optimism-skew (D3) --
+#
+# optimism_skew = (self-reported-success sessions carrying an INDEPENDENT
+# failure contradiction) / (all self-reported-success sessions). Visibility
+# only — no gating, no mutation, reuses the same scan_evals population as
+# build_rows above (no second scan). Two independent contradictions:
+# has_failures (failure_event_ids non-empty) and a GUARDED tool_success_rate
+# (< 1.0, only counted when outcome_event_count >= 2 — below that the
+# outcome population is ~= the self-report itself and not independent).
+
+def test_self_success_with_failure_event_ids_is_a_skew_hit():
+    evals = [rec("s1", task_result="success", task_result_source="self_reported",
+                  failure_event_ids=["evt-1"])]
+    row = comp.build_optimism_skew(evals)["overall"]
+    assert row["hits"] == 1
+    assert row["self_success_total"] == 1
+
+
+def test_tool_success_rate_below_min_outcome_events_is_not_independent():
+    """outcome_event_count=1: the guard is non-negotiable — NOT a hit even
+    though tool_success_rate < 1.0."""
+    evals = [rec("s1", task_result="success", task_result_source="self_reported",
+                  tool_success_rate=0.5, outcome_event_count=1)]
+    row = comp.build_optimism_skew(evals)["overall"]
+    assert row["hits"] == 0
+    assert row["self_success_total"] == 1
+
+
+def test_tool_success_rate_at_min_outcome_events_is_a_skew_hit():
+    """Same tool_success_rate, but outcome_event_count=2 clears the guard —
+    IS a hit."""
+    evals = [rec("s1", task_result="success", task_result_source="self_reported",
+                  tool_success_rate=0.5, outcome_event_count=2)]
+    row = comp.build_optimism_skew(evals)["overall"]
+    assert row["hits"] == 1
+
+
+def test_clean_tool_success_rate_is_not_a_hit():
+    evals = [rec("s1", task_result="success", task_result_source="self_reported",
+                  tool_success_rate=1.0, outcome_event_count=5)]
+    row = comp.build_optimism_skew(evals)["overall"]
+    assert row["hits"] == 0
+
+
+def test_self_failure_is_never_a_hit_regardless_of_contradictions():
+    evals = [rec("s1", task_result="failure", task_result_source="self_reported",
+                  failure_event_ids=["evt-1"], tool_success_rate=0.0,
+                  outcome_event_count=5)]
+    skew = comp.build_optimism_skew(evals)["overall"]
+    assert skew["hits"] == 0
+    assert skew["self_success_total"] == 0
+
+
+def test_ungraded_session_is_not_counted_in_the_denominator():
+    evals = [rec("s1", failure_event_ids=["evt-1"], tool_success_rate=0.0,
+                  outcome_event_count=5)]
+    skew = comp.build_optimism_skew(evals)["overall"]
+    assert skew["hits"] == 0
+    assert skew["self_success_total"] == 0
+
+
+def test_below_min_self_success_n_yields_null_rate_not_zero():
+    """The min-N gate: below MIN_SELF_SUCCESS_N self-success sessions, rate
+    must be null/insufficient_n — NEVER a bare 0.0 masquerading as a clean
+    measurement on almost no data."""
+    n = comp.MIN_SELF_SUCCESS_N - 1
+    evals = [rec(f"s{i}", task_result="success", task_result_source="self_reported")
+             for i in range(n)]
+    row = comp.build_optimism_skew(evals)["overall"]
+    assert row["self_success_total"] == n
+    assert row["hits"] == 0
+    assert row["rate"] is None
+    assert row["insufficient_n"] is True
+
+
+def test_at_min_self_success_n_reports_a_real_rate():
+    n = comp.MIN_SELF_SUCCESS_N
+    evals = [
+        rec(f"s{i}", task_result="success", task_result_source="self_reported",
+            failure_event_ids=["evt-1"] if i < 5 else None)
+        for i in range(n)
+    ]
+    row = comp.build_optimism_skew(evals)["overall"]
+    assert row["self_success_total"] == n
+    assert row["hits"] == 5
+    assert row["rate"] == round(5 / n, 4)
+    assert row["insufficient_n"] is False
+
+
+def test_empty_evals_yields_a_gated_overall_not_an_error():
+    row = comp.build_optimism_skew([])["overall"]
+    assert row == {
+        "hits": 0, "self_success_total": 0, "rate": None, "insufficient_n": True,
+    }
+
+
+def test_reported_per_experiment_group():
+    n = comp.MIN_SELF_SUCCESS_N
+    evals = [
+        rec(f"a{i}", task_result="success", task_result_source="self_reported",
+            experiment_group="A", failure_event_ids=["evt-1"] if i < 3 else None)
+        for i in range(n)
+    ] + [
+        rec(f"b{i}", task_result="success", task_result_source="self_reported",
+            experiment_group="B")
+        for i in range(5)  # below MIN_SELF_SUCCESS_N for the B arm
+    ]
+    by_group = comp.build_optimism_skew(evals)["by_experiment_group"]
+    assert by_group["A"] == {
+        "hits": 3, "self_success_total": n, "rate": round(3 / n, 4),
+        "insufficient_n": False,
+    }
+    assert by_group["B"] == {
+        "hits": 0, "self_success_total": 5, "rate": None, "insufficient_n": True,
+    }
+
+
+def test_none_experiment_group_excluded_from_skew_split_but_counted_overall():
+    evals = [rec("s1", task_result="success", task_result_source="self_reported")]
+    skew = comp.build_optimism_skew(evals)
+    assert skew["by_experiment_group"] == {}
+    assert skew["overall"]["self_success_total"] == 1
+
+
+# ------------------------------------------ endpoint-level via fakeredis --
+
+@pytest.mark.asyncio
+async def test_optimism_skew_surfaced_alongside_the_compliance_table():
+    r = fr.FakeRedis(decode_responses=True)
+    await r.set("rp:eval:hit", json.dumps(rec(
+        "hit", task_result="success", task_result_source="self_reported",
+        failure_event_ids=["evt-1"])))
+    await r.set("rp:eval:clean", json.dumps(rec(
+        "clean", task_result="success", task_result_source="self_reported")))
+    await r.set("rp:eval:failed", json.dumps(rec(
+        "failed", task_result="failure", task_result_source="self_reported",
+        failure_event_ids=["evt-2"])))
+
+    body = await comp.build_compliance(r)
+
+    assert body["optimism_skew"]["overall"] == {
+        "hits": 1, "self_success_total": 2, "rate": None, "insufficient_n": True,
+    }
+    assert body["optimism_skew"]["by_experiment_group"] == {}

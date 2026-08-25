@@ -39,6 +39,11 @@ SCAN_CAP = 2000
 # arrow, so it is withheld entirely rather than shown small.
 TREND_MIN_SESSIONS = 10
 
+# Below this many self-reported-success sessions, an optimism-skew rate is
+# noise dressed as a measurement — withheld (null + insufficient_n) rather
+# than shown, exactly like TREND_MIN_SESSIONS above.
+MIN_SELF_SUCCESS_N = 30
+
 _Metrics = dict[str, Any]
 
 def _num(value: Any) -> float | None:
@@ -368,6 +373,115 @@ def build_rows(evals: list[dict]) -> list[dict[str, Any]]:
     return rows
 
 
+# ---------------------------------------------------------------------------
+# Round 4 — optimism-skew honesty detector (outcome truth PR4 D3; additive,
+# visibility-only). Grading is only useful if the grades are HONEST: this
+# measures how often an agent self-reports "success" on a session that also
+# carries an INDEPENDENT failure contradiction — a signal ABOUT the grading
+# channel, not a compliance row, so it is reported as its own top-level
+# `optimism_skew` block rather than a new INSTRUCTIONS row. No LLM, no
+# gating, no mutation, and it reads the SAME parsed evals build_rows does
+# (no second scan of rp:eval:*).
+# ---------------------------------------------------------------------------
+
+
+def _is_self_success(record: dict) -> bool:
+    """Self-reported success = recognized_grade_pair(...)[0] == "success".
+
+    The [0] matters — the fn returns a tuple, never a bare None (it can
+    return (None, None)), so indexing rather than truthiness-testing the
+    pair is deliberate.
+    """
+    grade, _source = recognized_grade_pair(
+        record.get("task_result"), record.get("task_result_source"))
+    return grade == "success"
+
+
+def _is_skew_hit(record: dict) -> bool:
+    """A self-success record is a skew hit iff it also carries at least one
+    INDEPENDENT failure contradiction:
+
+      - has_failures: `failure_event_ids` non-empty (EvalResult, per-tool-call
+        outcome=="failure" events — independent of the self-reported grade).
+      - a GUARDED tool_success_rate < 1.0, counted ONLY when
+        outcome_event_count >= 2. NON-NEGOTIABLE: below 2, the outcome
+        population is ~= the self-report itself (scorers.py), so the rate is
+        not independent evidence and must be ignored — never bare
+        tool_success_rate, never failure_rate (same non-independence trap).
+    """
+    if record.get("failure_event_ids"):
+        return True
+    metrics = record.get("metrics") or {}
+    outcome_event_count = _num(metrics.get("outcome_event_count"))
+    tool_success_rate = _num(metrics.get("tool_success_rate"))
+    if (
+        outcome_event_count is not None and outcome_event_count >= 2
+        and tool_success_rate is not None and tool_success_rate < 1.0
+    ):
+        return True
+    return False
+
+
+def _skew_stats(hits: int, total: int) -> dict[str, Any]:
+    """One skew bucket: honest denominators, min-N gated.
+
+    Below MIN_SELF_SUCCESS_N self-success sessions, `rate` is null and
+    `insufficient_n` is true — NEVER a bare 0.0 that would read as a clean
+    measurement on almost no data (the outcome_event_count lesson, applied
+    to skew).
+    """
+    insufficient = total < MIN_SELF_SUCCESS_N
+    return {
+        "hits": hits,
+        "self_success_total": total,
+        "rate": None if insufficient else round(hits / total, 4),
+        "insufficient_n": insufficient,
+    }
+
+
+def build_optimism_skew(evals: list[dict]) -> dict[str, Any]:
+    """Optimism-skew rate over one snapshot of parsed evals, overall and per
+    pre-registered arm (PR4 D1).
+
+    `by_experiment_group` carries only observed "A"/"B" buckets — a session
+    with no (or unrecognized) experiment_group is excluded from the split
+    entirely (same convention as grade_self_reported's by_experiment_group in
+    build_rows) while still counting toward `overall`.
+
+    Bridge `abandoned` (owm.py's strongest hard-negative) is deliberately
+    NOT included here: it needs owm._fetch_bridge_statuses, a REST call to
+    Bridge, and this function backs a synchronous read-only reporting
+    endpoint that today has zero network dependencies beyond the eval scan.
+    The two contradictions above are independent and sufficient to ship;
+    Bridge-abandoned is a candidate follow-up, not a gap in this detector's
+    correctness.
+    """
+    overall_hits = 0
+    overall_total = 0
+    group_counts: dict[str, dict[str, int]] = {}
+    for record in evals:
+        if not _is_self_success(record):
+            continue
+        overall_total += 1
+        hit = _is_skew_hit(record)
+        if hit:
+            overall_hits += 1
+        group = record.get("experiment_group")
+        if group in ("A", "B"):
+            bucket = group_counts.setdefault(group, {"hits": 0, "total": 0})
+            bucket["total"] += 1
+            if hit:
+                bucket["hits"] += 1
+
+    return {
+        "overall": _skew_stats(overall_hits, overall_total),
+        "by_experiment_group": {
+            group: _skew_stats(counts["hits"], counts["total"])
+            for group, counts in group_counts.items()
+        },
+    }
+
+
 async def build_compliance(replay_redis) -> dict[str, Any]:
     evals, unparsed, capped = await scan_evals(replay_redis)
     payload: dict[str, Any] = {
@@ -377,6 +491,7 @@ async def build_compliance(replay_redis) -> dict[str, Any]:
         "unparsed": unparsed,
         "approximate": capped,
         "instructions": build_rows(evals),
+        "optimism_skew": build_optimism_skew(evals),
         "notes": [
             "Compliance measures BEHAVIOR — whether sessions did the instructed "
             "thing. It does not measure whether doing it helped: the outcome "
@@ -401,6 +516,16 @@ async def build_compliance(replay_redis) -> dict[str, Any]:
             "as new rows.",
             "Trend halves the DATED evals by eval time; it is withheld below "
             f"{TREND_MIN_SESSIONS} dated sessions rather than shown small.",
+            "optimism_skew measures grading HONESTY, not compliance: of "
+            "self-reported-success sessions, how many also carry an "
+            "independent failure contradiction (has_failures, or a "
+            "tool_success_rate < 1.0 guarded to outcome_event_count >= 2). "
+            "Visibility only — no gating, no mutation. It reads the SAME "
+            "scan as the table above, so the top-level `approximate` and "
+            "`unparsed` disclosures apply to it too. Below "
+            f"{MIN_SELF_SUCCESS_N} self-success sessions (overall or per "
+            "arm) its rate is null with insufficient_n true, never a bare "
+            "0.0.",
         ],
     }
     return payload
