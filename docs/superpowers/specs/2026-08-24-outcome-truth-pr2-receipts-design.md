@@ -38,14 +38,18 @@ sessions, truncated. Verified against `main @ 72cfa03`:
    (`vector.py:1197`). One id space end-to-end — the receipt joins cleanly to both `memory_read`
    and the outcome grade.
 
-3. **Long-session metrics are truncated.** PR1 made the *grade* truncation-proof
-   (`find_terminal_grade` snapshots ids and scans backward). The *metrics* still read the
-   oldest-1,000 window: `compute_session_eval` fetches `get_session_timeline(..., limit=1000)`
-   (`compute.py:102-104`) and computes every Tier-1 metric, the Brier predict/reconcile join, and
-   `failure_event_ids` off it; OWM's join reads `get_session_timeline(event_type="memory_read",
-   limit=1000)` (`owm.py:116-117`) with the filter applied *after* pagination, so late-session
-   memory_reads never count. Meanwhile `get_session_summary` already full-scans (uncapped zcard) —
-   so `event_count` and the metrics disagree on any >1,000-event session, silently.
+3. **Long-session metrics are truncated — in three places.** PR1 made the *grade* truncation-proof
+   (`find_terminal_grade` snapshots ids and scans backward). The *metric/feature* reads still take
+   the oldest-1,000 window. Every active `get_session_timeline(..., limit=1000)` caller in
+   `cortex/app`: (a) `compute_session_eval` (`compute.py:102-104`) — every Tier-1 metric, the Brier
+   predict/reconcile join, and `failure_event_ids`; (b) OWM's join (`owm.py:116-117`) — with the
+   `event_type="memory_read"` filter applied *after* pagination, so late memory_reads never count;
+   (c) the pattern engine's `extract_session_features` (`patterns/extractor.py:43`) — tool sequence,
+   memory/claim counts, success/failure rates, feeding strategy cards that appear in briefings.
+   Meanwhile `get_session_summary` already full-scans (uncapped zcard) — so `event_count` and the
+   metrics disagree on any >1,000-event session, silently. (The 2-of-3 enumeration in an earlier
+   draft was corrected during execution after a grep for all `limit=1000` callers surfaced the
+   third.)
 
 ## Decisions, and why
 
@@ -78,7 +82,10 @@ Replace `compute_session_eval`'s `get_session_timeline(limit=1000)` with
 `find_terminal_grade` uses (`get_event_batch` is built for a ~5k scan: MGET + pipelined XRANGE
 windows). Tier-1 metrics, the Brier join, and `failure_event_ids` then see the complete list. Do
 the same in `owm.py` (full-scan the session, filter `event_type == "memory_read"` in Python rather
-than the after-pagination `event_type=` window). `_METRIC_SCAN_MAX = 5000` matches
+than the after-pagination `event_type=` window) **and in `patterns/extractor.py`'s
+`extract_session_features`** (the same substitution — it aggregates over the whole event list, so
+truncation silently biases every strategy card built from a long session). `_METRIC_SCAN_MAX = 5000`
+matches
 `get_session_event_ids`'s own default and `find_terminal_grade`'s cap. **The cap is explicit, not
 silent:** when `len(ids) >= _METRIC_SCAN_MAX`, log a warning and stamp `metrics_truncated: true` on
 the EvalResult, so a truncated metric is visible downstream (the *grade* stays truthful regardless,
