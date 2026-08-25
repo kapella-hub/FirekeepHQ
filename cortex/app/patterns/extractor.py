@@ -11,6 +11,9 @@ from typing import Any
 
 import redis.asyncio as aioredis
 
+from app.evals.compute import _METRIC_SCAN_MAX  # single source of truth (task 4
+# brief): same cap as the eval metrics scan and OWM join, imported rather than
+# re-declared so the three can never drift apart.
 from app.evals.models import EvalResult
 from app.patterns.models import SessionFeatures
 
@@ -33,15 +36,19 @@ async def extract_session_features(
         SessionFeatures or None if the session has no events.
     """
     try:
-        from replay.reader import get_session_timeline, get_session_summary
+        from replay.reader import get_event_batch, get_session_event_ids, get_session_summary
 
         summary = await get_session_summary(replay_redis, session_id)
         event_count = summary.get("event_count", 0)
         if event_count == 0:
             return None
 
-        timeline = await get_session_timeline(replay_redis, session_id, limit=1000)
-        events: list[dict[str, Any]] = timeline.get("events", [])
+        # Full-session snapshot+hydrate (PR1 primitives, task 4b): the whole
+        # session, not the oldest-1000 window get_session_timeline used to
+        # silently truncate to. Capped at _METRIC_SCAN_MAX, same as the eval
+        # metrics scan and the OWM join (D3, outcome truth PR2).
+        ids = await get_session_event_ids(replay_redis, session_id, limit=_METRIC_SCAN_MAX)
+        events: list[dict[str, Any]] = await get_event_batch(replay_redis, ids)
         if not events:
             return None
 

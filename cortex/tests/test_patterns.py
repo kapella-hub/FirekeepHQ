@@ -245,7 +245,9 @@ class TestGradedProvenance:
 @pytest.mark.asyncio
 async def test_extractor_stamps_grade_and_provenance(monkeypatch):
     """A REAL extractor call; reader import is function-local — patch
-    replay.reader, not the extractor module."""
+    replay.reader, not the extractor module. Task 4b: the extractor reads
+    through get_session_event_ids/get_event_batch now (no get_session_timeline
+    fetch to fake)."""
     import replay.reader as reader_mod
     from app.evals.models import EvalResult
     from app.patterns.extractor import extract_session_features
@@ -253,14 +255,20 @@ async def test_extractor_stamps_grade_and_provenance(monkeypatch):
     async def fake_summary(*a, **k):
         return {"event_count": 2, "duration_ms": 10}
 
-    async def fake_timeline(*a, **k):
-        return {"events": [
-            {"event_type": "memory_read", "outcome": None, "payload": {}, "tags": []},
-            {"event_type": "session_end", "outcome": "success", "payload": {}, "tags": []},
-        ]}
+    _events = {
+        "e0": {"event_type": "memory_read", "outcome": None, "payload": {}, "tags": []},
+        "e1": {"event_type": "session_end", "outcome": "success", "payload": {}, "tags": []},
+    }
+
+    async def fake_ids(r, sid, *, limit=5000):
+        return list(_events.keys())
+
+    async def fake_batch(r, ids):
+        return [_events[i] for i in ids if i in _events]
 
     monkeypatch.setattr(reader_mod, "get_session_summary", fake_summary)
-    monkeypatch.setattr(reader_mod, "get_session_timeline", fake_timeline)
+    monkeypatch.setattr(reader_mod, "get_session_event_ids", fake_ids)
+    monkeypatch.setattr(reader_mod, "get_event_batch", fake_batch)
 
     graded = await extract_session_features(
         None, "s1",
@@ -271,6 +279,44 @@ async def test_extractor_stamps_grade_and_provenance(monkeypatch):
 
     ungraded = await extract_session_features(None, "s1", eval_result=None)
     assert ungraded.outcome == "unknown" and ungraded.outcome_source == "legacy"
+
+
+@pytest.mark.asyncio
+async def test_features_include_late_events_beyond_1000(monkeypatch):
+    """D3, third site (task 4b): extract_session_features must read the whole
+    session via get_session_event_ids/get_event_batch, not the oldest-1000
+    window get_session_timeline used to silently truncate to. Mirrors
+    test_evals.py's TestMetricsScanCap for the same fix in compute.py."""
+    import replay.reader as reader_mod
+    from app.patterns.extractor import extract_session_features
+
+    filler = [
+        (f"e{i}", {"event_type": "memory_read", "payload": {}, "outcome": "success"})
+        for i in range(1100)
+    ]
+    late_fail = ("late-fail", {"event_type": "tool_call", "payload": {}, "outcome": "failure"})
+    pairs = filler + [late_fail]
+    id_to_ev = dict(pairs)
+
+    async def fake_summary(*a, **k):
+        return {"event_count": len(pairs), "duration_ms": 1000}
+
+    async def fake_ids(r, sid, *, limit=5000):
+        return [i for i, _ in pairs][-limit:]
+
+    async def fake_batch(r, ids):
+        return [id_to_ev[i] for i in ids if i in id_to_ev]
+
+    monkeypatch.setattr(reader_mod, "get_session_summary", fake_summary)
+    monkeypatch.setattr(reader_mod, "get_session_event_ids", fake_ids)
+    monkeypatch.setattr(reader_mod, "get_event_batch", fake_batch)
+
+    feats = await extract_session_features(None, "sess-long-features")
+    assert feats is not None
+    # Old oldest-1000 window would have dropped this — it sits at index 1100
+    # of 1101 events.
+    assert feats.tool_type_counts.get("tool_call") == 1
+    assert feats.failure_rate > 0.0
 
 
 def test_success_rate_is_none_when_nothing_is_graded():
