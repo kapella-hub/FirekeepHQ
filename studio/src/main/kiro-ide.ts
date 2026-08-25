@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { delimiter, join, resolve } from "node:path";
+import { posix, win32 } from "node:path";
 
 export interface KiroIdeProbe {
   readonly available: boolean;
@@ -45,23 +45,24 @@ export class KiroIdeLauncher {
   async open(workspace?: string): Promise<{ readonly message: string }> {
     const probe = await this.probe();
     if (!probe.available || !probe.executable) throw new Error(probe.detail);
-    const target = resolve(workspace?.trim() || this.#cwd());
+    const target = this.#pathApi().resolve(workspace?.trim() || this.#cwd());
     if (!this.#exists(target)) throw new Error(`workspace does not exist: ${target}`);
     this.#launch(probe.executable, [target]);
     return { message: `Opened ${target}. Kiro IDE is an explicit external handoff; Kiro CLI remains the Studio runtime.` };
   }
 
   #candidates(): string[] {
+    const pathApi = this.#pathApi();
     const explicit = this.#env.KIRO_IDE_PATH?.trim();
     const candidates = explicit ? [explicit] : [];
     if (this.#platform === "win32") {
       for (const root of [this.#env.LOCALAPPDATA, this.#env.ProgramFiles, this.#env["ProgramFiles(x86)"]]) {
         if (!root) continue;
-        candidates.push(join(root, "Programs", "Kiro", "Kiro.exe"), join(root, "Kiro", "Kiro.exe"));
+        candidates.push(pathApi.join(root, "Programs", "Kiro", "Kiro.exe"), pathApi.join(root, "Kiro", "Kiro.exe"));
       }
       candidates.push(...this.#pathCandidates(["Kiro.exe", "kiro.exe"]));
     } else if (this.#platform === "darwin") {
-      candidates.push("/Applications/Kiro.app/Contents/MacOS/Kiro", join(this.#env.HOME ?? "", "Applications", "Kiro.app", "Contents", "MacOS", "Kiro"));
+      candidates.push("/Applications/Kiro.app/Contents/MacOS/Kiro", pathApi.join(this.#env.HOME ?? "", "Applications", "Kiro.app", "Contents", "MacOS", "Kiro"));
       candidates.push(...this.#pathCandidates(["kiro"]));
     } else {
       candidates.push("/usr/local/bin/kiro", "/usr/bin/kiro", ...this.#pathCandidates(["kiro"]));
@@ -70,6 +71,11 @@ export class KiroIdeLauncher {
   }
 
   #pathCandidates(names: readonly string[]): string[] {
-    return (this.#env.PATH ?? "").split(delimiter).filter(Boolean).flatMap((directory) => names.map((name) => join(directory, name)));
+    const pathApi = this.#pathApi();
+    return (this.#env.PATH ?? "").split(pathApi.delimiter).filter(Boolean).flatMap((directory) => names.map((name) => pathApi.join(directory, name)));
+  }
+
+  #pathApi(): typeof posix | typeof win32 {
+    return this.#platform === "win32" ? win32 : posix;
   }
 }
