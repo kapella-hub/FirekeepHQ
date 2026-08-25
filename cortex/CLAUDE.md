@@ -25,12 +25,12 @@ app/
 ├── models.py          # Request/response Pydantic models
 ├── exceptions.py      # FirekeepCortexError hierarchy
 ├── main.py            # FastAPI app, lifespan, routes, DI, router integration
-├── mcp_server.py      # MCP server (Streamable HTTP; 30 tools — core memory (recall/learn/stream/health/handoff/feedback) + replay/eval/vault/corpus/knowledge/skills/agent-gateway feature tools + runbook_ack)
+├── mcp_server.py      # MCP server (Streamable HTTP; 30 tools — core memory (recall/learn/stream/health/handoff/feedback; `feedback` also emits a `memory_feedback` replay event, added 2026-08-24) + replay/eval/vault/corpus/knowledge/skills/agent-gateway feature tools + runbook_ack)
 ├── dashboard.py       # Web dashboard router (memory browser, graph viz, DLQ)
 ├── webhooks.py        # Webhook registration and event firing
 ├── stats.py           # Memory statistics endpoint
 ├── transfer.py        # Export/import API (JSONL streaming)
-├── streaming.py       # SSE streaming recall endpoint
+├── streaming.py       # SSE streaming recall endpoint (emits a `memory_read` replay receipt + access/staleness bumps in a `finally` after the stream, 2026-08-24 — parity with the non-streaming recall path)
 ├── embedding_admin.py # Embedding model admin (status, re-embed)
 ├── lifecycle.py       # Knowledge lifecycle (deprecate, confirm, history, backlinks)
 ├── contradiction.py   # Automatic contradiction detection & supersession
