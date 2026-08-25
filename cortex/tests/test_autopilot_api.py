@@ -775,13 +775,21 @@ async def test_a_memory_read_key_cannot_open_the_inbox(mk, stores):
 
 # -------------------------------------------------- compliance (Living Instructions) --
 
-def _eval_record(sid, days_ago=1.0, **metrics):
-    return json.dumps({
+def _eval_record(sid, days_ago=1.0, task_result=None, task_result_source=None,
+                  experiment_group=None, **metrics):
+    body = {
         "session_id": sid,
         "created_at": iso(days_ago),
         "trigger": "session_complete",
         "metrics": metrics,
-    })
+    }
+    if task_result is not None:
+        body["task_result"] = task_result
+    if task_result_source is not None:
+        body["task_result_source"] = task_result_source
+    if experiment_group is not None:
+        body["experiment_group"] = experiment_group
+    return json.dumps(body)
 
 
 @pytest.mark.asyncio
@@ -790,10 +798,13 @@ async def test_compliance_scores_the_founding_predicates(mk, stores):
     exactly — the spec is a pre-registration, and a drifted predicate would
     orphan the baseline every later comparison stands on."""
     redis_client, replay_redis = stores
-    # One compliant-on-everything session, one blank one.
+    # One compliant-on-everything session (incl. a self-reported grade, so
+    # the new grade_self_reported row — PR4 D2 — is also 1/2 like the rest),
+    # one blank one.
     await replay_redis.set("rp:eval:s1", _eval_record(
         "s1", memory_read_count=2, memory_write_count=1, recall_used_rate=0.5,
-        context_snapshot_count=3, brier_score=0.11, outcome_event_count=2))
+        context_snapshot_count=3, brier_score=0.11, outcome_event_count=2,
+        task_result="success", task_result_source="self_reported"))
     await replay_redis.set("rp:eval:s2", _eval_record(
         "s2", memory_read_count=0, memory_write_count=0, recall_used_rate=0.0,
         context_snapshot_count=0, outcome_event_count=1))
@@ -809,6 +820,7 @@ async def test_compliance_scores_the_founding_predicates(mk, stores):
     assert set(rows) == {
         "recall_before_work", "write_as_you_go", "recall_visibly_used",
         "ctx_working_state", "declared_predictions", "outcome_bearing",
+        "grade_self_reported",
     }
     for key in rows:
         assert rows[key]["hits"] == 1, key

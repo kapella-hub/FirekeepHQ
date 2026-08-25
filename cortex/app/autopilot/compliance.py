@@ -28,6 +28,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from app.evals.models import recognized_grade_pair
+
 logger = logging.getLogger(__name__)
 
 # 30-day eval TTL bounds the population; the cap is a backstop, not a budget.
@@ -54,6 +56,25 @@ def _num(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return float(value)
+
+
+def _predicate_input(record: dict) -> _Metrics:
+    """The dict handed to a predicate: the eval's metrics, enriched with the
+    top-level grade/arm fields under keys no metric collides with (PR4 D2).
+    `task_result`, `task_result_source` (evals/models.py) and
+    `experiment_group` (PR4 D1) live on the eval RECORD, not inside
+    `metrics` — passing the whole record to predicates would make every
+    frozen predicate read its metric key off the top level, get None, and
+    silently flip to always-False. Every frozen predicate keeps reading its
+    metric key out of `metrics` unchanged; only grade_self_reported reads
+    the two grade keys, via recognized_grade_pair.
+    """
+    return {
+        **(record.get("metrics") or {}),
+        "task_result": record.get("task_result"),
+        "task_result_source": record.get("task_result_source"),
+        "experiment_group": record.get("experiment_group"),
+    }
 
 
 # The founding-measurement predicates, in the spec's row order. KEYS and
@@ -102,6 +123,21 @@ INSTRUCTIONS: list[tuple[str, str, str, Callable[[_Metrics], bool]]] = [
         "Outcome-bearing events ≥ 2",
         "outcome_event_count >= 2",
         lambda m: (_num(m.get("outcome_event_count")) or 0) >= 2,
+    ),
+    # Round 3 — grading ADOPTION (outcome truth PR4 D2, 2026-08-25, appended
+    # per the "change a predicate only by adding a NEW row" rule above). Did
+    # the agent self-report ANY recognized grade at all — success, partial,
+    # or failure via recognized_grade_pair, the one grade-validity check in
+    # cortex (evals/models.py) — not whether the grade was good. Reads
+    # task_result/task_result_source through the enriched dict built by
+    # _predicate_input, never through `e["metrics"]` directly: those two
+    # fields live at the top level of the eval record.
+    (
+        "grade_self_reported",
+        "Grade your task on completion (task_result)",
+        "recognized (task_result, task_result_source) present",
+        lambda m: recognized_grade_pair(
+            m.get("task_result"), m.get("task_result_source"))[0] is not None,
     ),
 ]
 
@@ -262,7 +298,7 @@ def build_rows(evals: list[dict]) -> list[dict[str, Any]]:
 
     rows: list[dict[str, Any]] = []
     for key, instruction, predicate_desc, predicate in INSTRUCTIONS:
-        scored = [(e, predicate(e.get("metrics", {}))) for e in evals]
+        scored = [(e, predicate(_predicate_input(e))) for e in evals]
         hits = sum(1 for _, hit in scored if hit)
         row: dict[str, Any] = {
             "key": key,
@@ -273,8 +309,8 @@ def build_rows(evals: list[dict]) -> list[dict[str, Any]]:
             "rate": round(hits / len(evals), 4) if evals else None,
         }
         if with_trend:
-            e_hits = sum(1 for e in earlier if predicate(e.get("metrics", {})))
-            r_hits = sum(1 for e in recent if predicate(e.get("metrics", {})))
+            e_hits = sum(1 for e in earlier if predicate(_predicate_input(e)))
+            r_hits = sum(1 for e in recent if predicate(_predicate_input(e)))
             row["earlier_rate"] = round(e_hits / len(earlier), 4)
             row["recent_rate"] = round(r_hits / len(recent), 4)
 
@@ -289,6 +325,24 @@ def build_rows(evals: list[dict]) -> list[dict[str, Any]]:
             if hit:
                 bucket["hits"] += 1
         row["by_runtime"] = by_runtime
+
+        # Round 3, additive to grade_self_reported only: the same predicate
+        # sliced by pre-registered arm (PR4 D1). "A"/"B" only — a session
+        # with no (or unrecognized) experiment_group is not a measured arm
+        # and is EXCLUDED from this split entirely (no bucket of its own),
+        # while still counting toward the row's overall hits/total above.
+        if key == "grade_self_reported":
+            by_experiment_group: dict[str, dict[str, int]] = {}
+            for e, hit in scored:
+                group = e.get("experiment_group")
+                if group not in ("A", "B"):
+                    continue
+                bucket = by_experiment_group.setdefault(
+                    group, {"hits": 0, "total": 0})
+                bucket["total"] += 1
+                if hit:
+                    bucket["hits"] += 1
+            row["by_experiment_group"] = by_experiment_group
 
         # Exposure: null for the derived rows (no instruction text to be
         # exposed to); counted per session for the four text-carrying rows.

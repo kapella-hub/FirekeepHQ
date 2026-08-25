@@ -31,6 +31,10 @@ NOW = datetime(2026, 8, 12, 12, 0, 0, tzinfo=timezone.utc)
 ALL_KEYS = {
     "recall_before_work", "write_as_you_go", "recall_visibly_used",
     "ctx_working_state", "declared_predictions", "outcome_bearing",
+    # grade_self_reported (PR4 D2, adoption row) is additive — a NEW row,
+    # not a change to any round-1/round-2 key. It carries instruction text
+    # like the other non-derived rows, so it belongs in TEXT_KEYS below too.
+    "grade_self_reported",
 }
 TEXT_KEYS = ALL_KEYS - {"recall_visibly_used", "outcome_bearing"}
 
