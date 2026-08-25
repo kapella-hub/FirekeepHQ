@@ -286,6 +286,10 @@ def test_install_sh_reattaches_the_terminal_when_piped_to_sh(tmp_path, artifact_
         "PATH": "/usr/bin:/bin",
         "HOME": str(tmp_path),
         "FIREKEEP_DIST_BASE": artifact_server["base"],
+        # This test owns the later wizard handoff. Consent has its own real-PTY
+        # acceptance suite; opt out here so the earlier prompt cannot consume
+        # or block the terminal this test is deliberately preserving.
+        "FIREKEEP_NO_FAILURE_REPORT": "1",
     }
     pid, fd = pty.fork()
     if pid == 0:  # child: has a controlling tty, so /dev/tty opens

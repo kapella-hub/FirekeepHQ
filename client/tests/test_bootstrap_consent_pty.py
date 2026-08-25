@@ -24,8 +24,10 @@ pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX pty only"
 # module on every platform, so the import itself must be guarded or a Windows run
 # fails at collection with ModuleNotFoundError instead of skipping cleanly.
 if sys.platform != "win32":
+    import fcntl
     import pty
     import select
+    import termios
 
 BOOTSTRAP = Path(__file__).resolve().parents[1] / "bootstrap" / "install.sh"
 
@@ -48,9 +50,17 @@ def _consent_snippet(tmp_path):
 
 def _run_under_pty(script, keys, env=None):
     parent, child = pty.openpty()
+
+    def claim_controlling_terminal():
+        # Merely wiring the slave PTY to fd 0/1/2 does not make /dev/tty
+        # available in a headless parent (such as GitHub Actions). Start a new
+        # session and explicitly claim the slave as its controlling terminal.
+        os.setsid()
+        fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+
     proc = subprocess.Popen(["sh", str(script)], stdin=child, stdout=child,
                             stderr=child, env=dict(os.environ, **(env or {})),
-                            close_fds=True, start_new_session=False)
+                            close_fds=True, preexec_fn=claim_controlling_terminal)
     os.close(child)
     output = b""
     wrote = False
