@@ -71,6 +71,8 @@ def create_autopilot_router(get_redis, get_replay_redis, get_vector, settings_fn
                 "stale_skills", inbox_mod.stale_skills(vector, settings)),
             "rereview_skills": await _section(
                 "rereview_skills", inbox_mod.rereview_skills(vector, settings)),
+            "low_efficacy_skills": await _section(
+                "low_efficacy_skills", inbox_mod.low_efficacy_skills(vector, settings)),
             "procedure_proposals": await _section(
                 "procedure_proposals", inbox_mod.procedure_proposals(redis_client, settings)),
             "runbook_deviations": await _section(

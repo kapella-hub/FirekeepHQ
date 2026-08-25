@@ -490,6 +490,43 @@ def test_point_to_response_maps_staleness_fields(mock_vector, mock_settings):
     assert data["last_recalled_at"] == "2026-01-01T00:00:00+00:00"
 
 
+def test_skill_response_efficacy_defaults():
+    resp = SkillResponse(
+        id="abc", trigger="t", symptoms="s", content="c", skill_status="active",
+    )
+    assert resp.skill_efficacy is None
+    assert resp.skill_efficacy_n is None
+    assert resp.skill_efficacy_updated_at is None
+
+
+def test_point_to_response_maps_efficacy_fields(mock_vector, mock_settings):
+    point = _make_mock_point()
+    point.payload["skill_efficacy"] = 0.2
+    point.payload["skill_efficacy_n"] = 8
+    point.payload["skill_efficacy_updated_at"] = "2026-08-20T00:00:00+00:00"
+    mock_vector._client.retrieve = AsyncMock(return_value=[point])
+    client = TestClient(_make_app(mock_vector, mock_settings))
+    resp = client.get("/skills/abc")
+    data = resp.json()
+    assert data["skill_efficacy"] == 0.2
+    assert data["skill_efficacy_n"] == 8
+    assert data["skill_efficacy_updated_at"] == "2026-08-20T00:00:00+00:00"
+
+
+def test_point_to_response_efficacy_absent_parses_as_none(mock_vector, mock_settings):
+    """Old points written before Task 2 carry no skill_efficacy* keys at all —
+    they must still parse, with the three fields defaulting to None rather
+    than raising."""
+    point = _make_mock_point()
+    mock_vector._client.retrieve = AsyncMock(return_value=[point])
+    client = TestClient(_make_app(mock_vector, mock_settings))
+    resp = client.get("/skills/abc")
+    data = resp.json()
+    assert data["skill_efficacy"] is None
+    assert data["skill_efficacy_n"] is None
+    assert data["skill_efficacy_updated_at"] is None
+
+
 def test_list_skills_stale_filter(mock_vector, mock_settings):
     """?status=active&stale=true returns only stale-flagged active skills."""
     stale = _make_mock_point(skill_id="old", status="active")

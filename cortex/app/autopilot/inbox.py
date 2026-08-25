@@ -23,7 +23,7 @@ import json
 import logging
 from typing import Any
 
-from qdrant_client.models import FieldCondition, Filter, MatchValue
+from qdrant_client.models import FieldCondition, Filter, MatchValue, Range
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +42,18 @@ SECTION_ITEM_LIMIT = 20
 # population is self-limiting; the cap exists so a pathological failure storm
 # cannot make the inbox itself the slow thing.
 DLQ_SCAN_CAP = 1000
+
+# low_efficacy_skills (D4) — visibility only, see the section docstring below.
+# MIN_N is a small evidence floor: skill_efficacy is shrunk toward neutral 0.5
+# by a Beta prior of OWM_PRIOR_N (default 5) pseudo-observations (app/owm.py),
+# so below that many real observations the score is still mostly the prior,
+# not a measurement. Matching OWM_PRIOR_N's default here is deliberate — it is
+# the point past which the shrinkage stops dominating.
+MIN_N = 5
+# THRESHOLD is a below-neutral cutoff: skill_efficacy is a success rate in
+# [0, 1] centered on 0.5, so anything at or above 0.4 is doing roughly as well
+# as (or better than) a coin flip and is not a triage candidate.
+THRESHOLD = 0.4
 
 _EVAL_DLQ_PREFIX = "rp:eval_dlq:"
 
@@ -136,6 +148,46 @@ async def rereview_skills(vector, settings) -> dict[str, Any]:
         "count": len(points),
         "approximate": capped,
         "items": [_skill_row(p) for p in points[:SECTION_ITEM_LIMIT]],
+    }
+
+
+async def low_efficacy_skills(vector, settings) -> dict[str, Any]:
+    """Active skills the nightly OWM pass scored below neutral, with enough
+    evidence to trust the number (outcome truth PR3, D4).
+
+    VISIBILITY ONLY — this section does not change recall ranking, does not
+    mutate `skill_status`, and does not write anything. A flagged skill is a
+    human's cue to go read it; the ranking-side response to a low score is
+    explicitly deferred (spec D4).
+
+    Filtered server-side on BOTH `skill_efficacy_n >= MIN_N` and
+    `skill_efficacy < THRESHOLD` (the `_qm.Range` idiom `app/owm.py`'s
+    stale-reset sweep uses for the same field) — a skill missing either
+    condition has either too little evidence or nothing to triage. `n` is
+    carried on every row alongside the score for the same reason MIN_N
+    exists: a reader who sees only `skill_efficacy` cannot tell a genuinely
+    poor performer from a skill still near the neutral prior.
+    """
+    points, capped = await _scroll(vector, settings, [
+        FieldCondition(key="memory_type", match=MatchValue(value="skill")),
+        FieldCondition(key="skill_status", match=MatchValue(value="active")),
+        FieldCondition(key="skill_efficacy_n", range=Range(gte=MIN_N)),
+        FieldCondition(key="skill_efficacy", range=Range(lt=THRESHOLD)),
+    ])
+    return {
+        "count": len(points),
+        "approximate": capped,
+        "items": [_low_efficacy_row(p) for p in points[:SECTION_ITEM_LIMIT]],
+    }
+
+
+def _low_efficacy_row(point) -> dict[str, Any]:
+    payload = point.payload or {}
+    return {
+        "id": str(point.id),
+        "trigger": payload.get("trigger") or "",
+        "skill_efficacy": payload.get("skill_efficacy"),
+        "skill_efficacy_n": payload.get("skill_efficacy_n"),
     }
 
 

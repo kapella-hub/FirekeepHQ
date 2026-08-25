@@ -81,8 +81,22 @@ def _matches(payload: dict, scroll_filter) -> bool:
     if scroll_filter is None:
         return True
     for cond in scroll_filter.must or []:
-        if payload.get(cond.key) != cond.match.value:
-            return False
+        if cond.match is not None:
+            if payload.get(cond.key) != cond.match.value:
+                return False
+        elif cond.range is not None:
+            value = payload.get(cond.key)
+            r = cond.range
+            if value is None:
+                return False
+            if r.gte is not None and not (value >= r.gte):
+                return False
+            if r.gt is not None and not (value > r.gt):
+                return False
+            if r.lte is not None and not (value <= r.lte):
+                return False
+            if r.lt is not None and not (value < r.lt):
+                return False
     return True
 
 
@@ -125,7 +139,7 @@ class _DeadRedis:
 
 
 def skill(pid, *, status="draft", stale=None, rereview=None, title="T",
-          created=None, reviewed=None):
+          created=None, reviewed=None, efficacy=None, efficacy_n=None):
     payload = {
         "memory_type": "skill", "skill_status": status, "status": "active",
         "procedure_title": title, "trigger": f"when {title}",
@@ -137,6 +151,10 @@ def skill(pid, *, status="draft", stale=None, rereview=None, title="T",
         payload["needs_rereview"] = rereview
     if reviewed is not None:
         payload["stale_reviewed_at"] = reviewed
+    if efficacy is not None:
+        payload["skill_efficacy"] = efficacy
+    if efficacy_n is not None:
+        payload["skill_efficacy_n"] = efficacy_n
     return _Point(pid, payload)
 
 
@@ -393,6 +411,48 @@ async def test_contested_previews_are_bounded(mk, stores):
     async with mk(_FakeVector(qdrant), redis_client, replay_redis) as c:
         pair = (await c.get("/autopilot/inbox")).json()["items"]["contested_memories"]["pairs"][0]
     assert len(pair["text_preview"]) <= 120
+
+
+# ------------------------------------------------- low-efficacy skills (D4) --
+
+@pytest.mark.asyncio
+async def test_low_efficacy_skills_flags_only_sufficient_evidence_below_threshold(mk, stores):
+    """VISIBILITY ONLY (D4): a skill needs BOTH enough evidence
+    (skill_efficacy_n >= MIN_N) and a below-neutral score (skill_efficacy <
+    THRESHOLD) to be flagged. A low-n score is mostly the OWM prior, not
+    signal, so it must be excluded rather than shown as if it were a
+    measurement; a high-n but healthy score has nothing to triage."""
+    redis_client, replay_redis = stores
+    qdrant = _FakeQdrant([
+        skill("flagged", status="active", title="Flagged", efficacy=0.2, efficacy_n=8),
+        skill("low_n", status="active", title="LowN", efficacy=0.1, efficacy_n=1),
+        skill("healthy", status="active", title="Healthy", efficacy=0.9, efficacy_n=8),
+    ])
+    async with mk(_FakeVector(qdrant), redis_client, replay_redis) as c:
+        section = (await c.get("/autopilot/inbox")).json()["items"]["low_efficacy_skills"]
+
+    assert section["count"] == 1
+    assert len(section["items"]) == 1
+    row = section["items"][0]
+    assert row["id"] == "flagged"
+    assert row["skill_efficacy"] == 0.2
+    assert row["skill_efficacy_n"] == 8, (
+        "n rides along on every row so a reader can never mistake the "
+        "low-n neutral prior for signal"
+    )
+
+
+@pytest.mark.asyncio
+async def test_low_efficacy_skills_ignores_non_active_and_unscored_skills(mk, stores):
+    redis_client, replay_redis = stores
+    qdrant = _FakeQdrant([
+        skill("draft_low", status="draft", title="DraftLow", efficacy=0.1, efficacy_n=8),
+        skill("unscored", status="active", title="Unscored"),
+    ])
+    async with mk(_FakeVector(qdrant), redis_client, replay_redis) as c:
+        section = (await c.get("/autopilot/inbox")).json()["items"]["low_efficacy_skills"]
+    assert section["count"] == 0
+    assert section["items"] == []
 
 
 # ------------------------------------------------- runbook deviations (C) --

@@ -522,6 +522,17 @@ class SkillResponse(BaseModel):
     stale_detected_at: str | None = None
     stale_reviewed_at: str | None = None
     last_recalled_at: str | None = None
+    # Outcome truth PR3 (D2/D4): the nightly OWM pass's PARALLEL, skill-only
+    # efficacy score (see app/owm.py) — never populated on skills authored or
+    # scored before that pass ran, hence optional with None defaults (old
+    # points parse fine, no migration). VISIBILITY ONLY: read here, never
+    # ranked or mutated by this reader. `skill_efficacy_n` MUST accompany the
+    # score wherever it's shown — a low-n score is mostly the neutral Beta
+    # prior, not a measurement, and a reader who sees only the score has no
+    # way to tell the difference.
+    skill_efficacy: float | None = None
+    skill_efficacy_n: int | None = None
+    skill_efficacy_updated_at: str | None = None
     # Living Procedures: absent on every skill authored before this feature, and
     # on every skill whose author declined to compile specs — None, not [], so a
     # reader can tell "not a procedure" from "a procedure with no steps".

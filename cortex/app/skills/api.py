@@ -425,6 +425,9 @@ def _point_to_response(point: Any) -> SkillResponse:
         stale_detected_at=p.get("stale_detected_at"),
         stale_reviewed_at=p.get("stale_reviewed_at"),
         last_recalled_at=p.get("last_recalled_at"),
+        skill_efficacy=p.get("skill_efficacy"),
+        skill_efficacy_n=p.get("skill_efficacy_n"),
+        skill_efficacy_updated_at=p.get("skill_efficacy_updated_at"),
         step_specs=p.get("step_specs"),
     )
 
