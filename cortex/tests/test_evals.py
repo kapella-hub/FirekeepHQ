@@ -43,11 +43,18 @@ async def _compute(monkeypatch, events, *, id_events=None, task_result_hint=None
                    replay_redis=None, webhook_sink=None):
     """Drive compute_session_eval with patched replay readers.
 
-    id_events models the session-tail SNAPSHOT as an ordered (oldest→newest)
+    Task 4 (outcome truth PR2 D3): compute_session_eval's metrics scan AND
+    find_terminal_grade's grade lift both read through the SAME
+    (get_session_event_ids, get_event_batch) primitives now — there is no
+    separate get_session_timeline fetch to fake. `id_events`, when given
+    (truthy), models the session-tail SNAPSHOT as an ordered (oldest→newest)
     list of (event_id, event_or_None); None means the body is MISSING from
     get_event_batch (trimmed/expired) — the snapshot ID stays but hydration
     omits it. This exercises find_terminal_grade's real shape: snapshot the
-    IDs once, hydrate backward in windows.
+    IDs once, hydrate backward in windows. When `id_events` is omitted/empty,
+    the backing snapshot is derived from `events` instead (each already
+    carries an "id" from _make_events) — the common case, where a test only
+    cares about the metrics/Tier1 side and has no grade-lift scenario to model.
 
     replay_redis defaults to a fresh fakeredis so store_eval actually persists
     (under the authoritative-store rule an unstored candidate returns None)."""
@@ -58,15 +65,15 @@ async def _compute(monkeypatch, events, *, id_events=None, task_result_hint=None
     if owned_redis:
         import fakeredis.aioredis
         replay_redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
-    pairs = list(id_events or [])
+    if id_events:
+        pairs = list(id_events)
+    else:
+        pairs = [(e.get("id") or f"auto-{i}", e) for i, e in enumerate(events)]
     id_to_ev = {i: ev for i, ev in pairs if ev is not None}
 
     async def fake_summary(*a, **k):
-        return {"event_count": max(len(events), 1), "duration_ms": 1000,
+        return {"event_count": max(len(pairs), 1), "duration_ms": 1000,
                 "agents": ["default"]}
-
-    async def fake_timeline(*a, **k):
-        return {"events": events}
 
     async def fake_ids(r, sid, *, limit=5000):
         return [i for i, _ in pairs][-limit:]
@@ -75,7 +82,6 @@ async def _compute(monkeypatch, events, *, id_events=None, task_result_hint=None
         return [id_to_ev[i] for i in ids if i in id_to_ev]
 
     monkeypatch.setattr(reader_mod, "get_session_summary", fake_summary)
-    monkeypatch.setattr(reader_mod, "get_session_timeline", fake_timeline)
     monkeypatch.setattr(reader_mod, "get_session_event_ids", fake_ids)
     monkeypatch.setattr(reader_mod, "get_event_batch", fake_batch)
     # Keep every test in-process: the production webhook client targets the
@@ -295,14 +301,14 @@ async def test_compute_includes_brier_score_when_predict_events_present(monkeypa
     async def fake_get_session_summary(*args, **kwargs):
         return {"event_count": len(fake_events), "duration_ms": 1000}
 
-    async def fake_get_session_timeline(*args, **kwargs):
-        return {"events": fake_events}
-
+    # Task 4: the metrics scan and find_terminal_grade's grade lift both read
+    # through get_session_event_ids/get_event_batch now (no get_session_timeline
+    # call left in compute_session_eval) — fake both to serve fake_events.
     async def fake_ids(*args, **kwargs):
-        return []
+        return [f"b{i}" for i in range(len(fake_events))]
 
     async def fake_batch(*args, **kwargs):
-        return []
+        return list(fake_events)
 
     saved = {}
 
@@ -315,7 +321,6 @@ async def test_compute_includes_brier_score_when_predict_events_present(monkeypa
 
     # Patch replay reader functions used inside compute_session_eval
     monkeypatch.setattr(reader_mod, "get_session_summary", fake_get_session_summary)
-    monkeypatch.setattr(reader_mod, "get_session_timeline", fake_get_session_timeline)
     monkeypatch.setattr(reader_mod, "get_session_event_ids", fake_ids)
     monkeypatch.setattr(reader_mod, "get_event_batch", fake_batch)
 
@@ -481,6 +486,42 @@ class TestTaskResultLifting:
                                 _make_events([{"type": "session_end"}]), id_events=[])
         assert result.task_result is None
         assert result.outcome == "unknown"
+
+
+class TestMetricsScanCap:
+    """Task 4 (outcome truth PR2 D3): the metrics scan (Tier1 metrics, the
+    Brier join, failure_event_ids) must see the WHOLE session via the PR1
+    snapshot+hydrate primitives, not the oldest-1000 window
+    get_session_timeline used to silently truncate to — and the cap is made
+    explicit via `metrics_truncated` rather than dropped silently."""
+
+    @pytest.mark.asyncio
+    async def test_metrics_include_late_events_beyond_1000(self, monkeypatch):
+        filler = [
+            (f"e{i}", {"id": f"e{i}", "event_type": "memory_read",
+                       "payload": {}, "outcome": "success"})
+            for i in range(1200)
+        ]
+        late_fail = ("late-fail", {"id": "late-fail", "event_type": "tool_call",
+                                   "payload": {}, "outcome": "failure"})
+        pairs = filler + [late_fail]
+        result = await _compute(monkeypatch, [], id_events=pairs)
+        assert result is not None
+        # Old oldest-1000 window would have dropped this — it sits at index
+        # 1200 of 1201 events.
+        assert "late-fail" in result.failure_event_ids
+        assert result.metrics_truncated is False  # 1201 < 5000
+
+    @pytest.mark.asyncio
+    async def test_metrics_truncated_flag_at_cap(self, monkeypatch):
+        pairs = [
+            (f"e{i}", {"id": f"e{i}", "event_type": "memory_read",
+                       "payload": {}, "outcome": "success"})
+            for i in range(5001)
+        ]
+        result = await _compute(monkeypatch, [], id_events=pairs)
+        assert result is not None
+        assert result.metrics_truncated is True
 
 
 class TestRaceSafeStore:

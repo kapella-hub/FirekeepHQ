@@ -59,6 +59,13 @@ class EvalResult(BaseModel):
 
     # Tier 1: Directly measurable from traces (always present)
     metrics: dict[str, float] = {}
+    # True when the metrics scan (and the OWM join's event fetch) hit
+    # _METRIC_SCAN_MAX and the session's true event history is longer — the
+    # cap made VISIBLE rather than a silent truncation (task 4, outcome truth
+    # PR2 D3). Old stored records predate this field and parse as False,
+    # which is honest: they were computed under the old undisclosed
+    # oldest-1000 cap, not this one.
+    metrics_truncated: bool = False
 
     # Tier 2: LLM-judged (present only if LLM eval was run)
     llm_judged_metrics: dict[str, float] | None = None

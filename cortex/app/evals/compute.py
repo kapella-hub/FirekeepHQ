@@ -19,6 +19,11 @@ logger = logging.getLogger(__name__)
 
 _EVAL_DLQ_PREFIX = "rp:eval_dlq:"
 _GRADE_SCAN_MAX = 5000  # one-shot snapshot cap; disclosed in spec D7
+_METRIC_SCAN_MAX = 5000  # module constant; matches get_session_event_ids
+# default + find_terminal_grade's _GRADE_SCAN_MAX. Caps the metrics scan (and,
+# via import, the OWM memory_read join) — the cap is the SAME value as the
+# grade lift's, but a separate constant because the two scans are
+# conceptually distinct call sites (task 4, outcome truth PR2 D3).
 
 
 _GRADE_HYDRATE_WINDOW = 200
@@ -88,7 +93,7 @@ async def compute_session_eval(
     """
     try:
         # Import reader here to avoid circular imports
-        from replay.reader import get_session_timeline, get_session_summary
+        from replay.reader import get_event_batch, get_session_event_ids, get_session_summary
 
         # Get session summary for high-level stats
         summary = await get_session_summary(replay_redis, session_id)
@@ -98,11 +103,21 @@ async def compute_session_eval(
             logger.debug("No replay events for session %s, skipping eval", session_id)
             return None
 
-        # Get all events for scoring
-        timeline = await get_session_timeline(
-            replay_redis, session_id, limit=1000,
+        # Full-session snapshot+hydrate (PR1 primitives, task 4): the metrics
+        # scan, the Brier predict/reconcile join and failure_event_ids must see
+        # the WHOLE session, not the oldest-1000 window get_session_timeline
+        # used to silently truncate to. Capped at _METRIC_SCAN_MAX, with the
+        # cap surfaced via metrics_truncated rather than dropped silently.
+        ids = await get_session_event_ids(
+            replay_redis, session_id, limit=_METRIC_SCAN_MAX,
         )
-        events = timeline.get("events", [])
+        events = await get_event_batch(replay_redis, ids)
+        metrics_truncated = len(ids) >= _METRIC_SCAN_MAX
+        if metrics_truncated:
+            logger.warning(
+                "eval metrics truncated at %d events for session %s",
+                _METRIC_SCAN_MAX, session_id,
+            )
 
         if not events:
             return None
@@ -215,6 +230,7 @@ async def compute_session_eval(
             session_id=session_id,
             trigger=trigger,
             metrics=metrics,
+            metrics_truncated=metrics_truncated,
             event_count=event_count,
             duration_ms=summary.get("duration_ms"),
             outcome=task_result or ("failure" if failure_event_ids else "unknown"),

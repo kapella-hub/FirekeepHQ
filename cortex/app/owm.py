@@ -32,9 +32,22 @@ import logging
 import time
 from typing import Callable
 
+from app.evals.compute import _METRIC_SCAN_MAX  # single source of truth (task 4 brief):
+# same cap as the eval metrics scan, imported rather than re-declared so the
+# two can never drift apart.
 from app.evals.models import recognized_grade_pair
 
 logger = logging.getLogger(__name__)
+
+
+async def _default_events_fn(replay_r, session_id: str) -> list[dict]:
+    """Full-session snapshot+hydrate (PR1 primitives, task 4): the SAME two
+    calls compute.py's metrics scan makes, capped at the same _METRIC_SCAN_MAX.
+    Returns a plain list of event dicts — the caller filters by event_type."""
+    from replay.reader import get_event_batch, get_session_event_ids
+
+    ids = await get_session_event_ids(replay_r, session_id, limit=_METRIC_SCAN_MAX)
+    return await get_event_batch(replay_r, ids)
 
 
 def compute_efficacy(successes: int, n: int, prior_n: int = 5) -> float:
@@ -66,7 +79,7 @@ def session_success(eval_data: dict, bridge_status: str | None) -> bool | None:
 
 async def run_pass(replay_r, vector, settings, *,
                    bridge_statuses: dict[str, str] | None = None,
-                   timeline_fn: Callable | None = None) -> dict:
+                   events_fn: Callable | None = None) -> dict:
     """One full OWM scoring pass. Returns a status dict; never raises for a
     single bad session/memory (those are counted, logged, and skipped).
 
@@ -86,9 +99,7 @@ async def run_pass(replay_r, vector, settings, *,
     """
     import json as _json
 
-    from replay import reader as _reader
-
-    timeline_fn = timeline_fn or _reader.get_session_timeline
+    events_fn = events_fn or _default_events_fn
     bridge_statuses = bridge_statuses or {}
     out = {"sessions_scanned": 0, "sessions_joined": 0, "memories_scored": 0,
            "write_errors": 0, "stale_reset": 0}
@@ -110,12 +121,14 @@ async def run_pass(replay_r, vector, settings, *,
             if success is None:
                 continue
 
-            # get_session_timeline returns an ENVELOPE {"events": [...], ...} —
-            # iterating it directly yields string keys (the critical
-            # silently-no-ops bug the adversarial review caught pre-ship).
-            timeline = await timeline_fn(replay_r, sid, event_type="memory_read",
-                                         limit=1000)
-            events = (timeline or {}).get("events") or []
+            # Full-session snapshot+hydrate (task 4): the old
+            # get_session_timeline(limit=1000) fetch applied the memory_read
+            # filter AFTER pagination, so a late memory_read past the
+            # oldest-1000 window never joined. events_fn returns the whole
+            # (capped) session as a plain list — no envelope to unwrap — and
+            # the type filter is applied here in Python instead.
+            all_events = await events_fn(replay_r, sid)
+            events = [e for e in (all_events or []) if e.get("event_type") == "memory_read"]
             mem_agents: dict[str, str] = {}
             for ev in events:
                 agent = str(ev.get("agent_id") or "unknown")

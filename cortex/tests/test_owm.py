@@ -118,13 +118,14 @@ def _settings(**over):
     return s
 
 
-def _timeline(events_by_sid):
-    """Mirrors replay/reader.py::get_session_timeline's REAL return: a dict
-    envelope {"session_id", "events", "total", "has_more"} — a bare-list mock
-    here masked a critical silently-no-ops-in-production bug (wf_51dd7c4e)."""
-    async def fn(r, sid, *, event_type=None, limit=1000):
-        evs = events_by_sid.get(sid, [])
-        return {"session_id": sid, "events": evs, "total": len(evs), "has_more": False}
+def _events_fn(events_by_sid):
+    """Task 4 (outcome truth PR2 D3): mirrors the events_fn seam's real
+    return — a plain list of event dicts for the whole (capped) session, no
+    envelope. `run_pass` applies the memory_read filter itself; this fixture
+    serves the FULL per-session event list, unfiltered, matching what a real
+    events_fn (get_session_event_ids + get_event_batch) would hand back."""
+    async def fn(r, sid):
+        return events_by_sid.get(sid, [])
     return fn
 
 
@@ -142,7 +143,7 @@ async def test_run_pass_joins_reads_to_outcomes_and_writes_payloads():
     }
     v = _vector()
     out = await run_pass(_redis_with(evals, ["s-good", "s-bad"]), v, _settings(),
-                         bridge_statuses={}, timeline_fn=_timeline(events))
+                         bridge_statuses={}, events_fn=_events_fn(events))
 
     assert out["sessions_joined"] == 2
     assert out["memories_scored"] == 2
@@ -167,7 +168,7 @@ async def test_run_pass_counts_a_session_once_per_memory():
     ]}
     v = _vector()
     await run_pass(_redis_with(evals, ["s1"]), v, _settings(),
-                   bridge_statuses={}, timeline_fn=_timeline(events))
+                   bridge_statuses={}, events_fn=_events_fn(events))
     payload = v._client.set_payload.call_args_list[0].kwargs["payload"]
     assert payload["owm_n"] == 1
 
@@ -181,7 +182,7 @@ async def test_run_pass_skips_dangling_index_and_legacy_events():
     }
     v = _vector()
     out = await run_pass(_redis_with(evals, ["s1", "s-expired"]), v, _settings(),
-                         bridge_statuses={}, timeline_fn=_timeline(events))
+                         bridge_statuses={}, events_fn=_events_fn(events))
     # s-expired's eval GET returns nil (30d TTL) -> skipped; s1 has no ids
     assert out["memories_scored"] == 0
     assert not v._client.set_payload.called
@@ -193,7 +194,7 @@ async def test_run_pass_excludes_ambiguous_sessions():
     events = {"s-mid": [{"event_type": "memory_read", "payload": {"memory_ids": ["m1"]}}]}
     v = _vector()
     out = await run_pass(_redis_with(evals, ["s-mid"]), v, _settings(),
-                         bridge_statuses={}, timeline_fn=_timeline(events))
+                         bridge_statuses={}, events_fn=_events_fn(events))
     assert out["memories_scored"] == 0
 
 
@@ -203,7 +204,7 @@ async def test_run_pass_bridge_abandoned_overrides_good_metrics():
     events = {"s1": [{"event_type": "memory_read", "payload": {"memory_ids": ["m1"]}}]}
     v = _vector()
     await run_pass(_redis_with(evals, ["s1"]), v, _settings(),
-                   bridge_statuses={"s1": "abandoned"}, timeline_fn=_timeline(events))
+                   bridge_statuses={"s1": "abandoned"}, events_fn=_events_fn(events))
     payload = v._client.set_payload.call_args_list[0].kwargs["payload"]
     assert payload["owm_efficacy"] < 0.5  # counted as a failure observation
 
@@ -218,7 +219,7 @@ async def test_run_pass_survives_a_set_payload_error(caplog):
             raise RuntimeError("point deleted")
     v._client.set_payload = AsyncMock(side_effect=boom)
     out = await run_pass(_redis_with(evals, ["s1"]), v, _settings(),
-                         bridge_statuses={}, timeline_fn=_timeline(events))
+                         bridge_statuses={}, events_fn=_events_fn(events))
     assert out["memories_scored"] == 1  # m2 still written
     assert out["write_errors"] == 1
 
@@ -238,7 +239,7 @@ async def test_stale_scored_memories_reset_to_neutral():
     events = {"s1": [{"event_type": "memory_read", "payload": {"memory_ids": ["m1"]}}]}
     v = _vector(stale_scored_ids=("m1", "m-old"))
     out = await run_pass(_redis_with(evals, ["s1"]), v, _settings(),
-                         bridge_statuses={}, timeline_fn=_timeline(events))
+                         bridge_statuses={}, events_fn=_events_fn(events))
     assert out["memories_scored"] == 1
     assert out["stale_reset"] == 1
     del_call = v._client.delete_payload.call_args_list[0].kwargs
@@ -260,7 +261,7 @@ async def test_corpus_and_skill_points_are_never_scored():
         "c1": {"source": "corpus"},
     })
     out = await run_pass(_redis_with(evals, ["s1"]), v, _settings(),
-                         bridge_statuses={}, timeline_fn=_timeline(events))
+                         bridge_statuses={}, events_fn=_events_fn(events))
     assert out["memories_scored"] == 1
     written = [c.kwargs["points"][0] for c in v._client.set_payload.call_args_list]
     assert written == ["m1"]
@@ -278,6 +279,25 @@ async def test_single_agent_contribution_is_capped_per_memory():
     v = _vector()
     s = _settings(OWM_AGENT_CAP=3)
     await run_pass(_redis_with(evals, [f"s{i}" for i in range(10)]), v, s,
-                   bridge_statuses={}, timeline_fn=_timeline(events))
+                   bridge_statuses={}, events_fn=_events_fn(events))
     payload = v._client.set_payload.call_args_list[0].kwargs["payload"]
     assert payload["owm_n"] == 3  # capped, not 10
+
+
+@pytest.mark.asyncio
+async def test_run_pass_late_memory_read_beyond_old_1000_window():
+    """Task 4 (outcome truth PR2 D3): the old get_session_timeline(
+    event_type="memory_read", limit=1000) fetch applied the type filter AFTER
+    pagination, so a memory_read past the oldest-1000 window never joined.
+    Seed >1000 filler events + a late memory_read + a recognized grade, and
+    confirm the late read's memory still reaches the join output."""
+    evals = {"s1": {"task_result": "success", "task_result_source": "self_reported"}}
+    filler = [{"event_type": "ctx_update", "payload": {}} for _ in range(1200)]
+    late_read = {"event_type": "memory_read", "payload": {"memory_ids": ["late-mem"]}}
+    events = {"s1": filler + [late_read]}
+    v = _vector()
+    out = await run_pass(_redis_with(evals, ["s1"]), v, _settings(),
+                         bridge_statuses={}, events_fn=_events_fn(events))
+    assert out["memories_scored"] == 1
+    written = [c.kwargs["points"][0] for c in v._client.set_payload.call_args_list]
+    assert written == ["late-mem"]

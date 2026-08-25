@@ -52,21 +52,22 @@ async def _compute(monkeypatch, events, agents=("default",)):
     from unittest.mock import AsyncMock
     from app.evals import compute as compute_mod
 
+    # Task 4: compute_session_eval's metrics scan (and find_terminal_grade's
+    # grade lift) read through get_session_event_ids/get_event_batch now —
+    # serve `events` from both, keyed by each event's own "id" (set by
+    # `_event` above).
     async def fake_summary(*args, **kwargs):
         return {"event_count": max(len(events), 1), "duration_ms": 1000,
                 "agents": list(agents)}
 
-    async def fake_timeline(*args, **kwargs):
-        return {"events": events}
-
     async def fake_ids(*args, **kwargs):
-        return []
+        return [e["id"] for e in events if e.get("id")]
 
-    async def fake_batch(*args, **kwargs):
-        return []
+    async def fake_batch(r, ids):
+        by_id = {e["id"]: e for e in events if e.get("id")}
+        return [by_id[i] for i in ids if i in by_id]
 
     monkeypatch.setattr(reader_mod, "get_session_summary", fake_summary)
-    monkeypatch.setattr(reader_mod, "get_session_timeline", fake_timeline)
     monkeypatch.setattr(reader_mod, "get_session_event_ids", fake_ids)
     monkeypatch.setattr(reader_mod, "get_event_batch", fake_batch)
     monkeypatch.setattr(compute_mod.aioredis, "from_url",
