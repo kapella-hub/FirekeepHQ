@@ -29,15 +29,28 @@ MEMBER_B = "member-alice"
 
 class TestExperimentGroupHelper:
     def test_stable_sha256_not_python_hash(self):
-        """Hardcoded expected value, computed independently via sha256 here
-        (not by calling the function under test) — a regression to Python's
-        hash() would almost certainly produce a different bit pattern and
-        fail this, and hash()'s per-process salting means it couldn't pass
-        reliably across runs even by coincidence."""
-        h = int(hashlib.sha256(MEMBER_B.encode("utf-8")).hexdigest(), 16)
-        expected = "A" if h % 2 == 0 else "B"
-        assert expected == "B"
-        assert _experiment_group(MEMBER_B) == "B"
+        """The arm must be a sha256 hash of owner_member, NOT Python's hash()
+        (salted per-process → would reshuffle every member's arm on restart,
+        breaking the stickiness D1 exists to guarantee).
+
+        Deterministic guard, not probabilistic: for EACH of many members we
+        compute the expected arm independently via sha256 and assert the
+        function returns it. A regression to hash() would land the wrong arm
+        for ~half of these members within any single process, so matching all
+        of them by coincidence has probability 2**-N — with N=64 that is a
+        deterministic catch, unlike a single-member check (which a salted
+        hash() passes ~50% of runs)."""
+        members = [f"member-{i:04d}" for i in range(64)]
+        for m in members:
+            expected = "A" if int(hashlib.sha256(m.encode("utf-8")).hexdigest(), 16) % 2 == 0 else "B"
+            assert _experiment_group(m) == expected, (
+                f"{m}: expected sha256 arm {expected}, got {_experiment_group(m)} "
+                "— a regression to Python hash() would fail this"
+            )
+        # Sanity: this member set actually exercises BOTH arms (else the loop
+        # above could vacuously pass an all-one-arm bug).
+        arms = {_experiment_group(m) for m in members}
+        assert arms == {"A", "B"}
 
     def test_deterministic_across_repeated_calls(self):
         first = _experiment_group(MEMBER_A)
