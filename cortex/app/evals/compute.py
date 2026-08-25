@@ -181,6 +181,7 @@ async def compute_session_eval(
         client_version: str | None = None
         instructions: dict[str, str] | None = None
         briefing_delivered: bool | None = None
+        experiment_group: str | None = None
 
         start_payload: dict | None = None
         for e in events:
@@ -222,6 +223,12 @@ async def compute_session_eval(
                 if "briefing_id" in start_payload
                 else None
             )
+            # Pre-registered arm assignment (outcome truth, PR4 D1) — same
+            # absent-guarded string read as runtime/client_version above. A
+            # missing key (pre-PR4 record) and an explicit None (unverified
+            # session, excluded from arms) both collapse to None here, which
+            # is correct: neither is a measured arm.
+            experiment_group = _attr("experiment_group")
 
         agents_raw = summary.get("agents", [])
         agents = (
@@ -245,6 +252,7 @@ async def compute_session_eval(
             client_version=client_version,
             instructions=instructions,
             briefing_delivered=briefing_delivered,
+            experiment_group=experiment_group,
             agents=agents,
         )
 

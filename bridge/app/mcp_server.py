@@ -29,7 +29,7 @@ from app.config import get_settings
 from app.prior_art import assemble_prior_art, render_prior_art
 from app.proactive_recall import fetch_relevant_memories
 from app.redis_client import get_redis, close_redis
-from app.session import SessionManager, TASK_RESULTS
+from app.session import SessionManager, TASK_RESULTS, _experiment_group
 from app.shadow import assemble_shadow
 from app import residency
 
@@ -410,6 +410,7 @@ async def ctx_start_session(
     """
     agent_id = _default_agent_id(agent_id)
     attribution = _attribution_from_headers()
+    owner_member = _verified_member_id()
     mgr = await _get_manager()
     result = await mgr.start_session(
         goal, agent_id=agent_id, tags=tags, project=project, briefing_id=briefing_id,
@@ -418,7 +419,7 @@ async def ctx_start_session(
         instr_rendered=attribution.get("instr_rendered"),
         instr_expected=attribution.get("instr_expected"),
         instr_gateway=attribution.get("instr_gateway"),
-        owner_member=_verified_member_id(),
+        owner_member=owner_member,
     )
 
     # Replay: trace session start. briefing_id and the attribution headers ride
@@ -430,6 +431,11 @@ async def ctx_start_session(
             "goal": goal,
             "tags": tags or [],
             "briefing_id": briefing_id or "",
+            # Pre-registered arm assignment (outcome truth, PR4 D1) — computed
+            # from the SAME verified owner_member just passed to
+            # start_session above, never re-derived. Orthogonal to the grade:
+            # this is assigned before any grade exists.
+            "experiment_group": _experiment_group(owner_member),
         }
         payload.update(attribution)  # only the headers that actually arrived
         await _replay_emit("session_start", sid, agent_id, payload)

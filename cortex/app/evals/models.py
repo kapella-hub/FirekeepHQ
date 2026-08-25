@@ -87,6 +87,13 @@ class EvalResult(BaseModel):
     # bool(session_start payload briefing_id) when a session_start event
     # exists; None when the timeline has no session_start at all.
     briefing_delivered: bool | None = None
+    # Pre-registered arm ("A"/"B") from outcome truth PR4 D1 — a
+    # deterministic sha256 hash of the verified owner_member, assigned once
+    # at session start, orthogonal to task_result. None covers both an
+    # unverified/unattributed session (excluded from arms) AND a record
+    # stored before this field shipped — the two are indistinguishable on
+    # the wire and neither is a measured arm.
+    experiment_group: str | None = None
     # From get_session_summary — previously computed per session and discarded.
     agents: list[str] = []
 

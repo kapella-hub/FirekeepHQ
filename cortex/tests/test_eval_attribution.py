@@ -224,6 +224,7 @@ def test_old_stored_records_keep_parsing():
     assert result.instructions is None
     assert result.briefing_delivered is None
     assert result.agents == []
+    assert result.experiment_group is None
 
 
 def test_new_fields_round_trip_through_the_store_shape():
@@ -235,9 +236,61 @@ def test_new_fields_round_trip_through_the_store_shape():
         instructions={"rendered": "a", "expected": "a"},
         briefing_delivered=False,
         agents=["default"],
+        experiment_group="B",
     )
     parsed = EvalResult.model_validate_json(result.model_dump_json())
     assert parsed.runtime == "kiro"
     assert parsed.instructions == {"rendered": "a", "expected": "a"}
     assert parsed.briefing_delivered is False
     assert parsed.agents == ["default"]
+    assert parsed.experiment_group == "B"
+
+
+# ---------------------------------------------------------------------------
+# experiment_group (outcome truth, PR4 D1) — rides the SAME session_start
+# payload the fields above ride, read the SAME absent-guarded way.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_experiment_group_read_off_the_session_start_payload(monkeypatch):
+    payload = dict(ATTRIBUTED_PAYLOAD)
+    payload["experiment_group"] = "A"
+    result = await _compute(monkeypatch, [_event("session_start", payload)])
+
+    assert result is not None
+    assert result.experiment_group == "A"
+
+
+@pytest.mark.asyncio
+async def test_missing_experiment_group_key_is_none_old_record(monkeypatch):
+    """A session_start payload from a pre-PR4 bridge carries no
+    experiment_group key at all — must read as None (unmeasured), not crash
+    or default to an arm."""
+    payload = {"goal": "g", "tags": [], "briefing_id": ""}
+    result = await _compute(monkeypatch, [_event("session_start", payload)])
+
+    assert result is not None
+    assert result.experiment_group is None
+
+
+@pytest.mark.asyncio
+async def test_null_experiment_group_value_reads_as_none(monkeypatch):
+    """An unverified/unattributed session stamps experiment_group=None on the
+    wire (excluded from arms, not a hashed one) — that must read back as
+    None, the same as a fully-absent key."""
+    payload = {"goal": "g", "tags": [], "briefing_id": "", "experiment_group": None}
+    result = await _compute(monkeypatch, [_event("session_start", payload)])
+
+    assert result is not None
+    assert result.experiment_group is None
+
+
+@pytest.mark.asyncio
+async def test_experiment_group_never_leaks_into_metrics(monkeypatch):
+    payload = dict(ATTRIBUTED_PAYLOAD)
+    payload["experiment_group"] = "B"
+    result = await _compute(monkeypatch, [_event("session_start", payload)])
+
+    assert result is not None
+    assert "experiment_group" not in result.metrics
