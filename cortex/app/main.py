@@ -1598,6 +1598,7 @@ async def memory_feedback(
     request: Request,
     feedback: FeedbackRequest,
     vector: Annotated[VectorClient, Depends(get_vector)],
+    redis_client: Annotated[redis.asyncio.Redis, Depends(get_redis)],
 ) -> FeedbackResponse:
     """Record relevance feedback for recalled memories.
 
@@ -1617,6 +1618,25 @@ async def memory_feedback(
             updated += 1
         except Exception:
             logger.warning("Failed to update feedback for memory %s", memory_id)
+
+    # Replay: trace the APPLIED stage of memory_read -> memory_feedback ->
+    # session grade. feedback.memory_ids are the same Qdrant point ids that
+    # memory_read stamps as memory_ids, so they're emitted as-is.
+    sid = request.headers.get("X-Session-Id", "unknown")
+    aid = request.headers.get("X-Agent-Id", "unknown")
+    await _bump_untagged_counter(redis_client, sid)
+    await _replay_emit(
+        "memory_feedback",
+        session_id=sid,
+        agent_id=aid,
+        payload={
+            "memory_ids": feedback.memory_ids[:50],
+            "useful": feedback.useful,
+            # Bool only -- the comment body itself must never leave this payload.
+            "comment_present": feedback.comment is not None,
+            "updated": updated,
+        },
+    )
 
     return FeedbackResponse(status="recorded", updated=updated)
 

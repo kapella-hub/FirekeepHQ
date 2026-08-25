@@ -493,6 +493,31 @@ class TestMemoryFeedback:
         )
         assert resp.status_code == 422
 
+    def test_feedback_emits_replay_receipt(self, test_client, mock_vector):
+        """POST /memory/feedback emits a memory_feedback replay event carrying
+        the ids/useful bit -- the APPLIED stage of memory_read -> memory_feedback
+        -> session grade. The comment body must never appear in the payload."""
+        mock_vector.set_feedback = AsyncMock()
+
+        with patch("app.main._replay_emit", new_callable=AsyncMock) as mock_emit:
+            resp = test_client.post(
+                "/memory/feedback",
+                json={"memory_ids": ["m1", "m2"], "useful": True, "comment": "spot on"},
+                headers={"X-Session-Id": "sess-fb", "X-Agent-Id": "agent-x"},
+            )
+            assert resp.status_code == 200
+            mock_emit.assert_called_once()
+            call = mock_emit.call_args
+            assert call.args[0] == "memory_feedback"
+            assert call.kwargs.get("session_id") == "sess-fb"
+            assert call.kwargs.get("agent_id") == "agent-x"
+            p = call.kwargs.get("payload")
+            assert p["memory_ids"] == ["m1", "m2"]
+            assert p["useful"] is True
+            assert p["comment_present"] is True
+            assert "comment" not in p  # comment body never leaves
+            assert p["updated"] == 2
+
 
 # ---------------------------------------------------------------------------
 # Session Context Propagation (X-Session-Id / X-Agent-Id → replay emit)
