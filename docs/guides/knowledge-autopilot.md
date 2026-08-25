@@ -60,7 +60,7 @@ So round 1 ships **attribution and visibility, no autonomous mutation**:
 | Contested-not-superseded for unconfirmed conflicts | Trial stages, lifecycle ladders for memories/skills |
 | `/autopilot/inbox` + `/autopilot/digest` + dashboard tab | Autopilot "modes" — round 1 *is* Recommend mode |
 | `/memory/{id}/evidence` ledger read | LLM-judged "did the agent follow this advice" |
-| `/autopilot/compliance` — Living Instructions rounds 1–2 (compliance table + attribution/exposure) | Instruction rewriting/AB — Living Instructions later rounds |
+| `/autopilot/compliance` — Living Instructions rounds 1–4 (compliance table + attribution/exposure + grading adoption + honesty skew) | Instruction rewriting/AB — Living Instructions later rounds |
 
 ## 1. Feedback-weighted recall
 
@@ -230,6 +230,69 @@ or handshake delivered, with per-key introduction versions; everything else is
 `unknown`, including every pre-0.1.41 session, forever — nothing backfills.
 The dashboard feature-detects both fields per response, so the table renders
 the round-1 surface unchanged against a server that does not send them.
+
+**Round 3 (2026-08-25, outcome truth PR4 D2) adds grading ADOPTION as a new
+frozen row, `grade_self_reported`** — appended per the "changes arrive as new
+rows" rule above, so the six 2026-08-11 founding predicates stay untouched
+(pinned by a dedicated test that reproduces the founding fixture with and
+without the new grade/arm fields present, plus the existing compliance suites
+staying green as their own freeze guard). The predicate reads
+`recognized_grade_pair(task_result, task_result_source)[0] is not None` — did
+the agent self-report ANY recognized grade at all, success, partial, or
+failure, not whether the grade was good. `task_result`/`task_result_source`
+live on the top-level eval record, not inside `metrics`, so the dict handed to
+every predicate is now built at the call site as `{**metrics, task_result,
+task_result_source, experiment_group}`; every frozen predicate keeps reading
+its metric key out of the enriched dict exactly as before (no metric key
+collides with the three promoted keys), and only the new row reads the grade
+keys. `grade_self_reported` alone additionally carries `by_experiment_group` —
+`{"A": {hits, total}, "B": {hits, total}}` — a session with no (or an
+unrecognized) `experiment_group` is excluded from the split but still counts
+toward the row's overall `hits`/`total`/`rate`.
+
+**Round 4 (2026-08-25, outcome truth PR4 D3) adds a top-level `optimism_skew`
+block — not an INSTRUCTIONS row, because it measures the grading channel's
+HONESTY, not compliance with an instruction.** Of self-reported-success
+sessions (`recognized_grade_pair(...)[0] == "success"`), what fraction also
+carry an INDEPENDENT failure contradiction: `has_failures` (`failure_event_ids`
+non-empty — per-tool-call `outcome=="failure"` events) OR a guarded
+`tool_success_rate < 1.0`, counted ONLY when `outcome_event_count >= 2` — the
+same non-independence trap `replay-evals-patterns.md` already documents for
+`_failure_rate`/`_tool_success_rate` on a near-empty outcome population,
+reapplied here as a non-negotiable guardrail: bare `tool_success_rate` or
+`failure_rate` are never used as independent evidence. Bridge `abandoned` (a
+third, harder contradiction) is DEFERRED — wiring `owm._fetch_bridge_statuses`'s
+REST call into what is today a synchronous, network-free, Redis-only endpoint
+would add a hard dependency on every request, plus a population mismatch
+(Bridge's 200-session cap vs. the eval scan's window) to reconcile; the two
+free signals are independent and sufficient to ship. Reported `overall` and
+per `experiment_group` (same "A"/"B"-only, `None`-excluded convention as
+`grade_self_reported`'s split above), each gated at `MIN_SELF_SUCCESS_N = 30`
+self-success sessions: below the threshold, `rate` is `null` and
+`insufficient_n` is `true` — never a bare `0.0` that would read as a clean
+measurement on almost no data (the `outcome_event_count` lesson, applied to
+skew). Reuses the exact parsed-evals scan `build_rows` already consumes (no
+second scan of `rp:eval:*`), and shares the response's top-level
+`approximate`/`unparsed` disclosures rather than duplicating them.
+
+**PR4 is observational instrumentation and a mild nudge, not the controlled
+experiment.** `experiment_group` (PR4 D1) — a stable sha256 hash of the
+verified `owner_member`, stamped once at `start_session`, sticky per member,
+orthogonal to the grade, `None` for an empty `owner_member` rather than a
+hashed arm — exists so both rows above can report per-arm, but PR4 ships its
+one nudge (the strengthened `ctx_complete_session` description — see
+`replay-evals-patterns.md`) to EVERY session alike, so there is no
+differential-by-arm treatment within PR4 to test. Its evidence is two plain
+before/after proportions against pre-registered thresholds (adoption ≥ 20% of
+completed sessions within a 2-week window; skew ≤ 15% of self-success sessions
+once `MIN_SELF_SUCCESS_N` is reached), not an inferential test — PR4 builds no
+statistics machinery. The pre-registration — hypotheses and thresholds
+committed before the nudge could move the numbers — is
+[`docs/superpowers/specs/2026-08-25-outcome-truth-pr4-adoption-design.md`](../superpowers/specs/2026-08-25-outcome-truth-pr4-adoption-design.md).
+The CONTROLLED per-session A/B (the client-rendered nudge actually varying by
+`experiment_group`, plus the two-proportion and McNemar/Cohen's-κ inferential
+stats) is PR5, gated on the client channel and coordinated with the client
+release.
 
 ## 7. The trust ledger (round 1)
 

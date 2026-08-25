@@ -63,7 +63,7 @@ app/
 ├── autopilot/         # Knowledge Autopilot round 1 (docs/guides/knowledge-autopilot.md) — READ-ONLY operator surface
 │   ├── inbox.py         # Section builders: draft/stale/rereview skills, low-efficacy skills (PR3, `skill_efficacy` below threshold at sufficient n), LP proposals, contested pairs, eval DLQ
 │   ├── digest.py        # Windowed activity counts (learned/archived/superseded/dreamed/drafted/feedback/GC)
-│   ├── compliance.py    # Living Instructions round 1 — per-instruction compliance over rp:eval:* (predicates frozen to the 2026-08-11 founding measurement)
+│   ├── compliance.py    # Living Instructions round 1 — per-instruction compliance over rp:eval:* (predicates frozen to the 2026-08-11 founding measurement); rounds 3-4 (outcome truth PR4, 2026-08-25) add the frozen `grade_self_reported` adoption row (per pre-registered `experiment_group` arm, via a call-site-only enriched predicate-input dict — the six frozen predicates read `metrics` unchanged) and a top-level `optimism_skew` honesty block (`has_failures` + guarded `tool_success_rate` at `outcome_event_count>=2`; `MIN_SELF_SUCCESS_N=30` gate; Bridge-abandoned deferred) — see docs/guides/knowledge-autopilot.md §6
 │   ├── trust.py         # Trust Ledger round 1 — per-agent declared/reconciled/prediction-match calibration/reversals from the rp:events gateway stream (frozen formulas; reconciles attribute by action_id, not their own agent_id; visibility only)
 │   └── api.py           # GET /autopilot/inbox + /digest + /compliance + /trust (admin); per-section fault isolation
 └── dreams/            # Automated memory consolidation + person profiles (round 1 — additive only)

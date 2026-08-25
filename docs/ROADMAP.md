@@ -115,6 +115,31 @@ from instructed clients (the 0.1.40/0.1.41 natural experiment, its two
 exposure epochs now distinguishable by receipt), and enough session
 volume for the frozen stats to resolve an effect.
 
+**Rounds 3–4 SHIPPED (2026-08-25, outcome truth PR4)** on the same
+`compliance.py` table: a frozen `grade_self_reported` row (did the agent
+self-report any recognized grade at all, per pre-registered
+`experiment_group` arm) and a top-level `optimism_skew` honesty block (of
+self-reported-success sessions, how many also carry an independent failure
+contradiction) — both visibility-only, freeze-safe, reusing the same
+compliance scan. Shipped alongside one mild server-side nudge (the
+`ctx_complete_session` tool description now states honest grading as the
+default) to every session, no A/B. The design spec below **IS the
+pre-registration** — committed before the nudge could move the numbers,
+hypotheses and thresholds fixed in advance, never revised after seeing data:
+[`docs/superpowers/specs/2026-08-25-outcome-truth-pr4-adoption-design.md`](superpowers/specs/2026-08-25-outcome-truth-pr4-adoption-design.md).
+PR4 itself is **observational** (before/after proportions against the
+pre-registered thresholds), not a controlled test — it stamps
+`experiment_group` per session now purely so the arm labels are clean and
+pre-dated for what comes next. **PR5** is the controlled per-session A/B:
+the proactive client-rendered nudge actually varying by `experiment_group`
+(the session-start hook is the only channel that can differ per session),
+gated on the client channel and coordinated with the peer's client release,
+analyzed with two-proportion and McNemar/Cohen's-κ inferential stats PR4
+deliberately does not build. **PR6+** is the downstream-efficacy question —
+whether real, adopted, honest grades feeding OWM/skill-efficacy actually
+raise agent success rates — deferred until PR5 shows grades both flow (H1)
+and are honest (H2).
+
 ## 4. The Institution Thesis (candidate — UNPUBLISHED direction record)
 
 "Agents come and go. The Keep stays." Agent vendors sell staff; Firekeep is
