@@ -158,9 +158,9 @@ evaporating.
 
 `GET /autopilot/inbox` (admin) aggregates every place review work already
 accumulates — draft skills, stale skills, source-changed (`needs_rereview`)
-skills, Living Procedures proposals, runbook deviations, contested pairs, the
-eval DLQ — into one surface with per-section fault isolation (one broken store
-never blanks the inbox). A runbook deviation is Enforced Runbooks' exception
+skills, low-efficacy skills, Living Procedures proposals, runbook deviations,
+contested pairs, the eval DLQ — into one surface with per-section fault
+isolation (one broken store never blanks the inbox). A runbook deviation is Enforced Runbooks' exception
 trail — a block that fired, a challenge an agent acknowledged, or a matched
 command that failed — kept newest-first per workspace under a disclosed
 200-entry cap (`MAX_DEVIATIONS`), so the section's `approximate` flag means
@@ -169,6 +169,21 @@ the ledger itself has trimmed. `GET /autopilot/digest?days=7` answers "what chan
 scans marked `approximate` when capped. The dashboard's **Autopilot** tab
 renders both, read-only — round 1 proposes and reports, it never mutates, and
 the dashboard guard test pins that absence.
+
+**`low_efficacy_skills` (2026-08-24, outcome truth PR3, D4).** Flags active
+skills the nightly OWM pass (see the OWM section of
+[`memory-and-recall.md`](memory-and-recall.md)) scored below neutral with
+enough evidence to trust the number — filtered server-side on
+`skill_efficacy_n >= MIN_N` (`5`, matching `OWM_PRIOR_N`'s default: the point
+past which the Beta-shrinkage prior stops dominating the score) **and**
+`skill_efficacy < THRESHOLD` (`0.4`, a below-neutral cutoff — `skill_efficacy`
+is a success rate centered on `0.5`). Each row carries `skill_efficacy` and
+`skill_efficacy_n` together, deliberately, so a reader can never mistake a
+low-`n` neutral-prior score for a real measurement. VISIBILITY ONLY, same as
+every other section here: it does not change recall ranking and does not
+mutate `skill_status`; a flagged skill is a cue for a human to go read it, and
+the ranking-side response to a low score is explicitly deferred to a later
+round.
 
 ## 5. The evidence ledger read
 

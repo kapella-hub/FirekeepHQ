@@ -640,6 +640,12 @@ services:
       CONFLUENCE_COLLECTOR_SCHEDULE_HOURS: ${CONFLUENCE_COLLECTOR_SCHEDULE_HOURS:-24}
       # Outcome-Weighted Memory (nightly scoring pass)
       OWM_ENABLED: ${OWM_ENABLED:-true}
+      # Skill efficacy (outcome truth PR3, 2026-08-24) — gates the SAME pass's
+      # skill branch INDEPENDENTLY of OWM_ENABLED above (the pass runs when
+      # either is true). Only cortex-worker reads it: app/owm.py runs off this
+      # service's Celery beat, and skills carry no recall-time multiplier (no
+      # cortex-api use), so it is deliberately absent from that service's block.
+      SKILL_OWM_ENABLED: ${SKILL_OWM_ENABLED:-true}
       OWM_PRIOR_N: ${OWM_PRIOR_N:-5}
       OWM_WINDOW_DAYS: ${OWM_WINDOW_DAYS:-30}
       OWM_AGENT_CAP: ${OWM_AGENT_CAP:-5}
