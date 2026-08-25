@@ -286,11 +286,16 @@ async def test_single_agent_contribution_is_capped_per_memory():
 
 @pytest.mark.asyncio
 async def test_run_pass_late_memory_read_beyond_old_1000_window():
-    """Task 4 (outcome truth PR2 D3): the old get_session_timeline(
-    event_type="memory_read", limit=1000) fetch applied the type filter AFTER
-    pagination, so a memory_read past the oldest-1000 window never joined.
-    Seed >1000 filler events + a late memory_read + a recognized grade, and
-    confirm the late read's memory still reaches the join output."""
+    """Task 4 (outcome truth PR2 D3): run_pass now applies the memory_read
+    type filter in Python over the WHOLE per-session event list (the old
+    get_session_timeline(event_type="memory_read", limit=1000) applied it AFTER
+    pagination, so a memory_read past the oldest-1000 window never joined).
+    This test drives that Python filter via an injected events_fn returning a
+    >1000-event list with a late memory_read, and confirms the late read's
+    memory reaches the join output. It does NOT exercise the real
+    _default_events_fn fetch/cap (get_session_event_ids + get_event_batch,
+    _METRIC_SCAN_MAX) — that primitive is covered by the compute.py and
+    patterns/extractor.py sibling tests whose fakes honor `limit`."""
     evals = {"s1": {"task_result": "success", "task_result_source": "self_reported"}}
     filler = [{"event_type": "ctx_update", "payload": {}} for _ in range(1200)]
     late_read = {"event_type": "memory_read", "payload": {"memory_ids": ["late-mem"]}}

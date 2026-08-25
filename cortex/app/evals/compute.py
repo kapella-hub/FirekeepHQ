@@ -112,7 +112,10 @@ async def compute_session_eval(
             replay_redis, session_id, limit=_METRIC_SCAN_MAX,
         )
         events = await get_event_batch(replay_redis, ids)
-        metrics_truncated = len(ids) >= _METRIC_SCAN_MAX
+        # Precise, not len(ids) >= cap: get_session_summary's event_count is the
+        # exact zcard, so a session of EXACTLY _METRIC_SCAN_MAX events (all of
+        # which were fetched) is not truncated — only a larger one is.
+        metrics_truncated = event_count > _METRIC_SCAN_MAX
         if metrics_truncated:
             logger.warning(
                 "eval metrics truncated at %d events for session %s",

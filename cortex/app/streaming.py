@@ -45,6 +45,7 @@ async def _emit_stream_receipt(
     aid: str,
     query: ContextQuery,
     accessed_ids: list[str],
+    result_count: int,
 ) -> None:
     """Best-effort parity with the non-streaming recall receipt (main.py
     `memory_recall`, ~line 1291-1342). Bumps `memory:access_counts` +
@@ -84,7 +85,12 @@ async def _emit_stream_receipt(
                 "top_k": query.top_k,
                 # None for deliberate calls; "prompt-hook" for pushed recall.
                 "trigger": query.trigger,
-                "result_count": len(accessed_ids),
+                # ALL source frames (vector + graph), matching the
+                # non-streaming handler's `len(result.sources)` — graph
+                # sources carry no metadata["id"] so they are absent from
+                # `accessed_ids`/`memory_ids` but must still be counted here,
+                # or SSE recalls with graph hits would under-report.
+                "result_count": result_count,
                 "namespace": query.namespace,
                 # OWM: the ids RETURNED, so a nightly pass can join which
                 # sessions saw which memories to how those sessions ended.
@@ -119,6 +125,7 @@ def create_streaming_router(
             # uses (`main.py`: `s.metadata.get("id")`, truthy-filtered), built
             # up as source frames go by instead of over `result.sources`.
             accessed_ids: list[str] = []
+            source_count = 0
             try:
                 async for event in rag_engine.recall_streaming(
                     query,
@@ -129,6 +136,7 @@ def create_streaming_router(
                     data = json.dumps(event["data"], default=str)
 
                     if event_type == "source":
+                        source_count += 1
                         mid = (event["data"].get("metadata") or {}).get("id")
                         if mid:
                             accessed_ids.append(mid)
@@ -141,7 +149,9 @@ def create_streaming_router(
                 # Runs on normal completion AND on client disconnect —
                 # closing the SSE blind spot means the receipt must fire
                 # either way, and it must never raise into the response.
-                await _emit_stream_receipt(redis_client, sid, aid, query, accessed_ids)
+                await _emit_stream_receipt(
+                    redis_client, sid, aid, query, accessed_ids, source_count
+                )
 
         return StreamingResponse(
             event_generator(),

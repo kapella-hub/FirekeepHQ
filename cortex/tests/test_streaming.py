@@ -515,8 +515,11 @@ class TestStreamReceiptParity:
         `metadata["id"]` in EITHER path (rag.py's graph branch in
         `recall_streaming` never sets one, same as `_format_graph_entries`
         for the non-streaming path), so they're silently excluded from
-        accessed_ids on both. This pins that the SSE fix does not change that
-        pre-existing behavior."""
+        accessed_ids/`memory_ids` on both. Here the lone graph row is also
+        scoped out of the stream entirely (the HTTP path passes workspace_id,
+        so the graph leg adjudicates and drops the unattributed row), leaving
+        zero source frames — `result_count == 0`, `memory_ids == []`, which is
+        exactly what the non-streaming path reports for the same query."""
         mock_graph.query_related.return_value = [
             {"name": "auth", "description": "Authentication module", "label": "Concept",
              "distance": 1, "memory_ids": ["m-auth"]},
@@ -541,5 +544,39 @@ class TestStreamReceiptParity:
         )
         payload = timeline["events"][0]["payload"]
         assert payload["memory_ids"] == []
-        assert payload["result_count"] == 0
+        assert payload["result_count"] == 0  # graph row scoped out → 0 frames
         assert await wired_replay_emitter.hlen("memory:access_counts") == 0
+
+    @pytest.mark.asyncio
+    async def test_result_count_counts_frames_without_ids(
+        self, mock_graph, mock_vector, wired_replay_emitter
+    ):
+        """result_count counts EVERY source frame — parity with the
+        non-streaming handler's `len(result.sources)` — while `memory_ids`
+        carries only id-bearing frames. A source that streams but lacks
+        `metadata["id"]` therefore lifts result_count but not memory_ids;
+        before the divergence-fix, result_count was `len(accessed_ids)` and
+        would have under-reported it as 1."""
+        mock_vector.search.return_value = [
+            {"id": "v1", "score": 0.9, "text": "has id", "metadata": {"id": "v1"}},
+            {"id": "v2", "score": 0.7, "text": "no id in metadata",
+             "metadata": {"source": "log"}},
+        ]
+
+        rag = RAGEngine(graph=mock_graph, vector=mock_vector)
+        test_app = _stream_app(rag, mock_graph, mock_vector, wired_replay_emitter)
+
+        async with _async_client(test_app) as client:
+            resp = await client.post(
+                "/memory/recall/stream",
+                json={"task": "x", "top_k": 5},
+                headers={"X-Session-Id": "sess-mixed", "X-Agent-Id": "a"},
+            )
+            _ = resp.text
+
+        timeline = await get_session_timeline(
+            wired_replay_emitter, "sess-mixed", event_type="memory_read"
+        )
+        payload = timeline["events"][0]["payload"]
+        assert payload["result_count"] == 2       # both frames counted
+        assert payload["memory_ids"] == ["v1"]    # only the id-bearing frame
