@@ -425,7 +425,8 @@ async def test_stale_scored_skills_reset_to_neutral():
     out = await run_pass(_redis_with(evals, ["s1"]), v, _settings(),
                          bridge_statuses={}, events_fn=_events_fn(events))
     assert out["skills_scored"] == 1
-    assert out["stale_reset"] == 1
+    assert out["skill_stale_reset"] == 1
+    assert out["stale_reset"] == 0  # skill sweep no longer bumps the memory counter
     del_call = v._client.delete_payload.call_args_list[0].kwargs
     assert del_call["points"] == ["sk-old"]
     assert set(del_call["keys"]) == {

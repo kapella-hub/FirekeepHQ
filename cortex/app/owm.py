@@ -113,7 +113,8 @@ async def run_pass(replay_r, vector, settings, *,
     events_fn = events_fn or _default_events_fn
     bridge_statuses = bridge_statuses or {}
     out = {"sessions_scanned": 0, "sessions_joined": 0, "memories_scored": 0,
-           "skills_scored": 0, "write_errors": 0, "stale_reset": 0}
+           "skills_scored": 0, "write_errors": 0, "stale_reset": 0,
+           "skill_stale_reset": 0}
     agent_cap = int(getattr(settings, "OWM_AGENT_CAP", 5) or 5)
 
     window_start = time.time() - settings.OWM_WINDOW_DAYS * 86400
@@ -334,7 +335,7 @@ async def run_pass(replay_r, vector, settings, *,
                             collection_name=settings.QDRANT_COLLECTION,
                             keys=["skill_efficacy", "skill_efficacy_n", "skill_efficacy_updated_at"],
                             points=[pid])
-                        out["stale_reset"] += 1
+                        out["skill_stale_reset"] += 1
                     except Exception as exc:  # noqa: BLE001
                         logger.warning("OWM: skill stale reset failed for %s: %s", pid, exc)
                 if not offset:
