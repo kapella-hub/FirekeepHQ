@@ -131,6 +131,22 @@ class TestMcpDegradedWarning:
 
     @pytest.mark.asyncio
     async def test_memory_recall_no_prefix_when_healthy(self):
+        mock_resp = _mock_response({
+            "context_block": "## Memory Recall",
+            "degraded": False,
+            "memory_ids": ["memory-one", "memory-two"],
+        })
+        with patch.object(
+            httpx.AsyncClient, "post", new_callable=AsyncMock, return_value=mock_resp
+        ):
+            from app.mcp_server import memory_recall
+            result = await memory_recall(task="anything")
+
+        assert result.startswith("## Memory Recall")
+        assert 'memory_feedback(memory_ids=["memory-one", "memory-two"]' in result
+
+    @pytest.mark.asyncio
+    async def test_memory_recall_without_feedback_ids_keeps_legacy_text(self):
         mock_resp = _mock_response({"context_block": "## Memory Recall", "degraded": False})
         with patch.object(
             httpx.AsyncClient, "post", new_callable=AsyncMock, return_value=mock_resp

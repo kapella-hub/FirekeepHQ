@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Firekeep Studio">
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1d241f"/>
+      <stop offset="1" stop-color="#0d110e"/>
+    </linearGradient>
+    <linearGradient id="ember" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffa05c"/>
+      <stop offset=".6" stop-color="#ff7a2f"/>
+      <stop offset="1" stop-color="#e2620f"/>
+    </linearGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="18"/>
+    </filter>
+  </defs>
+  <rect x="24" y="24" width="464" height="464" rx="116" fill="url(#background)" stroke="#ffffff" stroke-opacity=".09" stroke-width="8"/>
+  <circle cx="256" cy="264" r="136" fill="#ff7a2f" opacity=".12" filter="url(#glow)"/>
+  <g transform="translate(80 80) scale(5.5)">
+    <path d="M14 35 A18 18 0 0 0 50 35 Z" fill="#ff7a2f"/>
+    <rect x="29" y="49" width="6" height="4" rx="2" fill="#ff7a2f"/>
+    <path d="M17.61 5.58C18.13 9.84 21.87 11.75 21.87 16.62C21.87 21.06 19.00 24.28 15.35 24.28C11.61 24.28 9.00 21.58 9.00 17.84C9.00 14.62 11.34 12.71 12.39 10.01C12.82 12.62 13.95 13.75 15.00 14.28C14.39 10.88 15.43 8.10 17.61 5.58Z" fill="url(#ember)" transform="translate(17.90 5.77) scale(.92)"/>
+  </g>
+</svg>

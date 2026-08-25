@@ -80,7 +80,7 @@ Every hook is invoked via the dispatcher: `<venv>/python -m firekeep_client.hook
 
 ### Decision Board (`firekeep-decision`)
 
-When a clarification needs more than a couple of questions, call `decision_board(context, draft_questions)` instead of asking the questions inline. It asks Cortex to synthesize a board (retrieved evidence + suggested answers per question), opens it in your browser, and waits for your answers.
+When a clarification needs more than a couple of questions, call `decision_board(context, draft_questions)` instead of asking inline. It asks Cortex to synthesize a board (retrieved evidence + suggested answers per question) and waits for your answers. Firekeep Studio renders it natively; standalone Claude Code uses the local browser.
 
 - `decision_board(context, draft_questions=[])` — returns your answers once you submit, or `{status: "pending", board_id, next}` if you haven't answered within the poll window.
 - `decision_board_check(board_id)` — call this with the `board_id` from a pending response to collect the answers once you've submitted them.

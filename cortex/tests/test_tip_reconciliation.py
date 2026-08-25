@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import fakeredis.aioredis
 import pytest
+import pytest_asyncio
 
 from app.patterns.models import PatternCard, SessionFeatures
 from app.patterns.store import (
@@ -240,10 +241,6 @@ async def test_d6_ab_control_survives_reconciliation():
 # ---------------------------------------------------------------------------
 # KEEPTTL: neither persist site refreshes or resurrects card TTLs (D11/D9e)
 # ---------------------------------------------------------------------------
-
-import fakeredis.aioredis
-import pytest_asyncio
-
 
 @pytest_asyncio.fixture
 async def rr():

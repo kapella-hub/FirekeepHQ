@@ -120,6 +120,36 @@ data-loss confirmation that a plain uninstall or `--yes` can never trigger. Back
 up first ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#removing-the-server)) if you
 might want the data back.
 
+## Firekeep Studio (0.3.2 preview)
+
+[`studio/`](studio/) is a separate desktop client for people who want Firekeep to be the
+only agent application they open. It gives Codex, Claude Code, Kiro CLI, and Grok one
+runtime-neutral conversation surface: any supported runtime can be the explicit primary,
+other runtimes can review it in fresh read-only contexts, and `/compare`, `/consensus`,
+an explicit shared workspace, voice input/output, cache-aware token guards, local sessions,
+live provider model/reasoning discovery, and typed Client Kit controls are built in. The
+selected runtime is visually explicit, the full inspector can be hidden, and Studio links
+to the dashboard from the existing Client Kit connection without exposing its credentials.
+Fenced Mermaid responses render as native zoomable diagrams, and the existing Firekeep
+Decision Board opens as a native question/evidence/action panel inside Studio. Its local
+authenticated push preserves the original long poll, avoiding an extra agent turn merely to
+discover that the board is ready.
+The primary runtime picker shows live readiness and transport context, response scrolling
+respects readers who move away from the tail, and copy/paste uses bounded text-only native
+clipboard operations. Completed answers lead each run while detailed working events fold into
+a **Work log**. A runtime-neutral **Agents** view tiles Codex, Claude, Kiro, Grok, or any future
+chat-capable adapter into selectable panes with independent native continuations; the shared
+composer targets the selected pane, and active runs remain serialized for workspace safety.
+Mission Mode adds an outcome-bounded harness: one primary
+writer, deterministic local checks, bounded repair, independent review evidence, explicit
+human acceptance, and a task result stored separately from every agent's prose.
+
+Studio consumes provider-supported structured boundaries rather than scraping TUIs, keeps
+provider authentication provider-owned (except OS-encrypted API keys), and continues to use
+the existing Python Client Kit for Keep memory, hooks, policy, and connectivity. The preview
+build and installer commands, security boundaries, runtime matrix, and full `/` command
+inventory are in the [Studio README](studio/README.md).
+
 ## A Real Workflow
 
 Here's what happens when an agent uses Firekeep:
@@ -165,6 +195,7 @@ front end you deliberately configure. See
 | **FirekeepSentinel** | Environment observer. Docker health, git commits, file changes. Broadcasts alerts to Relay on errors. Container restarts, new commits, and file changes flow into a replayable event stream. |
 | **FirekeepRelay** | Agent coordination. Real-time pub/sub channels, persistent bulletin board, structured task queue, resource leases with monotonic fencing tokens, presence registry, direct messages, and an A2A agent card endpoint for external discovery. |
 | **Dashboard** | Web UI covering coordination, memory, diagnostics, devices, members, policy, vault, and operations. |
+| **Firekeep Studio** | Optional local desktop console and Mission harness for primary agents, deterministic verification, independent reviewers, voice, cross-runtime comparison, and Client Kit control. It is not a VPS service. |
 
 Code intelligence (**FirekeepSymdex** — 38 MCP tools, 8 analytics hidden behind a flag) and the **Decision Board** (`firekeep-decision`) run **client-side** as stdio-local MCP servers installed with the kit, not as VPS containers.
 
@@ -215,10 +246,11 @@ The dashboard is a zero-dependency static SPA. No build step, no npm, no framewo
 | **[docs/SETUP-CODEX.md](docs/SETUP-CODEX.md)** | Codex integration guide |
 | **[docs/SETUP-CLAUDE-CODE.md](docs/SETUP-CLAUDE-CODE.md)** | Claude Code integration guide |
 | **[docs/MULTI-AGENT.md](docs/MULTI-AGENT.md)** | Agent intelligence: pre-flight briefing, session debrief, multi-agent coordination |
+| **[studio/README.md](studio/README.md)** | Firekeep Studio runtime matrix, commands, security model, development, and packaging |
 
 ## Tech Stack
 
-Python 3.11 server services (client supports Python 3.10+) / FastAPI / FastMCP / Neo4j / Qdrant / Redis / Ollama / Docker Compose / tree-sitter
+Python 3.11 server services (client supports Python 3.10+) / FastAPI / FastMCP / Neo4j / Qdrant / Redis / Ollama / Docker Compose / tree-sitter / TypeScript / Electron / React
 
 Server-side embeddings and generation default to local Ollama, so the default
 server path has no model API bill. Symdex can optionally use Anthropic, Gemini,

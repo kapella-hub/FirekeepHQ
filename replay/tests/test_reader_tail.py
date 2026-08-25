@@ -67,7 +67,6 @@ class _CallCountingRedis:
 @pytest.mark.asyncio
 async def test_ids_are_newest_last_and_bounded(setup_emitter):
     r = setup_emitter
-    from replay.emitter import emit
     for i in range(5):
         await emit("ctx_update", "sess-n", "agent", {"i": str(i)})
     from replay.reader import get_session_event_ids
@@ -96,7 +95,6 @@ async def test_snapshot_is_a_single_atomic_redis_call(setup_emitter):
     the call count does: it fails the moment someone reintroduces a second
     round trip (a ZCARD probe, or ZRANGE issued in pages)."""
     r = setup_emitter
-    from replay.emitter import emit
     from replay.reader import get_session_event_ids
     for i in range(10):
         await emit("ctx_update", "s", "agent", {"i": str(i)})
@@ -115,7 +113,6 @@ async def test_get_event_batch_preserves_order_with_duplicates_and_missing(setup
     """get_event_batch must preserve request order, including repeated IDs,
     and silently skip IDs that don't resolve (missing from the index)."""
     r = setup_emitter
-    from replay.emitter import emit
     from replay.reader import get_session_event_ids
     for i in range(2):
         await emit("ctx_update", "sess-dup", "agent", {"i": str(i)})

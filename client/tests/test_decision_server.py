@@ -96,6 +96,99 @@ def test_headless_returns_inline_text_and_binds_no_socket(monkeypatch):
     assert server._BOARDS == {}
 
 
+def test_studio_surface_pushes_then_keeps_same_call_polling(write_config, monkeypatch):
+    write_config(active="personal", personal=DEFAULT_PERSONAL)
+    monkeypatch.setattr(server, "_is_headless", lambda: False)
+    monkeypatch.setenv("FIREKEEP_DECISION_SURFACE", "studio")
+    monkeypatch.setattr(server, "_notify_studio", lambda _url: True)
+    monkeypatch.setattr(server, "_open_browser", lambda _url: pytest.fail("Studio must suppress browser launch"))
+    result_holder = {}
+    def fake_spec(*_args, **_kwargs):
+        return {
+            "board_id": "studio-board",
+            "questions": [{
+                "id": "q0", "text": "Render the board inside Studio?",
+                "knowledge_found": False, "evidence": [],
+                "suggested_answers": [], "suggested_actions": [],
+            }],
+            "degraded": False,
+        }
+
+    thread = threading.Thread(target=lambda: result_holder.update(result=_run(
+        server._run_decision_board, "Choose the visual surface",
+        ["Render the board inside Studio?"], post_json=fake_spec,
+    )))
+    thread.start()
+    try:
+        board = _wait_for_board("studio-board")
+        assert board.spec["context"] == "Choose the visual surface"
+        payload = json.dumps({"answers": {"q0": {
+            "answer": "Use Studio", "actions_confirmed": [], "skipped": False,
+        }}}).encode("utf-8")
+        response = _http("POST", board.url.rstrip("/") + "/answer",
+                         headers={"Content-Type": "application/json"}, data=payload)
+        assert response.status == 204
+    finally:
+        thread.join(timeout=10)
+
+    assert not thread.is_alive()
+    assert "Use Studio" in result_holder["result"]
+
+
+def test_studio_notification_failure_falls_back_to_pending_without_browser(write_config, monkeypatch):
+    write_config(active="personal", personal=DEFAULT_PERSONAL)
+    monkeypatch.setattr(server, "_is_headless", lambda: False)
+    monkeypatch.setenv("FIREKEEP_DECISION_SURFACE", "studio")
+    monkeypatch.setattr(server, "_notify_studio", lambda _url: False)
+    monkeypatch.setattr(server, "_open_browser", lambda _url: pytest.fail("Studio must suppress browser launch"))
+
+    result = _run(server._run_decision_board, "ctx", ["Question?"], post_json=lambda *a, **k: {
+        "board_id": "fallback-board", "questions": [], "degraded": False,
+    })
+
+    assert result["status"] == "pending"
+    assert result["board_url"].startswith("http://127.0.0.1:")
+
+
+def test_notify_studio_posts_only_to_exact_authenticated_loopback(monkeypatch):
+    captured = {}
+
+    class Response:
+        status = 202
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    class Opener:
+        def open(self, request, timeout):
+            captured["url"] = request.full_url
+            captured["headers"] = dict(request.header_items())
+            captured["body"] = json.loads(request.data.decode("utf-8"))
+            captured["timeout"] = timeout
+            return Response()
+
+    monkeypatch.setenv("FIREKEEP_DECISION_NOTIFY_URL", "http://127.0.0.1:41234/decision")
+    monkeypatch.setenv("FIREKEEP_DECISION_NOTIFY_TOKEN", "ephemeral-token")
+    monkeypatch.setattr(server.urllib.request, "build_opener", lambda *handlers: Opener())
+
+    assert server._notify_studio("http://127.0.0.1:45555/board/abc") is True
+    assert captured == {
+        "url": "http://127.0.0.1:41234/decision",
+        "headers": {
+            "Authorization": "Bearer ephemeral-token",
+            "Content-type": "application/json",
+            "Accept": "application/json",
+        },
+        "body": {"board_url": "http://127.0.0.1:45555/board/abc"},
+        "timeout": 2.0,
+    }
+    monkeypatch.setenv("FIREKEEP_DECISION_NOTIFY_URL", "https://attacker.example/decision")
+    assert server._notify_studio("http://127.0.0.1:45555/board/abc") is False
+
+
 # --------------------------------------------------------------------------- #
 # Transport success -> serve + answer round-trip                              #
 # --------------------------------------------------------------------------- #

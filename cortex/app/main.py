@@ -1288,11 +1288,9 @@ async def memory_recall(
     # SP0 B2: access-count accumulator. Best-effort HINCRBY into a Redis hash
     # (no Qdrant write-on-read on the hot path); the memory-agent periodic
     # pass flushes deltas into Qdrant payloads and GC merges both.
-    accessed_ids: list = []
+    accessed_ids: list[str] = []
     try:
-        accessed_ids = [
-            s.metadata.get("id") for s in result.sources if s.metadata.get("id")
-        ]
+        accessed_ids = result.memory_ids
         if accessed_ids:
             now_iso = datetime.now(timezone.utc).isoformat()
             pipe = redis_client.pipeline()

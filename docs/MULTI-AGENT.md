@@ -117,7 +117,7 @@ This is simpler than multi-terminal coordination and sufficient for most tasks. 
 
 This is a LOCAL, per-user clarification surface — distinct from the Relay task/bulletin board above, which is team-visible. It's served by its own always-on stdio MCP server, `firekeep-decision`: stdio-local like `firekeep-symdex`, wheels installed unconditionally, but Decision is core infrastructure with no switch while symdex mounts only when registered as a dex (registered by default; `firekeep dex remove symdex` is the off-switch — see [guides/dexes.md](guides/dexes.md)).
 
-- `decision_board(context, draft_questions=[])` — asks Cortex to synthesize a board (evidence + suggested answers per question, pulled from a memory recall across all teammates' knowledge), opens it in your browser, and waits for your answers. Returns the answers (markdown) once submitted, or `{status: "pending", board_id, board_url, next}` if you haven't answered yet — `board_url` lets you open the board manually if the auto-open failed.
+- `decision_board(context, draft_questions=[])` — asks Cortex to synthesize a board (evidence + suggested answers per question, pulled from team memory) and waits for your answers. Firekeep Studio shows it natively; other runtimes use the local browser. Returns answers (markdown) once submitted, or `{status: "pending", board_id, board_url, next}` if you have not answered yet.
 - `decision_board_check(board_id)` — call with the `board_id` from a pending response to collect the answers once you've submitted them.
 
 No browser available (headless/CI)? The board is returned as plain text to answer inline instead.

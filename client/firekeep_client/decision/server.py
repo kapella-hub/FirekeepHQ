@@ -8,7 +8,8 @@ This module:
      draft questions into a board spec (retrieved evidence + suggested
      answers/actions per question);
   2. serves that spec from a loopback ``ThreadingHTTPServer`` on an ephemeral
-     port and opens the human's browser at ``/board/<id>``;
+     port and opens the human's browser at ``/board/<id>`` (or hands the URL to
+     Firekeep Studio when the runtime was launched there);
   3. long-polls (bounded, non-blocking) for the human's submitted answers and
      returns them as markdown.
 
@@ -34,6 +35,7 @@ import sys
 import threading
 import time
 import urllib.parse
+import urllib.request
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
@@ -118,6 +120,62 @@ def _poll_seconds() -> float:
 
 def _board_ttl_seconds() -> float:
     return _env_float("DECISION_BOARD_TTL_SECONDS", _DEFAULT_BOARD_TTL_SECONDS)
+
+
+def _uses_studio_surface() -> bool:
+    """True only for runtimes launched by Firekeep Studio.
+
+    This is a presentation hint, not an authorization boundary. The board stays
+    on its existing random-id loopback URL and Studio still has to fetch and
+    submit through that exact local contract.
+    """
+    return os.environ.get("FIREKEEP_DECISION_SURFACE", "").strip().lower() == "studio"
+
+
+def _notify_studio(board_url: str) -> bool:
+    """Best-effort authenticated handoff to Studio's ephemeral loopback receiver.
+
+    The receiver is presentation-only: the random board URL remains the answer
+    capability, while the bearer token prevents unrelated local processes from
+    making Studio pop arbitrary board URLs. No proxy is allowed for this
+    loopback-only hop, and the token is never logged.
+    """
+    notify_url = os.environ.get("FIREKEEP_DECISION_NOTIFY_URL", "").strip()
+    token = os.environ.get("FIREKEEP_DECISION_NOTIFY_TOKEN", "")
+    try:
+        parsed = urllib.parse.urlsplit(notify_url)
+        if (
+            parsed.scheme != "http"
+            or parsed.hostname != "127.0.0.1"
+            or parsed.path != "/decision"
+            or parsed.query
+            or parsed.fragment
+            or parsed.username
+            or parsed.password
+            or parsed.port is None
+            or not token
+        ):
+            return False
+        body = json.dumps({"board_url": board_url}).encode("utf-8")
+        request = urllib.request.Request(
+            notify_url,
+            data=body,
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+        )
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(request, timeout=2.0) as response:
+            return 200 <= response.status < 300
+    except Exception as exc:  # noqa: BLE001 — native handoff has a typed fallback
+        try:
+            hooklog.log_failure("decision", f"Studio board notification failed: {type(exc).__name__}")
+        except Exception:  # noqa: BLE001
+            pass
+        return False
 
 
 def _env_truthy(value: str | None) -> bool:
@@ -649,6 +707,9 @@ async def _run_decision_board(
 
     board_id = spec.get("board_id") or secrets.token_urlsafe(16)
     spec["board_id"] = board_id
+    # Cortex does not echo free-text context. The browser board already knows
+    # how to render it, and Studio's native board should have the same context.
+    spec.setdefault("context", context)
     _attach_embeds(spec, normalized_embeds)
     board = _Board(board_id, spec, embeds=normalized_embeds)
 
@@ -662,6 +723,17 @@ async def _run_decision_board(
     board.server = server
     board.url = url
     _BOARDS[board_id] = board
+
+    if _uses_studio_surface():
+        # Push the URL out-of-band, then KEEP the existing long poll. A quick
+        # human answer therefore returns in this same MCP call and costs no
+        # extra full-context model turn. If the local receiver is unavailable,
+        # the immediate pending result lets Studio recover from the ordinary
+        # tool output instead. No browser is launched on either Studio path.
+        board.opened = True
+        if _notify_studio(url):
+            return await _poll_board(board)
+        return _pending(board)
 
     board.opened = _open_browser(url)
 
@@ -728,7 +800,7 @@ def main() -> int:
         draft_questions: list[str] | None = None,
         embeds: list[dict] | None = None,
     ):
-        """Open an interactive Decision Board in the human's browser for clarifications.
+        """Open an interactive Decision Board for clarifications.
 
         Call this — instead of asking inline — whenever a clarification needs more
         than a couple of questions: the board retrieves prior knowledge, shows
@@ -749,6 +821,8 @@ def main() -> int:
 
         Poll contract: this returns EITHER the human's answers (markdown) if they
         submit quickly, OR ``{status: "pending", board_id, board_url, next}``.
+        Firekeep Studio renders the same loopback board as a native panel and does
+        not launch a browser; other runtimes use the browser surface.
         On pending, WAIT for the human: keep calling
         ``decision_board_check(board_id)`` — each call long-polls — until it
         returns the answers; do not start work that depends on them. If the

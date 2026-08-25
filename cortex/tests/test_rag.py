@@ -462,6 +462,7 @@ class TestRecall:
 
         assert len(response.sources) == 1
         assert response.sources[0].store == "vector"
+        assert response.memory_ids == ["v1"]
 
     @pytest.mark.asyncio
     async def test_unlinked_graph_owned_result_remains_recallable(
@@ -567,6 +568,7 @@ class TestRecall:
         # Should have graph result despite vector failure
         assert len(response.sources) == 1
         assert response.sources[0].store == "graph"
+        assert response.memory_ids == ["g1"]
 
     @pytest.mark.asyncio
     async def test_archived_linked_graph_result_is_filtered(

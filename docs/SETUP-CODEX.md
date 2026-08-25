@@ -108,7 +108,7 @@ yourself after `firekeep docdex add <folder>`. See [guides/dexes.md](guides/dexe
 
 `firekeep-decision` is a local backend behind the gateway, like Symdex. Both are always installed; Decision is core and always mounted, while Symdex mounts only when registered as a dex (which it is by default). Two tools:
 
-- `decision_board(context, draft_questions=[])` — asks Cortex to synthesize a board (retrieved evidence + suggested answers per question), opens it in the browser, and waits for the human's answers. Returns the answers (markdown) if submitted in time, else `{status: "pending", board_id, next}`.
+- `decision_board(context, draft_questions=[])` — asks Cortex to synthesize a board (retrieved evidence + suggested answers per question) and waits for the human's answers. Firekeep Studio renders it natively; standalone Codex uses the local browser. Returns answers (markdown) if submitted in time, else `{status: "pending", board_id, next}`.
 - `decision_board_check(board_id)` — call with the `board_id` from a pending response to collect the answers once submitted; `{status: "pending", ...}` if still waiting, `{status: "unknown"}` if the id isn't recognized.
 
 The installer writes this trigger into `~/.codex/AGENTS.md`, and the gateway also returns a compact version in its MCP `initialize` response. Codex still has no deterministic hook that can force the call, so launching the board remains model-directed rather than guaranteed.

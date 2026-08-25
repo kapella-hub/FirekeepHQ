@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import atexit
 import asyncio
+import json
 import logging
 
 import httpx
@@ -195,6 +196,20 @@ def _connection_error(exc: httpx.RequestError) -> str:
     )
 
 
+def _with_feedback_ids(context_block: str, memory_ids: object) -> str:
+    """Attach callable feedback identifiers without changing recall prose."""
+    if not isinstance(memory_ids, list):
+        return context_block
+    ids = [str(value) for value in memory_ids[:50] if value]
+    if not ids:
+        return context_block
+    encoded = json.dumps(ids)
+    return (
+        f"{context_block}\n\n"
+        f"> Feedback: `memory_feedback(memory_ids={encoded}, useful=...)`"
+    )
+
+
 @mcp.tool(output_schema=None)
 async def memory_recall(
     task: str,
@@ -251,7 +266,9 @@ async def memory_recall(
         resp = await client.post("/memory/recall", json=body, headers=headers)
         resp.raise_for_status()
         data = resp.json()
-        context_block = data["context_block"]
+        context_block = _with_feedback_ids(
+            data["context_block"], data.get("memory_ids")
+        )
         if data.get("degraded"):
             return (
                 "WARNING: vector search unavailable — results are graph-only; "

@@ -60,7 +60,7 @@ Tool breakdown: Cortex 30 + Bridge 7 + Sentinel 3 + Relay 25 = 65 HTTP-service t
 
 | Tool | Purpose |
 |------|---------|
-| `memory_recall` | Query memories with semantic + graph search |
+| `memory_recall` | Query memories with semantic + graph search; returns a callable feedback footer containing the exact recalled memory IDs when available |
 | `memory_learn` | Store action/outcome pairs (with secret scanning) |
 | `memory_stream` | Ingest raw events for batch processing |
 | `memory_health` | Check memory service health |
@@ -164,7 +164,7 @@ The wheel is always installed by the client kit, but **its tools exist only when
 
 | Tool | Purpose |
 |------|---------|
-| `decision_board` | Synthesize a globally-informed clarification board, open it in the browser, and long-poll for the human's answers |
+| `decision_board` | Synthesize a globally-informed clarification board, open it natively in Firekeep Studio or in the local browser elsewhere, and long-poll for the human's answers |
 | `decision_board_check` | Resume the bounded poll for a pending board by `board_id` |
 
 ## FirekeepDocdex (documents dex — NO MCP tools, deliberately)

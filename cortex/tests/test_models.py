@@ -198,6 +198,7 @@ class TestRecallResponse:
         assert rr.context_block == "## Memory"
         assert rr.sources == []
         assert rr.score == 0.0
+        assert rr.memory_ids == []
 
     def test_with_sources(self):
         src = MemorySource(store="graph", content="test", score=0.9)

@@ -111,6 +111,29 @@ def _memory_ids_of(row: Any) -> list[str]:
     return [str(m) for m in raw if m]
 
 
+def _feedback_memory_ids(entries: list[dict[str, Any]]) -> list[str]:
+    """Return the stable vector ids represented by recalled entries."""
+    ids: list[str] = []
+    seen: set[str] = set()
+    for entry in entries:
+        metadata = entry.get("metadata")
+        if not isinstance(metadata, dict):
+            continue
+        candidates: list[Any] = [metadata.get("id")]
+        linked = metadata.get("memory_ids")
+        if isinstance(linked, (list, tuple)):
+            candidates.extend(linked)
+        for candidate in candidates:
+            memory_id = str(candidate).strip() if candidate is not None else ""
+            if not memory_id or memory_id in seen:
+                continue
+            seen.add(memory_id)
+            ids.append(memory_id)
+            if len(ids) == 50:
+                return ids
+    return ids
+
+
 def _state_in_scope(
     state: dict[str, Any], scope: dict[str, str | None]
 ) -> bool:
@@ -395,6 +418,7 @@ class RAGEngine:
             context_block=context_block,
             sources=sources,
             score=aggregate_score,
+            memory_ids=_feedback_memory_ids(final_entries),
             tokens_used=tokens_used,
             token_budget=query.token_budget,
             format=response_format,
@@ -668,6 +692,8 @@ class RAGEngine:
             if not text:
                 continue
             metadata = dict(r.get("metadata", {}))
+            if r.get("id") is not None:
+                metadata["id"] = str(r["id"])
             # Raw cosine survives min-max normalization so downstream
             # consumers (Bridge proactive recall) can floor on the real
             # scale (SP0 C4, defect #16).

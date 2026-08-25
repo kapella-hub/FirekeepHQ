@@ -189,6 +189,9 @@ class RecallResponse(BaseModel):
     context_block: str
     sources: list[MemorySource]
     score: float
+    # Stable Qdrant ids for the returned sources. MCP renders these beside the
+    # Markdown so callers can pass the exact memories they acted on to feedback.
+    memory_ids: list[str] = Field(default_factory=list, max_length=50)
     request_id: str | None = None
     # Echoes back the namespace the query was SCOPED to; `None` means the recall
     # spanned every namespace in the caller's workspace. Never invent

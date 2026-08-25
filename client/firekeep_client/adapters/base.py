@@ -303,8 +303,9 @@ DECISION_INSTRUCTIONS = """\
 When a clarification needs more than a couple of questions — requirements, scope,
 preferences, anything where several answers shape the work ahead — call the
 `decision_board(context, draft_questions)` MCP tool (firekeep-decision server) instead of
-asking the questions inline. It opens a browser board for the human with evidence
-retrieved from team memory, and lets them answer everything at once.
+asking the questions inline. It opens a board for the human with evidence retrieved
+from team memory and lets them answer everything at once. Firekeep Studio renders the
+board natively; other runtimes use the local browser surface.
 
 - **Format the questions.** Question text renders lightweight markdown — put answer
   options on their own `-` list lines (never crammed into one sentence), use
@@ -315,12 +316,12 @@ retrieved from team memory, and lets them answer everything at once.
   `{"html": "<!doctype html>...", "title": "...", "question": 0, "height": 360}` —
   `question` indexes draft_questions; omit it for a board-level visual.
 - A single quick question: just ask inline as usual.
-- It returns `{status: "pending", board_id, board_url}` while the human is answering
-  in the browser. **Wait for the board**: keep calling `decision_board_check(board_id)`
-  in a loop — each call long-polls (~24s) server-side — until it returns the answers.
+- It returns `{status: "pending", board_id, board_url}` while the human is answering.
+  **Wait for the board**: keep calling `decision_board_check(board_id)` in a loop —
+  each call long-polls — until it returns the answers.
   Do not start work that depends on them, and do not re-ask the questions inline.
   If the response carries a `note` that the browser could not be opened, give the
-  human the `board_url` to open manually.
+  human the `board_url` to open manually (Studio handles its native fallback itself).
 - Treat the board as dead ONLY when a check returns `status: "unknown"`
   (expired/reaped) — then ask the questions inline.
 - Headless / no browser: the tool degrades to returning the questions as text — ask

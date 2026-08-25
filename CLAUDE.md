@@ -1,6 +1,6 @@
 # Firekeep
 
-Unified cognitive stack for AI agents. Consolidates four server services (Cortex, Bridge, Sentinel, Relay) plus a dashboard into one deployable unit; the dexes — the domain indexes the Keep understands (Symdex for code, Docdex for documents) — ship client-side in the kit behind a registry ([`docs/guides/dexes.md`](docs/guides/dexes.md)).
+Unified cognitive stack for AI agents. Consolidates four server services (Cortex, Bridge, Sentinel, Relay) plus a dashboard into one deployable unit; the dexes — the domain indexes the Keep understands (Symdex for code, Docdex for documents) — ship client-side in the kit behind a registry ([`docs/guides/dexes.md`](docs/guides/dexes.md)). Firekeep Studio is a separate optional Electron desktop client under `studio/`, not a server container or a Client Kit replacement.
 
 ## Architecture
 
@@ -14,6 +14,7 @@ Unified cognitive stack for AI agents. Consolidates four server services (Cortex
 | FirekeepDocdex | `docdex/` | none (client-side ingest client) | Documents dex. **CLIENT-SIDE ONLY, and NO MCP server** — manifest `kind: ingest-client`, so the gateway mounts nothing for it; the registry entry gates its session-start background sync and the doctor row instead. A human registers folders (`firekeep docdex add ~/Notes`, `--shared` for the workspace, default private to the member); a sync extracts `.md`/`.txt`/`.pdf`/`.docx`/`.html`/`.eml`/conversation-shaped `.json` (no OCR; role-labeled turns, not typed provenance) and ingests into the EXISTING corpus — no new server component. Ships as the `firekeep-docdex` wheel, bundled and checksum-verified exactly like symdex; registered by default since 1.2.0; `firekeep dex remove` is the off-switch. Disclosed caps, deletion semantics (a completed walk is the only source of deletions), the member-private threat boundary and the per-runtime sync coverage are all in [`docs/guides/dexes.md`](docs/guides/dexes.md). |
 | FirekeepMaildex | `maildex/` | none (client-side ingest client) | Email dex, registry consumer #3. **CLIENT-SIDE, NO MCP server, pure stdlib.** IMAP read-only (every open is `EXAMINE`, every fetch `PEEK`; no mutating verb or SMTP exists in the wheel), app password member-owned in the server vault (`maildex.<id>` — never on client disk), always member-private, 90-day backfill then incremental on the docdex chassis. Round-1 gap disclosed everywhere: provider-side deletions are not mirrored until `remove`/re-`add`. See [`docs/guides/dexes.md`](docs/guides/dexes.md). |
 | Dashboard | `dashboard/` | 8040 | Unified web UI (static SPA) |
+| Firekeep Studio | `studio/` | none (local desktop) | Runtime-neutral primary/reviewer console and Mission harness over Codex App Server, Claude stream JSON, Kiro ACP, and the Grok Responses API; one persisted workspace is passed to every runtime, live provider models/reasoning, cache-aware usage, sanitized Mermaid diagrams, and native Decision Boards are surfaced locally, while the Python Client Kit remains the Keep and dashboard connection source. |
 
 ## Infrastructure (VPS, localhost-only ports)
 
@@ -103,6 +104,23 @@ mirrors autoupdate's on-by-default), and an enrolled machine sends only closed-e
 category codes on install/connectivity/runtime failures, never paths or messages. See
 [`docs/guides/client-kit.md`](docs/guides/client-kit.md) "Field failure reporting".
 
+### Run Firekeep Studio from this checkout
+
+```bash
+cd studio
+npm install
+npm test
+npm run typecheck
+npm run smoke:runtimes   # installed auth/model/effort/Firekeep probes; no agent turn
+npm run smoke:tasks      # opt-in real disposable missions; spends provider tokens
+npm run smoke:package    # after package/dist; confirms app.asar renderer over CDP
+npm start
+npm run dist             # current-platform installer under studio/release/
+```
+
+Studio versioning and packaging are independent of the Python Client Kit. Runtime/UI
+behavior and slash commands are documented in [`studio/README.md`](studio/README.md).
+
 ### Run all services
 ```bash
 docker compose up -d
@@ -116,6 +134,7 @@ cd sentinel && pytest tests/ -v
 cd relay && pytest tests/ -v
 cd symdex && pytest tests/ -v
 cd docdex && pytest tests/ -v
+cd studio && npm test && npm run typecheck
 ```
 
 ## Agent Guidance: Secrets vs Operational Facts
@@ -129,6 +148,7 @@ cd docdex && pytest tests/ -v
 - Neo4j, Qdrant, Redis, Ollama
 - Docker Compose (13 containers)
 - tree-sitter (Symdex)
+- TypeScript, Electron, React (Firekeep Studio)
 
 ## Local Testing (v2 features)
 ```bash
@@ -174,6 +194,7 @@ When adding, removing, or renaming MCP tools, REST endpoints, env vars, or confi
   behaviour notes moved there; several tests assert the documented default matches the code)
 - `client/firekeep_client/adapters/*` + `client/firekeep_client/cli.py` — native-config render + installer next-steps output (runtimes: claude, codex, kiro, opencode, claude-desktop, and the `generic` "any MCP client" tier; keep the per-runtime degradation columns in `client/firekeep_client/contract/matrix.py` honest)
 - `dashboard/index.html` — UI references
+- `studio/src/core/`, `studio/src/main/`, `studio/src/renderer/`, and `studio/README.md` — desktop runtime contracts, secure IPC, UI, and slash-command references
 - `CLAUDE.md` — documentation
 
 This is non-negotiable. Stale references in setup scripts or dashboard after a tool removal are bugs.
