@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from unittest.mock import AsyncMock
 
+import fakeredis.aioredis
 import pytest
+import pytest_asyncio
 
 from app.engine.rag import RAGEngine
 from app.models import ContextQuery
+from replay.config import ReplaySettings
+from replay.reader import get_session_timeline
 
 
 # ---------------------------------------------------------------------------
@@ -245,7 +250,7 @@ class TestSSEEndpoint:
     """Test the SSE endpoint via the streaming router."""
 
     @pytest.mark.asyncio
-    async def test_sse_content_type(self, mock_graph, mock_vector):
+    async def test_sse_content_type(self, mock_graph, mock_vector, mock_redis):
         """Endpoint should return text/event-stream content type."""
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
@@ -257,6 +262,7 @@ class TestSSEEndpoint:
 
         test_app = FastAPI()
         test_app.include_router(router)
+        test_app.state.redis_client = mock_redis
 
         with TestClient(test_app) as client:
             response = client.post(
@@ -267,7 +273,7 @@ class TestSSEEndpoint:
             assert "text/event-stream" in response.headers["content-type"]
 
     @pytest.mark.asyncio
-    async def test_sse_events_properly_formatted(self, mock_graph, mock_vector):
+    async def test_sse_events_properly_formatted(self, mock_graph, mock_vector, mock_redis):
         """SSE events should follow the event/data format."""
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
@@ -283,6 +289,7 @@ class TestSSEEndpoint:
 
         test_app = FastAPI()
         test_app.include_router(router)
+        test_app.state.redis_client = mock_redis
 
         with TestClient(test_app) as client:
             response = client.post(
@@ -302,7 +309,7 @@ class TestSSEEndpoint:
             assert len(blocks) >= 3  # at least source + context + done
 
     @pytest.mark.asyncio
-    async def test_sse_empty_results(self, mock_graph, mock_vector):
+    async def test_sse_empty_results(self, mock_graph, mock_vector, mock_redis):
         """Empty results should still produce context + done events."""
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
@@ -314,6 +321,7 @@ class TestSSEEndpoint:
 
         test_app = FastAPI()
         test_app.include_router(router)
+        test_app.state.redis_client = mock_redis
 
         with TestClient(test_app) as client:
             response = client.post(
@@ -334,7 +342,7 @@ class TestSSEEndpoint:
                     assert done_data["total_sources"] == 0
 
     @pytest.mark.asyncio
-    async def test_sse_data_is_valid_json(self, mock_graph, mock_vector):
+    async def test_sse_data_is_valid_json(self, mock_graph, mock_vector, mock_redis):
         """All data lines in SSE events should be valid JSON."""
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
@@ -350,6 +358,7 @@ class TestSSEEndpoint:
 
         test_app = FastAPI()
         test_app.include_router(router)
+        test_app.state.redis_client = mock_redis
 
         with TestClient(test_app) as client:
             response = client.post(
@@ -366,3 +375,171 @@ class TestSSEEndpoint:
                         # Should be valid JSON
                         parsed = json.loads(data_str)
                         assert isinstance(parsed, dict)
+
+
+# ---------------------------------------------------------------------------
+# Receipt parity — memory_read replay event + access/staleness bumps (D1)
+#
+# Parity target: main.py:1291-1342 (the non-streaming /memory/recall handler).
+# It builds `accessed_ids = [s.metadata.get("id") for s in result.sources if
+# s.metadata.get("id")]`, pipelines hincrby("memory:access_counts", ...) +
+# hset("memory:last_recalled", ...) per id, bumps the untagged-call counter,
+# and emits ONE `memory_read` replay event. Before this fix, none of that ran
+# on the SSE path — SSE-recalled memories were invisible to OWM/compliance
+# and their staleness clock never advanced.
+# ---------------------------------------------------------------------------
+
+
+@pytest_asyncio.fixture
+async def fake_redis():
+    r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    yield r
+    await r.aclose()
+
+
+@pytest.fixture()
+def wired_replay_emitter(monkeypatch, fake_redis):
+    """Point the real replay emitter at `fake_redis` for this test only.
+
+    `app.main._replay_emit` lazily calls `replay.emitter.init_emitter()` the
+    first time it runs, then flips a module-global `_replay_initialized` flag
+    so every later call in the process skips re-init — which would otherwise
+    clobber this test's wiring with a real (or a prior test's) connection, or
+    vice versa. Patching both module globals directly, scoped by `monkeypatch`,
+    makes `emit()` (called via `_replay_emit`) and `get_session_timeline()`
+    read/write the exact same fake_redis instance the endpoint's own
+    access-count bumps land in.
+    """
+    import app.main as main_mod
+    import replay.emitter as emitter_mod
+
+    monkeypatch.setattr(main_mod, "_replay_initialized", True)
+    monkeypatch.setattr(emitter_mod, "_redis", fake_redis)
+    monkeypatch.setattr(emitter_mod, "_settings", ReplaySettings(ENABLED=True))
+    return fake_redis
+
+
+def _stream_app(rag, mock_graph, mock_vector, redis_client):
+    from fastapi import FastAPI
+
+    from app.streaming import create_streaming_router
+
+    router = create_streaming_router(rag, mock_graph, mock_vector)
+    test_app = FastAPI()
+    test_app.include_router(router)
+    test_app.state.redis_client = redis_client
+    return test_app
+
+
+def _async_client(app):
+    """httpx.AsyncClient over ASGITransport, not fastapi.testclient.TestClient:
+    TestClient runs the app in its own thread with its own event loop, so a
+    fakeredis instance touched there gets bound to that loop — the SAME
+    fakeredis instance is then unusable from the outer test coroutine's loop
+    (`RuntimeError: ... is bound to a different event loop`). ASGITransport
+    runs the app in-process on the caller's own loop instead."""
+    import httpx
+
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
+
+
+class TestStreamReceiptParity:
+    """D1: SSE recall must reach parity with POST /memory/recall — one
+    memory_read replay event plus access_counts/last_recalled bumps, fired
+    after the stream finishes."""
+
+    @pytest.mark.asyncio
+    async def test_stream_emits_memory_read_with_ids_and_no_top_score(
+        self, mock_graph, mock_vector, wired_replay_emitter
+    ):
+        mock_vector.search.return_value = [
+            {"id": "v1", "score": 0.85, "text": "Fix login timeout",
+             "metadata": {"id": "v1", "source": "log"}},
+            {"id": "v2", "score": 0.6, "text": "Auth module update",
+             "metadata": {"id": "v2"}},
+        ]
+
+        rag = RAGEngine(graph=mock_graph, vector=mock_vector)
+        test_app = _stream_app(rag, mock_graph, mock_vector, wired_replay_emitter)
+
+        async with _async_client(test_app) as client:
+            resp = await client.post(
+                "/memory/recall/stream",
+                json={"task": "fix auth", "top_k": 5, "namespace": "default"},
+                headers={"X-Session-Id": "sess-stream-1", "X-Agent-Id": "agent-a"},
+            )
+            _ = resp.text  # drain the body so the `finally` receipt fires
+
+        timeline = await get_session_timeline(
+            wired_replay_emitter, "sess-stream-1", event_type="memory_read"
+        )
+        events = timeline["events"]
+        assert len(events) == 1
+        payload = events[0]["payload"]
+        assert set(payload["memory_ids"]) == {"v1", "v2"}
+        assert payload["result_count"] == 2
+        assert "top_score" not in payload
+        assert payload["trigger"] is None
+        assert payload["namespace"] == "default"
+
+    @pytest.mark.asyncio
+    async def test_stream_bumps_access_counts_and_last_recalled(
+        self, mock_graph, mock_vector, wired_replay_emitter
+    ):
+        mock_vector.search.return_value = [
+            {"id": "v1", "score": 0.9, "text": "Fix login timeout",
+             "metadata": {"id": "v1"}},
+        ]
+
+        rag = RAGEngine(graph=mock_graph, vector=mock_vector)
+        test_app = _stream_app(rag, mock_graph, mock_vector, wired_replay_emitter)
+
+        async with _async_client(test_app) as client:
+            resp = await client.post(
+                "/memory/recall/stream",
+                json={"task": "fix auth", "top_k": 5},
+                headers={"X-Session-Id": "sess-stream-2", "X-Agent-Id": "agent-a"},
+            )
+            _ = resp.text
+
+        assert await wired_replay_emitter.hget("memory:access_counts", "v1") == "1"
+        last_recalled = await wired_replay_emitter.hget("memory:last_recalled", "v1")
+        assert last_recalled is not None
+        datetime.fromisoformat(last_recalled)  # a real ISO-8601 timestamp
+
+    @pytest.mark.asyncio
+    async def test_graph_only_sources_carry_no_id_same_as_non_streaming(
+        self, mock_graph, mock_vector, wired_replay_emitter
+    ):
+        """Parity, not a new bug: graph-sourced entries have no
+        `metadata["id"]` in EITHER path (rag.py's graph branch in
+        `recall_streaming` never sets one, same as `_format_graph_entries`
+        for the non-streaming path), so they're silently excluded from
+        accessed_ids on both. This pins that the SSE fix does not change that
+        pre-existing behavior."""
+        mock_graph.query_related.return_value = [
+            {"name": "auth", "description": "Authentication module", "label": "Concept",
+             "distance": 1, "memory_ids": ["m-auth"]},
+        ]
+        mock_vector.get_lifecycle_states.return_value = {
+            "m-auth": {"id": "m-auth", "status": "active"}
+        }
+
+        rag = RAGEngine(graph=mock_graph, vector=mock_vector)
+        test_app = _stream_app(rag, mock_graph, mock_vector, wired_replay_emitter)
+
+        async with _async_client(test_app) as client:
+            resp = await client.post(
+                "/memory/recall/stream",
+                json={"task": "fix auth", "top_k": 5},
+                headers={"X-Session-Id": "sess-stream-3", "X-Agent-Id": "agent-a"},
+            )
+            _ = resp.text
+
+        timeline = await get_session_timeline(
+            wired_replay_emitter, "sess-stream-3", event_type="memory_read"
+        )
+        payload = timeline["events"][0]["payload"]
+        assert payload["memory_ids"] == []
+        assert payload["result_count"] == 0
+        assert await wired_replay_emitter.hlen("memory:access_counts") == 0

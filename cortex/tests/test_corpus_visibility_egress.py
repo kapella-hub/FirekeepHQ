@@ -270,7 +270,7 @@ class TestEndpointCallSites:
 
     @pytest.mark.asyncio
     async def test_sse_recall_passes_principal_member_id(
-        self, mock_graph, mock_vector
+        self, mock_graph, mock_vector, mock_redis
     ):
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
@@ -282,6 +282,9 @@ class TestEndpointCallSites:
         router = create_streaming_router(rag, mock_graph, mock_vector)
         sse_app = FastAPI()
         sse_app.include_router(router)
+        # D1 (outcome-truth PR2): the endpoint now reads request.app.state.redis_client
+        # for the memory_read receipt + access/staleness bumps.
+        sse_app.state.redis_client = mock_redis
 
         with TestClient(sse_app) as client:
             resp = client.post(
