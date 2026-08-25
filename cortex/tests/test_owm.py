@@ -76,9 +76,12 @@ def _redis_with(evals: dict, index: list):
     return r
 
 
-def _vector(point_types=None, stale_scored_ids=()):
+def _vector(point_types=None, stale_scored_ids=(), stale_scored_skill_ids=()):
     """point_types: id -> payload dict returned by retrieve (memory_type/source
-    checks); stale_scored_ids: ids the scroll-for-scored pass reports."""
+    checks); stale_scored_ids: ids the owm_n scroll-for-scored pass reports;
+    stale_scored_skill_ids: ids the skill_efficacy_n scroll-for-scored pass
+    reports (the two sweeps use different filters, so the fixture inspects
+    scroll_filter to route to the right set)."""
     v = MagicMock()
     v._client = MagicMock()
     v._client.set_payload = AsyncMock()
@@ -97,8 +100,13 @@ def _vector(point_types=None, stale_scored_ids=()):
 
     async def _scroll(collection_name, scroll_filter=None, limit=1000,
                       offset=None, with_payload=False, with_vectors=False):
+        try:
+            key = scroll_filter.must[0].key
+        except Exception:
+            key = None
+        ids = stale_scored_skill_ids if key == "skill_efficacy_n" else stale_scored_ids
         pts = []
-        for pid in stale_scored_ids:
+        for pid in ids:
             pt = MagicMock()
             pt.id = pid
             pts.append(pt)
@@ -109,9 +117,11 @@ def _vector(point_types=None, stale_scored_ids=()):
 
 def _settings(**over):
     s = MagicMock()
+    s.OWM_ENABLED = True
     s.OWM_PRIOR_N = 5
     s.OWM_WINDOW_DAYS = 30
     s.OWM_AGENT_CAP = 5
+    s.SKILL_OWM_ENABLED = True
     s.QDRANT_COLLECTION = "memories"
     for k, val in over.items():
         setattr(s, k, val)
@@ -248,10 +258,14 @@ async def test_stale_scored_memories_reset_to_neutral():
 
 
 @pytest.mark.asyncio
-async def test_corpus_and_skill_points_are_never_scored():
-    """Corpus chunks and skills surface through the same vector search, so their
-    ids land in memory_ids — but outcome-scoring playbooks/documents by ambient
-    session failure is meaningless and pollutes their payloads."""
+async def test_corpus_points_are_never_scored_skills_get_a_distinct_field():
+    """Corpus chunks and skills surface through the same vector search. Corpus
+    stays fully excluded (outcome-scoring a document by ambient session
+    failure is meaningless). Skills are no longer dropped (PR3, D2 —
+    superseding the old "skills are never scored" assumption this test used
+    to assert): they route into a DISTINCT skill_efficacy field so the RAG
+    lifecycle scorer, which reads owm_efficacy with no memory_type guard
+    (rag.py:1187-1192), never silently re-ranks a skill."""
     evals = {"s1": {"task_result": "success", "task_result_source": "self_reported"}}
     events = {"s1": [{"event_type": "memory_read",
                       "payload": {"memory_ids": ["m1", "sk1", "c1"]}}]}
@@ -263,8 +277,14 @@ async def test_corpus_and_skill_points_are_never_scored():
     out = await run_pass(_redis_with(evals, ["s1"]), v, _settings(),
                          bridge_statuses={}, events_fn=_events_fn(events))
     assert out["memories_scored"] == 1
-    written = [c.kwargs["points"][0] for c in v._client.set_payload.call_args_list]
-    assert written == ["m1"]
+    assert out["skills_scored"] == 1
+    writes = {c.kwargs["points"][0]: c.kwargs["payload"]
+              for c in v._client.set_payload.call_args_list}
+    assert set(writes) == {"m1", "sk1"}  # c1 (corpus) never written
+    assert "owm_efficacy" in writes["m1"]
+    assert "skill_efficacy" in writes["sk1"]
+    assert "owm_efficacy" not in writes["sk1"]
+    assert "skill_efficacy" not in writes["m1"]
 
 
 @pytest.mark.asyncio
@@ -306,3 +326,107 @@ async def test_run_pass_late_memory_read_beyond_old_1000_window():
     assert out["memories_scored"] == 1
     written = [c.kwargs["points"][0] for c in v._client.set_payload.call_args_list]
     assert written == ["late-mem"]
+
+
+# --------------------------------------------------------------------------- #
+# Skill efficacy (outcome truth PR3, D2): skills route into a DISTINCT        #
+# skill_efficacy field instead of being dropped, gated independently by       #
+# SKILL_OWM_ENABLED.                                                          #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_run_pass_scores_skill_into_skill_efficacy_field():
+    evals = {"s1": {"task_result": "success", "task_result_source": "self_reported"}}
+    events = {"s1": [{"event_type": "memory_read",
+                      "payload": {"memory_ids": ["sk1"]}}]}
+    v = _vector(point_types={"sk1": {"memory_type": "skill"}})
+    out = await run_pass(_redis_with(evals, ["s1"]), v, _settings(),
+                         bridge_statuses={}, events_fn=_events_fn(events))
+    assert out["skills_scored"] == 1
+    writes = {c.kwargs["points"][0]: c.kwargs["payload"]
+              for c in v._client.set_payload.call_args_list}
+    assert writes["sk1"]["skill_efficacy"] == round(compute_efficacy(1, 1, 5), 4)
+    assert writes["sk1"]["skill_efficacy_n"] == 1
+    assert "skill_efficacy_updated_at" in writes["sk1"]
+
+
+@pytest.mark.asyncio
+async def test_skill_payload_never_carries_owm_efficacy():
+    """CRITICAL invariant: rag.py:1187-1192 reads owm_efficacy with NO
+    memory_type guard, so a skill point carrying it would have its general-RAG
+    recall silently re-ranked. Skills get ONLY skill_efficacy* keys."""
+    evals = {"s1": {"task_result": "success", "task_result_source": "self_reported"}}
+    events = {"s1": [{"event_type": "memory_read",
+                      "payload": {"memory_ids": ["sk1"]}}]}
+    v = _vector(point_types={"sk1": {"memory_type": "skill"}})
+    await run_pass(_redis_with(evals, ["s1"]), v, _settings(),
+                   bridge_statuses={}, events_fn=_events_fn(events))
+    skill_calls = [c for c in v._client.set_payload.call_args_list
+                   if c.kwargs["points"][0] == "sk1"]
+    assert len(skill_calls) == 1
+    assert set(skill_calls[0].kwargs["payload"]) == {
+        "skill_efficacy", "skill_efficacy_n", "skill_efficacy_updated_at"}
+
+
+@pytest.mark.asyncio
+async def test_memory_and_skill_scored_independently_in_same_run():
+    """A memory id in the same run as a skill id still gets owm_efficacy — the
+    memory path is untouched by the new skill path."""
+    evals = {"s1": {"task_result": "success", "task_result_source": "self_reported"}}
+    events = {"s1": [{"event_type": "memory_read",
+                      "payload": {"memory_ids": ["m1", "sk1"]}}]}
+    v = _vector(point_types={
+        "m1": {"memory_type": "episodic"},
+        "sk1": {"memory_type": "skill"},
+    })
+    out = await run_pass(_redis_with(evals, ["s1"]), v, _settings(),
+                         bridge_statuses={}, events_fn=_events_fn(events))
+    assert out["memories_scored"] == 1
+    assert out["skills_scored"] == 1
+    writes = {c.kwargs["points"][0]: c.kwargs["payload"]
+              for c in v._client.set_payload.call_args_list}
+    assert "owm_efficacy" in writes["m1"] and "skill_efficacy" not in writes["m1"]
+    assert "skill_efficacy" in writes["sk1"] and "owm_efficacy" not in writes["sk1"]
+
+
+@pytest.mark.asyncio
+async def test_skill_owm_disabled_flag_is_bit_neutral_for_skills():
+    """SKILL_OWM_ENABLED=false: no skill write, no skill stale-reset — the
+    skill path must be bit-neutral while the memory path is untouched."""
+    evals = {"s1": {"task_result": "success", "task_result_source": "self_reported"}}
+    events = {"s1": [{"event_type": "memory_read",
+                      "payload": {"memory_ids": ["m1", "sk1"]}}]}
+    v = _vector(point_types={
+        "m1": {"memory_type": "episodic"},
+        "sk1": {"memory_type": "skill"},
+    }, stale_scored_skill_ids=("sk1", "sk-old"))
+    out = await run_pass(_redis_with(evals, ["s1"]), v,
+                         _settings(SKILL_OWM_ENABLED=False),
+                         bridge_statuses={}, events_fn=_events_fn(events))
+    assert out["memories_scored"] == 1
+    assert out["skills_scored"] == 0
+    writes = {c.kwargs["points"][0]: c.kwargs["payload"]
+              for c in v._client.set_payload.call_args_list}
+    assert "m1" in writes
+    assert "sk1" not in writes
+    assert not v._client.delete_payload.called  # no skill stale-reset sweep at all
+
+
+@pytest.mark.asyncio
+async def test_stale_scored_skills_reset_to_neutral():
+    """Mirrors test_stale_scored_memories_reset_to_neutral for the skill side:
+    a skill scored last pass but absent from this run's evidence has its
+    skill_efficacy* keys deleted (back to neutral)."""
+    evals = {"s1": {"task_result": "success", "task_result_source": "self_reported"}}
+    events = {"s1": [{"event_type": "memory_read", "payload": {"memory_ids": ["sk1"]}}]}
+    v = _vector(point_types={"sk1": {"memory_type": "skill"}},
+               stale_scored_skill_ids=("sk1", "sk-old"))
+    out = await run_pass(_redis_with(evals, ["s1"]), v, _settings(),
+                         bridge_statuses={}, events_fn=_events_fn(events))
+    assert out["skills_scored"] == 1
+    assert out["stale_reset"] == 1
+    del_call = v._client.delete_payload.call_args_list[0].kwargs
+    assert del_call["points"] == ["sk-old"]
+    assert set(del_call["keys"]) == {
+        "skill_efficacy", "skill_efficacy_n", "skill_efficacy_updated_at"}

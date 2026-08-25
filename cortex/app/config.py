@@ -296,6 +296,7 @@ class Settings(BaseSettings):
     OWM_WINDOW_DAYS: int = 30         # join window; evals expire at 30d, larger is dead weight
     OWM_SCHEDULE_HOURS: int = 24      # Celery beat cadence for the scoring pass
     OWM_AGENT_CAP: int = 5            # max observations one agent contributes per memory
+    SKILL_OWM_ENABLED: bool = True    # score skills into a DISTINCT skill_efficacy field (PR3); independent of OWM_ENABLED
 
     # Feedback-weighted recall (Knowledge Autopilot round 1): thumbs-up/down —
     # from the dashboard or the memory_feedback MCP tool — accumulates as

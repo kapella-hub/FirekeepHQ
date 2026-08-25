@@ -15,6 +15,14 @@ evidence accumulates. Results land on the Qdrant payload (``owm_efficacy``,
   - the GC composite eviction score gains an efficacy factor (neutral 0.5 is
     bit-identical; persistently misleading memories age out faster).
 
+Skills ride the same ``memory_read`` receipts but are scored into a DISTINCT,
+PARALLEL field (``skill_efficacy``, ``skill_efficacy_n``,
+``skill_efficacy_updated_at``), gated independently by ``SKILL_OWM_ENABLED``
+(outcome truth PR3, D2). They never carry ``owm_efficacy`` — the RAG lifecycle
+scorer above reads that key with no ``memory_type`` guard, so a skill carrying
+it would have its general-RAG recall silently re-ranked. Corpus chunks stay
+excluded from both.
+
 Session success is DETERMINISTIC, no LLM, no statistics beyond the shrinkage:
 Bridge ``abandoned`` is a failure regardless of grade; otherwise the recognized
 (task_result, task_result_source) pair decides (2026-08-23, outcome truth) —
@@ -87,11 +95,14 @@ async def run_pass(replay_r, vector, settings, *,
       - a session counts ONCE per memory, and a single agent identity counts at
         most OWM_AGENT_CAP observations per memory (a CI bot's failing loop
         cannot bury a shared memory);
-      - corpus chunks and skill points are excluded (outcome-scoring a document
-        by ambient session failure is meaningless);
-      - memories scored in a previous pass but absent from this run's evidence
-        get their OWM keys DELETED (reset to neutral) — no permanent penalties,
-        no self-reinforcing death spiral once evals expire (30d TTL);
+      - corpus chunks are excluded (outcome-scoring a document by ambient
+        session failure is meaningless); skill points are routed into a
+        DISTINCT skill_efficacy field instead (PR3, D2), gated independently
+        by SKILL_OWM_ENABLED — never owm_efficacy (see module docstring);
+      - memories (and, independently, skills) scored in a previous pass but
+        absent from this run's evidence get their OWM keys DELETED (reset to
+        neutral) — no permanent penalties, no self-reinforcing death spiral
+        once evals expire (30d TTL);
       - abandoned-session detection depends on the Bridge status map, which the
         REST route caps at its 200 newest sessions — beyond that horizon a
         walked-away session with clean metrics counts as success (documented
@@ -102,7 +113,7 @@ async def run_pass(replay_r, vector, settings, *,
     events_fn = events_fn or _default_events_fn
     bridge_statuses = bridge_statuses or {}
     out = {"sessions_scanned": 0, "sessions_joined": 0, "memories_scored": 0,
-           "write_errors": 0, "stale_reset": 0}
+           "skills_scored": 0, "write_errors": 0, "stale_reset": 0}
     agent_cap = int(getattr(settings, "OWM_AGENT_CAP", 5) or 5)
 
     window_start = time.time() - settings.OWM_WINDOW_DAYS * 86400
@@ -149,9 +160,11 @@ async def run_pass(replay_r, vector, settings, *,
         except Exception as exc:  # noqa: BLE001 — one bad session never stops the pass
             logger.warning("OWM: session %s skipped: %s", sid, exc)
 
-    # Exclude corpus chunks + skills: their ids flow through the same recall
-    # results, but playbooks/documents must not carry outcome scores.
+    # Exclude corpus chunks; split skills into a PARALLEL tally instead of
+    # dropping them (PR3, D2) — playbooks/documents must not carry outcome
+    # scores, but skills now get their own distinct skill_efficacy field.
     scorable: dict[str, tuple[int, int]] = {}
+    skill_scorable: dict[str, tuple[int, int]] = {}
     all_ids = list(stats.keys())
     for i in range(0, len(all_ids), 100):
         batch = all_ids[i:i + 100]
@@ -164,64 +177,126 @@ async def run_pass(replay_r, vector, settings, *,
             continue
         for pt in points:
             payload = pt.payload or {}
-            if payload.get("memory_type") == "skill" or payload.get("source") == "corpus":
-                continue
+            if payload.get("source") == "corpus":
+                continue  # corpus never scored (unchanged)
             per_agent = stats.get(str(pt.id)) or {}
             s_total = sum(v[0] for v in per_agent.values())
             n_total = sum(v[1] for v in per_agent.values())
+            if payload.get("memory_type") == "skill":
+                if n_total:
+                    skill_scorable[str(pt.id)] = (s_total, n_total)
+                continue
             if n_total:
-                scorable[str(pt.id)] = (s_total, n_total)
+                scorable[str(pt.id)] = (s_total, n_total)   # memory path, unchanged
 
+    # Hoisted above both gates below: the skill block (independently gated on
+    # SKILL_OWM_ENABLED) needs the same timestamp as the memory block, and
+    # wrapping the memory block in `if settings.OWM_ENABLED:` would otherwise
+    # scope `now_iso` out of reach when OWM_ENABLED is False but
+    # SKILL_OWM_ENABLED is True.
     now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    written: set[str] = set()
-    for mid, (successes, n) in scorable.items():
-        payload = {
-            "owm_efficacy": round(compute_efficacy(successes, n, settings.OWM_PRIOR_N), 4),
-            "owm_n": n,
-            "owm_updated_at": now_iso,
-        }
+
+    if settings.OWM_ENABLED:
+        written: set[str] = set()
+        for mid, (successes, n) in scorable.items():
+            payload = {
+                "owm_efficacy": round(compute_efficacy(successes, n, settings.OWM_PRIOR_N), 4),
+                "owm_n": n,
+                "owm_updated_at": now_iso,
+            }
+            try:
+                await vector._client.set_payload(
+                    collection_name=settings.QDRANT_COLLECTION,
+                    payload=payload,
+                    points=[mid],
+                )
+                out["memories_scored"] += 1
+                written.add(mid)
+            except Exception as exc:  # noqa: BLE001 — deleted/foreign ids are expected
+                logger.warning("OWM: payload write failed for %s: %s", mid, exc)
+                out["write_errors"] += 1
+
+        # Stale reset: previously-scored points with no in-window evidence go
+        # back to neutral (keys deleted). Recompute-from-scratch is only
+        # honest if absence of evidence actually clears the old verdict.
         try:
-            await vector._client.set_payload(
-                collection_name=settings.QDRANT_COLLECTION,
-                payload=payload,
-                points=[mid],
-            )
-            out["memories_scored"] += 1
-            written.add(mid)
-        except Exception as exc:  # noqa: BLE001 — deleted/foreign ids are expected
-            logger.warning("OWM: payload write failed for %s: %s", mid, exc)
-            out["write_errors"] += 1
+            from qdrant_client import models as _qm
 
-    # Stale reset: previously-scored points with no in-window evidence go back
-    # to neutral (keys deleted). Recompute-from-scratch is only honest if
-    # absence of evidence actually clears the old verdict.
-    try:
-        from qdrant_client import models as _qm
+            offset = None
+            while True:
+                points, offset = await vector._client.scroll(
+                    collection_name=settings.QDRANT_COLLECTION,
+                    scroll_filter=_qm.Filter(must=[_qm.FieldCondition(
+                        key="owm_n", range=_qm.Range(gte=1))]),
+                    limit=1000, offset=offset,
+                    with_payload=False, with_vectors=False)
+                for pt in points or []:
+                    pid = str(pt.id)
+                    if pid in written:
+                        continue
+                    try:
+                        await vector._client.delete_payload(
+                            collection_name=settings.QDRANT_COLLECTION,
+                            keys=["owm_efficacy", "owm_n", "owm_updated_at"],
+                            points=[pid])
+                        out["stale_reset"] += 1
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("OWM: stale reset failed for %s: %s", pid, exc)
+                if not offset:
+                    break
+        except Exception as exc:  # noqa: BLE001 — reset is hygiene, never fatal
+            logger.warning("OWM: stale-reset sweep failed: %s", exc)
 
-        offset = None
-        while True:
-            points, offset = await vector._client.scroll(
-                collection_name=settings.QDRANT_COLLECTION,
-                scroll_filter=_qm.Filter(must=[_qm.FieldCondition(
-                    key="owm_n", range=_qm.Range(gte=1))]),
-                limit=1000, offset=offset,
-                with_payload=False, with_vectors=False)
-            for pt in points or []:
-                pid = str(pt.id)
-                if pid in written:
-                    continue
-                try:
-                    await vector._client.delete_payload(
-                        collection_name=settings.QDRANT_COLLECTION,
-                        keys=["owm_efficacy", "owm_n", "owm_updated_at"],
-                        points=[pid])
-                    out["stale_reset"] += 1
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("OWM: stale reset failed for %s: %s", pid, exc)
-            if not offset:
-                break
-    except Exception as exc:  # noqa: BLE001 — reset is hygiene, never fatal
-        logger.warning("OWM: stale-reset sweep failed: %s", exc)
+    # Skill path: DISTINCT field (skill_efficacy*), independent gate
+    # (SKILL_OWM_ENABLED), independent write + stale-reset loop. Deliberately
+    # NOT DRY'd with the memory blocks above — the separate field and
+    # separate flag are the point: skill_efficacy must never collide with
+    # owm_efficacy, which rag.py:1187-1192 reads with no memory_type guard.
+    if getattr(settings, "SKILL_OWM_ENABLED", True):
+        skill_written: set[str] = set()
+        for _sid, (successes, n) in skill_scorable.items():
+            sp = {
+                "skill_efficacy": round(compute_efficacy(successes, n, settings.OWM_PRIOR_N), 4),
+                "skill_efficacy_n": n,
+                "skill_efficacy_updated_at": now_iso,
+            }
+            try:
+                await vector._client.set_payload(
+                    collection_name=settings.QDRANT_COLLECTION, payload=sp, points=[_sid])
+                out["skills_scored"] += 1
+                skill_written.add(_sid)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("OWM: skill payload write failed for %s: %s", _sid, exc)
+                out["write_errors"] += 1
+
+        # Skill stale-reset — mirrors the memory stale-reset above but for the
+        # skill keys.
+        try:
+            from qdrant_client import models as _qm
+
+            offset = None
+            while True:
+                pts, offset = await vector._client.scroll(
+                    collection_name=settings.QDRANT_COLLECTION,
+                    scroll_filter=_qm.Filter(must=[_qm.FieldCondition(
+                        key="skill_efficacy_n", range=_qm.Range(gte=1))]),
+                    limit=1000, offset=offset, with_payload=False, with_vectors=False)
+                for pt in pts or []:
+                    pid = str(pt.id)
+                    if pid in skill_written:
+                        continue
+                    try:
+                        await vector._client.delete_payload(
+                            collection_name=settings.QDRANT_COLLECTION,
+                            keys=["skill_efficacy", "skill_efficacy_n", "skill_efficacy_updated_at"],
+                            points=[pid])
+                        out["stale_reset"] += 1
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("OWM: skill stale reset failed for %s: %s", pid, exc)
+                if not offset:
+                    break
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("OWM: skill stale-reset sweep failed: %s", exc)
 
     logger.info("OWM pass: %s", out)
     return out
@@ -276,12 +351,14 @@ from app.workers.sleep_cycle import celery_app  # noqa: E402
 
 @celery_app.task(name="app.owm.run_owm_scoring")
 def run_owm_scoring() -> dict:
-    """Beat fires unconditionally; the task self-gates on OWM_ENABLED and never
-    raises — failures come back as a status dict."""
+    """Beat fires unconditionally; the task self-gates on OWM_ENABLED /
+    SKILL_OWM_ENABLED (runs when EITHER is on) and never raises — failures
+    come back as a status dict."""
     from app.config import get_settings
 
-    if not get_settings().OWM_ENABLED:
-        return {"status": "disabled"}
+    settings = get_settings()
+    if not (settings.OWM_ENABLED or getattr(settings, "SKILL_OWM_ENABLED", True)):
+        return {"status": "disabled"}   # keep the exact existing disabled-return shape
     try:
         return asyncio.run(_run_owm_impl())
     except Exception as exc:  # noqa: BLE001
