@@ -134,8 +134,6 @@ async def run_pass(replay_r, vector, settings, *,
             if not raw:
                 continue  # 30d value TTL beat the never-pruned index entry
             success = session_success(_json.loads(raw), bridge_statuses.get(sid))
-            if success is None:
-                continue
 
             # Full-session snapshot+hydrate (task 4): the old
             # get_session_timeline(limit=1000) fetch applied the memory_read
@@ -143,22 +141,20 @@ async def run_pass(replay_r, vector, settings, *,
             # oldest-1000 window never joined. events_fn returns the whole
             # (capped) session as a plain list — no envelope to unwrap — and
             # the type filter is applied here in Python instead.
+            #
+            # Fetched BEFORE the grade gate below (fix round 1, D3 review): the
+            # memory_feedback applied signal is a direct judgment on the
+            # recalled artifact, "distinct from the session-outcome
+            # inference" per spec — it must NOT require a recognized grade.
             all_events = await events_fn(replay_r, sid)
-            events = [e for e in (all_events or []) if e.get("event_type") == "memory_read"]
-            mem_agents: dict[str, str] = {}
-            for ev in events:
-                agent = str(ev.get("agent_id") or "unknown")
-                ids = (ev.get("payload") or {}).get("memory_ids") or []
-                for m in ids:
-                    if m:
-                        mem_agents.setdefault(str(m), agent)
 
             # D3 (PR2 memory_feedback applied signal): accumulate SEPARATELY,
             # merged into SKILL tallies only (retrieve step). Memories are
             # already counted via the set_feedback counter (rag.py:1194+), so
             # feeding these into `stats` would double-count the same thumb.
-            # Placed BEFORE the `if not mem_agents: continue` guard below so a
-            # feedback-only session (no memory_read) still records.
+            # GRADE-INDEPENDENT by design: runs even when `success is None`
+            # (ungraded/partial/sourceless session) — the `useful` bit is its
+            # own signal, not derived from the session outcome.
             for ev in (all_events or []):
                 if ev.get("event_type") != "memory_feedback":
                     continue
@@ -176,6 +172,17 @@ async def run_pass(replay_r, vector, settings, *,
                         continue
                     fa[fagent] = [fs + (1 if fuseful else 0), fn + 1]
 
+            if success is None:
+                continue  # exposure tally below still needs a recognized grade
+
+            events = [e for e in (all_events or []) if e.get("event_type") == "memory_read"]
+            mem_agents: dict[str, str] = {}
+            for ev in events:
+                agent = str(ev.get("agent_id") or "unknown")
+                ids = (ev.get("payload") or {}).get("memory_ids") or []
+                for m in ids:
+                    if m:
+                        mem_agents.setdefault(str(m), agent)
             if not mem_agents:
                 continue  # pre-OWM event (no ids stamped) or no recalls
 

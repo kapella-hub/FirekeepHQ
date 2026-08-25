@@ -534,3 +534,29 @@ async def test_feedback_only_skill_scored_via_union():
               for c in v._client.set_payload.call_args_list}
     assert writes["sk1"]["skill_efficacy"] == round(compute_efficacy(1, 1, 5), 4)
     assert writes["sk1"]["skill_efficacy_n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_memory_feedback_counts_even_when_session_is_ungraded():
+    """Fix round 1 (D3 review): the applied signal is 'distinct from the
+    session-outcome inference' per spec -- the `useful` bit must NOT require
+    a recognized grade. A session with an UNRECOGNIZED grade (here:
+    "partial", which session_success() returns None for -- excluded from the
+    exposure join) that emits memory_feedback for a skill must still have
+    that feedback land in skill_efficacy. Before the fix, this session was
+    skipped in full (the feedback loop sat after the grade gate), so
+    skills_scored would be 0 and sk1 would never be written."""
+    evals = {"s1": {"task_result": "partial", "task_result_source": "self_reported"}}
+    events = {"s1": [
+        {"event_type": "memory_feedback",
+         "payload": {"memory_ids": ["sk1"], "useful": False}},
+    ]}
+    v = _vector(point_types={"sk1": {"memory_type": "skill"}})
+    out = await run_pass(_redis_with(evals, ["s1"]), v, _settings(),
+                         bridge_statuses={}, events_fn=_events_fn(events))
+    assert out["skills_scored"] == 1
+    assert out["sessions_joined"] == 0  # no recognized-grade exposure join happened
+    writes = {c.kwargs["points"][0]: c.kwargs["payload"]
+              for c in v._client.set_payload.call_args_list}
+    assert writes["sk1"]["skill_efficacy"] == round(compute_efficacy(0, 1, 5), 4)
+    assert writes["sk1"]["skill_efficacy_n"] == 1
