@@ -672,9 +672,21 @@ async def ctx_complete_session(
 ) -> dict:
     """Mark the current session as completed and save learnings to long-term memory.
 
-    Call this when your task is done. The session is enqueued for distillation into a
-    FirekeepCortex memory (a background worker drains the queue with retry/backoff) so
-    future sessions can benefit from what you learned.
+    Call this when your task is done. Pass `task_result` — "success", "partial", or
+    "failure" — grading the TASK you were doing, not whether this RPC call itself
+    worked. That grade is the default expectation of every call, not an optional
+    extra: an ungraded completion tells the memory system nothing about whether the
+    work actually landed.
+
+    Reporting "failure" or "partial" is expected and safe to report — an honest
+    failure teaches the memory system more than an optimistic "success" and carries
+    no penalty. Back the grade with `task_evidence`: what you actually verified
+    (tests run, commands that passed, files changed), not what you intended to do.
+
+    The session is enqueued for distillation into a FirekeepCortex memory (a
+    background worker drains the queue with retry/backoff) so future sessions can
+    benefit from what you learned. Set `skill_worthy=True` if this session involved
+    a hard-won fix worth saving as a reusable skill.
 
     Args:
         session_id: Session to complete (defaults to the connection's
