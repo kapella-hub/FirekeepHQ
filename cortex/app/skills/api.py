@@ -113,6 +113,21 @@ def create_skills_router(
         # traffic instead of usefulness.
         if record_recall and results:
             await _record_skill_usage(request, [r.id for r in results])
+            try:
+                from app.main import _replay_emit
+
+                sid = request.headers.get("X-Session-Id", "unknown")
+                aid = request.headers.get("X-Agent-Id", "unknown")
+                await _replay_emit(
+                    "memory_read", session_id=sid, agent_id=aid,
+                    payload={
+                        "memory_ids": [r.id for r in results][:50],
+                        "result_count": len(results),
+                        "trigger": "skill_recall",
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001 — telemetry never fails the recall
+                logger.warning("skill_recall replay receipt failed: %s", exc)
         return results
 
     @router.get("/skills/{skill_id}", response_model=SkillResponse)

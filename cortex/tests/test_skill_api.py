@@ -1,9 +1,14 @@
+import fakeredis.aioredis
+import httpx
 import pytest
+import pytest_asyncio
 from unittest.mock import AsyncMock, MagicMock
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from app.models import SkillResponse
 from app.skills.api import create_skills_router
+from replay.config import ReplaySettings
+from replay.reader import get_session_timeline
 
 
 def _make_mock_point(skill_id="abc", trigger="Fix X", status="active"):
@@ -570,3 +575,128 @@ def test_create_skill_without_headers_keeps_null_provenance(mock_vector, mock_se
     payload = kwargs["points"][0].payload
     assert payload["agent_id"] is None
     assert payload["source_session_id"] is None
+
+
+# ---------------------------------------------------------------------------
+# skill_recall replay receipt (Outcome Truth PR3, D1) — the dedicated
+# skill_recall path (record_recall=true) must emit ONE `memory_read` replay
+# event carrying the served skill ids, so a skill exposure can be joined to
+# its session's eventual outcome. Reuses `memory_read` (no new event type),
+# mirroring the streaming recall receipt in test_streaming.py.
+# ---------------------------------------------------------------------------
+
+
+@pytest_asyncio.fixture
+async def fake_redis():
+    r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    yield r
+    await r.aclose()
+
+
+@pytest.fixture()
+def wired_replay_emitter(monkeypatch, fake_redis):
+    """Point the real replay emitter at `fake_redis` for this test only.
+
+    Same dodge as test_streaming.py's fixture of the same name: patches
+    `app.main._replay_initialized` + `replay.emitter`'s module globals directly
+    so `_replay_emit` (called via the deferred `from app.main import
+    _replay_emit` inside the record_recall branch) and `get_session_timeline`
+    read/write the exact same fake_redis instance the endpoint's own
+    access-count bumps land in.
+    """
+    import app.main as main_mod
+    import replay.emitter as emitter_mod
+
+    monkeypatch.setattr(main_mod, "_replay_initialized", True)
+    monkeypatch.setattr(emitter_mod, "_redis", fake_redis)
+    monkeypatch.setattr(emitter_mod, "_settings", ReplaySettings(ENABLED=True))
+    return fake_redis
+
+
+def _asgi_client(app):
+    """httpx.AsyncClient over ASGITransport, not fastapi.testclient.TestClient:
+    TestClient runs the app in its own thread with its own event loop, so a
+    fakeredis instance touched there gets bound to that loop and becomes
+    unusable from the test coroutine's own loop afterward. ASGITransport runs
+    the app in-process on the caller's own loop instead."""
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
+
+
+@pytest.mark.asyncio
+async def test_explicit_skill_recall_emits_memory_read_receipt(
+    mock_vector, mock_settings, wired_replay_emitter, monkeypatch
+):
+    kept = _make_mock_point(skill_id="s1", trigger="Fix X")
+    other = _make_mock_point(skill_id="s2", trigger="Fix Y")
+
+    async def _results(*_args, **_kwargs):
+        return [kept, other], False
+
+    monkeypatch.setattr("app.skills.api.search_skill_points", _results)
+    app = _make_app(mock_vector, mock_settings, wired_replay_emitter)
+
+    async with _asgi_client(app) as client:
+        resp = await client.get(
+            "/skills",
+            params={"record_recall": True},
+            headers={"X-Session-Id": "sess-skill-1", "X-Agent-Id": "agent-a"},
+        )
+    assert resp.status_code == 200
+    assert [item["id"] for item in resp.json()] == ["s1", "s2"]
+
+    timeline = await get_session_timeline(
+        wired_replay_emitter, "sess-skill-1", event_type="memory_read"
+    )
+    events = timeline["events"]
+    assert len(events) == 1
+    payload = events[0]["payload"]
+    assert payload["memory_ids"] == ["s1", "s2"]
+    assert payload["result_count"] == 2
+    assert payload["trigger"] == "skill_recall"
+    assert "top_score" not in payload
+
+
+@pytest.mark.asyncio
+async def test_skill_listing_record_recall_false_emits_no_replay_event(
+    mock_vector, mock_settings, wired_replay_emitter
+):
+    """Dashboard browsing (record_recall unset/false) must not look like an
+    intentional skill_recall — no receipt, same as it records no usage stamp."""
+    point = _make_mock_point()
+    mock_vector._client.scroll = AsyncMock(return_value=([point], None))
+    app = _make_app(mock_vector, mock_settings, wired_replay_emitter)
+
+    async with _asgi_client(app) as client:
+        resp = await client.get(
+            "/skills",
+            params={"status": "active"},
+            headers={"X-Session-Id": "sess-skill-2", "X-Agent-Id": "agent-a"},
+        )
+    assert resp.status_code == 200
+
+    timeline = await get_session_timeline(
+        wired_replay_emitter, "sess-skill-2", event_type="memory_read"
+    )
+    assert timeline["events"] == []
+
+
+@pytest.mark.asyncio
+async def test_briefing_skills_section_emits_no_replay_event(
+    mock_vector, mock_settings, wired_replay_emitter
+):
+    """The briefing's `skills_section` never calls `list_skills` (it calls
+    `search_skill_points` directly and never touches `record_recall` or
+    `_record_skill_usage`), so it is structurally incapable of reaching the new
+    receipt branch. Proved here by exercising the real function against a
+    replay stream wired to fakeredis and asserting the stream stays empty --
+    not scoped to any one session_id, since skills_section has no Request/
+    session context to stamp one with in the first place."""
+    from app.briefing import sections as S
+
+    point = _make_mock_point()
+    mock_vector._client.scroll = AsyncMock(return_value=([point], None))
+
+    sec = await S.skills_section(mock_vector, mock_settings, goal="", project=None)
+
+    assert sec["status"] == "ok"
+    assert await wired_replay_emitter.xlen("rp:events") == 0
