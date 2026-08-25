@@ -430,3 +430,107 @@ async def test_stale_scored_skills_reset_to_neutral():
     assert del_call["points"] == ["sk-old"]
     assert set(del_call["keys"]) == {
         "skill_efficacy", "skill_efficacy_n", "skill_efficacy_updated_at"}
+
+
+# --------------------------------------------------------------------------- #
+# memory_feedback applied signal -> SKILL tally ONLY (outcome truth PR3, D3). #
+# PR2's memory_feedback replay receipt ({memory_ids, useful, ...}) is a       #
+# direct judgment on the recalled artifact. Memories already consume it via  #
+# the set_feedback Qdrant counter (rag.py:1194+), so it must feed the SKILL  #
+# tally exclusively -- routing it into `stats`/`scorable` too would          #
+# double-count the same thumb for memories.                                  #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_memory_feedback_merges_into_skill_tally():
+    """A skill graded 1/1 by exposure (memory_read + successful session) plus
+    a useful:false memory_feedback thumb must land at s=1, n=2 -- strictly
+    lower than the exposure-only 1/1 efficacy."""
+    evals = {"s1": {"task_result": "success", "task_result_source": "self_reported"}}
+    events = {"s1": [
+        {"event_type": "memory_read", "payload": {"memory_ids": ["sk1"]}},
+        {"event_type": "memory_feedback",
+         "payload": {"memory_ids": ["sk1"], "useful": False}},
+    ]}
+    v = _vector(point_types={"sk1": {"memory_type": "skill"}})
+    out = await run_pass(_redis_with(evals, ["s1"]), v, _settings(),
+                         bridge_statuses={}, events_fn=_events_fn(events))
+    assert out["skills_scored"] == 1
+    writes = {c.kwargs["points"][0]: c.kwargs["payload"]
+              for c in v._client.set_payload.call_args_list}
+    assert writes["sk1"]["skill_efficacy"] == round(compute_efficacy(1, 2, 5), 4)
+    assert writes["sk1"]["skill_efficacy_n"] == 2
+    assert writes["sk1"]["skill_efficacy"] < round(compute_efficacy(1, 1, 5), 4)
+
+
+@pytest.mark.asyncio
+async def test_memory_feedback_double_count_guard_owm_efficacy_unchanged():
+    """CRITICAL invariant: a memory with BOTH exposure (memory_read, 1/1
+    success) AND a memory_feedback thumb must have an owm_efficacy IDENTICAL
+    to the exposure-only figure -- proving the feedback event never reaches
+    `scorable` (it's already counted for memories via the set_feedback
+    Qdrant counter, rag.py:1194+)."""
+    evals = {"s1": {"task_result": "success", "task_result_source": "self_reported"}}
+    events = {"s1": [
+        {"event_type": "memory_read", "payload": {"memory_ids": ["m1"]}},
+        {"event_type": "memory_feedback",
+         "payload": {"memory_ids": ["m1"], "useful": False}},
+    ]}
+    v = _vector(point_types={"m1": {"memory_type": "episodic"}})
+    out = await run_pass(_redis_with(evals, ["s1"]), v, _settings(),
+                         bridge_statuses={}, events_fn=_events_fn(events))
+    assert out["memories_scored"] == 1
+    writes = {c.kwargs["points"][0]: c.kwargs["payload"]
+              for c in v._client.set_payload.call_args_list}
+    assert writes["m1"]["owm_efficacy"] == round(compute_efficacy(1, 1, 5), 4)
+    assert writes["m1"]["owm_n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_useful_true_feedback_raises_skill_tally_vs_exposure_failure():
+    """An exposure-graded failure (0/1) with a useful:true thumb on top must
+    score STRICTLY higher than the same exposure-failure with no feedback."""
+    evals = {"s1": {"task_result": "failure", "task_result_source": "self_reported"}}
+    control_events = {"s1": [
+        {"event_type": "memory_read", "payload": {"memory_ids": ["sk1"]}},
+    ]}
+    fb_events = {"s1": [
+        {"event_type": "memory_read", "payload": {"memory_ids": ["sk1"]}},
+        {"event_type": "memory_feedback",
+         "payload": {"memory_ids": ["sk1"], "useful": True}},
+    ]}
+
+    v_control = _vector(point_types={"sk1": {"memory_type": "skill"}})
+    await run_pass(_redis_with(evals, ["s1"]), v_control, _settings(),
+                   bridge_statuses={}, events_fn=_events_fn(control_events))
+    control_writes = {c.kwargs["points"][0]: c.kwargs["payload"]
+                      for c in v_control._client.set_payload.call_args_list}
+
+    v_fb = _vector(point_types={"sk1": {"memory_type": "skill"}})
+    await run_pass(_redis_with(evals, ["s1"]), v_fb, _settings(),
+                   bridge_statuses={}, events_fn=_events_fn(fb_events))
+    fb_writes = {c.kwargs["points"][0]: c.kwargs["payload"]
+                for c in v_fb._client.set_payload.call_args_list}
+
+    assert fb_writes["sk1"]["skill_efficacy"] > control_writes["sk1"]["skill_efficacy"]
+
+
+@pytest.mark.asyncio
+async def test_feedback_only_skill_scored_via_union():
+    """A skill with in-window feedback but NO memory_read exposure this pass
+    still gets retrieved and scored -- the retrieve driver is the union of
+    `stats` and `feedback_stats` keys, not `stats` alone."""
+    evals = {"s1": {"task_result": "success", "task_result_source": "self_reported"}}
+    events = {"s1": [
+        {"event_type": "memory_feedback",
+         "payload": {"memory_ids": ["sk1"], "useful": True}},
+    ]}
+    v = _vector(point_types={"sk1": {"memory_type": "skill"}})
+    out = await run_pass(_redis_with(evals, ["s1"]), v, _settings(),
+                         bridge_statuses={}, events_fn=_events_fn(events))
+    assert out["skills_scored"] == 1
+    writes = {c.kwargs["points"][0]: c.kwargs["payload"]
+              for c in v._client.set_payload.call_args_list}
+    assert writes["sk1"]["skill_efficacy"] == round(compute_efficacy(1, 1, 5), 4)
+    assert writes["sk1"]["skill_efficacy_n"] == 1

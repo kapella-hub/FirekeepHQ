@@ -121,6 +121,11 @@ async def run_pass(replay_r, vector, settings, *,
 
     # memory_id -> agent_id -> [successes, n] (n capped per agent at write-out)
     stats: dict[str, dict[str, list[int]]] = {}
+    # D3 (PR2 memory_feedback applied signal): a SEPARATE tally, merged into
+    # SKILL scores only (retrieve step below). Memories already consume
+    # memory_feedback via the set_feedback Qdrant counter (rag.py:1194+), so
+    # folding it into `stats` too would double-count the same thumb.
+    feedback_stats: dict[str, dict[str, list[int]]] = {}
     for sid_raw in session_ids:
         sid = sid_raw.decode() if isinstance(sid_raw, bytes) else sid_raw
         out["sessions_scanned"] += 1
@@ -147,6 +152,30 @@ async def run_pass(replay_r, vector, settings, *,
                 for m in ids:
                     if m:
                         mem_agents.setdefault(str(m), agent)
+
+            # D3 (PR2 memory_feedback applied signal): accumulate SEPARATELY,
+            # merged into SKILL tallies only (retrieve step). Memories are
+            # already counted via the set_feedback counter (rag.py:1194+), so
+            # feeding these into `stats` would double-count the same thumb.
+            # Placed BEFORE the `if not mem_agents: continue` guard below so a
+            # feedback-only session (no memory_read) still records.
+            for ev in (all_events or []):
+                if ev.get("event_type") != "memory_feedback":
+                    continue
+                fagent = str(ev.get("agent_id") or "unknown")
+                fp = ev.get("payload") or {}
+                fuseful = fp.get("useful")
+                if fuseful is None:
+                    continue
+                for fm in (fp.get("memory_ids") or []):
+                    if not fm:
+                        continue
+                    fa = feedback_stats.setdefault(str(fm), {})
+                    fs, fn = fa.get(fagent, (0, 0))
+                    if fn >= agent_cap:
+                        continue
+                    fa[fagent] = [fs + (1 if fuseful else 0), fn + 1]
+
             if not mem_agents:
                 continue  # pre-OWM event (no ids stamped) or no recalls
 
@@ -165,7 +194,9 @@ async def run_pass(replay_r, vector, settings, *,
     # scores, but skills now get their own distinct skill_efficacy field.
     scorable: dict[str, tuple[int, int]] = {}
     skill_scorable: dict[str, tuple[int, int]] = {}
-    all_ids = list(stats.keys())
+    # Union with feedback_stats: a skill with in-window feedback but no
+    # in-window memory_read exposure must still be retrieved and scored.
+    all_ids = list(set(stats.keys()) | set(feedback_stats.keys()))
     for i in range(0, len(all_ids), 100):
         batch = all_ids[i:i + 100]
         try:
@@ -183,8 +214,14 @@ async def run_pass(replay_r, vector, settings, *,
             s_total = sum(v[0] for v in per_agent.values())
             n_total = sum(v[1] for v in per_agent.values())
             if payload.get("memory_type") == "skill":
-                if n_total:
-                    skill_scorable[str(pt.id)] = (s_total, n_total)
+                # D3: merge in the memory_feedback applied signal (skills
+                # only — the memory `else` branch below stays exposure-only).
+                fa = feedback_stats.get(str(pt.id)) or {}
+                fb_s = sum(v[0] for v in fa.values())
+                fb_n = sum(v[1] for v in fa.values())
+                s_all, n_all = s_total + fb_s, n_total + fb_n
+                if n_all:
+                    skill_scorable[str(pt.id)] = (s_all, n_all)
                 continue
             if n_total:
                 scorable[str(pt.id)] = (s_total, n_total)   # memory path, unchanged
