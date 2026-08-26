@@ -352,6 +352,64 @@ def test_max_tasks_caps_the_run(cfg_env):
     assert len(rec.named("relay_task_update")) == 2
 
 
+def test_oldest_pending_tasks_are_requested_and_drained_first(cfg_env):
+    newest = {**_task(task_id="task-new", description="session_id=new"), "created_at": 30}
+    oldest = {**_task(task_id="task-old", description="session_id=old"), "created_at": 10}
+    middle = {**_task(task_id="task-mid", description="session_id=mid"), "created_at": 20}
+    rec = _Recorder({"relay_task_list": {"tasks": [oldest, middle, newest], "count": 3}})
+
+    out = nightshift.run(max_tasks=2, call_tool=rec, post_json=_llm_ok(_SYNTH),
+                         get_json=lambda url, *, headers, timeout=None, verify=True: {"data": []})
+
+    assert out["distilled"] == 2
+    assert rec.named("relay_task_list")[0][2]["oldest_first"] is True
+    assert [call[2]["task_id"] for call in rec.named("relay_task_update")] == ["task-old", "task-mid"]
+
+
+def test_old_relay_schema_falls_back_and_sorts_its_page_locally(cfg_env):
+    """The REAL fallback trigger: a pre-upgrade fastmcp relay does not raise a
+    transport error for an unknown arg — it answers 200 with an isError tool
+    RESULT, which call_tool unwraps to a plain error STRING (no in-band JSON-RPC
+    `error` member), not a dict. Proves the retry path fires on that shape."""
+    newest = {**_task(task_id="task-new", description="session_id=new"), "created_at": 30}
+    oldest = {**_task(task_id="task-old", description="session_id=old"), "created_at": 10}
+
+    def listing(arguments):
+        if arguments.get("oldest_first"):
+            return "Error executing tool relay_task_list: unexpected keyword argument 'oldest_first'"
+        assert arguments == {"status": "pending", "limit": 50}
+        return {"tasks": [newest, oldest], "count": 2}
+
+    rec = _Recorder({"relay_task_list": listing})
+    out = nightshift.run(max_tasks=1, call_tool=rec, post_json=_llm_ok(_SYNTH),
+                         get_json=lambda url, *, headers, timeout=None, verify=True: {"data": []})
+
+    assert out["distilled"] == 1
+    assert len(rec.named("relay_task_list")) == 2
+    assert rec.named("relay_task_update")[0][2]["task_id"] == "task-old"
+
+
+def test_old_relay_schema_falls_back_on_transport_error_too(cfg_env):
+    """Belt-and-braces: if a relay ever DOES raise TransportError for the new args
+    (a genuine network blip mid-negotiation, not just an unknown-arg rejection),
+    the retry still fires rather than aborting the shift."""
+    newest = {**_task(task_id="task-new", description="session_id=new"), "created_at": 30}
+    oldest = {**_task(task_id="task-old", description="session_id=old"), "created_at": 10}
+
+    def listing(arguments):
+        if arguments.get("oldest_first"):
+            raise nightshift.transport.TransportError("unexpected argument oldest_first")
+        return {"tasks": [newest, oldest], "count": 2}
+
+    rec = _Recorder({"relay_task_list": listing})
+    out = nightshift.run(max_tasks=1, call_tool=rec, post_json=_llm_ok(_SYNTH),
+                         get_json=lambda url, *, headers, timeout=None, verify=True: {"data": []})
+
+    assert out["distilled"] == 1
+    assert len(rec.named("relay_task_list")) == 2
+    assert rec.named("relay_task_update")[0][2]["task_id"] == "task-old"
+
+
 # --------------------------------------------------------------------------- #
 # Adversarial-review fixes (wf_02954176): the mock-invisible failure classes  #
 # --------------------------------------------------------------------------- #

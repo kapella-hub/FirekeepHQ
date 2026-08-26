@@ -296,6 +296,14 @@ def _relay_ok(resp: Any) -> bool:
     return isinstance(resp, dict) and not resp.get("error")
 
 
+def _task_created_at(task: dict) -> float:
+    """Stable fallback ordering for pre-upgrade Relay servers."""
+    try:
+        return float(task.get("created_at"))
+    except (TypeError, ValueError):
+        return float("inf")
+
+
 def run(max_tasks: int = _DEFAULT_MAX_TASKS, dry_run: bool = False, *,
         call_tool: Callable[..., Any] = _mcp.call_tool,
         post_json: Callable[..., Any] = transport.post_json,
@@ -361,10 +369,31 @@ def run(max_tasks: int = _DEFAULT_MAX_TASKS, dry_run: bool = False, *,
     seen_sessions: set[str] = set()
     stop_shift = False
     try:
-        listing = call_tool("relay", "relay_task_list",
-                            {"status": "pending", "limit": 50}, cfg=cfg)
-        tasks = [t for t in (listing.get("tasks") or [])
-                 if t.get("title") == _TASK_TITLE][:max_tasks]
+        list_args = {
+            "status": "pending", "title": _TASK_TITLE,
+            "oldest_first": True, "limit": 50,
+        }
+        try:
+            listing = call_tool("relay", "relay_task_list", list_args, cfg=cfg)
+        except transport.TransportError:
+            listing = None
+        if not isinstance(listing, dict) or "tasks" not in listing:
+            # Rolling upgrades: older Relay schemas reject title/oldest_first. A
+            # pre-upgrade fastmcp server does not raise TransportError for an unknown
+            # argument — it returns a normal 200 with an isError tool RESULT, which
+            # call_tool unwraps to a plain error STRING, not a dict, since there is no
+            # in-band JSON-RPC `error` (see hooks/_mcp.py). This is a transition safety
+            # net, not an independent guarantee: the relay deploy carrying title/
+            # oldest_first support must land before or with this 1.5.4 client rollout.
+            # Their real task rows still carry created_at, so sort the returned
+            # compatibility page locally while the server update catches up.
+            listing = call_tool("relay", "relay_task_list",
+                                {"status": "pending", "limit": 50}, cfg=cfg)
+        tasks = sorted(
+            (t for t in (listing.get("tasks") or [])
+             if t.get("title") == _TASK_TITLE),
+            key=_task_created_at,
+        )[:max_tasks]
 
         for task in tasks:
             if stop_shift:  # a transient LLM loss ended the shift mid-loop

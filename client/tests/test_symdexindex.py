@@ -215,11 +215,16 @@ def test_maybe_spawn_launches_detached_reindex(monkeypatch, repo, tmp_path):
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
     assert symdexindex.maybe_spawn(_cfg(), repo, "2026-07-29") is True
     assert seen["argv"][1:] == ["-m", "firekeep_symdex.reindex", str(repo), "--incremental"]
-    # Detached, and no stream inherited from the hook process.
+    # Detached from the hook, and no stream inherited from the hook process.
     assert seen["kw"]["stdin"] is subprocess.DEVNULL
     assert seen["kw"]["stdout"] is subprocess.DEVNULL
     if os.name == "nt":
-        assert seen["kw"]["creationflags"] & subprocess.DETACHED_PROCESS
+        # A HIDDEN console, not NO console: the venv launcher re-spawns the base
+        # interpreter, and with DETACHED_PROCESS that child was handed a visible
+        # console — a Windows Terminal window on every session start (2026-08-25).
+        # See firekeep_client.background / tests/test_background.py.
+        assert seen["kw"]["creationflags"] & subprocess.CREATE_NO_WINDOW
+        assert not seen["kw"]["creationflags"] & subprocess.DETACHED_PROCESS
     else:
         assert seen["kw"]["start_new_session"] is True
 

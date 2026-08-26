@@ -432,12 +432,16 @@ def test_maybe_spawn_launches_detached_sync(maildex_home, monkeypatch):
     argv, kw = seen[0]["argv"], seen[0]["kw"]
     assert argv[0] == sys.executable
     assert argv[1:] == ["-m", "firekeep_maildex.sync", "--all", "--quiet"]
-    # Detached, and no stream inherited from the hook process.
+    # Detached from the hook, and no stream inherited from the hook process.
     assert kw["stdin"] is subprocess.DEVNULL
     assert kw["stdout"] is subprocess.DEVNULL
     assert kw["stderr"] is subprocess.DEVNULL
     if os.name == "nt":
-        assert kw["creationflags"] & subprocess.DETACHED_PROCESS
+        # A HIDDEN console, not NO console — DETACHED_PROCESS made the venv launcher's
+        # re-spawned interpreter open a Windows Terminal window on every session start
+        # (2026-08-25). See firekeep_client.background / tests/test_background.py.
+        assert kw["creationflags"] & subprocess.CREATE_NO_WINDOW
+        assert not kw["creationflags"] & subprocess.DETACHED_PROCESS
     else:
         assert kw["start_new_session"] is True
 

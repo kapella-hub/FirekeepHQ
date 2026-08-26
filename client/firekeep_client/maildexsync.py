@@ -55,7 +55,7 @@ import sys
 import time
 from pathlib import Path
 
-from firekeep_client import dexes, resolver, state
+from firekeep_client import background, dexes, resolver, state
 
 _FALSEY = ("", "0", "false", "no", "off")
 _DISABLE = ("0", "false", "no", "off")  # explicit disable values (NOT blank)
@@ -272,20 +272,9 @@ def maybe_spawn(cfg, stamp: str) -> bool:
             os.close(fd)
         except FileExistsError:
             return True  # already claimed for this interval — in flight
-        kwargs: dict = {
-            "stdin": subprocess.DEVNULL,
-            "stdout": subprocess.DEVNULL,
-            "stderr": subprocess.DEVNULL,
-            "close_fds": True,
-            # cwd is deliberately left alone: a sync reads its accounts out of
-            # accounts.json and must not hold a handle on the session's workspace.
-        }
-        if os.name == "nt":
-            kwargs["creationflags"] = (
-                subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
-            )
-        else:
-            kwargs["start_new_session"] = True  # survives the hook exit
+        kwargs = background.popen_kwargs()
+        # cwd is deliberately left alone: a sync reads its accounts out of
+        # accounts.json and must not hold a handle on the session's workspace.
         argv = [str(exe), "-m", "firekeep_maildex.sync", "--all", "--quiet"]
         try:
             subprocess.Popen(argv, **kwargs)  # noqa: S603 — fixed argv, not shell-interpolated

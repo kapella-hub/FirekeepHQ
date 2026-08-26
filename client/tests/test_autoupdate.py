@@ -72,11 +72,15 @@ def test_maybe_spawn_launches_detached_and_claims(monkeypatch, fake_exe):
     argv, kw = spawns[0]
     assert argv == [str(fake_exe), "update"]
     # Detached + non-blocking so it survives the hook exiting. The detach carrier
-    # is per-platform (autoupdate.maybe_spawn): POSIX starts a new session,
-    # Windows uses DETACHED_PROCESS creation flags.
+    # is per-platform (firekeep_client.background.popen_kwargs): POSIX starts a new
+    # session; Windows gives the launcher a HIDDEN console (CREATE_NO_WINDOW), never
+    # NO console (DETACHED_PROCESS) — `firekeep.exe` is a launcher that re-spawns
+    # python, and a console child of a console-less parent is handed a VISIBLE
+    # console: a Windows Terminal window on every session start (2026-08-25).
     if os.name == "nt":
         assert kw.get("creationflags") == (
-            subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP)
+            subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP)
+        assert not kw["creationflags"] & subprocess.DETACHED_PROCESS
     else:
         assert kw.get("start_new_session") is True
     assert kw.get("stdout") == subprocess.DEVNULL

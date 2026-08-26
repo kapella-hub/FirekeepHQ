@@ -38,7 +38,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from firekeep_client import state
+from firekeep_client import background, state
 
 _FALSEY = ("", "0", "false", "no", "off")
 _DISABLE = ("0", "false", "no", "off")  # explicit disable values (NOT blank)
@@ -95,20 +95,11 @@ def maybe_spawn(cfg, latest: str, today: str) -> bool:
             os.close(fd)
         except FileExistsError:
             return True  # already claimed today for this target — in flight
-        kwargs: dict = {
-            "stdin": subprocess.DEVNULL,
-            "stdout": subprocess.DEVNULL,
-            "stderr": subprocess.DEVNULL,
-            "close_fds": True,
-        }
-        if os.name == "nt":
-            # Fully detach so the update outlives this hook process and doesn't
-            # inherit its console.
-            kwargs["creationflags"] = (
-                subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
-            )
-        else:
-            kwargs["start_new_session"] = True  # new session: survives the hook exit
+        # Outlives this hook process and inherits none of its streams; on Windows a
+        # HIDDEN console rather than none — `firekeep.exe` is a launcher that re-spawns
+        # python, and a console-less parent hands that child a visible console (see
+        # firekeep_client.background).
+        kwargs = background.popen_kwargs()
         try:
             subprocess.Popen([str(exe), "update"], **kwargs)  # noqa: S603 — fixed argv
         except Exception:  # noqa: BLE001

@@ -15,10 +15,11 @@ firekeep_symdex.reindex` is the callable surface that was missing.
 
 Shape is lifted wholesale from `firekeep_client.autoupdate`, for the same reasons:
 
-  * DETACHED spawn. A cold index of a few hundred files takes 10-30s; the SessionStart
-    hook timeout is 15s. Running it inline would trade a missing index for a hung
-    session start, which is strictly worse — the briefing is the thing the user is
-    actually waiting on.
+  * Background spawn (`background.popen_kwargs`). A cold index of a few hundred files
+    takes 10-30s; the SessionStart hook timeout is 15s. Running it inline would trade
+    a missing index for a hung session start, which is strictly worse — the briefing
+    is the thing the user is actually waiting on. (On Windows that means a HIDDEN
+    console, not no console — the helper's docstring has the Terminal-window story.)
   * ATOMIC O_EXCL claim. Two windows opening on the same repo together would otherwise
     both spawn an index writing the SAME `<root>/local-<name>.json`, and the loser's
     partial write is what the next session loads.
@@ -45,7 +46,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from firekeep_client import state
+from firekeep_client import background, state
 
 _FALSEY = ("", "0", "false", "no", "off")
 _DISABLE = ("0", "false", "no", "off")  # explicit disable values (NOT blank)
@@ -215,20 +216,9 @@ def maybe_spawn(cfg, folder: Path, stamp: str) -> bool:
             os.close(fd)
         except FileExistsError:
             return True  # already claimed for this (folder, stamp) — in flight
-        kwargs: dict = {
-            "stdin": subprocess.DEVNULL,
-            "stdout": subprocess.DEVNULL,
-            "stderr": subprocess.DEVNULL,
-            "close_fds": True,
-            # cwd is deliberately NOT the target folder: an index run must not hold a
-            # handle on a directory the user may delete or switch branches under.
-        }
-        if os.name == "nt":
-            kwargs["creationflags"] = (
-                subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
-            )
-        else:
-            kwargs["start_new_session"] = True  # survives the hook exit
+        kwargs = background.popen_kwargs()
+        # cwd is deliberately NOT the target folder: an index run must not hold a
+        # handle on a directory the user may delete or switch branches under.
         argv = [
             str(exe), "-m", "firekeep_symdex.reindex", str(folder), "--incremental",
         ]
