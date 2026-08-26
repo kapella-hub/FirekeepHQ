@@ -199,5 +199,13 @@ def render_briefing(*, agent_id: str, goal: str, sections: dict[str, Section],
             lines.append(f"⚠️ {w}")
     emit("dlq", _dlq)
 
+    # PR5 D2/D3: the grading-nudge treatment section, emitted LAST — it is an
+    # instruction about how the session should END, so it is the final thing
+    # read. Verbatim: the text is the registered intervention.
+    def _nudge(d):
+        if d.get("shown") and d.get("text"):
+            lines.append(d["text"])
+    emit("grading_nudge", _nudge)
+
     lines.append("=== END BRIEFING ===")
     return "\n".join(lines)

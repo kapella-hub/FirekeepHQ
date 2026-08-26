@@ -11,15 +11,17 @@ from app.briefing import sections as S
 from app.briefing.api import create_briefing_router
 from app.version import get_version_info
 
-# The 13 sections that MUST always be present (fail-loud: never omitted).
+# The 14 sections that MUST always be present (fail-loud: never omitted).
 # `observed` is the N=1 learning surface (descriptive, unvalidated) added in the
 # n1-learning-loop work — it always ships alongside the original 11. `profile`
 # (Dreaming Task 8) is the per-member person profile written by the nightly
 # dream pass — it always ships too, degrading to "empty" when none exists yet.
+# `grading_nudge` (outcome truth PR5) is the dark-deployed treatment section —
+# it always ships, degrading to "empty" while GRADING_NUDGE_ENABLED is False.
 ALL_SECTIONS = {
     "environment", "tasks", "bulletins", "quality", "strategy_tips", "observed",
     "cross_agent", "skills", "vault", "discipline", "dlq", "resumable_sessions",
-    "profile",
+    "profile", "grading_nudge",
 }
 
 
@@ -206,3 +208,43 @@ def test_vault_section_still_fails_loud_for_an_admin_caller(monkeypatch):
     withheld = asyncio.run(vault_section(["memory:read"]))
     assert withheld["status"] == "empty"
     assert withheld["data"]["omitted_reason"] == "insufficient scope"
+
+
+# --- grading nudge envelope + fault isolation (outcome truth PR5) ---------
+
+def test_briefing_envelope_carries_experiment_group(monkeypatch):
+    """D5: the arm delivered to the briefing envelope must be the SAME arm
+    computed from the verified identity's member_id — not a fresh random
+    draw. AUTH_ENABLED is off in this minimal app, so the caller is the
+    anonymous/deployment-owner principal; compute the expected arm the same
+    way the route does, from that same member_id, rather than hardcoding it.
+    """
+    from auth.experiment import experiment_group
+    from auth.principal import anonymous_principal
+
+    client = TestClient(_make_app(monkeypatch))
+    resp = client.get("/briefing?agent_id=moganes&goal=g")
+    body = resp.json()
+    assert "experiment_group" in body
+    expected = experiment_group(anonymous_principal()["member_id"])
+    assert body["experiment_group"] == expected
+
+
+def test_briefing_survives_grading_nudge_section_raising(monkeypatch):
+    """Section fault isolation (spec Testing bullet 4): briefing availability
+    is never hostage to the nudge section. A raise there degrades only that
+    one section to 'unavailable' — the route still returns 200 with a full
+    rendered briefing.
+    """
+    async def _boom(*_a, **_k):
+        raise RuntimeError("nudge backend down")
+    monkeypatch.setattr(S, "grading_nudge_section", _boom)
+
+    client = TestClient(_make_app(monkeypatch))
+    resp = client.get("/briefing?agent_id=moganes&goal=g")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["sections"]["grading_nudge"]["status"] == "unavailable"
+    assert body["degraded"] is True
+    # The rest of the briefing is unaffected -- still a full envelope.
+    assert set(body["sections"].keys()) == ALL_SECTIONS

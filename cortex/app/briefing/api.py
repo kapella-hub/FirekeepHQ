@@ -20,6 +20,7 @@ from typing import Any, Awaitable
 
 from fastapi import APIRouter, Depends, Query, Request
 
+from auth.experiment import experiment_group
 from auth.middleware import require_scope
 
 from app.config import get_settings
@@ -69,6 +70,9 @@ def create_briefing_router(section_timeout: float = 2.0) -> APIRouter:
         scopes = identity.get("scopes", [])
         briefing_id = uuid.uuid4().hex
         ab_group = random.choice(["treatment", "control"])
+        # PR5 D1: member-level arm, from the SAME verified member string
+        # bridge later stamps on the session — delivered arm == recorded arm.
+        arm = experiment_group(identity.get("member_id"))
 
         # Section name -> coroutine. Order here is irrelevant (gathered
         # concurrently); render.py imposes the display order.
@@ -88,6 +92,7 @@ def create_briefing_router(section_timeout: float = 2.0) -> APIRouter:
             "discipline": S.discipline_section(st.redis_client, st.replay_redis),
             "dlq": S.dlq_section(),
             "resumable_sessions": S.resumable_sessions_section(st.http_client, settings, agent_id),
+            "grading_nudge": S.grading_nudge_section(st.replay_redis, briefing_id, arm),
         }
 
         names = list(builders.keys())
@@ -109,6 +114,7 @@ def create_briefing_router(section_timeout: float = 2.0) -> APIRouter:
             "goal": goal,
             "project": project,
             "briefing_id": briefing_id,
+            "experiment_group": arm,
             "degraded": degraded,
             "sections": sections,
             "instructions": instructions,

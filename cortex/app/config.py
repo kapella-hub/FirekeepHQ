@@ -517,6 +517,15 @@ class Settings(BaseSettings):
     # Pattern Experiments (datasets + statistical framework)
     PATTERN_EXPERIMENTS_ENABLED: bool = False
 
+    # Outcome truth PR5 (D4): the controlled grading-nudge experiment. Ships
+    # dark — the flip to True is T0, a dated act recorded in the spec's
+    # addendum, never a default. GRADING_NUDGE_T0 is set at the same moment
+    # (ISO-8601 UTC): the arm_comparison readout admits only sessions with
+    # created_at >= T0, so an empty T0 means "not started" even if the flag
+    # were flipped alone.
+    GRADING_NUDGE_ENABLED: bool = False
+    GRADING_NUDGE_T0: str = ""
+
     # Validation (promotion ladder + A/B tip effectiveness) needs session volume a
     # small team won't hit for months; freeze it until then. Detectors + the N=1
     # "observed" briefing surface are unaffected. See docs/STRATEGY.md.
