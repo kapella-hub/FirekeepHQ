@@ -86,6 +86,7 @@ export interface BootstrapResult {
 
 export type StudioActionResult =
   | BootstrapResult
+  | { readonly type: "error"; readonly message: string }
   | { readonly type: "state"; readonly snapshot: StudioSnapshot; readonly sessions?: readonly StudioSessionSummary[]; readonly events?: readonly RuntimeEvent[] }
   | { readonly type: "command"; readonly result: CommandResult; readonly snapshot: StudioSnapshot; readonly sessions: readonly StudioSessionSummary[]; readonly events: readonly RuntimeEvent[] }
   | { readonly type: "completions"; readonly items: readonly CommandCompletion[] }

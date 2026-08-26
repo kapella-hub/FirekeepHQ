@@ -93,8 +93,59 @@ function terminateProcess(child: ChildProcessWithoutNullStreams, killTree: boole
 }
 
 /** Terminate a Studio-owned runtime and every subprocess it launched. */
-export function terminateProcessTree(child: ChildProcessWithoutNullStreams): void {
-  terminateProcess(child, true);
+export async function terminateProcessTree(child: ChildProcessWithoutNullStreams): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  const closed = waitForProcessClose(child, 7_500);
+  if (process.platform === "win32" && child.pid) {
+    await killWindowsProcessTree(child);
+  } else {
+    terminateProcess(child, true);
+  }
+  await closed;
+}
+
+async function killWindowsProcessTree(child: ChildProcessWithoutNullStreams): Promise<void> {
+  const killer = spawn("taskkill.exe", ["/pid", String(child.pid), "/t", "/f"], {
+    stdio: "ignore",
+    windowsHide: true,
+  });
+  await new Promise<void>((resolve) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (fallback: boolean): void => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      if (fallback && child.exitCode === null && child.signalCode === null) child.kill();
+      resolve();
+    };
+    killer.once("error", () => finish(true));
+    killer.once("exit", (code) => finish(code !== 0));
+    timer = setTimeout(() => {
+      killer.kill();
+      finish(true);
+    }, 5_000);
+    timer.unref();
+  });
+}
+
+async function waitForProcessClose(child: ChildProcessWithoutNullStreams, timeoutMs: number): Promise<void> {
+  await new Promise<void>((resolve) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      child.off("close", finish);
+      child.off("error", finish);
+      resolve();
+    };
+    child.once("close", finish);
+    child.once("error", finish);
+    timer = setTimeout(finish, timeoutMs);
+    timer.unref();
+  });
 }
 
 export function spawnRuntime(

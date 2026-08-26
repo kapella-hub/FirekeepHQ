@@ -44,7 +44,7 @@ export class JsonLineDecoder {
 export interface JsonlTransport {
   write(line: string): void;
   end(line?: string): void;
-  kill(): void;
+  kill(): void | Promise<void>;
   onStdout(listener: (chunk: Uint8Array | string) => void): () => void;
   onStderr(listener: (chunk: Uint8Array | string) => void): () => void;
   onExit(listener: (code: number | null, signal: NodeJS.Signals | null) => void): () => void;
@@ -74,7 +74,7 @@ export interface RpcPeer {
   onNotification(handler: NotificationHandler): () => void;
   onRequest(method: string, handler: RequestHandler): () => void;
   stderr(): string;
-  close(): void;
+  close(): void | Promise<void>;
 }
 
 export class JsonlRpcPeer implements RpcPeer {
@@ -89,6 +89,7 @@ export class JsonlRpcPeer implements RpcPeer {
   #nextId = 1;
   #stderr = "";
   #closed = false;
+  #closePromise: Promise<void> | null = null;
 
   constructor(transport: JsonlTransport, options: JsonlRpcPeerOptions = {}) {
     this.#transport = transport;
@@ -157,10 +158,11 @@ export class JsonlRpcPeer implements RpcPeer {
 
   stderr(): string { return this.#stderr; }
 
-  close(): void {
-    if (this.#closed) return;
-    this.#transport.kill();
+  close(): Promise<void> {
+    if (this.#closePromise) return this.#closePromise;
     this.#terminate(new Error("JSONL peer closed"));
+    this.#closePromise = Promise.resolve(this.#transport.kill());
+    return this.#closePromise;
   }
 
   #receive(raw: unknown): void {
@@ -244,7 +246,7 @@ export class ChildProcessJsonlTransport implements JsonlTransport {
 
   write(line: string): void { this.#child.stdin.write(line); }
   end(line?: string): void { this.#child.stdin.end(line); }
-  kill(): void { terminateProcessTree(this.#child); }
+  kill(): Promise<void> { return terminateProcessTree(this.#child); }
   onStdout(listener: (chunk: Uint8Array | string) => void): () => void { this.#child.stdout.on("data", listener); return () => this.#child.stdout.off("data", listener); }
   onStderr(listener: (chunk: Uint8Array | string) => void): () => void { this.#child.stderr.on("data", listener); return () => this.#child.stderr.off("data", listener); }
   onExit(listener: (code: number | null, signal: NodeJS.Signals | null) => void): () => void { this.#child.on("exit", listener); return () => this.#child.off("exit", listener); }

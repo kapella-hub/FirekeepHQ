@@ -112,7 +112,7 @@ async function createController(): Promise<StudioController> {
   activeDecisionReceiver = receiver;
   Object.assign(process.env, receiverEnvironment);
   const service = new StudioService({
-    runtimes: createRuntimeRegistry(secrets),
+    runtimes: createRuntimeRegistry(secrets, app.getVersion()),
     settings: new JsonSettingsStore<StudioPersistedState>(join(userData, "settings.json"), { onWarning: warning }),
     sessions: new JsonlSessionStore(join(userData, "sessions"), warning),
     cwd: () => app.getPath("home"),
@@ -217,7 +217,7 @@ app.whenReady().then(async () => {
     ...(details.mediaType ? { mediaType: details.mediaType } : {}),
   }));
   ipcMain.handle(STUDIO_INVOKE_CHANNEL, async (_event, action: unknown) => {
-    const result = await controller.dispatch(action);
+    const result = await controller.invoke(action);
     if (result.type === "bootstrap" || result.type === "state" || result.type === "command") applyThemeToAllWindows(result.snapshot.theme);
     if (result.type === "state" || result.type === "command") broadcast({ type: "snapshot", snapshot: result.snapshot });
     if (result.type === "state" && result.sessions) broadcast({ type: "sessions", sessions: result.sessions });

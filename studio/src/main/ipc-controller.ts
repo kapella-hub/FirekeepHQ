@@ -91,6 +91,15 @@ export class StudioController {
     readonly updates?: StudioUpdateControl,
   ) {}
 
+  async invoke(rawAction: unknown): Promise<StudioActionResult> {
+    try {
+      return await this.dispatch(rawAction);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : typeof error === "string" ? error : "Studio action failed";
+      return { type: "error", message: message.trim() || "Studio action failed" };
+    }
+  }
+
   async dispatch(rawAction: unknown): Promise<StudioActionResult> {
     const action = parseStudioAction(rawAction);
     if (action.type === "bootstrap") {

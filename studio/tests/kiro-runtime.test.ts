@@ -16,7 +16,7 @@ function request(overrides: Partial<RunRequest> = {}): RunRequest {
   };
 }
 
-function testAgent(): acp.AgentApp {
+function testAgent(includeUsage = true): acp.AgentApp {
   return acp.agent({ name: "test-kiro" })
     .onRequest(acp.methods.agent.initialize, () => ({
       protocolVersion: acp.PROTOCOL_VERSION,
@@ -52,7 +52,9 @@ function testAgent(): acp.AgentApp {
           content: [{ type: "diff", path: "a", oldText: "x", newText: "y" }],
         },
       });
-      return { stopReason: "end_turn", usage: { totalTokens: 20, inputTokens: 14, outputTokens: 6, thoughtTokens: 2 } };
+      return includeUsage
+        ? { stopReason: "end_turn", usage: { totalTokens: 20, inputTokens: 14, outputTokens: 6, thoughtTokens: 2 } }
+        : { stopReason: "end_turn" };
     });
 }
 
@@ -86,6 +88,20 @@ describe("KiroRuntime", () => {
 
     expect(result.nativeSessionId).toBe("kiro-session");
     expect(approve).not.toHaveBeenCalled();
+  });
+
+  it("completes honestly when the provider omits optional ACP usage", async () => {
+    const events: RuntimeEventPayload[] = [];
+    const runtime = new KiroRuntime({
+      agentName: null,
+      targetFactory: () => ({ target: testAgent(false), close: () => undefined, stderr: () => "" }),
+    });
+
+    const result = await runtime.run(request({ permissionMode: "safe" }), (event) => events.push(event), new AbortController().signal);
+
+    expect(result).toMatchObject({ nativeSessionId: "kiro-session", finalText: "Found it." });
+    expect(result.usage).toBeUndefined();
+    expect(events.some((event) => event.kind === "usage.updated")).toBe(false);
   });
 
   it("reads provider-owned Kiro authentication", async () => {

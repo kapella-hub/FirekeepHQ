@@ -110,7 +110,9 @@ export function App(): React.JSX.Element {
   const invoke = useCallback(async (action: StudioAction): Promise<StudioActionResult> => {
     try {
       setError(null);
-      return await window.firekeepStudio.invoke(action);
+      const result = await window.firekeepStudio.invoke(action);
+      if (result.type === "error") throw new Error(result.message);
+      return result;
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message.replace(/^Error invoking remote method '[^']+':\s*/i, ""));
@@ -264,12 +266,15 @@ export function App(): React.JSX.Element {
     transcript.scrollTo({ top: transcript.scrollHeight, behavior: "auto" });
   }, [events, commandCards.length, snapshot?.activeSessionId]);
 
+  const hasPrimaryResponse = events.some((event) => event.payload.kind === "message.completed" && event.payload.role === "assistant");
+
   const runReview = useCallback(async (): Promise<void> => {
+    if (busy || !snapshot?.reviewerRuntimeIds.length || !hasPrimaryResponse) return;
     setBusy(true);
     try { applyResult(await invoke({ type: "review.run" })); }
     catch { /* invoke surfaced the actionable error. */ }
     finally { setBusy(false); }
-  }, [applyResult, invoke]);
+  }, [applyResult, busy, hasPrimaryResponse, invoke, snapshot?.reviewerRuntimeIds.length]);
 
   const showAgentGrid = useCallback((): void => {
     if (!bootstrap || !snapshot) return;
@@ -527,7 +532,7 @@ export function App(): React.JSX.Element {
             <Eye size={15} /><span className="reviewer-label">Reviewers</span>
             {!snapshot.reviewerRuntimeIds.length ? <span className="reviewer-empty">No reviewers</span> : null}
             {snapshot.reviewerRuntimeIds.map((id) => <span className="reviewer-chip" key={id}>{runtimeName(bootstrap.runtimes, id)}<button aria-label={`Remove ${id} reviewer`} onClick={() => ignore(invoke({ type: "reviewer.remove", runtimeId: id }).then(applyResult))}><X size={12} /></button></span>)}
-            <button className="review-now" title={snapshot.reviewerRuntimeIds.length ? "Run a review now" : "Add a reviewer in Runtime Center"} disabled={!snapshot.reviewerRuntimeIds.length || busy} onClick={() => ignore(runReview())}>Run now</button>
+            <button className="review-now" title={!snapshot.reviewerRuntimeIds.length ? "Add a reviewer in Runtime Center" : !hasPrimaryResponse ? "Send a primary message before running a review" : "Run a review now"} disabled={!snapshot.reviewerRuntimeIds.length || !hasPrimaryResponse || busy} onClick={() => ignore(runReview())}>Run now</button>
           </div>
           <div className="layout-controls">
             <button type="button" className={`layout-toggle ${view === "agents" ? "active" : ""}`} aria-label={view === "agents" ? "Close agent grid" : "Open agent grid"} aria-pressed={view === "agents"} title="Toggle agent grid (Ctrl/Cmd+\\)" onClick={toggleAgentGrid}><PanelsTopLeft size={14} /><span>{view === "agents" ? "Conversation" : "Agents"}</span></button>
@@ -572,6 +577,8 @@ export function App(): React.JSX.Element {
       {rightOpen ? <aside className="inspector" aria-label="Studio inspector">
         <MissionPanel
           mission={snapshot.mission}
+          workspacePath={snapshot.workspacePath}
+          primaryRuntimeId={snapshot.primaryRuntimeId}
           busy={busy}
           onAction={(action) => ignore(controlMission(action))}
           onCommand={(value) => { setComposer(value); composerRef.current?.focus(); }}
@@ -671,11 +678,15 @@ function RuntimeManagerDialog({
 
 function MissionPanel({
   mission,
+  workspacePath,
+  primaryRuntimeId,
   busy,
   onAction,
   onCommand,
 }: {
   readonly mission: MissionSnapshot | null;
+  readonly workspacePath: string | null;
+  readonly primaryRuntimeId: string | null;
   readonly busy: boolean;
   readonly onAction: (action: StudioAction) => void;
   readonly onCommand: (value: string) => void;
@@ -690,16 +701,29 @@ function MissionPanel({
   for (const receipt of mission.checkReceipts) latestChecks.set(receipt.checkId, receipt);
   const passed = mission.checks.filter((check) => latestChecks.get(check.id)?.passed).length;
   const cancellable = !["succeeded", "partial", "failed", "cancelled"].includes(mission.phase);
+  const effectiveWorkspace = workspacePath;
+  const effectivePrimary = mission.primaryRuntimeId ?? primaryRuntimeId;
+  const runBlocker = mission.phase !== "draft"
+    ? null
+    : !effectiveWorkspace
+      ? "Choose an explicit workspace before running"
+      : !effectivePrimary
+        ? "Choose a mission primary before running"
+        : mission.checks.length === 0
+          ? "Add at least one deterministic check before running"
+          : null;
   return <section className="inspector-section mission-section">
     <div className="section-heading"><span>Mission</span><span className={`status-pill mission-${mission.phase}`}>{mission.phase}</span></div>
     <article className="mission-card">
       <strong>{mission.goal}</strong>
-      <p>{mission.primaryRuntimeId ?? "No primary"} · attempt {mission.attempt || "—"} · {passed}/{mission.checks.length} checks passed</p>
+      <p>{effectivePrimary ?? "No primary"} · attempt {mission.attempt || "—"} · {passed}/{mission.checks.length} checks passed</p>
       <div className="mission-progress"><span style={{ width: `${mission.checks.length ? (passed / mission.checks.length) * 100 : 0}%` }} /></div>
       {mission.blockReason ? <small className="mission-block">{mission.blockReason}</small> : null}
+      {runBlocker ? <small className="mission-block">{runBlocker === "Add at least one deterministic check before running" ? "Add a deterministic check before running." : `${runBlocker}.`}</small> : null}
       {mission.outcome ? <small className="mission-outcome">{mission.outcome.taskResult} · {mission.outcome.taskResultSource}</small> : <small>Task result · unknown</small>}
       <div className="mission-actions">
-        {mission.phase === "draft" ? <button disabled={busy} className="primary-action" onClick={() => onAction({ type: "mission.run" })}>Run</button> : null}
+        {mission.phase === "draft" ? <button disabled={busy || Boolean(runBlocker)} title={runBlocker ?? "Run mission"} className="primary-action" onClick={() => onAction({ type: "mission.run" })}>Run</button> : null}
+        {mission.phase === "draft" && mission.checks.length === 0 ? <button disabled={busy} onClick={() => onCommand("/mission check add -- ")}>Add check</button> : null}
         {mission.phase === "paused" ? <button disabled={busy} className="primary-action" onClick={() => onAction({ type: "mission.continue" })}>Continue</button> : null}
         {mission.phase === "awaiting-approval" ? <button disabled={busy} className="primary-action" onClick={() => onAction({ type: "mission.complete", taskResult: "success" })}>Approve</button> : null}
         {mission.phase === "awaiting-approval" && mission.attempt - 1 < mission.maxRepairAttempts ? <button disabled={busy} onClick={() => onCommand('/mission repair --note "')}>Repair</button> : null}

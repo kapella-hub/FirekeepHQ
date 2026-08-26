@@ -68,8 +68,16 @@ describe.skipIf(!live)("installed runtime task conformance", () => {
       expect(events).toContainEqual(expect.objectContaining({ payload: expect.objectContaining({ kind: "message.completed" }) }));
       expect(events).toContainEqual(expect.objectContaining({ payload: expect.objectContaining({ kind: "tool.started" }) }));
       expect(service.snapshot().nativeSessionIds[runtimeId]).toBeTruthy();
-      expect(service.snapshot().usage.tokens).toBeGreaterThan(0);
-      expect(service.snapshot().usage.measuredRuns).toBeGreaterThan(0);
+      const usage = service.snapshot().usage;
+      expect(usage.totalRuns).toBe(1);
+      if (usage.measuredRuns === 0) {
+        // ACP usage is explicitly optional and Kiro 2.15 can omit it. Never invent token counts.
+        expect(runtimeId).toBe("kiro");
+        expect(usage.tokens).toBe(0);
+      } else {
+        expect(usage.measuredRuns).toBe(1);
+        expect(usage.tokens).toBeGreaterThan(0);
+      }
     } finally {
       await service.shutdown();
       await rm(workspace, { recursive: true, force: true });

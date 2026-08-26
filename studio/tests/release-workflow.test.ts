@@ -8,7 +8,7 @@ describe("Studio release workflow", () => {
     const packageJson = JSON.parse(await readFile("package.json", "utf8"));
     const workflow = await readFile("../.github/workflows/studio-release.yml", "utf8");
 
-    expect(packageJson.version).toBe("0.4.0");
+    expect(packageJson.version).toBe("0.4.1");
     expect(packageJson.build.mac.target).toEqual(["dmg", "zip"]);
     expect(packageJson.build.publish).toEqual([{ provider: "generic", url: "https://github.com/kapella-hub/firekeep-dist/releases/download/studio-latest", channel: "latest" }]);
     expect(STUDIO_UPDATE_CHANNEL_URL).toBe(packageJson.build.publish[0].url);

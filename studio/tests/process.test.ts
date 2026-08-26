@@ -40,8 +40,7 @@ describe("runProcess", () => {
     const descendantPid = Number(stdout.trim());
 
     try {
-      terminateProcessTree(parent);
-      await waitFor(() => !isAlive(descendantPid), 5_000);
+      await terminateProcessTree(parent);
       expect(isAlive(descendantPid)).toBe(false);
     } finally {
       if (isAlive(descendantPid)) {

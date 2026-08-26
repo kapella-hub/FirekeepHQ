@@ -55,7 +55,7 @@ export class CodexRuntime implements AgentRuntime {
       { requestTimeoutMs: 60_000 },
     ));
     this.#versionProbe = options.versionProbe ?? (() => probeVersion(this.#command, [...this.#commandPrefix, "--version"]));
-    this.#appVersion = options.appVersion ?? "0.3.7";
+    this.#appVersion = options.appVersion ?? process.env.npm_package_version ?? "development";
     this.#loginTimeoutMs = options.loginTimeoutMs ?? 10 * 60_000;
     const firekeepMemory = options.firekeepMemory ?? installedFirekeepMemory();
     this.descriptor = {
@@ -143,7 +143,7 @@ export class CodexRuntime implements AgentRuntime {
     } finally {
       if (!retained) {
         dispose();
-        peer.close();
+        await peer.close();
       }
     }
   }
@@ -278,7 +278,7 @@ export class CodexRuntime implements AgentRuntime {
       clearTimeout(timeout);
       signal.removeEventListener("abort", abort);
       for (const dispose of disposals) dispose();
-      peer.close();
+      await peer.close();
     }
   }
 
@@ -288,7 +288,7 @@ export class CodexRuntime implements AgentRuntime {
       await this.#initialize(peer);
       return await operation(peer);
     } finally {
-      peer.close();
+      await peer.close();
     }
   }
 
@@ -298,7 +298,7 @@ export class CodexRuntime implements AgentRuntime {
     this.#pendingLogin = null;
     clearTimeout(pending.timeout);
     pending.dispose();
-    pending.peer.close();
+    void pending.peer.close();
   }
 
   async #cancelPendingLogin(loginId?: string): Promise<void> {
@@ -312,7 +312,7 @@ export class CodexRuntime implements AgentRuntime {
     } catch {
       // Closing the owning app-server process is the final cancellation fence.
     } finally {
-      pending.peer.close();
+      await pending.peer.close();
     }
   }
 

@@ -1,6 +1,6 @@
 {
   "name": "@firekeep/studio",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "private": true,
   "description": "Firekeep's runtime-neutral desktop console for local AI agents.",
   "productName": "Firekeep Studio",

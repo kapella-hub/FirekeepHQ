@@ -23,7 +23,7 @@ import { probeVersion, runProcess, spawnRuntime, terminateProcessTree, type Proc
 
 export interface AcpTargetHandle {
   readonly target: acp.Stream | acp.AgentApp;
-  readonly close: () => void;
+  readonly close: () => void | Promise<void>;
   readonly stderr: () => string;
 }
 
@@ -34,6 +34,7 @@ interface KiroRuntimeOptions {
   readonly launchLogin?: (device: boolean) => void;
   readonly versionProbe?: () => Promise<{ found: boolean; version?: string; detail: string }>;
   readonly agentName?: string | null;
+  readonly appVersion?: string;
 }
 
 interface JsonObject { readonly [key: string]: unknown }
@@ -46,6 +47,7 @@ export class KiroRuntime implements AgentRuntime {
   readonly #launchLogin: (device: boolean) => void;
   readonly #versionProbe: () => Promise<{ found: boolean; version?: string; detail: string }>;
   readonly #agentName: string | null;
+  readonly #appVersion: string;
 
   constructor(options: KiroRuntimeOptions = {}) {
     this.#command = options.command ?? (process.platform === "win32" ? "kiro-cli.exe" : "kiro-cli");
@@ -57,6 +59,7 @@ export class KiroRuntime implements AgentRuntime {
     });
     this.#versionProbe = options.versionProbe ?? (() => probeVersion(this.#command));
     this.#agentName = options.agentName === undefined ? installedFirekeepAgent() : options.agentName;
+    this.#appVersion = options.appVersion ?? process.env.npm_package_version ?? "development";
     this.descriptor = {
       id: "kiro",
       displayName: "Kiro",
@@ -135,12 +138,12 @@ export class KiroRuntime implements AgentRuntime {
     if (request.effort) args.push("--effort", request.effort);
     const handle = this.#targetFactory(args, request.cwd);
     try {
-      return await runAcpConversation(handle.target, request, sink, signal);
+      return await runAcpConversation(handle.target, request, sink, signal, this.#appVersion);
     } catch (error) {
       const stderr = handle.stderr().trim();
       throw stderr ? new Error(`${errorMessage(error)}\n${stderr}`) : error;
     } finally {
-      handle.close();
+      await handle.close();
     }
   }
 }
@@ -154,6 +157,7 @@ export async function runAcpConversation(
   request: RunRequest,
   sink: RuntimeEventSink,
   signal: AbortSignal,
+  appVersion = process.env.npm_package_version ?? "development",
 ): Promise<RunResult> {
   let finalText = "";
   let usage: RuntimeUsage | undefined;
@@ -188,7 +192,7 @@ export async function runAcpConversation(
     const initialized = await ctx.request(acp.methods.agent.initialize, {
       protocolVersion: acp.PROTOCOL_VERSION,
       clientCapabilities: {},
-      clientInfo: { name: "firekeep-studio", title: "Firekeep Studio", version: "0.3.7" },
+      clientInfo: { name: "firekeep-studio", title: "Firekeep Studio", version: appVersion },
     }, { cancellationSignal: signal });
     const cwd = request.cwd ?? process.cwd();
     if (resumableSessionId && initialized.agentCapabilities?.loadSession) {
@@ -284,7 +288,7 @@ function createProcessTarget(command: string, args: readonly string[], cwd?: str
   const input = Readable.toWeb(child.stdout) as ReadableStream<Uint8Array>;
   return {
     target: acp.ndJsonStream(output, input),
-    close: () => { terminateProcessTree(child); },
+    close: () => terminateProcessTree(child),
     stderr: () => stderr,
   };
 }

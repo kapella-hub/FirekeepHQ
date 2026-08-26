@@ -1,6 +1,6 @@
 # Firekeep Studio
 
-Firekeep Studio is Firekeep's runtime-neutral desktop agent console. Version `0.4.0`
+Firekeep Studio is Firekeep's runtime-neutral desktop agent console. Version `0.4.1`
 is a separate Electron application: it does not replace or fork the Python Client Kit.
 The kit remains the source of truth for Keep connectivity, memory, hooks, instructions,
 personal mode, and runtime configuration.
@@ -89,6 +89,15 @@ Studio has flushed its active session. macOS uses the same signed release eviden
 in-app installation is enabled only for releases signed and notarized with Apple Developer
 credentials. Until those credentials are armed, Studio opens the universal DMG explicitly
 instead of pretending an unsigned build can pass Apple's updater requirements.
+
+Version 0.4.1 prevents incomplete Mission and Review actions before they reach Electron's
+handler and returns every other operational action failure through Studio's typed IPC result.
+Draft Missions identify missing workspace, primary, or deterministic-check prerequisites and
+offer a direct check setup path; manual Review stays unavailable until a primary answer exists.
+Backend validation remains authoritative, while expected user errors stay inside the interface
+instead of escaping as Electron handler stack traces. Codex and Kiro process trees now settle
+before a run resolves, preventing Windows workspace-handle races. Live conformance also keeps
+Kiro's optional ACP usage honest when the provider omits token counts instead of inventing them.
 
 ## Runtime support
 

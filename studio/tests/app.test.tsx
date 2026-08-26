@@ -4,6 +4,7 @@ import "@testing-library/jest-dom/vitest";
 import React from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { MissionSnapshot } from "../src/core/mission.js";
 import type { StudioSnapshot } from "../src/core/studio-service.js";
 import type { StudioSessionSummary } from "../src/core/session-store.js";
 import type { RuntimeDescriptor, RuntimeEvent, RuntimeModel } from "../src/core/runtime.js";
@@ -38,12 +39,46 @@ function state(primaryRuntimeId: string | null = null): StudioSnapshot {
   };
 }
 
+function draftMission(checks: MissionSnapshot["checks"] = []): MissionSnapshot {
+  return {
+    version: 1,
+    id: "mission-1",
+    goal: "Make the behavior demonstrably correct",
+    phase: "draft",
+    createdAt: "2026-08-24T00:00:00.000Z",
+    updatedAt: "2026-08-24T00:00:00.000Z",
+    startedAt: null,
+    completedAt: null,
+    workspacePath: "C:\\workspace",
+    primaryRuntimeId: "alpha",
+    reviewerRuntimeIds: ["beta"],
+    runtimeSettings: {},
+    checks,
+    tokenBudget: 50_000,
+    maxRepairAttempts: 1,
+    attempt: 0,
+    nextAction: null,
+    nextReviewerIndex: 0,
+    measuredTokensAtStart: 0,
+    measuredTokens: 0,
+    lastPrimaryText: "",
+    manualRepairNote: null,
+    verificationPassed: null,
+    checkReceipts: [],
+    reviewReceipts: [],
+    outcome: null,
+    blockReason: null,
+    executionApprovedAt: null,
+  };
+}
+
 let pushStudioEvent: ((event: StudioPushEvent) => void) | null = null;
 
-function installBridge(options: { readonly snapshot?: StudioSnapshot; readonly sessions?: readonly StudioSessionSummary[]; readonly models?: readonly RuntimeModel[] | (() => readonly RuntimeModel[]); readonly dashboardAvailable?: boolean; readonly events?: readonly RuntimeEvent[]; readonly decisionBoard?: DecisionBoardDocument; readonly pushEvents?: readonly StudioPushEvent[]; readonly clipboardText?: string; readonly voiceInput?: VoiceInputOutcome | (() => Promise<VoiceInputOutcome>); readonly update?: StudioUpdateState; readonly updateResult?: StudioUpdateState } = {}): ReturnType<typeof vi.fn<(action: StudioAction) => Promise<StudioActionResult>>> {
+function installBridge(options: { readonly snapshot?: StudioSnapshot; readonly sessions?: readonly StudioSessionSummary[]; readonly models?: readonly RuntimeModel[] | (() => readonly RuntimeModel[]); readonly dashboardAvailable?: boolean; readonly events?: readonly RuntimeEvent[]; readonly decisionBoard?: DecisionBoardDocument; readonly pushEvents?: readonly StudioPushEvent[]; readonly clipboardText?: string; readonly voiceInput?: VoiceInputOutcome | (() => Promise<VoiceInputOutcome>); readonly update?: StudioUpdateState; readonly updateResult?: StudioUpdateState; readonly actionError?: { readonly actionType: StudioAction["type"]; readonly message: string } } = {}): ReturnType<typeof vi.fn<(action: StudioAction) => Promise<StudioActionResult>>> {
   let snapshot = options.snapshot ?? state();
   let sessions = [...(options.sessions ?? [{ id: "session-1", name: "UI test", color: "ember" as const, createdAt: "2026-08-24T00:00:00.000Z", updatedAt: "2026-08-24T00:00:00.000Z", eventCount: 0, nativeSessionIds: {} }])];
   const invoke = vi.fn(async (action: StudioAction): Promise<StudioActionResult> => {
+    if (options.actionError?.actionType === action.type) return { type: "error", message: options.actionError.message };
     if (action.type === "bootstrap") return { type: "bootstrap", appName: "Firekeep Studio", version: "0.4.0", dashboardAvailable: options.dashboardAvailable ?? true, update: options.update ?? { phase: "idle", currentVersion: "0.4.0", availableVersion: null, progressPercent: null, automatic: true, detail: "Studio checks for verified updates automatically." }, snapshot, runtimes, events: options.events ?? [], sessions };
     if (action.type === "runtime.probe") return { type: "diagnostics", items: runtimes.map((runtime) => ({ runtimeId: runtime.id, connection: { state: "ready", detail: "Ready" }, auth: { state: "connected", label: "Connected" } })) };
     if (action.type === "runtime.models") return { type: "models", runtimeId: action.runtimeId, items: typeof options.models === "function" ? options.models() : options.models ?? [] };
@@ -203,6 +238,73 @@ describe("Firekeep Studio renderer", () => {
     fireEvent.click(screen.getByRole("button", { name: "Start a mission" }));
 
     expect(screen.getByRole("textbox")).toHaveValue('/mission new "');
+  });
+
+  it("blocks invalid mission and review actions with actionable setup affordances", async () => {
+    const invoke = installBridge({
+      snapshot: {
+        ...state("alpha"),
+        workspacePath: "C:\\workspace",
+        reviewerRuntimeIds: ["beta"],
+        mission: draftMission(),
+      },
+    });
+    render(<App />);
+
+    const missionRun = await screen.findByRole("button", { name: "Run" });
+    expect(missionRun).toBeDisabled();
+    expect(missionRun).toHaveAttribute("title", "Add at least one deterministic check before running");
+    expect(screen.getByText("Add a deterministic check before running.")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add check" }));
+    expect(screen.getByRole("textbox")).toHaveValue("/mission check add -- ");
+
+    const reviewRun = screen.getByRole("button", { name: "Run now" });
+    expect(reviewRun).toBeDisabled();
+    expect(reviewRun).toHaveAttribute("title", "Send a primary message before running a review");
+    fireEvent.keyDown(window, { key: "R", ctrlKey: true, shiftKey: true });
+    expect(invoke.mock.calls.some(([action]) => action.type === "mission.run" || action.type === "review.run")).toBe(false);
+  });
+
+  it("enables mission and review actions after their prerequisites exist", async () => {
+    const base = { runId: "run-1", studioSessionId: "session-1", runtimeId: "alpha", timestamp: "2026-08-24T00:00:00.000Z" };
+    const invoke = installBridge({
+      snapshot: {
+        ...state("alpha"),
+        workspacePath: "C:\\workspace",
+        reviewerRuntimeIds: ["beta"],
+        mission: draftMission([{ id: "check-1", name: "tests", command: "npm test", timeoutMs: 60_000 }]),
+      },
+      events: [{ ...base, id: "event-1", payload: { kind: "message.completed", messageId: "message-1", role: "assistant", text: "A primary answer" }, raw: null }],
+    });
+    render(<App />);
+
+    const missionRun = await screen.findByRole("button", { name: "Run" });
+    const reviewRun = screen.getByRole("button", { name: "Run now" });
+    expect(missionRun).toBeEnabled();
+    expect(reviewRun).toBeEnabled();
+
+    fireEvent.click(missionRun);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "mission.run" }));
+    fireEvent.click(reviewRun);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "review.run" }));
+  });
+
+  it("surfaces typed action failures without an Electron handler stack", async () => {
+    installBridge({
+      snapshot: {
+        ...state("alpha"),
+        workspacePath: "C:\\workspace",
+        mission: draftMission([{ id: "check-1", name: "tests", command: "npm test", timeoutMs: 60_000 }]),
+      },
+      actionError: { actionType: "mission.run", message: "verification runner unavailable" },
+    });
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Run" }));
+
+    expect(await screen.findByText("verification runner unavailable")).toBeInTheDocument();
+    expect(screen.queryByText(/Error occurred in handler|Error invoking remote method/i)).not.toBeInTheDocument();
   });
 
   it("shows active work prominently on the Firekeep logo", async () => {

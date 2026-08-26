@@ -137,6 +137,36 @@ describe("Studio IPC controller", () => {
     await expect((await controller(openExternal, null)).dispatch({ type: "dashboard.open" })).rejects.toThrow(/dashboard.*not configured/i);
   });
 
+  it("returns typed IPC errors instead of rejecting the Electron handler", async () => {
+    const studio = await controller(undefined, null);
+    await studio.service.addReviewer("alpha");
+
+    await expect(studio.invoke({ type: "review.run" })).resolves.toEqual({
+      type: "error",
+      message: "there is no primary response to review",
+    });
+
+    await studio.service.createMission("Prove the mission path");
+    await expect(studio.invoke({ type: "mission.run" })).resolves.toEqual({
+      type: "error",
+      message: "choose an explicit workspace before running a mission",
+    });
+    await studio.service.setWorkspace("C:\\workspace");
+    await expect(studio.invoke({ type: "mission.run" })).resolves.toEqual({
+      type: "error",
+      message: "choose a mission primary before running a mission",
+    });
+    await studio.service.setPrimary("alpha");
+    await expect(studio.invoke({ type: "mission.run" })).resolves.toEqual({
+      type: "error",
+      message: "add at least one deterministic mission check before running",
+    });
+    await expect(studio.invoke({ type: "mission.run", command: "hidden" })).resolves.toMatchObject({
+      type: "error",
+      message: expect.stringMatching(/unrecognized key/i),
+    });
+  });
+
   it("delegates typed Decision Board loads and submissions without renderer fetch access", async () => {
     const url = "http://127.0.0.1:43123/board/abc";
     const decisionBoards: DecisionBoardTransport = {
