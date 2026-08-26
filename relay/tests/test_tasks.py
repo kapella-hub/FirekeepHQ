@@ -48,3 +48,33 @@ class TestDeleteTask:
         tasks = await list_tasks(redis)
         assert len(tasks) == 1
         assert tasks[0]["id"] == t2["id"]
+
+
+class TestTaskOrdering:
+    @pytest.mark.asyncio
+    async def test_oldest_first_is_explicit_and_respects_limit(self, redis):
+        oldest = await create_task(redis, "oldest")
+        middle = await create_task(redis, "middle")
+        newest = await create_task(redis, "newest")
+        await redis.zadd("nr:tasks", {
+            oldest["id"]: 10,
+            middle["id"]: 20,
+            newest["id"]: 30,
+        })
+
+        tasks = await list_tasks(redis, limit=2, oldest_first=True)
+
+        assert [task["id"] for task in tasks] == [oldest["id"], middle["id"]]
+
+    @pytest.mark.asyncio
+    async def test_filters_past_unrelated_rows_instead_of_stopping_at_scan_window(self, redis):
+        wanted = await create_task(redis, "distill_session")
+        for index in range(25):
+            await create_task(redis, f"unrelated-{index}")
+        await redis.zadd("nr:tasks", {wanted["id"]: 1})
+
+        tasks = await list_tasks(
+            redis, limit=1, oldest_first=False, title="distill_session",
+        )
+
+        assert [task["id"] for task in tasks] == [wanted["id"]]

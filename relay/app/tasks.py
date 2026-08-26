@@ -75,30 +75,47 @@ async def list_tasks(
     assignee: str | None = None,
     status: str | None = None,
     limit: int = 20,
+    oldest_first: bool = False,
+    title: str | None = None,
 ) -> list[dict]:
-    """List tasks, optionally filtered by assignee and/or status."""
-    # Get all task IDs ordered by creation time (newest first)
-    task_ids = await redis.zrevrange(TASK_INDEX_KEY, 0, limit * 3)
-
+    """List tasks with explicit ordering and optional field filters."""
+    limit = max(0, int(limit))
+    if limit == 0:
+        return []
+    read_range = redis.zrange if oldest_first else redis.zrevrange
+    batch_size = max(20, limit * 3)
     results = []
-    for tid in task_ids:
-        key = f"{TASK_PREFIX}{tid}"
-        raw = await redis.hgetall(key)
-        if not raw:
-            # Task expired, clean up index
-            await redis.zrem(TASK_INDEX_KEY, tid)
-            continue
-
-        # Apply filters
-        if assignee and raw.get("assignee", "") != assignee:
-            continue
-        if status and raw.get("status", "") != status:
-            continue
-
-        task = _parse_task(raw)
-        results.append(task)
-        if len(results) >= limit:
+    stale_ids = []
+    offset = 0
+    while len(results) < limit:
+        task_ids = await read_range(TASK_INDEX_KEY, offset, offset + batch_size - 1)
+        if not task_ids:
             break
+        offset += len(task_ids)
+        for tid in task_ids:
+            key = f"{TASK_PREFIX}{tid}"
+            raw = await redis.hgetall(key)
+            if not raw:
+                # Defer cleanup until paging ends so removals do not shift the
+                # next rank window and silently skip a live task.
+                stale_ids.append(tid)
+                continue
+
+            if assignee and raw.get("assignee", "") != assignee:
+                continue
+            if status and raw.get("status", "") != status:
+                continue
+            if title and raw.get("title", "") != title:
+                continue
+
+            results.append(_parse_task(raw))
+            if len(results) >= limit:
+                break
+        if len(task_ids) < batch_size:
+            break
+
+    if stale_ids:
+        await redis.zrem(TASK_INDEX_KEY, *stale_ids)
 
     return results
 

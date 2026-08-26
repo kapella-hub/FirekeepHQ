@@ -128,7 +128,8 @@ async def handle_get_status(redis) -> dict:
 # -- Briefing REST handlers (SP1b — server-side GET /briefing substrate) ------
 
 async def handle_get_tasks(
-    redis, assignee: str | None = None, status: str | None = None, limit: int = 20
+    redis, assignee: str | None = None, status: str | None = None, limit: int = 20,
+    oldest_first: bool = False, title: str | None = None,
 ) -> dict:
     """Wrap relay_task_list logic for the Cortex briefing aggregator.
 
@@ -136,7 +137,10 @@ async def handle_get_tasks(
     tool decorator, so the briefing router reaches it over REST behind SP1a auth.
     """
     from app.tasks import list_tasks
-    tasks = await list_tasks(redis, assignee, status, min(limit, 200))
+    tasks = await list_tasks(
+        redis, assignee, status, min(limit, 200),
+        oldest_first=oldest_first, title=title,
+    )
     return {"tasks": tasks, "count": len(tasks)}
 
 
@@ -305,12 +309,18 @@ async def route_get_tasks(request: Request) -> JSONResponse:
     try:
         assignee = request.query_params.get("assignee")
         status = request.query_params.get("status")
+        title = request.query_params.get("title")
+        oldest_first = request.query_params.get("oldest_first", "").lower() in {
+            "1", "true", "yes",
+        }
         try:
             limit = int(request.query_params.get("limit", "20"))
         except (ValueError, TypeError):
             limit = 20
         r = await _get_redis()
-        result = await handle_get_tasks(r, assignee, status, limit)
+        result = await handle_get_tasks(
+            r, assignee, status, limit, oldest_first=oldest_first, title=title,
+        )
         return JSONResponse(result)
     except Exception as e:
         logger.error("GET /tasks failed: %s", e)

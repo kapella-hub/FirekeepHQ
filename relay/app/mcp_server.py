@@ -533,8 +533,10 @@ async def relay_task_list(
     assignee: str | None = None,
     status: str | None = None,
     limit: int = 20,
+    oldest_first: bool = False,
+    title: str | None = None,
 ) -> dict:
-    """List tasks, optionally filtered by assignee or status.
+    """List tasks, optionally filtered and ordered oldest-first.
 
     Use this to check your inbox (filter by your agent ID) or see all
     pending work across agents.
@@ -543,11 +545,16 @@ async def relay_task_list(
         assignee: Filter by assigned agent ID
         status: Filter by status: "pending", "in-progress", "completed", "failed"
         limit: Maximum tasks to return
+        oldest_first: Return oldest matching tasks first (default is newest first)
+        title: Filter by exact task title
     """
     try:
         r = await get_redis()
         from app.tasks import list_tasks
-        tasks = await list_tasks(r, assignee, status, min(limit, _MAX_LIMIT))
+        tasks = await list_tasks(
+            r, assignee, status, min(limit, _MAX_LIMIT),
+            oldest_first=oldest_first, title=title,
+        )
         return {"tasks": tasks, "count": len(tasks)}
     except Exception as e:
         logger.error("relay_task_list failed: %s", e)

@@ -12,7 +12,7 @@ Upgrades claims to leases with monotonic fencing tokens, heartbeat extension, an
 **MCP Tools:** `relay_lease`, `relay_heartbeat`, `relay_lease_status`
 
 ## Task Queue (Relay)
-Structured task assignment for multi-agent workflows. Agents create, list, and update tasks. Tasks are stored in Redis with sorted set indexing.
+Structured task assignment for multi-agent workflows. Agents create, list, and update tasks. Tasks are stored in Redis with sorted set indexing. `relay_task_list` defaults to newest-first for inbox use, and accepts exact `title` filtering plus `oldest_first=true` for FIFO workers such as Night Shift; filtering scans the ordered index until the requested number of matching tasks is found, so unrelated new work cannot starve an older queue.
 
 **MCP Tools:** `relay_task_post`, `relay_task_list`, `relay_task_update`, `relay_task_delete`
 
