@@ -110,6 +110,11 @@ def test_check_never_raises(monkeypatch):
     assert serverupdate.check(_cfg()) is None
 
 
+def test_is_clean_release():
+    assert serverupdate.is_clean_release("v1.2.0") is True
+    assert serverupdate.is_clean_release("v1.2.1-67-g040d0ed") is False
+
+
 def test_nudge_line():
     s = serverupdate.ServerUpdateStatus("v1.2.0", "v1.3.0", "behind", False)
     line = serverupdate.nudge_line(s)

@@ -115,6 +115,18 @@ def check(cfg) -> ServerUpdateStatus | None:
         return None
 
 
+def is_clean_release(version: str) -> bool:
+    """True for a clean vX.Y.Z (parse succeeds); False for a git-describe
+    suffix or anything else malformed. Parse-succeeds semantics — the same
+    test `_relation` itself applies via its `except UpdateError` — never a
+    shape regex, so this and `_relation` can never disagree on an input."""
+    try:
+        updater.parse_version(version.strip().removeprefix("v"))
+        return True
+    except updater.UpdateError:
+        return False
+
+
 def nudge_line(status: ServerUpdateStatus | None) -> str:
     """The briefing line, or '' — behind + unacked only."""
     try:

@@ -171,6 +171,14 @@ def test_kit_hangs_together(firekeep_env, write_config, monkeypatch):
     monkeypatch.setattr(
         cli, "get_json", lambda url, **kw: {"status": "ok", "version": cli.__version__}
     )
+    # serverupdate.check() (the server-version row) reads cortex /version through its
+    # OWN imported get_json, not cli's -- same network transport, separate reference,
+    # so it needs the same mock or it would make a real HTTPS call to
+    # firekeep.office.example. This profile has no [dist] section, so the manifest
+    # half never fetches (dist_base raises before any request is made).
+    monkeypatch.setattr(
+        cli.serverupdate, "get_json", lambda url, **kw: {"status": "ok", "version": cli.__version__}
+    )
     ca_path = home / "firekeep-root-ca.crt"  # DEFAULT_OFFICE's ca_path
     ca_path.write_text("dummy PEM bytes -- decode is mocked below", encoding="utf-8")
     monkeypatch.setattr(

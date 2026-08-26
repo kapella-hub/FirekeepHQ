@@ -184,6 +184,10 @@ def test_real_run_doctor_check_names_satisfy_the_server_id_contract(tmp_path, mo
         raise TransportError("no network in this test")
 
     monkeypatch.setattr(cli, "get_json", fake_get_json)
+    # serverupdate.check() (the server-version row) reads cortex /version through
+    # its OWN imported get_json, a separate reference from cli's -- same network
+    # edge, needs the same fake or it would make a real call to 10.0.0.5.
+    monkeypatch.setattr(cli.serverupdate, "get_json", fake_get_json)
     results = cli.run_doctor(cfg)
 
     assert len(results) >= 10, "fixture regressed -- too few rows to be a meaningful check"
@@ -194,6 +198,10 @@ def test_real_run_doctor_check_names_satisfy_the_server_id_contract(tmp_path, mo
     # this minimal config (no [dist] section -- it returns None rather than
     # firing), so assert it directly rather than leaving it unexercised.
     assert _SERVER_ID_PATTERN.match("client-version")
+    # Same story for server-version: fake_get_json raises for anything but
+    # /health, so serverupdate.check()'s cortex /version fetch fails and the
+    # row returns None rather than firing here.
+    assert _SERVER_ID_PATTERN.match("server-version")
 
 
 def test_resolver_service_ids_satisfy_the_server_id_contract():

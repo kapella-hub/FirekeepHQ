@@ -112,5 +112,8 @@ def test_doctor_skips_the_row_entirely_when_there_is_no_server(tmp_path, monkeyp
 
     called = []
     monkeypatch.setattr(cli, "_check_embeddings", lambda c: called.append(1))
+    # cfg's host (10.0.0.5) is unroutable; without this the new server-version
+    # row would make a real, slow network call via serverupdate.check(cfg).
+    monkeypatch.setattr(cli, "_check_server_version", lambda c: None)
     cli.run_doctor(cfg())
     assert called == []
