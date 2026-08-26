@@ -39,4 +39,11 @@ describe("Studio release workflow", () => {
     expect(client).toContain('require("electron-updater")');
     expect(client).not.toMatch(/^import\s*\{[^}]*autoUpdater[^}]*\}\s*from\s*["']electron-updater["']/m);
   });
+
+  it("keeps every packaged-debug poll inside the smoke deadline", async () => {
+    const smoke = await readFile("scripts/package-smoke.mjs", "utf8");
+
+    expect(smoke).toContain("deadline - Date.now()");
+    expect(smoke).toContain("AbortSignal.timeout(attemptTimeout)");
+  });
 });

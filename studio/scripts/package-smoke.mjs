@@ -149,7 +149,8 @@ async function waitForPage(port, timeoutMs) {
   let lastError = "no page target";
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(`http://127.0.0.1:${port}/json/list`);
+      const attemptTimeout = Math.max(1, Math.min(1_000, deadline - Date.now()));
+      const response = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(attemptTimeout) });
       if (response.ok) {
         const targets = await response.json();
         const page = Array.isArray(targets) ? targets.find((target) => target?.type === "page") : null;
