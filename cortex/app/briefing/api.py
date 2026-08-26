@@ -1,13 +1,13 @@
 """Cortex briefing router — GET /briefing aggregator (SP1b-server).
 
 Template: app/ops.py create_ops_router(). Reads shared clients from
-request.app.state (mirrors the audit router at main.py:213). All 13 sections
+request.app.state (mirrors the audit router at main.py:213). All 14 sections
 run as independent asyncio tasks with a per-section timeout; a failed/hung
 upstream degrades only that section (SP1b spec §5). The 12th, `observed`, is the
 N=1 learning surface (descriptive, unvalidated, provenance-tagged). The 13th,
 `profile` (Dreaming Task 8), is the per-member person profile written by the
 nightly dream pass -- direct point-id lookup, degrades to "empty" (never
-"unavailable") when no profile has been dreamed yet.
+"unavailable") when no profile has been dreamed yet. The 14th, `grading_nudge`, is dark until the PR5 flip.
 """
 from __future__ import annotations
 

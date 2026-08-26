@@ -593,7 +593,7 @@ git commit -m "feat(briefing): dark-deployed grading-nudge section + arm envelop
 ```python
 """PR5 D8: the member-level primary analysis. The 4-vs-4 case is fully
 hand-worked; the 3-vs-3 floor case proves why D8 requires >= 5 members/arm
-(C(6,3)=20 -> the smallest attainable two-sided p is exactly 1/20 = 0.05,
+(C(6,3)=20 -> the smallest attainable two-sided p is exactly 2/20 = 0.1,
 which can never satisfy p < 0.05)."""
 from itertools import combinations
 
@@ -613,7 +613,7 @@ def test_four_vs_four_hand_worked():
     assert abs(r["p_value"] - 2 / 70) < 1e-12
 
 
-def test_three_vs_three_floor_is_exactly_one_twentieth():
+def test_three_vs_three_floor_is_two_twentieths():
     a, b = [1.0, 1.0, 1.0], [0.0, 0.0, 0.0]
     r = permutation_test_member_means(a, b)
     assert r["reassignments"] == 20          # C(6,3)

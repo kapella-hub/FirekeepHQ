@@ -322,3 +322,4 @@ async def test_member_token_absent_key_reads_none(monkeypatch):
 
     assert result is not None
     assert result.member_token is None
+    assert result.briefing_id is None
