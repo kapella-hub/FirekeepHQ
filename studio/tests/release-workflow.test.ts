@@ -48,5 +48,8 @@ describe("Studio release workflow", () => {
     expect(smoke).toContain("AbortSignal.timeout(attemptTimeout)");
     expect(smoke).toContain("DevTools command timed out after");
     expect(smoke).toContain('socket.addEventListener("close", () => rejectPending');
+    expect(smoke).toContain('process.kill(-pid, "SIGKILL")');
+    expect(smoke).toContain("childProcess.stdout?.destroy()");
+    expect(smoke).toContain("childProcess.unref()");
   });
 });

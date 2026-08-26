@@ -102,7 +102,7 @@ try {
   }
   process.stdout.write(`${JSON.stringify({ executable, title: target.title, url: target.url, layout, sessionEditor, agentGrid, lightTheme, responsiveInspector, commandSurface })}\n`);
 } finally {
-  terminateExactTree(child.pid);
+  terminateExactTree(child);
   const temporaryRoot = `${await realpath(tmpdir())}${sep}`.toLowerCase();
   const resolvedUserData = await realpath(userData);
   if (!`${resolvedUserData}${sep}`.toLowerCase().startsWith(temporaryRoot)) {
@@ -573,12 +573,23 @@ function assertCommandSurface(value) {
   }
 }
 
-function terminateExactTree(pid) {
+function terminateExactTree(childProcess) {
+  const pid = childProcess.pid;
   if (!pid) return;
-  if (process.platform === "win32") {
-    spawnSync("taskkill.exe", ["/pid", String(pid), "/t", "/f"], { stdio: "ignore", windowsHide: true });
-    return;
+  try {
+    if (process.platform === "win32") {
+      spawnSync("taskkill.exe", ["/pid", String(pid), "/t", "/f"], { stdio: "ignore", windowsHide: true });
+    } else {
+      // This is a disposable, detached smoke-only process group. Electron may
+      // handle SIGTERM without exiting, which leaves captured pipes alive.
+      process.kill(-pid, "SIGKILL");
+    }
+  } catch {
+    try { childProcess.kill("SIGKILL"); }
+    catch { /* The exact packaged process already exited. */ }
+  } finally {
+    childProcess.stdout?.destroy();
+    childProcess.stderr?.destroy();
+    childProcess.unref();
   }
-  try { process.kill(-pid, "SIGTERM"); }
-  catch { /* The exact packaged process already exited. */ }
 }
