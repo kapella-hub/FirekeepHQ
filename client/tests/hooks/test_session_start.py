@@ -238,3 +238,56 @@ class TestUnsignedUpdateNotice:
         self._quiet(monkeypatch)
         out = session_start.run({})
         assert "release signature" not in out["systemMessage"]
+
+
+class TestServerUpdateNudge:
+    """Daily server-update line beside the client nudge. Never raises; never
+    applies updates (spec decision 4). Cortex /version is read live; only the
+    dist-manifest fetch is day-cached."""
+
+    def _quiet(self, monkeypatch):
+        from firekeep_client import transport
+        from firekeep_client.hooks import _mcp
+        monkeypatch.setattr(transport, "get_json",
+                            lambda url, **k: {"rendered": "BRIEFING"})
+        monkeypatch.setattr(_mcp, "call_tool", lambda *a, **k: {})
+
+    def test_session_start_appends_server_update_line(self, client_env, monkeypatch):
+        from firekeep_client import serverupdate
+        from firekeep_client.hooks import session_start
+        self._quiet(monkeypatch)
+        monkeypatch.setattr(
+            session_start.serverupdate, "check",
+            lambda cfg: serverupdate.ServerUpdateStatus("v1.2.0", "v1.3.0", "behind", False))
+        out = session_start.run({})
+        assert "server update available: v1.2.0 -> v1.3.0" in out["systemMessage"]
+        assert "bash update.sh --to v1.3.0" in out["systemMessage"]
+
+    def test_session_start_quiet_when_current(self, client_env, monkeypatch):
+        from firekeep_client import serverupdate
+        from firekeep_client.hooks import session_start
+        self._quiet(monkeypatch)
+        monkeypatch.setattr(
+            session_start.serverupdate, "check",
+            lambda cfg: serverupdate.ServerUpdateStatus("v1.3.0", "v1.3.0", "current", False))
+        out = session_start.run({})
+        assert "server update available" not in out["systemMessage"]
+
+    def test_session_start_quiet_when_acked(self, client_env, monkeypatch):
+        from firekeep_client import serverupdate
+        from firekeep_client.hooks import session_start
+        self._quiet(monkeypatch)
+        monkeypatch.setattr(
+            session_start.serverupdate, "check",
+            lambda cfg: serverupdate.ServerUpdateStatus("v1.2.0", "v1.3.0", "behind", True))
+        out = session_start.run({})
+        assert "server update available" not in out["systemMessage"]
+
+    def test_session_start_quiet_when_no_server(self, client_env, monkeypatch):
+        from firekeep_client.hooks import session_start
+        self._quiet(monkeypatch)
+        # check() returns None when cortex /version did not answer
+        monkeypatch.setattr(session_start.serverupdate, "check", lambda cfg: None)
+        out = session_start.run({})
+        assert "systemMessage" in out
+        assert "server update available" not in out["systemMessage"]
