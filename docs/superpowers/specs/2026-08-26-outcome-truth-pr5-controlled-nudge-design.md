@@ -172,9 +172,8 @@ fixed now.**
   test** over arm reassignments (all C(m, m_A) reassignments, or 10,000
   Monte Carlo draws when the exact enumeration exceeds that), two-sided.
   H1′ holds iff permutation p < 0.05 AND the difference in arm means is
-  ≥ 10 percentage points. Floors: **≥ 5 qualifying members per arm** (below
-  4-vs-4 the permutation test cannot reach p < 0.05 at all — 3-vs-3 bottoms
-  out at exactly 1/20) AND **≥ 99 per-protocol sessions per arm** (the
+  ≥ 10 percentage points. Floors: **≥ 5 qualifying members per arm** (a two-sided 3-vs-3 floor is
+  exactly 2/20 = 0.1 — it can never reach p < 0.05; 4-vs-4's floor is 2/70 ≈ 0.029) AND **≥ 99 per-protocol sessions per arm** (the
   fixed-z two-proportion bound, retained for the descriptive session-level
   readout: n = (z_α/2 + z_β)² · (p₁(1−p₁) + p₂(1−p₂)) / (p₁−p₂)², z
   1.96/0.8416, worst-case p = 0.5, MDE 20pp). Below either floor the block
@@ -400,6 +399,8 @@ addendum committed with T0. Office compose/K8s inherit on their next update.
   and per-protocol fractions per arm make a differential-entry effect
   visible rather than assumed away.
 
+
+**2026-08-26, same-day arithmetic correction.** The two-sided 3-vs-3 permutation floor is 2/20, not 1/20 — the observed split and its mirror both attain the maximum; no registered threshold changes (the ≥ 5-member floor stands a fortiori).
 ## Revision record
 
 **2026-08-26, same day, pre-implementation.** Adversarial review (two
@@ -428,3 +429,4 @@ in-repo-text bundle; D12 given pre-registered `nudge_shown`-coverage
 accounting; the post-treatment risk restated (population entry is itself
 agent behavior). No threshold was weakened; every change corrects a
 mechanical impossibility or strengthens the inferential standard.
+

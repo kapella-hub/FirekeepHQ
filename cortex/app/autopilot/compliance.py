@@ -483,6 +483,11 @@ def build_optimism_skew(evals: list[dict]) -> dict[str, Any]:
 
 
 async def build_compliance(replay_redis) -> dict[str, Any]:
+    # Imported here rather than at module scope: arm_comparison reads THIS
+    # module's frozen helpers (INSTRUCTIONS, _predicate_input, the two skew
+    # predicates), so a top-level import in either direction is a cycle.
+    from app.autopilot.arm_comparison import build_arm_comparison
+
     evals, unparsed, capped = await scan_evals(replay_redis)
     payload: dict[str, Any] = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -492,6 +497,8 @@ async def build_compliance(replay_redis) -> dict[str, Any]:
         "approximate": capped,
         "instructions": build_rows(evals),
         "optimism_skew": build_optimism_skew(evals),
+        "arm_comparison": await build_arm_comparison(
+            replay_redis, evals, approximate=capped),
         "notes": [
             "Compliance measures BEHAVIOR — whether sessions did the instructed "
             "thing. It does not measure whether doing it helped: the outcome "

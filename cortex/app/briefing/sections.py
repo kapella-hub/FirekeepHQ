@@ -210,6 +210,51 @@ async def strategy_tips_section(replay_redis, goal: str, briefing_id: str, ab_gr
     }}
 
 
+# Outcome truth PR5. TREATMENT_ARM resolved by the D9 commit-hash coin
+# (spec revision 47d8e17: first hex digit 4, even -> "A"). The text is the
+# pre-registered intervention (D3) — byte-frozen by its test; changing a
+# character is a NEW experiment requiring a new dated registration.
+TREATMENT_ARM = "A"
+GRADING_NUDGE_TEXT = (
+    "## Grade this task when you finish\n"
+    "When you call `ctx_complete_session`, pass `task_result` — `success`, "
+    "`partial`, or `failure` — with `task_evidence` naming what you actually "
+    "verified. An honest `failure` or `partial` is expected and safe to "
+    "report; it is worth more to this team than an unexamined `success`. "
+    "Ungraded sessions teach nothing."
+)
+# 30 days — the eval retention window (D12: receipt lives exactly as long
+# as the eval it joins to). If evals export a TTL constant, import it
+# instead of this literal.
+_NUDGE_SHOWN_TTL = 30 * 86400
+
+
+async def grading_nudge_section(replay_redis, briefing_id: str,
+                                group: str | None) -> Section:
+    """PR5 D2/D3/D12: server-composed treatment section; control is absence.
+
+    Withhold-on-record-failure (strategy-tips precedent, D12): if the
+    nudge_shown receipt cannot be written, the section is NOT shown — an
+    unrecorded exposure corrupts the A/B loop. The receipt is server-side
+    proof of composition; briefing_delivered stays the exposure receipt.
+    """
+    withheld = {"group": group, "shown": False, "text": ""}
+    if not get_settings().GRADING_NUDGE_ENABLED:
+        return {"status": "empty", "error": None, "data": withheld}
+    if group != TREATMENT_ARM:
+        return {"status": "ok", "error": None, "data": withheld}
+    try:
+        await replay_redis.set(
+            f"rp:nudge_shown:{briefing_id}", group, ex=_NUDGE_SHOWN_TTL)
+    except Exception as exc:
+        return {"status": "ok",
+                "error": f"nudge-shown record failed: {exc}",
+                "data": withheld}
+    return {"status": "ok", "error": None,
+            "data": {"group": group, "shown": True,
+                     "text": GRADING_NUDGE_TEXT}}
+
+
 async def observed_patterns_section(replay_redis, agent_id: str, goal: str) -> Section:
     """N=1 surface: the caller's OWN recent candidate/observed patterns, described
     (NOT validated). Provenance-tagged so the agent sees the payoff of having logged

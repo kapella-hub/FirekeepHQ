@@ -29,7 +29,7 @@ from app.config import get_settings
 from app.prior_art import assemble_prior_art, render_prior_art
 from app.proactive_recall import fetch_relevant_memories
 from app.redis_client import get_redis, close_redis
-from app.session import SessionManager, TASK_RESULTS, _experiment_group
+from app.session import SessionManager, TASK_RESULTS, _experiment_group, member_token
 from app.shadow import assemble_shadow
 from app import residency
 
@@ -436,6 +436,9 @@ async def ctx_start_session(
             # start_session above, never re-derived. Orthogonal to the grade:
             # this is assigned before any grade exists.
             "experiment_group": _experiment_group(owner_member),
+            # PR5 D13: rides the same path experiment_group does, into the
+            # parsed eval record, so members-per-arm is computable there.
+            "member_token": member_token(owner_member),
         }
         payload.update(attribution)  # only the headers that actually arrived
         await _replay_emit("session_start", sid, agent_id, payload)

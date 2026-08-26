@@ -94,6 +94,14 @@ class EvalResult(BaseModel):
     # stored before this field shipped — the two are indistinguishable on
     # the wire and neither is a measured arm.
     experiment_group: str | None = None
+    # PR5 D13: one-way member key (sha256(owner_member)[:12]) riding the same
+    # path as experiment_group — the member-level analysis groups on it. None
+    # covers both an unattributed session and a pre-PR5 record.
+    member_token: str | None = None
+    # PR5 D12: the briefing this session received, so the nudge_shown receipt
+    # (keyed by briefing_id) is joinable per session. briefing_delivered above
+    # stays the exposure receipt; this is the join key, not a new receipt.
+    briefing_id: str | None = None
     # From get_session_summary — previously computed per session and discarded.
     agents: list[str] = []
 

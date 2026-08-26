@@ -1,13 +1,13 @@
 """Cortex briefing router — GET /briefing aggregator (SP1b-server).
 
 Template: app/ops.py create_ops_router(). Reads shared clients from
-request.app.state (mirrors the audit router at main.py:213). All 13 sections
+request.app.state (mirrors the audit router at main.py:213). All 14 sections
 run as independent asyncio tasks with a per-section timeout; a failed/hung
 upstream degrades only that section (SP1b spec §5). The 12th, `observed`, is the
 N=1 learning surface (descriptive, unvalidated, provenance-tagged). The 13th,
 `profile` (Dreaming Task 8), is the per-member person profile written by the
 nightly dream pass -- direct point-id lookup, degrades to "empty" (never
-"unavailable") when no profile has been dreamed yet.
+"unavailable") when no profile has been dreamed yet. The 14th, `grading_nudge`, is dark until the PR5 flip.
 """
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ from typing import Any, Awaitable
 
 from fastapi import APIRouter, Depends, Query, Request
 
+from auth.experiment import experiment_group
 from auth.middleware import require_scope
 
 from app.config import get_settings
@@ -69,6 +70,9 @@ def create_briefing_router(section_timeout: float = 2.0) -> APIRouter:
         scopes = identity.get("scopes", [])
         briefing_id = uuid.uuid4().hex
         ab_group = random.choice(["treatment", "control"])
+        # PR5 D1: member-level arm, from the SAME verified member string
+        # bridge later stamps on the session — delivered arm == recorded arm.
+        arm = experiment_group(identity.get("member_id"))
 
         # Section name -> coroutine. Order here is irrelevant (gathered
         # concurrently); render.py imposes the display order.
@@ -88,6 +92,7 @@ def create_briefing_router(section_timeout: float = 2.0) -> APIRouter:
             "discipline": S.discipline_section(st.redis_client, st.replay_redis),
             "dlq": S.dlq_section(),
             "resumable_sessions": S.resumable_sessions_section(st.http_client, settings, agent_id),
+            "grading_nudge": S.grading_nudge_section(st.replay_redis, briefing_id, arm),
         }
 
         names = list(builders.keys())
@@ -109,6 +114,7 @@ def create_briefing_router(section_timeout: float = 2.0) -> APIRouter:
             "goal": goal,
             "project": project,
             "briefing_id": briefing_id,
+            "experiment_group": arm,
             "degraded": degraded,
             "sections": sections,
             "instructions": instructions,

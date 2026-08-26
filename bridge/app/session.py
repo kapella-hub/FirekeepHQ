@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import time
@@ -14,6 +13,7 @@ import redis
 import redis.asyncio as aioredis
 
 from app.config import Settings
+from auth.experiment import experiment_group as _experiment_group, member_token
 
 logger = logging.getLogger(__name__)
 
@@ -29,24 +29,6 @@ TASK_RESULTS = ("success", "partial", "failure")
 # race.
 _COMPLETE_CAS_RETRIES = 8
 
-
-def _experiment_group(owner_member: str | None) -> str | None:
-    """The pre-registered arm ("A"/"B") for *owner_member* (outcome truth,
-    PR4 D1) — a later PR (PR5) uses this label; this function only assigns
-    it. Deterministic and STABLE across process restarts: sha256, never
-    Python's built-in hash(), which is salted per-process (PYTHONHASHSEED)
-    and would reassign every member's arm on the next restart, destroying
-    stickiness. Orthogonal to the grade — called once at session start, from
-    the verified owner_member only, never from task_result.
-
-    An empty/unverified owner_member returns None (excluded from arms)
-    rather than a hashed arm: hash("") is a single fixed value, so hashing it
-    would dump every unauthenticated session into the same arm.
-    """
-    if not owner_member:
-        return None
-    h = int(hashlib.sha256(owner_member.encode("utf-8")).hexdigest(), 16)
-    return "A" if h % 2 == 0 else "B"
 
 # --------------------------------------------------------------------------
 # Replay emitter (best-effort, mirrors cortex/app/main.py:_replay_emit)
@@ -255,6 +237,9 @@ class SessionManager:
         # Assignment happens here, at session START, before any grade can
         # exist; it must never read task_result.
         experiment_group = _experiment_group(owner_member)
+        # PR5 D13: one-way member key for arm analytics — same owner_member,
+        # same moment, so token and arm cannot disagree about the member.
+        token = member_token(owner_member)
 
         # Create new session metadata
         await self._r.hset(self._session_key(session_id), mapping={
@@ -269,6 +254,7 @@ class SessionManager:
             # Beside owner_member: same "" absent-default precedent as every
             # other optional meta field (Redis hashes cannot store None).
             "experiment_group": experiment_group or "",
+            "member_token": token or "",
             "project": project or "",
             "briefing_id": briefing_id or "",
             # Living Instructions round 2 attribution (the five X-Firekeep-*

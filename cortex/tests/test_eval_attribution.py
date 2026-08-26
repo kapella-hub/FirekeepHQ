@@ -294,3 +294,32 @@ async def test_experiment_group_never_leaks_into_metrics(monkeypatch):
 
     assert result is not None
     assert "experiment_group" not in result.metrics
+
+
+# ---------------------------------------------------------------------------
+# member_token (PR5 D13) + briefing_id (PR5 D12) — ride the SAME session_start
+# payload, read the SAME absent-guarded way as experiment_group above.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_member_token_and_briefing_id_ride_the_session_start_payload(monkeypatch):
+    payload = dict(ATTRIBUTED_PAYLOAD)
+    payload["member_token"] = "abc123def456"
+    payload["briefing_id"] = "b-1"
+    result = await _compute(monkeypatch, [_event("session_start", payload)])
+
+    assert result is not None
+    assert result.member_token == "abc123def456"
+    assert result.briefing_id == "b-1"
+
+
+@pytest.mark.asyncio
+async def test_member_token_absent_key_reads_none(monkeypatch):
+    """A pre-PR5 payload has no member_token key at all -> None, never ""."""
+    payload = {"goal": "g", "tags": [], "briefing_id": ""}
+    result = await _compute(monkeypatch, [_event("session_start", payload)])
+
+    assert result is not None
+    assert result.member_token is None
+    assert result.briefing_id is None
