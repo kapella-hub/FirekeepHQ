@@ -12,10 +12,12 @@ sessions are portable.
 
 Session usage and its next-turn guard stay visible in the left session rail, with fresh
 tokens separated from cached context and total provider traffic. The selected runtime has
-an explicit **In use** state. Runtime cards can be collapsed, and the complete inspector can
-be hidden when the conversation needs more visual focus. Model refreshes replace the live
-provider catalog and show progress, success, or failure. When the Client Kit has a server
-configured, the rail also opens its dashboard without sending a URL through renderer IPC.
+an explicit **In use** state. **Runtime Center**, opened from the primary-runtime picker,
+keeps every supported agent's account, reviewer, connectivity, and Keep status available
+without occupying the right inspector. The inspector can be hidden when the conversation
+needs more visual focus. Model refreshes replace the live provider catalog and show progress,
+success, or failure. When the Client Kit has a server configured, the rail also opens its
+dashboard without sending a URL through renderer IPC.
 
 Version 0.2 adds **Missions**: an outcome-bounded harness that gives one primary writer a
 goal, explicit workspace, frozen runtime settings, local acceptance checks, a measured-token
@@ -53,12 +55,15 @@ surface rather than permission for concurrent agents to write into one workspace
 
 ## Runtime support
 
-| Runtime | Structured boundary | Live options | Authentication |
+| Runtime | Structured boundary | Firekeep Client Kit surface | Authentication |
 |---|---|---|---|
-| Codex | `codex app-server` JSONL RPC | App Server `model/list`, including per-model reasoning efforts | Existing account or App Server-managed browser/device/API-key login |
-| Claude Code | Native `stream-json` CLI | Current CLI-advertised model aliases and effort levels | Existing provider-owned Claude login |
-| Kiro CLI | Stable ACP v1 via the official SDK | Account model JSON plus current ACP effort levels | Existing provider-owned browser/device login |
-| Grok | xAI Responses API with SSE | Authenticated language-model catalog and supported reasoning controls | xAI API key stored with Electron `safeStorage` |
+| Codex | `codex app-server` JSONL RPC; live `model/list` | Keep memory when the managed Codex MCP block is detected; Codex exposes no hooks | Existing account or App Server-managed browser/device/API-key login |
+| Claude Code | Native `stream-json` CLI; live CLI aliases/efforts | Keep memory and automatic hooks are reported independently from the installed native configs | Existing provider-owned Claude login |
+| Kiro CLI | Stable ACP v1; live account models/efforts | Keep memory and hooks when the Client Kit's named `firekeep` agent is installed | Existing provider-owned browser/device login |
+| Grok | xAI Responses API with SSE; live language-model catalog | Provider-direct: no Keep memory, hooks, or briefing | xAI API key stored with Electron `safeStorage` |
+
+Studio shows this distinction for every agent in Runtime Center. It never implies that a
+provider-direct adapter has team memory merely because another installed runtime does.
 
 Kiro CLI is the Kiro runtime inside Studio. The optional Kiro IDE is an explicit external
 handoff via `/kiro open`; it is not a second, privileged agent implementation. When the

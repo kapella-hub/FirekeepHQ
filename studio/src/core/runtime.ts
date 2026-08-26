@@ -10,6 +10,7 @@ export const RUNTIME_CAPABILITIES = [
   "audio-input",
   "usage",
   "reasoning",
+  "firekeep-memory",
   "firekeep-hooks",
 ] as const;
 

@@ -146,7 +146,10 @@ human acceptance, and a task result stored separately from every agent's prose.
 
 Studio consumes provider-supported structured boundaries rather than scraping TUIs, keeps
 provider authentication provider-owned (except OS-encrypted API keys), and continues to use
-the existing Python Client Kit for Keep memory, hooks, policy, and connectivity. The preview
+the existing Python Client Kit wherever a runtime's native configuration provides Keep memory,
+hooks, policy, and connectivity. Runtime cards report that evidence explicitly; the direct xAI
+Grok adapter is clearly marked as having no Keep memory rather than inheriting another runtime's
+claim. The preview
 build and installer commands, security boundaries, runtime matrix, and full `/` command
 inventory are in the [Studio README](studio/README.md).
 

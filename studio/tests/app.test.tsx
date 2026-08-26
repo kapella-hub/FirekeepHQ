@@ -2,7 +2,7 @@
 
 import "@testing-library/jest-dom/vitest";
 import React from "react";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { StudioSnapshot } from "../src/core/studio-service.js";
 import type { RuntimeDescriptor, RuntimeEvent, RuntimeModel } from "../src/core/runtime.js";
@@ -11,7 +11,7 @@ import type { StudioAction, StudioActionResult, StudioBridge, StudioPushEvent } 
 import type { DecisionBoardDocument } from "../src/shared/decision-board.js";
 
 const runtimes: RuntimeDescriptor[] = [
-  { id: "alpha", displayName: "Alpha", description: "Test agent", transport: "test-rpc", capabilities: ["chat", "review", "models", "reasoning", "tools"], loginMethods: ["browser"], accent: "#ff7a2f" },
+  { id: "alpha", displayName: "Alpha", description: "Test agent", transport: "test-rpc", capabilities: ["chat", "review", "models", "reasoning", "tools", "firekeep-memory", "firekeep-hooks"], loginMethods: ["browser"], accent: "#ff7a2f" },
   { id: "beta", displayName: "Beta", description: "Test reviewer", transport: "test-acp", capabilities: ["chat", "review"], loginMethods: ["device"], accent: "#8f83ff" },
 ];
 
@@ -65,6 +65,12 @@ function installBridge(options: { readonly snapshot?: StudioSnapshot; readonly m
 
 afterEach(() => { pushStudioEvent = null; cleanup(); });
 
+async function openRuntimeCenter(): Promise<HTMLElement> {
+  fireEvent.click(await screen.findByRole("button", { name: /Primary runtime:/i }));
+  fireEvent.click(screen.getByRole("button", { name: "Manage runtimes" }));
+  return screen.getByRole("dialog", { name: "Runtime Center" });
+}
+
 describe("Firekeep Studio renderer", () => {
   it("boots the runtime-neutral desk and uses the same typed action for a primary selection", async () => {
     const invoke = installBridge();
@@ -94,7 +100,7 @@ describe("Firekeep Studio renderer", () => {
   it("makes the mission harness discoverable without exposing a process bridge", async () => {
     installBridge();
     render(<App />);
-    await screen.findByText("Turn intent into evidence.");
+    await screen.findByText("Give an agent a goal and verify the result.");
 
     fireEvent.click(screen.getByRole("button", { name: "Start a mission" }));
 
@@ -109,7 +115,7 @@ describe("Firekeep Studio renderer", () => {
     expect(await screen.findByLabelText("Agent working")).toHaveClass("brand-icon");
   });
 
-  it("keeps usage in the session rail and lets the runtime list collapse", async () => {
+  it("keeps usage in the session rail and moves runtime management out of the inspector", async () => {
     installBridge();
     render(<App />);
 
@@ -117,13 +123,23 @@ describe("Firekeep Studio renderer", () => {
     expect(usage.closest(".session-rail")).toBeInTheDocument();
     expect(usage.closest(".inspector")).not.toBeInTheDocument();
 
-    const runtimeToggle = screen.getByRole("button", { name: "Agent runtimes" });
-    expect(runtimeToggle).toHaveAttribute("aria-expanded", "true");
-    expect(document.getElementById("runtime-list")).toBeInTheDocument();
+    const inspector = document.querySelector(".inspector");
+    expect(inspector).not.toBeNull();
+    expect(within(inspector as HTMLElement).queryByText("Agent runtimes")).not.toBeInTheDocument();
 
-    fireEvent.click(runtimeToggle);
-    expect(runtimeToggle).toHaveAttribute("aria-expanded", "false");
-    expect(document.getElementById("runtime-list")).not.toBeInTheDocument();
+    const center = await openRuntimeCenter();
+    expect(center).toHaveTextContent("Alpha");
+    expect(center).toHaveTextContent("Beta");
+    expect(center.closest(".inspector")).not.toBeInTheDocument();
+  });
+
+  it("distinguishes configured Keep integration from provider-direct runtimes", async () => {
+    installBridge();
+    render(<App />);
+
+    const center = await openRuntimeCenter();
+    expect(within(center).getByText("Keep memory + automatic hooks")).toBeInTheDocument();
+    expect(within(center).getByText("Provider direct · no Keep memory")).toBeInTheDocument();
   });
 
   it("derives reasoning choices from the selected live runtime model", async () => {
@@ -168,13 +184,25 @@ describe("Firekeep Studio renderer", () => {
     const invoke = installBridge({ snapshot: state("alpha") });
     render(<App />);
 
-    const selected = await screen.findByRole("button", { name: "Alpha is in use" });
+    const center = await openRuntimeCenter();
+    const selected = within(center).getByRole("button", { name: "Alpha is in use" });
     expect(selected).toHaveAttribute("aria-pressed", "true");
-    fireEvent.click(screen.getByRole("button", { name: "Use Beta as primary" }));
+    fireEvent.click(within(center).getByRole("button", { name: "Use Beta as primary" }));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "primary.set", runtimeId: "beta" }));
+
+    fireEvent.click(within(center).getByRole("button", { name: "Add Beta as reviewer" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "reviewer.add", runtimeId: "beta" }));
+
+    fireEvent.click(within(center).getByRole("button", { name: "Disconnect Beta" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "runtime.logout", runtimeId: "beta" }));
+
+    fireEvent.click(within(center).getByRole("button", { name: "Close Runtime Center" }));
 
     fireEvent.click(screen.getByRole("button", { name: "Hide inspector" }));
     expect(document.querySelector(".inspector")).not.toBeInTheDocument();
+    const hiddenCenter = await openRuntimeCenter();
+    expect(within(hiddenCenter).getByRole("button", { name: "Beta is in use" })).toBeInTheDocument();
+    fireEvent.click(within(hiddenCenter).getByRole("button", { name: "Close Runtime Center" }));
     fireEvent.click(screen.getByRole("button", { name: "Show inspector" }));
     expect(document.querySelector(".inspector")).toBeInTheDocument();
   });

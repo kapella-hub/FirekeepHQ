@@ -1,4 +1,4 @@
-import { Children, isValidElement, type ReactNode } from "react";
+import { Children, isValidElement, memo, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { MermaidDiagram } from "./MermaidDiagram.js";
@@ -19,9 +19,9 @@ const components: Components = {
   },
 };
 
-export function RichMarkdown({ children }: RichMarkdownProps): React.JSX.Element {
+export const RichMarkdown = memo(function RichMarkdown({ children }: RichMarkdownProps): React.JSX.Element {
   return <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>{children}</ReactMarkdown>;
-}
+});
 
 function textContent(value: ReactNode): string {
   if (typeof value === "string" || typeof value === "number") return String(value);

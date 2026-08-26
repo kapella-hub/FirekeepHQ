@@ -71,6 +71,7 @@ describe("KiroRuntime", () => {
 
     expect(args).toEqual(["acp", "--model", "kiro-model", "--effort", "high"]);
     expect(runtime.descriptor.capabilities).not.toContain("firekeep-hooks");
+    expect(runtime.descriptor.capabilities).not.toContain("firekeep-memory");
     expect(result).toMatchObject({ nativeSessionId: "kiro-session", finalText: "Found it.", usage: { totalTokens: 20, inputTokens: 14, outputTokens: 6, reasoningTokens: 2 } });
     expect(approve).toHaveBeenCalledWith(expect.objectContaining({ id: "kiro:t1", options: ["allow", "reject"] }));
     expect(events.map((event) => event.kind)).toEqual(expect.arrayContaining(["message.delta", "message.completed", "tool.started", "tool.completed", "diff.updated", "usage.updated"]));
@@ -139,5 +140,6 @@ describe("KiroRuntime", () => {
 
     expect(args.slice(0, 3)).toEqual(["acp", "--agent", "firekeep"]);
     expect(runtime.descriptor.capabilities).toContain("firekeep-hooks");
+    expect(runtime.descriptor.capabilities).toContain("firekeep-memory");
   });
 });

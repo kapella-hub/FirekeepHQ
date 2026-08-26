@@ -474,7 +474,7 @@ export function createCommandRegistry(service: StudioService, integrations: Comm
       const runtimeId = requireArg(command, 0, "runtime id");
       const method = command.flags.method;
       const parsedMethod = typeof method === "string" ? parseLoginMethod(method) : undefined;
-      if (parsedMethod === "api-key") throw new Error("Use the runtime card's secure Connect dialog for API keys; slash commands are intentionally non-secret");
+      if (parsedMethod === "api-key") throw new Error("Use Runtime Center's secure Connect dialog for API keys; slash commands are intentionally non-secret");
       const result = await login(runtimeId, parsedMethod ? { method: parsedMethod } : {});
       return loginResultNotice("Connection started", result);
     },
@@ -490,7 +490,7 @@ export function createCommandRegistry(service: StudioService, integrations: Comm
       if (action === "login") {
         const runtimeId = requireArg(command, 1, "runtime id");
         const method = command.args[2] ? parseLoginMethod(command.args[2]) : undefined;
-        if (method === "api-key") throw new Error("Use the runtime card's secure Connect dialog for API keys; slash commands are intentionally non-secret");
+        if (method === "api-key") throw new Error("Use Runtime Center's secure Connect dialog for API keys; slash commands are intentionally non-secret");
         const result = await login(runtimeId, method ? { method } : {});
         return loginResultNotice("Account login", result);
       }

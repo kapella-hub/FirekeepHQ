@@ -1,5 +1,5 @@
 import type { ChildProcessWithoutNullStreams, SpawnOptionsWithoutStdio } from "node:child_process";
-import { spawnRuntime } from "./process.js";
+import { spawnRuntime, terminateProcessTree } from "./process.js";
 
 export interface JsonLineDecoderOptions {
   readonly maxLineBytes?: number;
@@ -236,12 +236,15 @@ export class ChildProcessJsonlTransport implements JsonlTransport {
   readonly #child: ChildProcessWithoutNullStreams;
 
   constructor(command: string, args: readonly string[], options: SpawnOptionsWithoutStdio = {}) {
-    this.#child = spawnRuntime(command, args, options);
+    this.#child = spawnRuntime(command, args, {
+      ...options,
+      ...(process.platform === "win32" ? {} : { detached: true }),
+    });
   }
 
   write(line: string): void { this.#child.stdin.write(line); }
   end(line?: string): void { this.#child.stdin.end(line); }
-  kill(): void { this.#child.kill(); }
+  kill(): void { terminateProcessTree(this.#child); }
   onStdout(listener: (chunk: Uint8Array | string) => void): () => void { this.#child.stdout.on("data", listener); return () => this.#child.stdout.off("data", listener); }
   onStderr(listener: (chunk: Uint8Array | string) => void): () => void { this.#child.stderr.on("data", listener); return () => this.#child.stderr.off("data", listener); }
   onExit(listener: (code: number | null, signal: NodeJS.Signals | null) => void): () => void { this.#child.on("exit", listener); return () => this.#child.off("exit", listener); }

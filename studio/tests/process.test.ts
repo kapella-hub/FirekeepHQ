@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { runProcess, spawnRuntime } from "../src/main/runtime/process.js";
+import { runProcess, spawnRuntime, terminateProcessTree } from "../src/main/runtime/process.js";
 
 describe("runProcess", () => {
   it("captures bounded output and preserves the parent environment", async () => {
@@ -29,8 +29,41 @@ describe("runProcess", () => {
     expect(output).toBe("studio");
   });
 
+  it("terminates a runtime process together with its descendant", async () => {
+    const script = "const {spawn}=require('node:child_process');const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});process.stdout.write(String(child.pid)+'\\n');setInterval(()=>{},1000)";
+    const parent = spawnRuntime(process.execPath, ["-e", script], {
+      ...(process.platform === "win32" ? {} : { detached: true }),
+    });
+    let stdout = "";
+    parent.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString("utf8"); });
+    await waitFor(() => /^\d+\s*$/.test(stdout));
+    const descendantPid = Number(stdout.trim());
+
+    try {
+      terminateProcessTree(parent);
+      await waitFor(() => !isAlive(descendantPid), 5_000);
+      expect(isAlive(descendantPid)).toBe(false);
+    } finally {
+      if (isAlive(descendantPid)) {
+        try { process.kill(descendantPid, "SIGKILL"); } catch { /* already gone */ }
+      }
+      if (parent.pid && isAlive(parent.pid)) parent.kill("SIGKILL");
+    }
+  }, 10_000);
+
   it.runIf(process.platform === "win32")("refuses command shims instead of implicitly invoking a shell", () => {
     expect(() => spawnRuntime("provider.cmd", [])).toThrow(/shell shim/i);
     expect(() => spawnRuntime("provider.bat", [])).toThrow(/shell shim/i);
   });
 });
+
+async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+}
+
+function isAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; }
+  catch { return false; }
+}

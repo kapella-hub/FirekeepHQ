@@ -1,4 +1,7 @@
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type {
   AgentRuntime,
   LoginRequest,
@@ -23,20 +26,14 @@ interface ClaudeRuntimeOptions {
   readonly runCommand?: (args: readonly string[]) => Promise<ProcessResult>;
   readonly launchLogin?: () => void;
   readonly versionProbe?: () => Promise<{ found: boolean; version?: string; detail: string }>;
+  readonly firekeepMemory?: boolean;
+  readonly firekeepHooks?: boolean;
 }
 
 interface JsonObject { readonly [key: string]: unknown }
 
 export class ClaudeRuntime implements AgentRuntime {
-  readonly descriptor = {
-    id: "claude",
-    displayName: "Claude",
-    description: "Anthropic Claude Code through its native streaming CLI",
-    transport: "stream-json",
-    capabilities: ["chat", "review", "streaming", "tools", "resume", "models", "images", "usage", "reasoning", "firekeep-hooks"],
-    loginMethods: ["browser", "console"],
-    accent: "#d99b6c",
-  } as const;
+  readonly descriptor;
   readonly #command: string;
   readonly #processFactory: (args: readonly string[], cwd?: string) => JsonlTransport;
   readonly #runCommand: (args: readonly string[]) => Promise<ProcessResult>;
@@ -52,6 +49,17 @@ export class ClaudeRuntime implements AgentRuntime {
       child.unref();
     });
     this.#versionProbe = options.versionProbe ?? (() => probeVersion(this.#command));
+    const firekeepMemory = options.firekeepMemory ?? installedFirekeepMemory();
+    const firekeepHooks = options.firekeepHooks ?? installedFirekeepHooks();
+    this.descriptor = {
+      id: "claude",
+      displayName: "Claude",
+      description: "Anthropic Claude Code through its native streaming CLI",
+      transport: "stream-json",
+      capabilities: ["chat", "review", "streaming", "tools", "resume", "models", "images", "usage", "reasoning", ...(firekeepMemory ? ["firekeep-memory" as const] : []), ...(firekeepHooks ? ["firekeep-hooks" as const] : [])],
+      loginMethods: ["browser", "console"],
+      accent: "#d99b6c",
+    } as const;
   }
 
   async probe(): Promise<RuntimeConnection> {
@@ -248,3 +256,20 @@ function array(value: unknown): unknown[] { return Array.isArray(value) ? value 
 function string(value: unknown): string | undefined { return typeof value === "string" ? value : undefined; }
 function decode(value: Uint8Array | string): string { return typeof value === "string" ? value : Buffer.from(value).toString("utf8"); }
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error); }
+
+function installedFirekeepMemory(): boolean {
+  try {
+    const config = JSON.parse(readFileSync(join(homedir(), ".claude.json"), "utf8")) as { mcpServers?: Record<string, unknown> };
+    return Object.keys(config.mcpServers ?? {}).some((name) => name === "firekeep" || name.startsWith("firekeep-"));
+  } catch {
+    return false;
+  }
+}
+
+function installedFirekeepHooks(): boolean {
+  try {
+    return readFileSync(join(homedir(), ".claude", "settings.json"), "utf8").includes("firekeep_client.hooks");
+  } catch {
+    return false;
+  }
+}

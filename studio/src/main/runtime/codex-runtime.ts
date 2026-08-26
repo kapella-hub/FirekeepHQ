@@ -1,4 +1,5 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type {
   AgentRuntime,
@@ -23,25 +24,27 @@ export interface CodexRuntimeOptions {
   readonly peerFactory?: () => RpcPeer;
   readonly versionProbe?: () => Promise<VersionProbeResult>;
   readonly appVersion?: string;
+  readonly firekeepMemory?: boolean;
+  readonly loginTimeoutMs?: number;
 }
 
 interface JsonObject { readonly [key: string]: unknown }
+interface PendingLogin {
+  readonly loginId: string;
+  readonly peer: RpcPeer;
+  readonly dispose: () => void;
+  readonly timeout: ReturnType<typeof setTimeout>;
+}
 
 export class CodexRuntime implements AgentRuntime {
-  readonly descriptor = {
-    id: "codex",
-    displayName: "Codex",
-    description: "OpenAI Codex through the local App Server protocol",
-    transport: "app-server",
-    capabilities: ["chat", "review", "streaming", "tools", "approvals", "resume", "models", "images", "usage", "reasoning"],
-    loginMethods: ["browser", "device", "api-key"],
-    accent: "#8be3c7",
-  } as const;
+  readonly descriptor;
   readonly #command: string;
   readonly #commandPrefix: readonly string[];
   readonly #peerFactory: () => RpcPeer;
   readonly #versionProbe: () => Promise<VersionProbeResult>;
   readonly #appVersion: string;
+  readonly #loginTimeoutMs: number;
+  #pendingLogin: PendingLogin | null = null;
 
   constructor(options: CodexRuntimeOptions = {}) {
     const invocation = options.command ? { command: options.command, prefix: [] as string[] } : defaultCodexInvocation();
@@ -53,6 +56,17 @@ export class CodexRuntime implements AgentRuntime {
     ));
     this.#versionProbe = options.versionProbe ?? (() => probeVersion(this.#command, [...this.#commandPrefix, "--version"]));
     this.#appVersion = options.appVersion ?? "0.3.2";
+    this.#loginTimeoutMs = options.loginTimeoutMs ?? 10 * 60_000;
+    const firekeepMemory = options.firekeepMemory ?? installedFirekeepMemory();
+    this.descriptor = {
+      id: "codex",
+      displayName: "Codex",
+      description: "OpenAI Codex through the local App Server protocol",
+      transport: "app-server",
+      capabilities: ["chat", "review", "streaming", "tools", "approvals", "resume", "models", "images", "usage", "reasoning", ...(firekeepMemory ? ["firekeep-memory" as const] : [])],
+      loginMethods: ["browser", "device", "api-key"],
+      accent: "#8be3c7",
+    } as const;
   }
 
   async probe(): Promise<RuntimeConnection> {
@@ -83,26 +97,59 @@ export class CodexRuntime implements AgentRuntime {
   }
 
   async login(request: LoginRequest): Promise<LoginResult> {
-    return this.#withPeer(async (peer) => {
-      const method = request.method ?? "browser";
-      const params = method === "api-key"
-        ? { type: "apiKey", apiKey: requireSecret(request) }
-        : method === "device"
-          ? { type: "chatgptDeviceCode" }
-          : { type: "chatgpt", codexStreamlinedLogin: true, useHostedLoginSuccessPage: true, appBrand: "codex" };
+    await this.#cancelPendingLogin();
+    const method = request.method ?? "browser";
+    if (method === "api-key") {
+      return this.#withPeer(async (peer) => {
+        await peer.request("account/login/start", { type: "apiKey", apiKey: requireSecret(request) });
+        return { state: "complete", message: "Codex account connected." };
+      });
+    }
+
+    const peer = this.#peerFactory();
+    let retained = false;
+    let completedBeforeStart: string | null = null;
+    let dispose = (): void => undefined;
+    try {
+      await this.#initialize(peer);
+      dispose = peer.onNotification((notification, rawParams) => {
+        if (notification !== "account/login/completed") return;
+        const completedId = string(object(rawParams).loginId);
+        if (!completedId) return;
+        completedBeforeStart = completedId;
+        if (this.#pendingLogin?.peer === peer && this.#pendingLogin.loginId === completedId) this.#finishPendingLogin(peer);
+      });
+      const params = method === "device"
+        ? { type: "chatgptDeviceCode" }
+        : { type: "chatgpt", codexStreamlinedLogin: true, useHostedLoginSuccessPage: true, appBrand: "codex" };
       const response = object(await peer.request("account/login/start", params));
       const type = string(response.type);
+      const loginId = string(response.loginId);
+      if (!loginId) throw new Error("Codex App Server returned no login id");
+      if (completedBeforeStart === loginId) return { state: "complete", message: "Codex account connected." };
+      let result: LoginResult;
       if (type === "chatgpt" && string(response.authUrl)) {
-        return { state: "browser", url: string(response.authUrl) as string, message: "Finish signing in to Codex in your browser." };
+        result = { state: "browser", url: string(response.authUrl) as string, message: "Finish signing in to Codex in your browser." };
+      } else if (type === "chatgptDeviceCode" && string(response.verificationUrl) && string(response.userCode)) {
+        result = { state: "device", url: string(response.verificationUrl) as string, code: string(response.userCode) as string, message: "Enter the Codex device code in your browser." };
+      } else {
+        throw new Error(`Codex App Server returned an unsupported login response: ${type ?? "unknown"}`);
       }
-      if (type === "chatgptDeviceCode" && string(response.verificationUrl) && string(response.userCode)) {
-        return { state: "device", url: string(response.verificationUrl) as string, code: string(response.userCode) as string, message: "Enter the Codex device code in your browser." };
+      const timeout = setTimeout(() => { void this.#cancelPendingLogin(loginId); }, this.#loginTimeoutMs);
+      timeout.unref();
+      this.#pendingLogin = { loginId, peer, dispose, timeout };
+      retained = true;
+      return result;
+    } finally {
+      if (!retained) {
+        dispose();
+        peer.close();
       }
-      return { state: "complete", message: "Codex account connected." };
-    });
+    }
   }
 
   async logout(): Promise<void> {
+    await this.#cancelPendingLogin();
     await this.#withPeer(async (peer) => { await peer.request("account/logout"); });
   }
 
@@ -245,6 +292,30 @@ export class CodexRuntime implements AgentRuntime {
     }
   }
 
+  #finishPendingLogin(peer: RpcPeer): void {
+    const pending = this.#pendingLogin;
+    if (!pending || pending.peer !== peer) return;
+    this.#pendingLogin = null;
+    clearTimeout(pending.timeout);
+    pending.dispose();
+    pending.peer.close();
+  }
+
+  async #cancelPendingLogin(loginId?: string): Promise<void> {
+    const pending = this.#pendingLogin;
+    if (!pending || (loginId && pending.loginId !== loginId)) return;
+    this.#pendingLogin = null;
+    clearTimeout(pending.timeout);
+    pending.dispose();
+    try {
+      await pending.peer.request("account/login/cancel", { loginId: pending.loginId }, { timeoutMs: 5_000 });
+    } catch {
+      // Closing the owning app-server process is the final cancellation fence.
+    } finally {
+      pending.peer.close();
+    }
+  }
+
   async #initialize(peer: RpcPeer): Promise<void> {
     await peer.request("initialize", {
       clientInfo: { name: "firekeep_studio", title: "Firekeep Studio", version: this.#appVersion },
@@ -316,6 +387,16 @@ function isRuntimeEffort(value: string | null): value is RuntimeEffort { return 
 function isInputModality(value: unknown): value is "text" | "image" | "audio" { return value === "text" || value === "image" || value === "audio"; }
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error); }
 function requireSecret(request: LoginRequest): string { if (!request.secret) throw new Error("Codex API-key login requires a key"); return request.secret; }
+
+function installedFirekeepMemory(): boolean {
+  try {
+    const config = readFileSync(join(homedir(), ".codex", "config.toml"), "utf8");
+    return config.includes("# >>> firekeep-client")
+      && (config.includes("[mcp_servers.firekeep]") || config.includes("[mcp_servers.firekeep-"));
+  } catch {
+    return false;
+  }
+}
 
 function defaultCodexInvocation(): { readonly command: string; readonly prefix: readonly string[] } {
   if (process.platform !== "win32") return { command: "codex", prefix: [] };

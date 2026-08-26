@@ -42,6 +42,15 @@ function request(overrides: Partial<RunRequest> = {}): RunRequest {
 }
 
 describe("ClaudeRuntime", () => {
+  it("advertises Firekeep capabilities only when the matching native config exists", () => {
+    const disconnected = new ClaudeRuntime({ firekeepMemory: false, firekeepHooks: false });
+    const configured = new ClaudeRuntime({ firekeepMemory: true, firekeepHooks: true });
+
+    expect(disconnected.descriptor.capabilities).not.toContain("firekeep-memory");
+    expect(disconnected.descriptor.capabilities).not.toContain("firekeep-hooks");
+    expect(configured.descriptor.capabilities).toEqual(expect.arrayContaining(["firekeep-memory", "firekeep-hooks"]));
+  });
+
   it("normalizes stream-json output and resumes a provider session", async () => {
     const transport = new FakeTransport();
     let capturedArgs: readonly string[] = [];

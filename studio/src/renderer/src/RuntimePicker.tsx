@@ -1,4 +1,4 @@
-import { Check, ChevronDown } from "lucide-react";
+import { Check, ChevronDown, Settings2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { RuntimeDescriptor } from "../../core/runtime.js";
 import type { RuntimeDiagnostic } from "../../core/studio-service.js";
@@ -8,9 +8,10 @@ interface RuntimePickerProps {
   readonly selectedId: string | null;
   readonly diagnostics: Readonly<Record<string, RuntimeDiagnostic>>;
   readonly onSelect: (runtimeId: string) => void;
+  readonly onManage: () => void;
 }
 
-export function RuntimePicker({ runtimes, selectedId, diagnostics, onSelect }: RuntimePickerProps): React.JSX.Element {
+export function RuntimePicker({ runtimes, selectedId, diagnostics, onSelect, onManage }: RuntimePickerProps): React.JSX.Element {
   const choices = runtimes.filter((runtime) => runtime.capabilities.includes("chat"));
   const selected = choices.find((runtime) => runtime.id === selectedId);
   const selectedIndex = Math.max(0, choices.findIndex((runtime) => runtime.id === selectedId));
@@ -81,26 +82,33 @@ export function RuntimePicker({ runtimes, selectedId, diagnostics, onSelect }: R
       <span className={`runtime-picker-status ${status.tone}`}><i />{status.label}</span>
       <ChevronDown className="runtime-picker-chevron" size={15} />
     </button>
-    {open ? <div className="runtime-picker-menu" id="primary-runtime-options" role="listbox" aria-label="Primary runtime">
+    {open ? <div className="runtime-picker-menu">
       <header><span>Choose the agent for new turns</span><small>Reviewers stay independent</small></header>
-      {choices.map((runtime, index) => {
-        const optionStatus = runtimeStatus(diagnostics[runtime.id]);
-        const isSelected = runtime.id === selectedId;
-        return <button
-          type="button"
-          key={runtime.id}
-          role="option"
-          aria-selected={isSelected}
-          className={index === activeIndex ? "active" : ""}
-          onMouseEnter={() => setActiveIndex(index)}
-          onClick={() => choose(index)}
-        >
-          <span className="runtime-orb" style={{ "--runtime-accent": runtime.accent ?? "#df7e45" } as React.CSSProperties}>{runtime.displayName.slice(0, 1)}</span>
-          <span><strong>{runtime.displayName}</strong><small>{runtime.transport}</small></span>
-          <span className={`runtime-option-status ${optionStatus.tone}`}><i />{optionStatus.label}</span>
-          {isSelected ? <Check className="runtime-option-check" size={15} /> : null}
-        </button>;
-      })}
+      <div className="runtime-picker-options" id="primary-runtime-options" role="listbox" aria-label="Primary runtime">
+        {choices.map((runtime, index) => {
+          const optionStatus = runtimeStatus(diagnostics[runtime.id]);
+          const isSelected = runtime.id === selectedId;
+          return <button
+            type="button"
+            key={runtime.id}
+            role="option"
+            aria-selected={isSelected}
+            className={index === activeIndex ? "active" : ""}
+            onMouseEnter={() => setActiveIndex(index)}
+            onClick={() => choose(index)}
+          >
+            <span className="runtime-orb" style={{ "--runtime-accent": runtime.accent ?? "#df7e45" } as React.CSSProperties}>{runtime.displayName.slice(0, 1)}</span>
+            <span><strong>{runtime.displayName}</strong><small>{runtime.transport}</small></span>
+            <span className={`runtime-option-status ${optionStatus.tone}`}><i />{optionStatus.label}</span>
+            {isSelected ? <Check className="runtime-option-check" size={15} /> : null}
+          </button>;
+        })}
+      </div>
+      <button type="button" className="runtime-picker-manage" aria-label="Manage runtimes" onClick={() => { setOpen(false); onManage(); }}>
+        <Settings2 size={15} />
+        <span><strong>Manage runtimes</strong><small>Accounts, reviewers, and Keep status</small></span>
+        <span className="runtime-picker-count">{runtimes.length}</span>
+      </button>
     </div> : null}
   </div>;
 }

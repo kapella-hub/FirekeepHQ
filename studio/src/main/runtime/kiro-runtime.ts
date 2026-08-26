@@ -19,7 +19,7 @@ import type {
   RuntimeUsage,
 } from "../../core/runtime.js";
 import { RUNTIME_EFFORTS } from "../../core/runtime.js";
-import { probeVersion, runProcess, spawnRuntime, type ProcessResult } from "./process.js";
+import { probeVersion, runProcess, spawnRuntime, terminateProcessTree, type ProcessResult } from "./process.js";
 
 export interface AcpTargetHandle {
   readonly target: acp.Stream | acp.AgentApp;
@@ -62,7 +62,7 @@ export class KiroRuntime implements AgentRuntime {
       displayName: "Kiro",
       description: "Kiro CLI through the stable Agent Client Protocol",
       transport: "acp-v1",
-      capabilities: ["chat", "review", "streaming", "tools", "approvals", "resume", "models", "usage", "reasoning", ...(this.#agentName ? ["firekeep-hooks" as const] : [])],
+      capabilities: ["chat", "review", "streaming", "tools", "approvals", "resume", "models", "usage", "reasoning", ...(this.#agentName ? ["firekeep-memory" as const, "firekeep-hooks" as const] : [])],
       loginMethods: ["browser", "device"],
       accent: "#8f83ff",
     };
@@ -273,14 +273,18 @@ function acpUsage(value: acp.Usage): RuntimeUsage {
 }
 
 function createProcessTarget(command: string, args: readonly string[], cwd?: string): AcpTargetHandle {
-  const child = spawnRuntime(command, args, { ...(cwd ? { cwd } : {}), env: process.env });
+  const child = spawnRuntime(command, args, {
+    ...(cwd ? { cwd } : {}),
+    env: process.env,
+    ...(process.platform === "win32" ? {} : { detached: true }),
+  });
   let stderr = "";
   child.stderr.on("data", (chunk: Buffer) => { stderr = (stderr + chunk.toString("utf8")).slice(-64 * 1024); });
   const output = Writable.toWeb(child.stdin) as WritableStream<Uint8Array>;
   const input = Readable.toWeb(child.stdout) as ReadableStream<Uint8Array>;
   return {
     target: acp.ndJsonStream(output, input),
-    close: () => { child.kill(); },
+    close: () => { terminateProcessTree(child); },
     stderr: () => stderr,
   };
 }

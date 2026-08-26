@@ -56,6 +56,11 @@ function configuredPeer(): FakePeer {
 }
 
 describe("CodexRuntime", () => {
+  it("reports Keep memory only when native Codex config was detected", () => {
+    expect(new CodexRuntime({ firekeepMemory: false }).descriptor.capabilities).not.toContain("firekeep-memory");
+    expect(new CodexRuntime({ firekeepMemory: true }).descriptor.capabilities).toContain("firekeep-memory");
+  });
+
   it("initializes App Server, starts a thread, and normalizes its stream", async () => {
     const peer = configuredPeer();
     const runtime = new CodexRuntime({ peerFactory: () => peer, versionProbe: async () => ({ found: true, version: "codex-cli 1", detail: "ready" }) });
@@ -132,5 +137,47 @@ describe("CodexRuntime", () => {
 
     await expect(runtime.authStatus()).resolves.toMatchObject({ state: "connected", label: "dev@example.com · pro" });
     await expect(runtime.listModels()).resolves.toEqual([expect.objectContaining({ id: "gpt", efforts: ["high"], inputModalities: ["text", "image"] })]);
+  });
+
+  it("keeps browser login alive until the matching completion notification", async () => {
+    const peer = configuredPeer();
+    peer.responses.set("account/login/start", { type: "chatgpt", loginId: "login-1", authUrl: "https://auth.example.test/login" });
+    const runtime = new CodexRuntime({ peerFactory: () => peer, loginTimeoutMs: 60_000 });
+
+    await expect(runtime.login({ method: "browser" })).resolves.toMatchObject({ state: "browser", url: "https://auth.example.test/login" });
+    expect(peer.closed).toBe(false);
+
+    peer.emit("account/login/completed", { loginId: "someone-else", success: true });
+    expect(peer.closed).toBe(false);
+
+    peer.emit("account/login/completed", { loginId: "login-1", success: true });
+    expect(peer.closed).toBe(true);
+  });
+
+  it("closes synchronous API-key login immediately", async () => {
+    const peer = configuredPeer();
+    peer.responses.set("account/login/start", { type: "apiKey" });
+    const runtime = new CodexRuntime({ peerFactory: () => peer });
+
+    await expect(runtime.login({ method: "api-key", secret: "test-key" })).resolves.toMatchObject({ state: "complete" });
+    expect(peer.closed).toBe(true);
+  });
+
+  it("cancels an earlier pending login before starting another", async () => {
+    const first = configuredPeer();
+    first.responses.set("account/login/start", { type: "chatgpt", loginId: "login-1", authUrl: "https://auth.example.test/one" });
+    const second = configuredPeer();
+    second.responses.set("account/login/start", { type: "chatgpt", loginId: "login-2", authUrl: "https://auth.example.test/two" });
+    const peers = [first, second];
+    const runtime = new CodexRuntime({ peerFactory: () => peers.shift() as FakePeer });
+
+    await runtime.login({ method: "browser" });
+    await runtime.login({ method: "browser" });
+
+    expect(first.calls).toContainEqual({ method: "account/login/cancel", params: { loginId: "login-1" } });
+    expect(first.closed).toBe(true);
+    expect(second.closed).toBe(false);
+    second.emit("account/login/completed", { loginId: "login-2", success: true });
+    expect(second.closed).toBe(true);
   });
 });

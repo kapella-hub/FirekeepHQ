@@ -47,10 +47,10 @@ export async function runProcess(command: string, args: readonly string[], optio
 
   const timeout = options.timeoutMs === 0 ? undefined : setTimeout(() => {
     timedOut = true;
-    terminateChild(child, options.killTree === true);
+    terminateProcess(child, options.killTree === true);
   }, options.timeoutMs ?? 15_000);
   timeout?.unref();
-  const abort = (): void => { terminateChild(child, options.killTree === true); };
+  const abort = (): void => { terminateProcess(child, options.killTree === true); };
   options.signal?.addEventListener("abort", abort, { once: true });
   if (options.signal?.aborted) abort();
 
@@ -73,7 +73,8 @@ export async function runProcess(command: string, args: readonly string[], optio
   }
 }
 
-function terminateChild(child: ChildProcessWithoutNullStreams, killTree: boolean): void {
+function terminateProcess(child: ChildProcessWithoutNullStreams, killTree: boolean): void {
+  if (child.exitCode !== null || child.signalCode !== null) return;
   if (!killTree || !child.pid) {
     child.kill();
     return;
@@ -84,10 +85,16 @@ function terminateChild(child: ChildProcessWithoutNullStreams, killTree: boolean
       windowsHide: true,
     });
     killer.once("error", () => child.kill());
+    killer.once("exit", (code) => { if (code !== 0) child.kill(); });
     return;
   }
   try { process.kill(-child.pid, "SIGTERM"); }
   catch { child.kill(); }
+}
+
+/** Terminate a Studio-owned runtime and every subprocess it launched. */
+export function terminateProcessTree(child: ChildProcessWithoutNullStreams): void {
+  terminateProcess(child, true);
 }
 
 export function spawnRuntime(
