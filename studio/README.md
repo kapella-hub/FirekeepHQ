@@ -1,6 +1,6 @@
 # Firekeep Studio
 
-Firekeep Studio is Firekeep's runtime-neutral desktop agent console. Version `0.3.4`
+Firekeep Studio is Firekeep's runtime-neutral desktop agent console. Version `0.3.5`
 is a separate Electron application: it does not replace or fork the Python Client Kit.
 The kit remains the source of truth for Keep connectivity, memory, hooks, instructions,
 personal mode, and runtime configuration.
@@ -19,8 +19,8 @@ needs more visual focus. Model refreshes replace the live provider catalog and s
 success, or failure. When the Client Kit has a server configured, the rail also opens its
 dashboard without sending a URL through renderer IPC.
 
-Sessions can be named and color-coded directly in the left rail—including inactive
-sessions—or from `/session rename ...` and `/session color ...`. The fixed palette is
+Sessions can be named and color-coded by clicking their row in the left rail—including
+inactive sessions—or from `/session rename ...` and `/session color ...`. The fixed palette is
 stored with session metadata; older indexes migrate to the ember default when loaded.
 
 Version 0.2 adds **Missions**: an outcome-bounded harness that gives one primary writer a
@@ -65,6 +65,10 @@ Studio's typed IPC boundary. Unsupported platforms now report that honestly.
 Version 0.3.4 brings the established Firekeep Beacon into every Studio brand surface and
 replaces the generic welcome copy with the product's continuity promise: agents come and
 go; the Keep stays.
+
+Version 0.3.5 makes each complete session row the name-and-color editor trigger while
+preserving its existing select/resume behavior. The palette icon remains a visual hint,
+not a second competing target.
 
 ## Runtime support
 

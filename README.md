@@ -120,7 +120,7 @@ data-loss confirmation that a plain uninstall or `--yes` can never trigger. Back
 up first ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#removing-the-server)) if you
 might want the data back.
 
-## Firekeep Studio (0.3.4 preview)
+## Firekeep Studio (0.3.5 preview)
 
 [`studio/`](studio/) is a separate desktop client for people who want Firekeep to be the
 only agent application they open. It gives Codex, Claude Code, Kiro CLI, and Grok one

@@ -480,11 +480,14 @@ export function App(): React.JSX.Element {
         <nav className="session-list" aria-label="Studio sessions">
           {sessions.map((session) => (
             <div key={session.id} className={`session-entry ${session.id === snapshot.activeSessionId ? "active" : ""} ${sessionEditorId === session.id ? "editing" : ""}`} style={sessionAccentStyle(session.color)}>
-              <button className="session-row" onClick={() => { if (session.id !== snapshot.activeSessionId) ignore(invoke({ type: "session.resume", sessionId: session.id }).then(applyResult)); }}>
+              <button type="button" className="session-row" aria-label={`Open ${session.name} and edit name and color`} aria-expanded={sessionEditorId === session.id} aria-controls={`session-editor-${session.id}`} onClick={() => {
+                setSessionEditorId((current) => current === session.id ? null : session.id);
+                if (session.id !== snapshot.activeSessionId) ignore(invoke({ type: "session.resume", sessionId: session.id }).then(applyResult));
+              }}>
                 <span className="session-row-heading"><span className="session-color-dot" /><span className="session-row-title">{session.name}</span></span>
                 <span className="session-row-meta">{session.mission ? `${session.mission.phase} · ` : ""}{session.eventCount} events · {relativeTime(session.updatedAt)}</span>
+                <span className="session-customize" aria-hidden="true"><Palette size={13} /></span>
               </button>
-              <button type="button" className="session-customize" aria-label={`Customize ${session.name}`} aria-expanded={sessionEditorId === session.id} onClick={() => setSessionEditorId((current) => current === session.id ? null : session.id)}><Palette size={13} /></button>
               {sessionEditorId === session.id ? <SessionEditor session={session} saving={sessionSaving} close={() => setSessionEditorId(null)} save={(name, color) => saveSession(session.id, name, color)} /> : null}
             </div>
           ))}
@@ -708,7 +711,7 @@ function SessionEditor({ session, saving, close, save }: { readonly session: Stu
   const [color, setColor] = useState<SessionColor>(session.color ?? DEFAULT_SESSION_COLOR);
   const cleanName = name.trim();
   return (
-    <form className="session-editor" aria-label={`Edit ${session.name}`} onSubmit={(event) => { event.preventDefault(); if (cleanName && !saving) ignore(save(cleanName, color)); }}>
+    <form id={`session-editor-${session.id}`} className="session-editor" aria-label={`Edit ${session.name}`} onSubmit={(event) => { event.preventDefault(); if (cleanName && !saving) ignore(save(cleanName, color)); }}>
       <label><span>Session name</span><input aria-label="Session name" autoFocus maxLength={120} value={name} onChange={(event) => setName(event.target.value)} /></label>
       <fieldset><legend>Color</legend><div className="session-colors" role="radiogroup" aria-label="Session color">{SESSION_COLOR_OPTIONS.map((option) => <button key={option.id} type="button" role="radio" aria-label={option.label} aria-checked={color === option.id} className={color === option.id ? "selected" : ""} style={{ "--choice-color": option.value } as React.CSSProperties} onClick={() => setColor(option.id)}><span /></button>)}</div></fieldset>
       <div className="session-editor-actions"><button type="button" onClick={close}>Cancel</button><button type="submit" className="primary" aria-label="Save session" disabled={!cleanName || saving}>{saving ? "Saving…" : "Save"}</button></div>

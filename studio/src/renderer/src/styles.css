@@ -83,9 +83,9 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, input:focus-
 .session-color-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 999px; background: var(--session-accent, var(--ember)); box-shadow: 0 0 8px color-mix(in srgb, var(--session-accent, var(--ember)) 46%, transparent); }
 .session-row-title { overflow: hidden; color: var(--text); font-size: 12px; font-weight: 570; text-overflow: ellipsis; white-space: nowrap; }
 .session-row-meta { color: var(--faint); font-size: 10px; }
-.session-customize { position: absolute; top: 7px; right: 6px; display: grid; place-items: center; width: 25px; height: 25px; padding: 0; border: 0; border-radius: 7px; background: transparent; color: var(--faint); opacity: 0; cursor: pointer; }
-.session-entry:hover .session-customize, .session-entry.active .session-customize, .session-customize:focus-visible, .session-customize[aria-expanded="true"] { opacity: 1; }
-.session-customize:hover, .session-customize[aria-expanded="true"] { background: color-mix(in srgb, var(--session-accent) 12%, var(--surface-2)); color: var(--session-accent); }
+.session-customize { position: absolute; top: 7px; right: 6px; display: grid; place-items: center; width: 25px; height: 25px; border-radius: 7px; color: var(--faint); opacity: 0; pointer-events: none; }
+.session-entry:hover .session-customize, .session-entry.active .session-customize, .session-row:focus-visible .session-customize, .session-row[aria-expanded="true"] .session-customize { opacity: 1; }
+.session-row:hover .session-customize, .session-row[aria-expanded="true"] .session-customize { background: color-mix(in srgb, var(--session-accent) 12%, var(--surface-2)); color: var(--session-accent); }
 .session-editor { display: grid; gap: 10px; padding: 10px; border-top: 1px solid var(--line); }
 .session-editor label { display: grid; gap: 5px; color: var(--muted); font-size: 9px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; }
 .session-editor input { min-width: 0; width: 100%; padding: 7px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: var(--text); font-size: 11px; letter-spacing: 0; text-transform: none; }
