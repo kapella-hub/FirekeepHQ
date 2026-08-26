@@ -5,6 +5,7 @@ import type { StudioAction, StudioActionResult } from "../shared/ipc.js";
 import type { DecisionBoardTransport } from "./decision-board-client.js";
 import { LoopbackDecisionBoardClient } from "./decision-board-client.js";
 import type { VoiceInput } from "./voice-input.js";
+import type { StudioUpdateControl } from "./studio-updater.js";
 import { SESSION_COLORS } from "../core/session-store.js";
 
 const id = z.string().min(1).max(128).regex(/^[a-zA-Z0-9._:-]+$/);
@@ -56,6 +57,8 @@ const actionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("voice.set"), enabled: z.boolean() }).strict(),
   z.object({ type: z.literal("voice.input.start"), language: language.optional() }).strict(),
   z.object({ type: z.literal("voice.input.stop") }).strict(),
+  z.object({ type: z.literal("update.check") }).strict(),
+  z.object({ type: z.literal("update.install") }).strict(),
   z.object({ type: z.literal("run.cancel"), runId: optionalId }).strict(),
 ]);
 
@@ -85,6 +88,7 @@ export class StudioController {
     readonly decisionBoards: DecisionBoardTransport = new LoopbackDecisionBoardClient(),
     readonly clipboard: ClipboardTransport = emptyClipboard,
     readonly voiceInput: VoiceInput = unavailableVoiceInput,
+    readonly updates?: StudioUpdateControl,
   ) {}
 
   async dispatch(rawAction: unknown): Promise<StudioActionResult> {
@@ -95,6 +99,7 @@ export class StudioController {
         appName: "Firekeep Studio",
         version: this.appVersion,
         dashboardAvailable: this.dashboardUrl !== null,
+        update: this.#updateState(),
         snapshot: this.service.snapshot(),
         runtimes: this.service.runtimes.list().map((runtime) => runtime.descriptor),
         events: this.service.events(),
@@ -116,6 +121,8 @@ export class StudioController {
       const stopped = this.voiceInput.cancel();
       return { type: "voice-input", state: "cancelled", text: "", detail: stopped ? "Voice input stopped." : "No voice input was active." };
     }
+    if (action.type === "update.check") return { type: "update", state: this.updates ? await this.updates.check() : this.#updateState() };
+    if (action.type === "update.install") return { type: "update", state: this.updates ? await this.updates.install() : this.#updateState() };
     if (action.type === "decision.load") return { type: "decision", board: await this.decisionBoards.load(action.url) };
     if (action.type === "decision.submit") {
       await this.decisionBoards.submit(action.url, action.answers);
@@ -166,6 +173,17 @@ export class StudioController {
 
   async #openProviderUrl(value: string): Promise<void> {
     await this.#openHttpUrl(value, "provider login");
+  }
+
+  #updateState() {
+    return this.updates?.snapshot() ?? {
+      phase: "disabled" as const,
+      currentVersion: this.appVersion,
+      availableVersion: null,
+      progressPercent: null,
+      automatic: false,
+      detail: "Updates are unavailable in this Studio build.",
+    };
   }
 
   async #openHttpUrl(value: string, label: string): Promise<void> {

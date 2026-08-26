@@ -98,6 +98,22 @@ describe("slash command registry", () => {
     expect(result).toMatchObject({ title: "Firekeep doctor", body: "Keep healthy", tone: "success" });
   });
 
+  it("checks and installs Studio releases through /update without conflating Client Kit updates", async () => {
+    const { service } = setup();
+    await service.initialize();
+    const ready = { phase: "ready", currentVersion: "0.3.7", availableVersion: "0.4.0", progressPercent: 100, automatic: true, detail: "Verified and ready." } as const;
+    const updates = { snapshot: vi.fn(() => ready), check: vi.fn(async () => ready), install: vi.fn(async () => ready) };
+    const commands = createCommandRegistry(service, { updates });
+
+    const checked = await commands.execute("/update check");
+    const installed = await commands.execute("/update install");
+
+    expect(checked).toMatchObject({ title: "Studio update · ready", body: expect.stringContaining("Verified and ready") });
+    expect(installed).toMatchObject({ title: "Studio update · ready" });
+    expect(updates.check).toHaveBeenCalledOnce();
+    expect(updates.install).toHaveBeenCalledOnce();
+  });
+
   it("runs compare and consensus workflows through runtime-neutral commands", async () => {
     const { service, commands } = setup();
     await service.initialize();

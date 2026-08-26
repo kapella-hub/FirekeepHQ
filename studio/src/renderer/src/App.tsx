@@ -8,6 +8,7 @@ import {
   Code2,
   Copy,
   Cpu,
+  Download,
   Eye,
   ExternalLink,
   FileDiff,
@@ -39,7 +40,7 @@ import type { MissionSnapshot } from "../../core/mission";
 import { DEFAULT_SESSION_COLOR, type SessionColor, type StudioSessionSummary } from "../../core/session-store";
 import type { RuntimeDiagnostic, StudioSnapshot } from "../../core/studio-service";
 import type { LoginMethod, RuntimeDescriptor, RuntimeEffort, RuntimeEvent, RuntimeModel, RuntimeUsage } from "../../core/runtime";
-import type { BootstrapResult, StudioAction, StudioActionResult } from "../../shared/ipc";
+import type { BootstrapResult, StudioAction, StudioActionResult, StudioUpdateState } from "../../shared/ipc";
 import type { DecisionAnswers, DecisionBoardDocument, DecisionEmbed, DecisionQuestion } from "../../shared/decision-board";
 import { findDecisionBoardUrl } from "../../shared/decision-board";
 import { FirekeepMark } from "./FirekeepMark.js";
@@ -68,6 +69,7 @@ const SESSION_COLOR_OPTIONS: readonly { readonly id: SessionColor; readonly labe
 
 export function App(): React.JSX.Element {
   const [bootstrap, setBootstrap] = useState<BootstrapResult | null>(null);
+  const [updateState, setUpdateState] = useState<StudioUpdateState | null>(null);
   const [snapshot, setSnapshot] = useState<StudioSnapshot | null>(null);
   const [events, setEvents] = useState<RuntimeEvent[]>([]);
   const [sessions, setSessions] = useState<StudioSessionSummary[]>([]);
@@ -148,6 +150,8 @@ export function App(): React.JSX.Element {
       setSnapshot(result.snapshot);
       setSessions([...result.sessions]);
       replaceEvents(result.events);
+    } else if (result.type === "update") {
+      setUpdateState(result.state);
     }
   }, [replaceEvents]);
 
@@ -205,6 +209,7 @@ export function App(): React.JSX.Element {
           window.speechSynthesis.speak(new SpeechSynthesisUtterance(stripMarkdown(payload.text).slice(0, 8_000)));
         }
       } else if (event.type === "snapshot") setSnapshot(event.snapshot);
+      else if (event.type === "update") setUpdateState(event.state);
       else if (event.type === "decision.available") {
         surfacedBoardsRef.current.add(event.board.url);
         setDecisionBoard(event.board);
@@ -213,6 +218,7 @@ export function App(): React.JSX.Element {
     ignore(invoke({ type: "bootstrap" }).then((result) => {
       if (!active || result.type !== "bootstrap") return;
       setBootstrap(result);
+      setUpdateState(result.update);
       setSnapshot(result.snapshot);
       replaceEvents(result.events);
       setSessions([...result.sessions]);
@@ -438,6 +444,12 @@ export function App(): React.JSX.Element {
     } catch { /* invoke surfaced the actionable error. */ }
     finally { setSessionSaving(false); }
   };
+  const updateStudio = async (): Promise<void> => {
+    if (!updateState || updateState.phase === "disabled" || updateState.phase === "checking" || updateState.phase === "downloading") return;
+    try {
+      applyResult(await invoke({ type: updateState.phase === "ready" || updateState.phase === "available" ? "update.install" : "update.check" }));
+    } catch { /* invoke surfaced the actionable error. */ }
+  };
   const timeline = useMemo(() => buildTimeline(events), [events]);
   const timelineRuns = useMemo(() => groupTimeline(timeline), [timeline]);
   const primary = bootstrap?.runtimes.find((runtime) => runtime.id === snapshot?.primaryRuntimeId);
@@ -465,10 +477,11 @@ export function App(): React.JSX.Element {
       <header className="titlebar">
         <div className="brand"><span className="brand-icon" role="status" aria-label={agentWorking ? "Agent working" : "Firekeep Studio idle"}><FirekeepMark size={18} />{agentWorking ? <span className="brand-activity" /> : null}</span><span>Firekeep</span><strong>Studio</strong></div>
         <div className="titlebar-center">
-          {currentSession ? <button className="session-title-button" title="Edit session name and color" style={sessionAccentStyle(currentSession.color)} onClick={() => setSessionEditorId((current) => current === currentSession.id ? null : currentSession.id)}><span className="session-color-dot" /><span className="session-title">{currentSession.name}</span><Palette size={11} /></button> : <span className="session-title">New session</span>}
+          {currentSession ? <div className="session-title-display" style={sessionAccentStyle(currentSession.color)}><span className="session-color-dot" /><span className="session-title">{currentSession.name}</span><button type="button" className="session-title-customize" aria-label={`Customize current session ${currentSession.name}`} aria-expanded={sessionEditorId === currentSession.id} title="Edit session name and color" onClick={() => setSessionEditorId((current) => current === currentSession.id ? null : currentSession.id)}><Palette size={11} /></button></div> : <span className="session-title">New session</span>}
           <span className="session-id">{snapshot.activeSessionId.slice(0, 12)}</span>
         </div>
         <div className="titlebar-actions">
+          {updateState && updateState.phase !== "disabled" ? <StudioUpdateButton state={updateState} onAction={() => ignore(updateStudio())} /> : null}
           <button className="icon-button" title={snapshot.voiceEnabled ? "Turn spoken replies off" : "Turn spoken replies on"} onClick={() => ignore(invoke({ type: "voice.set", enabled: !snapshot.voiceEnabled }).then(applyResult))}>{snapshot.voiceEnabled ? <Volume2 size={17} /> : <VolumeX size={17} />}</button>
           <button className="icon-button appearance-button" aria-label={`Appearance: ${themeLabel(snapshot.theme)}. Switch to ${nextTheme(snapshot.theme)} theme`} title={`Appearance: ${themeLabel(snapshot.theme)} · next ${nextTheme(snapshot.theme)}`} onClick={() => ignore(invoke({ type: "theme.set", theme: nextTheme(snapshot.theme) }).then(applyResult))}><SunMoon size={17} /></button>
           <button className="inspector-toggle" aria-label={rightOpen ? "Hide inspector" : "Show inspector"} title={rightOpen ? "Hide the right inspector" : "Show the right inspector"} onClick={() => setRightOpen((value) => !value)}>{rightOpen ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}<span>{rightOpen ? "Hide panel" : "Show panel"}</span></button>
@@ -699,6 +712,39 @@ function MissionPanel({
 
 function LaunchScreen({ error }: { readonly error: string | null }): React.JSX.Element {
   return <main className="launch-shell"><section className="launch-card" aria-live="polite"><span className="brand-mark"><FirekeepMark size={30} /></span><p className="eyebrow">THE KEEP IS WAKING</p><h1>Firekeep Studio</h1><p className="lede">One calm console for every agent you trust.</p><div className="launch-status"><span className="pulse-dot" /> Loading runtime core…</div>{error ? <p className="launch-error">{error}</p> : null}</section></main>;
+}
+
+function StudioUpdateButton({ state, onAction }: { readonly state: StudioUpdateState; readonly onAction: () => void }): React.JSX.Element {
+  const busy = state.phase === "checking" || state.phase === "downloading";
+  const version = state.availableVersion ?? state.currentVersion;
+  const label = state.phase === "ready"
+    ? `Restart to install Firekeep Studio ${version}`
+    : state.phase === "available"
+      ? `Download Firekeep Studio ${version}`
+      : state.phase === "downloading"
+        ? `Downloading Firekeep Studio ${version}, ${state.progressPercent ?? 0} percent`
+        : state.phase === "checking"
+          ? "Checking for Studio updates"
+          : state.phase === "error"
+            ? `Retry Studio update check: ${state.detail}`
+            : `Check for Studio updates. ${state.detail}`;
+  const text = state.phase === "ready"
+    ? "Restart to update"
+    : state.phase === "available"
+      ? `Get ${version}`
+      : state.phase === "downloading"
+        ? `${state.progressPercent ?? 0}%`
+        : null;
+  const icon = state.phase === "ready"
+    ? <Sparkles size={14} />
+    : state.phase === "available" || state.phase === "downloading"
+      ? <Download className={state.phase === "downloading" ? "update-download" : undefined} size={14} />
+      : state.phase === "error"
+        ? <AlertTriangle size={14} />
+        : state.phase === "current"
+          ? <CheckCircle2 size={14} />
+          : <RefreshCw className={state.phase === "checking" ? "spin" : undefined} size={14} />;
+  return <button type="button" className={`studio-update-button ${state.phase}`} aria-label={label} title={state.detail} disabled={busy} onClick={onAction}>{icon}{text ? <span>{text}</span> : null}</button>;
 }
 
 function Welcome({ runtimes, workspacePath, onWorkspace, onChoose, onCommand }: { readonly runtimes: readonly RuntimeDescriptor[]; readonly workspacePath: string | null; readonly onWorkspace: () => void; readonly onChoose: (id: string) => void; readonly onCommand: (value: string) => void }): React.JSX.Element {

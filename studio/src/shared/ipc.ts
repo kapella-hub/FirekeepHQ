@@ -21,6 +21,15 @@ export interface VoiceInputOutcome {
   readonly detail: string;
 }
 
+export interface StudioUpdateState {
+  readonly phase: "disabled" | "idle" | "checking" | "current" | "available" | "downloading" | "ready" | "error";
+  readonly currentVersion: string;
+  readonly availableVersion: string | null;
+  readonly progressPercent: number | null;
+  readonly automatic: boolean;
+  readonly detail: string;
+}
+
 export type StudioAction =
   | { type: "bootstrap" }
   | { type: "dashboard.open" }
@@ -59,6 +68,8 @@ export type StudioAction =
   | { type: "voice.set"; enabled: boolean }
   | { type: "voice.input.start"; language?: string }
   | { type: "voice.input.stop" }
+  | { type: "update.check" }
+  | { type: "update.install" }
   | { type: "run.cancel"; runId?: string };
 
 export interface BootstrapResult {
@@ -66,6 +77,7 @@ export interface BootstrapResult {
   readonly appName: "Firekeep Studio";
   readonly version: string;
   readonly dashboardAvailable: boolean;
+  readonly update: StudioUpdateState;
   readonly snapshot: StudioSnapshot;
   readonly runtimes: readonly RuntimeDescriptor[];
   readonly events: readonly RuntimeEvent[];
@@ -85,12 +97,14 @@ export type StudioActionResult =
   | { readonly type: "clipboard-written" }
   | { readonly type: "decision"; readonly board: DecisionBoardDocument }
   | { readonly type: "decision-submitted"; readonly url: string }
+  | { readonly type: "update"; readonly state: StudioUpdateState }
   | ({ readonly type: "voice-input" } & VoiceInputOutcome);
 
 export type StudioPushEvent =
   | { readonly type: "runtime.event"; readonly event: RuntimeEvent }
   | { readonly type: "snapshot"; readonly snapshot: StudioSnapshot }
   | { readonly type: "decision.available"; readonly board: DecisionBoardDocument }
+  | { readonly type: "update"; readonly state: StudioUpdateState }
   | { readonly type: "sessions"; readonly sessions: readonly StudioSessionSummary[] };
 
 export interface StudioBridge {

@@ -8,7 +8,7 @@ import type { StudioSnapshot } from "../src/core/studio-service.js";
 import type { StudioSessionSummary } from "../src/core/session-store.js";
 import type { RuntimeDescriptor, RuntimeEvent, RuntimeModel } from "../src/core/runtime.js";
 import { App } from "../src/renderer/src/App.js";
-import type { StudioAction, StudioActionResult, StudioBridge, StudioPushEvent, VoiceInputOutcome } from "../src/shared/ipc.js";
+import type { StudioAction, StudioActionResult, StudioBridge, StudioPushEvent, StudioUpdateState, VoiceInputOutcome } from "../src/shared/ipc.js";
 import type { DecisionBoardDocument } from "../src/shared/decision-board.js";
 
 const runtimes: RuntimeDescriptor[] = [
@@ -40,11 +40,11 @@ function state(primaryRuntimeId: string | null = null): StudioSnapshot {
 
 let pushStudioEvent: ((event: StudioPushEvent) => void) | null = null;
 
-function installBridge(options: { readonly snapshot?: StudioSnapshot; readonly sessions?: readonly StudioSessionSummary[]; readonly models?: readonly RuntimeModel[] | (() => readonly RuntimeModel[]); readonly dashboardAvailable?: boolean; readonly events?: readonly RuntimeEvent[]; readonly decisionBoard?: DecisionBoardDocument; readonly pushEvents?: readonly StudioPushEvent[]; readonly clipboardText?: string; readonly voiceInput?: VoiceInputOutcome | (() => Promise<VoiceInputOutcome>) } = {}): ReturnType<typeof vi.fn<(action: StudioAction) => Promise<StudioActionResult>>> {
+function installBridge(options: { readonly snapshot?: StudioSnapshot; readonly sessions?: readonly StudioSessionSummary[]; readonly models?: readonly RuntimeModel[] | (() => readonly RuntimeModel[]); readonly dashboardAvailable?: boolean; readonly events?: readonly RuntimeEvent[]; readonly decisionBoard?: DecisionBoardDocument; readonly pushEvents?: readonly StudioPushEvent[]; readonly clipboardText?: string; readonly voiceInput?: VoiceInputOutcome | (() => Promise<VoiceInputOutcome>); readonly update?: StudioUpdateState; readonly updateResult?: StudioUpdateState } = {}): ReturnType<typeof vi.fn<(action: StudioAction) => Promise<StudioActionResult>>> {
   let snapshot = options.snapshot ?? state();
   let sessions = [...(options.sessions ?? [{ id: "session-1", name: "UI test", color: "ember" as const, createdAt: "2026-08-24T00:00:00.000Z", updatedAt: "2026-08-24T00:00:00.000Z", eventCount: 0, nativeSessionIds: {} }])];
   const invoke = vi.fn(async (action: StudioAction): Promise<StudioActionResult> => {
-    if (action.type === "bootstrap") return { type: "bootstrap", appName: "Firekeep Studio", version: "0.3.7", dashboardAvailable: options.dashboardAvailable ?? true, snapshot, runtimes, events: options.events ?? [], sessions };
+    if (action.type === "bootstrap") return { type: "bootstrap", appName: "Firekeep Studio", version: "0.4.0", dashboardAvailable: options.dashboardAvailable ?? true, update: options.update ?? { phase: "idle", currentVersion: "0.4.0", availableVersion: null, progressPercent: null, automatic: true, detail: "Studio checks for verified updates automatically." }, snapshot, runtimes, events: options.events ?? [], sessions };
     if (action.type === "runtime.probe") return { type: "diagnostics", items: runtimes.map((runtime) => ({ runtimeId: runtime.id, connection: { state: "ready", detail: "Ready" }, auth: { state: "connected", label: "Connected" } })) };
     if (action.type === "runtime.models") return { type: "models", runtimeId: action.runtimeId, items: typeof options.models === "function" ? options.models() : options.models ?? [] };
     if (action.type === "command.complete") return { type: "completions", items: action.input === "/" ? [{ value: "/doctor", label: "/doctor", description: "Check runtimes" }] : [] };
@@ -57,6 +57,7 @@ function installBridge(options: { readonly snapshot?: StudioSnapshot; readonly s
       return { type: "voice-input", ...result };
     }
     if (action.type === "voice.input.stop") return { type: "voice-input", state: "cancelled", text: "", detail: "Voice input stopped." };
+    if (action.type === "update.check" || action.type === "update.install") return { type: "update", state: options.updateResult ?? options.update ?? { phase: "current", currentVersion: "0.4.0", availableVersion: null, progressPercent: null, automatic: true, detail: "Firekeep Studio 0.4.0 is current." } };
     if (action.type === "session.update") sessions = sessions.map((session) => session.id === action.sessionId ? { ...session, name: action.name, color: action.color } : session);
     if (action.type === "primary.set") snapshot = { ...snapshot, primaryRuntimeId: action.runtimeId };
     return { type: "state", snapshot, ...(action.type.startsWith("session.") ? { sessions } : {}) };
@@ -146,6 +147,29 @@ describe("Firekeep Studio renderer", () => {
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "session.update", sessionId: "session-2", name: "Release plan", color: "ocean" }));
     expect(await screen.findByText("Release plan")).toBeInTheDocument();
+  });
+
+  it("keeps the titlebar session label passive and edits only from its palette", async () => {
+    installBridge();
+    render(<App />);
+
+    await screen.findByRole("button", { name: "Customize current session UI test" });
+    const title = document.querySelector(".titlebar-center .session-title");
+    expect(title).toHaveTextContent("UI test");
+    expect(title.closest("button")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Customize current session UI test" }));
+    expect(screen.getByRole("textbox", { name: "Session name" })).toHaveValue("UI test");
+  });
+
+  it("shows a quiet verified-update control and promotes it to restart when ready", async () => {
+    const ready: StudioUpdateState = { phase: "ready", currentVersion: "0.4.0", availableVersion: "0.4.1", progressPercent: 100, automatic: true, detail: "Studio 0.4.1 is verified and ready." };
+    const invoke = installBridge({ updateResult: ready });
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /Check for Studio updates/i }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "update.check" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Restart to install Firekeep Studio 0.4.1" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "update.install" }));
   });
 
   it("shows an actionable voice error when the local recognizer is unavailable", async () => {

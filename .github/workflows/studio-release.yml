@@ -1,0 +1,285 @@
+name: studio-release
+
+on:
+  push:
+    tags:
+      - "studio-v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: studio-release
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate Studio release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    defaults:
+      run:
+        working-directory: studio
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Require a main-branch release commit and matching package version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#studio-v}"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::Studio tags must use studio-vMAJOR.MINOR.PATCH"; exit 1; }
+          package_version="$(node -p "require('./package.json').version")"
+          [ "$package_version" = "$version" ] || { echo "::error::Tag ${version} does not match studio/package.json ${package_version}"; exit 1; }
+          git fetch origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "::error::Studio releases must point at a commit on origin/main"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: studio/package-lock.json
+      - name: Install exact dependencies
+        run: npm ci
+      - name: Run deterministic release gates
+        run: npm test
+      - name: Build and typecheck
+        run: npm run build
+      - name: Audit runtime dependencies
+        run: npm audit --omit=dev --audit-level=moderate
+
+  windows:
+    name: Build Windows installer
+    needs: validate
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: studio
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: studio/package-lock.json
+      - name: Install exact dependencies
+        run: npm ci
+      - name: Build NSIS installer and update metadata
+        run: npm run dist -- --win --x64 --publish never
+        env:
+          CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+      - name: Exercise the packaged Windows application
+        run: npm run smoke:package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: studio-windows-${{ needs.validate.outputs.version }}
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            studio/release/Firekeep-Studio-${{ needs.validate.outputs.version }}-Setup.exe
+            studio/release/Firekeep-Studio-${{ needs.validate.outputs.version }}-Setup.exe.blockmap
+            studio/release/latest.yml
+
+  macos:
+    name: Build universal macOS installer
+    needs: validate
+    runs-on: macos-14
+    outputs:
+      native_signed: ${{ steps.build.outputs.native_signed }}
+    defaults:
+      run:
+        working-directory: studio
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: studio/package-lock.json
+      - name: Install exact dependencies
+        run: npm ci
+      - name: Build universal DMG, updater ZIP, and metadata
+        id: build
+        shell: bash
+        env:
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          if [ -n "${CSC_LINK:-}" ] && [ -n "${CSC_KEY_PASSWORD:-}" ] && [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ]; then
+            echo "native_signed=true" >> "$GITHUB_OUTPUT"
+            npm run dist -- --mac --universal --publish never -c.mac.notarize=true
+          else
+            echo "::warning::Apple Developer signing/notarization secrets are not armed; publishing a universal unsigned DMG and a signed-manifest manual update path."
+            echo "native_signed=false" >> "$GITHUB_OUTPUT"
+            CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist -- --mac --universal --publish never -c.mac.identity=null -c.mac.hardenedRuntime=false
+          fi
+      - name: Exercise the packaged macOS application
+        run: npm run smoke:package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: studio-macos-${{ needs.validate.outputs.version }}
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            studio/release/Firekeep-Studio-${{ needs.validate.outputs.version }}-universal.dmg
+            studio/release/Firekeep-Studio-${{ needs.validate.outputs.version }}-universal.zip
+            studio/release/Firekeep-Studio-${{ needs.validate.outputs.version }}-universal.zip.blockmap
+            studio/release/latest-mac.yml
+
+  publish:
+    name: Publish Studio and advance its update channel
+    needs: [validate, windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: studio-*-${{ needs.validate.outputs.version }}
+          path: studio-artifacts
+          merge-multiple: true
+      - name: Assemble and sign the isolated Studio update channel
+        shell: bash
+        env:
+          FIREKEEP_SIGNING_KEY: ${{ secrets.FIREKEEP_SIGNING_KEY }}
+          VERSION: ${{ needs.validate.outputs.version }}
+          MAC_AUTOMATIC: ${{ needs.macos.outputs.native_signed }}
+        run: |
+          set -euo pipefail
+          published_at="$(git show -s --format=%cI "$GITHUB_SHA")"
+          base_url="https://github.com/kapella-hub/firekeep-dist/releases/download/studio-v${VERSION}"
+          node studio/scripts/make-update-manifest.mjs \
+            --version "$VERSION" \
+            --directory studio-artifacts \
+            --base-url "$base_url" \
+            --published-at "$published_at" \
+            --mac-automatic "$MAC_AUTOMATIC"
+          python studio/scripts/sign_update_manifest.py studio-artifacts/studio-update.json
+          python - <<'PY'
+          from hashlib import sha256
+          from pathlib import Path
+
+          root = Path("studio-artifacts")
+          files = sorted(path for path in root.iterdir() if path.is_file() and path.name != "SHA256SUMS")
+          def digest(path: Path) -> str:
+              hasher = sha256()
+              with path.open("rb") as handle:
+                  for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                      hasher.update(chunk)
+              return hasher.hexdigest()
+
+          root.joinpath("SHA256SUMS").write_text(
+              "".join(f"{digest(path)}  {path.name}\n" for path in files),
+              encoding="utf-8",
+              newline="\n",
+          )
+          PY
+      - name: Publish immutable release assets and the small mutable channel pointer
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.FIREKEEP_DIST_RELEASE_TOKEN }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          [ -n "${GH_TOKEN:-}" ] || { echo "::error::FIREKEEP_DIST_RELEASE_TOKEN is required"; exit 1; }
+          repo="kapella-hub/firekeep-dist"
+          tag="studio-v${VERSION}"
+          cat > studio-release-notes.md <<EOF
+          Firekeep Studio ${VERSION}
+
+          - Windows x64 NSIS installer
+          - Universal macOS installer for Apple Silicon and Intel
+          - Signed, isolated automatic-update metadata
+
+          The macOS artifact is signed and notarized only when the release log reports that Apple credentials were armed. Studio and users can authenticate every published installer against the signed Firekeep manifest either way.
+          EOF
+          if gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
+            mkdir existing-assets
+            gh release download "$tag" --repo "$repo" --dir existing-assets
+            python - <<'PY'
+          from pathlib import Path
+          import sys
+
+          local = Path("studio-artifacts")
+          remote = Path("existing-assets")
+          local_names = {p.name for p in local.iterdir() if p.is_file()}
+          remote_names = {p.name for p in remote.iterdir() if p.is_file()}
+          if local_names != remote_names:
+              raise SystemExit(f"immutable Studio release asset set differs: local={sorted(local_names)} remote={sorted(remote_names)}")
+          for name in sorted(local_names):
+              if local.joinpath(name).read_bytes() != remote.joinpath(name).read_bytes():
+                  raise SystemExit(f"immutable Studio release asset differs: {name}")
+          PY
+            echo "::notice::${tag} already exists with byte-identical assets; reusing it."
+          else
+            gh release create "$tag" studio-artifacts/* \
+              --repo "$repo" \
+              --target gh-pages \
+              --title "Firekeep Studio ${VERSION}" \
+              --notes-file studio-release-notes.md \
+              --latest=false
+          fi
+
+          if ! gh release view studio-latest --repo "$repo" >/dev/null 2>&1; then
+            gh release create studio-latest \
+              --repo "$repo" \
+              --target gh-pages \
+              --title "Firekeep Studio stable update channel" \
+              --notes "Machine-readable metadata only. Installers live in immutable studio-v* releases." \
+              --prerelease
+          fi
+          gh release upload studio-latest \
+            studio-artifacts/latest.yml \
+            studio-artifacts/latest-mac.yml \
+            studio-artifacts/studio-update.json \
+            studio-artifacts/studio-update.json.minisig \
+            --repo "$repo" \
+            --clobber
+      - name: Verify the public release and update channel byte for byte
+        shell: bash
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          version_base="https://github.com/kapella-hub/firekeep-dist/releases/download/studio-v${VERSION}"
+          channel_base="https://github.com/kapella-hub/firekeep-dist/releases/download/studio-latest"
+          for name in "Firekeep-Studio-${VERSION}-Setup.exe" "Firekeep-Studio-${VERSION}-universal.dmg" SHA256SUMS; do
+            curl --retry 8 --retry-all-errors --retry-delay 5 -fsSIL "${version_base}/${name}" >/dev/null
+          done
+          for name in latest.yml latest-mac.yml studio-update.json studio-update.json.minisig; do
+            served="$(mktemp)"
+            matched=0
+            for attempt in $(seq 1 30); do
+              if curl -fsSL "${channel_base}/${name}?verify=${GITHUB_RUN_ID}-${attempt}" -o "$served" && cmp -s "$served" "studio-artifacts/${name}"; then
+                matched=1
+                break
+              fi
+              sleep 5
+            done
+            [ "$matched" = 1 ] || { echo "::error::public Studio channel does not serve ${name} byte for byte"; exit 1; }
+          done
+          python - <<'PY'
+          from pathlib import Path
+          from client.firekeep_client.signing import PINNED_PUBLIC_KEY, trusted_comment_version, verify
+
+          data = Path("studio-artifacts/studio-update.json").read_bytes()
+          signature = Path("studio-artifacts/studio-update.json.minisig").read_text(encoding="utf-8")
+          trusted = verify(data, signature, PINNED_PUBLIC_KEY)
+          assert trusted_comment_version(trusted) is not None
+          print(f"verified public Studio update signature: {trusted}")
+          PY

@@ -72,8 +72,9 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, input:focus-
 .brand-activity, .brand-activity::after { position: absolute; inset: -4px; border: 1px solid color-mix(in srgb, var(--ember) 72%, transparent); border-radius: 11px; pointer-events: none; animation: ember-radiate 1.45s ease-out infinite; }
 .brand-activity::after { content: ""; inset: -1px; animation-delay: 0.55s; }
 .titlebar-center { min-width: 0; justify-self: center; display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
-.session-title-button { min-width: 0; display: inline-flex; align-items: center; gap: 7px; padding: 5px 8px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--muted); cursor: pointer; -webkit-app-region: no-drag; }
-.session-title-button:hover { background: var(--surface-3); color: var(--text); }
+.session-title-display { min-width: 0; display: inline-flex; align-items: center; gap: 7px; padding: 5px 3px 5px 8px; color: var(--muted); }
+.session-title-customize { display: inline-grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--faint); cursor: pointer; -webkit-app-region: no-drag; }
+.session-title-customize:hover, .session-title-customize[aria-expanded="true"] { border-color: var(--line); background: var(--surface-3); color: var(--session-accent, var(--ember)); }
 .session-title { overflow: hidden; max-width: min(32vw, 360px); color: var(--text); font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
 .session-id { color: var(--faint); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 10px; }
 .titlebar-actions { justify-self: end; display: flex; align-items: center; gap: 4px; -webkit-app-region: no-drag; }
@@ -83,6 +84,14 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, input:focus-
 .icon-button:hover { color: var(--text); background: var(--surface-3); }
 .appearance-button:hover { color: var(--yellow); }
 .icon-button.compact { width: 25px; height: 25px; }
+.studio-update-button { min-width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 0 8px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--muted); font-size: 10px; font-weight: 700; cursor: pointer; }
+.studio-update-button:hover { border-color: var(--line); background: var(--surface-3); color: var(--text); }
+.studio-update-button.ready, .studio-update-button.available { border-color: color-mix(in srgb, var(--ember) 48%, var(--line)); background: var(--ember-soft); color: var(--ember); box-shadow: 0 0 16px color-mix(in srgb, var(--ember) 12%, transparent); }
+.studio-update-button.downloading { border-color: var(--line); background: var(--surface-2); color: var(--text); }
+.studio-update-button.current { color: var(--green); }
+.studio-update-button.error { color: var(--red); }
+.studio-update-button:disabled { opacity: 0.82; }
+.update-download { animation: pulse 1.15s ease-in-out infinite; }
 
 .session-rail { grid-area: rail; min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--line); background: linear-gradient(180deg, var(--surface), color-mix(in srgb, var(--surface) 92%, var(--bg))); }
 .rail-heading, .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 46px; padding: 0 14px; color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
@@ -419,6 +428,7 @@ kbd { padding: 1px 4px; border: 1px solid var(--line); border-radius: 4px; backg
   .titlebar { grid-template-columns: 218px 1fr 255px; }
   .conversation-toolbar { padding-inline: 14px; }
 }
+@media (max-width: 1250px) { .studio-update-button span { display: none; } }
 @media (max-width: 1120px) {
   .studio, .studio:not(:has(.inspector)) { grid-template-columns: 210px minmax(0, 1fr); grid-template-areas: "title title" "rail conversation"; }
   .titlebar { grid-template-columns: 210px minmax(0, 1fr) 250px; }

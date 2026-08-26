@@ -1,4 +1,5 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, session, shell } from "electron";
+import { appendFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,6 +8,7 @@ import { createCommandRegistry } from "../core/slash-commands.js";
 import { StudioService, type StudioPersistedState, type ThemeMode } from "../core/studio-service.js";
 import { STUDIO_EVENT_CHANNEL, STUDIO_INVOKE_CHANNEL, type StudioPushEvent } from "../shared/ipc.js";
 import { ElectronSecretStore } from "./electron-secret-store.js";
+import { ElectronUpdateClient } from "./electron-update-client.js";
 import { FirekeepClient } from "./firekeep-client.js";
 import { loadConfiguredDashboardUrl } from "./firekeep-config.js";
 import { LoopbackDecisionBoardClient } from "./decision-board-client.js";
@@ -19,11 +21,23 @@ import { createRuntimeRegistry } from "./runtime/index.js";
 import { JsonlSessionStore } from "./session-store.js";
 import { WindowsVoiceInput } from "./voice-input.js";
 import { windowThemeColors } from "./window-theme.js";
+import { HttpSignedManifestSource, StudioUpdater } from "./studio-updater.js";
 
 const currentDirectory = fileURLToPath(new URL(".", import.meta.url));
 let activeController: StudioController | null = null;
 let activeDecisionReceiver: StudioDecisionBoardReceiver | null = null;
+let activeUpdater: StudioUpdater | null = null;
 let shutdownStarted = false;
+
+function packageSmokeTrace(phase: string): void {
+  if (process.env.FIREKEEP_STUDIO_PACKAGE_SMOKE !== "1") return;
+  process.stderr.write(`[studio-smoke] ${phase}\n`);
+  const path = process.env.FIREKEEP_STUDIO_PACKAGE_SMOKE_LOG;
+  if (path) {
+    try { appendFileSync(path, `${phase}\n`, { encoding: "utf8" }); }
+    catch { /* The smoke test still has stderr and timeout evidence. */ }
+  }
+}
 
 function createWindow(theme: ThemeMode): BrowserWindow {
   const colors = windowThemeColors(theme, nativeTheme.shouldUseDarkColors);
@@ -85,6 +99,7 @@ function broadcast(event: StudioPushEvent): void {
 }
 
 async function createController(): Promise<StudioController> {
+  packageSmokeTrace("creating controller");
   const userData = app.getPath("userData");
   const warning = (message: string, error: unknown): void => console.warn(message, error instanceof Error ? error.message : String(error));
   const secrets = new ElectronSecretStore(join(userData, "secrets.json"), warning);
@@ -93,6 +108,7 @@ async function createController(): Promise<StudioController> {
     broadcast({ type: "decision.available", board: await decisionBoards.load(url) });
   });
   const receiverEnvironment = await receiver.start();
+  packageSmokeTrace("decision receiver ready");
   activeDecisionReceiver = receiver;
   Object.assign(process.env, receiverEnvironment);
   const service = new StudioService({
@@ -116,6 +132,7 @@ async function createController(): Promise<StudioController> {
     },
   });
   await service.initialize();
+  packageSmokeTrace("session state ready");
   service.subscribe((event) => {
     broadcast({ type: "runtime.event", event });
     broadcast({ type: "snapshot", snapshot: service.snapshot() });
@@ -150,21 +167,37 @@ async function createController(): Promise<StudioController> {
     });
     return selected.canceled ? null : selected.filePaths[0] ?? null;
   };
+  packageSmokeTrace("creating updater");
+  const updates = new StudioUpdater({
+    currentVersion: app.getVersion(),
+    packaged: app.isPackaged,
+    platform: process.platform,
+    manifestSource: new HttpSignedManifestSource(),
+    nativeUpdater: new ElectronUpdateClient(),
+    openExternal: (url) => shell.openExternal(url),
+    requestQuit: () => app.quit(),
+  });
+  updates.subscribe((state) => broadcast({ type: "update", state }));
+  activeUpdater = updates;
+  packageSmokeTrace("updater ready");
   const commands = createCommandRegistry(service, {
     firekeep: new FirekeepClient(),
     kiroIde: new KiroIdeLauncher(),
     login,
     exportSession,
     selectWorkspace,
+    updates,
   });
   const dashboardUrl = await loadConfiguredDashboardUrl();
+  packageSmokeTrace("controller ready");
   return new StudioController(service, commands, app.getVersion(), (url) => shell.openExternal(url), selectWorkspace, dashboardUrl, decisionBoards, {
     readText: () => clipboard.readText(),
     writeText: (text) => clipboard.writeText(text),
-  }, new WindowsVoiceInput());
+  }, new WindowsVoiceInput(), updates);
 }
 
 app.whenReady().then(async () => {
+  packageSmokeTrace("app ready");
   const controller = await createController();
   activeController = controller;
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
@@ -195,10 +228,17 @@ app.whenReady().then(async () => {
     if (theme === "system") applyThemeToAllWindows(theme);
   });
   createWindow(controller.service.snapshot().theme);
+  packageSmokeTrace("window created");
+  activeUpdater?.start();
   app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(controller.service.snapshot().theme); });
 }).catch((error) => {
+  const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+  packageSmokeTrace(`startup failed: ${detail}`);
   console.error("Firekeep Studio failed to start", error);
-  dialog.showErrorBox("Firekeep Studio could not start", error instanceof Error ? error.message : String(error));
+  process.stderr.write(`Firekeep Studio failed to start: ${detail}\n`);
+  if (process.env.FIREKEEP_STUDIO_PACKAGE_SMOKE !== "1") {
+    dialog.showErrorBox("Firekeep Studio could not start", error instanceof Error ? error.message : String(error));
+  }
   app.quit();
 });
 
@@ -207,12 +247,20 @@ app.on("before-quit", (event) => {
   event.preventDefault();
   shutdownStarted = true;
   activeController?.voiceInput.cancel();
+  activeUpdater?.dispose();
   void Promise.all([
     activeController?.service.shutdown() ?? Promise.resolve(),
     activeDecisionReceiver?.close() ?? Promise.resolve(),
   ])
     .catch((error) => console.warn("Studio shutdown did not finish cleanly", error))
-    .finally(() => app.quit());
+    .finally(() => {
+      try {
+        if (!activeUpdater?.installDownloaded()) app.quit();
+      } catch (error) {
+        console.warn("Studio update could not start after shutdown", error);
+        app.quit();
+      }
+    });
 });
 
 app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });

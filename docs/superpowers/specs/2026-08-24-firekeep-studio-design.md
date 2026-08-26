@@ -1,7 +1,7 @@
 # Firekeep Studio — Universal Agent Console Design
 
 **Date:** 2026-08-24
-**Status:** Implemented preview (`0.3.7`)
+**Status:** Implemented preview (`0.4.0`)
 **Product name:** Firekeep Studio
 **Package:** `studio/` (separate desktop application)
 
@@ -541,3 +541,45 @@ an application crash.
 32. Agent-grid tests prove any chat-capable runtime can occupy and receive a direct pane turn,
     direct targeting preserves the configured primary, and packaged smoke validates selectable
     pane geometry without permitting concurrent active runs.
+33. The packaged app checks a fixed, credential-free HTTPS release channel and refuses a
+    manifest unless its minisign signature validates against the same pinned Firekeep key used
+    by the Client Kit. The renderer cannot choose the channel, manifest, artifact, or key.
+34. Windows automatic updates verify the signed manifest, native updater version, downloaded
+    artifact size, and SHA-256 before an install can be armed. Installation occurs only during
+    the normal shutdown path after active runtime cancellation and local persistence settle.
+35. The macOS release contains both a universal DMG and ZIP. Native in-app updates are offered
+    only when the workflow actually used Apple signing and notarization credentials; unsigned
+    builds remain a visible manual-install path rather than a false automatic-success state.
+36. A `studio-vMAJOR.MINOR.PATCH` tag must match `studio/package.json` and point to a commit on
+    `main`. The release workflow runs deterministic tests, typecheck/build, runtime dependency
+    audit, both platform package builds, packaged renderer smoke, signed-manifest generation,
+    immutable-release byte checks, and public-channel byte/signature verification.
+
+## 17. Studio release and update contract
+
+Studio and the Python Client Kit have independent versions and update commands. `/firekeep update`
+delegates to the Client Kit; `/update` controls only Studio. Packaged Studio checks
+once shortly after launch and can also be checked explicitly through the title bar or
+`/update check`. Development builds never contact the release channel.
+
+The channel root is compiled into the Electron main process. It exposes a bounded JSON
+manifest and detached minisign signature from the mutable `studio-latest` release. The
+manifest points to versioned HTTPS assets in an immutable `studio-v<version>` release and
+binds each platform's installer/updater filename, size, and SHA-256. The signature's trusted
+comment must name the same semantic version as the manifest. Unknown schema, invalid UTF-8,
+credentials in a URL, non-HTTPS redirects, oversized metadata, version disagreement, missing
+platforms, or artifact mismatch all fail closed and leave the current application untouched.
+
+On Windows, verified native metadata downloads the NSIS updater in the background. Studio
+shows its state and progress; **Restart to update** requests the same orderly shutdown used by
+a normal close, and only the final quit phase invokes the installer. On macOS, Electron's
+native updater is usable only for Apple-signed builds, so the release manifest carries an
+explicit per-platform `automatic` flag stamped by the build job. A release without complete
+Apple signing and notarization credentials offers the signed-manifest DMG as a manual update.
+This is an external trust prerequisite, not a condition Studio can safely bypass.
+
+Immutable binaries are stored once because installers are too large for the documentation
+site and duplicating them under a mutable tag wastes release storage. The fixed
+`studio-latest` release therefore contains only native updater metadata plus the signed
+Firekeep manifest. Re-running a versioned release is allowed only when every existing asset
+is byte-identical; otherwise publishing stops.

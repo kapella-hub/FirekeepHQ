@@ -256,3 +256,23 @@ Update version and documentation surfaces, then run the entire deterministic sui
 typecheck, no-inference runtime smoke, real task conformance, production build, unpacked
 package, current-platform installer, packaged renderer CDP smoke, and dependency audit.
 Preserve every unrelated dirty path.
+
+## Task 18 — 0.4 cross-platform release and verified updates
+
+Add a Studio-owned updater instead of routing through the Python Client Kit. Pin Firekeep's
+existing minisign public key in Electron main, verify a bounded fixed-channel manifest before
+asking the native updater to download, and verify the downloaded file's signed size and
+SHA-256 before installation. Expose typed update state through IPC, a compact title-bar
+control, and `/update status|check|install`. Keep the renderer unable to provide URLs, paths,
+keys, manifests, or signatures, and install only after orderly Studio shutdown.
+
+Build x64 Windows NSIS assets and universal macOS DMG+ZIP assets in a tag-triggered workflow.
+Publish binaries under an immutable `studio-v<version>` release, publish only signed metadata
+under `studio-latest`, and verify the public bytes and signature. Gate macOS automatic updates
+on actual Apple signing/notarization credentials; otherwise publish a clearly manual universal
+DMG. Update both READMEs and the design contract.
+
+**Verify:** updater/signature/IPC/renderer tests, workflow and manifest contract tests, full
+deterministic suite, typecheck/build, runtime dependency audit, local Windows installer plus
+packaged smoke, tag workflow on macOS and Windows, public artifact byte checks, and an installed
+Windows 0.4.0 version check. Preserve unrelated dirty paths and stage explicit files only.

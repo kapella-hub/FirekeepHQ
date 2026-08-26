@@ -1,10 +1,11 @@
 {
   "name": "@firekeep/studio",
-  "version": "0.3.7",
+  "version": "0.4.0",
   "private": true,
   "description": "Firekeep's runtime-neutral desktop console for local AI agents.",
   "productName": "Firekeep Studio",
   "author": "Firekeep",
+  "repository": "https://github.com/kapella-hub/FirekeepHQ",
   "main": "out/main/index.js",
   "type": "module",
   "license": "SEE LICENSE IN ../LICENSE",
@@ -29,6 +30,13 @@
     "directories": {
       "output": "release"
     },
+    "publish": [
+      {
+        "provider": "generic",
+        "url": "https://github.com/kapella-hub/firekeep-dist/releases/download/studio-latest",
+        "channel": "latest"
+      }
+    ],
     "files": [
       "out/**/*",
       "package.json"
@@ -43,7 +51,10 @@
       "allowToChangeInstallationDirectory": true
     },
     "mac": {
-      "target": "dmg",
+      "target": [
+        "dmg",
+        "zip"
+      ],
       "category": "public.app-category.developer-tools",
       "artifactName": "Firekeep-Studio-${version}-${arch}.${ext}"
     },
@@ -56,6 +67,7 @@
   "dependencies": {
     "@agentclientprotocol/sdk": "^1.4.0",
     "dompurify": "^3.4.14",
+    "electron-updater": "^6.8.9",
     "lucide-react": "^1.33.0",
     "mermaid": "^11.17.1",
     "react": "^19.2.8",

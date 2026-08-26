@@ -2,6 +2,7 @@ import type { LoginMethod, LoginRequest, LoginResult, RuntimeEffort, RuntimePerm
 import type { MissionSnapshot, MissionTaskResult } from "./mission.js";
 import type { ReviewerMode, StudioService, ThemeMode } from "./studio-service.js";
 import { isSessionColor, SESSION_COLORS } from "./session-store.js";
+import type { StudioUpdateState } from "../shared/ipc.js";
 
 export interface ParsedSlashCommand {
   readonly name: string;
@@ -52,6 +53,11 @@ export interface CommandIntegrations {
     readonly detail: string;
   }>;
   readonly selectWorkspace?: () => Promise<string | null>;
+  readonly updates?: {
+    snapshot(): StudioUpdateState;
+    check(): Promise<StudioUpdateState>;
+    install(): Promise<StudioUpdateState>;
+  };
 }
 
 export class CommandRegistry {
@@ -595,6 +601,19 @@ export function createCommandRegistry(service: StudioService, integrations: Comm
     const summary = (await service.listSessions()).find((session) => session.id === active);
     const exported = await integrations.exportSession(format, content, summary?.name ?? "Firekeep Studio session");
     return notice(exported.saved ? "Session exported" : "Export cancelled", exported.detail, exported.saved ? "success" : "neutral");
+  } });
+  commands.register({ name: "update", summary: "Check or install Firekeep Studio updates.", usages: ["/update status", "/update check", "/update install"], execute: async (command) => {
+    if (!integrations.updates) throw new Error("Studio updates are unavailable in this build");
+    const action = command.args[0] ?? "status";
+    const state = action === "check"
+      ? await integrations.updates.check()
+      : action === "install"
+        ? await integrations.updates.install()
+        : action === "status"
+          ? integrations.updates.snapshot()
+          : (() => { throw new Error(`unknown update action: ${action}`); })();
+    const tone: CommandResult["tone"] = state.phase === "error" ? "danger" : state.phase === "available" ? "warning" : state.phase === "ready" || state.phase === "current" ? "success" : "neutral";
+    return notice(`Studio update · ${state.phase}`, `${state.detail}\n\nCurrent: **${state.currentVersion}**${state.availableVersion ? ` · Available: **${state.availableVersion}**` : ""}`, tone);
   } });
   commands.register({
     name: "firekeep",

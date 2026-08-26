@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
-import { access, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { access, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { createServer } from "node:net";
@@ -8,14 +9,25 @@ const executable = resolve(packagedExecutable());
 await access(executable);
 const port = await reservePort();
 const userData = await mkdtemp(join(tmpdir(), "firekeep-studio-smoke-"));
-const child = spawn(executable, [`--remote-debugging-port=${port}`, `--user-data-dir=${userData}`], {
+const startupTrace = join(userData, "startup.log");
+const child = spawn(executable, ["--enable-logging=stderr", `--remote-debugging-port=${port}`, `--user-data-dir=${userData}`], {
   detached: process.platform !== "win32",
-  stdio: "ignore",
+  env: { ...process.env, FIREKEEP_STUDIO_PACKAGE_SMOKE: "1", FIREKEEP_STUDIO_PACKAGE_SMOKE_LOG: startupTrace },
+  stdio: ["ignore", "pipe", "pipe"],
   windowsHide: true,
 });
+const childOutput = boundedChildOutput(child);
 
 try {
-  const target = await waitForPage(port, 45_000);
+  let target;
+  try {
+    target = await waitForPage(port, 45_000);
+  } catch (error) {
+    const details = childOutput().trim();
+    let trace = "";
+    try { trace = (await readFile(startupTrace, "utf8")).trim(); } catch { /* The app did not reach its main module. */ }
+    throw new Error(`${error instanceof Error ? error.message : String(error)}${trace ? `\nStartup trace:\n${trace}` : ""}${details ? `\nPackaged process output:\n${details}` : ""}`);
+  }
   if (target.title !== "Firekeep Studio") throw new Error(`unexpected packaged title: ${target.title}`);
   if (!target.url.startsWith("file:") || !target.url.includes("app.asar")) {
     throw new Error(`packaged renderer did not load from app.asar: ${target.url}`);
@@ -99,9 +111,23 @@ try {
   await rm(resolvedUserData, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
 
+function boundedChildOutput(childProcess, limit = 32_000) {
+  let output = "";
+  const append = (label, chunk) => {
+    output += `${label}${String(chunk)}`;
+    if (output.length > limit) output = output.slice(-limit);
+  };
+  childProcess.stdout?.on("data", (chunk) => append("stdout: ", chunk));
+  childProcess.stderr?.on("data", (chunk) => append("stderr: ", chunk));
+  return () => output;
+}
+
 function packagedExecutable() {
   if (process.platform === "win32") return join("release", "win-unpacked", "Firekeep Studio.exe");
-  if (process.platform === "darwin") return join("release", "mac", "Firekeep Studio.app", "Contents", "MacOS", "Firekeep Studio");
+  if (process.platform === "darwin") {
+    const candidates = [join("release", "mac-universal", "Firekeep Studio.app", "Contents", "MacOS", "Firekeep Studio"), join("release", "mac", "Firekeep Studio.app", "Contents", "MacOS", "Firekeep Studio")];
+    return candidates.find(existsSync) ?? candidates[0];
+  }
   return join("release", "linux-unpacked", "firekeep-studio");
 }
 
@@ -195,7 +221,10 @@ async function waitForStudioLayout(cdp, timeoutMs) {
         const label = primary?.querySelector(".runtime-picker-copy small");
         const value = primary?.querySelector(".runtime-picker-copy strong");
         const toolbar = document.querySelector(".conversation-toolbar");
-        if (!inspector || !primary || !picker || !label || !value || !toolbar) return null;
+        const update = document.querySelector(".studio-update-button");
+        const sessionTitle = document.querySelector(".session-title-display > .session-title");
+        const sessionCustomize = document.querySelector(".session-title-customize");
+        if (!inspector || !primary || !picker || !label || !value || !toolbar || !update || !sessionTitle || !sessionCustomize) return null;
         return {
           viewport: { width: innerWidth, height: innerHeight },
           inspector: rect(inspector),
@@ -204,6 +233,10 @@ async function waitForStudioLayout(cdp, timeoutMs) {
           value: rect(value),
           picker: rect(picker),
           toolbar: rect(toolbar),
+          update: rect(update),
+          updateLabel: update.getAttribute("aria-label") ?? "",
+          sessionTitleParent: sessionTitle.parentElement?.tagName ?? "",
+          sessionCustomizeLabel: sessionCustomize.getAttribute("aria-label") ?? "",
         };
       })()`,
       returnByValue: true,
@@ -223,6 +256,12 @@ function assertStudioLayout(layout) {
   }
   if (layout.label.bottom > layout.value.top + 1) {
     throw new Error(`primary runtime label overlaps its value: ${JSON.stringify({ label: layout.label, value: layout.value })}`);
+  }
+  if (!layout.updateLabel.toLowerCase().includes("studio update") || layout.update.right > layout.inspector.left) {
+    throw new Error(`Studio update control is missing or overlaps the inspector toggle: ${JSON.stringify({ update: layout.update, inspector: layout.inspector, label: layout.updateLabel })}`);
+  }
+  if (layout.sessionTitleParent !== "DIV" || !layout.sessionCustomizeLabel.toLowerCase().includes("customize current session")) {
+    throw new Error(`titlebar session editing is not palette-only: ${JSON.stringify({ parent: layout.sessionTitleParent, label: layout.sessionCustomizeLabel })}`);
   }
 }
 

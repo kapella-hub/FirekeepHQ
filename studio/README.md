@@ -1,6 +1,6 @@
 # Firekeep Studio
 
-Firekeep Studio is Firekeep's runtime-neutral desktop agent console. Version `0.3.7`
+Firekeep Studio is Firekeep's runtime-neutral desktop agent console. Version `0.4.0`
 is a separate Electron application: it does not replace or fork the Python Client Kit.
 The kit remains the source of truth for Keep connectivity, memory, hooks, instructions,
 personal mode, and runtime configuration.
@@ -80,6 +80,16 @@ drawer instead of disappearing. Three-agent workspaces now use one balanced, tmu
 when space permits. The packaged smoke verifies both themes, the session editor, the responsive
 inspector, the command surface, and the three-pane geometry against the built executable.
 
+Version 0.4 adds a release channel that is separate from the Python Client Kit. Packaged
+Studio checks that channel shortly after launch, verifies its manifest with Firekeep's pinned
+minisign public key, and accepts only the platform artifact whose version, byte length, and
+SHA-256 digest match that signed manifest. Windows downloads in the background and offers a
+visible **Restart to update** action; a normal app close also installs a ready update after
+Studio has flushed its active session. macOS uses the same signed release evidence, but native
+in-app installation is enabled only for releases signed and notarized with Apple Developer
+credentials. Until those credentials are armed, Studio opens the universal DMG explicitly
+instead of pretending an unsigned build can pass Apple's updater requirements.
+
 ## Runtime support
 
 | Runtime | Structured boundary | Firekeep Client Kit surface | Authentication |
@@ -112,12 +122,13 @@ npm run package
 npm run dist
 ```
 
-Artifacts land in `studio/release/`. The local build is unsigned unless a release-signing
-identity is configured. On first launch, choose a primary runtime from the welcome screen,
-choose the workspace your agents should operate in, then connect any account whose provider
-CLI is not already signed in. Ordinary turns without an explicit workspace start from the
-user's home folder, never the installed application's launch directory; Missions still
-require an explicit workspace.
+Artifacts land in `studio/release/`. Windows builds an x64 NSIS installer. macOS builds a
+universal DMG for installation and a ZIP used by the native updater. Local builds are unsigned
+unless the operating system's release-signing identity is configured. On first launch, choose
+a primary runtime from the welcome screen, choose the workspace your agents should operate
+in, then connect any account whose provider CLI is not already signed in. Ordinary turns
+without an explicit workspace start from the user's home folder, never the installed
+application's launch directory; Missions still require an explicit workspace.
 
 ## Essential commands
 
@@ -150,6 +161,8 @@ Useful starting points:
   `/session resume ...`, and `/session delete <id> --confirm <id>`.
 - `/export markdown` or `/export json` — choose a local file; Studio uploads nothing.
 - `/firekeep status`, `/firekeep doctor`, `/firekeep personal ...`, and `/firekeep update`.
+- `/update status`, `/update check`, and `/update install` — inspect or act on the separate
+  Firekeep Studio release channel.
 - `/voice on` — enable spoken assistant replies. Click the microphone once to dictate and
   click again to cancel; the editable transcript is never submitted automatically.
 
@@ -219,6 +232,25 @@ permission settings are frozen when execution begins; reviewer runs are always f
   hosted Web Speech path is deliberately not used because it exposes the API but fails at
   runtime. Other platforms currently report voice input as unavailable. Spoken replies use
   the operating-system/Chromium speech synthesizer and may have different platform behavior.
+- Studio's generic update URL is fixed in the main process. The renderer cannot supply an
+  update URL, release manifest, local path, or signature. A downloaded installer is never run
+  unless both the signed manifest and the artifact's exact size and SHA-256 digest verify.
+
+## Publishing Studio
+
+The `studio-release` workflow publishes a release only from a `studio-vMAJOR.MINOR.PATCH`
+tag whose package version matches and whose commit is on `main`. It builds and smoke-tests an
+x64 Windows NSIS installer plus a universal Intel/Apple-Silicon macOS DMG and updater ZIP.
+Large binaries live once in the immutable `studio-v<version>` release in
+`kapella-hub/firekeep-dist`; the small `studio-latest` release is only the signed mutable
+channel pointer. Publishing is byte-idempotent and verifies the public channel before the job
+can pass.
+
+The workflow requires `FIREKEEP_DIST_RELEASE_TOKEN` and `FIREKEEP_SIGNING_KEY`. Native Windows
+signing is used when `WIN_CSC_LINK` and `WIN_CSC_KEY_PASSWORD` are configured. Native macOS
+automatic updating requires all of `MAC_CSC_LINK`, `MAC_CSC_KEY_PASSWORD`, `APPLE_ID`,
+`APPLE_APP_SPECIFIC_PASSWORD`, and `APPLE_TEAM_ID`; without that complete set the workflow
+publishes an explicitly unsigned universal installer and marks macOS updates as manual.
 
 ## Validation
 

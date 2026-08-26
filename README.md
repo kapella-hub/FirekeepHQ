@@ -120,7 +120,7 @@ data-loss confirmation that a plain uninstall or `--yes` can never trigger. Back
 up first ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#removing-the-server)) if you
 might want the data back.
 
-## Firekeep Studio (0.3.7 preview)
+## Firekeep Studio (0.4.0 preview)
 
 [`studio/`](studio/) is a separate desktop client for people who want Firekeep to be the
 only agent application they open. It gives Codex, Claude Code, Kiro CLI, and Grok one
@@ -152,6 +152,13 @@ Grok adapter is clearly marked as having no Keep memory rather than inheriting a
 claim. The preview
 build and installer commands, security boundaries, runtime matrix, and full `/` command
 inventory are in the [Studio README](studio/README.md).
+
+Studio 0.4 ships an x64 Windows installer and a universal macOS installer from an isolated,
+signed release channel. Packaged builds check for Studio updates shortly after launch; Windows
+downloads and installs a verified update on restart, while macOS uses native automatic updates
+only when the release is Apple-signed and notarized. The current release page, checksums, and
+both installers are published under
+[Firekeep Studio releases](https://github.com/kapella-hub/firekeep-dist/releases?q=studio-v).
 
 ## A Real Workflow
 

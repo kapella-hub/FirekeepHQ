@@ -8,9 +8,10 @@ import type { VoiceInputOutcome } from "../src/shared/ipc.js";
 import { StudioController, parseStudioAction } from "../src/main/ipc-controller.js";
 import type { DecisionBoardTransport } from "../src/main/decision-board-client.js";
 import type { VoiceInput } from "../src/main/voice-input.js";
+import type { StudioUpdateControl } from "../src/main/studio-updater.js";
 import { FakeRuntime } from "./helpers/fake-runtime.js";
 
-async function controller(openExternal: (url: string) => Promise<void> = async () => undefined, dashboardUrl: string | null = "http://keep.example:8040/", decisionBoards?: DecisionBoardTransport, clipboard?: { readText(): string; writeText(text: string): void }, voiceInput?: VoiceInput): Promise<StudioController> {
+async function controller(openExternal: (url: string) => Promise<void> = async () => undefined, dashboardUrl: string | null = "http://keep.example:8040/", decisionBoards?: DecisionBoardTransport, clipboard?: { readText(): string; writeText(text: string): void }, voiceInput?: VoiceInput, updates?: StudioUpdateControl): Promise<StudioController> {
   const service = new StudioService({
     runtimes: new RuntimeRegistry([new FakeRuntime({ id: "alpha", displayName: "Alpha", description: "test", transport: "test", capabilities: ["chat", "review", "models"] })]),
     settings: new MemorySettingsStore<StudioPersistedState>(),
@@ -21,7 +22,7 @@ async function controller(openExternal: (url: string) => Promise<void> = async (
     now: () => "2026-08-24T00:00:00.000Z",
   });
   await service.initialize();
-  return new StudioController(service, createCommandRegistry(service), "0.3.7", openExternal, async () => "C:\\workspace", dashboardUrl, decisionBoards, clipboard, voiceInput);
+  return new StudioController(service, createCommandRegistry(service), "0.3.7", openExternal, async () => "C:\\workspace", dashboardUrl, decisionBoards, clipboard, voiceInput, updates);
 }
 
 describe("Studio IPC controller", () => {
@@ -45,6 +46,9 @@ describe("Studio IPC controller", () => {
     expect(() => parseStudioAction({ type: "voice.input.start", language: "bad language", command: "hidden" })).toThrow();
     expect(parseStudioAction({ type: "session.update", sessionId: "session-1", name: "Release plan", color: "violet" })).toEqual({ type: "session.update", sessionId: "session-1", name: "Release plan", color: "violet" });
     expect(() => parseStudioAction({ type: "session.update", sessionId: "session-1", name: "Release plan", color: "ultraviolet" })).toThrow();
+    expect(parseStudioAction({ type: "update.check" })).toEqual({ type: "update.check" });
+    expect(parseStudioAction({ type: "update.install" })).toEqual({ type: "update.install" });
+    expect(() => parseStudioAction({ type: "update.install", url: "https://attacker.example" })).toThrow();
   });
 
   it("exposes only bounded text clipboard operations", async () => {
@@ -95,6 +99,23 @@ describe("Studio IPC controller", () => {
     expect(studio.service.events()).toContainEqual(expect.objectContaining({ payload: expect.objectContaining({ role: "user", text: "hello" }) }));
     await studio.dispatch({ type: "message.sendTo", runtimeId: "alpha", text: "pane hello" });
     expect(studio.service.events()).toContainEqual(expect.objectContaining({ payload: expect.objectContaining({ role: "user", text: "pane hello" }) }));
+  });
+
+  it("exposes updater state and only typed check/install operations", async () => {
+    const current = { phase: "idle", currentVersion: "0.3.7", availableVersion: null, progressPercent: null, automatic: true, detail: "Automatic updates are on." } as const;
+    const ready = { phase: "ready", currentVersion: "0.3.7", availableVersion: "0.4.0", progressPercent: 100, automatic: true, detail: "Ready." } as const;
+    const updates: StudioUpdateControl = {
+      snapshot: vi.fn(() => current),
+      check: vi.fn(async () => ready),
+      install: vi.fn(async () => ready),
+    };
+    const studio = await controller(undefined, null, undefined, undefined, undefined, updates);
+
+    await expect(studio.dispatch({ type: "bootstrap" })).resolves.toMatchObject({ type: "bootstrap", update: current });
+    await expect(studio.dispatch({ type: "update.check" })).resolves.toEqual({ type: "update", state: ready });
+    await expect(studio.dispatch({ type: "update.install" })).resolves.toEqual({ type: "update", state: ready });
+    expect(updates.check).toHaveBeenCalledOnce();
+    expect(updates.install).toHaveBeenCalledOnce();
   });
 
   it("updates a named session's persisted title and color through typed IPC", async () => {
