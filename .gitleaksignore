@@ -41,3 +41,16 @@ client/tests/test_resolver.py:generic-api-key:126
 # full-history scan green without rewriting published history. Per the lesson
 # above, the literal is not reproduced here.
 f0fac44daba8249dbc57cddbd4d5a33aecdc8b96:bridge/tests/test_prior_art.py:generic-api-key:96
+#
+# Release-gate findings verified as non-secrets: synthetic test/plan values, a
+# public Ed25519 verification key, and an opaque benchmark ledger identifier.
+# Keep history and tree fingerprints explicit so no rule or path is disabled.
+9c10e2be48afd24118a017a13ccbcd52fdcdd109:cortex/tests/test_eval_attribution.py:generic-api-key:313
+6cded8bedbdf477778d06311e7ee3ec471a20a68:studio/src/main/release-signing.ts:generic-api-key:3
+d607eb647f209cf4535a37f8b6acd2c34c27fbac:docs/superpowers/plans/2026-08-26-outcome-truth-pr5-controlled-nudge.md:generic-api-key:295
+d607eb647f209cf4535a37f8b6acd2c34c27fbac:docs/superpowers/plans/2026-08-26-outcome-truth-pr5-controlled-nudge.md:generic-api-key:296
+benchmarks/memory/work-polluted-20260803/ingest_ledger.jsonl:generic-api-key:8722
+cortex/tests/test_eval_attribution.py:generic-api-key:313
+docs/superpowers/plans/2026-08-26-outcome-truth-pr5-controlled-nudge.md:generic-api-key:295
+docs/superpowers/plans/2026-08-26-outcome-truth-pr5-controlled-nudge.md:generic-api-key:296
+studio/src/main/release-signing.ts:generic-api-key:3

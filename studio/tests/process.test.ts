@@ -41,6 +41,7 @@ describe("runProcess", () => {
 
     try {
       await terminateProcessTree(parent);
+      if (process.platform !== "win32") await waitFor(() => !isAlive(descendantPid), 5_000);
       expect(isAlive(descendantPid)).toBe(false);
     } finally {
       if (isAlive(descendantPid)) {
