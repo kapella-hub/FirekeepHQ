@@ -96,6 +96,25 @@ class TestStartSessionPersistsExperimentGroup:
         assert mapping["experiment_group"] == ""
 
 
+class TestStartSessionPersistsMemberToken:
+    @pytest.mark.asyncio
+    async def test_member_token_stamped_beside_experiment_group(self, mock_redis):
+        """PR5 D13: the token is written at the same point as the arm, from the
+        same owner_member, '' when absent (Redis hashes cannot store None)."""
+        mgr = SessionManager(mock_redis, Settings())
+        await mgr.start_session("goal", agent_id="alice", owner_member=MEMBER_A)
+        mapping = mock_redis.hset.call_args_list[0].kwargs["mapping"]
+        expected = hashlib.sha256(MEMBER_A.encode("utf-8")).hexdigest()[:12]
+        assert mapping["member_token"] == expected
+
+    @pytest.mark.asyncio
+    async def test_absent_owner_member_stores_empty_token(self, mock_redis):
+        mgr = SessionManager(mock_redis, Settings())
+        await mgr.start_session("goal", agent_id="alice")
+        mapping = mock_redis.hset.call_args_list[0].kwargs["mapping"]
+        assert mapping["member_token"] == ""
+
+
 def _mgr(session_id: str = "abc") -> AsyncMock:
     mgr = AsyncMock()
     mgr.start_session = AsyncMock(
