@@ -205,16 +205,33 @@ function assertStudioLayout(layout) {
 }
 
 async function openSessionEditorForSmoke(cdp) {
+  const rowClicked = await cdp.send("Runtime.evaluate", {
+    expression: `(() => {
+      const row = document.querySelector('.session-row');
+      if (!row) return false;
+      row.click();
+      return true;
+    })()`,
+    returnByValue: true,
+  });
+  if (!rowClicked.result?.value) throw new Error("session row did not render");
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+  const rowOpenedEditor = await cdp.send("Runtime.evaluate", {
+    expression: "Boolean(document.querySelector('.session-editor'))",
+    returnByValue: true,
+  });
+  if (rowOpenedEditor.result?.value) throw new Error("session row unexpectedly opened the editor");
+
   const opened = await cdp.send("Runtime.evaluate", {
     expression: `(() => {
-      const button = document.querySelector('.session-row');
+      const button = document.querySelector('.session-customize');
       if (!button) return false;
       button.click();
       return true;
     })()`,
     returnByValue: true,
   });
-  if (!opened.result?.value) throw new Error("session row did not render");
+  if (!opened.result?.value) throw new Error("session customizer did not render");
   await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
   const result = await cdp.send("Runtime.evaluate", {
     expression: `(() => {

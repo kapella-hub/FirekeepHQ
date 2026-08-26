@@ -44,7 +44,7 @@ function installBridge(options: { readonly snapshot?: StudioSnapshot; readonly s
   let snapshot = options.snapshot ?? state();
   let sessions = [...(options.sessions ?? [{ id: "session-1", name: "UI test", color: "ember" as const, createdAt: "2026-08-24T00:00:00.000Z", updatedAt: "2026-08-24T00:00:00.000Z", eventCount: 0, nativeSessionIds: {} }])];
   const invoke = vi.fn(async (action: StudioAction): Promise<StudioActionResult> => {
-    if (action.type === "bootstrap") return { type: "bootstrap", appName: "Firekeep Studio", version: "0.3.5", dashboardAvailable: options.dashboardAvailable ?? true, snapshot, runtimes, events: options.events ?? [], sessions };
+    if (action.type === "bootstrap") return { type: "bootstrap", appName: "Firekeep Studio", version: "0.3.6", dashboardAvailable: options.dashboardAvailable ?? true, snapshot, runtimes, events: options.events ?? [], sessions };
     if (action.type === "runtime.probe") return { type: "diagnostics", items: runtimes.map((runtime) => ({ runtimeId: runtime.id, connection: { state: "ready", detail: "Ready" }, auth: { state: "connected", label: "Connected" } })) };
     if (action.type === "runtime.models") return { type: "models", runtimeId: action.runtimeId, items: typeof options.models === "function" ? options.models() : options.models ?? [] };
     if (action.type === "command.complete") return { type: "completions", items: action.input === "/" ? [{ value: "/doctor", label: "/doctor", description: "Check runtimes" }] : [] };
@@ -110,17 +110,20 @@ describe("Firekeep Studio renderer", () => {
     expect(invoke).toHaveBeenCalledWith({ type: "command.complete", input: "/" });
   });
 
-  it("selects and opens any session for renaming and recoloring when its row is clicked", async () => {
+  it("keeps row clicks for selection and opens name and color editing from the palette", async () => {
     const invoke = installBridge({ sessions: [
       { id: "session-1", name: "UI test", color: "ember", createdAt: "2026-08-24T00:00:00.000Z", updatedAt: "2026-08-24T00:00:00.000Z", eventCount: 0, nativeSessionIds: {} },
       { id: "session-2", name: "Research", color: "slate", createdAt: "2026-08-23T00:00:00.000Z", updatedAt: "2026-08-23T00:00:00.000Z", eventCount: 3, nativeSessionIds: {} },
     ] });
     render(<App />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Open Research and edit name and color" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Research.*3 events/i }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "session.resume", sessionId: "session-2" }));
+    expect(screen.queryByRole("textbox", { name: "Session name" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Customize Research" }));
     const name = screen.getByRole("textbox", { name: "Session name" });
     expect(name).toHaveValue("Research");
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "session.resume", sessionId: "session-2" }));
     fireEvent.change(name, { target: { value: "Release plan" } });
     fireEvent.click(screen.getByRole("radio", { name: "Ocean" }));
     fireEvent.click(screen.getByRole("button", { name: "Save session" }));
