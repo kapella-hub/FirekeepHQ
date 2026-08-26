@@ -164,7 +164,7 @@ def _fetch_org_defaults(cfg, timeout: float = 3.0) -> dict:
         base = os.environ.get("FIREKEEP_DIST_BASE", "").rstrip("/")
         if not base:
             base = updater.dist_base(cfg)  # raises when no [dist] section
-        ctx = updater._dist_ssl_context()
+        ctx = updater.dist_ssl_context()
         req = urllib.request.Request(f"{base}/latest/org-defaults.json")
         kwargs = {"timeout": timeout}
         if ctx is not None:

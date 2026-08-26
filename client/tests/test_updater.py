@@ -339,7 +339,7 @@ def test_dist_ssl_context_none_without_truststore(monkeypatch):
     import sys
     from firekeep_client import updater
     monkeypatch.setitem(sys.modules, "truststore", None)  # import truststore -> ImportError
-    assert updater._dist_ssl_context() is None
+    assert updater.dist_ssl_context() is None
 
 
 def test_dist_ssl_context_uses_truststore_when_available(monkeypatch):
@@ -350,4 +350,4 @@ def test_dist_ssl_context_uses_truststore_when_available(monkeypatch):
     sentinel = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     fake = types.SimpleNamespace(SSLContext=lambda proto: sentinel)
     monkeypatch.setitem(sys.modules, "truststore", fake)
-    assert updater._dist_ssl_context() is sentinel
+    assert updater.dist_ssl_context() is sentinel
