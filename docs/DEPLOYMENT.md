@@ -338,6 +338,11 @@ publish a passwordless Redis and a plaintext vector store.
 
 ## Updating
 
+`firekeep doctor` and the daily session-start briefing now tell you when a Keep is
+running behind the latest published release, so you don't have to remember to
+check — see [`docs/guides/client-kit.md`](guides/client-kit.md) "Server update
+visibility".
+
 For a published, source-free install, choose the target release explicitly:
 
 ```bash

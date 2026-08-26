@@ -103,6 +103,11 @@ A separate, ongoing field-failure reporting channel exists alongside `doctor --r
 mirrors autoupdate's on-by-default), and an enrolled machine sends only closed-enum
 category codes on install/connectivity/runtime failures, never paths or messages. See
 [`docs/guides/client-kit.md`](docs/guides/client-kit.md) "Field failure reporting".
+Doctor and the session-start briefing also now surface a Keep running behind the
+latest published server release — cortex's version compared against
+`server/latest/server.json`, silenced per-version via
+`[dist] server_update_ack = vX.Y.Z` — see
+[`docs/guides/client-kit.md`](docs/guides/client-kit.md) "Server update visibility".
 
 ### Run Firekeep Studio from this checkout
 

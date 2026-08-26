@@ -645,6 +645,97 @@ survive that stronger, later guarantee. Same gate every other sender in the kit
 consults, and it fails toward not-bypassed, so a bug in the gate itself cannot
 silently disable reporting.
 
+## Server update visibility (`firekeep_client.serverupdate`)
+
+A companion gap to the `client-version` nudge above: nothing ever told an operator
+that the **server** — not the client — had drifted behind the latest published
+release. Detect-and-tell only; this module never applies an update, on purpose
+(see the invariant below). Full design record:
+`docs/superpowers/specs/2026-08-25-server-update-visibility-design.md`.
+
+**Only a clean `vX.Y.Z` running version is ever judged.** `serverupdate.check(cfg)`
+reads cortex `/version` live on every call (never cached — see the caching
+paragraph below) and, for a clean release tag, compares it against
+`server/latest/server.json` via `updater.parse_version`/`updater.is_newer` — the
+same comparator the client's own update check uses, wrapped in
+`try/except UpdateError` rather than a truthiness check, so a malformed version
+string is never silently treated as "not newer." A git-describe string
+(`v1.2.1-67-g040d0ed`) means the box was built from source, so it is **never
+judged against the manifest at all** — those operators update by `git pull`, and
+a bundle-manifest comparison would be meaningless for them. It gets its own
+`"(source checkout — update via git)"` OK row unconditionally, even when the
+dist host is unreachable, because it never needed the manifest to begin with.
+
+**The full state matrix**, running version × whether `latest` could be fetched:
+a clean release *behind* the published `latest` is a WARN (or an OK, once
+acknowledged — below); *current* and *ahead* are both OK, worded differently
+(`"is current"` vs. `"(ahead of published latest vY)"` — real during the
+release pipeline's Pages-propagation window and under a `publish_latest=0`
+hotfix, so "current" would assert an equality that never happened); a
+git-describe running version is always the source-checkout OK row regardless of
+manifest state; and when the manifest can't be fetched or parsed for a clean
+release, there is **no row and no line at all** — that failure belongs to the
+existing `client-version` row's "cannot check for updates" warn, not to this
+one. When cortex `/version` itself doesn't answer, `check()` returns `None` and
+neither surface says anything — with no running version there is nothing to
+compare.
+
+**`[dist] server_update_ack = vX.Y.Z`** in `~/.firekeep/config` acknowledges that
+specific published version: doctor drops the WARN to an OK that still states the
+fact (`server v1.2.0 (v1.3.0 available, acknowledged — clear
+[dist] server_update_ack to re-enable the warning)`), and the briefing line
+stops. It names a version rather than being a boolean, so **it re-arms itself
+automatically** the moment a newer `latest` is published — a team that pins
+deliberately (the release workflow explicitly supports maintaining an old line
+via `publish_latest=0` hotfixes) re-acknowledges once per new version rather
+than the ack rotting into permanent silence, the exact failure that got the old
+`version-skew` doctor row removed. It is per-machine, like the rest of `[dist]`.
+
+**Never auto-applied — a hard invariant, not a default.** The client happily
+auto-updates itself (see above), because swapping a client venv is reversible
+and confined to one machine. A server update can carry an **irreversible Neo4j
+store-format migration** — the same lesson the image-pinning discipline in root
+`CLAUDE.md` exists for. So the tell always names `bash update.sh --to vY` and
+stops there; no flag, config key, or future convenience is permitted to make
+this module run an update itself. `update.sh --to` already takes a volume
+backup before touching anything, which is the safety net the tell points at,
+not one this module builds itself.
+
+**Caching: the manifest fetch, never the verdict.** Only
+`server/latest/server.json` is day-cached (scratch key `server_update_check`,
+negatives included — an unreachable dist host costs one 3s timeout per day,
+the same discipline as the client-update nudge). Cortex `/version` is read live
+on every render. This matters right after an operator runs
+`update.sh --to vY`: a cached *verdict* would keep repeating the stale warn
+until midnight at the exact moment the operator is checking whether the update
+worked; reading the running version live means doctor reflects the new version
+immediately, even against a manifest fetched that same morning.
+
+**Two surfaces, matching coverage to what already exists.** `firekeep doctor`'s
+`server-version` row runs the live check on every invocation, on every
+runtime — it is the verdict row, distinct from the existing `versions` row
+(client+cortex report, judges neither; doctor may show both, deliberately). The
+`session_start` briefing appends one line beside the existing client-update
+nudge, only when `relation == "behind"` and unacknowledged:
+```
+[firekeep] server update available: v1.2.0 -> v1.3.0 — run `bash update.sh --to v1.3.0` on the server host
+```
+**Hookless runtimes get the doctor row only** — codex, Claude Desktop and the
+generic tier have no `session_start` hook to append a line to, so a Keep behind
+the latest release is invisible between doctor runs on those runtimes, the same
+asymmetry the client-update nudge already lives with.
+
+**Privacy.** The check adds one daily `GET` of `server/latest/server.json` to
+the same dist host, under the same `[dist]` gate, at the same cadence as the
+existing client-update check — no previously invisible machine becomes visible
+because of it. The one new signal the dist host gains is being able to
+distinguish, by request path, "machines whose team runs a bundle-deployed Keep"
+from client-only installs. It never learns the running version or anything
+else: the comparison happens client-side, the manifest fetch is a plain `GET`,
+and the Keep's own version never leaves the tailnet. No consent gate applies,
+for the same reason none applies to the client-update check this one rides
+beside — absence of `[dist]` disables both.
+
 ## The install skill (`skills/install-firekeep/`, 2026-08-20)
 
 A portable Agent Skill that lets someone's existing coding agent install Firekeep
