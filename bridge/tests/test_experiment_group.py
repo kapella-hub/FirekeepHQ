@@ -70,6 +70,14 @@ class TestExperimentGroupHelper:
         assert _experiment_group(None) is None
 
 
+def test_arm_function_is_the_shared_auth_implementation():
+    """PR5 D1: bridge must use auth.experiment's function, not a local copy —
+    identity, not equality, so a silent re-fork fails loudly."""
+    from auth.experiment import experiment_group
+    from app.session import _experiment_group
+    assert _experiment_group is experiment_group
+
+
 class TestStartSessionPersistsExperimentGroup:
     @pytest.mark.asyncio
     async def test_field_stored_on_the_session_hash_beside_owner_member(self, mock_redis):
