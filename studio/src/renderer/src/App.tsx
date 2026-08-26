@@ -25,10 +25,10 @@ import {
   Plus,
   RefreshCw,
   Send,
-  Settings2,
   ShieldCheck,
   Sparkles,
   Square,
+  SunMoon,
   Terminal,
   Volume2,
   VolumeX,
@@ -461,7 +461,7 @@ export function App(): React.JSX.Element {
   if (!bootstrap || !snapshot) return <LaunchScreen error={error} />;
 
   return (
-    <div className="studio" data-busy={agentWorking || undefined}>
+    <div className="studio" data-busy={agentWorking || undefined} data-view={view}>
       <header className="titlebar">
         <div className="brand"><span className="brand-icon" role="status" aria-label={agentWorking ? "Agent working" : "Firekeep Studio idle"}><FirekeepMark size={18} />{agentWorking ? <span className="brand-activity" /> : null}</span><span>Firekeep</span><strong>Studio</strong></div>
         <div className="titlebar-center">
@@ -470,7 +470,7 @@ export function App(): React.JSX.Element {
         </div>
         <div className="titlebar-actions">
           <button className="icon-button" title={snapshot.voiceEnabled ? "Turn spoken replies off" : "Turn spoken replies on"} onClick={() => ignore(invoke({ type: "voice.set", enabled: !snapshot.voiceEnabled }).then(applyResult))}>{snapshot.voiceEnabled ? <Volume2 size={17} /> : <VolumeX size={17} />}</button>
-          <button className="icon-button" title="Cycle theme" onClick={() => ignore(invoke({ type: "theme.set", theme: snapshot.theme === "system" ? "dark" : snapshot.theme === "dark" ? "light" : "system" }).then(applyResult))}><Settings2 size={17} /></button>
+          <button className="icon-button appearance-button" aria-label={`Appearance: ${themeLabel(snapshot.theme)}. Switch to ${nextTheme(snapshot.theme)} theme`} title={`Appearance: ${themeLabel(snapshot.theme)} · next ${nextTheme(snapshot.theme)}`} onClick={() => ignore(invoke({ type: "theme.set", theme: nextTheme(snapshot.theme) }).then(applyResult))}><SunMoon size={17} /></button>
           <button className="inspector-toggle" aria-label={rightOpen ? "Hide inspector" : "Show inspector"} title={rightOpen ? "Hide the right inspector" : "Show the right inspector"} onClick={() => setRightOpen((value) => !value)}>{rightOpen ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}<span>{rightOpen ? "Hide panel" : "Show panel"}</span></button>
         </div>
       </header>
@@ -480,7 +480,7 @@ export function App(): React.JSX.Element {
         <nav className="session-list" aria-label="Studio sessions">
           {sessions.map((session) => (
             <div key={session.id} className={`session-entry ${session.id === snapshot.activeSessionId ? "active" : ""} ${sessionEditorId === session.id ? "editing" : ""}`} style={sessionAccentStyle(session.color)}>
-              <button className="session-row" onClick={() => { if (session.id !== snapshot.activeSessionId) ignore(invoke({ type: "session.resume", sessionId: session.id }).then(applyResult)); }}>
+              <button className="session-row" aria-current={session.id === snapshot.activeSessionId ? "page" : undefined} onClick={() => { if (session.id !== snapshot.activeSessionId) ignore(invoke({ type: "session.resume", sessionId: session.id }).then(applyResult)); }}>
                 <span className="session-row-heading"><span className="session-color-dot" /><span className="session-row-title">{session.name}</span></span>
                 <span className="session-row-meta">{session.mission ? `${session.mission.phase} · ` : ""}{session.eventCount} events · {relativeTime(session.updatedAt)}</span>
               </button>
@@ -488,6 +488,7 @@ export function App(): React.JSX.Element {
               {sessionEditorId === session.id ? <SessionEditor session={session} saving={sessionSaving} close={() => setSessionEditorId(null)} save={(name, color) => saveSession(session.id, name, color)} /> : null}
             </div>
           ))}
+          {!sessions.length ? <div className="session-list-empty"><Sparkles size={17} /><span>Your next session starts here.</span></div> : null}
         </nav>
         <div className="rail-footer">
           <section className="usage-summary rail-usage" aria-labelledby="session-usage-heading">
@@ -509,10 +510,11 @@ export function App(): React.JSX.Element {
       <main className="conversation">
         <div className="conversation-toolbar">
           <RuntimePicker runtimes={bootstrap.runtimes} selectedId={snapshot.primaryRuntimeId} diagnostics={diagnostics} onSelect={(runtimeId) => void choosePrimary(runtimeId)} onManage={() => { setRuntimeManagerOpen(true); ignore(refreshDiagnostics()); }} />
-          <div className="reviewer-strip">
-            <Eye size={15} /><span>Review</span>
+          <div className="reviewer-strip" aria-label="Reviewers">
+            <Eye size={15} /><span className="reviewer-label">Reviewers</span>
+            {!snapshot.reviewerRuntimeIds.length ? <span className="reviewer-empty">No reviewers</span> : null}
             {snapshot.reviewerRuntimeIds.map((id) => <span className="reviewer-chip" key={id}>{runtimeName(bootstrap.runtimes, id)}<button aria-label={`Remove ${id} reviewer`} onClick={() => ignore(invoke({ type: "reviewer.remove", runtimeId: id }).then(applyResult))}><X size={12} /></button></span>)}
-            <button className="review-now" disabled={!snapshot.reviewerRuntimeIds.length || busy} onClick={() => ignore(runReview())}>Run now</button>
+            <button className="review-now" title={snapshot.reviewerRuntimeIds.length ? "Run a review now" : "Add a reviewer in Runtime Center"} disabled={!snapshot.reviewerRuntimeIds.length || busy} onClick={() => ignore(runReview())}>Run now</button>
           </div>
           <div className="layout-controls">
             <button type="button" className={`layout-toggle ${view === "agents" ? "active" : ""}`} aria-label={view === "agents" ? "Close agent grid" : "Open agent grid"} aria-pressed={view === "agents"} title="Toggle agent grid (Ctrl/Cmd+\\)" onClick={toggleAgentGrid}><PanelsTopLeft size={14} /><span>{view === "agents" ? "Conversation" : "Agents"}</span></button>
@@ -538,7 +540,7 @@ export function App(): React.JSX.Element {
         <div className="composer-zone">
           {completions.length ? <div className="command-menu" role="listbox">{completions.slice(0, 9).map((item, index) => <button role="option" aria-selected={index === completionIndex} key={`${item.value}:${index}`} className={index === completionIndex ? "selected" : ""} onMouseDown={(event) => { event.preventDefault(); setComposer(item.value); setCompletions([]); composerRef.current?.focus(); }}><span>{item.label}</span><small>{item.description}</small></button>)}</div> : null}
           <div className="composer-shell">
-            <textarea ref={composerRef} value={composer} rows={1} placeholder={view === "agents" && activePane ? `Message ${activePane.displayName} pane, or type / for commands…` : snapshot.primaryRuntimeId ? `Message ${primary?.displayName ?? "your agent"}, or type / for commands…` : "Choose a primary runtime, or type /doctor…"} onChange={(event) => setComposer(event.target.value)} onKeyDown={(event) => {
+            <textarea ref={composerRef} aria-label="Message composer" value={composer} rows={1} placeholder={view === "agents" && activePane ? `Message ${activePane.displayName} pane, or type / for commands…` : snapshot.primaryRuntimeId ? `Message ${primary?.displayName ?? "your agent"}, or type / for commands…` : "Choose a primary runtime, or type /doctor…"} onChange={(event) => setComposer(event.target.value)} onKeyDown={(event) => {
               if (event.key === "ArrowDown" && completions.length) { event.preventDefault(); setCompletionIndex((value) => Math.min(value + 1, completions.length - 1)); }
               else if (event.key === "ArrowUp" && completions.length) { event.preventDefault(); setCompletionIndex((value) => Math.max(value - 1, 0)); }
               else if (event.key === "Tab" && completions[completionIndex]) { event.preventDefault(); setComposer(completions[completionIndex].value); setCompletions([]); }
@@ -554,7 +556,7 @@ export function App(): React.JSX.Element {
         </div>
       </main>
 
-      {rightOpen ? <aside className="inspector">
+      {rightOpen ? <aside className="inspector" aria-label="Studio inspector">
         <MissionPanel
           mission={snapshot.mission}
           busy={busy}
@@ -584,7 +586,7 @@ export function App(): React.JSX.Element {
         connect={openConnect}
         disconnect={(runtimeId) => ignore(invoke({ type: "runtime.logout", runtimeId }).then(() => refreshDiagnostics()))}
       /> : null}
-      {connectDialog ? <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setConnectDialog(null)}><form className="modal" onSubmit={(event) => { event.preventDefault(); ignore(connect()); }}><button type="button" className="modal-close" onClick={() => setConnectDialog(null)}><X size={17} /></button><span className="modal-icon"><KeyRound size={22} /></span><h2>Connect {runtimeName(bootstrap.runtimes, connectDialog.runtimeId)}</h2><p>Authentication remains owned by the provider. Studio only stores API keys using your operating system's encrypted credential service.</p><label>Method<select value={connectDialog.method} onChange={(event) => setConnectDialog({ ...connectDialog, method: event.target.value as LoginMethod })}>{loginMethods(bootstrap.runtimes.find((runtime) => runtime.id === connectDialog.runtimeId)).map((method) => <option key={method} value={method}>{methodLabel(method)}</option>)}</select></label>{connectDialog.method === "api-key" ? <label>API key<input autoFocus type="password" autoComplete="off" value={secret} onChange={(event) => setSecret(event.target.value)} placeholder="Stored encrypted; never shown again" /></label> : null}<div className="modal-actions"><button type="button" onClick={() => setConnectDialog(null)}>Cancel</button><button className="primary-action" type="submit" disabled={connectDialog.method === "api-key" && !secret}>Continue securely</button></div></form></div> : null}
+      {connectDialog ? <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setConnectDialog(null)}><form className="modal" role="dialog" aria-modal="true" aria-labelledby="connect-runtime-title" onSubmit={(event) => { event.preventDefault(); ignore(connect()); }}><button type="button" className="modal-close" aria-label="Close connection dialog" onClick={() => setConnectDialog(null)}><X size={17} /></button><span className="modal-icon"><KeyRound size={22} /></span><h2 id="connect-runtime-title">Connect {runtimeName(bootstrap.runtimes, connectDialog.runtimeId)}</h2><p>Authentication remains owned by the provider. Studio only stores API keys using your operating system's encrypted credential service.</p><label>Method<select value={connectDialog.method} onChange={(event) => setConnectDialog({ ...connectDialog, method: event.target.value as LoginMethod })}>{loginMethods(bootstrap.runtimes.find((runtime) => runtime.id === connectDialog.runtimeId)).map((method) => <option key={method} value={method}>{methodLabel(method)}</option>)}</select></label>{connectDialog.method === "api-key" ? <label>API key<input autoFocus type="password" autoComplete="off" value={secret} onChange={(event) => setSecret(event.target.value)} placeholder="Stored encrypted; never shown again" /></label> : null}<div className="modal-actions"><button type="button" onClick={() => setConnectDialog(null)}>Cancel</button><button className="primary-action" type="submit" disabled={connectDialog.method === "api-key" && !secret}>Continue securely</button></div></form></div> : null}
       {decisionBoard ? <DecisionBoardModal board={decisionBoard} close={() => setDecisionBoard(null)} submit={async (answers) => {
         const result = await invoke({ type: "decision.submit", url: decisionBoard.url, answers });
         if (result.type !== "decision-submitted") throw new Error("Decision Board returned an unexpected submission response");
@@ -764,7 +766,7 @@ interface AgentGridProps extends TimelineActions {
 function AgentGrid(props: AgentGridProps): React.JSX.Element {
   const visible = props.focusedRuntimeId ? props.runtimes.filter((runtime) => runtime.id === props.focusedRuntimeId) : props.runtimes;
   if (!visible.length) return <div className="agent-grid-empty"><PanelsTopLeft size={22} /><strong>No agent panes open</strong><span>Add a runtime from the toolbar.</span></div>;
-  return <div className={`agent-grid ${props.focusedRuntimeId ? "focused" : ""}`} aria-label="Agent grid">{visible.map((runtime) => <AgentPane key={runtime.id} {...props} runtime={runtime} runs={props.runs.filter((run) => run.runtimeId === runtime.id)} canClose={props.runtimes.length > 1} />)}</div>;
+  return <div className={`agent-grid ${props.focusedRuntimeId ? "focused" : ""}`} data-count={visible.length} aria-label="Agent grid">{visible.map((runtime) => <AgentPane key={runtime.id} {...props} runtime={runtime} runs={props.runs.filter((run) => run.runtimeId === runtime.id)} canClose={props.runtimes.length > 1} />)}</div>;
 }
 
 function AgentPane({ runtime, runs, activeRuntimeId, focusedRuntimeId, primaryRuntimeId, workingRuntimeId, diagnostics, commandCards, error, select, close, focus, makePrimary, clearError, resolveApproval, openDecision, decisionLoading, canClose }: AgentGridProps & { readonly runtime: RuntimeDescriptor; readonly runs: readonly TimelineRun[]; readonly canClose: boolean }): React.JSX.Element {
@@ -892,6 +894,8 @@ function CopyButton({ text }: { readonly text: string }): React.JSX.Element {
 function sessionAccentStyle(color: SessionColor = DEFAULT_SESSION_COLOR): React.CSSProperties {
   return { "--session-accent": SESSION_COLOR_OPTIONS.find((option) => option.id === color)?.value ?? SESSION_COLOR_OPTIONS[0]!.value } as React.CSSProperties;
 }
+function nextTheme(theme: StudioSnapshot["theme"]): StudioSnapshot["theme"] { return theme === "system" ? "dark" : theme === "dark" ? "light" : "system"; }
+function themeLabel(theme: StudioSnapshot["theme"]): string { return theme === "system" ? "System" : theme === "dark" ? "Dark" : "Light"; }
 function runtimeName(runtimes: readonly RuntimeDescriptor[], id: string): string { return runtimes.find((runtime) => runtime.id === id)?.displayName ?? id; }
 function pretty(value: unknown): string { return typeof value === "string" ? value : JSON.stringify(value, null, 2); }
 function pathLeaf(value: string): string { return value.replace(/[\\/]+$/, "").split(/[\\/]/).at(-1) || value; }

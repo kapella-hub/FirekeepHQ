@@ -24,9 +24,13 @@ try {
   let layout;
   let sessionEditor;
   let agentGrid = null;
+  let lightTheme;
+  let responsiveInspector;
+  let commandSurface;
   try {
     layout = await waitForStudioLayout(cdp, 10_000);
     assertStudioLayout(layout);
+    await setThemeForSmoke(cdp, "dark");
     const screenshotPath = process.env.FIREKEEP_STUDIO_SMOKE_SCREENSHOT;
     if (screenshotPath) {
       await cdp.send("Runtime.evaluate", {
@@ -57,16 +61,34 @@ try {
     }
     await closeSessionEditorForSmoke(cdp);
     const gridScreenshotPath = process.env.FIREKEEP_STUDIO_SMOKE_GRID_SCREENSHOT;
+    agentGrid = await openAgentGridForSmoke(cdp);
+    assertAgentGrid(agentGrid);
     if (gridScreenshotPath) {
-      agentGrid = await openAgentGridForSmoke(cdp);
-      assertAgentGrid(agentGrid);
       const capture = await cdp.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
       await writeFile(gridScreenshotPath, Buffer.from(capture.data, "base64"));
+    }
+    await closeAgentGridForSmoke(cdp);
+    lightTheme = await setThemeForSmoke(cdp, "light");
+    assertLightTheme(lightTheme);
+    const lightScreenshotPath = process.env.FIREKEEP_STUDIO_SMOKE_LIGHT_SCREENSHOT;
+    if (lightScreenshotPath) {
+      const capture = await cdp.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+      await writeFile(lightScreenshotPath, Buffer.from(capture.data, "base64"));
+    }
+    responsiveInspector = await inspectResponsiveInspector(cdp);
+    assertResponsiveInspector(responsiveInspector);
+    await setThemeForSmoke(cdp, "dark");
+    commandSurface = await runCommandForSmoke(cdp);
+    assertCommandSurface(commandSurface);
+    const commandScreenshotPath = process.env.FIREKEEP_STUDIO_SMOKE_COMMAND_SCREENSHOT;
+    if (commandScreenshotPath) {
+      const capture = await cdp.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+      await writeFile(commandScreenshotPath, Buffer.from(capture.data, "base64"));
     }
   } finally {
     await cdp.close();
   }
-  process.stdout.write(`${JSON.stringify({ executable, title: target.title, url: target.url, layout, sessionEditor, agentGrid })}\n`);
+  process.stdout.write(`${JSON.stringify({ executable, title: target.title, url: target.url, layout, sessionEditor, agentGrid, lightTheme, responsiveInspector, commandSurface })}\n`);
 } finally {
   terminateExactTree(child.pid);
   const temporaryRoot = `${await realpath(tmpdir())}${sep}`.toLowerCase();
@@ -339,7 +361,7 @@ async function openAgentGridForSmoke(cdp) {
 }
 
 function assertAgentGrid(agentGrid) {
-  if (agentGrid.paneCount < 1 || agentGrid.activeCount !== 1) {
+  if (agentGrid.paneCount !== 3 || agentGrid.activeCount !== 1) {
     throw new Error(`agent grid selection is invalid: ${JSON.stringify(agentGrid)}`);
   }
   if (!agentGrid.placeholder.toLowerCase().includes("pane")) {
@@ -349,6 +371,147 @@ function assertAgentGrid(agentGrid) {
     if (pane.width < 240 || pane.height < 160 || pane.left < agentGrid.grid.left || pane.right > agentGrid.grid.right + 1) {
       throw new Error(`agent pane is clipped or unusable: ${JSON.stringify({ pane, grid: agentGrid.grid })}`);
     }
+  }
+  const firstTop = agentGrid.panes[0].top;
+  if (agentGrid.panes.some((pane) => Math.abs(pane.top - firstTop) > 1)) {
+    throw new Error(`three agent panes did not share one tmux-style row: ${JSON.stringify(agentGrid.panes)}`);
+  }
+}
+
+async function closeAgentGridForSmoke(cdp) {
+  const result = await cdp.send("Runtime.evaluate", {
+    expression: `(() => {
+      const button = document.querySelector('[aria-label="Close agent grid"]');
+      if (!button) return false;
+      button.click();
+      return true;
+    })()`,
+    returnByValue: true,
+  });
+  if (!result.result?.value) throw new Error("agent grid could not return to the conversation");
+}
+
+async function setThemeForSmoke(cdp, desired) {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const result = await cdp.send("Runtime.evaluate", {
+      expression: `(() => {
+        const theme = document.documentElement.dataset.theme ?? '';
+        if (theme === ${JSON.stringify(desired)}) return { theme, clicked: false };
+        const button = document.querySelector('.appearance-button');
+        if (!button) return null;
+        button.click();
+        return { theme, clicked: true };
+      })()`,
+      returnByValue: true,
+    });
+    if (!result.result?.value) throw new Error("appearance control did not render");
+    if (result.result.value.theme === desired) break;
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 120));
+  }
+  const result = await cdp.send("Runtime.evaluate", {
+    expression: `(() => ({
+      theme: document.documentElement.dataset.theme ?? '',
+      body: getComputedStyle(document.body).backgroundColor,
+      titlebar: getComputedStyle(document.querySelector('.titlebar')).backgroundImage,
+      label: document.querySelector('.appearance-button')?.getAttribute('aria-label') ?? '',
+    }))()`,
+    returnByValue: true,
+  });
+  return result.result?.value;
+}
+
+function assertLightTheme(theme) {
+  if (!theme || theme.theme !== "light" || theme.body !== "rgb(241, 243, 239)" || !theme.label.includes("Appearance: Light")) {
+    throw new Error(`light appearance did not reach the packaged renderer: ${JSON.stringify(theme)}`);
+  }
+}
+
+async function inspectResponsiveInspector(cdp) {
+  await cdp.send("Emulation.setDeviceMetricsOverride", { width: 1000, height: 760, deviceScaleFactor: 1, mobile: false });
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, 240));
+  const geometry = await cdp.send("Runtime.evaluate", {
+    expression: `(() => {
+      const panel = document.querySelector('.inspector');
+      const toggle = document.querySelector('.inspector-toggle');
+      if (!panel || !toggle) return null;
+      const bounds = panel.getBoundingClientRect();
+      const style = getComputedStyle(panel);
+      toggle.click();
+      return { viewport: innerWidth, left: bounds.left, right: bounds.right, width: bounds.width, position: style.position, display: style.display };
+    })()`,
+    returnByValue: true,
+  });
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+  const hidden = await cdp.send("Runtime.evaluate", {
+    expression: `(() => {
+      const hidden = !document.querySelector('.inspector');
+      document.querySelector('.inspector-toggle')?.click();
+      return hidden;
+    })()`,
+    returnByValue: true,
+  });
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+  await cdp.send("Emulation.clearDeviceMetricsOverride");
+  return geometry.result?.value ? { ...geometry.result.value, hidden: Boolean(hidden.result?.value) } : null;
+}
+
+function assertResponsiveInspector(value) {
+  if (!value || value.position !== "fixed" || value.display === "none" || !value.hidden || Math.abs(value.right - value.viewport) > 1 || value.width < 280) {
+    throw new Error(`responsive inspector is clipped or cannot be toggled: ${JSON.stringify(value)}`);
+  }
+}
+
+async function runCommandForSmoke(cdp) {
+  const submitted = await cdp.send("Runtime.evaluate", {
+    expression: `(() => {
+      const textarea = document.querySelector('.composer-shell textarea');
+      if (!textarea) return false;
+      const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+      setValue?.call(textarea, '/help');
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+      return true;
+    })()`,
+    returnByValue: true,
+  });
+  if (!submitted.result?.value) throw new Error("composer did not render for command smoke");
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, 80));
+  await cdp.send("Runtime.evaluate", {
+    expression: `(() => {
+      const send = document.querySelector('.send-button');
+      if (!send || send.disabled) return false;
+      send.click();
+      return true;
+    })()`,
+    returnByValue: true,
+  });
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const result = await cdp.send("Runtime.evaluate", {
+      expression: `(() => {
+        const card = document.querySelector('.command-card');
+        const transcript = document.querySelector('.transcript');
+        if (!card || !transcript) return null;
+        const bounds = card.getBoundingClientRect();
+        return {
+          title: card.querySelector('header span')?.textContent?.trim() ?? '',
+          rowCount: card.querySelectorAll('tbody tr').length,
+          contentLength: card.textContent?.trim().length ?? 0,
+          width: bounds.width,
+          visible: bounds.height > 0,
+          transcriptWidth: transcript.getBoundingClientRect().width,
+        };
+      })()`,
+      returnByValue: true,
+    });
+    if (result.result?.value) return result.result.value;
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+  }
+  throw new Error("/help did not render a packaged command card");
+}
+
+function assertCommandSurface(value) {
+  if (!value || !value.visible || value.title !== "Firekeep Studio commands" || value.contentLength < 200 || value.width < 500 || value.width > value.transcriptWidth) {
+    throw new Error(`packaged command surface is incomplete or clipped: ${JSON.stringify(value)}`);
   }
 }
 

@@ -1,6 +1,6 @@
 # Firekeep Studio
 
-Firekeep Studio is Firekeep's runtime-neutral desktop agent console. Version `0.3.6`
+Firekeep Studio is Firekeep's runtime-neutral desktop agent console. Version `0.3.7`
 is a separate Electron application: it does not replace or fork the Python Client Kit.
 The kit remains the source of truth for Keep connectivity, memory, hooks, instructions,
 personal mode, and runtime configuration.
@@ -72,6 +72,13 @@ not a second competing target.
 
 Version 0.3.6 restores the clearer split interaction after hands-on use: clicking a session
 row only selects it, while its palette icon exclusively opens name-and-color editing.
+
+Version 0.3.7 is a complete presentation pass: stronger contrast and typography, calmer
+surface depth, larger interaction targets, richer Markdown, polished session/runtime/mission
+panels, native light/dark window chrome, and a minimum-width inspector that becomes a real
+drawer instead of disappearing. Three-agent workspaces now use one balanced, tmux-style row
+when space permits. The packaged smoke verifies both themes, the session editor, the responsive
+inspector, the command surface, and the three-pane geometry against the built executable.
 
 ## Runtime support
 

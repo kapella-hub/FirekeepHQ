@@ -21,7 +21,7 @@ async function controller(openExternal: (url: string) => Promise<void> = async (
     now: () => "2026-08-24T00:00:00.000Z",
   });
   await service.initialize();
-  return new StudioController(service, createCommandRegistry(service), "0.3.6", openExternal, async () => "C:\\workspace", dashboardUrl, decisionBoards, clipboard, voiceInput);
+  return new StudioController(service, createCommandRegistry(service), "0.3.7", openExternal, async () => "C:\\workspace", dashboardUrl, decisionBoards, clipboard, voiceInput);
 }
 
 describe("Studio IPC controller", () => {

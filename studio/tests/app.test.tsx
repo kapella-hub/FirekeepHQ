@@ -44,7 +44,7 @@ function installBridge(options: { readonly snapshot?: StudioSnapshot; readonly s
   let snapshot = options.snapshot ?? state();
   let sessions = [...(options.sessions ?? [{ id: "session-1", name: "UI test", color: "ember" as const, createdAt: "2026-08-24T00:00:00.000Z", updatedAt: "2026-08-24T00:00:00.000Z", eventCount: 0, nativeSessionIds: {} }])];
   const invoke = vi.fn(async (action: StudioAction): Promise<StudioActionResult> => {
-    if (action.type === "bootstrap") return { type: "bootstrap", appName: "Firekeep Studio", version: "0.3.6", dashboardAvailable: options.dashboardAvailable ?? true, snapshot, runtimes, events: options.events ?? [], sessions };
+    if (action.type === "bootstrap") return { type: "bootstrap", appName: "Firekeep Studio", version: "0.3.7", dashboardAvailable: options.dashboardAvailable ?? true, snapshot, runtimes, events: options.events ?? [], sessions };
     if (action.type === "runtime.probe") return { type: "diagnostics", items: runtimes.map((runtime) => ({ runtimeId: runtime.id, connection: { state: "ready", detail: "Ready" }, auth: { state: "connected", label: "Connected" } })) };
     if (action.type === "runtime.models") return { type: "models", runtimeId: action.runtimeId, items: typeof options.models === "function" ? options.models() : options.models ?? [] };
     if (action.type === "command.complete") return { type: "completions", items: action.input === "/" ? [{ value: "/doctor", label: "/doctor", description: "Check runtimes" }] : [] };
@@ -71,7 +71,11 @@ function installBridge(options: { readonly snapshot?: StudioSnapshot; readonly s
   return invoke;
 }
 
-afterEach(() => { pushStudioEvent = null; cleanup(); });
+afterEach(() => {
+  pushStudioEvent = null;
+  delete document.documentElement.dataset.theme;
+  cleanup();
+});
 
 async function openRuntimeCenter(): Promise<HTMLElement> {
   fireEvent.click(await screen.findByRole("button", { name: /Primary runtime:/i }));
@@ -93,6 +97,18 @@ describe("Firekeep Studio renderer", () => {
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "primary.set", runtimeId: "alpha" }));
     expect(await screen.findByText("0 fresh tokens")).toBeInTheDocument();
+    expect(screen.getByText("No reviewers")).toBeInTheDocument();
+  });
+
+  it("applies the persisted appearance and announces the next theme", async () => {
+    const invoke = installBridge({ snapshot: { ...state(), theme: "light" } });
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Agents come and go. The Keep stays." });
+    expect(document.documentElement).toHaveAttribute("data-theme", "light");
+
+    fireEvent.click(screen.getByRole("button", { name: "Appearance: Light. Switch to system theme" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "theme.set", theme: "system" }));
   });
 
   it("shows slash completion and appends typed local voice input", async () => {
@@ -370,6 +386,7 @@ describe("Firekeep Studio renderer", () => {
     render(<App />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Open agent grid" }));
+    expect(screen.getByLabelText("Agent grid")).toHaveAttribute("data-count", "2");
     expect(screen.getByRole("region", { name: "Alpha agent pane" })).toBeInTheDocument();
     const betaPane = screen.getByRole("region", { name: "Beta agent pane" });
     fireEvent.click(betaPane);

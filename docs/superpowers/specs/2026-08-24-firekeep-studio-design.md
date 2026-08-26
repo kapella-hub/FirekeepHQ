@@ -1,7 +1,7 @@
 # Firekeep Studio — Universal Agent Console Design
 
 **Date:** 2026-08-24
-**Status:** Implemented preview (`0.3.6`)
+**Status:** Implemented preview (`0.3.7`)
 **Product name:** Firekeep Studio
 **Package:** `studio/` (separate desktop application)
 

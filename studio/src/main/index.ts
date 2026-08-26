@@ -1,10 +1,10 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, session, shell } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, session, shell } from "electron";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { JsonSettingsStore } from "../core/settings-store.js";
 import { createCommandRegistry } from "../core/slash-commands.js";
-import { StudioService, type StudioPersistedState } from "../core/studio-service.js";
+import { StudioService, type StudioPersistedState, type ThemeMode } from "../core/studio-service.js";
 import { STUDIO_EVENT_CHANNEL, STUDIO_INVOKE_CHANNEL, type StudioPushEvent } from "../shared/ipc.js";
 import { ElectronSecretStore } from "./electron-secret-store.js";
 import { FirekeepClient } from "./firekeep-client.js";
@@ -18,13 +18,15 @@ import { allowsMicrophoneCheck, allowsMicrophoneRequest } from "./permissions.js
 import { createRuntimeRegistry } from "./runtime/index.js";
 import { JsonlSessionStore } from "./session-store.js";
 import { WindowsVoiceInput } from "./voice-input.js";
+import { windowThemeColors } from "./window-theme.js";
 
 const currentDirectory = fileURLToPath(new URL(".", import.meta.url));
 let activeController: StudioController | null = null;
 let activeDecisionReceiver: StudioDecisionBoardReceiver | null = null;
 let shutdownStarted = false;
 
-function createWindow(): BrowserWindow {
+function createWindow(theme: ThemeMode): BrowserWindow {
+  const colors = windowThemeColors(theme, nativeTheme.shouldUseDarkColors);
   const window = new BrowserWindow({
     width: 1540,
     height: 980,
@@ -32,8 +34,8 @@ function createWindow(): BrowserWindow {
     minHeight: 680,
     show: false,
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "hidden",
-    ...(process.platform === "darwin" ? {} : { titleBarOverlay: { color: "#101311", symbolColor: "#d6ddd7", height: 42 } }),
-    backgroundColor: "#0d100e",
+    ...(process.platform === "darwin" ? {} : { titleBarOverlay: { color: colors.overlay, symbolColor: colors.symbols, height: 44 } }),
+    backgroundColor: colors.background,
     webPreferences: {
       preload: join(currentDirectory, "../preload/index.cjs"),
       contextIsolation: true,
@@ -66,6 +68,16 @@ function createWindow(): BrowserWindow {
     });
   }).catch((error) => console.error("Studio renderer failed to load", error));
   return window;
+}
+
+function applyWindowTheme(window: BrowserWindow, theme: ThemeMode): void {
+  const colors = windowThemeColors(theme, nativeTheme.shouldUseDarkColors);
+  window.setBackgroundColor(colors.background);
+  if (process.platform !== "darwin") window.setTitleBarOverlay({ color: colors.overlay, symbolColor: colors.symbols, height: 44 });
+}
+
+function applyThemeToAllWindows(theme: ThemeMode): void {
+  for (const window of BrowserWindow.getAllWindows()) applyWindowTheme(window, theme);
 }
 
 function broadcast(event: StudioPushEvent): void {
@@ -173,12 +185,17 @@ app.whenReady().then(async () => {
   }));
   ipcMain.handle(STUDIO_INVOKE_CHANNEL, async (_event, action: unknown) => {
     const result = await controller.dispatch(action);
+    if (result.type === "bootstrap" || result.type === "state" || result.type === "command") applyThemeToAllWindows(result.snapshot.theme);
     if (result.type === "state" || result.type === "command") broadcast({ type: "snapshot", snapshot: result.snapshot });
     if (result.type === "state" && result.sessions) broadcast({ type: "sessions", sessions: result.sessions });
     return result;
   });
-  createWindow();
-  app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+  nativeTheme.on("updated", () => {
+    const theme = activeController?.service.snapshot().theme ?? "system";
+    if (theme === "system") applyThemeToAllWindows(theme);
+  });
+  createWindow(controller.service.snapshot().theme);
+  app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(controller.service.snapshot().theme); });
 }).catch((error) => {
   console.error("Firekeep Studio failed to start", error);
   dialog.showErrorBox("Firekeep Studio could not start", error instanceof Error ? error.message : String(error));
