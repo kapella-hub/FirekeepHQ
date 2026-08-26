@@ -180,19 +180,37 @@ async function connectCdp(url) {
   });
   let nextId = 0;
   const pending = new Map();
+  const rejectPending = (reason) => {
+    for (const { reject, timeout } of pending.values()) {
+      clearTimeout(timeout);
+      reject(reason);
+    }
+    pending.clear();
+  };
+  socket.addEventListener("close", () => rejectPending(new Error("DevTools socket closed")));
+  socket.addEventListener("error", () => rejectPending(new Error("DevTools socket failed")));
   socket.addEventListener("message", (event) => {
     const message = JSON.parse(String(event.data));
     if (!message.id || !pending.has(message.id)) return;
-    const { resolve: resolvePromise, reject } = pending.get(message.id);
+    const { resolve: resolvePromise, reject, timeout } = pending.get(message.id);
     pending.delete(message.id);
+    clearTimeout(timeout);
     if (message.error) reject(new Error(message.error.message));
     else resolvePromise(message.result ?? {});
   });
   return {
-    send(method, params = {}) {
+    send(method, params = {}, timeoutMs = 5_000) {
       const id = ++nextId;
       return new Promise((resolvePromise, reject) => {
-        pending.set(id, { resolve: resolvePromise, reject });
+        if (socket.readyState !== WebSocket.OPEN) {
+          reject(new Error(`DevTools socket is not open for ${method}`));
+          return;
+        }
+        const timeout = setTimeout(() => {
+          pending.delete(id);
+          reject(new Error(`DevTools command timed out after ${timeoutMs}ms: ${method}`));
+        }, timeoutMs);
+        pending.set(id, { resolve: resolvePromise, reject, timeout });
         socket.send(JSON.stringify({ id, method, params }));
       });
     },

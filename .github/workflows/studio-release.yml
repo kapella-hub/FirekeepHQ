@@ -73,6 +73,7 @@ jobs:
           CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
       - name: Exercise the packaged Windows application
+        timeout-minutes: 2
         run: npm run smoke:package
       - uses: actions/upload-artifact@v4
         with:
@@ -122,6 +123,7 @@ jobs:
             CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist -- --mac --universal --publish never -c.mac.identity=null -c.mac.hardenedRuntime=false
           fi
       - name: Exercise the packaged macOS application
+        timeout-minutes: 2
         run: npm run smoke:package
       - uses: actions/upload-artifact@v4
         with:

@@ -16,6 +16,7 @@ describe("Studio release workflow", () => {
     expect(workflow).toContain("npm run dist -- --win --x64 --publish never");
     expect(workflow).toContain("npm run dist -- --mac --universal --publish never");
     expect(workflow.match(/npm run smoke:package/g)).toHaveLength(2);
+    expect(workflow.match(/timeout-minutes: 2/g)).toHaveLength(2);
     expect(workflow).toContain("studio/scripts/sign_update_manifest.py");
     expect(workflow).toContain("FIREKEEP_SIGNING_KEY");
     expect(workflow).toContain("studio-latest");
@@ -45,5 +46,7 @@ describe("Studio release workflow", () => {
 
     expect(smoke).toContain("deadline - Date.now()");
     expect(smoke).toContain("AbortSignal.timeout(attemptTimeout)");
+    expect(smoke).toContain("DevTools command timed out after");
+    expect(smoke).toContain('socket.addEventListener("close", () => rejectPending');
   });
 });
