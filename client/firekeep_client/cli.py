@@ -29,6 +29,7 @@ from firekeep_client import (
     report,
     resolver,
     serverinit,
+    serverupdate,
     state,
     updater,
     wizard,
@@ -1694,6 +1695,47 @@ def _check_client_version(cfg) -> tuple[str, str, str] | None:
     return ("client-version", "ok", f"client {__version__} is current")
 
 
+def _check_server_version(cfg) -> tuple[str, str, str] | None:
+    """Compare the RUNNING server against server/latest/server.json.
+
+    The complement of `_check_versions`: that row reports client+cortex and
+    judges neither (see its own docstring on why version-skew was removed).
+    This is the one row in doctor that judges the server version, and it can
+    because `serverupdate.check` compares it against an authority that
+    actually exists — the published release manifest — never against the
+    client's own tag series.
+
+    None when `serverupdate.check` returns None (cortex /version silent —
+    nothing to say on any surface) or when the running version is a clean
+    vX.Y.Z but the manifest could not be judged (dist-host trouble is
+    `client-version`'s row, not this one). A git-describe running version
+    gets its own OK row regardless of manifest availability — it never
+    needed the manifest to begin with.
+    """
+    status = serverupdate.check(cfg)
+    if status is None:
+        return None
+    if status.relation == "unjudged":
+        if serverupdate.is_clean_release(status.running):
+            return None  # dist-host trouble: client-version's row, not ours
+        return ("server-version", "ok",
+                f"server {status.running} (source checkout — update via git)")
+    if status.relation == "current":
+        return ("server-version", "ok", f"server {status.running} is current")
+    if status.relation == "ahead":
+        return ("server-version", "ok",
+                f"server {status.running} (ahead of published latest {status.latest})")
+    # behind
+    if status.ack:
+        return ("server-version", "ok",
+                f"server {status.running} ({status.latest} available, acknowledged — "
+                f"clear [dist] server_update_ack to re-enable the warning)")
+    return ("server-version", "warn",
+            f"server {status.running}, latest {status.latest} — run "
+            f"`bash update.sh --to {status.latest}` on the server host "
+            f"(it backs up volumes first)")
+
+
 def run_doctor(cfg=None) -> list[tuple[str, str, str]]:
     from firekeep_client.join import sweep_pending
     sweep_pending(_config_path())
@@ -1729,6 +1771,9 @@ def run_doctor(cfg=None) -> list[tuple[str, str, str]]:
     client_version = _check_client_version(cfg)
     if client_version is not None:
         results.append(client_version)
+    server_version = _check_server_version(cfg)
+    if server_version is not None:
+        results.append(server_version)
     agent_id_result = _check_agent_id(cfg)
     if agent_id_result is not None:
         results.append(agent_id_result)

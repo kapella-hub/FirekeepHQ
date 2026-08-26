@@ -19,8 +19,8 @@ import platform
 import urllib.parse
 
 from firekeep_client import (
-    autoupdate, docdexsync, hooklog, maildexsync, report, resolver, state,
-    symdexindex, transport, updater,
+    autoupdate, docdexsync, hooklog, maildexsync, report, resolver, serverupdate,
+    state, symdexindex, transport, updater,
 )
 from firekeep_client.hooks import _mcp, never_raise, runbooks
 
@@ -172,6 +172,7 @@ def run(payload: dict) -> dict:
     report.flush(cfg)
 
     return {"systemMessage": rendered + _update_nudge(cfg) + _unsigned_notice()
+            + serverupdate.nudge_line(serverupdate.check(cfg))
             + symdexindex.index_nudge(cfg, payload)
             + docdexsync.sync_nudge(cfg)
             + maildexsync.sync_nudge(cfg)}

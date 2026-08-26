@@ -43,7 +43,9 @@ def fetch_manifest(
 ) -> ServerManifest:
     url = f"{base.rstrip('/')}/{_manifest_path(version)}"
     try:
-        data = get_json(url, headers={}, timeout=timeout, verify=True)
+        ctx = updater.dist_ssl_context()
+        data = get_json(url, headers={}, timeout=timeout,
+                        verify=ctx if ctx is not None else True)
     except (TransportError, OSError) as exc:
         raise ServerInitError(f"cannot reach the server release manifest at {url}: {exc}") from exc
     if not isinstance(data, dict) or set(data) != {"version", "file", "sha256"}:

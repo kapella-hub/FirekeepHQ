@@ -17,7 +17,7 @@ from pathlib import Path
 from firekeep_client.transport import TransportError, get_json
 
 
-def _dist_ssl_context() -> "ssl.SSLContext | None":
+def dist_ssl_context() -> "ssl.SSLContext | None":
     """OS-trust SSL context for release-host fetches ONLY (GitHub Pages / GitLab sit
     behind corporate TLS interception; the managed CPython's default bundle lacks the
     interception CA). Scoped on purpose — truststore.inject_into_ssl() would replace
@@ -84,7 +84,7 @@ def fetch_manifest(base: str, *, timeout: float = 10.0) -> Manifest:
     # shipped inside forever.
     url = f"{base.rstrip('/')}/latest/latest.json"
     try:
-        ctx = _dist_ssl_context()
+        ctx = dist_ssl_context()
         data = get_json(url, headers={}, timeout=timeout,
                         verify=ctx if ctx is not None else True)
     except (TransportError, OSError) as exc:
@@ -105,7 +105,7 @@ def bootstrap_url(base: str, *, windows: bool) -> str:
 
 
 def _read_url(url: str, timeout: float) -> bytes:
-    ctx = _dist_ssl_context()
+    ctx = dist_ssl_context()
     with urllib.request.urlopen(url, timeout=timeout, context=ctx) as resp:  # noqa: S310
         return resp.read()
 

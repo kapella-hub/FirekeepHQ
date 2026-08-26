@@ -122,6 +122,9 @@ def test_doctor_reports_it_first(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_check_health", lambda cfg: refused())
     monkeypatch.setattr(cli, "_config_path", lambda: tmp_path / "config")
     monkeypatch.setattr("firekeep_client.join.sweep_pending", lambda path: None)
+    # Keep this test about ROUTING/ordering only -- without this the new
+    # server-version row would make a real network call via serverupdate.check.
+    monkeypatch.setattr(cli, "_check_server_version", lambda cfg: None)
 
     results = cli.run_doctor(cfg_of(LOCAL))
     names = [name for name, _, _ in results]

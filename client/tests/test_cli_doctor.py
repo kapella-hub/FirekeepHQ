@@ -150,6 +150,93 @@ def test_check_versions_survives_ssl_errors_not_wrapped_by_transport(tmp_path, m
     assert status == "warn"
 
 
+# --- server-version: the one row that JUDGES the server version -------------
+#
+# `versions` (above) reports client+cortex and judges neither (see its own
+# docstring). This row is its narrowed complement: it compares the running
+# cortex version against server/latest/server.json via
+# serverupdate.check(cfg), and is the ONLY doctor row that does so.
+
+
+def _status(running, latest, relation, ack=False):
+    from firekeep_client import serverupdate
+    return serverupdate.ServerUpdateStatus(running, latest, relation, ack)
+
+
+def test_server_version_behind_warns_with_command(monkeypatch):
+    monkeypatch.setattr(cli.serverupdate, "check",
+                        lambda cfg: _status("v1.2.0", "v1.3.0", "behind"))
+    row = cli._check_server_version(cfg=None)
+    assert row[0] == "server-version" and row[1] == "warn"
+    assert "bash update.sh --to v1.3.0" in row[2] and "backs up" in row[2]
+
+
+def test_server_version_acked_is_ok_but_states_the_fact(monkeypatch):
+    monkeypatch.setattr(cli.serverupdate, "check",
+                        lambda cfg: _status("v1.2.0", "v1.3.0", "behind", ack=True))
+    row = cli._check_server_version(cfg=None)
+    assert row[1] == "ok" and "v1.3.0 available" in row[2] and "acknowledged" in row[2]
+
+
+def test_server_version_current_and_ahead_render_differently(monkeypatch):
+    monkeypatch.setattr(cli.serverupdate, "check",
+                        lambda cfg: _status("v1.3.0", "v1.3.0", "current"))
+    assert "is current" in cli._check_server_version(cfg=None)[2]
+    monkeypatch.setattr(cli.serverupdate, "check",
+                        lambda cfg: _status("v1.3.0", "v1.2.1", "ahead"))
+    row = cli._check_server_version(cfg=None)
+    assert row[1] == "ok" and "ahead of published latest v1.2.1" in row[2]
+
+
+def test_server_version_source_checkout_needs_no_manifest(monkeypatch):
+    monkeypatch.setattr(cli.serverupdate, "check",
+                        lambda cfg: _status("v1.2.1-67-g040d0ed", None, "unjudged"))
+    row = cli._check_server_version(cfg=None)
+    assert row[1] == "ok" and "source checkout" in row[2] and "git" in row[2]
+
+
+def test_server_version_clean_but_unjudged_no_row(monkeypatch):
+    # clean running version, manifest unavailable: client-version's
+    # "cannot check for updates" owns dist-host trouble — this row stays out
+    monkeypatch.setattr(cli.serverupdate, "check",
+                        lambda cfg: _status("v1.2.0", None, "unjudged"))
+    assert cli._check_server_version(cfg=None) is None
+
+
+def test_server_version_silent_when_cortex_silent(monkeypatch):
+    monkeypatch.setattr(cli.serverupdate, "check", lambda cfg: None)
+    assert cli._check_server_version(cfg=None) is None
+
+
+def _run_doctor_with_stubs(tmp_path, monkeypatch):
+    """The file's all-stubs pattern (see test_run_doctor_includes_the_docdex_row_once_registered
+    at :934) reused here, isolating run_doctor to just the two version rows plus whatever
+    the SERVER fixture's cfg produces for the rest."""
+    cfg = _cfg(tmp_path, monkeypatch, SERVER)
+    monkeypatch.setattr(cli, "_check_health", lambda cfg: [])
+    monkeypatch.setattr(cli, "_check_versions", lambda cfg: ("versions", "ok", ""))
+    monkeypatch.setattr(cli, "_check_api_key", lambda cfg: None)
+    monkeypatch.setattr(cli, "_check_venv_scripts",
+                        lambda venv, is_windows=None: ("venv-scripts", "ok", ""))
+    monkeypatch.setattr(cli, "_check_codex_adapter", lambda venv: [])
+    monkeypatch.setattr(cli, "_check_instructions", lambda: [])
+    monkeypatch.setattr(cli, "_check_config_perms",
+                        lambda config, is_windows=None: ("config-perms", "ok", ""))
+    monkeypatch.setattr(cli, "_check_ca_expiry", lambda cfg: None)
+    return cli.run_doctor(cfg)
+
+
+def test_exactly_one_row_judges_the_server_version(tmp_path, monkeypatch):
+    """The narrowed invariant: `versions` reports, only server-version JUDGES
+    (carries the update command)."""
+    monkeypatch.setattr(cli.serverupdate, "check",
+                        lambda cfg: _status("v1.2.0", "v1.3.0", "behind"))
+    rows = _run_doctor_with_stubs(tmp_path, monkeypatch)
+    judging = [r for r in rows if "update.sh --to" in r[2]]
+    assert len(judging) == 1 and judging[0][0] == "server-version"
+    assert any(r[0] == "versions" for r in rows)  # the report row survives
+
+
 def test_check_venv_scripts_present_and_missing(tmp_path):
     venv = tmp_path / "venv"
     for is_win in (False, True):
@@ -558,6 +645,7 @@ def test_run_doctor_includes_agent_id_check(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_check_instructions", lambda: [
         ("codex-instructions", "warn", ""),
     ])
+    monkeypatch.setattr(cli, "_check_server_version", lambda cfg: None)
     results = cli.run_doctor(cfg)
     names = {n for n, _, _ in results}
     assert "agent-id" in names
@@ -588,6 +676,7 @@ def test_run_doctor_includes_the_current_link_row_on_a_side_by_side_layout(tmp_p
     monkeypatch.setattr(cli, "_check_instructions", lambda: [])
     monkeypatch.setattr(cli, "_check_config_perms", lambda config, is_windows=None: ("config-perms", "ok", ""))
     monkeypatch.setattr(cli, "_check_ca_expiry", lambda cfg: None)
+    monkeypatch.setattr(cli, "_check_server_version", lambda cfg: None)
     results = cli.run_doctor(cfg)
     rows = {n: s for n, s, _ in results}
     assert rows.get("current-link") == "ok"
@@ -637,6 +726,7 @@ def test_doctor_output_never_contains_api_key(tmp_path, monkeypatch, capsys):
     cfg = _cfg(tmp_path, monkeypatch, HTTPS_WITH_KEY)
     monkeypatch.setattr(cli, "get_json", lambda url, **kw: {"status": "ok",
                                                             "version": cli.__version__})
+    monkeypatch.setattr(cli, "_check_server_version", lambda cfg: None)
     results = cli.run_doctor(cfg)
     monkeypatch.setattr(cli, "run_doctor", lambda cfg=None: results)
     cli.cmd_doctor(None)
@@ -812,6 +902,7 @@ def test_run_doctor_includes_the_dexes_row(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_check_instructions", lambda: [])
     monkeypatch.setattr(cli, "_check_config_perms", lambda config, is_windows=None: ("config-perms", "ok", ""))
     monkeypatch.setattr(cli, "_check_ca_expiry", lambda cfg: None)
+    monkeypatch.setattr(cli, "_check_server_version", lambda cfg: None)
     results = cli.run_doctor(cfg)
     assert [n for n, _, _ in results].count("dexes") == 1
 
@@ -947,6 +1038,7 @@ def test_run_doctor_includes_the_docdex_row_once_registered(tmp_path, monkeypatc
     monkeypatch.setattr(cli, "_check_config_perms",
                         lambda config, is_windows=None: ("config-perms", "ok", ""))
     monkeypatch.setattr(cli, "_check_ca_expiry", lambda cfg: None)
+    monkeypatch.setattr(cli, "_check_server_version", lambda cfg: None)
     names = [n for n, _, _ in cli.run_doctor(cfg)]
     assert names.count("dexes") == 1
     assert names.count("docdex") == 1
@@ -1079,6 +1171,7 @@ def test_run_doctor_includes_the_maildex_row_once_registered(tmp_path, monkeypat
     monkeypatch.setattr(cli, "_check_config_perms",
                         lambda config, is_windows=None: ("config-perms", "ok", ""))
     monkeypatch.setattr(cli, "_check_ca_expiry", lambda cfg: None)
+    monkeypatch.setattr(cli, "_check_server_version", lambda cfg: None)
     names = [n for n, _, _ in cli.run_doctor(cfg)]
     assert names.count("dexes") == 1
     assert names.count("maildex") == 1
@@ -1259,6 +1352,7 @@ def test_run_doctor_includes_the_backup_row(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_check_config_perms",
                         lambda config, is_windows=None: ("config-perms", "ok", ""))
     monkeypatch.setattr(cli, "_check_ca_expiry", lambda cfg: None)
+    monkeypatch.setattr(cli, "_check_server_version", lambda cfg: None)
     rows = {n: (s, d) for n, s, d in cli.run_doctor(cfg)}
     assert "backup" in rows
     assert rows["backup"][0] == "ok"
