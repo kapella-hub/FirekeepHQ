@@ -331,10 +331,17 @@ def _h1_primary(
         sorted(fractions[CONTROL_ARM].values()),
     )
     diff = result["diff"]
+    # `- 1e-12` is float tolerance on a `>=`, not a loosened threshold: a
+    # per-member difference of exactly the registered +0.10 (12/20 vs 10/20)
+    # subtracts to 0.09999999999999998 in IEEE754, so a bare `>=` reports the
+    # registered floor as below the registered floor. permutation.py:28
+    # carries the same tolerance for the same reason. MIN_ARM_MEAN_DIFF is
+    # unchanged — this is what makes the comparison mean what it says.
     return {
         **base,
         "status": "ok",
-        "holds": result["p_value"] < ALPHA and diff >= MIN_ARM_MEAN_DIFF,
+        "holds": (result["p_value"] < ALPHA
+                  and diff >= MIN_ARM_MEAN_DIFF - 1e-12),
         "p_value": round(result["p_value"], 6),
         "diff": round(diff, 6),
         "mean_treatment": round(result["mean_a"], 6),
@@ -484,11 +491,11 @@ async def _coverage(replay_redis, pp: dict[str, list[dict]]) -> dict[str, Any]:
 
 # --- entry point ----------------------------------------------------------
 
-async def _build(replay_redis, evals: list[dict]) -> dict[str, Any]:
+async def _build(replay_redis, evals: list[dict], approximate: bool) -> dict[str, Any]:
     t0 = _parse_t0(get_settings().GRADING_NUDGE_T0)
     if t0 is None:
         return {"status": "not_started", "confirmatory": False,
-                "note": NOT_STARTED_NOTE}
+                "approximate": approximate, "note": NOT_STARTED_NOTE}
 
     graded = _grade_predicate()
     counts = {
@@ -524,6 +531,11 @@ async def _build(replay_redis, evals: list[dict]) -> dict[str, Any]:
     return {
         "status": "ok",
         "confirmatory": False,
+        # Same field name as the enclosing compliance payload's disclosure:
+        # when the eval scan hit SCAN_CAP these are SOME sessions, not all of
+        # them. It has to travel WITH the block — the D14 snapshot is read
+        # standalone, where the top-level disclosure is not in the frame.
+        "approximate": approximate,
         "t0": t0.isoformat(),
         "treatment_arm": TREATMENT_ARM,
         "control_arm": CONTROL_ARM,
@@ -542,14 +554,20 @@ async def _build(replay_redis, evals: list[dict]) -> dict[str, Any]:
     }
 
 
-async def build_arm_comparison(replay_redis, evals: list[dict]) -> dict[str, Any]:
+async def build_arm_comparison(
+    replay_redis, evals: list[dict], *, approximate: bool = False,
+) -> dict[str, Any]:
     """The `arm_comparison` block on /autopilot/compliance.
+
+    `approximate` is the caller's `scan_evals` cap flag: True means `evals` is
+    a truncated population, and every non-error payload repeats it so the
+    block stays honest when read on its own.
 
     Wrapped exception-tight ON PURPOSE: the compliance surface predates this
     experiment and must keep serving its frozen rows even if the analysis
     below cannot run. Failure is a status, never a 500.
     """
     try:
-        return await _build(replay_redis, evals)
+        return await _build(replay_redis, evals, approximate)
     except Exception as exc:  # noqa: BLE001 — see docstring
         return {"status": "error", "confirmatory": False, "error": str(exc)}

@@ -497,7 +497,8 @@ async def build_compliance(replay_redis) -> dict[str, Any]:
         "approximate": capped,
         "instructions": build_rows(evals),
         "optimism_skew": build_optimism_skew(evals),
-        "arm_comparison": await build_arm_comparison(replay_redis, evals),
+        "arm_comparison": await build_arm_comparison(
+            replay_redis, evals, approximate=capped),
         "notes": [
             "Compliance measures BEHAVIOR — whether sessions did the instructed "
             "thing. It does not measure whether doing it helped: the outcome "

@@ -28,11 +28,14 @@ import pytest
 
 from app.autopilot import arm_comparison as AC
 from app.autopilot.arm_comparison import (
+    ALPHA,
     BALANCE_MAX_PP_FRACTION_GAP,
     BALANCE_MAX_SINGLE_MEMBER_SHARE,
     EXPOSED_RUNTIME,
+    MAX_TREATMENT_SKEW_RATE,
     MIN_ARM_MEAN_DIFF,
     MIN_MEMBERS_PER_ARM,
+    MIN_NUDGE_SHOWN_COVERAGE,
     MIN_SELF_SUCCESS_PER_ARM,
     MIN_SESSIONS_PER_ARM,
     MIN_SESSIONS_PER_MEMBER,
@@ -117,6 +120,13 @@ def test_constants_are_the_registered_values():
     assert NONINFERIORITY_MARGIN == 0.10
     assert NONINFERIORITY_Z == 1.645
     assert MIN_SELF_SUCCESS_PER_ARM == 30
+    # Registered values that live outside the brief's constants block — the
+    # H2' absolute ceiling (stated inline in the D8 contract), the H1'
+    # significance level, and the D12 coverage floor. Unpinned, each was a
+    # number anyone could have quietly retuned.
+    assert MAX_TREATMENT_SKEW_RATE == 0.15
+    assert ALPHA == 0.05
+    assert MIN_NUDGE_SHOWN_COVERAGE == 0.90
 
 
 # ----------------------------------------------------------------- T0 gate --
@@ -301,6 +311,25 @@ async def test_h1_direction_is_treatment_minus_control(redis, t0_set):
     assert h1["status"] == "ok"
     assert h1["diff"] == pytest.approx(-0.6)
     assert h1["holds"] is False
+
+
+async def test_h1_holds_at_exactly_the_registered_floor(redis, t0_set):
+    """The float boundary. 12/20 vs 10/20 is a difference of exactly +0.10 —
+    the registered practical-significance floor, and the gate is `>=`, so this
+    is a win. In IEEE754 the subtraction lands at 0.09999999999999998, and a
+    naive `>=` reports the registered floor as below the registered floor.
+
+    `permutation.py:28` already carries a 1e-12 tolerance for exactly this
+    reason. The constant is unchanged; the tolerance is what makes the
+    comparison actually mean ">= 0.10". This matters more here than almost
+    anywhere else in the block: the D14 snapshot freezes the verdict."""
+    evals = (_even_arm(TREATMENT_ARM, 5, 20, 0.6)
+             + _even_arm(CONTROL_ARM, 5, 20, 0.5))
+    h1 = (await _build(redis, evals))["h1_primary"]
+    assert h1["status"] == "ok"
+    assert h1["p_value"] < 0.05
+    assert h1["diff"] == pytest.approx(0.10)
+    assert h1["holds"] is True
 
 
 async def test_h1_significant_but_below_the_practical_floor_does_not_hold(
@@ -597,6 +626,43 @@ async def test_redis_failure_degrades_to_status_error(redis, t0_set):
     body = await _build(Exploding(), [_rec(arm=TREATMENT_ARM)])
     assert body["status"] == "error"
     assert "redis down" in body["error"]
+
+
+# -------------------------------------------------- capped-scan honesty --
+
+async def test_capped_scan_is_disclosed_in_the_block(redis, t0_set):
+    """A capped scan means these are SOME sessions, not all of them. The D14
+    snapshot is read standalone, so the disclosure has to travel with the
+    block rather than only on the enclosing compliance payload."""
+    body = await build_arm_comparison(redis, [_rec()], approximate=True)
+    assert body["approximate"] is True
+
+
+async def test_approximate_defaults_to_false(redis, t0_set):
+    body = await _build(redis, [_rec()])
+    assert body["approximate"] is False
+
+
+async def test_not_started_also_carries_the_disclosure(redis, t0_unset):
+    body = await build_arm_comparison(redis, [_rec()], approximate=True)
+    assert body["status"] == "not_started"
+    assert body["approximate"] is True
+
+
+async def test_capped_compliance_scan_propagates_into_the_block(
+        t0_set, monkeypatch):
+    """End of the wire: scan_evals caps, build_compliance already knows, and
+    the block must learn it from there rather than reporting clean numbers
+    over a truncated population."""
+    from app.autopilot import compliance as comp
+    monkeypatch.setattr(comp, "SCAN_CAP", 2)
+    r = fr.FakeRedis(decode_responses=True)
+    for i in range(4):
+        await r.set(f"rp:eval:s{i}",
+                    json.dumps(_rec(token=f"m{i}", briefing=f"b{i}")))
+    body = await comp.build_compliance(r)
+    assert body["approximate"] is True
+    assert body["arm_comparison"]["approximate"] is True
 
 
 # ------------------------------------------------------ D14 disclosure --
