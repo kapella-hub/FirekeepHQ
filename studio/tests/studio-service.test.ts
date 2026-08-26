@@ -228,12 +228,12 @@ describe("StudioService", () => {
     await service.setPrimary("alpha");
     const original = service.snapshot().activeSessionId;
     await service.sendMessage("remember this");
-    await service.renameSession("First task");
+    await service.updateSession(original, { name: "First task", color: "ocean" });
     await service.startNewSession();
     await service.resumeSession(original);
 
     expect(service.events().some((item) => item.payload.kind === "message.completed")).toBe(true);
-    expect(await service.listSessions()).toContainEqual(expect.objectContaining({ id: original, name: "First task" }));
+    expect(await service.listSessions()).toContainEqual(expect.objectContaining({ id: original, name: "First task", color: "ocean" }));
     expect(service.exportSession("markdown")).toContain("response from alpha");
   });
 

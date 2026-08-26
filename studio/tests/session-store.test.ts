@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -53,13 +53,13 @@ describe("JsonlSessionStore", () => {
 
     await store.ensure("session-1", "2026-08-24T00:00:00.000Z");
     await store.append(event);
-    await store.rename("session-1", "Important work");
+    await store.updateMetadata("session-1", { name: "Important work", color: "ocean" });
     await store.setNativeSessionIds("session-1", { codex: "thread-1" });
     await store.setMission("session-1", mission);
     await store.flush();
 
     expect(await store.load("session-1")).toEqual([event]);
-    expect(await store.list()).toEqual([expect.objectContaining({ id: "session-1", name: "Important work", eventCount: 1, nativeSessionIds: { codex: "thread-1" }, mission })]);
+    expect(await store.list()).toEqual([expect.objectContaining({ id: "session-1", name: "Important work", color: "ocean", eventCount: 1, nativeSessionIds: { codex: "thread-1" }, mission })]);
 
     await store.remove("session-1");
     expect(await store.list()).toEqual([]);
@@ -70,5 +70,26 @@ describe("JsonlSessionStore", () => {
     const root = await mkdtemp(join(tmpdir(), "firekeep-studio-sessions-"));
     const store = new JsonlSessionStore(root);
     await expect(store.ensure("../escape", "2026-08-24T00:00:00.000Z")).rejects.toThrow(/invalid session id/i);
+  });
+
+  it("migrates legacy index entries to the default color and rejects unknown colors", async () => {
+    const root = await mkdtemp(join(tmpdir(), "firekeep-studio-sessions-"));
+    await writeFile(join(root, "index.json"), JSON.stringify({
+      version: 1,
+      sessions: {
+        "session-legacy": {
+          id: "session-legacy",
+          name: "Legacy",
+          createdAt: "2026-08-24T00:00:00.000Z",
+          updatedAt: "2026-08-24T00:00:00.000Z",
+          eventCount: 0,
+          nativeSessionIds: {},
+        },
+      },
+    }), "utf8");
+    const store = new JsonlSessionStore(root);
+
+    expect(await store.list()).toEqual([expect.objectContaining({ id: "session-legacy", color: "ember" })]);
+    await expect(store.updateMetadata("session-legacy", { color: "infrared" as never })).rejects.toThrow(/session color/i);
   });
 });

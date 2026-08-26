@@ -188,7 +188,7 @@ export async function runAcpConversation(
     const initialized = await ctx.request(acp.methods.agent.initialize, {
       protocolVersion: acp.PROTOCOL_VERSION,
       clientCapabilities: {},
-      clientInfo: { name: "firekeep-studio", title: "Firekeep Studio", version: "0.3.3" },
+      clientInfo: { name: "firekeep-studio", title: "Firekeep Studio", version: "0.3.4" },
     }, { cancellationSignal: signal });
     const cwd = request.cwd ?? process.cwd();
     if (resumableSessionId && initialized.agentCapabilities?.loadSession) {

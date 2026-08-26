@@ -11,7 +11,6 @@ import {
   Eye,
   ExternalLink,
   FileDiff,
-  Flame,
   FolderOpen,
   KeyRound,
   LogOut,
@@ -19,6 +18,7 @@ import {
   Mic,
   MicOff,
   Minimize2,
+  Palette,
   PanelRightClose,
   PanelRightOpen,
   PanelsTopLeft,
@@ -36,12 +36,13 @@ import {
 } from "lucide-react";
 import type { CommandCompletion, CommandResult } from "../../core/slash-commands";
 import type { MissionSnapshot } from "../../core/mission";
-import type { StudioSessionSummary } from "../../core/session-store";
+import { DEFAULT_SESSION_COLOR, type SessionColor, type StudioSessionSummary } from "../../core/session-store";
 import type { RuntimeDiagnostic, StudioSnapshot } from "../../core/studio-service";
 import type { LoginMethod, RuntimeDescriptor, RuntimeEffort, RuntimeEvent, RuntimeModel, RuntimeUsage } from "../../core/runtime";
 import type { BootstrapResult, StudioAction, StudioActionResult } from "../../shared/ipc";
 import type { DecisionAnswers, DecisionBoardDocument, DecisionEmbed, DecisionQuestion } from "../../shared/decision-board";
 import { findDecisionBoardUrl } from "../../shared/decision-board";
+import { FirekeepMark } from "./FirekeepMark.js";
 import { RichMarkdown } from "./RichMarkdown.js";
 import { RenderBoundary } from "./RenderBoundary.js";
 import { RuntimePicker } from "./RuntimePicker.js";
@@ -53,6 +54,17 @@ interface ConnectDialog { readonly runtimeId: string; readonly method: LoginMeth
 interface ModelRefresh { readonly runtimeId: string; readonly state: "loading" | "success" | "error"; readonly message: string }
 type StudioView = "conversation" | "agents";
 type VoiceInputState = "idle" | "listening" | "stopping";
+
+const SESSION_COLOR_OPTIONS: readonly { readonly id: SessionColor; readonly label: string; readonly value: string }[] = [
+  { id: "ember", label: "Ember", value: "#ff7a2f" },
+  { id: "gold", label: "Gold", value: "#dca63a" },
+  { id: "moss", label: "Moss", value: "#65a86f" },
+  { id: "teal", label: "Teal", value: "#3da5a0" },
+  { id: "ocean", label: "Ocean", value: "#4b8fdf" },
+  { id: "violet", label: "Violet", value: "#8f83ff" },
+  { id: "rose", label: "Rose", value: "#d66d91" },
+  { id: "slate", label: "Slate", value: "#7f8997" },
+];
 
 export function App(): React.JSX.Element {
   const [bootstrap, setBootstrap] = useState<BootstrapResult | null>(null);
@@ -81,6 +93,8 @@ export function App(): React.JSX.Element {
   const [activePaneId, setActivePaneId] = useState<string | null>(null);
   const [focusedPaneId, setFocusedPaneId] = useState<string | null>(null);
   const [paneMenuOpen, setPaneMenuOpen] = useState(false);
+  const [sessionEditorId, setSessionEditorId] = useState<string | null>(null);
+  const [sessionSaving, setSessionSaving] = useState(false);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
   const followingTailRef = useRef(true);
@@ -291,6 +305,7 @@ export function App(): React.JSX.Element {
       } else if (event.key === "Escape") {
         if (connectDialog) setConnectDialog(null);
         else if (runtimeManagerOpen) setRuntimeManagerOpen(false);
+        else if (sessionEditorId) setSessionEditorId(null);
         else if (focusedPaneId) setFocusedPaneId(null);
         else if (voiceInputState !== "idle") ignore(invoke({ type: "voice.input.stop" }));
         else if (snapshot?.activeRunId) ignore(invoke({ type: "run.cancel", runId: snapshot.activeRunId }));
@@ -298,7 +313,7 @@ export function App(): React.JSX.Element {
     };
     window.addEventListener("keydown", keyboard);
     return () => window.removeEventListener("keydown", keyboard);
-  }, [busy, connectDialog, focusedPaneId, invoke, runReview, runtimeManagerOpen, snapshot?.activeRunId, toggleAgentGrid, voiceInputState]);
+  }, [busy, connectDialog, focusedPaneId, invoke, runReview, runtimeManagerOpen, sessionEditorId, snapshot?.activeRunId, toggleAgentGrid, voiceInputState]);
 
   const submit = async (): Promise<void> => {
     const input = composer.trim();
@@ -415,6 +430,14 @@ export function App(): React.JSX.Element {
       composerRef.current?.focus();
     }
   };
+  const saveSession = async (sessionId: string, name: string, color: SessionColor): Promise<void> => {
+    setSessionSaving(true);
+    try {
+      applyResult(await invoke({ type: "session.update", sessionId, name, color }));
+      setSessionEditorId((current) => current === sessionId ? null : current);
+    } catch { /* invoke surfaced the actionable error. */ }
+    finally { setSessionSaving(false); }
+  };
   const timeline = useMemo(() => buildTimeline(events), [events]);
   const timelineRuns = useMemo(() => groupTimeline(timeline), [timeline]);
   const primary = bootstrap?.runtimes.find((runtime) => runtime.id === snapshot?.primaryRuntimeId);
@@ -440,9 +463,9 @@ export function App(): React.JSX.Element {
   return (
     <div className="studio" data-busy={agentWorking || undefined}>
       <header className="titlebar">
-        <div className="brand"><span className="brand-icon" role="status" aria-label={agentWorking ? "Agent working" : "Firekeep Studio idle"}><Flame size={17} />{agentWorking ? <span className="brand-activity" /> : null}</span><span>Firekeep</span><strong>Studio</strong></div>
+        <div className="brand"><span className="brand-icon" role="status" aria-label={agentWorking ? "Agent working" : "Firekeep Studio idle"}><FirekeepMark size={18} />{agentWorking ? <span className="brand-activity" /> : null}</span><span>Firekeep</span><strong>Studio</strong></div>
         <div className="titlebar-center">
-          <span className="session-title">{currentSession?.name ?? "New session"}</span>
+          {currentSession ? <button className="session-title-button" title="Edit session name and color" style={sessionAccentStyle(currentSession.color)} onClick={() => setSessionEditorId((current) => current === currentSession.id ? null : currentSession.id)}><span className="session-color-dot" /><span className="session-title">{currentSession.name}</span><Palette size={11} /></button> : <span className="session-title">New session</span>}
           <span className="session-id">{snapshot.activeSessionId.slice(0, 12)}</span>
         </div>
         <div className="titlebar-actions">
@@ -456,10 +479,14 @@ export function App(): React.JSX.Element {
         <div className="rail-heading"><span>Sessions</span><button className="icon-button compact" title="New session" onClick={() => ignore(invoke({ type: "session.new" }).then(applyResult))}><Plus size={15} /></button></div>
         <nav className="session-list" aria-label="Studio sessions">
           {sessions.map((session) => (
-            <button key={session.id} className={`session-row ${session.id === snapshot.activeSessionId ? "active" : ""}`} onClick={() => { if (session.id !== snapshot.activeSessionId) ignore(invoke({ type: "session.resume", sessionId: session.id }).then(applyResult)); }}>
-              <span className="session-row-title">{session.name}</span>
-              <span className="session-row-meta">{session.mission ? `${session.mission.phase} · ` : ""}{session.eventCount} events · {relativeTime(session.updatedAt)}</span>
-            </button>
+            <div key={session.id} className={`session-entry ${session.id === snapshot.activeSessionId ? "active" : ""} ${sessionEditorId === session.id ? "editing" : ""}`} style={sessionAccentStyle(session.color)}>
+              <button className="session-row" onClick={() => { if (session.id !== snapshot.activeSessionId) ignore(invoke({ type: "session.resume", sessionId: session.id }).then(applyResult)); }}>
+                <span className="session-row-heading"><span className="session-color-dot" /><span className="session-row-title">{session.name}</span></span>
+                <span className="session-row-meta">{session.mission ? `${session.mission.phase} · ` : ""}{session.eventCount} events · {relativeTime(session.updatedAt)}</span>
+              </button>
+              <button type="button" className="session-customize" aria-label={`Customize ${session.name}`} aria-expanded={sessionEditorId === session.id} onClick={() => setSessionEditorId((current) => current === session.id ? null : session.id)}><Palette size={13} /></button>
+              {sessionEditorId === session.id ? <SessionEditor session={session} saving={sessionSaving} close={() => setSessionEditorId(null)} save={(name, color) => saveSession(session.id, name, color)} /> : null}
+            </div>
           ))}
         </nav>
         <div className="rail-footer">
@@ -669,11 +696,24 @@ function MissionPanel({
 }
 
 function LaunchScreen({ error }: { readonly error: string | null }): React.JSX.Element {
-  return <main className="launch-shell"><section className="launch-card" aria-live="polite"><span className="brand-mark"><Flame size={28} /></span><p className="eyebrow">THE KEEP IS WAKING</p><h1>Firekeep Studio</h1><p className="lede">One calm console for every agent you trust.</p><div className="launch-status"><span className="pulse-dot" /> Loading runtime core…</div>{error ? <p className="launch-error">{error}</p> : null}</section></main>;
+  return <main className="launch-shell"><section className="launch-card" aria-live="polite"><span className="brand-mark"><FirekeepMark size={30} /></span><p className="eyebrow">THE KEEP IS WAKING</p><h1>Firekeep Studio</h1><p className="lede">One calm console for every agent you trust.</p><div className="launch-status"><span className="pulse-dot" /> Loading runtime core…</div>{error ? <p className="launch-error">{error}</p> : null}</section></main>;
 }
 
 function Welcome({ runtimes, workspacePath, onWorkspace, onChoose, onCommand }: { readonly runtimes: readonly RuntimeDescriptor[]; readonly workspacePath: string | null; readonly onWorkspace: () => void; readonly onChoose: (id: string) => void; readonly onCommand: (value: string) => void }): React.JSX.Element {
-  return <section className="welcome"><span className="welcome-mark"><Sparkles size={24} /></span><p className="eyebrow">A NEW KIND OF AGENT DESK</p><h1>Your agents, one conversation.</h1><p>Choose a workspace, make any runtime primary, and add another as an independent reviewer. Firekeep keeps the workflow coherent without pretending their native sessions are interchangeable.</p><button className="welcome-workspace" onClick={onWorkspace}><FolderOpen size={16} /><span>{workspacePath ? pathLeaf(workspacePath) : "Choose a workspace"}</span></button><div className="runtime-choices">{runtimes.map((runtime) => <button key={runtime.id} onClick={() => onChoose(runtime.id)} style={{ "--runtime-accent": runtime.accent ?? "#df7e45" } as React.CSSProperties}><span className="runtime-orb">{runtime.displayName[0]}</span><span><strong>{runtime.displayName}</strong><small>{runtime.transport}</small></span></button>)}</div><div className="quick-commands"><button onClick={() => onCommand('/mission new "')}>/mission</button><button onClick={() => onCommand("/workspace choose")}>/workspace</button><button onClick={() => onCommand("/doctor")}>/doctor</button><button onClick={() => onCommand("/reviewer add ")}>/reviewer</button><button onClick={() => onCommand('/compare --prompt "')}>/compare</button><button onClick={() => onCommand("/firekeep status")}>/firekeep</button><button onClick={() => onCommand("/help")}>/help</button></div></section>;
+  return <section className="welcome"><span className="welcome-mark"><FirekeepMark size={30} /></span><p className="eyebrow">FIREKEEP STUDIO</p><h1 aria-label="Agents come and go. The Keep stays."><span>Agents come and go.</span><span>The Keep stays.</span></h1><p>Choose any runtime to lead, bring in another to review, and keep the work, context, and handoffs together.</p><button className="welcome-workspace" onClick={onWorkspace}><FolderOpen size={16} /><span>{workspacePath ? pathLeaf(workspacePath) : "Choose a workspace"}</span></button><div className="runtime-choices">{runtimes.map((runtime) => <button key={runtime.id} onClick={() => onChoose(runtime.id)} style={{ "--runtime-accent": runtime.accent ?? "#df7e45" } as React.CSSProperties}><span className="runtime-orb">{runtime.displayName[0]}</span><span><strong>{runtime.displayName}</strong><small>{runtime.transport}</small></span></button>)}</div><div className="quick-commands"><button onClick={() => onCommand('/mission new "')}>/mission</button><button onClick={() => onCommand("/workspace choose")}>/workspace</button><button onClick={() => onCommand("/doctor")}>/doctor</button><button onClick={() => onCommand("/reviewer add ")}>/reviewer</button><button onClick={() => onCommand('/compare --prompt "')}>/compare</button><button onClick={() => onCommand("/firekeep status")}>/firekeep</button><button onClick={() => onCommand("/help")}>/help</button></div></section>;
+}
+
+function SessionEditor({ session, saving, close, save }: { readonly session: StudioSessionSummary; readonly saving: boolean; readonly close: () => void; readonly save: (name: string, color: SessionColor) => Promise<void> }): React.JSX.Element {
+  const [name, setName] = useState(session.name);
+  const [color, setColor] = useState<SessionColor>(session.color ?? DEFAULT_SESSION_COLOR);
+  const cleanName = name.trim();
+  return (
+    <form className="session-editor" aria-label={`Edit ${session.name}`} onSubmit={(event) => { event.preventDefault(); if (cleanName && !saving) ignore(save(cleanName, color)); }}>
+      <label><span>Session name</span><input aria-label="Session name" autoFocus maxLength={120} value={name} onChange={(event) => setName(event.target.value)} /></label>
+      <fieldset><legend>Color</legend><div className="session-colors" role="radiogroup" aria-label="Session color">{SESSION_COLOR_OPTIONS.map((option) => <button key={option.id} type="button" role="radio" aria-label={option.label} aria-checked={color === option.id} className={color === option.id ? "selected" : ""} style={{ "--choice-color": option.value } as React.CSSProperties} onClick={() => setColor(option.id)}><span /></button>)}</div></fieldset>
+      <div className="session-editor-actions"><button type="button" onClick={close}>Cancel</button><button type="submit" className="primary" aria-label="Save session" disabled={!cleanName || saving}>{saving ? "Saving…" : "Save"}</button></div>
+    </form>
+  );
 }
 
 interface TimelineActions {
@@ -849,6 +889,9 @@ function CopyButton({ text }: { readonly text: string }): React.JSX.Element {
   return <button type="button" className={`copy-button ${state}`} aria-label="Copy response" title={state === "failed" ? "Copy failed" : state === "copied" ? "Copied" : "Copy response"} onClick={() => ignore(copy())}>{state === "copied" ? <CheckCircle2 size={14} /> : <Copy size={14} />}</button>;
 }
 
+function sessionAccentStyle(color: SessionColor = DEFAULT_SESSION_COLOR): React.CSSProperties {
+  return { "--session-accent": SESSION_COLOR_OPTIONS.find((option) => option.id === color)?.value ?? SESSION_COLOR_OPTIONS[0]!.value } as React.CSSProperties;
+}
 function runtimeName(runtimes: readonly RuntimeDescriptor[], id: string): string { return runtimes.find((runtime) => runtime.id === id)?.displayName ?? id; }
 function pretty(value: unknown): string { return typeof value === "string" ? value : JSON.stringify(value, null, 2); }
 function pathLeaf(value: string): string { return value.replace(/[\\/]+$/, "").split(/[\\/]/).at(-1) || value; }

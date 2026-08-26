@@ -1,7 +1,7 @@
 # Firekeep Studio — Universal Agent Console Design
 
 **Date:** 2026-08-24
-**Status:** Implemented preview (`0.3.3`)
+**Status:** Implemented preview (`0.3.4`)
 **Product name:** Firekeep Studio
 **Package:** `studio/` (separate desktop application)
 
@@ -221,6 +221,7 @@ the same metadata used by completion, so documentation cannot drift from the par
 - `/session new [name]`
 - `/session list`
 - `/session rename <name>`
+- `/session color <ember|gold|moss|teal|ocean|violet|rose|slate>`
 - `/session resume <id>`
 - `/session delete <id> --confirm <id>`
 - `/model [runtime-id] [model-id]`

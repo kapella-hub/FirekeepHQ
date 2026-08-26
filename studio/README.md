@@ -1,6 +1,6 @@
 # Firekeep Studio
 
-Firekeep Studio is Firekeep's runtime-neutral desktop agent console. Version `0.3.3`
+Firekeep Studio is Firekeep's runtime-neutral desktop agent console. Version `0.3.4`
 is a separate Electron application: it does not replace or fork the Python Client Kit.
 The kit remains the source of truth for Keep connectivity, memory, hooks, instructions,
 personal mode, and runtime configuration.
@@ -18,6 +18,10 @@ without occupying the right inspector. The inspector can be hidden when the conv
 needs more visual focus. Model refreshes replace the live provider catalog and show progress,
 success, or failure. When the Client Kit has a server configured, the rail also opens its
 dashboard without sending a URL through renderer IPC.
+
+Sessions can be named and color-coded directly in the left rail—including inactive
+sessions—or from `/session rename ...` and `/session color ...`. The fixed palette is
+stored with session metadata; older indexes migrate to the ember default when loaded.
 
 Version 0.2 adds **Missions**: an outcome-bounded harness that gives one primary writer a
 goal, explicit workspace, frozen runtime settings, local acceptance checks, a measured-token
@@ -57,6 +61,10 @@ Version 0.3.3 replaces Electron's nonfunctional hosted Web Speech recognition wi
 cancellable Windows dictation. The microphone is click-to-start and click-to-cancel, raw
 audio remains inside the Windows recognizer, and only the resulting text returns through
 Studio's typed IPC boundary. Unsupported platforms now report that honestly.
+
+Version 0.3.4 brings the established Firekeep Beacon into every Studio brand surface and
+replaces the generic welcome copy with the product's continuity promise: agents come and
+go; the Keep stays.
 
 ## Runtime support
 
@@ -124,7 +132,8 @@ Useful starting points:
 - `/connect codex --method device` — launch supported non-secret provider auth.
 - `/kiro status` and `/kiro open` — inspect Kiro CLI plus the optional IDE handoff.
 - `/budget set 50k` and `/usage` — stop before the next turn after a measured session limit.
-- `/session rename ...`, `/session resume ...`, and `/session delete <id> --confirm <id>`.
+- `/session rename ...`, `/session color ember|gold|moss|teal|ocean|violet|rose|slate`,
+  `/session resume ...`, and `/session delete <id> --confirm <id>`.
 - `/export markdown` or `/export json` — choose a local file; Studio uploads nothing.
 - `/firekeep status`, `/firekeep doctor`, `/firekeep personal ...`, and `/firekeep update`.
 - `/voice on` — enable spoken assistant replies. Click the microphone once to dictate and

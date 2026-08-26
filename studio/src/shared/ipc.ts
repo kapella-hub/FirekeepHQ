@@ -1,5 +1,5 @@
 import type { CommandCompletion, CommandResult } from "../core/slash-commands.js";
-import type { StudioSessionSummary } from "../core/session-store.js";
+import type { SessionColor, StudioSessionSummary } from "../core/session-store.js";
 import type { ReviewerMode, RuntimeDiagnostic, StudioSnapshot, ThemeMode } from "../core/studio-service.js";
 import type {
   LoginMethod,
@@ -49,6 +49,7 @@ export type StudioAction =
   | { type: "session.new" }
   | { type: "session.resume"; sessionId: string }
   | { type: "session.rename"; name: string }
+  | { type: "session.update"; sessionId: string; name: string; color: SessionColor }
   | { type: "mission.run" }
   | { type: "mission.continue" }
   | { type: "mission.repair"; note: string }

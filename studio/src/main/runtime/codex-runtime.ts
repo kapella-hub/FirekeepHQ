@@ -55,7 +55,7 @@ export class CodexRuntime implements AgentRuntime {
       { requestTimeoutMs: 60_000 },
     ));
     this.#versionProbe = options.versionProbe ?? (() => probeVersion(this.#command, [...this.#commandPrefix, "--version"]));
-    this.#appVersion = options.appVersion ?? "0.3.3";
+    this.#appVersion = options.appVersion ?? "0.3.4";
     this.#loginTimeoutMs = options.loginTimeoutMs ?? 10 * 60_000;
     const firekeepMemory = options.firekeepMemory ?? installedFirekeepMemory();
     this.descriptor = {

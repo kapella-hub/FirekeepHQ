@@ -60,7 +60,9 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, input:focus-
 .brand-activity, .brand-activity::after { position: absolute; inset: -4px; border: 1px solid color-mix(in srgb, var(--ember) 72%, transparent); border-radius: 11px; pointer-events: none; animation: ember-radiate 1.45s ease-out infinite; }
 .brand-activity::after { content: ""; inset: -1px; animation-delay: 0.55s; }
 .titlebar-center { justify-self: center; display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
-.session-title { color: var(--text); font-weight: 570; }
+.session-title-button { min-width: 0; display: inline-flex; align-items: center; gap: 6px; padding: 3px 6px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; -webkit-app-region: no-drag; }
+.session-title-button:hover { background: var(--surface-3); color: var(--text); }
+.session-title { overflow: hidden; max-width: min(34vw, 360px); color: var(--text); font-weight: 570; text-overflow: ellipsis; white-space: nowrap; }
 .session-id { color: var(--faint); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 10px; }
 .titlebar-actions { justify-self: end; display: flex; gap: 4px; -webkit-app-region: no-drag; }
 .inspector-toggle { display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 0 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); color: var(--muted); font-size: 9px; font-weight: 650; cursor: pointer; }
@@ -72,11 +74,32 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, input:focus-
 .session-rail { grid-area: rail; min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--line); background: var(--surface); }
 .rail-heading, .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 46px; padding: 0 14px; color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
 .session-list { min-height: 0; flex: 1 1 auto; overflow-y: auto; padding: 4px 8px; }
-.session-row { width: 100%; display: flex; flex-direction: column; align-items: stretch; gap: 4px; padding: 11px 10px; border: 1px solid transparent; border-radius: 10px; background: transparent; text-align: left; cursor: pointer; }
-.session-row:hover { background: var(--surface-2); }
-.session-row.active { border-color: var(--line); background: var(--surface-3); box-shadow: inset 2px 0 var(--ember); }
+.session-entry { position: relative; margin-bottom: 3px; overflow: hidden; border: 1px solid transparent; border-radius: 10px; background: transparent; }
+.session-entry:hover { background: var(--surface-2); }
+.session-entry.active { border-color: color-mix(in srgb, var(--session-accent) 36%, var(--line)); background: var(--surface-3); box-shadow: inset 2px 0 var(--session-accent); }
+.session-entry.editing { border-color: color-mix(in srgb, var(--session-accent) 48%, var(--line)); background: var(--surface-3); }
+.session-row { width: 100%; display: flex; flex-direction: column; align-items: stretch; gap: 5px; padding: 11px 34px 11px 10px; border: 0; background: transparent; text-align: left; cursor: pointer; }
+.session-row-heading { min-width: 0; display: flex; align-items: center; gap: 7px; }
+.session-color-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 999px; background: var(--session-accent, var(--ember)); box-shadow: 0 0 8px color-mix(in srgb, var(--session-accent, var(--ember)) 46%, transparent); }
 .session-row-title { overflow: hidden; color: var(--text); font-size: 12px; font-weight: 570; text-overflow: ellipsis; white-space: nowrap; }
 .session-row-meta { color: var(--faint); font-size: 10px; }
+.session-customize { position: absolute; top: 7px; right: 6px; display: grid; place-items: center; width: 25px; height: 25px; padding: 0; border: 0; border-radius: 7px; background: transparent; color: var(--faint); opacity: 0; cursor: pointer; }
+.session-entry:hover .session-customize, .session-entry.active .session-customize, .session-customize:focus-visible, .session-customize[aria-expanded="true"] { opacity: 1; }
+.session-customize:hover, .session-customize[aria-expanded="true"] { background: color-mix(in srgb, var(--session-accent) 12%, var(--surface-2)); color: var(--session-accent); }
+.session-editor { display: grid; gap: 10px; padding: 10px; border-top: 1px solid var(--line); }
+.session-editor label { display: grid; gap: 5px; color: var(--muted); font-size: 9px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; }
+.session-editor input { min-width: 0; width: 100%; padding: 7px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: var(--text); font-size: 11px; letter-spacing: 0; text-transform: none; }
+.session-editor fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
+.session-editor legend { margin-bottom: 6px; color: var(--muted); font-size: 9px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; }
+.session-colors { display: grid; grid-template-columns: repeat(8, 1fr); gap: 5px; }
+.session-colors button { display: grid; place-items: center; aspect-ratio: 1; padding: 0; border: 1px solid transparent; border-radius: 7px; background: transparent; cursor: pointer; }
+.session-colors button span { width: 13px; height: 13px; border-radius: 999px; background: var(--choice-color); box-shadow: 0 2px 8px color-mix(in srgb, var(--choice-color) 38%, transparent); }
+.session-colors button:hover, .session-colors button.selected { border-color: color-mix(in srgb, var(--choice-color) 68%, white); background: color-mix(in srgb, var(--choice-color) 14%, transparent); }
+.session-colors button.selected span { box-shadow: 0 0 0 2px var(--surface-3), 0 0 0 3px var(--choice-color); }
+.session-editor-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.session-editor-actions button { min-height: 27px; padding: 0 9px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-2); color: var(--muted); font-size: 9px; font-weight: 650; cursor: pointer; }
+.session-editor-actions button.primary { border-color: color-mix(in srgb, var(--session-accent) 44%, var(--line)); background: color-mix(in srgb, var(--session-accent) 14%, var(--surface-2)); color: var(--text); }
+.session-editor-actions button:disabled { opacity: 0.45; cursor: default; }
 .rail-footer { flex: 0 0 auto; padding: 14px; border-top: 1px solid var(--line); }
 .rail-usage { margin: -5px -4px 14px; padding: 0 0 13px; border-bottom: 1px solid var(--line); }
 .rail-usage .section-heading { min-height: 34px; padding: 0 4px; }
@@ -140,6 +163,7 @@ select option { background: var(--surface); color: var(--text); }
 .welcome-mark { display: inline-grid; place-items: center; width: 48px; height: 48px; border: 1px solid color-mix(in srgb, var(--ember) 35%, transparent); border-radius: 15px; background: var(--ember-soft); color: var(--ember); box-shadow: 0 18px 50px var(--shadow); }
 .eyebrow { margin: 18px 0 9px; color: color-mix(in srgb, var(--ember) 70%, var(--muted)); font-size: 9px; font-weight: 800; letter-spacing: 0.2em; }
 .welcome h1, .launch-card h1 { margin: 0; font-size: clamp(28px, 4vw, 46px); letter-spacing: -0.05em; }
+.welcome h1 span { display: block; line-height: 1.08; }
 .welcome > p:not(.eyebrow) { max-width: 590px; margin: 14px auto 24px; color: var(--muted); font-size: 14px; line-height: 1.65; }
 .welcome-workspace { display: inline-flex; align-items: center; gap: 7px; margin: -6px 0 20px; padding: 7px 11px; border: 1px solid color-mix(in srgb, var(--ember) 32%, var(--line)); border-radius: 9px; background: var(--ember-soft); color: var(--text); font-size: 11px; font-weight: 600; cursor: pointer; }
 .welcome-workspace svg { color: var(--ember); }

@@ -22,6 +22,7 @@ try {
   }
   const cdp = await connectCdp(target.webSocketDebuggerUrl);
   let layout;
+  let sessionEditor;
   let agentGrid = null;
   try {
     layout = await waitForStudioLayout(cdp, 10_000);
@@ -47,6 +48,14 @@ try {
       const capture = await cdp.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
       await writeFile(screenshotPath, Buffer.from(capture.data, "base64"));
     }
+    sessionEditor = await openSessionEditorForSmoke(cdp);
+    assertSessionEditor(sessionEditor);
+    const sessionScreenshotPath = process.env.FIREKEEP_STUDIO_SMOKE_SESSION_SCREENSHOT;
+    if (sessionScreenshotPath) {
+      const capture = await cdp.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+      await writeFile(sessionScreenshotPath, Buffer.from(capture.data, "base64"));
+    }
+    await closeSessionEditorForSmoke(cdp);
     const gridScreenshotPath = process.env.FIREKEEP_STUDIO_SMOKE_GRID_SCREENSHOT;
     if (gridScreenshotPath) {
       agentGrid = await openAgentGridForSmoke(cdp);
@@ -57,7 +66,7 @@ try {
   } finally {
     await cdp.close();
   }
-  process.stdout.write(`${JSON.stringify({ executable, title: target.title, url: target.url, layout, agentGrid })}\n`);
+  process.stdout.write(`${JSON.stringify({ executable, title: target.title, url: target.url, layout, sessionEditor, agentGrid })}\n`);
 } finally {
   terminateExactTree(child.pid);
   const temporaryRoot = `${await realpath(tmpdir())}${sep}`.toLowerCase();
@@ -193,6 +202,60 @@ function assertStudioLayout(layout) {
   if (layout.label.bottom > layout.value.top + 1) {
     throw new Error(`primary runtime label overlaps its value: ${JSON.stringify({ label: layout.label, value: layout.value })}`);
   }
+}
+
+async function openSessionEditorForSmoke(cdp) {
+  const opened = await cdp.send("Runtime.evaluate", {
+    expression: `(() => {
+      const button = document.querySelector('.session-customize');
+      if (!button) return false;
+      button.click();
+      return true;
+    })()`,
+    returnByValue: true,
+  });
+  if (!opened.result?.value) throw new Error("session customizer did not render");
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+  const result = await cdp.send("Runtime.evaluate", {
+    expression: `(() => {
+      const rect = (element) => {
+        const value = element.getBoundingClientRect();
+        return { left: value.left, top: value.top, right: value.right, bottom: value.bottom, width: value.width, height: value.height };
+      };
+      const rail = document.querySelector('.session-rail');
+      const editor = document.querySelector('.session-editor');
+      const input = editor?.querySelector('input[aria-label="Session name"]');
+      const save = editor?.querySelector('[aria-label="Save session"]');
+      const colors = editor?.querySelectorAll('[role="radio"]');
+      if (!rail || !editor || !input || !save || !colors) return null;
+      return { rail: rect(rail), editor: rect(editor), input: rect(input), colorCount: colors.length, saveVisible: rect(save).height > 0 };
+    })()`,
+    returnByValue: true,
+  });
+  if (!result.result?.value) throw new Error("session editor did not open");
+  return result.result.value;
+}
+
+function assertSessionEditor(editor) {
+  if (editor.colorCount !== 8 || !editor.saveVisible || editor.input.width < 150) {
+    throw new Error(`session editor controls are incomplete: ${JSON.stringify(editor)}`);
+  }
+  if (editor.editor.left < editor.rail.left || editor.editor.right > editor.rail.right + 1 || editor.editor.bottom > editor.rail.bottom) {
+    throw new Error(`session editor is clipped by the rail: ${JSON.stringify(editor)}`);
+  }
+}
+
+async function closeSessionEditorForSmoke(cdp) {
+  const closed = await cdp.send("Runtime.evaluate", {
+    expression: `(() => {
+      const cancel = [...document.querySelectorAll('.session-editor button')].find((button) => button.textContent?.trim() === 'Cancel');
+      if (!cancel) return false;
+      cancel.click();
+      return true;
+    })()`,
+    returnByValue: true,
+  });
+  if (!closed.result?.value) throw new Error("session editor could not close");
 }
 
 async function openAgentGridForSmoke(cdp) {

@@ -21,7 +21,7 @@ async function controller(openExternal: (url: string) => Promise<void> = async (
     now: () => "2026-08-24T00:00:00.000Z",
   });
   await service.initialize();
-  return new StudioController(service, createCommandRegistry(service), "0.3.3", openExternal, async () => "C:\\workspace", dashboardUrl, decisionBoards, clipboard, voiceInput);
+  return new StudioController(service, createCommandRegistry(service), "0.3.4", openExternal, async () => "C:\\workspace", dashboardUrl, decisionBoards, clipboard, voiceInput);
 }
 
 describe("Studio IPC controller", () => {
@@ -43,6 +43,8 @@ describe("Studio IPC controller", () => {
     expect(parseStudioAction({ type: "voice.input.start", language: "en-US" })).toEqual({ type: "voice.input.start", language: "en-US" });
     expect(parseStudioAction({ type: "voice.input.stop" })).toEqual({ type: "voice.input.stop" });
     expect(() => parseStudioAction({ type: "voice.input.start", language: "bad language", command: "hidden" })).toThrow();
+    expect(parseStudioAction({ type: "session.update", sessionId: "session-1", name: "Release plan", color: "violet" })).toEqual({ type: "session.update", sessionId: "session-1", name: "Release plan", color: "violet" });
+    expect(() => parseStudioAction({ type: "session.update", sessionId: "session-1", name: "Release plan", color: "ultraviolet" })).toThrow();
   });
 
   it("exposes only bounded text clipboard operations", async () => {
@@ -93,6 +95,15 @@ describe("Studio IPC controller", () => {
     expect(studio.service.events()).toContainEqual(expect.objectContaining({ payload: expect.objectContaining({ role: "user", text: "hello" }) }));
     await studio.dispatch({ type: "message.sendTo", runtimeId: "alpha", text: "pane hello" });
     expect(studio.service.events()).toContainEqual(expect.objectContaining({ payload: expect.objectContaining({ role: "user", text: "pane hello" }) }));
+  });
+
+  it("updates a named session's persisted title and color through typed IPC", async () => {
+    const studio = await controller();
+    const sessionId = studio.service.snapshot().activeSessionId;
+
+    const result = await studio.dispatch({ type: "session.update", sessionId, name: "Release plan", color: "violet" });
+
+    expect(result).toMatchObject({ type: "state", sessions: [expect.objectContaining({ id: sessionId, name: "Release plan", color: "violet" })] });
   });
 
   it("opens only the configured dashboard URL", async () => {

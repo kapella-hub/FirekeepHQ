@@ -2,7 +2,7 @@ import { appendFile, mkdir, readFile, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { parseMissionSnapshot, type MissionSnapshot } from "../core/mission.js";
 import type { RuntimeEvent } from "../core/runtime.js";
-import type { SessionStore, StudioSessionSummary } from "../core/session-store.js";
+import { DEFAULT_SESSION_COLOR, isSessionColor, normalizeSessionMetadata, type SessionMetadataUpdate, type SessionStore, type StudioSessionSummary } from "../core/session-store.js";
 import { JsonSettingsStore } from "../core/settings-store.js";
 
 interface SessionIndex { readonly version: 1; readonly sessions: Readonly<Record<string, StudioSessionSummary>> }
@@ -26,7 +26,7 @@ export class JsonlSessionStore implements SessionStore {
     validateId(id);
     await this.#mutateIndex((sessions) => sessions[id] ? sessions : {
       ...sessions,
-      [id]: { id, name: defaultName(createdAt), createdAt, updatedAt: createdAt, eventCount: 0, nativeSessionIds: {} },
+      [id]: { id, name: defaultName(createdAt), color: DEFAULT_SESSION_COLOR, createdAt, updatedAt: createdAt, eventCount: 0, nativeSessionIds: {} },
     });
   }
 
@@ -39,6 +39,7 @@ export class JsonlSessionStore implements SessionStore {
         const current = sessions[event.studioSessionId] ?? {
           id: event.studioSessionId,
           name: defaultName(event.timestamp),
+          color: DEFAULT_SESSION_COLOR,
           createdAt: event.timestamp,
           updatedAt: event.timestamp,
           eventCount: 0,
@@ -73,14 +74,13 @@ export class JsonlSessionStore implements SessionStore {
     return Object.values(index?.sessions ?? {}).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   }
 
-  async rename(id: string, name: string): Promise<void> {
+  async updateMetadata(id: string, update: SessionMetadataUpdate): Promise<void> {
     validateId(id);
-    const clean = name.trim().slice(0, 120);
-    if (!clean) throw new Error("session name cannot be empty");
+    const clean = normalizeSessionMetadata(update);
     await this.#mutateIndex((sessions) => {
       const current = sessions[id];
       if (!current) throw new Error(`unknown session: ${id}`);
-      return { ...sessions, [id]: { ...current, name: clean } };
+      return { ...sessions, [id]: { ...current, ...clean } };
     });
   }
 
@@ -154,6 +154,7 @@ function parseIndex(value: unknown): SessionIndex {
     sessions[id] = {
       id,
       name: item.name,
+      color: isSessionColor(item.color) ? item.color : DEFAULT_SESSION_COLOR,
       createdAt: item.createdAt,
       updatedAt: item.updatedAt,
       eventCount: item.eventCount,

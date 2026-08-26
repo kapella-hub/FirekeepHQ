@@ -1,5 +1,5 @@
 import type { RuntimeRegistry } from "./runtime-registry.js";
-import type { SessionStore, StudioSessionSummary } from "./session-store.js";
+import { DEFAULT_SESSION_COLOR, type SessionMetadataUpdate, type SessionStore, type StudioSessionSummary } from "./session-store.js";
 import type { SettingsStore } from "./settings-store.js";
 import {
   DEFAULT_MISSION_CHECK_TIMEOUT_MS,
@@ -354,6 +354,7 @@ export class StudioService {
     return [{
       id: state.activeSessionId,
       name: "Current session",
+      color: DEFAULT_SESSION_COLOR,
       createdAt: this.#now(),
       updatedAt: this.#now(),
       eventCount: this.#events.length,
@@ -363,8 +364,12 @@ export class StudioService {
   }
 
   async renameSession(name: string): Promise<void> {
+    await this.updateSession(this.#requireState().activeSessionId, { name });
+  }
+
+  async updateSession(sessionId: string, update: SessionMetadataUpdate): Promise<void> {
     if (!this.#sessions) throw new Error("persistent sessions are unavailable");
-    await this.#sessions.rename(this.#requireState().activeSessionId, name);
+    await this.#sessions.updateMetadata(sessionId, update);
   }
 
   async deleteSession(sessionId: string, confirmation: string): Promise<void> {
@@ -481,7 +486,7 @@ export class StudioService {
       executionApprovedAt: null,
     };
     await this.#storeMission(mission);
-    if (this.#sessions) await this.#sessions.rename(state.activeSessionId, cleanGoal.slice(0, 120));
+    if (this.#sessions) await this.#sessions.updateMetadata(state.activeSessionId, { name: cleanGoal.slice(0, 120) });
     return this.mission() as MissionSnapshot;
   }
 

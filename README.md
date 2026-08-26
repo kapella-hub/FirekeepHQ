@@ -120,13 +120,13 @@ data-loss confirmation that a plain uninstall or `--yes` can never trigger. Back
 up first ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#removing-the-server)) if you
 might want the data back.
 
-## Firekeep Studio (0.3.3 preview)
+## Firekeep Studio (0.3.4 preview)
 
 [`studio/`](studio/) is a separate desktop client for people who want Firekeep to be the
 only agent application they open. It gives Codex, Claude Code, Kiro CLI, and Grok one
 runtime-neutral conversation surface: any supported runtime can be the explicit primary,
 other runtimes can review it in fresh read-only contexts, and `/compare`, `/consensus`,
-an explicit shared workspace, Windows voice input and system voice output, cache-aware token guards, local sessions,
+an explicit shared workspace, Windows voice input and system voice output, cache-aware token guards, named and color-coded local sessions,
 live provider model/reasoning discovery, and typed Client Kit controls are built in. The
 selected runtime is visually explicit, the full inspector can be hidden, and Studio links
 to the dashboard from the existing Client Kit connection without exposing its credentials.

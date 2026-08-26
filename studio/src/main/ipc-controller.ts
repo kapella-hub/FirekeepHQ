@@ -5,6 +5,7 @@ import type { StudioAction, StudioActionResult } from "../shared/ipc.js";
 import type { DecisionBoardTransport } from "./decision-board-client.js";
 import { LoopbackDecisionBoardClient } from "./decision-board-client.js";
 import type { VoiceInput } from "./voice-input.js";
+import { SESSION_COLORS } from "../core/session-store.js";
 
 const id = z.string().min(1).max(128).regex(/^[a-zA-Z0-9._:-]+$/);
 const optionalId = id.optional();
@@ -45,6 +46,7 @@ const actionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("session.new") }).strict(),
   z.object({ type: z.literal("session.resume"), sessionId: id }).strict(),
   z.object({ type: z.literal("session.rename"), name: z.string().min(1).max(120) }).strict(),
+  z.object({ type: z.literal("session.update"), sessionId: id, name: z.string().min(1).max(120), color: z.enum(SESSION_COLORS) }).strict(),
   z.object({ type: z.literal("mission.run") }).strict(),
   z.object({ type: z.literal("mission.continue") }).strict(),
   z.object({ type: z.literal("mission.repair"), note: z.string().min(1).max(4_000) }).strict(),
@@ -149,6 +151,7 @@ export class StudioController {
     else if (action.type === "session.new") await this.service.startNewSession();
     else if (action.type === "session.resume") await this.service.resumeSession(action.sessionId);
     else if (action.type === "session.rename") await this.service.renameSession(action.name);
+    else if (action.type === "session.update") await this.service.updateSession(action.sessionId, { name: action.name, color: action.color });
     else if (action.type === "mission.run") await this.service.runMission();
     else if (action.type === "mission.continue") await this.service.continueMission();
     else if (action.type === "mission.repair") await this.service.repairMission(action.note);

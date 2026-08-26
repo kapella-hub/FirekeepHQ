@@ -1,6 +1,7 @@
 import type { LoginMethod, LoginRequest, LoginResult, RuntimeEffort, RuntimePermissionMode } from "./runtime.js";
 import type { MissionSnapshot, MissionTaskResult } from "./mission.js";
 import type { ReviewerMode, StudioService, ThemeMode } from "./studio-service.js";
+import { isSessionColor, SESSION_COLORS } from "./session-store.js";
 
 export interface ParsedSlashCommand {
   readonly name: string;
@@ -551,15 +552,16 @@ export function createCommandRegistry(service: StudioService, integrations: Comm
     const selected = service.snapshot().workspacePath;
     return notice("Workspace", selected ?? "No workspace selected.", selected ? "success" : "neutral");
   } });
-  commands.register({ name: "session", summary: "Create and manage Studio sessions.", usages: ["/session new [name]", "/session list", "/session rename <name>", "/session resume <id>", "/session delete <id> --confirm <id>"], execute: async (command) => {
+  commands.register({ name: "session", summary: "Create and manage Studio sessions.", usages: ["/session new [name]", "/session list", "/session rename <name>", `/session color <${SESSION_COLORS.join("|")}>`, "/session resume <id>", "/session delete <id> --confirm <id>"], execute: async (command) => {
     const action = command.args[0] ?? "list";
     if (action === "new") { await service.startNewSession(); const name = command.args.slice(1).join(" "); if (name) await service.renameSession(name); return notice("New session", name || service.snapshot().activeSessionId); }
     if (action === "rename") { await service.renameSession(command.args.slice(1).join(" ")); return notice("Session renamed", command.args.slice(1).join(" ")); }
+    if (action === "color") { const color = requireArg(command, 1, "session color"); if (!isSessionColor(color)) throw new Error(`invalid session color: ${color}; choose ${SESSION_COLORS.join(", ")}`); await service.updateSession(service.snapshot().activeSessionId, { color }); return notice("Session color", color, "success"); }
     if (action === "resume") { const id = requireArg(command, 1, "session id"); await service.resumeSession(id); return notice("Session resumed", id); }
     if (action === "delete") { const id = requireArg(command, 1, "session id"); const confirmation = command.flags.confirm; if (typeof confirmation !== "string") throw new Error("session deletion requires --confirm <session-id>"); await service.deleteSession(id, confirmation); return notice("Session deleted", `${id} was permanently removed from this device.`, "warning"); }
     if (action !== "list") throw new Error(`unknown session action: ${action}`);
     const sessions = await service.listSessions();
-    return { kind: "table", title: "Studio sessions", body: `${sessions.length} local session${sessions.length === 1 ? "" : "s"}`, rows: sessions.map((item) => [item.id, item.name, String(item.eventCount), item.updatedAt]) };
+    return { kind: "table", title: "Studio sessions", body: `${sessions.length} local session${sessions.length === 1 ? "" : "s"}`, rows: sessions.map((item) => [item.id, item.name, item.color, String(item.eventCount), item.updatedAt]) };
   } });
   commands.register({ name: "doctor", aliases: ["status"], summary: "Check runtime connectivity and authentication.", usages: ["/doctor [runtime-id|all]", "/status [runtime-id|all]"], execute: async (command) => { const target = command.args[0] ?? "all"; const diagnostics = target === "all" ? await service.probeAll() : [await service.probeRuntime(target)]; return { kind: "table", title: "Studio doctor", body: `${diagnostics.length} checks`, rows: diagnostics.map((item) => [item.runtimeId, item.connection.state, item.auth.state, item.connection.detail]) }; } });
   commands.register({ name: "cancel", summary: "Cancel the active run.", usages: ["/cancel"], execute: async () => notice("Cancel", service.cancel() ? "Cancellation requested." : "No active run.", "neutral") });

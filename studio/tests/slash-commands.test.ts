@@ -197,6 +197,19 @@ describe("slash command registry", () => {
     await expect(commands.execute(`/session delete ${id} --confirm ${id}`)).resolves.toMatchObject({ title: "Session deleted", tone: "warning" });
   });
 
+  it("names and colors the active session from slash commands", async () => {
+    const sessions = new MemorySessionStore();
+    const runtimes = new RuntimeRegistry([new FakeRuntime({ id: "alpha", displayName: "Alpha", description: "A", transport: "test", capabilities: ["chat"] })]);
+    const service = new StudioService({ runtimes, settings: new MemorySettingsStore(), sessions, idFactory: (prefix) => `${prefix}-1`, now: () => "2026-08-24T00:00:00.000Z" });
+    await service.initialize();
+    const commands = createCommandRegistry(service);
+
+    await commands.execute("/session rename Release plan");
+    await expect(commands.execute("/session color ocean")).resolves.toMatchObject({ title: "Session color", body: "ocean" });
+    expect(await service.listSessions()).toContainEqual(expect.objectContaining({ name: "Release plan", color: "ocean" }));
+    await expect(commands.execute("/session color ultraviolet")).rejects.toThrow(/invalid session color/i);
+  });
+
   it("configures, runs, and reports an evidence-backed mission from slash commands", async () => {
     const runtimes = new RuntimeRegistry([
       new FakeRuntime({ id: "alpha", displayName: "Alpha", description: "A", transport: "test", capabilities: ["chat", "review", "usage"] }),
