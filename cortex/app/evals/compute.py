@@ -182,6 +182,8 @@ async def compute_session_eval(
         instructions: dict[str, str] | None = None
         briefing_delivered: bool | None = None
         experiment_group: str | None = None
+        member_token: str | None = None
+        briefing_id: str | None = None
 
         start_payload: dict | None = None
         for e in events:
@@ -229,6 +231,12 @@ async def compute_session_eval(
             # session, excluded from arms) both collapse to None here, which
             # is correct: neither is a measured arm.
             experiment_group = _attr("experiment_group")
+            # PR5 D13/D12 — same absent-guarded string read as
+            # experiment_group above: a missing key (pre-PR5 record) and an
+            # explicit empty string both collapse to None, never a measured
+            # value.
+            member_token = _attr("member_token")
+            briefing_id = _attr("briefing_id")
 
         agents_raw = summary.get("agents", [])
         agents = (
@@ -253,6 +261,8 @@ async def compute_session_eval(
             instructions=instructions,
             briefing_delivered=briefing_delivered,
             experiment_group=experiment_group,
+            member_token=member_token,
+            briefing_id=briefing_id,
             agents=agents,
         )
 
