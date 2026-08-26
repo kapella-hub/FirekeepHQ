@@ -106,7 +106,7 @@ describe("Firekeep Studio renderer", () => {
     render(<App />);
 
     await screen.findByRole("heading", { name: "Agents come and go. The Keep stays." });
-    expect(document.documentElement).toHaveAttribute("data-theme", "light");
+    await waitFor(() => expect(document.documentElement).toHaveAttribute("data-theme", "light"));
 
     fireEvent.click(screen.getByRole("button", { name: "Appearance: Light. Switch to system theme" }));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "theme.set", theme: "system" }));
