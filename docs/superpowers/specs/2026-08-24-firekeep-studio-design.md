@@ -1,7 +1,7 @@
 # Firekeep Studio — Universal Agent Console Design
 
 **Date:** 2026-08-24
-**Status:** Implemented preview (`0.3.2`)
+**Status:** Implemented preview (`0.3.3`)
 **Product name:** Firekeep Studio
 **Package:** `studio/` (separate desktop application)
 
@@ -379,16 +379,18 @@ increase or recoverable runtime failure.
 Voice is a Studio input/output layer, not a provider feature requirement:
 
 ```text
-microphone -> local/browser STT -> ordinary Studio prompt -> primary runtime
+microphone -> typed local STT boundary -> editable Studio prompt -> primary runtime
 primary text -> optional system TTS -> speakers
 ```
 
-The transcript is always visible and editable before submission. Interim recognition
-replaces its prior interim text rather than duplicating it. Tool approvals are never
-accepted from passive speech; an explicit click is required. Chromium/OS speech facilities
-may use a platform network service, so Studio does
-not call voice processing categorically local. Runtime-native audio may be added only
-through capability negotiation.
+The transcript is always visible and editable before submission. Tool approvals are never
+accepted from passive speech; an explicit click is required. On Windows, Studio invokes the
+installed desktop speech recognizer through a strict start/stop IPC pair and a bounded,
+cancellable local process. Raw audio never crosses IPC or reaches an agent. Electron's Web
+Speech object is not a valid availability signal because recognition fails at runtime with
+its hosted-service network error; Studio does not use that path. Other platforms report
+input as unavailable until they gain a native adapter. System TTS remains platform-owned.
+Runtime-native audio may be added only through capability negotiation.
 
 ## 13. Native visual artifacts and Decision Boards
 

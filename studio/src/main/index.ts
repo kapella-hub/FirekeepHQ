@@ -17,6 +17,7 @@ import { ProcessMissionCheckRunner } from "./mission-check-runner.js";
 import { allowsMicrophoneCheck, allowsMicrophoneRequest } from "./permissions.js";
 import { createRuntimeRegistry } from "./runtime/index.js";
 import { JsonlSessionStore } from "./session-store.js";
+import { WindowsVoiceInput } from "./voice-input.js";
 
 const currentDirectory = fileURLToPath(new URL(".", import.meta.url));
 let activeController: StudioController | null = null;
@@ -148,7 +149,7 @@ async function createController(): Promise<StudioController> {
   return new StudioController(service, commands, app.getVersion(), (url) => shell.openExternal(url), selectWorkspace, dashboardUrl, decisionBoards, {
     readText: () => clipboard.readText(),
     writeText: (text) => clipboard.writeText(text),
-  });
+  }, new WindowsVoiceInput());
 }
 
 app.whenReady().then(async () => {
@@ -188,6 +189,7 @@ app.on("before-quit", (event) => {
   if (shutdownStarted) return;
   event.preventDefault();
   shutdownStarted = true;
+  activeController?.voiceInput.cancel();
   void Promise.all([
     activeController?.service.shutdown() ?? Promise.resolve(),
     activeDecisionReceiver?.close() ?? Promise.resolve(),

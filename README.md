@@ -120,13 +120,13 @@ data-loss confirmation that a plain uninstall or `--yes` can never trigger. Back
 up first ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#removing-the-server)) if you
 might want the data back.
 
-## Firekeep Studio (0.3.2 preview)
+## Firekeep Studio (0.3.3 preview)
 
 [`studio/`](studio/) is a separate desktop client for people who want Firekeep to be the
 only agent application they open. It gives Codex, Claude Code, Kiro CLI, and Grok one
 runtime-neutral conversation surface: any supported runtime can be the explicit primary,
 other runtimes can review it in fresh read-only contexts, and `/compare`, `/consensus`,
-an explicit shared workspace, voice input/output, cache-aware token guards, local sessions,
+an explicit shared workspace, Windows voice input and system voice output, cache-aware token guards, local sessions,
 live provider model/reasoning discovery, and typed Client Kit controls are built in. The
 selected runtime is visually explicit, the full inspector can be hidden, and Studio links
 to the dashboard from the existing Client Kit connection without exposing its credentials.
@@ -198,7 +198,7 @@ front end you deliberately configure. See
 | **FirekeepSentinel** | Environment observer. Docker health, git commits, file changes. Broadcasts alerts to Relay on errors. Container restarts, new commits, and file changes flow into a replayable event stream. |
 | **FirekeepRelay** | Agent coordination. Real-time pub/sub channels, persistent bulletin board, structured task queue, resource leases with monotonic fencing tokens, presence registry, direct messages, and an A2A agent card endpoint for external discovery. |
 | **Dashboard** | Web UI covering coordination, memory, diagnostics, devices, members, policy, vault, and operations. |
-| **Firekeep Studio** | Optional local desktop console and Mission harness for primary agents, deterministic verification, independent reviewers, voice, cross-runtime comparison, and Client Kit control. It is not a VPS service. |
+| **Firekeep Studio** | Optional local desktop console and Mission harness for primary agents, deterministic verification, independent reviewers, Windows dictation, system voice replies, cross-runtime comparison, and Client Kit control. It is not a VPS service. |
 
 Code intelligence (**FirekeepSymdex** — 38 MCP tools, 8 analytics hidden behind a flag) and the **Decision Board** (`firekeep-decision`) run **client-side** as stdio-local MCP servers installed with the kit, not as VPS containers.
 

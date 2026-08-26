@@ -52,6 +52,7 @@ interface CommandCard { readonly id: string; readonly input: string; readonly re
 interface ConnectDialog { readonly runtimeId: string; readonly method: LoginMethod }
 interface ModelRefresh { readonly runtimeId: string; readonly state: "loading" | "success" | "error"; readonly message: string }
 type StudioView = "conversation" | "agents";
+type VoiceInputState = "idle" | "listening" | "stopping";
 
 export function App(): React.JSX.Element {
   const [bootstrap, setBootstrap] = useState<BootstrapResult | null>(null);
@@ -71,7 +72,7 @@ export function App(): React.JSX.Element {
   const [runtimeManagerOpen, setRuntimeManagerOpen] = useState(false);
   const [connectDialog, setConnectDialog] = useState<ConnectDialog | null>(null);
   const [secret, setSecret] = useState("");
-  const [listening, setListening] = useState(false);
+  const [voiceInputState, setVoiceInputState] = useState<VoiceInputState>("idle");
   const [decisionBoard, setDecisionBoard] = useState<DecisionBoardDocument | null>(null);
   const [decisionLoading, setDecisionLoading] = useState<string | null>(null);
   const [followingTail, setFollowingTail] = useState(true);
@@ -84,8 +85,6 @@ export function App(): React.JSX.Element {
   const transcriptRef = useRef<HTMLDivElement>(null);
   const followingTailRef = useRef(true);
   const voiceEnabledRef = useRef(false);
-  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
-  const voiceBaseRef = useRef("");
   const modelRequestRef = useRef<Record<string, number>>({});
   const surfacedBoardsRef = useRef(new Set<string>());
   const seenEventIdsRef = useRef(new Set<string>());
@@ -293,12 +292,13 @@ export function App(): React.JSX.Element {
         if (connectDialog) setConnectDialog(null);
         else if (runtimeManagerOpen) setRuntimeManagerOpen(false);
         else if (focusedPaneId) setFocusedPaneId(null);
+        else if (voiceInputState !== "idle") ignore(invoke({ type: "voice.input.stop" }));
         else if (snapshot?.activeRunId) ignore(invoke({ type: "run.cancel", runId: snapshot.activeRunId }));
       }
     };
     window.addEventListener("keydown", keyboard);
     return () => window.removeEventListener("keydown", keyboard);
-  }, [busy, connectDialog, focusedPaneId, invoke, runReview, runtimeManagerOpen, snapshot?.activeRunId, toggleAgentGrid]);
+  }, [busy, connectDialog, focusedPaneId, invoke, runReview, runtimeManagerOpen, snapshot?.activeRunId, toggleAgentGrid, voiceInputState]);
 
   const submit = async (): Promise<void> => {
     const input = composer.trim();
@@ -394,29 +394,27 @@ export function App(): React.JSX.Element {
     } catch { /* Keep the dialog open so the user can retry. */ }
   };
 
-  const startListening = (): void => {
-    const Recognition = window.SpeechRecognition ?? window.webkitSpeechRecognition;
-    if (!Recognition) { setError("Speech recognition is unavailable in this system's Chromium build."); return; }
-    recognitionRef.current?.abort();
-    const recognition = new Recognition();
-    recognition.continuous = false;
-    recognition.interimResults = true;
-    recognition.lang = navigator.language;
-    voiceBaseRef.current = composerRef.current?.value ?? "";
-    recognition.onstart = () => setListening(true);
-    recognition.onend = () => setListening(false);
-    recognition.onerror = (event) => { setListening(false); setError(`Voice input: ${event.error}`); };
-    recognition.onresult = (event) => {
-      let transcript = "";
-      for (let index = 0; index < event.results.length; index += 1) transcript += event.results[index]?.[0]?.transcript ?? "";
-      const base = voiceBaseRef.current;
-      setComposer(`${base}${base && transcript.trim() ? " " : ""}${transcript.trimStart()}`);
-    };
-    recognitionRef.current = recognition;
-    recognition.start();
+  const toggleVoiceInput = async (): Promise<void> => {
+    if (voiceInputState === "stopping") return;
+    if (voiceInputState === "listening") {
+      setVoiceInputState("stopping");
+      try { await invoke({ type: "voice.input.stop" }); }
+      catch { /* invoke surfaced the actionable error. */ }
+      return;
+    }
+    setVoiceInputState("listening");
+    try {
+      const result = await invoke({ type: "voice.input.start", language: navigator.language || "en-US" });
+      if (result.type !== "voice-input") throw new Error("voice input returned an unexpected response");
+      if (result.state === "complete" && result.text) {
+        setComposer((current) => `${current}${current && !/\s$/.test(current) ? " " : ""}${result.text}`);
+      } else if (result.state === "empty" || result.state === "unavailable") setError(result.detail);
+    } catch { /* invoke surfaced the actionable error. */ }
+    finally {
+      setVoiceInputState("idle");
+      composerRef.current?.focus();
+    }
   };
-
-  const stopListening = (): void => recognitionRef.current?.stop();
   const timeline = useMemo(() => buildTimeline(events), [events]);
   const timelineRuns = useMemo(() => groupTimeline(timeline), [timeline]);
   const primary = bootstrap?.runtimes.find((runtime) => runtime.id === snapshot?.primaryRuntimeId);
@@ -448,7 +446,7 @@ export function App(): React.JSX.Element {
           <span className="session-id">{snapshot.activeSessionId.slice(0, 12)}</span>
         </div>
         <div className="titlebar-actions">
-          <button className="icon-button" title={snapshot.voiceEnabled ? "Turn voice mode off" : "Turn voice mode on"} onClick={() => ignore(invoke({ type: "voice.set", enabled: !snapshot.voiceEnabled }).then(applyResult))}>{snapshot.voiceEnabled ? <Volume2 size={17} /> : <VolumeX size={17} />}</button>
+          <button className="icon-button" title={snapshot.voiceEnabled ? "Turn spoken replies off" : "Turn spoken replies on"} onClick={() => ignore(invoke({ type: "voice.set", enabled: !snapshot.voiceEnabled }).then(applyResult))}>{snapshot.voiceEnabled ? <Volume2 size={17} /> : <VolumeX size={17} />}</button>
           <button className="icon-button" title="Cycle theme" onClick={() => ignore(invoke({ type: "theme.set", theme: snapshot.theme === "system" ? "dark" : snapshot.theme === "dark" ? "light" : "system" }).then(applyResult))}><Settings2 size={17} /></button>
           <button className="inspector-toggle" aria-label={rightOpen ? "Hide inspector" : "Show inspector"} title={rightOpen ? "Hide the right inspector" : "Show the right inspector"} onClick={() => setRightOpen((value) => !value)}>{rightOpen ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}<span>{rightOpen ? "Hide panel" : "Show panel"}</span></button>
         </div>
@@ -521,11 +519,11 @@ export function App(): React.JSX.Element {
             }} />
             <div className="composer-actions">
               <button type="button" className="paste-button" aria-label="Paste from clipboard" title="Paste from clipboard" onClick={() => ignore(pasteClipboard())}><ClipboardPaste size={17} /></button>
-              <button className={`mic-button ${listening ? "listening" : ""}`} title="Hold for voice input" onPointerDown={startListening} onPointerUp={stopListening} onPointerLeave={stopListening}>{listening ? <MicOff size={18} /> : <Mic size={18} />}</button>
+              <button type="button" className={`mic-button ${voiceInputState !== "idle" ? "listening" : ""}`} aria-label={voiceInputState === "idle" ? "Start voice input" : voiceInputState === "listening" ? "Stop voice input" : "Stopping voice input"} title={voiceInputState === "idle" ? "Start voice input" : voiceInputState === "listening" ? "Stop voice input" : "Stopping voice input"} disabled={voiceInputState === "stopping"} onClick={() => ignore(toggleVoiceInput())}>{voiceInputState === "idle" ? <Mic size={18} /> : <MicOff size={18} />}</button>
               {snapshot.activeRunId ? <button className="send-button stop" title="Cancel run" onClick={() => ignore(invoke({ type: "run.cancel", runId: snapshot.activeRunId! }))}><Square size={15} fill="currentColor" /></button> : <button className="send-button" title="Send" disabled={!composer.trim() || busy} onClick={() => ignore(submit())}><Send size={17} /></button>}
             </div>
           </div>
-          <div className="composer-hint"><span><kbd>Enter</kbd> send · <kbd>Shift Enter</kbd> newline · <kbd>⌘K</kbd> commands</span><span>{busy ? <><span className="pulse-dot" /> Agent working</> : `${snapshot.usage.freshTokens.toLocaleString()} fresh · ${snapshot.usage.tokens.toLocaleString()} total${snapshot.voiceEnabled ? " · voice replies on" : ""}`}</span></div>
+          <div className="composer-hint"><span><kbd>Enter</kbd> send · <kbd>Shift Enter</kbd> newline · <kbd>⌘K</kbd> commands</span><span>{voiceInputState !== "idle" ? <><span className="pulse-dot" /> {voiceInputState === "listening" ? "Listening · speak naturally" : "Stopping voice input"}</> : busy ? <><span className="pulse-dot" /> Agent working</> : `${snapshot.usage.freshTokens.toLocaleString()} fresh · ${snapshot.usage.tokens.toLocaleString()} total${snapshot.voiceEnabled ? " · voice replies on" : ""}`}</span></div>
         </div>
       </main>
 

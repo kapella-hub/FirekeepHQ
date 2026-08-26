@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { StudioSnapshot } from "../src/core/studio-service.js";
 import type { RuntimeDescriptor, RuntimeEvent, RuntimeModel } from "../src/core/runtime.js";
 import { App } from "../src/renderer/src/App.js";
-import type { StudioAction, StudioActionResult, StudioBridge, StudioPushEvent } from "../src/shared/ipc.js";
+import type { StudioAction, StudioActionResult, StudioBridge, StudioPushEvent, VoiceInputOutcome } from "../src/shared/ipc.js";
 import type { DecisionBoardDocument } from "../src/shared/decision-board.js";
 
 const runtimes: RuntimeDescriptor[] = [
@@ -39,10 +39,10 @@ function state(primaryRuntimeId: string | null = null): StudioSnapshot {
 
 let pushStudioEvent: ((event: StudioPushEvent) => void) | null = null;
 
-function installBridge(options: { readonly snapshot?: StudioSnapshot; readonly models?: readonly RuntimeModel[] | (() => readonly RuntimeModel[]); readonly dashboardAvailable?: boolean; readonly events?: readonly RuntimeEvent[]; readonly decisionBoard?: DecisionBoardDocument; readonly pushEvents?: readonly StudioPushEvent[]; readonly clipboardText?: string } = {}): ReturnType<typeof vi.fn<(action: StudioAction) => Promise<StudioActionResult>>> {
+function installBridge(options: { readonly snapshot?: StudioSnapshot; readonly models?: readonly RuntimeModel[] | (() => readonly RuntimeModel[]); readonly dashboardAvailable?: boolean; readonly events?: readonly RuntimeEvent[]; readonly decisionBoard?: DecisionBoardDocument; readonly pushEvents?: readonly StudioPushEvent[]; readonly clipboardText?: string; readonly voiceInput?: VoiceInputOutcome | (() => Promise<VoiceInputOutcome>) } = {}): ReturnType<typeof vi.fn<(action: StudioAction) => Promise<StudioActionResult>>> {
   let snapshot = options.snapshot ?? state();
   const invoke = vi.fn(async (action: StudioAction): Promise<StudioActionResult> => {
-    if (action.type === "bootstrap") return { type: "bootstrap", appName: "Firekeep Studio", version: "0.3.2", dashboardAvailable: options.dashboardAvailable ?? true, snapshot, runtimes, events: options.events ?? [], sessions: [{ id: "session-1", name: "UI test", createdAt: "2026-08-24T00:00:00.000Z", updatedAt: "2026-08-24T00:00:00.000Z", eventCount: 0, nativeSessionIds: {} }] };
+    if (action.type === "bootstrap") return { type: "bootstrap", appName: "Firekeep Studio", version: "0.3.3", dashboardAvailable: options.dashboardAvailable ?? true, snapshot, runtimes, events: options.events ?? [], sessions: [{ id: "session-1", name: "UI test", createdAt: "2026-08-24T00:00:00.000Z", updatedAt: "2026-08-24T00:00:00.000Z", eventCount: 0, nativeSessionIds: {} }] };
     if (action.type === "runtime.probe") return { type: "diagnostics", items: runtimes.map((runtime) => ({ runtimeId: runtime.id, connection: { state: "ready", detail: "Ready" }, auth: { state: "connected", label: "Connected" } })) };
     if (action.type === "runtime.models") return { type: "models", runtimeId: action.runtimeId, items: typeof options.models === "function" ? options.models() : options.models ?? [] };
     if (action.type === "command.complete") return { type: "completions", items: action.input === "/" ? [{ value: "/doctor", label: "/doctor", description: "Check runtimes" }] : [] };
@@ -50,6 +50,11 @@ function installBridge(options: { readonly snapshot?: StudioSnapshot; readonly m
     if (action.type === "decision.submit") return { type: "decision-submitted", url: action.url };
     if (action.type === "clipboard.read") return { type: "clipboard-read", text: options.clipboardText ?? "" };
     if (action.type === "clipboard.write") return { type: "clipboard-written" };
+    if (action.type === "voice.input.start") {
+      const result = typeof options.voiceInput === "function" ? await options.voiceInput() : options.voiceInput ?? { state: "unavailable", text: "", detail: "Voice input unavailable" };
+      return { type: "voice-input", ...result };
+    }
+    if (action.type === "voice.input.stop") return { type: "voice-input", state: "cancelled", text: "", detail: "Voice input stopped." };
     if (action.type === "primary.set") snapshot = { ...snapshot, primaryRuntimeId: action.runtimeId };
     return { type: "state", snapshot };
   });
@@ -85,16 +90,42 @@ describe("Firekeep Studio renderer", () => {
     expect(await screen.findByText("0 fresh tokens")).toBeInTheDocument();
   });
 
-  it("shows slash completion and an actionable error when system speech recognition is unavailable", async () => {
-    const invoke = installBridge();
+  it("shows slash completion and appends typed local voice input", async () => {
+    const invoke = installBridge({ voiceInput: { state: "complete", text: "dictated text", detail: "local" } });
     render(<App />);
     await screen.findByText("Your agents, one conversation.");
     const composer = screen.getByRole("textbox");
     fireEvent.change(composer, { target: { value: "/" } });
     expect(await screen.findByRole("option", { name: /doctor/i })).toBeInTheDocument();
-    fireEvent.pointerDown(screen.getByTitle("Hold for voice input"));
-    expect(await screen.findByText(/Speech recognition is unavailable/i)).toBeInTheDocument();
+    fireEvent.change(composer, { target: { value: "Draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start voice input" }));
+
+    await waitFor(() => expect(composer).toHaveValue("Draft dictated text"));
+    expect(invoke).toHaveBeenCalledWith({ type: "voice.input.start", language: expect.any(String) });
     expect(invoke).toHaveBeenCalledWith({ type: "command.complete", input: "/" });
+  });
+
+  it("shows an actionable voice error when the local recognizer is unavailable", async () => {
+    installBridge({ voiceInput: { state: "unavailable", text: "", detail: "Install a Windows speech language to use voice input." } });
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Start voice input" }));
+
+    expect(await screen.findByText(/Install a Windows speech language/i)).toBeInTheDocument();
+  });
+
+  it("lets a second microphone click cancel the active local listener", async () => {
+    let finish: ((result: VoiceInputOutcome) => void) | undefined;
+    const invoke = installBridge({ voiceInput: () => new Promise<VoiceInputOutcome>((resolve) => { finish = resolve; }) });
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Start voice input" }));
+    expect(await screen.findByText(/Listening · speak naturally/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Stop voice input" }));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "voice.input.stop" }));
+    finish?.({ state: "cancelled", text: "", detail: "Voice input stopped." });
+    expect(await screen.findByRole("button", { name: "Start voice input" })).toBeInTheDocument();
   });
 
   it("makes the mission harness discoverable without exposing a process bridge", async () => {

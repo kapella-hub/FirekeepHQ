@@ -1,6 +1,6 @@
 # Firekeep Studio
 
-Firekeep Studio is Firekeep's runtime-neutral desktop agent console. Version `0.3.2`
+Firekeep Studio is Firekeep's runtime-neutral desktop agent console. Version `0.3.3`
 is a separate Electron application: it does not replace or fork the Python Client Kit.
 The kit remains the source of truth for Keep connectivity, memory, hooks, instructions,
 personal mode, and runtime configuration.
@@ -52,6 +52,11 @@ that runtime without changing the configured primary, and **Use** makes the chan
 Each pane keeps its provider-native continuation while sharing the Studio session and selected
 workspace. Studio still serializes active runs, so the tiled view is a supervision and handoff
 surface rather than permission for concurrent agents to write into one workspace.
+
+Version 0.3.3 replaces Electron's nonfunctional hosted Web Speech recognition with bounded,
+cancellable Windows dictation. The microphone is click-to-start and click-to-cancel, raw
+audio remains inside the Windows recognizer, and only the resulting text returns through
+Studio's typed IPC boundary. Unsupported platforms now report that honestly.
 
 ## Runtime support
 
@@ -122,7 +127,8 @@ Useful starting points:
 - `/session rename ...`, `/session resume ...`, and `/session delete <id> --confirm <id>`.
 - `/export markdown` or `/export json` — choose a local file; Studio uploads nothing.
 - `/firekeep status`, `/firekeep doctor`, `/firekeep personal ...`, and `/firekeep update`.
-- `/voice on` — enable spoken assistant replies; hold the microphone button to dictate.
+- `/voice on` — enable spoken assistant replies. Click the microphone once to dictate and
+  click again to cancel; the editable transcript is never submitted automatically.
 
 The token guard uses total provider-reported traffic, including cached context. The usage
 card separately shows **fresh** tokens (non-cached input, cache writes, output, and other
@@ -185,9 +191,11 @@ permission settings are frozen when execution begins; reviewer runs are always f
   exact session ID as confirmation; exports use an OS save dialog.
 - The workspace is selected through an OS folder dialog, persisted locally, and cannot be
   changed while a run is active.
-- Speech recognition and synthesis use the Chromium/operating-system speech facilities
-  available on the machine. Those facilities may use a platform network service; Studio
-  does not represent them as guaranteed local inference.
+- On Windows, microphone input uses the installed Windows desktop speech recognizer in a
+  bounded local process; raw audio never crosses Studio IPC or reaches an agent. Electron's
+  hosted Web Speech path is deliberately not used because it exposes the API but fails at
+  runtime. Other platforms currently report voice input as unavailable. Spoken replies use
+  the operating-system/Chromium speech synthesizer and may have different platform behavior.
 
 ## Validation
 

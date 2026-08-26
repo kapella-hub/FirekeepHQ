@@ -15,6 +15,12 @@ import type { DecisionAnswers, DecisionBoardDocument } from "./decision-board.js
 export const STUDIO_INVOKE_CHANNEL = "studio:invoke";
 export const STUDIO_EVENT_CHANNEL = "studio:event";
 
+export interface VoiceInputOutcome {
+  readonly state: "complete" | "empty" | "cancelled" | "unavailable";
+  readonly text: string;
+  readonly detail: string;
+}
+
 export type StudioAction =
   | { type: "bootstrap" }
   | { type: "dashboard.open" }
@@ -50,6 +56,8 @@ export type StudioAction =
   | { type: "mission.cancel" }
   | { type: "theme.set"; theme: ThemeMode }
   | { type: "voice.set"; enabled: boolean }
+  | { type: "voice.input.start"; language?: string }
+  | { type: "voice.input.stop" }
   | { type: "run.cancel"; runId?: string };
 
 export interface BootstrapResult {
@@ -75,7 +83,8 @@ export type StudioActionResult =
   | { readonly type: "clipboard-read"; readonly text: string }
   | { readonly type: "clipboard-written" }
   | { readonly type: "decision"; readonly board: DecisionBoardDocument }
-  | { readonly type: "decision-submitted"; readonly url: string };
+  | { readonly type: "decision-submitted"; readonly url: string }
+  | ({ readonly type: "voice-input" } & VoiceInputOutcome);
 
 export type StudioPushEvent =
   | { readonly type: "runtime.event"; readonly event: RuntimeEvent }
