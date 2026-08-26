@@ -353,8 +353,9 @@ describe("Firekeep Studio renderer", () => {
       scrollTop: { configurable: true, writable: true, value: 200 },
     });
     const scrollTo = vi.mocked(transcript.scrollTo);
-    scrollTo.mockClear();
     fireEvent.scroll(transcript);
+    await screen.findByRole("button", { name: "Jump to latest response" });
+    scrollTo.mockClear();
 
     act(() => pushStudioEvent?.({ type: "runtime.event", event: { ...base, id: "event-2", payload: { kind: "message.delta", messageId: "message-2", role: "assistant", text: "Streaming" }, raw: null } }));
     await screen.findByText("Streaming");
