@@ -235,7 +235,7 @@ next session)"; opted-out it's the old "run: firekeep update" nudge. Opt out wit
 session — `maybe_spawn` swallows every error and returns False. Release-host fetches on this
 path (`firekeep update`'s manifest/wheel downloads, `firekeep doctor`'s `client-version` check) go
 through a scoped `truststore` OS-trust SSL context (`client/firekeep_client/updater.py:
-_dist_ssl_context`) — `truststore` is a new `truststore>=0.9.1` dependency in
+dist_ssl_context`) — `truststore` is a new `truststore>=0.9.1` dependency in
 `client/pyproject.toml` — never `truststore.inject_into_ssl()`, which replaces the
 process-wide default context and would widen the configured server's `ca_path` trust
 instead of leaving it scoped; when `truststore` isn't installed the call returns `None`
