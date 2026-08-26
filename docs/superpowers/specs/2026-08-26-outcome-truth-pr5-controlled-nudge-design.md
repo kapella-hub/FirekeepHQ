@@ -118,21 +118,35 @@ populations, counted and disclosed, per the frozen compliance convention
 runtime is **not_exposed** — assigned-but-unreached contamination, reported.
 **Intent-to-treat** over all A/B sessions with `created_at >= T0` is the
 secondary analysis; its dilution by unexposable runtimes only pulls toward
-null, never fabricates an effect. A **balance check** is mandatory: exposure
-rates must not differ significantly between arms (the rule conditions only
-on pre-treatment, arm-independent receipts; a significant imbalance
-invalidates the per-protocol read for that snapshot).
+null, never fabricates an effect. A **balance check** is mandatory, and it
+is absolute bounds, not a significance test — non-significance at small N is
+the weakest evidence of balance exactly when imbalance is most damaging. The
+readout reports a per-arm composition table (members, sessions per member,
+runtime mix, per-protocol fraction of ITT), and the per-protocol read is
+valid only if (a) the arms' per-protocol fractions of ITT are within 10
+percentage points of each other, and (b) no arm's per-protocol sessions are
+more than 50% from a single member. A violated bound demotes that snapshot's
+per-protocol read to descriptive (`balance_violated`, table attached) —
+never a verdict. The rule conditions only on pre-treatment, arm-independent
+receipts.
 
 **D7. The readout is an additive `arm_comparison` block on the always-on
 compliance surface — not the Experiment shell.** `compare_arm_proportions`
-(new, in the autopilot module) imports the three pure helpers from
-`patterns/statistics.py` (`_chi_square_2x2` — whose stdlib fallback makes it
-scipy-free; `_cohens_h`; `_confidence_interval_diff`) and feeds directly
-from the `grade_self_reported` row's `by_experiment_group` buckets
-restricted per D6. It reports per-arm rates (computed — the split ships only
-hits/total today), p-value, Cohen's h, the CI on the difference, sessions
-AND distinct members per arm, and `insufficient_n` gating per D8. Tests run
-un-gated (not under the `PATTERN_EXPERIMENTS_ENABLED` skip). **Dated
+(new, in the autopilot module) classifies **from the parsed per-eval records
+`build_compliance` already holds** — each carrying `experiment_group`,
+`created_at`, `briefing_delivered`, `runtime` and the D13 member token —
+applying D6 record-by-record. (The `grade_self_reported` row's
+`by_experiment_group` buckets are pre-aggregated hits/total carrying none of
+D6's dimensions; they cannot be "restricted", and they stay byte-identical
+under the frozen-row guard.) The block reports: the member-level primary
+result (D8 — arm means of member proportions, permutation p), the
+session-level χ²/Cohen's h/CI **labeled descriptive**, sessions and distinct
+members per arm, the D6 balance table, unknown/not_exposed counts, the D12
+`nudge_shown` coverage, and `insufficient_n` gating per D8. Stats helpers
+come from `patterns/statistics.py` (`_chi_square_2x2` — whose stdlib
+fallback makes it scipy-free; `_cohens_h`; `_confidence_interval_diff`); the
+permutation test is new and pure stdlib. Tests run un-gated (not under the
+`PATTERN_EXPERIMENTS_ENABLED` skip). **Dated
 walk-back of the deferred-list vehicle:** the PR4 document said "Experiment.
 pattern_id made optional"; that shell is registration-gated off by default
 (invisible on every real deployment), its compute joins SessionFeatures —
@@ -146,24 +160,43 @@ raises on the shipped image); the fixed-z computation is stated in D8.
 **D8. Hypotheses (primed, per the PR4 document's reservation), thresholds
 fixed now.**
 
-- **H1′ (controlled adoption lift):** among per-protocol sessions, the
-  treatment arm's graded fraction exceeds control's, χ² p < 0.05 AND
-  |Cohen's h| > 0.1 (the spine's own significance semantics). Minimum
-  detectable effect pre-registered at **20 percentage points absolute**;
-  minimum N per arm from the fixed-z two-proportion formula
-  n = (z_α/2 + z_β)² · (p₁(1−p₁) + p₂(1−p₂)) / (p₁−p₂)² with z 1.96/0.8416
-  and worst-case variance (p = 0.5): **99 sessions per arm**, AND at least
-  **3 distinct members per arm**. Below either bound the block reports
-  `insufficient_n` with the counts — never a verdict. The clustering caveat
-  is disclosed in the block itself: randomization is member-level, sessions
-  within a member are correlated, so the session-level test is
-  anticonservative; members-per-arm is reported beside sessions-per-arm so a
-  reader can see when the "experiment" is really two people.
-- **H2′ (honesty under the stronger nudge):** the treatment arm's
-  optimism-skew stays ≤ 15% of self-success sessions at N ≥ 30 (H2's bound
-  and gate, unchanged) AND is not significantly worse than control's (same
-  spine, same α). A nudge that lifts adoption by teaching flattery fails
-  here regardless of H1′.
+- **H1′ (controlled adoption lift) — member-level primary.** Randomization
+  is member-level (D1), so the confirmatory unit is the member, not the
+  session: grading is plausibly a per-member habit (intra-member correlation
+  near 1), and a session-level test under that structure is not merely
+  anticonservative — with ~33 sessions per member, the design effect
+  1+(m̄−1)ρ inflates variance ~17× even at ρ = 0.5, and the session-level
+  p-value stops meaning anything. Primary analysis: for each member with
+  **≥ 5 per-protocol sessions**, compute the graded fraction; compare the
+  arms' unweighted means of member fractions with an **exact permutation
+  test** over arm reassignments (all C(m, m_A) reassignments, or 10,000
+  Monte Carlo draws when the exact enumeration exceeds that), two-sided.
+  H1′ holds iff permutation p < 0.05 AND the difference in arm means is
+  ≥ 10 percentage points. Floors: **≥ 5 qualifying members per arm** (below
+  4-vs-4 the permutation test cannot reach p < 0.05 at all — 3-vs-3 bottoms
+  out at exactly 1/20) AND **≥ 99 per-protocol sessions per arm** (the
+  fixed-z two-proportion bound, retained for the descriptive session-level
+  readout: n = (z_α/2 + z_β)² · (p₁(1−p₁) + p₂(1−p₂)) / (p₁−p₂)², z
+  1.96/0.8416, worst-case p = 0.5, MDE 20pp). Below either floor the block
+  reports `insufficient_n` with the counts — never a verdict. The
+  session-level χ² p < 0.05 ∧ |Cohen's h| > 0.1 readout is retained
+  **descriptive-only** and can never substitute for the member-level
+  primary. Stated honestly: the current fleet may never reach 5 members per
+  arm; in that case H1′ stays `insufficient_n` indefinitely and PR6 stays
+  gated — that is the designed outcome, not a defect to be patched by
+  promoting the session-level number.
+- **H2′ (honesty under the stronger nudge) — non-inferiority, not
+  absence-of-significance.** Two conditions, both required: (a) the
+  treatment arm's optimism-skew stays ≤ 15% of self-success sessions, at
+  N ≥ 30 self-success sessions **per arm** (H2's bound and gate, unchanged);
+  (b) a **one-sided non-inferiority test at α = 0.05 with a
+  10-percentage-point margin** — the upper bound of the one-sided 95%
+  confidence interval on (skew_treatment − skew_control) must lie below
+  +10pp. Passing requires evidence of non-inferiority: an underpowered
+  comparison reports `insufficient_n`, never a pass — "not significantly
+  worse" at small N is the underpowered test passing by default, which is
+  exactly backwards for an honesty guardrail. A nudge that lifts adoption
+  by teaching flattery fails here regardless of H1′.
 - **H3′ is deliberately NOT registered.** The McNemar/Cohen's-κ
   paired-agreement helper the PR4 document named has zero input rows today:
   `_RECOGNIZED_SOURCES = ("self_reported",)`, `llm_judged_*` fields are
@@ -175,11 +208,17 @@ fixed now.**
   biases κ by construction). This supersedes the deferred-list line by
   dated note.
 
-**D9. Arm→treatment mapping: A = treatment, B = control.** Fixed here,
-mechanically (alphabetical), chosen before the author viewed any per-arm
-adoption number (the compliance splits were never inspected during this
-spec's preparation; the hash is deterministic, so this mapping is the last
-researcher degree of freedom and it closes now).
+**D9. Arm→treatment mapping: decided by a public coin, not by the author.**
+The original draft fixed A = treatment "chosen blind" — an unauditable
+claim, since the per-arm adoption splits were live on
+`GET /autopilot/compliance` from PR4's deploy (2026-08-25), a day before
+this document existed. Replaced by a data-independent mechanism declared
+before its input exists: **the treatment arm is "A" if the first hex digit
+of this revision's git commit hash is even (0, 2, 4, 6, 8, a, c, e), "B" if
+odd**. The hash cannot be known before the commit is made and cannot be
+steered toward either outcome without discarding commits the reflog would
+show. The resolved mapping is recorded in the implementation plan (the next
+commit) and again in the T0 addendum.
 
 **D10. None-arm sessions receive control behavior.** No nudge section, no
 inclusion in inference, disclosed counts — unauthenticated and
@@ -197,7 +236,44 @@ section is **withheld** — the strategy-tips precedent: an unrecorded
 exposure corrupts the loop. The receipt enables a delivered-vs-recorded
 consistency check in the readout; `briefing_delivered` remains the exposure
 receipt (D6) because it is client-side-mechanical, while `nudge_shown` is
-server-side proof of composition.
+server-side proof of composition. The accounting is pre-registered, because
+withhold-on-failure creates assigned-but-untreated arm-A sessions that D6 —
+which never conditions on `nudge_shown` — still classifies per-protocol:
+the readout reports **nudge_shown coverage** (the fraction of arm-A
+per-protocol sessions whose briefing has a `nudge_shown` record),
+classification stays as-assigned (the dilution pulls the measured effect
+toward null, never fabricates one), and coverage below 90% is flagged in
+the block.
+
+**D13. A hashed member token rides the eval pipeline (new data element).**
+D7 and D8 need members-per-arm and per-member graded fractions, but the
+parsed eval records carry no member identity — PR4-D1 stamped only
+`experiment_group`, and without a member key the registered member floor
+was uncomputable. The same field-riding path gains `member_token =
+sha256(owner_member).hexdigest()[:12]`: stamped on the session beside
+`experiment_group` at the same resolution point (the verified
+`owner_member`, so token and arm cannot disagree about which member),
+carried through the session_start replay payload into the parsed eval
+snapshot, and grouped on by `compare_arm_proportions`. The token is one-way
+(analytics surfaces never expose the raw member string) and deterministic
+(the same member aggregates across sessions). Records without the token —
+every eval predating the PR5 deploy — classify **unknown** for member-level
+analysis; the deploy precedes T0, so no per-protocol record can lack it.
+
+**D14. The verdict of record is one dated snapshot; every earlier view is
+non-confirmatory.** The always-on `arm_comparison` block recomputes on
+every compliance GET. Continuous recomputation plus a lift-when-crossed
+`insufficient_n` gate invites first-crossing selection — unlimited looks at
+nominal α — and the 30-day eval TTL makes successive snapshots overlapping
+sliding windows an experimenter could shop between. Registered now: the
+H1′/H2′ verdict of record is a **single dated snapshot committed as an
+addendum to this document, taken at T0 + 28 days** (inside the 30-day TTL,
+so the whole [T0, readout] window is intact in one snapshot). If the D8
+floors are unmet at that date, `insufficient_n` IS the registered readout
+of this experiment, and any continuation runs under a new dated
+registration. Every intermediate view of the block is operational
+monitoring, never confirmatory; the block carries `confirmatory: false`
+until the registered snapshot exists.
 
 ## Non-goals
 
@@ -211,6 +287,43 @@ server-side proof of composition.
 - Dashboard rendering of the arm comparison (the JSON block is the readout;
   a UI card is a follow-up).
 
+## Interference and co-intervention (disclosed)
+
+Dark deploy (D4) protects the *code* path; it cannot protect the *text*.
+This document commits the verbatim treatment wording (D3) into the
+repository whose guides and specs the measured fleet's own agents read —
+CLAUDE.md links the guides into every session, and the Detection section
+below updates two guides inside PR4's H1 window. The population under
+measurement is the team dogfooding this repo. Two spillover channels are
+therefore part of the registration, each with its bias direction:
+
+- **In-repo text.** Any agent — either arm, or the PR4 uniform population —
+  can read the strong-nudge wording in this spec or the guides, before T0
+  and after. For PR4-H1, the in-window text is a uniform co-intervention:
+  the registered PR4-H1 snapshot therefore measures the effect of the
+  **mild-tool-description-nudge + in-repo-strong-nudge-text bundle**, not
+  the D4 description alone, and is reframed as such by this dated note. For
+  H1′, control-arm exposure to the text moves control toward treatment
+  behavior — contamination that pulls the measured incremental lift
+  **toward null**; it cannot fabricate a lift.
+- **Shared team memory.** Members share one Keep: a treatment-arm session's
+  graded outcomes and any learned grade-your-sessions knowledge are
+  recallable by control-arm sessions. Same direction — control
+  contamination, toward null. SUTVA does not hold across arms on a
+  shared-memory fleet; what H1′ estimates is the incremental effect of
+  *direct briefing delivery over ambient exposure*, which is the deployable
+  quantity anyway (a real rollout would be fleet-wide with the same ambient
+  effects).
+
+A design that removed these channels — deployment-level randomization
+across isolated Keeps, the text quarantined out of the repo — is out of
+reach at this fleet size and would answer a less relevant question. The
+disclosure is the mitigation, and the direction analysis is why the readout
+stays interpretable: both channels shrink the measured effect, so a
+positive H1′ survives them, while a null H1′ is ambiguous between "no
+effect" and "ambient saturation" — a caveat the block carries in its own
+text.
+
 ## Detection of the two drift points this spec corrects in prose
 
 `docs/guides/replay-evals-patterns.md`'s PR4-vs-PR5 paragraph and the
@@ -220,7 +333,10 @@ server-composed channel and the deferred H3′, each as a dated addition.
 ## Files
 
 `auth/experiment.py` (new — the shared arm function; bridge re-imports);
-`bridge/app/session.py` (import swap only); `cortex/app/briefing/api.py` +
+`bridge/app/session.py` (import swap + the D13 member-token stamp beside
+`experiment_group`); the session_start payload model and eval parser on the
+PR4-D1 field-riding path (D13 — exact files pinned in the implementation
+plan); `cortex/app/briefing/api.py` +
 `cortex/app/briefing/sections.py` (arm computation, envelope field,
 `grading_nudge_section`, D12 receipt); `cortex/app/config.py`
 (`GRADING_NUDGE_ENABLED=False`); `cortex/app/autopilot/compliance.py` or
@@ -240,10 +356,18 @@ population logic); tests (`auth/tests/test_experiment_parity.py`,
 - Section: treatment renders the D3 text verbatim; control/None-arm renders
   nothing; flag off renders nothing for both; record-failure withholds
   (D12); the envelope field matches the composed behavior.
-- Arm comparison: known-bucket fixtures against hand-computed χ²/h/CI;
-  `insufficient_n` below either D8 bound; unknown/not_exposed
-  classification per D6 including the balance check; freeze guard — the
-  existing compliance rows byte-identical.
+- Arm comparison: record-level fixtures (per-eval records with arm, member
+  token, receipts, timestamps) against hand-computed permutation p and arm
+  means — the permutation test pinned against a fully worked 4-vs-4
+  example; the session-level χ²/h/CI present and labeled descriptive;
+  `insufficient_n` below each D8 floor separately; unknown/not_exposed
+  classification per D6; each absolute balance bound (10pp,
+  50%-single-member) demonstrated both violated and clean; `nudge_shown`
+  coverage computed; `confirmatory: false` present pre-addendum; freeze
+  guard — the existing compliance rows byte-identical.
+- Member token (D13): stamped beside `experiment_group` from the same
+  member string (token/arm parity); carried into the parsed eval snapshot;
+  an absent token classifies unknown for member-level analysis.
 - Discipline: briefing availability unaffected — section composition
   failure degrades to no section, never a failed briefing.
 
@@ -267,6 +391,40 @@ addendum committed with T0. Office compose/K8s inherit on their next update.
   verdict. The experiment may simply take longer than the eval TTL window —
   readouts are snapshots; the analysis must complete on snapshots, not
   assume the store accumulates forever.
-- **Post-treatment collider guard.** Nothing agent-behavior-dependent enters
-  the exposure definition (D6 uses only mechanical receipts); the balance
-  check is the tripwire if that assumption ever breaks.
+- **Post-treatment selection.** D6's receipts are mechanical, but
+  population entry itself is not: a session exists in the eval store only
+  because the agent called `ctx_start_session`, which is agent behavior the
+  nudge could in principle influence — a treatment that changes
+  session-starting or session-completing rates selects differently into the
+  two arms. The D6 composition table is the named guard: sessions-per-member
+  and per-protocol fractions per arm make a differential-entry effect
+  visible rather than assumed away.
+
+## Revision record
+
+**2026-08-26, same day, pre-implementation.** Adversarial review (two
+independent streams — claims verification against the codebase, hostile
+methodology review — each followed by a skeptic verification pass) returned
+twelve findings; this revision absorbs them before any code exists, the one
+window in which a pre-registration may legitimately change. The substantive
+changes: D7's data flow corrected — the pre-aggregated
+`by_experiment_group` buckets carry none of D6's dimensions and could never
+be "restricted", so classification now runs record-level; D13 added —
+member identity did not exist on the eval records, so the registered member
+floor was uncomputable as written; H1′'s primary analysis moved to the
+member level (the randomization unit) with an exact permutation test, the
+session-level χ² demoted to descriptive and its 3-members floor (which the
+review correctly called theater) replaced by a 5-member floor at which the
+permutation test can actually reach significance; H2′ recast as one-sided
+non-inferiority with a stated α and margin (it was
+acceptance-by-non-significance); the balance check given absolute bounds
+and a composition table (it was an unspecified significance test with the
+burden inverted); D14 added — one dated snapshot at T0 + 28 days is the
+verdict of record, because an always-on block recomputed at will is
+unlimited-looks α inflation; D9's unauditable "chosen blind" replaced by a
+commit-hash coin; the interference section added with bias directions,
+reframing the registered PR4-H1 snapshot as measuring the mild-nudge +
+in-repo-text bundle; D12 given pre-registered `nudge_shown`-coverage
+accounting; the post-treatment risk restated (population entry is itself
+agent behavior). No threshold was weakened; every change corrects a
+mechanical impossibility or strengthens the inferential standard.
