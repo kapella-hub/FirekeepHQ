@@ -25,10 +25,12 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import fakeredis.aioredis as fr
 import pytest
 
+from app.autopilot import arm_comparison as ac
 from app.autopilot import compliance as comp
 
 NOW = datetime(2026, 8, 25, 12, 0, 0, tzinfo=timezone.utc)
@@ -328,6 +330,71 @@ def test_none_experiment_group_excluded_from_skew_split_but_counted_overall():
 
 
 # ------------------------------------------ endpoint-level via fakeredis --
+
+# ------------------------------------------- PR5 arm_comparison freeze --
+#
+# Outcome truth PR5 adds ONE top-level key. The guard below is the same shape
+# as the round-3/round-4 guards above: the frozen halves of the payload must
+# be byte-identical to what the pure builders produce over the same snapshot,
+# whether or not the new block runs. `arm_comparison` reads the eval list it
+# is handed and writes nothing to it — this is what proves that.
+
+PAYLOAD_KEYS = {
+    "generated_at", "sessions_evaluated", "dated_sessions", "unparsed",
+    "approximate", "instructions", "optimism_skew", "arm_comparison", "notes",
+}
+
+
+@pytest.mark.asyncio
+async def test_arm_comparison_is_additive_to_the_frozen_surface():
+    """T0 unset (the default): the new key is present and inert, and every
+    pre-PR5 section is exactly what its builder produces alone."""
+    evals = [
+        rec("s1", memory_read_count=2, memory_write_count=1, days_ago=2.0,
+            task_result="success", task_result_source="self_reported",
+            experiment_group="A"),
+        rec("s2", memory_read_count=0, days_ago=1.0, experiment_group="B"),
+    ]
+    r = fr.FakeRedis(decode_responses=True)
+    for e in evals:
+        await r.set(f"rp:eval:{e['session_id']}", json.dumps(e))
+
+    body = await comp.build_compliance(r)
+
+    assert set(body) == PAYLOAD_KEYS
+    assert body["instructions"] == comp.build_rows(evals)
+    assert body["optimism_skew"] == comp.build_optimism_skew(evals)
+    assert body["arm_comparison"]["status"] == "not_started"
+
+
+@pytest.mark.asyncio
+async def test_running_arm_comparison_does_not_perturb_the_frozen_rows(
+        monkeypatch):
+    """The same guard with the experiment ACTUALLY RUNNING — T0 set and both
+    arms populated with per-protocol sessions, so the whole D6/D8 path
+    executes over the very list `build_rows` scores."""
+    monkeypatch.setattr(
+        ac, "get_settings",
+        lambda: SimpleNamespace(GRADING_NUDGE_T0="2026-08-01T00:00:00+00:00"))
+    evals = []
+    r = fr.FakeRedis(decode_responses=True)
+    for i in range(6):
+        e = rec(f"s{i}", memory_read_count=i % 2, days_ago=i + 1.0,
+                task_result="success", task_result_source="self_reported",
+                experiment_group="A" if i % 2 else "B")
+        e["member_token"] = f"{'0' * 11}{i}"
+        e["briefing_delivered"] = True
+        e["runtime"] = "claude"
+        e["briefing_id"] = f"b{i}"
+        evals.append(e)
+        await r.set(f"rp:eval:{e['session_id']}", json.dumps(e))
+
+    body = await comp.build_compliance(r)
+
+    assert body["arm_comparison"]["status"] == "ok"
+    assert body["instructions"] == comp.build_rows(evals)
+    assert body["optimism_skew"] == comp.build_optimism_skew(evals)
+
 
 @pytest.mark.asyncio
 async def test_optimism_skew_surfaced_alongside_the_compliance_table():
