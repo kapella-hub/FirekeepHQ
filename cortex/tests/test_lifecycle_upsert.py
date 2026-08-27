@@ -180,7 +180,12 @@ class TestUpsertMergesLifecycle:
         ):
             await vector_client.upsert(
                 text="same text",
-                metadata={"source": "action_log", "agent_id": "bob", "domain": "general"},
+                metadata={
+                    "source": "action_log",
+                    "agent_id": "bob",
+                    "domain": "general",
+                    "workspace_id": "ws-test",
+                },
             )
 
         payload = mock_qdrant_client.upsert.call_args.kwargs["points"][0].payload
@@ -201,7 +206,8 @@ class TestUpsertMergesLifecycle:
             vector_client, "_embed", new_callable=AsyncMock, return_value=[0.1] * 768
         ):
             point_id = await vector_client.upsert(
-                text="brand new", metadata={"source": "action_log"}
+                text="brand new",
+                metadata={"source": "action_log", "workspace_id": "ws-test"},
             )
 
         assert isinstance(point_id, str)
@@ -218,7 +224,10 @@ class TestUpsertMergesLifecycle:
         with patch.object(
             vector_client, "_embed", new_callable=AsyncMock, return_value=[0.1] * 768
         ):
-            await vector_client.upsert(text="new", metadata={"source": "action_log"})
+            await vector_client.upsert(
+                text="new",
+                metadata={"source": "action_log", "workspace_id": "ws-test"},
+            )
 
         payload = mock_qdrant_client.upsert.call_args.kwargs["points"][0].payload
         assert payload["created_at"] == payload["timestamp"]

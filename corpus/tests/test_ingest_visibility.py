@@ -289,7 +289,7 @@ class TestUpsertPromotion:
             await client.upsert(
                 text="private chunk",
                 metadata={"source": "corpus", "visibility": "member",
-                          "member_id": "m1"},
+                          "member_id": "m1", "workspace_id": "ws-test"},
             )
         payload = qdrant.upsert.call_args.kwargs["points"][0].payload
         assert payload["visibility"] == "member"
@@ -303,7 +303,8 @@ class TestUpsertPromotion:
         with patch.object(client, "_embed", new=AsyncMock(return_value=[0.1] * 8)):
             await client.upsert(
                 text="a plain memory",
-                metadata={"source": "action_log", "domain": "general"},
+                metadata={"source": "action_log", "domain": "general",
+                          "workspace_id": "ws-test"},
             )
         payload = qdrant.upsert.call_args.kwargs["points"][0].payload
         assert "visibility" not in payload
@@ -320,7 +321,8 @@ class TestUpsertPromotion:
         with patch.object(client, "_embed", new=AsyncMock(return_value=[0.1] * 8)):
             await client.upsert(
                 text="a staged chunk",
-                metadata={"source": "corpus", "committed": False},
+                metadata={"source": "corpus", "committed": False,
+                          "workspace_id": "ws-test"},
             )
         payload = qdrant.upsert.call_args.kwargs["points"][0].payload
         assert payload["committed"] is False, (

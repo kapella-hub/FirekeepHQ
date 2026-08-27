@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import time
 import uuid
@@ -34,6 +35,7 @@ from qdrant_client.models import (
 
 from app.db.visibility import GENERATION_GUARD, visibility_should
 from app.exceptions import VectorStoreError
+from app.models import normalize_namespace
 
 if TYPE_CHECKING:
     from app.config import Settings
@@ -42,6 +44,43 @@ logger = logging.getLogger(__name__)
 
 # Deterministic namespace for content-based UUIDs (uuid5).
 FIREKEEP_UUID_NAMESPACE = uuid.UUID("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+
+
+def memory_point_id(workspace_id: str, namespace: str, text: str) -> str:
+    """Mint a scoped, deterministic point id for a memory (identity-v2 D1).
+
+    Seed is the JSON encoding of ``["mem2", workspace_id, namespace, text]``
+    (compact separators, ``ensure_ascii=False``) hashed via
+    ``uuid.uuid5(FIREKEEP_UUID_NAMESPACE, seed)``. Scoping the seed on
+    workspace_id and namespace — not text alone — means identical text in two
+    workspaces (or two namespaces of the same workspace) can never collapse
+    onto the same point, and JSON-encoding each field (rather than joining
+    with a delimiter) means no value a caller controls, including the text
+    itself, can forge a collision by embedding the delimiter.
+
+    Immutability invariant: this encoding is the registered identity contract
+    for "mem2" points. Changing it changes every existing point's id, which
+    orphans stored vectors from anything that recomputes rather than reads
+    the id back. Do not alter the seed shape without a migration.
+
+    namespace is normalized (see ``app.models.normalize_namespace``) before
+    seeding, so this function is idempotent regardless of the caller's
+    casing/hyphenation of the namespace.
+
+    Raises:
+        ValueError: workspace_id is falsy (None or empty) — identity must be
+            scoped to a verified workspace; there is no unscoped mint.
+    """
+    if not workspace_id:
+        raise ValueError("memory_point_id requires a non-empty workspace_id")
+
+    seed = json.dumps(
+        ["mem2", workspace_id, normalize_namespace(namespace), text],
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return str(uuid.uuid5(FIREKEEP_UUID_NAMESPACE, seed))
+
 
 # Maximum number of embedding vectors to cache in memory.
 _EMBED_CACHE_MAX_SIZE = 512
@@ -707,17 +746,37 @@ class VectorClient:
                       to top-level payload fields when present, so endpoints
                       like /memory/contributors can filter/group on them.
                       Other keys are stored under 'metadata'.
-            namespace: Tenant namespace for multi-tenant isolation.
+            namespace: Tenant namespace for multi-tenant isolation. Normalized
+                      once here (see app.models.normalize_namespace) before
+                      use in either the stored payload or a minted point id.
             point_id: caller-scoped identity (corpus uses source-scoped IDs so
                       identical text never collapses across sources/members —
-                      Docdex §4.2); None keeps text-derived dedup for memories.
+                      Docdex §4.2); None mints a scoped id from
+                      metadata["workspace_id"] via memory_point_id
+                      (identity-v2 D1) — a write with no point_id and no
+                      verified workspace_id is refused rather than minted
+                      unscoped (identity-v2 D3, fail-closed).
 
         Returns:
             The generated point ID as a string.
+
+        Raises:
+            VectorStoreError: point_id is None and metadata carries no
+                workspace_id — there is no unscoped mint.
         """
         try:
+            namespace = normalize_namespace(namespace)
+            if point_id is None:
+                workspace_id = metadata.get("workspace_id")
+                try:
+                    point_id = memory_point_id(workspace_id, namespace, text)
+                except ValueError as exc:
+                    raise VectorStoreError(
+                        "memory write refused: no verified workspace_id — "
+                        "cannot mint a scoped point id"
+                    ) from exc
+
             vector = await self._embed(text)
-            point_id = point_id or str(uuid.uuid5(FIREKEEP_UUID_NAMESPACE, text))
 
             ts = metadata.get(
                 "timestamp",
@@ -819,7 +878,8 @@ class VectorClient:
     async def upsert_point(self, point_id: str, text: str, payload: dict) -> str:
         """Write a point at a CALLER-CHOSEN id with a caller-owned payload.
 
-        `upsert` derives its id as uuid5(text) and merges lifecycle from whatever
+        `upsert` derives its id via memory_point_id(workspace_id, namespace, text)
+        when the caller passes no point_id, and merges lifecycle from whatever
         point already sits at that id — which is right for learned memories and
         wrong for anything that must be updated in place (skills already work
         around it with a raw PointStruct; dreams are the second case). Nothing

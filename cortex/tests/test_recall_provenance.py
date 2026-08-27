@@ -55,6 +55,10 @@ def vector_client(mock_qdrant_client) -> VectorClient:
 async def _write_then_read(client, qdrant, metadata: dict) -> dict:
     """Round-trip: upsert `metadata`, then search over the payload it produced."""
     qdrant.retrieve = AsyncMock(return_value=[])
+    # identity-v2 D3: upsert()'s minting branch fails closed without a verified
+    # workspace_id; these tests exercise provenance projection, not minting, so
+    # supply one here rather than at every call site.
+    metadata = {"workspace_id": "ws-test", **metadata}
     with patch.object(client, "_embed", new_callable=AsyncMock, return_value=[0.1] * 768):
         await client.upsert("a memory", metadata)
 

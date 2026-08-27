@@ -185,6 +185,7 @@ class TestUpsert:
                     "source": "action_log",
                     "tags": ["auth"],
                     "domain": "security",
+                    "workspace_id": "ws-test",
                 },
             )
 
@@ -204,7 +205,20 @@ class TestUpsert:
 
     @pytest.mark.asyncio
     async def test_upsert_uses_deterministic_uuid(self, vector_client, mock_qdrant_client):
-        """Same text should produce the same point ID (uuid5)."""
+        """Same text should produce the same point ID (uuid5).
+
+        KNOWN CONFLICT (identity-v2 D1/D3, task 1 self-review): this test
+        pins the OLD text-only minting formula (uuid5(FIREKEEP_UUID_NAMESPACE,
+        text)) directly against the real upsert() minting branch. Task 1
+        intentionally changes that branch to (a) require metadata['workspace_id']
+        (fail-closed — this call has none, so it now raises VectorStoreError
+        before ever reaching a uuid) and (b) seed via
+        memory_point_id(workspace_id, namespace, text), not text alone. Per
+        the task brief, a test that pins the old minting itself is reported,
+        not silently rewritten — left failing for the controller to decide
+        (rewrite against memory_point_id, or delete as superseded by
+        tests/test_memory_point_id.py's test_seed_is_the_registered_encoding).
+        """
         embed_vector = [0.1] * 768
 
         with patch.object(
@@ -226,7 +240,9 @@ class TestUpsert:
             side_effect=VectorStoreError("embed failed"),
         ):
             with pytest.raises(VectorStoreError, match="embed failed"):
-                await vector_client.upsert("text", {"source": "test"})
+                await vector_client.upsert(
+                    "text", {"source": "test", "workspace_id": "ws-test"}
+                )
 
     @pytest.mark.asyncio
     async def test_upsert_qdrant_failure(self, vector_client, mock_qdrant_client):
@@ -235,7 +251,9 @@ class TestUpsert:
         ):
             mock_qdrant_client.upsert.side_effect = RuntimeError("qdrant down")
             with pytest.raises(VectorStoreError, match="Failed to upsert"):
-                await vector_client.upsert("text", {"source": "test"})
+                await vector_client.upsert(
+                    "text", {"source": "test", "workspace_id": "ws-test"}
+                )
 
     @pytest.mark.asyncio
     async def test_upsert_promotes_agent_id_session_id_and_project(
@@ -260,6 +278,7 @@ class TestUpsert:
                     "agent_id": "alex",
                     "session_id": "sid-123",
                     "project": "firekeep",
+                    "workspace_id": "ws-test",
                 },
             )
 
@@ -292,7 +311,8 @@ class TestUpsert:
         ):
             await vector_client.upsert(
                 text="content with no team-continuity keys",
-                metadata={"source": "action_log", "tags": [], "domain": "general"},
+                metadata={"source": "action_log", "tags": [], "domain": "general",
+                          "workspace_id": "ws-test"},
             )
 
         points = mock_qdrant_client.upsert.call_args.kwargs["points"]
@@ -684,7 +704,10 @@ class TestSetFeedback:
 class TestNamespaceSupport:
     @pytest.mark.asyncio
     async def test_upsert_stores_namespace_in_payload(self, vector_client, mock_qdrant_client):
-        """upsert should store the namespace in the Qdrant payload."""
+        """upsert should store the namespace in the Qdrant payload, normalized
+        (identity-v2 D1: normalize_namespace runs once at the top of upsert
+        and the normalized value — not the raw caller value — is what lands
+        in the payload, so it matches the value the point id was seeded on)."""
         embed_vector = [0.1] * 768
 
         with patch.object(
@@ -692,13 +715,14 @@ class TestNamespaceSupport:
         ):
             await vector_client.upsert(
                 text="Fix auth bug",
-                metadata={"source": "action_log", "tags": ["auth"], "domain": "security"},
+                metadata={"source": "action_log", "tags": ["auth"], "domain": "security",
+                          "workspace_id": "ws-test"},
                 namespace="agent-1",
             )
 
         call_kwargs = mock_qdrant_client.upsert.call_args.kwargs
         points = call_kwargs["points"]
-        assert points[0].payload["namespace"] == "agent-1"
+        assert points[0].payload["namespace"] == "agent_1"
 
     @pytest.mark.asyncio
     async def test_upsert_default_namespace_in_payload(self, vector_client, mock_qdrant_client):
@@ -710,7 +734,8 @@ class TestNamespaceSupport:
         ):
             await vector_client.upsert(
                 text="Fix auth bug",
-                metadata={"source": "action_log", "tags": [], "domain": "general"},
+                metadata={"source": "action_log", "tags": [], "domain": "general",
+                          "workspace_id": "ws-test"},
             )
 
         call_kwargs = mock_qdrant_client.upsert.call_args.kwargs
@@ -1171,7 +1196,8 @@ class TestUpsertLifecycleFields:
         ):
             await vector_client.upsert(
                 text="Test memory",
-                metadata={"source": "test", "tags": [], "domain": "general"},
+                metadata={"source": "test", "tags": [], "domain": "general",
+                          "workspace_id": "ws-test"},
             )
 
         call_kwargs = mock_qdrant_client.upsert.call_args.kwargs
@@ -1480,7 +1506,7 @@ class TestMemoryTypeTopLevel:
             await vector_client.upsert(
                 text="Neo4j pool size is 50",
                 metadata={"source": "action_log", "tags": [], "domain": "infra",
-                          "memory_type": "reference"},
+                          "memory_type": "reference", "workspace_id": "ws-test"},
             )
         payload = mock_qdrant_client.upsert.call_args.kwargs["points"][0].payload
         assert payload["memory_type"] == "reference"          # top-level: GC reads this
@@ -1493,7 +1519,8 @@ class TestMemoryTypeTopLevel:
         ):
             await vector_client.upsert(
                 text="some text",
-                metadata={"source": "action_log", "tags": [], "domain": "general"},
+                metadata={"source": "action_log", "tags": [], "domain": "general",
+                          "workspace_id": "ws-test"},
             )
         payload = mock_qdrant_client.upsert.call_args.kwargs["points"][0].payload
         assert payload["memory_type"] == "episodic"
