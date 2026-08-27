@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import uuid
 from collections import OrderedDict
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -11,7 +10,7 @@ import httpx
 import pytest
 
 from app.config import Settings
-from app.db.vector import FIREKEEP_UUID_NAMESPACE, VectorClient, _EMBED_CACHE_MAX_SIZE
+from app.db.vector import VectorClient, _EMBED_CACHE_MAX_SIZE, memory_point_id
 from app.exceptions import VectorStoreError
 
 
@@ -207,28 +206,24 @@ class TestUpsert:
     async def test_upsert_uses_deterministic_uuid(self, vector_client, mock_qdrant_client):
         """Same text should produce the same point ID (uuid5).
 
-        KNOWN CONFLICT (identity-v2 D1/D3, task 1 self-review): this test
-        pins the OLD text-only minting formula (uuid5(FIREKEEP_UUID_NAMESPACE,
-        text)) directly against the real upsert() minting branch. Task 1
-        intentionally changes that branch to (a) require metadata['workspace_id']
-        (fail-closed — this call has none, so it now raises VectorStoreError
-        before ever reaching a uuid) and (b) seed via
-        memory_point_id(workspace_id, namespace, text), not text alone. Per
-        the task brief, a test that pins the old minting itself is reported,
-        not silently rewritten — left failing for the controller to decide
-        (rewrite against memory_point_id, or delete as superseded by
-        tests/test_memory_point_id.py's test_seed_is_the_registered_encoding).
+        Re-pinned to the v2 scoped encoding (identity-v2 D1): the id is
+        memory_point_id(workspace_id, namespace, text), not a bare
+        uuid5(FIREKEEP_UUID_NAMESPACE, text) — see
+        docs/superpowers/specs/2026-08-27-memory-identity-v2-design.md. The
+        regression this test guards (same input twice -> same id) is
+        unchanged; only the formula moved.
         """
         embed_vector = [0.1] * 768
+        metadata = {"source": "test", "workspace_id": "ws-test"}
 
         with patch.object(
             vector_client, "_embed", new_callable=AsyncMock, return_value=embed_vector
         ):
-            id1 = await vector_client.upsert("same text", {"source": "test"})
-            id2 = await vector_client.upsert("same text", {"source": "test"})
+            id1 = await vector_client.upsert("same text", metadata)
+            id2 = await vector_client.upsert("same text", metadata)
 
         assert id1 == id2
-        expected = str(uuid.uuid5(FIREKEEP_UUID_NAMESPACE, "same text"))
+        expected = memory_point_id("ws-test", "default", "same text")
         assert id1 == expected
 
     @pytest.mark.asyncio
