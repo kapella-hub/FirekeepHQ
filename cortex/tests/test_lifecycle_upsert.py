@@ -371,3 +371,88 @@ class TestV1LifecycleBridge:
         )
         payload = mock_qdrant_client.upsert.call_args.kwargs["points"][0].payload
         assert payload["confirmed_count"] == 3
+
+    @pytest.mark.asyncio
+    async def test_explicit_memory_scheme_point_id_still_bridges(
+        self, vector_client, mock_qdrant_client
+    ):
+        """The /memory/learn shape (identity-v2 D2): main.py precomputes
+        memory_point_id itself and passes it in as an explicit point_id, so
+        `point_id is not None` at upsert() — `minted` alone would miss this,
+        the PRIMARY relearn path and the one D5 exists to protect. The bridge
+        must still fire by recognizing the id as memory-scheme (recomputing
+        and comparing), not merely by "was it minted here."""
+        text = "same text"
+        workspace_id = "ws-bridge"
+        namespace = "default"
+        v1_id = _v1_point_id(text)
+        v2_id = memory_point_id(workspace_id, namespace, text)
+
+        v1_point = MagicMock()
+        v1_point.payload = _existing(
+            status="archived",
+            archived_at="2026-04-01T00:00:00+00:00",
+            archive_source="gc",
+            archive_reason="low_value",
+            archived_from_status="active",
+            purge_eligible_at="2026-06-30T00:00:00+00:00",
+        )
+
+        async def retrieve(collection, ids, with_payload=True):
+            if ids == [v2_id]:
+                return []
+            if ids == [v1_id]:
+                return [v1_point]
+            raise AssertionError(f"unexpected retrieve ids: {ids}")
+
+        mock_qdrant_client.retrieve = AsyncMock(side_effect=retrieve)
+
+        with patch.object(
+            vector_client, "_embed", new_callable=AsyncMock, return_value=[0.1] * 768
+        ):
+            point_id = await vector_client.upsert(
+                text=text,
+                metadata={"source": "action_log", "workspace_id": workspace_id},
+                namespace=namespace,
+                point_id=v2_id,  # explicit, as main.py's /memory/learn does
+            )
+
+        assert point_id == v2_id
+        assert mock_qdrant_client.retrieve.await_count == 2
+        payload = mock_qdrant_client.upsert.call_args.kwargs["points"][0].payload
+        assert payload["status"] == "archived"
+        assert payload["archived_at"] == "2026-04-01T00:00:00+00:00"
+        assert payload["purge_eligible_at"] == "2026-06-30T00:00:00+00:00"
+
+    @pytest.mark.asyncio
+    async def test_explicit_non_scheme_point_id_does_not_bridge(
+        self, vector_client, mock_qdrant_client
+    ):
+        """A caller-owned id from a DIFFERENT scheme (corpus's source-scoped
+        ids, dreams, skills) must never trigger the bridge, even when a v1
+        point with the same text happens to exist — classification is by
+        recomputing memory_point_id and comparing, and a corpus-shaped id
+        fails that equality. Only one retrieve (the caller's own id)."""
+        text = "same text"
+        workspace_id = "ws-bridge"
+        namespace = "default"
+        corpus_id = "corpus-source-scoped-id"
+
+        mock_qdrant_client.retrieve = AsyncMock(return_value=[])
+
+        with patch.object(
+            vector_client, "_embed", new_callable=AsyncMock, return_value=[0.1] * 768
+        ):
+            point_id = await vector_client.upsert(
+                text=text,
+                metadata={"source": "corpus", "workspace_id": workspace_id},
+                namespace=namespace,
+                point_id=corpus_id,
+            )
+
+        assert point_id == corpus_id
+        mock_qdrant_client.retrieve.assert_awaited_once_with(
+            "test_collection", [corpus_id], with_payload=True
+        )
+        payload = mock_qdrant_client.upsert.call_args.kwargs["points"][0].payload
+        assert payload["status"] == "active"

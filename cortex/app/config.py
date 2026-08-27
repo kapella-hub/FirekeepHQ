@@ -93,10 +93,12 @@ class Settings(BaseSettings):
 
     # Identity-v2 D5: transitional lifecycle bridge for the compat window
     # between the v2-identity deploy and the store migration. When upsert()'s
-    # v2-id prefetch misses, also check the OLD v1 point id (bare
-    # uuid5(text)) so relearning text that still exists only as a v1 point
-    # does not resurrect an archived/superseded/deprecated memory ACTIVE
-    # under a freshly-minted v2 id. Retired after the identity migration.
+    # v2-id prefetch misses on a memory-scheme id — either minted internally
+    # (no point_id given) or passed in explicitly by /memory/learn, which
+    # precomputes the same memory_point_id (D2) — also check the OLD v1
+    # point id (bare uuid5(text)) so relearning text that still exists only
+    # as a v1 point does not resurrect an archived/superseded/deprecated
+    # memory ACTIVE under the v2 id. Retired after the identity migration.
     MEMORY_ID_V1_BRIDGE: bool = True
 
     # Memory Decay

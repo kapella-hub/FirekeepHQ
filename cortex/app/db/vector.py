@@ -782,8 +782,8 @@ class VectorClient:
         try:
             namespace = normalize_namespace(namespace)
             minted = point_id is None
+            workspace_id = metadata.get("workspace_id")
             if point_id is None:
-                workspace_id = metadata.get("workspace_id")
                 try:
                     point_id = memory_point_id(workspace_id, namespace, text)
                 except ValueError as exc:
@@ -871,12 +871,27 @@ class VectorClient:
                     point_id,
                     exc,
                 )
-            # Identity-v2 D5 compat bridge: a v2-id miss on a MINTED point may
-            # still be an old v1 point (bare uuid5(text)) — relearning it
-            # would otherwise mint a fresh v2 id and resurrect an archived/
-            # superseded memory ACTIVE. Only runs on the minting branch (an
-            # explicit point_id, e.g. corpus, has no v1 formula to bridge).
-            if existing_payload is None and minted and self._v1_bridge_enabled:
+            # Identity-v2 D5 compat bridge: a v2-id miss may still be an old
+            # v1 point (bare uuid5(text)) — relearning it would otherwise
+            # mint/pass a fresh v2 id and resurrect an archived/superseded
+            # memory ACTIVE. This must cover BOTH id sources: `minted` (no
+            # point_id given — transfer/backfill) AND the /memory/learn shape,
+            # where main.py precomputes the identical memory_point_id and
+            # passes it in as an explicit point_id (identity-v2 D2) — the
+            # primary relearn path, and the one D5 exists to protect. There is
+            # no reliable way to tell "explicit id that happens to equal the
+            # scheme" from "the route computed it itself", so classification
+            # recomputes the scheme id and compares: cheap (one more uuid5),
+            # and a caller-supplied id from a DIFFERENT scheme (corpus's
+            # source-scoped ids, dreams, skills) fails the equality and is
+            # correctly excluded — a route-vs-upsert formula divergence fails
+            # SAFE (the bridge silently doesn't fire; the write still uses
+            # whatever id the caller passed).
+            is_memory_scheme_id = minted or (
+                bool(workspace_id)
+                and point_id == memory_point_id(workspace_id, namespace, text)
+            )
+            if existing_payload is None and is_memory_scheme_id and self._v1_bridge_enabled:
                 try:
                     v1_points = await self._client.retrieve(
                         self._collection, [_v1_point_id(text)], with_payload=True
