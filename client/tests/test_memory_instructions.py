@@ -112,6 +112,7 @@ class TestMemoryComesFirst:
         pass every test above."""
         sections = re.findall(r"^## (.+)$", FIREKEEP_INSTRUCTIONS, re.M)
         joined = " ".join(sections)
+        assert "Communicating" in joined
         assert "Decision Board" in joined
         assert "Knowledge Ingest" in joined
 

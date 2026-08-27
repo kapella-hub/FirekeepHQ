@@ -320,6 +320,18 @@ own loud data-loss confirmation, distinct from the client-removal confirmation. 
 not installed the command prints the manual `docker compose down -v` line and continues with
 client removal rather than failing.
 
+**Communicating section (client 1.5.5, 2026-08-27).** The rendered block gains a fourth
+section, `## Communicating` (`COMMUNICATION_INSTRUCTIONS` in `adapters/base.py`, composed
+second — it governs ordinary turns like the Memory section): fleet-wide response-style
+guidance, written as observable tests (first sentence holds the verdict; a sentence that
+needs a second pass gets rewritten; length calibrated to the question), never exhortations.
+It reaches every runtime surface including the generic tier. Cost decision recorded in
+`client/tests/test_instruction_budget.py`: ~304 tok/turn always-on, ceilings raised in the
+same commit. Guidance-only — deliberately no compliance row, since the server cannot
+observe response length and an unmeasurable predicate would be theater. The instructions
+hash moves with the release, as any rendered-text change does; exposure classification is
+unaffected (sessions self-report rendered==expected).
+
 ## Instruction attribution (client 0.1.41 — Living Instructions round 2)
 
 Two instruction artifacts reach a session, and the round-2 measurement contract

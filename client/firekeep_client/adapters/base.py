@@ -414,12 +414,48 @@ are already gated by hooks and need no declaration.
 """
 
 
+# Requested 2026-08-27: the fleet's replies had grown long and dense enough
+# that the team owner asked for conciseness guidance IN the client, fleet-wide,
+# not hand-written per repo. Same design rule as the section above — observable
+# tests ("first sentence holds the verdict", "needs a second pass -> rewrite"),
+# never exhortations: "be concise" has no edge a model can evaluate. The
+# always-on cost (~0.3k tok/turn) was weighed per test_instruction_budget.py
+# and the ceilings raised in the same commit that added this.
+COMMUNICATION_INSTRUCTIONS = """\
+## Communicating
+
+Your reply is read by a person catching up, not appended to a log. Two
+observable tests before sending:
+
+**The first-sentence test.** A reader who stops after your first sentence
+must already hold the verdict — what happened, what you found, or what you
+recommend. Process narration ("First I looked at…") and restating the
+question never open a reply.
+
+**The re-read test.** Any sentence that needs a second pass gets rewritten —
+a reply that must be re-read saved nobody time. Concise means selective, not
+compressed: drop what does not change the reader's next action, and write
+what remains as full sentences — never fragment chains, arrow shorthand
+("A → B → fails"), or names you invented mid-session.
+
+Calibrate length to the question, not to the effort behind the answer: a
+conversational question gets plain prose, ~150 words, no headers; a completed
+task gets the outcome first and only decision-relevant detail — no recap, no
+closing summary; a design or review runs as long as its content earns.
+
+Report faithfully: a failure is a failure with its evidence, a verified
+success carries no hedging, a number you did not measure is never implied.
+Honesty compresses better than optimism.
+"""
+
+
 # The full firekeep-owned instruction block rendered into each runtime's instruction
 # surface (Claude global CLAUDE.md, kiro steering, opencode AGENTS.md, codex
 # AGENTS.md). Append new sections here.
 #
-# MEMORY_INSTRUCTIONS is first ON PURPOSE. It is the one section that governs
-# ordinary turns; the other two fire on specific, rarer situations.
+# MEMORY_INSTRUCTIONS is first ON PURPOSE, COMMUNICATION second: those two
+# govern ordinary turns; the remaining sections fire on specific, rarer
+# situations.
 #
 # WHY THIS SECTION EXISTS AT ALL — the failure it fixes, so nobody trims it back:
 # a user asked their agent "deploy to my vps" and was told the agent did not know
@@ -448,7 +484,8 @@ are already gated by hooks and need no declaration.
 # repo proved the same thing for decision_board in client 0.1.11, which is the
 # reason DECISION_INSTRUCTIONS exists.
 FIREKEEP_INSTRUCTIONS = (
-    f"{MEMORY_INSTRUCTIONS}\n\n{DECISION_INSTRUCTIONS}\n\n{KNOWLEDGE_INGEST_INSTRUCTIONS}"
+    f"{MEMORY_INSTRUCTIONS}\n\n{COMMUNICATION_INSTRUCTIONS}\n\n"
+    f"{DECISION_INSTRUCTIONS}\n\n{KNOWLEDGE_INGEST_INSTRUCTIONS}"
 )
 
 
@@ -473,7 +510,8 @@ MEMORY_INSTRUCTIONS_NO_HOOKS = MEMORY_INSTRUCTIONS.replace(
 )
 
 GENERIC_INSTRUCTIONS = (
-    f"{MEMORY_INSTRUCTIONS_NO_HOOKS}\n\n{DECISION_INSTRUCTIONS}\n\n{KNOWLEDGE_INGEST_INSTRUCTIONS}"
+    f"{MEMORY_INSTRUCTIONS_NO_HOOKS}\n\n{COMMUNICATION_INSTRUCTIONS}\n\n"
+    f"{DECISION_INSTRUCTIONS}\n\n{KNOWLEDGE_INGEST_INSTRUCTIONS}"
 )
 
 

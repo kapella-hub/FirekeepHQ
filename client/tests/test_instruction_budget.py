@@ -32,24 +32,32 @@ import pytest
 from firekeep_client.adapters import base
 
 
-# name -> (ceiling_chars, measured_2026_08_21)
+# name -> (ceiling_chars, measured at last re-baseline: 2026-08-21, or
+# 2026-08-27 for the rows the Communicating section moved)
 # Headroom is ~12% on the composed blocks and ~15% on the smaller constants:
 # enough for a paragraph of ordinary editing, not enough for a new section.
 BUDGETS = {
     "MEMORY_INSTRUCTIONS": (3_800, 3_356),
+    # 2026-08-27, the deliberate spend this file exists to force a look at:
+    # the team owner asked for fleet-wide conciseness guidance in the client.
+    # ~304 tok/turn always-on, accepted — the guidance exists to SHRINK the
+    # other side of every exchange, and a response trimmed by ~a paragraph
+    # repays it immediately.
+    "COMMUNICATION_INSTRUCTIONS": (1_400, 1_215),
     "DECISION_INSTRUCTIONS": (2_050, 1_782),
     "KNOWLEDGE_INGEST_INSTRUCTIONS": (1_500, 1_298),
     "MCP_SERVER_INSTRUCTIONS": (1_450, 1_251),
     "GATEWAY_INSTRUCTIONS": (1_650, 1_440),
     "CHAT_INSTRUCTIONS": (1_250, 1_061),
     # The composed blocks — what actually lands in a user's instruction file.
-    "FIREKEEP_INSTRUCTIONS": (7_200, 6_440),
-    "GENERIC_INSTRUCTIONS": (7_200, 6_362),
+    "FIREKEEP_INSTRUCTIONS": (8_650, 7_748),
+    "GENERIC_INSTRUCTIONS": (8_650, 7_670),
 }
 
 # The total always-on Firekeep surface on a default Claude Code install:
-# the rendered instruction file block + the MCP handshake text. ~1,970 tok today.
-TOTAL_ALWAYS_ON_CEILING_CHARS = 8_800
+# the rendered instruction file block + the MCP handshake text. ~2,300 tok today
+# (was ~1,970 before the Communicating section, 2026-08-27).
+TOTAL_ALWAYS_ON_CEILING_CHARS = 10_300
 
 
 @pytest.mark.parametrize("name", sorted(BUDGETS))
@@ -99,6 +107,7 @@ def test_composed_block_is_the_sum_of_its_parts():
     """
     parts = (
         base.MEMORY_INSTRUCTIONS,
+        base.COMMUNICATION_INSTRUCTIONS,
         base.DECISION_INSTRUCTIONS,
         base.KNOWLEDGE_INGEST_INSTRUCTIONS,
     )
@@ -107,7 +116,7 @@ def test_composed_block_is_the_sum_of_its_parts():
     joined = sum(len(p) for p in parts)
     overhead = len(base.FIREKEEP_INSTRUCTIONS) - joined
     assert 0 <= overhead <= 400, (
-        f"FIREKEEP_INSTRUCTIONS carries {overhead} chars beyond its three known "
+        f"FIREKEEP_INSTRUCTIONS carries {overhead} chars beyond its four known "
         "sections — a new section was added inline. Give it its own constant "
         "and its own budget line."
     )
