@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import uuid
 from unittest.mock import AsyncMock, patch
 
-from app.db.vector import FIREKEEP_UUID_NAMESPACE
+from app.db.vector import memory_point_id
 from app.exceptions import (
     GraphConnectionError,
     VectorStoreError,
 )
+from auth.principal import deployment_workspace_id
 
 
 # ---------------------------------------------------------------------------
@@ -256,8 +256,13 @@ class TestMemoryLearn:
         assert "Rebuild index" in text_arg
         assert "Search speed improved" in text_arg
         assert "Resolution: Ran REINDEX" in text_arg
-        expected_id = str(uuid.uuid5(FIREKEEP_UUID_NAMESPACE, text_arg))
+        # identity-v2 D2: scoped to the (anonymous-mode) deployment workspace
+        # and the request's namespace — no longer a bare uuid5(text).
+        expected_id = memory_point_id(deployment_workspace_id(), "default", text_arg)
         assert mock_graph.merge_action_log.call_args.kwargs["memory_id"] == expected_id
+        # The route must pass that SAME id to vector.upsert as point_id= —
+        # ending the parallel-computation coincidence: one mint, two writers.
+        assert call_args.kwargs["point_id"] == expected_id
 
     def test_learn_missing_required_fields(self, test_client):
         resp = test_client.post("/memory/learn", json={"action": "only action"})

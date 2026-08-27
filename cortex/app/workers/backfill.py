@@ -25,6 +25,7 @@ import redis.asyncio
 
 from app.config import get_settings
 from app.workers.sleep_cycle import celery_app
+from auth.principal import anonymous_principal
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +114,23 @@ async def _drain(redis_client=None, vector_client=None) -> dict[str, Any]:
             try:
                 payload = json.loads(fields.get("payload") or "{}")
                 namespace = payload.pop("namespace", "default")
+                if not payload.get("workspace_id"):
+                    # Legacy entry: enqueued before workspace_id was always
+                    # stamped (or otherwise missing it). VectorClient.upsert
+                    # fails closed with no point_id and no workspace_id
+                    # (identity-v2 D3) — left alone this would grind every
+                    # attempt into a permanent DLQ entry. Stamp the deployment
+                    # owner's principal instead of guessing; this is the one
+                    # sanctioned unverified-owner mint in the identity-v2 plan.
+                    owner = anonymous_principal()
+                    payload["workspace_id"] = owner["workspace_id"]
+                    payload.setdefault("member_id", owner["member_id"])
+                    logger.warning(
+                        "Backfill entry %s has no workspace_id — stamping "
+                        "deployment owner workspace %r",
+                        fields.get("memory_id", entry_id),
+                        owner["workspace_id"],
+                    )
                 await vector_client.upsert(
                     text=fields["text"], metadata=payload, namespace=namespace
                 )

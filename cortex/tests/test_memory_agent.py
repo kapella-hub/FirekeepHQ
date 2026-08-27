@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import uuid
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -95,7 +94,8 @@ class TestDuplicateDetection:
     def test_llm_merge_reembeds_and_rekeys(
         self, mock_settings, mock_qdrant, mock_neo4j, mock_webhook, mock_ml
     ):
-        """LLM path: merged text is re-embedded, upserted under uuid5(merged_text),
+        """LLM path: merged text is re-embedded, upserted under
+        memory_point_id(keeper_workspace, keeper_namespace, merged_text),
         and ALL cluster members (keeper included) are superseded by the new id."""
         settings = _make_settings()
         mock_settings.return_value = settings
@@ -111,19 +111,23 @@ class TestDuplicateDetection:
         p1 = _make_point("id-1", {"text": "Use Postgres for storage", "status": "active",
                                     "domain": "db", "tags": [], "confirmed_count": 0,
                                     "contradicted_count": 0, "timestamp": "2026-01-01T00:00:00+00:00",
-                                    "created_at": "2025-06-01T00:00:00+00:00"},
+                                    "created_at": "2025-06-01T00:00:00+00:00",
+                                    "workspace_id": "ws-1", "namespace": "infra"},
                          [0.9, 0.1, 0.0])
         p2 = _make_point("id-2", {"text": "Postgres is the storage backend", "status": "active",
                                     "domain": "db", "tags": [], "confirmed_count": 0,
-                                    "contradicted_count": 0, "timestamp": "2026-02-01T00:00:00+00:00"},
+                                    "contradicted_count": 0, "timestamp": "2026-02-01T00:00:00+00:00",
+                                    "workspace_id": "ws-1", "namespace": "infra"},
                          [0.89, 0.11, 0.01])
         client.scroll.return_value = ([p1, p2], None)
         sp2 = _make_point("id-2", score=0.95)
         client.query_points.return_value = _make_query_result([sp2])
 
         merged_text = "Use Postgres as the primary storage backend"
-        from app.db.vector import FIREKEEP_UUID_NAMESPACE
-        expected_id = str(uuid.uuid5(FIREKEEP_UUID_NAMESPACE, merged_text))
+        from app.db.vector import memory_point_id
+        # identity-v2 D2: scoped to the KEEPER's workspace_id + namespace
+        # (p1 — both members tie on confidence, and max() keeps the first).
+        expected_id = memory_point_id("ws-1", "infra", merged_text)
 
         with patch("app.workers.memory_agent.httpx.post") as mock_httpx:
             llm_resp = MagicMock()
@@ -354,6 +358,48 @@ class TestDedupSafety:
         assert result["merged"] == 0
         client.upsert.assert_not_called()
         client.set_payload.assert_not_called()
+
+    @patch("app.workers.memory_agent._fire_webhook_sync")
+    @patch("app.workers.memory_agent._get_neo4j_driver")
+    @patch("app.workers.memory_agent._get_qdrant_client")
+    @patch("app.workers.memory_agent.get_settings")
+    def test_cross_workspace_cluster_is_skipped(
+        self, mock_settings, mock_qdrant, mock_neo4j, mock_webhook, caplog
+    ):
+        """identity-v2 D2: the dedup pass's own clustering groups by domain +
+        vector similarity, not workspace, so a cross-workspace cluster is
+        possible in principle even though it shouldn't occur in practice.
+        If it ever does, the merge must refuse rather than mint a point
+        scoped to one member's workspace while superseding another's."""
+        import logging
+
+        settings = _make_settings()
+        mock_settings.return_value = settings
+
+        client = MagicMock()
+        mock_qdrant.return_value = client
+        p1 = _make_point("id-1", {"text": "Use Postgres for storage", "status": "active",
+                                    "domain": "db", "tags": [], "confirmed_count": 0,
+                                    "contradicted_count": 0, "workspace_id": "ws-1"},
+                         [0.9, 0.1, 0.0])
+        p2 = _make_point("id-2", {"text": "Postgres is the storage backend", "status": "active",
+                                    "domain": "db", "tags": [], "confirmed_count": 0,
+                                    "contradicted_count": 0, "workspace_id": "ws-2"},
+                         [0.89, 0.11, 0.01])
+        client.scroll.return_value = ([p1, p2], None)
+        sp2 = _make_point("id-2", score=0.95)
+        client.query_points.return_value = _make_query_result([sp2])
+
+        with patch("app.workers.memory_agent.httpx.post") as mock_httpx:
+            mock_httpx.side_effect = Exception("LLM down")
+            with caplog.at_level(logging.WARNING, logger="app.workers.memory_agent"):
+                result = duplicate_detection_pass()
+
+        assert result["merged"] == 0
+        assert result["details"] == []
+        client.upsert.assert_not_called()
+        client.set_payload.assert_not_called()
+        assert any("multiple workspaces" in r.getMessage() for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------

@@ -1406,9 +1406,16 @@ async def memory_learn(
     # write and can be handed to the graph in the same gather. Without it the
     # Neo4j row carries no back-link and recall cannot verify its lifecycle
     # against the authoritative vector record.
-    from app.db.vector import FIREKEEP_UUID_NAMESPACE as _VECTOR_NS
+    #
+    # identity-v2 D2: minted ONCE via memory_point_id and passed to BOTH the
+    # graph write and vector.upsert's point_id= — previously each store
+    # re-derived its own id (the graph via a bare uuid5(text), the vector
+    # store via its own internal mint), a parallel-computation coincidence
+    # that only matched by accident and diverges the moment either side's
+    # scoping changes.
+    from app.db.vector import memory_point_id
 
-    memory_id = str(uuid.uuid5(_VECTOR_NS, text))
+    memory_id = memory_point_id(principal["workspace_id"], log.namespace, text)
 
     graph_result, vector_result = await asyncio.gather(
         graph.merge_action_log(
@@ -1432,6 +1439,7 @@ async def memory_learn(
                 "member_id": principal["member_id"],
             },
             namespace=log.namespace,
+            point_id=memory_id,
         ),
         return_exceptions=True,
     )
@@ -1458,13 +1466,11 @@ async def memory_learn(
         # background backfill (Redis stream, drained by Celery beat).
         backfill_queued = False
         try:
-            import uuid as _uuid
-
-            from app.db.vector import FIREKEEP_UUID_NAMESPACE
             from app.workers.backfill import enqueue_backfill
 
+            # Reuse the SAME id computed once above — never re-derive it here.
             await enqueue_backfill(
-                memory_id=str(_uuid.uuid5(FIREKEEP_UUID_NAMESPACE, text)),
+                memory_id=memory_id,
                 text=text,
                 payload={
                     "source": "action_log",

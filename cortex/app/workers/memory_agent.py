@@ -11,7 +11,6 @@ import asyncio
 import json
 import logging
 import statistics
-import uuid
 from datetime import datetime, timezone
 from typing import Any
 
@@ -28,7 +27,7 @@ from qdrant_client.models import (
 )
 
 from app.config import get_settings
-from app.db.vector import FIREKEEP_UUID_NAMESPACE, _merge_lifecycle
+from app.db.vector import _merge_lifecycle, memory_point_id
 from app.workers.sleep_cycle import _get_neo4j_driver, _get_redis_client, celery_app
 
 logger = logging.getLogger(__name__)
@@ -314,11 +313,12 @@ def _merge_cluster(
     """Merge a cluster of duplicate memories. Returns merge info or None.
 
     SP0 B1: when the LLM produces new merged text, the text is RE-EMBEDDED
-    and written as a NEW point keyed to uuid5(merged_text), inheriting
-    lifecycle via _merge_lifecycle (max confirmed_count of the cluster,
-    earliest created_at). All cluster members — keeper included — are then
-    marked superseded by the new point. If embedding fails, the merge is
-    aborted with no writes at all.
+    and written as a NEW point keyed to memory_point_id(keeper_workspace,
+    keeper_namespace, merged_text) (identity-v2 D2), inheriting lifecycle via
+    _merge_lifecycle (max confirmed_count of the cluster, earliest
+    created_at). All cluster members — keeper included — are then marked
+    superseded by the new point. If embedding fails, or the cluster spans
+    more than one workspace, the merge is aborted with no writes at all.
     """
     # Try LLM merge first
     merged_text = None
@@ -369,6 +369,23 @@ def _merge_cluster(
         merged_text = best["text"]
     keeper = best
 
+    # identity-v2 D2: the merged point mints via memory_point_id, scoped to
+    # the KEEPER's workspace_id + namespace — a merge inherits the keeper's
+    # scope, never a blend of the cluster's. The dedup pass's own clustering
+    # groups by domain + vector similarity, not workspace, so members are
+    # EXPECTED to already share one workspace; this asserts that rather than
+    # trusting it, and refuses to merge (superseding losers included) across
+    # a workspace boundary if it's ever wrong.
+    member_workspaces = {m["payload"].get("workspace_id") for m in cluster}
+    if len(member_workspaces) > 1:
+        logger.warning(
+            "Merge aborted: cluster spans multiple workspaces (%s) — refusing "
+            "to merge across workspaces, cluster=%s",
+            sorted(str(w) for w in member_workspaces),
+            [m["id"] for m in cluster],
+        )
+        return None
+
     if merged_text == keeper["text"]:
         # Text unchanged (fallback path): keeper's stored vector already
         # matches its text. No re-embed, no re-key — supersede losers only.
@@ -386,7 +403,20 @@ def _merge_cluster(
             )
             return None
 
-        merged_into = str(uuid.uuid5(FIREKEEP_UUID_NAMESPACE, merged_text))
+        try:
+            merged_into = memory_point_id(
+                keeper["payload"].get("workspace_id"),
+                keeper["payload"].get("namespace") or "default",
+                merged_text,
+            )
+        except ValueError:
+            logger.warning(
+                "Merge aborted: keeper %s has no workspace_id — cannot mint a "
+                "scoped id, cluster=%s",
+                keeper["id"],
+                [m["id"] for m in cluster],
+            )
+            return None
 
         # Build the merged payload: fresh copy of the keeper's payload with the
         # new text, then fold lifecycle fields from every cluster member via

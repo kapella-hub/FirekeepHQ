@@ -44,8 +44,13 @@ class StatefulFakeVector:
     async def _embed(self, text):
         return [0.1] * 768
 
-    async def upsert(self, text, metadata, namespace="default"):
-        point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, text))
+    async def upsert(self, text, metadata, namespace="default", point_id=None):
+        # identity-v2 D2: the real VectorClient.upsert accepts a caller-scoped
+        # point_id (the route mints it once via memory_point_id and passes it
+        # here); this fake must honour it rather than always re-deriving its
+        # own, or every write silently ignores the id the caller chose.
+        if point_id is None:
+            point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, text))
         self.points[point_id] = {
             "text": text,
             "source": metadata.get("source", "unknown"),

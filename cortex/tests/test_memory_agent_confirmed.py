@@ -107,7 +107,7 @@ def _point(pid, payload, vector, score=None):
 
 
 def _mem(pid, text, vector, *, confirmed=0, contradicted=0, domain="infra",
-         timestamp="2026-01-01T00:00:00+00:00"):
+         timestamp="2026-01-01T00:00:00+00:00", workspace_id="ws-test"):
     return _point(pid, {
         "text": text,
         "status": "active",
@@ -116,6 +116,11 @@ def _mem(pid, text, vector, *, confirmed=0, contradicted=0, domain="infra",
         "confirmed_count": confirmed,
         "contradicted_count": contradicted,
         "timestamp": timestamp,
+        # identity-v2 D2: every merge candidate needs a workspace_id — the
+        # merged point mints via memory_point_id(keeper_workspace, ...), and
+        # a cluster spanning more than one workspace is refused outright.
+        # All fixtures in this file share one workspace by default.
+        "workspace_id": workspace_id,
     }, vector)
 
 

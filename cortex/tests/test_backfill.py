@@ -235,6 +235,61 @@ class TestDrain:
         assert await fake_redis.llen(BACKFILL_DLQ_KEY) == 0
 
     @pytest.mark.asyncio
+    async def test_legacy_entry_without_workspace_id_is_stamped(self, fake_redis, caplog):
+        """identity-v2 D2: a payload lacking workspace_id (enqueued before it
+        was always stamped) must be stamped with the deployment owner
+        principal before upsert — not left to grind VectorClient.upsert's
+        fail-closed mint into permanent retries/DLQ."""
+        import logging
+
+        from auth.principal import anonymous_principal
+
+        await enqueue_backfill(
+            "mem-legacy",
+            "legacy text",
+            {"domain": "general", "tags": [], "source": "action_log", "namespace": "infra"},
+            redis_client=fake_redis,
+        )
+        vector = AsyncMock()
+        vector.upsert = AsyncMock(return_value="mem-legacy")
+        with caplog.at_level(logging.WARNING, logger="app.workers.backfill"):
+            result = await _drain(redis_client=fake_redis, vector_client=vector)
+
+        assert result["drained"] == 1
+        kwargs = vector.upsert.await_args.kwargs
+        owner = anonymous_principal()
+        assert kwargs["metadata"]["workspace_id"] == owner["workspace_id"]
+        assert kwargs["metadata"]["member_id"] == owner["member_id"]
+        assert any("no workspace_id" in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_modern_entry_with_workspace_id_is_untouched(self, fake_redis, caplog):
+        """A payload that already carries a real workspace_id must pass
+        through unstamped — the legacy fallback must never override a
+        verified scope."""
+        import logging
+
+        await enqueue_backfill(
+            "mem-modern",
+            "modern text",
+            {
+                "domain": "general", "tags": [], "source": "action_log",
+                "namespace": "infra", "workspace_id": "ws-real", "member_id": "member-real",
+            },
+            redis_client=fake_redis,
+        )
+        vector = AsyncMock()
+        vector.upsert = AsyncMock(return_value="mem-modern")
+        with caplog.at_level(logging.WARNING, logger="app.workers.backfill"):
+            result = await _drain(redis_client=fake_redis, vector_client=vector)
+
+        assert result["drained"] == 1
+        kwargs = vector.upsert.await_args.kwargs
+        assert kwargs["metadata"]["workspace_id"] == "ws-real"
+        assert kwargs["metadata"]["member_id"] == "member-real"
+        assert not any("no workspace_id" in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.asyncio
     async def test_moves_to_dlq_after_max_attempts(self, fake_redis):
         await fake_redis.xadd(
             BACKFILL_STREAM_KEY,
