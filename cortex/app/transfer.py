@@ -84,6 +84,15 @@ def create_transfer_router(graph: Neo4jClient, vector: VectorClient) -> APIRoute
         memories AND arbitrary Neo4j labels and relationship types — `label` and
         `rel_type` are passed through to `merge_knowledge_nodes` verbatim — so it can
         author graph structure no other route exposes."""
+        from auth.principal import request_principal
+
+        # Identity-v2 Task 4: Resolve the verified principal to stamp imported memories.
+        # The identity parameter from require_scope("admin") dependency is already resolved;
+        # use it if it has the necessary fields, otherwise fall back to request_principal.
+        principal = identity
+        if not (isinstance(principal, dict) and principal.get("workspace_id")):
+            principal = request_principal(request)
+
         content_type = request.headers.get("content-type", "")
         body = await request.body()
 
@@ -155,6 +164,11 @@ def create_transfer_router(graph: Neo4jClient, vector: VectorClient) -> APIRoute
                     metadata["tags"] = item.get("tags", metadata.get("tags", []))
                     metadata["source"] = item.get("source", metadata.get("source", "import"))
                     metadata["timestamp"] = item.get("created_at", "")
+                    # Identity-v2 Task 4: Override metadata with verified principal.
+                    # This ensures imported memories are attributed to the importing principal,
+                    # not to whatever workspace_id/member_id the body asserts.
+                    metadata["workspace_id"] = principal["workspace_id"]
+                    metadata["member_id"] = principal["member_id"]
                     ns = item.get("namespace", "default")
                     await vector.upsert(text=text, metadata=metadata, namespace=ns)
                     imported_memories += 1

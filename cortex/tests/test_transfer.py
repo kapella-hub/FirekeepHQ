@@ -72,18 +72,30 @@ def transfer_app():
     # captured at decoration time. Bypassing a check in a unit test is only safe
     # when another test proves the check is there: see
     # test_transfer_routes_refuse_anonymous_when_auth_disabled below.
-    _admin = {"agent_id": "test-admin", "scopes": ["*"], "authenticated": True}
-    with patch("app.transfer.require_scope", lambda scope: (lambda: _admin)):
+    _admin = {
+        "workspace_id": "workspace-test",
+        "member_id": "member-test",
+        "agent_id": "test-admin",
+        "scopes": ["*"],
+        "authenticated": True,
+    }
+
+    def _mock_require_scope(scope):
+        def _get_admin():
+            return _admin
+        return _get_admin
+
+    with patch("app.transfer.require_scope", _mock_require_scope):
         router = create_transfer_router(graph=mock_graph, vector=mock_vector)
     app.include_router(router)
 
-    return app, mock_graph, mock_vector
+    return app, mock_graph, mock_vector, _admin
 
 
 class TestExportEndpoint:
     def test_export_returns_jsonl_stream(self, transfer_app):
         """Export returns JSONL with memory, node, and edge entries."""
-        app, mock_graph, mock_vector = transfer_app
+        app, mock_graph, mock_vector, _admin = transfer_app
 
         with TestClient(app) as client:
             resp = client.get("/memory/export")
@@ -110,7 +122,7 @@ class TestExportEndpoint:
 
     def test_export_with_namespace_filter(self, transfer_app):
         """Export with namespace filter only returns matching memories."""
-        app, mock_graph, mock_vector = transfer_app
+        app, mock_graph, mock_vector, _admin = transfer_app
 
         with TestClient(app) as client:
             resp = client.get("/memory/export?namespace=default")
@@ -124,7 +136,7 @@ class TestExportEndpoint:
 class TestImportEndpoint:
     def test_import_with_valid_data(self, transfer_app):
         """Import valid JSONL data processes all items."""
-        app, mock_graph, mock_vector = transfer_app
+        app, mock_graph, mock_vector, _admin = transfer_app
 
         jsonl_body = "\n".join([
             json.dumps({"type": "memory", "text": "Fixed auth", "namespace": "default", "tags": ["auth"]}),
@@ -149,7 +161,7 @@ class TestImportEndpoint:
 
     def test_import_with_json_array(self, transfer_app):
         """Import a JSON array body."""
-        app, mock_graph, mock_vector = transfer_app
+        app, mock_graph, mock_vector, _admin = transfer_app
 
         data = [
             {"type": "memory", "text": "Test memory 1"},
@@ -166,7 +178,7 @@ class TestImportEndpoint:
 
     def test_import_with_mixed_valid_invalid(self, transfer_app):
         """Import with some invalid items reports errors but imports valid ones."""
-        app, mock_graph, mock_vector = transfer_app
+        app, mock_graph, mock_vector, _admin = transfer_app
 
         jsonl_body = "\n".join([
             json.dumps({"type": "memory", "text": "Valid memory"}),
@@ -191,7 +203,7 @@ class TestImportEndpoint:
 
     def test_import_empty_body(self, transfer_app):
         """Import with empty body returns 422."""
-        app, mock_graph, mock_vector = transfer_app
+        app, mock_graph, mock_vector, _admin = transfer_app
 
         with TestClient(app) as client:
             resp = client.post(
@@ -204,7 +216,7 @@ class TestImportEndpoint:
 
     def test_export_import_round_trip(self, transfer_app):
         """Export then import produces consistent data."""
-        app, mock_graph, mock_vector = transfer_app
+        app, mock_graph, mock_vector, _admin = transfer_app
 
         with TestClient(app) as client:
             # Export
@@ -227,6 +239,79 @@ class TestImportEndpoint:
         assert body["imported_nodes"] == 2
         assert body["imported_edges"] == 1
         assert body["errors"] == []
+
+
+class TestImportPrincipalOverride:
+    """Tests for identity-v2 Task 4: transfer import stamps the verified principal."""
+
+    def test_import_foreign_workspace_id_overridden(self, transfer_app):
+        """An import body asserting a foreign workspace_id is overridden by the principal's."""
+        app, mock_graph, mock_vector, _admin = transfer_app
+
+        # Body asserts a different workspace_id
+        data = [
+            {
+                "type": "memory",
+                "text": "Test memory",
+                "metadata": {
+                    "workspace_id": "workspace-foreign",
+                    "member_id": "member-foreign",
+                },
+            },
+        ]
+
+        with TestClient(app) as client:
+            resp = client.post("/memory/import", json=data)
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["imported_memories"] == 1
+
+        # Verify that upsert was called with the principal's workspace_id and member_id
+        assert mock_vector.upsert.called
+        call_args = mock_vector.upsert.call_args
+        assert call_args is not None
+
+        # Extract metadata from call
+        metadata = call_args.kwargs.get("metadata")
+        assert metadata is not None
+
+        # The metadata should have workspace_id and member_id from principal, not from body
+        assert metadata["workspace_id"] == "workspace-test", \
+            f"Expected workspace_id='workspace-test' but got '{metadata.get('workspace_id')}'"
+        assert metadata["member_id"] == "member-test", \
+            f"Expected member_id='member-test' but got '{metadata.get('member_id')}'"
+
+    def test_import_no_workspace_id_uses_principal(self, transfer_app):
+        """An import body with no workspace_id gets the principal's workspace_id."""
+        app, mock_graph, mock_vector, _admin = transfer_app
+
+        data = [
+            {
+                "type": "memory",
+                "text": "Test memory without workspace_id",
+                # No metadata with workspace_id provided
+            },
+        ]
+
+        with TestClient(app) as client:
+            resp = client.post("/memory/import", json=data)
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["imported_memories"] == 1
+
+        # Verify that upsert was called with principal's workspace_id and member_id
+        assert mock_vector.upsert.called
+        call_args = mock_vector.upsert.call_args
+        assert call_args is not None
+
+        metadata = call_args.kwargs.get("metadata")
+        assert metadata is not None
+
+        # The metadata should have the principal's workspace_id and member_id
+        assert metadata["workspace_id"] == "workspace-test"
+        assert metadata["member_id"] == "member-test"
 
 
 def test_transfer_routes_refuse_anonymous_when_auth_disabled():
