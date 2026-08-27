@@ -82,6 +82,19 @@ def memory_point_id(workspace_id: str, namespace: str, text: str) -> str:
     return str(uuid.uuid5(FIREKEEP_UUID_NAMESPACE, seed))
 
 
+def _v1_point_id(text: str) -> str:
+    """The OLD (pre-identity-v2) point id formula: bare ``uuid5(text)``.
+
+    Identity-v2 D5: the transitional compat-window bridge in ``upsert()``
+    below uses this to find a point that predates ``memory_point_id`` scoping,
+    and the (currently inert) migration tool will import this same helper for
+    its classification predicate. Never use this to MINT a new point —
+    ``memory_point_id`` is the only identity-v2 mint; this is read-only
+    lookup of the old identity. Transitional; retire with the migration.
+    """
+    return str(uuid.uuid5(FIREKEEP_UUID_NAMESPACE, text))
+
+
 # Maximum number of embedding vectors to cache in memory.
 _EMBED_CACHE_MAX_SIZE = 512
 
@@ -380,6 +393,8 @@ class VectorClient:
         self._http_client = httpx.AsyncClient(timeout=30.0)
         self._embed_retry_attempts = max(1, settings.EMBED_RETRY_ATTEMPTS)
         self._embed_max_chars = max(1, settings.EMBED_MAX_CHARS)
+        # Identity-v2 D5: transitional lifecycle bridge, see upsert().
+        self._v1_bridge_enabled = settings.MEMORY_ID_V1_BRIDGE
         # LRU embedding cache: hash(text) -> embedding vector
         self._embed_cache: OrderedDict[str, list[float]] = OrderedDict()
         # TTL cache for get_stats()
@@ -766,6 +781,7 @@ class VectorClient:
         """
         try:
             namespace = normalize_namespace(namespace)
+            minted = point_id is None
             if point_id is None:
                 workspace_id = metadata.get("workspace_id")
                 try:
@@ -855,6 +871,27 @@ class VectorClient:
                     point_id,
                     exc,
                 )
+            # Identity-v2 D5 compat bridge: a v2-id miss on a MINTED point may
+            # still be an old v1 point (bare uuid5(text)) — relearning it
+            # would otherwise mint a fresh v2 id and resurrect an archived/
+            # superseded memory ACTIVE. Only runs on the minting branch (an
+            # explicit point_id, e.g. corpus, has no v1 formula to bridge).
+            if existing_payload is None and minted and self._v1_bridge_enabled:
+                try:
+                    v1_points = await self._client.retrieve(
+                        self._collection, [_v1_point_id(text)], with_payload=True
+                    )
+                    if v1_points and isinstance(
+                        getattr(v1_points[0], "payload", None), dict
+                    ):
+                        existing_payload = v1_points[0].payload
+                except Exception as exc:
+                    logger.warning(
+                        "v1 lifecycle bridge pre-fetch failed for %s "
+                        "(treating as new): %s",
+                        point_id,
+                        exc,
+                    )
             payload = _merge_lifecycle(existing_payload, payload)
 
             await self._client.upsert(

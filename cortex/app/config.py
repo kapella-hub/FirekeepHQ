@@ -91,6 +91,14 @@ class Settings(BaseSettings):
     # Re-embed
     REEMBED_BATCH_SIZE: int = 50
 
+    # Identity-v2 D5: transitional lifecycle bridge for the compat window
+    # between the v2-identity deploy and the store migration. When upsert()'s
+    # v2-id prefetch misses, also check the OLD v1 point id (bare
+    # uuid5(text)) so relearning text that still exists only as a v1 point
+    # does not resurrect an archived/superseded/deprecated memory ACTIVE
+    # under a freshly-minted v2 id. Retired after the identity migration.
+    MEMORY_ID_V1_BRIDGE: bool = True
+
     # Memory Decay
     MEMORY_DECAY_HALF_LIFE_DAYS: int = 90
     DECAY_REFERENCE_DAYS: int = 0

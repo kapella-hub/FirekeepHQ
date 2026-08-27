@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config import Settings
-from app.db.vector import VectorClient, _merge_lifecycle
+from app.db.vector import VectorClient, _merge_lifecycle, _v1_point_id, memory_point_id
 
 
 def _fresh(**overrides) -> dict:
@@ -231,3 +231,143 @@ class TestUpsertMergesLifecycle:
 
         payload = mock_qdrant_client.upsert.call_args.kwargs["points"][0].payload
         assert payload["created_at"] == payload["timestamp"]
+
+
+class TestV1LifecycleBridge:
+    """Identity-v2 D5 — the transitional bridge for the compat window.
+
+    A post-deploy relearn of text that exists ONLY as an OLD v1 point (id =
+    bare uuid5(text)) mints a NEW v2 id via memory_point_id. The v2-id
+    prefetch misses that v1 point, so without the bridge _merge_lifecycle(None,
+    fresh) returns fresh and an archived/superseded/deprecated memory comes
+    back ACTIVE with its provenance dropped — a real adversarial-review
+    finding, not a hypothetical.
+    """
+
+    @pytest.mark.asyncio
+    async def test_v1_archived_point_resurrects_as_archived_under_v2_id(
+        self, vector_client, mock_qdrant_client
+    ):
+        """Bridge ON: the v2 prefetch misses, so upsert() must additionally
+        check the v1 id and feed that payload into _merge_lifecycle — the new
+        v2 point keeps the archived status and its recovery provenance."""
+        text = "same text"
+        workspace_id = "ws-bridge"
+        namespace = "default"
+        v1_id = _v1_point_id(text)
+        v2_id = memory_point_id(workspace_id, namespace, text)
+
+        v1_point = MagicMock()
+        v1_point.payload = _existing(
+            status="archived",
+            archived_at="2026-04-01T00:00:00+00:00",
+            archive_source="gc",
+            archive_reason="low_value",
+            archived_from_status="active",
+            purge_eligible_at="2026-06-30T00:00:00+00:00",
+        )
+
+        async def retrieve(collection, ids, with_payload=True):
+            if ids == [v2_id]:
+                return []
+            if ids == [v1_id]:
+                return [v1_point]
+            raise AssertionError(f"unexpected retrieve ids: {ids}")
+
+        mock_qdrant_client.retrieve = AsyncMock(side_effect=retrieve)
+
+        with patch.object(
+            vector_client, "_embed", new_callable=AsyncMock, return_value=[0.1] * 768
+        ):
+            point_id = await vector_client.upsert(
+                text=text,
+                metadata={"source": "action_log", "workspace_id": workspace_id},
+                namespace=namespace,
+            )
+
+        assert point_id == v2_id
+        assert mock_qdrant_client.retrieve.await_count == 2
+        payload = mock_qdrant_client.upsert.call_args.kwargs["points"][0].payload
+        assert payload["status"] == "archived"
+        assert payload["archived_at"] == "2026-04-01T00:00:00+00:00"
+        assert payload["archive_source"] == "gc"
+        assert payload["purge_eligible_at"] == "2026-06-30T00:00:00+00:00"
+        # v2 content still wins over v1 provenance.
+        assert payload["namespace"] == namespace
+        assert payload["text"] == text
+
+    @pytest.mark.asyncio
+    async def test_bridge_flag_off_pins_raw_fresh_active_behavior(
+        self, settings, mock_qdrant_client
+    ):
+        """Bridge OFF: today's raw behavior is pinned — a v2-prefetch miss
+        must NOT consult the v1 id at all, so the same archived v1 point is
+        never found and the new v2 point comes back fresh/active."""
+        settings.MEMORY_ID_V1_BRIDGE = False
+        client = VectorClient(settings)
+        client._client = mock_qdrant_client
+        client._http_client = AsyncMock()
+
+        text = "same text"
+        workspace_id = "ws-bridge"
+        namespace = "default"
+        v2_id = memory_point_id(workspace_id, namespace, text)
+
+        async def retrieve(collection, ids, with_payload=True):
+            if ids == [v2_id]:
+                return []
+            raise AssertionError(
+                f"v1 bridge must not run when the flag is off; got retrieve({ids})"
+            )
+
+        mock_qdrant_client.retrieve = AsyncMock(side_effect=retrieve)
+
+        with patch.object(
+            client, "_embed", new_callable=AsyncMock, return_value=[0.1] * 768
+        ):
+            await client.upsert(
+                text=text,
+                metadata={"source": "action_log", "workspace_id": workspace_id},
+                namespace=namespace,
+            )
+
+        assert mock_qdrant_client.retrieve.await_count == 1
+        payload = mock_qdrant_client.upsert.call_args.kwargs["points"][0].payload
+        assert payload["status"] == "active"
+        for key in (
+            "archived_at", "archive_source", "archive_reason",
+            "archived_from_status", "purge_eligible_at",
+        ):
+            assert payload.get(key) is None
+
+    @pytest.mark.asyncio
+    async def test_v2_prefetch_hit_does_not_consult_v1_id(
+        self, vector_client, mock_qdrant_client
+    ):
+        """When the v2-id prefetch HITS, behavior is unchanged: no second
+        retrieve, and the v1 id is never touched."""
+        text = "same text"
+        workspace_id = "ws-bridge"
+        namespace = "default"
+        v2_id = memory_point_id(workspace_id, namespace, text)
+
+        v2_point = MagicMock()
+        v2_point.payload = _existing(status="active", confirmed_count=3)
+
+        mock_qdrant_client.retrieve = AsyncMock(return_value=[v2_point])
+
+        with patch.object(
+            vector_client, "_embed", new_callable=AsyncMock, return_value=[0.1] * 768
+        ):
+            point_id = await vector_client.upsert(
+                text=text,
+                metadata={"source": "action_log", "workspace_id": workspace_id},
+                namespace=namespace,
+            )
+
+        assert point_id == v2_id
+        mock_qdrant_client.retrieve.assert_awaited_once_with(
+            "test_collection", [v2_id], with_payload=True
+        )
+        payload = mock_qdrant_client.upsert.call_args.kwargs["points"][0].payload
+        assert payload["confirmed_count"] == 3
