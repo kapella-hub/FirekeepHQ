@@ -1,8 +1,10 @@
 # Memory identity v2 — scoped point identity and the collision migration
 
-**Status:** Design, pre-implementation. The live-store migration this spec
-defines EXECUTES only on a separate, explicit user go — deploying the code is
-not consent to migrate.
+**Status:** Design, pre-implementation, REVISED same-day after adversarial
+review (26-agent: claims-vs-code with live Qdrant probes, hostile migration
+review, skeptic verification — 33 findings, every major absorbed; record at
+bottom). The live-store migration EXECUTES only on a separate, explicit user
+go — deploying the code is not consent to migrate.
 **Date:** 2026-08-27
 **Provenance:** Root cause proven by the 2026-08-27 LongMemEval retest
 (codex-root): isolated-Qdrant repro of cross-workspace overwrite; ingest
@@ -11,43 +13,43 @@ duplicated across namespaces, 1,903 evidence texts colliding, 282/500
 questions touched); two clean identical-input ingests differing on 3,677
 point owners and 46/470 questions' evidence availability; a dataset-level
 audit showing the v2 scheme yields 124,263 unambiguous points with 470/470
-evidence retention. Artifacts: `.superpowers/longmemeval-retest-b58f9ee/`
-(scoped-identity-audit.json, ingest-collision-audit.json,
-ownership-gpu1-vs-gpu3-analysis.json, paired-old-vs-gpu1-bench.json).
-Five-stream code scoping 2026-08-27 (this session) pinned every mint site,
-join, and migration precedent cited below.
+evidence retention. Artifacts: `.superpowers/longmemeval-retest-b58f9ee/`.
+Five-stream code scoping + the review's own probes pinned every mint site,
+join, precedent, and Qdrant behavior cited below.
 
 ## Problem
 
 A learned memory's identity is its text. `VectorClient.upsert()` mints the
 Qdrant point id as `uuid5(FIREKEEP_UUID_NAMESPACE, text)`
-(`cortex/app/db/vector.py:720`), and the graph chain nodes MERGE on a
-sha256 content hash of the same bare text (`db/graph.py`), with
-workspace_id/member_id as plain last-writer-wins SET properties. Identical
-text learned in workspace B therefore lands on workspace A's point and node:
-A's memory leaves A's recall (visibility 1→0), B gains it (0→1), and
-`_merge_lifecycle` (vector.py:178-217) preserves A's `agent_id`/`project`/
-`created_at` under B's ownership — provenance bleed. This is a live
-cross-workspace integrity defect, independent of any benchmark; the
-benchmark merely measured it (the fixture's nondeterminism and its 80
-evidence-less questions are both this defect under concurrency).
+(`cortex/app/db/vector.py:720`), and the graph chain nodes MERGE per-node on
+a truncated sha256 of each node's own text (`_content_hash`,
+`db/graph.py:188-191`, applied separately to action/outcome/resolution —
+NOT the vector point's concatenated text), with workspace_id/member_id as
+plain last-writer-wins SET properties. Identical text learned in workspace B
+therefore lands on workspace A's point and node: A's memory leaves A's
+recall (visibility 1→0), B gains it (0→1), and `_merge_lifecycle`
+(vector.py:178-217) preserves A's `agent_id`/`project`/`created_at` under
+B's ownership — provenance bleed. This is a live cross-workspace integrity
+defect, independent of any benchmark; the benchmark merely measured it (the
+fixture's nondeterminism and its 80 evidence-less questions are both this
+defect under concurrency).
 
-Two adjacent defects share the class and are IN scope because they are the
-same missing tenancy boundary on the same write path:
+Adjacent defects in the same class, IN scope because they are the same
+missing tenancy boundary on the same write path:
 
 - **Cross-workspace auto-supersession.** `contradiction.detect_and_supersede`
   runs on every `/memory/learn` via `find_similar`, whose filter
-  (vector.py:276-326) has NO workspace_id condition — a write in one
-  workspace can supersede a near-duplicate memory in another.
-- **Unattributed imports.** `transfer.py`'s import (transfer.py:159) never
-  reads the principal: imported memories carry `workspace_id=None` and the
-  same colliding text-only id.
+  (vector.py:276-326) has NO workspace_id condition.
+- **Unattributed OR caller-asserted imports.** `transfer.py`'s import
+  (transfer.py:153-159) never reads the principal: a round-trip import
+  carries `workspace_id=None`, and a hand-written body can assert ANY
+  workspace_id — `upsert` promotes it verbatim (vector.py:743-748). Both
+  directions violate the boundary.
 
-## Decisions
+## Decisions — identity (code)
 
 **D1. Identity = uuid5 over an unambiguous canonical encoding of
 [kind/version, verified workspace_id, canonical namespace, exact text].**
-Concretely:
 
 ```python
 seed = json.dumps(["mem2", workspace_id, namespace, text],
@@ -55,166 +57,314 @@ seed = json.dumps(["mem2", workspace_id, namespace, text],
 point_id = str(uuid.uuid5(FIREKEEP_UUID_NAMESPACE, seed))
 ```
 
-JSON-array encoding, not delimiter-joined strings: text may contain any
-delimiter, and an ambiguous encoding is this bug wearing a new hat. The
-`"mem2"` kind tag versions the scheme and keeps the seed space disjoint from
-corpus ids (`"corpus|…"` strings in the same uuid namespace) by construction.
-Workspace-only scoping is insufficient — namespaces are deliberate write
-categories, and an exact-text relearn into a different namespace must not
-move the original's namespace/tags (the retest audit's finding). The
-namespace input is the CANONICAL namespace (`normalize_namespace`), matching
-what the payload stores.
+JSON-array encoding, not delimiter-joined strings — text may contain any
+delimiter. The `"mem2"` tag versions the scheme and keeps the seed space
+disjoint from corpus ids (`"corpus|…"`) by construction; the one residual
+(a v1 memory whose literal text is shaped like a v2 seed) is covered by the
+dry run's occupancy check (D6.2). **Invariant: namespace, workspace_id and
+text are identity inputs and therefore immutable payload fields under v2 —
+no code may `set_payload` any of them without re-keying the point.**
+`upsert()` normalizes the namespace ONCE at its top (`normalize_namespace`,
+imported from `app.models`) and uses the normalized value for BOTH the
+payload and the seed, so the payload-derivability invariant holds by
+construction even for callers that pass raw namespaces (transfer.py does).
+The shipped one-time task `workers/migrate_namespaces.py` mutates payload
+namespaces in place with no re-keying — it is retired (deleted or
+hard-gated) in this PR.
 
-**D2. One helper, four call sites, zero re-derivations.**
+**D2. One helper; the mint sites rewired; the lockstep risk closed.**
 `memory_point_id(workspace_id, namespace, text)` lives in
-`cortex/app/db/vector.py` beside the namespace constant. The v1 formula is
-currently re-derived at three sites beyond the canonical one, each of which
-must be rewired to call the helper (a missed one silently forks identity):
-`main.py:1409-1411` (graph-handoff precompute), `main.py:1461-1467`
-(vector-write-failure backfill enqueue), `workers/memory_agent.py:389` (the
-merge pass, which today mints via a RAW QdrantClient bypassing VectorClient
-— it imports only the namespace constant, so centralizing the algorithm does
-NOT reach it without explicit rewiring). `VectorClient.upsert()` itself
-computes the id via the helper; a guard test asserts `uuid5` over the bare
-text appears nowhere outside the helper and the migration tooling.
+`cortex/app/db/vector.py`. The v1 formula is currently derived at the
+canonical site (vector.py:720) and re-derived at `main.py:1409-1411`
+(graph-handoff precompute), `main.py:1461-1467` (vector-write-failure
+backfill enqueue), and `workers/memory_agent.py:389` (the merge pass, which
+mints via a raw QdrantClient and imports `FIREKEEP_UUID_NAMESPACE` and
+`_merge_lifecycle` directly — centralizing the algorithm does NOT reach it
+without explicit rewiring). Implementation verifies each site live (one may
+prove dead code — if so it is deleted, not rewired). A guard test asserts
+no `uuid5` derivation over memory text exists outside the helper and the
+migration tooling.
 
-**D3. Fail closed on scope.** `upsert()` (and the helper) REFUSE a memory
-write with no verified workspace_id — raising, not defaulting: an unscoped
-write is how v1's bleed happened, and every legitimate caller has a
-principal (`anonymous_principal()` resolves the deployment owner even with
-auth off). `transfer.py`'s import gains the request principal and stamps
-`workspace_id`/`member_id` like `/memory/learn` does. The dreams/corpus/
-skills paths are untouched: dreams and corpus ids are already scoped
-(profile ids fold workspace; corpus ids fold workspace+source+chunk), and
-they write via the caller-id `upsert_point()` path, which stays as the
-documented escape hatch.
+**D3. Fail closed on scope — on the MINTING branch only.** The fail-closed
+check (no verified workspace_id → raise) applies to `upsert()`'s
+`point_id is None` branch — the memory-minting path. Callers that pass an
+explicit `point_id` (corpus at corpus/store.py:175-184, which goes through
+`upsert()`, NOT `upsert_point()`; only dreams use `upsert_point`) are
+exempt: corpus ids are already scoped, and corpus must keep ingesting even
+when its metadata lacks a workspace (a state its own docstring records).
+`transfer.py`'s import gains the request principal and OVERRIDES
+`workspace_id`/`member_id` from it after reading item metadata — never
+`setdefault` — closing both the None case and the caller-asserted spoof.
+`workers/backfill._drain`: a queued entry whose stored payload lacks
+`workspace_id` (pre-deploy enqueues) is stamped with the deployment owner's
+principal rather than ground through retries into the DLQ — it is a
+pre-existing memory being retried, not a new unscoped write.
 
-**D4. The graph gets the same boundary.** Chain-node identity
-(`_content_hash`) becomes a hash of the same canonical [kind, workspace,
-namespace, text] encoding, so two workspaces' identical action text builds
-two nodes; workspace_id/member_id remain properties but no longer flip
-owners. `find_similar` gains a required workspace_id filter (closing the
-cross-workspace supersession hole); `detect_and_supersede`'s callers pass
-the verified principal's workspace. Graph recall's existing post-retrieval
-scoping (`_scope_verdict` in engine/rag.py, admit-by-default for
-unattributable rows) is unchanged in this PR and disclosed as the standing
-residual it already is; Domain/Concept nodes stay globally text-keyed by
-their documented design.
+**D4. The graph gets the same boundary, stated precisely.** Chain-node
+identity becomes `_content_hash` over the canonical [kind, workspace,
+namespace, node-text] encoding, applied per node text (action / outcome /
+resolution) as today; `CONTENT_HASH_LENGTH` truncation is retained and
+disclosed (shortened hash, larger input space — collision odds remain
+negligible at this store's scale). `find_similar` gains a required
+workspace_id filter (closing cross-workspace supersession);
+`detect_and_supersede` callers pass the verified principal's workspace.
+Existing chain nodes are NOT re-keyed (splitting merged nodes requires the
+destroyed ownership facts); instead the migration stamps
+`legacy_unscoped: true` on every chain node whose id matches the v1 hash of
+its own text, and `_scope_verdict` DENIES `legacy_unscoped` rows regardless
+of the `unattributed` lever — the graph analogue of vector quarantine,
+disclosed as permanent. Graph recall's post-retrieval scoping design and
+Domain/Concept global text keying are unchanged (standing residuals).
 
-**D5. Compatibility window: v2 writes beside v1 points, duplication is the
-honest transitional state.** Recall retrieves by embedding + payload
-filters, never by id shape, so v1 points stay recallable after the code
-deploys. A post-deploy write of text that exists as a v1 point creates a NEW
-v2 point rather than colliding — transiently, both may surface in recall.
-That duplication is bounded (relearns of pre-existing text between deploy
-and migration), visible, and strictly safer than one more day of
-cross-workspace overwrites. No read path changes.
+**D5. Compatibility window, with the lifecycle bridge.** v2 code deploys
+before the migration (it stops NEW cross-workspace overwrites immediately).
+Recall retrieves by embedding + filters, so v1 points stay recallable. A
+post-deploy relearn of pre-existing text creates a v2 twin beside the v1
+point — and without mitigation that twin would resurrect archived/
+superseded/deprecated memories as fresh ACTIVE points, defeating
+`_merge_lifecycle`'s core invariant (vector.py:184-185) and dropping
+archive provenance. So `upsert()` carries a transitional bridge: on a v2-id
+lifecycle-prefetch miss, it ALSO retrieves the v1 id (`uuid5(NS, text)`)
+and feeds that payload into `_merge_lifecycle` — status, counters, archive
+provenance, created_at/agent_id/project all survive into the v2 twin. The
+bridge is ~10 lines, flag-gated (`MEMORY_ID_V1_BRIDGE=true` default), and
+retired after the migration. The remaining window cost is plain
+duplication: bounded, visible, resolved by the migration's twin-merge
+(D6.3). Regression test: archive a memory, re-learn its exact text, assert
+it does not come back active.
 
-**D6. Migration: shadow copy, alias flip, quarantine — never guess owners.**
-The live store's collided points are single points holding the LAST writer's
-payload; the overwritten workspaces' data was destroyed at write time and is
-**unrecoverable** — this migration stops future losses and re-homes what
-exists; it cannot resurrect what v1 already destroyed. Mechanism, borrowing
-`workspace_migration.py`'s verify-then-marker pattern and `reembed.py`'s
-scroll shape:
+## D6. The migration — freeze, copy, cut over, verify
 
-1. **Cold backup first** (the existing whole-volume tar; restore is the only
-   full rollback, and rollback becomes lossy once v2 writes exist — so the
-   runbook is roll-forward after the flip, restore+replay only for
-   catastrophe).
-2. **Dry run (read-only, mandatory):** scroll every point. A point is a
-   v1 MEMORY point iff `point.id == uuid5(ns, payload.text)` — under v1
-   semantics payload text never diverges from the minting text (colliding
-   writes shared the text; the merge pass mints from merged_text), and
-   corpus/dream/skill/v2 points all fail this predicate. Classify:
-   migratable (verified workspace_id + namespace present) / **quarantine**
-   (workspace_id None — imports, pre-workspace-era points) / non-memory
-   (untouched). Report counts, predicted v2 ids, and any predicted v2-id
-   collision (two v1 points mapping to one v2 id — same workspace, same
-   namespace, same text — merged by `_merge_lifecycle` rules, counters
-   maxed, earliest created_at kept). No writes.
-3. **Shadow copy:** create `<collection>_v2`; for each migratable point,
-   copy vector (retrieved with vectors — no re-embedding) + payload to the
-   v2 id; quarantined points copy at their EXISTING id with
-   `legacy_unscoped: true` stamped (still recallable, excluded from v2
-   dedup semantics, listed in the report for manual adoption); non-memory
-   points copy verbatim. Write the old→new id map (JSONL artifact + Redis
-   hash `mem:idmap:v2`, TTL ≥ the replay/eval retention window).
-4. **Graph remap, before the flip:** rewrite `MemoryRef.vector_id` and the
-   `memory_ids` arrays on chain nodes through the map (ids absent from the
-   map pass through unchanged — they are corpus/dream/skill or already-v2).
-   Graph chain-node re-keying applies to NEW writes only; existing merged
-   nodes are left as-is (splitting them requires the destroyed ownership
-   facts — same never-guess rule).
-5. **Verify, then flip:** full rescan of the shadow collection — zero
-   points satisfying the v1 predicate outside quarantine, counts reconciled
-   against the dry run — then swap via Qdrant collection alias
-   (`update_collection_aliases`, atomic): `QDRANT_COLLECTION` becomes an
-   alias to the v2 collection. qdrant-client 1.18.0 supports aliases;
-   nothing in cortex uses them today; search/scroll/upsert through an alias
-   are transparent. The old collection is retained until the operator
-   deletes it (that deletion is a second explicit act).
-6. **Completion marker** in Redis (the `workspace_migration` precedent), so
-   the migration is idempotent and a re-run resumes/verifies rather than
-   repeats.
+Governing facts the design now builds on (all empirically verified in
+review): Qdrant v1.13.2 refuses an alias whose name collides with an
+existing collection and has no rename, so "the old name becomes an alias
+while the old collection is retained" is impossible; `initialize()`
+(vector.py:351-377) would try to re-create a collection at an alias name
+and abort startup; a no-freeze scroll-copy of a live collection loses ~half
+of concurrent writes (id-ordered cursor vs uniformly-distributed new ids)
+and races every in-place mutator (gc, owm, contradiction supersession,
+access-count flushes) with no constructible catch-up.
 
-**D7. Stranded-join mitigation.** Historical replay events
-(`memory_read`/`memory_feedback` payloads) and the access-count/
-last-recalled Redis hashes name OLD ids and are immutable or unowned by any
-migration precedent. OWM's nightly join (owm.py — keys stats by event
-memory_ids, then `set_payload` onto those ids) consults the `mem:idmap:v2`
-map as a fallback when an event id misses, for as long as the map lives;
-the access-count and last-recalled hash keys are renamed through the map
-once, during step 4. After the map's TTL, pre-migration events age out of
-their own retention anyway. The client kit's proactive-recall seen-cache
-(12h TTL) self-heals and needs nothing.
+**Cut-over model: new canonical name, not an alias.** The v2 collection is
+`firekeep_memory_v2` and BECOMES the configured name: the flip is
+`QDRANT_COLLECTION=firekeep_memory_v2` in the deployment env plus container
+recreate, inside the freeze. Optionally, after the operator later deletes
+the old collection, an alias `firekeep_memory → firekeep_memory_v2` may be
+created for out-of-band tools. Independent hardening in the same PR:
+`initialize()` becomes alias-aware (resolve via `get_collection(name)`
+success, not membership in `get_collections()`), with a test that startup
+is a no-op against a name that resolves to an alias.
 
-**D8. Benchmark closure — the original goal.** After deploy+migration, one
-clean full ingest of the fixture must show ~124,263 points, 470/470
-questions with owned evidence, and a repeat ingest must produce an
-IDENTICAL ownership map (the determinism the retest proved impossible under
-v1). Only then is a ranker A/B meaningful; the published 0.819 metric is
-retired/dated on the site per the retest's resolution (site copy is a
-separate act). The bench harness itself needs no change — the schedule
-sensitivity was never the harness's fault.
+**The whole migration runs inside one maintenance freeze:**
 
-**D9. Disclosed follow-ups, out of scope:** skills' `SKILL_NS` ids don't
-fold workspace (same defect shape, different surface — document-sourced
-skills colliding across workspaces); graph Domain/Concept global text
-keying (documented residual); engine/rag.py's admit-by-default for
-unattributable graph rows; `_merge_lifecycle`'s field-level semantics
-(unchanged by this spec).
+1. **Freeze.** Stop celery beat and every worker (gc, memory_agent, owm,
+   dreams, sleep_cycle, skills, collectors, backfill drain — they bypass
+   the API via raw clients); gate the write API: `/memory/learn`,
+   `/memory/stream`, transfer import, corpus/knowledge ingest, lifecycle
+   and feedback mutators return 503 with a retry hint
+   (`MIGRATION_FREEZE=true`). Read API and dashboard may stay up until
+   step 5. **Cold backup at freeze start** (`deploy/backup.sh` — a
+   disclosed stack outage of minutes; `--exclude-models` mandated). The
+   freeze is what makes the backup a true restore point: the runbook states
+   the RPO plainly — restoring discards everything after freeze start.
+2. **Dry run (read-only, mandatory; also runnable pre-freeze for
+   planning).** Scroll every point; classify by PROVENANCE, with the id
+   predicate as a confirming signal, never the definition:
+   - **corpus** (`source == "corpus"` or `corpus|`-seeded id — includes
+     legacy pre-65606df chunks whose ids ARE bare uuid5(text)),
+     **dream/profile/skill** (their id schemes / `memory_type`): copy
+     verbatim, untouched.
+   - **v2 points** (id already matches `memory_point_id` of their own
+     payload): copy verbatim.
+   - **v1 migratable** (memory-shaped payload, verified workspace_id;
+     absent `namespace` key reads as `"default"`, matching
+     `namespace_condition`'s legacy semantics): re-key to the v2 id.
+     Includes the **repaired-text bucket** — memory points whose id
+     matches NO current text (the ~19 mojibake repairs): re-homed FROM
+     PAYLOAD like any migratable point, counted separately in the report.
+   - **quarantine** (memory-shaped, workspace_id None): copied at their
+     existing id with `workspace_id: "__quarantine__"` (a sentinel no
+     principal holds) plus `legacy_unscoped: true` — uniformly invisible
+     to BOTH recall legs (never "recallable but only via the graph"), and
+     adopted only by an explicit admin act. `migrate_single_workspace`
+     (main.py:730-734, currently unconditional every startup) is gated in
+     this PR on its own completion marker AND skips
+     `legacy_unscoped`/sentinel points — without this, the first restart
+     silently adopts the whole bucket.
+   - Report: counts per bucket, predicted v2 ids, **occupancy check**
+     (predicted v2 id already present in the source — the D5 twins, plus
+     the contrived seed-shaped-text case), and pre-existing dangling
+     `superseded_by`/`contested_with` references (baseline for step 6).
+3. **Shadow copy** into `firekeep_memory_v2`, created from
+   `get_collection(source).config.params` VERBATIM (never from env), with
+   the three payload indexes (`tags`, `namespace`, `workspace_id`) created
+   explicitly and `indexing_threshold: 0` during bulk load, restored after.
+   Copy vector + payload; when the target v2 id is already occupied (a D5
+   twin), apply `_merge_lifecycle(v1_payload as existing, v2_payload as
+   fresh)` deterministically — v2 text and vector win, counters max,
+   earliest created_at survives, archive provenance survives. During the
+   payload copy, rewrite the point-id-valued payload FIELDS through the
+   map: `superseded_by` (contradiction.py:121, memory_agent.py:433,
+   vector.py:1277) and `contested_with` (memory_agent.py:730) — both are
+   user-rendered (rag.py:1435,1441) and autopilot-read. Write the old→new
+   id map as a durable JSONL artifact; mirror into Redis
+   (`mem:idmap:v2`) as a cache of the file, not the source of truth.
+   **State machine** in Redis: `{run_id, source_collection,
+   source_points_count_at_start, step, cursor, started_at}` — advanced
+   per step, cursor-resumable, refusing to resume if the source fingerprint
+   disagrees; step N+1 refuses until step N is marked complete and the map
+   count equals the dry run's migratable count.
+4. **Flip:** update `QDRANT_COLLECTION`, recreate cortex containers (still
+   inside the freeze; workers stay stopped).
+5. **Graph remap — after the flip**, so graph rows never point at ids the
+   live collection lacks (before the flip, remapped rows would be dropped
+   by `_scope_verdict`'s resolve-fail path — rag.py:929-933 — emptying the
+   graph leg): rewrite `MemoryRef.vector_id` and chain-node `memory_ids`
+   through the map (unmapped ids pass through — corpus/dream/skill/v2);
+   stamp `legacy_unscoped` chain nodes per D4; add a uniqueness constraint
+   on `MemoryRef.vector_id` after de-duplicating. Then the Redis hash
+   folds: `memory:access_counts` and `memory:last_recalled` fields
+   translated through the map (flusher is already stopped; skill-id fields
+   pass through unmapped by design; the `:flushing` key is confirmed empty
+   first), with a reconciliation count reported — a nonzero residual is
+   the measured loss.
+6. **Verify — exact and fatal, only possible because of the freeze:**
+   source `points_count` unchanged since freeze (else abort); shadow
+   counts reconcile exactly per bucket (no tolerance); fidelity sample —
+   N random migratable points, vector equality and field-by-field payload
+   equality (excluding id and the rewritten reference fields); payload
+   indexes present; config.params equality; **search parity** — ~50
+   recorded queries against source and shadow return the same texts and
+   scores; no `superseded_by`/`contested_with` in the shadow naming an id
+   absent from the shadow beyond the dry run's pre-existing-dangling
+   baseline; zero v1-predicate memory points outside quarantine.
+7. **Unfreeze:** restart workers/beat, lift the write gate, completion
+   marker written. The old collection is retained until the operator
+   deletes it (a later explicit act; its name is now unreferenced, so
+   retention conflicts with nothing).
 
-**D10. Rollout order.** (1) Ship v2 code (helper, four sites, fail-closed
-scope, graph key, contradiction scoping, transfer principal) behind no flag
-— it changes only NEW writes and is strictly safer; (2) deploy; (3) the
-migration (D6) runs as a separate, explicitly-approved operation with its
-own dry-run report reviewed first; (4) the benchmark rerun (D8).
+Rollback: before step 4, delete the shadow and unfreeze — nothing changed.
+After step 4, roll forward or restore the freeze-start backup (RPO stated
+above). Never both directions.
+
+## D7. Stranded-join mitigation
+
+Historical replay events name OLD ids. **OWM's join is the dangerous one:
+a miss is not a no-op — after writing scores for ids it found, owm.py's
+stale-reset sweep (owm.py:265-292) DELETES `owm_efficacy`/`owm_n` from
+every point not written this pass. Post-migration, with every event naming
+v1 ids, an unmapped run would write nothing and wipe every migrated
+memory's efficacy (and `skill_efficacy` in the parallel block), degrading
+recall ranking store-wide in one night.** Therefore: owm.py translates
+event `memory_ids` through the idmap AT THE TOP of the join, before
+building stats; and the stale-reset sweep is SKIPPED entirely (loudly
+logged) whenever the map is expected (migration marker present) but
+unavailable — an expired cache degrades to no-update, never to wipe. The
+JSONL artifact is the durable form; Redis is a cache. The client kit's
+proactive-recall seen-cache (12h TTL) self-heals. Replay events themselves
+stay immutable history and age out on their own retention.
+
+## D8. Benchmark closure — the original goal
+
+After deploy + migration: one clean full ingest of the LongMemEval fixture
+must show ~124,263 points and 470/470 questions with owned evidence, and a
+REPEAT ingest must produce an identical ownership map (the determinism the
+retest proved impossible under v1). Only then is a ranker A/B meaningful.
+The published 0.819 homepage metric is retired/dated per the retest's
+resolution (site copy is a separate act). The bench harness needs no
+change.
+
+## D9. Disclosed follow-ups, out of scope
+
+Skills' `SKILL_NS` ids don't fold workspace (same defect shape; skills
+also write via a raw client upsert — synthesizer.py:647); graph
+Domain/Concept global text keying; engine/rag.py's admit-by-default for
+unattributable rows (narrowed here only for `legacy_unscoped`);
+`_merge_lifecycle` field semantics (function unchanged; D5's bridge changes
+only its reachability); `CONTENT_HASH_LENGTH` sizing.
+
+## D10. Rollout order
+
+(1) Ship v2 code: helper, mint-site rewiring, fail-closed minting branch,
+transfer principal override, backfill legacy stamping, graph key +
+workspace-scoped contradiction, D5 bridge, alias-aware `initialize()`,
+gated `migrate_single_workspace`, retired `migrate_namespaces`, the
+`MIGRATION_FREEZE` gate, and the migration tool itself (inert). (2) Deploy
+(cortex containers; compose env additions per the checklist). (3) Dry run;
+its report reviewed by the user. (4) The freeze-migration (D6), on the
+user's separate go, at an agreed time (the write API is down for the
+window; reads stay up until the flip). (5) The benchmark rerun (D8).
 
 ## Testing
 
-- Helper: canonical-encoding vectors (text containing `|`, `"`, newlines,
-  json metacharacters; workspace/namespace permutations produce distinct
-  ids; identical inputs produce identical ids across processes).
-- Guard: no `uuid5(...text)` derivation outside the helper + migration
-  (grep-shaped test, the D2 lockstep risk).
-- Fail-closed: upsert without workspace raises; transfer import stamps the
-  principal; contradiction cannot see across workspaces (two-workspace
-  fixture: near-duplicate text does NOT supersede).
-- Graph: same text, two workspaces → two chain nodes; memory_ids no longer
-  cross-accrete.
-- Collision end-to-end: the retest's repro shape as a regression test —
-  same text learned in workspaces A and B; both recalls see their own copy;
-  neither's provenance moves.
-- Migration (against a seeded local Qdrant): v1-predicate classification
-  (memory vs corpus vs dream vs skill points); quarantine path; predicted
-  v2-collision merge; idempotent resume; verify-pass failure on a planted
-  stray; alias flip leaves search results intact; old→new map completeness.
-- OWM fallback join through the map; access-count key rename.
+- Helper: canonical-encoding vectors (delimiters, quotes, newlines, JSON
+  metacharacters in text; workspace/namespace permutations distinct;
+  deterministic across processes). Guard: no bare-text uuid5 outside
+  helper + migration tooling.
+- Fail-closed: minting-branch-only (upsert with point_id and no workspace
+  succeeds — the corpus shape; without point_id raises); transfer import
+  overrides an asserted foreign workspace_id with the principal's;
+  backfill legacy entry stamped, not DLQ-ground.
+- Namespace: upsert normalizes once for payload AND seed; guard that every
+  migration-written point satisfies
+  `payload.namespace == normalize_namespace(payload.namespace)`.
+- Bridge (D5): archive → relearn exact text → not active; provenance
+  fields survive into the v2 twin; bridge off → documented raw behavior.
+- Graph: same text two workspaces → two chain nodes; `legacy_unscoped`
+  rows denied by `_scope_verdict` under every `unattributed` setting.
+- Cross-workspace regression: the retest's repro — learn same text in A
+  and B, both recalls see their own, neither's provenance moves; near-dup
+  in B does NOT supersede A's.
+- `initialize()`: no-op against an alias-resolving name; double-start test.
+- `migrate_single_workspace`: boots twice against a store holding a
+  sentinel/`legacy_unscoped` point → workspace stays `__quarantine__`.
+- Migration (seeded local Qdrant): provenance classification incl. legacy
+  corpus chunks (id-predicate-true, source=corpus → untouched) and
+  repaired-text bucket; occupancy/twin merge determinism (order-independent
+  result, v2 text+vector win); quarantine sentinel invisible on BOTH legs;
+  cursor resume mid-copy (planted crash) + refusal on fingerprint
+  mismatch; superseded_by/contested_with rewritten; verify-pass failures
+  each demonstrated (planted count drift, planted vector mutation, planted
+  dangling reference); config.params carried from source.
+- OWM: idmap translation at join top; sweep skipped + logged when marker
+  present and map absent; hash-fold reconciliation counts.
 
 ## Deploy
 
-Cortex containers only (standard pull + rebuild). The migration tooling
-ships as a script/worker but DOES NOT run at deploy. Office/K8s inherit on
-their next update. Migration execution: separate user go, preceded by the
-dry-run report and a fresh cold backup, per D6/D10.
+Cortex containers (standard pull + rebuild) + the compose env additions
+(`MIGRATION_FREEZE` default false, bridge flag default true). The migration
+tool ships inert. Office/K8s inherit on their next update. Migration
+execution: separate user go, preceded by the reviewed dry-run report and
+the freeze-start cold backup, per D6/D10.
+
+## Revision record
+
+**2026-08-27, same day, pre-implementation.** Adversarial review (claims
+verifier with live Qdrant v1.13.2 probes, hostile migration reviewer,
+skeptic verification; 33 findings, 24 verified) rebuilt the migration
+design and corrected the identity sections: the alias flip was DISPROVEN
+empirically (name-collision 409, no rename, `initialize()` bricking) →
+cut-over is a new canonical collection name + config flip, with
+alias-aware `initialize()` as hardening; a mandatory write freeze replaced
+the no-freeze copy (concurrent-write loss was shown unfixable by catch-up)
+and collapsed the verify pass to exact-and-fatal; classification moved
+from id-shape to provenance (legacy corpus chunks and mojibake-repaired
+points both defeated the id predicate — the latter proving "payload text
+never diverges from minting text" false); the D5 window gained the
+lifecycle bridge (archived/superseded resurrection was undisclosed) and
+the migration a deterministic twin-merge for occupied v2 ids; quarantine
+became a sentinel workspace after the review showed "recallable" was false
+on the vector leg, cross-workspace-leaky on the graph leg, and the whole
+bucket was auto-adopted by `migrate_single_workspace` on the next restart;
+graph remap moved AFTER the flip (before, it emptied the graph leg);
+`superseded_by`/`contested_with` joined the remap; OWM's stale-reset was
+found to DELETE scores on a missed join → translation at the join top +
+sweep-skip guard; hash folds moved inside the freeze post-flip with the
+flusher fenced; the state machine, source fingerprint, occupancy check,
+fidelity/search-parity verification, shadow config inheritance, backfill
+legacy stamping, transfer principal OVERRIDE (caller-asserted spoof),
+namespace normalize-at-top invariant, and `migrate_namespaces` retirement
+were all added; the resource-envelope finding was refuted at this store's
+scale but yielded operational preconditions (disk/memory checks, measured
+dry-run numbers in the report). No registered goal changed: same identity
+scheme, same never-guess-owners rule, same user-gated execution.
