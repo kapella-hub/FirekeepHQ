@@ -1098,6 +1098,29 @@ class TestThePlanIsBoundToTheRun:
         with pytest.raises(mig.MigrationRefused, match="refusing to overwrite"):
             await mig.dry_run(client, source="somewhere_else", idmap_path=idmap)
 
+    async def test_a_damaged_plan_artifact_refuses_with_guidance(
+            self, redis_client, frozen, idmap):
+        """A truncated write or a hand-edit would otherwise surface as a bare
+        JSONDecodeError from inside a migration step — a stack trace, mid-freeze,
+        about a file the operator does not know is load-bearing."""
+        client = await _seeded()
+        await mig.dry_run(client, source="firekeep_memory", idmap_path=idmap)
+        Path(mig.plan_path(idmap)).write_text('{"source_collection": "fire',
+                                              encoding="utf-8")
+        with pytest.raises(mig.MigrationRefused, match="not readable JSON"):
+            await mig.dry_run(client, source="firekeep_memory", idmap_path=idmap)
+        with pytest.raises(mig.MigrationRefused, match="not readable JSON"):
+            await mig.execute(client, redis_client, settings=frozen,
+                              idmap_path=idmap, source="firekeep_memory")
+
+    async def test_a_plan_missing_fields_refuses_with_guidance(self, idmap):
+        client = await _seeded()
+        await mig.dry_run(client, source="firekeep_memory", idmap_path=idmap)
+        Path(mig.plan_path(idmap)).write_text('{"source_collection": "x"}',
+                                              encoding="utf-8")
+        with pytest.raises(mig.MigrationRefused, match="missing fields"):
+            mig._load_plan(idmap)
+
     async def test_re_running_the_dry_run_on_the_same_source_is_fine(self, idmap):
         """The guard is about SUBSTITUTION, not about writing twice — an
         operator re-planning the same collection must not be blocked."""
@@ -1284,6 +1307,42 @@ class TestGraphRemap:
         assert rounds == [] and cycles == []
         assert collisions == [{"old": "v1", "new": "target"}]
 
+    async def test_two_pairs_targeting_one_fresh_id_do_not_both_move(self):
+        """Two source points can land on the same v2 id with that id held by
+        NOBODY — the repaired-text class, where a mojibake fix made one memory's
+        text duplicate another's in the same scope. Moving both in one round
+        leaves two MemoryRefs at one vector_id, and the uniqueness constraint
+        created at the end of the remap then fails ON THE DATA: the step raises,
+        never completes, and the operator is stuck inside the freeze."""
+        a, b, x = (str(uuid.uuid5(FIREKEEP_UUID_NAMESPACE, s)) for s in "abx")
+        graph = _FakeGraph(memory_ref_ids=[a, b])
+        report = await mig.graph_remap(graph, {a: x, b: x}, content_hash_length=32)
+
+        assert report["memory_ref_rekeyed"] == 1
+        assert report["memory_ref_collisions"] == 1
+        assert report["memory_ref_rounds"] == 1
+        # Which one wins is decided by id order, not by scroll order — the same
+        # determinism rule the rest of the migration uses.
+        winner, loser = sorted([a, b])
+        rekeys = graph.params_for("SET m.vector_id")
+        assert [p["pairs"] for p in rekeys] == [[{"old": winner, "new": x}]]
+        # The loser is merged into the survivor, not written alongside it.
+        assert graph.params_for("DETACH DELETE old")[0]["pairs"] == [
+            {"old": loser, "new": x}]
+        # And the constraint is still created last, over de-duplicated data.
+        assert "IS UNIQUE" in graph.writes[-1][0]
+
+    def test_the_planner_claims_each_target_once_per_round(self):
+        rounds, collisions, cycles = mig._plan_memory_ref_rewrites(
+            {"a", "b"}, {"a": "x", "b": "x"})
+        assert [[p["old"] for p in r] for r in rounds] == [["a"]]
+        assert collisions == [{"old": "b", "new": "x"}]
+        assert cycles == []
+        # No round may name one target twice — that is the constraint violation.
+        for round_pairs in rounds:
+            targets = [p["new"] for p in round_pairs]
+            assert len(targets) == len(set(targets))
+
     def test_a_cycle_is_reported_and_left_alone(self):
         """Unreachable at uuid5 scale, but the collision path would DETACH
         DELETE both sides — losing data to break a tie."""
@@ -1291,6 +1350,28 @@ class TestGraphRemap:
             {"x", "y"}, {"x": "y", "y": "x"})
         assert rounds == [] and collisions == []
         assert [c["old"] for c in cycles] == ["x", "y"]
+
+    async def test_a_stranded_cycle_count_reaches_the_state(self, redis_client,
+                                                            frozen, idmap):
+        """The one thing the remap deliberately leaves undone has to be visible
+        where an operator looks, not only in a log line that has scrolled past
+        by the time verify runs."""
+        client = await _seeded()
+        await _run_full(client, redis_client, frozen, idmap)
+        flipped = Settings(MIGRATION_FREEZE=True,
+                           QDRANT_COLLECTION=mig.SHADOW_COLLECTION)
+        await mig.mark_flipped(redis_client, settings=flipped)
+
+        old_a = _v1_point_id(T_PLAIN_A)
+        new_a = memory_point_id(WS, NS, T_PLAIN_A)
+        graph = _FakeGraph(memory_ref_ids=[old_a, new_a])
+        # Make the pair a cycle by pointing the target back at the source.
+        mig.write_idmap(idmap, {old_a: new_a, new_a: old_a})
+        report = await mig.graph_remap_step(graph, redis_client, settings=flipped,
+                                            idmap_path=idmap)
+        assert report["memory_ref_cycles"] == 2
+        state = await mig.read_state(redis_client)
+        assert state["graph_remap_cycles"] == "2"
 
     async def test_the_uniqueness_constraint_is_created_last(self):
         graph = _FakeGraph()

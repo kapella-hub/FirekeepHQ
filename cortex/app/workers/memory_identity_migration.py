@@ -838,7 +838,7 @@ async def dry_run(client, *, source: str, idmap_path: str = DEFAULT_IDMAP_PATH,
             )
     existing_plan = Path(plan_path(idmap_path))
     if existing_plan.exists():
-        previous = json.loads(existing_plan.read_text(encoding="utf-8"))
+        previous = _read_plan_json(existing_plan)
         if previous.get("source_collection") != source:
             raise MigrationRefused(
                 f"a plan for {previous.get('source_collection')!r} already sits "
@@ -888,6 +888,27 @@ def _require_plan_is_this_runs(plan: MigrationPlan, state: dict[str, str]) -> No
         )
 
 
+def _read_plan_json(path: Path) -> dict:
+    """Parse a plan artifact, or refuse with something an operator can act on.
+
+    A truncated write or a hand-edit would otherwise surface as a bare
+    ``JSONDecodeError`` from inside a migration step — a stack trace, mid-freeze,
+    about a file the operator does not know is load-bearing.
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise MigrationRefused(
+            f"the plan artifact at {path} is not readable JSON ({exc}). It is "
+            "written atomically, so this is a hand-edit or a damaged file: "
+            "restore it, or re-run the dry run against the ORIGINAL collection."
+        ) from exc
+    if not isinstance(data, dict):
+        raise MigrationRefused(
+            f"the plan artifact at {path} is not a plan object")
+    return data
+
+
 def _load_plan(idmap_path: str, mapping: dict[str, str] | None = None) -> MigrationPlan:
     path = Path(plan_path(idmap_path))
     if not path.exists():
@@ -895,7 +916,13 @@ def _load_plan(idmap_path: str, mapping: dict[str, str] | None = None) -> Migrat
             f"no dry-run plan at {path}. The dry run is mandatory and its "
             "report is reviewed before execution (spec D10 step 3)."
         )
-    return MigrationPlan.from_dict(json.loads(path.read_text(encoding="utf-8")), mapping)
+    try:
+        return MigrationPlan.from_dict(_read_plan_json(path), mapping)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise MigrationRefused(
+            f"the plan artifact at {path} is missing fields this tool needs "
+            f"({exc}). Re-run the dry run against the original collection."
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -1406,7 +1433,26 @@ def _plan_memory_ref_rewrites(
     rounds: list[list[dict]] = []
 
     while pending:
-        movable = [old for old in sorted(pending) if pending[old] not in occupied]
+        # `claimed` is not bookkeeping — it is the whole correctness of a round.
+        # Two pending pairs can share a target that is FREE right now (two
+        # source points whose payloads land on the same v2 id: the repaired-text
+        # class, where a mojibake fix made one memory's text duplicate
+        # another's in the same scope). Judging movability on `occupied` alone
+        # puts both in one round's UNWIND, leaving two MemoryRefs at one
+        # vector_id — and the uniqueness constraint created at the end of the
+        # remap then fails ON THE DATA, so the step raises, never completes, and
+        # the operator is stuck mid-freeze. Only the first claimant moves; the
+        # loser falls to the next round, finds its target held by a node that is
+        # no longer moving, and classifies as an ordinary collision (merge the
+        # relationships, delete the duplicate) — which is exactly what it is.
+        movable: list[str] = []
+        claimed: set[str] = set()
+        for old in sorted(pending):
+            new = pending[old]
+            if new in occupied or new in claimed:
+                continue
+            claimed.add(new)
+            movable.append(old)
         if not movable:
             break
         for old in movable:
@@ -1437,7 +1483,11 @@ async def graph_remap_step(graph, redis_client, *, settings: Settings,
     await _write_state(redis_client, step=STEP_GRAPH_REMAP, status=STATUS_IN_PROGRESS)
     report = await graph_remap(
         graph, mapping, content_hash_length=settings.CONTENT_HASH_LENGTH)
-    await _write_state(redis_client, step=STEP_GRAPH_REMAP, status=STATUS_COMPLETE)
+    # Stranded cycles are the one thing the remap deliberately leaves undone, so
+    # the count belongs in the state an operator reads, not only in a log line
+    # that has scrolled past by the time verify runs.
+    await _write_state(redis_client, step=STEP_GRAPH_REMAP, status=STATUS_COMPLETE,
+                       graph_remap_cycles=report["memory_ref_cycles"])
     logger.info("graph remap: %s", report)
     return report
 
