@@ -1,22 +1,24 @@
-# OpenAI Secure MCP Tunnel -> firekeep gateway (chat toolset).
-# Install per README.md in this directory. The tunnel makes OUTBOUND-only
-# HTTPS to OpenAI's control plane; the Keep stays tailnet-private — no inbound
-# port opens anywhere.
+# OpenAI Secure MCP Tunnel -> Firekeep gateway (chat toolset).
+# Template: replace all three __FIREKEEP_*__ tokens with the enrolled Linux
+# account's user, primary group, and absolute home path before installation.
+# The maintained setup guide renders an equivalent unit and verifies it before start.
 [Unit]
-Description=Firekeep ChatGPT tunnel (Secure MCP Tunnel -> firekeep gateway)
+Description=Firekeep ChatGPT tunnel (Secure MCP Tunnel -> Firekeep gateway)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
+User=__FIREKEEP_OS_USER__
+Group=__FIREKEEP_OS_GROUP__
+Environment="HOME=__FIREKEEP_HOME__"
 # WorkingDirectory holds ./profiles/firekeep.yaml (created by tunnel-client init).
 WorkingDirectory=/etc/firekeep/chatgpt-tunnel
-# tunnel.env (0600 root:root) holds CONTROL_PLANE_API_KEY. Deliberately NOT in
-# Firekeep's vault: the tunnel must start before the Keep's own auth matters,
-# and the vault lives inside the thing being exposed.
+# tunnel.env must be 0600 and owned by the User/Group above. It holds
+# CONTROL_PLANE_API_KEY and deliberately stays outside Firekeep's vault: the
+# tunnel must start before the Keep's own tool access is available.
 EnvironmentFile=/etc/firekeep/chatgpt-tunnel/tunnel.env
 ExecStart=/usr/local/bin/tunnel-client run --profile firekeep
-# Restart=always is also the long-lived-gateway backstop: restarting
-# tunnel-client restarts the spawned gateway and its backend shims.
+# Restarting tunnel-client also restarts its long-lived gateway child.
 Restart=always
 RestartSec=5
 

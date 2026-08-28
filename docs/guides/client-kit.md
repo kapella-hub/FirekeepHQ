@@ -502,16 +502,18 @@ owns the mismatch.
 
 **The founding consumer: ChatGPT via OpenAI's Secure MCP Tunnel.** `tunnel-client`
 runs on the Keep host as a systemd service, makes outbound-only HTTPS to OpenAI's
-control plane, and spawns `run-gateway.sh` — which exports `FIREKEEP_TOOLSET=chat`
-inside the exec'd script (inheritance-proof) and runs
+control plane, and spawns `run-gateway.sh` — which clears any inherited
+`FIREKEEP_TOOLS_ALLOW`, exports `FIREKEEP_TOOLSET=chat`, and runs
 `firekeep gateway --runtime chatgpt`. The Keep stays tailnet-private: no public
 port, no OAuth server. Requests transit OpenAI's control plane (a disclosed trust
-statement), identity is the host machine's enrollment, and every call lands in
-replay as `runtime: chatgpt` — which is also the memory-poisoning mitigation:
-`memory_learn` stays in the preset because a chat that cannot save a decision loses
-half its value, and chatgpt-authored memories stay auditable and purgeable as a
-class. Recipe, prerequisites and operations: `deploy/chatgpt-tunnel/README.md`;
-design record: `docs/superpowers/specs/2026-08-19-chatgpt-tunnel-design.md`. The
+statement). The gateway uses the enrolled service account's member credential and
+configured agent identity, shared by every user and conversation through that
+connection. `--runtime chatgpt` adds request-observability headers and is retained
+on sessions created through `ctx_start_session`; it does not tag every learned
+memory or create a purge-by-runtime boundary. `memory_learn` stays in the preset
+because a chat that cannot save a decision loses half its value. Recipe,
+prerequisites and operations: `deploy/chatgpt-tunnel/README.md`; design record:
+`docs/superpowers/specs/2026-08-19-chatgpt-tunnel-design.md`. The
 standards-based public `/mcp` + OAuth endpoint (what Claude web/mobile connectors
 would need) is deliberately NOT built — its own future decision.
 

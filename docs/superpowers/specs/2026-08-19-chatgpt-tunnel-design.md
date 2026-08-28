@@ -32,9 +32,10 @@ plane. That is a third party in the request path, chosen deliberately over
 public exposure of a box holding all team memory and the vault key.
 
 **Identity:** the VPS enrollment — ChatGPT sees exactly what the owner's coding
-agents see, member-private docdex/maildex included. All calls are attributed
-`runtime: chatgpt` in replay (the `--runtime` flag is already free-form
-pass-through; zero server changes).
+agents see, member-private docdex/maildex included. The `--runtime chatgpt` flag
+adds request-observability headers. Bridge retains that value on sessions created
+through `ctx_start_session`; individual calls and learned memories do not gain a
+durable runtime tag.
 
 **Session semantics:** all ChatGPT chats share the one enrolled agent identity,
 so `ctx_start_session` from a new chat auto-pauses the previous session — the
@@ -81,10 +82,11 @@ Rules, all load-bearing:
 **Why memory_learn stays in (and the risk, named):** a chat session that cannot
 save a decision loses half its value. The cost is that ChatGPT retrieved
 content is prompt-injection-rich and the threat model's largest OPEN finding is
-memory poisoning by a valid key — this surface extends it. Round-1 mitigation
-is attribution, not prevention: every write carries `runtime: chatgpt` in
-replay, so chatgpt-authored memories are auditable and purgeable as a class.
-Excluded outright: vault, corpus ingest, relay, backup, dex/code tools.
+memory poisoning by a valid key — this surface extends it. The round-1 control is
+the smaller capability surface and a separately enrollable service identity, not
+per-write attribution: Firekeep does not tag learned memories or provide
+purge-by-runtime retention. Excluded outright: vault, corpus ingest, relay,
+backup, dex/code tools.
 
 ## Long-lived gateway (verify during implementation)
 
@@ -121,8 +123,8 @@ that is a disclosed limitation of round 1, not a blocker.
    -32601.
 3. VPS: tunnel-client doctor green; service up.
 4. ChatGPT: real connector round-trip — "what's our VPS address?" answered from
-   recall; `runtime: chatgpt` visible in replay. Owner performs the OpenAI-side
-   setup; this gate blocks on it.
+   recall; a session created with `ctx_start_session` retains `runtime: chatgpt`
+   in its replay. Owner performs the OpenAI-side setup; this gate blocks on it.
 5. Then: site automation-table row + mirrors, guide section, CLAUDE.md.
 
 ## Out of scope
