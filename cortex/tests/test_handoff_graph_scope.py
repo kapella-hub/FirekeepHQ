@@ -62,8 +62,11 @@ STATES = {
 }
 
 
-def verdict(memory_ids, *, unattributed="admit", scope=SCOPE, states=STATES):
-    return RAGEngine._scope_verdict(states, memory_ids, scope, unattributed=unattributed)
+def verdict(memory_ids, *, unattributed="admit", scope=SCOPE, states=STATES, legacy_unscoped=False):
+    return RAGEngine._scope_verdict(
+        states, memory_ids, scope, unattributed=unattributed,
+        legacy_unscoped=legacy_unscoped,
+    )
 
 
 class TestSharedRules:
@@ -174,6 +177,32 @@ class TestHandoffWiring:
         assert out.get("empty") is not True, (
             "this documents the pre-fix behaviour the deny policy prevents"
         )
+
+
+class TestLegacyUnscopedIsPermanentQuarantine:
+    """Identity-v2 D4: the graph analogue of vector quarantine. Denied under
+    BOTH policies — unlike an ordinary unattributed row, which recall admits
+    and only handoff denies, `legacy_unscoped` is denied by both because the
+    NODE's own identity is untrustworthy, not merely unattributed."""
+
+    def test_denied_under_admit(self):
+        assert verdict(["in"], legacy_unscoped=True) is False
+
+    def test_denied_under_deny(self):
+        assert verdict(["in"], unattributed="deny", legacy_unscoped=True) is False
+
+    def test_denied_even_when_fully_in_scope(self):
+        """Being backed by an in-scope memory does not rescue it, unlike an
+        ordinary row (test_one_in_scope_memory_is_enough above)."""
+        assert verdict(["in", "in"], legacy_unscoped=True) is False
+        assert verdict(["in", "in"], unattributed="deny", legacy_unscoped=True) is False
+
+    def test_denied_even_under_a_qdrant_outage(self):
+        """Unlike an ordinary row (test_a_qdrant_outage_admits_rather_than_
+        emptying_recall above), an outage does not rescue a legacy_unscoped
+        row either — the denial is about the node's own identity, not about
+        whether its backing memories could be resolved."""
+        assert verdict(["in"], states=None, legacy_unscoped=True) is False
 
 
 class TestStateInScope:

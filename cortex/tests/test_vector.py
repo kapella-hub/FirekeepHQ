@@ -1139,7 +1139,9 @@ class TestFindSimilar:
         with patch.object(
             vector_client, "_embed", new_callable=AsyncMock, return_value=[0.1] * 768
         ):
-            results = await vector_client.find_similar("test text", threshold=0.85)
+            results = await vector_client.find_similar(
+                "test text", threshold=0.85, workspace_id="ws-1"
+            )
 
         assert len(results) == 1
         assert results[0]["id"] == "p1"
@@ -1164,7 +1166,7 @@ class TestFindSimilar:
         with patch.object(
             vector_client, "_embed", new_callable=AsyncMock, return_value=[0.1] * 768
         ):
-            await vector_client.find_similar("test", domain="infra")
+            await vector_client.find_similar("test", domain="infra", workspace_id="ws-1")
 
         call_kwargs = mock_qdrant_client.query_points.call_args.kwargs
         query_filter = call_kwargs["query_filter"]
@@ -1173,6 +1175,91 @@ class TestFindSimilar:
         ]
         assert len(domain_conditions) == 1
         assert domain_conditions[0].match.value == "infra"
+
+
+class TestFindSimilarWorkspaceScoping:
+    """Identity-v2 D4: find_similar (contradiction detection) must never
+    search across tenants — see docs/superpowers/specs/2026-08-27-memory-
+    identity-v2-design.md D4, and the retest's cross-workspace supersession
+    repro this closes."""
+
+    @pytest.mark.asyncio
+    async def test_requires_workspace_id_keyword(self, vector_client):
+        """workspace_id has no default — a caller must supply it."""
+        with pytest.raises(TypeError):
+            await vector_client.find_similar("test text")  # type: ignore[call-arg]
+
+    @pytest.mark.asyncio
+    async def test_empty_workspace_id_is_refused(self, vector_client):
+        """Fail closed, not silently unscoped — mirrors memory_point_id."""
+        with pytest.raises(ValueError, match="workspace_id"):
+            await vector_client.find_similar("test text", workspace_id="")
+
+    @pytest.mark.asyncio
+    async def test_filter_includes_workspace_id_as_a_must_condition(
+        self, vector_client, mock_qdrant_client
+    ):
+        result_obj = MagicMock()
+        result_obj.points = []
+        mock_qdrant_client.query_points.return_value = result_obj
+
+        with patch.object(
+            vector_client, "_embed", new_callable=AsyncMock, return_value=[0.1] * 768
+        ):
+            await vector_client.find_similar("test text", workspace_id="ws-a")
+
+        query_filter = mock_qdrant_client.query_points.call_args.kwargs["query_filter"]
+        ws_conditions = [
+            c for c in query_filter.must if getattr(c, "key", None) == "workspace_id"
+        ]
+        assert len(ws_conditions) == 1
+        assert ws_conditions[0].match.value == "ws-a"
+
+    @pytest.mark.asyncio
+    async def test_cross_workspace_near_duplicate_is_not_returned(
+        self, vector_client, mock_qdrant_client
+    ):
+        """The retest's repro, at the unit that decides it: a near-duplicate
+        memory written in workspace B must not be found (and therefore never
+        superseded) when searching from workspace A, even though the text and
+        embedding are close enough to match on every other axis."""
+        mine = _make_point(
+            "mine",
+            {
+                "text": "the widget service listens on port 9931",
+                "domain": "infra",
+                "namespace": "default",
+                "status": "active",
+                "workspace_id": "ws-a",
+            },
+        )
+        theirs = _make_point(
+            "theirs",
+            {
+                "text": "the widget service listens on port 9931",
+                "domain": "infra",
+                "namespace": "default",
+                "status": "active",
+                "workspace_id": "ws-b",
+            },
+        )
+        theirs.score = 0.95
+        mine.score = 0.95
+
+        mock_qdrant_client.query_points = _filtering_query_points([mine, theirs])
+
+        with patch.object(
+            vector_client, "_embed", new_callable=AsyncMock, return_value=[0.1] * 768
+        ):
+            results = await vector_client.find_similar(
+                "the widget service listens on port 9931",
+                domain="infra",
+                threshold=0.85,
+                workspace_id="ws-a",
+            )
+
+        ids = {r["id"] for r in results}
+        assert ids == {"mine"}, "a workspace-b near-duplicate must never surface for workspace-a"
 
 
 # ---------------------------------------------------------------------------

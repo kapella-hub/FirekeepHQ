@@ -88,7 +88,7 @@ def test_projected_metadata_agrees_with_gc_on_every_memory_type_shape():
 def test_find_similar_filter_excludes_confirmed_memories():
     from app.db import vector as v
 
-    f = v._similarity_filter(namespace="default", domain="infra")
+    f = v._similarity_filter(namespace="default", domain="infra", workspace_id="ws-1")
     matches = _must_not_conditions(f, "confirmed_count")
     assert len(matches) == 1, "must_not must exclude confirmed_count, structurally"
     assert matches[0].range is not None and matches[0].range.gt == 0
@@ -119,7 +119,7 @@ def test_find_similar_filter_excludes_dream_authored_sources(source):
     the most ordinary path in the system."""
     from app.db import vector as v
 
-    f = v._similarity_filter(namespace="default", domain="infra")
+    f = v._similarity_filter(namespace="default", domain="infra", workspace_id="ws-1")
     assert source in _excluded_sources(f), (
         f"must_not must exclude source=={source!r}, structurally"
     )

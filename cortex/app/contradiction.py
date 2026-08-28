@@ -67,14 +67,19 @@ async def detect_and_supersede(
     new_graph_id: str | None,
     domain: str,
     namespace: str = "default",
+    *,
+    workspace_id: str,
 ) -> list[str]:
     """Supersede near-duplicates of a freshly stored memory.
 
     Searches the vector store for active memories within
-    ``SIMILARITY_THRESHOLD`` cosine of *new_text* in the same domain. Each
-    match is marked superseded by the new memory (WITHOUT accruing a
-    contradiction — see the module docstring), and a SUPERSEDES edge is created
-    in the graph if a graph ID is available.
+    ``SIMILARITY_THRESHOLD`` cosine of *new_text* in the same domain AND
+    workspace (identity-v2 D4 — ``workspace_id`` is required and forwarded to
+    ``find_similar`` unchanged; the caller is expected to pass the verified
+    principal's workspace, exactly as ``/memory/learn`` already does for the
+    write itself). Each match is marked superseded by the new memory (WITHOUT
+    accruing a contradiction — see the module docstring), and a SUPERSEDES
+    edge is created in the graph if a graph ID is available.
 
     Returns list of superseded memory IDs.
     """
@@ -88,13 +93,15 @@ async def detect_and_supersede(
         # defect) and source="dream" points (a dream must never be merged
         # into or superseded by the episode it summarised). Nothing below
         # needs to duplicate those guards — they hold for every caller of
-        # find_similar, not just this one.
+        # find_similar, not just this one. Identity-v2 D4 adds workspace_id
+        # to that same filter, closing cross-workspace supersession.
         similar = await vector.find_similar(
             text=new_text,
             namespace=namespace,
             domain=domain,
             threshold=SIMILARITY_THRESHOLD,
             top_k=4,
+            workspace_id=workspace_id,
         )
 
         for match in similar:

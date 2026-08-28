@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.contradiction import detect_and_supersede
+from app.contradiction import SIMILARITY_THRESHOLD, detect_and_supersede
 
 
 class TestContradictionDetection:
@@ -17,7 +17,8 @@ class TestContradictionDetection:
         vector.find_similar = AsyncMock(return_value=[])
 
         result = await detect_and_supersede(
-            vector, graph, "new text", "new-id", "graph-id", "domain"
+            vector, graph, "new text", "new-id", "graph-id", "domain",
+            workspace_id="ws-1",
         )
         assert result == []
 
@@ -41,7 +42,8 @@ class TestContradictionDetection:
         graph.create_supersession = AsyncMock()
 
         result = await detect_and_supersede(
-            vector, graph, "new text", "new-id", "graph-id", "test"
+            vector, graph, "new text", "new-id", "graph-id", "test",
+            workspace_id="ws-1",
         )
         assert result == ["old-id"]
         # count_as_contradiction=False: this path decides supersession on cosine
@@ -54,6 +56,9 @@ class TestContradictionDetection:
             reason="near-duplicate", count_as_contradiction=False,
         )
         graph.create_supersession.assert_called_once()
+        # identity-v2 D4: workspace_id must reach find_similar unchanged —
+        # this is the whole mechanism that closes cross-workspace supersession.
+        assert vector.find_similar.await_args.kwargs["workspace_id"] == "ws-1"
 
     @pytest.mark.asyncio
     async def test_skips_same_memory_id(self):
@@ -73,7 +78,8 @@ class TestContradictionDetection:
         )
 
         result = await detect_and_supersede(
-            vector, graph, "new text", "new-id", "graph-id", "test"
+            vector, graph, "new text", "new-id", "graph-id", "test",
+            workspace_id="ws-1",
         )
         assert result == []
 
@@ -107,7 +113,8 @@ class TestContradictionDetection:
         graph.create_supersession = AsyncMock()
 
         result = await detect_and_supersede(
-            vector, graph, "new text", "new-id", "graph-id", "test"
+            vector, graph, "new text", "new-id", "graph-id", "test",
+            workspace_id="ws-1",
         )
         assert result == ["old-2"]
 
@@ -130,7 +137,8 @@ class TestContradictionDetection:
         vector.update_status = AsyncMock()
 
         result = await detect_and_supersede(
-            vector, graph, "new text", "new-id", None, "test"
+            vector, graph, "new text", "new-id", None, "test",
+            workspace_id="ws-1",
         )
         assert result == ["old-id"]
         graph.create_supersession.assert_not_called()
@@ -144,7 +152,8 @@ class TestContradictionDetection:
         )
 
         result = await detect_and_supersede(
-            vector, graph, "new text", "new-id", "graph-id", "test"
+            vector, graph, "new text", "new-id", "graph-id", "test",
+            workspace_id="ws-1",
         )
         assert result == []
 
@@ -164,7 +173,8 @@ class TestContradictionDetection:
         graph.create_supersession = AsyncMock()
 
         result = await detect_and_supersede(
-            vector, graph, "new text", "new-id", "graph-id", "d"
+            vector, graph, "new text", "new-id", "graph-id", "d",
+            workspace_id="ws-1",
         )
         assert result == ["old-1", "old-2", "old-3"]
         assert vector.update_status.call_count == 3
@@ -184,7 +194,40 @@ class TestContradictionDetection:
         graph.create_supersession = AsyncMock(side_effect=RuntimeError("graph down"))
 
         result = await detect_and_supersede(
-            vector, graph, "new text", "new-id", "graph-id", "test"
+            vector, graph, "new text", "new-id", "graph-id", "test",
+            workspace_id="ws-1",
         )
         assert result == ["old-id"]
         vector.update_status.assert_called_once()
+
+
+class TestWorkspaceScoping:
+    """Identity-v2 D4: detect_and_supersede must always have a workspace to
+    forward to find_similar — there is no unscoped contradiction search."""
+
+    @pytest.mark.asyncio
+    async def test_workspace_id_is_a_required_keyword(self):
+        vector = AsyncMock()
+        graph = AsyncMock()
+        vector.find_similar = AsyncMock(return_value=[])
+
+        with pytest.raises(TypeError):
+            await detect_and_supersede(  # type: ignore[call-arg]
+                vector, graph, "new text", "new-id", "graph-id", "test"
+            )
+
+    @pytest.mark.asyncio
+    async def test_workspace_id_forwarded_verbatim_to_find_similar(self):
+        vector = AsyncMock()
+        graph = AsyncMock()
+        vector.find_similar = AsyncMock(return_value=[])
+
+        await detect_and_supersede(
+            vector, graph, "new text", "new-id", "graph-id", "test",
+            namespace="infra", workspace_id="ws-scoped",
+        )
+
+        vector.find_similar.assert_awaited_once_with(
+            text="new text", namespace="infra", domain="test",
+            threshold=SIMILARITY_THRESHOLD, top_k=4, workspace_id="ws-scoped",
+        )

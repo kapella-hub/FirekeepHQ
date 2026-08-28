@@ -46,17 +46,23 @@ logger = logging.getLogger(__name__)
 FIREKEEP_UUID_NAMESPACE = uuid.UUID("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
 
 
-def memory_point_id(workspace_id: str, namespace: str, text: str) -> str:
-    """Mint a scoped, deterministic point id for a memory (identity-v2 D1).
+def mem2_seed(workspace_id: str | None, namespace: str, text: str) -> str:
+    """The canonical "mem2" scope encoding, shared across identity schemes.
 
-    Seed is the JSON encoding of ``["mem2", workspace_id, namespace, text]``
-    (compact separators, ``ensure_ascii=False``) hashed via
-    ``uuid.uuid5(FIREKEEP_UUID_NAMESPACE, seed)``. Scoping the seed on
+    JSON encoding of ``["mem2", workspace_id, normalize_namespace(namespace),
+    text]`` (compact separators, ``ensure_ascii=False``). Scoping the seed on
     workspace_id and namespace — not text alone — means identical text in two
     workspaces (or two namespaces of the same workspace) can never collapse
-    onto the same point, and JSON-encoding each field (rather than joining
+    onto the same identity, and JSON-encoding each field (rather than joining
     with a delimiter) means no value a caller controls, including the text
     itself, can forge a collision by embedding the delimiter.
+
+    This is the ONE place the encoding is built. ``memory_point_id`` below
+    hashes it via uuid5 for Qdrant point ids; ``Neo4jClient`` (identity-v2 D4)
+    hashes the same seed via SHA-256 for graph chain-node ids. Two different
+    hash algorithms over the identical seed means "same (workspace, namespace,
+    text)" is recognized as the same scope in both stores without either
+    store's identity scheme depending on the other's.
 
     Immutability invariant: this encoding is the registered identity contract
     for "mem2" points. Changing it changes every existing point's id, which
@@ -65,7 +71,23 @@ def memory_point_id(workspace_id: str, namespace: str, text: str) -> str:
 
     namespace is normalized (see ``app.models.normalize_namespace``) before
     seeding, so this function is idempotent regardless of the caller's
-    casing/hyphenation of the namespace.
+    casing/hyphenation of the namespace. workspace_id is embedded as-is
+    (including ``None``, which json-encodes as ``null``) — callers that must
+    refuse an unscoped identity enforce that themselves (see
+    ``memory_point_id``'s ValueError below).
+    """
+    return json.dumps(
+        ["mem2", workspace_id, normalize_namespace(namespace), text],
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+
+
+def memory_point_id(workspace_id: str, namespace: str, text: str) -> str:
+    """Mint a scoped, deterministic point id for a memory (identity-v2 D1).
+
+    ``uuid.uuid5(FIREKEEP_UUID_NAMESPACE, mem2_seed(workspace_id, namespace,
+    text))`` — see ``mem2_seed`` for the encoding rationale.
 
     Raises:
         ValueError: workspace_id is falsy (None or empty) — identity must be
@@ -74,11 +96,7 @@ def memory_point_id(workspace_id: str, namespace: str, text: str) -> str:
     if not workspace_id:
         raise ValueError("memory_point_id requires a non-empty workspace_id")
 
-    seed = json.dumps(
-        ["mem2", workspace_id, normalize_namespace(namespace), text],
-        separators=(",", ":"),
-        ensure_ascii=False,
-    )
+    seed = mem2_seed(workspace_id, namespace, text)
     return str(uuid.uuid5(FIREKEEP_UUID_NAMESPACE, seed))
 
 
@@ -325,8 +343,14 @@ def namespace_condition(namespace: str | None) -> Filter | FieldCondition | None
     )
 
 
-def _similarity_filter(namespace: str, domain: str | None) -> Filter:
+def _similarity_filter(namespace: str, domain: str | None, workspace_id: str) -> Filter:
     """Build the query filter used by ``find_similar`` (contradiction detection).
+
+    ``workspace_id`` is a hard ``must`` (identity-v2 D4) — the same tenancy
+    boundary ``search()`` applies, and for the identical reason: without it, a
+    near-duplicate memory learned in workspace B could supersede a memory that
+    belongs to workspace A. Required, not optional — see ``find_similar``'s
+    own fail-closed check.
 
     Two ``must_not`` guards, both audit findings (Dreaming Task 5):
       1. ``confirmed_count > 0`` — this filter previously checked status/
@@ -364,7 +388,10 @@ def _similarity_filter(namespace: str, domain: str | None) -> Filter:
     honest consequence of treating namespace as a category, and a duplicate is
     cheaper than a wrongful supersession.
     """
-    conditions = [FieldCondition(key="status", match=MatchValue(value="active"))]
+    conditions = [
+        FieldCondition(key="status", match=MatchValue(value="active")),
+        FieldCondition(key="workspace_id", match=MatchValue(value=workspace_id)),
+    ]
     ns_clause = namespace_condition(namespace)
     if ns_clause is not None:
         conditions.append(ns_clause)
@@ -1571,13 +1598,37 @@ class VectorClient:
             "metadata": {k: v for k, v in p.payload.items() if k not in ("text", "status", "confirmed_count", "contradicted_count", "last_confirmed_at", "superseded_by")},
         }
 
-    async def find_similar(self, text: str, namespace: str = "default", domain: str | None = None, threshold: float = 0.85, top_k: int = 3) -> list[dict]:
-        """Find similar active memories for contradiction detection."""
+    async def find_similar(
+        self,
+        text: str,
+        namespace: str = "default",
+        domain: str | None = None,
+        threshold: float = 0.85,
+        top_k: int = 3,
+        *,
+        workspace_id: str,
+    ) -> list[dict]:
+        """Find similar active memories for contradiction detection.
+
+        ``workspace_id`` is required (identity-v2 D4): this is the query that
+        decides what an ordinary ``/memory/learn`` is allowed to supersede, and
+        without a tenancy filter a near-duplicate written in one workspace
+        could mark another workspace's memory superseded. The ONLY caller is
+        ``contradiction.detect_and_supersede``, which always has the verified
+        principal's workspace to pass.
+
+        Raises:
+            ValueError: workspace_id is falsy — there is no unscoped search.
+        """
+        if not workspace_id:
+            raise ValueError("find_similar requires a non-empty workspace_id")
         embedding = await self._embed(text)
         results = await self._client.query_points(
             collection_name=self._collection,
             query=embedding,
-            query_filter=_similarity_filter(namespace=namespace, domain=domain),
+            query_filter=_similarity_filter(
+                namespace=namespace, domain=domain, workspace_id=workspace_id
+            ),
             limit=top_k,
             with_payload=True,
         )

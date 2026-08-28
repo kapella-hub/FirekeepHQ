@@ -148,6 +148,24 @@ class TestFormatGraphEntries:
     def test_handles_empty_results(self, engine):
         assert engine._format_graph_entries([], "test") == []
 
+    def test_legacy_unscoped_is_carried_into_metadata(self, engine):
+        """Identity-v2 D4: _verify_graph_lifecycle reads this out of metadata
+        to hand to _scope_verdict, so a raw row's flag must survive here."""
+        results = [
+            {
+                "name": "n", "description": "d", "label": "L", "distance": 1,
+                "legacy_unscoped": True,
+            }
+        ]
+        entries = engine._format_graph_entries(results, "test")
+        assert entries[0]["metadata"]["legacy_unscoped"] is True
+
+    def test_legacy_unscoped_absent_by_default(self, engine):
+        """Present-only: absent on every row until the migration stamps it."""
+        results = [{"name": "n", "description": "d", "label": "L", "distance": 1}]
+        entries = engine._format_graph_entries(results, "test")
+        assert "legacy_unscoped" not in entries[0]["metadata"]
+
 
 # ---------------------------------------------------------------------------
 # _merge_and_boost

@@ -1513,6 +1513,7 @@ async def memory_learn(
             new_graph_id=str(graph_result),
             domain=log.domain,
             namespace=log.namespace,
+            workspace_id=principal["workspace_id"],
         )
     except Exception:
         logger.warning("Contradiction detection failed, continuing")

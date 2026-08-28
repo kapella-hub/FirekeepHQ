@@ -46,6 +46,7 @@ async def test_supersession_does_not_count_as_a_contradiction():
         vector=vector, graph=graph,
         new_text="the widget service listens on port 9931",
         new_vector_id="new-id", new_graph_id="g", domain="infra",
+        workspace_id="ws-1",
     )
 
     assert result == ["old-id"]

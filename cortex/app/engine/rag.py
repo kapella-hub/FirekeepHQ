@@ -654,6 +654,8 @@ class RAGEngine:
                     memory_ids = _memory_ids_of(r)
                     if memory_ids:
                         metadata["memory_ids"] = memory_ids
+                    if r.get("legacy_unscoped"):
+                        metadata["legacy_unscoped"] = True
                     entries.append(
                         {
                             "content": content,
@@ -762,6 +764,11 @@ class RAGEngine:
             memory_ids = _memory_ids_of(r)
             if memory_ids:
                 metadata["memory_ids"] = memory_ids
+            # Identity-v2 D4: carried through so _verify_graph_lifecycle can
+            # hand it to _scope_verdict. Present-only — absent on every row
+            # until the migration stamps it, and False is the safe default.
+            if r.get("legacy_unscoped"):
+                metadata["legacy_unscoped"] = True
 
             entries.append(
                 {
@@ -849,8 +856,25 @@ class RAGEngine:
         scope: dict[str, str | None] | None,
         *,
         unattributed: str = "admit",
+        legacy_unscoped: bool = False,
     ) -> bool:
         """Decide one graph row against the recall's declared scope.
+
+        ``legacy_unscoped`` (identity-v2 D4) is checked FIRST and denies
+        unconditionally — before the "nothing is scoped, admit" early return,
+        and regardless of ``unattributed``. It is True when the migration
+        stamped the row's backing chain node ``legacy_unscoped: true``: that
+        node's id predates workspace scoping (a bare ``_content_hash(text)``),
+        so it may have MERGEd rows from more than one workspace before the
+        migration could tell them apart. Unlike an ordinary unattributed row
+        — which is a WEAKER claim about scope, admitted because it names no
+        vector memory to check — a legacy_unscoped row is a node whose own
+        identity is untrustworthy, and no amount of coincidental agreement
+        with the declared scope rescues it. This is the graph analogue of
+        vector quarantine (``workspace_id: "__quarantine__"``, uniformly
+        invisible on both recall legs) and, like it, disclosed as permanent:
+        recovering per-workspace ownership would require re-deriving facts
+        the MERGE already destroyed.
 
         WHY. ``query_related`` / ``query_related_multihop`` take a namespace and
         nothing else — no project, no workspace_id. So a recall that declared a
@@ -920,6 +944,8 @@ class RAGEngine:
             description in-scope, and requiring all of them would drop shared
             entities like "docker" from every scoped recall.
         """
+        if legacy_unscoped:
+            return False
         if not scope or not any(v is not None for v in scope.values()):
             return True
         if states is None:
@@ -968,7 +994,8 @@ class RAGEngine:
             if not admit:
                 continue
             if not self._scope_verdict(
-                states, memory_ids, scope, unattributed=unattributed
+                states, memory_ids, scope, unattributed=unattributed,
+                legacy_unscoped=bool(metadata.get("legacy_unscoped")),
             ):
                 continue
             metadata["lifecycle_verified"] = status is not None
@@ -1001,7 +1028,8 @@ class RAGEngine:
                 states, _memory_ids_of(row), include_archived
             )[0]
             and self._scope_verdict(
-                states, _memory_ids_of(row), scope, unattributed=unattributed
+                states, _memory_ids_of(row), scope, unattributed=unattributed,
+                legacy_unscoped=bool(row.get("legacy_unscoped")),
             )
         ]
 

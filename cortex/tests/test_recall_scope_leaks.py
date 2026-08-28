@@ -111,6 +111,33 @@ class TestScopeVerdict:
             _states(other={"project": "myproj"}), ["gone"], {"project": "myproj"}
         )
 
+    def test_legacy_unscoped_row_is_denied_even_when_scope_matches(self):
+        """Identity-v2 D4: a chain node the migration flagged
+        legacy_unscoped MERGEd across workspaces before scoping existed, so
+        coincidental agreement with the declared scope does not rescue it —
+        unlike an ordinary in-scope row, which is admitted."""
+        assert not RAGEngine._scope_verdict(
+            _states(m1={"project": "myproj"}), ["m1"], {"project": "myproj"},
+            legacy_unscoped=True,
+        )
+
+    def test_legacy_unscoped_row_is_denied_even_when_nothing_is_scoped(self):
+        """Permanent quarantine, not a scope-conditional gate: an unscoped
+        recall (the branch that admits everything else) must not wave it
+        through either."""
+        assert not RAGEngine._scope_verdict(
+            _states(m1={"project": "myproj"}), ["m1"], None,
+            legacy_unscoped=True,
+        )
+        assert not RAGEngine._scope_verdict(_states(), [], None, legacy_unscoped=True)
+
+    def test_legacy_unscoped_defaults_false_and_does_not_affect_ordinary_rows(self):
+        """Every pre-existing call site is unaffected — the parameter is
+        opt-in and only the migration will ever set it True."""
+        assert RAGEngine._scope_verdict(
+            _states(m1={"project": "myproj"}), ["m1"], {"project": "myproj"},
+        )
+
 
 class TestScopeIsApplied:
     @pytest.mark.asyncio
@@ -156,6 +183,57 @@ class TestScopeIsApplied:
         rows = [
             {"name": "a", "description": "mine", "memory_ids": ["mine"]},
             {"name": "b", "description": "theirs", "memory_ids": ["theirs"]},
+        ]
+        kept = await engine._filter_graph_rows(
+            rows, include_archived=False, scope={"workspace_id": "ws-a"},
+        )
+        assert [r["name"] for r in kept] == ["a"]
+
+    @pytest.mark.asyncio
+    async def test_verify_graph_lifecycle_drops_legacy_unscoped_rows(self):
+        """Identity-v2 D4, the integration point: a row whose backing chain
+        node was migration-stamped legacy_unscoped must not render, even
+        though its memory_ids resolve perfectly in-scope."""
+
+        class _Vector:
+            async def get_lifecycle_states(self, ids):
+                return _states(mine={"project": "myproj"})
+
+        engine = RAGEngine.__new__(RAGEngine)
+        engine._vector = _Vector()
+
+        entries = [
+            {"content": "mine", "metadata": {"memory_ids": ["mine"]}},
+            {
+                "content": "collided",
+                "metadata": {"memory_ids": ["mine"], "legacy_unscoped": True},
+            },
+        ]
+        kept = await engine._verify_graph_lifecycle(
+            entries, include_archived=False, scope={"project": "myproj"},
+        )
+        assert [e["content"] for e in kept] == ["mine"]
+
+    @pytest.mark.asyncio
+    async def test_streaming_path_drops_legacy_unscoped_rows(self):
+        """Same gate, same reason, on the SSE path — leaving it off would
+        make `format=stream` a documented bypass around D4's quarantine."""
+
+        class _Vector:
+            async def get_lifecycle_states(self, ids):
+                return _states(mine={"workspace_id": "ws-a"})
+
+        engine = RAGEngine.__new__(RAGEngine)
+        engine._vector = _Vector()
+
+        rows = [
+            {"name": "a", "description": "mine", "memory_ids": ["mine"]},
+            {
+                "name": "b",
+                "description": "collided",
+                "memory_ids": ["mine"],
+                "legacy_unscoped": True,
+            },
         ]
         kept = await engine._filter_graph_rows(
             rows, include_archived=False, scope={"workspace_id": "ws-a"},

@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 import neo4j
 from neo4j import AsyncGraphDatabase
 
+from app.db.vector import mem2_seed
 from app.exceptions import GraphConnectionError
 
 if TYPE_CHECKING:
@@ -190,6 +191,27 @@ class Neo4jClient:
         length = self._settings.CONTENT_HASH_LENGTH
         return hashlib.sha256(text.encode("utf-8")).hexdigest()[:length]
 
+    def _scoped_chain_id(
+        self, workspace_id: str | None, namespace: str, node_text: str
+    ) -> str:
+        """Content hash of a chain node, scoped to workspace+namespace (D4).
+
+        Identity-v2 D4: the graph gets the same boundary the vector store got
+        in D1. Previously ``merge_action_log`` MERGEd Action/Outcome/Resolution
+        nodes on a bare ``_content_hash(text)`` — identical text in two
+        workspaces MERGEd onto the SAME node, silently folding one workspace's
+        chain into another's. Hashing ``mem2_seed(workspace_id, namespace,
+        node_text)`` instead — the identical canonical encoding
+        ``memory_point_id`` uses for the vector leg — means the same text in
+        two workspaces (or two namespaces) now MERGEs onto two distinct nodes.
+
+        ``_content_hash`` itself and ``CONTENT_HASH_LENGTH`` are unchanged:
+        only the INPUT fed to it changes. Existing (pre-migration) chain nodes
+        are not re-keyed by this — see the migration's ``legacy_unscoped``
+        stamping and ``RAGEngine._scope_verdict``'s deny for that residual.
+        """
+        return self._content_hash(mem2_seed(workspace_id, namespace, node_text))
+
     @staticmethod
     def _sanitize_label(label: str) -> str:
         """Sanitize a label to alphanumeric + underscore only."""
@@ -353,8 +375,8 @@ class Neo4jClient:
         """
         domain = self._canonicalize(log.domain)
         tags = [self._canonicalize(t) for t in log.tags]
-        action_id = self._content_hash(log.action)
-        outcome_id = self._content_hash(log.outcome)
+        action_id = self._scoped_chain_id(workspace_id, namespace, log.action)
+        outcome_id = self._scoped_chain_id(workspace_id, namespace, log.outcome)
 
         query = """
         MERGE (ns:Namespace {name: $namespace})
@@ -398,7 +420,9 @@ class Neo4jClient:
         """
 
         resolution_id = (
-            self._content_hash(log.resolution) if log.resolution else None
+            self._scoped_chain_id(workspace_id, namespace, log.resolution)
+            if log.resolution
+            else None
         )
 
         driver = self._ensure_driver()

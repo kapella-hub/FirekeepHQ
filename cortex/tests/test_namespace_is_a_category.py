@@ -169,7 +169,7 @@ class TestWritePathIsScopedBothWays:
         near-duplicate. Scoping both ways only narrows supersession."""
         from app.db.vector import _similarity_filter
 
-        f = _similarity_filter("default", None)
+        f = _similarity_filter("default", None, workspace_id="ws-1")
         assert any(isinstance(c, Filter) for c in f.must), (
             "the default namespace must contribute a clause on the write path"
         )

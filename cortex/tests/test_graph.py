@@ -9,6 +9,7 @@ import pytest
 
 from app.config import Settings
 from app.db.graph import Neo4jClient
+from app.db.vector import mem2_seed
 from app.exceptions import GraphConnectionError
 from app.models import ActionLog
 
@@ -181,9 +182,19 @@ class TestMergeActionLog:
         assert call_kwargs["outcome"] == "Timeout fixed"
         assert call_kwargs["resolution"] == "Changed config"
         assert call_kwargs["tags"] == ["db", "perf"]
-        assert call_kwargs["action_id"] == client_with_driver._content_hash("Increased pool")
-        assert call_kwargs["outcome_id"] == client_with_driver._content_hash("Timeout fixed")
-        assert call_kwargs["resolution_id"] == client_with_driver._content_hash("Changed config")
+        # identity-v2 D4: the hash input is the canonical mem2 scope encoding,
+        # not the bare text — no workspace_id/namespace were passed here, so
+        # they default to None/"default", exactly as merge_action_log's own
+        # signature defaults do.
+        assert call_kwargs["action_id"] == client_with_driver._content_hash(
+            mem2_seed(None, "default", "Increased pool")
+        )
+        assert call_kwargs["outcome_id"] == client_with_driver._content_hash(
+            mem2_seed(None, "default", "Timeout fixed")
+        )
+        assert call_kwargs["resolution_id"] == client_with_driver._content_hash(
+            mem2_seed(None, "default", "Changed config")
+        )
         assert call_kwargs["memory_id"] == "qdrant-memory-1"
 
         query = tx.run.call_args.args[0]
@@ -249,6 +260,110 @@ class TestMergeActionLog:
         log = ActionLog(action="a", outcome="o")
         with pytest.raises(GraphConnectionError, match="Failed to merge action log"):
             await client_with_driver.merge_action_log(log)
+
+
+# ---------------------------------------------------------------------------
+# Scoped chain identity (identity-v2 D4)
+# ---------------------------------------------------------------------------
+
+
+class TestScopedChainIdentity:
+    """Chain-node identity is now the canonical mem2 encoding, not bare text.
+
+    Previously Action/Outcome/Resolution nodes were MERGEd on
+    ``_content_hash(text)`` alone — identical text in two workspaces MERGEd
+    onto the SAME node, silently folding one workspace's chain into another's.
+    """
+
+    @pytest.mark.asyncio
+    async def test_action_and_outcome_ids_match_canonical_mem2_encoding(
+        self, client_with_driver
+    ):
+        tx = client_with_driver._mock_tx
+        mock_result = AsyncMock()
+        mock_result.single = AsyncMock(return_value={"id": "elem-1"})
+        tx.run = AsyncMock(return_value=mock_result)
+
+        log = ActionLog(
+            action="Restarted the service",
+            outcome="Service came back up",
+            resolution="Bumped the memory limit",
+        )
+        await client_with_driver.merge_action_log(
+            log, namespace="infra", workspace_id="ws-a"
+        )
+
+        call_kwargs = tx.run.call_args.kwargs
+        assert call_kwargs["action_id"] == client_with_driver._content_hash(
+            mem2_seed("ws-a", "infra", "Restarted the service")
+        )
+        assert call_kwargs["outcome_id"] == client_with_driver._content_hash(
+            mem2_seed("ws-a", "infra", "Service came back up")
+        )
+        assert call_kwargs["resolution_id"] == client_with_driver._content_hash(
+            mem2_seed("ws-a", "infra", "Bumped the memory limit")
+        )
+
+    @pytest.mark.asyncio
+    async def test_same_text_two_workspaces_produce_different_action_ids(
+        self, client_with_driver
+    ):
+        """The MERGE key itself must differ, or the two workspaces' Action
+        nodes collapse into one — exactly the defect D4 closes."""
+        tx = client_with_driver._mock_tx
+        mock_result = AsyncMock()
+        mock_result.single = AsyncMock(return_value={"id": "elem-1"})
+        tx.run = AsyncMock(return_value=mock_result)
+
+        log = ActionLog(action="Restarted the service", outcome="Service came back up")
+
+        await client_with_driver.merge_action_log(log, workspace_id="workspace-a")
+        call_a = tx.run.call_args.kwargs
+
+        await client_with_driver.merge_action_log(log, workspace_id="workspace-b")
+        call_b = tx.run.call_args.kwargs
+
+        assert call_a["action_id"] != call_b["action_id"]
+        assert call_a["outcome_id"] != call_b["outcome_id"]
+
+    @pytest.mark.asyncio
+    async def test_same_text_two_namespaces_produce_different_action_ids(
+        self, client_with_driver
+    ):
+        """Namespace is part of the scope encoding too — the same workspace's
+        two categories must not collapse onto one chain node either."""
+        tx = client_with_driver._mock_tx
+        mock_result = AsyncMock()
+        mock_result.single = AsyncMock(return_value={"id": "elem-1"})
+        tx.run = AsyncMock(return_value=mock_result)
+
+        log = ActionLog(action="Rotated the credentials", outcome="Access restored")
+
+        await client_with_driver.merge_action_log(
+            log, namespace="infrastructure", workspace_id="ws-a"
+        )
+        call_default = tx.run.call_args.kwargs
+
+        await client_with_driver.merge_action_log(
+            log, namespace="security", workspace_id="ws-a"
+        )
+        call_security = tx.run.call_args.kwargs
+
+        assert call_default["action_id"] != call_security["action_id"]
+
+    @pytest.mark.asyncio
+    async def test_content_hash_length_unchanged(self, client_with_driver):
+        """D4 changes the hash INPUT, not the hash function or its truncation."""
+        tx = client_with_driver._mock_tx
+        mock_result = AsyncMock()
+        mock_result.single = AsyncMock(return_value={"id": "elem-1"})
+        tx.run = AsyncMock(return_value=mock_result)
+
+        log = ActionLog(action="a", outcome="o")
+        await client_with_driver.merge_action_log(log, workspace_id="ws-a")
+
+        call_kwargs = tx.run.call_args.kwargs
+        assert len(call_kwargs["action_id"]) == client_with_driver._settings.CONTENT_HASH_LENGTH
 
 
 # ---------------------------------------------------------------------------
