@@ -1972,6 +1972,22 @@ async def _check_search_parity(client, plan: MigrationPlan, mapping: dict[str, s
             )
             if tie_reorder:
                 continue
+            # Boundary-tie truncation: when a tie GROUP straddles the top-k
+            # cutoff, each collection legitimately admits a different member
+            # at the tail — the sibling id sits just past the other list's
+            # limit, so the in-list reorder rule above cannot see it. Found
+            # live at position 8/10 with byte-identical scores. Exempt only
+            # when both ids carry their own list's FINAL (minimum) score:
+            # membership inside the boundary band is arbitrary; anything
+            # scoring above the band stays fatal.
+            boundary_tie = (
+                abs(want[1] - got[1]) <= _SCORE_TOLERANCE
+                and expected and actual
+                and abs(want[1] - expected[-1][1]) <= _SCORE_TOLERANCE
+                and abs(got[1] - actual[-1][1]) <= _SCORE_TOLERANCE
+            )
+            if boundary_tie:
+                continue
             mismatches.append(
                 f"probe {probe_id} position {position}: expected {want}, got {got}")
             break

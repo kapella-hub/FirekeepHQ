@@ -1565,7 +1565,12 @@ class TestSearchParityTieReorder:
                and abs(expected_scores[got[0]] - got[1]) <= tol
                and want[0] in actual_scores
                and abs(actual_scores[want[0]] - want[1]) <= tol)
-        return not tie
+        if tie:
+            return False
+        boundary = (abs(want[1] - got[1]) <= tol
+                    and abs(want[1] - expected[-1][1]) <= tol
+                    and abs(got[1] - actual[-1][1]) <= tol)
+        return not boundary
 
     def _first_mismatch(self, expected, actual):
         for want, got in zip(expected, actual):
@@ -1583,7 +1588,16 @@ class TestSearchParityTieReorder:
         actual = [("z", 0.8), ("c", 0.5)]
         assert self._first_mismatch(expected, actual) is not None
 
-    def test_equal_score_but_foreign_id_is_fatal(self):
-        expected = [("a", 0.9), ("b", 0.9)]
-        actual = [("z", 0.9), ("a", 0.9)]
+    def test_equal_score_but_foreign_id_above_the_tail_band_is_fatal(self):
+        # z at 0.9 mid-list while the tail sits at 0.5: not a boundary tie —
+        # a genuinely different high-ranking neighbour is a real mismatch.
+        expected = [("a", 0.9), ("b", 0.9), ("c", 0.5)]
+        actual = [("z", 0.9), ("a", 0.9), ("c", 0.5)]
         assert self._first_mismatch(expected, actual) is not None
+
+    def test_boundary_tie_truncation_is_not_a_mismatch(self):
+        # The tie group at the final score straddles the cutoff: each list
+        # admits a different member of it at the tail. Both are correct.
+        expected = [("a", 0.9), ("b", 0.7), ("c", 0.7)]
+        actual = [("a", 0.9), ("b", 0.7), ("d", 0.7)]
+        assert self._first_mismatch(expected, actual) is None
