@@ -56,6 +56,10 @@ def _return_aliases(query: str) -> list[str]:
     tail = query.rsplit("RETURN", 1)[1]
     for terminator in ("ORDER BY", "LIMIT"):
         tail = tail.split(terminator)[0]
+    # Splitting on every comma also splits INSIDE expressions like
+    # `coalesce(x, [])`, which is harmless here only because the fragment
+    # carrying the ` AS alias` is always the last one: a nested comma yields
+    # leading fragments with no ` AS ` at all, and those are dropped below.
     aliases = []
     for item in tail.split(","):
         parts = item.strip().split(" AS ")

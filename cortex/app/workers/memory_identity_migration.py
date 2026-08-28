@@ -85,7 +85,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-from qdrant_client.models import OptimizersConfigDiff, PayloadSchemaType, PointStruct
+from qdrant_client.models import (
+    OptimizersConfigDiff,
+    PayloadSchemaType,
+    PointStruct,
+    SearchParams,
+)
 
 from app.config import Settings, get_settings
 from app.db.vector import _merge_lifecycle, _v1_point_id, memory_point_id
@@ -804,13 +809,43 @@ async def _scroll(client, collection: str, *, batch_size: int = 256,
 
 
 async def dry_run(client, *, source: str, idmap_path: str = DEFAULT_IDMAP_PATH,
-                  batch_size: int = 256) -> MigrationPlan:
+                  batch_size: int = 256, redis_client=None) -> MigrationPlan:
     """Classify the whole source collection and write the plan artifact.
 
-    Read-only with respect to the store, and runnable outside the freeze so an
-    operator can plan the window with real numbers. Mandatory: ``execute``
-    refuses without a reviewed plan on disk.
+    Read-only with respect to the STORE (it does write the plan artifact), and
+    runnable outside the freeze so an operator can plan the window with real
+    numbers. Mandatory: ``execute`` refuses without a reviewed plan on disk.
+
+    REGENERATING A PLAN OVER A RUN IS REFUSED, and this is a safety property,
+    not tidiness. After the flip ``QDRANT_COLLECTION`` names the shadow, so a
+    plain ``dry-run`` with no ``--source`` classifies the SHADOW and overwrites
+    the artifact at this path. Every fatal check in ``verify`` is a comparison
+    against that artifact, so a plan derived from the shadow makes them compare
+    the shadow with itself: the bucket census matches by construction, the map
+    is empty so the fidelity sample is empty, the dangling baseline already
+    contains whatever is broken — and a damaged store passes and gets the
+    completion marker. ``verify`` refuses a foreign plan too (belt and braces);
+    this refuses to create one.
     """
+    if redis_client is not None:
+        state = await read_state(redis_client)
+        if state and source == state.get("shadow_collection", SHADOW_COLLECTION):
+            raise MigrationRefused(
+                f"refusing to build a plan from {source}: it is this run's "
+                "SHADOW, and the plan artifact is what verify checks the shadow "
+                "AGAINST. Pass --source to name the original collection, or "
+                "--idmap-path to write somewhere the run does not read."
+            )
+    existing_plan = Path(plan_path(idmap_path))
+    if existing_plan.exists():
+        previous = json.loads(existing_plan.read_text(encoding="utf-8"))
+        if previous.get("source_collection") != source:
+            raise MigrationRefused(
+                f"a plan for {previous.get('source_collection')!r} already sits "
+                f"at {existing_plan}; refusing to overwrite it with one for "
+                f"{source!r}. Use --idmap-path for a separate plan."
+            )
+
     plan = await scan_plan(client, source, batch_size=batch_size)
     _write_atomic(plan_path(idmap_path), json.dumps(plan.to_dict(), indent=2) + "\n")
     logger.info(
@@ -819,6 +854,38 @@ async def dry_run(client, *, source: str, idmap_path: str = DEFAULT_IDMAP_PATH,
         len(plan.conflicts), len(plan.dangling_baseline),
     )
     return plan
+
+
+def _require_plan_is_this_runs(plan: MigrationPlan, state: dict[str, str]) -> None:
+    """The plan must describe the collection this run started from.
+
+    Every fatal check in ``verify`` compares the shadow against this artifact,
+    so a plan describing something else does not weaken the verification — it
+    INVERTS it. The reproduced case: after the flip, a plain ``dry-run`` with
+    no ``--source`` classifies the shadow and overwrites the artifact; the
+    bucket census then matches by construction, the map is empty so the
+    fidelity sample compares nothing, and the dangling baseline already
+    contains every break in the shadow. A store missing a point passed all
+    three and was handed the completion marker.
+
+    Binding it to the run's own fingerprint costs two comparisons and makes
+    that substitution impossible to perform by accident.
+    """
+    recorded_source = state.get("source_collection")
+    recorded_count = state.get("source_points_count_at_start")
+    if plan.source_collection != recorded_source or (
+            recorded_count is not None
+            and plan.source_points_count != int(recorded_count)):
+        raise MigrationRefused(
+            f"the plan artifact describes {plan.source_collection!r} at "
+            f"{plan.source_points_count} points, but this run started from "
+            f"{recorded_source!r} at {recorded_count}. It is not this run's "
+            "plan — most likely a post-flip `dry-run` with no --source "
+            "regenerated it FROM THE SHADOW, which would make every check "
+            "below compare the shadow with itself. Restore the original "
+            "plan artifact (or re-run the dry run against "
+            f"{recorded_source!r}) before verifying."
+        )
 
 
 def _load_plan(idmap_path: str, mapping: dict[str, str] | None = None) -> MigrationPlan:
@@ -1061,8 +1128,10 @@ async def _copy_points(client, redis_client, plan: MigrationPlan, *, source: str
             if structs:
                 await client.upsert(collection_name=shadow, points=structs)
                 written += len(structs)
-            await _write_state(redis_client, cursor=next_offset if next_offset else
-                               CURSOR_GROUPS)
+            # `is None`, not falsiness: exhaustion is the only thing that ends
+            # the scroll, and a falsy-but-real offset would be read as the end.
+            await _write_state(redis_client, cursor=(
+                CURSOR_GROUPS if next_offset is None else next_offset))
         cursor = CURSOR_GROUPS
         await _write_state(redis_client, cursor=CURSOR_GROUPS)
 
@@ -1256,7 +1325,9 @@ async def graph_remap(graph, mapping: dict[str, str], *,
         "memory_ids_rewritten": 0,
         "legacy_unscoped_stamped": 0,
         "memory_ref_rekeyed": 0,
+        "memory_ref_rounds": 0,
         "memory_ref_collisions": 0,
+        "memory_ref_cycles": 0,
     }
 
     nodes = await _read_paged(graph, _CHAIN_NODE_READ)
@@ -1286,23 +1357,19 @@ async def graph_remap(graph, mapping: dict[str, str], *,
 
     existing = {row["vector_id"] for row in await _read_paged(graph, _MEMORY_REF_READ)
                 if row.get("vector_id")}
-    simple: list[dict] = []
-    collisions: list[dict] = []
-    seen = set(existing)
-    for old, new in sorted(mapping.items()):
-        if old not in existing:
-            continue
-        if new in seen:
-            collisions.append({"old": old, "new": new})
-        else:
-            simple.append({"old": old, "new": new})
-            seen.add(new)
+    rounds, collisions, cycles = _plan_memory_ref_rewrites(existing, mapping)
 
-    # Order matters: the straight rewrites run first, because one of them can
-    # be what CREATES the node a later pair then collides with.
-    if simple:
-        await graph._execute_write(_MEMORY_REF_REKEY, {"pairs": simple})
-        report["memory_ref_rekeyed"] = len(simple)
+    # Rewrites go out in ROUNDS, and the rounds are the whole point. A target
+    # can be occupied by a node that is itself moving: A->B where B->C. Treating
+    # that as a collision strands A — the straight pass moves B out first, the
+    # collision MERGE then matches no keeper at B, A stays at its old id, and
+    # the collision counter claims it was handled. Each round moves only pairs
+    # whose target is free right now, which frees the next round's targets.
+    for pairs in rounds:
+        await graph._execute_write(_MEMORY_REF_REKEY, {"pairs": pairs})
+        report["memory_ref_rekeyed"] += len(pairs)
+    report["memory_ref_rounds"] = len(rounds)
+
     if collisions:
         for rel_type in _MEMORY_REF_REL_TYPES:
             for outgoing in (True, False):
@@ -1310,14 +1377,61 @@ async def graph_remap(graph, mapping: dict[str, str], *,
                     _rel_merge_query(rel_type, outgoing), {"pairs": collisions})
         await graph._execute_write(_MEMORY_REF_DELETE_OLD, {"pairs": collisions})
         report["memory_ref_collisions"] = len(collisions)
+    if cycles:
+        # Two refs whose targets are each other. Unreachable at uuid5 scale, and
+        # LEFT ALONE rather than guessed at: the collision path would DETACH
+        # DELETE both sides of the cycle, which loses data to fix a tie.
+        report["memory_ref_cycles"] = len(cycles)
+        logger.warning(
+            "MemoryRef rewrite cycle(s) left untouched: %s", cycles[:5])
 
     await graph._execute_write(_MEMORY_REF_CONSTRAINT, {})
     return report
 
 
+def _plan_memory_ref_rewrites(
+    existing: set[str], mapping: dict[str, str]
+) -> tuple[list[list[dict]], list[dict], list[dict]]:
+    """Split MemoryRef rewrites into ordered rounds, collisions and cycles.
+
+    Pure, so the ordering rule is testable without a graph. A pair may move as
+    soon as its target id is unoccupied; moving it frees the id it leaves, which
+    may unblock another pair. Iterating to a fixed point resolves chains of any
+    length. What remains when no round makes progress is either a genuine
+    collision (the target is held by something that is NOT moving — the D5 twin
+    case) or a cycle (each side waiting on the other).
+    """
+    pending = {old: new for old, new in mapping.items() if old in existing}
+    occupied = set(existing)
+    rounds: list[list[dict]] = []
+
+    while pending:
+        movable = [old for old in sorted(pending) if pending[old] not in occupied]
+        if not movable:
+            break
+        for old in movable:
+            new = pending.pop(old)
+            occupied.discard(old)
+            occupied.add(new)
+        rounds.append([{"old": old, "new": mapping[old]} for old in movable])
+
+    collisions: list[dict] = []
+    cycles: list[dict] = []
+    for old, new in sorted(pending.items()):
+        (cycles if new in pending else collisions).append({"old": old, "new": new})
+    return rounds, collisions, cycles
+
+
 async def graph_remap_step(graph, redis_client, *, settings: Settings,
                            idmap_path: str = DEFAULT_IDMAP_PATH) -> dict:
-    """The state-machine wrapper: refuses before the flip, records completion."""
+    """The state-machine wrapper: refuses before the flip, records completion.
+
+    Requires the freeze like every other write step: the remap rewrites graph
+    rows to name ids the map defines, and a sleep-cycle or memory_agent pass
+    running alongside would MERGE new chain nodes carrying untranslated ids
+    behind it.
+    """
+    _require_freeze(settings)
     await _require_step_complete(redis_client, STEP_GRAPH_REMAP)
     mapping = read_idmap(idmap_path)
     await _write_state(redis_client, step=STEP_GRAPH_REMAP, status=STATUS_IN_PROGRESS)
@@ -1445,7 +1559,14 @@ async def _present_ids(client, collection: str, ids: list[str],
 
 async def fold_hashes_step(redis_client, client, *, settings: Settings,
                            idmap_path: str = DEFAULT_IDMAP_PATH) -> dict:
-    """The state-machine wrapper around ``fold_redis_hashes``."""
+    """The state-machine wrapper around ``fold_redis_hashes``.
+
+    Requires the freeze: the fold reads a hash, rewrites its fields and deletes
+    the old ones. Every live ``/memory/recall`` HINCRBYs into that same hash, so
+    without the write gate a bump landing between the read and the delete is
+    lost, and one landing after it resurrects an old id.
+    """
+    _require_freeze(settings)
     state = await _require_step_complete(redis_client, STEP_HASH_FOLD)
     mapping = read_idmap(idmap_path)
     shadow = state.get("shadow_collection", SHADOW_COLLECTION)
@@ -1492,6 +1613,7 @@ async def verify(client, redis_client, *, settings: Settings,
     so every check below is fatal rather than advisory. A pass writes the
     completion marker ``owm.py`` reads; a failure writes nothing.
     """
+    _require_freeze(settings)
     state = await _require_step_complete(redis_client, STEP_VERIFY)
     source = state["source_collection"]
     shadow = state.get("shadow_collection", SHADOW_COLLECTION)
@@ -1499,6 +1621,7 @@ async def verify(client, redis_client, *, settings: Settings,
 
     mapping = read_idmap(idmap_path)
     plan = _load_plan(idmap_path, mapping)
+    _require_plan_is_this_runs(plan, state)
     await _write_state(redis_client, step=STEP_VERIFY, status=STATUS_IN_PROGRESS)
 
     checks: dict[str, bool] = {}
@@ -1560,7 +1683,17 @@ async def verify(client, redis_client, *, settings: Settings,
                 continue
             sampled += 1
             fidelity_failures.extend(_compare_point(old_id, new_id, src, dst))
+    # A sample of zero is not a pass. Without this floor, any plan whose
+    # fidelity_sample_ids came out empty — including one regenerated from the
+    # shadow, where the map is empty by construction — reports "no failures"
+    # over nothing compared at all.
+    if mapping and sampled == 0:
+        fidelity_failures.append(
+            f"nothing was sampled while the map holds {len(mapping)} entries — "
+            "the plan's fidelity sample is empty, so this check verified nothing"
+        )
     detail["fidelity_sampled"] = sampled
+    detail["fidelity_requested"] = len(plan.fidelity_sample_ids)
     record("fidelity_sample", not fidelity_failures,
            "; ".join(fidelity_failures[:5]))
 
@@ -1572,10 +1705,22 @@ async def verify(client, redis_client, *, settings: Settings,
            f"source {src_params} vs shadow {dst_params}")
 
     # 4. Payload indexes.
-    schema = set((await client.get_collection(shadow)).payload_schema or {})
+    shadow_info = await client.get_collection(shadow)
+    schema = set(shadow_info.payload_schema or {})
     missing = [f for f in PAYLOAD_INDEX_FIELDS if f not in schema]
     detail["payload_indexes"] = sorted(schema)
     record("payload_indexes", not missing, f"missing {missing}")
+
+    # Reported, not asserted: `execute` sets indexing_threshold=0 for the bulk
+    # load and restores it afterwards, but that restore's success is a boolean
+    # it discards — a server that refused it leaves the shadow permanently
+    # unindexed, which is a performance cliff nothing else here would notice.
+    detail["shadow_indexing_threshold"] = getattr(
+        getattr(shadow_info.config, "optimizer_config", None),
+        "indexing_threshold", None)
+    detail["source_indexing_threshold"] = getattr(
+        getattr((await client.get_collection(source)).config, "optimizer_config",
+                None), "indexing_threshold", None)
 
     # 5. Search parity.
     parity_ok, parity_detail = await _check_search_parity(
@@ -1657,15 +1802,31 @@ async def _check_search_parity(client, plan: MigrationPlan, mapping: dict[str, s
                                limit: int = 10) -> tuple[bool, dict]:
     """Query both collections with the same stored vectors; compare the answers.
 
-    A collapsed target legitimately changes a neighbourhood — two source
-    points became one, and the surviving vector is the v2 twin's — so a
-    difference is only tolerated at a position involving a collapsed id.
-    Everything else is a copy defect.
+    ``SearchParams(exact=True)`` on BOTH sides, and that is not a detail. The
+    source has been live for months and is HNSW-indexed; the shadow was just
+    bulk-loaded with ``indexing_threshold=0`` and answers by brute force. HNSW
+    is approximate — the same query against the same vectors can return a
+    displaced neighbour at position 7 purely because of graph structure. Under
+    a fatal position-by-position comparison that is a FALSE FATAL, delivered to
+    an operator mid-freeze who must then decide whether their store is corrupt.
+    Exact search on both sides removes the only difference that is not evidence.
+
+    A collapsed target legitimately changes a neighbourhood — two source points
+    became one, and the surviving vector is the v2 twin's — so a difference is
+    tolerated only at a position involving a collapsed id. Everything else is a
+    copy defect.
+
+    The probe FLOOR exists because every ``continue`` below silently shrinks
+    the sample: an unretrievable source vector, or a plan carrying no probe ids
+    at all, would otherwise report "no mismatches" over nothing at all and read
+    as a pass.
     """
     collapsed = {m for members in plan.target_groups.values() for m in members}
     collapsed |= set(plan.target_groups)
     mismatches: list[str] = []
+    requested = len(plan.parity_probe_ids)
     probed = 0
+    truncated = 0
 
     for probe_id in plan.parity_probe_ids:
         records = await client.retrieve(collection_name=source, ids=[probe_id],
@@ -1674,10 +1835,13 @@ async def _check_search_parity(client, plan: MigrationPlan, mapping: dict[str, s
             continue
         vector = records[0].vector
         probed += 1
+        exact = SearchParams(exact=True)
         src_hits = (await client.query_points(
-            collection_name=source, query=vector, limit=limit)).points
+            collection_name=source, query=vector, limit=limit,
+            search_params=exact)).points
         dst_hits = (await client.query_points(
-            collection_name=shadow, query=vector, limit=limit)).points
+            collection_name=shadow, query=vector, limit=limit,
+            search_params=exact)).points
 
         expected: list[tuple[str, float]] = []
         seen: set[str] = set()
@@ -1688,6 +1852,11 @@ async def _check_search_parity(client, plan: MigrationPlan, mapping: dict[str, s
             seen.add(mapped)
             expected.append((mapped, float(hit.score)))
         actual = [(str(h.id), float(h.score)) for h in dst_hits]
+        if len(expected) != len(actual):
+            # Expected when a collapse removed a neighbour; counted rather than
+            # ignored, because the comparison below only reaches the shorter of
+            # the two and a growing count means the sample is thinning.
+            truncated += 1
 
         for position, (want, got) in enumerate(zip(expected, actual)):
             if want[0] == got[0] and abs(want[1] - got[1]) <= _SCORE_TOLERANCE:
@@ -1697,7 +1866,19 @@ async def _check_search_parity(client, plan: MigrationPlan, mapping: dict[str, s
             mismatches.append(
                 f"probe {probe_id} position {position}: expected {want}, got {got}")
             break
-    return not mismatches, {"probed": probed, "mismatches": mismatches[:5]}
+
+    detail = {"requested": requested, "probed": probed, "truncated": truncated,
+              "mismatches": mismatches[:5]}
+    if requested == 0 and plan.source_points_count > 0:
+        detail["floor"] = "the plan carries no parity probes for a non-empty store"
+        return False, detail
+    if probed * 2 < requested:
+        detail["floor"] = (
+            f"only {probed} of {requested} probe vectors could be retrieved — "
+            "the parity sample is too thin to mean anything"
+        )
+        return False, detail
+    return not mismatches, detail
 
 
 # ---------------------------------------------------------------------------
@@ -1726,7 +1907,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("dry-run", parents=[common],
-                   help="classify everything; write the plan; touch nothing")
+                   help=("classify everything and write the plan artifact; the "
+                         "STORE is untouched. Pass --source explicitly once the "
+                         "flip has happened — the default now names the shadow"))
     sub.add_parser("execute", parents=[common],
                    help="copy the source into the shadow, re-keyed (needs the freeze)")
     sub.add_parser("resume", parents=[common],
@@ -1752,8 +1935,12 @@ async def _dispatch(args, settings: Settings) -> dict:
     try:
         if args.command == "dry-run":
             source = args.source or settings.QDRANT_COLLECTION
+            # redis_client is passed so the dry run can see whether a run is
+            # recorded: post-flip, the default source IS the shadow, and a plan
+            # built from it would disarm every check verify makes.
             plan = await dry_run(client, source=source, idmap_path=args.idmap_path,
-                                 batch_size=args.batch_size)
+                                 batch_size=args.batch_size,
+                                 redis_client=redis_client)
             return plan.to_dict()
         if args.command == "execute":
             return await execute(client, redis_client, settings=settings,

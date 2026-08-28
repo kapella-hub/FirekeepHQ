@@ -205,6 +205,21 @@ class _IndexRecording:
         )
 
 
+class _RecordingQueries:
+    """Captures the kwargs of every query_points call."""
+
+    def __init__(self, inner) -> None:
+        self._inner = inner
+        self.queries: list[dict] = []
+
+    def __getattr__(self, name):  # pragma: no cover - passthrough
+        return getattr(self._inner, name)
+
+    async def query_points(self, *args, **kwargs):
+        self.queries.append(kwargs)
+        return await self._inner.query_points(*args, **kwargs)
+
+
 class _CrashAfter:
     """Kills the process at the Nth upsert — the planted mid-copy crash."""
 
@@ -252,6 +267,20 @@ async def _dump(client, collection: str) -> dict[str, PointStruct]:
         if offset is None:
             break
     return out
+
+
+def _doctor_plan(idmap_path: str, **fields) -> None:
+    """Edit the plan artifact in place, leaving its run-binding fields intact.
+
+    The sample lists are what several verify checks measure themselves against,
+    and a plan carrying an empty one has to be caught by the check rather than
+    read as a clean pass. Editing the artifact is how an operator would get
+    there in practice too — by regenerating it.
+    """
+    path = Path(mig.plan_path(idmap_path))
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data.update(fields)
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
 async def _run_full(client, redis, settings, idmap_path, *, source="firekeep_memory"):
@@ -941,6 +970,189 @@ class TestVerify:
             await mig.verify(ready.client, ready.redis, settings=ready.settings,
                              idmap_path=ready.idmap)
 
+    async def test_search_parity_asks_both_collections_for_exact_search(self, ready):
+        """The source is HNSW-indexed after months of live writes; the shadow was
+        just bulk-loaded and answers by brute force. Comparing an approximate
+        ranking against an exact one position-by-position, fatally, produces a
+        FALSE fatal handed to an operator mid-freeze."""
+        recording = _RecordingQueries(ready.client)
+        report = await mig.verify(recording, ready.redis, settings=ready.settings,
+                                  idmap_path=ready.idmap)
+        assert report.checks["search_parity"] is True
+        assert recording.queries, "search parity issued no queries"
+        assert all(q["search_params"].exact is True for q in recording.queries)
+        # Both sides, not just one.
+        assert {q["collection_name"] for q in recording.queries} == {
+            "firekeep_memory", mig.SHADOW_COLLECTION}
+
+    async def test_an_empty_fidelity_sample_is_not_a_pass(self, ready):
+        """Every `continue` in the sample loop shrinks it silently. A plan whose
+        sample came out empty — including one regenerated from the shadow, where
+        the map is empty by construction — must not report a clean pass over
+        nothing compared at all."""
+        _doctor_plan(ready.idmap, fidelity_sample_ids=[])
+        report = await mig.verify(ready.client, ready.redis, settings=ready.settings,
+                                  idmap_path=ready.idmap)
+        assert not report.ok
+        assert report.checks["fidelity_sample"] is False
+        assert report.detail["fidelity_sampled"] == 0
+
+    async def test_a_starved_parity_sample_is_not_a_pass(self, ready):
+        """Probe vectors that cannot be retrieved are skipped; skip enough of
+        them and "no mismatches" is a statement about almost nothing."""
+        ghosts = [str(uuid.uuid5(FIREKEEP_UUID_NAMESPACE, f"ghost-{i}"))
+                  for i in range(9)]
+        # A probe id names a SOURCE point — that is where its vector is read
+        # from before being run against both collections.
+        _doctor_plan(ready.idmap, parity_probe_ids=[_v1_point_id(T_PLAIN_A), *ghosts])
+        report = await mig.verify(ready.client, ready.redis, settings=ready.settings,
+                                  idmap_path=ready.idmap)
+        assert not report.ok
+        assert report.checks["search_parity"] is False
+        assert report.detail["search_parity"]["probed"] == 1
+        assert "too thin" in report.detail["search_parity"]["floor"]
+
+    async def test_a_plan_with_no_probes_at_all_is_not_a_pass(self, ready):
+        _doctor_plan(ready.idmap, parity_probe_ids=[])
+        report = await mig.verify(ready.client, ready.redis, settings=ready.settings,
+                                  idmap_path=ready.idmap)
+        assert report.checks["search_parity"] is False
+
+    async def test_the_restored_indexing_threshold_is_surfaced(self, ready):
+        """`execute` discards the restore's success boolean, so a server that
+        refused it leaves the shadow permanently unindexed with nothing to say
+        so. The report carries both values for the operator to compare."""
+        report = await mig.verify(ready.client, ready.redis, settings=ready.settings,
+                                  idmap_path=ready.idmap)
+        assert "shadow_indexing_threshold" in report.detail
+        assert "source_indexing_threshold" in report.detail
+
+
+class TestThePlanIsBoundToTheRun:
+    """The reviewer's reproduction, both halves.
+
+    Every fatal check in `verify` is a comparison against the plan artifact.
+    After the flip `QDRANT_COLLECTION` names the shadow, so a plain `dry-run`
+    with no `--source` classifies the SHADOW and overwrites that artifact — and
+    a plan derived from the shadow does not weaken the checks, it INVERTS them:
+    the bucket census matches by construction, the map is empty so the fidelity
+    sample compares nothing, and the dangling baseline already contains every
+    break the shadow has. A damaged store passed and was handed the completion
+    marker.
+    """
+
+    @pytest.fixture()
+    async def flipped(self, redis_client, frozen, idmap):
+        client = _IndexRecording(await _seeded())
+        await _run_full(client, redis_client, frozen, idmap)
+        settings = Settings(MIGRATION_FREEZE=True,
+                            QDRANT_COLLECTION=mig.SHADOW_COLLECTION)
+        await mig.mark_flipped(redis_client, settings=settings)
+        await mig.graph_remap_step(_FakeGraph(), redis_client, settings=settings,
+                                   idmap_path=idmap)
+        await mig.fold_hashes_step(redis_client, client, settings=settings,
+                                   idmap_path=idmap)
+        return SimpleNamespace(client=client, redis=redis_client, idmap=idmap,
+                               settings=settings)
+
+    async def test_a_post_flip_dry_run_against_the_shadow_is_refused(self, flipped):
+        """The default source IS the shadow once the flip has happened."""
+        with pytest.raises(mig.MigrationRefused, match="SHADOW|shadow"):
+            await mig.dry_run(flipped.client,
+                              source=flipped.settings.QDRANT_COLLECTION,
+                              idmap_path=flipped.idmap,
+                              redis_client=flipped.redis)
+
+    async def test_a_plan_regenerated_from_the_shadow_makes_verify_refuse(
+            self, flipped):
+        """Belt and braces: even if a foreign plan reaches the path some other
+        way, verify must refuse rather than compare the shadow with itself.
+
+        The store is damaged first, so "refuses" is meaningfully different from
+        "passes" — with the original plan this verify reports False."""
+        await flipped.client.delete(
+            collection_name=mig.SHADOW_COLLECTION,
+            points_selector=[memory_point_id(WS, NS, T_PLAIN_A)])
+        honest = await mig.verify(flipped.client, flipped.redis,
+                                  settings=flipped.settings, idmap_path=flipped.idmap)
+        assert not honest.ok  # the damage IS detectable with this run's plan
+
+        regenerated = await mig.scan_plan(flipped.client, mig.SHADOW_COLLECTION)
+        Path(mig.plan_path(flipped.idmap)).write_text(
+            json.dumps(regenerated.to_dict(), indent=2), encoding="utf-8")
+
+        with pytest.raises(mig.MigrationRefused, match="not this run's plan"):
+            await mig.verify(flipped.client, flipped.redis,
+                             settings=flipped.settings, idmap_path=flipped.idmap)
+        assert not await flipped.redis.exists(mig.MIGRATION_COMPLETE_KEY)
+
+    async def test_a_dry_run_for_a_different_source_will_not_overwrite(
+            self, redis_client, idmap):
+        """Redis-independent second net: the artifact itself records which
+        collection it describes."""
+        client = await _seeded()
+        await mig.dry_run(client, source="firekeep_memory", idmap_path=idmap)
+        await client.create_collection(
+            collection_name="somewhere_else",
+            vectors_config=VectorParams(size=DIM, distance=Distance.COSINE))
+        with pytest.raises(mig.MigrationRefused, match="refusing to overwrite"):
+            await mig.dry_run(client, source="somewhere_else", idmap_path=idmap)
+
+    async def test_re_running_the_dry_run_on_the_same_source_is_fine(self, idmap):
+        """The guard is about SUBSTITUTION, not about writing twice — an
+        operator re-planning the same collection must not be blocked."""
+        client = await _seeded()
+        first = await mig.dry_run(client, source="firekeep_memory", idmap_path=idmap)
+        again = await mig.dry_run(client, source="firekeep_memory", idmap_path=idmap)
+        assert again.counts == first.counts
+
+
+class TestPostFlipStepsRequireTheFreeze:
+    """The freeze is what makes these steps sound, so they must assert it.
+
+    `verify`'s own docstring says the count reconciliation is only exact
+    *because* writes are stopped, and it never checked. The fold is worse than
+    unsound without it: it reads a hash, rewrites its fields and deletes the old
+    ones, while every live recall HINCRBYs into that same hash.
+    """
+
+    @pytest.fixture()
+    async def flipped_thawed(self, redis_client, frozen, idmap):
+        client = _IndexRecording(await _seeded())
+        await _run_full(client, redis_client, frozen, idmap)
+        frozen_flipped = Settings(MIGRATION_FREEZE=True,
+                                  QDRANT_COLLECTION=mig.SHADOW_COLLECTION)
+        await mig.mark_flipped(redis_client, settings=frozen_flipped)
+        thawed = Settings(MIGRATION_FREEZE=False,
+                          QDRANT_COLLECTION=mig.SHADOW_COLLECTION)
+        return SimpleNamespace(client=client, redis=redis_client, idmap=idmap,
+                               thawed=thawed, frozen=frozen_flipped)
+
+    async def test_graph_remap_refuses(self, flipped_thawed):
+        with pytest.raises(mig.MigrationRefused, match="MIGRATION_FREEZE"):
+            await mig.graph_remap_step(_FakeGraph(), flipped_thawed.redis,
+                                       settings=flipped_thawed.thawed,
+                                       idmap_path=flipped_thawed.idmap)
+
+    async def test_fold_hashes_refuses(self, flipped_thawed):
+        with pytest.raises(mig.MigrationRefused, match="MIGRATION_FREEZE"):
+            await mig.fold_hashes_step(flipped_thawed.redis, flipped_thawed.client,
+                                       settings=flipped_thawed.thawed,
+                                       idmap_path=flipped_thawed.idmap)
+
+    async def test_verify_refuses(self, flipped_thawed):
+        await mig.graph_remap_step(_FakeGraph(), flipped_thawed.redis,
+                                   settings=flipped_thawed.frozen,
+                                   idmap_path=flipped_thawed.idmap)
+        await mig.fold_hashes_step(flipped_thawed.redis, flipped_thawed.client,
+                                   settings=flipped_thawed.frozen,
+                                   idmap_path=flipped_thawed.idmap)
+        with pytest.raises(mig.MigrationRefused, match="MIGRATION_FREEZE"):
+            await mig.verify(flipped_thawed.client, flipped_thawed.redis,
+                             settings=flipped_thawed.thawed,
+                             idmap_path=flipped_thawed.idmap)
+        assert not await flipped_thawed.redis.exists(mig.MIGRATION_COMPLETE_KEY)
+
 
 # ---------------------------------------------------------------------------
 # graph remap
@@ -1041,6 +1253,44 @@ class TestGraphRemap:
         report = await mig.graph_remap(graph, {old: new}, content_hash_length=32)
         assert report["memory_ref_collisions"] == 1
         assert "MemoryRef" in graph.cypher()
+
+    async def test_a_chained_rewrite_is_not_stranded(self):
+        """A->B where B->C. Classifying A->B as a collision because B is
+        occupied strands A: the straight pass moves B to C first, the collision
+        MERGE then finds no keeper at B, A keeps its old id — and the collision
+        counter reports it as handled. The rewrites have to go out in rounds."""
+        a, b, c = (str(uuid.uuid5(FIREKEEP_UUID_NAMESPACE, x)) for x in "abc")
+        graph = _FakeGraph(memory_ref_ids=[a, b])
+        report = await mig.graph_remap(graph, {a: b, b: c}, content_hash_length=32)
+
+        assert report["memory_ref_collisions"] == 0
+        assert report["memory_ref_rekeyed"] == 2
+        assert report["memory_ref_rounds"] == 2
+        rounds = graph.params_for("SET m.vector_id")
+        # B vacates first, then A takes the id it left.
+        assert [p["pairs"] for p in rounds] == [
+            [{"old": b, "new": c}], [{"old": a, "new": b}]]
+
+    def test_the_round_planner_resolves_chains_and_still_finds_real_collisions(self):
+        a, b, c = "a", "b", "c"
+        rounds, collisions, cycles = mig._plan_memory_ref_rewrites(
+            {a, b}, {a: b, b: c})
+        assert [[p["old"] for p in r] for r in rounds] == [[b], [a]]
+        assert collisions == [] and cycles == []
+
+        # The D5 twin: the target is held by something that is NOT moving.
+        rounds, collisions, cycles = mig._plan_memory_ref_rewrites(
+            {"v1", "target"}, {"v1": "target"})
+        assert rounds == [] and cycles == []
+        assert collisions == [{"old": "v1", "new": "target"}]
+
+    def test_a_cycle_is_reported_and_left_alone(self):
+        """Unreachable at uuid5 scale, but the collision path would DETACH
+        DELETE both sides — losing data to break a tie."""
+        rounds, collisions, cycles = mig._plan_memory_ref_rewrites(
+            {"x", "y"}, {"x": "y", "y": "x"})
+        assert rounds == [] and collisions == []
+        assert [c["old"] for c in cycles] == ["x", "y"]
 
     async def test_the_uniqueness_constraint_is_created_last(self):
         graph = _FakeGraph()
