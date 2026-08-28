@@ -52,8 +52,9 @@ STATUS_TOOL = {
 # surface for hosts where the full ~90 tools are wrong — the ChatGPT tunnel is
 # the founding case: a consumer chat surface, prompt-injection-rich, that still
 # deserves recall, sessions (prior art rides ctx_start_session) and the one
-# write that makes chat valuable (memory_learn — the poisoning risk is carried
-# by replay attribution, runtime: chatgpt, not prevented). Excluded outright:
+# write that makes chat valuable (memory_learn). Retrieved content is
+# prompt-injection-rich and the poisoning risk remains: runtime observability
+# does not tag individual writes or create a purge boundary. Excluded outright:
 # vault, corpus ingest, relay, backup, dex/code tools.
 TOOLSET_PRESETS: dict[str, frozenset[str]] = {
     "chat": frozenset({
