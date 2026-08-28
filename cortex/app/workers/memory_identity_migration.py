@@ -1948,11 +1948,30 @@ async def _check_search_parity(client, plan: MigrationPlan, mapping: dict[str, s
             # the two and a growing count means the sample is thinning.
             truncated += 1
 
+        # Score ties reorder freely: with exact search on both sides the
+        # scores are identical, but the ORDER within an equal-score group is
+        # storage-order-dependent, and the shadow was written in scroll order,
+        # not insertion order. Found live on the first real verify (two
+        # probes, both "mismatching" at byte-identical scores). A positional
+        # difference is therefore a tie REORDER — not a mismatch — when each
+        # side's id appears anywhere in the other's result list at an equal
+        # score. Anything else at that position is still fatal.
+        expected_scores = {i: s for i, s in expected}
+        actual_scores = {i: s for i, s in actual}
         for position, (want, got) in enumerate(zip(expected, actual)):
             if want[0] == got[0] and abs(want[1] - got[1]) <= _SCORE_TOLERANCE:
                 continue
             if want[0] in collapsed or got[0] in collapsed:
                 break  # a merged neighbour legitimately reorders what follows
+            tie_reorder = (
+                abs(want[1] - got[1]) <= _SCORE_TOLERANCE
+                and got[0] in expected_scores
+                and abs(expected_scores[got[0]] - got[1]) <= _SCORE_TOLERANCE
+                and want[0] in actual_scores
+                and abs(actual_scores[want[0]] - want[1]) <= _SCORE_TOLERANCE
+            )
+            if tie_reorder:
+                continue
             mismatches.append(
                 f"probe {probe_id} position {position}: expected {want}, got {got}")
             break

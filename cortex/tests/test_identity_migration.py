@@ -1543,3 +1543,47 @@ class TestCompletionAndInertness:
         assert parser.parse_args(["dry-run"]).idmap_path == mig.DEFAULT_IDMAP_PATH
         assert parser.parse_args(["dry-run", "--idmap-path", "/x.jsonl"]).idmap_path \
             == "/x.jsonl"
+
+
+class TestSearchParityTieReorder:
+    """Equal-score neighbours reorder freely between collections: storage
+    order decides ties, and exact search makes the scores identical on both
+    sides. Found LIVE on the first real verify — two probes 'mismatched' at
+    byte-identical scores in swapped order, failing an otherwise-perfect
+    migration. A tie swap (each id present in the other list at an equal
+    score) is a reorder, not a mismatch; a genuinely different neighbour or
+    score at the position stays fatal."""
+
+    def _mismatch_at(self, want, got, expected, actual):
+        tol = mig._SCORE_TOLERANCE
+        expected_scores = {i: s for i, s in expected}
+        actual_scores = {i: s for i, s in actual}
+        if want[0] == got[0] and abs(want[1] - got[1]) <= tol:
+            return False
+        tie = (abs(want[1] - got[1]) <= tol
+               and got[0] in expected_scores
+               and abs(expected_scores[got[0]] - got[1]) <= tol
+               and want[0] in actual_scores
+               and abs(actual_scores[want[0]] - want[1]) <= tol)
+        return not tie
+
+    def _first_mismatch(self, expected, actual):
+        for want, got in zip(expected, actual):
+            if self._mismatch_at(want, got, expected, actual):
+                return (want, got)
+        return None
+
+    def test_tie_swap_is_not_a_mismatch(self):
+        expected = [("a", 0.9), ("b", 0.9), ("c", 0.5)]
+        actual = [("b", 0.9), ("a", 0.9), ("c", 0.5)]
+        assert self._first_mismatch(expected, actual) is None
+
+    def test_different_id_at_different_score_is_fatal(self):
+        expected = [("a", 0.9), ("c", 0.5)]
+        actual = [("z", 0.8), ("c", 0.5)]
+        assert self._first_mismatch(expected, actual) is not None
+
+    def test_equal_score_but_foreign_id_is_fatal(self):
+        expected = [("a", 0.9), ("b", 0.9)]
+        actual = [("z", 0.9), ("a", 0.9)]
+        assert self._first_mismatch(expected, actual) is not None
