@@ -1,0 +1,19 @@
+# Gitleaks configuration — extends the built-in rules.
+#
+# The CI `secrets` job runs the bare gitleaks binary over the working tree
+# AND full history; this file is auto-loaded from the repo root. Allowlist
+# entries here must be SPECIFIC PROSE, never secret-shaped patterns: each one
+# documents a known false positive that lives permanently in git history
+# (history cannot be reworded after the fact).
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Documentation-prose false positives, pinned verbatim"
+regexes = [
+  # owm.py docstring (identity-v2, commit 7fb6bff): the generic-api-key rule
+  # matched "re-keyed: corpus/dream/skill" as key:value. The live file was
+  # reworded; this covers the historical commit.
+  '''re-keyed: corpus/dream/skill''',
+]

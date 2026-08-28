@@ -79,8 +79,8 @@ async def _translate_memory_ids(redis_client, raw_ids: set[str]) -> dict[str, st
     Events recorded before the identity migration name the OLD (v1) point
     id; after the flip the Qdrant store holds the NEW (v2) id. This looks
     every raw id up in ``IDMAP_REDIS_KEY`` (batch HMGET) and returns only the
-    hits — a miss (the id was never re-keyed: corpus/dream/skill ids, or a
-    pre-migration deploy where the hash does not exist at all) is left for
+    hits — a miss (ids that were never re-keyed, i.e. corpus, dream and
+    skill ids, or a pre-migration deploy where the hash does not exist) is left for
     the caller to resolve as "keep the original id". This function never
     invents a mapping, only narrows one, so an empty/absent hash degrades to
     a no-op translation, not an error.
