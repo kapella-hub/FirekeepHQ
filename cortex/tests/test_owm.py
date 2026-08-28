@@ -892,3 +892,69 @@ async def test_sweep_skipped_when_count_record_is_absent(caplog):
     assert out["stale_reset"] == 0
     assert not v._client.delete_payload.called
     assert any("stale-reset sweep SKIPPED" in rec.message for rec in caplog.records)
+
+
+# --------------------------------------------------------------------------- #
+# Production wiring: `_run_owm_impl` itself, not just `run_pass`.             #
+# The tests above pin how `run_pass` behaves when handed two distinct        #
+# clients; none of them touch `_run_owm_impl`, which is the code that        #
+# actually BUILDS those two clients from settings.RP_REDIS_URL / REDIS_URL   #
+# and passes idmap_r=idmap_r through. A regression that drops that keyword   #
+# (idmap_r silently defaulting to replay_r) would pass every test above and  #
+# still wipe every migrated memory's efficacy in production.                 #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_run_owm_impl_wires_idmap_r_from_redis_url_not_rp_redis_url():
+    """`_run_owm_impl` must build idmap_r from settings.REDIS_URL (DB 0) and
+    hand it to run_pass as idmap_r=, not reuse the RP_REDIS_URL (DB 6) replay
+    client. redis.asyncio.from_url is patched with a side effect keyed on the
+    URL so the two clients it returns are distinguishable fakes: the marker +
+    idmap sit ONLY on the settings.REDIS_URL fake (the real safety-key store),
+    and the settings.RP_REDIS_URL fake carries neither — the honest post-fix
+    state of DB 6.
+
+    If `idmap_r=idmap_r` were dropped from the real `run_pass(...)` call in
+    `_run_owm_impl`, idmap_r would default to replay_r — the RP_REDIS_URL
+    fake, which has no marker and no idmap — and the sweep gate would consult
+    THAT instead: `_sweep_gate` would see "no migration" and run the sweep
+    unguarded, and `_translate_memory_ids` would miss on "v1-old" and score it
+    under its raw, untranslated id. Both assertions below would then fail.
+    """
+    from unittest.mock import AsyncMock, patch
+
+    from app import owm as owm_module
+
+    evals = {"s1": {"task_result": "success", "task_result_source": "self_reported"}}
+    events = {"s1": [{"event_type": "memory_read", "payload": {"memory_ids": ["v1-old"]}}]}
+    replay_fake = _redis_with(evals, ["s1"])  # DB 6 as it really is: no marker, no idmap
+    idmap_fake = _redis_with({}, [], migration_complete=True,
+                             idmap={"v1-old": "v2-new"})  # DB 0, the real safety-key store
+    replay_fake.aclose = AsyncMock()
+    idmap_fake.aclose = AsyncMock()
+    v = _vector(stale_scored_ids=("v2-new",))
+
+    settings = _settings(REDIS_URL="redis://data:6379/0",
+                         RP_REDIS_URL="redis://replay:6379/6")
+
+    def _from_url(url, **kwargs):
+        if url == settings.RP_REDIS_URL:
+            return replay_fake
+        if url == settings.REDIS_URL:
+            return idmap_fake
+        raise AssertionError(f"unexpected redis url passed to from_url: {url!r}")
+
+    with patch("app.config.get_settings", return_value=settings), \
+         patch("redis.asyncio.from_url", side_effect=_from_url), \
+         patch("app.db.vector.VectorClient", return_value=v), \
+         patch.object(owm_module, "_fetch_bridge_statuses", AsyncMock(return_value={})), \
+         patch.object(owm_module, "_default_events_fn", _events_fn(events)):
+        out = await owm_module._run_owm_impl()
+
+    assert out["memories_scored"] == 1
+    assert out["stale_reset"] == 0  # sweep gate read idmap_r's marker+idmap, skipped correctly
+    writes = {c.kwargs["points"][0]: c.kwargs["payload"]
+              for c in v._client.set_payload.call_args_list}
+    assert "v2-new" in writes       # translated through idmap_r before scoring
+    assert "v1-old" not in writes

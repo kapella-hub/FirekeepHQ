@@ -164,11 +164,20 @@ it touches nothing (see step 2).
      `/knowledge/ingest(-url)` and `/corpus/ingest` return 503; recall/export
      stay up. See `MIGRATION_FREEZE` in
      [`docs/guides/cortex-configuration.md`](cortex-configuration.md) for the
-     exact route list — including the two paths it does NOT cover.
-     `POST /admin/embeddings/reembed` is one of those: it isn't gated, and it
+     exact route list — including the one write path it does NOT cover.
+     `POST /admin/embeddings/reembed` is that path: it isn't gated, and it
      only enqueues Celery work, which `cortex-worker` being stopped for this
      freeze means it sits queued and fires the moment the worker restarts at
      unfreeze (step 7) — do not trigger it during the window.
+
+     A second write path shares the same shape but isn't tracked in the
+     config guide's list: `POST /skill/evaluate` also carries no freeze gate
+     (verified at `cortex/app/skills/api.py:43` — no `require_not_frozen`
+     dependency, unlike its `/skills` siblings) and background-queues Celery
+     skill synthesis, which writes a draft skill to Qdrant. With
+     `cortex-worker` stopped it sits queued exactly like a reembed trigger
+     and fires at unfreeze (step 7) — avoid triggering it during the window
+     too.
 
    **Take the cold backup now, at freeze start** — `deploy/backup.sh --exclude-models`,
    the same script the nightly cron uses (see "What runs automatically" above).
@@ -270,8 +279,13 @@ it touches nothing (see step 2).
    `memory:access_counts`/`memory:last_recalled` through the same map (skill-id
    fields pass through unmapped, by design) and refuses if a `:flushing` key
    is non-empty (a `memory_agent` drain still mid-flight would otherwise write
-   counts straight back under the old ids). Both require the freeze, same as
-   every step from here on.
+   counts straight back under the old ids). Recall stays up through all of
+   this — it keeps stamping these same fields under whatever id it currently
+   serves — so a recall landing after this step already ran can recreate a
+   few v1-keyed fields the fold just cleared; that's bounded to access-count
+   hygiene (GC/staleness inputs, never memory content), and a re-run of this
+   step would surface them in its own residual count. Both require the
+   freeze, same as every step from here on.
 
 6. **Verify — exact and fatal, only meaningful because of the freeze.**
 
