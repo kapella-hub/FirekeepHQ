@@ -1,20 +1,100 @@
 # Firekeep
 
-**Your agents need more than memory. They need a Keep.**
+## Your agents shouldn’t work like strangers.
 
-Firekeep is the **self-hosted operating layer for connected AI agents**. It carries durable knowledge, working context, procedures, coordination, and replayable evidence across sessions, models, machines, and teammates. It connects through MCP today: shipped adapters configure Claude Code, Claude Desktop (auto-detected when the app's config dir exists), Codex, Kiro, and OpenCode, while other MCP clients can use the generic configuration path. The server stack and its default inference path are local; optional connectors and Symdex AI providers contact third-party services only when you configure them.
+Connect Claude Code, Codex, Kiro, OpenCode, and other MCP clients through one
+shared, self-hosted Keep.
 
-**[Website](https://firekeep.ai) · [Live demo](https://firekeep.ai/?demo=1#cross-runtime-demo) · [Install guide](https://firekeep.ai/docs.html#server) · [Case study](https://firekeep.ai/case-study.html) · [Concepts](https://firekeep.ai/agents-md-vs-memory.html)**
+Every solved problem should make the next one easier. Firekeep preserves the
+experience behind the work — durable knowledge, working state, procedures,
+coordination, and inspectable evidence — and puts it back to work in the next
+session, tool, or machine.
+
+Use it for your own continuity on one workstation. Add teammates when you need
+them without starting the team’s context over.
+
+**[Website](https://firekeep.ai/?src=github) · [Install](https://firekeep.ai/docs.html?src=github#server) · [Product tour](https://firekeep.ai/?src=github#outcomes) · [Firekeep Studio](https://firekeep.ai/?src=github#studio) · [Evidence](https://firekeep.ai/?src=github#proof) · [Privacy](https://firekeep.ai/privacy.html) · [Support](https://github.com/kapella-hub/FirekeepHQ/issues)**
 
 ---
 
-## The Problem
+## One Keep, across runtimes
 
-AI agents are powerful, but each session starts with partial amnesia. They lose context, repeat discovery, miss operational state, and struggle to explain why they made an earlier decision. When something goes wrong, there is often no reliable trace to inspect. When multiple agents or teammates share a project, coordination becomes fragile.
+```mermaid
+flowchart LR
+    A["Claude Code<br/>stores a proven fix"] --> K[("your self-hosted<br/>Keep")]
+    K --> B["Codex<br/>recalls the fix + evidence"]
+    K --> C["Kiro<br/>reuses the procedure"]
+    K --> D["OpenCode / MCP client<br/>continues informed"]
+```
 
-Firekeep fixes this by giving agents durable memory, live operational awareness, and shared coordination infrastructure.
+Agents keep their native interfaces and provider-owned sessions. What carries
+forward is the Firekeep context they explicitly record and recall through the
+same local MCP gateway. That means one person can switch tools without losing
+the thread, and a team can earn context once and carry it forward.
 
-## What Firekeep Does
+**[See Claude Code and Codex share one Keep →](https://firekeep.ai/claude-code-codex-shared-memory.html?src=github)**
+
+## Install Firekeep
+
+The installer configures Claude Code, Codex, Kiro, and OpenCode together (plus
+Claude Desktop when its config directory exists), then asks where your Firekeep
+server should live. The full setup flow is in the
+**[install guide](https://firekeep.ai/docs.html#server)**.
+
+```bash
+curl -fsSL 'https://firekeep.ai/latest/install?src=github' | sh    # macOS / Linux
+irm 'https://firekeep.ai/latest/install.ps1?src=github' | iex      # Windows PowerShell
+```
+
+The current server targets `linux/amd64` and needs Docker Compose v2, two x86-64
+CPU cores, and Git; 16 GB RAM is recommended for the default stack. It binds to
+`127.0.0.1` by default. See the
+**[requirements and sizing notes](https://firekeep.ai/docs.html#requirements)**
+before choosing a host.
+
+**Trying Firekeep for the first time? [Share what worked and where you got stuck →](https://github.com/kapella-hub/FirekeepHQ/discussions/15)**
+
+## Runtime coverage
+
+- **Client Kit:** configures Claude Code, Codex, Kiro, and OpenCode together;
+  Claude Desktop is added when its config directory exists. Other MCP clients
+  can use the generic path.
+- **Claude Code:** managed MCP, instructions, and lifecycle hooks. Its supported
+  pre-tool hook can hard-block an edit, write, or shell action.
+- **Codex:** managed MCP plus `AGENTS.md` guidance. Codex exposes no native hooks,
+  so lifecycle automation and pre-edit enforcement are not implied.
+- **Kiro CLI:** a named Firekeep agent with MCP, steering, and lifecycle hooks.
+  On the validated Kiro CLI 2.12.1 surface, its pre-edit hook is advisory.
+- **Firekeep Studio:** runs Codex, Claude Code, Kiro CLI, and Grok in one desktop
+  workspace. The direct Grok adapter has no Keep memory, hooks, or briefing;
+  Studio reports that boundary instead of inheriting another runtime’s status.
+
+See the **[integration guide](docs/INTEGRATIONS.md)** and
+**[Studio runtime matrix](studio/README.md#runtime-support)** for the maintained
+details.
+
+## Measured retrieval, with the method attached
+
+On the accepted 2026-08-28 LongMemEval-S run, Firekeep achieved **97.7% Evidence
+Recall@10**: at least one labeled evidence session appeared in the first ten
+results for **459 of 470 scored questions**. The measurement covers retrieval,
+not generated-answer accuracy; it is one corrected deterministic run rather
+than a multi-run confidence interval.
+
+**[Methodology](https://firekeep.ai/benchmarks/METHODOLOGY.md) · [Result data](https://firekeep.ai/benchmarks/longmemeval-s-20260828.json)**
+
+## The problem Firekeep solves
+
+People do not build professional judgment by rereading every email, document,
+ticket, or source file from the beginning. They remember what happened, why a
+decision worked, how a failure was diagnosed, and which procedure held up in
+practice. That experience changes how they approach the next problem.
+
+Agents should improve the same way. Firekeep connects the knowledge, working
+state, coordination, and evidence behind the work so the next agent can begin
+with the experience the last one earned.
+
+## Detailed capability map
 
 | Capability | What it means |
 |---|---|
@@ -49,16 +129,7 @@ It is an **operating layer for connected AI agents** — infrastructure that sit
 - **Agent-agnostic.** Swap the agent client without rebuilding the underlying memory and coordination layer. Cursor has a documented manual MCP path; Aider does not currently have a shipped adapter.
 - **A2A-discoverable.** Relay publishes an [Agent-to-Agent](https://github.com/google/A2A) agent card at `/.well-known/agent.json` for capability discovery. This is discovery-only, not an A2A task-execution endpoint.
 
-## Install
-
-**[firekeep.ai/docs.html](https://firekeep.ai/docs.html) is the install guide** —
-requirements, the server, every client runtime, updating, troubleshooting. It is
-maintained there rather than duplicated here; this section is the pointer.
-
-```bash
-curl -fsSL https://firekeep.ai/latest/install | sh    # macOS / Linux
-irm https://firekeep.ai/latest/install.ps1 | iex         # Windows
-```
+## Installation and operations details
 
 One command, two required questions: the **agent identity** every memory, session and
 replay event is attributed to, and **where your Firekeep server is** — set one
@@ -120,7 +191,11 @@ data-loss confirmation that a plain uninstall or `--yes` can never trigger. Back
 up first ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#removing-the-server)) if you
 might want the data back.
 
-## Firekeep Studio (0.4.1 preview)
+## Firekeep Studio
+
+[![Firekeep Studio showing a multi-runtime conversation workspace, sessions, Mission controls, and runtime status](https://firekeep.ai/assets/firekeep-studio-preview.webp)](https://firekeep.ai/#studio)
+
+**[Download for Windows](https://firekeep.ai/latest/studio/windows?src=github) · [Download universal macOS](https://firekeep.ai/latest/studio/macos?src=github) · [Explore Studio →](https://firekeep.ai/?src=github#studio)**
 
 [`studio/`](studio/) is a separate desktop client for people who want Firekeep to be the
 only agent application they open. It gives Codex, Claude Code, Kiro CLI, and Grok one
