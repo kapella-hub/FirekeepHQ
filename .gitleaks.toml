@@ -11,9 +11,17 @@ useDefault = true
 
 [allowlist]
 description = "Documentation-prose false positives, pinned verbatim"
+# Match the whole LINE, not just the redacted secret span — gitleaks'
+# default regexTarget is the secret, which for the finding below was only
+# the value-shaped token and never contained the identifying prose.
+regexTarget = "line"
 regexes = [
-  # owm.py docstring (identity-v2, commit 7fb6bff): the generic-api-key rule
-  # matched "re-keyed: corpus/dream/skill" as key:value. The live file was
-  # reworded; this covers the historical commit.
+  # owm.py docstring (identity-v2): the generic-api-key rule matched
+  # "re-keyed: corpus/dream/skill" as key:value. The live file was
+  # reworded; the regex + commit pin cover the historical commit.
   '''re-keyed: corpus/dream/skill''',
+]
+commits = [
+  # Task 8's original commit carrying the docstring phrase above.
+  "cf878aeb2547fcf0ebb894bc4e192feea344117c",
 ]
