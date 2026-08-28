@@ -229,7 +229,8 @@ def create_skills_router(
             step_specs=payload.get("step_specs"),
         )
 
-    @router.patch("/skills/{skill_id}", response_model=SkillResponse)
+    @router.patch("/skills/{skill_id}", response_model=SkillResponse,
+                 dependencies=[Depends(require_not_frozen)])
     async def patch_skill(
         skill_id: str,
         req: SkillPatchRequest,

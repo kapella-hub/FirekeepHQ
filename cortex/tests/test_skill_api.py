@@ -285,6 +285,25 @@ class TestSkillsMigrationFreezeGate:
         assert resp.status_code == 204
         mock_vector._client.delete.assert_called_once()
 
+    def test_patch_skill_503_when_frozen(self, mock_vector, mock_settings):
+        """PATCH /skills/{id} closed a real gap: its siblings POST/DELETE were
+        gated in the same fix wave but PATCH was initially missed — it also
+        mutates Qdrant (upsert on semantic-field edits, set_payload
+        otherwise), so a migration freeze must block it too."""
+        from app.config import Settings, get_settings
+
+        point = _make_mock_point()
+        mock_vector._client.retrieve = AsyncMock(return_value=[point])
+        mock_vector._client.set_payload = AsyncMock()
+        app = _make_app(mock_vector, mock_settings)
+        app.dependency_overrides[get_settings] = lambda: Settings(MIGRATION_FREEZE=True)
+        client = TestClient(app)
+        resp = client.patch("/skills/abc", json={"skill_status": "deprecated"})
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == "memory store migration in progress; retry shortly"
+        mock_vector._client.set_payload.assert_not_called()
+        mock_vector._client.upsert.assert_not_awaited()
+
 
 # ---------------------------------------------------------------------------
 # Provenance fields (source_type / content_class / source_doc /
