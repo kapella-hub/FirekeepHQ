@@ -1,6 +1,6 @@
 {
   "name": "firekeep",
-  "description": "Firekeep — self-hosted persistent memory for AI agents. Installs and connects the Firekeep client on this machine.",
+  "description": "Connect AI agents through one shared, self-hosted Keep. Installs and connects Firekeep on this machine.",
   "owner": {
     "name": "Omnicron, LLC",
     "url": "https://firekeep.ai"
@@ -9,7 +9,7 @@
     {
       "name": "firekeep",
       "source": "./",
-      "description": "Install and connect Firekeep — self-hosted persistent memory for AI agents — on this machine, then verify it with the product's own doctor."
+      "description": "Install and connect Firekeep — one self-hosted Keep that carries knowledge, working context, coordination, and evidence across AI agents — then verify it with the product's own doctor."
     }
   ]
 }

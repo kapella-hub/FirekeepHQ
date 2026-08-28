@@ -1,5 +1,5 @@
 {
-  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "firekeep",
   "version": "1.1.0",
   "description": "Install and connect Firekeep — one self-hosted Keep that carries knowledge, working context, coordination, and evidence across AI agents — then verify it with the product's own doctor.",
@@ -10,5 +10,17 @@
   "homepage": "https://firekeep.ai/docs.html",
   "repository": "https://github.com/kapella-hub/FirekeepHQ",
   "license": "BUSL-1.1",
-  "keywords": ["shared-context", "multi-agent", "organizational-knowledge", "self-hosted", "mcp", "agent-memory"]
+  "keywords": [
+    "firekeep",
+    "agent-memory",
+    "shared-context",
+    "multi-agent",
+    "organizational-knowledge",
+    "self-hosted",
+    "mcp",
+    "claude-code",
+    "codex",
+    "kiro",
+    "opencode"
+  ]
 }

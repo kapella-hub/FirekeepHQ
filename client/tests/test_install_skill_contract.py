@@ -253,6 +253,48 @@ def test_plugin_manifest_is_valid_and_declares_its_name():
     assert re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", data["name"]), data["name"]
 
 
+def test_agent_plugin_manifest_is_portable_and_reuses_the_install_skill():
+    """One root Agent Plugins manifest is the compatibility floor for Kiro,
+    Cursor, and other conforming clients. Keep it closed to the standard's
+    fields so one vendor-specific convenience cannot invalidate every other
+    destination."""
+    manifest = PLUGIN_ROOT / "plugin.json"
+    assert manifest.exists(), f"missing Agent Plugins manifest: {manifest}"
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+
+    assert data["$schema"] == "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
+    assert data["name"] == "firekeep"
+    assert re.fullmatch(r"\d+\.\d+\.\d+", data["version"]), data["version"]
+    assert data["description"]
+    assert data["author"].get("name")
+    assert data["keywords"]
+    assert data["license"] == "BUSL-1.1"
+
+    allowed = {
+        "$schema", "name", "version", "description", "author", "homepage",
+        "repository", "license", "keywords", "extensions",
+    }
+    assert not (set(data) - allowed), f"non-portable manifest fields: {set(data) - allowed}"
+    assert (PLUGIN_ROOT / "skills" / "install-firekeep" / "SKILL.md").is_file()
+
+
+def test_plugin_versions_match_across_portable_and_claude_manifests():
+    """Both clients cache explicit versions, so a release must bump the two
+    manifests together. The marketplace entry deliberately has no third copy:
+    Claude treats plugin.json as authoritative when both declare a version."""
+    claude_plugin = json.loads(
+        (PLUGIN_ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8")
+    )
+    portable_plugin = json.loads(
+        (PLUGIN_ROOT / "plugin.json").read_text(encoding="utf-8")
+    )
+    marketplace = json.loads(
+        (PLUGIN_ROOT / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8")
+    )
+    assert claude_plugin["version"] == portable_plugin["version"]
+    assert "version" not in marketplace["plugins"][0]
+
+
 def test_marketplace_manifest_is_at_the_repo_root_and_points_at_the_plugin():
     marketplace = REPO_ROOT / ".claude-plugin" / "marketplace.json"
     assert marketplace.exists(), (
