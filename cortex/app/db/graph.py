@@ -173,14 +173,25 @@ class Neo4jClient:
             return records
 
     async def _execute_write(self, query: str, params: dict[str, Any]) -> list[dict[str, Any]]:
-        """Execute a write query in an explicit transaction and return results."""
+        """Execute a write query in an explicit transaction and return results.
+
+        `AsyncSession.begin_transaction()` is a coroutine, NOT an async context
+        manager — it must be awaited for the transaction object (neo4j driver
+        5.x contract). Found live during the identity-v2 migration's
+        graph-remap: this method's only caller is the migration tool, so no
+        other path had ever executed it and the mocked graph tests could not
+        see the driver contract.
+        """
         driver = self._ensure_driver()
         async with driver.session() as session:
-            async with session.begin_transaction() as tx:
+            tx = await session.begin_transaction()
+            try:
                 result = await tx.run(query, params)
                 records = await result.data()
                 await tx.commit()
                 return records
+            finally:
+                await tx.close()
 
     # ------------------------------------------------------------------
     # Helpers

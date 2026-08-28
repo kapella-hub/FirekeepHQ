@@ -851,3 +851,40 @@ class TestGetSupersessionHistory:
 
         assert result["supersedes"] == []
         assert result["superseded_by"] is None
+
+
+class TestExecuteWriteDriverContract:
+    """Pin _execute_write to the REAL neo4j 5.x async driver contract:
+    begin_transaction() is a coroutine returning the transaction, never an
+    async context manager. The fake below mimics the driver exactly — the
+    pre-fix implementation (async with session.begin_transaction()) raises
+    TypeError against it, which is precisely what happened live during the
+    identity-v2 graph-remap."""
+
+    @pytest.mark.asyncio
+    async def test_execute_write_awaits_begin_transaction(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        records = [{"ok": 1}]
+        tx = MagicMock()
+        tx.run = AsyncMock(return_value=MagicMock(data=AsyncMock(return_value=records)))
+        tx.commit = AsyncMock()
+        tx.close = AsyncMock()
+
+        session = MagicMock()
+        # Driver contract: a coroutine, NOT an async context manager.
+        session.begin_transaction = AsyncMock(return_value=tx)
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=False)
+
+        driver = MagicMock()
+        driver.session = MagicMock(return_value=session)
+
+        client = Neo4jClient.__new__(Neo4jClient)
+        client._driver = driver
+        client._ensure_driver = lambda: driver
+
+        out = await client._execute_write("RETURN 1", {})
+        assert out == records
+        tx.commit.assert_awaited_once()
+        tx.close.assert_awaited_once()
