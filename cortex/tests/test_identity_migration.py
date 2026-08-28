@@ -1482,7 +1482,7 @@ class TestFoldHashes:
 class TestCompletionAndInertness:
     async def test_verify_writes_the_marker_task_8_reads(self, redis_client, frozen, idmap):
         client = _IndexRecording(await _seeded())
-        await _run_full(client, redis_client, frozen, idmap)
+        plan = await _run_full(client, redis_client, frozen, idmap)
         flipped = Settings(MIGRATION_FREEZE=True, QDRANT_COLLECTION=mig.SHADOW_COLLECTION)
         await mig.mark_flipped(redis_client, settings=flipped)
         await mig.graph_remap_step(_FakeGraph(), redis_client, settings=flipped,
@@ -1490,9 +1490,14 @@ class TestCompletionAndInertness:
         await mig.fold_hashes_step(redis_client, client, settings=flipped,
                                    idmap_path=idmap)
         assert not await redis_client.exists(mig.MIGRATION_COMPLETE_KEY)
+        assert not await redis_client.exists(mig.MIGRATION_IDMAP_COUNT_KEY)
         report = await mig.verify(client, redis_client, settings=flipped, idmap_path=idmap)
         assert report.ok
         assert await redis_client.exists(mig.MIGRATION_COMPLETE_KEY)
+        # D7 fix round 1: recorded alongside the marker so owm.py's sweep-skip
+        # guard can tell a merely-empty idmap cache from a partially degraded
+        # one (same key, fewer fields than were mirrored at execute time).
+        assert await redis_client.get(mig.MIGRATION_IDMAP_COUNT_KEY) == str(len(plan.mapping))
 
     async def test_a_failed_verify_does_not_write_the_marker(
             self, redis_client, frozen, idmap):
@@ -1509,6 +1514,7 @@ class TestCompletionAndInertness:
         report = await mig.verify(client, redis_client, settings=flipped, idmap_path=idmap)
         assert not report.ok
         assert not await redis_client.exists(mig.MIGRATION_COMPLETE_KEY)
+        assert not await redis_client.exists(mig.MIGRATION_IDMAP_COUNT_KEY)
 
     def test_importing_the_module_runs_nothing(self):
         """It ships INERT: no celery task, no beat entry, no import-time work."""

@@ -44,9 +44,10 @@ from app.evals.compute import _METRIC_SCAN_MAX  # single source of truth (task 4
 # same cap as the eval metrics scan, imported rather than re-declared so the
 # two can never drift apart.
 from app.evals.models import recognized_grade_pair
-from app.workers.memory_identity_migration import (  # identity-v2 D7 (task 8):
+from app.workers.memory_identity_migration import (  # identity-v2 D7 (task 8, fix round 1):
     IDMAP_REDIS_KEY,  # the old->new id map cache the join translates through
     MIGRATION_COMPLETE_KEY,  # presence gates the stale-reset sweep-skip guard
+    MIGRATION_IDMAP_COUNT_KEY,  # expected HLEN of IDMAP_REDIS_KEY; catches a partial cache
 )
 
 logger = logging.getLogger(__name__)
@@ -100,6 +101,61 @@ async def _translate_memory_ids(redis_client, raw_ids: set[str]) -> dict[str, st
             if new_id:
                 mapping[old_id] = new_id.decode() if isinstance(new_id, bytes) else new_id
     return mapping
+
+
+async def _sweep_gate(redis_client) -> tuple[bool, str]:
+    """Should the D7 stale-reset sweep run this pass? Returns ``(skip, reason)``.
+
+    Fix round 1: an EMPTY idmap hash is not the only unsafe state. A hash
+    that still exists but has fewer fields than `MIGRATION_IDMAP_COUNT_KEY`
+    recorded at verify time (a Redis restart or AOF loss can drop some
+    fields without dropping the key) is a PARTIALLY degraded cache — some
+    ids translate, some silently don't, and a point scored under an
+    un-translatable old id looks "not written this pass" to the sweep just
+    as an empty cache would. So the guard compares live size against the
+    recorded expectation, not mere presence.
+
+    Every Redis lookup below fails TOWARD skip=True: the sweep is the risky
+    action (it deletes), so an unreadable marker, hash length, or count
+    record must never be read as "everything checks out, proceed" — it is
+    read as "cannot prove this is safe," which skips.
+    """
+    try:
+        migration_complete = bool(await redis_client.exists(MIGRATION_COMPLETE_KEY))
+    except Exception as exc:  # noqa: BLE001 — an unreadable marker must not look like "no marker"
+        logger.warning("OWM: migration marker lookup failed (%s) — skipping the "
+                       "stale-reset sweep to be safe", exc)
+        return True, f"migration marker lookup failed ({exc})"
+
+    if not migration_complete:
+        return False, ""  # pre-migration deploy: sweep runs exactly as before D7
+
+    try:
+        idmap_len = int(await redis_client.hlen(IDMAP_REDIS_KEY) or 0)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("OWM: idmap HLEN lookup failed (%s) — skipping the "
+                       "stale-reset sweep to be safe", exc)
+        return True, f"idmap HLEN lookup failed ({exc})"
+
+    try:
+        raw_count = await redis_client.get(MIGRATION_IDMAP_COUNT_KEY)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("OWM: idmap count record lookup failed (%s) — skipping "
+                       "the stale-reset sweep to be safe", exc)
+        return True, f"idmap count record lookup failed ({exc})"
+
+    recorded_count: int | None = None
+    if raw_count is not None:
+        try:
+            recorded_count = int(raw_count)
+        except (TypeError, ValueError):
+            recorded_count = None  # unparseable is treated as unrecorded -> mismatch
+
+    if idmap_len == 0 or recorded_count is None or idmap_len != recorded_count:
+        recorded_display = recorded_count if recorded_count is not None else "an unrecorded"
+        return True, (f"idmap {IDMAP_REDIS_KEY} holds {idmap_len} of "
+                      f"{recorded_display} expected entries")
+    return False, ""
 
 
 def session_success(eval_data: dict, bridge_status: str | None) -> bool | None:
@@ -159,14 +215,9 @@ async def run_pass(replay_r, vector, settings, *,
     window_start = time.time() - settings.OWM_WINDOW_DAYS * 86400
     session_ids = await replay_r.zrangebyscore("rp:eval_index", window_start, "+inf")
 
-    # D7 (identity-v2 join safety, task 8): checked ONCE, up front. Both the
-    # per-event id translation below and the stale-reset sweep-skip guard
-    # further down read these two flags. `exists` on a Redis hash is 0 for
-    # both "never created" and "emptied back to zero fields" (Redis deletes a
-    # hash the moment its last field is removed) -- exactly the "empty or
-    # absent" the spec calls out, with no separate HLEN needed.
-    migration_complete = bool(await replay_r.exists(MIGRATION_COMPLETE_KEY))
-    idmap_present = bool(await replay_r.exists(IDMAP_REDIS_KEY))
+    # D7 (identity-v2 join safety, task 8; completeness check added fix round
+    # 1): checked ONCE, up front, and reused by both stale-reset blocks below.
+    skip_sweep, skip_sweep_reason = await _sweep_gate(replay_r)
 
     # memory_id -> agent_id -> [successes, n] (n capped per agent at write-out)
     stats: dict[str, dict[str, list[int]]] = {}
@@ -339,20 +390,20 @@ async def run_pass(replay_r, vector, settings, *,
         # back to neutral (keys deleted). Recompute-from-scratch is only
         # honest if absence of evidence actually clears the old verdict.
         #
-        # D7 guard: a point scored under its OLD id before the identity
+        # D7 guard (fix round 1 tightened this to a completeness check, not
+        # mere presence): a point scored under its OLD id before the identity
         # migration, and not re-observed since, is translated to its NEW id
-        # above only while the idmap cache is populated. If the migration
-        # marker is set but the cache has since expired (Redis hash empty or
-        # gone -- it is a cache, never the source of truth), this sweep can
-        # no longer tell "genuinely stale" from "just moved id", and running
-        # it anyway would delete every migrated memory's efficacy in one
-        # pass. Skipping degrades to no-update, never a wipe.
-        if migration_complete and not idmap_present:
+        # above only while the idmap cache is fully populated. If the
+        # migration marker is set but the cache has since expired OR
+        # partially degraded (it is a cache, never the source of truth), this
+        # sweep can no longer tell "genuinely stale" from "just moved id, and
+        # its translation was one of the lost fields", and running it anyway
+        # would delete migrated memories' efficacy. Skipping degrades to
+        # no-update, never a wipe.
+        if skip_sweep:
             logger.warning(
-                "OWM: stale-reset sweep SKIPPED — migration marker %s is set "
-                "but %s is empty/absent (expired idmap cache); scores left "
-                "untouched rather than risk wiping migrated memories",
-                MIGRATION_COMPLETE_KEY, IDMAP_REDIS_KEY)
+                "OWM: stale-reset sweep SKIPPED — %s; scores left untouched "
+                "rather than risk wiping migrated memories", skip_sweep_reason)
         else:
             try:
                 from qdrant_client import models as _qm
@@ -405,14 +456,13 @@ async def run_pass(replay_r, vector, settings, *,
                 out["write_errors"] += 1
 
         # Skill stale-reset — mirrors the memory stale-reset above but for the
-        # skill keys. Same D7 guard applies: an expired idmap cache after a
-        # completed migration must degrade this sweep to a no-op too.
-        if migration_complete and not idmap_present:
+        # skill keys. Same D7 guard applies: an expired OR partially degraded
+        # idmap cache after a completed migration must degrade this sweep to
+        # a no-op too.
+        if skip_sweep:
             logger.warning(
-                "OWM: skill stale-reset sweep SKIPPED — migration marker %s "
-                "is set but %s is empty/absent (expired idmap cache); scores "
-                "left untouched rather than risk wiping migrated skills",
-                MIGRATION_COMPLETE_KEY, IDMAP_REDIS_KEY)
+                "OWM: skill stale-reset sweep SKIPPED — %s; scores left "
+                "untouched rather than risk wiping migrated skills", skip_sweep_reason)
         else:
             try:
                 from qdrant_client import models as _qm

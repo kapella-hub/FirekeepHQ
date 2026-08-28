@@ -259,10 +259,15 @@ recall ranking store-wide in one night.** Therefore: owm.py translates
 event `memory_ids` through the idmap AT THE TOP of the join, before
 building stats; and the stale-reset sweep is SKIPPED entirely (loudly
 logged) whenever the map is expected (migration marker present) but
-unavailable — an expired cache degrades to no-update, never to wipe. The
-JSONL artifact is the durable form; Redis is a cache. The client kit's
-proactive-recall seen-cache (12h TTL) self-heals. Replay events themselves
-stay immutable history and age out on their own retention.
+unavailable — an expired cache degrades to no-update, never to wipe. Fix
+round 1: "unavailable" is a completeness check against the entry count
+`verify` records alongside the marker, not mere presence — a hash that
+still exists but holds fewer fields than recorded (a Redis restart or AOF
+loss can drop some without dropping the key) is a PARTIALLY degraded cache
+and is treated exactly like an absent one. The JSONL artifact is the
+durable form; Redis is a cache. The client kit's proactive-recall seen-cache
+(12h TTL) self-heals. Replay events themselves stay immutable history and
+age out on their own retention.
 
 ## D8. Benchmark closure — the original goal
 

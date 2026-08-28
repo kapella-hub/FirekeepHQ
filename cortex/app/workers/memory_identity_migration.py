@@ -116,15 +116,24 @@ STATE_KEY = "mem:migration:v2:state"
 
 #: The old->new id map, mirrored from the JSONL artifact. A CACHE, never the
 #: source of truth: `owm.py` (D7) reads it to translate historical replay
-#: events, and treats an empty/absent hash as "unavailable", not as "nothing
-#: moved" -- the difference between a degraded join and wiping every migrated
-#: memory's efficacy score.
+#: events, and treats an empty OR PARTIALLY-DEGRADED hash (fewer entries than
+#: `MIGRATION_IDMAP_COUNT_KEY` recorded -- a Redis restart or AOF loss can
+#: drop some fields without dropping the key) as "unavailable", not as
+#: "nothing moved" -- the difference between a degraded join and wiping every
+#: migrated memory's efficacy score.
 IDMAP_REDIS_KEY = "mem:idmap:v2"
 
 #: Written only by a verify pass that fully succeeded. `owm.py` reads its
 #: presence to decide whether a missing idmap means "pre-migration deploy"
-#: (normal) or "expired cache" (skip the stale-reset sweep, loudly).
+#: (normal) or "expired/degraded cache" (skip the stale-reset sweep, loudly).
 MIGRATION_COMPLETE_KEY = "mem:migration:v2:complete"
+
+#: The idmap's expected entry count, recorded alongside `MIGRATION_COMPLETE_KEY`
+#: by the same successful verify pass. `owm.py` (D7 fix round 1) compares this
+#: against `IDMAP_REDIS_KEY`'s live HLEN: a marker set but a hash whose size no
+#: longer matches is a PARTIALLY degraded cache -- as dangerous as an empty
+#: one for the sweep, and an empty/absent check alone would miss it.
+MIGRATION_IDMAP_COUNT_KEY = "mem:idmap:v2:count"
 
 #: The durable form of the map. `cortex-api` mounts `./backups` (read-only, for
 #: `GET /ops/backups`) and nothing else writable, so this default sits beside
@@ -1808,6 +1817,11 @@ async def verify(client, redis_client, *, settings: Settings,
                                            "collection": shadow,
                                            "completed_at": datetime.now(
                                                timezone.utc).isoformat()}))
+        # D7 fix round 1: recorded alongside the marker so `owm.py` can tell a
+        # merely-empty idmap cache from a PARTIALLY degraded one (same key,
+        # fewer fields than were mirrored at execute time) -- both are unsafe
+        # to sweep against, but only a recorded expectation catches the second.
+        await redis_client.set(MIGRATION_IDMAP_COUNT_KEY, str(len(mapping)))
         await _write_state(redis_client, step=STEP_VERIFY, status=STATUS_COMPLETE)
         logger.info("verify passed; migration marker written")
     else:

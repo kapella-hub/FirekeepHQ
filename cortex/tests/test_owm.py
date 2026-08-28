@@ -10,7 +10,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.owm import compute_efficacy, run_pass, session_success
-from app.workers.memory_identity_migration import IDMAP_REDIS_KEY, MIGRATION_COMPLETE_KEY
+from app.workers.memory_identity_migration import (
+    IDMAP_REDIS_KEY,
+    MIGRATION_COMPLETE_KEY,
+    MIGRATION_IDMAP_COUNT_KEY,
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -67,17 +71,35 @@ def test_legacy_records_are_unknown_never_success():
 # --------------------------------------------------------------------------- #
 
 
+_AUTO = object()  # sentinel: "derive idmap_recorded_count from idmap" (see below)
+
+
 def _redis_with(evals: dict, index: list, *,
-                migration_complete: bool = False, idmap: dict | None = None):
+                migration_complete: bool = False, idmap: dict | None = None,
+                idmap_recorded_count=_AUTO):
     """migration_complete / idmap (task 8, identity-v2 D7): the marker + the
     idmap Redis hash the join reads. Defaults reproduce a pre-migration
     deploy -- MIGRATION_COMPLETE_KEY absent, IDMAP_REDIS_KEY empty -- so every
     existing (pre-task-8) test exercises the byte-identical no-marker path
-    without being touched."""
+    without being touched.
+
+    idmap_recorded_count (fix round 1, D7 completeness check): what
+    MIGRATION_IDMAP_COUNT_KEY's GET returns -- the entry count `verify`
+    recorded alongside the marker. The default _AUTO derives it as
+    ``len(idmap)`` when idmap is non-empty (the healthy case: HLEN matches
+    what was recorded) and ``None`` when idmap is empty (nothing to record).
+    Pass an explicit int LOWER than len(idmap)'s eventual HLEN comparison
+    point to simulate a PARTIALLY degraded cache, or explicit ``None`` to
+    simulate an unrecorded/expired count key.
+    """
     idmap = idmap or {}
+    if idmap_recorded_count is _AUTO:
+        idmap_recorded_count = len(idmap) if idmap else None
     r = AsyncMock()
     r.zrangebyscore = AsyncMock(return_value=list(index))
     async def _get(key):
+        if key == MIGRATION_IDMAP_COUNT_KEY:
+            return str(idmap_recorded_count) if idmap_recorded_count is not None else None
         sid = key.split("rp:eval:", 1)[-1]
         data = evals.get(sid)
         return json.dumps(data) if data is not None else None
@@ -86,10 +108,12 @@ def _redis_with(evals: dict, index: list, *,
     async def _exists(key):
         if key == MIGRATION_COMPLETE_KEY:
             return 1 if migration_complete else 0
-        if key == IDMAP_REDIS_KEY:
-            return 1 if idmap else 0
         return 0
     r.exists = AsyncMock(side_effect=_exists)
+
+    async def _hlen(key):
+        return len(idmap) if key == IDMAP_REDIS_KEY else 0
+    r.hlen = AsyncMock(side_effect=_hlen)
 
     async def _hmget(key, keys):
         if key != IDMAP_REDIS_KEY:
@@ -697,3 +721,83 @@ async def test_sweep_runs_normally_with_no_migration_marker():
     assert out["stale_reset"] == 1
     del_call = v._client.delete_payload.call_args_list[0].kwargs
     assert del_call["points"] == ["m-old"]
+
+
+# --------------------------------------------------------------------------- #
+# D7 fix round 1: a NON-EMPTY idmap hash is not automatically a trustworthy   #
+# one. `verify` now records the idmap's expected entry count alongside the   #
+# completion marker; the sweep-skip guard compares live HLEN against that    #
+# recorded count, not mere presence, so a PARTIALLY degraded cache (a Redis  #
+# restart / AOF loss can drop some fields without dropping the key) is       #
+# caught too.                                                                 #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_sweep_skipped_when_idmap_is_partially_degraded(caplog):
+    """Marker set, idmap hash NON-empty, but holding fewer entries (2) than
+    verify recorded (5) -- some old ids would silently fail to translate.
+    Both stale-reset sweeps must be skipped, with the warning naming both
+    the live and expected counts, and no delete_payload call made."""
+    evals = {"s1": {"task_result": "success", "task_result_source": "self_reported"}}
+    events = {"s1": [{"event_type": "memory_read", "payload": {"memory_ids": ["m1"]}}]}
+    idmap = {"v1-a": "v2-a", "v1-b": "v2-b"}  # only 2 of the 5 recorded entries survive
+    v = _vector(stale_scored_ids=("m1", "m-old"))
+    r = _redis_with(evals, ["s1"], migration_complete=True, idmap=idmap,
+                    idmap_recorded_count=5)
+
+    with caplog.at_level(logging.WARNING):
+        out = await run_pass(r, v, _settings(), bridge_statuses={},
+                             events_fn=_events_fn(events))
+
+    assert out["memories_scored"] == 1
+    assert out["stale_reset"] == 0
+    assert not v._client.delete_payload.called
+    messages = " ".join(rec.message for rec in caplog.records)
+    assert "stale-reset sweep SKIPPED" in messages
+    assert "holds 2 of 5 expected entries" in messages
+
+
+@pytest.mark.asyncio
+async def test_sweep_runs_normally_when_idmap_is_complete():
+    """Marker set, idmap HLEN matches the recorded count EXACTLY -> the cache
+    is trusted and the sweep runs as normal, still wiping a genuinely stale
+    point. Distinguishes "complete" from merely "non-empty"."""
+    evals = {"s1": {"task_result": "success", "task_result_source": "self_reported"}}
+    events = {"s1": [{"event_type": "memory_read", "payload": {"memory_ids": ["m1"]}}]}
+    idmap = {"v1-a": "v2-a", "v1-b": "v2-b"}
+    v = _vector(stale_scored_ids=("m1", "m-old"))
+    r = _redis_with(evals, ["s1"], migration_complete=True, idmap=idmap,
+                    idmap_recorded_count=2)
+
+    out = await run_pass(r, v, _settings(), bridge_statuses={},
+                         events_fn=_events_fn(events))
+
+    assert out["memories_scored"] == 1
+    assert out["stale_reset"] == 1
+    del_call = v._client.delete_payload.call_args_list[0].kwargs
+    assert del_call["points"] == ["m-old"]
+
+
+@pytest.mark.asyncio
+async def test_sweep_skipped_when_count_record_is_absent(caplog):
+    """Marker set, idmap hash non-empty, but MIGRATION_IDMAP_COUNT_KEY was
+    never recorded (or expired independently of the hash). An absent/
+    unparseable expectation is treated as a MISMATCH, not as "trust it
+    anyway" -- there is nothing to compare HLEN against, so it cannot be
+    proven safe."""
+    evals = {"s1": {"task_result": "success", "task_result_source": "self_reported"}}
+    events = {"s1": [{"event_type": "memory_read", "payload": {"memory_ids": ["m1"]}}]}
+    idmap = {"v1-a": "v2-a"}
+    v = _vector(stale_scored_ids=("m1", "m-old"))
+    r = _redis_with(evals, ["s1"], migration_complete=True, idmap=idmap,
+                    idmap_recorded_count=None)
+
+    with caplog.at_level(logging.WARNING):
+        out = await run_pass(r, v, _settings(), bridge_statuses={},
+                             events_fn=_events_fn(events))
+
+    assert out["memories_scored"] == 1
+    assert out["stale_reset"] == 0
+    assert not v._client.delete_payload.called
+    assert any("stale-reset sweep SKIPPED" in rec.message for rec in caplog.records)
