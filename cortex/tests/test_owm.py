@@ -4,11 +4,13 @@ memories) to session outcomes (auto-evals + Bridge status), shrunk toward neutra
 so small N can never swing rankings.
 """
 import json
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from app.owm import compute_efficacy, run_pass, session_success
+from app.workers.memory_identity_migration import IDMAP_REDIS_KEY, MIGRATION_COMPLETE_KEY
 
 
 # --------------------------------------------------------------------------- #
@@ -65,7 +67,14 @@ def test_legacy_records_are_unknown_never_success():
 # --------------------------------------------------------------------------- #
 
 
-def _redis_with(evals: dict, index: list):
+def _redis_with(evals: dict, index: list, *,
+                migration_complete: bool = False, idmap: dict | None = None):
+    """migration_complete / idmap (task 8, identity-v2 D7): the marker + the
+    idmap Redis hash the join reads. Defaults reproduce a pre-migration
+    deploy -- MIGRATION_COMPLETE_KEY absent, IDMAP_REDIS_KEY empty -- so every
+    existing (pre-task-8) test exercises the byte-identical no-marker path
+    without being touched."""
+    idmap = idmap or {}
     r = AsyncMock()
     r.zrangebyscore = AsyncMock(return_value=list(index))
     async def _get(key):
@@ -73,6 +82,20 @@ def _redis_with(evals: dict, index: list):
         data = evals.get(sid)
         return json.dumps(data) if data is not None else None
     r.get = AsyncMock(side_effect=_get)
+
+    async def _exists(key):
+        if key == MIGRATION_COMPLETE_KEY:
+            return 1 if migration_complete else 0
+        if key == IDMAP_REDIS_KEY:
+            return 1 if idmap else 0
+        return 0
+    r.exists = AsyncMock(side_effect=_exists)
+
+    async def _hmget(key, keys):
+        if key != IDMAP_REDIS_KEY:
+            return [None] * len(keys)
+        return [idmap.get(k) for k in keys]
+    r.hmget = AsyncMock(side_effect=_hmget)
     return r
 
 
@@ -561,3 +584,116 @@ async def test_memory_feedback_counts_even_when_session_is_ungraded():
               for c in v._client.set_payload.call_args_list}
     assert writes["sk1"]["skill_efficacy"] == round(compute_efficacy(0, 1, 5), 4)
     assert writes["sk1"]["skill_efficacy_n"] == 1
+
+
+# --------------------------------------------------------------------------- #
+# D7 (identity-v2, task 8): OWM join safety across the identity migration.    #
+# Replay events name the OLD (v1) point id; post-migration the Qdrant store   #
+# holds the NEW (v2) id under mem:idmap:v2. A naive join would score nothing  #
+# (translated ids never match) and the stale-reset sweep would then wipe      #
+# every migrated memory's efficacy in the same pass -- the failure this       #
+# guard exists to prevent.                                                    #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_events_naming_v1_ids_are_translated_and_scored_under_v2_id():
+    """Populated idmap: a memory_read event naming the OLD id must score the
+    NEW id, and the stale-reset sweep must NOT treat that new id as stale --
+    it WAS written this pass, just under its translated id."""
+    evals = {"s1": {"task_result": "success", "task_result_source": "self_reported"}}
+    events = {"s1": [{"event_type": "memory_read",
+                      "payload": {"memory_ids": ["v1-old"]}}]}
+    idmap = {"v1-old": "v2-new"}
+    # The scroll-for-scored sweep reports "v2-new" as already carrying owm_n
+    # (a prior pass scored it under its new id) -- it must survive, not be
+    # reset, because this pass's translated write lands on the same id.
+    v = _vector(stale_scored_ids=("v2-new",))
+    r = _redis_with(evals, ["s1"], migration_complete=True, idmap=idmap)
+
+    out = await run_pass(r, v, _settings(), bridge_statuses={},
+                         events_fn=_events_fn(events))
+
+    assert out["memories_scored"] == 1
+    assert out["stale_reset"] == 0
+    writes = {c.kwargs["points"][0]: c.kwargs["payload"]
+              for c in v._client.set_payload.call_args_list}
+    assert "v2-new" in writes
+    assert "v1-old" not in writes
+
+
+@pytest.mark.asyncio
+async def test_feedback_ids_are_also_translated_through_the_idmap():
+    """The same D7 translation applies to memory_feedback ids, which feed the
+    skill tally -- not just memory_read ids."""
+    evals = {"s1": {"task_result": "success", "task_result_source": "self_reported"}}
+    events = {"s1": [
+        {"event_type": "memory_read", "payload": {"memory_ids": ["v1-skill"]}},
+        {"event_type": "memory_feedback",
+         "payload": {"memory_ids": ["v1-skill"], "useful": True}},
+    ]}
+    idmap = {"v1-skill": "v2-skill"}
+    v = _vector(point_types={"v2-skill": {"memory_type": "skill"}})
+    r = _redis_with(evals, ["s1"], migration_complete=True, idmap=idmap)
+
+    out = await run_pass(r, v, _settings(), bridge_statuses={},
+                         events_fn=_events_fn(events))
+
+    assert out["skills_scored"] == 1
+    writes = {c.kwargs["points"][0]: c.kwargs["payload"]
+              for c in v._client.set_payload.call_args_list}
+    # exposure (1/1) + a useful:true feedback thumb -> s=2, n=2 under the NEW id
+    assert writes["v2-skill"]["skill_efficacy_n"] == 2
+    assert "v1-skill" not in writes
+
+
+@pytest.mark.asyncio
+async def test_sweep_skipped_when_marker_present_but_idmap_empty(caplog):
+    """Expired-cache case: the migration completed (marker set) but
+    mem:idmap:v2 has since emptied or expired. The stale-reset sweep -- both
+    the memory and the skill block -- must be skipped ENTIRELY with a loud
+    warning, and existing scores left untouched (delete_payload never
+    called), rather than wipe every migrated memory's/skill's efficacy."""
+    evals = {"s1": {"task_result": "success", "task_result_source": "self_reported"}}
+    events = {"s1": [{"event_type": "memory_read",
+                      "payload": {"memory_ids": ["m1", "sk1"]}}]}
+    v = _vector(point_types={"m1": {"memory_type": "episodic"},
+                             "sk1": {"memory_type": "skill"}},
+               stale_scored_ids=("m1", "m-old"),
+               stale_scored_skill_ids=("sk1", "sk-old"))
+    r = _redis_with(evals, ["s1"], migration_complete=True, idmap={})
+
+    with caplog.at_level(logging.WARNING):
+        out = await run_pass(r, v, _settings(), bridge_statuses={},
+                             events_fn=_events_fn(events))
+
+    # This pass's own writes still happen -- only the sweep is skipped.
+    assert out["memories_scored"] == 1
+    assert out["skills_scored"] == 1
+    assert out["stale_reset"] == 0
+    assert out["skill_stale_reset"] == 0
+    assert not v._client.delete_payload.called
+    messages = " ".join(r.message for r in caplog.records)
+    assert "stale-reset sweep SKIPPED" in messages
+    assert "skill stale-reset sweep SKIPPED" in messages
+
+
+@pytest.mark.asyncio
+async def test_sweep_runs_normally_with_no_migration_marker():
+    """Pre-migration deploy: MIGRATION_COMPLETE_KEY was never written. The
+    stale-reset sweep must run exactly as before D7 -- genuinely stale points
+    still get wiped back to neutral. Pins byte-identical no-marker behavior
+    alongside every other (unmodified) test in this file, which all exercise
+    the same default no-marker fixture path."""
+    evals = {"s1": {"task_result": "success", "task_result_source": "self_reported"}}
+    events = {"s1": [{"event_type": "memory_read", "payload": {"memory_ids": ["m1"]}}]}
+    v = _vector(stale_scored_ids=("m1", "m-old"))
+    r = _redis_with(evals, ["s1"])  # migration_complete=False, idmap={} (defaults)
+
+    out = await run_pass(r, v, _settings(), bridge_statuses={},
+                         events_fn=_events_fn(events))
+
+    assert out["memories_scored"] == 1
+    assert out["stale_reset"] == 1
+    del_call = v._client.delete_payload.call_args_list[0].kwargs
+    assert del_call["points"] == ["m-old"]

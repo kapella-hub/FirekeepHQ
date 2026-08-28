@@ -44,8 +44,17 @@ from app.evals.compute import _METRIC_SCAN_MAX  # single source of truth (task 4
 # same cap as the eval metrics scan, imported rather than re-declared so the
 # two can never drift apart.
 from app.evals.models import recognized_grade_pair
+from app.workers.memory_identity_migration import (  # identity-v2 D7 (task 8):
+    IDMAP_REDIS_KEY,  # the old->new id map cache the join translates through
+    MIGRATION_COMPLETE_KEY,  # presence gates the stale-reset sweep-skip guard
+)
 
 logger = logging.getLogger(__name__)
+
+#: Redis command batching for the D7 idmap lookup — mirrors the migration
+#: module's own `_REDIS_BATCH`, kept local so this module never imports a
+#: private name across a package boundary.
+_ID_TRANSLATE_BATCH = 1000
 
 
 async def _default_events_fn(replay_r, session_id: str) -> list[dict]:
@@ -61,6 +70,36 @@ async def _default_events_fn(replay_r, session_id: str) -> list[dict]:
 def compute_efficacy(successes: int, n: int, prior_n: int = 5) -> float:
     """Beta-shrunk success fraction: (s + prior/2) / (n + prior). 0.5 at n=0."""
     return (successes + prior_n * 0.5) / (n + prior_n)
+
+
+async def _translate_memory_ids(redis_client, raw_ids: set[str]) -> dict[str, str]:
+    """Batch old-id -> new-id lookup for D7 (identity-v2 join safety).
+
+    Events recorded before the identity migration name the OLD (v1) point
+    id; after the flip the Qdrant store holds the NEW (v2) id. This looks
+    every raw id up in ``IDMAP_REDIS_KEY`` (batch HMGET) and returns only the
+    hits — a miss (the id was never re-keyed: corpus/dream/skill ids, or a
+    pre-migration deploy where the hash does not exist at all) is left for
+    the caller to resolve as "keep the original id". This function never
+    invents a mapping, only narrows one, so an empty/absent hash degrades to
+    a no-op translation, not an error.
+    """
+    if not raw_ids:
+        return {}
+    ids = sorted(raw_ids)
+    mapping: dict[str, str] = {}
+    for i in range(0, len(ids), _ID_TRANSLATE_BATCH):
+        batch = ids[i:i + _ID_TRANSLATE_BATCH]
+        try:
+            values = await redis_client.hmget(IDMAP_REDIS_KEY, batch)
+        except Exception as exc:  # noqa: BLE001 — a lookup failure degrades to no-translate
+            logger.warning("OWM: idmap lookup failed for a batch of %d ids: %s",
+                           len(batch), exc)
+            continue
+        for old_id, new_id in zip(batch, values or []):
+            if new_id:
+                mapping[old_id] = new_id.decode() if isinstance(new_id, bytes) else new_id
+    return mapping
 
 
 def session_success(eval_data: dict, bridge_status: str | None) -> bool | None:
@@ -120,6 +159,15 @@ async def run_pass(replay_r, vector, settings, *,
     window_start = time.time() - settings.OWM_WINDOW_DAYS * 86400
     session_ids = await replay_r.zrangebyscore("rp:eval_index", window_start, "+inf")
 
+    # D7 (identity-v2 join safety, task 8): checked ONCE, up front. Both the
+    # per-event id translation below and the stale-reset sweep-skip guard
+    # further down read these two flags. `exists` on a Redis hash is 0 for
+    # both "never created" and "emptied back to zero fields" (Redis deletes a
+    # hash the moment its last field is removed) -- exactly the "empty or
+    # absent" the spec calls out, with no separate HLEN needed.
+    migration_complete = bool(await replay_r.exists(MIGRATION_COMPLETE_KEY))
+    idmap_present = bool(await replay_r.exists(IDMAP_REDIS_KEY))
+
     # memory_id -> agent_id -> [successes, n] (n capped per agent at write-out)
     stats: dict[str, dict[str, list[int]]] = {}
     # D3 (PR2 memory_feedback applied signal): a SEPARATE tally, merged into
@@ -127,6 +175,13 @@ async def run_pass(replay_r, vector, settings, *,
     # memory_feedback via the set_feedback Qdrant counter (rag.py:1194+), so
     # folding it into `stats` too would double-count the same thumb.
     feedback_stats: dict[str, dict[str, list[int]]] = {}
+
+    # Phase 1: fetch each session's eval + full event list exactly once,
+    # unchanged from before D7. Raw memory ids from BOTH event kinds are
+    # collected here too, so the D7 translation (phase 1.5) can run as one
+    # batch lookup instead of one HMGET per event.
+    sessions: list[tuple[str, bool | None, list[dict]]] = []
+    raw_ids: set[str] = set()
     for sid_raw in session_ids:
         sid = sid_raw.decode() if isinstance(sid_raw, bytes) else sid_raw
         out["sessions_scanned"] += 1
@@ -142,60 +197,79 @@ async def run_pass(replay_r, vector, settings, *,
             # oldest-1000 window never joined. events_fn returns the whole
             # (capped) session as a plain list — no envelope to unwrap — and
             # the type filter is applied here in Python instead.
-            #
-            # Fetched BEFORE the grade gate below (fix round 1, D3 review): the
-            # memory_feedback applied signal is a direct judgment on the
-            # recalled artifact, "distinct from the session-outcome
-            # inference" per spec — it must NOT require a recognized grade.
             all_events = await events_fn(replay_r, sid)
-
-            # D3 (PR2 memory_feedback applied signal): accumulate SEPARATELY,
-            # merged into SKILL tallies only (retrieve step). Memories are
-            # already counted via the set_feedback counter (rag.py:1194+), so
-            # feeding these into `stats` would double-count the same thumb.
-            # GRADE-INDEPENDENT by design: runs even when `success is None`
-            # (ungraded/partial/sourceless session) — the `useful` bit is its
-            # own signal, not derived from the session outcome.
+            sessions.append((sid, success, all_events))
             for ev in (all_events or []):
-                if ev.get("event_type") != "memory_feedback":
-                    continue
-                fagent = str(ev.get("agent_id") or "unknown")
-                fp = ev.get("payload") or {}
-                fuseful = fp.get("useful")
-                if fuseful is None:
-                    continue
-                for fm in (fp.get("memory_ids") or []):
-                    if not fm:
-                        continue
-                    fa = feedback_stats.setdefault(str(fm), {})
-                    fs, fn = fa.get(fagent, (0, 0))
-                    if fn >= agent_cap:
-                        continue
-                    fa[fagent] = [fs + (1 if fuseful else 0), fn + 1]
-
-            if success is None:
-                continue  # exposure tally below still needs a recognized grade
-
-            events = [e for e in (all_events or []) if e.get("event_type") == "memory_read"]
-            mem_agents: dict[str, str] = {}
-            for ev in events:
-                agent = str(ev.get("agent_id") or "unknown")
-                ids = (ev.get("payload") or {}).get("memory_ids") or []
-                for m in ids:
-                    if m:
-                        mem_agents.setdefault(str(m), agent)
-            if not mem_agents:
-                continue  # pre-OWM event (no ids stamped) or no recalls
-
-            out["sessions_joined"] += 1
-            for mid, agent in mem_agents.items():  # once per (session, memory)
-                per_agent = stats.setdefault(mid, {})
-                s, n = per_agent.get(agent, (0, 0))
-                if n >= agent_cap:
-                    continue  # one identity cannot dominate a memory's score
-                per_agent[agent] = [s + (1 if success else 0), n + 1]
+                et = ev.get("event_type")
+                if et == "memory_feedback":
+                    for fm in ((ev.get("payload") or {}).get("memory_ids") or []):
+                        if fm:
+                            raw_ids.add(str(fm))
+                elif et == "memory_read":
+                    for m in ((ev.get("payload") or {}).get("memory_ids") or []):
+                        if m:
+                            raw_ids.add(str(m))
         except Exception as exc:  # noqa: BLE001 — one bad session never stops the pass
             logger.warning("OWM: session %s skipped: %s", sid, exc)
+
+    # Phase 1.5 (D7): translate every event memory_id through the identity
+    # map BEFORE stats/feedback_stats are built. Pre-migration -- or an id
+    # that was never re-keyed (corpus/dream/skill ids, already-v2 ids) -- this
+    # is always a miss, which keeps the original id: byte-identical to
+    # pre-D7 behavior whenever there is nothing to translate.
+    idmap = await _translate_memory_ids(replay_r, raw_ids)
+
+    # Phase 2: build stats/feedback_stats from the fetched sessions, keyed by
+    # the TRANSLATED id. Order matches the original single-pass loop exactly
+    # (feedback tally first, grade-independent; then the grade-gated exposure
+    # tally) so behavior is unchanged beyond the translation itself.
+    for sid, success, all_events in sessions:
+        # D3 (PR2 memory_feedback applied signal): accumulate SEPARATELY,
+        # merged into SKILL tallies only (retrieve step). Memories are
+        # already counted via the set_feedback counter (rag.py:1194+), so
+        # feeding these into `stats` would double-count the same thumb.
+        # GRADE-INDEPENDENT by design: runs even when `success is None`
+        # (ungraded/partial/sourceless session) — the `useful` bit is its
+        # own signal, not derived from the session outcome.
+        for ev in (all_events or []):
+            if ev.get("event_type") != "memory_feedback":
+                continue
+            fagent = str(ev.get("agent_id") or "unknown")
+            fp = ev.get("payload") or {}
+            fuseful = fp.get("useful")
+            if fuseful is None:
+                continue
+            for fm in (fp.get("memory_ids") or []):
+                if not fm:
+                    continue
+                fm_t = idmap.get(str(fm), str(fm))
+                fa = feedback_stats.setdefault(fm_t, {})
+                fs, fn = fa.get(fagent, (0, 0))
+                if fn >= agent_cap:
+                    continue
+                fa[fagent] = [fs + (1 if fuseful else 0), fn + 1]
+
+        if success is None:
+            continue  # exposure tally below still needs a recognized grade
+
+        events = [e for e in (all_events or []) if e.get("event_type") == "memory_read"]
+        mem_agents: dict[str, str] = {}
+        for ev in events:
+            agent = str(ev.get("agent_id") or "unknown")
+            ids = (ev.get("payload") or {}).get("memory_ids") or []
+            for m in ids:
+                if m:
+                    mem_agents.setdefault(idmap.get(str(m), str(m)), agent)
+        if not mem_agents:
+            continue  # pre-OWM event (no ids stamped) or no recalls
+
+        out["sessions_joined"] += 1
+        for mid, agent in mem_agents.items():  # once per (session, memory)
+            per_agent = stats.setdefault(mid, {})
+            s, n = per_agent.get(agent, (0, 0))
+            if n >= agent_cap:
+                continue  # one identity cannot dominate a memory's score
+            per_agent[agent] = [s + (1 if success else 0), n + 1]
 
     # Exclude corpus chunks; split skills into a PARALLEL tally instead of
     # dropping them (PR3, D2) — playbooks/documents must not carry outcome
@@ -264,33 +338,49 @@ async def run_pass(replay_r, vector, settings, *,
         # Stale reset: previously-scored points with no in-window evidence go
         # back to neutral (keys deleted). Recompute-from-scratch is only
         # honest if absence of evidence actually clears the old verdict.
-        try:
-            from qdrant_client import models as _qm
+        #
+        # D7 guard: a point scored under its OLD id before the identity
+        # migration, and not re-observed since, is translated to its NEW id
+        # above only while the idmap cache is populated. If the migration
+        # marker is set but the cache has since expired (Redis hash empty or
+        # gone -- it is a cache, never the source of truth), this sweep can
+        # no longer tell "genuinely stale" from "just moved id", and running
+        # it anyway would delete every migrated memory's efficacy in one
+        # pass. Skipping degrades to no-update, never a wipe.
+        if migration_complete and not idmap_present:
+            logger.warning(
+                "OWM: stale-reset sweep SKIPPED — migration marker %s is set "
+                "but %s is empty/absent (expired idmap cache); scores left "
+                "untouched rather than risk wiping migrated memories",
+                MIGRATION_COMPLETE_KEY, IDMAP_REDIS_KEY)
+        else:
+            try:
+                from qdrant_client import models as _qm
 
-            offset = None
-            while True:
-                points, offset = await vector._client.scroll(
-                    collection_name=settings.QDRANT_COLLECTION,
-                    scroll_filter=_qm.Filter(must=[_qm.FieldCondition(
-                        key="owm_n", range=_qm.Range(gte=1))]),
-                    limit=1000, offset=offset,
-                    with_payload=False, with_vectors=False)
-                for pt in points or []:
-                    pid = str(pt.id)
-                    if pid in written:
-                        continue
-                    try:
-                        await vector._client.delete_payload(
-                            collection_name=settings.QDRANT_COLLECTION,
-                            keys=["owm_efficacy", "owm_n", "owm_updated_at"],
-                            points=[pid])
-                        out["stale_reset"] += 1
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning("OWM: stale reset failed for %s: %s", pid, exc)
-                if not offset:
-                    break
-        except Exception as exc:  # noqa: BLE001 — reset is hygiene, never fatal
-            logger.warning("OWM: stale-reset sweep failed: %s", exc)
+                offset = None
+                while True:
+                    points, offset = await vector._client.scroll(
+                        collection_name=settings.QDRANT_COLLECTION,
+                        scroll_filter=_qm.Filter(must=[_qm.FieldCondition(
+                            key="owm_n", range=_qm.Range(gte=1))]),
+                        limit=1000, offset=offset,
+                        with_payload=False, with_vectors=False)
+                    for pt in points or []:
+                        pid = str(pt.id)
+                        if pid in written:
+                            continue
+                        try:
+                            await vector._client.delete_payload(
+                                collection_name=settings.QDRANT_COLLECTION,
+                                keys=["owm_efficacy", "owm_n", "owm_updated_at"],
+                                points=[pid])
+                            out["stale_reset"] += 1
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning("OWM: stale reset failed for %s: %s", pid, exc)
+                    if not offset:
+                        break
+            except Exception as exc:  # noqa: BLE001 — reset is hygiene, never fatal
+                logger.warning("OWM: stale-reset sweep failed: %s", exc)
 
     # Skill path: DISTINCT field (skill_efficacy*), independent gate
     # (SKILL_OWM_ENABLED), independent write + stale-reset loop. Deliberately
@@ -315,33 +405,42 @@ async def run_pass(replay_r, vector, settings, *,
                 out["write_errors"] += 1
 
         # Skill stale-reset — mirrors the memory stale-reset above but for the
-        # skill keys.
-        try:
-            from qdrant_client import models as _qm
+        # skill keys. Same D7 guard applies: an expired idmap cache after a
+        # completed migration must degrade this sweep to a no-op too.
+        if migration_complete and not idmap_present:
+            logger.warning(
+                "OWM: skill stale-reset sweep SKIPPED — migration marker %s "
+                "is set but %s is empty/absent (expired idmap cache); scores "
+                "left untouched rather than risk wiping migrated skills",
+                MIGRATION_COMPLETE_KEY, IDMAP_REDIS_KEY)
+        else:
+            try:
+                from qdrant_client import models as _qm
 
-            offset = None
-            while True:
-                pts, offset = await vector._client.scroll(
-                    collection_name=settings.QDRANT_COLLECTION,
-                    scroll_filter=_qm.Filter(must=[_qm.FieldCondition(
-                        key="skill_efficacy_n", range=_qm.Range(gte=1))]),
-                    limit=1000, offset=offset, with_payload=False, with_vectors=False)
-                for pt in pts or []:
-                    pid = str(pt.id)
-                    if pid in skill_written:
-                        continue
-                    try:
-                        await vector._client.delete_payload(
-                            collection_name=settings.QDRANT_COLLECTION,
-                            keys=["skill_efficacy", "skill_efficacy_n", "skill_efficacy_updated_at"],
-                            points=[pid])
-                        out["skill_stale_reset"] += 1
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning("OWM: skill stale reset failed for %s: %s", pid, exc)
-                if not offset:
-                    break
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("OWM: skill stale-reset sweep failed: %s", exc)
+                offset = None
+                while True:
+                    pts, offset = await vector._client.scroll(
+                        collection_name=settings.QDRANT_COLLECTION,
+                        scroll_filter=_qm.Filter(must=[_qm.FieldCondition(
+                            key="skill_efficacy_n", range=_qm.Range(gte=1))]),
+                        limit=1000, offset=offset, with_payload=False, with_vectors=False)
+                    for pt in pts or []:
+                        pid = str(pt.id)
+                        if pid in skill_written:
+                            continue
+                        try:
+                            await vector._client.delete_payload(
+                                collection_name=settings.QDRANT_COLLECTION,
+                                keys=["skill_efficacy", "skill_efficacy_n",
+                                      "skill_efficacy_updated_at"],
+                                points=[pid])
+                            out["skill_stale_reset"] += 1
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning("OWM: skill stale reset failed for %s: %s", pid, exc)
+                    if not offset:
+                        break
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("OWM: skill stale-reset sweep failed: %s", exc)
 
     logger.info("OWM pass: %s", out)
     return out
