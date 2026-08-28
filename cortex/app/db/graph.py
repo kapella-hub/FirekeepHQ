@@ -664,7 +664,17 @@ class Neo4jClient:
     async def _query_related_fulltext(
         self, keywords: list[str], limit: int, namespace: str | None = "default"
     ) -> list[dict[str, Any]] | None:
-        """Try fulltext index search. Returns None if index doesn't exist."""
+        """Try fulltext index search. Returns None if index doesn't exist.
+
+        `legacy_unscoped` is selected here and in the other three read-path
+        queries (the multihop variant, the CONTAINS fallback, and
+        ``query_resolutions``) because ``RAGEngine._scope_verdict`` denies on
+        it (identity-v2 D4) and reads it off the row this projection builds.
+        The migration stamps the property; without it in the RETURN the deny
+        would receive False for every row in the store and the whole quarantine
+        would be inert. `coalesce(..., false)` because no node carries the
+        property until the migration runs.
+        """
         # Build Lucene query string: OR-join all keywords
         # Escape special Lucene characters in keywords
         def _escape_lucene(term: str) -> str:
@@ -710,6 +720,7 @@ class Neo4jClient:
                result.description AS description,
                labels(result)[0] AS label,
                coalesce(result.memory_ids, []) AS memory_ids,
+               coalesce(result.legacy_unscoped, false) AS legacy_unscoped,
                distance,
                score
         ORDER BY score DESC, distance ASC
@@ -835,6 +846,7 @@ class Neo4jClient:
                result.description AS description,
                labels(result)[0] AS label,
                coalesce(result.memory_ids, []) AS memory_ids,
+               coalesce(result.legacy_unscoped, false) AS legacy_unscoped,
                distance,
                weighted_score AS score
         ORDER BY weighted_score DESC, distance ASC
@@ -894,6 +906,7 @@ class Neo4jClient:
                related.description AS description,
                labels(related)[0] AS label,
                coalesce(related.memory_ids, []) AS memory_ids,
+               coalesce(related.legacy_unscoped, false) AS legacy_unscoped,
                size(r) AS distance
         ORDER BY distance ASC
         LIMIT $limit
@@ -1307,7 +1320,9 @@ class Neo4jClient:
         RETURN r.description AS resolution,
                o.description AS error,
                elementId(r) AS id,
-               coalesce(r.memory_ids, []) + coalesce(o.memory_ids, []) AS memory_ids
+               coalesce(r.memory_ids, []) + coalesce(o.memory_ids, []) AS memory_ids,
+               (coalesce(r.legacy_unscoped, false)
+                OR coalesce(o.legacy_unscoped, false)) AS legacy_unscoped
         LIMIT $limit
         """
         driver = self._ensure_driver()
