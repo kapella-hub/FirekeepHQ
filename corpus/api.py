@@ -288,6 +288,11 @@ def create_corpus_router() -> APIRouter:
         names the dex scope. This handler previously resolved NO principal at
         all (spec §9 finding 1).
         """
+        if is_migration_frozen():
+            raise HTTPException(
+                status_code=503,
+                detail="memory store migration in progress; retry shortly",
+            )
         if delete_corpus_source is None:
             raise HTTPException(status_code=503, detail="Corpus module not initialized")
 
@@ -328,6 +333,11 @@ def create_corpus_router() -> APIRouter:
         atomically: any record the caller may not delete refuses the call
         before anything is removed.
         """
+        if is_migration_frozen():
+            raise HTTPException(
+                status_code=503,
+                detail="memory store migration in progress; retry shortly",
+            )
         if get_corpus_sources is None or delete_corpus_source is None:
             # Unlike the single-source delete, the records ARE the deletion
             # driver — without the listing there is nothing safe to delete.

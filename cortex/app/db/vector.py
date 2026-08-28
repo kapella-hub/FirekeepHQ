@@ -957,7 +957,19 @@ class VectorClient:
                     if v1_points and isinstance(
                         getattr(v1_points[0], "payload", None), dict
                     ):
-                        existing_payload = v1_points[0].payload
+                        v1_payload = v1_points[0].payload
+                        # identity-v2 D5 fix: v1 ids predate workspace
+                        # scoping (bare uuid5(text)), so a v1 hit can belong
+                        # to ANY workspace. Bridging unconditionally let
+                        # workspace B's first learn of text T inherit
+                        # workspace A's archived/superseded status,
+                        # agent_id/project, and even a foreign superseded_by
+                        # id — a cross-tenant lifecycle leak. Only adopt when
+                        # the v1 point's own workspace_id matches this
+                        # write's; a mismatch OR an absent v1 workspace_id
+                        # (legacy pre-workspace data) is left unbridged.
+                        if v1_payload.get("workspace_id") == workspace_id:
+                            existing_payload = v1_payload
                 except Exception as exc:
                     logger.warning(
                         "v1 lifecycle bridge pre-fetch failed for %s "

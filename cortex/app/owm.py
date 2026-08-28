@@ -181,10 +181,29 @@ def session_success(eval_data: dict, bridge_status: str | None) -> bool | None:
 
 
 async def run_pass(replay_r, vector, settings, *,
+                   idmap_r=None,
                    bridge_statuses: dict[str, str] | None = None,
                    events_fn: Callable | None = None) -> dict:
     """One full OWM scoring pass. Returns a status dict; never raises for a
     single bad session/memory (those are counted, logged, and skipped).
+
+    idmap_r (fix round 2, identity-v2 D7 safety): the D7 join-safety keys
+    (``MIGRATION_COMPLETE_KEY``, ``IDMAP_REDIS_KEY``,
+    ``MIGRATION_IDMAP_COUNT_KEY``) are written by the migration tool via
+    ``settings.REDIS_URL`` (DB 0, cortex data) — NOT ``settings.RP_REDIS_URL``
+    (DB 6, replay), which is what ``replay_r`` is built from. Reading those
+    keys off ``replay_r`` looks in the wrong logical Redis DB: the marker is
+    always absent, the idmap is always empty, and the sweep-gate's own
+    fail-toward-skip logic (see ``_sweep_gate``) can't save it, because an
+    EMPTY hash post-migration reads as "genuinely nothing to translate," not
+    as "wrong DB" — so the stale-reset sweep runs unguarded and wipes every
+    migrated point's efficacy the first night after the flip. ``idmap_r``
+    isolates the DB-0 client the D7 checks (``_sweep_gate``,
+    ``_translate_memory_ids``) actually need; ``replay_r`` keeps the DB-6
+    event/eval reads it was always for. Defaults to ``replay_r`` when omitted
+    so a caller passing one client for both (as every pre-fix-round-2 test
+    fixture does) keeps working — real production wiring
+    (``_run_owm_impl``) always passes both explicitly.
 
     Fairness/hygiene guarantees (wf_51dd7c4e review):
       - a session counts ONCE per memory, and a single agent identity counts at
@@ -206,6 +225,7 @@ async def run_pass(replay_r, vector, settings, *,
     import json as _json
 
     events_fn = events_fn or _default_events_fn
+    idmap_r = idmap_r if idmap_r is not None else replay_r
     bridge_statuses = bridge_statuses or {}
     out = {"sessions_scanned": 0, "sessions_joined": 0, "memories_scored": 0,
            "skills_scored": 0, "write_errors": 0, "stale_reset": 0,
@@ -217,7 +237,9 @@ async def run_pass(replay_r, vector, settings, *,
 
     # D7 (identity-v2 join safety, task 8; completeness check added fix round
     # 1): checked ONCE, up front, and reused by both stale-reset blocks below.
-    skip_sweep, skip_sweep_reason = await _sweep_gate(replay_r)
+    # Reads idmap_r (DB 0), NOT replay_r (DB 6) — see the idmap_r docstring
+    # note above (fix round 2).
+    skip_sweep, skip_sweep_reason = await _sweep_gate(idmap_r)
 
     # memory_id -> agent_id -> [successes, n] (n capped per agent at write-out)
     stats: dict[str, dict[str, list[int]]] = {}
@@ -267,8 +289,10 @@ async def run_pass(replay_r, vector, settings, *,
     # map BEFORE stats/feedback_stats are built. Pre-migration -- or an id
     # that was never re-keyed (corpus/dream/skill ids, already-v2 ids) -- this
     # is always a miss, which keeps the original id: byte-identical to
-    # pre-D7 behavior whenever there is nothing to translate.
-    idmap = await _translate_memory_ids(replay_r, raw_ids)
+    # pre-D7 behavior whenever there is nothing to translate. Reads idmap_r
+    # (DB 0), NOT replay_r (DB 6) -- see the idmap_r docstring note above
+    # (fix round 2).
+    idmap = await _translate_memory_ids(idmap_r, raw_ids)
 
     # Phase 2: build stats/feedback_stats from the fetched sessions, keyed by
     # the TRANSLATED id. Order matches the original single-pass loop exactly
@@ -526,12 +550,21 @@ async def _run_owm_impl() -> dict:
 
     settings = get_settings()
     r = redis.asyncio.from_url(settings.RP_REDIS_URL, decode_responses=True)
+    # Fix round 2 (critical): the D7 safety keys (migration marker, idmap,
+    # idmap count) are written by the migration tool against
+    # settings.REDIS_URL (DB 0, cortex data — memory_identity_migration.py's
+    # _dispatch), not settings.RP_REDIS_URL (DB 6, replay) that `r` above
+    # connects to. A single shared client reads them from the wrong logical
+    # DB, silently defeating the sweep-skip guard. See run_pass's idmap_r
+    # docstring note for the full failure mode.
+    idmap_r = redis.asyncio.from_url(settings.REDIS_URL, decode_responses=True)
     vector = VectorClient(settings)
     try:
         statuses = await _fetch_bridge_statuses(settings)
-        return await run_pass(r, vector, settings, bridge_statuses=statuses)
+        return await run_pass(r, vector, settings, idmap_r=idmap_r,
+                              bridge_statuses=statuses)
     finally:
-        for closer in (r.aclose, vector.close):
+        for closer in (r.aclose, idmap_r.aclose, vector.close):
             try:
                 await closer()
             except Exception:  # noqa: BLE001

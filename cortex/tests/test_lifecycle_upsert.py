@@ -259,6 +259,7 @@ class TestV1LifecycleBridge:
 
         v1_point = MagicMock()
         v1_point.payload = _existing(
+            workspace_id=workspace_id,
             status="archived",
             archived_at="2026-04-01T00:00:00+00:00",
             archive_source="gc",
@@ -295,6 +296,106 @@ class TestV1LifecycleBridge:
         # v2 content still wins over v1 provenance.
         assert payload["namespace"] == namespace
         assert payload["text"] == text
+
+    @pytest.mark.asyncio
+    async def test_v1_point_from_a_different_workspace_does_not_bridge(
+        self, vector_client, mock_qdrant_client
+    ):
+        """Identity-v2 D5 fix (cross-workspace leak): v1 ids predate
+        workspace scoping (bare uuid5(text)), so a v1-id hit can belong to
+        ANY workspace. Workspace B's first learn of text T must NOT inherit
+        workspace A's v1 point's archived status, agent_id/project, or a
+        foreign superseded_by id — it comes back a fresh, active point with
+        none of the v1 provenance adopted, exactly as if the v1 point did
+        not exist."""
+        text = "same text"
+        workspace_id = "ws-bridge"
+        other_workspace_id = "ws-other-tenant"
+        namespace = "default"
+        v1_id = _v1_point_id(text)
+        v2_id = memory_point_id(workspace_id, namespace, text)
+
+        v1_point = MagicMock()
+        v1_point.payload = _existing(
+            workspace_id=other_workspace_id,
+            status="archived",
+            archived_at="2026-04-01T00:00:00+00:00",
+            archive_source="gc",
+            archive_reason="low_value",
+            archived_from_status="active",
+            purge_eligible_at="2026-06-30T00:00:00+00:00",
+            superseded_by="foreign-winner-id",
+        )
+
+        async def retrieve(collection, ids, with_payload=True):
+            if ids == [v2_id]:
+                return []
+            if ids == [v1_id]:
+                return [v1_point]
+            raise AssertionError(f"unexpected retrieve ids: {ids}")
+
+        mock_qdrant_client.retrieve = AsyncMock(side_effect=retrieve)
+
+        with patch.object(
+            vector_client, "_embed", new_callable=AsyncMock, return_value=[0.1] * 768
+        ):
+            point_id = await vector_client.upsert(
+                text=text,
+                metadata={"source": "action_log", "workspace_id": workspace_id},
+                namespace=namespace,
+            )
+
+        assert point_id == v2_id
+        assert mock_qdrant_client.retrieve.await_count == 2  # v1 id was still consulted
+        payload = mock_qdrant_client.upsert.call_args.kwargs["points"][0].payload
+        assert payload["status"] == "active"
+        assert payload["confirmed_count"] == 0
+        assert payload["agent_id"] == "unknown"
+        assert payload["project"] is None
+        for key in (
+            "archived_at", "archive_source", "archive_reason",
+            "archived_from_status", "purge_eligible_at",
+        ):
+            assert payload.get(key) is None
+        assert payload["superseded_by"] is None
+
+    @pytest.mark.asyncio
+    async def test_v1_point_with_no_workspace_id_does_not_bridge(
+        self, vector_client, mock_qdrant_client
+    ):
+        """The "OR absent" half of the same fix: legacy pre-workspace v1 data
+        that never carried a workspace_id at all must not bridge either — an
+        absent v1 workspace_id is never treated as a wildcard match."""
+        text = "same text"
+        workspace_id = "ws-bridge"
+        namespace = "default"
+        v1_id = _v1_point_id(text)
+        v2_id = memory_point_id(workspace_id, namespace, text)
+
+        v1_point = MagicMock()
+        v1_point.payload = _existing(status="archived")  # no workspace_id key at all
+
+        async def retrieve(collection, ids, with_payload=True):
+            if ids == [v2_id]:
+                return []
+            if ids == [v1_id]:
+                return [v1_point]
+            raise AssertionError(f"unexpected retrieve ids: {ids}")
+
+        mock_qdrant_client.retrieve = AsyncMock(side_effect=retrieve)
+
+        with patch.object(
+            vector_client, "_embed", new_callable=AsyncMock, return_value=[0.1] * 768
+        ):
+            point_id = await vector_client.upsert(
+                text=text,
+                metadata={"source": "action_log", "workspace_id": workspace_id},
+                namespace=namespace,
+            )
+
+        assert point_id == v2_id
+        payload = mock_qdrant_client.upsert.call_args.kwargs["points"][0].payload
+        assert payload["status"] == "active"
 
     @pytest.mark.asyncio
     async def test_bridge_flag_off_pins_raw_fresh_active_behavior(
@@ -390,6 +491,7 @@ class TestV1LifecycleBridge:
 
         v1_point = MagicMock()
         v1_point.payload = _existing(
+            workspace_id=workspace_id,
             status="archived",
             archived_at="2026-04-01T00:00:00+00:00",
             archive_source="gc",

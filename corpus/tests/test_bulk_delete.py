@@ -16,8 +16,11 @@ a nonexistent one (404 — no existence oracle).
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 
+import corpus.api as corpus_api
 from corpus.store import delete_dex_source, dex_source_prefix, list_sources, track_source
 from corpus.tests.test_source_authz import (  # noqa: F401  (h is a fixture)
     ADMIN,
@@ -129,6 +132,20 @@ class TestBulkDelete:
         remaining = await _tracked_names(h)
         assert "docdex:src1:zz" not in remaining
         assert _SRC1_WS1 <= remaining
+
+    @pytest.mark.asyncio
+    async def test_503_when_frozen(self, h):  # noqa: F811
+        """MIGRATION_FREEZE gate (identity-v2 D6, final fix wave item 3):
+        DELETE /corpus/dex-sources/{id} was missed by the original freeze
+        sweep. Checked before any record is touched."""
+        await _seed_bulk(h)
+        h.act_as(ALICE_DEX)
+        with patch.object(corpus_api, "is_migration_frozen", return_value=True):
+            resp = await h.delete("/corpus/dex-sources/src1")
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == "memory store migration in progress; retry shortly"
+        h.vector.delete_by_filter.assert_not_called()
+        assert _SRC1_WS1 <= await _tracked_names(h)
 
 
 # ---------------------------------------------------------------------------

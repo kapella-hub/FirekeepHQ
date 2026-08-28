@@ -879,6 +879,13 @@ def _require_plan_is_this_runs(plan: MigrationPlan, state: dict[str, str]) -> No
 
     Binding it to the run's own fingerprint costs two comparisons and makes
     that substitution impossible to perform by accident.
+
+    This is a deliberate SECOND defence, not a redundant one: `verify`'s
+    fidelity-sample floor ("a sample of zero is not a pass," where the
+    fidelity check is assembled below) catches an empty map at COMPARISON
+    time; this check catches the wrong plan at the SOURCE, before any
+    comparison runs. Either alone leaves a gap the other was added to close
+    — do not remove one because the other "already covers it."
     """
     recorded_source = state.get("source_collection")
     recorded_count = state.get("source_points_count_at_start")
@@ -1561,6 +1568,17 @@ async def fold_redis_hashes(redis_client, mapping: dict[str, str], client, *,
         # Batched: at this store's scale both sides are six figures of fields,
         # and one HDEL/HSET carrying all of them is a single command large
         # enough to stall the instance the rest of the freeze depends on.
+        #
+        # Order is HDEL-then-HSET, not the reverse, and that is deliberate.
+        # A crash between the two loops leaves the moved fields' old names
+        # gone and their new names never written — the bookkeeping for those
+        # memories resets to absent (a live recall recreates it from zero).
+        # The reverse order is NOT safer: a rerun of this function is
+        # idempotent only from the PRE-fold state, and `_fold_value` SUMS
+        # ACCESS_COUNTS_KEY, so a rerun against a hash still holding BOTH an
+        # old field and its already-written new replacement would double-count
+        # that memory's access total. A reset-to-absent crash window beats a
+        # silent double-count one, so this order stays as it is.
         stale = [f for f in entries if f not in folded]
         for start in range(0, len(stale), _REDIS_BATCH):
             await redis_client.hdel(key, *stale[start:start + _REDIS_BATCH])
@@ -1746,6 +1764,14 @@ async def verify(client, redis_client, *, settings: Settings,
     # fidelity_sample_ids came out empty — including one regenerated from the
     # shadow, where the map is empty by construction — reports "no failures"
     # over nothing compared at all.
+    #
+    # This is a deliberate SECOND defence alongside `_require_plan_is_this_runs`
+    # above, not a redundant one: that check binds the plan to this run's
+    # fingerprint BEFORE verification starts (catches the wrong plan at the
+    # source); this one catches an empty map AT comparison time, in case a
+    # plan with a legitimately/accidentally empty map ever gets this far.
+    # Removing either because the other "already covers it" reopens the gap
+    # the other was added to close.
     if mapping and sampled == 0:
         fidelity_failures.append(
             f"nothing was sampled while the map holds {len(mapping)} entries — "

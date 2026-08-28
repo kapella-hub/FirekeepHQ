@@ -164,7 +164,11 @@ it touches nothing (see step 2).
      `/knowledge/ingest(-url)` and `/corpus/ingest` return 503; recall/export
      stay up. See `MIGRATION_FREEZE` in
      [`docs/guides/cortex-configuration.md`](cortex-configuration.md) for the
-     exact route list.
+     exact route list — including the two paths it does NOT cover.
+     `POST /admin/embeddings/reembed` is one of those: it isn't gated, and it
+     only enqueues Celery work, which `cortex-worker` being stopped for this
+     freeze means it sits queued and fires the moment the worker restarts at
+     unfreeze (step 7) — do not trigger it during the window.
 
    **Take the cold backup now, at freeze start** — `deploy/backup.sh --exclude-models`,
    the same script the nightly cron uses (see "What runs automatically" above).

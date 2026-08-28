@@ -111,6 +111,19 @@ class TestDeleteEndpoint:
             assert data["chunks_deleted"] == "all"
             mock_delete.assert_called_once_with(source_name="TestDoc")
 
+    def test_503_when_frozen(self, client):
+        """MIGRATION_FREEZE gate (identity-v2 D6, final fix wave item 3):
+        DELETE /corpus/sources/{name} was missed by the original freeze
+        sweep — same patch convention as the ingest gate test above."""
+        with (
+            patch("corpus.api.is_migration_frozen", return_value=True),
+            patch("corpus.api.delete_corpus_source", new_callable=AsyncMock) as mock_delete,
+        ):
+            resp = client.delete("/corpus/sources/TestDoc")
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == "memory store migration in progress; retry shortly"
+        mock_delete.assert_not_awaited()
+
 
 class TestEntitiesEndpointGone:
     def test_entities_endpoint_removed(self, client):

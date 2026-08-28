@@ -16,7 +16,8 @@ sub-dependency (not a bare ``get_settings()`` call) so tests can flip the
 flag with ``app.dependency_overrides[get_settings]`` instead of mutating the
 process-wide ``lru_cache`` singleton.
 
-Corpus's ``/corpus/ingest`` is gated separately (``corpus/api.py``'s
+Corpus's write routes (``POST /corpus/ingest``, ``DELETE /corpus/sources/{name}``,
+``DELETE /corpus/dex-sources/{id}``) are gated separately (``corpus/api.py``'s
 ``is_migration_frozen`` module hook): ``corpus/`` is a shared module used
 outside Cortex and takes no dependency on ``app.config``, the same reason
 its ``ingest_document``/``get_corpus_sources``/``delete_corpus_source``

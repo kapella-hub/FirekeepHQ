@@ -13,6 +13,7 @@ from qdrant_client.models import (
 
 from app.config import get_settings, Settings
 from app.db.vector import VectorClient
+from app.migration_gate import require_not_frozen
 from app.skills.search import search_skill_points
 from app.models import (
     SkillRequest, SkillResponse, SkillPatchRequest, SkillEvaluateRequest
@@ -146,7 +147,8 @@ def create_skills_router(
             raise HTTPException(status_code=404, detail="Skill not found")
         return _point_to_response(points[0])
 
-    @router.post("/skills", response_model=SkillResponse, status_code=201)
+    @router.post("/skills", response_model=SkillResponse, status_code=201,
+                dependencies=[Depends(require_not_frozen)])
     async def create_skill(
         req: SkillRequest,
         request: Request,
@@ -339,7 +341,8 @@ def create_skills_router(
         )
         return _point_to_response(updated[0])
 
-    @router.delete("/skills/{skill_id}", status_code=204)
+    @router.delete("/skills/{skill_id}", status_code=204,
+                  dependencies=[Depends(require_not_frozen)])
     async def delete_skill(
         skill_id: str,
         vector: VectorClient = Depends(get_vector),

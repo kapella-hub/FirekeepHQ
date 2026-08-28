@@ -779,6 +779,97 @@ async def test_sweep_runs_normally_when_idmap_is_complete():
     assert del_call["points"] == ["m-old"]
 
 
+
+# --------------------------------------------------------------------------- #
+# D7 fix round 2 (CRITICAL): `_run_owm_impl` used to build ONE Redis client   #
+# from settings.RP_REDIS_URL (DB 6, replay) and reuse it for BOTH the event/  #
+# eval reads AND the D7 safety-key reads (_sweep_gate/_translate_memory_ids). #
+# The migration tool writes mem:idmap:v2 / mem:migration:v2:complete /        #
+# mem:idmap:v2:count via settings.REDIS_URL (DB 0, cortex data) — a DIFFERENT #
+# logical Redis DB. Keys never cross DBs, so post-migration the gate always   #
+# saw "no marker" and translation always saw "no map": every migrated        #
+# memory's efficacy got wiped the first night after the flip. `run_pass` now #
+# takes an explicit `idmap_r` used ONLY by the sweep gate and the id          #
+# translation; `replay_r` keeps the event/eval reads. These tests use TWO    #
+# distinct fake clients so a regression back to a single shared client (or a #
+# fallback that reads the wrong one) fails loudly rather than silently.       #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_idmap_r_not_replay_r_drives_translation_and_sweep_gate():
+    """The replay client holds NO marker/idmap (the state of the real DB-6
+    client after the fix); the cortex-data client (idmap_r) holds both. Only
+    a correct wiring — translation and the sweep gate reading idmap_r — can
+    translate v1-old to v2-new and recognize it as already-written-this-pass
+    (stale_reset == 0). If the code regressed to reading replay_r (which has
+    no map at all), translation would silently miss and the point would be
+    scored — wrongly — under the raw v1-old id."""
+    evals = {"s1": {"task_result": "success", "task_result_source": "self_reported"}}
+    events = {"s1": [{"event_type": "memory_read",
+                      "payload": {"memory_ids": ["v1-old"]}}]}
+    replay_r = _redis_with(evals, ["s1"])  # no marker, no idmap — DB 6 as it really is
+    idmap_r = _redis_with({}, [], migration_complete=True,
+                          idmap={"v1-old": "v2-new"})  # DB 0, the real safety-key store
+    v = _vector(stale_scored_ids=("v2-new",))
+
+    out = await run_pass(replay_r, v, _settings(), idmap_r=idmap_r,
+                         bridge_statuses={}, events_fn=_events_fn(events))
+
+    assert out["memories_scored"] == 1
+    assert out["stale_reset"] == 0
+    writes = {c.kwargs["points"][0]: c.kwargs["payload"]
+              for c in v._client.set_payload.call_args_list}
+    assert "v2-new" in writes
+    assert "v1-old" not in writes
+
+
+@pytest.mark.asyncio
+async def test_gate_ignores_a_migration_marker_set_only_on_replay_r():
+    """Inverse of the above: the marker + idmap sit on replay_r (as they
+    would under the old, buggy single-client wiring reading DB 6) while the
+    real cortex-data client (idmap_r) has no marker at all — the honest
+    pre-migration state. replay_r's marker is paired with an EMPTY idmap, so
+    if the gate mistakenly consulted replay_r it would read "migration
+    complete but cache empty" and SKIP the sweep. The gate must instead see
+    idmap_r's "no marker yet" and run the sweep normally, same as any
+    pre-migration deploy."""
+    evals = {"s1": {"task_result": "success", "task_result_source": "self_reported"}}
+    events = {"s1": [{"event_type": "memory_read", "payload": {"memory_ids": ["m1"]}}]}
+    replay_r = _redis_with(evals, ["s1"], migration_complete=True, idmap={})
+    idmap_r = _redis_with({}, [])  # migration_complete=False, idmap={} (defaults)
+    v = _vector(stale_scored_ids=("m1", "m-old"))
+
+    out = await run_pass(replay_r, v, _settings(), idmap_r=idmap_r,
+                         bridge_statuses={}, events_fn=_events_fn(events))
+
+    assert out["memories_scored"] == 1
+    assert out["stale_reset"] == 1  # sweep ran normally — gate never saw replay_r's marker
+    del_call = v._client.delete_payload.call_args_list[0].kwargs
+    assert del_call["points"] == ["m-old"]
+
+
+@pytest.mark.asyncio
+async def test_idmap_r_defaults_to_replay_r_when_omitted():
+    """Back-compat: every pre-fix-round-2 test in this file calls run_pass
+    with a single client and no idmap_r — that must keep working exactly as
+    before (idmap_r defaults to replay_r)."""
+    evals = {"s1": {"task_result": "success", "task_result_source": "self_reported"}}
+    events = {"s1": [{"event_type": "memory_read",
+                      "payload": {"memory_ids": ["v1-old"]}}]}
+    idmap = {"v1-old": "v2-new"}
+    r = _redis_with(evals, ["s1"], migration_complete=True, idmap=idmap)
+    v = _vector(stale_scored_ids=("v2-new",))
+
+    out = await run_pass(r, v, _settings(), bridge_statuses={},
+                         events_fn=_events_fn(events))
+
+    assert out["memories_scored"] == 1
+    writes = {c.kwargs["points"][0]: c.kwargs["payload"]
+              for c in v._client.set_payload.call_args_list}
+    assert "v2-new" in writes
+
+
 @pytest.mark.asyncio
 async def test_sweep_skipped_when_count_record_is_absent(caplog):
     """Marker set, idmap hash non-empty, but MIGRATION_IDMAP_COUNT_KEY was

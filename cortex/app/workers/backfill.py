@@ -46,7 +46,9 @@ async def enqueue_backfill(
     """Enqueue a vector-less memory for background embedding backfill.
 
     Args:
-        memory_id: Deterministic point id (uuid5 of text) the vector will get.
+        memory_id: Deterministic point id the vector will get — minted via
+            memory_point_id(workspace_id, namespace, text) (identity-v2 D2),
+            not a bare uuid5(text).
         text: The memory text to embed.
         payload: The upsert metadata dict; may include "namespace" which the
             drain pops out and passes as the upsert namespace arg.

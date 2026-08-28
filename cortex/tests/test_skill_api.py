@@ -229,6 +229,64 @@ def test_delete_skill(mock_vector, mock_settings):
 
 
 # ---------------------------------------------------------------------------
+# MIGRATION_FREEZE gate (identity-v2 D6, final fix wave item 3) — POST
+# /skills and DELETE /skills/{id} were missed by the original freeze sweep.
+# `require_not_frozen` depends on the REAL app.config.get_settings (not the
+# router's injected settings_fn), so it is overridden the same way
+# test_lifecycle.py's TestLifecycleMigrationFreezeGate does it.
+# ---------------------------------------------------------------------------
+
+
+class TestSkillsMigrationFreezeGate:
+    def test_create_skill_503_when_frozen(self, mock_vector, mock_settings):
+        from app.config import Settings, get_settings
+
+        app = _make_app(mock_vector, mock_settings)
+        app.dependency_overrides[get_settings] = lambda: Settings(MIGRATION_FREEZE=True)
+        client = TestClient(app)
+        resp = client.post("/skills", json={
+            "trigger": "t", "symptoms": "s", "steps": "steps",
+        })
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == "memory store migration in progress; retry shortly"
+        mock_vector._embed.assert_not_awaited()
+
+    def test_delete_skill_503_when_frozen(self, mock_vector, mock_settings):
+        from app.config import Settings, get_settings
+
+        mock_vector._client.delete = AsyncMock()
+        app = _make_app(mock_vector, mock_settings)
+        app.dependency_overrides[get_settings] = lambda: Settings(MIGRATION_FREEZE=True)
+        client = TestClient(app)
+        resp = client.delete("/skills/abc")
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == "memory store migration in progress; retry shortly"
+        mock_vector._client.delete.assert_not_called()
+
+    def test_create_skill_200_when_not_frozen(self, mock_vector, mock_settings):
+        from app.config import Settings, get_settings
+
+        app = _make_app(mock_vector, mock_settings)
+        app.dependency_overrides[get_settings] = lambda: Settings(MIGRATION_FREEZE=False)
+        client = TestClient(app)
+        resp = client.post("/skills", json={
+            "trigger": "t", "symptoms": "s", "steps": "steps",
+        })
+        assert resp.status_code == 201
+
+    def test_delete_skill_204_when_not_frozen(self, mock_vector, mock_settings):
+        from app.config import Settings, get_settings
+
+        mock_vector._client.delete = AsyncMock()
+        app = _make_app(mock_vector, mock_settings)
+        app.dependency_overrides[get_settings] = lambda: Settings(MIGRATION_FREEZE=False)
+        client = TestClient(app)
+        resp = client.delete("/skills/abc")
+        assert resp.status_code == 204
+        mock_vector._client.delete.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
 # Provenance fields (source_type / content_class / source_doc /
 # procedure_title / needs_rereview) — SP2 Task 1
 # ---------------------------------------------------------------------------
