@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 from qdrant_client import AsyncQdrantClient
+from qdrant_client.http.exceptions import UnexpectedResponse
 from qdrant_client.models import (
     Distance,
     FieldCondition,
@@ -430,11 +431,41 @@ class VectorClient:
         self._STATS_CACHE_TTL = 60.0
 
     async def initialize(self) -> None:
-        """Create the Qdrant collection if it doesn't already exist."""
+        """Create the Qdrant collection if it doesn't already exist.
+
+        identity-v2 D6: "exists" is decided by `get_collection(name)`
+        succeeding, not by membership in `get_collections()`'s list. The
+        migration's cut-over model points ``QDRANT_COLLECTION`` at a new
+        canonical name and, later, an operator may create an alias
+        (old name -> new collection) for out-of-band tools. Qdrant v1.13.2
+        resolves an alias transparently through `get_collection()` but does
+        NOT list it in `get_collections()` -- empirically verified in
+        review -- so the old membership check would see "not present" for
+        an alias-resolved name and attempt `create_collection` at that
+        name. Qdrant refuses a name colliding with an existing alias, so
+        startup would abort every time a deploy used an alias. Only a
+        genuine not-found (404) triggers creation; any other failure
+        (including from create_collection itself) is wrapped as
+        VectorStoreError so a transient outage surfaces as a startup
+        failure rather than a swallowed retry-forever loop.
+        """
+        should_create = False
         try:
-            collections = await self._client.get_collections()
-            existing = {c.name for c in collections.collections}
-            if self._collection not in existing:
+            await self._client.get_collection(self._collection)
+        except UnexpectedResponse as exc:
+            if exc.status_code == 404:
+                should_create = True
+            else:
+                raise VectorStoreError(
+                    f"Failed to initialize Qdrant collection: {exc}"
+                ) from exc
+        except Exception as exc:
+            raise VectorStoreError(
+                f"Failed to initialize Qdrant collection: {exc}"
+            ) from exc
+
+        if should_create:
+            try:
                 await self._client.create_collection(
                     collection_name=self._collection,
                     vectors_config=VectorParams(
@@ -447,15 +478,15 @@ class VectorClient:
                     self._collection,
                     self._embedding_dim,
                 )
-            else:
-                logger.info(
-                    "Qdrant collection '%s' already exists",
-                    self._collection,
-                )
-        except Exception as exc:
-            raise VectorStoreError(
-                f"Failed to initialize Qdrant collection: {exc}"
-            ) from exc
+            except Exception as exc:
+                raise VectorStoreError(
+                    f"Failed to initialize Qdrant collection: {exc}"
+                ) from exc
+        else:
+            logger.info(
+                "Qdrant collection '%s' already exists (directly or via alias)",
+                self._collection,
+            )
 
         # Create payload indexes for faster filtered queries
         for field_name in ("tags", "namespace"):

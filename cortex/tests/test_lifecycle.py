@@ -248,6 +248,50 @@ class TestMemoryHistory:
         assert data["contradicted_count"] == 1
         assert data["last_confirmed_at"] == "2026-01-15T10:00:00Z"
 
+
+# ---------------------------------------------------------------------------
+# MIGRATION_FREEZE gate (identity-v2 D6) — lifecycle mutators must 503 while
+# frozen; the read routes (history/backlinks) stay unaffected.
+# ---------------------------------------------------------------------------
+
+
+class TestLifecycleMigrationFreezeGate:
+    @pytest.fixture()
+    def frozen_client(self, mock_graph: AsyncMock, mock_vector: AsyncMock) -> TestClient:
+        from app.config import Settings, get_settings
+
+        test_app = FastAPI()
+        test_app.include_router(create_lifecycle_router(graph=mock_graph, vector=mock_vector))
+        test_app.dependency_overrides[get_settings] = lambda: Settings(MIGRATION_FREEZE=True)
+        return TestClient(test_app, raise_server_exceptions=False)
+
+    def test_deprecate_503_when_frozen(self, frozen_client: TestClient):
+        resp = frozen_client.post(
+            "/memory/deprecate",
+            json={"memory_ids": ["mem-1"], "status": "deprecated", "reason": "r"},
+        )
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == "memory store migration in progress; retry shortly"
+
+    def test_confirm_503_when_frozen(self, frozen_client: TestClient):
+        resp = frozen_client.post("/memory/confirm", json={"memory_ids": ["mem-1"]})
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == "memory store migration in progress; retry shortly"
+
+    def test_restore_503_when_frozen(self, frozen_client: TestClient):
+        resp = frozen_client.post("/memory/restore", json={"memory_ids": ["mem-1"]})
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == "memory store migration in progress; retry shortly"
+
+    def test_history_read_stays_200_when_frozen(
+        self, frozen_client: TestClient, mock_vector: AsyncMock
+    ):
+        mock_vector.get_memory = AsyncMock(
+            return_value={"status": "active", "confirmed_count": 0, "contradicted_count": 0}
+        )
+        resp = frozen_client.get("/memory/some-id/history")
+        assert resp.status_code == 200
+
     def test_404_for_nonexistent_memory(
         self, lifecycle_client: TestClient, mock_vector: AsyncMock
     ):

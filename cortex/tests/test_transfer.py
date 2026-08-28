@@ -241,6 +241,38 @@ class TestImportEndpoint:
         assert body["errors"] == []
 
 
+class TestImportMigrationFreezeGate:
+    """identity-v2 D6: /memory/import bulk-writes memories and graph
+    structure, so it must refuse during the freeze window. /memory/export
+    is a read and is deliberately not gated."""
+
+    def test_import_503_when_frozen(self, transfer_app):
+        from app.config import Settings, get_settings
+
+        app, mock_graph, mock_vector, _admin = transfer_app
+        app.dependency_overrides[get_settings] = lambda: Settings(MIGRATION_FREEZE=True)
+
+        with TestClient(app) as client:
+            resp = client.post(
+                "/memory/import",
+                json=[{"type": "memory", "text": "should be refused"}],
+            )
+
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == "memory store migration in progress; retry shortly"
+
+    def test_export_stays_200_when_frozen(self, transfer_app):
+        from app.config import Settings, get_settings
+
+        app, mock_graph, mock_vector, _admin = transfer_app
+        app.dependency_overrides[get_settings] = lambda: Settings(MIGRATION_FREEZE=True)
+
+        with TestClient(app) as client:
+            resp = client.get("/memory/export")
+
+        assert resp.status_code == 200
+
+
 class TestImportPrincipalOverride:
     """Tests for identity-v2 Task 4: transfer import stamps the verified principal."""
 

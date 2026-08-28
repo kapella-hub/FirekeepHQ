@@ -317,6 +317,23 @@ class TestContestedResolve:
         )
         assert resp.status_code == 404
 
+    def test_503_when_frozen(self, mock_graph, mock_vector):
+        """MIGRATION_FREEZE gate (identity-v2 D6): a resolve verdict mutates
+        both memories, so it must refuse during the freeze window."""
+        from app.config import Settings, get_settings
+
+        app = FastAPI()
+        app.include_router(create_lifecycle_router(graph=mock_graph, vector=mock_vector))
+        app.dependency_overrides[get_settings] = lambda: Settings(MIGRATION_FREEZE=True)
+        client = TestClient(app, raise_server_exceptions=False)
+
+        resp = client.post(
+            "/memory/contested/resolve",
+            json={"winner_id": "w1", "loser_id": "l1", "action": "supersede"},
+        )
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == "memory store migration in progress; retry shortly"
+
 
 # ---------------------------------------------------------------------------
 # /memory/{id}/evidence

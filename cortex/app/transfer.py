@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, AsyncIterator
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
+from app.migration_gate import require_not_frozen
 from app.models import ImportResponse
 from auth.middleware import require_scope
 
@@ -75,7 +76,7 @@ def create_transfer_router(graph: Neo4jClient, vector: VectorClient) -> APIRoute
             headers={"Content-Disposition": "attachment; filename=firekeep-export.jsonl"},
         )
 
-    @router.post("/import", response_model=ImportResponse)
+    @router.post("/import", response_model=ImportResponse, dependencies=[Depends(require_not_frozen)])
     async def memory_import(
         request: Request,
         identity: dict = Depends(require_scope("admin")),

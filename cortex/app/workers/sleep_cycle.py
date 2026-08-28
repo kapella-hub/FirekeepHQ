@@ -41,11 +41,17 @@ def _create_celery_app() -> Celery:
         result_serializer="json",
         timezone="UTC",
         enable_utc=True,
+        # app.workers.migrate_namespaces retired here (identity-v2 D10,
+        # docs/superpowers/specs/2026-08-27-memory-identity-v2-design.md): it
+        # mutated namespace payload fields via a raw Qdrant client, bypassing
+        # the identity helper this migration's contract requires every
+        # identity-input mutation go through. Nothing else imported it (grep
+        # confirmed only this include entry and its own now-deleted test),
+        # so the module was deleted rather than flag-gated.
         include=[
             "app.workers.gc",
             "app.workers.memory_agent",
             "app.workers.reembed",
-            "app.workers.migrate_namespaces",
             "app.workers.skill_synthesis",
             "app.workers.agent_gateway_sweep",
             "app.workers.backfill",

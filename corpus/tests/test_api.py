@@ -55,6 +55,23 @@ class TestIngestEndpoint:
             assert data["entities_extracted"] == 5
             assert "namespace" not in data
 
+    def test_503_when_frozen(self, client):
+        """MIGRATION_FREEZE gate (identity-v2 D6). corpus/ is a shared module
+        with no dependency on Cortex's app.config, so the Cortex lifespan
+        hook rebinds `is_migration_frozen` (mirrors the ingest_document
+        etc. hooks below it) -- checked here via the same patch convention."""
+        with (
+            patch("corpus.api.is_migration_frozen", return_value=True),
+            patch("corpus.api.ingest_document", new_callable=AsyncMock) as mock_ingest,
+        ):
+            resp = client.post(
+                "/corpus/ingest",
+                json={"content": "some content", "source_name": "Test Doc"},
+            )
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == "memory store migration in progress; retry shortly"
+        mock_ingest.assert_not_awaited()
+
 
 class TestSourcesEndpoint:
     def test_lists_sources(self, client):

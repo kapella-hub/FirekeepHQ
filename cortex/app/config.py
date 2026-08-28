@@ -101,6 +101,18 @@ class Settings(BaseSettings):
     # memory ACTIVE under the v2 id. Retired after the identity migration.
     MEMORY_ID_V1_BRIDGE: bool = True
 
+    # Identity-v2 D6: the migration freeze gate. While true, every write path
+    # that could mutate a Qdrant/Neo4j record — /memory/learn, /memory/stream,
+    # transfer import, corpus/knowledge ingest, lifecycle mutators (deprecate/
+    # confirm/restore/contested-resolve), /memory/feedback — returns 503 so
+    # nothing races the freeze-migration's shadow copy and verify passes
+    # (docs/superpowers/specs/2026-08-27-memory-identity-v2-design.md D6 step
+    # 1). Read/recall routes are deliberately unaffected; the design keeps
+    # them serving until the collection flip (D6 step 4). Ships dark
+    # (default false) — the migration tool ships inert per D10, and setting
+    # this alone is not a migration: it only stops new writes.
+    MIGRATION_FREEZE: bool = False
+
     # Memory Decay
     MEMORY_DECAY_HALF_LIFE_DAYS: int = 90
     DECAY_REFERENCE_DAYS: int = 0

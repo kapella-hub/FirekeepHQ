@@ -30,6 +30,7 @@ from app.db.vector import VectorClient
 from app.embedding_admin import create_embedding_router
 from app.engine.rag import RAGEngine
 from app.lifecycle import create_lifecycle_router
+from app.migration_gate import require_not_frozen
 from app.ops import create_ops_router
 from app.ops_backups import create_ops_backups_router
 from app.exceptions import (
@@ -804,6 +805,12 @@ async def lifespan(app: FastAPI):
             corpus_api.ingest_document = _do_ingest
             corpus_api.get_corpus_sources = _do_sources
             corpus_api.delete_corpus_source = _do_delete
+            # identity-v2 D6: corpus/ takes no dependency on app.config (it is
+            # a shared module used outside Cortex), so the MIGRATION_FREEZE
+            # gate is threaded through the same module-level-callable
+            # mechanism as the three hooks above, rather than app.migration_gate's
+            # FastAPI dependency.
+            corpus_api.is_migration_frozen = lambda: get_settings().MIGRATION_FREEZE
 
             logger.info("Corpus module initialized (Qdrant chunks + Redis source tracking)")
         except Exception as exc:
@@ -1354,7 +1361,7 @@ async def memory_recall(
     return result
 
 
-@app.post("/memory/learn", response_model=LearnResponse)
+@app.post("/memory/learn", response_model=LearnResponse, dependencies=[Depends(require_not_frozen)])
 @limiter.limit(lambda: get_settings().RATE_LIMIT)
 async def memory_learn(
     request: Request,
@@ -1557,7 +1564,7 @@ async def memory_learn(
     return learn_response
 
 
-@app.post("/memory/stream", response_model=StreamResponse)
+@app.post("/memory/stream", response_model=StreamResponse, dependencies=[Depends(require_not_frozen)])
 @limiter.limit(lambda: get_settings().RATE_LIMIT)
 async def memory_stream(
     request: Request,
@@ -1597,7 +1604,7 @@ async def memory_stream(
     return StreamResponse(status="queued", queued=len(events))
 
 
-@app.post("/memory/feedback", response_model=FeedbackResponse)
+@app.post("/memory/feedback", response_model=FeedbackResponse, dependencies=[Depends(require_not_frozen)])
 @limiter.limit(lambda: get_settings().RATE_LIMIT)
 async def memory_feedback(
     request: Request,

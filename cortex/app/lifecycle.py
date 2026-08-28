@@ -18,6 +18,7 @@ from slowapi.util import get_remote_address
 from app.config import get_settings
 from app.db.graph import Neo4jClient
 from app.db.vector import VectorClient
+from app.migration_gate import require_not_frozen
 from app.models import (
     BacklinksResponse,
     ConfirmRequest,
@@ -70,7 +71,7 @@ def create_lifecycle_router(
                 len(entries), GC_EVICTION_LOG_KEY, [e.get("id") for e in entries],
             )
 
-    @router.post("/memory/deprecate")
+    @router.post("/memory/deprecate", dependencies=[Depends(require_not_frozen)])
     @limiter.limit(lambda: get_settings().RATE_LIMIT)
     async def deprecate_memories(request: Request, body: DeprecateRequest) -> DeprecateResponse:
         """Change memory status to deprecated, superseded, or archived."""
@@ -99,7 +100,7 @@ def create_lifecycle_router(
                 logger.warning("Failed to update status for memory %s", memory_id)
         return DeprecateResponse(status="updated", updated=updated)
 
-    @router.post("/memory/confirm")
+    @router.post("/memory/confirm", dependencies=[Depends(require_not_frozen)])
     @limiter.limit(lambda: get_settings().RATE_LIMIT)
     async def confirm_memories(request: Request, body: ConfirmRequest) -> ConfirmResponse:
         """Confirm memories are still valid -- resets decay, bumps confidence."""
@@ -113,7 +114,7 @@ def create_lifecycle_router(
                 logger.warning("Failed to confirm memory %s", memory_id)
         return ConfirmResponse(status="confirmed", confirmed=confirmed)
 
-    @router.post("/memory/restore")
+    @router.post("/memory/restore", dependencies=[Depends(require_not_frozen)])
     @limiter.limit(lambda: get_settings().RATE_LIMIT)
     async def restore_memories(
         request: Request,
@@ -271,7 +272,7 @@ def create_lifecycle_router(
             },
         }
 
-    @router.post("/memory/contested/resolve")
+    @router.post("/memory/contested/resolve", dependencies=[Depends(require_not_frozen)])
     @limiter.limit(lambda: get_settings().RATE_LIMIT)
     async def resolve_contested(
         request: Request,

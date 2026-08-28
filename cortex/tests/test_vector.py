@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
+from qdrant_client.http.exceptions import UnexpectedResponse
 
 from app.config import Settings
 from app.db.vector import VectorClient, _EMBED_CACHE_MAX_SIZE, memory_point_id
@@ -111,14 +112,19 @@ class TestEmbedTruncation:
 
 
 class TestInitialize:
+    """identity-v2 D6: "exists" is decided by `get_collection(name)` succeeding,
+    not by membership in `get_collections()` -- the latter cannot see a name
+    that resolves through a Qdrant alias (empirically verified in review: an
+    alias does not appear in get_collections()'s list, but get_collection()
+    resolves it transparently). Only a genuine not-found (404) creates."""
+
     @pytest.mark.asyncio
     async def test_creates_collection_when_missing(
         self, vector_client, mock_qdrant_client
     ):
-        # Simulate no existing collection
-        collections_resp = MagicMock()
-        collections_resp.collections = []
-        mock_qdrant_client.get_collections.return_value = collections_resp
+        mock_qdrant_client.get_collection.side_effect = UnexpectedResponse(
+            status_code=404, reason_phrase="Not Found", content=b"{}", headers={},
+        )
 
         await vector_client.initialize()
 
@@ -130,24 +136,53 @@ class TestInitialize:
     async def test_skips_creation_when_exists(
         self, vector_client, mock_qdrant_client
     ):
-        existing = MagicMock()
-        existing.name = "test_collection"
-        collections_resp = MagicMock()
-        collections_resp.collections = [existing]
-        mock_qdrant_client.get_collections.return_value = collections_resp
+        mock_qdrant_client.get_collection.return_value = MagicMock()
 
         await vector_client.initialize()
 
+        mock_qdrant_client.get_collection.assert_awaited_once_with("test_collection")
+        mock_qdrant_client.create_collection.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_skips_creation_when_name_resolves_via_alias(
+        self, vector_client, mock_qdrant_client
+    ):
+        """The alias case itself: get_collection() succeeds for a name that
+        would NOT appear in get_collections()'s membership list. initialize()
+        must not even consult get_collections() to decide this."""
+        mock_qdrant_client.get_collection.return_value = MagicMock()
+
+        await vector_client.initialize()
+
+        mock_qdrant_client.get_collections.assert_not_called()
         mock_qdrant_client.create_collection.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_initialize_error_raises_vector_store_error(
         self, vector_client, mock_qdrant_client
     ):
-        mock_qdrant_client.get_collections.side_effect = RuntimeError("down")
+        mock_qdrant_client.get_collection.side_effect = RuntimeError("down")
 
         with pytest.raises(VectorStoreError, match="Failed to initialize"):
             await vector_client.initialize()
+
+        mock_qdrant_client.create_collection.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_non_not_found_unexpected_response_raises_vector_store_error(
+        self, vector_client, mock_qdrant_client
+    ):
+        """A 500 (or any non-404) from get_collection is a real failure, not
+        "doesn't exist yet" -- it must be wrapped and raised, never trigger
+        create_collection."""
+        mock_qdrant_client.get_collection.side_effect = UnexpectedResponse(
+            status_code=500, reason_phrase="Internal Server Error", content=b"", headers={},
+        )
+
+        with pytest.raises(VectorStoreError, match="Failed to initialize"):
+            await vector_client.initialize()
+
+        mock_qdrant_client.create_collection.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

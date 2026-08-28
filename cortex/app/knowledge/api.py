@@ -48,6 +48,7 @@ from app.db.vector import VectorClient
 from app.knowledge.crawler import is_safe_url
 from app.knowledge.ingest_core import ingest_knowledge_document
 from app.knowledge.status import get_ingest_status
+from app.migration_gate import require_not_frozen
 from app.workers.skill_synthesis import run_url_ingest
 
 logger = logging.getLogger(__name__)
@@ -203,7 +204,10 @@ def create_knowledge_router() -> APIRouter:
     # here would be circular. Mirrors app/skills/api.py's identical pattern.
     from app.main import get_redis, get_vector
 
-    @router.post("/ingest", response_model=KnowledgeIngestResponse, status_code=202)
+    @router.post(
+        "/ingest", response_model=KnowledgeIngestResponse, status_code=202,
+        dependencies=[Depends(require_not_frozen)],
+    )
     async def ingest(
         request: Request,
         req: KnowledgeIngestRequest,
@@ -256,7 +260,10 @@ def create_knowledge_router() -> APIRouter:
             note="classification + skill drafting queued",
         )
 
-    @router.post("/ingest-url", response_model=KnowledgeUrlIngestResponse, status_code=202)
+    @router.post(
+        "/ingest-url", response_model=KnowledgeUrlIngestResponse, status_code=202,
+        dependencies=[Depends(require_not_frozen)],
+    )
     async def ingest_url(req: KnowledgeUrlIngestRequest) -> KnowledgeUrlIngestResponse:
         """Crawl a URL (bounded depth/pages, SSRF-guarded) and queue each fetched
         page for knowledge ingestion. Fails fast on an unsafe start URL (defense

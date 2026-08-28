@@ -855,3 +855,66 @@ class TestRecallTrigger:
         assert ContextQuery(task="t", trigger="prompt-hook").trigger == "prompt-hook"
         with pytest.raises(pydantic.ValidationError):
             ContextQuery(task="t", trigger="x" * 33)
+
+
+# ---------------------------------------------------------------------------
+# MIGRATION_FREEZE gate (identity-v2 D6) — /memory/learn, /memory/stream,
+# /memory/feedback are write paths and must 503 while frozen; /memory/recall
+# is a read and must stay unaffected.
+# ---------------------------------------------------------------------------
+
+
+class TestMigrationFreezeGate:
+    def _freeze(self, on: bool):
+        from app.config import Settings, get_settings
+        from app.main import app
+
+        app.dependency_overrides[get_settings] = lambda: Settings(MIGRATION_FREEZE=on)
+
+    def test_learn_503_when_frozen(self, test_client):
+        self._freeze(True)
+        resp = test_client.post(
+            "/memory/learn",
+            json={"action": "a", "outcome": "o"},
+        )
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == "memory store migration in progress; retry shortly"
+
+    def test_stream_503_when_frozen(self, test_client):
+        self._freeze(True)
+        resp = test_client.post(
+            "/memory/stream",
+            json={"source": "ci", "payload": {"build": "123"}, "tags": ["ci"]},
+        )
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == "memory store migration in progress; retry shortly"
+
+    def test_feedback_503_when_frozen(self, test_client):
+        self._freeze(True)
+        resp = test_client.post(
+            "/memory/feedback",
+            json={"memory_ids": ["m1"], "useful": True},
+        )
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == "memory store migration in progress; retry shortly"
+
+    def test_recall_stays_200_when_frozen(self, test_client, mock_graph, mock_vector):
+        """The read path is deliberately unaffected — the design keeps recall
+        serving until the collection flip."""
+        mock_graph.query_related.return_value = []
+        mock_vector.search.return_value = []
+        self._freeze(True)
+
+        resp = test_client.post("/memory/recall", json={"task": "still readable"})
+        assert resp.status_code == 200
+
+    def test_all_normal_when_not_frozen(self, test_client, mock_graph, mock_vector):
+        mock_graph.merge_action_log.return_value = "graph-id-1"
+        mock_vector.upsert.return_value = "vector-id-1"
+        self._freeze(False)
+
+        resp = test_client.post(
+            "/memory/learn",
+            json={"action": "a", "outcome": "o"},
+        )
+        assert resp.status_code == 200

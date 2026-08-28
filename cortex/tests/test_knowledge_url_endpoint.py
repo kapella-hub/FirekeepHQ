@@ -124,3 +124,25 @@ def test_ingest_url_missing_url_returns_422(client):
 
     assert resp.status_code == 422
     mock_task.delay.assert_not_called()
+
+
+def test_ingest_url_503_when_frozen(mock_vector, mock_redis):
+    """MIGRATION_FREEZE gate (identity-v2 D6): queues a Celery ingest task,
+    so it must refuse during the freeze window."""
+    from app.config import Settings, get_settings
+
+    app = _make_app(mock_vector, mock_redis)
+    app.dependency_overrides[get_settings] = lambda: Settings(MIGRATION_FREEZE=True)
+    frozen_client = TestClient(app)
+
+    with (
+        patch("app.knowledge.api.is_safe_url", return_value=(True, "")),
+        patch("app.knowledge.api.run_url_ingest") as mock_task,
+    ):
+        resp = frozen_client.post(
+            "/knowledge/ingest-url", json={"url": "https://example.com/docs"}
+        )
+
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "memory store migration in progress; retry shortly"
+    mock_task.delay.assert_not_called()

@@ -239,3 +239,44 @@ def test_get_sources_503_when_corpus_not_initialized(client):
         resp = client.get("/knowledge/sources")
 
     assert resp.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# MIGRATION_FREEZE gate (identity-v2 D6) — POST /knowledge/ingest writes into
+# the corpus + queues skill drafting, so it must refuse during the freeze
+# window. GET /knowledge/sources is a read and stays unaffected.
+# ---------------------------------------------------------------------------
+
+
+def test_ingest_503_when_frozen(mock_vector, mock_redis):
+    from app.config import Settings, get_settings
+
+    app = _make_app(mock_vector, mock_redis)
+    app.dependency_overrides[get_settings] = lambda: Settings(MIGRATION_FREEZE=True)
+    frozen_client = TestClient(app)
+
+    with patch("app.knowledge.api.ingest_knowledge_document", new=AsyncMock()) as mock_core:
+        resp = frozen_client.post(
+            "/knowledge/ingest",
+            json={"content": "x", "source_name": "Runbook", "source_type": "wiki"},
+        )
+
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "memory store migration in progress; retry shortly"
+    mock_core.assert_not_awaited()
+
+
+def test_sources_stays_200_when_frozen(mock_vector, mock_redis):
+    from app.config import Settings, get_settings
+
+    app = _make_app(mock_vector, mock_redis)
+    app.dependency_overrides[get_settings] = lambda: Settings(MIGRATION_FREEZE=True)
+    frozen_client = TestClient(app)
+
+    with (
+        patch("corpus.api.get_corpus_sources", new=AsyncMock(return_value=[])),
+        patch("app.knowledge.api.get_ingest_status", new=AsyncMock(return_value=None)),
+    ):
+        resp = frozen_client.get("/knowledge/sources")
+
+    assert resp.status_code == 200

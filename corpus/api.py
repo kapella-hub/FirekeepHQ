@@ -193,6 +193,15 @@ ingest_document = None
 get_corpus_sources = None
 delete_corpus_source = None
 
+# identity-v2 D6 migration freeze gate. `corpus/` is a shared module used
+# outside Cortex, so it takes no dependency on Cortex's app.config/FastAPI
+# dependency-injection gate (app.migration_gate.require_not_frozen) -- this
+# mirrors the three callables above: a plain hook the Cortex lifespan rebinds
+# to the real settings check, defaulting to "never frozen" so a caller that
+# builds this router directly (unit tests, another service) is unaffected.
+def is_migration_frozen() -> bool:
+    return False
+
 
 def create_corpus_router() -> APIRouter:
     """Create the corpus REST router."""
@@ -208,6 +217,11 @@ def create_corpus_router() -> APIRouter:
         from ``memory_recall``, which filters on the caller's workspace — the
         exact opposite of what this endpoint's contract promises.
         """
+        if is_migration_frozen():
+            raise HTTPException(
+                status_code=503,
+                detail="memory store migration in progress; retry shortly",
+            )
         if ingest_document is None:
             raise HTTPException(status_code=503, detail="Corpus module not initialized")
 
