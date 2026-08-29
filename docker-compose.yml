@@ -234,7 +234,7 @@ services:
       args:
         GIT_SHA: ${GIT_SHA:-unknown}
         BUILD_TIME: ${BUILD_TIME:-unknown}
-        APP_VERSION: ${APP_VERSION:-0.6.0}
+        APP_VERSION: ${APP_VERSION:-0.0.0-unprovenanced}
         # Base-image registry. Personal deploys default to Docker Hub; the office
         # docker-host path pins its the registry mirror mirror in docker-compose.office.yml
         # (office CI builds bare `docker build`, which keeps the Dockerfile's own
@@ -486,7 +486,7 @@ services:
       args:
         GIT_SHA: ${GIT_SHA:-unknown}
         BUILD_TIME: ${BUILD_TIME:-unknown}
-        APP_VERSION: ${APP_VERSION:-0.6.0}
+        APP_VERSION: ${APP_VERSION:-0.0.0-unprovenanced}
         # Base-image registry. Personal deploys default to Docker Hub; the office
         # docker-host path pins its the registry mirror mirror in docker-compose.office.yml
         # (office CI builds bare `docker build`, which keeps the Dockerfile's own
@@ -569,7 +569,7 @@ services:
       args:
         GIT_SHA: ${GIT_SHA:-unknown}
         BUILD_TIME: ${BUILD_TIME:-unknown}
-        APP_VERSION: ${APP_VERSION:-0.6.0}
+        APP_VERSION: ${APP_VERSION:-0.0.0-unprovenanced}
         REGISTRY: ${REGISTRY:-docker.io/library}
     restart: unless-stopped
     command: celery -A app.workers.sleep_cycle worker --loglevel=info --concurrency=1 --pool=solo
@@ -732,7 +732,7 @@ services:
       args:
         GIT_SHA: ${GIT_SHA:-unknown}
         BUILD_TIME: ${BUILD_TIME:-unknown}
-        APP_VERSION: ${APP_VERSION:-0.6.0}
+        APP_VERSION: ${APP_VERSION:-0.0.0-unprovenanced}
         # Base-image registry. Personal deploys default to Docker Hub; the office
         # docker-host path pins its the registry mirror mirror in docker-compose.office.yml
         # (office CI builds bare `docker build`, which keeps the Dockerfile's own
@@ -825,7 +825,7 @@ services:
         REGISTRY: ${REGISTRY:-docker.io/library}
         GIT_SHA: ${GIT_SHA:-unknown}
         BUILD_TIME: ${BUILD_TIME:-unknown}
-        APP_VERSION: ${APP_VERSION:-0.6.0}
+        APP_VERSION: ${APP_VERSION:-0.0.0-unprovenanced}
     restart: unless-stopped
     ports:
       - "${BIND_ADDR:-127.0.0.1}:8070:8070"
@@ -875,7 +875,7 @@ services:
         REGISTRY: ${REGISTRY:-docker.io/library}
         GIT_SHA: ${GIT_SHA:-unknown}
         BUILD_TIME: ${BUILD_TIME:-unknown}
-        APP_VERSION: ${APP_VERSION:-0.6.0}
+        APP_VERSION: ${APP_VERSION:-0.0.0-unprovenanced}
     restart: unless-stopped
     ports:
       - "${BIND_ADDR:-127.0.0.1}:8060:8060"
@@ -944,7 +944,7 @@ services:
         REGISTRY: ${REGISTRY:-docker.io/library}
         GIT_SHA: ${GIT_SHA:-unknown}
         BUILD_TIME: ${BUILD_TIME:-unknown}
-        APP_VERSION: ${APP_VERSION:-0.6.0}
+        APP_VERSION: ${APP_VERSION:-0.0.0-unprovenanced}
     restart: unless-stopped
     ports:
       - "${BIND_ADDR:-127.0.0.1}:8050:8050"

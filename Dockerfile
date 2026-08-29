@@ -63,7 +63,7 @@ RUN chown -R appuser:appuser /app
 # Build provenance — injected at build time, read at runtime by app/version.py
 ARG GIT_SHA=unknown
 ARG BUILD_TIME=unknown
-ARG APP_VERSION=0.6.0
+ARG APP_VERSION=0.0.0-unprovenanced
 ENV GIT_SHA=${GIT_SHA} \
     BUILD_TIME=${BUILD_TIME} \
     APP_VERSION=${APP_VERSION}

@@ -25,8 +25,26 @@ _CACHE_KEY = "server_update_check"
 class ServerUpdateStatus:
     running: str
     latest: str | None
-    relation: str  # "behind" | "current" | "ahead" | "unjudged"
+    relation: str  # "behind"|"current"|"ahead"|"unjudged"|"unprovenanced"
     ack: bool
+
+
+# A build that cannot say what it is. `provenance._FALLBACK_VERSION` is the
+# server-side source of truth, but it lives in a different distribution unit
+# (the server repo, not the client wheel), so the value is restated here and
+# tied to it by tests/test_provenance.py's build-plumbing guard.
+#
+# WHY THIS SET IS NOT JUST THE CURRENT SENTINEL: `0.6.0` is what every image
+# built before the fix stamps, and those images are already in the field. The
+# client is the only half of the pair that reaches them, so it carries the
+# legacy value permanently. No `v0.6.0` server release has ever existed (the
+# series runs v0.1.0..v0.4.7, then v1.0.0+), so this shadows nothing real.
+_UNPROVENANCED = frozenset({"0.0.0-unprovenanced", "0.6.0"})
+
+
+def is_unprovenanced(version: str) -> bool:
+    """True when the server reported a build-time placeholder, not a version."""
+    return version.strip().removeprefix("v") in _UNPROVENANCED
 
 
 def _fetch_running(cfg) -> str | None:
@@ -76,6 +94,11 @@ def _fetch_latest(cfg) -> str | None:
 
 
 def _relation(running: str, latest: str | None) -> str:
+    # Checked BEFORE the manifest: provenance is a property of the server, not
+    # of dist-host reachability, so this verdict must never degrade to
+    # "unjudged" merely because the manifest could not be fetched.
+    if is_unprovenanced(running):
+        return "unprovenanced"
     if latest is None:
         return "unjudged"
     try:
@@ -116,10 +139,15 @@ def check(cfg) -> ServerUpdateStatus | None:
 
 
 def is_clean_release(version: str) -> bool:
-    """True for a clean vX.Y.Z (parse succeeds); False for a git-describe
-    suffix or anything else malformed. Parse-succeeds semantics — the same
-    test `_relation` itself applies via its `except UpdateError` — never a
-    shape regex, so this and `_relation` can never disagree on an input."""
+    """True for a clean vX.Y.Z; False for a git-describe suffix, an
+    unprovenanced placeholder, or anything else malformed.
+
+    Mirrors `_relation` step for step — the same `_UNPROVENANCED` membership
+    test, then the same parse `_relation` applies via its `except UpdateError`
+    — never a shape regex, so this and `_relation` can never disagree on an
+    input. Both gained the sentinel check together for exactly that reason."""
+    if is_unprovenanced(version):
+        return False  # parses, but means "unknown" -- see _UNPROVENANCED
     try:
         updater.parse_version(version.strip().removeprefix("v"))
         return True

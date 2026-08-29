@@ -682,6 +682,33 @@ a bundle-manifest comparison would be meaningless for them. It gets its own
 `"(source checkout — update via git)"` OK row unconditionally, even when the
 dist host is unreachable, because it never needed the manifest to begin with.
 
+**A third case: the server that cannot say what it is.** `serverupdate.check`
+also refuses to judge a running version that is a *build-time placeholder*
+rather than a version — `is_unprovenanced()` matches the current
+`0.0.0-unprovenanced` sentinel and the legacy `0.6.0` it replaced. This is not
+a hypothetical: a bare `docker compose build` (anything outside
+`install.sh`/`update.sh`) leaves `GIT_SHA`/`BUILD_TIME`/`APP_VERSION` unset, so
+compose stamps its own default into the image. The old default parsed as a
+clean release, so the client compared it to the published series and printed
+`server update available: 0.6.0 -> v1.3.1` — a twenty-tag jump naming a version
+that never shipped, on a Keep whose checkout was in fact *current* (seen live
+2026-08-29). The guard that was supposed to catch this, `is_clean_release`,
+tests parseability — and the one input meaning "I do not know what I am" was
+the one input that parsed perfectly.
+
+The verdict is decided **before** the manifest is consulted, because provenance
+is a property of the server, not of dist-host reachability. It gets a doctor
+WARN naming the real defect ("server reports no build provenance (…) — it was
+built without APP_VERSION/GIT_SHA; rebuild with `bash update.sh`") and
+carries **no `--to`**: there is no version to update *to*, only a rebuild in
+place. The **briefing stays silent** — the nudge's whole contract is "an update
+IS available", and here that is precisely what cannot be known. Claiming it
+anyway is what made the original report actively misleading rather than merely
+noisy. The server half of the fix (a sentinel that no longer parses) is pinned
+by `tests/test_provenance.py`; the client half must keep matching `0.6.0`
+forever, because images built before the fix are already in the field and the
+client is the only half that reaches them.
+
 **The full state matrix**, running version × whether `latest` could be fetched:
 a clean release *behind* the published `latest` is a WARN (or an OK, once
 acknowledged — below); *current* and *ahead* are both OK, worded differently
@@ -689,8 +716,10 @@ acknowledged — below); *current* and *ahead* are both OK, worded differently
 release pipeline's Pages-propagation window and under a `publish_latest=0`
 hotfix, so "current" would assert an equality that never happened); a
 git-describe running version is always the source-checkout OK row regardless of
-manifest state; and when the manifest can't be fetched or parsed for a clean
-release, there is **no row and no line at all** — that failure belongs to the
+manifest state; an unprovenanced placeholder is always the build-provenance WARN
+regardless of manifest state, and never a briefing line; and when the manifest
+can't be fetched or parsed for a clean release, there is **no row and no line at
+all** — that failure belongs to the
 existing `client-version` row's "cannot check for updates" warn, not to this
 one. When cortex `/version` itself doesn't answer, `check()` returns `None` and
 neither surface says anything — with no running version there is nothing to

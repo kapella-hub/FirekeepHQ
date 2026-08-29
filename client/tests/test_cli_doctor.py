@@ -203,6 +203,32 @@ def test_server_version_clean_but_unjudged_no_row(monkeypatch):
     assert cli._check_server_version(cfg=None) is None
 
 
+def test_server_version_unprovenanced_warns_to_rebuild(monkeypatch):
+    """A server that cannot say what it is gets its OWN diagnosis.
+
+    Not "behind" (we cannot know), and not "source checkout" (it is not one --
+    it is a build that ran without GIT_SHA/BUILD_TIME/APP_VERSION in the env,
+    so compose stamped its own default). The row therefore carries no version
+    comparison and no `--to`, only the rebuild that restores provenance.
+    """
+    monkeypatch.setattr(cli.serverupdate, "check",
+                        lambda cfg: _status("0.6.0", "v1.3.1", "unprovenanced"))
+    row = cli._check_server_version(cfg=None)
+    assert row[0] == "server-version" and row[1] == "warn"
+    assert "provenance" in row[2]
+    assert "update.sh" in row[2]
+    assert "--to" not in row[2], "there is no version to update TO -- rebuild in place"
+    assert "source checkout" not in row[2], "wrong diagnosis: this is not a checkout"
+
+
+def test_unprovenanced_row_stays_out_of_the_judging_row_count(monkeypatch):
+    """test_exactly_one_row_judges_the_server_version counts rows carrying
+    `update.sh --to`. The unprovenanced row must not join that count."""
+    monkeypatch.setattr(cli.serverupdate, "check",
+                        lambda cfg: _status("0.6.0", "v1.3.1", "unprovenanced"))
+    assert "update.sh --to" not in cli._check_server_version(cfg=None)[2]
+
+
 def test_server_version_silent_when_cortex_silent(monkeypatch):
     monkeypatch.setattr(cli.serverupdate, "check", lambda cfg: None)
     assert cli._check_server_version(cfg=None) is None

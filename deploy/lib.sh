@@ -557,12 +557,12 @@ host_path() {
 # When PULLING published images the deployed version IS the release tag the
 # images were built and published under (server-release.yml bakes
 # APP_VERSION=<tag> into each image). git-describe run here would instead report
-# the source-free bundle's absent-repo fallback (0.6.0) — a version nothing
-# running actually is. From source, describe against this repo's server v-tags
+# the source-free bundle's absent-repo fallback (0.0.0-unprovenanced) — a
+# version nothing running actually is. From source, describe against this repo's server v-tags
 # is correct, so the pull path is the only one that must override it.
 #
 # Kept out of install.sh's inline flow so tests/test_deploy_lib.py can assert the
-# pull path reports the tag rather than the 0.6.0 fallback.
+# pull path reports the tag rather than the 0.0.0-unprovenanced fallback.
 provenance_app_version() {
     local pull_mode="${1:?pull mode required}" image_tag="${2-}"
     if [ "$pull_mode" -eq 1 ]; then
@@ -571,8 +571,8 @@ provenance_app_version() {
         # --match excludes this repo's client-vX.Y.Z release tags (client/ has
         # its own release cadence -- see CLAUDE.md) so a server build never
         # reports a client version; falls back to the short SHA (--always) until
-        # server vX.Y.Z tags exist, then 0.6.0 outside a git repo.
-        git describe --tags --match 'v[0-9]*' --always --dirty 2>/dev/null || echo 0.6.0
+        # server vX.Y.Z tags exist, then 0.0.0-unprovenanced outside a git repo.
+        git describe --tags --match 'v[0-9]*' --always --dirty 2>/dev/null || echo 0.0.0-unprovenanced
     fi
 }
 
