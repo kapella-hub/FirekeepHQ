@@ -380,6 +380,15 @@ and a later `docker compose pull` would silently downgrade to the genuinely
 published image. `dev` never collides with a published tag, and
 `install.sh --pull` rejects it by name.
 
+`--to` is **refused** on a source checkout rather than ignored. The two shapes
+take different arguments — a checkout has a branch to pull, a published install
+has a release to select — and `update.sh` decides which you are by the presence
+of `SERVER_BUNDLE.json`. This matters because `firekeep doctor` prints
+`bash update.sh --to vY` for any clean `vX.Y.Z` a server reports, and a checkout
+parked exactly on a release tag reports exactly that: the flag used to be
+accepted and silently dropped, running a plain `git pull` while the operator
+believed they had pinned a version.
+
 ### Upgrading across the 2026-07-26 security defaults
 
 **Run `update.sh`; do not upgrade with a bare `docker compose up -d`.** Both new
