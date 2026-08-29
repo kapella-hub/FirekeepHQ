@@ -5,6 +5,8 @@ callers may set env after import. cortex/tests/test_version.py already depends
 on this behaviour.
 """
 import importlib
+import re
+from pathlib import Path
 
 import provenance
 
@@ -70,9 +72,6 @@ def test_module_reloads_cleanly(monkeypatch):
 # compared it to the published series -- announcing a twenty-tag jump from a
 # version that never shipped. The string that means "I do not know what I am"
 # must not be shaped like an answer.
-
-import re
-from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
