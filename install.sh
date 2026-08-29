@@ -288,8 +288,9 @@ fi
 export GIT_SHA="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 export BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 # On --pull the deployed version is IMAGE_TAG_VALUE, not git-describe: the source-
-# free bundle has no git repo, so describe would fall through to 0.6.0 and the
-# provenance line would name a version nothing here runs. From source, describe
+# free bundle has no git repo, so describe would fall through to the
+# 0.0.0-unprovenanced sentinel and the provenance line would name a version
+# nothing here runs. From source, describe
 # is correct. GIT_SHA stays whatever git yields ('unknown' in the bundle) — the
 # real SHA is baked into the pulled image and GET /version reads it from there.
 # Both branches route through provenance_app_version (deploy/lib.sh), where the

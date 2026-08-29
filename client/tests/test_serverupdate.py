@@ -126,3 +126,63 @@ def test_nudge_line():
         serverupdate.ServerUpdateStatus("x", None, "unjudged", False),
     ]:
         assert serverupdate.nudge_line(quiet) == ""
+
+
+# --- unprovenanced: a build that cannot say what it is ----------------------
+#
+# The failure this fixes: a bare `docker compose build` leaves GIT_SHA/
+# BUILD_TIME/APP_VERSION unset, so compose stamps its own `${APP_VERSION:-...}`
+# default into the image. The old default was `0.6.0` — a string that PARSES as
+# a clean release, so `_relation` judged it against the published series and
+# reported "0.6.0 -> v1.3.1": a jump across twenty tags, naming a version that
+# never shipped. `is_clean_release` did not catch it because it tests
+# parseability, and the one input meaning "I do not know what I am" was the one
+# input that parsed perfectly.
+#
+# No v0.6.0 server tag has ever existed (the series runs v0.1.0..v0.4.7,
+# v1.0.0+), so treating it as a sentinel cannot shadow a real release.
+
+
+@pytest.mark.parametrize("running", [
+    "0.0.0-unprovenanced",   # the current sentinel
+    "0.6.0",                 # legacy: every image built before the fix
+    "v0.6.0",                # ...and the v-prefixed spelling of it
+])
+def test_unprovenanced_server_is_never_judged_against_the_release_series(
+        monkeypatch, running):
+    _wire(monkeypatch, running=running, latest="v1.3.1")
+    status = serverupdate.check(_cfg())
+    assert status is not None
+    assert status.relation == "unprovenanced", (
+        "a build with no provenance must not be compared to a release tag")
+
+
+def test_unprovenanced_is_decided_before_the_manifest_is_consulted(monkeypatch):
+    """Provenance is a property of the SERVER, not of dist-host reachability —
+    so the verdict must not degrade to 'unjudged' when the manifest is absent."""
+    _wire(monkeypatch, running="0.6.0", latest=None)
+    assert serverupdate.check(_cfg()).relation == "unprovenanced"
+
+
+def test_unprovenanced_nudge_is_silent(monkeypatch):
+    """The nudge's contract is 'an update IS available'. Here we cannot know
+    that, so we do not claim it — doctor's warn row carries this instead."""
+    s = serverupdate.ServerUpdateStatus("0.6.0", "v1.3.1", "unprovenanced", False)
+    assert serverupdate.nudge_line(s) == ""
+
+
+def test_is_clean_release_rejects_the_unprovenanced_sentinels():
+    """`is_clean_release` and `_relation` must never disagree on an input (its
+    own docstring's invariant), so the sentinel check has to live in both."""
+    assert serverupdate.is_clean_release("0.6.0") is False
+    assert serverupdate.is_clean_release("0.0.0-unprovenanced") is False
+
+
+def test_real_releases_still_judge_normally(monkeypatch):
+    """Regression guard: the sentinel check must not swallow ordinary versions,
+    including the neighbouring 0.5.0/0.7.0 that are NOT sentinels."""
+    for running, relation in (("v0.5.0", "behind"), ("v0.7.0", "behind"),
+                              ("v1.3.1", "current")):
+        _wire(monkeypatch, running=running, latest="v1.3.1")
+        state.delete_scratch(serverupdate._CACHE_KEY)
+        assert serverupdate.check(_cfg()).relation == relation

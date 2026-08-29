@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 
 # Fallback when APP_VERSION is not provided by the build.
-_FALLBACK_VERSION = "0.6.0"
+_FALLBACK_VERSION = "0.0.0-unprovenanced"
 
 
 def get_version_info(service: str) -> dict[str, str]:

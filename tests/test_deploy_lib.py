@@ -380,13 +380,17 @@ REPO = LIB.parents[1]
 UNINSTALL_SH = REPO / "uninstall.sh"
 
 
-# --- provenance_app_version: the --pull path reports the tag, not 0.6.0 ------
+# --- provenance_app_version: the --pull path reports the tag, not the sentinel
 #
-# install.sh's build-provenance line used to run `git describe ... || echo 0.6.0`
-# unconditionally. On a `--pull` install from the source-free bundle there is no
-# git repo, so it fell through to 0.6.0 and printed APP_VERSION=0.6.0 for a
-# deployment that is actually the pulled release tag (e.g. v0.4.5). The rule now
-# lives in this helper so it can be asserted directly.
+# install.sh's build-provenance line used to run `git describe ... || echo
+# <sentinel>` unconditionally. On a `--pull` install from the source-free bundle
+# there is no git repo, so it fell through to the sentinel and printed it as
+# APP_VERSION for a deployment that is actually the pulled release tag (e.g.
+# v0.4.5). The rule now lives in this helper so it can be asserted directly.
+#
+# The sentinel itself is imported rather than spelled out: it changed from the
+# release-shaped `0.6.0` to `0.0.0-unprovenanced` (see tests/test_provenance.py),
+# and a literal here would have kept passing while guarding nothing.
 
 def _provenance(pull_mode: int, image_tag: str = "") -> subprocess.CompletedProcess:
     return subprocess.run(
@@ -404,9 +408,10 @@ def test_provenance_app_version_pull_reports_the_release_tag():
 
 
 def test_provenance_app_version_pull_is_not_the_absent_repo_fallback():
-    """The exact regression: --pull stamped APP_VERSION=0.6.0 (git-describe's
-    no-repo fallback) instead of the tag it deployed."""
-    assert _provenance(1, "v0.4.5").stdout.strip() != "0.6.0"
+    """The exact regression: --pull stamped git-describe's no-repo fallback as
+    APP_VERSION instead of the tag it deployed."""
+    import provenance
+    assert _provenance(1, "v0.4.5").stdout.strip() != provenance._FALLBACK_VERSION
 
 
 def test_provenance_app_version_source_ignores_a_passed_tag():
@@ -415,7 +420,7 @@ def test_provenance_app_version_source_ignores_a_passed_tag():
     why install.sh only overrides APP_VERSION on the pull path.)"""
     out = _provenance(0, "v9.9.9").stdout.strip()
     assert out != "v9.9.9"
-    assert out, "the source path must always answer something (describe/SHA/0.6.0)"
+    assert out, "the source path must always answer something (describe/SHA/sentinel)"
 
 
 def test_install_sh_stamps_the_image_tag_into_app_version_on_pull():
@@ -423,7 +428,7 @@ def test_install_sh_stamps_the_image_tag_into_app_version_on_pull():
     wrong. The pull branch must feed IMAGE_TAG_VALUE through provenance_app_version."""
     text = (REPO / "install.sh").read_text(encoding="utf-8")
     assert 'provenance_app_version "$PULL_MODE" "${IMAGE_TAG_VALUE:-}"' in text
-    # The inline `git describe ... || echo 0.6.0` must be gone from install.sh —
+    # The inline `git describe ... || echo <sentinel>` must be gone from install.sh —
     # it moved into the helper, and leaving a copy behind reopens the bug.
     assert "git describe" not in text, "install.sh still computes APP_VERSION inline"
 

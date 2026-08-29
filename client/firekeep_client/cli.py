@@ -1711,10 +1711,25 @@ def _check_server_version(cfg) -> tuple[str, str, str] | None:
     `client-version`'s row, not this one). A git-describe running version
     gets its own OK row regardless of manifest availability — it never
     needed the manifest to begin with.
+
+    A server reporting a build-time placeholder gets a WARN of its own. That
+    case used to be judged as a release and produced the false "0.6.0 ->
+    v1.3.1" nag; it is a misconfigured BUILD, not an available update, so the
+    briefing stays silent about it and only this row speaks.
     """
     status = serverupdate.check(cfg)
     if status is None:
         return None
+    if status.relation == "unprovenanced":
+        # Not "behind" (unknowable) and not "source checkout" (it is not one).
+        # The build simply ran without GIT_SHA/BUILD_TIME/APP_VERSION in the
+        # environment, so compose stamped its own default. There is no version
+        # to update TO — the fix is a rebuild in place, which is why this row
+        # carries no `--to` and stays out of the judging-row count.
+        return ("server-version", "warn",
+                f"server reports no build provenance ({status.running}) — it was "
+                f"built without APP_VERSION/GIT_SHA; rebuild with "
+                f"`bash update.sh` on the server host")
     if status.relation == "unjudged":
         if serverupdate.is_clean_release(status.running):
             return None  # dist-host trouble: client-version's row, not ours

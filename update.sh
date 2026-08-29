@@ -316,7 +316,7 @@ export BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 # --match excludes this repo's client-vX.Y.Z release tags (client/ has its own
 # release cadence -- see CLAUDE.md) so a server build never reports a client
 # version; falls back to the short SHA (--always) until server vX.Y.Z tags exist.
-export APP_VERSION="$(git describe --tags --match 'v[0-9]*' --always --dirty 2>/dev/null || echo 0.6.0)"
+export APP_VERSION="$(git describe --tags --match 'v[0-9]*' --always --dirty 2>/dev/null || echo 0.0.0-unprovenanced)"
 echo "Build provenance: GIT_SHA=${GIT_SHA} BUILD_TIME=${BUILD_TIME} APP_VERSION=${APP_VERSION}"
 
 # --- Image-tag hygiene (this whole path is the build path: a bundle install
