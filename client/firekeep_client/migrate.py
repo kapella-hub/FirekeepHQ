@@ -24,6 +24,10 @@ from firekeep_client import resolver, state
 
 MIGRATION_LOCK_STALE_SECONDS = 30.0
 MIGRATION_LOCK_POLL_SECONDS = 0.025
+# How long a run of CONSECUTIVE PermissionErrors is treated as a Windows
+# delete-pending window before it is believed and re-raised. Short: the real
+# window is milliseconds, and a genuine EACCES should reach the user fast.
+MIGRATION_LOCK_CONTENDED_SECONDS = 2.0
 _PORTS_SKELETON_HOST = "127.0.0.1"
 _PATHS_SKELETON_BASE = "https://firekeep.office.example"
 
@@ -121,23 +125,72 @@ def _lock_is_stale(path: Path) -> bool:
 
 @contextmanager
 def _migration_lock(config_path: Path):
+    """Hold the config-migration lock, tolerating Windows' delete-pending state.
+
+    Windows has no atomic unlink. A file deleted while any handle is still open
+    enters DELETE_PENDING: its directory entry survives, and CreateFile -- which
+    `os.open` uses -- answers ERROR_ACCESS_DENIED. Python raises that as
+    **PermissionError, not FileExistsError**, so every waiter racing the owner's
+    release escaped this loop and crashed `resolver.load_config()`. POSIX has no
+    such state; there a PermissionError is always a genuine EACCES.
+
+    So a denial is retried on a BUDGET rather than swallowed. Retrying forever
+    would turn a read-only `~/.firekeep` or a restrictive ACL into a silent hang
+    inside `load_config()` -- strictly worse than the crash this fixes -- and the
+    budget is also what still surfaces a real EACCES on POSIX.
+    """
     path = lock_path(config_path)
+    denied_deadline: float | None = None
+
+    def absorb_denial(exc: PermissionError) -> None:
+        """Ride out one denial, or believe it once the budget is spent.
+
+        The deadline spans CONSECUTIVE denials only. It is disarmed by an honest
+        FileExistsError on a live lock (see below) and by a successful acquire,
+        so a transient denial early in a long legitimate wait cannot accumulate
+        into a spurious failure minutes later.
+        """
+        nonlocal denied_deadline
+        now = time.monotonic()
+        if denied_deadline is None:
+            denied_deadline = now + MIGRATION_LOCK_CONTENDED_SECONDS
+        elif now >= denied_deadline:
+            raise exc
+        time.sleep(MIGRATION_LOCK_POLL_SECONDS)
+
     while True:
         try:
             fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except PermissionError as exc:
+            absorb_denial(exc)
+            continue
         except FileExistsError:
             if _lock_is_stale(path):
                 try:
                     path.unlink()
+                except FileNotFoundError:
+                    pass
+                except PermissionError as exc:
+                    # The same delete-pending window, reached from the recovery
+                    # side. Deliberately does NOT disarm the deadline: the denial
+                    # is what is blocking progress here, so a lock that can never
+                    # be removed has to end this loop rather than spin in it.
+                    absorb_denial(exc)
+                    continue
+                else:
                     print(
                         f"firekeep config migration: recovered stale lock {path}",
                         file=sys.stderr,
                     )
-                except FileNotFoundError:
-                    pass
                 continue
+            # An honest, live lock: real contention, not a denial. A live owner
+            # may hold it far longer than the denial budget, so this wait stays
+            # unbounded -- and observing it proves any earlier denial was
+            # transient.
+            denied_deadline = None
             time.sleep(MIGRATION_LOCK_POLL_SECONDS)
             continue
+        denied_deadline = None
         try:
             with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
                 json.dump({
@@ -153,7 +206,12 @@ def _migration_lock(config_path: Path):
         finally:
             try:
                 path.unlink()
-            except FileNotFoundError:
+            except (FileNotFoundError, PermissionError):
+                # Best-effort release. A waiter's transient handle (its own
+                # os.open, or _lock_is_stale's read) can block this unlink on
+                # Windows. The lock then lingers and _lock_is_stale reclaims it
+                # after MIGRATION_LOCK_STALE_SECONDS -- recoverable. Crashing the
+                # owner AFTER its migration already succeeded is not.
                 pass
         return
 
@@ -323,7 +381,13 @@ def _write_atomic(path: Path, body: bytes) -> None:
         if tmp_path is not None:
             try:
                 tmp_path.unlink()
-            except FileNotFoundError:
+            except (FileNotFoundError, PermissionError):
+                # FileNotFoundError is the normal path: os.replace consumed the
+                # temp file. PermissionError is Windows -- an indexer or scanner
+                # holding the just-written file blocks its deletion. Either way
+                # the temp file is garbage; raising HERE would crash a migration
+                # that already succeeded, and inside a `finally` it would also
+                # mask whatever exception sent us here.
                 pass
 
 

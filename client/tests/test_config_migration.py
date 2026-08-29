@@ -306,3 +306,146 @@ def test_live_owner_lock_is_waited_on_not_broken(firekeep_env, monkeypatch):
     assert released.is_set()
     assert time.monotonic() - started >= 0.05
     assert cfg.has_section("server")
+
+
+# --- Windows DELETE_PENDING: PermissionError from a contended lock ----------
+#
+# On Windows a file unlinked while any handle is still open enters a
+# DELETE_PENDING state: the directory entry survives, and CreateFile -- which
+# os.open uses -- answers ERROR_ACCESS_DENIED, which Python raises as
+# PermissionError, NOT FileExistsError. Every waiter racing the owner's release
+# lands there, and the retry loop caught only FileExistsError, so the exception
+# escaped _migration_lock -> migrate_config -> resolver.load_config() and
+# crashed whatever command was loading config.
+#
+# Observed on the Windows CI runner, 2026-08-29:
+#   PermissionError: [Errno 13] Permission denied:
+#     '...\.firekeep\config.migration.lock'   (migrate.py:127, the os.open)
+# with 'firekeep: migrated ... to one [server] connection' on stderr -- i.e. a
+# sibling thread had just finished and released. POSIX has no delete-pending
+# state, so there a PermissionError is always a genuine EACCES and must surface.
+
+
+def _deny_for(target, real, exc=None):
+    """Wrap `real`, raising PermissionError only for `target`."""
+    def wrapper(p, *a, **kw):
+        if str(p) == str(target):
+            raise exc or PermissionError(13, "Permission denied", str(p))
+        return real(p, *a, **kw)
+    return wrapper
+
+
+def test_transient_permission_error_while_acquiring_is_retried(firekeep_env, monkeypatch):
+    """THE BUG: one delete-pending answer must not escape the loop."""
+    from firekeep_client import migrate
+    path = firekeep_env["config_path"]
+    lock = migrate.lock_path(path)
+    real_open, calls = os.open, {"n": 0}
+
+    def flaky(p, *a, **kw):
+        if str(p) == str(lock):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise PermissionError(13, "Permission denied", str(p))
+        return real_open(p, *a, **kw)
+
+    monkeypatch.setattr(migrate.os, "open", flaky)
+    with migrate._migration_lock(path):
+        pass
+    assert calls["n"] >= 2, "must retry the acquire after a delete-pending denial"
+
+
+def test_persistent_permission_error_surfaces_and_does_not_spin_forever(
+        firekeep_env, monkeypatch):
+    """A genuine EACCES -- read-only ~/.firekeep, a restrictive ACL -- must still
+    reach the caller. Retrying it forever would convert this crash into a silent
+    hang inside load_config(), which is strictly worse than the bug being fixed."""
+    from firekeep_client import migrate
+    path = firekeep_env["config_path"]
+    monkeypatch.setattr(migrate, "MIGRATION_LOCK_CONTENDED_SECONDS", 0.2, raising=False)
+    monkeypatch.setattr(
+        migrate.os, "open",
+        _deny_for(migrate.lock_path(path), os.open))
+    started = time.monotonic()
+    with pytest.raises(PermissionError):
+        with migrate._migration_lock(path):
+            pass
+    assert time.monotonic() - started < 10, "budget must bound the retrying"
+
+
+def test_permission_error_releasing_the_lock_does_not_propagate(firekeep_env, monkeypatch):
+    """Release is best-effort. A waiter's transient handle can block the owner's
+    unlink on Windows; the lock then lingers and _lock_is_stale reclaims it after
+    MIGRATION_LOCK_STALE_SECONDS. Crashing the owner AFTER its migration already
+    succeeded would be the worse outcome."""
+    from firekeep_client import migrate
+    path = firekeep_env["config_path"]
+    monkeypatch.setattr(
+        Path, "unlink",
+        _deny_for(migrate.lock_path(path), Path.unlink), raising=True)
+    with migrate._migration_lock(path):
+        pass  # must not raise
+
+
+def test_undeletable_stale_lock_surfaces_rather_than_looping(firekeep_env, monkeypatch):
+    """The third site: stale-lock recovery also unlinks, and also only tolerated
+    FileNotFoundError. If that unlink can never succeed the loop must end, not
+    spin."""
+    from firekeep_client import migrate
+    path = firekeep_env["config_path"]
+    monkeypatch.setattr(migrate, "MIGRATION_LOCK_STALE_SECONDS", 0.01)
+    monkeypatch.setattr(migrate, "MIGRATION_LOCK_CONTENDED_SECONDS", 0.2, raising=False)
+    lock = migrate.lock_path(path)
+    stamp = (datetime.datetime.now(datetime.timezone.utc)
+             - datetime.timedelta(seconds=60)).isoformat()
+    lock.write_text(json.dumps({"pid": 99999999, "created_at": stamp}), encoding="utf-8")
+    old = time.time() - 60
+    os.utime(lock, (old, old))
+    monkeypatch.setattr(Path, "unlink", _deny_for(lock, Path.unlink))
+    started = time.monotonic()
+    with pytest.raises(PermissionError):
+        with migrate._migration_lock(path):
+            pass
+    assert time.monotonic() - started < 10, "must not loop on an undeletable stale lock"
+
+
+def test_ordinary_contention_still_waits_rather_than_failing(firekeep_env):
+    """Regression lock: FileExistsError is honest contention, never a denial, and
+    must keep its unbounded wait -- a live owner may legitimately hold the lock
+    longer than the PermissionError budget."""
+    from firekeep_client import migrate
+    path = firekeep_env["config_path"]
+    seen = []
+
+    def worker():
+        with migrate._migration_lock(path):
+            seen.append("held")
+            time.sleep(0.15)
+
+    t = threading.Thread(target=worker)
+    t.start()
+    time.sleep(0.05)
+    with migrate._migration_lock(path):
+        seen.append("second")
+    t.join()
+    assert seen == ["held", "second"]
+
+
+def test_write_atomic_survives_an_undeletable_temp_file(firekeep_env, monkeypatch):
+    """Fourth site, same root cause. On Windows a scanner holding the freshly
+    written temp file blocks its deletion. That happens in a `finally`, so raising
+    would both crash an already-successful migration and mask any exception that
+    sent us there. The temp file is garbage; the migration is not."""
+    from firekeep_client import migrate
+    path = firekeep_env["config_path"]
+    real_unlink = Path.unlink
+    payload = b'[server]\nkind = ports\n'
+
+    def deny_temp(self, *a, **kw):
+        if ".migrate-" in self.name:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_unlink(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "unlink", deny_temp)
+    migrate._write_atomic(path, payload)
+    assert path.read_bytes() == payload
