@@ -273,35 +273,93 @@ SCENARIOS: dict[str, str] = {
 }
 
 
+#: `timeout(1)`'s status for "the deadline won". Nothing the lab's own
+#: scenarios can exit with collides, so a row carrying it is unambiguous.
+TIMEOUT_EXIT = 124
+
+
+def _partial(output: "str | bytes | None") -> str:
+    """Whatever the container managed to say before the lab stopped listening."""
+    if output is None:
+        return ""
+    if isinstance(output, bytes):
+        return output.decode("utf-8", errors="replace")
+    return output
+
+
+def _abandon(container: str) -> None:
+    """Stop a container the lab has given up waiting for.
+
+    `docker run` is a CLIENT. Killing it detaches; it does not stop the
+    container, and `--rm` therefore never fires. Without this, a timed-out
+    target leaves its container -- and whatever it is wedged on -- running
+    underneath every later target in the matrix, so one stall quietly degrades
+    the thirteen measurements that follow it.
+
+    Cleanup must never raise. It runs while a failure is already being
+    reported, and a second exception here would replace a diagnosis with a
+    stack trace, which is precisely the defect this function helps fix.
+    """
+    try:
+        docker("rm", "--force", container, check=False, capture=True, timeout=60)
+    except (subprocess.SubprocessError, OSError):
+        pass
+
+
 def run_scenario(target: Target, scenario: str, timeout: int = 900) -> Result:
     body = SCENARIOS[scenario]
     script = f"set -x\n{target.prep}\nset +x\n{body}\n"
     RUNS.joinpath(scenario).mkdir(parents=True, exist_ok=True)
     log = RUNS / scenario / f"{target.name}.log"
+    # Named so a timeout has something to kill, and uniquely so that a lab which
+    # died without cleaning up cannot make every later run of this target fail
+    # on a name collision rather than on its own merits. The name is written
+    # into the transcript header, which is where someone hunting it will look.
+    container = f"{NETWORK}-{scenario}-{target.name}-{time.time_ns():x}"
 
     print(f"lab: [{scenario}] {target.name} ({target.image}) …", flush=True)
-    completed = subprocess.run(
-        [
-            "docker", "run", "--rm", "--network", NETWORK,
-            # A stranger's box has no Firekeep state. Nothing is mounted from the
-            # host, so every run starts from a genuinely empty $HOME.
-            "-e", "HOME=/root",
-            target.image, target.shell, "-c", script,
-        ],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-        errors="replace", timeout=timeout,
-    )
-    output = completed.stdout or ""
+    timed_out = False
+    try:
+        completed = subprocess.run(
+            [
+                "docker", "run", "--rm", "--name", container, "--network", NETWORK,
+                # A stranger's box has no Firekeep state. Nothing is mounted from the
+                # host, so every run starts from a genuinely empty $HOME.
+                "-e", "HOME=/root",
+                target.image, target.shell, "-c", script,
+            ],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            errors="replace", timeout=timeout,
+        )
+        exit_code, output = completed.returncode, completed.stdout or ""
+    except subprocess.TimeoutExpired as expired:
+        # A timeout is a RESULT, not an abort. Letting TimeoutExpired escape
+        # cost a real run on 2026-08-29: one slow opensuse container took the
+        # other thirteen combinations down with it and, because the raise
+        # landed before the write below, the transcript upload found nothing to
+        # collect. Seventeen minutes of runner time reported one stack trace.
+        timed_out = True
+        exit_code, output = TIMEOUT_EXIT, _partial(expired.output)
+        _abandon(container)
+
+    stamp = f" (TIMED OUT after {timeout}s)" if timed_out else ""
     header = (
         f"# scenario: {scenario}\n# image: {target.image}\n"
-        f"# exit: {completed.returncode}\n# command:\n{script}\n{'=' * 72}\n"
+        f"# container: {container}\n"
+        f"# exit: {exit_code}{stamp}\n# command:\n{script}\n{'=' * 72}\n"
     )
     log.write_text(redact(header + readable(output)), encoding="utf-8")
     log.with_suffix(".raw.log").write_text(redact(header + output), encoding="utf-8")
-    result = Result(scenario, target.name, completed.returncode, log)
-    result.failures = assess(scenario, completed.returncode, output)
+    result = Result(scenario, target.name, exit_code, log)
+    result.failures = assess(scenario, exit_code, output)
+    if timed_out:
+        result.failures.insert(
+            0,
+            f"timed out after {timeout}s — still running when the lab gave up, "
+            f"so the transcript stops mid-install",
+        )
     verdict = "PASS" if result.ok else "FAIL"
-    print(f"lab: [{scenario}] {target.name}: {verdict} (exit {completed.returncode}) -> {log}")
+    print(f"lab: [{scenario}] {target.name}: {verdict} (exit {result.exit_code}) -> {log}")
     for failure in result.failures:
         print(f"lab:     - {failure}")
     return result
