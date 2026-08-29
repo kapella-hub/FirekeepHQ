@@ -32,6 +32,9 @@ on:
       - 'Dockerfile'
       - '.env.example'
       - '.github/workflows/install-smoke.yml'
+      # The lab IS the client-matrix job. Without this a change to the
+      # harness ships unverified by the very check it implements.
+      - 'scripts/installlab/**'
   schedule:
     - cron: '0 4 * * *'   # 04:00 UTC daily — catches drift from upstream image tags
   workflow_dispatch:
