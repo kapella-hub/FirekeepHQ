@@ -55,6 +55,48 @@ if [ -f SERVER_BUNDLE.json ]; then
     exec firekeep init --server-dir "$(pwd)" --version "$TO_VERSION"
 fi
 
+# --- Source-checkout arguments -------------------------------------------
+# Everything reaching here is a source checkout: the bundle path above parsed
+# its own arguments and `exec`d away. This path accepts exactly one flag.
+#
+# `--to` is not merely unsupported here, it is a CATEGORY ERROR: a checkout
+# updates by pulling its tracked branch, so a release tag has nothing to
+# select. It used to be accepted and SILENTLY IGNORED, which is worse than
+# refusing it, because the product's own advice leads here -- `firekeep
+# doctor` prints `bash update.sh --to vY` for any clean vX.Y.Z the server
+# reports, and a checkout parked exactly on a release tag reports exactly
+# that. The operator followed the instruction and got a plain `git pull`
+# while believing they had pinned a version.
+#
+# Validation runs BEFORE the office guard, the pull, and the backup: an
+# argument error must cost nothing.
+SKIP_BACKUP=0
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --no-backup)
+            SKIP_BACKUP=1
+            shift
+            ;;
+        --to)
+            echo "ERROR: --to is for published (source-free) installs; this is a source checkout." >&2
+            echo "       A checkout updates by pulling its tracked branch, so there is no" >&2
+            echo "       release bundle to select." >&2
+            echo "" >&2
+            echo "       Run instead:  bash update.sh" >&2
+            echo "" >&2
+            echo "       Pinning or rolling back to a specific release is a published-install" >&2
+            echo "       feature (firekeep init --version vX.Y.Z). See docs/DEPLOYMENT.md" >&2
+            echo "       section 'Updating' for the difference between the two shapes." >&2
+            exit 2
+            ;;
+        *)
+            echo "ERROR: unknown source-checkout update argument: $1" >&2
+            echo "Usage: bash update.sh [--no-backup]" >&2
+            exit 2
+            ;;
+    esac
+done
+
 # --- Office-front safety guard ---
 # Bare `docker compose` only loads docker-compose.yml unless COMPOSE_FILE
 # is set (shell env or .env — docker compose v2 reads COMPOSE_FILE from
@@ -120,11 +162,6 @@ DATASTORE_AFTER="$(grep -hoE '^[[:space:]]+image:[[:space:]]*(neo4j|redis|qdrant
 # Default ON. Disk is cheap and the data is the one thing a customer cannot
 # recreate; deploy/backup.sh stops neo4j/qdrant/redis first so the archive is
 # actually restorable, and restarts them on every exit path.
-SKIP_BACKUP=0
-for arg in "$@"; do
-    [ "$arg" = "--no-backup" ] && SKIP_BACKUP=1
-done
-
 if [ "$DATASTORE_BEFORE" != "$DATASTORE_AFTER" ]; then
     echo ""
     echo "############################################################"
