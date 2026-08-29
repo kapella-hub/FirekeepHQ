@@ -1251,6 +1251,9 @@ button.btn-outline:hover { border-color: var(--accent); color: var(--accent); ba
                                 <div class="form-group"><label>Device name (optional)</label><input id="deviceInviteName" type="text" placeholder="Morgan laptop"></div>
                                 <div class="form-group"><label>Credential lifetime</label><input id="deviceInviteExpiry" type="number" min="0" max="365" value="90"><div style="font-size:11px;color:var(--text-dim);margin-top:4px">days · 0 means never</div></div>
                             </div>
+                            <div class="form-row">
+                                <div class="form-group" style="flex:1"><label>Address the new device will call</label><input id="deviceInviteHost" type="text" placeholder="100.64.0.1 or firekeep.example.com"><div id="deviceInviteHostHint" style="font-size:11px;color:var(--text-dim);margin-top:4px">Checking what this server publishes on...</div></div>
+                            </div>
                             <div class="form-actions"><button type="submit" class="btn btn-sm">+ Add device</button></div>
                         </form>
                         <div id="deviceInviteResult" style="display:none;margin-top:18px">
@@ -4721,8 +4724,52 @@ function groupDeviceCredentials(rows) {
     });
 }
 
+var _deviceInviteDefaults = null;
+
+// The address the admin reached this dashboard at is, by construction, an
+// address that reaches this box — the right guess when the server itself
+// cannot name one. It is only wrong when the admin is on the box (or tunnelled
+// to it), which is exactly when the loopback check below rejects it.
+function browserInviteHost() {
+    var host = window.location.hostname || '';
+    return (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]') ? '' : host;
+}
+
+function isLoopbackHost(host) {
+    return host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]';
+}
+
+function updateDeviceInviteHostHint() {
+    var host = ($('deviceInviteHost').value || '').trim();
+    var hint = $('deviceInviteHostHint');
+    if (!host || isLoopbackHost(host)) {
+        hint.textContent = 'No reachable address: the code will tell the device to open an SSH tunnel to the server instead. '
+            + ((_deviceInviteDefaults && _deviceInviteDefaults.detail) || '');
+        return;
+    }
+    var source = _deviceInviteDefaults && _deviceInviteDefaults.host === host
+        ? ' (from ' + _deviceInviteDefaults.source + ')' : '';
+    hint.textContent = 'Devices will call http://' + host + ':8100 directly' + source
+        + '. That traffic is unencrypted, so this should be a private address — a tailnet, VPN or LAN.';
+}
+
+function loadDeviceInviteDefaults() {
+    return fetchJSON(CONFIG.CORTEX_API + '/enroll/defaults').then(function(data) {
+        _deviceInviteDefaults = data;
+        var field = $('deviceInviteHost');
+        if (!field.value) field.value = data.host || browserInviteHost();
+        updateDeviceInviteHostHint();
+        return data;
+    }).catch(function() {
+        var field = $('deviceInviteHost');
+        if (!field.value) field.value = browserInviteHost();
+        updateDeviceInviteHostHint();
+    });
+}
+
 function loadDevices() {
     var devices = $('devicesList'), invites = $('deviceInvitesList');
+    loadDeviceInviteDefaults();
     devices.innerHTML = '<div class="spinner">Loading devices...</div>';
     invites.innerHTML = '<div class="spinner">Loading invites...</div>';
     Promise.all([
@@ -4789,7 +4836,21 @@ function updateDeviceInviteCommand() {
 }
 
 function issueDeviceInvite(body) {
-    body.transport = 'tunnel'; body.kind = 'ports'; body.host = '127.0.0.1';
+    // This used to hardcode transport=tunnel + host=127.0.0.1 regardless of the
+    // deployment, so every code minted here told the joining machine to keep
+    // host = 127.0.0.1 and reach the server over ssh. Send the address the
+    // operator can see and edit instead, and fall back to a tunnel only when
+    // there genuinely is no address that reaches the ports.
+    // browserInviteHost() covers the race where the form is submitted before
+    // /enroll/defaults answers — an empty field would otherwise silently mean
+    // "tunnel", which is the very bug this replaced.
+    var host = ($('deviceInviteHost').value || '').trim() || browserInviteHost();
+    body.kind = 'ports';
+    if (host && !isLoopbackHost(host)) {
+        body.transport = 'http'; body.host = host; body.insecure_http = true;
+    } else {
+        body.transport = 'tunnel'; body.host = '127.0.0.1';
+    }
     return fetchJSON(CONFIG.CORTEX_API + '/enroll/invite', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
     }).then(function(data) { showDeviceInvite(data); loadDevices(); return data; });
@@ -4823,6 +4884,7 @@ window.renameDevice = renameDevice; window.revokeDevice = revokeDevice;
 window.regenerateDevice = regenerateDevice; window.cancelDeviceInvite = cancelDeviceInvite;
 
 $('btnRefreshDevices').addEventListener('click', loadDevices);
+$('deviceInviteHost').addEventListener('input', updateDeviceInviteHostHint);
 $('deviceInvitePlatform').addEventListener('change', updateDeviceInviteCommand);
 $('btnCopyDeviceInvite').addEventListener('click', function() {
     navigator.clipboard.writeText($('deviceInviteCommand').textContent).then(function() { toast('Install command copied', 'success'); });
@@ -4899,7 +4961,9 @@ $('memberInviteForm').addEventListener('submit', function(e) {
         body: JSON.stringify({
             label: $('memberInviteName').value.trim(),
             email: $('memberInviteEmail').value.trim(),
-            transport: 'tunnel', kind: 'ports', host: '127.0.0.1'
+            // No transport/host: the server fills them from the address it
+            // actually publishes on, and says so plainly in a 400 if it cannot.
+            kind: 'ports'
         })
     }).then(function(data) {
         showMemberInvite(data); loadMembers(); toast('Member invite issued', 'success');

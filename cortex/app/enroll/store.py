@@ -253,4 +253,11 @@ class EnrollmentStore:
         return rows
 
     async def cancel(self, tid: str) -> bool:
-        return bool(await self.redis.delete(f"{TICKET_PREFIX}{tid}"))
+        # Drop the index entry with the record. list_outstanding reads only the
+        # newest `limit` tids and then filters, so tids left behind by a cancel
+        # consume that window and can push live invites out of the listing.
+        async with self.redis.pipeline(transaction=True) as pipe:
+            pipe.delete(f"{TICKET_PREFIX}{tid}")
+            pipe.zrem(TICKET_INDEX, tid)
+            deleted, _ = await pipe.execute()
+        return bool(deleted)

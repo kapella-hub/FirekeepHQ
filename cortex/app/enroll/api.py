@@ -17,6 +17,7 @@ from auth.middleware import require_scope
 from app.config import get_settings
 from app.version import VERSION
 
+from .advertise import advertised_host, resolve_connection
 from .mint import mint_invite
 from .store import EnrollmentSettings, EnrollmentStore, ticket_id
 
@@ -44,9 +45,13 @@ class EnrollRequest(BaseModel):
 class InviteRequest(BaseModel):
     agent: str = Field(default="", max_length=64)
     expires_days: int | None = Field(default=None, ge=0, le=365)
-    transport: str = Field(default="tunnel", pattern="^(tls|tunnel|http)$")
+    # Empty transport/host mean "whatever this server actually serves on" and
+    # are resolved from BIND_ADDR at mint time. They used to default to an ssh
+    # tunnel onto 127.0.0.1, which is only ever right for a localhost-bound
+    # deployment and silently wrote host = 127.0.0.1 into every joining device.
+    transport: str = Field(default="", pattern="^(|tls|tunnel|http)$")
     kind: str = Field(default="ports", pattern="^(ports|paths)$")
-    host: str = "127.0.0.1"
+    host: str = ""
     base_url: str = ""
     ca_pem: str = ""
     ca_mode: str = Field(default="", pattern="^(|os)$")
@@ -227,28 +232,45 @@ def create_enroll_router(
     ) -> dict[str, Any]:
         if not enabled:
             raise HTTPException(status_code=409, detail=AUTH_OFF_DETAIL)
+        if not req.transport and req.kind != "ports":
+            raise HTTPException(
+                status_code=400,
+                detail="kind=paths requires an explicit transport",
+            )
+        transport, host, server_chosen = resolve_connection(
+            transport=req.transport, kind=req.kind, host=req.host
+        )
         ssh_target = req.ssh_target
-        if req.transport == "tunnel" and not ssh_target:
+        if transport == "tunnel" and not ssh_target:
             vps_ip = os.environ.get("VPS_IP", "").strip()
             ssh_user = os.environ.get("FIREKEEP_SSH_USER", "root").strip() or "root"
             if vps_ip:
                 ssh_target = f"{ssh_user}@{vps_ip}"
-        if req.kind == "ports" and not req.host:
-            raise HTTPException(status_code=400, detail="kind=ports requires host")
+        if req.kind == "ports" and not host:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "kind=ports requires host, and this server cannot name one: "
+                    f"{advertised_host().detail}"
+                ),
+            )
         if req.kind == "paths" and not req.base_url:
             raise HTTPException(status_code=400, detail="kind=paths requires base_url")
-        if req.transport == "tls" and not (req.ca_pem or req.ca_mode == "os"):
+        if transport == "tls" and not (req.ca_pem or req.ca_mode == "os"):
             raise HTTPException(status_code=400, detail="t=tls requires ca_pem or ca_mode=os")
-        if req.transport == "tunnel" and not ssh_target:
+        if transport == "tunnel" and not ssh_target:
             raise HTTPException(status_code=400, detail="t=tunnel requires ssh_target")
-        if req.transport == "http" and not req.insecure_http:
+        # `insecure_http` confirms a cleartext host the CALLER named. A host the
+        # server resolved from its own BIND_ADDR needs no such confirmation: the
+        # process is already serving cleartext on exactly that address.
+        if transport == "http" and not (req.insecure_http or server_chosen):
             raise HTTPException(status_code=400, detail="plain HTTP requires insecure_http=true")
         return await mint_invite(
             enrollment_store,
             agent_label=req.agent,
-            transport=req.transport,
+            transport=transport,
             kind=req.kind,
-            host=req.host,
+            host=host,
             base_url=req.base_url,
             ca_pem=req.ca_pem,
             ca_mode=req.ca_mode,
@@ -258,6 +280,21 @@ def create_enroll_router(
             device_id=req.device_id,
             dist_base=req.dist_base,
         )
+
+    @router.get("/enroll/defaults")
+    async def defaults(
+        identity: dict = Depends(require_scope("admin")),
+    ) -> dict[str, Any]:
+        """What an invite will say if the caller names no transport or host."""
+        advertised = advertised_host()
+        transport, host, _ = resolve_connection(transport="", kind="ports", host="")
+        return {
+            "host": host if transport != "tunnel" else "",
+            "transport": transport,
+            "source": advertised.source,
+            "detail": advertised.detail,
+            "reachable": advertised.reachable,
+        }
 
     @router.get("/enroll/invites")
     async def list_invites(
