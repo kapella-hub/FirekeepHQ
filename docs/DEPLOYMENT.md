@@ -285,10 +285,16 @@ the client whether to use an SSH tunnel, direct TLS, or explicitly insecure HTTP
 the installer does not ask the customer to choose a network shape, profile,
 server, or API key.
 
-On the shipped loopback configuration the code carries
-`FIREKEEP_SSH_USER@VPS_IP`, starts the required six-port SSH tunnel, and redeems
-over `http://127.0.0.1:8100`. Set those two values correctly in `.env` before
-issuing the code. The server-shell fallback is:
+Which shape it picks follows `BIND_ADDR`, the interface the ports actually
+bind to. On the shipped loopback configuration nothing off the machine can reach
+them, so the code carries `FIREKEEP_SSH_USER@VPS_IP`, starts the required
+six-port SSH tunnel, and redeems over `http://127.0.0.1:8100` — set those two
+values correctly in `.env` before issuing it. Once `BIND_ADDR` names a real
+interface, the code sends the device straight to `http://<BIND_ADDR>:8100`
+instead, and the Add device form shows that address for you to confirm or
+override. `VPS_IP` is not a substitute for `BIND_ADDR` here: an invite built
+from a public address that publishes no ports is redeemable only through ssh,
+and it writes `host = 127.0.0.1` into the joining machine's config for good. The server-shell fallback is:
 
 ```bash
 deploy/firekeep-admin invite --agent laptop --json

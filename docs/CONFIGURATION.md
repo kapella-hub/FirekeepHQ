@@ -29,7 +29,7 @@ cp .env.example .env
 | `NB_PROACTIVE_RECALL_ENABLED` | `True` | Auto-inject memories on ctx_update |
 | `RP_ENABLED` | `True` | Enable replay trace event recording |
 | `RP_RETENTION_DAYS` | `30` | How long replay events are retained |
-| `BIND_ADDR` | `127.0.0.1` | Host interface the six published app ports (8040-8100) bind to. Loopback by default — a fresh install is reachable only from the machine it runs on. See [Binding and exposure](#binding-and-exposure). |
+| `BIND_ADDR` | `127.0.0.1` | Host interface the six published app ports (8040-8100) bind to, and therefore the address every device invite hands out. Loopback by default — a fresh install is reachable only from the machine it runs on, so invites fall back to an SSH tunnel. See [Binding and exposure](#binding-and-exposure). |
 | `AUTH_ENABLED` | `True` | Enforce per-key `X-API-Key` authentication on every MCP and REST surface. **Changed from `False` on 2026-07-26** — see [Authentication](#authentication). |
 | `FIREKEEP_SSH_USER` | `root` | SSH account carried by loopback-server join codes; combine with `VPS_IP` to start the client tunnel. |
 | `ENROLL_TICKET_TTL_HOURS` | `24` | Single-use join-code validity. |
@@ -129,7 +129,7 @@ service keys. These override that.
 
 | Flag | Env | Default | Description |
 |---|---|---|---|
-| `--ip <addr>` | `FIREKEEP_VPS_IP` | detected via `ip route get` | The address a remote client reaches this host at. Becomes `VPS_IP`, the default `ssh_target` in every tunnel join code, and the CORS origin. Set it when the routed address is not the reachable one (NAT, floating IP, a DNS name). Getting it wrong is recoverable — the invite API answers `400 t=tunnel requires ssh_target` and you pass `--ssh-target` explicitly. |
+| `--ip <addr>` | `FIREKEEP_VPS_IP` | detected via `ip route get` | The address of this host as an **ssh and CORS** destination. Becomes `VPS_IP`, the default `ssh_target` in tunnel join codes, and the CORS origin. It is **not** what an invite tells a device to call — `BIND_ADDR` is, because that is where the ports actually answer, and the two routinely differ (a tailnet address that serves :8100 against a public address that publishes nothing). `VPS_IP` is consulted for a device address only when `BIND_ADDR` is a wildcard, where every interface is published and only `VPS_IP` names which one to hand out. Set it when the routed address is not the reachable one (NAT, floating IP, a DNS name). Getting it wrong is recoverable — the invite API answers `400 t=tunnel requires ssh_target` and you pass `--ssh-target` explicitly. |
 | `--neo4j-password <pw>` | `FIREKEEP_NEO4J_PASSWORD` | generated (24 bytes hex) | Machine-to-machine only; nothing but the containers reads it. **It is baked into the Neo4j data volume at first boot** — editing `NEO4J_PASSWORD` in `.env` afterwards breaks the stack rather than changing it. Supply it only when restoring a backup or satisfying a secrets policy. |
 | `--wait-for-models` | — | off | Block until the ~3.3 GB Ollama pull completes instead of backgrounding it. Use when a machine must be fully ready on exit (CI, image builds). |
 | — | `FIREKEEP_MODEL_PULL_GRACE` | `120` | Seconds to wait for the model pull before handing it to a background watcher. A warm model volume finishes instantly and still reports `[OK]`. |
@@ -224,6 +224,16 @@ explicitly:
 sed -i 's/^BIND_ADDR=.*/BIND_ADDR=0.0.0.0/' .env
 docker compose up -d          # recreates the app containers with new bindings
 ```
+
+`BIND_ADDR` is also the address enrollment hands out. An invite that names no
+transport asks the server where it publishes: a concrete non-loopback
+`BIND_ADDR` mints a direct `http://<BIND_ADDR>:8100` code, a wildcard falls back
+to `VPS_IP`, and a loopback binding mints an SSH-tunnel code because nothing off
+the machine can reach the ports. `GET /enroll/defaults` (admin) returns that
+decision and the one-line reason behind it; the dashboard's **Devices → Add
+device** field is prefilled from it and can be overridden per invite. Prefer a
+private address here — a direct code is plain HTTP, so the API key it issues
+crosses the network in cleartext on anything but a tailnet, VPN or LAN.
 
 > **A host firewall will not contain a published port.** Docker publishes a port
 > by writing its own `DOCKER` iptables chain, which is evaluated *before* ufw's
