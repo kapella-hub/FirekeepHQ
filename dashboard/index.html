@@ -62,6 +62,23 @@
     --amber-muted: rgba(232, 197, 71, 0.12);
     --violet: #8B93B8;
     --violet-muted: rgba(139, 147, 184, 0.14);
+
+    /* Memory-graph node taxonomy — the five Neo4j labels, coloured along the arc
+       a session actually takes: Domain (what it was about) -> Action (what was
+       done) -> Outcome (what happened) -> Resolution (how it settled) ->
+       Concept (what was learned). So hue reads as position in that arc, not as
+       decoration.
+
+       Deliberately confined to the COOL band. --green/--amber/--red mean health
+       and --accent means brand+interaction (see the rule at the top of this
+       block); a node's TYPE is neither, so borrowing those hues would assert a
+       status the graph has no idea about. And as with status, colour is never
+       alone: the legend names every type it draws. */
+    --mg-domain: #5BE1D6;
+    --mg-action: #56B6F0;
+    --mg-outcome: #8B8CF0;
+    --mg-resolution: #B47BE8;
+    --mg-concept: #E87BC4;
     /* aliases — several components referenced these names which were never defined
        (silently rendering no background / wrong color); map them onto the palette. */
     --bg-card: var(--surface);
@@ -452,7 +469,15 @@ button.btn-outline:hover { border-color: var(--accent); color: var(--accent); ba
 .mg-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; padding: 24px; color: var(--text-dim); font-size: 13px; }
 .mg-empty[hidden] { display: none; }  /* beat .mg-empty's own display:flex, which ties with the UA [hidden] rule and wins on source order */
 .mg-tip { position: absolute; z-index: 3; pointer-events: none; transform: translate(-50%, calc(-100% - 12px)); padding: 5px 9px; border-radius: 7px; background: rgba(10,11,14,.94); border: 1px solid var(--border); color: var(--text); font-size: 12px; max-width: 240px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; box-shadow: 0 6px 20px rgba(0,0,0,.45); }
-.mg-legend { position: absolute; bottom: 10px; right: 14px; font-family: var(--mono, ui-monospace, monospace); font-size: 9.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--text-dim); opacity: .7; pointer-events: none; }
+.mg-hint { position: absolute; bottom: 10px; right: 14px; font-family: var(--font-mono, ui-monospace, monospace); font-size: 9.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--text-dim); opacity: .7; pointer-events: none; }
+/* Type legend. The graph colours nodes by Neo4j label, so the key has to be on
+   the card — colour alone is not a readable encoding, here or anywhere else in
+   this console. Wraps and drops to the card's full width on narrow viewports
+   rather than colliding with the drag hint. */
+.mg-legend { position: absolute; bottom: 9px; left: 14px; right: 96px; display: flex; flex-wrap: wrap; gap: 5px 12px; pointer-events: none; }
+.mg-key { display: inline-flex; align-items: center; gap: 5px; font-family: var(--font-mono, ui-monospace, monospace); font-size: 9.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--text-dim); }
+.mg-key i { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; box-shadow: 0 0 7px currentColor; background: currentColor; }
+@media (max-width: 560px) { .mg-legend { right: 14px; bottom: 26px; } }
 .source-badge.vector { background: var(--accent-muted); color: var(--accent); }
 
 /* Events */
@@ -829,7 +854,8 @@ button.btn-outline:hover { border-color: var(--accent); color: var(--accent); ba
                     <canvas id="memoryGraph" class="mg-canvas" aria-label="3D view of the knowledge graph"></canvas>
                     <div class="mg-empty" id="mgEmpty" hidden>The knowledge graph is empty — nodes appear here as memories connect.</div>
                     <div class="mg-tip" id="mgTip" hidden></div>
-                    <div class="mg-legend">drag to rotate</div>
+                    <div class="mg-legend" id="mgLegend"></div>
+                    <div class="mg-hint">drag to rotate</div>
                 </div>
             </div>
             <div class="section"><div id="overviewPresence" class="presence-row"></div></div>
@@ -2453,6 +2479,7 @@ function renderMemoryGraph(canvas, rawNodes, rawEdges) {
         var emptyEl = document.getElementById('mgEmpty');
         var countEl = document.getElementById('mgCount');
         var tipEl = document.getElementById('mgTip');
+        var legendEl = document.getElementById('mgLegend');
 
         // Cap for legibility + a stable frame budget; index by id.
         // The snapshot puts the human content in `name` and the Neo4j node kind
@@ -2475,6 +2502,19 @@ function renderMemoryGraph(canvas, rawNodes, rawEdges) {
             if (s && t && s !== t) { edges.push([s._i, t._i]); s.deg++; t.deg++; }
         });
 
+        // One-line display name. Node names run to 938 characters in the real
+        // store, so this is a hard cap, not a nicety.
+        nodes.forEach(function (n) {
+            var t = String(n.label || n.id).replace(/\s+/g, ' ').trim();
+            n.short = t.length > 22 ? t.slice(0, 21) + '…' : t;
+        });
+        // Name only the hubs. Labelling all 70 is unreadable; labelling the
+        // most-connected ones makes the graph self-annotating -- the big bright
+        // circles ARE what this Keep is organised around. Everything else keeps
+        // its name in the hover tooltip.
+        nodes.slice().sort(function (a, b) { return (b.deg || 0) - (a.deg || 0); })
+             .slice(0, 14).forEach(function (n) { if ((n.deg || 0) >= 2) n.named = true; });
+
         if (emptyEl) emptyEl.hidden = nodes.length > 0;
         if (countEl) countEl.textContent = nodes.length ? (nodes.length + ' nodes · ' + edges.length + ' links') : '';
 
@@ -2485,21 +2525,65 @@ function renderMemoryGraph(canvas, rawNodes, rawEdges) {
         if (!nodes.length) { _mgState = null; if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height); return; }
 
         // Seed on a Fibonacci sphere — an even, attractive 3D cloud out of the box.
-        var R = 150, GA = Math.PI * (3 - Math.sqrt(5));
+        var R = 132, GA = Math.PI * (3 - Math.sqrt(5));
         nodes.forEach(function (n, i) {
             var y = 1 - (i / Math.max(1, nodes.length - 1)) * 2, rad = Math.sqrt(Math.max(0, 1 - y * y)), th = GA * i;
             n.x = Math.cos(th) * rad * R; n.y = y * R; n.z = Math.sin(th) * rad * R;
             n.vx = 0; n.vy = 0; n.vz = 0;
         });
-        // Light relaxation so linked nodes clump, without wrecking the even spread.
-        for (var s = 0; s < 45; s++) stepMemoryForces(nodes, edges);
+        // Relax, then pin every node back onto the sphere SHELL on each step. The
+        // forces still pull linked memories together, but they now do it ACROSS
+        // THE SURFACE: related nodes become neighbours on a globe and every link
+        // is a chord you can follow as it turns. Without the re-projection the
+        // repulsion just inflates an irregular cloud that overflows the card and
+        // reads as noise rather than structure.
+        for (var s = 0; s < 60; s++) {
+            stepMemoryForces(nodes, edges);
+            for (var si = 0; si < nodes.length; si++) {
+                var sn = nodes[si];
+                var m = Math.sqrt(sn.x * sn.x + sn.y * sn.y + sn.z * sn.z) || 1;
+                sn.x = sn.x / m * R; sn.y = sn.y / m * R; sn.z = sn.z / m * R;
+            }
+        }
 
         var css = getComputedStyle(document.documentElement);
         var ember = (css.getPropertyValue('--pulse') || '#FF9147').trim();
+        var mono = (css.getPropertyValue('--font-mono') || 'ui-monospace, monospace').trim();
         var reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
+        // Colour encodes the Neo4j label; radius encodes degree. Both come from
+        // the palette tokens so the graph recolours with the rest of the stack.
+        var MG_TYPES = ['Domain', 'Action', 'Outcome', 'Resolution', 'Concept'];
+        var typeColor = {}, otherColor = (css.getPropertyValue('--violet') || '#8B93B8').trim();
+        MG_TYPES.forEach(function (t) {
+            var v = (css.getPropertyValue('--mg-' + t.toLowerCase()) || '').trim();
+            if (v) typeColor[t] = v;
+        });
+        nodes.forEach(function (n) { n.color = typeColor[n.type] || otherColor; });
+
+        // Key only the types actually on screen -- a swatch for something not
+        // drawn is noise. Colour is never the sole encoding in this console.
+        if (legendEl) {
+            var keys = MG_TYPES.filter(function (t) {
+                return nodes.some(function (n) { return n.type === t; });
+            });
+            if (nodes.some(function (n) { return !typeColor[n.type]; })) keys.push('Other');
+            legendEl.textContent = '';
+            keys.forEach(function (name) {
+                var key = document.createElement('span');
+                key.className = 'mg-key';
+                key.style.color = typeColor[name] || otherColor;
+                var text = document.createElement('span');
+                text.textContent = name;
+                text.style.color = 'var(--text-dim)';
+                key.appendChild(document.createElement('i'));
+                key.appendChild(text);
+                legendEl.appendChild(key);
+            });
+        }
+
         var st = {
-            nodes: nodes, edges: edges, ctx: ctx, canvas: canvas, ember: ember, tip: tipEl,
+            nodes: nodes, edges: edges, ctx: ctx, canvas: canvas, ember: ember, tip: tipEl, mono: mono,
             ay: prevAy, ax: prevAx, spin: reduced ? 0 : 0.0022,
             dragging: false, lastX: 0, lastY: 0, mouseX: null, mouseY: null, hover: -1,
             w: 0, h: 0, raf: 0
@@ -2551,7 +2635,7 @@ function renderMemoryGraph(canvas, rawNodes, rawEdges) {
             var cax = Math.cos(st.ax), sax = Math.sin(st.ax);
             var y2 = n.y * cax - z1 * sax, z2 = n.y * sax + z1 * cax;
             var p = 460 / (460 + z2 + 240);          // perspective foreshortening
-            return { x: st.w / 2 + x1 * p * 1.4, y: st.h / 2 + y2 * p * 1.4, z: z2, p: p };
+            return { x: st.w / 2 + x1 * p * 1.7, y: st.h / 2 + y2 * p * 1.7, z: z2, p: p };
         }
 
         function frame() {
@@ -2573,7 +2657,7 @@ function renderMemoryGraph(canvas, rawNodes, rawEdges) {
             for (i = 0; i < st.edges.length; i++) {
                 var a = pj[st.edges[i][0]], b = pj[st.edges[i][1]], dep = (a.p + b.p) / 2;
                 var lit = (st.hover >= 0 && (st.edges[i][0] === st.hover || st.edges[i][1] === st.hover));
-                ctx.strokeStyle = lit ? mgEmberAlpha(st.ember, 0.55) : 'rgba(150,162,180,' + (0.05 + dep * 0.10).toFixed(3) + ')';
+                ctx.strokeStyle = lit ? mgEmberAlpha(st.nodes[st.hover].color, 0.62) : 'rgba(150,162,180,' + (0.05 + dep * 0.10).toFixed(3) + ')';
                 ctx.lineWidth = lit ? 1.3 : Math.max(0.4, dep * 0.9);
                 ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
             }
@@ -2582,13 +2666,58 @@ function renderMemoryGraph(canvas, rawNodes, rawEdges) {
             for (var k = 0; k < order.length; k++) {
                 i = order[k]; n = st.nodes[i];
                 var p = pj[i], far = Math.max(0, Math.min(1, (p.p - 0.52) / 0.5));
-                var rr = Math.max(1.3, (2.2 + Math.min(6, (n.deg || 0) * 0.9)) * p.p * 1.15);
+                var rr = mgRadius(n, p.p);
                 var hovered = (i === st.hover);
                 ctx.beginPath(); ctx.arc(p.x, p.y, rr, 0, 6.2832);
-                ctx.shadowColor = st.ember; ctx.shadowBlur = hovered ? 16 : 4 + far * 6;
-                ctx.fillStyle = mgEmberAlpha(st.ember, hovered ? 1 : 0.35 + far * 0.6);
+                ctx.shadowColor = n.color; ctx.shadowBlur = hovered ? 18 : 4 + far * 7;
+                ctx.fillStyle = mgEmberAlpha(n.color, hovered ? 1 : 0.32 + far * 0.6);
                 ctx.fill(); ctx.shadowBlur = 0;
                 if (hovered) { ctx.strokeStyle = 'rgba(255,255,255,0.85)'; ctx.lineWidth = 1.2; ctx.stroke(); }
+            }
+
+            // Labels last, so they sit above every disc. Outlined rather than
+            // boxed: nine pills would fight the graph for attention, while a
+            // dark stroke just lifts the text clear of the edge lines behind it.
+            ctx.font = '10px ' + st.mono;
+            ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+            var placed = [];
+            for (var q = order.length - 1; q >= 0; q--) {   // nearest first: the front label wins the space
+                var li = order[q], ln = st.nodes[li];
+                var isHover = (li === st.hover);
+                if (!ln.named && !isHover) continue;
+                var lp = pj[li];
+                // Front hemisphere only. A label for a node behind the globe
+                // points at nothing the reader can see, and it is the single
+                // biggest source of the crossing text this layout used to have.
+                if (lp.z > 0 && !isHover) continue;
+                var lfar = Math.max(0, Math.min(1, (lp.p - 0.52) / 0.5));
+                var la = isHover ? 1 : (0.34 + lfar * 0.58);
+                var lw = ctx.measureText(ln.short).width;
+                var lrr = mgRadius(ln, lp.p);
+                // Radiate outward from the globe's centre: nodes on the right get
+                // their name to the right, nodes on the left get it to the left.
+                // Anything else lays text back across the sphere it belongs to.
+                var outward = (lp.x >= st.w / 2);
+                var lx = outward ? lp.x + lrr + 5 : lp.x - lrr - 5 - lw;
+                // Outward or not at all. Flipping a non-fitting label to the
+                // inside just lays it back over the sphere, which is the clutter
+                // the outward rule exists to prevent; a narrow card simply shows
+                // fewer names, and the hover tooltip still has every one.
+                if (lx + lw > st.w - 6 || lx < 6) continue;
+                var box = { x: lx, y: lp.y - 7, w: lw, h: 14 };
+                var clash = false;
+                for (var b = 0; b < placed.length; b++) {
+                    var o = placed[b];
+                    if (box.x < o.x + o.w + 6 && box.x + box.w + 6 > o.x &&
+                        box.y < o.y + o.h && box.y + box.h > o.y) { clash = true; break; }
+                }
+                if (clash && !isHover) continue;   // drop it rather than overlap
+                placed.push(box);
+                ctx.lineWidth = 3;
+                ctx.strokeStyle = 'rgba(10,11,14,' + (0.92 * la).toFixed(3) + ')';
+                ctx.strokeText(ln.short, lx, lp.y);
+                ctx.fillStyle = mgEmberAlpha(ln.color, la);
+                ctx.fillText(ln.short, lx, lp.y);
             }
 
             if (st.tip) {
@@ -2637,6 +2766,14 @@ function stepMemoryForces(nodes, edges) {
 }
 
 // Ember accent → rgba() at a given alpha (accepts #rgb or #rrggbb).
+// Disc radius. sqrt so AREA grows roughly with degree -- linear radius makes an
+// 11-link hub look four times the weight it has. Capped at 12 links so one
+// outlier cannot swallow the cloud. Shared by the disc and label passes, which
+// must agree on where a label starts.
+function mgRadius(n, persp) {
+    return Math.max(1.5, (2.8 + 7.4 * Math.sqrt(Math.min(n.deg || 0, 12) / 12)) * persp * 1.15);
+}
+
 function mgEmberAlpha(hex, a) {
     var h = (hex || '#FF9147').replace('#', '');
     if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
