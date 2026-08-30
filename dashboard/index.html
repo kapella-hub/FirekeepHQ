@@ -2525,7 +2525,7 @@ function renderMemoryGraph(canvas, rawNodes, rawEdges) {
         if (!nodes.length) { _mgState = null; if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height); return; }
 
         // Seed on a Fibonacci sphere — an even, attractive 3D cloud out of the box.
-        var R = 132, GA = Math.PI * (3 - Math.sqrt(5));
+        var R = 132, GA = Math.PI * (3 - Math.sqrt(5)), MG_STRETCH = 2.8;
         nodes.forEach(function (n, i) {
             var y = 1 - (i / Math.max(1, nodes.length - 1)) * 2, rad = Math.sqrt(Math.max(0, 1 - y * y)), th = GA * i;
             n.x = Math.cos(th) * rad * R; n.y = y * R; n.z = Math.sin(th) * rad * R;
@@ -2586,7 +2586,7 @@ function renderMemoryGraph(canvas, rawNodes, rawEdges) {
             nodes: nodes, edges: edges, ctx: ctx, canvas: canvas, ember: ember, tip: tipEl, mono: mono,
             ay: prevAy, ax: prevAx, spin: reduced ? 0 : 0.0022,
             dragging: false, lastX: 0, lastY: 0, mouseX: null, mouseY: null, hover: -1,
-            w: 0, h: 0, raf: 0
+            w: 0, h: 0, sx: 1.7, sy: 1.7, raf: 0
         };
         _mgState = st;
 
@@ -2598,6 +2598,18 @@ function renderMemoryGraph(canvas, rawNodes, rawEdges) {
             canvas.height = Math.max(1, Math.floor(h * dpr));
             ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
             st.w = w; st.h = h;
+            // Fit the globe to the CARD, not to a fixed radius. A wide card was
+            // leaving a small circle marooned in whitespace; now the silhouette
+            // grows to the box on each axis independently. `eq` is the projected
+            // radius at the equator (where the silhouette actually is) for
+            // scale 1, so these divisions land on real pixels.
+            var eq = R * (460 / 700);
+            st.sy = Math.max(0.8, Math.min(2.0, (h / 2 - 44) / eq));
+            // Horizontal gets its own fit, minus a gutter for rim labels, and
+            // is capped relative to sy so an ultrawide window cannot pull it
+            // into a hairline. On a typical card the cap is what binds, which is
+            // deliberate: the shape is chosen, not just whatever the box allows.
+            st.sx = Math.max(st.sy, Math.min(st.sy * MG_STRETCH, (w / 2 - 124) / eq));
         }
         size();
         st._rz = function () { try { size(); } catch (e) {} };
@@ -2635,7 +2647,7 @@ function renderMemoryGraph(canvas, rawNodes, rawEdges) {
             var cax = Math.cos(st.ax), sax = Math.sin(st.ax);
             var y2 = n.y * cax - z1 * sax, z2 = n.y * sax + z1 * cax;
             var p = 460 / (460 + z2 + 240);          // perspective foreshortening
-            return { x: st.w / 2 + x1 * p * 1.7, y: st.h / 2 + y2 * p * 1.7, z: z2, p: p };
+            return { x: st.w / 2 + x1 * p * st.sx, y: st.h / 2 + y2 * p * st.sy, z: z2, p: p };
         }
 
         function frame() {
