@@ -1,0 +1,59 @@
+{
+  "name": "firekeep-pi",
+  "version": "0.1.0",
+  "description": "Firekeep hook bridge for the Pi coding agent \u2014 briefings in context, a hard-blocking pre-edit gate, and shared working state across every agent you run.",
+  "keywords": [
+    "pi",
+    "pi-extension",
+    "coding-agent",
+    "firekeep",
+    "memory",
+    "mcp",
+    "self-hosted"
+  ],
+  "license": "LicenseRef-Firekeep-BUSL-1.1",
+  "author": "Firekeep",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kapella-hub/FirekeepHQ",
+    "directory": "client/pi"
+  },
+  "homepage": "https://firekeep.ai/docs.html#pi",
+  "bugs": "https://github.com/kapella-hub/FirekeepHQ/issues",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.84.0"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^0.84.4",
+    "@earendil-works/pi-coding-agent": "^0.84.4",
+    "@types/node": "^26.4.0",
+    "typescript": "^5.6.0"
+  }
+}

@@ -305,8 +305,20 @@ def _claude_desktop_present() -> bool:
     return app_present()
 
 
+def _pi_present() -> bool:
+    """Whether Pi appears installed (its `~/.pi/agent` config dir exists).
+
+    Same gate, same reason as _claude_desktop_present: `firekeep install` with no
+    --runtime must not write a settings.json — and a `packages` entry Pi would
+    then try to install — onto a machine that has never run Pi. Lazy import: cli
+    must stay importable without every adapter module."""
+    from firekeep_client.adapters.pi import app_present
+    return app_present()
+
+
 def _selected_runtimes(runtime: str, *, include_generic: bool = False,
-                       include_claude_desktop: bool = False) -> list[str]:
+                       include_claude_desktop: bool = False,
+                       include_pi: bool = False) -> list[str]:
     """PURE: a function of its arguments only, never of the config on disk.
 
     `generic` joins the "all" fan-out only when the caller says so, so an
@@ -316,6 +328,7 @@ def _selected_runtimes(runtime: str, *, include_generic: bool = False,
     that never ran Claude Desktop gets no config written for it."""
     if runtime == "all":
         return (["claude", "codex", "kiro", "opencode"]
+                + (["pi"] if include_pi else [])
                 + (["claude-desktop"] if include_claude_desktop else [])
                 + (["generic"] if include_generic else []))
     return [runtime]
@@ -584,7 +597,8 @@ def cmd_install(args) -> int:
         venv_bin = _venv_bin(_venv_root(home))
         for name in _selected_runtimes(args.runtime,
                                        include_generic=_generic_is_configured(),
-                                       include_claude_desktop=_claude_desktop_present()):
+                                       include_claude_desktop=_claude_desktop_present(),
+                                       include_pi=_pi_present()):
             step = f"render {name} adapter"
             get_adapter(name).render(venv_bin=venv_bin)
 
@@ -813,7 +827,8 @@ def cmd_uninstall(args) -> int:
     generic_target = resolver.generic_agents_md()
     generic_orphan = _generic_orphan_warning(home) if generic_target is None else None
     runtimes = _selected_runtimes("all", include_generic=generic_target is not None,
-                                  include_claude_desktop=_claude_desktop_present())
+                                  include_claude_desktop=_claude_desktop_present(),
+                                  include_pi=_pi_present())
 
     # Say exactly what will be removed BEFORE touching anything.
     print("firekeep uninstall will remove:")
@@ -1467,7 +1482,7 @@ def _check_claude_desktop_adapter(venv: Path) -> list[tuple[str, str, str]]:
 # unconfigured user's doctor output is unchanged. claude-desktop is absent on
 # purpose: it renders no instruction file (rendered_instructions_path returns
 # None for it), so there is no block to hash-check.
-_INSTRUCTION_RUNTIMES = ("claude", "codex", "kiro", "opencode", "generic")
+_INSTRUCTION_RUNTIMES = ("claude", "codex", "kiro", "opencode", "pi", "generic")
 
 
 def _expected_instructions_hash(runtime: str) -> str:
@@ -2938,7 +2953,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # bootstrap's FIREKEEP_RUNTIME) remains available for a targeted re-render.
     inst.add_argument(
         "--runtime",
-        choices=["claude", "codex", "kiro", "opencode", "claude-desktop", "generic", "all"],
+        choices=["claude", "codex", "kiro", "opencode", "pi", "claude-desktop", "generic", "all"],
         default=None,
     )
     # `generic` is any MCP client the kit ships no bespoke adapter for: it prints

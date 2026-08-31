@@ -105,6 +105,14 @@ def _isolate_firekeep_home(tmp_path, monkeypatch):
     # Windows dev machine with Claude Desktop installed would detect the REAL
     # app (app_present) and write the developer's real claude_desktop_config.json.
     monkeypatch.setenv("APPDATA", str(tmp_path / "_isolated" / "appdata"))
+    # Same hazard, same fix, one runtime later: the pi adapter's app_present()
+    # gate is `~/.pi/agent` existing, and `Path.home()` ignores the HOME/
+    # USERPROFILE monkeypatching the cli suites do on some platforms. Without
+    # this, a developer who has actually installed Pi gets a FIFTH runtime in the
+    # "all" fan-out and every count invariant in test_cli_install/
+    # test_cli_uninstall fails on their machine but not in CI — which is the
+    # worst kind of failure, because it looks like the change broke the suite.
+    monkeypatch.setenv("PI_CODING_AGENT_CONFIG_DIR", str(tmp_path / "_isolated" / "pi-agent"))
     # Runtime attribution (0.1.41) is env-triggered and process-cached. An ambient
     # FIREKEEP_RUNTIME (or one exported by code under test — gateway.run and the
     # hook dispatcher SET os.environ, which monkeypatch cannot see) must never
