@@ -62,7 +62,7 @@ ERRORS = (
 OS_FAMILIES = ("darwin", "linux-gnu", "linux-musl", "windows")
 ARCHES = ("x86_64", "arm64", "other")
 PY_BUCKETS = ("3.9", "3.10", "3.11", "3.12", "3.13", "3.14", "other")
-RUNTIMES = ("claude", "codex", "kiro", "opencode", "claude-desktop", "generic")
+RUNTIMES = ("claude", "codex", "kiro", "opencode", "pi", "claude-desktop", "generic")
 DEX_NAMES = ("symdex", "docdex", "maildex")
 BACKENDS = ("cortex", "bridge", "sentinel", "relay")
 

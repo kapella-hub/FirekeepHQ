@@ -51,7 +51,12 @@ from firekeep_client.adapters.claude import CLAUDE_HOOKS
 # every capability cell is the generic value, because the app exposes no hook
 # surface. If a cell here ever claims more than generic's, either Claude
 # Desktop grew hooks or the cell is lying.
-RUNTIMES = ("claude", "kiro", "codex", "opencode", "claude-desktop", "generic")
+# `pi` (pi.dev) is the only non-claude runtime whose briefing reaches the MODEL
+# rather than the terminal: its `before_agent_start` returns a replacement
+# systemPrompt. Every pi cell below traces to a numbered assertion in
+# docs/PI-VALIDATION.md (16/16 on 0.84.4, 2026-08-29); the one wired-but-
+# unexercised capability says so rather than borrowing claude's value.
+RUNTIMES = ("claude", "kiro", "codex", "opencode", "pi", "claude-desktop", "generic")
 
 
 def _precompact_claude(hooks: tuple[tuple[str, str, str | None, int], ...]) -> str:
@@ -118,6 +123,7 @@ MATRIX: dict[str, dict[str, str]] = {
                  "kiro": "agentSpawn hook (delivery unverified)",
                  "codex": "manual/memory_recall",
                  "opencode": "plugin (first event, console log only)",
+                 "pi": "extension hook (systemPrompt, validated 0.84.4)",
                  "claude-desktop": "none (MCP only)",
                  "generic": "none (MCP only)"},
     # Proactive recall (firekeep_client.promptrecall): fires only where the runtime
@@ -133,16 +139,20 @@ MATRIX: dict[str, dict[str, str]] = {
     "proactive_recall": {"claude": "per-prompt push",
                          "kiro": "per-prompt push (delivery unverified)",
                          "codex": "none (no hooks)", "opencode": "none (no prompt text)",
+                         "pi": "per-prompt push (prompt text validated 0.84.4)",
                          "claude-desktop": "none (no hooks)",
                          "generic": "none (no hooks)"},
     "presence": {"claude": "hook", "kiro": "hook", "codex": "sidecar (manual today)",
-                 "opencode": "plugin hooks", "claude-desktop": "sidecar (manual today)",
+                 "opencode": "plugin hooks",
+                 "pi": "extension hooks (validated 0.84.4)",
+                 "claude-desktop": "sidecar (manual today)",
                  "generic": "sidecar (manual today)"},
     # kiro (validated 2.12.1): the fs_write pre-edit hook FIRES (the agent-gateway before-call
     # runs + records), but kiro does not enforce its own exit-2 block — so it is advisory, not
     # a hard gate. See firekeep_client/adapters/kiro.py + docs/KIRO-VALIDATION.md.
     "pre_edit_block": {"claude": "guaranteed", "kiro": "advisory (fires, non-blocking on 2.12.1)", "codex": "none",
                        "opencode": "guaranteed (plugin throw, validated 1.14.22)",
+                       "pi": "guaranteed (native tool_call block, validated 0.84.4)",
                        "claude-desktop": "none",
                        "generic": "none"},
     # Only Claude exposes a compaction event; the other three runtimes have no
@@ -151,10 +161,16 @@ MATRIX: dict[str, dict[str, str]] = {
     # _precompact_claude) so it cannot claim a hook the kit does not render; the
     # other three are hand-authored because there is nothing to derive them from.
     "precompact": {"claude": _precompact_claude(CLAUDE_HOOKS), "kiro": "none",
-                   "codex": "none", "opencode": "none", "claude-desktop": "none",
+                   "codex": "none", "opencode": "none",
+                   # session_before_compact is wired in the bridge but no scenario
+                   # forces a compaction, so this stays unverified on purpose.
+                   "pi": "wired, unverified (no compaction scenario run)",
+                   "claude-desktop": "none",
                    "generic": "none"},
     "reconcile": {"claude": "hooks", "kiro": "kiro pre/post hooks", "codex": "self-reported",
-                  "opencode": "plugin pre/post hooks", "claude-desktop": "self-reported",
+                  "opencode": "plugin pre/post hooks",
+                  "pi": "extension pre/post hooks (validated 0.84.4)",
+                  "claude-desktop": "self-reported",
                   "generic": "self-reported"},
     # Personal / bypass mode: the is_bypassed() gate (marker + FIREKEEP_BYPASS) works on
     # every runtime; only the /personal slash command is claude-specific. kiro/codex
@@ -164,6 +180,7 @@ MATRIX: dict[str, dict[str, str]] = {
         "kiro": "firekeep personal CLI + FIREKEEP_BYPASS (no /personal command)",
         "codex": "firekeep personal CLI + FIREKEEP_BYPASS (sidecar honors the gate)",
         "opencode": "firekeep personal CLI + FIREKEEP_BYPASS (no /personal command)",
+        "pi": "firekeep personal CLI + FIREKEEP_BYPASS (no /personal command)",
         "claude-desktop": "firekeep personal CLI + FIREKEEP_BYPASS (no /personal command)",
         "generic": "firekeep personal CLI + FIREKEEP_BYPASS (no /personal command)",
     },
@@ -179,6 +196,7 @@ MATRIX: dict[str, dict[str, str]] = {
         "kiro": "CLI + gateway + agentSpawn hook (delivery unverified)",
         "codex": "CLI + gateway (no hooks)",
         "opencode": "CLI + gateway + plugin (first event)",
+        "pi": "CLI + gateway + session_start hook",
         "claude-desktop": "gateway only (no CLI habit, no hooks)",
         "generic": "CLI + gateway (no hooks)",
     },
