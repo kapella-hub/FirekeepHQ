@@ -68,13 +68,25 @@ class _Recorder:
         return [c for c in self.calls if c[1] == tool]
 
 
+class _CountedPost:
+    """Callable double with the exact `transport.post_json` signature, plus a
+    `.calls` counter the fleet-job tests use to assert retry behaviour."""
+
+    def __init__(self, payload_obj):
+        self._payload_obj = payload_obj
+        self.calls = 0
+
+    def __call__(self, url, body, *, headers, timeout=None, verify=True):
+        self.calls += 1
+        return {"choices": [{"message": {"content": json.dumps(self._payload_obj)}}]}
+
+
 def _llm_ok(payload_obj):
     """An LM Studio chat-completions responder returning `payload_obj` as JSON.
     Signature mirrors transport.post_json (keyword-only headers) — the live run
-    caught a probe call missing `headers` that permissive **kw doubles hid."""
-    def post_json(url, body, *, headers, timeout=None, verify=True):
-        return {"choices": [{"message": {"content": json.dumps(payload_obj)}}]}
-    return post_json
+    caught a probe call missing `headers` that permissive **kw doubles hid.
+    Exposes `.calls` so tests can assert how many attempts were made."""
+    return _CountedPost(payload_obj)
 
 
 _SYNTH = {
@@ -385,7 +397,15 @@ def test_old_relay_schema_falls_back_and_sorts_its_page_locally(cfg_env):
                          get_json=lambda url, *, headers, timeout=None, verify=True: {"data": []})
 
     assert out["distilled"] == 1
-    assert len(rec.named("relay_task_list")) == 2
+    # The job catalog now lists every title (distill_session, reauthor_stale_skill,
+    # propose_contested_verdict) under one budget, so the OTHER two titles also take
+    # a first (oldest_first) call each and short-circuit to [] on the same error
+    # shape. distill_session is listed FIRST (JOB_TITLES order), so its own two
+    # calls (the failing oldest_first one, then the compat retry — which carries
+    # no "title" key at all) are exactly the first two calls recorded overall.
+    calls = rec.named("relay_task_list")
+    assert calls[0][2]["title"] == "distill_session" and calls[0][2]["oldest_first"] is True
+    assert calls[1][2] == {"status": "pending", "limit": 50}
     assert rec.named("relay_task_update")[0][2]["task_id"] == "task-old"
 
 
@@ -406,7 +426,12 @@ def test_old_relay_schema_falls_back_on_transport_error_too(cfg_env):
                          get_json=lambda url, *, headers, timeout=None, verify=True: {"data": []})
 
     assert out["distilled"] == 1
-    assert len(rec.named("relay_task_list")) == 2
+    # See the sibling test above: the catalog lists all three job titles, but
+    # distill_session's own two calls (raise, then the untitled compat retry)
+    # are the first two calls recorded, since it is listed first.
+    calls = rec.named("relay_task_list")
+    assert calls[0][2]["title"] == "distill_session" and calls[0][2]["oldest_first"] is True
+    assert calls[1][2] == {"status": "pending", "limit": 50}
     assert rec.named("relay_task_update")[0][2]["task_id"] == "task-old"
 
 
@@ -501,7 +526,8 @@ def test_nonpositive_max_processes_nothing(cfg_env):
     out = nightshift.run(max_tasks=-3, call_tool=rec, post_json=_llm_ok(_SYNTH),
                          get_json=_get_ok)
     assert out == {"distilled": 0, "legacy": 0, "skipped": 0, "failed": 0,
-                   "duplicates": 0, "deferred": 0}
+                   "duplicates": 0, "deferred": 0, "reauthored": 0, "proposed": 0,
+                   "noop": 0, "draft_skills": 0}
 
 
 def test_dry_run_touches_no_relay_at_all_except_listing(cfg_env):
@@ -594,3 +620,214 @@ def test_ollama_model_without_thinking_retries_without_think_not_deferred(cfg_en
     assert out["distilled"] == 1
     assert out["deferred"] == 0                   # NOT treated as a transient loss
     assert "think" in bodies[0] and "think" not in bodies[1]
+
+
+# --- Fleet-as-GPU job catalog -------------------------------------------------
+# `json` is already imported at module top — no local alias needed here.
+
+
+def _fleet_task(title, ctx, task_id="task-f1", description="skill_id=s1 workspace_id=ws"):
+    return {"id": task_id, "title": title, "assigner": "cortex-fleet",
+            "description": description, "context": json.dumps(ctx), "created_at": 5.0}
+
+
+_REAUTHOR_CTX = {"skill_id": "s1", "trigger": "old trigger", "symptoms": "old symptoms",
+                 "content": "trigger: old\n---\n## Steps\nold steps\n\n## Gotchas\nnone",
+                 "domain": "neo4j", "project": None, "timestamp": "2026-05-01T00:00:00+00:00",
+                 "last_recalled_at": None, "stale_detected_at": "2026-09-01T00:00:00+00:00",
+                 "access_count": 0, "skill_efficacy": None, "skill_efficacy_n": None}
+
+_PAIR_CTX = {"a": {"id": "m1", "text": "Deploy with update.sh", "domain": "ops",
+                   "timestamp": "2026-08-01T00:00:00+00:00", "confirmed_count": 0,
+                   "contradicted_count": 0},
+             "b": {"id": "m2", "text": "Deploy with install.sh", "domain": "ops",
+                   "timestamp": "2026-08-20T00:00:00+00:00", "confirmed_count": 0,
+                   "contradicted_count": 0},
+             "contested_at": "2026-09-01T00:00:00+00:00"}
+
+
+def _listing_by_title(*tasks):
+    """A relay whose relay_task_list honours the exact `title` filter."""
+    def respond(service, tool, arguments, **kw):
+        if tool == "relay_task_list":
+            title = arguments.get("title")
+            return {"tasks": [t for t in tasks if not title or t["title"] == title],
+                    "count": len(tasks)}
+        return None
+    return respond
+
+
+class _Relay(_Recorder):
+    """_Recorder with a per-title relay_task_list."""
+    def __init__(self, tasks, canned=None):
+        super().__init__(canned or {})
+        self._tasks = tasks
+
+    def __call__(self, service, tool, arguments, **kw):
+        if tool == "relay_task_list":
+            title = arguments.get("title")
+            self.calls.append((service, tool, arguments))
+            return {"tasks": [t for t in self._tasks if not title or t["title"] == title],
+                    "count": len(self._tasks)}
+        return super().__call__(service, tool, arguments, **kw)
+
+
+def _get_json_ok(url, *, headers, timeout=None, verify=True):
+    # LM Studio 404s the Ollama-only /api/version probe (see _ollama_native_root),
+    # keeping detection on OpenAI /v1 — without this, EVERY base here would be
+    # (mis)detected as Ollama, since a blanket {"data": []} never raises. That
+    # matters to the fleet-job tests below whose fake post_json routes on the
+    # exact /chat/completions URL.
+    if url.endswith("/api/version"):
+        raise nightshift.transport.TransportError("404 not found")
+    return {"data": []}
+
+
+def test_reauthor_rewrite_becomes_a_draft_with_lineage(cfg_env):
+    rec = _Relay([_fleet_task("reauthor_stale_skill", _REAUTHOR_CTX)],
+                 {"skill_create": "Skill created: sk-new"})
+    llm = _llm_ok({"verdict": "rewrite", "reason": "runbook moved",
+                   "skill": {"trigger": "new trigger", "symptoms": "new symptoms",
+                             "steps": "new steps", "gotchas": "g", "domain": "neo4j"}})
+    out = nightshift.run(call_tool=rec, post_json=llm, get_json=_get_json_ok)
+    assert out["reauthored"] == 1 and out["draft_skills"] == 1 and out["failed"] == 0
+    created = rec.named("skill_create")[0][2]
+    assert created["status"] == "draft"
+    assert created["origin_job"] == "reauthor_stale_skill" and created["reauthor_of"] == "s1"
+    assert created["trigger"] == "new trigger" and created["agent_id"] == "night-shift"
+    lease = rec.named("relay_lease")[0][2]
+    assert lease["resource_id"] == "fleet.task-f1"
+    done = rec.named("relay_task_update")[-1][2]
+    assert done["status"] == "completed" and "re-authored" in done["result"]
+
+
+def test_reauthor_still_valid_writes_nothing_and_is_a_noop(cfg_env):
+    rec = _Relay([_fleet_task("reauthor_stale_skill", _REAUTHOR_CTX)])
+    llm = _llm_ok({"verdict": "still_valid", "reason": "steps unchanged", "skill": None})
+    out = nightshift.run(call_tool=rec, post_json=llm, get_json=_get_json_ok)
+    assert out["noop"] == 1 and out["reauthored"] == 0
+    assert not rec.named("skill_create")
+    done = rec.named("relay_task_update")[-1][2]
+    assert done["status"] == "completed" and "still_valid" in done["result"]
+
+
+def test_reauthor_unconfirmed_skill_create_fails_the_task(cfg_env):
+    rec = _Relay([_fleet_task("reauthor_stale_skill", _REAUTHOR_CTX)],
+                 {"skill_create": "Error: unknown argument origin_job"})
+    llm = _llm_ok({"verdict": "rewrite", "reason": "r",
+                   "skill": {"trigger": "t", "symptoms": "s", "steps": "x", "gotchas": "", "domain": "d"}})
+    out = nightshift.run(call_tool=rec, post_json=llm, get_json=_get_json_ok)
+    assert out["failed"] == 1 and out["reauthored"] == 0
+    assert rec.named("relay_task_update")[-1][2]["status"] == "failed"
+
+
+def test_reauthor_malformed_verdict_retries_once_then_fails(cfg_env):
+    rec = _Relay([_fleet_task("reauthor_stale_skill", _REAUTHOR_CTX)])
+    llm = _llm_ok({"verdict": "shrug"})
+    out = nightshift.run(call_tool=rec, post_json=llm, get_json=_get_json_ok)
+    assert out["failed"] == 1 and llm.calls == 2
+
+
+def test_propose_posts_to_cortex_with_member_headers(cfg_env, monkeypatch):
+    rec = _Relay([_fleet_task("propose_contested_verdict", _PAIR_CTX,
+                              description="pair=m1,m2 workspace_id=ws")])
+    posts = []
+
+    def post_json(url, body, *, headers, timeout=None, verify=True):
+        if url.endswith("/memory/contested/propose"):
+            posts.append((url, body, headers))
+            return {"status": "proposed", "first": True}
+        return _llm_ok({"action": "supersede", "winner_id": "m2",
+                        "rationale": "m2 is newer and names the current script"})(
+            url, body, headers=headers, timeout=timeout, verify=verify)
+
+    out = nightshift.run(call_tool=rec, post_json=post_json, get_json=_get_json_ok)
+    assert out["proposed"] == 1 and out["failed"] == 0
+    url, body, headers = posts[0]
+    assert body == {"winner_id": "m2", "loser_id": "m1", "action": "supersede",
+                    "rationale": "m2 is newer and names the current script"}
+    assert headers["X-Agent-Id"] == "night-shift"
+    # cfg_env's profile (DEFAULT_PERSONAL) carries no api_key, so there is no
+    # X-API-Key/Authorization to assert on here; the real contract under test is
+    # that every header resolver.resolve("cortex") would hand out rides along on
+    # the propose POST (X-Agent-Id deliberately overridden to the worker) — that
+    # is what would carry a member key on a profile that has one configured.
+    from firekeep_client import resolver as _resolver
+    ep = _resolver.resolve("cortex")
+    for k, v in ep.headers.items():
+        if k == "X-Agent-Id":
+            continue
+        assert headers.get(k) == v
+    assert rec.named("relay_lease")[0][2]["resource_id"] == "fleet.task-f1"
+    assert rec.named("relay_task_update")[-1][2]["status"] == "completed"
+
+
+def test_propose_coexist_needs_no_winner(cfg_env):
+    rec = _Relay([_fleet_task("propose_contested_verdict", _PAIR_CTX)])
+    posts = []
+
+    def post_json(url, body, *, headers, timeout=None, verify=True):
+        if url.endswith("/memory/contested/propose"):
+            posts.append(body)
+            return {"status": "proposed", "first": True}
+        return _llm_ok({"action": "coexist", "winner_id": None, "rationale": "both scripts exist"})(
+            url, body, headers=headers, timeout=timeout, verify=verify)
+
+    out = nightshift.run(call_tool=rec, post_json=post_json, get_json=_get_json_ok)
+    assert out["proposed"] == 1
+    assert posts[0]["action"] == "coexist" and {posts[0]["winner_id"], posts[0]["loser_id"]} == {"m1", "m2"}
+
+
+def test_propose_winner_outside_the_pair_is_malformed(cfg_env):
+    rec = _Relay([_fleet_task("propose_contested_verdict", _PAIR_CTX)])
+    llm = _llm_ok({"action": "supersede", "winner_id": "m9", "rationale": "?"})
+    out = nightshift.run(call_tool=rec, post_json=llm, get_json=_get_json_ok)
+    assert out["failed"] == 1 and llm.calls == 2
+
+
+def test_propose_rejected_by_cortex_fails_the_task_not_the_shift(cfg_env):
+    rec = _Relay([_fleet_task("propose_contested_verdict", _PAIR_CTX),
+                  _task()])  # a distill task queued behind it must still run
+
+    def post_json(url, body, *, headers, timeout=None, verify=True):
+        if url.endswith("/memory/contested/propose"):
+            raise nightshift.transport.TransportError("409 not contested")
+        if url.endswith("/chat/completions"):
+            if "contested" in json.dumps(body):
+                return _llm_ok({"action": "coexist", "winner_id": None, "rationale": "r"})(
+                    url, body, headers=headers, timeout=timeout, verify=verify)
+            return _llm_ok(_SYNTH)(url, body, headers=headers, timeout=timeout, verify=verify)
+        raise AssertionError(url)
+
+    out = nightshift.run(call_tool=rec, post_json=post_json, get_json=_get_json_ok)
+    assert out["failed"] == 1 and out["deferred"] == 0 and out["distilled"] == 1
+
+
+def test_fifo_across_titles_under_one_budget(cfg_env):
+    tasks = [_task(), _fleet_task("reauthor_stale_skill", _REAUTHOR_CTX, task_id="task-r"),
+             _fleet_task("propose_contested_verdict", _PAIR_CTX, task_id="task-p")]
+    rec = _Relay(tasks, {"skill_create": "Skill created: x"})
+    llm = _llm_ok({"verdict": "still_valid", "reason": "ok", "skill": None,
+                   **_SYNTH})  # distill reads memory/skill keys, reauthor reads verdict
+    out = nightshift.run(max_tasks=2, call_tool=rec, post_json=llm, get_json=_get_json_ok)
+    leased = [c[2]["resource_id"] for c in rec.named("relay_lease")]
+    assert leased == ["distill.task-1", "fleet.task-r"]  # distill first, budget of two
+    assert out["distilled"] == 1 and out["noop"] == 1
+
+
+def test_unknown_task_context_fails_visibly(cfg_env):
+    t = _fleet_task("reauthor_stale_skill", {})
+    t["context"] = "not json"
+    rec = _Relay([t])
+    out = nightshift.run(call_tool=rec, post_json=_llm_ok({}), get_json=_get_json_ok)
+    assert out["failed"] == 1
+    assert "context" in rec.named("relay_task_update")[-1][2]["result"]
+
+
+def test_dry_run_touches_no_review_surface_for_fleet_jobs(cfg_env):
+    rec = _Relay([_fleet_task("reauthor_stale_skill", _REAUTHOR_CTX)])
+    llm = _llm_ok({"verdict": "rewrite", "reason": "r",
+                   "skill": {"trigger": "t", "symptoms": "s", "steps": "x", "gotchas": "", "domain": "d"}})
+    out = nightshift.run(dry_run=True, call_tool=rec, post_json=llm, get_json=_get_json_ok)
+    assert out["reauthored"] == 1
+    assert not rec.named("skill_create") and not rec.named("relay_lease")

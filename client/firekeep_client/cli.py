@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import http.client
+import json
 import os
 import re
 import shutil
@@ -15,6 +16,7 @@ import ssl
 import stat
 import subprocess
 import sys
+import time
 import types
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1926,25 +1928,34 @@ def cmd_restore(args) -> int:
 
 
 def cmd_night_shift(args) -> int:
-    """Drain distill_session Relay tasks with a LOCAL model (LM Studio or Ollama).
-
-    The stop hook enqueues one per session end; this worker turns each into a
-    consolidated memory + (when warranted) a DRAFT skill for human review —
-    attributed to the original session, on zero-marginal-cost local compute.
-    Run it manually, or schedule it (launchd/cron) for actual night shifts."""
-    from firekeep_client import nightshift
+    """Drain the fleet job catalog with a LOCAL model (LM Studio or Ollama):
+    distill_session (the stop hook's, one per session end), reauthor_stale_skill
+    and propose_contested_verdict (cortex's nightly fleet_enqueue_pass). Every
+    output is a draft or a proposal for human review — attributed to the
+    original session/skill where applicable, on zero-marginal-cost local
+    compute. Run it manually, or schedule it (launchd/cron) for actual night
+    shifts."""
+    from firekeep_client import nightshift, state
 
     out = nightshift.run(max_tasks=args.max, dry_run=args.dry_run)
+    try:
+        state.write_scratch("night_shift_last", json.dumps({
+            "at": time.time(), "counts": {k: v for k, v in out.items() if k != "error"},
+            "error": out.get("error"), "reported": False,
+        }), ttl_seconds=7 * 86400)
+    except Exception:  # noqa: BLE001 — bookkeeping never fails the command
+        pass
     if out.get("error"):
         print(f"firekeep night-shift: {out['error']}", file=sys.stderr)
         return 1
-    mode = " (dry-run — nothing written)" if args.dry_run else ""
+    mode = " (dry run)" if args.dry_run else ""
     print(f"firekeep night-shift{mode}: {out['distilled']} distilled, "
-          f"{out['legacy']} legacy cleared, {out['skipped']} skipped, "
-          f"{out['failed']} failed")
-    if out["distilled"] and not args.dry_run:
-        print("firekeep night-shift: draft skills await review in the dashboard "
-              "Skills tab; memories are live in recall.")
+          f"{out['reauthored']} re-authored, {out['proposed']} verdict proposed, "
+          f"{out['noop']} no-op, {out['legacy']} legacy, {out['duplicates']} duplicates, "
+          f"{out['skipped']} skipped, {out['failed']} failed, {out['deferred']} deferred")
+    if out.get("draft_skills") or out.get("proposed"):
+        print("firekeep night-shift: draft skills and verdict proposals await review in "
+              "the dashboard (Skills tab / Autopilot tab)")
     return 0
 
 
@@ -3147,7 +3158,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     shift = sub.add_parser(
         "night-shift",
-        help="distill queued sessions into memory/draft skills via the local LLM",
+        help="drain the fleet queue (distill_session, reauthor_stale_skill, "
+             "propose_contested_verdict) with a LOCAL model",
     )
     shift.add_argument("--max", type=int, default=5, metavar="N",
                        help="max tasks to drain this run (default 5)")

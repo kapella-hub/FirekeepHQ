@@ -1,15 +1,17 @@
-"""Night Shift — the Fleet-as-GPU distill worker (client-side, stdlib-only).
+"""Night Shift — the Fleet-as-GPU job catalog worker (client-side, stdlib-only).
 
-Since SP1b the `stop` hook has enqueued a `distill_session` Relay task at every
-session end — structural capture with, until now, nothing draining the queue
-(the deliberately-built Fleet-as-GPU seam). Night Shift is the drain, run where
+Night Shift drains the fleet job catalog: `distill_session` (the `stop` hook has
+enqueued one of these at every session end since SP1b — structural capture with,
+until this module, nothing draining the queue), and, since the fleet catalog,
+`reauthor_stale_skill` and `propose_contested_verdict` — both enqueued nightly by
+cortex's `fleet_enqueue_pass` for a human to eventually review. All three run where
 the free compute lives: the developer's own machine, against a LOCAL model served
 by LM Studio (`:1234`) or Ollama (`:11434`). Both speak the OpenAI-compatible API,
 so the request path is identical and choosing between them is pure detection: with
 no `FIREKEEP_NIGHTSHIFT_LLM_BASE` set, they are probed in that order and the first
 to answer wins.
 
-Per task it:
+Per distill_session task it:
   1. leases `distill.<task_id>` (fencing token — two workers can't double-drain);
   2. reconstructs the session's evidence: Cortex replay summary + auto-evals
      (best-effort) plus the workspace snapshot the stop hook stored in the task;
@@ -21,15 +23,32 @@ Per task it:
      session's agent and session_id, never to the worker;
   5. completes the task and releases the lease.
 
+Job catalog (`JOB_TITLES`, listed and drained FIFO-by-title under ONE
+`max_tasks` budget — distill_session first, then the two fleet jobs — each
+fleet task leases `fleet.<task_id>`):
+  - `reauthor_stale_skill`: input is a stale skill's full context (trigger,
+    symptoms, content, staleness/efficacy stats). The model returns a verdict —
+    "rewrite" (materially improvable: output is a COMPLETE replacement skill,
+    written as `skill_create(status="draft", origin_job="reauthor_stale_skill",
+    reauthor_of=<original skill_id>)` — the original is never touched), "still_valid"
+    or "retire" (both are a NO-OP: nothing is written; the verdict rides the
+    task's completion for a human to act on — spec decision 9).
+  - `propose_contested_verdict`: input is a contradicting pair of unconfirmed
+    memories. The model proposes "supersede" (one wins) or "coexist" (both stand),
+    posted as a draft to `POST /memory/contested/propose` for a human to confirm —
+    NOTHING here activates a skill or resolves a pair; the human dashboard does.
+
 Posture: personal/bypass mode is a hard no-op (nothing is read or sent); a
 `:cloud` model is refused (session content must not leave the machine — override
 with FIREKEEP_NIGHTSHIFT_ALLOW_REMOTE=1) and no reachable backend aborts, both
 BEFORE any task is touched; a malformed model
 response is retried once and then the task is marked failed (visible in the
 dashboard, no infinite retry); tasks predating the stop hook's session_id stamp
-are completed with a note (backlog clears, nothing is invented). Import
-boundary: stdlib + firekeep_client stdlib modules only (`hooks._mcp` for MCP,
-`transport` for REST/LLM) — never `mcp`/`httpx`.
+are completed with a note (backlog clears, nothing is invented). An unconfirmed
+skill_create or an unconfirmed/rejected propose POST fails that ONE task, never
+the shift; a TRANSIENT LLM TransportError defers and stops the whole shift, same
+as the distill path. Import boundary: stdlib + firekeep_client stdlib modules
+only (`hooks._mcp` for MCP, `transport` for REST/LLM) — never `mcp`/`httpx`.
 """
 from __future__ import annotations
 
@@ -51,7 +70,13 @@ _LLM_BACKENDS = (
 _DEFAULT_LLM_BASE = _LLM_BACKENDS[0][1]
 _DEFAULT_LLM_MODEL = "qwen/qwen3.6-35b-a3b"
 _DEFAULT_MAX_TASKS = 5
-_TASK_TITLE = "distill_session"
+JOB_DISTILL = "distill_session"
+JOB_REAUTHOR = "reauthor_stale_skill"
+JOB_VERDICT = "propose_contested_verdict"
+# Listed in THIS order: distill first (the queue that existed before the
+# catalog), then the fleet jobs cortex enqueues nightly. One max_tasks budget.
+JOB_TITLES = (JOB_DISTILL, JOB_REAUTHOR, JOB_VERDICT)
+_TASK_TITLE = JOB_DISTILL  # legacy alias — existing tests and messages use it
 _LLM_TIMEOUT = 300.0  # local 35B on a laptop: generous, not infinite
 
 _SYSTEM_PROMPT = (
@@ -68,6 +93,33 @@ _SYSTEM_PROMPT = (
     "Emit a skill ONLY for a hard-won fix, non-obvious root cause, or "
     "reusable technique — routine work gets \"skill\": null. Be concrete and "
     "specific; never invent details absent from the evidence."
+)
+
+_REAUTHOR_PROMPT = (
+    "You review a team skill (a 'what to do when X happens' playbook) that nobody "
+    "has recalled for a long time. Decide whether it is still worth keeping as "
+    "written. Reply with STRICT JSON only — no prose, no code fences — matching:\n"
+    '{"verdict": "rewrite" | "still_valid" | "retire", "reason": "<one sentence>", '
+    '"skill": {"trigger": "<one sentence: when this applies>", '
+    '"symptoms": "<observable signals>", "steps": "<the procedure>", '
+    '"gotchas": "<pitfalls>", "domain": "<one word>"} | null}\n'
+    "Use \"rewrite\" ONLY when you can make the skill materially clearer, more "
+    "specific or more correct from the evidence given — then fill \"skill\" with the "
+    "COMPLETE rewritten playbook (never a diff). \"still_valid\" = keep as is; "
+    "\"retire\" = obsolete. For those two, \"skill\" must be null. Never invent "
+    "commands, paths or facts absent from the evidence."
+)
+
+_VERDICT_PROMPT = (
+    "Two memories in a team knowledge base contradict each other and neither has "
+    "been confirmed by a human. Propose a verdict for a human to review. Reply with "
+    "STRICT JSON only — no prose, no code fences — matching:\n"
+    '{"action": "supersede" | "coexist", "winner_id": "<id of the memory to KEEP>" | null, '
+    '"rationale": "<1-3 sentences citing the evidence>"}\n'
+    "\"supersede\" = one is wrong or outdated: winner_id MUST be exactly one of the "
+    "two ids given. \"coexist\" = both are true in their own contexts: winner_id must "
+    "be null. Prefer the more specific, more recent, more confirmed memory. Never "
+    "invent facts absent from the two texts."
 )
 
 
@@ -242,21 +294,26 @@ def _content_of(resp: Any) -> str:
     raise ValueError("no assistant content in LLM response")
 
 
-def _synthesize(sid: str, assigner: str, evidence: str,
-                post_json: Callable[..., Any], base: str,
-                native: str | None = None) -> dict:
-    """One LLM distillation with a single retry on malformed output.
+def _json_object(text: str) -> dict:
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end <= start:
+        raise ValueError("no JSON object in model reply")
+    data = json.loads(text[start:end + 1])
+    if not isinstance(data, dict):
+        raise ValueError("model reply is not a JSON object")
+    return data
 
-    On Ollama (`native` set) the call goes to the NATIVE `/api/chat` with
-    `think: false` + `format: "json"` — the only shape that keeps a reasoning model
-    from thinking the whole budget away (see `_ollama_native_root`). Everything else
-    speaks OpenAI `/v1/chat/completions` unchanged.
+
+def _chat_json(messages: list[dict], post_json: Callable[..., Any], base: str,
+               native: str | None, validate: Callable[[str], dict]) -> dict:
+    """One local-model call, `validate`d, with a single retry on malformed output.
+
+    Raises transport.TransportError on a TRANSIENT loss (caller defers the shift)
+    and ValueError when the model never produced valid output (caller fails the
+    task). The Ollama native/`think:false` handling is the one documented in
+    `_ollama_native_root`; a non-thinking model that rejects `think` is retried
+    without it rather than deferring the shift.
     """
-    messages = [
-        {"role": "system", "content": _SYSTEM_PROMPT},
-        {"role": "user", "content":
-            f"Session {sid} by agent {assigner}. Evidence:\n\n{evidence}"},
-    ]
     if native:
         url = f"{native}/api/chat"
         body: dict[str, Any] = {"model": _llm_model(), "messages": messages,
@@ -265,17 +322,12 @@ def _synthesize(sid: str, assigner: str, evidence: str,
     else:
         url = f"{base}/chat/completions"
         body = {"model": _llm_model(), "temperature": 0.2, "messages": messages}
-
     last_error: Exception | None = None
     for _attempt in (1, 2):
         try:
             resp = post_json(url, body, headers={"Content-Type": "application/json"},
                              timeout=_LLM_TIMEOUT)
         except transport.TransportError as e:
-            # A non-thinking Ollama model rejects `think` with a 400. That is a
-            # permanent model mismatch, NOT the transient loss the caller treats a
-            # TransportError as (which would defer the whole shift) — drop the field
-            # and retry this attempt against the same model.
             if native and body.get("think") is not None and "think" in str(e).lower():
                 body = {k: v for k, v in body.items() if k != "think"}
                 hooklog.log_failure(
@@ -283,11 +335,53 @@ def _synthesize(sid: str, assigner: str, evidence: str,
                 continue
             raise
         try:
-            return _extract_json(_content_of(resp))
+            return validate(_content_of(resp))
         except (KeyError, IndexError, TypeError, ValueError) as e:
             last_error = e
             hooklog.log_failure("nightshift", f"malformed LLM reply (attempt): {e!r}")
     raise ValueError(f"model never produced valid JSON: {last_error!r}")
+
+
+def _synthesize(sid: str, assigner: str, evidence: str,
+                post_json: Callable[..., Any], base: str,
+                native: str | None = None) -> dict:
+    """Distill one session (see module docstring). Kept as the named entry point
+    the existing tests exercise; the mechanics live in `_chat_json`."""
+    messages = [
+        {"role": "system", "content": _SYSTEM_PROMPT},
+        {"role": "user", "content":
+            f"Session {sid} by agent {assigner}. Evidence:\n\n{evidence}"},
+    ]
+    return _chat_json(messages, post_json, base, native, _extract_json)
+
+
+def _validate_reauthor(text: str) -> dict:
+    data = _json_object(text)
+    verdict = str(data.get("verdict") or "")
+    if verdict not in ("rewrite", "still_valid", "retire"):
+        raise ValueError(f"reauthor verdict must be rewrite|still_valid|retire, got {verdict!r}")
+    skill = data.get("skill")
+    if verdict == "rewrite":
+        if not isinstance(skill, dict) or not str(skill.get("trigger") or "").strip() \
+                or not str(skill.get("steps") or "").strip():
+            raise ValueError("rewrite verdict without a complete skill")
+    return data
+
+
+def _validate_proposal(text: str, pair: set[str]) -> dict:
+    data = _json_object(text)
+    action = str(data.get("action") or "")
+    winner = data.get("winner_id")
+    if action == "supersede":
+        if winner not in pair:
+            raise ValueError(f"supersede winner_id {winner!r} is not one of the pair")
+    elif action == "coexist":
+        data["winner_id"] = None
+    else:
+        raise ValueError(f"action must be supersede|coexist, got {action!r}")
+    if not str(data.get("rationale") or "").strip():
+        raise ValueError("proposal without a rationale")
+    return data
 
 
 def _relay_ok(resp: Any) -> bool:
@@ -304,21 +398,194 @@ def _task_created_at(task: dict) -> float:
         return float("inf")
 
 
+def _task_context(task: dict) -> dict:
+    try:
+        ctx = json.loads(task.get("context") or "")
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"task context is not JSON: {e}") from e
+    if not isinstance(ctx, dict):
+        raise ValueError("task context is not a JSON object")
+    return ctx
+
+
+def _handle_reauthor(ctx: dict, *, call_tool, cfg, post_json, base, native,
+                     worker: str, dry_run: bool) -> tuple[str, str]:
+    """Returns (summary_counter, relay result text). Raises to fail the task."""
+    skill_id = str(ctx.get("skill_id") or "")
+    if not skill_id:
+        raise ValueError("task context has no skill_id")
+    evidence = json.dumps({k: ctx.get(k) for k in (
+        "trigger", "symptoms", "content", "domain", "project", "timestamp",
+        "last_recalled_at", "stale_detected_at", "access_count",
+        "skill_efficacy", "skill_efficacy_n")}, indent=1)
+    messages = [{"role": "system", "content": _REAUTHOR_PROMPT},
+                {"role": "user", "content": f"Stale skill {skill_id}:\n\n{evidence}"}]
+    data = _chat_json(messages, post_json, base, native, _validate_reauthor)
+    verdict, reason = data["verdict"], str(data.get("reason") or "")[:300]
+    if verdict != "rewrite":
+        # No artifact is written for these two — the stale flag stays in the
+        # inbox for the human; the verdict rides the task (spec decision 9).
+        return "noop", f"night-shift: {verdict} — {reason}"
+    if dry_run:
+        return "reauthored", "night-shift (dry run): would draft a re-authored skill"
+    skill = data["skill"]
+    created = call_tool("cortex", "skill_create", {
+        "trigger": str(skill.get("trigger") or "")[:1000],
+        "symptoms": str(skill.get("symptoms") or "")[:2000],
+        "steps": str(skill.get("steps") or "")[:4000],
+        "gotchas": str(skill.get("gotchas") or "")[:2000],
+        "domain": str(skill.get("domain") or ctx.get("domain") or "")[:100],
+        "status": "draft",
+        "origin_job": JOB_REAUTHOR,
+        "reauthor_of": skill_id,
+        "agent_id": worker,
+    }, cfg=cfg)
+    if not (isinstance(created, str) and created.startswith("Skill created")):
+        # Older server (unknown argument), cross-workspace 404, in-band error:
+        # never complete a task whose draft was not confirmed.
+        raise RuntimeError(f"skill_create did not confirm: {created!r}"[:300])
+    return "reauthored", f"night-shift: re-authored draft awaiting review — {reason}"
+
+
+def _handle_propose(ctx: dict, *, post_json, base, native, worker: str,
+                    dry_run: bool) -> tuple[str, str]:
+    a, b = ctx.get("a") or {}, ctx.get("b") or {}
+    ids = {str(a.get("id") or ""), str(b.get("id") or "")} - {""}
+    if len(ids) != 2:
+        raise ValueError("task context does not describe a pair")
+    evidence = json.dumps({"a": a, "b": b, "contested_at": ctx.get("contested_at")}, indent=1)
+    messages = [{"role": "system", "content": _VERDICT_PROMPT},
+                {"role": "user", "content": f"Contested pair:\n\n{evidence}"}]
+    data = _chat_json(messages, post_json, base, native,
+                      lambda text: _validate_proposal(text, ids))
+    action = data["action"]
+    if action == "supersede":
+        winner = str(data["winner_id"])
+        loser = next(i for i in ids if i != winner)
+    else:
+        winner, loser = str(a.get("id")), str(b.get("id"))
+    body = {"winner_id": winner, "loser_id": loser, "action": action,
+            "rationale": str(data.get("rationale") or "")[:1000]}
+    if dry_run:
+        return "proposed", f"night-shift (dry run): would propose {action}"
+    ep = resolver.resolve("cortex")
+    headers = dict(ep.headers)
+    headers.update({"Content-Type": "application/json", "X-Agent-Id": worker})
+    try:
+        resp = post_json(f"{ep.rest_base}/memory/contested/propose", body,
+                         headers=headers, verify=ep.verify)
+    except transport.TransportError as e:
+        # A cortex 404/409/5xx here is THIS task's failure, not the model going
+        # away — it must not defer the whole shift.
+        raise RuntimeError(f"propose rejected by cortex: {e}"[:300]) from e
+    if not (isinstance(resp, dict) and resp.get("status") == "proposed"):
+        raise RuntimeError(f"propose not confirmed: {resp!r}"[:300])
+    return "proposed", (f"night-shift: proposed {action}"
+                        + (f" (keep {winner})" if action == "supersede" else "")
+                        + f" — {body['rationale'][:200]}")
+
+
+def _run_fleet_task(task: dict, title: str, *, out: dict, call_tool, cfg, post_json,
+                    base, native, worker: str, dry_run: bool) -> None:
+    """One catalog task: lease, dispatch, write through review surfaces, complete.
+
+    Mirrors the distill branch's contract — honest counting, one bad task never
+    stops the shift, a TRANSIENT model loss defers and stops it (`out["_stop"]`).
+    """
+    task_id = task.get("id") or ""
+    if dry_run:
+        try:
+            ctx = _task_context(task)
+            if title == JOB_REAUTHOR:
+                counter, _ = _handle_reauthor(ctx, call_tool=call_tool, cfg=cfg, post_json=post_json,
+                                              base=base, native=native, worker=worker, dry_run=True)
+            else:
+                counter, _ = _handle_propose(ctx, post_json=post_json, base=base, native=native,
+                                             worker=worker, dry_run=True)
+            out[counter] += 1
+        except transport.TransportError:
+            out["deferred"] += 1
+            out["_stop"] = True
+        except Exception as e:  # noqa: BLE001
+            hooklog.log_failure("nightshift", f"dry-run {title} failed: {e}")
+            out["failed"] += 1
+        return
+
+    token = 0
+    try:
+        lease = call_tool("relay", "relay_lease",
+                          {"resource_id": f"fleet.{task_id}", "agent_id": worker}, cfg=cfg)
+        if not (isinstance(lease, dict) and lease.get("acquired")):
+            out["skipped"] += 1
+            return
+        token = int(lease.get("fencing_token") or 0)
+        ctx = _task_context(task)
+        try:
+            if title == JOB_REAUTHOR:
+                counter, result = _handle_reauthor(
+                    ctx, call_tool=call_tool, cfg=cfg, post_json=post_json, base=base,
+                    native=native, worker=worker, dry_run=False)
+            elif title == JOB_VERDICT:
+                counter, result = _handle_propose(
+                    ctx, post_json=post_json, base=base, native=native, worker=worker,
+                    dry_run=False)
+            else:
+                raise ValueError(f"unknown fleet job {title!r}")
+        except transport.TransportError as e:
+            hooklog.log_failure("nightshift", f"LLM transient, deferring: {e}")
+            out["deferred"] += 1
+            out["_stop"] = True
+            return
+        resp = call_tool("relay", "relay_task_update",
+                         {"task_id": task_id, "status": "completed", "result": result[:500]},
+                         cfg=cfg)
+        if _relay_ok(resp):
+            out[counter] += 1
+            if counter == "reauthored":
+                out["draft_skills"] += 1
+        else:
+            hooklog.log_failure("nightshift",
+                                f"completion not confirmed for {task_id}: {resp!r}"[:300])
+            out["failed"] += 1
+    except Exception as e:  # noqa: BLE001 — one bad task never stops the shift
+        hooklog.log_failure("nightshift", f"task {task_id} ({title}) failed: {e}")
+        out["failed"] += 1
+        try:
+            call_tool("relay", "relay_task_update",
+                      {"task_id": task_id, "status": "failed",
+                       "result": f"night-shift: {e}"[:500]}, cfg=cfg)
+        except Exception as e2:  # noqa: BLE001
+            hooklog.log_failure("nightshift", f"task_update(failed) failed: {e2}")
+    finally:
+        if token:
+            try:
+                call_tool("relay", "relay_release",
+                          {"resource_id": f"fleet.{task_id}", "agent_id": worker,
+                           "fencing_token": token}, cfg=cfg)
+            except Exception as e:  # noqa: BLE001
+                hooklog.log_failure("nightshift", f"lease release failed: {e}")
+
+
 def run(max_tasks: int = _DEFAULT_MAX_TASKS, dry_run: bool = False, *,
         call_tool: Callable[..., Any] = _mcp.call_tool,
         post_json: Callable[..., Any] = transport.post_json,
         get_json: Callable[..., Any] = transport.get_json) -> dict:
-    """Drain up to `max_tasks` distill_session tasks. Returns a summary dict —
-    {distilled, legacy, skipped, failed, duplicates, deferred} plus `error` on a
+    """Drain up to `max_tasks` tasks across the job catalog (`JOB_TITLES`).
+    Returns a summary dict — {distilled, legacy, skipped, failed, duplicates,
+    deferred, reauthored, proposed, noop, draft_skills} plus `error` on a
     run-level abort. Never raises — the CLI turns `error` into a nonzero exit.
 
-    Counting is HONEST: distilled/legacy/duplicates increment only after the
-    relay confirms the task update in-band (a completion that failed would mean
-    re-distilling next run, so it is counted `failed`, not `distilled`).
-    `deferred` = a TRANSIENT LLM failure; the task stays pending and the shift
-    stops (the model is gone — failing every remaining task would be noise)."""
+    Counting is HONEST: distilled/legacy/duplicates/reauthored/proposed increment
+    only after the relay confirms the task update in-band (a completion that
+    failed would mean re-processing next run, so it is counted `failed`, not the
+    success bucket). `noop` = a reauthor verdict of still_valid/retire (nothing
+    written, by design). `draft_skills` = every draft skill_create this run
+    confirmed, from EITHER job (distill or reauthor). `deferred` = a TRANSIENT
+    LLM failure; the task stays pending and the shift stops (the model is gone —
+    failing every remaining task would be noise)."""
     out = {"distilled": 0, "legacy": 0, "skipped": 0, "failed": 0,
-           "duplicates": 0, "deferred": 0}
+           "duplicates": 0, "deferred": 0, "reauthored": 0, "proposed": 0,
+           "noop": 0, "draft_skills": 0}
     if max_tasks <= 0:
         return out
 
@@ -369,31 +636,29 @@ def run(max_tasks: int = _DEFAULT_MAX_TASKS, dry_run: bool = False, *,
     seen_sessions: set[str] = set()
     stop_shift = False
     try:
-        list_args = {
-            "status": "pending", "title": _TASK_TITLE,
-            "oldest_first": True, "limit": 50,
-        }
-        try:
-            listing = call_tool("relay", "relay_task_list", list_args, cfg=cfg)
-        except transport.TransportError:
-            listing = None
-        if not isinstance(listing, dict) or "tasks" not in listing:
-            # Rolling upgrades: older Relay schemas reject title/oldest_first. A
-            # pre-upgrade fastmcp server does not raise TransportError for an unknown
-            # argument — it returns a normal 200 with an isError tool RESULT, which
-            # call_tool unwraps to a plain error STRING, not a dict, since there is no
-            # in-band JSON-RPC `error` (see hooks/_mcp.py). This is a transition safety
-            # net, not an independent guarantee: the relay deploy carrying title/
-            # oldest_first support must land before or with this 1.5.4 client rollout.
-            # Their real task rows still carry created_at, so sort the returned
-            # compatibility page locally while the server update catches up.
-            listing = call_tool("relay", "relay_task_list",
-                                {"status": "pending", "limit": 50}, cfg=cfg)
-        tasks = sorted(
-            (t for t in (listing.get("tasks") or [])
-             if t.get("title") == _TASK_TITLE),
-            key=_task_created_at,
-        )[:max_tasks]
+        def _list(title: str) -> list[dict]:
+            args = {"status": "pending", "title": title, "oldest_first": True, "limit": 50}
+            try:
+                listing = call_tool("relay", "relay_task_list", args, cfg=cfg)
+            except transport.TransportError:
+                listing = None
+            if not isinstance(listing, dict) or "tasks" not in listing:
+                if title != JOB_DISTILL:
+                    return []  # a pre-catalog relay has no such tasks
+                # Rolling upgrades: older Relay schemas reject title/oldest_first
+                # (an isError tool RESULT unwraps to a STRING, not a dict — see
+                # hooks/_mcp.py). Sort the compatibility page locally.
+                listing = call_tool("relay", "relay_task_list",
+                                    {"status": "pending", "limit": 50}, cfg=cfg)
+            return sorted(
+                (t for t in ((listing or {}).get("tasks") or []) if t.get("title") == title),
+                key=_task_created_at,
+            )
+
+        tasks: list[dict] = []
+        for title in JOB_TITLES:
+            tasks.extend(_list(title))
+        tasks = tasks[:max_tasks]
 
         for task in tasks:
             if stop_shift:  # a transient LLM loss ended the shift mid-loop
@@ -406,6 +671,16 @@ def run(max_tasks: int = _DEFAULT_MAX_TASKS, dry_run: bool = False, *,
 
             if not task_id:
                 out["skipped"] += 1
+                continue
+
+            title = task.get("title") or ""
+            if title != JOB_DISTILL:
+                _run_fleet_task(task, title, out=out, call_tool=call_tool, cfg=cfg,
+                                post_json=post_json, base=base, native=native,
+                                worker=worker, dry_run=dry_run)
+                if out.get("_stop"):
+                    stop_shift = True
+                    out.pop("_stop", None)
                 continue
 
             if dry_run:
@@ -499,6 +774,7 @@ def run(max_tasks: int = _DEFAULT_MAX_TASKS, dry_run: bool = False, *,
                         "gotchas": str(skill.get("gotchas") or "")[:2000],
                         "domain": str(skill.get("domain") or "")[:100],
                         "status": "draft",
+                        "origin_job": JOB_DISTILL,
                         "agent_id": assigner,
                         "session_id": sid,
                     }, cfg=cfg)
@@ -515,6 +791,8 @@ def run(max_tasks: int = _DEFAULT_MAX_TASKS, dry_run: bool = False, *,
                 if _relay_ok(resp):
                     seen_sessions.add(sid)
                     out["distilled"] += 1
+                    if made_skill:
+                        out["draft_skills"] += 1
                 else:
                     # Memory IS stored but the task stays pending — next run
                     # would duplicate it, so this is a failure, loudly.

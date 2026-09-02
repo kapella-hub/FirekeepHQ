@@ -1,3 +1,4 @@
+import json
 import textwrap
 
 import pytest
@@ -76,7 +77,11 @@ def test_night_shift_maps_args_and_exit_codes(monkeypatch):
 
     def fake_run(max_tasks=5, dry_run=False, **_kw):
         seen.update(max_tasks=max_tasks, dry_run=dry_run)
-        return {"distilled": 2, "legacy": 1, "skipped": 0, "failed": 0}
+        # Every summary key the job-catalog CLI output formats now: a fake that
+        # returned only the pre-catalog four keys would KeyError inside cmd_night_shift.
+        return {"distilled": 2, "legacy": 1, "skipped": 0, "failed": 0,
+                "duplicates": 0, "deferred": 0, "reauthored": 0, "proposed": 0,
+                "noop": 0, "draft_skills": 0}
 
     monkeypatch.setattr("firekeep_client.nightshift.run", fake_run)
     assert cli.main(["night-shift", "--max", "3", "--dry-run"]) == 0
@@ -90,6 +95,24 @@ def test_night_shift_error_exits_nonzero(monkeypatch):
                        "failed": 0, "error": "LM Studio unreachable"},
     )
     assert cli.main(["night-shift"]) == 1
+
+
+def test_night_shift_prints_per_job_counts_and_records_last_run(monkeypatch, capsys, tmp_path):
+    from firekeep_client import cli, nightshift, state
+    monkeypatch.setattr(nightshift, "run", lambda **kw: {
+        "distilled": 1, "legacy": 0, "skipped": 0, "failed": 0, "duplicates": 0,
+        "deferred": 0, "reauthored": 2, "proposed": 1, "noop": 1, "draft_skills": 3})
+    written = {}
+    monkeypatch.setattr(state, "write_scratch",
+                        lambda name, value, ttl_seconds=None: written.update({name: (value, ttl_seconds)}))
+    rc = cli.main(["night-shift", "--max", "5"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "1 distilled" in out and "2 re-authored" in out and "1 verdict proposed" in out
+    value, ttl = written["night_shift_last"]
+    rec = json.loads(value)
+    assert rec["counts"]["reauthored"] == 2 and rec["reported"] is False and rec["at"] > 0
+    assert ttl == 7 * 86400
 
 
 # --- firekeep restore (2026-08-02) ------------------------------------------
