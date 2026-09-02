@@ -499,9 +499,11 @@ def _run_fleet_task(task: dict, title: str, *, out: dict, call_tool, cfg, post_j
             if title == JOB_REAUTHOR:
                 counter, _ = _handle_reauthor(ctx, call_tool=call_tool, cfg=cfg, post_json=post_json,
                                               base=base, native=native, worker=worker, dry_run=True)
-            else:
+            elif title == JOB_VERDICT:
                 counter, _ = _handle_propose(ctx, post_json=post_json, base=base, native=native,
                                              worker=worker, dry_run=True)
+            else:
+                raise ValueError(f"unknown fleet job {title!r}")
             out[counter] += 1
         except transport.TransportError:
             out["deferred"] += 1

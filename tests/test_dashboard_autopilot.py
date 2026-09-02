@@ -794,7 +794,11 @@ class TestFleet:
     def test_a_null_rate_is_a_dash_never_zero_percent(self):
         html = _render("renderAutopilotDigest", dict(DIGEST, fleet=FLEET))
         assert "—" in html
-        assert "0%" not in html.replace("100%", "")
+        # A standalone "0%" (not preceded by another digit or a decimal point)
+        # would mean a null rate rendered as zero instead of a dash. Plain
+        # substring exclusion of "0%" false-fails on any genuine rate ending
+        # in zero (e.g. "70%"), which "100%" alone doesn't cover.
+        assert not re.search(r"(?<![\d.])0%", html)
 
     def test_no_fleet_block_renders_no_table(self):
         assert "Fleet" not in _render("renderAutopilotDigest", DIGEST)

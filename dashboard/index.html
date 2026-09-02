@@ -5846,7 +5846,7 @@ var AP_FLEET_JOBS = [
 function apRate(v) {
     // null means "no evidence yet" — a rate is never invented from a prior, and
     // rendering it as 0% would read as "everything rejected".
-    if (v == null) return '<span title="not enough verdicts yet">—</span>';
+    if (v == null) return '<span title="not enough evidence yet">—</span>';
     return apEsc(Math.round(v * 100)) + '%';
 }
 

@@ -831,3 +831,41 @@ def test_dry_run_touches_no_review_surface_for_fleet_jobs(cfg_env):
     out = nightshift.run(dry_run=True, call_tool=rec, post_json=llm, get_json=_get_json_ok)
     assert out["reauthored"] == 1
     assert not rec.named("skill_create") and not rec.named("relay_lease")
+
+
+def test_run_fleet_task_dry_run_unknown_title_fails_without_a_model_call(cfg_env):
+    """The dry-run branch's bare `else` used to route ANY non-reauthor title
+    -- including a genuinely unknown one -- to the propose handler, silently
+    misreading its context as a contested pair instead of failing the task.
+    The live branch already raises ValueError for an unknown title; the
+    dry-run branch must match. A pending task with an unknown title never
+    reaches `_run_fleet_task` through `run()` (relay_task_list is only ever
+    queried for JOB_TITLES), so it's exercised directly.
+
+    Uses a genuinely valid pair context (`_PAIR_CTX`), not `{}` -- an empty
+    context makes `_handle_propose` itself raise on the id-count check, which
+    would land on `out["failed"] == 1` for the WRONG reason and pass even
+    with the bug still in place. The model call is tracked rather than
+    raised from the fake, since an exception raised there is caught by the
+    same `except Exception` the fix is supposed to make unreachable and
+    would silently inflate `out["failed"]` without proving anything.
+    """
+    calls = []
+
+    def post_json(*a, **k):
+        calls.append((a, k))
+        return {}
+
+    def call_tool(*a, **k):
+        calls.append((a, k))
+        return {}
+
+    out = {"failed": 0}
+    nightshift._run_fleet_task(
+        {"id": "task-x", "title": "some_unknown_job", "context": json.dumps(_PAIR_CTX)},
+        "some_unknown_job",
+        out=out, call_tool=call_tool, cfg=None, post_json=post_json,
+        base="http://x", native=False, worker="w", dry_run=True,
+    )
+    assert out["failed"] == 1
+    assert calls == []
