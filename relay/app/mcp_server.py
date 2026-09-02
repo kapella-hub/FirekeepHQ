@@ -508,20 +508,11 @@ async def relay_task_post(
         if len(title) > 500:
             return {"error": "Title too long (max 500 chars)"}
         r = await get_redis()
-        from app.tasks import create_task
-        task = await create_task(r, title, assignee, assigner, description, priority, files, context)
-
-        # Broadcast notification on the tasks channel
-        msg = f"New task: {title}"
-        if assignee:
-            msg = f"Task for {assignee}: {title}"
-        await broadcast(
-            r, "tasks", msg, assigner, ["task-assigned"],
-            backlog_size=get_settings().CHANNEL_BACKLOG_SIZE,
-            backlog_ttl_seconds=get_settings().BULLETIN_TTL_HOURS * 3600,
+        from app.routes import handle_post_task
+        task = await handle_post_task(
+            r, title=title, assignee=assignee, assigner=assigner,
+            description=description, priority=priority, files=files, context=context,
         )
-
-        await _replay_emit("coordination", {"action": "task_created", "task_id": task["id"], "assignee": assignee or ""}, agent_id=assigner)
         return {"status": "created", "task": task}
     except Exception as e:
         logger.error("relay_task_post failed: %s", e)
@@ -1087,6 +1078,12 @@ async def _route_delete_task(request: StarletteRequest) -> StarletteJSONResponse
 async def _route_get_tasks(request: StarletteRequest) -> StarletteJSONResponse:
     from app.routes import route_get_tasks
     return await route_get_tasks(request)
+
+
+@mcp.custom_route("/tasks", methods=["POST"], name="post_task")
+async def _route_post_task(request: StarletteRequest) -> StarletteJSONResponse:
+    from app.routes import route_post_task
+    return await route_post_task(request)
 
 
 @mcp.custom_route("/bulletin", methods=["GET"], name="get_bulletin")

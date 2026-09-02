@@ -144,6 +144,39 @@ async def handle_get_tasks(
     return {"tasks": tasks, "count": len(tasks)}
 
 
+async def handle_post_task(
+    redis, *, title: str, assignee: str | None = None, assigner: str = "unknown",
+    description: str = "", priority: str = "normal", files: list[str] | None = None,
+    context: str = "",
+) -> dict:
+    """Create a task WITH the two side effects the MCP tool has always had.
+
+    One helper for both the tool and the REST route: parity is three effects
+    (store, tasks-channel broadcast, coordination/task_created replay emit),
+    and a route that did only the first would create tasks nobody is told
+    about. Lazy imports keep routes.py free of the mcp_server import cycle
+    (`_get_redis` below does the same).
+    """
+    from app.tasks import create_task
+    from app.pubsub import broadcast
+    from app.config import get_settings
+    from app.mcp_server import _replay_emit
+
+    task = await create_task(redis, title, assignee, assigner, description, priority, files, context)
+    msg = f"Task for {assignee}: {title}" if assignee else f"New task: {title}"
+    await broadcast(
+        redis, "tasks", msg, assigner, ["task-assigned"],
+        backlog_size=get_settings().CHANNEL_BACKLOG_SIZE,
+        backlog_ttl_seconds=get_settings().BULLETIN_TTL_HOURS * 3600,
+    )
+    await _replay_emit(
+        "coordination",
+        {"action": "task_created", "task_id": task["id"], "assignee": assignee or ""},
+        agent_id=assigner,
+    )
+    return task
+
+
 async def handle_get_bulletin(redis, limit: int = 20) -> dict:
     """Wrap relay_read logic (unfiltered) for the Cortex briefing aggregator."""
     from app.bulletin import read_bulletin
@@ -324,6 +357,45 @@ async def route_get_tasks(request: Request) -> JSONResponse:
         return JSONResponse(result)
     except Exception as e:
         logger.error("GET /tasks failed: %s", e)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def route_post_task(request: Request) -> JSONResponse:
+    """POST /tasks — REST twin of relay_task_post, for server-side enqueue.
+
+    Auth is the blanket key middleware and deliberately NO per-route scope
+    (same as GET/DELETE /tasks, /dm/*, /presence/*): cortex's internal key
+    carries no relay scope and deployed keys cannot be re-scoped in place
+    (spec 2026-09-02 fleet-as-gpu, decision 4).
+    """
+    try:
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 — malformed body is the caller's fault
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+        title = str(body.get("title") or "").strip()
+        if not title:
+            return JSONResponse({"error": "title is required"}, status_code=400)
+        if len(title) > 500:
+            return JSONResponse({"error": "Title too long (max 500 chars)"}, status_code=400)
+        files = body.get("files")
+        if files is not None and not (
+            isinstance(files, list) and all(isinstance(f, str) for f in files)
+        ):
+            return JSONResponse({"error": "files must be a list of strings"}, status_code=400)
+        r = await _get_redis()
+        task = await handle_post_task(
+            r, title=title, assignee=(body.get("assignee") or None),
+            assigner=str(body.get("assigner") or "unknown"),
+            description=str(body.get("description") or ""),
+            priority=str(body.get("priority") or "normal"),
+            files=files, context=str(body.get("context") or ""),
+        )
+        return JSONResponse({"status": "created", "task": task}, status_code=201)
+    except Exception as e:
+        logger.error("POST /tasks failed: %s", e)
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
