@@ -5837,6 +5837,50 @@ function apChip(label, value) {
         + apEsc(label) + '</span>';
 }
 
+var AP_FLEET_JOBS = [
+    ['distill_session', 'Session distill'],
+    ['reauthor_stale_skill', 'Stale-skill re-author'],
+    ['propose_contested_verdict', 'Contested-verdict proposal']
+];
+
+function apRate(v) {
+    // null means "no evidence yet" — a rate is never invented from a prior, and
+    // rendering it as 0% would read as "everything rejected".
+    if (v == null) return '<span title="not enough verdicts yet">—</span>';
+    return apEsc(Math.round(v * 100)) + '%';
+}
+
+function apFleetTable(fleet) {
+    var jobs = fleet && fleet.jobs;
+    if (!jobs) return '';
+    var rows = AP_FLEET_JOBS.map(function(pair) {
+        var j = jobs[pair[0]];
+        if (!j) return '';
+        var w = j.window || {}, a = j.all_time || {};
+        var isVerdict = pair[0] === 'propose_contested_verdict';
+        var produced = isVerdict ? (w.proposed || 0) : (w.produced || 0);
+        var accepted = isVerdict ? (w.matched || 0) : (w.approved || 0);
+        var declined = isVerdict ? ((w.resolved || 0) - (w.matched || 0)) : (w.rejected || 0);
+        var rateW = isVerdict ? w.match_rate : w.approval_rate;
+        var rateA = isVerdict ? a.match_rate : a.approval_rate;
+        return '<tr><td>' + apEsc(pair[1]) + '</td>'
+            + '<td style="text-align:right">' + apEsc(produced) + '</td>'
+            + '<td style="text-align:right">' + apEsc(accepted) + '</td>'
+            + '<td style="text-align:right">' + apEsc(declined) + '</td>'
+            + '<td style="text-align:right">' + apRate(rateW) + '</td>'
+            + '<td style="text-align:right">' + apRate(rateA) + '</td>'
+            + '<td style="text-align:right;color:var(--text-dim)">' + apEsc(a.pending != null ? a.pending : '') + '</td></tr>';
+    }).join('');
+    if (!rows) return '';
+    return '<div style="margin-top:14px"><div style="font-weight:600;font-size:13px;margin-bottom:6px">Fleet — what the night shift produced, and how much of it humans kept</div>'
+        + '<table class="data-table" style="width:100%;font-size:12px">'
+        + '<thead><tr><th>Job</th><th>Produced</th><th>Approved / agreed</th>'
+        + '<th>Rejected / disagreed</th><th>Rate (window)</th><th>Rate (all time)</th><th>Pending</th></tr></thead>'
+        + '<tbody>' + rows + '</tbody></table>'
+        + '<div style="font-size:11px;color:var(--text-dim);margin-top:4px">Approval rate = approved ÷ (approved + rejected); '
+        + 'a verdict proposal counts as agreed when the human\'s resolve matched it. Read-only: approve in Skills, resolve pairs via the API.</div></div>';
+}
+
 function renderAutopilotDigest(d) {
     if (!d) return '<div class="card card-padded"><div class="empty-state">Digest unavailable.</div></div>';
     var counts = d.counts || {};
@@ -5848,6 +5892,7 @@ function renderAutopilotDigest(d) {
     var out = '<div class="card card-padded">'
         + '<div style="font-size:15px;line-height:1.6">' + apEsc(d.summary || '') + '</div>';
     if (chips) out += '<div style="margin-top:12px">' + chips + '</div>';
+    if (d.fleet) out += apFleetTable(d.fleet);
 
     // The approximate flag is not decoration. Qdrant scroll pages by point ID,
     // uncorrelated with time, so a capped scan is an arbitrary SAMPLE and these
@@ -5883,6 +5928,15 @@ function apSkillRow(it) {
         + '</div>';
 }
 
+function apEfficacyRow(it) {
+    // Score and n TOGETHER, always: a low-n score is mostly the neutral prior.
+    return '<div style="padding:7px 0;border-top:1px solid var(--border);font-size:13px">'
+        + apEsc(it.trigger || it.id)
+        + '<span style="color:var(--text-dim);margin-left:8px">efficacy '
+        + apEsc(it.skill_efficacy != null ? Number(it.skill_efficacy).toFixed(2) : '?')
+        + ' (n=' + apEsc(it.skill_efficacy_n != null ? it.skill_efficacy_n : '?') + ')</span></div>';
+}
+
 function apProposalRow(it) {
     return '<div style="padding:7px 0;border-top:1px solid var(--border);font-size:13px">'
         + '<span class="badge">' + apEsc(it.kind || 'proposal') + '</span> '
@@ -5894,12 +5948,30 @@ function apContestedRow(it) {
     // lifecycle state the system deliberately refuses to decide on its own, so
     // how long it has sat unresolved is the number that decides whether it
     // matters. Both sides of a dispute are flagged, so one dispute is two rows.
-    return '<div style="padding:7px 0;border-top:1px solid var(--border);font-size:13px">'
+    var html = '<div style="padding:7px 0;border-top:1px solid var(--border);font-size:13px">'
         + apEsc(it.text_preview || '')
         + '<span style="color:var(--text-dim);margin-left:8px">contests '
         + apEsc(it.contested_with || 'another memory')
         + (it.contested_at ? ' since ' + apEsc(it.contested_at) : '')
-        + '</span></div>';
+        + '</span>';
+    var pv = it.proposed_verdict;
+    if (pv && pv.action) {
+        // A Night Shift PROPOSAL, never a verdict: the pair stays contested until
+        // a human resolves it. Shown so the human starts from a reasoned draft.
+        var verdict;
+        if (pv.action === 'coexist') {
+            verdict = 'both true (coexist)';
+        } else {
+            var keep = pv.winner_id || '?';
+            var other = keep === it.id ? (it.contested_with || '?') : it.id;
+            verdict = 'keep ' + apEsc(keep) + ', supersede ' + apEsc(other);
+        }
+        html += '<div style="margin-top:4px;font-size:12px;color:var(--amber)">Night Shift proposes: ' + verdict
+            + (it.proposed_rationale ? ' <span style="color:var(--text-dim)">— ' + apEsc(it.proposed_rationale) + '</span>' : '')
+            + '<span style="color:var(--text-dim)"> (' + apEsc(it.proposed_by || 'fleet')
+            + (it.proposed_at ? ', ' + apEsc(it.proposed_at) : '') + ')</span></div>';
+    }
+    return html + '</div>';
 }
 
 function apDlqRow(it) {
@@ -5939,6 +6011,9 @@ var AUTOPILOT_SECTIONS = [
     { key: 'rereview_skills', title: 'Skills whose source document changed',
       cta: 'Open skills', action: "autopilotOpenSkills('active')",
       pick: function(s) { return s.items || []; }, row: apSkillRow },
+    { key: 'low_efficacy_skills', title: 'Skills scoring below neutral',
+      cta: 'Open skills', action: "autopilotOpenSkills('active')",
+      pick: function(s) { return s.items || []; }, row: apEfficacyRow },
     { key: 'procedure_proposals', title: 'Procedure proposals',
       cta: 'Open procedures', action: "autopilotOpen('skills')",
       pick: function(s) { return s.items || []; }, row: apProposalRow },

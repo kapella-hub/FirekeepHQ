@@ -760,3 +760,76 @@ class TestTrustCard:
                 "invalid": {"unattributed_predict": 0, "missing_action_id": 0,
                             "malformed": 0, "bad_timestamp": 0}, "generated_at": "x"}
         assert "no agent" in render_trust(data).lower()
+
+
+# ------------------------------------------------------------------- fleet --
+# Shape copied from cortex/app/fleet/ledger.py's real summarize() response
+# (Task 7) and surfaced at digest.fleet.jobs (Task 7's digest.py wiring).
+
+FLEET = {
+    "enabled": True,
+    "jobs": {
+        "distill_session": {
+            "window": {"produced": 0, "approved": 0, "rejected": 0, "approval_rate": None},
+            "all_time": {"produced": 0, "approved": 0, "rejected": 0, "approval_rate": None, "pending": 0}},
+        "reauthor_stale_skill": {
+            "window": {"produced": 3, "approved": 2, "rejected": 1, "approval_rate": 0.667},
+            "all_time": {"produced": 9, "approved": 5, "rejected": 2, "approval_rate": 0.714, "pending": 2}},
+        "propose_contested_verdict": {
+            "window": {"proposed": 2, "resolved": 1, "matched": 1, "match_rate": 1.0},
+            "all_time": {"proposed": 4, "resolved": 1, "matched": 1, "match_rate": 1.0}},
+    },
+}
+
+
+class TestFleet:
+    def test_the_digest_renders_a_fleet_table(self):
+        d = dict(DIGEST, fleet=FLEET)
+        html = _render("renderAutopilotDigest", d)
+        assert "Fleet" in html
+        assert "Stale-skill re-author" in html and "Contested-verdict proposal" in html
+        assert "67%" in html and "71%" in html   # window and all-time approval rates
+        assert "100%" in html                    # match rate
+
+    def test_a_null_rate_is_a_dash_never_zero_percent(self):
+        html = _render("renderAutopilotDigest", dict(DIGEST, fleet=FLEET))
+        assert "—" in html
+        assert "0%" not in html.replace("100%", "")
+
+    def test_no_fleet_block_renders_no_table(self):
+        assert "Fleet" not in _render("renderAutopilotDigest", DIGEST)
+
+    def test_a_contested_row_shows_the_proposal(self):
+        row = {"id": "m1", "contested_with": "m2", "contested_at": "2026-09-01",
+               "text_preview": "Deploy with update.sh",
+               "proposed_verdict": {"action": "supersede", "winner_id": "m1"},
+               "proposed_rationale": "m1 names the current script",
+               "proposed_by": "night-shift", "proposed_at": "2026-09-02T03:00:00+00:00"}
+        html = _render("apContestedRow", row)
+        assert "Night Shift proposes" in html and "keep m1" in html and "supersede m2" in html
+        assert "m1 names the current script" in html and "night-shift" in html
+
+    def test_a_coexist_proposal_reads_as_both_true(self):
+        row = {"id": "m1", "contested_with": "m2", "text_preview": "A",
+               "proposed_verdict": {"action": "coexist", "winner_id": None},
+               "proposed_rationale": "", "proposed_by": "night-shift", "proposed_at": ""}
+        assert "both true" in _render("apContestedRow", row)
+
+    def test_a_row_without_a_proposal_is_unchanged(self):
+        row = {"id": "m1", "contested_with": "m2", "contested_at": "x", "text_preview": "A"}
+        assert "proposes" not in _render("apContestedRow", row)
+
+    def test_low_efficacy_section_is_listed(self):
+        inbox = _inbox(items={"low_efficacy_skills": {"count": 1, "approximate": False, "items": [
+            {"id": "s1", "trigger": "Rotate the key", "skill_efficacy": 0.31, "skill_efficacy_n": 7}]}})
+        html = _render("renderAutopilotInbox", inbox)
+        assert "Rotate the key" in html and "0.31" in html and "n=7" in html
+
+    def test_every_api_section_key_has_a_dashboard_entry(self):
+        """The class of drift low_efficacy_skills had: emitted, documented, and
+        never rendered — so the headline total counted rows nobody could see."""
+        api = (DASHBOARD.parents[1] / "cortex/app/autopilot/api.py").read_text(encoding="utf-8")
+        emitted = set(re.findall(r'"([a-z_]+)": await _section\(', api))
+        block = _autopilot_js()
+        listed = set(re.findall(r"\{ key: '([a-z_]+)'", block))
+        assert emitted <= listed, f"API sections missing from AUTOPILOT_SECTIONS: {sorted(emitted - listed)}"
