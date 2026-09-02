@@ -76,3 +76,30 @@ async def test_rejected_reauthor_marker(redis):
     key = ledger.rejected_reauthor_key("sk-1")
     assert await redis.exists(key) == 1
     assert 0 < await redis.ttl(key) <= 90 * 86400
+
+
+@pytest_asyncio.fixture
+async def redis_bytes():
+    # The app's real client is `redis.asyncio.from_url(settings.REDIS_URL)`
+    # with NO `decode_responses=True` (see app/main.py) — HGETALL comes back
+    # with bytes KEYS as well as bytes values. This fixture reproduces that,
+    # unlike every other test here which uses decode_responses=True and would
+    # not catch a key-decoding bug.
+    r = fr.FakeRedis()
+    yield r
+    await r.aclose()
+
+
+@pytest.mark.asyncio
+async def test_summarize_against_bytes_mode_redis(redis_bytes):
+    assert await ledger.record(redis_bytes, ledger.JOB_REAUTHOR, "produced", now=NOW) is True
+    assert await ledger.record(redis_bytes, ledger.JOB_REAUTHOR, "produced", now=NOW) is True
+    assert await ledger.record(redis_bytes, ledger.JOB_REAUTHOR, "approved", now=NOW) is True
+
+    out = await ledger.summarize(redis_bytes, days=7, now=NOW)
+    re = out[ledger.JOB_REAUTHOR]
+    # approval_rate = approved / (approved + rejected) = 1/1, pending = 2-1-0
+    assert re["all_time"] == {"produced": 2, "approved": 1, "rejected": 0,
+                              "approval_rate": 1.0, "pending": 1}
+    assert re["window"] == {"produced": 2, "approved": 1, "rejected": 0,
+                            "approval_rate": 1.0}

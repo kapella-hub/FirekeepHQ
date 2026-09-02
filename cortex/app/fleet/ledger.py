@@ -84,10 +84,20 @@ async def mark_rejected_reauthor(redis_client, skill_id: str) -> None:
 
 
 def _ints(raw: dict | None, counters: tuple[str, ...]) -> dict[str, int]:
+    """Normalize an `HGETALL` reply and read out `counters` as ints.
+
+    The app's real redis client is constructed without `decode_responses=True`
+    (`redis.asyncio.from_url(settings.REDIS_URL)` in `app/main.py`), so
+    `HGETALL` returns `{b"produced": b"5", ...}` — bytes KEYS, not just bytes
+    values. Decoding only the value and looking it up with a `str` key (the
+    original bug) misses every entry and silently reports all zeros. Decode
+    both, matching the house pattern in `app/procedures/store.py`'s `_smap`.
+    """
     raw = raw or {}
+    decoded = {(k.decode() if isinstance(k, bytes) else k): v for k, v in raw.items()}
     out: dict[str, int] = {}
     for c in counters:
-        v = raw.get(c)
+        v = decoded.get(c)
         if isinstance(v, bytes):
             v = v.decode()
         try:
