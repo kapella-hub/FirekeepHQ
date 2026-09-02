@@ -262,6 +262,15 @@ async def build_digest(vector, redis_client, settings, *, days: int,
         logger.exception("Autopilot digest: gc log read failed")
         errors["gc_actions"] = str(exc)[:200]
 
+    fleet: dict[str, Any] = {"enabled": bool(getattr(settings, "FLEET_ENQUEUE_ENABLED", True)),
+                             "jobs": {}}
+    try:
+        from app.fleet import ledger as _ledger
+        fleet["jobs"] = await _ledger.summarize(redis_client, days=days, now=now)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Autopilot digest: fleet ledger read failed")
+        errors["fleet"] = str(exc)[:200]
+
     payload: dict[str, Any] = {
         "generated_at": now.isoformat(),
         "window_days": days,
@@ -270,6 +279,7 @@ async def build_digest(vector, redis_client, settings, *, days: int,
         "approximate": approximate,
         "scanned": scanned,
         "summary": summarize(counts, days, approximate),
+        "fleet": fleet,
         "notes": [
             "skills_activated counts human blessings via stale_reviewed_at "
             "(promotion to active OR clearing the stale flag) — the store has "
@@ -279,6 +289,8 @@ async def build_digest(vector, redis_client, settings, *, days: int,
             "memories_superseded counts by the superseded_at stamp; supersessions "
             "from before the stamp existed are counted only when their keeper was "
             "written in the window, which undercounts old deep-pass supersessions.",
+            "fleet.jobs rates are null when nothing has been approved or rejected yet "
+            "— a rate is never invented from a prior; window counts sum UTC days.",
         ],
     }
     if approximate:

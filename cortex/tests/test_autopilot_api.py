@@ -767,6 +767,41 @@ async def test_a_dead_qdrant_still_yields_the_gc_number(mk, stores, monkeypatch)
     assert "memories" in body["errors"]
 
 
+@pytest.mark.asyncio
+async def test_digest_carries_the_fleet_ledger(mk, stores, monkeypatch):
+    redis_client, replay_redis = stores
+    monkeypatch.setattr(digest_mod, "datetime", _FrozenDatetime)
+    from app.fleet import ledger
+    await ledger.record(redis_client, ledger.JOB_REAUTHOR, "produced", now=NOW)
+    await ledger.record(redis_client, ledger.JOB_REAUTHOR, "approved", now=NOW)
+
+    async with mk(_FakeVector(_FakeQdrant()), redis_client, replay_redis) as c:
+        body = (await c.get("/autopilot/digest?days=7")).json()
+
+    fleet = body["fleet"]
+    assert fleet["enabled"] is True
+    re = fleet["jobs"]["reauthor_stale_skill"]
+    assert re["window"]["produced"] == 1 and re["window"]["approval_rate"] == 1.0
+    assert fleet["jobs"]["propose_contested_verdict"]["window"]["match_rate"] is None
+    assert "fleet" not in body.get("errors", {})
+
+
+@pytest.mark.asyncio
+async def test_digest_fleet_degrades_in_place(mk, stores, monkeypatch):
+    redis_client, replay_redis = stores
+    from app.fleet import ledger
+
+    async def boom(*a, **k):
+        raise RuntimeError("redis gone")
+    monkeypatch.setattr(ledger, "summarize", boom)
+
+    async with mk(_FakeVector(_FakeQdrant()), redis_client, replay_redis) as c:
+        body = (await c.get("/autopilot/digest?days=7")).json()
+
+    assert body["fleet"]["jobs"] == {} and "fleet" in body["errors"]
+    assert "counts" in body  # the rest of the digest survived
+
+
 # -------------------------------------------------------------------- auth --
 
 @pytest.mark.asyncio
