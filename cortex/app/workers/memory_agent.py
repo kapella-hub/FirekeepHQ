@@ -1120,6 +1120,7 @@ def run_memory_agent() -> dict[str, Any]:
     results: dict[str, Any] = {"status": "ok", "passes": {}}
 
     from app.skills.staleness import skill_staleness_pass
+    from app.fleet.enqueue import fleet_enqueue_pass
 
     passes = [
         ("duplicate_detection", duplicate_detection_pass),
@@ -1131,6 +1132,9 @@ def run_memory_agent() -> dict[str, Any]:
         # timestamps are current when it evaluates (blueprint ordering).
         ("last_recalled_flush", flush_last_recalled),
         ("skill_staleness", skill_staleness_pass),
+        # Fleet-as-GPU: turns tonight's stale flags + contested pairs into relay
+        # tasks for client Night Shift workers. After staleness on purpose.
+        ("fleet_enqueue", fleet_enqueue_pass),
     ]
 
     for name, func in passes:

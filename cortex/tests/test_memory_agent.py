@@ -1314,3 +1314,14 @@ class TestNewPassesExecuted:
         assert "flush_last_recalled" in calls
         assert "skill_staleness_pass" in calls
         assert calls.index("flush_last_recalled") < calls.index("skill_staleness_pass")
+
+
+def test_fleet_enqueue_pass_is_registered_after_staleness(monkeypatch):
+    """The enqueue pass must see TONIGHT's stale flags, so it runs after
+    skill_staleness — and it is one of the isolated passes (an error there
+    never stops the rest)."""
+    import inspect
+    from app.workers import memory_agent
+    src = inspect.getsource(memory_agent.run_memory_agent)
+    assert src.index('("skill_staleness", skill_staleness_pass)') < src.index(
+        '("fleet_enqueue", fleet_enqueue_pass)')
