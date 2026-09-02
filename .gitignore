@@ -72,3 +72,6 @@ Microsoft/
 # Never let `git add -A` stage a database dump into history.
 /backups/
 *.tar.gz
+
+# superpowers SDD scratch (ledger, briefs, review packages)
+.superpowers/
