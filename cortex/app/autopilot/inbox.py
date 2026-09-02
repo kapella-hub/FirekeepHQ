@@ -218,6 +218,12 @@ async def contested_memories(vector, settings) -> dict[str, Any]:
             "contested_with": payload.get("contested_with") or "",
             "contested_at": payload.get("contested_at") or "",
             "text_preview": _preview(payload.get("text")),
+            # Fleet-as-GPU: a Night Shift proposal, when one exists. Rendered
+            # beside the pair; resolving stays a human API call.
+            "proposed_verdict": payload.get("proposed_verdict"),
+            "proposed_rationale": payload.get("proposed_rationale") or "",
+            "proposed_by": payload.get("proposed_by") or "",
+            "proposed_at": payload.get("proposed_at") or "",
         })
     return {"count": len(points), "approximate": capped, "pairs": pairs}
 

@@ -402,6 +402,28 @@ async def test_a_client_authored_skill_still_gets_a_label(mk, stores):
 
 
 @pytest.mark.asyncio
+async def test_contested_rows_carry_the_fleet_proposal(mk, stores):
+    """Fleet-as-GPU: a Night Shift proposal on a pair renders beside it in the
+    inbox — resolving stays a human call to /memory/contested/resolve."""
+    redis_client, replay_redis = stores
+    qdrant = _FakeQdrant([
+        _Point("m1", {"status": "active", "contested": True, "contested_with": "m2",
+                      "contested_at": iso(1), "text": "A",
+                      "proposed_verdict": {"action": "coexist", "winner_id": None},
+                      "proposed_rationale": "both true", "proposed_by": "night-shift",
+                      "proposed_at": iso(0.5)}),
+        _Point("m2", {"status": "active", "contested": True, "contested_with": "m1",
+                      "contested_at": iso(1), "text": "B"}),
+    ])
+    async with mk(_FakeVector(qdrant), redis_client, replay_redis) as c:
+        body = (await c.get("/autopilot/inbox")).json()
+    rows = {p["id"]: p for p in body["items"]["contested_memories"]["pairs"]}
+    assert rows["m1"]["proposed_verdict"] == {"action": "coexist", "winner_id": None}
+    assert rows["m1"]["proposed_by"] == "night-shift" and rows["m1"]["proposed_rationale"] == "both true"
+    assert rows["m2"]["proposed_verdict"] is None and rows["m2"]["proposed_by"] == ""
+
+
+@pytest.mark.asyncio
 async def test_contested_previews_are_bounded(mk, stores):
     redis_client, replay_redis = stores
     qdrant = _FakeQdrant([_Point("m1", {

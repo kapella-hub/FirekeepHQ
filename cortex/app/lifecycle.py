@@ -23,6 +23,7 @@ from app.models import (
     BacklinksResponse,
     ConfirmRequest,
     ConfirmResponse,
+    ContestedProposeRequest,
     ContestedResolveRequest,
     DeprecateRequest,
     DeprecateResponse,
@@ -272,6 +273,30 @@ def create_lifecycle_router(
             },
         }
 
+    async def _load_contested_pair(winner_id: str, loser_id: str) -> tuple[dict, dict]:
+        winner = await vector.get_memory(winner_id)
+        loser = await vector.get_memory(loser_id)
+        if not winner or not loser:
+            raise HTTPException(status_code=404, detail="Memory not found")
+        # contested_with is NOT a hoisted get_memory field — it lives under
+        # "metadata". Reading it at the top level made this endpoint 409 on
+        # every genuinely contested pair.
+        winner_meta = winner.get("metadata") or {}
+        loser_meta = loser.get("metadata") or {}
+        if winner_meta.get("contested_with") != loser_id and loser_meta.get(
+            "contested_with"
+        ) != winner_id:
+            raise HTTPException(
+                status_code=409,
+                detail="These memories are not contested with each other",
+            )
+        return winner_meta, loser_meta
+
+    _PROPOSAL_CLEAR = {
+        "proposed_verdict": None, "proposed_rationale": None,
+        "proposed_by": None, "proposed_at": None,
+    }
+
     @router.post("/memory/contested/resolve", dependencies=[Depends(require_not_frozen)])
     @limiter.limit(lambda: get_settings().RATE_LIMIT)
     async def resolve_contested(
@@ -294,22 +319,8 @@ def create_lifecycle_router(
           similarity band, so without it a coexist verdict would be undone
           within 24 hours.
         """
-        winner = await vector.get_memory(body.winner_id)
-        loser = await vector.get_memory(body.loser_id)
-        if not winner or not loser:
-            raise HTTPException(status_code=404, detail="Memory not found")
-        # contested_with is NOT a hoisted get_memory field — it lives under
-        # "metadata". Reading it at the top level made this endpoint 409 on
-        # every genuinely contested pair.
-        winner_meta = winner.get("metadata") or {}
-        loser_meta = loser.get("metadata") or {}
-        if winner_meta.get("contested_with") != body.loser_id and loser_meta.get(
-            "contested_with"
-        ) != body.winner_id:
-            raise HTTPException(
-                status_code=409,
-                detail="These memories are not contested with each other",
-            )
+        winner_meta, loser_meta = await _load_contested_pair(body.winner_id, body.loser_id)
+        proposal = winner_meta.get("proposed_verdict") or loser_meta.get("proposed_verdict")
 
         settings = get_settings()
         if body.action == "supersede":
@@ -345,6 +356,7 @@ def create_lifecycle_router(
                     "contested": False,
                     "contested_with": None,
                     "contested_at": None,
+                    **_PROPOSAL_CLEAR,
                 },
                 points=[body.winner_id, body.loser_id],
             )
@@ -360,14 +372,68 @@ def create_lifecycle_router(
                         "contested_with": None,
                         "contested_at": None,
                         "coexist_with": other_id,
+                        **_PROPOSAL_CLEAR,
                     },
                     points=[this_id],
                 )
+        if isinstance(proposal, dict):
+            # The verdict is the ground truth the fleet's proposal is scored
+            # against (spec decision 7). Best-effort, after the verdict is durable.
+            from app.fleet import ledger as _ledger
+            await _ledger.record(redis_client, _ledger.JOB_VERDICT, "resolved")
+            agreed = proposal.get("action") == body.action and (
+                body.action == "coexist" or proposal.get("winner_id") == body.winner_id
+            )
+            if agreed:
+                await _ledger.record(redis_client, _ledger.JOB_VERDICT, "matched")
         return {
             "status": "resolved",
             "action": body.action,
             "winner_id": body.winner_id,
             "loser_id": body.loser_id,
+        }
+
+    @router.post("/memory/contested/propose", dependencies=[Depends(require_not_frozen)])
+    @limiter.limit(lambda: get_settings().RATE_LIMIT)
+    async def propose_contested(
+        request: Request,
+        body: ContestedProposeRequest,
+        identity: dict = Depends(require_scope("memory:write")),
+    ) -> dict[str, Any]:
+        """Record a PROPOSED verdict on a contested pair without resolving it.
+
+        Written by Night Shift's `propose_contested_verdict` job (a local model on
+        a developer's machine). It sets four `proposed_*` fields on both points
+        and nothing else — the pair stays contested, recall keeps annotating it,
+        and only /memory/contested/resolve (a human) supersedes or coexists. A
+        second proposal overwrites the first; only the first is counted.
+        """
+        winner_meta, loser_meta = await _load_contested_pair(body.winner_id, body.loser_id)
+        first = not (winner_meta.get("proposed_at") or loser_meta.get("proposed_at"))
+        proposed_by = (
+            request.headers.get("X-Agent-Id")
+            or (identity or {}).get("agent_id")
+            or "unknown"
+        )
+        await vector._client.set_payload(
+            collection_name=get_settings().QDRANT_COLLECTION,
+            payload={
+                "proposed_verdict": {
+                    "action": body.action,
+                    "winner_id": body.winner_id if body.action == "supersede" else None,
+                },
+                "proposed_rationale": body.rationale,
+                "proposed_by": str(proposed_by)[:128],
+                "proposed_at": datetime.now(timezone.utc).isoformat(),
+            },
+            points=[body.winner_id, body.loser_id],
+        )
+        if first:
+            from app.fleet import ledger as _ledger
+            await _ledger.record(redis_client, _ledger.JOB_VERDICT, "proposed")
+        return {
+            "status": "proposed", "action": body.action,
+            "winner_id": body.winner_id, "loser_id": body.loser_id, "first": first,
         }
 
     return router

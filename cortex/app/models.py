@@ -291,6 +291,20 @@ class ContestedResolveRequest(BaseModel):
     action: Literal["supersede", "coexist"] = "supersede"
 
 
+class ContestedProposeRequest(BaseModel):
+    """A fleet worker's PROPOSED verdict on a contested pair (Fleet-as-GPU).
+
+    Same shape as the human verdict plus a rationale, so the two can be compared
+    later (the ledger's `matched` counter). Proposing never resolves: the pair
+    stays contested until a human calls /memory/contested/resolve.
+    """
+
+    winner_id: str = Field(..., min_length=1, max_length=128)
+    loser_id: str = Field(..., min_length=1, max_length=128)
+    action: Literal["supersede", "coexist"] = "supersede"
+    rationale: str = Field(default="", max_length=1000)
+
+
 # ---------------------------------------------------------------------------
 # Stats & Transfer Models
 # ---------------------------------------------------------------------------

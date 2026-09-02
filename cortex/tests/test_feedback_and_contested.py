@@ -394,3 +394,185 @@ class TestEvidenceLedger:
         ))
         resp = lifecycle_client.get("/memory/mem-1/evidence")
         assert resp.status_code in (401, 403)
+
+
+# ---------------------------------------------------------------------------
+# /memory/contested/propose (Fleet-as-GPU) + resolve bookkeeping
+#
+# Driven over ASGITransport, not `TestClient` + `asyncio.get_event_loop()
+# .run_until_complete(...)`: under Python 3.14 there is no implicit event
+# loop, and a fakeredis instance touched inside TestClient's own
+# thread-local loop is unusable from the test coroutine's own loop
+# afterward. See `_asgi_client` in test_skill_api.py for the same fix.
+# ---------------------------------------------------------------------------
+import fakeredis.aioredis as _fr
+import httpx as _httpx
+from fastapi import FastAPI as _FastAPI
+
+
+def _ledger_app(mock_graph, mock_vector):
+    r = _fr.FakeRedis(decode_responses=True)
+    app = _FastAPI()
+    app.include_router(create_lifecycle_router(graph=mock_graph, vector=mock_vector,
+                                               redis_client=r))
+    return app, r
+
+
+def _asgi_client(app):
+    return _httpx.AsyncClient(transport=_httpx.ASGITransport(app=app), base_url="http://test")
+
+
+def _proposed_pair(mock_vector, *, action="supersede", winner="w1"):
+    prop = {"action": action, "winner_id": (winner if action == "supersede" else None)}
+
+    async def _get(mid):
+        return {
+            "w1": _real_shape("w1", status="active", contested=True, contested_with="l1",
+                              proposed_verdict=prop, proposed_at="2026-09-01T00:00:00+00:00"),
+            "l1": _real_shape("l1", status="active", contested=True, contested_with="w1",
+                              proposed_verdict=prop, proposed_at="2026-09-01T00:00:00+00:00"),
+        }.get(mid)
+
+    mock_vector.get_memory = AsyncMock(side_effect=_get)
+
+
+class TestContestedPropose:
+    @pytest.mark.asyncio
+    async def test_proposal_is_written_to_both_points_and_counted_once(self, mock_graph, mock_vector):
+        app, r = _ledger_app(mock_graph, mock_vector)
+        _contested_pair(mock_vector)
+        async with _asgi_client(app) as client:
+            resp = await client.post(
+                "/memory/contested/propose", headers={"X-Agent-Id": "night-shift"},
+                json={"winner_id": "w1", "loser_id": "l1", "action": "supersede",
+                      "rationale": "w1 cites the newer runbook"})
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["status"] == "proposed" and resp.json()["first"] is True
+        call = mock_vector._client.set_payload.call_args
+        assert set(call.kwargs["points"]) == {"w1", "l1"}
+        written = call.kwargs["payload"]
+        assert written["proposed_verdict"] == {"action": "supersede", "winner_id": "w1"}
+        assert written["proposed_rationale"] == "w1 cites the newer runbook"
+        assert written["proposed_by"] == "night-shift" and written["proposed_at"]
+        # Nothing was resolved: no supersede, no confirm, no edge.
+        mock_vector.update_status.assert_not_called()
+        mock_vector.confirm_memory.assert_not_called()
+        mock_graph.create_supersession.assert_not_called()
+        assert await r.hget("fleet:ledger:propose_contested_verdict", "proposed") == "1"
+
+    @pytest.mark.asyncio
+    async def test_second_proposal_overwrites_but_is_not_counted_again(self, mock_graph, mock_vector):
+        app, r = _ledger_app(mock_graph, mock_vector)
+        _proposed_pair(mock_vector)
+        async with _asgi_client(app) as client:
+            resp = await client.post(
+                "/memory/contested/propose",
+                json={"winner_id": "l1", "loser_id": "w1", "action": "supersede"})
+        assert resp.status_code == 200 and resp.json()["first"] is False
+        assert mock_vector._client.set_payload.call_args.kwargs["payload"]["proposed_verdict"] == {
+            "action": "supersede", "winner_id": "l1"}
+        assert await r.hget("fleet:ledger:propose_contested_verdict", "proposed") is None
+
+    @pytest.mark.asyncio
+    async def test_coexist_proposal_has_no_winner(self, mock_graph, mock_vector):
+        app, _r = _ledger_app(mock_graph, mock_vector)
+        _contested_pair(mock_vector)
+        async with _asgi_client(app) as client:
+            resp = await client.post(
+                "/memory/contested/propose",
+                json={"winner_id": "w1", "loser_id": "l1", "action": "coexist"})
+        assert resp.status_code == 200
+        assert mock_vector._client.set_payload.call_args.kwargs["payload"]["proposed_verdict"] == {
+            "action": "coexist", "winner_id": None}
+
+    @pytest.mark.asyncio
+    async def test_not_a_pair_is_409_and_writes_nothing(self, mock_graph, mock_vector):
+        app, r = _ledger_app(mock_graph, mock_vector)
+
+        async def _get(mid):
+            return {"w1": _real_shape("w1", status="active", contested=True, contested_with="zz"),
+                    "l1": _real_shape("l1", status="active")}.get(mid)
+
+        mock_vector.get_memory = AsyncMock(side_effect=_get)
+        async with _asgi_client(app) as client:
+            resp = await client.post(
+                "/memory/contested/propose",
+                json={"winner_id": "w1", "loser_id": "l1"})
+        assert resp.status_code == 409
+        mock_vector._client.set_payload.assert_not_called()
+        assert await r.keys("fleet:*") == []
+
+    @pytest.mark.asyncio
+    async def test_unknown_memory_is_404(self, mock_graph, mock_vector):
+        app, _r = _ledger_app(mock_graph, mock_vector)
+        mock_vector.get_memory = AsyncMock(return_value=None)
+        async with _asgi_client(app) as client:
+            resp = await client.post(
+                "/memory/contested/propose",
+                json={"winner_id": "a", "loser_id": "b"})
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_rationale_is_capped(self, mock_graph, mock_vector):
+        app, _r = _ledger_app(mock_graph, mock_vector)
+        _contested_pair(mock_vector)
+        async with _asgi_client(app) as client:
+            resp = await client.post(
+                "/memory/contested/propose",
+                json={"winner_id": "w1", "loser_id": "l1", "rationale": "x" * 1001})
+        assert resp.status_code == 422
+
+
+class TestResolveWithProposal:
+    def _clear_payloads(self, mock_vector):
+        return [c.kwargs["payload"] for c in mock_vector._client.set_payload.call_args_list]
+
+    @pytest.mark.asyncio
+    async def test_matching_supersede_counts_resolved_and_matched_and_clears_proposal(
+            self, mock_graph, mock_vector):
+        app, r = _ledger_app(mock_graph, mock_vector)
+        _proposed_pair(mock_vector, action="supersede", winner="w1")
+        async with _asgi_client(app) as client:
+            resp = await client.post(
+                "/memory/contested/resolve",
+                json={"winner_id": "w1", "loser_id": "l1", "action": "supersede"})
+        assert resp.status_code == 200, resp.text
+        assert await r.hget("fleet:ledger:propose_contested_verdict", "resolved") == "1"
+        assert await r.hget("fleet:ledger:propose_contested_verdict", "matched") == "1"
+        for p in self._clear_payloads(mock_vector):
+            assert p["contested"] is False
+            assert p["proposed_verdict"] is None and p["proposed_rationale"] is None
+            assert p["proposed_by"] is None and p["proposed_at"] is None
+
+    @pytest.mark.asyncio
+    async def test_disagreeing_verdict_counts_resolved_only(self, mock_graph, mock_vector):
+        app, r = _ledger_app(mock_graph, mock_vector)
+        _proposed_pair(mock_vector, action="supersede", winner="w1")
+        async with _asgi_client(app) as client:
+            await client.post(
+                "/memory/contested/resolve",
+                json={"winner_id": "l1", "loser_id": "w1", "action": "supersede"})
+        assert await r.hget("fleet:ledger:propose_contested_verdict", "resolved") == "1"
+        assert await r.hget("fleet:ledger:propose_contested_verdict", "matched") is None
+
+    @pytest.mark.asyncio
+    async def test_coexist_matches_coexist(self, mock_graph, mock_vector):
+        app, r = _ledger_app(mock_graph, mock_vector)
+        _proposed_pair(mock_vector, action="coexist")
+        async with _asgi_client(app) as client:
+            await client.post(
+                "/memory/contested/resolve",
+                json={"winner_id": "w1", "loser_id": "l1", "action": "coexist"})
+        assert await r.hget("fleet:ledger:propose_contested_verdict", "matched") == "1"
+        for p in self._clear_payloads(mock_vector):
+            assert p["coexist_with"] in {"w1", "l1"} and p["proposed_verdict"] is None
+
+    @pytest.mark.asyncio
+    async def test_resolve_without_a_proposal_records_nothing(self, mock_graph, mock_vector):
+        app, r = _ledger_app(mock_graph, mock_vector)
+        _contested_pair(mock_vector)
+        async with _asgi_client(app) as client:
+            await client.post(
+                "/memory/contested/resolve",
+                json={"winner_id": "w1", "loser_id": "l1", "action": "supersede"})
+        assert await r.keys("fleet:ledger:*") == []
