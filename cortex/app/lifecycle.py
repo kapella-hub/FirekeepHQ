@@ -273,7 +273,9 @@ def create_lifecycle_router(
             },
         }
 
-    async def _load_contested_pair(winner_id: str, loser_id: str) -> tuple[dict, dict]:
+    async def _load_contested_pair(
+        request: Request, winner_id: str, loser_id: str
+    ) -> tuple[dict, dict]:
         winner = await vector.get_memory(winner_id)
         loser = await vector.get_memory(loser_id)
         if not winner or not loser:
@@ -283,6 +285,22 @@ def create_lifecycle_router(
         # every genuinely contested pair.
         winner_meta = winner.get("metadata") or {}
         loser_meta = loser.get("metadata") or {}
+        # Fleet tasks publish pair ids Keep-wide (spec decision 6), so without
+        # this a member key from workspace B could walk any pair id it can
+        # guess/observe and stamp a verdict onto workspace A's memories. Same
+        # shape as skills/api.py's reauthor_of guard: 404, not 403 — the
+        # boundary must not even confirm the pair exists to the wrong caller.
+        # Legacy points with no workspace_id stay accessible to everyone
+        # (absence is not a difference worth enforcing).
+        from auth.principal import request_principal
+
+        principal = request_principal(request)
+        caller_ws = principal.get("workspace_id")
+        if caller_ws:
+            for meta in (winner_meta, loser_meta):
+                point_ws = meta.get("workspace_id")
+                if point_ws and point_ws != caller_ws:
+                    raise HTTPException(status_code=404, detail="Memory not found")
         if winner_meta.get("contested_with") != loser_id and loser_meta.get(
             "contested_with"
         ) != winner_id:
@@ -319,7 +337,7 @@ def create_lifecycle_router(
           similarity band, so without it a coexist verdict would be undone
           within 24 hours.
         """
-        winner_meta, loser_meta = await _load_contested_pair(body.winner_id, body.loser_id)
+        winner_meta, loser_meta = await _load_contested_pair(request, body.winner_id, body.loser_id)
         proposal = winner_meta.get("proposed_verdict") or loser_meta.get("proposed_verdict")
 
         settings = get_settings()
@@ -408,7 +426,7 @@ def create_lifecycle_router(
         and only /memory/contested/resolve (a human) supersedes or coexists. A
         second proposal overwrites the first; only the first is counted.
         """
-        winner_meta, loser_meta = await _load_contested_pair(body.winner_id, body.loser_id)
+        winner_meta, loser_meta = await _load_contested_pair(request, body.winner_id, body.loser_id)
         first = not (winner_meta.get("proposed_at") or loser_meta.get("proposed_at"))
         proposed_by = (
             request.headers.get("X-Agent-Id")

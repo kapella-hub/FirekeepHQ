@@ -19,8 +19,11 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
+import fakeredis.aioredis as _fr
+import httpx as _httpx
 import pytest
 from fastapi import FastAPI
+from fastapi import FastAPI as _FastAPI
 from fastapi.testclient import TestClient
 
 from app.engine.rag import RAGEngine
@@ -405,9 +408,6 @@ class TestEvidenceLedger:
 # thread-local loop is unusable from the test coroutine's own loop
 # afterward. See `_asgi_client` in test_skill_api.py for the same fix.
 # ---------------------------------------------------------------------------
-import fakeredis.aioredis as _fr
-import httpx as _httpx
-from fastapi import FastAPI as _FastAPI
 
 
 def _ledger_app(mock_graph, mock_vector):
@@ -434,6 +434,124 @@ def _proposed_pair(mock_vector, *, action="supersede", winner="w1"):
         }.get(mid)
 
     mock_vector.get_memory = AsyncMock(side_effect=_get)
+
+
+def _cross_workspace_pair(mock_vector, ws="ws-a"):
+    async def _get(mid):
+        return {
+            "w1": _real_shape("w1", status="active", contested=True,
+                              contested_with="l1", workspace_id=ws),
+            "l1": _real_shape("l1", status="active", contested=True,
+                              contested_with="w1", workspace_id=ws),
+        }.get(mid)
+
+    mock_vector.get_memory = AsyncMock(side_effect=_get)
+
+
+class TestContestedWorkspaceGuard:
+    """F1: fleet tasks publish pair ids Keep-wide, so a member key from
+    workspace B must not be able to stamp a verdict onto workspace A's
+    contested pair just by knowing the ids. 404, not 403 -- the boundary
+    must not even confirm the pair exists."""
+
+    @pytest.mark.asyncio
+    async def test_propose_cross_workspace_is_404(self, mock_graph, mock_vector, monkeypatch):
+        app, r = _ledger_app(mock_graph, mock_vector)
+        _cross_workspace_pair(mock_vector, ws="ws-a")
+        monkeypatch.setattr(
+            "auth.principal.request_principal",
+            lambda req: {"workspace_id": "ws-b", "member_id": "m"},
+        )
+        async with _asgi_client(app) as client:
+            resp = await client.post(
+                "/memory/contested/propose",
+                json={"winner_id": "w1", "loser_id": "l1", "action": "supersede"},
+            )
+        assert resp.status_code == 404
+        mock_vector._client.set_payload.assert_not_called()
+        assert await r.keys("fleet:*") == []
+
+    @pytest.mark.asyncio
+    async def test_resolve_cross_workspace_is_404(self, mock_graph, mock_vector, monkeypatch):
+        app, r = _ledger_app(mock_graph, mock_vector)
+        _cross_workspace_pair(mock_vector, ws="ws-a")
+        monkeypatch.setattr(
+            "auth.principal.request_principal",
+            lambda req: {"workspace_id": "ws-b", "member_id": "m"},
+        )
+        async with _asgi_client(app) as client:
+            resp = await client.post(
+                "/memory/contested/resolve",
+                json={"winner_id": "w1", "loser_id": "l1", "action": "supersede"},
+            )
+        assert resp.status_code == 404
+        mock_vector.update_status.assert_not_called()
+        mock_vector._client.set_payload.assert_not_called()
+        assert await r.keys("fleet:*") == []
+
+    @pytest.mark.asyncio
+    async def test_propose_same_workspace_is_200(self, mock_graph, mock_vector, monkeypatch):
+        app, r = _ledger_app(mock_graph, mock_vector)
+        _cross_workspace_pair(mock_vector, ws="ws-a")
+        monkeypatch.setattr(
+            "auth.principal.request_principal",
+            lambda req: {"workspace_id": "ws-a", "member_id": "m"},
+        )
+        async with _asgi_client(app) as client:
+            resp = await client.post(
+                "/memory/contested/propose",
+                json={"winner_id": "w1", "loser_id": "l1", "action": "supersede"},
+            )
+        assert resp.status_code == 200, resp.text
+
+    @pytest.mark.asyncio
+    async def test_resolve_same_workspace_is_200(self, mock_graph, mock_vector, monkeypatch):
+        app, r = _ledger_app(mock_graph, mock_vector)
+        _cross_workspace_pair(mock_vector, ws="ws-a")
+        monkeypatch.setattr(
+            "auth.principal.request_principal",
+            lambda req: {"workspace_id": "ws-a", "member_id": "m"},
+        )
+        async with _asgi_client(app) as client:
+            resp = await client.post(
+                "/memory/contested/resolve",
+                json={"winner_id": "w1", "loser_id": "l1", "action": "supersede"},
+            )
+        assert resp.status_code == 200, resp.text
+
+    @pytest.mark.asyncio
+    async def test_propose_legacy_points_without_workspace_id_is_200(
+        self, mock_graph, mock_vector, monkeypatch
+    ):
+        app, r = _ledger_app(mock_graph, mock_vector)
+        _contested_pair(mock_vector)  # no workspace_id in metadata at all
+        monkeypatch.setattr(
+            "auth.principal.request_principal",
+            lambda req: {"workspace_id": "ws-b", "member_id": "m"},
+        )
+        async with _asgi_client(app) as client:
+            resp = await client.post(
+                "/memory/contested/propose",
+                json={"winner_id": "w1", "loser_id": "l1", "action": "supersede"},
+            )
+        assert resp.status_code == 200, resp.text
+
+    @pytest.mark.asyncio
+    async def test_resolve_legacy_points_without_workspace_id_is_200(
+        self, mock_graph, mock_vector, monkeypatch
+    ):
+        app, r = _ledger_app(mock_graph, mock_vector)
+        _contested_pair(mock_vector)  # no workspace_id in metadata at all
+        monkeypatch.setattr(
+            "auth.principal.request_principal",
+            lambda req: {"workspace_id": "ws-b", "member_id": "m"},
+        )
+        async with _asgi_client(app) as client:
+            resp = await client.post(
+                "/memory/contested/resolve",
+                json={"winner_id": "w1", "loser_id": "l1", "action": "supersede"},
+            )
+        assert resp.status_code == 200, resp.text
 
 
 class TestContestedPropose:
