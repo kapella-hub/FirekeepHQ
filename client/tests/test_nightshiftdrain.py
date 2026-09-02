@@ -4,7 +4,6 @@ env var, and never costs the briefing anything."""
 from __future__ import annotations
 
 import json
-import os
 import socket
 import subprocess
 import time
