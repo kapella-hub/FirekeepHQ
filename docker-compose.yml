@@ -427,8 +427,6 @@ services:
       # The whole set is carried on all four cortex services because one Settings
       # class is read by four processes.
       PROCEDURE_ENABLED: ${PROCEDURE_ENABLED:-false}
-      FLEET_ENQUEUE_ENABLED: ${FLEET_ENQUEUE_ENABLED:-true}
-      FLEET_ENQUEUE_MAX_PER_RUN: ${FLEET_ENQUEUE_MAX_PER_RUN:-20}
       PROCEDURE_WARN_ENABLED: ${PROCEDURE_WARN_ENABLED:-true}
       PROCEDURE_MIN_EXECUTIONS: ${PROCEDURE_MIN_EXECUTIONS:-5}
       PROCEDURE_PRIOR_N: ${PROCEDURE_PRIOR_N:-5}
@@ -439,6 +437,11 @@ services:
       PROCEDURE_INDEX_CACHE_SECONDS: ${PROCEDURE_INDEX_CACHE_SECONDS:-30}
       PROCEDURE_MAX_SPECS: ${PROCEDURE_MAX_SPECS:-50}
       PROCEDURE_SCHEDULE_HOURS: ${PROCEDURE_SCHEDULE_HOURS:-24}
+      # Fleet-as-GPU (spec 2026-09-02): nightly relay tasks for stale skills /
+      # contested pairs, drained by client Night Shift against a local model;
+      # drafts only. Carried on all four services (one Settings class).
+      FLEET_ENQUEUE_ENABLED: ${FLEET_ENQUEUE_ENABLED:-true}
+      FLEET_ENQUEUE_MAX_PER_RUN: ${FLEET_ENQUEUE_MAX_PER_RUN:-20}
       # Task 5 confused-deputy pin: env_file imports the WHOLE .env, so
       # cortex-api would otherwise inherit the eval:grade-carrying bridge key.
       # Mirrors the FIREKEEP_API_KEY pin on cortex-mcp below.
@@ -532,8 +535,6 @@ services:
       # cortex services (the MCP tool surface proxies to cortex-api REST, which is
       # where these actually bind). Opt-in; off by default.
       PROCEDURE_ENABLED: ${PROCEDURE_ENABLED:-false}
-      FLEET_ENQUEUE_ENABLED: ${FLEET_ENQUEUE_ENABLED:-true}
-      FLEET_ENQUEUE_MAX_PER_RUN: ${FLEET_ENQUEUE_MAX_PER_RUN:-20}
       PROCEDURE_WARN_ENABLED: ${PROCEDURE_WARN_ENABLED:-true}
       PROCEDURE_MIN_EXECUTIONS: ${PROCEDURE_MIN_EXECUTIONS:-5}
       PROCEDURE_PRIOR_N: ${PROCEDURE_PRIOR_N:-5}
@@ -544,6 +545,11 @@ services:
       PROCEDURE_INDEX_CACHE_SECONDS: ${PROCEDURE_INDEX_CACHE_SECONDS:-30}
       PROCEDURE_MAX_SPECS: ${PROCEDURE_MAX_SPECS:-50}
       PROCEDURE_SCHEDULE_HOURS: ${PROCEDURE_SCHEDULE_HOURS:-24}
+      # Fleet-as-GPU (spec 2026-09-02): nightly relay tasks for stale skills /
+      # contested pairs, drained by client Night Shift against a local model;
+      # drafts only. Carried on all four services (one Settings class).
+      FLEET_ENQUEUE_ENABLED: ${FLEET_ENQUEUE_ENABLED:-true}
+      FLEET_ENQUEUE_MAX_PER_RUN: ${FLEET_ENQUEUE_MAX_PER_RUN:-20}
       # Task 5 confused-deputy pin: env_file imports the WHOLE .env. cortex-mcp
       # already pins FIREKEEP_API_KEY empty above for the same reason; this is
       # the eval:grade-carrying bridge key, not the caller-forwarding one.
@@ -679,8 +685,6 @@ services:
       # nightly hardening pass, so the window / TTL / prior / agent-cap values
       # bind here. Opt-in; off by default.
       PROCEDURE_ENABLED: ${PROCEDURE_ENABLED:-false}
-      FLEET_ENQUEUE_ENABLED: ${FLEET_ENQUEUE_ENABLED:-true}
-      FLEET_ENQUEUE_MAX_PER_RUN: ${FLEET_ENQUEUE_MAX_PER_RUN:-20}
       PROCEDURE_WARN_ENABLED: ${PROCEDURE_WARN_ENABLED:-true}
       PROCEDURE_MIN_EXECUTIONS: ${PROCEDURE_MIN_EXECUTIONS:-5}
       PROCEDURE_PRIOR_N: ${PROCEDURE_PRIOR_N:-5}
@@ -691,6 +695,11 @@ services:
       PROCEDURE_INDEX_CACHE_SECONDS: ${PROCEDURE_INDEX_CACHE_SECONDS:-30}
       PROCEDURE_MAX_SPECS: ${PROCEDURE_MAX_SPECS:-50}
       PROCEDURE_SCHEDULE_HOURS: ${PROCEDURE_SCHEDULE_HOURS:-24}
+      # Fleet-as-GPU (spec 2026-09-02): nightly relay tasks for stale skills /
+      # contested pairs, drained by client Night Shift against a local model;
+      # drafts only. Carried on all four services (one Settings class).
+      FLEET_ENQUEUE_ENABLED: ${FLEET_ENQUEUE_ENABLED:-true}
+      FLEET_ENQUEUE_MAX_PER_RUN: ${FLEET_ENQUEUE_MAX_PER_RUN:-20}
       # Task 5 confused-deputy pin: env_file imports the WHOLE .env, so
       # cortex-worker would otherwise inherit the eval:grade-carrying bridge key.
       # Mirrors the FIREKEEP_API_KEY pin on cortex-mcp above.
@@ -785,8 +794,6 @@ services:
       # value). The rest mirror worker/api for parity, same as the Collectors and
       # Dreaming blocks above.
       PROCEDURE_ENABLED: ${PROCEDURE_ENABLED:-false}
-      FLEET_ENQUEUE_ENABLED: ${FLEET_ENQUEUE_ENABLED:-true}
-      FLEET_ENQUEUE_MAX_PER_RUN: ${FLEET_ENQUEUE_MAX_PER_RUN:-20}
       PROCEDURE_WARN_ENABLED: ${PROCEDURE_WARN_ENABLED:-true}
       PROCEDURE_MIN_EXECUTIONS: ${PROCEDURE_MIN_EXECUTIONS:-5}
       PROCEDURE_PRIOR_N: ${PROCEDURE_PRIOR_N:-5}
@@ -797,6 +804,11 @@ services:
       PROCEDURE_INDEX_CACHE_SECONDS: ${PROCEDURE_INDEX_CACHE_SECONDS:-30}
       PROCEDURE_MAX_SPECS: ${PROCEDURE_MAX_SPECS:-50}
       PROCEDURE_SCHEDULE_HOURS: ${PROCEDURE_SCHEDULE_HOURS:-24}
+      # Fleet-as-GPU (spec 2026-09-02): nightly relay tasks for stale skills /
+      # contested pairs, drained by client Night Shift against a local model;
+      # drafts only. Carried on all four services (one Settings class).
+      FLEET_ENQUEUE_ENABLED: ${FLEET_ENQUEUE_ENABLED:-true}
+      FLEET_ENQUEUE_MAX_PER_RUN: ${FLEET_ENQUEUE_MAX_PER_RUN:-20}
       # Task 5 confused-deputy pin: env_file imports the WHOLE .env, so
       # cortex-beat would otherwise inherit the eval:grade-carrying bridge key.
       # Mirrors the FIREKEEP_API_KEY pin on cortex-mcp above.
