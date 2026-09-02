@@ -1356,6 +1356,8 @@ async def skill_create(
     project: str | None = None,
     status: str = "active",
     step_specs: list[dict] | None = None,
+    origin_job: str | None = None,
+    reauthor_of: str | None = None,
     session_id: str = "unknown",
     agent_id: str = "unknown",
 ) -> str:
@@ -1395,6 +1397,11 @@ async def skill_create(
             Prefer specific globs. "*.py" matches everything and is not a step.
             The LIST ORDER is the procedure's order — it is the only ordering
             that exists, and a warning only ever names an EARLIER step.
+        origin_job: The fleet job that produced this draft, e.g.
+            "reauthor_stale_skill". Feeds the approval ledger — omit for a
+            skill you authored yourself.
+        reauthor_of: Id of the stale skill this one rewrites. The server
+            rejects one outside your workspace.
     """
     try:
         session_id, agent_id = _resolve_identity(session_id, agent_id)
@@ -1411,6 +1418,10 @@ async def skill_create(
         # no specs carries none at all.
         if step_specs:
             body["step_specs"] = step_specs
+        if origin_job:
+            body["origin_job"] = origin_job
+        if reauthor_of:
+            body["reauthor_of"] = reauthor_of
         # Forward the resolved identity so POST /skills persists provenance —
         # previously resolved and DISCARDED, so every skill lost its origin
         # (wf_02954176; memory_learn already did this correctly).

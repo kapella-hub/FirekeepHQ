@@ -197,10 +197,29 @@ def create_skills_router(
         principal = request_principal(request)
         payload["workspace_id"] = principal["workspace_id"]
         payload["member_id"] = principal["member_id"]
+        if req.reauthor_of:
+            # The original must exist and belong to the caller's workspace — a
+            # Night Shift worker enrolled elsewhere fails here, visibly, instead of
+            # drafting across the tenancy boundary (spec decision 6).
+            original = await vector._client.retrieve(
+                collection_name=settings.QDRANT_COLLECTION, ids=[req.reauthor_of],
+                with_payload=True, with_vectors=False,
+            )
+            orig_ws = ((original[0].payload or {}).get("workspace_id") if original else None)
+            if not original or (orig_ws and principal.get("workspace_id")
+                                and orig_ws != principal["workspace_id"]):
+                raise HTTPException(status_code=404, detail="reauthor_of skill not found")
+            payload["reauthor_of"] = req.reauthor_of
+        if req.origin_job:
+            payload["origin_job"] = req.origin_job
         await vector._client.upsert(
             collection_name=settings.QDRANT_COLLECTION,
             points=[PointStruct(id=skill_id, vector=embedding, payload=payload)],
         )
+        if req.origin_job and req.status == "draft":
+            from app.fleet import ledger as _ledger
+            await _ledger.record(getattr(request.app.state, "redis_client", None),
+                                 req.origin_job, "produced")
         # Keep the pre-edit matcher index fresh. Best-effort: a rebuild failure
         # must not fail the write, and the nightly pass rebuilds unconditionally.
         if req.step_specs is not None:
@@ -227,6 +246,8 @@ def create_skills_router(
             created_at=now,
             source_type=payload["source_type"],
             step_specs=payload.get("step_specs"),
+            origin_job=payload.get("origin_job"),
+            reauthor_of=payload.get("reauthor_of"),
         )
 
     @router.patch("/skills/{skill_id}", response_model=SkillResponse,
@@ -246,6 +267,7 @@ def create_skills_router(
         )
         if not points:
             raise HTTPException(status_code=404, detail="Skill not found")
+        current = points[0].payload or {}
         updates: dict[str, Any] = {}
         if req.skill_status is not None:
             updates["skill_status"] = req.skill_status
@@ -255,9 +277,16 @@ def create_skills_router(
             # queue would be flagged STALE on the very next sweep after approval
             # (its only timestamp is the old synthesis time).
             if req.skill_status == "active":
-                updates["stale_reviewed_at"] = datetime.datetime.now(
-                    datetime.timezone.utc
-                ).isoformat()
+                now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                updates["stale_reviewed_at"] = now_iso
+                if current.get("skill_status") != "active":
+                    # The REAL approval timestamp (Fleet-as-GPU spec decision 7):
+                    # stamped once, on the draft->active transition only.
+                    updates["approved_at"] = now_iso
+                    if current.get("origin_job") and not current.get("approved_at"):
+                        from app.fleet import ledger as _ledger
+                        await _ledger.record(getattr(request.app.state, "redis_client", None),
+                                             current["origin_job"], "approved")
         if req.content is not None:
             updates["content"] = req.content
         if req.trigger is not None:
@@ -346,9 +375,26 @@ def create_skills_router(
                   dependencies=[Depends(require_not_frozen)])
     async def delete_skill(
         skill_id: str,
+        request: Request,
         vector: VectorClient = Depends(get_vector),
     ):
         settings = settings_fn()
+        # Deleting a fleet DRAFT is the human saying "no" — the only rejection
+        # signal that exists, and it vanishes with the point, so record it first.
+        try:
+            points = await vector._client.retrieve(
+                collection_name=settings.QDRANT_COLLECTION, ids=[skill_id],
+                with_payload=True, with_vectors=False,
+            )
+            current = (points[0].payload or {}) if points else {}
+        except Exception:  # noqa: BLE001 — a lookup failure must not block the delete
+            current = {}
+        if current.get("origin_job") and current.get("skill_status") == "draft":
+            from app.fleet import ledger as _ledger
+            _r = getattr(request.app.state, "redis_client", None)
+            await _ledger.record(_r, current["origin_job"], "rejected")
+            if current["origin_job"] == _ledger.JOB_REAUTHOR and current.get("reauthor_of"):
+                await _ledger.mark_rejected_reauthor(_r, current["reauthor_of"])
         await vector._client.delete(
             collection_name=settings.QDRANT_COLLECTION,
             points_selector=PointIdsList(points=[skill_id]),
@@ -433,6 +479,9 @@ def _point_to_response(point: Any) -> SkillResponse:
         skill_efficacy_n=p.get("skill_efficacy_n"),
         skill_efficacy_updated_at=p.get("skill_efficacy_updated_at"),
         step_specs=p.get("step_specs"),
+        origin_job=p.get("origin_job"),
+        reauthor_of=p.get("reauthor_of"),
+        approved_at=p.get("approved_at"),
     )
 
 

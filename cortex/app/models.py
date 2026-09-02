@@ -486,6 +486,12 @@ class SkillRequest(BaseModel):
     # agent (the server runs no LLM for this). Absent => the skill is simply not
     # an observed procedure. See docs/superpowers/specs/2026-08-06-living-procedures-design.md
     step_specs: list[StepSpec] | None = None
+    # Fleet-as-GPU (spec 2026-09-02): which fleet job produced this draft, and — for
+    # a stale-skill re-author — which skill it rewrites. origin_job feeds the
+    # approval ledger; reauthor_of is validated server-side against the caller's
+    # workspace (404 otherwise) so a worker cannot draft across a tenancy boundary.
+    origin_job: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_]{0,63}$")
+    reauthor_of: str | None = Field(default=None, min_length=1, max_length=128)
 
     @field_validator("project", mode="before")
     @classmethod
@@ -540,6 +546,12 @@ class SkillResponse(BaseModel):
     # on every skill whose author declined to compile specs — None, not [], so a
     # reader can tell "not a procedure" from "a procedure with no steps".
     step_specs: list[StepSpec] | None = None
+    # Fleet-as-GPU: absent on every pre-existing skill (None, no migration).
+    origin_job: str | None = None
+    reauthor_of: str | None = None
+    # A REAL approval timestamp (draft->active), stamped for every skill from this
+    # release on. stale_reviewed_at is NOT this: it is also written by "still valid".
+    approved_at: str | None = None
 
 
 class SkillPatchRequest(BaseModel):

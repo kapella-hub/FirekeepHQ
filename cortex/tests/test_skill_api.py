@@ -814,3 +814,143 @@ async def test_briefing_skills_section_emits_no_replay_event(
 
     assert sec["status"] == "ok"
     assert await wired_replay_emitter.xlen("rp:events") == 0
+
+
+# ---------------------------------------------------------------------------
+# Fleet-as-GPU (spec 2026-09-02): origin_job / reauthor_of / approved_at /
+# ledger hooks. Driven over ASGITransport (see `_asgi_client` above) rather
+# than `TestClient` + `asyncio.get_event_loop().run_until_complete(...)`: under
+# Python 3.14 there is no implicit event loop, and a fakeredis instance bound
+# to TestClient's own thread-local loop is unusable from the test coroutine's
+# loop afterward — the same reason `_asgi_client` exists in the first place.
+# ---------------------------------------------------------------------------
+
+
+def _skill_body(**extra):
+    return {"trigger": "t", "symptoms": "s", "steps": "do it", "status": "draft", **extra}
+
+
+@pytest.mark.asyncio
+async def test_create_stores_origin_and_reauthor_and_counts_produced(mock_vector, mock_settings):
+    r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    mock_vector._client.retrieve = AsyncMock(return_value=[_make_mock_point("old-1")])
+    app = _make_app(mock_vector, mock_settings, redis_client=r)
+    async with _asgi_client(app) as client:
+        resp = await client.post("/skills", json=_skill_body(
+            origin_job="reauthor_stale_skill", reauthor_of="old-1"))
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["origin_job"] == "reauthor_stale_skill"
+    assert resp.json()["reauthor_of"] == "old-1"
+    payload = mock_vector._client.upsert.call_args.kwargs["points"][0].payload
+    assert payload["origin_job"] == "reauthor_stale_skill" and payload["reauthor_of"] == "old-1"
+    assert await r.hget("fleet:ledger:reauthor_stale_skill", "produced") == "1"
+    await r.aclose()
+
+
+@pytest.mark.asyncio
+async def test_create_without_origin_writes_no_ledger_and_no_keys(mock_vector, mock_settings):
+    r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    app = _make_app(mock_vector, mock_settings, redis_client=r)
+    async with _asgi_client(app) as client:
+        resp = await client.post("/skills", json=_skill_body())
+    assert resp.status_code == 201, resp.text
+    payload = mock_vector._client.upsert.call_args.kwargs["points"][0].payload
+    assert "origin_job" not in payload and "reauthor_of" not in payload
+    assert await r.keys("fleet:*") == []
+    await r.aclose()
+
+
+@pytest.mark.parametrize("bad", ["Reauthor", "1abc", "has-dash", "x" * 65])
+def test_origin_job_pattern_is_enforced(mock_vector, mock_settings, bad):
+    client = TestClient(_make_app(mock_vector, mock_settings))
+    resp = client.post("/skills", json=_skill_body(origin_job=bad))
+    assert resp.status_code == 422
+
+
+def test_reauthor_of_unknown_skill_is_404(mock_vector, mock_settings):
+    mock_vector._client.retrieve = AsyncMock(return_value=[])
+    client = TestClient(_make_app(mock_vector, mock_settings))
+    resp = client.post("/skills", json=_skill_body(origin_job="reauthor_stale_skill",
+                                                   reauthor_of="ghost"))
+    assert resp.status_code == 404
+    mock_vector._client.upsert.assert_not_called()
+
+
+def test_reauthor_of_other_workspace_is_404(mock_vector, mock_settings, monkeypatch):
+    other = _make_mock_point("old-2")
+    other.payload["workspace_id"] = "ws-other"
+    mock_vector._client.retrieve = AsyncMock(return_value=[other])
+    monkeypatch.setattr("auth.principal.request_principal",
+                        lambda req: {"workspace_id": "ws-mine", "member_id": "m1"})
+    client = TestClient(_make_app(mock_vector, mock_settings))
+    resp = client.post("/skills", json=_skill_body(reauthor_of="old-2"))
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_activation_stamps_approved_at_once_and_counts_approved(mock_vector, mock_settings):
+    r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    mock_vector._client.set_payload = AsyncMock()
+    draft = _make_mock_point("d1", status="draft")
+    draft.payload["origin_job"] = "reauthor_stale_skill"
+    mock_vector._client.retrieve = AsyncMock(return_value=[draft])
+    app = _make_app(mock_vector, mock_settings, redis_client=r)
+    async with _asgi_client(app) as client:
+        resp = await client.patch("/skills/d1", json={"skill_status": "active"})
+        assert resp.status_code == 200, resp.text
+        written = mock_vector._client.set_payload.call_args.kwargs["payload"]
+        assert written["skill_status"] == "active" and written["approved_at"]
+        assert await r.hget("fleet:ledger:reauthor_stale_skill", "approved") == "1"
+        # Re-PATCHing an already-active skill neither re-stamps nor double-counts.
+        draft.payload.update(written)
+        resp2 = await client.patch("/skills/d1", json={"skill_status": "active"})
+        assert resp2.status_code == 200, resp2.text
+    assert await r.hget("fleet:ledger:reauthor_stale_skill", "approved") == "1"
+    assert "approved_at" not in mock_vector._client.set_payload.call_args.kwargs["payload"]
+    await r.aclose()
+
+
+@pytest.mark.asyncio
+async def test_activation_of_a_plain_skill_stamps_but_does_not_count(mock_vector, mock_settings):
+    r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    mock_vector._client.set_payload = AsyncMock()
+    mock_vector._client.retrieve = AsyncMock(return_value=[_make_mock_point("p1", status="draft")])
+    app = _make_app(mock_vector, mock_settings, redis_client=r)
+    async with _asgi_client(app) as client:
+        resp = await client.patch("/skills/p1", json={"skill_status": "active"})
+    assert resp.status_code == 200, resp.text
+    assert mock_vector._client.set_payload.call_args.kwargs["payload"]["approved_at"]
+    assert await r.keys("fleet:*") == []
+    await r.aclose()
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_fleet_draft_counts_rejected_and_marks_the_original(mock_vector, mock_settings):
+    r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    draft = _make_mock_point("d2", status="draft")
+    draft.payload.update({"origin_job": "reauthor_stale_skill", "reauthor_of": "old-9"})
+    mock_vector._client.retrieve = AsyncMock(return_value=[draft])
+    mock_vector._client.delete = AsyncMock()
+    app = _make_app(mock_vector, mock_settings, redis_client=r)
+    async with _asgi_client(app) as client:
+        resp = await client.delete("/skills/d2")
+    assert resp.status_code == 204
+    mock_vector._client.delete.assert_awaited_once()
+    assert await r.hget("fleet:ledger:reauthor_stale_skill", "rejected") == "1"
+    assert await r.exists("fleet:rejected:reauthor_stale_skill:old-9") == 1
+    await r.aclose()
+
+
+@pytest.mark.asyncio
+async def test_deleting_an_active_fleet_skill_is_not_a_rejection(mock_vector, mock_settings):
+    r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    active = _make_mock_point("a2", status="active")
+    active.payload["origin_job"] = "reauthor_stale_skill"
+    mock_vector._client.retrieve = AsyncMock(return_value=[active])
+    mock_vector._client.delete = AsyncMock()
+    app = _make_app(mock_vector, mock_settings, redis_client=r)
+    async with _asgi_client(app) as client:
+        resp = await client.delete("/skills/a2")
+    assert resp.status_code == 204
+    assert await r.keys("fleet:ledger:*") == []
+    await r.aclose()
