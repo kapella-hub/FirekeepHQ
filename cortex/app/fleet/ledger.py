@@ -32,8 +32,20 @@ _COUNTERS = {JOB_DISTILL: SKILL_COUNTERS, JOB_REAUTHOR: SKILL_COUNTERS,
 LEDGER_PREFIX = "fleet:ledger"
 DAILY_TTL_SECONDS = 400 * 86400
 REJECTED_TTL_SECONDS = 90 * 86400
-# Equals relay's TASK_TTL_SECONDS: an in-flight marker must not outlive the task it guards.
+# Equals relay's TASK_TTL_SECONDS: the JOB_VERDICT marker must not outlive the
+# task it guards -- a proposal is a state the store remembers (proposed_verdict/
+# proposed_at), so there is nothing to gain from holding the marker any longer.
+# JOB_REAUTHOR uses the longer TTL below instead.
 LIVE_MARKER_TTL_SECONDS = 7 * 86400
+# A `still_valid`/`retire` verdict on JOB_REAUTHOR writes nothing to the store
+# (only `resolve_contested`'s verdict path is a state the store remembers), and
+# `stale` clears only on recall -- so with the same 7-day TTL as the relay task
+# itself, a rewrite the model declined or a human has not acted on gets
+# re-posted every week forever, burning a cap slot and a local-model call for
+# no new information. A rewrite is retried monthly instead; the verdict job
+# keeps the 7-day relay-TTL marker because a proposal IS a state the store
+# remembers (proposed_verdict/proposed_at on both points).
+REAUTHOR_LIVE_MARKER_TTL_SECONDS = 30 * 86400
 
 
 def total_key(job: str) -> str:

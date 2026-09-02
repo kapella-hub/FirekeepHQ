@@ -101,21 +101,36 @@ marker-only enqueue re-posts weekly and duplicates drafts a human has not acted 
 yet. The pass therefore asks the store what is *true*: a stale skill is enqueued
 only if **no skill with `reauthor_of == its id` exists in any status** and no
 rejected-draft marker names it; a contested pair only if **neither side carries a
-`proposed_verdict`**. A short live marker (`SET NX EX 7d`, cortex Redis) prevents
-double-posting while a task is in flight and expires with the task. Drained work
-never re-enqueues; expired work does; rejected work is retried once the 90-day
-rejection marker lapses.
+`proposed_verdict`**. A short live marker (cortex Redis, `SET NX EX`) prevents
+double-posting while a task is in flight: 7 days (matching `TASK_TTL_SECONDS`)
+for a contested-pair verdict, which expires with the task since a proposal is
+itself a state the store remembers; 30 days for a stale-skill reauthor, since a
+`still_valid`/`retire` verdict writes nothing to the store and `stale` clears
+only on recall, so the 7-day task TTL alone would re-post the identical skill
+every week forever. Drained work never re-enqueues; expired work does; rejected
+work is retried once the 90-day rejection marker lapses.
 
-**6. Member-private points never enter a relay task.** Relay tasks are
-Keep-global — no workspace scoping, readable by every registered key via
-`relay_task_list`. The task `context` must carry the text the worker needs (there
-is no non-admin read path back to the pair), so the pass excludes every point with
-`visibility == "member"` outright (the docdex/maildex member-private tier —
-`cortex/app/db/visibility.py`). Workspace-visible text is already recallable by
-every agent key in the workspace, so the audience does not widen. Multi-workspace
-Keeps get a server-side guard rather than client trust: `reauthor_of` must resolve
-to a skill in the caller's workspace (404 otherwise), and `POST
-/memory/contested/propose` validates the pair exactly as `resolve` does, so a
+**6. Member-private points never enter a relay task, and neither does a
+mixed-workspace night.** Relay tasks are Keep-global — no workspace scoping,
+readable by every registered key via `relay_task_list`. The task `context` must
+carry the text the worker needs (there is no non-admin read path back to the
+pair), so the pass excludes every point with `visibility == "member"` outright
+(the docdex/maildex member-private tier — `cortex/app/db/visibility.py`).
+Workspace-visible text is already recallable by every agent key *within* that
+workspace, so the audience does not widen there — but a Keep-global task carries
+no such guarantee across workspaces, and excluding member-private points does
+nothing to stop workspace-visible text from a second workspace landing in the
+same queue. `fleet_enqueue_pass` therefore gathers every stale-skill and
+contested-pair candidate before posting anything and, if candidates from more
+than one distinct workspace show up in the same run, posts nothing and reports
+`status="skipped_multi_workspace"` (with the count) rather than guess which
+workspace is safe to send — this pass is, as shipped, a single-workspace-Keep
+feature; workspace-scoped relay tasks are the tracked follow-up that lifts it.
+Independently, the write side is guarded too, not merely trusted to the client:
+`reauthor_of` must resolve to a skill in the caller's workspace (404 otherwise),
+and both `POST /memory/contested/propose` and `POST /memory/contested/resolve`
+refuse (404, not 403 — the boundary must not even confirm the pair exists) a
+pair whose points carry a `workspace_id` that differs from the caller's, so a
 worker enrolled in a different workspace fails visibly instead of writing across
 the boundary.
 

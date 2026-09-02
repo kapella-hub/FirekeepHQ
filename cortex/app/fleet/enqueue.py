@@ -12,12 +12,28 @@ neither "post on transition" (loses the finding if the task expires undrained)
 nor "post on a marker" (re-drafts work a human has not acted on) is right. The
 store is asked what is TRUE: a stale skill with a re-author draft in any status
 is done; a pair carrying a proposal is done; a rejection marker means a human
-threw the last rewrite away. A short live marker only stops double-posting
-while a task is in flight, and expires with the task.
+threw the last rewrite away. A short live marker stops double-posting while a
+task is in flight: it expires with the task for a verdict (7d), but a rewrite
+nobody has acted on is retried monthly rather than weekly, so a reauthor
+marker outlives its relay task on purpose (30d — see ledger.py).
 
 MEMBER-PRIVATE NEVER LEAVES. Relay tasks are Keep-global and the worker needs
 the text in `context`, so `visibility == "member"` points are excluded at the
 query (both sides of a pair must be workspace-visible).
+
+SINGLE-WORKSPACE ONLY, FOR NOW. Excluding member-private points does not make
+relay tasks workspace-safe -- a workspace-visible skill or memory is still
+readable by every registered key on the Keep via `relay_task_list`, because
+relay tasks have no workspace scoping at all. On a Keep with exactly one
+workspace that is a no-op; on a Keep with more than one it is a cross-
+workspace leak. So this pass gathers every stale-skill and contested-pair
+candidate first, and if candidates from more than one distinct workspace are
+present in the same run, it posts NOTHING and reports
+`status="skipped_multi_workspace"` rather than guess which workspace is safe
+to send. The follow-up that lifts this is workspace-scoped relay tasks
+(tagging tasks with `workspace_id` and filtering `relay_task_list` by the
+caller's own workspace); until that ships, fleet enqueue is a single-
+workspace-Keep feature.
 """
 from __future__ import annotations
 
@@ -65,10 +81,10 @@ def _scroll(client, settings, must: list, must_not: list | None = None) -> list:
     return list(points)
 
 
-def _claim(redis_client, key: str) -> bool:
+def _claim(redis_client, key: str, ttl: int) -> bool:
     """SET NX EX — the live marker. A Redis failure claims nothing (no post)."""
     try:
-        return bool(redis_client.set(key, "1", nx=True, ex=ledger.LIVE_MARKER_TTL_SECONDS))
+        return bool(redis_client.set(key, "1", nx=True, ex=ttl))
     except Exception as exc:  # noqa: BLE001
         logger.warning("fleet enqueue: marker claim failed for %s: %s", key, exc)
         return False
@@ -135,10 +151,12 @@ def fleet_enqueue_pass(client=None, settings=None, redis_client=None,
     def _send(job: str, subject: str, task: dict) -> bool:
         nonlocal budget
         key = ledger.live_marker_key(job, subject)
+        ttl = (ledger.REAUTHOR_LIVE_MARKER_TTL_SECONDS if job == ledger.JOB_REAUTHOR
+               else ledger.LIVE_MARKER_TTL_SECONDS)
         if budget <= 0:
             out["capped"] += 1
             return False
-        if not _claim(redis_client, key):
+        if not _claim(redis_client, key, ttl):
             out["skipped_inflight"] += 1
             return False
         budget -= 1
@@ -149,7 +167,10 @@ def fleet_enqueue_pass(client=None, settings=None, redis_client=None,
         return False
 
     try:
-        # --- stale skills -> reauthor_stale_skill -----------------------------
+        # --- gather: stale skills -> reauthor_stale_skill candidates ----------
+        reauthor_candidates: list[tuple[str, dict]] = []  # (skill_id, task)
+        workspaces: set[str] = set()
+
         stale = _scroll(client, settings, [
             FieldCondition(key="memory_type", match=MatchValue(value="skill")),
             FieldCondition(key="skill_status", match=MatchValue(value="active")),
@@ -187,10 +208,14 @@ def fleet_enqueue_pass(client=None, settings=None, redis_client=None,
                 "description": f"skill_id={pid} workspace_id={payload.get('workspace_id') or '-'}",
                 "context": _skill_context(pid, payload),
             }
-            if _send(ledger.JOB_REAUTHOR, pid, task):
-                out["reauthor_enqueued"] += 1
+            ws = payload.get("workspace_id")
+            if ws:
+                workspaces.add(ws)
+            reauthor_candidates.append((pid, task))
 
-        # --- contested pairs -> propose_contested_verdict ---------------------
+        # --- gather: contested pairs -> propose_contested_verdict candidates --
+        verdict_candidates: list[tuple[str, dict]] = []  # (subject, task)
+
         contested = _scroll(client, settings, [
             FieldCondition(key="status", match=MatchValue(value="active")),
             FieldCondition(key="contested", match=MatchValue(value=True)),
@@ -223,6 +248,33 @@ def fleet_enqueue_pass(client=None, settings=None, redis_client=None,
                     "contested_at": payload.get("contested_at") or other_payload.get("contested_at"),
                 }),
             }
+            for side_payload in (payload, other_payload):
+                ws = side_payload.get("workspace_id")
+                if ws:
+                    workspaces.add(ws)
+            verdict_candidates.append((subject, task))
+
+        # --- guard: refuse a mixed-workspace run before sending anything ------
+        # Relay tasks are Keep-global (see module docstring); candidates from
+        # more than one workspace in the same run means SOME workspace's text
+        # would leak to every other registered key. No marker has been claimed
+        # yet, so refusing here costs nothing but the night's cap slot.
+        if len(workspaces) > 1:
+            logger.warning(
+                "fleet enqueue: %d workspaces present; fleet tasks are "
+                "Keep-global, refusing to enqueue until relay tasks are "
+                "workspace-scoped", len(workspaces),
+            )
+            out["status"] = "skipped_multi_workspace"
+            out["workspaces"] = len(workspaces)
+            return out
+
+        # --- send ---------------------------------------------------------
+        for pid, task in reauthor_candidates:
+            if _send(ledger.JOB_REAUTHOR, pid, task):
+                out["reauthor_enqueued"] += 1
+
+        for subject, task in verdict_candidates:
             if _send(ledger.JOB_VERDICT, subject, task):
                 out["verdict_enqueued"] += 1
         return out

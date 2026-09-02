@@ -10,7 +10,7 @@ import json
 
 import fakeredis
 import pytest
-from qdrant_client.models import FieldCondition, Filter, IsEmptyCondition, MatchValue
+from qdrant_client.models import FieldCondition, IsEmptyCondition
 
 from app.fleet import enqueue, ledger
 
@@ -92,7 +92,8 @@ def _run(points, redis, post=None, settings=None):
 
 
 def test_disabled_before_any_io(redis):
-    s = _Settings(); s.FLEET_ENQUEUE_ENABLED = False
+    s = _Settings()
+    s.FLEET_ENQUEUE_ENABLED = False
     q = _FakeQdrant([_stale_skill()])
     rec = _Recorder()
     out = enqueue.fleet_enqueue_pass(client=q, settings=s, redis_client=redis, post=rec)
@@ -151,12 +152,25 @@ def test_rejected_marker_blocks_re_enqueue(redis):
 
 
 def test_live_marker_blocks_double_post_and_expires_with_the_task(redis):
+    """F4: a reauthor marker outlives the 7-day relay task TTL -- still_valid/
+    retire verdicts write nothing to the store, so without a longer marker the
+    same stale skill gets re-posted every week forever. It's retried monthly
+    instead, matching REAUTHOR_LIVE_MARKER_TTL_SECONDS."""
     out1, post1 = _run([_stale_skill()], redis)
     assert len(post1.tasks) == 1
     ttl = redis.ttl(ledger.live_marker_key("reauthor_stale_skill", "s1"))
-    assert 0 < ttl <= ledger.LIVE_MARKER_TTL_SECONDS
+    assert 7 * 86400 < ttl <= ledger.REAUTHOR_LIVE_MARKER_TTL_SECONDS
     out2, post2 = _run([_stale_skill()], redis)
     assert post2.tasks == [] and out2["skipped_inflight"] == 1
+
+
+def test_verdict_live_marker_still_uses_the_7_day_relay_ttl(redis):
+    """A verdict IS a state the store remembers (a resolve/propose write), so
+    unlike reauthor it keeps the shorter relay-TTL marker."""
+    out, post = _run(_pair(), redis)
+    assert len(post.tasks) == 1
+    ttl = redis.ttl(ledger.live_marker_key("propose_contested_verdict", "m1:m2"))
+    assert 0 < ttl <= ledger.LIVE_MARKER_TTL_SECONDS
 
 
 def test_failed_post_releases_the_marker_and_counts_failed(redis):
@@ -166,7 +180,8 @@ def test_failed_post_releases_the_marker_and_counts_failed(redis):
 
 
 def test_cap_bounds_a_night(redis):
-    s = _Settings(); s.FLEET_ENQUEUE_MAX_PER_RUN = 2
+    s = _Settings()
+    s.FLEET_ENQUEUE_MAX_PER_RUN = 2
     pts = [_stale_skill(f"s{i}") for i in range(5)]
     out, post = _run(pts, redis, settings=s)
     assert len(post.tasks) == 2 and out["capped"] == 3
@@ -191,6 +206,44 @@ def test_post_relay_task_uses_rest_and_internal_key(monkeypatch):
     assert enqueue.post_relay_task(_Settings(), {"title": "t"}) is True
     assert seen["url"] == "http://relay:8050/tasks" and seen["json"] == {"title": "t"}
     assert seen["headers"] == {"X-API-Key": "nxs_test"} and seen["timeout"] == 10.0
+
+
+def test_multi_workspace_candidates_are_skipped_before_anything_is_sent(redis):
+    """Relay tasks are Keep-global (MEMBER-PRIVATE NEVER LEAVES only excludes
+    member-private points, not cross-workspace ones). Seeing more than one
+    workspace among candidates means posting anything would leak workspace-
+    visible text to every other registered key -- so nothing gets posted, and
+    no live marker is left claimed for a task that never went out."""
+    ws_b_pair = [
+        _Point("m1", {"status": "active", "contested": True, "contested_with": "m2",
+                      "text": "A", "contested_at": "2026-09-01T00:00:00+00:00",
+                      "workspace_id": "ws-b"}),
+        _Point("m2", {"status": "active", "contested": True, "contested_with": "m1",
+                      "text": "B", "contested_at": "2026-09-01T00:00:00+00:00",
+                      "workspace_id": "ws-b"}),
+    ]
+    pts = [_stale_skill(workspace_id="ws-a")] + ws_b_pair
+    out, post = _run(pts, redis)
+    assert post.tasks == []
+    assert out["status"] == "skipped_multi_workspace"
+    assert out["workspaces"] == 2
+    assert redis.keys("fleet:enqueued:*") == []
+
+
+def test_single_workspace_pass_is_unaffected(redis):
+    """All existing fixtures use one workspace ("ws") -- the guard must not
+    fire on the common case."""
+    out, post = _run([_stale_skill()] + _pair(), redis)
+    assert out["status"] == "ok"
+    assert out["reauthor_enqueued"] == 1 and out["verdict_enqueued"] == 1
+
+
+def test_legacy_candidate_with_no_workspace_id_does_not_count_as_a_second_workspace(redis):
+    stale_no_ws = _stale_skill()
+    del stale_no_ws.payload["workspace_id"]
+    out, post = _run([stale_no_ws] + _pair(), redis)
+    assert out["status"] == "ok"
+    assert out["reauthor_enqueued"] == 1 and out["verdict_enqueued"] == 1
 
 
 def test_post_relay_task_swallows_transport_errors(monkeypatch):
