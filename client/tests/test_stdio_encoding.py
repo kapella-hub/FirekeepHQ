@@ -167,10 +167,26 @@ def test_every_stdio_entry_point_pins_utf8(module_path, func, monkeypatch):
         monkeypatch.setattr(
             module, "FastMCPUnavailable", RuntimeError, raising=False
         )
+
+        # The decision server's main() ends in mcp.run(), a real stdio server.
+        # Letting it get that far and swallowing whatever it raised worked until
+        # anyio 4.15.0 (2026-09-02), whose stdio wrapping CLOSES sys.stdin/stdout
+        # on the way out — under pytest those are the capture streams, and every
+        # later test in the process then dies with "I/O operation on closed
+        # file". The asserted call is the first line of main(), so stop there:
+        # record, then raise a private sentinel the except below catches.
+        class _Stop(BaseException):
+            pass
+
+        def _record_and_stop():
+            called.append(True)
+            raise _Stop()
+
+        monkeypatch.setattr(module, "force_utf8_stdio", _record_and_stop)
         try:
             module.main()
         except BaseException:
-            pass  # the handshake needs a real runtime; the call above is the point
+            pass  # stopped by the sentinel right after the asserted call
 
     assert called == [True], f"{module_path}.{func} did not pin stdio to UTF-8"
 
@@ -231,10 +247,22 @@ def test_every_stdio_entry_point_pins_import_paths(module_path, func, monkeypatc
         monkeypatch.setattr(
             module, "FastMCPUnavailable", RuntimeError, raising=False
         )
+
+        # Same reason as the utf-8 test above: never let main() reach mcp.run()
+        # (anyio >= 4.15 closes pytest's captured stdio there). pin_import_paths
+        # is the second line of main(); stop right after it fires.
+        class _Stop(BaseException):
+            pass
+
+        def _record_and_stop():
+            called.append(True)
+            raise _Stop()
+
+        monkeypatch.setattr(module, "pin_import_paths", _record_and_stop)
         try:
             module.main()
         except BaseException:
-            pass  # the handshake needs a real runtime; the call above is the point
+            pass  # stopped by the sentinel right after the asserted call
 
     assert called == [True], f"{module_path}.{func} did not pin its import paths"
 
