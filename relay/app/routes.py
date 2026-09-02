@@ -361,7 +361,7 @@ async def route_get_tasks(request: Request) -> JSONResponse:
 
 
 async def route_post_task(request: Request) -> JSONResponse:
-    """POST /tasks — REST twin of relay_task_post, for server-side enqueue.
+    """POST /tasks — REST counterpart of relay_task_post, for server-side enqueue.
 
     Auth is the blanket key middleware and deliberately NO per-route scope
     (same as GET/DELETE /tasks, /dm/*, /presence/*): cortex's internal key

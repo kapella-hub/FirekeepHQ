@@ -1,4 +1,4 @@
-"""POST /tasks — the REST twin of relay_task_post.
+"""POST /tasks — the REST counterpart of relay_task_post.
 
 Cortex's nightly fleet pass creates tasks server-side with FIREKEEP_INTERNAL_KEY,
 which carries NO relay scope (deploy/bootstrap-keys.sh:197) and cannot be
