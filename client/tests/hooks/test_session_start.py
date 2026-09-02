@@ -291,3 +291,15 @@ class TestServerUpdateNudge:
         out = session_start.run({})
         assert "systemMessage" in out
         assert "server update available" not in out["systemMessage"]
+
+
+class TestNightShiftDrainNudge:
+    def test_the_drain_nudge_is_in_the_chain(self, client_env, monkeypatch):
+        from firekeep_client import nightshiftdrain, transport
+        from firekeep_client.hooks import _mcp, session_start
+        monkeypatch.setattr(transport, "get_json", lambda url, **k: {"rendered": "BRIEFING"})
+        monkeypatch.setattr(_mcp, "call_tool", lambda *a, **k: {})
+        monkeypatch.setattr(nightshiftdrain, "drain_nudge",
+                            lambda cfg: "\n\n[firekeep] night shift draining the fleet queue in background (test)")
+        out = session_start.run({})
+        assert "night shift draining" in out["systemMessage"]

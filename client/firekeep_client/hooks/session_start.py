@@ -19,8 +19,8 @@ import platform
 import urllib.parse
 
 from firekeep_client import (
-    autoupdate, docdexsync, hooklog, maildexsync, report, resolver, serverupdate,
-    state, symdexindex, transport, updater,
+    autoupdate, docdexsync, hooklog, maildexsync, nightshiftdrain, report, resolver,
+    serverupdate, state, symdexindex, transport, updater,
 )
 from firekeep_client.hooks import _mcp, never_raise, runbooks
 
@@ -166,6 +166,8 @@ def run(payload: dict) -> dict:
     #    replaces the old plugin hook's ACTION-REQUIRED nag). Each is silent
     #    unless it has something to say, and the ingest dexes go last, in
     #    registry order — the briefing is what the user is waiting to read.
+    #    ...and, last, drain the fleet queue with Night Shift when a local model
+    #    is listening (nightshiftdrain — spawns nothing and says nothing otherwise).
 
     # 5. Field-failure spool flush (spec, flush point 3) — same daily pass as
     #    autoupdate/dex syncs; report.flush never raises.
@@ -175,4 +177,5 @@ def run(payload: dict) -> dict:
             + serverupdate.nudge_line(serverupdate.check(cfg))
             + symdexindex.index_nudge(cfg, payload)
             + docdexsync.sync_nudge(cfg)
-            + maildexsync.sync_nudge(cfg)}
+            + maildexsync.sync_nudge(cfg)
+            + nightshiftdrain.drain_nudge(cfg)}
