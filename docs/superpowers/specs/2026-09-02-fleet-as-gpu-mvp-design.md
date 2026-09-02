@@ -1,7 +1,15 @@
 # Fleet-as-GPU MVP — design
 
 **Status:** approved in brainstorming (decision board 2026-09-02, founder accepted
-all four recommended forks and delegated the scope boundary); not yet implemented.
+all four recommended forks and delegated the scope boundary); **implemented on
+branch `worktree-fleet-as-gpu` (2026-09-02)** — see
+`docs/superpowers/plans/2026-09-02-fleet-as-gpu-mvp.md` for the per-task commits.
+Two plan-text defects were found and fixed during implementation and are worth
+knowing: the ledger reader had to decode bytes hash *keys* (the app's Redis client
+is bytes-mode), and the enqueue pass's pair loop had to check partner presence
+*before* the lexical de-duplication skip (else a pair whose smaller-id side is
+member-private vanished uncounted). The firekeep.ai docs change is committed in
+the site repo but **not deployed** until the release that ships this lands.
 **Date:** 2026-09-02
 **Scope:** turn the Fleet-as-GPU *seam* — a `distill_session` queue nobody drains
 unless a human types `firekeep night-shift` — into a *system*: a scheduler that
