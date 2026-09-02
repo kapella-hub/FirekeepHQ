@@ -18,7 +18,7 @@
 - `POST /tasks` carries **no** `require_scope_asgi` (spec decision 4) — documented, not accidental.
 - Relay task titles are the job ids, exactly: `distill_session`, `reauthor_stale_skill`, `propose_contested_verdict`.
 - Ledger keys: `fleet:ledger:<job>` (all-time hash) and `fleet:ledger:<job>:<YYYY-MM-DD>` (daily hash, TTL 400 days). Rejection marker `fleet:rejected:reauthor_stale_skill:<skill_id>` (TTL 90 days). Live marker `fleet:enqueued:<job>:<subject>` (TTL 7 days = relay `TASK_TTL_SECONDS`).
-- New cortex settings: `FLEET_ENQUEUE_ENABLED: bool = True`, `FLEET_ENQUEUE_MAX_PER_RUN: int = 20` — declared in `config.py`, mirrored in both compose files, documented in `docs/guides/cortex-configuration.md`.
+- New cortex settings: `FLEET_ENQUEUE_ENABLED: bool = True`, `FLEET_ENQUEUE_MAX_PER_RUN: int = 20` — declared in `config.py`, plumbed as `${VAR:-default}` into all four cortex service blocks of `docker-compose.yml` and listed in `.env.example`, documented in `docs/guides/cortex-configuration.md`.
 - New client env/config: `FIREKEEP_NO_AUTO_NIGHTSHIFT` (env off-switch), `[nightshift] auto_drain = false` (config off-switch), `FIREKEEP_NIGHTSHIFT_DRAIN_INTERVAL_HOURS` (default `6`).
 - Rates are `null` when the denominator is zero; the dashboard renders `null` as `—`, never `0%`.
 - `tests/test_dashboard_autopilot.py::TestRoundOneIsReadOnly` must pass **unchanged**: the Autopilot panel fetches exactly `/autopilot/compliance`, `/autopilot/digest?days=7`, `/autopilot/inbox` and names no write verb.
@@ -34,7 +34,7 @@
 | Area | Create | Modify |
 |---|---|---|
 | Relay | `relay/tests/test_task_post_route.py` | `relay/app/routes.py` (add `handle_post_task`, `route_post_task`), `relay/app/mcp_server.py` (tool delegates to helper; register POST route), `docs/guides/relay-coordination.md` |
-| Cortex config | — | `cortex/app/config.py`, `docker-compose.yml`, `docker-compose.office.yml`, `docs/guides/cortex-configuration.md` |
+| Cortex config | — | `cortex/app/config.py`, `docker-compose.yml` (all four cortex services), `.env.example`, `docs/guides/cortex-configuration.md` |
 | Cortex ledger | `cortex/app/fleet/__init__.py`, `cortex/app/fleet/ledger.py`, `cortex/tests/test_fleet_ledger.py` | — |
 | Cortex skills | — | `cortex/app/models.py` (`SkillRequest`, `SkillResponse`), `cortex/app/skills/api.py`, `cortex/app/mcp_server.py` (`skill_create`), `cortex/tests/test_skill_api.py` |
 | Cortex contested | — | `cortex/app/models.py` (`ContestedProposeRequest`), `cortex/app/lifecycle.py`, `cortex/app/autopilot/inbox.py`, `cortex/tests/test_feedback_and_contested.py`, `cortex/tests/test_autopilot_api.py` |
@@ -328,7 +328,7 @@ git commit -m "feat(relay): POST /tasks — REST twin of relay_task_post for ser
 
 **Files:**
 - Modify: `cortex/app/config.py` (after `SKILL_STALE_AFTER_DAYS`, ~line 581)
-- Modify: `docker-compose.yml` (every cortex service block that carries `PROCEDURE_ENABLED`: lines ~429, ~677, ~781), `docker-compose.office.yml` (~532)
+- Modify: `docker-compose.yml` (all four cortex service blocks — `cortex-api`, `cortex-mcp`, `cortex-worker`, `cortex-beat` — beside their `PROCEDURE_ENABLED` lines), `.env.example` (beside the `PROCEDURE_*` block, ~line 403). `docker-compose.office.yml` carries no env flags and is NOT touched.
 - Modify: `docs/guides/cortex-configuration.md` (append a bullet in the skills/autopilot area)
 - Test: `cortex/tests/test_config_fleet.py`
 
@@ -360,11 +360,29 @@ def test_env_override(monkeypatch):
     assert s.FLEET_ENQUEUE_ENABLED is False and s.FLEET_ENQUEUE_MAX_PER_RUN == 5
 
 
-def test_compose_and_docs_carry_the_flags():
-    for f in ("docker-compose.yml", "docker-compose.office.yml"):
-        text = (REPO / f).read_text(encoding="utf-8")
-        assert "FLEET_ENQUEUE_ENABLED: ${FLEET_ENQUEUE_ENABLED:-true}" in text, f
-        assert "FLEET_ENQUEUE_MAX_PER_RUN: ${FLEET_ENQUEUE_MAX_PER_RUN:-20}" in text, f
+COMPOSE = (REPO / "docker-compose.yml").read_text(encoding="utf-8")
+FLAGS = [("FLEET_ENQUEUE_ENABLED", "true"), ("FLEET_ENQUEUE_MAX_PER_RUN", "20")]
+
+
+# Copy `_service_block(name)` and `_has_env_entry(block, var)` VERBATIM from
+# cortex/tests/test_procedure_config.py (same drift class, same helpers) — or
+# import them from that module if it imports cleanly.
+
+@pytest.mark.parametrize("service", ["cortex-api", "cortex-mcp", "cortex-worker", "cortex-beat"])
+@pytest.mark.parametrize("name,default", FLAGS)
+def test_every_cortex_service_carries_the_flag_with_the_code_default(service, name, default):
+    """One Settings class, four processes: the enqueue pass runs in the worker,
+    the digest's `enabled` flag is read by the API — a var plumbed into only some
+    of them makes one deployment answer differently per container."""
+    assert _has_env_entry(_service_block(service), name), f"{name} missing from {service}"
+    hits = re.findall(rf"{name}:\s*\$\{{{name}:-([^}}]*)\}}", COMPOSE)
+    assert hits, f"{name} is not plumbed in docker-compose.yml"
+    assert all(h.strip().lower() == default for h in hits), hits
+
+
+def test_env_example_and_guide_carry_the_flags():
+    env = (REPO / ".env.example").read_text(encoding="utf-8")
+    assert "FLEET_ENQUEUE_ENABLED" in env and "FLEET_ENQUEUE_MAX_PER_RUN" in env
     guide = (REPO / "docs/guides/cortex-configuration.md").read_text(encoding="utf-8")
     assert "`FLEET_ENQUEUE_ENABLED` (default `true`)" in guide
     assert "`FLEET_ENQUEUE_MAX_PER_RUN` (default `20`)" in guide
@@ -388,11 +406,22 @@ Expected: FAIL — `AttributeError: 'Settings' object has no attribute 'FLEET_EN
     FLEET_ENQUEUE_MAX_PER_RUN: int = 20
 ```
 
-- [ ] **Step 4: Mirror in compose** — in each cortex service env block that already has `PROCEDURE_ENABLED: ${PROCEDURE_ENABLED:-false}` (docker-compose.yml ×3, docker-compose.office.yml ×1) add directly under it:
+- [ ] **Step 4: Mirror in compose and `.env.example`** — in `docker-compose.yml`, in EACH of the four cortex service blocks (`cortex-api`, `cortex-mcp`, `cortex-worker`, `cortex-beat`), directly under that block's `PROCEDURE_ENABLED: ${PROCEDURE_ENABLED:-false}` line, add:
 
 ```yaml
       FLEET_ENQUEUE_ENABLED: ${FLEET_ENQUEUE_ENABLED:-true}
       FLEET_ENQUEUE_MAX_PER_RUN: ${FLEET_ENQUEUE_MAX_PER_RUN:-20}
+```
+
+and in `.env.example`, directly after the `PROCEDURE_*` block (~line 411), add:
+
+```bash
+# --- Fleet-as-GPU (cortex) ---
+# The nightly memory agent posts one relay task per stale skill and per contested
+# pair for client Night Shift workers to drain against a LOCAL model. Every output
+# is a draft skill or a verdict proposal behind human review. Cap = tasks per night.
+FLEET_ENQUEUE_ENABLED=true
+FLEET_ENQUEUE_MAX_PER_RUN=20
 ```
 
 - [ ] **Step 5: Document** — in `docs/guides/cortex-configuration.md`, add a bullet next to the `SKILL_STALE_AFTER_DAYS` / skills bullets:
@@ -409,7 +438,7 @@ Expected: PASS.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add cortex/app/config.py docker-compose.yml docker-compose.office.yml docs/guides/cortex-configuration.md cortex/tests/test_config_fleet.py
+git add cortex/app/config.py docker-compose.yml .env.example docs/guides/cortex-configuration.md cortex/tests/test_config_fleet.py
 git commit -m "feat(cortex): FLEET_ENQUEUE_ENABLED / FLEET_ENQUEUE_MAX_PER_RUN settings"
 ```
 
