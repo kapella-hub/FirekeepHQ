@@ -579,6 +579,14 @@ class Settings(BaseSettings):
     # human review by the memory-agent staleness sweep (never deleted, never
     # status-changed). A re-recalled skill un-stales on the next run.
     SKILL_STALE_AFTER_DAYS: int = 90
+    # Fleet-as-GPU (spec 2026-09-02): the nightly memory agent posts ONE relay task
+    # per stale skill (`reauthor_stale_skill`) and per contested pair
+    # (`propose_contested_verdict`) for client Night Shift workers to drain against
+    # a LOCAL model. Default ON because every output is a draft or a proposal
+    # behind human review; the cap bounds a night's postings so a large backlog
+    # cannot flood the relay queue. Dedup is state-based (see app/fleet/enqueue.py).
+    FLEET_ENQUEUE_ENABLED: bool = True
+    FLEET_ENQUEUE_MAX_PER_RUN: int = 20
     # Raw-cosine floor for SEMANTIC skill matching (GET /skills?q=, briefing skills
     # section). Deliberately NOT RECALL_SCORE_FLOOR (0.35, above): that was tuned for
     # prose memory bodies on mxbai-embed-large/1024-dim, while a skill embeds a terse

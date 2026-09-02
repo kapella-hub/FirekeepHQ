@@ -427,6 +427,8 @@ services:
       # The whole set is carried on all four cortex services because one Settings
       # class is read by four processes.
       PROCEDURE_ENABLED: ${PROCEDURE_ENABLED:-false}
+      FLEET_ENQUEUE_ENABLED: ${FLEET_ENQUEUE_ENABLED:-true}
+      FLEET_ENQUEUE_MAX_PER_RUN: ${FLEET_ENQUEUE_MAX_PER_RUN:-20}
       PROCEDURE_WARN_ENABLED: ${PROCEDURE_WARN_ENABLED:-true}
       PROCEDURE_MIN_EXECUTIONS: ${PROCEDURE_MIN_EXECUTIONS:-5}
       PROCEDURE_PRIOR_N: ${PROCEDURE_PRIOR_N:-5}
@@ -530,6 +532,8 @@ services:
       # cortex services (the MCP tool surface proxies to cortex-api REST, which is
       # where these actually bind). Opt-in; off by default.
       PROCEDURE_ENABLED: ${PROCEDURE_ENABLED:-false}
+      FLEET_ENQUEUE_ENABLED: ${FLEET_ENQUEUE_ENABLED:-true}
+      FLEET_ENQUEUE_MAX_PER_RUN: ${FLEET_ENQUEUE_MAX_PER_RUN:-20}
       PROCEDURE_WARN_ENABLED: ${PROCEDURE_WARN_ENABLED:-true}
       PROCEDURE_MIN_EXECUTIONS: ${PROCEDURE_MIN_EXECUTIONS:-5}
       PROCEDURE_PRIOR_N: ${PROCEDURE_PRIOR_N:-5}
@@ -675,6 +679,8 @@ services:
       # nightly hardening pass, so the window / TTL / prior / agent-cap values
       # bind here. Opt-in; off by default.
       PROCEDURE_ENABLED: ${PROCEDURE_ENABLED:-false}
+      FLEET_ENQUEUE_ENABLED: ${FLEET_ENQUEUE_ENABLED:-true}
+      FLEET_ENQUEUE_MAX_PER_RUN: ${FLEET_ENQUEUE_MAX_PER_RUN:-20}
       PROCEDURE_WARN_ENABLED: ${PROCEDURE_WARN_ENABLED:-true}
       PROCEDURE_MIN_EXECUTIONS: ${PROCEDURE_MIN_EXECUTIONS:-5}
       PROCEDURE_PRIOR_N: ${PROCEDURE_PRIOR_N:-5}
@@ -779,6 +785,8 @@ services:
       # value). The rest mirror worker/api for parity, same as the Collectors and
       # Dreaming blocks above.
       PROCEDURE_ENABLED: ${PROCEDURE_ENABLED:-false}
+      FLEET_ENQUEUE_ENABLED: ${FLEET_ENQUEUE_ENABLED:-true}
+      FLEET_ENQUEUE_MAX_PER_RUN: ${FLEET_ENQUEUE_MAX_PER_RUN:-20}
       PROCEDURE_WARN_ENABLED: ${PROCEDURE_WARN_ENABLED:-true}
       PROCEDURE_MIN_EXECUTIONS: ${PROCEDURE_MIN_EXECUTIONS:-5}
       PROCEDURE_PRIOR_N: ${PROCEDURE_PRIOR_N:-5}
