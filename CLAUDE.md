@@ -109,6 +109,8 @@ latest published server release — cortex's version compared against
 `[dist] server_update_ack = vX.Y.Z` — see
 [`docs/guides/client-kit.md`](docs/guides/client-kit.md) "Server update visibility".
 
+Night Shift is now the drain for a **fleet job catalog** (`distill_session`, `reauthor_stale_skill`, `propose_contested_verdict`): cortex's nightly `fleet_enqueue_pass` posts the latter two through relay's `POST /tasks`, `session_start` spawns `firekeep night-shift` in the background when a local model port answers (`FIREKEEP_NO_AUTO_NIGHTSHIFT=1` to stop), every output is a draft skill or a verdict *proposal* behind human review, and an approval-rate ledger per job type shows on the dashboard's Autopilot tab — see [`docs/guides/client-kit.md`](docs/guides/client-kit.md) "Night Shift and the fleet job catalog" and [`docs/guides/knowledge-autopilot.md`](docs/guides/knowledge-autopilot.md) §8.
+
 ### Run Firekeep Studio from this checkout
 
 ```bash
@@ -177,7 +179,7 @@ reference material does not need to be.
 | Backup and restore — nightly snapshots, `firekeep backup`, the disaster runbook | [`docs/guides/backup-and-restore.md`](docs/guides/backup-and-restore.md) |
 | Memory, recall, corpus and vault | [`docs/guides/memory-and-recall.md`](docs/guides/memory-and-recall.md) |
 | Skills, docs→skills and collectors | [`docs/guides/knowledge-and-skills.md`](docs/guides/knowledge-and-skills.md) |
-| Knowledge Autopilot — feedback, reaper, contested, inbox | [`docs/guides/knowledge-autopilot.md`](docs/guides/knowledge-autopilot.md) |
+| Knowledge Autopilot — feedback, reaper, contested, inbox, the fleet ledger | [`docs/guides/knowledge-autopilot.md`](docs/guides/knowledge-autopilot.md) |
 | LLM endpoint selection | [`docs/guides/llm-endpoint-selection.md`](docs/guides/llm-endpoint-selection.md) |
 | Dreaming — consolidation and person profiles | [`docs/guides/dreaming.md`](docs/guides/dreaming.md) |
 | Living Procedures — observed runbooks | [`docs/guides/living-procedures.md`](docs/guides/living-procedures.md) |

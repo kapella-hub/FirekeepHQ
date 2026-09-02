@@ -154,6 +154,8 @@ failed supersede write 500s with the dispute still recorded, so the pair stays
 in the inbox and the human retries instead of the verdict silently
 evaporating.
 
+**Proposed, then resolved (Fleet-as-GPU, 2026-09-02).** A client Night Shift worker can now file a *proposal* on a contested pair — `POST /memory/contested/propose` (`memory:write`), same shape as the verdict plus a `rationale` — which sets `proposed_verdict {action, winner_id}`, `proposed_rationale`, `proposed_by`, `proposed_at` on both points and nothing else: the pair stays contested, recall keeps annotating it, and the inbox row shows the proposal beside the pair. Only `/memory/contested/resolve` (a human) supersedes or coexists; it clears the four `proposed_*` fields with the contested flags and scores the proposal in the fleet ledger (`resolved`, plus `matched` when the human's action and winner equal the proposal's). A second proposal overwrites the first and is not counted again. Member-private points never get proposals because they are never enqueued (§8).
+
 ## 4. Inbox and digest
 
 `GET /autopilot/inbox` (admin) aggregates every place review work already
@@ -184,6 +186,8 @@ every other section here: it does not change recall ranking and does not
 mutate `skill_status`; a flagged skill is a cue for a human to go read it, and
 the ranking-side response to a low score is explicitly deferred to a later
 round.
+
+**Fleet block in the digest (2026-09-02).** `GET /autopilot/digest` gains `fleet: {enabled, jobs}` — per job type (`distill_session`, `reauthor_stale_skill`, `propose_contested_verdict`) a `window` and an `all_time` block read from the fleet ledger (§8): `produced / approved / rejected / approval_rate` for skill jobs, `proposed / resolved / matched / match_rate` for verdicts, all-time `pending = produced − approved − rejected`. A rate is `null` when its denominator is zero — never a prior — and the dashboard renders `null` as `—`. The dashboard also now lists the `low_efficacy_skills` section it had been omitting (the headline total counted rows the panel never showed); `tests/test_dashboard_autopilot.py` pins that every section the API emits has a dashboard entry.
 
 ## 5. The evidence ledger read
 
@@ -348,6 +352,18 @@ carry no `workspace_id`, so per-workspace scoping is a write-path change out of
 scope here; the tenancy invariant (filter on the caller's workspace, or restrict
 to a deployment superadmin and otherwise fail closed) must hold before any
 deployment serves more than one workspace.
+
+## 8. The fleet: enqueue, drain, and the approval ledger (Fleet-as-GPU MVP, 2026-09-02)
+
+The nightly passes already *find* the work a fleet could do — `skill_staleness_pass` flags skills nobody recalled in `SKILL_STALE_AFTER_DAYS`, `deep_contradiction_pass` contests unconfirmed pairs — and until now both sat in the inbox until a human got to them. `fleet_enqueue_pass` (`app/fleet/enqueue.py`, registered **after** `skill_staleness` in `run_memory_agent`, gated by `FLEET_ENQUEUE_ENABLED`, default on) posts one relay task per finding through relay's new `POST /tasks` using `RELAY_URL` + `FIREKEEP_INTERNAL_KEY` — the same seam the briefing reads `GET /tasks` through. (That route carries no per-route scope on purpose: the internal key has no `relay:*` scope and deployed keys are never re-scoped; see `docs/guides/relay-coordination.md`.) The tasks — `reauthor_stale_skill` with the skill's fields in `context`, `propose_contested_verdict` with both texts — are drained by client Night Shift workers against a **local** model (`docs/guides/client-kit.md`, Night Shift). Nothing generates on the server.
+
+**Dedup is state-based, because relay tasks have no idempotency and expire in 7 days.** A stale skill is enqueued only if no skill with `reauthor_of == its id` exists in any status and no rejection marker names it (`fleet:rejected:reauthor_stale_skill:<id>`, set when a human deletes the fleet's draft, 90-day TTL); a contested pair only if neither side carries `proposed_verdict`. A live marker (`fleet:enqueued:<job>:<subject>`, `SET NX EX 7d`) stops double-posting while a task is in flight and expires with the task. Drained work never re-enqueues; expired work does; the whole night is capped at `FLEET_ENQUEUE_MAX_PER_RUN` (default 20, remainder reported as `capped`).
+
+**Member-private never leaves.** Relay tasks are Keep-global (readable by every registered key, no workspace scoping) and the worker needs the text in `context`, so points with `visibility == "member"` are excluded at the query and a pair whose partner is private is skipped (`skipped_unpaired`). Cross-workspace writes fail server-side: `reauthor_of` must resolve inside the caller's workspace (404) and `propose` validates the pair like `resolve`.
+
+**The ledger (`app/fleet/ledger.py`).** Rejection of a draft is *deletion* and no approval timestamp existed, so a rate read from Qdrant would forget every rejected draft. Monotonic Redis counters are written at the moments the store forgets: `produced` (a draft created with `origin_job`), `approved` (its draft→active PATCH — which now also stamps a real `approved_at` on every skill), `rejected` (DELETE of a fleet draft), `proposed` (first proposal on a pair), `resolved` / `matched` (a human verdict on a pair that carried one). `fleet:ledger:<job>` all-time plus `fleet:ledger:<job>:<YYYY-MM-DD>` per UTC day (400-day TTL) feed the digest's `fleet` block (§4) and the dashboard's Fleet table. **This is the kill metric**: a job type whose approval rate stays low after enough verdicts is a job type to switch off, on evidence.
+
+Out of the MVP, named so nobody infers them: the Dreaming port onto the queue, capability tags, per-job token budgets in trace, the other catalog jobs (handoff brief, doc drift, evidence pack, calibration review, merge near-duplicates), a headless-agent tier, an OS scheduled task, and writing a `still_valid`/`retire` verdict onto the skill's inbox row.
 
 ## What unlocks round 2
 
