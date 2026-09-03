@@ -87,7 +87,8 @@ def decide_expire(skill_id: str, status: str, last_shown_at: str | None,
         return None
     shown_dt = _parse_dt(last_shown_at)
     last_activity = max(since_dt, shown_dt) if shown_dt is not None else since_dt
-    if now - last_activity < timedelta(days=ttl_days):
+    now_aware = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+    if now_aware - last_activity < timedelta(days=ttl_days):
         return None
     return Decision(
         skill_id=skill_id,
@@ -103,14 +104,20 @@ def decide_expire(skill_id: str, status: str, last_shown_at: str | None,
     )
 
 
+def _low_efficacy(ev: Evidence, prior_n: int) -> bool:
+    """The shared demote/flag condition: enough paired outcomes, enough
+    failures, and efficacy under the demote ceiling."""
+    n = ev.successes + ev.failures
+    return (ev.failures >= DEMOTE_MIN_FAILURES
+            and efficacy(ev, prior_n) < DEMOTE_MAX_EFFICACY
+            and n >= DEMOTE_MIN_N)
+
+
 def decide_demote(skill_id: str, status: str, ev: Evidence, prior_n: int) -> Decision | None:
     """Trial only: demote back to draft on sustained low efficacy."""
     if status != "trial":
         return None
-    n = ev.successes + ev.failures
-    if (ev.failures >= DEMOTE_MIN_FAILURES
-            and efficacy(ev, prior_n) < DEMOTE_MAX_EFFICACY
-            and n >= DEMOTE_MIN_N):
+    if _low_efficacy(ev, prior_n):
         return Decision(
             skill_id=skill_id,
             action="demote",
@@ -128,10 +135,7 @@ def decide_flag(skill_id: str, status: str, ev: Evidence, prior_n: int,
     demote uses for trials."""
     if status != "active" or already_flagged:
         return None
-    n = ev.successes + ev.failures
-    if (ev.failures >= DEMOTE_MIN_FAILURES
-            and efficacy(ev, prior_n) < DEMOTE_MAX_EFFICACY
-            and n >= DEMOTE_MIN_N):
+    if _low_efficacy(ev, prior_n):
         return Decision(
             skill_id=skill_id,
             action="flag",
@@ -170,8 +174,8 @@ def admit_block_reason(payload: dict, dup_match: tuple[str, float] | None,
     None when it is clear to admit."""
     steps = payload.get("steps")
     steps_empty = not steps if isinstance(steps, list) else not str(steps or "").strip()
-    if (not str(payload.get("trigger", "")).strip()
-            or not str(payload.get("symptoms", "")).strip()
+    if (not str(payload.get("trigger") or "").strip()
+            or not str(payload.get("symptoms") or "").strip()
             or steps_empty):
         return "incomplete"
     if payload.get("needs_rereview"):

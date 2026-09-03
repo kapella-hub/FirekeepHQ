@@ -130,6 +130,26 @@ def test_expire_naive_ladder_since_assumed_utc():
     assert d.evidence["ttl_days"] == 60
 
 
+def test_expire_naive_now_matches_aware_now():
+    ladder_since = (NOW - timedelta(days=61)).isoformat()
+    naive_now = NOW.replace(tzinfo=None)
+    d_naive = decide_expire("s1", "trial", None, ladder_since, naive_now, ttl_days=60)
+    d_aware = decide_expire("s1", "trial", None, ladder_since, NOW, ttl_days=60)
+    assert d_naive is not None
+    assert d_aware is not None
+    assert d_naive == d_aware
+
+
+def test_expire_last_shown_at_older_than_ladder_since_uses_ladder_since():
+    # last_shown_at strictly older than ladder_since: max() must pick
+    # ladder_since as the last-activity anchor, so a recent ladder_since
+    # keeps the trial from expiring even though last_shown_at is ancient.
+    ladder_since = (NOW - timedelta(days=10)).isoformat()
+    last_shown_at = (NOW - timedelta(days=200)).isoformat()
+    d = decide_expire("s1", "trial", last_shown_at, ladder_since, NOW, ttl_days=60)
+    assert d is None
+
+
 # --------------------------------------------------------------------------- #
 # decide_demote                                                               #
 # --------------------------------------------------------------------------- #
@@ -289,6 +309,26 @@ def test_admit_block_reason_incomplete_empty_steps_list():
 def test_admit_block_reason_incomplete_whitespace_steps_string():
     payload = _clean_payload(steps="   ")
     assert admit_block_reason(payload, dup_match=None, domain_trial_count=0) == "incomplete"
+
+
+def test_admit_block_reason_incomplete_explicit_none_trigger():
+    payload = _clean_payload(trigger=None)
+    assert admit_block_reason(payload, dup_match=None, domain_trial_count=0) == "incomplete"
+
+
+def test_admit_block_reason_incomplete_explicit_none_symptoms():
+    payload = _clean_payload(symptoms=None)
+    assert admit_block_reason(payload, dup_match=None, domain_trial_count=0) == "incomplete"
+
+
+def test_admit_block_reason_incomplete_wins_over_duplicate():
+    payload = _clean_payload(trigger="", duplicate_of="other-id")
+    assert admit_block_reason(payload, dup_match=None, domain_trial_count=0) == "incomplete"
+
+
+def test_admit_block_reason_parked_field_with_none_value_not_parked():
+    payload = _clean_payload(demoted_at=None)
+    assert admit_block_reason(payload, dup_match=None, domain_trial_count=0) is None
 
 
 def test_admit_block_reason_incomplete_missing_steps_key():
