@@ -22,12 +22,14 @@ logger = logging.getLogger(__name__)
 JOB_DISTILL = "distill_session"
 JOB_REAUTHOR = "reauthor_stale_skill"
 JOB_VERDICT = "propose_contested_verdict"
-JOBS = (JOB_DISTILL, JOB_REAUTHOR, JOB_VERDICT)
+JOB_LADDER = "ladder"   # not a fleet job: the skill ladder's own transitions (spec 2026-09-03 decision 8)
+JOBS = (JOB_DISTILL, JOB_REAUTHOR, JOB_VERDICT, JOB_LADDER)
 
 SKILL_COUNTERS = ("produced", "approved", "rejected")
 VERDICT_COUNTERS = ("proposed", "resolved", "matched")
+LADDER_COUNTERS = ("admitted", "promoted", "demoted", "expired", "rewrite_requested")
 _COUNTERS = {JOB_DISTILL: SKILL_COUNTERS, JOB_REAUTHOR: SKILL_COUNTERS,
-             JOB_VERDICT: VERDICT_COUNTERS}
+             JOB_VERDICT: VERDICT_COUNTERS, JOB_LADDER: LADDER_COUNTERS}
 
 LEDGER_PREFIX = "fleet:ledger"
 DAILY_TTL_SECONDS = 400 * 86400
@@ -120,6 +122,8 @@ def _ints(raw: dict | None, counters: tuple[str, ...]) -> dict[str, int]:
 
 
 def _with_rate(counts: dict[str, int], job: str) -> dict:
+    if job == JOB_LADDER:
+        return {**counts}
     if job == JOB_VERDICT:
         return {**counts, "match_rate": rate(counts["matched"], counts["resolved"])}
     return {**counts, "approval_rate": rate(counts["approved"],
@@ -144,7 +148,7 @@ async def summarize(redis_client, *, days: int, now: datetime | None = None) -> 
                 window[c] += v
         total = _ints(await redis_client.hgetall(total_key(job)), counters)
         all_time = _with_rate(total, job)
-        if job != JOB_VERDICT:
+        if job in (JOB_DISTILL, JOB_REAUTHOR):
             all_time["pending"] = max(0, total["produced"] - total["approved"] - total["rejected"])
         out[job] = {"window": _with_rate(window, job), "all_time": all_time}
     return out

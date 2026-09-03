@@ -103,3 +103,17 @@ async def test_summarize_against_bytes_mode_redis(redis_bytes):
                               "approval_rate": 1.0, "pending": 1}
     assert re["window"] == {"produced": 2, "approved": 1, "rejected": 0,
                             "approval_rate": 1.0}
+
+
+@pytest.mark.asyncio
+async def test_ladder_key_records_and_summarizes(redis):
+    assert await ledger.record(redis, ledger.JOB_LADDER, "admitted", now=NOW) is True
+    assert await ledger.record(redis, ledger.JOB_LADDER, "promoted", now=NOW) is True
+    assert await ledger.record(redis, ledger.JOB_LADDER, "bogus", now=NOW) is False
+    out = await ledger.summarize(redis, days=7, now=NOW)
+    assert out["ladder"]["window"] == {"admitted": 1, "promoted": 1, "demoted": 0,
+                                       "expired": 0, "rewrite_requested": 0}
+    assert out["ladder"]["all_time"]["promoted"] == 1
+    assert "approval_rate" not in out["ladder"]["window"] and "pending" not in out["ladder"]["all_time"]
+    # the fleet jobs are untouched
+    assert set(out) == {ledger.JOB_DISTILL, ledger.JOB_REAUTHOR, ledger.JOB_VERDICT, ledger.JOB_LADDER}
