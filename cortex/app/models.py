@@ -566,6 +566,23 @@ class SkillResponse(BaseModel):
     # A REAL approval timestamp (draft->active), stamped for every skill from this
     # release on. stale_reviewed_at is NOT this: it is also written by "still valid".
     approved_at: str | None = None
+    # Skill Ladder PR1 (spec 2026-09-03): a `trial` status sits between draft and
+    # active. `ladder_since` is stamped on every skill_status CHANGE (a fresh
+    # evidence window per decision 4); `approved_by` records who blessed an
+    # activation ("human" or, from PR2's shadow/enforce ladder, "ladder").
+    # `ladder_shadow` / `ladder_history` / the demotion + dup/supersede fields are
+    # ALL absent on every skill this PR1 pass never touches — None, not a
+    # migration, exactly like the Fleet-as-GPU fields above.
+    ladder_since: str | None = None
+    approved_by: str | None = None
+    ladder_shadow: dict | None = None
+    ladder_history: list[dict] | None = None
+    demoted_at: str | None = None
+    demotion_reason: str | None = None
+    ladder_rewrite_requested_at: str | None = None
+    trial_expired_at: str | None = None
+    duplicate_of: str | None = None
+    superseded_by: str | None = None
 
 
 class SkillPatchRequest(BaseModel):
@@ -578,6 +595,13 @@ class SkillPatchRequest(BaseModel):
     # Replaces the whole list when present (I3: the PATCH path is the ONLY
     # writer of step_specs — every derived number lives in Redis).
     step_specs: list[StepSpec] | None = None
+    # Skill Ladder PR1: who is blessing a change to `active`. A header-free field
+    # (not derived from the caller's identity) because PR2's ladder pass sends
+    # "ladder" from a background worker with no human session behind it; a bare
+    # PATCH from the dashboard/CLI omits it and defaults to "human" at the
+    # call site (see patch_skill), not here, so the default reflects the ACTUAL
+    # approver rather than baking "human" into every unrelated PATCH payload.
+    approved_by: Literal["human", "ladder"] | None = None
 
     @field_validator("step_specs")
     @classmethod

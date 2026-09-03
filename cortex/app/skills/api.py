@@ -8,7 +8,7 @@ from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from qdrant_client.models import (
-    FieldCondition, MatchValue, PointIdsList, PointStruct
+    FieldCondition, MatchAny, MatchValue, PointIdsList, PointStruct
 )
 
 from app.config import get_settings, Settings
@@ -71,9 +71,16 @@ def create_skills_router(
         # escape hatch, since that would leak drafts just like the old
         # no-arg default did. Treat falsy as the safe default.
         status = status or "active"
+        # `recallable` is the one alias: what an agent may be shown — active plus
+        # trial (spec 2026-09-03 decision 1). Plain `active` stays active-only so
+        # dashboards and the staleness sweep keep their exact meaning.
+        if status == "recallable":
+            status_cond = FieldCondition(key="skill_status", match=MatchAny(any=["active", "trial"]))
+        else:
+            status_cond = FieldCondition(key="skill_status", match=MatchValue(value=status))
         must = [
             FieldCondition(key="memory_type", match=MatchValue(value="skill")),
-            FieldCondition(key="skill_status", match=MatchValue(value=status)),
+            status_cond,
         ]
         if project:
             must.append(FieldCondition(key="project", match=MatchValue(value=project.lower())))
@@ -94,6 +101,11 @@ def create_skills_router(
             vector, settings, must=must, query=q, limit=limit,
         )
         results = [_point_to_response(p) for p in points]
+
+        if status == "recallable":
+            # Actives first, trials last; stable within a tier so the semantic
+            # ranking survives inside each group.
+            results.sort(key=lambda r: 0 if r.skill_status == "active" else 1)
 
         # THE FIX. On the semantic path the points are already cosine-ranked and
         # floored, so the legacy substring narrowing must NOT run — re-applying it
@@ -271,6 +283,12 @@ def create_skills_router(
         updates: dict[str, Any] = {}
         if req.skill_status is not None:
             updates["skill_status"] = req.skill_status
+            if req.skill_status != current.get("skill_status"):
+                # Every status change opens a fresh evidence window for the ladder
+                # (spec decision 4): promotions never ride evidence from a previous life.
+                updates["ladder_since"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                if req.skill_status == "active":
+                    updates["approved_by"] = req.approved_by or "human"
             # Promoting to active is a human blessing — stamp freshness so the
             # staleness sweep gives the newly-active skill a full window. Without
             # this, a draft that aged past SKILL_STALE_AFTER_DAYS in the review
@@ -482,6 +500,16 @@ def _point_to_response(point: Any) -> SkillResponse:
         origin_job=p.get("origin_job"),
         reauthor_of=p.get("reauthor_of"),
         approved_at=p.get("approved_at"),
+        ladder_since=p.get("ladder_since"),
+        approved_by=p.get("approved_by"),
+        ladder_shadow=p.get("ladder_shadow"),
+        ladder_history=p.get("ladder_history"),
+        demoted_at=p.get("demoted_at"),
+        demotion_reason=p.get("demotion_reason"),
+        ladder_rewrite_requested_at=p.get("ladder_rewrite_requested_at"),
+        trial_expired_at=p.get("trial_expired_at"),
+        duplicate_of=p.get("duplicate_of"),
+        superseded_by=p.get("superseded_by"),
     )
 
 

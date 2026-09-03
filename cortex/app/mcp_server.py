@@ -1304,10 +1304,13 @@ async def skill_recall(
     namespace: str = "default",
     top_k: int = 3,
 ) -> str:
-    """Retrieve relevant active skills for the current task.
+    """Retrieve relevant active (and trial) skills for the current task.
 
     Call at session start or when approaching a complex problem to surface
-    team-shared procedures from past breakthroughs.
+    team-shared procedures from past breakthroughs. A trial skill — one still
+    building evidence on the promotion ladder — is prefixed `[TRIAL]` with a
+    caveat to verify before relying on it; treat it with more caution than an
+    active one.
 
     Args:
         task: What you are working on.
@@ -1316,7 +1319,10 @@ async def skill_recall(
     """
     try:
         client = await _get_client()
-        params: dict = {"status": "active", "limit": top_k}
+        # "recallable" status = active + trial (skill ladder PR1, spec 2026-09-03):
+        # an agent may lean on a trial skill, just not without the caveat rendered
+        # below — draft/deprecated stay excluded exactly as before.
+        params: dict = {"status": "recallable", "limit": top_k}
         if project:
             params["project"] = project
         # Send the FULL task. The old five-word truncation existed only to make a
@@ -1336,7 +1342,11 @@ async def skill_recall(
             return "No relevant skills found."
         lines = ["## Relevant Skills\n"]
         for s in skills[:top_k]:
-            lines.append(f"**{s.get('trigger', 'Skill')}**")
+            if s.get("skill_status") == "trial":
+                lines.append(f"**[TRIAL] {s.get('trigger', 'Skill')}** — trial skill: not yet "
+                             "proven, verify before relying on it")
+            else:
+                lines.append(f"**{s.get('trigger', 'Skill')}**")
             lines.append(s.get("content", ""))
             lines.append("")
         return "\n".join(lines)

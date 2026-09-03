@@ -954,3 +954,77 @@ async def test_deleting_an_active_fleet_skill_is_not_a_rejection(mock_vector, mo
     assert resp.status_code == 204
     assert await r.keys("fleet:ledger:*") == []
     await r.aclose()
+
+
+# --- Skill ladder: trial status, recallable alias, ladder_since ---------------
+from qdrant_client.models import MatchAny as _MatchAny
+
+
+def _scroll_filter_must(mock_vector):
+    """The Filter.must list the last scroll/search received."""
+    call = mock_vector._client.scroll.call_args or mock_vector._client.search.call_args
+    kw = call.kwargs
+    flt = kw.get("scroll_filter") or kw.get("query_filter")
+    return list(flt.must)
+
+
+def test_status_recallable_matches_active_and_trial(mock_vector, mock_settings):
+    active = _make_mock_point("a1", "Active one", status="active")
+    trial = _make_mock_point("t1", "Trial one", status="trial")
+    mock_vector._client.scroll = AsyncMock(return_value=([trial, active], None))
+    client = TestClient(_make_app(mock_vector, mock_settings))
+    resp = client.get("/skills?status=recallable")
+    assert resp.status_code == 200
+    statuses = [c for c in _scroll_filter_must(mock_vector) if c.key == "skill_status"]
+    assert len(statuses) == 1 and isinstance(statuses[0].match, _MatchAny)
+    assert set(statuses[0].match.any) == {"active", "trial"}
+    # actives first, trial last
+    assert [s["skill_status"] for s in resp.json()] == ["active", "trial"]
+
+
+def test_status_active_is_still_active_only(mock_vector, mock_settings):
+    mock_vector._client.scroll = AsyncMock(return_value=([], None))
+    TestClient(_make_app(mock_vector, mock_settings)).get("/skills?status=active")
+    statuses = [c for c in _scroll_filter_must(mock_vector) if c.key == "skill_status"]
+    assert statuses[0].match.value == "active"
+
+
+def test_status_trial_lists_trials(mock_vector, mock_settings):
+    mock_vector._client.scroll = AsyncMock(return_value=([_make_mock_point("t1", status="trial")], None))
+    resp = TestClient(_make_app(mock_vector, mock_settings)).get("/skills?status=trial")
+    assert resp.status_code == 200 and resp.json()[0]["skill_status"] == "trial"
+
+
+def test_patch_status_change_stamps_ladder_since_and_approved_by(mock_vector, mock_settings):
+    draft = _make_mock_point("d1", status="draft")
+    mock_vector._client.retrieve = AsyncMock(return_value=[draft])
+    client = TestClient(_make_app(mock_vector, mock_settings))
+    resp = client.patch("/skills/d1", json={"skill_status": "trial"})
+    assert resp.status_code == 200, resp.text
+    written = mock_vector._client.set_payload.call_args.kwargs["payload"]
+    assert written["skill_status"] == "trial" and written["ladder_since"]
+    assert "approved_by" not in written
+    draft.payload.update(written)
+    client.patch("/skills/d1", json={"skill_status": "active"})
+    written = mock_vector._client.set_payload.call_args.kwargs["payload"]
+    assert written["approved_by"] == "human" and written["ladder_since"] and written["approved_at"]
+
+
+def test_patch_same_status_does_not_restamp_ladder_since(mock_vector, mock_settings):
+    active = _make_mock_point("a1", status="active")
+    active.payload["ladder_since"] = "2026-01-01T00:00:00+00:00"
+    mock_vector._client.retrieve = AsyncMock(return_value=[active])
+    client = TestClient(_make_app(mock_vector, mock_settings))
+    client.patch("/skills/a1", json={"skill_status": "active", "stale": False})
+    written = mock_vector._client.set_payload.call_args.kwargs["payload"]
+    assert "ladder_since" not in written
+
+
+def test_response_exposes_ladder_fields(mock_vector, mock_settings):
+    p = _make_mock_point("a1", status="active")
+    p.payload.update({"ladder_since": "2026-09-01T00:00:00+00:00", "approved_by": "human",
+                      "ladder_shadow": {"would": "promote"}, "duplicate_of": None})
+    mock_vector._client.retrieve = AsyncMock(return_value=[p])
+    body = TestClient(_make_app(mock_vector, mock_settings)).get("/skills/a1").json()
+    assert body["ladder_since"] == "2026-09-01T00:00:00+00:00"
+    assert body["approved_by"] == "human" and body["ladder_shadow"] == {"would": "promote"}

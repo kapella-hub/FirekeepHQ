@@ -342,7 +342,10 @@ async def test_skill_recall_sends_the_full_task_as_the_query():
     assert path[0] == "/skills"
     params = kwargs["params"]
     assert params["q"] == task, "the full task must be sent, not a truncated prefix"
-    assert params["status"] == "active"
+    # Skill ladder PR1 (spec 2026-09-03): skill_recall now asks for `recallable`
+    # (active + trial), not `active` alone — see test_mcp_skill_recall_trial.py
+    # for the [TRIAL] labeling this alias enables.
+    assert params["status"] == "recallable"
     assert params["limit"] == 3
     assert params["record_recall"] is True
 
