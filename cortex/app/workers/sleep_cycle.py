@@ -59,6 +59,7 @@ def _create_celery_app() -> Celery:
             "app.owm",
             "app.dreams.task",
             "app.procedures.harden",
+            "app.skills.ladder",
         ],
         beat_schedule={
             "sleep-cycle-consolidation": {
@@ -92,6 +93,10 @@ def _create_celery_app() -> Celery:
             "owm-scoring": {
                 "task": "app.owm.run_owm_scoring",
                 "schedule": timedelta(hours=s.OWM_SCHEDULE_HOURS),
+            },
+            "skill-ladder": {
+                "task": "app.skills.ladder.run_skill_ladder",
+                "schedule": timedelta(hours=s.SKILL_LADDER_SCHEDULE_HOURS),
             },
             "dream-tick": {
                 "task": "app.dreams.task.run_dream_tick",
