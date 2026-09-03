@@ -26,6 +26,7 @@ from app.skills.ladder_rules import (
     decide_promote,
     default_ladder_since,
 )
+from tests.skill_payloads import real_skill_payload
 
 NOW = datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc)
 
@@ -281,14 +282,11 @@ def test_promote_non_trial_status_returns_none():
 
 
 def _clean_payload(**over):
-    payload = {
-        "skill_status": "draft",
-        "trigger": "when X happens",
-        "symptoms": "Y is observed",
-        "steps": ["do a", "do b"],
-    }
-    payload.update(over)
-    return payload
+    """A draft shaped the way `POST /skills` actually stores one (see
+    tests/skill_payloads.py): the steps live in `content` under `## Steps`,
+    NOT in a `steps` payload key. `steps=` here is the CONTENT body, so
+    `steps=""` produces the real "heading present, body empty" shape."""
+    return real_skill_payload(**over)
 
 
 def test_admit_block_reason_incomplete_missing_trigger():
@@ -302,7 +300,10 @@ def test_admit_block_reason_incomplete_missing_symptoms():
 
 
 def test_admit_block_reason_incomplete_empty_steps_list():
-    payload = _clean_payload(steps=[])
+    # An explicit (forward-compatible) `steps` key that is empty falls THROUGH
+    # to the content body; with that empty too, neither source supplies steps.
+    payload = _clean_payload(steps="")
+    payload["steps"] = []
     assert admit_block_reason(payload, dup_match=None, domain_trial_count=0) == "incomplete"
 
 
@@ -331,10 +332,47 @@ def test_admit_block_reason_parked_field_with_none_value_not_parked():
     assert admit_block_reason(payload, dup_match=None, domain_trial_count=0) is None
 
 
-def test_admit_block_reason_incomplete_missing_steps_key():
+def test_admit_block_reason_duplicate_of_none_un_parks_the_draft():
+    """I3's clear path relies on this: `PATCH {clear_duplicate_of: true}`
+    writes `duplicate_of: None`, and PARKED_FIELDS is present-AND-TRUTHY, so
+    the key survives on the payload while no longer blocking admission."""
+    payload = _clean_payload(duplicate_of=None)
+    assert "duplicate_of" in payload
+    assert admit_block_reason(payload, dup_match=None, domain_trial_count=0) is None
+
+
+def test_admit_block_reason_real_draft_with_steps_in_content_admits():
+    """C1, the regression this suite previously certified: a draft created
+    through `POST /skills` carries NO `steps` payload key — the steps are in
+    `content` under `## Steps` — and it must be admissible."""
     payload = _clean_payload()
-    del payload["steps"]
+    assert "steps" not in payload
+    assert "## Steps" in payload["content"]
+    assert admit_block_reason(payload, dup_match=None, domain_trial_count=0) is None
+
+
+def test_admit_block_reason_real_draft_with_empty_steps_body_is_incomplete():
+    """The heading alone is not steps: `create_skill` emits `## Steps\\n{steps}`
+    even when the author supplied none, so the BODY is what is tested."""
+    payload = _clean_payload(steps="")
+    assert "## Steps" in payload["content"]
     assert admit_block_reason(payload, dup_match=None, domain_trial_count=0) == "incomplete"
+
+
+def test_admit_block_reason_explicit_steps_key_without_content_admits():
+    """Forward-compatible: if a future writer stores a real `steps` key, it is
+    read directly and no `content` is needed."""
+    payload = _clean_payload()
+    del payload["content"]
+    payload["steps"] = ["do a", "do b"]
+    assert admit_block_reason(payload, dup_match=None, domain_trial_count=0) is None
+
+
+def test_admit_block_reason_steps_body_survives_a_hash_inside_a_step():
+    """`## ` is only a terminator at line start — a shell comment inside a step
+    must not truncate the body to nothing."""
+    payload = _clean_payload(steps="run `docker ps ## note` then restart")
+    assert admit_block_reason(payload, dup_match=None, domain_trial_count=0) is None
 
 
 def test_admit_block_reason_rereview():

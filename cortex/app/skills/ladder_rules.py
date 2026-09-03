@@ -12,6 +12,7 @@ decisions — nothing in this module or its caller mutates `skill_status`.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -168,15 +169,58 @@ def decide_promote(skill_id: str, status: str, ev: Evidence, prior_n: int, *,
     return None
 
 
+#: The three completeness fields (spec decision 5) and the `## <Heading>` each
+#: one lives under inside `content` when it is not a payload key of its own.
+#:
+#: WHY TWO SOURCES. `trigger` and `symptoms` are real payload keys on every
+#: stored skill; `steps` is not, and never has been — `app/skills/api.py`'s
+#: create path folds the steps into `content` under `## Steps`, and both
+#: `app/skills/synthesizer.py` paths do the same. Reading only the key
+#: classified every real draft "incomplete" and admission was inert on the
+#: live Keep. Reading the key first keeps this forward-compatible if a writer
+#: ever does store one.
+_COMPLETENESS_HEADINGS = {"trigger": "Trigger", "symptoms": "Symptoms", "steps": "Steps"}
+
+
+def _heading_body(content: str, heading: str) -> str:
+    """The body under `## <heading>` in a skill's `content` — the text after
+    the heading line, up to the next `## ` heading or the end of the string.
+
+    Anchored at line start (`re.MULTILINE`) so a `##` appearing INSIDE a step
+    (a shell comment, a nested markdown heading) does not truncate the body.
+    Presence of the heading is never enough on its own: `create_skill` writes
+    `## Steps\\n{req.steps}` even when `req.steps` is empty, so an empty body
+    under a present heading must read as missing.
+    """
+    if not content:
+        return ""
+    match = re.search(
+        rf"^## {re.escape(heading)}[ \t]*$\n?(.*?)(?=^## |\Z)",
+        content, re.MULTILINE | re.DOTALL,
+    )
+    return match.group(1).strip() if match else ""
+
+
+def _completeness_value(payload: dict, field: str) -> str:
+    """One completeness field's effective value: the payload key when present
+    and non-empty after stripping (a list is joined), else the matching
+    `## <Heading>` body parsed out of `content`."""
+    raw = payload.get(field)
+    if isinstance(raw, (list, tuple)):
+        text = "\n".join(str(item) for item in raw).strip()
+    else:
+        text = str(raw or "").strip()
+    if text:
+        return text
+    return _heading_body(str(payload.get("content") or ""), _COMPLETENESS_HEADINGS[field])
+
+
 def admit_block_reason(payload: dict, dup_match: tuple[str, float] | None,
                         domain_trial_count: int) -> str | None:
     """The reason a draft cannot be admitted to trial, checked in order, or
     None when it is clear to admit."""
-    steps = payload.get("steps")
-    steps_empty = not steps if isinstance(steps, list) else not str(steps or "").strip()
-    if (not str(payload.get("trigger") or "").strip()
-            or not str(payload.get("symptoms") or "").strip()
-            or steps_empty):
+    if any(not _completeness_value(payload, field)
+           for field in ("trigger", "symptoms", "steps")):
         return "incomplete"
     if payload.get("needs_rereview"):
         return "rereview"

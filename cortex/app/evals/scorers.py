@@ -58,9 +58,31 @@ def _tool_success_rate(events: list[dict]) -> float | None:
     return round(successes / len(with_outcome), 4)
 
 
+def _is_briefing_receipt(event: dict) -> bool:
+    """True for the briefing's own skills-section `memory_read` receipt
+    (`trigger="briefing"`, emitted by `app/briefing/sections.py`).
+
+    IT IS NOT A RECALL. The receipt exists so the skill ladder can tell that a
+    skill was *shown*; it fires automatically at session start, with the agent
+    having asked for nothing. Counting it makes `memory_read_count` gain a
+    floor of 1 in every session and pulls `recall_used_rate` toward 1.0 (an
+    action almost always follows a session-start event), which would silently
+    inflate a series the compliance rows are frozen against — the same reason
+    `app/owm.py` excludes it from both of its tallies.
+
+    A non-dict payload (some stored events carry it as a JSON string) reads as
+    "not a briefing receipt" rather than raising, matching
+    `_memory_freshness_at_recall`'s own defensiveness.
+    """
+    payload = event.get("payload")
+    return isinstance(payload, dict) and payload.get("trigger") == "briefing"
+
+
 def _memory_read_count(events: list[dict]) -> float:
-    """Count of memory_read events in the session."""
-    return float(sum(1 for e in events if e.get("event_type") == "memory_read"))
+    """Count of memory_read events in the session, excluding briefing receipts."""
+    return float(sum(1 for e in events
+                     if e.get("event_type") == "memory_read"
+                     and not _is_briefing_receipt(e)))
 
 
 def _memory_write_count(events: list[dict]) -> float:
@@ -75,8 +97,13 @@ def _recall_used_rate(events: list[dict]) -> float:
     any agent.action.predict or memory_write event follows it in the session.
     Returns 0.0 when there are no reads — so sessions that never recall pull the
     aggregate (surfaced as recall_hit_rate in the briefing) down, by design.
+
+    Briefing receipts are excluded (`_is_briefing_receipt`): the receipt fires
+    at session start, so something follows it in nearly every session and it
+    would score as "used" while the agent recalled nothing.
     """
-    reads = [i for i, e in enumerate(events) if e.get("event_type") == "memory_read"]
+    reads = [i for i, e in enumerate(events)
+             if e.get("event_type") == "memory_read" and not _is_briefing_receipt(e)]
     if not reads:
         return 0.0
 

@@ -27,6 +27,7 @@ import pytest_asyncio
 
 from app.skills import ladder
 from app.skills.ladder import run_ladder_impl
+from tests.skill_payloads import real_skill_payload
 
 NOW = datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc)
 
@@ -81,14 +82,26 @@ class _Point:
 
 def _skill_point(pid, *, status, trigger="", symptoms="", steps=None, domain="",
                  timestamp=None, ladder_since=None, **extra) -> _Point:
-    payload = {
-        "memory_type": "skill",
-        "skill_status": status,
-        "trigger": trigger,
-        "symptoms": symptoms,
-        "steps": steps if steps is not None else [],
-        "domain": domain,
-    }
+    """A skill point shaped the way `app/skills/api.py` actually stores one
+    (tests/skill_payloads.py).
+
+    `steps` go into `content` under `## Steps`, NOT into a `steps` payload key
+    — no writer has ever stored one, and inventing it here is what let C1 ship.
+    `steps=None` therefore still yields the incomplete shape (heading present,
+    body empty), and a point with no `timestamp` still has none, so the
+    oldest-first ordering test is unchanged.
+    """
+    if steps is None:
+        steps_text = ""
+    elif isinstance(steps, (list, tuple)):
+        steps_text = "\n".join(str(s) for s in steps)
+    else:
+        steps_text = str(steps)
+    payload = real_skill_payload(
+        trigger=trigger, symptoms=symptoms, domain=domain,
+        steps=steps_text, status=status,
+    )
+    payload.pop("timestamp", None)
     if timestamp is not None:
         payload["timestamp"] = timestamp
     if ladder_since is not None:
