@@ -442,6 +442,14 @@ services:
       # drafts only. Carried on all four services (one Settings class).
       FLEET_ENQUEUE_ENABLED: ${FLEET_ENQUEUE_ENABLED:-true}
       FLEET_ENQUEUE_MAX_PER_RUN: ${FLEET_ENQUEUE_MAX_PER_RUN:-20}
+      # Skill ladder (spec 2026-09-03): trial tier + evidence-gated promotion;
+      # shadow mode records decisions and changes nothing (enforce ships in PR2).
+      SKILL_LADDER_ENABLED: ${SKILL_LADDER_ENABLED:-true}
+      SKILL_LADDER_MODE: ${SKILL_LADDER_MODE:-shadow}
+      SKILL_LADDER_SCHEDULE_HOURS: ${SKILL_LADDER_SCHEDULE_HOURS:-24}
+      SKILL_LADDER_PROMOTE_MIN_SUCCESSES: ${SKILL_LADDER_PROMOTE_MIN_SUCCESSES:-3}
+      SKILL_LADDER_PROMOTE_MIN_AGENTS: ${SKILL_LADDER_PROMOTE_MIN_AGENTS:-2}
+      SKILL_LADDER_TRIAL_TTL_DAYS: ${SKILL_LADDER_TRIAL_TTL_DAYS:-60}
       # Task 5 confused-deputy pin: env_file imports the WHOLE .env, so
       # cortex-api would otherwise inherit the eval:grade-carrying bridge key.
       # Mirrors the FIREKEEP_API_KEY pin on cortex-mcp below.
@@ -550,6 +558,14 @@ services:
       # drafts only. Carried on all four services (one Settings class).
       FLEET_ENQUEUE_ENABLED: ${FLEET_ENQUEUE_ENABLED:-true}
       FLEET_ENQUEUE_MAX_PER_RUN: ${FLEET_ENQUEUE_MAX_PER_RUN:-20}
+      # Skill ladder (spec 2026-09-03): trial tier + evidence-gated promotion;
+      # shadow mode records decisions and changes nothing (enforce ships in PR2).
+      SKILL_LADDER_ENABLED: ${SKILL_LADDER_ENABLED:-true}
+      SKILL_LADDER_MODE: ${SKILL_LADDER_MODE:-shadow}
+      SKILL_LADDER_SCHEDULE_HOURS: ${SKILL_LADDER_SCHEDULE_HOURS:-24}
+      SKILL_LADDER_PROMOTE_MIN_SUCCESSES: ${SKILL_LADDER_PROMOTE_MIN_SUCCESSES:-3}
+      SKILL_LADDER_PROMOTE_MIN_AGENTS: ${SKILL_LADDER_PROMOTE_MIN_AGENTS:-2}
+      SKILL_LADDER_TRIAL_TTL_DAYS: ${SKILL_LADDER_TRIAL_TTL_DAYS:-60}
       # Task 5 confused-deputy pin: env_file imports the WHOLE .env. cortex-mcp
       # already pins FIREKEEP_API_KEY empty above for the same reason; this is
       # the eval:grade-carrying bridge key, not the caller-forwarding one.
@@ -700,6 +716,14 @@ services:
       # drafts only. Carried on all four services (one Settings class).
       FLEET_ENQUEUE_ENABLED: ${FLEET_ENQUEUE_ENABLED:-true}
       FLEET_ENQUEUE_MAX_PER_RUN: ${FLEET_ENQUEUE_MAX_PER_RUN:-20}
+      # Skill ladder (spec 2026-09-03): trial tier + evidence-gated promotion;
+      # shadow mode records decisions and changes nothing (enforce ships in PR2).
+      SKILL_LADDER_ENABLED: ${SKILL_LADDER_ENABLED:-true}
+      SKILL_LADDER_MODE: ${SKILL_LADDER_MODE:-shadow}
+      SKILL_LADDER_SCHEDULE_HOURS: ${SKILL_LADDER_SCHEDULE_HOURS:-24}
+      SKILL_LADDER_PROMOTE_MIN_SUCCESSES: ${SKILL_LADDER_PROMOTE_MIN_SUCCESSES:-3}
+      SKILL_LADDER_PROMOTE_MIN_AGENTS: ${SKILL_LADDER_PROMOTE_MIN_AGENTS:-2}
+      SKILL_LADDER_TRIAL_TTL_DAYS: ${SKILL_LADDER_TRIAL_TTL_DAYS:-60}
       # Task 5 confused-deputy pin: env_file imports the WHOLE .env, so
       # cortex-worker would otherwise inherit the eval:grade-carrying bridge key.
       # Mirrors the FIREKEEP_API_KEY pin on cortex-mcp above.
@@ -809,6 +833,14 @@ services:
       # drafts only. Carried on all four services (one Settings class).
       FLEET_ENQUEUE_ENABLED: ${FLEET_ENQUEUE_ENABLED:-true}
       FLEET_ENQUEUE_MAX_PER_RUN: ${FLEET_ENQUEUE_MAX_PER_RUN:-20}
+      # Skill ladder (spec 2026-09-03): trial tier + evidence-gated promotion;
+      # shadow mode records decisions and changes nothing (enforce ships in PR2).
+      SKILL_LADDER_ENABLED: ${SKILL_LADDER_ENABLED:-true}
+      SKILL_LADDER_MODE: ${SKILL_LADDER_MODE:-shadow}
+      SKILL_LADDER_SCHEDULE_HOURS: ${SKILL_LADDER_SCHEDULE_HOURS:-24}
+      SKILL_LADDER_PROMOTE_MIN_SUCCESSES: ${SKILL_LADDER_PROMOTE_MIN_SUCCESSES:-3}
+      SKILL_LADDER_PROMOTE_MIN_AGENTS: ${SKILL_LADDER_PROMOTE_MIN_AGENTS:-2}
+      SKILL_LADDER_TRIAL_TTL_DAYS: ${SKILL_LADDER_TRIAL_TTL_DAYS:-60}
       # Task 5 confused-deputy pin: env_file imports the WHOLE .env, so
       # cortex-beat would otherwise inherit the eval:grade-carrying bridge key.
       # Mirrors the FIREKEEP_API_KEY pin on cortex-mcp above.

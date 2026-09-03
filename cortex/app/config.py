@@ -587,6 +587,18 @@ class Settings(BaseSettings):
     # cannot flood the relay queue. Dedup is state-based (see app/fleet/enqueue.py).
     FLEET_ENQUEUE_ENABLED: bool = True
     FLEET_ENQUEUE_MAX_PER_RUN: int = 20
+    # The skill ladder (spec 2026-09-03): drafts earn `trial`, trial earns `active`
+    # on independent graded evidence, failing trials fall back to draft and failing
+    # actives are flagged for a fleet rewrite. MODE is the safety: "shadow" records
+    # every decision (inbox + digest) and changes nothing; "enforce" applies them
+    # and ships in PR2 — a shadow fortnight comes first. Thresholds that nobody
+    # tunes live as constants in app/skills/ladder_rules.py, not here.
+    SKILL_LADDER_ENABLED: bool = True
+    SKILL_LADDER_MODE: str = "shadow"
+    SKILL_LADDER_SCHEDULE_HOURS: int = 24
+    SKILL_LADDER_PROMOTE_MIN_SUCCESSES: int = 3
+    SKILL_LADDER_PROMOTE_MIN_AGENTS: int = 2
+    SKILL_LADDER_TRIAL_TTL_DAYS: int = 60
     # Raw-cosine floor for SEMANTIC skill matching (GET /skills?q=, briefing skills
     # section). Deliberately NOT RECALL_SCORE_FLOOR (0.35, above): that was tuned for
     # prose memory bodies on mxbai-embed-large/1024-dim, while a skill embeds a terse
