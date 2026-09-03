@@ -40,7 +40,9 @@ _MSG = (
     "with skill_create(trigger, symptoms, steps, gotchas, domain) — you hold the "
     "context and a capable model; the server does not synthesize skills for you. "
     "2. If PAUSED leave the session active — it persists. 3. Store non-obvious "
-    "learnings with memory_learn. 4. Update tasks (relay_task_update) and "
+    "learnings with memory_learn. 4. If a recalled skill guided this work, call "
+    "memory_feedback with its id (useful=true/false) — that is the evidence that "
+    "promotes or demotes it. 5. Update tasks (relay_task_update) and "
     "release leases (relay_release). Do NOT skip completing a session you own — "
     "distilled learnings improve future recall."
 )

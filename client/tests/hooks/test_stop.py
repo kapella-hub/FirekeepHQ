@@ -321,3 +321,18 @@ class TestStopPersonalMode:
 
         assert out == {}
         assert calls == []
+
+    def test_stop_msg_includes_skill_feedback_guidance(self, client_env, monkeypatch):
+        """The stop hook asks for skill feedback to enable the ladder's applied signal.
+        If a recalled skill guided the work, memory_feedback with its id is the evidence
+        that promotes or demotes it."""
+        from firekeep_client.hooks import stop
+
+        # Assert that the message constant itself contains the guidance
+        assert "memory_feedback with its id" in stop._MSG
+
+        # Assert that stop.run() returns it in the systemMessage
+        _record_calls(monkeypatch)
+        out = stop.run({})
+        assert "systemMessage" in out
+        assert "memory_feedback with its id" in out["systemMessage"]
