@@ -53,21 +53,40 @@ a human wants — the human path stays authoritative.
 **2. "Used" is one of three signals; only the strongest promotes.** *Shown* — the
 skill was injected into a briefing or returned by `skill_recall` (a
 `memory_read` receipt; the briefing gains one with `trigger="briefing"`, the
-one receipt it deliberately did not emit until now). *Applied* — an agent said
-so: `memory_feedback(memory_ids=[skill_id], useful=…)` (exists), or Living
-Procedures observed the skill's `step_specs` executed (exists for procedure
-skills). *Applied and it worked* — applied with `useful=true` **and** the
-session's verified-owner grade is `success` (`recognized_grade_pair` on the
-stored eval, Bridge `abandoned` overriding as failure). Shown alone never
-promotes — a skill sitting in a briefing while the session succeeded for other
-reasons would promote itself. Shown-without-applied is recorded as the
-denominator of a *reach rate* the digest shows; it is evidence about the
-trigger text, not about the steps.
+one receipt it deliberately did not emit until now). *Reached* — an agent
+deliberately asked for it: a `skill_recall` receipt (`trigger="skill_recall"`).
+*Applied* — an agent said so: `memory_feedback(memory_ids=[skill_id],
+useful=…)` (exists), or Living Procedures observed the skill's `step_specs`
+executed (exists for procedure skills). A **success observation** is *applied
+with `useful=true`* — or, when no feedback exists for that skill in that
+session, a *reached* receipt — **and** the session's verified-owner grade is
+`success` (`recognized_grade_pair` on the stored eval, Bridge `abandoned`
+overriding as failure). A **failure observation** is `useful=false` **paired
+with** a failed or abandoned grade. Passive exposure never counts either way:
+a skill sitting in a briefing while the session succeeded for other reasons
+would promote itself, and one displayed in three failed sessions would demote
+itself. Shown-without-reach is the denominator of a *reach rate* the digest
+shows — evidence about the trigger text, not the steps. **Cross-cutting
+consequence, stated here because no single task can see it:** the new
+`trigger="briefing"` receipts must be **excluded from OWM's `skill_efficacy`
+exposure tally** (it joins every skill `memory_read` to the session grade, so
+briefing receipts would drive every skill's efficacy toward the session base
+rate); the ladder's evidence reader is the only consumer of briefing receipts.
 
 **3. "Successfully" is the human-attributable grade, never "no exception".**
-Ungraded and `partial` sessions contribute nothing; `abandoned` is a failure;
-`useful=false` is a failure regardless of the session grade (the thumb exists
-precisely because a session can succeed while one recalled artefact misled).
+Ungraded and `partial` sessions contribute nothing; `abandoned` is a failure.
+`useful=false` **alone** is not a failure — "not useful" is indistinguishable
+from "not relevant to what I was doing", and a good skill with a broad trigger
+would be punished for being recalled eagerly. It counts against the reach rate;
+it becomes a failure observation only alongside a failed or abandoned grade.
+**Two honest caveats.** The applied signal is a behavioural ask: today agents
+rarely call `memory_feedback` on skill ids, so a healthy first fortnight is
+measured by *feedback events on skills > 0* and *reach rate > 0*, and zero
+promotions in shadow means the pipe is dry, not that the rules are wrong — the
+stop hook's new sentence and the reached-receipt fallback exist for exactly
+this. And on a solo Keep (one human, several agent identities — this PC, a
+laptop, night-shift), "two distinct agents" is satisfied trivially; the
+independence rule protects a team Keep and is stated as such, not oversold.
 
 **4. "Several" means independent.** Promotion requires
 `SKILL_LADDER_PROMOTE_MIN_SUCCESSES = 3` applied-and-succeeded observations from
@@ -81,6 +100,10 @@ member id is present on the event it is preferred. These are lower than the
 pattern ladder's 10/15/25 because each observation here is a graded session,
 not a heuristic match. Evidence is counted only **since the skill's last status
 change** (`ladder_since`), so a human demotion is not undone by stale evidence.
+For the skills that exist before this ships, `ladder_since` defaults to
+`approved_at`, else `stale_reviewed_at`, else the skill's `timestamp` — the
+first run must not read a skill's whole history as if it were one window; it
+is stamped explicitly by the first pass so later runs never re-derive it.
 
 **5. Admission to trial is deterministic and capped.** A draft enters trial when:
 trigger, symptoms and steps are non-empty; it is not a near-duplicate of an
@@ -90,49 +113,96 @@ under `SKILL_LADDER_TRIAL_CAP_PER_DOMAIN = 10`. At most
 `SKILL_LADDER_ADMIT_PER_RUN = 20` per night, oldest first. A near-duplicate draft
 is not admitted and is marked `duplicate_of=<id>` for the inbox — the fleet's own
 output is the most likely flood, and the cap is what keeps a bad night from
-filling the tier. Source-backed document drafts (`source_type="document"`) are
-admitted on the same rule; they are not auto-*activated* on provenance in this
-round (the guide allows it; it is a later switch).
+filling the tier. **Never admitted:** a draft carrying `demoted_at`,
+`ladder_rewrite_requested_at`, `trial_expired_at`, `superseded_by` or
+`duplicate_of` — those are parked for a human or for the rewrite loop, and
+without this rule a demoted skill would re-enter trial the next night on the
+strength of nothing. Source-backed document drafts (`source_type="document"`)
+are admitted on the same rule; they are not auto-*activated* on provenance in
+this round (the guide allows it; it is a later switch).
 
-**6. Demotion is symmetric, and a failed skill is sent to be rewritten.** A trial
-or active skill with ≥ `SKILL_LADDER_DEMOTE_MIN_FAILURES = 3` failure observations
-and efficacy < 0.4 at n ≥ 5 (since `ladder_since`) is demoted to **draft** with
-`demoted_at`, `demotion_reason` and the evidence summary on its payload — and
-the ladder enqueues a **`reauthor_failed_skill`** fleet task carrying the skill
-plus its failure evidence (the failing sessions' ids, the last feedback comment,
-the efficacy numbers). Night Shift rewrites it into a new draft with
+**6. Failure demotes a trial skill; it flags an active one for rewrite.** A
+**trial** skill with ≥ 3 failure observations and efficacy < 0.4 at n ≥ 5 (since
+`ladder_since`) is demoted to **draft** with `demoted_at`, `demotion_reason` and
+the evidence summary on its payload, and parked from re-admission. An **active**
+skill meeting the same bar is **not demoted in this round**: a human activated it,
+and three thumbs may mean "not what I needed" as easily as "wrong"; demoting and
+rewriting would also open a visibility gap. It stays active and receives
+`ladder_rewrite_requested_at`. In both cases the skill is handed to the fleet:
+the enqueue pass posts a **`reauthor_failed_skill`** task carrying the skill plus
+its failure evidence (the failing sessions' ids, the last feedback comment, the
+efficacy numbers); Night Shift rewrites it into a new draft with
 `reauthor_of=<failed id>` and `origin_job="reauthor_failed_skill"`; that draft
-re-enters the ladder at trial like any other; and **when a re-authored skill is
-promoted to active, the skill it rewrote is deprecated with `superseded_by`**,
-closing the loop the founder asked for ("update the skill that failed").
+enters the ladder at trial like any other; and **when a re-authored skill is
+promoted to active, the skill it rewrote is deprecated with `superseded_by`** —
+the rewrite earns its place before the original loses it, which closes the loop
+the founder asked for ("update the skill that failed") without ever leaving a
+hole. A human can request the same rewrite by hand: the Skills tab gains a
+**Rewrite** button that sets `ladder_rewrite_requested_at` through `PATCH`.
 Unused trial skills — no *shown* receipt for `SKILL_LADDER_TRIAL_TTL_DAYS = 60` —
-return to draft with `trial_expired_at` (never deleted).
+return to draft with `trial_expired_at` (never deleted). The rewrite job, the
+supersede-on-promotion rule and the button ship in **PR2** (see Phasing).
 
 **7. Shadow first, then enforce, by one setting.** `SKILL_LADDER_MODE` is
 `"shadow"` by default: the pass computes every admission, promotion, demotion
 and expiry exactly as it would apply them, writes each decision to a ledger
 (`skills:ladder:decisions`, capped list in cortex Redis) and a per-skill
-`ladder_shadow` payload field, and changes **no** status. The autopilot inbox
+`ladder_shadow` payload field, and changes **no** status **and enqueues no fleet
+task** — a "would request rewrite of X" line in the ledger is the whole effect,
+so Night Shift never rewrites a skill that was never actually demoted or
+flagged. The autopilot inbox
 gains a `ladder_proposals` section and the digest a `ladder` block, so a human
 watches two weeks of what the rules *would* have done before flipping to
 `"enforce"`. In enforce mode every transition writes a `ladder_history` entry
 (`from`, `to`, `at`, `reason`, evidence summary) onto the skill — the undo
 trail — and still lands in the digest.
 
-**8. The ledger, again.** The fleet ledger from 2026-09-02 gains the new job type
-and two ladder counters per skill job (`promoted`, `demoted`) so the kill metric
-extends from "did a human approve the draft" to "did the draft earn its way to
-active". Ladder-driven promotions are recorded as `approved` with
-`approved_by="ladder"` on the skill; a human activation stays `approved_by="human"`.
+**8. The ledger, again.** Human-authored and document-derived skills carry no
+`origin_job`, so ladder counters cannot hang off the fleet's per-job keys. The
+ledger gains one **ladder-wide** key, `fleet:ledger:ladder`, with counters
+`admitted`, `promoted`, `demoted`, `expired`, `rewrite_requested` (all-time and
+per UTC day, same shape as the job keys); a ladder promotion of a fleet-authored
+draft *additionally* counts `approved` on its origin job, so the fleet's kill
+metric extends from "did a human approve the draft" to "did the draft earn its
+way to active". Every promotion records `approved_by` on the skill —
+`"ladder"` or `"human"`.
 
-**9. What this deliberately does not do.** No LLM anywhere in the ladder — every
+**9. The pattern ladder is reused in shape, not in code — said plainly.**
+`patterns/lifecycle.py::evaluate_promotion` operates on `PatternCard`s with
+heuristic match counts and a tip-lift statistic; skills are scored on graded
+sessions and explicit feedback, which is why the thresholds here (3 / 2 agents /
+0.6) are lower than 10 / 15 / 25 and why the two are not literally one function.
+What is reused is the contract the guide asked for: staged rungs, evidence
+thresholds, independence, decay/expiry, a terminal parked state a human lifts,
+and shadow before state. The pattern engine itself is untouched.
+
+**10. What this deliberately does not do.** No LLM anywhere in the ladder — every
 rule is deterministic over receipts and grades (the deleted recall-ranker
-lesson). No `dormant` tier for aged actives in this round (the staleness sweep
-plus the fleet re-author job cover it; a demote-to-dormant rule is a named
-follow-up once trial has data). No provenance-based auto-activation of document
-skills (switch later). No change to the pattern engine itself. No dashboard
-write actions on the Autopilot tab (its read-only pin holds; humans act in the
-Skills tab as today).
+lesson). No automatic demotion of active skills (decision 6). No `dormant` tier
+for aged actives in this round (the staleness sweep plus the fleet re-author job
+cover it; a demote-to-dormant rule is a named follow-up once trial has data). No
+provenance-based auto-activation of document skills (switch later). No change to
+the pattern engine itself. No dashboard write actions on the Autopilot tab (its
+read-only pin holds; humans act in the Skills tab as today).
+
+## Phasing
+
+**PR1 — see it before it acts.** `trial` status end to end (API, MCP, recall,
+briefing with one-trial cap and the `[TRIAL]` label, dashboard filter/badges);
+the briefing receipt **with OWM's exclusion of `trigger="briefing"`** from its
+skill tally; the evidence reader; the ladder pass in **shadow mode only**
+(expire / demote-trial / flag-active / promote / admit as decisions, no status
+change, no enqueue); ledger key; `ladder_proposals` inbox section and `ladder`
+digest block; the stop hook's feedback sentence; settings, compose, docs. This
+is the smart cut: it ships visibility immediately and answers the only question
+that matters first — whether feedback events on skills appear at all.
+
+**PR2 — let it act.** `SKILL_LADDER_MODE=enforce` path (transitions,
+`ladder_history`, `approved_by`, supersede-on-promotion), the
+`reauthor_failed_skill` fleet job (enqueue selector + Night Shift handler with
+the failure-first prompt + ledger job), and the Skills-tab **Rewrite** button.
+Flipping to enforce on the production Keep is a human decision taken after the
+shadow ledger has shown at least a fortnight of decisions.
 
 ## Components
 
@@ -167,34 +237,39 @@ Skills tab as today).
 (`SKILL_LADDER_SCHEDULE_HOURS = 24`, registered after OWM in
 `sleep_cycle.py`'s schedule), self-gated on `SKILL_LADDER_ENABLED` (default
 `True`), SETNX-locked like its siblings, never raising. Order per run:
-**expire** (trial → draft on TTL), **demote** (trial/active → draft + enqueue
-`reauthor_failed_skill`), **promote** (trial → active; deprecate `reauthor_of`
-target with `superseded_by`), **admit** (draft → trial, capped). In shadow mode
-each step writes decisions and touches no status; in enforce mode each step
-applies the transition, writes `ladder_history`, and records the ledger
-counter. Returns `{mode, expired, demoted, promoted, admitted, skipped_duplicate,
-skipped_capped, reauthor_enqueued, errors}`; the run record is kept in Redis
+**expire** (trial → draft on TTL), **demote** (trial → draft on failure),
+**flag** (active meeting the failure bar → `ladder_rewrite_requested_at`, stays
+active), **promote** (trial → active; in PR2 also deprecate the `reauthor_of`
+target with `superseded_by`), **admit** (draft → trial, capped, exclusions per
+decision 5). In shadow mode each step writes decisions (`skills:ladder:decisions`
++ `ladder_shadow`) and touches no status and enqueues nothing; in enforce mode
+(PR2) each step applies the transition in one `set_payload` together with its
+`ladder_history` entry and records the ledger counter. Returns `{mode, expired,
+demoted, flagged, promoted, admitted, skipped_duplicate, skipped_capped,
+skipped_parked, errors}`; the run record is kept in Redis
 (`skills:ladder:last_run`) for the digest.
 
-### C. Cortex — the failed-skill re-author job
+### C. Cortex — the failed-skill re-author job (PR2)
 
-`fleet_enqueue_pass` gains a third selector: skills the ladder marked for
-rewrite (`ladder_rewrite_requested_at` set, no pending `reauthor_of` draft, no
-rejection marker) → task `title="reauthor_failed_skill"`, same dedup markers and
-caps as the stale job, `context` = the stale-job context plus
-`{"failure": {"failures", "successes", "efficacy", "last_failure_sessions",
-"last_feedback_comment", "demotion_reason"}}`. The ledger's `JOBS` gains the
-title; the live-marker TTL is the re-author 30-day one.
+`fleet_enqueue_pass` gains a third selector: skills marked for rewrite
+(`ladder_rewrite_requested_at` set — by the ladder in enforce mode or by the
+Skills-tab button — with no pending `reauthor_of` draft and no rejection marker)
+→ task `title="reauthor_failed_skill"`, same dedup markers and caps as the stale
+job, `context` = the stale-job context plus `{"failure": {"failures",
+"successes", "efficacy", "last_failure_sessions", "last_feedback_comment",
+"demotion_reason"}}`. The ledger's `JOBS` gains the title; the live-marker TTL is
+the re-author 30-day one. In shadow mode nothing is ever flagged, so nothing is
+ever enqueued.
 
-### D. Client — Night Shift
+### D. Client — Night Shift and the stop hook
 
-`nightshift.py` lists a fourth title, `reauthor_failed_skill`, handled by the
-existing re-author handler with a prompt variant that puts the failure evidence
-first ("this skill was applied in these sessions and they failed / users marked
-it not useful — rewrite so the failure cannot recur, or retire it") and passes
-`origin_job="reauthor_failed_skill"`. The stop hook's completion message gains
-one sentence: "If a recalled skill guided this work, `memory_feedback` its id
-with useful=true/false — that is what promotes or demotes it."
+PR1: the stop hook's completion message gains one sentence: "If a recalled skill
+guided this work, `memory_feedback` its id with useful=true/false — that is what
+promotes or demotes it." PR2: `nightshift.py` lists a fourth title,
+`reauthor_failed_skill`, handled by the existing re-author handler with a prompt
+variant that puts the failure evidence first ("this skill was applied in these
+sessions and they failed / users marked it not useful — rewrite so the failure
+cannot recur, or retire it") and passes `origin_job="reauthor_failed_skill"`.
 
 ### E. Autopilot surfaces and dashboard
 
@@ -211,26 +286,31 @@ with useful=true/false — that is what promotes or demotes it."
 
 ### F. Settings (config.py, compose ×4 services, .env.example, guide)
 
-`SKILL_LADDER_ENABLED=true`, `SKILL_LADDER_MODE=shadow`,
+Six operator-facing settings — the ones someone will actually turn:
+`SKILL_LADDER_ENABLED=true`, `SKILL_LADDER_MODE=shadow` (`shadow|enforce`),
 `SKILL_LADDER_SCHEDULE_HOURS=24`, `SKILL_LADDER_PROMOTE_MIN_SUCCESSES=3`,
-`SKILL_LADDER_PROMOTE_MIN_AGENTS=2`, `SKILL_LADDER_PER_AGENT_CAP=2`,
-`SKILL_LADDER_PROMOTE_MIN_EFFICACY=0.6`, `SKILL_LADDER_DEMOTE_MIN_FAILURES=3`,
-`SKILL_LADDER_DEMOTE_MAX_EFFICACY=0.4`, `SKILL_LADDER_DEMOTE_MIN_N=5`,
-`SKILL_LADDER_TRIAL_TTL_DAYS=60`, `SKILL_LADDER_DUP_THRESHOLD=0.92`,
-`SKILL_LADDER_TRIAL_CAP_PER_DOMAIN=10`, `SKILL_LADDER_ADMIT_PER_RUN=20`,
-`SKILL_LADDER_WINDOW_DAYS=30` (evidence window, matching the eval TTL).
+`SKILL_LADDER_PROMOTE_MIN_AGENTS=2`, `SKILL_LADDER_TRIAL_TTL_DAYS=60`. The
+evidence window reuses `OWM_WINDOW_DAYS` (30, matching the eval TTL). Everything
+else is a named module constant in `skills/ladder.py`, documented in the guide
+but not plumbed as an env var: `PER_AGENT_CAP=2`, `PROMOTE_MIN_EFFICACY=0.6`,
+`DEMOTE_MIN_FAILURES=3`, `DEMOTE_MAX_EFFICACY=0.4`, `DEMOTE_MIN_N=5`,
+`DUP_THRESHOLD=0.92`, `TRIAL_CAP_PER_DOMAIN=10`, `ADMIT_PER_RUN=20`. Sixteen
+knobs nobody tunes are a support surface, not a feature.
 
 ## Data flow
 
 Day: agent session → briefing injects ≤3 active + ≤1 trial skill (receipt,
-`trigger=briefing`) / `skill_recall` (receipt) → agent applies one →
-`memory_feedback(skill_id, useful)` (event) → `ctx_complete_session(task_result)`
-(grade). Night: OWM scores `skill_efficacy`; **ladder** joins receipts + feedback
-+ grade since `ladder_since` → expire / demote (+ `reauthor_failed_skill` task) /
-promote (+ supersede the rewritten original) / admit → ledger + inbox + digest.
-Later: Night Shift drains the re-author task into a new draft → admitted to
-trial → earns its way up. Humans see proposals (shadow) or history (enforce)
-and can veto with one PATCH at any point.
+`trigger=briefing`, ladder-only) / `skill_recall` (receipt, reached) → agent
+applies one → `memory_feedback(skill_id, useful)` (event) →
+`ctx_complete_session(task_result)` (grade). Night: OWM scores `skill_efficacy`
+(briefing receipts excluded); **ladder** joins receipts + feedback + grade since
+`ladder_since` → expire / demote-trial / flag-active / promote / admit. PR1
+(shadow): every decision goes to the ledger, inbox and digest and nothing
+moves. PR2 (enforce): transitions apply with `ladder_history`; a flagged or
+demoted skill becomes a `reauthor_failed_skill` task; Night Shift drains it into
+a new draft → admitted to trial → earns its way up → on promotion the original
+is superseded. Humans see proposals (shadow) or history (enforce) and can veto
+with one PATCH at any point.
 
 ## Error handling
 
