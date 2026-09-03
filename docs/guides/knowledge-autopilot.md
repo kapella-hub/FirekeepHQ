@@ -189,6 +189,8 @@ round.
 
 **Fleet block in the digest (2026-09-02).** `GET /autopilot/digest` gains `fleet: {enabled, jobs}` — per job type (`distill_session`, `reauthor_stale_skill`, `propose_contested_verdict`) a `window` and an `all_time` block read from the fleet ledger (§8): `produced / approved / rejected / approval_rate` for skill jobs, `proposed / resolved / matched / match_rate` for verdicts, all-time `pending = produced − approved − rejected` (skill jobs only — a verdict job's all-time block carries no `pending` field). A rate is `null` when its denominator is zero — never a prior — and the dashboard renders `null` as `—`. The dashboard also now lists the `low_efficacy_skills` section it had been omitting (the headline total counted rows the panel never showed); `tests/test_dashboard_autopilot.py` pins that every section the API emits has a dashboard entry.
 
+**`ladder_proposals` in the inbox, and a `ladder` block in the digest (2026-09-03, skill ladder PR1, shadow).** `GET /autopilot/inbox` gains a section listing the skill ladder's most recent shadow decisions — admit, promote, demote, flag, expire, each with its evidence — plus every draft currently parked as a probable duplicate; it counts toward `total_actionable` like every other section. `GET /autopilot/digest` gains a `ladder` block with the last run's mode, counts and per-tier (active/trial) shown/reached/rate numbers. Full mechanics, thresholds and the shadow contract: §9.
+
 ## 5. The evidence ledger read
 
 `GET /memory/{id}/evidence` (admin) composes what already flows into one
@@ -365,6 +367,139 @@ The nightly passes already *find* the work a fleet could do — `skill_staleness
 
 Out of the MVP, named so nobody infers them: the Dreaming port onto the queue, capability tags, per-job token budgets in trace, the other catalog jobs (handoff brief, doc drift, evidence pack, calibration review, merge near-duplicates), a headless-agent tier, an OS scheduled task, and writing a `still_valid`/`retire` verdict onto the skill's inbox row.
 
+## 9. The skill ladder (round 2, rung one — shadow)
+
+Measured on the production Keep just before this shipped (2026-09-02): 93 active
+skills, zero with any efficacy evidence (`skill_efficacy_n > 0`), and a 32-skill
+draft backlog with a median age of 14 days. The entry gate — every
+machine-authored skill starts as an invisible `draft` — was doing its job; nothing
+after it was. The one signal that could tell a good draft from a bad one —
+outcome-weighted skill efficacy — was unfed, because agents reach skills through
+the briefing (which emitted no receipt before this) or `skill_recall` (which never
+distinguished a session that succeeded from one that didn't).
+
+**A `trial` status is the fourth rung.** `skill_status` is now `draft` → `trial` →
+`active` → `deprecated`. A draft can never be "used" — nothing about it can accrue
+evidence — so `trial` is the only place that can happen: it is recallable
+(`GET /skills?status=recallable` = `active` ∪ `trial`, actives first), shown in the
+briefing at most once per session after the actives, and labeled `[TRIAL]`
+everywhere an agent sees it. See [`knowledge-and-skills.md`](knowledge-and-skills.md)
+for the status/receipt reference; this section is the evidence and the pass.
+
+**Three signals, three different weights.** *Shown* is a `memory_read` receipt —
+the briefing's own (`trigger="briefing"`, new) or `skill_recall`'s (`trigger=
+"skill_recall"`, existing). *Reached* is specifically the `skill_recall` receipt —
+an agent asked for the skill, rather than merely having it listed. *Applied* is a
+`memory_feedback` naming the skill id. A **success observation** is the session's
+verified grade reading `True` **and** either `useful=true` or — when no feedback
+was given for that skill in that session — a reached receipt; a **failure
+observation** is `useful=false` **paired with** a failed or abandoned grade.
+Passive exposure never counts either way — a skill sitting in a briefing while the
+session succeeded for other reasons does not promote it, and one shown in three
+failed sessions does not demote it — and `useful=false` alone, with no failed
+grade, is not a failure: a broad-triggering good skill recalled into the wrong
+situation would otherwise be punished for being findable. All of this lives in one
+module, `cortex/app/skills/ladder_evidence.py`, which reuses OWM's own
+session-grading and Bridge-status helpers rather than re-deriving them.
+
+**Independence and the thresholds.** Promotion (`trial` → `active`) needs
+`SKILL_LADDER_PROMOTE_MIN_SUCCESSES` (default `3`) success observations from at
+least `SKILL_LADDER_PROMOTE_MIN_AGENTS` (default `2`) distinct identities
+(`member_id` when the event carries one, else `agent_id`; at most 2 successes
+counted per identity, so one agent's streak cannot promote alone), zero failures
+in the window, and a Beta-shrunk efficacy `(successes + P/2)/(n + P) ≥ 0.6` with
+`P = OWM_PRIOR_N`. Demotion (`trial` → `draft` only) fires at ≥3 failures,
+efficacy < 0.4, at n ≥ 5 — the same condition on an **active** skill never demotes
+it (a human activated it; a run of thumbs-down may mean "not what I needed" as
+easily as "wrong"); it instead sets `ladder_rewrite_requested_at` and leaves the
+skill active and recallable. Expiry (`trial` → `draft`) fires when a trial's last
+activity — the later of `ladder_since` and its last-shown date — is older than
+`SKILL_LADDER_TRIAL_TTL_DAYS` (default `60`). Evidence is counted only since
+`ladder_since`, which every real status change re-stamps, so a human's earlier
+demotion is never undone by evidence from before it; a pre-existing skill's first
+window defaults to `approved_at` → `stale_reviewed_at` → `timestamp`, stamped once
+by the pass's first run.
+
+**Admission (`draft` → `trial`) is deterministic, not a model call.** A draft is
+blocked, checked in order: an empty trigger/symptoms/steps; `needs_rereview`; any
+parked field (`demoted_at`, `ladder_rewrite_requested_at`, `trial_expired_at`,
+`superseded_by`, `duplicate_of` — each means the draft belongs to a human or the
+rewrite loop, never to a fresh trial); the per-run cap (module constant
+`ADMIT_PER_RUN`, `20`, checked *before* the embed so a draft past the cap never
+pays for one); a semantic near-duplicate against every active+trial skill (cosine
+≥ `DUP_THRESHOLD`, `0.92` — an embed failure blocks the whole night's admissions
+rather than being read as "no duplicate", so a broken embedding backend can never
+wave a duplicate through); and the per-domain trial cap (`TRIAL_CAP_PER_DOMAIN`,
+`10`). Drafts are processed oldest-first (a missing timestamp sorts last, never
+first); a blocked duplicate is stamped `duplicate_of=<id>` so the inbox can list
+it. No LLM sits anywhere in this pass — every rule is a deterministic read over
+receipts and grades.
+
+**Shadow, this PR.** `SKILL_LADDER_MODE` defaults to `shadow`. The nightly pass
+(`cortex/app/skills/ladder.py::run_skill_ladder`, Celery beat every
+`SKILL_LADDER_SCHEDULE_HOURS` hours, SETNX-locked, per-skill fault-isolated, never
+raising) walks trial skills for expiry, then demotion, then promotion — first
+match wins, so one skill gets at most one decision a night — then active skills
+for the flag condition, then drafts for admission, computing every decision
+exactly as it would apply it. It writes only three things: a decision-log entry
+(`skills:ladder:decisions`, capped at 500), a `ladder_shadow` stamp on the
+affected skill, and `duplicate_of` on a blocked draft. **No `skill_status`
+changes, no fleet task is enqueued, and the fleet ledger's `fleet:ledger:ladder`
+key (counters `admitted`/`promoted`/`demoted`/`expired`/`rewrite_requested`) stays
+at zero.** Setting `SKILL_LADDER_MODE=enforce` still runs shadow this PR — it logs
+"enforce mode ships in PR2 — ran shadow" and changes nothing, so a wrong setting
+cannot flip live behavior early.
+
+**Where the decisions surface.** The inbox's `ladder_proposals` section (§4) shows
+only the latest run's decisions plus every currently-parked duplicate. The
+digest's `ladder` block (§4) reports `mode` from what the last run actually did —
+never from the live setting, which can change before the next run fires — and
+`rate: null`, not `0.0`, when nothing was shown, since a zero-denominator fraction
+is not a measurement of zero. The dashboard's Skills tab gains a Trial filter, a
+`TRIAL` badge, `Activate`/`Back to draft` buttons on a trial skill, and shows
+`approved_by` plus "ladder would: `<action>`" from `ladder_shadow`; the Autopilot
+tab renders a "Skill ladder — proposed transitions" section and the digest block,
+through the same two fetches round 1 already makes — no new fetch, no write verb,
+the read-only pin holds.
+
+**What a healthy first fortnight looks like.** `useful=true`/`false` events on
+skill ids are rare today — the stop hook's new reminder and the
+reached-receipt-with-no-feedback fallback exist because of this — so the two
+numbers worth watching are *feedback events on skills > 0* and *reach rate > 0*
+(shown-without-reach is itself a finding about the trigger text, not the steps).
+Zero promotions on day one is the expected, honest baseline given a
+≥3-successes-from-≥2-identities bar, not evidence the rules are wrong. Expect the
+admit stream to work through the draft backlog minus whatever it correctly
+recognizes as duplicates.
+
+**The solo-Keep caveat.** On a Keep with one human and several agent identities
+(this machine, a laptop, night-shift), "two distinct identities" is satisfied
+trivially, since each reports its own `agent_id`. The independence rule is real
+and does exactly what it says — it protects a *team* Keep, where two agreeing
+identities means two people actually agreed — but on a solo Keep it is satisfied
+by default rather than earned, which is worth knowing before reading a
+zero-identity promotion as a bug.
+
+**Excluded from OWM, by name.** The briefing's new `memory_read` receipt
+(`trigger="briefing"`) is excluded from Outcome-Weighted Memory's `skill_efficacy`
+tally, for both the memory and the skill branch (see the OWM bullet in
+[`memory-and-recall.md`](memory-and-recall.md)) — OWM joins every `memory_read`
+receipt to its session's grade, so counting a briefing impression there would pull
+every skill's efficacy toward the session base rate. The ladder's own evidence
+reader is the only consumer of that receipt.
+
+**PR2 (not built).** `SKILL_LADDER_MODE=enforce` applies the same decisions
+instead of only logging them, stamps a `ladder_history` entry on every transition,
+and records `approved_by="ladder"` on an automatic promotion. A demoted trial or a
+flagged active is handed to the fleet as a `reauthor_failed_skill` task (failure
+evidence first — the failing sessions, the last feedback comment, the efficacy
+numbers); Night Shift rewrites it into a new draft (`reauthor_of=<failed id>`)
+that re-enters the ladder like any other; when that rewrite is promoted, the skill
+it rewrote is deprecated with `superseded_by`. A human can request the same
+rewrite by hand from a Skills-tab **Rewrite** button. Flipping to `enforce` on a
+production Keep is a decision taken only after the shadow ledger has shown a
+fortnight of what the rules would have done.
+
 ## What unlocks round 2
 
 Auto-promotion becomes defensible when: (a) the reaper + feedback + gateway
@@ -377,3 +512,11 @@ notes); (b) promotion criteria require independence across *principals*
 than a second ladder invented. Source-backed doc skills may promote on
 provenance before statistics exist. Run any autopilot action in shadow
 (ledger-only) before letting it touch state.
+
+§9 is this round's first rung, and it honours exactly this gate: every ladder
+decision above is ledger-only, no `skill_status` ever changes in PR1, and OWM was
+taught to exclude the new briefing receipt from its own `skill_efficacy` tally
+before that receipt could distort it — the independence-across-principals
+requirement (b) is enforced today (`SKILL_LADDER_PROMOTE_MIN_AGENTS`), not
+deferred to PR2. Flipping `SKILL_LADDER_MODE` to `enforce` is the second rung,
+taken once the shadow ledger has shown enough decisions to trust.
