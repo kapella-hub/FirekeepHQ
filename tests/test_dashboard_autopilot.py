@@ -30,6 +30,7 @@ import json
 import re
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -74,10 +75,26 @@ def _render(fn: str, *args) -> str:
         "\nprocess.stdout.write(String(%s(%s)));\n"
         % (fn, ", ".join(json.dumps(a) for a in args))
     )
-    # encoding pinned: node emits UTF-8; text=True alone decodes with the
-    # locale codepage on Windows, turning '—' into mojibake mid-assertion.
-    p = subprocess.run(["node", "-e", js], capture_output=True, text=True,
-                       encoding="utf-8", timeout=30)
+    # Written to a temp file rather than passed via `node -e <js>`: the
+    # sentinel block is well past the point where `node -e` is comfortable,
+    # and on Windows the whole argv is one CreateProcess command-line capped
+    # at 32767 chars (WinError 206, "filename or extension is too long") —
+    # a limit a growing panel (this ladder block, PR2's enforce-mode block
+    # next) will keep bumping into. A file has no such ceiling.
+    # delete=False: Windows cannot reopen a file that is still held open by
+    # this process, so node needs the handle closed before it can read it.
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".js", delete=False, encoding="utf-8"
+    ) as f:
+        f.write(js)
+        path = f.name
+    try:
+        # encoding pinned: node emits UTF-8; text=True alone decodes with the
+        # locale codepage on Windows, turning '—' into mojibake mid-assertion.
+        p = subprocess.run(["node", path], capture_output=True, text=True,
+                           encoding="utf-8", timeout=30)
+    finally:
+        Path(path).unlink(missing_ok=True)
     assert p.returncode == 0, f"node failed: {p.stderr[:600]}"
     return p.stdout
 
@@ -837,3 +854,174 @@ class TestFleet:
         block = _autopilot_js()
         listed = set(re.findall(r"\{ key: '([a-z_]+)'", block))
         assert emitted <= listed, f"API sections missing from AUTOPILOT_SECTIONS: {sorted(emitted - listed)}"
+
+
+# ------------------------------------------------------- skill ladder (PR1) --
+# Shapes copied from cortex/app/autopilot/inbox.py's _ladder_decision_row and
+# ladder_proposals(), and cortex/app/autopilot/digest.py's build_ladder_block().
+# Round 1 is shadow-only: this panel renders proposed transitions, it never
+# proposes one itself, so it stays inside the same read-only invariant as the
+# rest of this file.
+
+LADDER_ITEM_PROMOTE = {
+    "id": "sk1", "title": "Rotate the Neo4j password", "action": "promote",
+    "from": "trial", "to": "active", "reason": "earned across 2 identities",
+    "at": "2026-09-02T03:00:00+00:00",
+    "evidence": {"successes": 4, "failures": 0,
+                 "identities": {"agent-a": 2, "agent-b": 2},
+                 "shown": 6, "reached": 5, "applied": 4, "efficacy": 0.82},
+}
+
+LADDER_ITEM_FLAG = {
+    "id": "sk2", "title": "Restart the worker", "action": "flag",
+    "from": "active", "to": None, "reason": "efficacy below neutral",
+    "at": "2026-09-02T03:00:00+00:00",
+    "evidence": {"successes": 1, "failures": 4,
+                 "identities": {"agent-a": 1},
+                 "shown": 5, "reached": 5, "applied": 5, "efficacy": 0.31},
+}
+
+LADDER = {
+    "mode": "shadow",
+    "last_run": {
+        "mode": "shadow", "at": "2026-09-02T03:00:00+00:00",
+        "expired": 1, "demoted": 0, "flagged": 2, "promoted": 1, "admitted": 5,
+        "skipped_duplicate": 0, "skipped_capped": 0, "skipped_parked": 0,
+        "skipped_incomplete": 0, "stamped_since": 12, "trial_count": 7,
+        "reach_by_tier": {"active": {"shown": 100, "reached": 40, "applied": 0},
+                          "trial": {"shown": 10, "reached": 0, "applied": 0}},
+        "errors": [],
+    },
+    "trial_count": 7,
+    "reach": {"active": {"shown": 100, "reached": 40, "rate": 0.4},
+             "trial": {"shown": 10, "reached": 0, "rate": None}},
+}
+
+
+class TestLadderProposalRow:
+    def test_a_promote_row_shows_action_transition_reason_and_evidence(self):
+        html = _render("apLadderRow", LADDER_ITEM_PROMOTE)
+        assert "promote" in html
+        assert "trial" in html and "active" in html
+        assert "earned across 2 identities" in html
+        assert "successes=4" in html
+        assert "identities=2" in html, (
+            "identities is an identity->count dict; the row must show a count "
+            "of keys, never the raw mapping"
+        )
+
+    def test_a_flag_row_has_no_to_status_and_never_renders_null(self):
+        """`to` is None for a flag decision — the row must show `from` alone,
+        never the literal string 'null' that a naive template would emit."""
+        html = _render("apLadderRow", LADDER_ITEM_FLAG)
+        assert "flag" in html
+        assert "active" in html
+        assert "null" not in html
+        assert "efficacy below neutral" in html
+
+    def test_hostile_reason_is_escaped(self):
+        item = json.loads(json.dumps(LADDER_ITEM_PROMOTE))
+        item["reason"] = "<script>alert(1)</script>"
+        html = _render("apLadderRow", item)
+        assert "<script>" not in html
+        assert "&lt;script&gt;" in html
+
+
+class TestLadderProposalsSection:
+    def test_the_section_lists_items_and_the_duplicates_note(self):
+        body = _inbox(items={"ladder_proposals": {
+            "count": 3, "mode": "shadow", "items": [LADDER_ITEM_PROMOTE],
+            "duplicates": [
+                {"id": "d3", "title": "Rotate the key", "duplicate_of": "sk1"},
+                {"id": "d4", "title": "Rotate the key v2", "duplicate_of": "sk1"},
+            ],
+        }})
+        html = _render("renderAutopilotInbox", body)
+        assert "Skill ladder" in html
+        assert "Rotate the Neo4j password" in html
+        assert "2 drafts parked as duplicates" in html
+
+    def test_no_duplicates_means_no_duplicates_note(self):
+        body = _inbox(items={"ladder_proposals": {
+            "count": 1, "mode": "shadow", "items": [LADDER_ITEM_PROMOTE],
+            "duplicates": [],
+        }})
+        html = _render("renderAutopilotInbox", body)
+        assert "parked as duplicates" not in html
+
+    def test_the_cta_opens_the_trial_queue(self):
+        body = _inbox(items={"ladder_proposals": {
+            "count": 1, "mode": "shadow", "items": [LADDER_ITEM_PROMOTE],
+            "duplicates": [],
+        }})
+        html = _render("renderAutopilotInbox", body)
+        assert "autopilotOpenSkills('trial')" in html
+
+    def test_an_absent_section_is_not_listed_as_clear(self):
+        """Round-1 back-compat: a server predating Task 8 sends no
+        ladder_proposals key at all."""
+        html = _render("renderAutopilotInbox", INBOX)
+        assert "Skill ladder" not in html
+
+
+class TestLadderDigestBlock:
+    def test_the_block_shows_mode_last_run_counts_stamps_trial_count_and_reach(self):
+        html = _render("renderAutopilotDigest", dict(DIGEST, ladder=LADDER))
+        assert "shadow" in html
+        assert "2026-09-02T03:00:00+00:00" in html
+        assert "12" in html          # stamped_since
+        assert "7" in html           # trial_count
+        assert "40%" in html         # active reach rate
+        assert "—" in html           # trial reach rate is null
+
+    def test_a_missing_ladder_block_renders_nothing_extra(self):
+        html_without = _render("renderAutopilotDigest", DIGEST)
+        html_with = _render("renderAutopilotDigest", dict(DIGEST, ladder=LADDER))
+        assert "Skill ladder" not in html_without
+        assert "Skill ladder" in html_with
+
+    def test_no_last_run_says_never(self):
+        ladder = {"mode": "shadow", "last_run": None, "trial_count": 0,
+                  "reach": {"active": {"shown": 0, "reached": 0, "rate": None},
+                           "trial": {"shown": 0, "reached": 0, "rate": None}}}
+        html = _render("renderAutopilotDigest", dict(DIGEST, ladder=ladder))
+        assert "never" in html
+
+    def test_a_run_warning_reaches_the_reader(self):
+        ladder = json.loads(json.dumps(LADDER))
+        ladder["last_run"]["warning"] = "enforce mode ships in PR2 — running shadow"
+        html = _render("renderAutopilotDigest", dict(DIGEST, ladder=ladder))
+        assert "enforce mode ships in PR2" in html
+
+
+# ------------------------------------------------ trial skills (Skills tab) --
+# Source-level assertions only: loadSkills()'s card renderer touches fetch and
+# the DOM, so it is not extractable into the node harness the way the
+# sentinel-block functions are (same reasoning as the rest of the Skills tab).
+
+class TestTrialSkillsTab:
+    def test_the_status_filter_has_a_trial_option(self):
+        assert 'value="trial"' in _src()
+
+    def test_demote_skill_is_defined_outside_the_sentinel_block(self):
+        src = _src()
+        assert "function demoteSkill" in src
+        block = _autopilot_js()
+        assert "function demoteSkill" not in block, (
+            "demoteSkill is a write path — it must live in the Skills-tab "
+            "code, not inside the read-only autopilot sentinel block"
+        )
+
+    def test_demote_skill_is_window_exported(self):
+        assert re.search(r"\bwindow\.demoteSkill\s*=", _src()), (
+            "demoteSkill is called from an inline onclick; unexported it "
+            "would silently do nothing at click time"
+        )
+
+    def test_demote_skill_patches_status_back_to_draft(self):
+        src = _src()
+        m = re.search(r"async function demoteSkill\([\s\S]*?\n\}", src)
+        assert m, "demoteSkill not found"
+        body = m.group(0)
+        assert "'PATCH'" in body or '"PATCH"' in body
+        assert "skill_status" in body and "draft" in body

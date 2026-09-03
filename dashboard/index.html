@@ -1433,6 +1433,7 @@ button.btn-outline:hover { border-color: var(--accent); color: var(--accent); ba
                 <select id="skillStatusFilter" onchange="loadSkills()" style="padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px">
                     <option value="active">Active</option>
                     <option value="draft">Draft Queue</option>
+                    <option value="trial">Trial</option>
                     <option value="stale">Stale (review)</option>
                     <option value="deprecated">Deprecated</option>
                 </select>
@@ -5881,6 +5882,23 @@ function apFleetTable(fleet) {
         + 'a verdict proposal counts as agreed when the human\'s resolve matched it. Read-only: approve in Skills, resolve pairs via the API.</div></div>';
 }
 
+var AP_LADDER_ACTIONS = ['expired', 'demoted', 'flagged', 'promoted', 'admitted'];
+
+function apLadderBlock(ladder) {
+    // Absent on a Keep predating Task 7/8 — render nothing, never invented zeros.
+    if (!ladder) return '';
+    var r = ladder.last_run, rc = ladder.reach || {}, a = rc.active || {}, t = rc.trial || {};
+    var counts = r ? AP_LADDER_ACTIONS.map(function(k) { return apEsc(r[k] || 0) + ' ' + k; }).join(', ') : '';
+    return '<div style="margin-top:14px;font-size:12px"><b>Skill ladder (' + apEsc(ladder.mode || 'shadow') + ')</b> — last run '
+        + (r && r.at ? apEsc(r.at) : 'never')
+        + (r ? ': ' + counts + (r.stamped_since != null ? ', stamped_since ' + apEsc(r.stamped_since) : '') : '')
+        + '. trial_count ' + apEsc(ladder.trial_count || 0)
+        + '. reach — active ' + apEsc(a.shown || 0) + '/' + apEsc(a.reached || 0) + ' (' + apRate(a.rate)
+        + '), trial ' + apEsc(t.shown || 0) + '/' + apEsc(t.reached || 0) + ' (' + apRate(t.rate) + ')'
+        + (r && r.warning ? '<div style="color:var(--amber);margin-top:4px">' + apEsc(r.warning) + '</div>' : '')
+        + '</div>';
+}
+
 function renderAutopilotDigest(d) {
     if (!d) return '<div class="card card-padded"><div class="empty-state">Digest unavailable.</div></div>';
     var counts = d.counts || {};
@@ -5893,6 +5911,7 @@ function renderAutopilotDigest(d) {
         + '<div style="font-size:15px;line-height:1.6">' + apEsc(d.summary || '') + '</div>';
     if (chips) out += '<div style="margin-top:12px">' + chips + '</div>';
     if (d.fleet) out += apFleetTable(d.fleet);
+    out += apLadderBlock(d.ladder);
 
     // The approximate flag is not decoration. Qdrant scroll pages by point ID,
     // uncorrelated with time, so a capped scan is an arbitrary SAMPLE and these
@@ -6001,6 +6020,29 @@ function apDeviationRow(it) {
         + '</div>';
 }
 
+function apLadderRow(it) {
+    // `to` is null for a "flag" decision — show `from` alone, never a literal
+    // "null". evidence's keys are action-specific, so it renders as a compact
+    // key=value list rather than a fixed template; `identities` (an
+    // identity->count map) renders as a count of keys, not the raw object.
+    var to = it.to ? (apEsc(it.from) + ' → ' + apEsc(it.to)) : apEsc(it.from);
+    var ev = it.evidence, kv = [];
+    if (ev && typeof ev === 'object') {
+        for (var k in ev) {
+            if (!Object.prototype.hasOwnProperty.call(ev, k)) continue;
+            var v = ev[k];
+            if (k === 'identities' && v && typeof v === 'object') v = Object.keys(v).length;
+            kv.push(apEsc(k) + '=' + apEsc(v));
+        }
+    }
+    return '<div style="padding:7px 0;border-top:1px solid var(--border);font-size:13px">'
+        + '<span class="badge">' + apEsc(it.action || '') + '</span> ' + apEsc(it.title || it.id || '')
+        + '<span style="color:var(--text-dim);margin-left:8px">(' + to + ')</span>'
+        + (it.reason ? '<div style="margin-top:2px;color:var(--text-dim)">' + apEsc(it.reason) + '</div>' : '')
+        + (kv.length ? '<div style="margin-top:2px;font-size:11px;color:var(--text-dim)">' + kv.join(' ') + '</div>' : '')
+        + '</div>';
+}
+
 var AUTOPILOT_SECTIONS = [
     { key: 'draft_skills', title: 'Draft skills awaiting approval',
       cta: 'Open draft queue', action: "autopilotOpenSkills('draft')",
@@ -6014,6 +6056,9 @@ var AUTOPILOT_SECTIONS = [
     { key: 'low_efficacy_skills', title: 'Skills scoring below neutral',
       cta: 'Open skills', action: "autopilotOpenSkills('active')",
       pick: function(s) { return s.items || []; }, row: apEfficacyRow },
+    { key: 'ladder_proposals', title: 'Skill ladder — proposed transitions',
+      cta: 'Open skills', action: "autopilotOpenSkills('trial')",
+      pick: function(s) { return s.items || []; }, row: apLadderRow },
     { key: 'procedure_proposals', title: 'Procedure proposals',
       cta: 'Open procedures', action: "autopilotOpen('skills')",
       pick: function(s) { return s.items || []; }, row: apProposalRow },
@@ -6077,7 +6122,15 @@ function renderAutopilotInbox(inbox) {
         if (!count) { clear.push(sec.title); return; }
         var rows = sec.pick(s);
         var body = rows.map(sec.row).join('');
-        if (count > rows.length) {
+        if (sec.key === 'ladder_proposals') {
+            // count = items+duplicates here, not a truncation count, so the
+            // generic "more not shown" below would misdescribe duplicates.
+            var nDup = (s.duplicates || []).length;
+            if (nDup) {
+                body += '<div style="padding:7px 0;border-top:1px solid var(--border);font-size:12px;color:var(--text-dim)">'
+                    + nDup + (nDup === 1 ? ' draft' : ' drafts') + ' parked as duplicates.</div>';
+            }
+        } else if (count > rows.length) {
             body += '<div style="padding:7px 0;border-top:1px solid var(--border);font-size:12px;color:var(--text-dim)">'
                 + apEsc(count - rows.length) + ' more not shown here.</div>';
         }
@@ -6427,6 +6480,10 @@ async function loadSkills() {
         grid.innerHTML = skills.map(function(s) {
             var actions = '';
             if (s.skill_status === 'draft') actions += '<button class="btn btn-sm" onclick="activateSkill(\'' + esc(s.id) + '\')" style="background:var(--accent);color:#000;padding:3px 10px;font-size:11px">Activate</button>';
+            if (s.skill_status === 'trial') {
+                actions += '<button class="btn btn-sm" onclick="activateSkill(\'' + esc(s.id) + '\')" style="background:var(--accent);color:#000;padding:3px 10px;font-size:11px">Activate</button>';
+                actions += '<button class="btn btn-sm btn-outline" onclick="demoteSkill(\'' + esc(s.id) + '\')" style="padding:3px 10px;font-size:11px">Back to draft</button>';
+            }
             if (s.skill_status === 'active') actions += '<button class="btn btn-sm btn-outline" onclick="deprecateSkill(\'' + esc(s.id) + '\')" style="padding:3px 10px;font-size:11px">Deprecate</button>';
             if (s.skill_status === 'deprecated') actions += '<button class="btn btn-sm btn-outline" onclick="activateSkill(\'' + esc(s.id) + '\')" style="padding:3px 10px;font-size:11px">Restore</button>';
             actions += '<button class="btn btn-sm btn-outline" onclick="deleteSkill(\'' + esc(s.id) + '\')" style="border-color:var(--red);color:var(--red);padding:3px 10px;font-size:11px">Delete</button>';
@@ -6436,6 +6493,7 @@ async function loadSkills() {
                         '<span style="font-weight:600;font-size:14px">' + esc(s.trigger) + '</span>' +
                         (s.domain ? '<span class="badge badge-blue" style="margin-left:8px">' + esc(s.domain) + '</span>' : '') +
                         (s.skill_status === 'draft' ? '<span class="badge badge-yellow" style="margin-left:4px">DRAFT</span>' : '') +
+                        (s.skill_status === 'trial' ? '<span class="badge badge-blue" style="margin-left:4px">TRIAL</span>' : '') +
                         (s.stale ? '<span class="badge badge-yellow" style="margin-left:4px">STALE</span>' : '') +
                     '</div>' +
                     '<div style="display:flex;gap:6px">' + actions + '</div>' +
@@ -6445,6 +6503,8 @@ async function loadSkills() {
                 (s.project ? '<div class="text-dim" style="font-size:11px">Project: ' + esc(s.project) + '</div>' : '') +
                 (s.source_doc ? '<div class="text-dim" style="font-size:11px">from document: ' + esc(s.source_doc) + '</div>' : '') +
                 (s.last_recalled_at ? '<div class="text-dim" style="font-size:11px">last recalled: ' + esc(s.last_recalled_at.slice(0, 10)) + '</div>' : '') +
+                (s.approved_by ? '<div class="text-dim" style="font-size:11px">approved by ' + esc(s.approved_by) + '</div>' : '') +
+                (s.ladder_shadow && s.ladder_shadow.action ? '<div class="text-dim" style="font-size:11px">ladder would: ' + esc(s.ladder_shadow.action) + '</div>' : '') +
                 (s.stale ? '<div style="font-size:11px;color:var(--yellow,var(--amber));margin-top:2px;display:flex;align-items:center;gap:8px">&#9888; unrecalled &mdash; review or deprecate <button class="btn btn-sm btn-outline" onclick="markSkillValid(\'' + esc(s.id) + '\')" style="padding:2px 8px;font-size:10px">Still valid</button></div>' : '') +
                 (s.needs_rereview ? '<div style="font-size:11px;color:var(--yellow,var(--amber));margin-top:2px;display:flex;align-items:center;gap:8px">&#9888; source updated &mdash; re-review <button class="btn btn-sm btn-outline" onclick="markSkillReviewed(\'' + esc(s.id) + '\')" style="padding:2px 8px;font-size:10px">Mark reviewed</button></div>' : '') +
                 '<details style="margin-top:10px">' +
@@ -6484,6 +6544,13 @@ async function activateSkill(id) {
     await fetch(CONFIG.CORTEX_API + '/skills/' + encodeURIComponent(id), { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({skill_status:'active'}) });
     loadSkills();
 }
+async function demoteSkill(id) {
+    // Skill Ladder PR1: a human sending a trial skill back to draft. Round 1
+    // ladder decisions are shadow-only (never mutate skill_status themselves),
+    // so this write path belongs to the Skills tab, not the autopilot panel.
+    await fetch(CONFIG.CORTEX_API + '/skills/' + encodeURIComponent(id), { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({skill_status:'draft'}) });
+    loadSkills();
+}
 async function markSkillReviewed(id) {
     await fetchJSON(CONFIG.CORTEX_API + '/skills/' + encodeURIComponent(id), { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({needs_rereview:false}) });
     loadSkills();
@@ -6507,6 +6574,7 @@ window.showCreateSkill = showCreateSkill;
 window.hideCreateSkill = hideCreateSkill;
 window.submitCreateSkill = submitCreateSkill;
 window.activateSkill = activateSkill;
+window.demoteSkill = demoteSkill;
 window.markSkillReviewed = markSkillReviewed;
 window.markSkillValid = markSkillValid;
 window.deprecateSkill = deprecateSkill;
