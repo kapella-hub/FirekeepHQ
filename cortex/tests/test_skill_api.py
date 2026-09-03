@@ -795,25 +795,35 @@ async def test_skill_listing_record_recall_false_emits_no_replay_event(
 
 
 @pytest.mark.asyncio
-async def test_briefing_skills_section_emits_no_replay_event(
+async def test_briefing_skills_section_emits_briefing_receipt(
     mock_vector, mock_settings, wired_replay_emitter
 ):
-    """The briefing's `skills_section` never calls `list_skills` (it calls
-    `search_skill_points` directly and never touches `record_recall` or
-    `_record_skill_usage`), so it is structurally incapable of reaching the new
-    receipt branch. Proved here by exercising the real function against a
-    replay stream wired to fakeredis and asserting the stream stays empty --
-    not scoped to any one session_id, since skills_section has no Request/
-    session context to stamp one with in the first place."""
+    """Skill ladder Task 3 (spec 2026-09-03 decision 2) superseded the prior
+    behavior this test documented: the briefing's `skills_section` now emits
+    its OWN `memory_read` receipt -- `trigger="briefing"` -- once it selects
+    skills to show, distinct from `skill_recall`'s `trigger="skill_recall"`
+    receipt above (an impression is not a reach). It still never calls
+    `list_skills`, `record_recall`, or `_record_skill_usage` -- no usage-count
+    bump happens, only the new exposure receipt."""
     from app.briefing import sections as S
 
     point = _make_mock_point()
     mock_vector._client.scroll = AsyncMock(return_value=([point], None))
 
-    sec = await S.skills_section(mock_vector, mock_settings, goal="", project=None)
+    sec = await S.skills_section(
+        mock_vector, mock_settings, goal="", project=None,
+        session_id="sess-briefing-1", agent_id="agent-a",
+    )
 
     assert sec["status"] == "ok"
-    assert await wired_replay_emitter.xlen("rp:events") == 0
+    timeline = await get_session_timeline(
+        wired_replay_emitter, "sess-briefing-1", event_type="memory_read"
+    )
+    events = timeline["events"]
+    assert len(events) == 1
+    payload = events[0]["payload"]
+    assert payload["memory_ids"] == ["abc"]
+    assert payload["trigger"] == "briefing"
 
 
 # ---------------------------------------------------------------------------

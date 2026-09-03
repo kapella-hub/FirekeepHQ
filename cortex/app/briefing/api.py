@@ -84,7 +84,14 @@ def create_briefing_router(section_timeout: float = 2.0) -> APIRouter:
             "strategy_tips": S.strategy_tips_section(st.replay_redis, goal, briefing_id, ab_group),
             "observed": S.observed_patterns_section(st.replay_redis, agent_id, goal),
             "cross_agent": S.cross_agent_section(st.replay_redis, goal, agent_id),
-            "skills": S.skills_section(st.vector_client, settings, goal, project),
+            "skills": S.skills_section(
+                st.vector_client, settings, goal, project,
+                # api.py had no X-Session-Id / X-Agent-Id reads before this task;
+                # agent_id falls back to the query param (used everywhere else in
+                # this router) rather than "unknown", since it is a real value.
+                session_id=request.headers.get("X-Session-Id"),
+                agent_id=request.headers.get("X-Agent-Id") or agent_id,
+            ),
             "vault": S.vault_section(scopes),
             "profile": S.profile_section(
                 st.vector_client, settings, identity.get("member_id"), identity["workspace_id"],

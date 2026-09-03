@@ -35,13 +35,22 @@ def _cosine(a, b):
     return dot / (na * nb)
 
 
+def _match_values(match):
+    """Normalize a Qdrant match condition (MatchValue or MatchAny) to the set
+    of values it accepts. The briefing's skills_section (Task 3) filters
+    skill_status with MatchAny(["active", "trial"]) rather than a single
+    MatchValue, so this fake tests membership instead of equality."""
+    values = getattr(match, "any", None)
+    return set(values) if values is not None else {match.value}
+
+
 def _matches(payload, flt):
     """Evaluate a Qdrant Filter's must/must_not the way _filtering_scroll does."""
     for c in (getattr(flt, "must", None) or []):
-        if (payload or {}).get(c.key) != c.match.value:
+        if (payload or {}).get(c.key) not in _match_values(c.match):
             return False
     for c in (getattr(flt, "must_not", None) or []):
-        if (payload or {}).get(c.key) == c.match.value:
+        if (payload or {}).get(c.key) in _match_values(c.match):
             return False
     return True
 

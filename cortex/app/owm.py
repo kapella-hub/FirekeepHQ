@@ -279,6 +279,8 @@ async def run_pass(replay_r, vector, settings, *,
                         if fm:
                             raw_ids.add(str(fm))
                 elif et == "memory_read":
+                    if (ev.get("payload") or {}).get("trigger") == "briefing":
+                        continue  # impression, not reach (skill ladder spec decision 2)
                     for m in ((ev.get("payload") or {}).get("memory_ids") or []):
                         if m:
                             raw_ids.add(str(m))
@@ -327,7 +329,18 @@ async def run_pass(replay_r, vector, settings, *,
         if success is None:
             continue  # exposure tally below still needs a recognized grade
 
-        events = [e for e in (all_events or []) if e.get("event_type") == "memory_read"]
+        # A briefing impression (trigger="briefing", app/briefing/sections.py)
+        # is the ladder's *shown* signal, not a reach -- exclude it here so
+        # BOTH downstream tallies (memory owm_efficacy and skill
+        # skill_efficacy, both built from mem_agents/stats below) skip it
+        # (skill ladder spec 2026-09-03 decision 2). The Phase-1 raw_ids
+        # collection above applies the same guard so an excluded id is never
+        # even offered to the identity-map translation.
+        events = [
+            e for e in (all_events or [])
+            if e.get("event_type") == "memory_read"
+            and (e.get("payload") or {}).get("trigger") != "briefing"
+        ]
         mem_agents: dict[str, str] = {}
         for ev in events:
             agent = str(ev.get("agent_id") or "unknown")

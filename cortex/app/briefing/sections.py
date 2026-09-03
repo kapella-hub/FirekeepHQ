@@ -10,6 +10,7 @@ isolation in one place (SP1b spec §5.1).
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from app.config import get_settings
@@ -23,7 +24,9 @@ from vault.store import list_secrets
 
 from datetime import datetime, timedelta, timezone
 
-from qdrant_client.models import FieldCondition, MatchValue
+from qdrant_client.models import FieldCondition, MatchAny, MatchValue
+
+logger = logging.getLogger(__name__)
 
 Section = dict[str, Any]
 
@@ -299,8 +302,10 @@ async def cross_agent_section(replay_redis, goal: str, agent_id: str) -> Section
     return {"status": status, "error": None, "data": {"patterns": dumped}}
 
 
-async def skills_section(vector, settings, goal: str, project: str | None) -> Section:
-    """Active skills for the session goal.
+async def skills_section(vector, settings, goal: str, project: str | None, *,
+                         session_id: str | None = None,
+                         agent_id: str | None = None) -> Section:
+    """Recallable (active + trial) skills for the session goal.
 
     Semantic cosine match (floored at SKILL_MATCH_SCORE_FLOOR) when a goal is present;
     an ID-ordered scroll when the goal is empty — the production-NORMAL case, since a
@@ -313,13 +318,28 @@ async def skills_section(vector, settings, goal: str, project: str | None) -> Se
     `_run_section` converts any raise or timeout into status='unavailable', which sets
     degraded=true on the whole envelope and prints '[SKILLS unavailable: ...]' into
     every session's briefing. The helper's internal fallback is what guarantees that.
+
+    Skill ladder (spec 2026-09-03 decisions 1-2): the filter is `recallable` —
+    active + trial via MatchAny, matching `GET /skills?status=recallable`
+    (app/skills/api.py) — so a trial skill gets its one shot at being SHOWN
+    before it ever earns a `skill_recall` reach. Actives are preferred (up to
+    3); at most one trial fills the remaining slot, prefixed `[TRIAL] ` in its
+    trigger so the rendered briefing marks it unproven. Once selected, the
+    section emits its OWN `memory_read` receipt with `trigger="briefing"` —
+    the ladder's *shown* signal, distinct from `skill_recall`'s *reached*
+    signal (skills/api.py) — via a lazy, best-effort import of
+    `app.main._replay_emit`: a receipt failure must never cost the briefing.
+    OWM (app/owm.py) is taught to skip `trigger="briefing"` reads for both its
+    memory and skill tallies, since an impression is not a reach.
     """
     must = [FieldCondition(key="memory_type", match=MatchValue(value="skill")),
-            FieldCondition(key="skill_status", match=MatchValue(value="active"))]
+            FieldCondition(key="skill_status", match=MatchAny(any=["active", "trial"]))]
     if project:
         must.append(FieldCondition(key="project", match=MatchValue(value=project.lower())))
     points, semantic = await search_skill_points(
-        vector, settings, must=must, query=goal, limit=3,
+        vector, settings, must=must, query=goal, limit=6,
+        # Headroom for the actives/trial split below — up to 3 actives plus 1
+        # trial can require more raw candidates than the 3 ultimately shown.
         # The briefing's own embed budget, NOT the endpoint's. `GET /skills?q=`
         # runs under no per-section cap and waits ~10s for a cold CPU embed;
         # this section is hard-capped at 2.0s and must give up sooner. Sharing
@@ -342,8 +362,34 @@ async def skills_section(vector, settings, goal: str, project: str | None) -> Se
                 and ql not in payload.get("domain", "").lower()):
             continue
         skills.append({"id": str(p.id), "trigger": trigger,
-                       "symptoms": payload.get("symptoms", "")})
+                       "symptoms": payload.get("symptoms", ""),
+                       "tier": payload.get("skill_status")})
+
+    # Actives first, then at most one trial — never more than 3 shown total.
+    actives = [s for s in skills if s["tier"] == "active"][:3]
+    trials = [s for s in skills if s["tier"] == "trial"][:1]
+    skills = (actives + trials)[:3]
+    for s in skills:
+        if s["tier"] == "trial" and not s["trigger"].startswith("[TRIAL] "):
+            s["trigger"] = "[TRIAL] " + s["trigger"]
+
     status = "ok" if skills else "empty"
+
+    # Exposure receipt (spec 2026-09-03 decision 2): the ladder's *shown*
+    # signal. trigger="briefing" so OWM can exclude it — an impression is not
+    # a reach.
+    if skills:
+        try:
+            from app.main import _replay_emit
+            await _replay_emit(
+                "memory_read", session_id=session_id or "unknown",
+                agent_id=agent_id or "unknown",
+                payload={"memory_ids": [s["id"] for s in skills],
+                         "result_count": len(skills), "trigger": "briefing"},
+            )
+        except Exception as exc:  # noqa: BLE001 — a receipt never costs the briefing
+            logger.debug("briefing skills receipt skipped: %s", exc)
+
     # `match` makes "no skills matched" distinguishable from "the matcher did
     # not run". Reporting a bare status='empty' after an embed timeout is what
     # made `GET /briefing` say "no skills" against a store of 28 with

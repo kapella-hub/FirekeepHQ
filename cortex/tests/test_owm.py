@@ -481,6 +481,28 @@ async def test_stale_scored_skills_reset_to_neutral():
 
 
 # --------------------------------------------------------------------------- #
+# Briefing receipts are an impression, not a reach (skill ladder spec         #
+# 2026-09-03 decision 2) -- OWM must ignore trigger="briefing" memory_read   #
+# events for BOTH tallies (memory owm_efficacy and skill skill_efficacy),    #
+# since both derive from the same exposure join.                             #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_briefing_receipts_are_not_skill_exposure():
+    evals = {"s1": {"task_result": "success", "task_result_source": "self_reported"}}
+    events = {"s1": [{"event_type": "memory_read",
+                      "payload": {"memory_ids": ["sk1"], "trigger": "briefing"}}]}
+    v = _vector(point_types={"sk1": {"memory_type": "skill"}})
+    out = await run_pass(_redis_with(evals, ["s1"]), v, _settings(),
+                         bridge_statuses={}, events_fn=_events_fn(events))
+    assert out["skills_scored"] == 0
+    writes = {c.kwargs["points"][0]: c.kwargs["payload"]
+              for c in v._client.set_payload.call_args_list}
+    assert "sk1" not in writes   # nothing tallied -- no write at all
+
+
+# --------------------------------------------------------------------------- #
 # memory_feedback applied signal -> SKILL tally ONLY (outcome truth PR3, D3). #
 # PR2's memory_feedback replay receipt ({memory_ids, useful, ...}) is a       #
 # direct judgment on the recalled artifact. Memories already consume it via  #

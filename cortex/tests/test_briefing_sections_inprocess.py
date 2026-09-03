@@ -236,16 +236,26 @@ def _document_draft_skill_point():
     return p
 
 
+def _match_set(match):
+    """Normalize a Qdrant match condition (MatchValue or MatchAny) to the set
+    of values it accepts, so a fake filter-evaluator can test membership
+    regardless of which the caller used."""
+    values = getattr(match, "any", None)
+    return set(values) if values is not None else {match.value}
+
+
 def _filtering_scroll(points):
     """Unlike the canned-list fakes above, this one actually evaluates the
     Qdrant `must` FieldConditions skills_section passes to scroll — needed to
-    prove the hardcoded skill_status=active filter really excludes drafts
-    rather than just asserting on a fixture we control."""
+    prove the hardcoded skill_status filter really excludes drafts rather
+    than just asserting on a fixture we control. skill_status is now a
+    MatchAny(["active", "trial"]) (Task 3), not a single MatchValue, so this
+    tests set-membership rather than equality."""
     async def _scroll(*, scroll_filter, limit, **_kwargs):
-        conditions = {c.key: c.match.value for c in (scroll_filter.must or [])}
+        conditions = {c.key: _match_set(c.match) for c in (scroll_filter.must or [])}
         matched = [
             p for p in points
-            if all((p.payload or {}).get(k) == v for k, v in conditions.items())
+            if all((p.payload or {}).get(k) in v for k, v in conditions.items())
         ]
         return matched[:limit], None
     return _scroll
@@ -266,6 +276,67 @@ async def test_skills_section_excludes_document_draft():
     ids = {s["id"] for s in sec["data"]["skills"]}
     assert "doc1" not in ids
     assert "sk1" in ids
+
+
+def _tiered_skill_point(pid: str, status: str, trigger: str) -> MagicMock:
+    p = MagicMock()
+    p.id = pid
+    p.payload = {"memory_type": "skill", "skill_status": status,
+                 "trigger": trigger, "symptoms": "sym"}
+    return p
+
+
+@pytest.mark.asyncio
+async def test_skills_section_adds_one_trial_after_actives_and_emits_receipt(monkeypatch):
+    """Ladder shown signal (Task 3): actives first, then at most one trial
+    (still <=3 total), each trial's trigger prefixed [TRIAL], and a
+    memory_read receipt fires with trigger='briefing' so OWM can tell an
+    impression apart from a reach (spec 2026-09-03 decision 2)."""
+    points = [
+        _tiered_skill_point("T1", "trial", "rotate the password"),
+        _tiered_skill_point("A1", "active", "rotate keys"),
+        _tiered_skill_point("T2", "trial", "rotate secrets"),
+        _tiered_skill_point("A2", "active", "rotate tokens"),
+    ]
+    vector = _semantic_vector(points)
+    settings = MagicMock(QDRANT_COLLECTION="firekeep_memory")
+
+    emitted = []
+
+    async def fake_emit(event_type, **kw):
+        emitted.append((event_type, kw))
+    monkeypatch.setattr("app.main._replay_emit", fake_emit, raising=False)
+
+    sec = await S.skills_section(vector, settings, goal="rotate password", project=None)
+
+    tiers = [s["tier"] for s in sec["data"]["skills"]]
+    assert tiers == ["active", "active", "trial"]          # <=3 total, one trial, last
+    assert sec["data"]["skills"][-1]["trigger"].startswith("[TRIAL] ")
+    assert emitted and emitted[0][0] == "memory_read"
+    assert emitted[0][1]["payload"]["trigger"] == "briefing"
+    assert set(emitted[0][1]["payload"]["memory_ids"]) == {"A1", "A2", "T1"}
+
+    # The must filter carries the recallable MatchAny (active + trial), and
+    # the section asks for headroom (limit=6) to make the actives/trial split
+    # possible.
+    call = vector._client.query_points.call_args
+    status_cond = next(c for c in call.kwargs["query_filter"].must
+                       if c.key == "skill_status")
+    assert set(status_cond.match.any) == {"active", "trial"}
+    assert call.kwargs["limit"] == 6
+
+
+@pytest.mark.asyncio
+async def test_skills_section_receipt_failure_never_breaks_the_section(monkeypatch):
+    vector = _semantic_vector([_skill_point()])
+    settings = MagicMock(QDRANT_COLLECTION="firekeep_memory")
+
+    async def boom(*a, **k):
+        raise RuntimeError("replay down")
+    monkeypatch.setattr("app.main._replay_emit", boom, raising=False)
+
+    sec = await S.skills_section(vector, settings, goal="x", project=None)
+    assert sec["status"] == "ok"
 
 
 # --- vault (admin-gated, D4) ----------------------------------------------
