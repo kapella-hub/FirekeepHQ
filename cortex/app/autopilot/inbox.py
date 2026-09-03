@@ -1,6 +1,9 @@
 """The exception inbox's section gatherers — one function per queue.
 
-Each function reads exactly one store and returns one section. They do NOT
+Each function returns one section. Most read exactly one store; `ladder_proposals`
+reads two (the ladder's Redis decision log plus a Qdrant scroll for the drafts it
+parked as duplicates), because a decision and the skill it was made about do not
+live in the same place. They do NOT
 guard themselves: `api.py` wraps every call so a single broken store degrades
 that section to an error marker instead of 500-ing the whole inbox (the
 `run_doctor` philosophy — a diagnostic surface that dies on its first bad
@@ -386,13 +389,17 @@ def _parse_ladder_decisions(raw_entries: list, since: str) -> list[dict[str, Any
     return items
 
 
-async def _ladder_duplicate_drafts(vector, settings) -> list[dict[str, Any]]:
+async def _ladder_duplicate_drafts(vector, settings) -> tuple[list[dict[str, Any]], bool]:
     """Draft skills the ladder pass's admission loop parked as a probable
     duplicate (`duplicate_of`, stamped in `ladder.py`'s draft loop). Not
     scoped to the latest run — the stamp persists on the draft across runs,
     so limiting this to "found tonight" would drop a duplicate parked on an
-    earlier night and never revisited."""
-    points, _ = await _scroll(vector, settings, [
+    earlier night and never revisited.
+
+    Returns `(rows, capped)` like every other section's scan: the draft scroll
+    stops at `SECTION_SCAN_LIMIT`, and a capped scan reported as a confident
+    count is the one thing this file's header rules out."""
+    points, capped = await _scroll(vector, settings, [
         FieldCondition(key="memory_type", match=MatchValue(value="skill")),
         FieldCondition(key="skill_status", match=MatchValue(value="draft")),
     ])
@@ -406,7 +413,7 @@ async def _ladder_duplicate_drafts(vector, settings) -> list[dict[str, Any]]:
                 "title": payload.get("trigger") or "",
                 "duplicate_of": dup_of,
             })
-    return duplicates[:LADDER_ITEM_CAP]
+    return duplicates[:LADDER_ITEM_CAP], capped
 
 
 async def ladder_proposals(redis_client, vector, settings) -> dict[str, Any]:
@@ -422,17 +429,9 @@ async def ladder_proposals(redis_client, vector, settings) -> dict[str, Any]:
     that is a fresh-deployment state, not an error, so it reports empty items
     and the shadow default mode rather than degrading the section.
     """
-    from app.skills.ladder import DECISIONS_KEY, LAST_RUN_KEY
+    from app.skills.ladder import DECISIONS_KEY, read_last_run
 
-    raw_last_run = await redis_client.get(LAST_RUN_KEY)
-    last_run: dict | None = None
-    if raw_last_run:
-        try:
-            parsed = json.loads(raw_last_run)
-        except (json.JSONDecodeError, TypeError):
-            parsed = None
-        if isinstance(parsed, dict):
-            last_run = parsed
+    last_run = await read_last_run(redis_client)
 
     since = last_run.get("at") if last_run else None
     mode = (last_run.get("mode") if last_run else None) or "shadow"
@@ -442,11 +441,12 @@ async def ladder_proposals(redis_client, vector, settings) -> dict[str, Any]:
         raw_entries = await redis_client.lrange(DECISIONS_KEY, 0, -1)
         items = _parse_ladder_decisions(raw_entries, since)[:LADDER_ITEM_CAP]
 
-    duplicates = await _ladder_duplicate_drafts(vector, settings)
+    duplicates, capped = await _ladder_duplicate_drafts(vector, settings)
 
     return {
         "count": len(items) + len(duplicates),
         "mode": mode,
         "items": items,
         "duplicates": duplicates,
+        "approximate": capped,
     }

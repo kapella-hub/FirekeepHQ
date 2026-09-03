@@ -595,13 +595,20 @@ class SkillPatchRequest(BaseModel):
     # Replaces the whole list when present (I3: the PATCH path is the ONLY
     # writer of step_specs — every derived number lives in Redis).
     step_specs: list[StepSpec] | None = None
-    # Skill Ladder PR1: who is blessing a change to `active`. A header-free field
-    # (not derived from the caller's identity) because PR2's ladder pass sends
-    # "ladder" from a background worker with no human session behind it; a bare
-    # PATCH from the dashboard/CLI omits it and defaults to "human" at the
-    # call site (see patch_skill), not here, so the default reflects the ACTUAL
-    # approver rather than baking "human" into every unrelated PATCH payload.
-    approved_by: Literal["human", "ladder"] | None = None
+    # Skill Ladder PR1: the human's lever for un-parking a draft the nightly
+    # pass stamped `duplicate_of=<id>`. Without it the stamp is permanent and
+    # admission-blocking (`ladder_rules.PARKED_FIELDS`) — including after the
+    # active skill it duplicated has been deleted — and the spec's "parked for
+    # a human" would leave the human with nothing to pull. A bool rather than
+    # `duplicate_of: str | None`, because Pydantic cannot tell "field omitted"
+    # from "field explicitly null" on an optional, and clearing must be an
+    # explicit request rather than a side effect of any other PATCH.
+    #
+    # `approved_by` is deliberately NOT a request field: it is server-decided.
+    # Letting a client assert "ladder" would record a human activation as an
+    # automatic one, and PR2's pass applies its transitions in-process via
+    # `set_payload`, never over HTTP, so it never needed to send one.
+    clear_duplicate_of: bool = False
 
     @field_validator("step_specs")
     @classmethod

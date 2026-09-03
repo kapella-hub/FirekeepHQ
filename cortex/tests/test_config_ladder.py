@@ -16,7 +16,7 @@ FLAGS = [
     ("SKILL_LADDER_SCHEDULE_HOURS", "24"),
     ("SKILL_LADDER_PROMOTE_MIN_SUCCESSES", "3"),
     ("SKILL_LADDER_PROMOTE_MIN_AGENTS", "2"),
-    ("SKILL_LADDER_TRIAL_TTL_DAYS", "60"),
+    ("SKILL_LADDER_TRIAL_TTL_DAYS", "30"),
 ]
 
 
@@ -27,7 +27,12 @@ def test_defaults():
     assert s.SKILL_LADDER_SCHEDULE_HOURS == 24
     assert s.SKILL_LADDER_PROMOTE_MIN_SUCCESSES == 3
     assert s.SKILL_LADDER_PROMOTE_MIN_AGENTS == 2
-    assert s.SKILL_LADDER_TRIAL_TTL_DAYS == 60
+    assert s.SKILL_LADDER_TRIAL_TTL_DAYS == 30
+    # The shipped defaults must not clamp each other: the ladder clamps the TTL
+    # to the evidence window at run time and warns when it bites, so defaults
+    # that disagree would emit that warning on every nightly run of every
+    # deployment. Bumping one without the other is the mistake this pins.
+    assert s.SKILL_LADDER_TRIAL_TTL_DAYS <= s.OWM_WINDOW_DAYS
 
 
 def test_env_override(monkeypatch):

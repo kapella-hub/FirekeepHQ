@@ -48,7 +48,12 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from app.owm import _default_events_fn, _fetch_bridge_statuses, session_success
+from app.owm import (
+    _default_events_fn,
+    _fetch_bridge_statuses,
+    compute_efficacy,
+    session_success,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -262,9 +267,13 @@ async def gather(replay_r, settings, *, since_by_skill: dict[str, datetime],
 
 def efficacy(ev: Evidence, prior_n: int) -> float:
     """Beta-shrunk success fraction over this evidence's paired outcomes:
-    (successes + prior/2) / (n + prior), n = successes + failures. 0.5 at
-    n=0 — same shrinkage `app.owm.compute_efficacy` uses, kept as a separate
-    function because ladder evidence is a distinct `Evidence` shape, not a
-    bare (successes, n) pair."""
+    (successes + prior/2) / (n + prior), n = successes + failures. 0.5 at n=0.
+
+    A thin adapter over `app.owm.compute_efficacy`, not a second copy of the
+    formula: this module's job is turning an `Evidence` into the
+    `(successes, n)` pair that function already takes. Two independent
+    implementations of one statistic is exactly how a ladder threshold and an
+    OWM threshold come to mean subtly different things.
+    """
     n = ev.successes + ev.failures
-    return (ev.successes + prior_n * 0.5) / (n + prior_n)
+    return compute_efficacy(ev.successes, n, prior_n)

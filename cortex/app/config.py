@@ -598,7 +598,7 @@ class Settings(BaseSettings):
     SKILL_LADDER_SCHEDULE_HOURS: int = 24
     SKILL_LADDER_PROMOTE_MIN_SUCCESSES: int = 3
     SKILL_LADDER_PROMOTE_MIN_AGENTS: int = 2
-    SKILL_LADDER_TRIAL_TTL_DAYS: int = 60
+    SKILL_LADDER_TRIAL_TTL_DAYS: int = 30   # clamped to OWM_WINDOW_DAYS at run time
     # Raw-cosine floor for SEMANTIC skill matching (GET /skills?q=, briefing skills
     # section). Deliberately NOT RECALL_SCORE_FLOOR (0.35, above): that was tuned for
     # prose memory bodies on mxbai-embed-large/1024-dim, while a skill embeds a terse

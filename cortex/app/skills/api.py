@@ -288,7 +288,10 @@ def create_skills_router(
                 # (spec decision 4): promotions never ride evidence from a previous life.
                 updates["ladder_since"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
                 if req.skill_status == "active":
-                    updates["approved_by"] = req.approved_by or "human"
+                    # Server-decided, never client-asserted: reaching this route
+                    # at all IS the human act. PR2's ladder writes "ladder"
+                    # in-process via set_payload and never comes through here.
+                    updates["approved_by"] = "human"
             # Promoting to active is a human blessing — stamp freshness so the
             # staleness sweep gives the newly-active skill a full window. Without
             # this, a draft that aged past SKILL_STALE_AFTER_DAYS in the review
@@ -313,6 +316,14 @@ def create_skills_router(
             updates["symptoms"] = req.symptoms
         if req.needs_rereview is not None:
             updates["needs_rereview"] = req.needs_rereview
+        if req.clear_duplicate_of:
+            # Un-parks a draft the ladder stamped as a probable duplicate.
+            # `PARKED_FIELDS` is present-AND-truthy, so writing None lifts the
+            # block while leaving the key on the payload as a record that the
+            # pass once matched it. A PATCH carrying only this is still a real
+            # change: `updates` is non-empty, so the `elif updates` set_payload
+            # branch below fires.
+            updates["duplicate_of"] = None
         if req.stale is not None:
             updates["stale"] = req.stale
             # A human clearing the flag ("Still valid") is an acknowledgment the

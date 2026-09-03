@@ -62,7 +62,7 @@ class _Settings:
         self.SKILL_LADDER_SCHEDULE_HOURS = 24
         self.SKILL_LADDER_PROMOTE_MIN_SUCCESSES = 3
         self.SKILL_LADDER_PROMOTE_MIN_AGENTS = 2
-        self.SKILL_LADDER_TRIAL_TTL_DAYS = 60
+        self.SKILL_LADDER_TRIAL_TTL_DAYS = 30
         self.OWM_PRIOR_N = 5
         self.OWM_WINDOW_DAYS = 30
         self.QDRANT_COLLECTION = "memories"
@@ -287,6 +287,56 @@ async def test_shadow_contract_five_decisions_and_no_status_writes(redis, replay
     assert persisted["trial_count"] == 3
     assert set(persisted["reach_by_tier"]) == {"active", "trial"}
     assert "at" in persisted
+    # Defaults agree with the evidence window, so nothing is clamped and the
+    # key stays off the record entirely.
+    assert "ttl_clamped_to" not in persisted
+
+
+# --------------------------------------------------------------------------- #
+# Case 1b: the TTL is bounded by the window the evidence lives in            #
+# --------------------------------------------------------------------------- #
+
+
+async def test_trial_ttl_is_clamped_to_the_evidence_window(redis, replay_r):
+    """I2: a 60-day TTL is unmeasurable against a 30-day eval retention — a
+    trial last shown 45 days ago has no surviving `shown` receipt, so it is
+    indistinguishable from one never shown. The pass clamps to
+    `OWM_WINDOW_DAYS`, says so in the run record, and expires on the clamped
+    number rather than sitting on evidence that no longer exists."""
+    trial = _skill_point("trial-old", status="trial", domain="other",
+                         ladder_since=iso(31))
+    fake = _FakeQdrant([trial])
+    vector = _FakeVector(fake)
+
+    out = await run_ladder_impl(
+        vector, replay_r, redis,
+        _settings(SKILL_LADDER_TRIAL_TTL_DAYS=60, OWM_WINDOW_DAYS=30),
+        now=NOW, events_fn=_events_fn({}), bridge_statuses={}, dup_fn=_no_dup,
+    )
+
+    assert out["ttl_clamped_to"] == 30
+    assert out["expired"] == 1
+    assert trial.payload["ladder_shadow"]["action"] == "expire"
+    decisions = [json.loads(d) for d in await redis.lrange(ladder.DECISIONS_KEY, 0, -1)]
+    assert decisions[0]["evidence"]["ttl_days"] == 30
+
+
+async def test_trial_ttl_below_the_window_is_not_clamped(redis, replay_r):
+    """A configured TTL shorter than the window is honoured as written — the
+    clamp is a ceiling, not a floor."""
+    trial = _skill_point("trial-recent", status="trial", domain="other",
+                         ladder_since=iso(12))
+    fake = _FakeQdrant([trial])
+    vector = _FakeVector(fake)
+
+    out = await run_ladder_impl(
+        vector, replay_r, redis,
+        _settings(SKILL_LADDER_TRIAL_TTL_DAYS=10, OWM_WINDOW_DAYS=30),
+        now=NOW, events_fn=_events_fn({}), bridge_statuses={}, dup_fn=_no_dup,
+    )
+
+    assert "ttl_clamped_to" not in out
+    assert out["expired"] == 1
 
 
 # --------------------------------------------------------------------------- #
@@ -481,6 +531,45 @@ async def test_evidence_gather_failure_records_error_and_continues_to_admission(
                                 events_fn=_events_fn({}), bridge_statuses={}, dup_fn=_no_dup)
     assert any(e["skill_id"] is None and e["stage"] == "evidence" for e in out["errors"])
     assert out["admitted"] == 1
+
+
+async def test_read_last_run_shapes(redis):
+    """`read_last_run` is the one decoder for this key, shared by the inbox and
+    the digest. An unreadable record is a fresh-deployment state, not an error
+    — both readers treat None that way."""
+    assert await ladder.read_last_run(redis) is None          # never run
+    await redis.set(ladder.LAST_RUN_KEY, "not json at all")
+    assert await ladder.read_last_run(redis) is None          # unparsable
+    await redis.set(ladder.LAST_RUN_KEY, json.dumps(["not", "a", "dict"]))
+    assert await ladder.read_last_run(redis) is None          # wrong type
+    await redis.set(ladder.LAST_RUN_KEY, json.dumps({"mode": "shadow"}))
+    assert await ladder.read_last_run(redis) == {"mode": "shadow"}
+
+
+async def test_run_record_errors_are_capped_and_each_message_truncated(redis, replay_r):
+    """M1: the whole run record is `json.dumps`'d into Redis and echoed
+    verbatim into `GET /autopilot/digest`. With the dup backend down, a Keep
+    at the scroll ceiling would otherwise produce one unbounded entry per
+    draft."""
+    drafts = [
+        _skill_point(f"draft-{i}", status="draft", trigger=f"t{i}", symptoms="s",
+                     steps=["a"], domain=f"d{i}", timestamp=iso(i + 1),
+                     ladder_since=iso(i + 1))
+        for i in range(120)
+    ]
+    fake = _FakeQdrant(drafts)
+    vector = _FakeVector(fake)
+
+    async def dup_fn(vector, settings, payload):
+        raise RuntimeError("x" * 500)
+
+    out = await run_ladder_impl(vector, replay_r, redis, _settings(), now=NOW,
+                                events_fn=_events_fn({}), bridge_statuses={},
+                                dup_fn=dup_fn)
+
+    assert len(out["errors"]) == 100
+    assert all(len(e["error"]) <= 200 for e in out["errors"])
+    assert out["admitted"] == 0
 
 
 # --------------------------------------------------------------------------- #

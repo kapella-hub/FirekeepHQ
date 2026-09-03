@@ -302,6 +302,46 @@ async def cross_agent_section(replay_redis, goal: str, agent_id: str) -> Section
     return {"status": status, "error": None, "data": {"patterns": dumped}}
 
 
+async def _trial_fallback(vector, settings, must: list, goal: str,
+                          embed_timeout: float, rows_fn) -> list[dict]:
+    """One extra tier-scoped lookup for a trial skill, when the main page held
+    none.
+
+    WHY IT IS NEEDED. With an empty goal — the production-NORMAL case, since a
+    standard Claude Code SessionStart supplies no goal — `search_skill_points`
+    returns an ID-ordered scroll page, so against dozens of actives the first
+    six points by ID will effectively never include a trial. Without this a
+    trial gets no `shown` receipt at all: `reach_by_tier["trial"]` stays zero
+    and every trial expires having been offered to nobody, which is precisely
+    the question the shadow fortnight exists to answer.
+
+    Same `must` as the caller's, with `skill_status` narrowed from the
+    recallable MatchAny to `trial` alone, `limit=1`. Going through
+    `search_skill_points` rather than a raw scroll keeps both paths: an
+    ID-ordered scroll when there is no goal (the one extra scroll), a
+    cache-warm `query_points` when there is.
+
+    Best-effort by design. The main lookup already fails loud on a Qdrant
+    outage; a SUPPLEMENTARY lookup must never be what turns a section holding
+    three good actives into `unavailable` for the whole envelope. The returned
+    point is re-checked for `tier == "trial"` rather than trusted from the
+    filter — cheap, and the difference between labelling a real trial and
+    stamping `[TRIAL] ` on an active.
+    """
+    trial_must = [c for c in must if getattr(c, "key", None) != "skill_status"]
+    trial_must.insert(1, FieldCondition(key="skill_status",
+                                        match=MatchValue(value="trial")))
+    try:
+        points, ranked = await search_skill_points(
+            vector, settings, must=trial_must, query=goal, limit=1,
+            embed_timeout=embed_timeout,
+        )
+    except Exception as exc:  # noqa: BLE001 — a supplement never costs the section
+        logger.debug("briefing trial fallback skipped: %s", exc)
+        return []
+    return [s for s in rows_fn(points, ranked) if s["tier"] == "trial"][:1]
+
+
 async def skills_section(vector, settings, goal: str, project: str | None, *,
                          session_id: str | None = None,
                          agent_id: str | None = None) -> Section:
@@ -322,53 +362,71 @@ async def skills_section(vector, settings, goal: str, project: str | None, *,
     Skill ladder (spec 2026-09-03 decisions 1-2): the filter is `recallable` —
     active + trial via MatchAny, matching `GET /skills?status=recallable`
     (app/skills/api.py) — so a trial skill gets its one shot at being SHOWN
-    before it ever earns a `skill_recall` reach. Actives are preferred (up to
-    3); at most one trial fills the remaining slot, prefixed `[TRIAL] ` in its
-    trigger so the rendered briefing marks it unproven. Once selected, the
-    section emits its OWN `memory_read` receipt with `trigger="briefing"` —
-    the ladder's *shown* signal, distinct from `skill_recall`'s *reached*
-    signal (skills/api.py) — via a lazy, best-effort import of
-    `app.main._replay_emit`: a receipt failure must never cost the briefing.
-    OWM (app/owm.py) is taught to skip `trigger="briefing"` reads for both its
-    memory and skill tallies, since an impression is not a reach.
+    before it ever earns a `skill_recall` reach. Up to 3 actives, plus one
+    trial in a slot of its OWN (the spec's data-flow line: "≤3 active + ≤1
+    trial"), prefixed `[TRIAL] ` in its trigger so the rendered briefing marks
+    it unproven. Once selected, the section emits its OWN `memory_read`
+    receipt with `trigger="briefing"` — the ladder's *shown* signal, distinct
+    from `skill_recall`'s *reached* signal (skills/api.py) — via a lazy,
+    best-effort import of `app.main._replay_emit`: a receipt failure must
+    never cost the briefing. OWM (app/owm.py) and the eval scorers
+    (app/evals/scorers.py) both skip `trigger="briefing"` reads, since an
+    impression is not a reach.
     """
     must = [FieldCondition(key="memory_type", match=MatchValue(value="skill")),
             FieldCondition(key="skill_status", match=MatchAny(any=["active", "trial"]))]
     if project:
         must.append(FieldCondition(key="project", match=MatchValue(value=project.lower())))
+    # The briefing's own embed budget, NOT the endpoint's. `GET /skills?q=` runs
+    # under no per-section cap and waits ~10s for a cold CPU embed; this section
+    # is hard-capped at 2.0s and must give up sooner. Sharing one number gave the
+    # endpoint a budget that disabled it.
+    embed_timeout = _float_setting(
+        settings, "SKILL_MATCH_BRIEFING_EMBED_TIMEOUT_SECONDS", 1.2
+    )
     points, semantic = await search_skill_points(
         vector, settings, must=must, query=goal, limit=6,
-        # Headroom for the actives/trial split below — up to 3 actives plus 1
-        # trial can require more raw candidates than the 3 ultimately shown.
-        # The briefing's own embed budget, NOT the endpoint's. `GET /skills?q=`
-        # runs under no per-section cap and waits ~10s for a cold CPU embed;
-        # this section is hard-capped at 2.0s and must give up sooner. Sharing
-        # one number gave the endpoint a budget that disabled it.
-        embed_timeout=_float_setting(
-            settings, "SKILL_MATCH_BRIEFING_EMBED_TIMEOUT_SECONDS", 1.2
-        ),
+        # Headroom for the actives/trial split below — 3 actives plus 1 trial
+        # can require more raw candidates than the 4 ultimately shown.
+        embed_timeout=embed_timeout,
     )
-    skills = []
     ql = (goal or "").lower()
-    for p in points:
-        payload = p.payload or {}
-        trigger = payload.get("trigger", "")
-        # Ranked-and-floored points must not be re-narrowed by substring (see
-        # search_skill_points' two-path contract); the legacy filter still guards the
-        # degraded scroll path, where it is the only thing preventing three arbitrary
-        # ID-ordered skills being presented as "relevant".
-        if (ql and not semantic
-                and ql not in trigger.lower()
-                and ql not in payload.get("domain", "").lower()):
-            continue
-        skills.append({"id": str(p.id), "trigger": trigger,
-                       "symptoms": payload.get("symptoms", ""),
-                       "tier": payload.get("skill_status")})
 
-    # Actives first, then at most one trial — never more than 3 shown total.
+    def _rows(candidates: list, ranked: bool) -> list[dict]:
+        rows = []
+        for p in candidates:
+            payload = p.payload or {}
+            trigger = payload.get("trigger", "")
+            # Ranked-and-floored points must not be re-narrowed by substring (see
+            # search_skill_points' two-path contract); the legacy filter still guards
+            # the degraded scroll path, where it is the only thing preventing three
+            # arbitrary ID-ordered skills being presented as "relevant".
+            if (ql and not ranked
+                    and ql not in trigger.lower()
+                    and ql not in payload.get("domain", "").lower()):
+                continue
+            rows.append({"id": str(p.id), "trigger": trigger,
+                         "symptoms": payload.get("symptoms", ""),
+                         "tier": payload.get("skill_status")})
+        return rows
+
+    skills = _rows(points, semantic)
+
+    # Up to 3 actives, and the trial in a slot of its own — 4 items, not 3. A
+    # trial that loses its place to a third active is never SHOWN, so it earns
+    # nothing, and the shadow fortnight measures a column of zeros for the one
+    # tier it exists to measure.
     actives = [s for s in skills if s["tier"] == "active"][:3]
     trials = [s for s in skills if s["tier"] == "trial"][:1]
-    skills = (actives + trials)[:3]
+    # Skipped when the main lookup DEGRADED with a goal present (`not semantic
+    # and goal`): the embed backend is down, so a second attempt would spend
+    # another `embed_timeout` inside a section hard-capped at 2.0s, and the
+    # substring narrowing `_rows` applies on that path would reject the result
+    # anyway. `semantic or not goal` is exactly the condition under which this
+    # section reports no degradation at all.
+    if not trials and (semantic or not goal):
+        trials = await _trial_fallback(vector, settings, must, goal, embed_timeout, _rows)
+    skills = actives + trials
     for s in skills:
         if s["tier"] == "trial" and not s["trigger"].startswith("[TRIAL] "):
             s["trigger"] = "[TRIAL] " + s["trigger"]

@@ -63,9 +63,51 @@ _SCROLL_PAGE = 200
 
 _ENFORCE_WARNING = "enforce mode ships in PR2 — ran shadow"
 
+#: Run-record `errors` bounds. With the embed backend down, every draft on a
+#: Keep at the scroll ceiling produces one entry, and the whole record is
+#: `json.dumps`'d into Redis AND echoed verbatim into `GET /autopilot/digest`.
+#: 200 chars per message is the `str(exc)[:200]` convention `autopilot/` uses.
+_MAX_ERRORS = 100
+_MAX_ERROR_CHARS = 200
+
 #: Maps a Decision's action to the run-record counter it increments. "admit"
 #: is handled separately (it has its own skip categories alongside it).
 _ACTION_TO_COUNT = {"expire": "expired", "demote": "demoted", "promote": "promoted"}
+
+
+def _record_error(errors: list, skill_id: str | None, stage: str, exc: object) -> None:
+    """Append one bounded error entry. Silently drops past `_MAX_ERRORS` — a
+    run record is a summary a human reads in the digest, not a log."""
+    if len(errors) >= _MAX_ERRORS:
+        return
+    errors.append({"skill_id": skill_id, "stage": stage,
+                   "error": str(exc)[:_MAX_ERROR_CHARS]})
+
+
+async def read_last_run(redis_client) -> dict | None:
+    """The last ladder run record, or None when the pass has never run (or its
+    record expired, or is unreadable) — a fresh-deployment state, not an error.
+
+    Lives here rather than in each reader because `app/autopilot/inbox.py` and
+    `app/autopilot/digest.py` held byte-identical copies of the same
+    get/decode/parse/type-check dance, and the module that owns the key should
+    be the one that decodes it. Bytes are handled as well as str: a client
+    without `decode_responses` is a configuration difference, not a corrupt
+    record.
+    """
+    raw = await redis_client.get(LAST_RUN_KEY)
+    if not raw:
+        return None
+    if isinstance(raw, bytes):
+        try:
+            raw = raw.decode()
+        except UnicodeDecodeError:
+            return None
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _parse_since(value: str | None) -> datetime | None:
@@ -219,7 +261,7 @@ async def _stamp_since(vector, settings, points, errors: list) -> tuple[dict[str
                 )
                 stamped += 1
             except Exception as exc:  # noqa: BLE001 — one bad stamp never stops the rest
-                errors.append({"skill_id": skill_id, "stage": "since", "error": str(exc)})
+                _record_error(errors, skill_id, "since", exc)
         since_by_skill[skill_id] = default
     return since_by_skill, stamped
 
@@ -265,6 +307,23 @@ async def _run_locked(vector, replay_r, redis_client, settings, *, now,
         "skipped_incomplete": 0,
     }
 
+    # The expiry TTL cannot exceed the window the evidence lives in. A trial's
+    # last-shown date comes only from `ladder_evidence.gather`, which scans
+    # `rp:eval_index` back `OWM_WINDOW_DAYS`, and `evals/store.py` writes each
+    # eval with a 30-day TTL — so a trial last shown 45 days ago is, to this
+    # pass, indistinguishable from one never shown at all. A longer configured
+    # TTL would report it as expired on evidence that no longer exists, which
+    # is the opposite of measurable. Clamp loudly rather than silently.
+    configured_ttl = int(settings.SKILL_LADDER_TRIAL_TTL_DAYS)
+    window_days = int(settings.OWM_WINDOW_DAYS)
+    effective_ttl = min(configured_ttl, window_days)
+    if effective_ttl < configured_ttl:
+        logger.warning(
+            "SKILL_LADDER_TRIAL_TTL_DAYS=%s exceeds the evidence window "
+            "OWM_WINDOW_DAYS=%s; expiry evaluated at %s days",
+            configured_ttl, window_days, effective_ttl,
+        )
+
     trial_points = await _scroll_status(vector, settings, "trial")
     active_points = await _scroll_status(vector, settings, "active")
     draft_points = await _scroll_status(vector, settings, "draft")
@@ -286,7 +345,7 @@ async def _run_locked(vector, replay_r, redis_client, settings, *, now,
             events_fn=events_fn, bridge_statuses=bridge_statuses, now=now,
         )
     except Exception as exc:  # noqa: BLE001 — a total gather failure never aborts the pass
-        errors.append({"skill_id": None, "stage": "evidence", "error": str(exc)})
+        _record_error(errors, None, "evidence", exc)
         evidence = {}
 
     trial_ids = {str(p.id) for p in trial_points}
@@ -310,7 +369,7 @@ async def _run_locked(vector, replay_r, redis_client, settings, *, now,
             ladder_since = since_map.get(skill_id)
             decision = decide_expire(
                 skill_id, "trial", ev.last_shown_at, ladder_since, now,
-                settings.SKILL_LADDER_TRIAL_TTL_DAYS,
+                effective_ttl,
             )
             if decision is None:
                 decision = decide_demote(skill_id, "trial", ev, settings.OWM_PRIOR_N)
@@ -324,7 +383,7 @@ async def _run_locked(vector, replay_r, redis_client, settings, *, now,
                 await _record(redis_client, vector, settings, decision, payload, now)
                 counts[_ACTION_TO_COUNT[decision.action]] += 1
         except Exception as exc:  # noqa: BLE001 — one bad trial never stops the rest
-            errors.append({"skill_id": skill_id, "stage": "trial", "error": str(exc)})
+            _record_error(errors, skill_id, "trial", exc)
 
     for p in active_points:
         skill_id = str(p.id)
@@ -337,7 +396,7 @@ async def _run_locked(vector, replay_r, redis_client, settings, *, now,
                 await _record(redis_client, vector, settings, decision, payload, now)
                 counts["flagged"] += 1
         except Exception as exc:  # noqa: BLE001 — one bad active never stops the rest
-            errors.append({"skill_id": skill_id, "stage": "active", "error": str(exc)})
+            _record_error(errors, skill_id, "active", exc)
 
     trial_domain_counts: dict[str, int] = {}
     for p in trial_points:
@@ -408,7 +467,7 @@ async def _run_locked(vector, replay_r, redis_client, settings, *, now,
                 counts["admitted"] += 1
                 trial_domain_counts[domain] = domain_trial_count + 1
         except Exception as exc:  # noqa: BLE001 — one bad draft never stops the rest
-            errors.append({"skill_id": skill_id, "stage": "admit", "error": str(exc)})
+            _record_error(errors, skill_id, "admit", exc)
 
     run_record: dict = {
         "mode": "shadow",
@@ -427,6 +486,8 @@ async def _run_locked(vector, replay_r, redis_client, settings, *, now,
         "reach_by_tier": reach_by_tier,
         "errors": errors,
     }
+    if effective_ttl < configured_ttl:
+        run_record["ttl_clamped_to"] = effective_ttl
     if settings.SKILL_LADDER_MODE == "enforce":
         run_record["warning"] = _ENFORCE_WARNING
         logger.warning(_ENFORCE_WARNING)

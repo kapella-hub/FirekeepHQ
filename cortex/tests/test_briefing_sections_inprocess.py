@@ -326,6 +326,140 @@ async def test_skills_section_adds_one_trial_after_actives_and_emits_receipt(mon
     assert call.kwargs["limit"] == 6
 
 
+def _sequenced_scroll_vector(pages):
+    """Successive `scroll` calls return successive pages.
+
+    Models the production-NORMAL no-goal path the trial fallback exists for:
+    with an empty goal `search_skill_points` never embeds, it scrolls — so the
+    main recallable page comes back ID-ordered and all-active, and the second,
+    tier-scoped scroll is what finds the trial. The canned-list fakes above
+    hand the SAME points to both calls, so the fallback could not be told
+    apart from the main lookup.
+
+    A page may be an exception instead of a list, to exercise the fallback's
+    best-effort guard.
+    """
+    v = MagicMock()
+    v._client = AsyncMock()
+    v._embed = AsyncMock(return_value=[1.0, 0.0, 0.0])
+    v._client.scroll = AsyncMock(side_effect=[
+        p if isinstance(p, BaseException) else (p, None) for p in pages
+    ])
+    return v
+
+
+async def _capture_receipt(monkeypatch) -> list:
+    emitted = []
+
+    async def fake_emit(event_type, **kw):
+        emitted.append((event_type, kw))
+    monkeypatch.setattr("app.main._replay_emit", fake_emit, raising=False)
+    return emitted
+
+
+@pytest.mark.asyncio
+async def test_skills_section_three_actives_do_not_crowd_out_the_trial(monkeypatch):
+    """I1: the trial keeps a slot of its own — 4 items, not 3. Before this a
+    third active discarded the trial, so a trial was never SHOWN, never earned
+    a receipt, and expired having been offered to nobody."""
+    points = [
+        _tiered_skill_point("A1", "active", "rotate keys"),
+        _tiered_skill_point("A2", "active", "rotate tokens"),
+        _tiered_skill_point("A3", "active", "rotate certs"),
+        _tiered_skill_point("T1", "trial", "rotate the password"),
+    ]
+    vector = _semantic_vector(points)
+    settings = MagicMock(QDRANT_COLLECTION="firekeep_memory")
+    emitted = await _capture_receipt(monkeypatch)
+
+    sec = await S.skills_section(vector, settings, goal="rotate password", project=None)
+
+    tiers = [s["tier"] for s in sec["data"]["skills"]]
+    assert tiers == ["active", "active", "active", "trial"]
+    assert sec["data"]["skills"][-1]["trigger"].startswith("[TRIAL] ")
+    # No second lookup: the main page already carried a trial.
+    assert vector._client.query_points.await_count == 1
+    assert set(emitted[0][1]["payload"]["memory_ids"]) == {"A1", "A2", "A3", "T1"}
+
+
+@pytest.mark.asyncio
+async def test_skills_section_falls_back_to_a_tier_scoped_lookup_for_a_trial(monkeypatch):
+    """The production-NORMAL no-goal path: the main page is all actives, so
+    one extra `limit=1` lookup filtered to `skill_status=trial` supplies the
+    trial the ladder needs to have SHOWN."""
+    actives = [_tiered_skill_point(f"A{i}", "active", f"active {i}") for i in (1, 2, 3)]
+    trial = _tiered_skill_point("T9", "trial", "unproven thing")
+    vector = _sequenced_scroll_vector([actives, [trial]])
+    settings = MagicMock(QDRANT_COLLECTION="firekeep_memory")
+    emitted = await _capture_receipt(monkeypatch)
+
+    sec = await S.skills_section(vector, settings, goal="", project=None)
+
+    tiers = [s["tier"] for s in sec["data"]["skills"]]
+    assert tiers == ["active", "active", "active", "trial"]
+    assert sec["data"]["skills"][-1]["id"] == "T9"
+    assert sec["data"]["skills"][-1]["trigger"].startswith("[TRIAL] ")
+    # The receipt names every id shown, the fallback's included.
+    assert set(emitted[0][1]["payload"]["memory_ids"]) == {"A1", "A2", "A3", "T9"}
+
+    # The second lookup narrows skill_status to `trial` alone (not the
+    # recallable MatchAny) and asks for exactly one point.
+    second = vector._client.scroll.call_args_list[1]
+    status_cond = next(c for c in second.kwargs["scroll_filter"].must
+                       if c.key == "skill_status")
+    assert getattr(status_cond.match, "any", None) is None
+    assert status_cond.match.value == "trial"
+    assert second.kwargs["limit"] == 1
+
+
+@pytest.mark.asyncio
+async def test_skills_section_no_trials_anywhere_shows_three_actives(monkeypatch):
+    """The fallback runs but finds nothing: three actives, and no invented id
+    in the receipt."""
+    actives = [_tiered_skill_point(f"A{i}", "active", f"active {i}") for i in (1, 2, 3)]
+    vector = _sequenced_scroll_vector([actives, []])
+    settings = MagicMock(QDRANT_COLLECTION="firekeep_memory")
+    emitted = await _capture_receipt(monkeypatch)
+
+    sec = await S.skills_section(vector, settings, goal="", project=None)
+
+    assert [s["tier"] for s in sec["data"]["skills"]] == ["active"] * 3
+    assert emitted[0][1]["payload"]["memory_ids"] == ["A1", "A2", "A3"]
+
+
+@pytest.mark.asyncio
+async def test_skills_section_trial_fallback_failure_never_breaks_the_section(monkeypatch):
+    """A supplementary lookup must not turn a section holding three good
+    actives into `unavailable` for the whole briefing envelope."""
+    actives = [_tiered_skill_point(f"A{i}", "active", f"active {i}") for i in (1, 2, 3)]
+    vector = _sequenced_scroll_vector([actives, RuntimeError("qdrant down")])
+    settings = MagicMock(QDRANT_COLLECTION="firekeep_memory")
+    await _capture_receipt(monkeypatch)
+
+    sec = await S.skills_section(vector, settings, goal="", project=None)
+
+    assert sec["status"] == "ok"
+    assert [s["tier"] for s in sec["data"]["skills"]] == ["active"] * 3
+
+
+@pytest.mark.asyncio
+async def test_skills_section_fallback_never_labels_an_active_as_a_trial(monkeypatch):
+    """The fallback re-checks the tier of what came back rather than trusting
+    the filter — the difference between showing a real trial and stamping
+    `[TRIAL] ` on an active."""
+    actives = [_tiered_skill_point("A1", "active", "active one")]
+    vector = _sequenced_scroll_vector(
+        [actives, [_tiered_skill_point("A2", "active", "active two")]]
+    )
+    settings = MagicMock(QDRANT_COLLECTION="firekeep_memory")
+    await _capture_receipt(monkeypatch)
+
+    sec = await S.skills_section(vector, settings, goal="", project=None)
+
+    assert [s["tier"] for s in sec["data"]["skills"]] == ["active"]
+    assert not sec["data"]["skills"][0]["trigger"].startswith("[TRIAL] ")
+
+
 @pytest.mark.asyncio
 async def test_skills_section_receipt_failure_never_breaks_the_section(monkeypatch):
     vector = _semantic_vector([_skill_point()])

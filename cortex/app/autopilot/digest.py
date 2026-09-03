@@ -251,17 +251,9 @@ async def build_ladder_block(redis_client) -> dict[str, Any]:
     `app/skills/ladder.py`'s nightly pass, and nothing here touches Qdrant.
     `mode` reports what the last run actually did, never `settings` — a
     setting can change before the next run executes it."""
-    from app.skills.ladder import LAST_RUN_KEY
+    from app.skills.ladder import read_last_run
 
-    raw = await redis_client.get(LAST_RUN_KEY)
-    last_run: dict | None = None
-    if raw:
-        try:
-            parsed = json.loads(raw)
-        except (json.JSONDecodeError, TypeError):
-            parsed = None
-        if isinstance(parsed, dict):
-            last_run = parsed
+    last_run = await read_last_run(redis_client)
 
     return {
         "mode": (last_run.get("mode") if last_run else None) or "shadow",

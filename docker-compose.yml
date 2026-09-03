@@ -449,7 +449,7 @@ services:
       SKILL_LADDER_SCHEDULE_HOURS: ${SKILL_LADDER_SCHEDULE_HOURS:-24}
       SKILL_LADDER_PROMOTE_MIN_SUCCESSES: ${SKILL_LADDER_PROMOTE_MIN_SUCCESSES:-3}
       SKILL_LADDER_PROMOTE_MIN_AGENTS: ${SKILL_LADDER_PROMOTE_MIN_AGENTS:-2}
-      SKILL_LADDER_TRIAL_TTL_DAYS: ${SKILL_LADDER_TRIAL_TTL_DAYS:-60}
+      SKILL_LADDER_TRIAL_TTL_DAYS: ${SKILL_LADDER_TRIAL_TTL_DAYS:-30}
       # Task 5 confused-deputy pin: env_file imports the WHOLE .env, so
       # cortex-api would otherwise inherit the eval:grade-carrying bridge key.
       # Mirrors the FIREKEEP_API_KEY pin on cortex-mcp below.
@@ -565,7 +565,7 @@ services:
       SKILL_LADDER_SCHEDULE_HOURS: ${SKILL_LADDER_SCHEDULE_HOURS:-24}
       SKILL_LADDER_PROMOTE_MIN_SUCCESSES: ${SKILL_LADDER_PROMOTE_MIN_SUCCESSES:-3}
       SKILL_LADDER_PROMOTE_MIN_AGENTS: ${SKILL_LADDER_PROMOTE_MIN_AGENTS:-2}
-      SKILL_LADDER_TRIAL_TTL_DAYS: ${SKILL_LADDER_TRIAL_TTL_DAYS:-60}
+      SKILL_LADDER_TRIAL_TTL_DAYS: ${SKILL_LADDER_TRIAL_TTL_DAYS:-30}
       # Task 5 confused-deputy pin: env_file imports the WHOLE .env. cortex-mcp
       # already pins FIREKEEP_API_KEY empty above for the same reason; this is
       # the eval:grade-carrying bridge key, not the caller-forwarding one.
@@ -723,7 +723,7 @@ services:
       SKILL_LADDER_SCHEDULE_HOURS: ${SKILL_LADDER_SCHEDULE_HOURS:-24}
       SKILL_LADDER_PROMOTE_MIN_SUCCESSES: ${SKILL_LADDER_PROMOTE_MIN_SUCCESSES:-3}
       SKILL_LADDER_PROMOTE_MIN_AGENTS: ${SKILL_LADDER_PROMOTE_MIN_AGENTS:-2}
-      SKILL_LADDER_TRIAL_TTL_DAYS: ${SKILL_LADDER_TRIAL_TTL_DAYS:-60}
+      SKILL_LADDER_TRIAL_TTL_DAYS: ${SKILL_LADDER_TRIAL_TTL_DAYS:-30}
       # Task 5 confused-deputy pin: env_file imports the WHOLE .env, so
       # cortex-worker would otherwise inherit the eval:grade-carrying bridge key.
       # Mirrors the FIREKEEP_API_KEY pin on cortex-mcp above.
@@ -840,7 +840,7 @@ services:
       SKILL_LADDER_SCHEDULE_HOURS: ${SKILL_LADDER_SCHEDULE_HOURS:-24}
       SKILL_LADDER_PROMOTE_MIN_SUCCESSES: ${SKILL_LADDER_PROMOTE_MIN_SUCCESSES:-3}
       SKILL_LADDER_PROMOTE_MIN_AGENTS: ${SKILL_LADDER_PROMOTE_MIN_AGENTS:-2}
-      SKILL_LADDER_TRIAL_TTL_DAYS: ${SKILL_LADDER_TRIAL_TTL_DAYS:-60}
+      SKILL_LADDER_TRIAL_TTL_DAYS: ${SKILL_LADDER_TRIAL_TTL_DAYS:-30}
       # Task 5 confused-deputy pin: env_file imports the WHOLE .env, so
       # cortex-beat would otherwise inherit the eval:grade-carrying bridge key.
       # Mirrors the FIREKEEP_API_KEY pin on cortex-mcp above.

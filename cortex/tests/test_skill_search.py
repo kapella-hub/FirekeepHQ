@@ -367,8 +367,16 @@ async def test_briefing_matches_semantically(vector, settings):
     )
 
     assert [s["id"] for s in sec["data"]["skills"]] == ["s1"]
-    # Positive proof the semantic branch ran, not the scroll fallback.
-    vector._embed.assert_awaited_once_with("the vector DB keeps dropping writes")
+    # Positive proof the semantic branch ran, not the scroll fallback. Two
+    # awaits, not one: the main recallable lookup found no trial, so the
+    # tier-scoped trial fallback ran too. It embeds the SAME goal, which
+    # `vector._embed` caches by content hash, so the second is a cache hit
+    # rather than a second round trip — asserting the query text is what
+    # matters, and that no other string is ever embedded here.
+    assert vector._embed.await_count == 2
+    assert {call.args[0] for call in vector._embed.await_args_list} == {
+        "the vector DB keeps dropping writes"
+    }
 
 
 @pytest.mark.asyncio
@@ -392,3 +400,8 @@ async def test_briefing_never_unavailable_on_embed_failure(vector, settings):
     # 28 skills present and degraded=false, and why nobody noticed for weeks.
     assert sec["error"] == "skill match degraded to scroll"
     assert sec["data"]["match"] == "degraded-scroll"
+    # And the trial fallback does NOT run here. With the backend down a second
+    # attempt would spend another embed timeout inside a section capped at
+    # 2.0s, and the degraded path's substring narrowing would reject whatever
+    # came back anyway.
+    assert vector._embed.await_count == 1

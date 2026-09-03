@@ -41,6 +41,7 @@ from httpx import ASGITransport, AsyncClient
 
 from app.autopilot.api import create_autopilot_router
 from app.autopilot import digest as digest_mod
+from app.autopilot import inbox as inbox_mod
 from app.procedures import store as proc_store
 from app.skills.ladder import DECISIONS_KEY, LAST_RUN_KEY
 from auth import keys
@@ -655,8 +656,29 @@ async def test_ladder_proposals_missing_last_run_is_not_an_error(mk, stores):
 
     assert body["items"]["ladder_proposals"] == {
         "count": 0, "mode": "shadow", "items": [], "duplicates": [],
+        "approximate": False,
     }
     assert "degraded" not in body
+
+
+@pytest.mark.asyncio
+async def test_ladder_proposals_reports_a_capped_draft_scan_as_approximate(
+        mk, stores, monkeypatch):
+    """M2: every sibling section reports `approximate` when its scan came back
+    full. This one silently under-reported — the draft scroll stops at
+    SECTION_SCAN_LIMIT, so a duplicate parked beyond it is simply invisible."""
+    redis_client, replay_redis = stores
+    monkeypatch.setattr(inbox_mod, "SECTION_SCAN_LIMIT", 3)
+    qdrant = _FakeQdrant([
+        _Point(f"d{i}", {"memory_type": "skill", "skill_status": "draft",
+                         "trigger": f"t{i}", "duplicate_of": "other"})
+        for i in range(5)
+    ])
+    async with mk(_FakeVector(qdrant), redis_client, replay_redis) as c:
+        section = (await c.get("/autopilot/inbox")).json()["items"]["ladder_proposals"]
+
+    assert section["approximate"] is True
+    assert len(section["duplicates"]) == 3
 
 
 @pytest.mark.asyncio

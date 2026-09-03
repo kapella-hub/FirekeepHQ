@@ -5,6 +5,7 @@ import pytest_asyncio
 from unittest.mock import AsyncMock, MagicMock
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from qdrant_client.models import MatchAny as _MatchAny
 from app.models import SkillResponse
 from app.skills.api import create_skills_router
 from replay.config import ReplaySettings
@@ -967,7 +968,6 @@ async def test_deleting_an_active_fleet_skill_is_not_a_rejection(mock_vector, mo
 
 
 # --- Skill ladder: trial status, recallable alias, ladder_since ---------------
-from qdrant_client.models import MatchAny as _MatchAny
 
 
 def _scroll_filter_must(mock_vector):
@@ -1018,6 +1018,54 @@ def test_patch_status_change_stamps_ladder_since_and_approved_by(mock_vector, mo
     client.patch("/skills/d1", json={"skill_status": "active"})
     written = mock_vector._client.set_payload.call_args.kwargs["payload"]
     assert written["approved_by"] == "human" and written["ladder_since"] and written["approved_at"]
+
+
+def test_patch_clear_duplicate_of_un_parks_a_stamped_draft(mock_vector, mock_settings):
+    """I3: `duplicate_of` is admission-blocking and permanent without this —
+    including after the active skill it duplicated has been deleted. A PATCH
+    carrying nothing but the flag is still a real change and must be written."""
+    draft = _make_mock_point("d1", status="draft")
+    draft.payload["duplicate_of"] = "other-skill"
+    mock_vector._client.retrieve = AsyncMock(return_value=[draft])
+    client = TestClient(_make_app(mock_vector, mock_settings))
+
+    resp = client.patch("/skills/d1", json={"clear_duplicate_of": True})
+
+    assert resp.status_code == 200, resp.text
+    written = mock_vector._client.set_payload.call_args.kwargs["payload"]
+    assert written == {"duplicate_of": None}
+    # The re-fetch reads the same point the fake mutation applies to.
+    draft.payload.update(written)
+    assert client.get("/skills/d1").json()["duplicate_of"] is None
+
+
+def test_patch_without_the_flag_leaves_duplicate_of_alone(mock_vector, mock_settings):
+    """Clearing is explicit: no other PATCH un-parks a draft as a side effect."""
+    draft = _make_mock_point("d1", status="draft")
+    draft.payload["duplicate_of"] = "other-skill"
+    mock_vector._client.retrieve = AsyncMock(return_value=[draft])
+    client = TestClient(_make_app(mock_vector, mock_settings))
+
+    client.patch("/skills/d1", json={"needs_rereview": True})
+
+    written = mock_vector._client.set_payload.call_args.kwargs["payload"]
+    assert "duplicate_of" not in written
+
+
+def test_patch_cannot_assert_approved_by(mock_vector, mock_settings):
+    """M3: `approved_by` is server-decided. A client asserting "ladder" would
+    record a human activation as an automatic one; PR2's pass writes the field
+    in-process and never comes through this route."""
+    draft = _make_mock_point("d1", status="draft")
+    mock_vector._client.retrieve = AsyncMock(return_value=[draft])
+    client = TestClient(_make_app(mock_vector, mock_settings))
+
+    resp = client.patch("/skills/d1",
+                        json={"skill_status": "active", "approved_by": "ladder"})
+
+    assert resp.status_code == 200, resp.text
+    written = mock_vector._client.set_payload.call_args.kwargs["payload"]
+    assert written["approved_by"] == "human"
 
 
 def test_patch_same_status_does_not_restamp_ladder_since(mock_vector, mock_settings):
