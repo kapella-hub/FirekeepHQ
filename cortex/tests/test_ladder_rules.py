@@ -73,6 +73,11 @@ def test_expire_old_never_shown_trial_expires():
     assert d.from_status == "trial"
     assert d.to_status == "draft"
     assert d.reason == "trial_ttl"
+    assert d.evidence == {
+        "ladder_since": ladder_since,
+        "last_shown_at": None,
+        "ttl_days": 60,
+    }
 
 
 def test_expire_recently_shown_old_trial_does_not_expire():
@@ -88,6 +93,11 @@ def test_expire_old_shown_then_stale_expires():
     d = decide_expire("s1", "trial", last_shown_at, ladder_since, NOW, ttl_days=60)
     assert d is not None
     assert d.reason == "trial_ttl"
+    assert d.evidence == {
+        "ladder_since": ladder_since,
+        "last_shown_at": last_shown_at,
+        "ttl_days": 60,
+    }
 
 
 def test_expire_active_never_expires():
@@ -105,12 +115,19 @@ def test_expire_exactly_at_ttl_boundary_expires():
     ladder_since = (NOW - timedelta(days=60)).isoformat()
     d = decide_expire("s1", "trial", None, ladder_since, NOW, ttl_days=60)
     assert d is not None
+    assert d.evidence == {
+        "ladder_since": ladder_since,
+        "last_shown_at": None,
+        "ttl_days": 60,
+    }
 
 
 def test_expire_naive_ladder_since_assumed_utc():
     ladder_since = (NOW - timedelta(days=61)).replace(tzinfo=None).isoformat()
     d = decide_expire("s1", "trial", None, ladder_since, NOW, ttl_days=60)
     assert d is not None
+    assert d.evidence["ladder_since"] == ladder_since
+    assert d.evidence["ttl_days"] == 60
 
 
 # --------------------------------------------------------------------------- #

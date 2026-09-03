@@ -95,7 +95,11 @@ def decide_expire(skill_id: str, status: str, last_shown_at: str | None,
         from_status="trial",
         to_status="draft",
         reason="trial_ttl",
-        evidence={},
+        evidence={
+            "ladder_since": ladder_since,
+            "last_shown_at": last_shown_at,
+            "ttl_days": ttl_days,
+        },
     )
 
 
