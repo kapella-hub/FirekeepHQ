@@ -185,6 +185,20 @@ cd client && python -m pytest tests/test_e2e_bootstrap.py -m e2e -q
 ```
 
 
+- **1.6.1** — The stop hook now asks the agent, at the end of a turn, to call
+  `memory_feedback` with the id of any recalled skill that guided the work
+  (`useful=true/false`). That thumb is the *applied* signal the server-side skill
+  ladder promotes and demotes on (shadow mode; `docs/guides/knowledge-autopilot.md`
+  §9) — until a kit carries this release, no installed machine emits it and the
+  ladder's fortnight of shadow data measures only briefing impressions and
+  `skill_recall` reaches. No other client change since 1.6.0.
+- **1.6.0** — Fleet-as-GPU: Night Shift becomes the drain for the fleet job
+  catalog (`distill_session`, `reauthor_stale_skill`, `propose_contested_verdict`)
+  that the Keep's nightly pass posts through relay tasks; `session_start` spawns
+  `firekeep night-shift` in the background when a local model port answers
+  (`FIREKEEP_NO_AUTO_NIGHTSHIFT=1` to stop), and every output is a draft skill or a
+  verdict *proposal* behind human review — the Autopilot tab shows the per-job
+  approval ledger. Also fixed the stdio-capture tests that anyio 4.15 broke.
 - **0.1.36** — Single-product conversion: the Solo/Team split and the signed
   licence-key system are removed — the BUSL-1.1 LICENSE is the only boundary
   (legal terms, no technical enforcement). On the client that removes the
