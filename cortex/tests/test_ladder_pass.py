@@ -10,10 +10,11 @@ covered by their own suites) and this orchestrator.
 
 The Qdrant double is deliberately dumb — filter-matching scroll + a
 `set_payload` that mutates the underlying point in place, mirroring
-`test_autopilot_api.py`'s `_FakeQdrant`. `dup_fn` is injected in every test
-except the two that specifically exercise the real duplicate-check helper
-(embed-unavailable path only — a successful semantic hit is already covered
-by `ladder_rules`' own suite).
+`test_autopilot_api.py`'s `_FakeQdrant`. `dup_fn` is injected in most tests;
+a few specifically exercise the REAL default duplicate-check helper
+(`_default_dup_fn`) against a fake `query_points` — an empty active/trial set
+(the fresh-Keep bootstrap case, fix round 1), a real 0.95 hit, and an embed
+failure.
 """
 from __future__ import annotations
 
@@ -111,16 +112,28 @@ def _matches(payload: dict, scroll_filter) -> bool:
     return True
 
 
+class _ScoredPoint:
+    def __init__(self, pid, score):
+        self.id = pid
+        self.score = score
+
+
+class _FakeQueryResponse:
+    def __init__(self, points):
+        self.points = list(points)
+
+
 class _FakeQdrant:
     """Filter-matching scroll + payload-mutating set_payload — enough to pin
-    what this module actually issues. `query_points` deliberately raises: no
-    test here exercises a successful semantic duplicate hit (that belongs to
-    `ladder_rules`' own suite), only the embed-unavailable degrade path, which
-    never reaches `query_points`."""
+    what this module actually issues. `query_points` returns
+    `query_points_result` (default: empty — the fresh-Keep bootstrap case),
+    mirroring the real Qdrant response shape (a `.points` list of scored
+    points)."""
 
     def __init__(self, points=None):
         self.points = list(points or [])
         self.set_payload_calls: list[dict] = []
+        self.query_points_result: list = []
 
     async def scroll(self, collection_name, scroll_filter=None, limit=200,
                      offset=None, with_payload=True, with_vectors=False):
@@ -138,7 +151,7 @@ class _FakeQdrant:
                     p.payload.update(payload)
 
     async def query_points(self, **kwargs):
-        raise AssertionError("query_points must not be called in these tests")
+        return _FakeQueryResponse(self.query_points_result)
 
 
 class _FakeVector:
@@ -215,8 +228,9 @@ async def test_shadow_contract_five_decisions_and_no_status_writes(redis, replay
                                 events_fn=_events_fn(events), bridge_statuses={},
                                 dup_fn=_no_dup)
 
+    _ALLOWED_KEYS = {"ladder_since", "ladder_shadow", "duplicate_of"}
     for call in fake.set_payload_calls:
-        assert "skill_status" not in call["payload"]
+        assert set(call["payload"]) <= _ALLOWED_KEYS
 
     decisions_raw = await redis.lrange(ladder.DECISIONS_KEY, 0, -1)
     decisions = [json.loads(d) for d in decisions_raw]
@@ -247,6 +261,20 @@ async def test_shadow_contract_five_decisions_and_no_status_writes(redis, replay
 
     assert await redis.exists("fleet:ledger:ladder") == 0
 
+    # The record Task 8's autopilot surface reads is a DIFFERENT object than
+    # the one returned here — assert it directly rather than trusting they
+    # stay in sync.
+    persisted = json.loads(await redis.get(ladder.LAST_RUN_KEY))
+    assert persisted["mode"] == "shadow"
+    assert persisted["expired"] == 1
+    assert persisted["demoted"] == 1
+    assert persisted["flagged"] == 1
+    assert persisted["promoted"] == 1
+    assert persisted["admitted"] == 1
+    assert persisted["trial_count"] == 3
+    assert set(persisted["reach_by_tier"]) == {"active", "trial"}
+    assert "at" in persisted
+
 
 # --------------------------------------------------------------------------- #
 # Case 2: ladder_since stamped once                                          #
@@ -263,10 +291,14 @@ async def test_ladder_since_stamped_once(redis, replay_r):
                                  events_fn=_events_fn({}), bridge_statuses={})
     assert out1["stamped_since"] == 1
     assert trial.payload["ladder_since"] == iso(90)
+    assert any("ladder_since" in call["payload"] for call in fake.set_payload_calls)
 
+    calls_before_second_run = len(fake.set_payload_calls)
     out2 = await run_ladder_impl(vector, replay_r, redis, settings, now=NOW,
                                  events_fn=_events_fn({}), bridge_statuses={})
     assert out2["stamped_since"] == 0
+    new_calls = fake.set_payload_calls[calls_before_second_run:]
+    assert all("ladder_since" not in call["payload"] for call in new_calls)
 
 
 # --------------------------------------------------------------------------- #
@@ -391,6 +423,10 @@ async def test_enforce_mode_still_runs_shadow(redis, replay_r):
     assert out["warning"] == "enforce mode ships in PR2 — ran shadow"
     assert out["admitted"] == 1
 
+    persisted = json.loads(await redis.get(ladder.LAST_RUN_KEY))
+    assert persisted["mode"] == "shadow"
+    assert persisted["warning"] == "enforce mode ships in PR2 — ran shadow"
+
 
 # --------------------------------------------------------------------------- #
 # Case 9: fault isolation                                                    #
@@ -451,3 +487,40 @@ async def test_dup_check_unavailable_blocks_admission_and_records_error(redis, r
     assert out["admitted"] == 0
     assert any(e["skill_id"] == "draft-1" and e["stage"] == "admit"
                and e["error"] == "dup_check_unavailable" for e in out["errors"])
+
+
+# --------------------------------------------------------------------------- #
+# Fix round 1, Important #1: the real _default_dup_fn must never treat "no    #
+# active/trial skills to compare against" as "the duplicate check is broken" #
+# --------------------------------------------------------------------------- #
+
+
+async def test_default_dup_fn_admits_when_no_active_or_trial_skills_exist(redis, replay_r):
+    """The ordinary bootstrap state of a fresh Keep: no active/trial skills
+    exist yet, so a genuinely clean draft's semantic search legitimately
+    finds nothing. That must admit, not deadlock as 'unavailable'."""
+    draft = _skill_point("draft-1", status="draft", trigger="t", symptoms="s",
+                         steps=["a"], domain="d", timestamp=iso(1), ladder_since=iso(1))
+    fake = _FakeQdrant([draft])
+    # query_points_result defaults to [] — no active/trial skill to match.
+    vector = _FakeVector(fake)
+
+    out = await run_ladder_impl(vector, replay_r, redis, _settings(), now=NOW,
+                                events_fn=_events_fn({}), bridge_statuses={})
+    assert out["admitted"] == 1
+    assert out["errors"] == []
+    assert draft.payload["ladder_shadow"]["action"] == "admit"
+
+
+async def test_default_dup_fn_detects_real_duplicate_via_query_points(redis, replay_r):
+    draft = _skill_point("draft-1", status="draft", trigger="t", symptoms="s",
+                         steps=["a"], domain="d", timestamp=iso(1), ladder_since=iso(1))
+    fake = _FakeQdrant([draft])
+    fake.query_points_result = [_ScoredPoint("active-1", 0.95)]
+    vector = _FakeVector(fake)
+
+    out = await run_ladder_impl(vector, replay_r, redis, _settings(), now=NOW,
+                                events_fn=_events_fn({}), bridge_statuses={})
+    assert out["admitted"] == 0
+    assert out["skipped_duplicate"] == 1
+    assert draft.payload["duplicate_of"] == "active-1"

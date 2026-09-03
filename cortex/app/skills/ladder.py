@@ -114,22 +114,49 @@ async def _scroll_status(vector, settings, status: str) -> list:
 
 
 async def _default_dup_fn(vector, settings, payload: dict) -> tuple[str, float] | None:
-    """Semantic duplicate check against active+trial skills, reusing the same
-    matcher `GET /skills?q=` uses. Raises `_DupCheckUnavailable` when the embed
-    degraded to a plain scroll (`semantic=False`) — the caller must never treat
-    that as "no duplicate found"."""
+    """Semantic duplicate check against active+trial skills.
+
+    Fix round 1 (controller ruling 2's premise was wrong): this does NOT go
+    through `search_skill_points`, because that helper's `semantic=False`
+    covers THREE distinct paths — the embed failed, nothing cleared
+    `SKILL_MATCH_SCORE_FLOOR`, or the filter matched zero points — and the
+    third is the ordinary state of a fresh Keep with no active/trial skills
+    yet. Keying "unavailable" off that flag deadlocked admission forever:
+    with nothing to compare against, `query_points` legitimately returns
+    nothing, which is "no duplicate", not "the check is broken".
+
+    So this embeds directly with the same primitive `search_skill_points`
+    uses (`_embed_with_cache_warm`) and treats ONLY an embed exception as
+    "unavailable" (`_DupCheckUnavailable`). A successful embed always yields a
+    real answer — `None` for zero hits, a real score otherwise — with no score
+    floor: DUP_THRESHOLD (0.92) in `ladder_rules.admit_block_reason` is the
+    only cutoff that matters here.
+    """
     from app.skills.api import _skill_embed_text
-    from app.skills.search import search_skill_points
+    from app.skills.search import DEFAULT_EMBED_TIMEOUT, _embed_with_cache_warm, _float_setting
+
+    timeout = _float_setting(settings, "SKILL_MATCH_EMBED_TIMEOUT_SECONDS", DEFAULT_EMBED_TIMEOUT)
+    try:
+        vec = await _embed_with_cache_warm(vector, _skill_embed_text(payload), timeout)
+    except Exception as exc:  # noqa: BLE001 — the ONLY "unavailable" case is a broken embed
+        raise _DupCheckUnavailable("dup_check_unavailable") from exc
 
     must = [
         FieldCondition(key="memory_type", match=MatchValue(value="skill")),
         FieldCondition(key="skill_status", match=MatchAny(any=["active", "trial"])),
     ]
-    points, semantic = await search_skill_points(
-        vector, settings, must=must, query=_skill_embed_text(payload), limit=1,
+    # NOT wrapped: a genuine Qdrant failure here must propagate and be caught
+    # by the admission loop's own per-skill try/except (stage="admit"), same
+    # as every other draft-processing failure — it is not an "unavailable
+    # duplicate check", it is a storage failure.
+    results = await vector._client.query_points(
+        collection_name=settings.QDRANT_COLLECTION,
+        query=vec,
+        query_filter=Filter(must=must),
+        limit=1,
+        with_payload=False,
     )
-    if not semantic:
-        raise _DupCheckUnavailable("dup_check_unavailable")
+    points = list(results.points)
     if not points:
         return None
     top = points[0]
@@ -167,12 +194,12 @@ async def _record(redis_client, vector, settings, decision: Decision, payload: d
     )
 
 
-async def _stamp_since(vector, settings, points, errors: list) -> dict[str, str | None]:
+async def _stamp_since(vector, settings, points, errors: list) -> tuple[dict[str, str | None], int]:
     """For every point lacking `ladder_since`, stamp `default_ladder_since`
-    where it resolves to something (counted in the caller's `stamped_since`);
-    return a skill_id -> effective-`ladder_since` map (existing, freshly
-    stamped, or still None) for the REST of this run to use, so a second scroll
-    is never needed to see the freshly-written value."""
+    where it resolves to something; return a skill_id -> effective-`ladder_since`
+    map (existing, freshly stamped, or still None) for the REST of this run to
+    use, so a second scroll is never needed to see the freshly-written value,
+    plus how many stamps were written."""
     since_by_skill: dict[str, str | None] = {}
     stamped = 0
     for p in points:
@@ -194,15 +221,20 @@ async def _stamp_since(vector, settings, points, errors: list) -> dict[str, str 
             except Exception as exc:  # noqa: BLE001 — one bad stamp never stops the rest
                 errors.append({"skill_id": skill_id, "stage": "since", "error": str(exc)})
         since_by_skill[skill_id] = default
-    since_by_skill["__stamped_count__"] = stamped  # popped by the caller
-    return since_by_skill
+    return since_by_skill, stamped
 
 
 async def run_ladder_impl(vector, replay_r, redis_client, settings, *, now=None,
                           events_fn=None, bridge_statuses=None, dup_fn=None) -> dict:
     """One nightly ladder pass. Returns the run record (or a `{"status": ...}`
-    short-circuit for disabled/locked). Never raises — every per-skill failure
-    is caught and appended to the run record's `errors` list instead."""
+    short-circuit for disabled/locked). Per-skill decision/admission failures
+    are caught and appended to the run record's `errors` list rather than
+    propagating; a Qdrant/redis outage during the three status scrolls, the
+    `last_run` write, or `_stamp_since`'s own set_payload calls is NOT
+    isolated the same way (`_stamp_since` isolates only per-point stamp
+    failures, not a scroll-level outage) — those propagate to the caller,
+    which for the Celery task means `run_skill_ladder`'s own try/except turns
+    it into `{"status": "error", ...}` rather than a partial run record."""
     if not settings.SKILL_LADDER_ENABLED:
         return {"status": "disabled"}
 
@@ -237,10 +269,9 @@ async def _run_locked(vector, replay_r, redis_client, settings, *, now,
     active_points = await _scroll_status(vector, settings, "active")
     draft_points = await _scroll_status(vector, settings, "draft")
 
-    since_map = await _stamp_since(
+    since_map, stamped_since = await _stamp_since(
         vector, settings, [*trial_points, *active_points, *draft_points], errors,
     )
-    stamped_since = since_map.pop("__stamped_count__")
 
     since_trial_active: dict[str, datetime] = {}
     for p in (*trial_points, *active_points):
@@ -327,34 +358,47 @@ async def _run_locked(vector, replay_r, redis_client, settings, *, now,
         try:
             domain = payload.get("domain") or ""
             domain_trial_count = trial_domain_counts.get(domain, 0)
-            # Cheap pre-check (no dup_match) first: incomplete/rereview/parked/
-            # domain_cap never need a duplicate lookup at all.
-            prelim = admit_block_reason(payload, dup_match=None, domain_trial_count=domain_trial_count)
+
+            # Cheap pre-check: incomplete/rereview/parked never depend on
+            # dup_match or domain_trial_count, so they are decided before
+            # either costs anything. `domain_cap` is deliberately NOT
+            # decided here — ladder_rules orders `duplicate` before
+            # `domain_cap` (a draft that is both must be recorded as a
+            # duplicate, not silently re-bucketed as capped), so that
+            # decision waits for the real dup_match below.
+            prelim = admit_block_reason(payload, dup_match=None, domain_trial_count=0)
             if prelim in ("incomplete", "rereview"):
                 counts["skipped_incomplete"] += 1
                 continue
             if prelim and prelim.startswith("parked:"):
                 counts["skipped_parked"] += 1
                 continue
-            if prelim == "domain_cap":
+
+            # Per-run cap BEFORE the duplicate lookup (ruling 6: "stop after
+            # ADMIT_PER_RUN admits") — a draft beyond the cap must never pay
+            # for an embed + Qdrant search it cannot use.
+            if counts["admitted"] >= ADMIT_PER_RUN:
                 counts["skipped_capped"] += 1
                 continue
 
             dup_match = await dup_fn_effective(vector, settings, payload)
             reason = admit_block_reason(payload, dup_match=dup_match, domain_trial_count=domain_trial_count)
             if reason is not None:
-                # The only reason left, given the pre-check above, is a duplicate.
-                dup_id = reason.split(":", 1)[1]
-                await vector._client.set_payload(
-                    collection_name=settings.QDRANT_COLLECTION,
-                    payload={"duplicate_of": dup_id},
-                    points=[skill_id],
-                )
-                counts["skipped_duplicate"] += 1
-                continue
-
-            if counts["admitted"] >= ADMIT_PER_RUN:
-                counts["skipped_capped"] += 1
+                if reason.startswith("duplicate:"):
+                    dup_id = reason.split(":", 1)[1]
+                    await vector._client.set_payload(
+                        collection_name=settings.QDRANT_COLLECTION,
+                        payload={"duplicate_of": dup_id},
+                        points=[skill_id],
+                    )
+                    counts["skipped_duplicate"] += 1
+                elif reason == "domain_cap":
+                    counts["skipped_capped"] += 1
+                else:
+                    # incomplete/rereview/parked already excluded by the
+                    # pre-check above on this same payload — unreachable in
+                    # practice, kept only as a defensive fallback.
+                    counts["skipped_incomplete"] += 1
                 continue
 
             decision = decide_admit(skill_id, payload, dup_match=dup_match,
@@ -385,6 +429,7 @@ async def _run_locked(vector, replay_r, redis_client, settings, *, now,
     }
     if settings.SKILL_LADDER_MODE == "enforce":
         run_record["warning"] = _ENFORCE_WARNING
+        logger.warning(_ENFORCE_WARNING)
 
     await redis_client.set(LAST_RUN_KEY, json.dumps(run_record))
     return run_record
