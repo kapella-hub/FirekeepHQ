@@ -225,6 +225,52 @@ def summarize(counts: dict[str, int], days: int, approximate: bool) -> str:
     return f"{prefix} {window} Firekeep {body}."
 
 
+def _ladder_reach(last_run: dict | None) -> dict[str, dict[str, Any]]:
+    """`reach_by_tier`'s raw shown/reached/applied into {shown, reached, rate}.
+    `rate` is None rather than 0.0 when nothing was shown — a fraction with a
+    zero denominator is not a measurement of zero, it is no measurement, and
+    this whole block exists to answer whether the evidence signals exist at
+    all."""
+    reach_by_tier = (last_run or {}).get("reach_by_tier") or {}
+    out: dict[str, dict[str, Any]] = {}
+    for tier in ("active", "trial"):
+        tier_data = reach_by_tier.get(tier) or {}
+        shown = int(tier_data.get("shown") or 0)
+        reached = int(tier_data.get("reached") or 0)
+        out[tier] = {
+            "shown": shown,
+            "reached": reached,
+            "rate": round(reached / shown, 3) if shown else None,
+        }
+    return out
+
+
+async def build_ladder_block(redis_client) -> dict[str, Any]:
+    """The skill-ladder pass's (PR1, shadow) shadow reach, read-only and
+    redis-only — everything it needs (`last_run`) is written by
+    `app/skills/ladder.py`'s nightly pass, and nothing here touches Qdrant.
+    `mode` reports what the last run actually did, never `settings` — a
+    setting can change before the next run executes it."""
+    from app.skills.ladder import LAST_RUN_KEY
+
+    raw = await redis_client.get(LAST_RUN_KEY)
+    last_run: dict | None = None
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            parsed = None
+        if isinstance(parsed, dict):
+            last_run = parsed
+
+    return {
+        "mode": (last_run.get("mode") if last_run else None) or "shadow",
+        "last_run": last_run,
+        "trial_count": int((last_run or {}).get("trial_count") or 0),
+        "reach": _ladder_reach(last_run),
+    }
+
+
 async def build_digest(vector, redis_client, settings, *, days: int,
                        now: datetime | None = None) -> dict[str, Any]:
     """Assemble the digest. Each source is guarded independently — a dead
@@ -271,6 +317,17 @@ async def build_digest(vector, redis_client, settings, *, days: int,
         logger.exception("Autopilot digest: fleet ledger read failed")
         errors["fleet"] = str(exc)[:200]
 
+    ladder: dict[str, Any] = {
+        "mode": "shadow", "last_run": None, "trial_count": 0,
+        "reach": {"active": {"shown": 0, "reached": 0, "rate": None},
+                 "trial": {"shown": 0, "reached": 0, "rate": None}},
+    }
+    try:
+        ladder = await build_ladder_block(redis_client)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Autopilot digest: ladder read failed")
+        errors["ladder"] = str(exc)[:200]
+
     payload: dict[str, Any] = {
         "generated_at": now.isoformat(),
         "window_days": days,
@@ -280,6 +337,7 @@ async def build_digest(vector, redis_client, settings, *, days: int,
         "scanned": scanned,
         "summary": summarize(counts, days, approximate),
         "fleet": fleet,
+        "ladder": ladder,
         "notes": [
             "skills_activated counts human blessings via stale_reviewed_at "
             "(promotion to active OR clearing the stale flag) — the store has "

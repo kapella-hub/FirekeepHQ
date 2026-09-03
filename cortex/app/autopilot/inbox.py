@@ -43,6 +43,12 @@ SECTION_ITEM_LIMIT = 20
 # cannot make the inbox itself the slow thing.
 DLQ_SCAN_CAP = 1000
 
+# ladder_proposals (PR1, shadow) — items and duplicates are each capped
+# independently here rather than via SECTION_ITEM_LIMIT: the decisions list
+# is already bounded to one night's run (ladder.py's own 500-entry cap covers
+# many runs, not one), so this is a defensive ceiling, not a triage trim.
+LADDER_ITEM_CAP = 50
+
 # low_efficacy_skills (D4) — visibility only, see the section docstring below.
 # MIN_N is a small evidence floor: skill_efficacy is shrunk toward neutral 0.5
 # by a Beta prior of OWM_PRIOR_N (default 5) pseudo-observations (app/owm.py),
@@ -335,3 +341,112 @@ async def eval_dlq(replay_redis) -> dict[str, Any]:
         })
 
     return {"count": count, "approximate": capped, "items": items}
+
+
+def _ladder_decision_row(entry: dict) -> dict[str, Any]:
+    """One decision entry, as `ladder.py::_record` writes it, reshaped for the
+    panel. `evidence` is passed through UNCHANGED — its keys vary by action
+    (expire carries `ladder_since`/`last_shown_at`/`ttl_days`; admit carries
+    `dup_score`/`domain_trial_count`; demote/flag/promote carry the 7-key
+    successes/failures/... shape) and projecting it to one fixed key set
+    would silently drop whichever action's evidence didn't fit."""
+    return {
+        "id": entry.get("skill_id"),
+        "title": entry.get("title") or "",
+        "action": entry.get("action"),
+        "from": entry.get("from"),
+        "to": entry.get("to"),
+        "reason": entry.get("reason") or "",
+        "at": entry.get("at"),
+        "evidence": entry.get("evidence") or {},
+    }
+
+
+def _parse_ladder_decisions(raw_entries: list, since: str) -> list[dict[str, Any]]:
+    """`skills:ladder:decisions` is LPUSH'd newest-first, so list order
+    already matches the output order. Keep only the LATEST run's entries —
+    `at >= since`, where `since` is that run's own `at` (the decision `at` and
+    the run-record `at` are the same `now.isoformat()` string within one run,
+    so a plain string compare is safe). An element that fails to parse is
+    skipped, never raised: one bad row must not blank the whole section."""
+    items: list[dict[str, Any]] = []
+    for raw in raw_entries:
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", errors="replace")
+        try:
+            entry = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(entry, dict):
+            continue
+        at = entry.get("at")
+        if not isinstance(at, str) or at < since:
+            continue
+        items.append(_ladder_decision_row(entry))
+    return items
+
+
+async def _ladder_duplicate_drafts(vector, settings) -> list[dict[str, Any]]:
+    """Draft skills the ladder pass's admission loop parked as a probable
+    duplicate (`duplicate_of`, stamped in `ladder.py`'s draft loop). Not
+    scoped to the latest run — the stamp persists on the draft across runs,
+    so limiting this to "found tonight" would drop a duplicate parked on an
+    earlier night and never revisited."""
+    points, _ = await _scroll(vector, settings, [
+        FieldCondition(key="memory_type", match=MatchValue(value="skill")),
+        FieldCondition(key="skill_status", match=MatchValue(value="draft")),
+    ])
+    duplicates: list[dict[str, Any]] = []
+    for p in points:
+        payload = p.payload or {}
+        dup_of = payload.get("duplicate_of")
+        if dup_of:
+            duplicates.append({
+                "id": str(p.id),
+                "title": payload.get("trigger") or "",
+                "duplicate_of": dup_of,
+            })
+    return duplicates[:LADDER_ITEM_CAP]
+
+
+async def ladder_proposals(redis_client, vector, settings) -> dict[str, Any]:
+    """The nightly skill-ladder pass's shadow decisions (`app/skills/ladder.py`,
+    PR1) — a human glance, nothing more. In shadow mode the pass never
+    mutates `skill_status`; this section is the only place its decisions
+    become visible before a later PR turns any of them into real transitions.
+
+    `items` holds only the LATEST run's decisions (see
+    `_parse_ladder_decisions`); `duplicates` lists every draft currently
+    parked with a `duplicate_of` stamp, regardless of which run parked it. A
+    missing `last_run` means the pass has never run (or its record expired) —
+    that is a fresh-deployment state, not an error, so it reports empty items
+    and the shadow default mode rather than degrading the section.
+    """
+    from app.skills.ladder import DECISIONS_KEY, LAST_RUN_KEY
+
+    raw_last_run = await redis_client.get(LAST_RUN_KEY)
+    last_run: dict | None = None
+    if raw_last_run:
+        try:
+            parsed = json.loads(raw_last_run)
+        except (json.JSONDecodeError, TypeError):
+            parsed = None
+        if isinstance(parsed, dict):
+            last_run = parsed
+
+    since = last_run.get("at") if last_run else None
+    mode = (last_run.get("mode") if last_run else None) or "shadow"
+
+    items: list[dict[str, Any]] = []
+    if isinstance(since, str):
+        raw_entries = await redis_client.lrange(DECISIONS_KEY, 0, -1)
+        items = _parse_ladder_decisions(raw_entries, since)[:LADDER_ITEM_CAP]
+
+    duplicates = await _ladder_duplicate_drafts(vector, settings)
+
+    return {
+        "count": len(items) + len(duplicates),
+        "mode": mode,
+        "items": items,
+        "duplicates": duplicates,
+    }

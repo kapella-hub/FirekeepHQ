@@ -42,6 +42,7 @@ from httpx import ASGITransport, AsyncClient
 from app.autopilot.api import create_autopilot_router
 from app.autopilot import digest as digest_mod
 from app.procedures import store as proc_store
+from app.skills.ladder import DECISIONS_KEY, LAST_RUN_KEY
 from auth import keys
 
 NOW = datetime(2026, 8, 9, 12, 0, 0, tzinfo=timezone.utc)
@@ -137,6 +138,9 @@ class _DeadRedis:
     async def lrange(self, *a, **k):
         raise RuntimeError("redis down")
 
+    async def get(self, *a, **k):
+        raise RuntimeError("redis down")
+
 
 def skill(pid, *, status="draft", stale=None, rereview=None, title="T",
           created=None, reviewed=None, efficacy=None, efficacy_n=None):
@@ -179,6 +183,36 @@ def _deviation(days_ago=1.0, *, kind="block", skill_id="sk1", step_id="s1",
         "step_id": step_id, "session": session, "member": "member-owner",
         "agent": "agent-1", "command_hash": "a" * 12, "detail": detail,
     })
+
+
+def _ladder_decision(at, *, skill_id="sk1", title="A skill", action="promote",
+                     from_status="trial", to_status="active", reason="earned",
+                     evidence=None, mode="shadow"):
+    """Mirrors `ladder.py::_record`'s LPUSH'd entry shape exactly."""
+    return json.dumps({
+        "at": at, "skill_id": skill_id, "title": title, "action": action,
+        "from": from_status, "to": to_status, "reason": reason,
+        "evidence": evidence or {
+            "successes": 3, "failures": 0, "identities": {"agent-1": 2, "agent-2": 1},
+            "shown": 5, "reached": 4, "applied": 3, "efficacy": 0.7,
+        },
+        "mode": mode,
+    })
+
+
+def _ladder_last_run(at, **overrides):
+    """Mirrors `ladder.py::_run_locked`'s run-record shape exactly."""
+    record = {
+        "mode": "shadow", "at": at, "expired": 0, "demoted": 0, "flagged": 0,
+        "promoted": 1, "admitted": 0, "skipped_duplicate": 0, "skipped_capped": 0,
+        "skipped_parked": 0, "skipped_incomplete": 0, "stamped_since": 0,
+        "trial_count": 3,
+        "reach_by_tier": {"active": {"shown": 0, "reached": 0, "applied": 0},
+                         "trial": {"shown": 0, "reached": 0, "applied": 0}},
+        "errors": [],
+    }
+    record.update(overrides)
+    return json.dumps(record)
 
 
 @pytest_asyncio.fixture
@@ -555,6 +589,92 @@ async def test_a_broken_ledger_read_degrades_only_the_deviation_section(mk, stor
     assert body["total_actionable"] == 1
 
 
+# --------------------------------------------------------- ladder proposals --
+
+@pytest.mark.asyncio
+async def test_ladder_proposals_shows_only_the_latest_run(mk, stores):
+    """Two runs' worth of decisions sit in the same capped list; only the
+    entries whose `at` matches the CURRENT `last_run.at` belong to the human
+    glancing at "what did the pass just do", not its whole history."""
+    redis_client, replay_redis = stores
+    older_at, newer_at = iso(2), iso(1)
+    await redis_client.lpush(DECISIONS_KEY, _ladder_decision(older_at, skill_id="old1", action="demote"))
+    await redis_client.lpush(DECISIONS_KEY, _ladder_decision(newer_at, skill_id="new1", action="promote"))
+    await redis_client.set(LAST_RUN_KEY, _ladder_last_run(newer_at))
+
+    async with mk(_FakeVector(_FakeQdrant()), redis_client, replay_redis) as c:
+        section = (await c.get("/autopilot/inbox")).json()["items"]["ladder_proposals"]
+
+    assert section["mode"] == "shadow"
+    assert [i["id"] for i in section["items"]] == ["new1"]
+    assert section["count"] == 1
+    assert section["duplicates"] == []
+    row = section["items"][0]
+    assert row["action"] == "promote" and row["from"] == "trial" and row["to"] == "active"
+    assert row["evidence"] == {
+        "successes": 3, "failures": 0, "identities": {"agent-1": 2, "agent-2": 1},
+        "shown": 5, "reached": 4, "applied": 3, "efficacy": 0.7,
+    }, "evidence passes through unchanged, whatever shape the decision carried"
+
+
+@pytest.mark.asyncio
+async def test_ladder_proposals_lists_duplicate_drafts(mk, stores):
+    redis_client, replay_redis = stores
+    qdrant = _FakeQdrant([skill("dup1", status="draft", title="Dup")])
+    qdrant.points[0].payload["duplicate_of"] = "sk-existing"
+
+    async with mk(_FakeVector(qdrant), redis_client, replay_redis) as c:
+        section = (await c.get("/autopilot/inbox")).json()["items"]["ladder_proposals"]
+
+    assert section["duplicates"] == [
+        {"id": "dup1", "title": "when Dup", "duplicate_of": "sk-existing"},
+    ]
+    assert section["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_ladder_proposals_count_toward_total_actionable(mk, stores):
+    redis_client, replay_redis = stores
+    at = iso(1)
+    await redis_client.lpush(DECISIONS_KEY, _ladder_decision(at, skill_id="s1"))
+    await redis_client.set(LAST_RUN_KEY, _ladder_last_run(at))
+    qdrant = _FakeQdrant([skill("d1", status="draft")])
+
+    async with mk(_FakeVector(qdrant), redis_client, replay_redis) as c:
+        body = (await c.get("/autopilot/inbox")).json()
+
+    assert body["items"]["ladder_proposals"]["count"] == 1
+    assert body["total_actionable"] == 2, "draft_skills(1) + ladder_proposals(1)"
+
+
+@pytest.mark.asyncio
+async def test_ladder_proposals_missing_last_run_is_not_an_error(mk, stores):
+    redis_client, replay_redis = stores
+    async with mk(_FakeVector(_FakeQdrant()), redis_client, replay_redis) as c:
+        body = (await c.get("/autopilot/inbox")).json()
+
+    assert body["items"]["ladder_proposals"] == {
+        "count": 0, "mode": "shadow", "items": [], "duplicates": [],
+    }
+    assert "degraded" not in body
+
+
+@pytest.mark.asyncio
+async def test_ladder_proposals_skips_an_unparsable_decision(mk, stores):
+    redis_client, replay_redis = stores
+    at = iso(1)
+    await redis_client.lpush(DECISIONS_KEY, "not json")
+    await redis_client.lpush(DECISIONS_KEY, _ladder_decision(at, skill_id="ok1"))
+    await redis_client.set(LAST_RUN_KEY, _ladder_last_run(at))
+
+    async with mk(_FakeVector(_FakeQdrant()), redis_client, replay_redis) as c:
+        resp = await c.get("/autopilot/inbox")
+
+    assert resp.status_code == 200
+    section = resp.json()["items"]["ladder_proposals"]
+    assert [i["id"] for i in section["items"]] == ["ok1"]
+
+
 # ------------------------------------------------------------------ digest --
 
 @pytest.mark.asyncio
@@ -800,6 +920,60 @@ async def test_digest_fleet_degrades_in_place(mk, stores, monkeypatch):
 
     assert body["fleet"]["jobs"] == {} and "fleet" in body["errors"]
     assert "counts" in body  # the rest of the digest survived
+
+
+@pytest.mark.asyncio
+async def test_digest_ladder_block_reports_reach_and_the_last_run(mk, stores, monkeypatch):
+    """The digest ladder block is the fortnight's evidence-exists question:
+    did the pass show trial/active skills to anyone at all."""
+    redis_client, replay_redis = stores
+    monkeypatch.setattr(digest_mod, "datetime", _FrozenDatetime)
+    at = iso(1)
+    await redis_client.set(LAST_RUN_KEY, _ladder_last_run(
+        at, trial_count=4,
+        reach_by_tier={"active": {"shown": 10, "reached": 4, "applied": 2},
+                      "trial": {"shown": 0, "reached": 0, "applied": 0}},
+    ))
+
+    async with mk(_FakeVector(_FakeQdrant()), redis_client, replay_redis) as c:
+        body = (await c.get("/autopilot/digest?days=7")).json()
+
+    ladder = body["ladder"]
+    assert ladder["mode"] == "shadow"
+    assert ladder["trial_count"] == 4
+    assert ladder["reach"]["active"] == {"shown": 10, "reached": 4, "rate": 0.4}
+    assert ladder["reach"]["trial"] == {"shown": 0, "reached": 0, "rate": None}, (
+        "a zero denominator is no measurement, not a measurement of zero"
+    )
+    assert ladder["last_run"]["at"] == at
+    assert "ladder" not in body.get("errors", {})
+
+
+@pytest.mark.asyncio
+async def test_digest_ladder_defaults_before_any_run(mk, stores, monkeypatch):
+    redis_client, replay_redis = stores
+    monkeypatch.setattr(digest_mod, "datetime", _FrozenDatetime)
+    async with mk(_FakeVector(_FakeQdrant()), redis_client, replay_redis) as c:
+        body = (await c.get("/autopilot/digest?days=7")).json()
+
+    assert body["ladder"] == {
+        "mode": "shadow", "last_run": None, "trial_count": 0,
+        "reach": {"active": {"shown": 0, "reached": 0, "rate": None},
+                 "trial": {"shown": 0, "reached": 0, "rate": None}},
+    }
+
+
+@pytest.mark.asyncio
+async def test_digest_ladder_degrades_in_place(mk, stores, monkeypatch):
+    redis_client, replay_redis = stores
+    monkeypatch.setattr(digest_mod, "datetime", _FrozenDatetime)
+
+    async with mk(_FakeVector(_FakeQdrant()), _DeadRedis(), replay_redis) as c:
+        body = (await c.get("/autopilot/digest?days=7")).json()
+
+    assert "ladder" in body["errors"]
+    assert body["ladder"]["mode"] == "shadow", "the default shape still renders"
+    assert "counts" in body, "one dead dependency must not cost the rest of the digest"
 
 
 # -------------------------------------------------------------------- auth --
