@@ -5893,8 +5893,8 @@ function apLadderBlock(ladder) {
         + (r && r.at ? apEsc(r.at) : 'never')
         + (r ? ': ' + counts + (r.stamped_since != null ? ', stamped_since ' + apEsc(r.stamped_since) : '') : '')
         + '. trial_count ' + apEsc(ladder.trial_count || 0)
-        + '. reach — active ' + apEsc(a.shown || 0) + '/' + apEsc(a.reached || 0) + ' (' + apRate(a.rate)
-        + '), trial ' + apEsc(t.shown || 0) + '/' + apEsc(t.reached || 0) + ' (' + apRate(t.rate) + ')'
+        + '. reach — active ' + apEsc(a.shown || 0) + ' shown / ' + apEsc(a.reached || 0) + ' reached (' + apRate(a.rate)
+        + '), trial ' + apEsc(t.shown || 0) + ' shown / ' + apEsc(t.reached || 0) + ' reached (' + apRate(t.rate) + ')'
         + (r && r.warning ? '<div style="color:var(--amber);margin-top:4px">' + apEsc(r.warning) + '</div>' : '')
         + '</div>';
 }
@@ -6128,7 +6128,8 @@ function renderAutopilotInbox(inbox) {
             var nDup = (s.duplicates || []).length;
             if (nDup) {
                 body += '<div style="padding:7px 0;border-top:1px solid var(--border);font-size:12px;color:var(--text-dim)">'
-                    + nDup + (nDup === 1 ? ' draft' : ' drafts') + ' parked as duplicates.</div>';
+                    + (nDup === 1 ? '1 draft parked as a duplicate' : nDup + ' drafts parked as duplicates')
+                    + ' — unpark from the Skills tab.</div>';
             }
         } else if (count > rows.length) {
             body += '<div style="padding:7px 0;border-top:1px solid var(--border);font-size:12px;color:var(--text-dim)">'
@@ -6505,6 +6506,7 @@ async function loadSkills() {
                 (s.last_recalled_at ? '<div class="text-dim" style="font-size:11px">last recalled: ' + esc(s.last_recalled_at.slice(0, 10)) + '</div>' : '') +
                 (s.approved_by ? '<div class="text-dim" style="font-size:11px">approved by ' + esc(s.approved_by) + '</div>' : '') +
                 (s.ladder_shadow && s.ladder_shadow.action ? '<div class="text-dim" style="font-size:11px">ladder would: ' + esc(s.ladder_shadow.action) + '</div>' : '') +
+                (s.duplicate_of ? '<div class="text-dim" style="font-size:11px;display:flex;align-items:center;gap:8px">duplicate of ' + esc(s.duplicate_of) + ' <button class="btn btn-sm btn-outline" onclick="unparkSkill(\'' + esc(s.id) + '\')" style="padding:2px 8px;font-size:10px">Unpark</button></div>' : '') +
                 (s.stale ? '<div style="font-size:11px;color:var(--yellow,var(--amber));margin-top:2px;display:flex;align-items:center;gap:8px">&#9888; unrecalled &mdash; review or deprecate <button class="btn btn-sm btn-outline" onclick="markSkillValid(\'' + esc(s.id) + '\')" style="padding:2px 8px;font-size:10px">Still valid</button></div>' : '') +
                 (s.needs_rereview ? '<div style="font-size:11px;color:var(--yellow,var(--amber));margin-top:2px;display:flex;align-items:center;gap:8px">&#9888; source updated &mdash; re-review <button class="btn btn-sm btn-outline" onclick="markSkillReviewed(\'' + esc(s.id) + '\')" style="padding:2px 8px;font-size:10px">Mark reviewed</button></div>' : '') +
                 '<details style="margin-top:10px">' +
@@ -6551,6 +6553,13 @@ async function demoteSkill(id) {
     await fetch(CONFIG.CORTEX_API + '/skills/' + encodeURIComponent(id), { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({skill_status:'draft'}) });
     loadSkills();
 }
+async function unparkSkill(id) {
+    // Skill Ladder PR1 fix wave (I3): a stamped duplicate_of permanently barred
+    // a draft from ever being admitted to trial, with no lever to clear it.
+    // clear_duplicate_of un-parks it; same PATCH shape as activateSkill/demoteSkill.
+    await fetch(CONFIG.CORTEX_API + '/skills/' + encodeURIComponent(id), { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({clear_duplicate_of:true}) });
+    loadSkills();
+}
 async function markSkillReviewed(id) {
     await fetchJSON(CONFIG.CORTEX_API + '/skills/' + encodeURIComponent(id), { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({needs_rereview:false}) });
     loadSkills();
@@ -6575,6 +6584,7 @@ window.hideCreateSkill = hideCreateSkill;
 window.submitCreateSkill = submitCreateSkill;
 window.activateSkill = activateSkill;
 window.demoteSkill = demoteSkill;
+window.unparkSkill = unparkSkill;
 window.markSkillReviewed = markSkillReviewed;
 window.markSkillValid = markSkillValid;
 window.deprecateSkill = deprecateSkill;

@@ -352,3 +352,62 @@ unlocks round 2" — this *is* round 2's first rung, with the shadow gate
 honoured), `cortex-configuration.md`, `cortex-api-endpoints.md`,
 `client-kit.md` (Night Shift fourth title, stop-hook sentence), root `CLAUDE.md`,
 `README.md` (Knowledge Autopilot row), `.env.example`, compose.
+
+## Amendments (2026-09-03, final review)
+
+Findings from the whole-branch final review of PR1, folded in as amendments
+rather than edits to the decisions above — the decisions record what was
+approved at design time; these record what changed after implementation and
+review surfaced gaps in it.
+
+- **Decision 2's exclusion is wider than "OWM only."** The review found two
+  more `memory_read` consumers the original decision did not name: the eval
+  scorers' `memory_read_count` and `recall_used_rate`
+  (`cortex/app/evals/scorers.py`), and — because it reads
+  `memory_read_count` — the frozen `recall_before_work` compliance predicate
+  (`autopilot/compliance.py`, §6 of `knowledge-autopilot.md`). All three now
+  skip `trigger="briefing"` events, the same guard OWM already applied, so
+  the pre-ladder baseline those frozen predicates were pinned against stays
+  comparable. This is the corrected reading: **every** `memory_read`
+  consumer excludes the briefing receipt except the ladder's own evidence
+  reader, which is the sole consumer that counts it (as *shown*).
+- **The briefing budget is `≤3` active `+` `≤1` trial, four items, not
+  `≤3` total.** Decision 1's "at most one per briefing, after the actives"
+  and the Data flow section's "≤3 active + ≤1 trial" were both in the spec;
+  Task 3's implementation read the two together as "≤3 total," which drops
+  the trial whenever three actives already fill the slot — on the
+  production-normal no-goal path, effectively always. The Data flow line was
+  the intended reading and is now the implemented one: a trial keeps a
+  fourth slot of its own, placed last, and a no-goal page with no trial
+  candidate among its first results gets one extra one-point
+  `skill_status=trial` scroll so the tier is not silently starved of a
+  *shown* receipt for its whole life.
+- **`SKILL_LADDER_TRIAL_TTL_DAYS` default is `30`, not `60`, and is clamped
+  to the evidence window.** Decision 6's 60-day figure was unmeasurable
+  against the 30-day eval retention (`evals/store.py`) that
+  `last_shown_at` is read back from — a trial shown between day 31 and day
+  60 would read as never-shown and expire regardless. The pass now clamps
+  the effective TTL to `OWM_WINDOW_DAYS` at run time, logs a warning, and
+  records `ttl_clamped_to` on the run whenever the configured value would
+  otherwise exceed what the store can still answer. PR2 carries forward
+  persisting `last_shown_at` onto the skill's own payload (a fifth shadow
+  bookkeeping write, additive to the three named in Decision 7 / the
+  global constraints) so a longer TTL becomes measurable once it no longer
+  depends on eval retention.
+- **`duplicate_of` is clearable.** Decision 5 stamped `duplicate_of` as a
+  parking mechanism but named no way to lift it, which made it permanent —
+  including after the active skill it duplicated was itself deleted or
+  demoted. `PATCH /skills/{id}` now accepts `clear_duplicate_of: true`,
+  which sets `duplicate_of` to `null` and returns the draft to normal
+  admission eligibility; the Skills tab exposes this as an **Unpark**
+  button next to the "duplicate of `<id>`" label on the draft's card.
+- **`approved_by` is not a PATCH request field.** Decision 8 says every
+  promotion records `approved_by` as `"ladder"` or `"human"`; it did not
+  say whether a PATCH caller could set the value directly, and the
+  implementation initially exposed it as a plain request field, letting
+  any caller assert `"ladder"` for what was actually a human action. The
+  field is not accepted on the PATCH request body: an activation over HTTP
+  always records `approved_by="human"`, and PR2's ladder pass writes
+  `"ladder"` itself, in-process, on the transitions it applies directly —
+  never over HTTP. `SkillResponse.approved_by` is unaffected; only the
+  request side changed.

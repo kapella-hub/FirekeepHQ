@@ -948,6 +948,32 @@ class TestLadderProposalsSection:
         }})
         html = _render("renderAutopilotInbox", body)
         assert "parked as duplicates" not in html
+        assert "parked as a duplicate" not in html
+
+    def test_a_single_duplicate_uses_singular_grammar(self):
+        """Final review, T9 minor: count=1 must not read '1 draft parked as
+        duplicates' — the plural noun disagreeing with the singular count."""
+        body = _inbox(items={"ladder_proposals": {
+            "count": 2, "mode": "shadow", "items": [LADDER_ITEM_PROMOTE],
+            "duplicates": [{"id": "d3", "title": "Rotate the key", "duplicate_of": "sk1"}],
+        }})
+        html = _render("renderAutopilotInbox", body)
+        assert "1 draft parked as a duplicate" in html
+        assert "1 draft parked as duplicates" not in html
+
+    def test_the_duplicates_note_points_to_the_skills_tab(self):
+        """I3: duplicate_of is now clearable, so the read-only note tells the
+        operator where the lever lives — text only, no action, inside the
+        sentinel block."""
+        body = _inbox(items={"ladder_proposals": {
+            "count": 3, "mode": "shadow", "items": [LADDER_ITEM_PROMOTE],
+            "duplicates": [
+                {"id": "d3", "title": "Rotate the key", "duplicate_of": "sk1"},
+                {"id": "d4", "title": "Rotate the key v2", "duplicate_of": "sk1"},
+            ],
+        }})
+        html = _render("renderAutopilotInbox", body)
+        assert "unpark from the Skills tab" in html
 
     def test_the_cta_opens_the_trial_queue(self):
         body = _inbox(items={"ladder_proposals": {
@@ -973,6 +999,13 @@ class TestLadderDigestBlock:
         assert "7" in html           # trial_count
         assert "40%" in html         # active reach rate
         assert "—" in html           # trial reach rate is null
+
+    def test_the_reach_pair_is_labelled_shown_and_reached(self):
+        """M4 (final review): the bare 'N/M (x%)' pair left the reader to
+        infer which number was shown and which was reached."""
+        html = _render("renderAutopilotDigest", dict(DIGEST, ladder=LADDER))
+        assert "100 shown / 40 reached (40%)" in html
+        assert "10 shown / 0 reached" in html
 
     def test_a_missing_ladder_block_renders_nothing_extra(self):
         html_without = _render("renderAutopilotDigest", DIGEST)
@@ -1025,3 +1058,35 @@ class TestTrialSkillsTab:
         body = m.group(0)
         assert "'PATCH'" in body or '"PATCH"' in body
         assert "skill_status" in body and "draft" in body
+
+    def test_unpark_skill_is_defined_outside_the_sentinel_block(self):
+        """Unparking a duplicate-stamped draft (final review I3) is a write
+        path exactly like demoteSkill — it belongs to the Skills tab, not the
+        read-only autopilot panel."""
+        src = _src()
+        assert "function unparkSkill" in src
+        block = _autopilot_js()
+        assert "function unparkSkill" not in block, (
+            "unparkSkill is a write path — it must live in the Skills-tab "
+            "code, not inside the read-only autopilot sentinel block"
+        )
+
+    def test_the_sentinel_block_never_names_clear_duplicate_of(self):
+        """The write payload key itself must not appear inside the read-only
+        block either — a stray reference there would be the same class of
+        drift the write-verb check exists to catch."""
+        assert "clear_duplicate_of" not in _extract()
+
+    def test_unpark_skill_is_window_exported(self):
+        assert re.search(r"\bwindow\.unparkSkill\s*=", _src()), (
+            "unparkSkill is called from an inline onclick; unexported it "
+            "would silently do nothing at click time"
+        )
+
+    def test_unpark_skill_clears_duplicate_of(self):
+        src = _src()
+        m = re.search(r"async function unparkSkill\([\s\S]*?\n\}", src)
+        assert m, "unparkSkill not found"
+        body = m.group(0)
+        assert "'PATCH'" in body or '"PATCH"' in body
+        assert "clear_duplicate_of" in body

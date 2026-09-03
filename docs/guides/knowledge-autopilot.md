@@ -189,7 +189,7 @@ round.
 
 **Fleet block in the digest (2026-09-02).** `GET /autopilot/digest` gains `fleet: {enabled, jobs}` — per job type (`distill_session`, `reauthor_stale_skill`, `propose_contested_verdict`) a `window` and an `all_time` block read from the fleet ledger (§8): `produced / approved / rejected / approval_rate` for skill jobs, `proposed / resolved / matched / match_rate` for verdicts, all-time `pending = produced − approved − rejected` (skill jobs only — a verdict job's all-time block carries no `pending` field). A rate is `null` when its denominator is zero — never a prior — and the dashboard renders `null` as `—`. The dashboard also now lists the `low_efficacy_skills` section it had been omitting (the headline total counted rows the panel never showed); `tests/test_dashboard_autopilot.py` pins that every section the API emits has a dashboard entry.
 
-**`ladder_proposals` in the inbox, and a `ladder` block in the digest (2026-09-03, skill ladder PR1, shadow).** `GET /autopilot/inbox` gains a section listing the skill ladder's most recent shadow decisions — admit, promote, demote, flag, expire, each with its evidence — plus every draft currently parked as a probable duplicate; it counts toward `total_actionable` like every other section. `GET /autopilot/digest` gains a `ladder` block with the last run's mode, counts and per-tier (active/trial) shown/reached/rate numbers. Full mechanics, thresholds and the shadow contract: §9.
+**`ladder_proposals` in the inbox, and a `ladder` block in the digest (2026-09-03, skill ladder PR1, shadow).** `GET /autopilot/inbox` gains a section listing the skill ladder's most recent shadow decisions — admit, promote, demote, flag, expire, each with its evidence — plus up to 50 drafts currently parked as probable duplicates (`approximate: true` when the duplicate scan itself was capped); it counts toward `total_actionable` like every other section. `GET /autopilot/digest` gains a `ladder` block with the last run's mode, counts and per-tier (active/trial) shown/reached/rate numbers. Full mechanics, thresholds and the shadow contract: §9.
 
 ## 5. The evidence ledger read
 
@@ -381,10 +381,17 @@ distinguished a session that succeeded from one that didn't).
 **A `trial` status is the fourth rung.** `skill_status` is now `draft` → `trial` →
 `active` → `deprecated`. A draft can never be "used" — nothing about it can accrue
 evidence — so `trial` is the only place that can happen: it is recallable
-(`GET /skills?status=recallable` = `active` ∪ `trial`, actives first), shown in the
-briefing at most once per session after the actives, and labeled `[TRIAL]`
-everywhere an agent sees it. See [`knowledge-and-skills.md`](knowledge-and-skills.md)
-for the status/receipt reference; this section is the evidence and the pass.
+(`GET /skills?status=recallable` = `active` ∪ `trial`, actives first), and labeled
+`[TRIAL]` everywhere an agent sees it. The briefing shows at most `≤3` active
+skills plus `≤1` trial — four items, never three, since a trial competing with a
+full three actives for the same slot would never be shown at all — with the trial
+placed last. On the production-normal no-goal path (an ID-ordered scroll, not a
+relevance match, per the briefing's own docstring), the main page rarely contains
+a trial among its first few results by chance alone, so whenever it comes up
+empty the briefing issues one extra, one-point scroll filtered to
+`skill_status=trial` so the trial tier still gets a chance to be shown. See
+[`knowledge-and-skills.md`](knowledge-and-skills.md) for the status/receipt
+reference; this section is the evidence and the pass.
 
 **Three signals, three different weights.** *Shown* is a `memory_read` receipt —
 the briefing's own (`trigger="briefing"`, new) or `skill_recall`'s (`trigger=
@@ -414,26 +421,37 @@ it (a human activated it; a run of thumbs-down may mean "not what I needed" as
 easily as "wrong"); it instead sets `ladder_rewrite_requested_at` and leaves the
 skill active and recallable. Expiry (`trial` → `draft`) fires when a trial's last
 activity — the later of `ladder_since` and its last-shown date — is older than
-`SKILL_LADDER_TRIAL_TTL_DAYS` (default `60`). Evidence is counted only since
+`SKILL_LADDER_TRIAL_TTL_DAYS` (default `30`), clamped at run time to
+`OWM_WINDOW_DAYS` — the evidence window evals are actually retained for (30 days)
+— with a warning logged and `ttl_clamped_to` recorded on the run whenever a
+higher configured value would otherwise ask for a `last_shown_at` older than what
+the store can still answer. Evidence is counted only since
 `ladder_since`, which every real status change re-stamps, so a human's earlier
 demotion is never undone by evidence from before it; a pre-existing skill's first
 window defaults to `approved_at` → `stale_reviewed_at` → `timestamp`, stamped once
 by the pass's first run.
 
 **Admission (`draft` → `trial`) is deterministic, not a model call.** A draft is
-blocked, checked in order: an empty trigger/symptoms/steps; `needs_rereview`; any
-parked field (`demoted_at`, `ladder_rewrite_requested_at`, `trial_expired_at`,
-`superseded_by`, `duplicate_of` — each means the draft belongs to a human or the
-rewrite loop, never to a fresh trial); the per-run cap (module constant
-`ADMIT_PER_RUN`, `20`, checked *before* the embed so a draft past the cap never
-pays for one); a semantic near-duplicate against every active+trial skill (cosine
-≥ `DUP_THRESHOLD`, `0.92` — an embed failure blocks the whole night's admissions
-rather than being read as "no duplicate", so a broken embedding backend can never
-wave a duplicate through); and the per-domain trial cap (`TRIAL_CAP_PER_DOMAIN`,
-`10`). Drafts are processed oldest-first (a missing timestamp sorts last, never
-first); a blocked duplicate is stamped `duplicate_of=<id>` so the inbox can list
-it. No LLM sits anywhere in this pass — every rule is a deterministic read over
-receipts and grades.
+blocked, checked in order: an empty trigger, symptoms, or steps — `steps` is read
+from the stored payload's own `steps` key when a writer provides one, else parsed
+out of the `## Steps` heading's body inside `content` (the heading present with
+an empty body still counts as empty), because neither skill creator today stores
+a top-level `steps` key — both fold it into `content` instead, which is where the
+check has to look; `needs_rereview`; any parked field (`demoted_at`,
+`ladder_rewrite_requested_at`, `trial_expired_at`, `superseded_by`,
+`duplicate_of` — each means the draft belongs to a human or the rewrite loop,
+never to a fresh trial); the per-run cap (module constant `ADMIT_PER_RUN`, `20`,
+checked *before* the embed so a draft past the cap never pays for one); a
+semantic near-duplicate against every active+trial skill (cosine ≥
+`DUP_THRESHOLD`, `0.92` — an embed failure blocks only *that draft's* admission
+for the night, recorded as an `errors` entry at stage `admit` so the run keeps
+going, rather than laundering the failure into "no duplicate" for it or halting
+every other draft's check); and the per-domain trial cap
+(`TRIAL_CAP_PER_DOMAIN`, `10`). Drafts are processed oldest-first (a missing
+timestamp sorts last, never first); a blocked duplicate is stamped
+`duplicate_of=<id>` so the inbox can list it — a stamp a human can clear (see
+below), not a permanent park. No LLM sits anywhere in this pass — every rule is
+a deterministic read over receipts and grades.
 
 **Shadow, this PR.** `SKILL_LADDER_MODE` defaults to `shadow`. The nightly pass
 (`cortex/app/skills/ladder.py::run_skill_ladder`, Celery beat every
@@ -451,12 +469,17 @@ at zero.** Setting `SKILL_LADDER_MODE=enforce` still runs shadow this PR — it 
 cannot flip live behavior early.
 
 **Where the decisions surface.** The inbox's `ladder_proposals` section (§4) shows
-only the latest run's decisions plus every currently-parked duplicate. The
-digest's `ladder` block (§4) reports `mode` from what the last run actually did —
-never from the live setting, which can change before the next run fires — and
-`rate: null`, not `0.0`, when nothing was shown, since a zero-denominator fraction
-is not a measurement of zero. The dashboard's Skills tab gains a Trial filter, a
-`TRIAL` badge, `Activate`/`Back to draft` buttons on a trial skill, and shows
+only the latest run's decisions plus up to 50 currently-parked duplicates
+(`approximate: true` when that scan itself was capped). The digest's `ladder`
+block (§4) reports `mode` from what the last run actually did — never from the
+live setting, which can change before the next run fires — and `rate: null`, not
+`0.0`, when nothing was shown, since a zero-denominator fraction is not a
+measurement of zero. `duplicate_of` is not a permanent park: `PATCH /skills/{id}`
+accepts `clear_duplicate_of: true` to un-stamp a draft and give it another shot
+at admission, surfaced as an **Unpark** button on the draft's Skills-tab card
+(next to the "duplicate of `<id>`" label) and referenced from the inbox's
+duplicates note. The dashboard's Skills tab gains a Trial filter, a `TRIAL`
+badge, `Activate`/`Back to draft` buttons on a trial skill, and shows
 `approved_by` plus "ladder would: `<action>`" from `ladder_shadow`; the Autopilot
 tab renders a "Skill ladder — proposed transitions" section and the digest block,
 through the same two fetches round 1 already makes — no new fetch, no write verb,
@@ -477,20 +500,37 @@ recognizes as duplicates.
 trivially, since each reports its own `agent_id`. The independence rule is real
 and does exactly what it says — it protects a *team* Keep, where two agreeing
 identities means two people actually agreed — but on a solo Keep it is satisfied
-by default rather than earned, which is worth knowing before reading a
-zero-identity promotion as a bug.
+by default rather than earned: a promotion whose two-identity bar was met by
+identities that are not actually independent — one human standing behind every
+one of them — is the thing to distrust here, not a sign the rule misfired.
 
-**Excluded from OWM, by name.** The briefing's new `memory_read` receipt
-(`trigger="briefing"`) is excluded from Outcome-Weighted Memory's `skill_efficacy`
-tally, for both the memory and the skill branch (see the OWM bullet in
+**Excluded from every `memory_read` tally but the ladder's own.** The briefing's
+new `memory_read` receipt (`trigger="briefing"`) is excluded from
+Outcome-Weighted Memory's `skill_efficacy` tally, for both the memory and the
+skill branch (see the OWM bullet in
 [`memory-and-recall.md`](memory-and-recall.md)) — OWM joins every `memory_read`
 receipt to its session's grade, so counting a briefing impression there would pull
-every skill's efficacy toward the session base rate. The ladder's own evidence
-reader is the only consumer of that receipt.
+every skill's efficacy toward the session base rate. The same exclusion applies
+everywhere else a `memory_read` event is tallied: the eval scorers'
+`memory_read_count` and `recall_used_rate` (`cortex/app/evals/scorers.py`) both
+skip `trigger="briefing"` too, and so — by construction, since it reads
+`memory_read_count` — does the frozen `recall_before_work` compliance predicate
+(§6). Without this, an automatic briefing impression would have satisfied
+"recall before you answer" for every session from the day this shipped, silently
+breaking comparability with the pre-ladder baseline those predicates are frozen
+against. The ladder's own evidence reader remains the only consumer that *does*
+count the briefing receipt — counting it is what "shown" means there.
 
 **PR2 (not built).** `SKILL_LADDER_MODE=enforce` applies the same decisions
 instead of only logging them, stamps a `ladder_history` entry on every transition,
-and records `approved_by="ladder"` on an automatic promotion. A demoted trial or a
+re-stamps `ladder_since` at each enforce-mode transition exactly as a human
+`PATCH` already does (so a 90-day-old draft admitted under enforce gets a fresh
+evidence window rather than inheriting a clock old enough to expire it on its
+first night), and records `approved_by="ladder"` on an automatic promotion. It
+also persists `last_shown_at` onto the skill's own payload on every run, so a
+trial's last-shown date survives past the 30-day eval retention window that
+bounds this PR's TTL and a longer configured `SKILL_LADDER_TRIAL_TTL_DAYS`
+becomes measurable instead of being clamped away. A demoted trial or a
 flagged active is handed to the fleet as a `reauthor_failed_skill` task (failure
 evidence first — the failing sessions, the last feedback comment, the efficacy
 numbers); Night Shift rewrites it into a new draft (`reauthor_of=<failed id>`)
