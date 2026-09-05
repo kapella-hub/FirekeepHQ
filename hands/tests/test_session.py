@@ -23,6 +23,7 @@ from firekeep_hands.backends.base import (
 from firekeep_hands.backends.fake import FakeBackend
 from firekeep_hands.broker.permits import PermitStore
 from firekeep_hands.config import HandsConfig, Policy, Remembered
+from firekeep_hands import session as session_module
 from firekeep_hands.evidence import Ledger
 from firekeep_hands.keep import KeepDecision
 from firekeep_hands.session import HandsSession
@@ -115,6 +116,7 @@ class FakeLink:
         # What cortex said about the task. The real KeepLink sets this from
         # the ActionBeforeResponse; None means it never answered.
         self.last_decision = decision or KeepDecision(None)
+        self.holds = False
         self.before: list[tuple] = []
         self.after: list[tuple] = []
         self.leases: list[int] = []
@@ -128,18 +130,26 @@ class FakeLink:
     def action_after(self, action_id, outcome, summary):
         self.after.append((action_id, outcome, summary))
 
-    def acquire_lease(self, ttl_minutes: int = 30):
+    def acquire_lease(self, ttl_minutes: int = 30, reclaim_own: bool = True):
         self.leases.append(ttl_minutes)
         reply = {"acquired": self._acquired, "fencing_token": 7}
-        if not self._acquired:
+        if self._acquired:
+            self.holds = True
+        else:
             reply.update(self.lease_extra)
         return reply
 
     def renew_lease(self):
         self.renewed += 1
 
-    def release_lease(self):
+    def release_lease(self) -> bool:
+        """Mirrors the real one: nothing to release unless we hold it, and the
+        answer says which of the two happened."""
+        if not self.holds:
+            return False
+        self.holds = False
         self.released = True
+        return True
 
 
 def _page_scene() -> list[dict]:
@@ -1089,6 +1099,35 @@ def test_abandon_closes_an_open_task_and_gives_the_machine_back(session):
     assert session.task_id is None
     assert json.loads((Path(closed["evidence"]) / "task.json").read_text(
         encoding="utf-8"))["outcome"] == "abandoned"
+
+
+def test_task_end_says_whether_the_lease_actually_came_back(session):
+    """"not held" is the normal answer on a machine with no Keep, and a
+    caller reporting a shutdown must not claim a release it never made."""
+    session.task_start("x", ["Notepad"])
+    assert session.task_end("done", "ok")["lease"] == "released"
+
+    session.task_start("y", ["Notepad"])
+    session.link.holds = False  # relay never really gave it to us
+    assert session.task_end("done", "ok")["lease"] == "not held"
+
+
+def test_a_failed_abandon_names_the_task_it_failed_for(session, monkeypatch):
+    """`task_end` clears `task_id` in its own finally, so reading it in the
+    handler logged "abandon failed for None"."""
+    session.task_start("x", ["Notepad"])
+    task_id = session.task_id
+    logged: list[str] = []
+    monkeypatch.setattr(session_module.hooklog, "log_failure",
+                        lambda hook, message, exc=None: logged.append(message))
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("cortex exploded")
+
+    session.link.action_after = boom
+    assert session.abandon() is None
+    assert any(task_id in message for message in logged)
+    assert not any("for None" in message for message in logged)
 
 
 def test_abandon_with_no_task_open_does_nothing(session):

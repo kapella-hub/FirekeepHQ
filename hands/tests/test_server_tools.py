@@ -275,6 +275,21 @@ def test_shutdown_hands_the_machine_back_and_stops_the_worker(session):
         worker.run(lambda: None)
 
 
+def test_the_shutdown_log_says_what_actually_happened(session, monkeypatch):
+    """A log that always claimed a release would be the first thing to
+    mislead somebody debugging a lease that outlived its session."""
+    logged: list[str] = []
+    monkeypatch.setattr(server.hooklog, "log_failure",
+                        lambda hook, message, exc=None: logged.append(message))
+    _text(server.dispatch(session, "hands_task_start", {"goal": "x"}))
+    session.link.holds = False  # relay never really gave it to us
+    worker = server.Worker()
+    server.shutdown(session, worker)
+
+    assert len(logged) == 1
+    assert "closed as abandoned" in logged[0] and "lease not held" in logged[0]
+
+
 def test_shutdown_is_safe_with_no_session_and_no_task(session):
     worker = server.Worker()
     server.shutdown(None, worker)  # start-up failed before a session existed

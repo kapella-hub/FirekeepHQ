@@ -216,9 +216,10 @@ class Worker:
 def build_session() -> HandsSession:
     """Everything the server needs, built on the worker thread.
 
-    The broker may legitimately be absent here — it is a separate process
-    started by a logon task — so `from_disk()` returning None is not an
-    error; the session re-probes when a protected step actually arrives."""
+    The broker may legitimately be absent here — it is a separate process,
+    started at logon by a per-user `Run` registry value on Windows or a
+    LaunchAgent on macOS — so `from_disk()` returning None is not an error;
+    the session re-probes when a protected step actually arrives."""
     config = load_config()
     session_id = os.environ.get("FIREKEEP_SESSION_ID") or uuid.uuid4().hex[:12]
     return HandsSession(
@@ -319,7 +320,14 @@ def _raise_on_sigterm(signum, _frame):
     """SIGTERM's default action ends the process outright, running no
     `finally` anywhere — which is exactly how a lease gets stranded. Turning
     it into the same KeyboardInterrupt a Ctrl+C produces gives `serve` its
-    one chance to hand the machine back."""
+    one chance to hand the machine back.
+
+    This buys nothing on Windows, and the honest reading matters: an external
+    `os.kill(pid, SIGTERM)` there is `TerminateProcess`, which ends the
+    process at the kernel and never reaches Python, so no handler of any kind
+    can run. The covered shutdown paths on Windows are stdin EOF (the runtime
+    closing the pipe, which is the ordinary case) and Ctrl+C. On POSIX this
+    handler is what makes a `kill` survivable."""
     raise KeyboardInterrupt(f"signal {signum}")
 
 
@@ -346,8 +354,15 @@ def shutdown(session: HandsSession | None, worker: Worker) -> None:
         try:
             closed = worker.run(session.abandon)
             if closed is not None:
+                # What actually happened, not what we hoped: "not held" is the
+                # normal answer on an offline machine, and a log that always
+                # claimed a release would be the first thing to mislead
+                # somebody debugging a lease that outlived its session.
                 hooklog.log_failure(
-                    "hands", f"shut down with {closed['task_id']} open; lease released")
+                    "hands",
+                    f"shut down with {closed['task_id']} open: closed as abandoned, "
+                    f"lease {closed.get('lease', 'unknown')}",
+                )
         except Exception as exc:  # noqa: BLE001 — nothing may escape a shutdown
             hooklog.log_failure("hands", f"shutdown teardown failed: {exc}", exc)
     worker.shutdown()

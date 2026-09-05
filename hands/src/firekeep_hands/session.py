@@ -319,9 +319,14 @@ class HandsSession:
             # whether the human gets their machine back. Guarded separately
             # so a failure here cannot replace the exception it is unwinding.
             try:
-                self.link.release_lease()
+                released = bool(self.link.release_lease())
             except Exception as exc:  # noqa: BLE001 — the lease is the point
                 hooklog.log_failure("hands", f"lease release failed: {exc}", exc)
+                released = False
+            # Say which of the two happened rather than let a caller assume:
+            # "not held" is the normal answer offline, and the difference
+            # matters to whoever is reading a shutdown log.
+            result["lease"] = "released" if released else "not held"
             self.last_task = dict(result)
             self._reset()
         return result
@@ -340,10 +345,13 @@ class HandsSession:
         failure is logged and swallowed: shutdown is not a place to raise."""
         if self.task_id is None:
             return None
+        # Captured up front: `task_end` clears `task_id` in its own `finally`,
+        # so reading it in the handler below logged "abandon failed for None".
+        task_id = self.task_id
         try:
             return self.task_end("abandoned", summary)
         except Exception as exc:  # noqa: BLE001 — a teardown must not raise
-            hooklog.log_failure("hands", f"abandon failed for {self.task_id}: {exc}", exc)
+            hooklog.log_failure("hands", f"abandon failed for {task_id}: {exc}", exc)
             try:
                 self.link.release_lease()
             except Exception as release_exc:  # noqa: BLE001 — the lease is the point
@@ -936,8 +944,9 @@ class HandsSession:
         }
 
     def _ensure_broker(self) -> "BrokerClient | None":
-        """Re-probe once when we have no broker: it is started by a logon
-        task / LaunchAgent and may well come up after the MCP server did, and
+        """Re-probe once when we have no broker: it is started at logon by a
+        per-user `Run` registry value on Windows or a LaunchAgent on macOS,
+        so it may well come up after the MCP server did, and
         a session that gave up at start-up would refuse every protected step
         for the rest of its life."""
         if self.broker is None:

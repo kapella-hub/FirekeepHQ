@@ -270,19 +270,24 @@ class KeepLink:
             lambda: {"resource_id": f"hands:{self.machine_id}", "fencing_token": self._fencing_token, "agent_id": self.agent_id},
         )
 
-    def release_lease(self) -> None:
+    def release_lease(self) -> bool:
         """No-op if we don't currently hold the lease — e.g. right after a
         lost `acquire_lease()` race — rather than send `relay_release` with a
         stale or foreign `fencing_token`, which would be worse than doing
-        nothing."""
+        nothing.
+
+        Returns whether a release was actually sent, so a caller reporting
+        the shutdown to a human can say which of the two happened instead of
+        claiming a release it may never have made."""
         if not self._holds_lease:
-            return
+            return False
         self._call(
             "relay",
             "relay_release",
             lambda: {"resource_id": f"hands:{self.machine_id}", "agent_id": self.agent_id, "fencing_token": self._fencing_token},
         )
         self._holds_lease = False
+        return True
 
     def post_permit_task(
         self,
