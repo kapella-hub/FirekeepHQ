@@ -152,14 +152,7 @@ class Browser:
         classifier never looked at and the human never approved. There is no
         `elementFromPoint` confirmation here, so the viewport is the hit test,
         and it refuses rather than guesses."""
-        rect, viewport = self._locate(ref, tab)
-        if _outside_viewport(rect, viewport):
-            raise HandsError(
-                "stale_ref",
-                f"{ref} is outside the viewport ({rect} in a {viewport[0]}x{viewport[1]} "
-                "page) and could not be scrolled into it — a click there would land on "
-                "something else; find again after scrolling",
-            )
+        rect = self.ensure_clickable(ref, tab=tab)
         _target_id, session = self._resolve(tab)
         x, y, w, h = rect
         cx, cy = x + w / 2, y + h / 2
@@ -174,6 +167,31 @@ class Browser:
                 {"type": event_type, "x": cx, "y": cy, "button": "left", "clickCount": 1},
                 session=session,
             )
+
+    def ensure_clickable(self, ref: str, *, tab: str | None = None) -> list[int]:
+        """Resolve `ref` and prove a click on it would land ON it, returning
+        the rect a click would use. Raises `stale_ref` otherwise.
+
+        Separate from `click` so a caller can run the check BEFORE it spends
+        anything. `HandsSession` does exactly that: a protected browser click
+        consumes the human's permit before it dispatches, so a target that
+        fails this check would otherwise burn an approval on a step that never
+        happened. Calling this first costs one extra probe round trip and
+        turns that into an ordinary refusal with the permit untouched.
+
+        Running it twice is harmless — the probe's scroll is idempotent and it
+        re-measures each time — and `click` keeps its own call, because the
+        check belongs to the operation for every caller, not only the one that
+        remembers to ask first."""
+        rect, viewport = self._locate(ref, tab)
+        if _outside_viewport(rect, viewport):
+            raise HandsError(
+                "stale_ref",
+                f"{ref} is outside the viewport ({rect} in a {viewport[0]}x{viewport[1]} "
+                "page) and could not be scrolled into it — a click there would land on "
+                "something else; find again after scrolling",
+            )
+        return rect
 
     def fill(self, ref: str, text: str, *, tab: str | None = None) -> None:
         """Inserts `text` at the caret — appends to whatever the field

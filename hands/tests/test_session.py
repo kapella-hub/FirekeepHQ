@@ -179,6 +179,10 @@ class FakeBrowser:
         self.scene = _page_scene() if scene is None else list(scene)
         self.page = dict(page or {"url": "https://shop.example/cart", "title": "Cart — Shop"})
         self.loaded = True
+        # Refs the real browser would refuse to click: present in the page but
+        # outside the viewport after the probe's scroll, so a click at their
+        # coordinates would land on something else.
+        self.offscreen: set[str] = set()
 
     @property
     def live(self) -> set[str]:
@@ -210,9 +214,17 @@ class FakeBrowser:
         return [c for c in self.scene
                 if needle in c["name"].lower() or needle in c["href"].lower()][:limit]
 
-    def click(self, ref, *, tab=None) -> None:
+    def ensure_clickable(self, ref, *, tab=None) -> list[int]:
         if ref not in self.live:
             raise HandsError("stale_ref", f"{ref} no longer exists (find again)")
+        if ref in self.offscreen:
+            raise HandsError("stale_ref", f"{ref} is outside the viewport and could not "
+                                          "be scrolled into it")
+        self.calls.append(("ensure_clickable", ref))
+        return [0, 0, 10, 10]
+
+    def click(self, ref, *, tab=None) -> None:
+        self.ensure_clickable(ref, tab=tab)     # the real Browser checks here too
         self.calls.append(("click", ref))
 
     def fill(self, ref, text, *, tab=None) -> None:
@@ -988,6 +1000,48 @@ def test_an_ordinary_web_click_needs_no_permit(session):
     assert r["ok"] is True and r["classes"] == []
     assert ("screenshot", None) not in browser.calls  # unprotected: no evidence images
     assert session.ledger.steps()[-1]["before"] is None
+
+
+def test_an_unreachable_target_never_spends_the_approval(session, store):
+    """The permit is consumed before the click is dispatched, so a target that
+    fails the viewport check inside `browser.click` would burn the human's
+    approval on a step that never happened — and the retry would need a fresh
+    chord. Everything that can refuse now runs before the consume."""
+    browser = FakeBrowser()
+    session.browser = browser
+    session.task_start("x", ["Notepad", "browser"])
+    session.browser_op("find", query="order")
+    ch = session.browser_op("click", ref="g1-d3")["needs_permit"]["challenge"]
+    store.decide(ch, "approve", via="chord")
+
+    browser.offscreen.add("g1-d3")          # scrolled out of reach in the meantime
+    r = session.browser_op("click", ref="g1-d3", permit=ch)
+
+    assert r["ok"] is False and r["error"].startswith("stale_ref")
+    assert "viewport" in r["error"]
+    assert store.get(ch).state == "approved"        # still spendable, not consumed
+    assert ("click", "g1-d3") not in browser.calls  # and never dispatched
+
+    # The proof it was not merely deferred: scroll it back and the SAME permit
+    # still works, with no second chord.
+    browser.offscreen.clear()
+    assert session.browser_op("click", ref="g1-d3", permit=ch)["ok"] is True
+    assert store.get(ch).state == "consumed"
+
+
+def test_an_unreachable_unprotected_click_is_still_a_ledgered_error(session):
+    """The pre-check runs only on the protected path. An ordinary click that
+    cannot be reached is a step that was attempted and failed, and the ledger
+    should say so rather than silently refusing before the budget is spent."""
+    browser = FakeBrowser()
+    session.browser = browser
+    session.task_start("x", ["Notepad", "browser"])
+    session.browser_op("find", query="Save")
+    browser.offscreen.add("g1-d1")
+
+    r = session.browser_op("click", ref="g1-d1")
+    assert r["ok"] is False and r["error"].startswith("stale_ref")
+    assert session.ledger.steps()[-1]["outcome"] == "error"
 
 
 def test_a_protected_browser_step_is_photographed_through_the_browser(session, store):

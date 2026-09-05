@@ -1021,6 +1021,18 @@ class HandsSession:
                           task_hosts=self.task_hosts, browser_step=True)
         if decision.verdict != "permit":
             return {"classes": decision.classes, "permit": None, "control": control}
+        # Everything that can refuse this step happens BEFORE the permit is
+        # consumed. `_gate` below spends the human's approval, and a click at
+        # an unreachable target would then fail inside `browser.click` — an
+        # approval burned on a step that never happened, needing a fresh chord
+        # to retry. One extra probe round trip buys an ordinary refusal with
+        # the permit still sitting there approved. Only for `click`: `fill`
+        # inserts at the DOM focus and has no coordinate to check.
+        if op == "click":
+            try:
+                self._require_browser().ensure_clickable(ref, tab=kwargs.get("tab"))
+            except HandsError as exc:
+                return _error(exc)
         routed = Routed(policy_action["kind"], "browser", control, None, {})
         gate = self._gate(ledger_action, routed, window, decision, kwargs.get("permit"))
         if "error" in gate or "needs_permit" in gate:

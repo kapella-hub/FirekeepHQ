@@ -581,11 +581,15 @@ straddling an edge is still clicked; only "entirely outside" refuses. A page
 that cannot report its own size yields no verdict rather than a refusal. `fill`
 is unaffected: it inserts at the DOM focus and never touches a coordinate.
 
-**One consequence to know:** on a *protected* browser click the permit is
-consumed before the click is dispatched, so an element that fails this check
-spends the human's approval on a ledgered `stale_ref` error. That is the same
-shape as a page that moves on between the scan and the click, and it fails in
-the right direction — but the approval is gone, and the retry needs a new one.
+**The check runs before the approval is spent.** A protected click consumes
+the permit before it dispatches, so a target that failed this test inside the
+click would have burned the human's approval on a step that never happened and
+made the retry need a fresh chord. On the protected path Hands therefore
+resolves the element and proves it reachable *first*: a failure comes back as
+an ordinary refusal with the permit still sitting there approved, and scrolling
+the element back into view lets the same permit be spent. An ordinary
+unprotected click keeps the old shape — it is attempted, it fails, and the
+ledger records the failed step.
 
 Controls come from a DOM probe that stamps each ref with the scan that minted it
 — `g<generation>-d<N>`, where the generation counter lives on the page and bumps
