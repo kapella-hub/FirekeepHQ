@@ -38,12 +38,18 @@ pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="node is no
 _RUNNER_PREAMBLE = r"""
 function makeElement(spec) {
     var attrs = Object.assign({}, spec.attrs || {});
+    // `rect` is mutable so `scrollIntoView` can move it, the way a real
+    // scroll changes what getBoundingClientRect reports afterwards.
+    var rect = spec.rect || { left: 0, top: 0, width: 0, height: 0 };
     return {
         tagName: spec.tag || "DIV",
         value: spec.value !== undefined ? spec.value : "",
         innerText: spec.text || "",
+        scrollIntoView: spec.scrolls_to === undefined ? undefined : function () {
+            rect = spec.scrolls_to;
+        },
         getBoundingClientRect: function () {
-            return spec.rect || { left: 0, top: 0, width: 0, height: 0 };
+            return rect;
         },
         getAttribute: function (name) {
             return Object.prototype.hasOwnProperty.call(attrs, name) ? attrs[name] : null;
@@ -53,7 +59,11 @@ function makeElement(spec) {
 }
 
 var __elements = (%(specs)s).map(makeElement);
-global.window = { getComputedStyle: function () { return { visibility: "visible" }; } };
+global.window = {
+    getComputedStyle: function () { return { visibility: "visible" }; },
+    innerWidth: %(viewport_w)s,
+    innerHeight: %(viewport_h)s,
+};
 global.document = {
     querySelectorAll: function () { return __elements; },
     querySelector: function (sel) {
@@ -68,14 +78,20 @@ global.document = {
 """
 
 
-def _run_ops(specs: list[dict], ops: list[dict]) -> list[dict]:
+def _run_ops(specs: list[dict], ops: list[dict], *, viewport=(1280, 720)) -> list[dict]:
     """Runs the probe once per entry in `ops`, all against the SAME stubbed
     `document`/`window` in one `node` process — so `window.__hands_gen`
     (and any `data-hands-ref` attributes a scan set) carry over from one op
     to the next exactly as they would across separate `Runtime.evaluate`
     calls on one real page. Returns one result per op, in order."""
     probe_source = _PROBE_PATH.read_text(encoding="utf-8")
-    script = _RUNNER_PREAMBLE % {"specs": json.dumps(specs)}
+    script = _RUNNER_PREAMBLE % {
+        "specs": json.dumps(specs),
+        # `undefined` stands for a window that cannot report its size — the
+        # probe must answer `viewport: null` rather than throw.
+        "viewport_w": json.dumps(viewport[0]) if viewport else "undefined",
+        "viewport_h": json.dumps(viewport[1]) if viewport else "undefined",
+    }
     script += "\nvar __results = [];\n"
     for op in ops:
         # The probe file is itself a single `(function () { ... })()`
@@ -97,8 +113,8 @@ def _run_ops(specs: list[dict], ops: list[dict]) -> list[dict]:
     return json.loads(completed.stdout)
 
 
-def _run_probe(specs: list[dict], hands: dict) -> dict:
-    return _run_ops(specs, [hands])[0]
+def _run_probe(specs: list[dict], hands: dict, **kw) -> dict:
+    return _run_ops(specs, [hands], **kw)[0]
 
 
 def test_probe_source_parses() -> None:
@@ -172,6 +188,53 @@ def test_focus_returns_ok_and_rect_for_a_known_ref() -> None:
 
     assert result["ok"] is True
     assert result["rect"] == [5, 6, 100, 20]
+    assert result["viewport"] == [1280, 720]
+
+
+def test_focus_scrolls_into_view_before_it_measures() -> None:
+    """`browser.click` dispatches at the centre of this rect in VIEWPORT
+    coordinates with no hit test, so the rect has to be read AFTER the scroll
+    — a pre-scroll rect would send the mouse event to wherever the element
+    used to be, which is some other element's coordinates now."""
+    specs = [
+        {"tag": "DIV", "text": "Buy", "attrs": {"data-hands-ref": "g0-d1", "onclick": "x"},
+         "rect": {"left": 10, "top": 5000, "width": 100, "height": 40},   # below the fold
+         "scrolls_to": {"left": 10, "top": 340, "width": 100, "height": 40}},
+    ]
+    result = _run_probe(specs, {"op": "focus", "ref": "g0-d1", "max_nodes": 200})
+
+    assert result["ok"] is True
+    assert result["rect"] == [10, 340, 100, 40]   # the post-scroll rect, not [10, 5000, ...]
+
+
+def test_focus_survives_an_element_that_cannot_scroll() -> None:
+    """A stub (or a real element in a container that will not scroll) has no
+    usable `scrollIntoView`. The op must still answer with the rect it has —
+    the viewport check on the Python side is what catches the consequence."""
+    specs = [
+        {"tag": "DIV", "text": "Buy", "attrs": {"data-hands-ref": "g0-d1", "onclick": "x"},
+         "rect": {"left": 10, "top": 5000, "width": 100, "height": 40}},   # no scrolls_to
+    ]
+    result = _run_probe(specs, {"op": "focus", "ref": "g0-d1", "max_nodes": 200})
+
+    assert result["ok"] is True
+    assert result["rect"] == [10, 5000, 100, 40]
+    assert result["viewport"] == [1280, 720]
+
+
+def test_focus_reports_a_null_viewport_when_the_window_cannot_say() -> None:
+    """Null means "no verdict" to `browser.click`, never "outside" — a page
+    that cannot report its size must not become one where nothing can be
+    clicked."""
+    specs = [
+        {"tag": "INPUT", "text": "", "attrs": {"data-hands-ref": "g0-d1"},
+         "rect": {"left": 5, "top": 6, "width": 100, "height": 20}},
+    ]
+    result = _run_probe(specs, {"op": "focus", "ref": "g0-d1", "max_nodes": 200},
+                        viewport=None)
+
+    assert result["ok"] is True
+    assert result["viewport"] is None
 
 
 def test_focus_returns_not_ok_for_a_well_formed_but_absent_ref() -> None:

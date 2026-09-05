@@ -554,6 +554,24 @@ re-prompted; which sites it may reach is still the allowlist's decision, per
 navigation. Every op is a ledgered step against the same budget: a task that
 clicks its way through a page has done that many things.
 
+A browser click is dispatched at a **viewport coordinate**, so the probe scrolls
+the element to the centre of the view before it measures, and the click is
+refused with `stale_ref` when the rect it reports is still entirely outside the
+viewport. That second case is an element that could not be scrolled to —
+fixed-position content parked off-screen, a transformed container — and clicking
+its coordinates anyway would land on whatever else occupies that point, which is
+not the element that was classified and approved. There is no
+`elementFromPoint` confirmation, so the viewport is the hit test. A control
+straddling an edge is still clicked; only "entirely outside" refuses. A page
+that cannot report its own size yields no verdict rather than a refusal. `fill`
+is unaffected: it inserts at the DOM focus and never touches a coordinate.
+
+**One consequence to know:** on a *protected* browser click the permit is
+consumed before the click is dispatched, so an element that fails this check
+spends the human's approval on a ledgered `stale_ref` error. That is the same
+shape as a page that moves on between the scan and the click, and it fails in
+the right direction — but the approval is gone, and the retry needs a new one.
+
 Controls come from a DOM probe that stamps each ref with the scan that minted it
 — `g<generation>-d<N>`, where the generation counter lives on the page and bumps
 once per scan. A ref from any scan but the most recent is rejected as stale

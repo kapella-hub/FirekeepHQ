@@ -130,6 +130,15 @@
         return [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)];
     }
 
+    function viewportSize() {
+        // `[w, h]`, or `null` when the page cannot say. Null means "no
+        // verdict" on the Python side rather than "outside" — a viewport this
+        // could not read must never turn every click into a refusal.
+        var w = typeof window.innerWidth === "number" ? window.innerWidth : 0;
+        var h = typeof window.innerHeight === "number" ? window.innerHeight : 0;
+        return w > 0 && h > 0 ? [Math.round(w), Math.round(h)] : null;
+    }
+
     function describe(el, ref) {
         var role = roleOf(el);
         return {
@@ -203,7 +212,37 @@
             // [onclick] div) — that must not fail the whole op, since the
             // caller (click) only needs the rect below.
         }
-        return { ok: true, rect: rectOf(el) };
+        // Focusing scrolls a focusable element into view; this makes that
+        // true for the ones focus() cannot help (a plain [onclick] div below
+        // the fold) and deterministic for the ones it does. It matters
+        // because `click` dispatches at the centre of the rect returned
+        // below, in VIEWPORT coordinates, with no hit test — so an
+        // off-viewport rect means the mouse event lands wherever those
+        // coordinates happen to be, which may be a different element than the
+        // one that was classified and approved. `behavior: "instant"`
+        // overrides a page's `scroll-behavior: smooth`, which would otherwise
+        // leave the rect below reading a position the page is still animating
+        // away from; it throws as an invalid enum on older Chrome, hence the
+        // plain retry.
+        try {
+            el.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
+        } catch (err) {
+            try {
+                el.scrollIntoView({ block: "center", inline: "nearest" });
+            } catch (err2) {
+                // Not scrollable (or a stub without the method) — the
+                // viewport check on the Python side is what catches the
+                // consequence.
+            }
+        }
+        return {
+            ok: true,
+            rect: rectOf(el),
+            // So the caller can tell an on-screen rect from one that could
+            // not be scrolled to. Sent as data rather than judged here: the
+            // refusal belongs with the other HandsErrors.
+            viewport: viewportSize(),
+        };
     }
 
     var settings = typeof __hands !== "undefined" ? __hands : {};

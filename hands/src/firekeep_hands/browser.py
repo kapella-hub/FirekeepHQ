@@ -41,6 +41,31 @@ from .backends.base import HandsError
 _PROBE_MAX_NODES = 500
 
 
+def _is_size(value: object) -> bool:
+    """A well-formed `[width, height]` with both positive."""
+    return (
+        isinstance(value, (list, tuple))
+        and len(value) == 2
+        and all(isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0
+                for v in value)
+    )
+
+
+def _outside_viewport(rect: object, viewport: object) -> bool:
+    """True only when `rect` lies ENTIRELY outside `viewport`.
+
+    Entirely, not partly: a control straddling the bottom edge is still the
+    control the human was shown, and refusing it would turn a working click
+    into a puzzle. A viewport the probe could not report (`None`) yields no
+    verdict at all — a page that cannot say how big it is must not become a
+    page where nothing can be clicked."""
+    if not _is_size(viewport) or not (isinstance(rect, (list, tuple)) and len(rect) == 4):
+        return False
+    x, y, w, h = rect
+    width, height = viewport
+    return x + w <= 0 or y + h <= 0 or x >= width or y >= height
+
+
 def _load_probe_source() -> str:
     return (resources.files("firekeep_hands") / "_dom_probe.js").read_text(encoding="utf-8")
 
@@ -116,7 +141,25 @@ class Browser:
     # -- acting on a control -----------------------------------------------
 
     def click(self, ref: str, *, tab: str | None = None) -> None:
-        rect = self._locate(ref, tab)
+        """A mouse event at the centre of the rect the probe just reported.
+
+        The probe scrolls the element into view before measuring, so the
+        common case is a rect in the middle of the viewport. An element that
+        is STILL outside it afterwards is one that could not be scrolled to —
+        fixed-position content parked off-screen, a transformed container — and
+        clicking its coordinates anyway would dispatch at a point occupied by
+        some other element, or by nothing: the click would land somewhere the
+        classifier never looked at and the human never approved. There is no
+        `elementFromPoint` confirmation here, so the viewport is the hit test,
+        and it refuses rather than guesses."""
+        rect, viewport = self._locate(ref, tab)
+        if _outside_viewport(rect, viewport):
+            raise HandsError(
+                "stale_ref",
+                f"{ref} is outside the viewport ({rect} in a {viewport[0]}x{viewport[1]} "
+                "page) and could not be scrolled into it — a click there would land on "
+                "something else; find again after scrolling",
+            )
         _target_id, session = self._resolve(tab)
         x, y, w, h = rect
         cx, cy = x + w / 2, y + h / 2
@@ -137,7 +180,11 @@ class Browser:
         already contains, exactly like a person typing. Does not select-all
         or clear first; see the module docstring if the caller wants a
         replace instead of an insert."""
-        self._locate(ref, tab)  # focuses the element; raises stale_ref if gone
+        # Focuses the element; raises stale_ref if gone. No viewport check:
+        # `Input.insertText` goes to whatever has DOM focus and never touches a
+        # coordinate, so an off-screen field is a fine target for a fill and
+        # only a bad one for a click.
+        self._locate(ref, tab)
         _target_id, session = self._resolve(tab)
         self._ensure_transport().send("Input.insertText", {"text": text}, session=session)
 
@@ -154,16 +201,18 @@ class Browser:
 
     # -- internals: the DOM probe -------------------------------------------
 
-    def _locate(self, ref: str, tab: str | None) -> list[int]:
-        """The current `[x, y, w, h]` rect for `ref`, via the probe's
-        "focus" op. Used by both `click` (which only needs the rect) and
-        `fill` (which also wants the DOM focus `Input.insertText` requires) —
+    def _locate(self, ref: str, tab: str | None) -> tuple[list[int], list[int] | None]:
+        """The current `[x, y, w, h]` rect for `ref` and the page's viewport
+        size, via the probe's "focus" op. Used by both `click` (which needs
+        the rect, and the viewport to check it against) and `fill` (which
+        wants the DOM focus `Input.insertText` requires, and needs neither) —
         see `_dom_probe.js` for why one op serves both."""
         data = self._run_probe(tab, "focus", ref=ref)
         rect = data.get("rect")
         if not data.get("ok") or not rect:
             raise HandsError("stale_ref", f"{ref} no longer exists (find again)")
-        return rect
+        viewport = data.get("viewport")
+        return rect, (viewport if _is_size(viewport) else None)
 
     def _run_probe(self, tab: str | None, op: str, **extra) -> dict:
         _target_id, session = self._resolve(tab)

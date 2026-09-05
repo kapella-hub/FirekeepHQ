@@ -48,6 +48,10 @@ class FakeTransport:
         # ref -> rect, for the fake "focus" op that click()/fill() call to
         # get a fresh rect / prove the ref still resolves.
         self.known_refs = {"d1": [10, 20, 100, 40], "d2": [5, 5, 200, 30]}
+        # What the probe reports for `window.innerWidth/innerHeight`. `None`
+        # stands for a page that could not say, which must not turn every
+        # click into a refusal.
+        self.viewport: list[int] | None = [1280, 720]
         self.wait_event_result: dict = {}
 
     def send(self, method: str, params: dict | None = None, *, session: str | None = None,
@@ -79,7 +83,7 @@ class FakeTransport:
             return {"controls": self.find_controls, "truncated": False}
         if op == "focus":
             rect = self.known_refs.get(payload.get("ref"))
-            return {"ok": rect is not None, "rect": rect}
+            return {"ok": rect is not None, "rect": rect, "viewport": self.viewport}
         raise AssertionError(f"FakeTransport got an unexpected probe op: {op!r}")
 
     def wait_event(self, name: str, *, session: str | None, timeout: float) -> dict | None:
@@ -218,6 +222,62 @@ def test_click_unknown_ref_raises_stale_ref(browser: Browser) -> None:
     with pytest.raises(HandsError) as excinfo:
         browser.click("d999")
     assert excinfo.value.code == "stale_ref"
+
+
+def test_a_click_is_refused_when_the_rect_is_entirely_off_the_viewport(
+    browser: Browser, fake: FakeTransport
+) -> None:
+    """The probe scrolls the element into view before measuring, so a rect
+    still outside the viewport is one that could NOT be scrolled to. Clicking
+    its coordinates would dispatch at a point some other element occupies —
+    the click would land somewhere the classifier never looked at and the
+    human never approved. There is no elementFromPoint confirmation, so the
+    viewport is the hit test."""
+    fake.known_refs["d1"] = [10, 5000, 100, 40]      # far below a 720-high page
+
+    with pytest.raises(HandsError) as excinfo:
+        browser.click("d1")
+    assert excinfo.value.code == "stale_ref"
+    assert "outside the viewport" in str(excinfo.value)
+    assert fake.calls_named("Input.dispatchMouseEvent") == []   # nothing dispatched
+
+
+@pytest.mark.parametrize("rect", [
+    [10, 700, 100, 40],      # straddles the bottom edge
+    [-20, 20, 100, 40],      # straddles the left edge
+    [1240, 20, 100, 40],     # straddles the right edge
+])
+def test_a_control_straddling_an_edge_is_still_clicked(
+    browser: Browser, fake: FakeTransport, rect
+) -> None:
+    """Entirely outside, not partly: a control half off the bottom is still
+    the control the human was shown, and refusing it would turn a working
+    click into a puzzle."""
+    fake.known_refs["d1"] = rect
+    browser.click("d1")
+    assert fake.calls_named("Input.dispatchMouseEvent")
+
+
+@pytest.mark.parametrize("viewport", [None, [], [0, 0], "1280x720", [1280]])
+def test_a_page_that_cannot_report_its_size_still_clicks(
+    browser: Browser, fake: FakeTransport, viewport
+) -> None:
+    """No verdict, not "outside". A page that cannot say how big it is must
+    not become a page where nothing can be clicked."""
+    fake.viewport = viewport
+    fake.known_refs["d1"] = [10, 5000, 100, 40]
+    browser.click("d1")
+    assert fake.calls_named("Input.dispatchMouseEvent")
+
+
+def test_an_off_viewport_field_can_still_be_filled(
+    browser: Browser, fake: FakeTransport
+) -> None:
+    """`Input.insertText` goes to whatever has DOM focus and never touches a
+    coordinate, so the viewport check belongs to `click` alone."""
+    fake.known_refs["d2"] = [10, 5000, 200, 30]
+    browser.fill("d2", "hello")
+    assert fake.calls_named("Input.insertText") == [({"text": "hello"}, "S1")]
 
 
 def test_fill_focuses_then_inserts_text(browser: Browser, fake: FakeTransport) -> None:
