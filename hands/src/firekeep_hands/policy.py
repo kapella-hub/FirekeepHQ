@@ -85,6 +85,11 @@ def _classify_with_reasons(
     title = window.title if window else ""
     name_and_title = " ".join(t for t in (ctrl_text, title) if t)
 
+    # `send` reads the clicked control's own name, not the window title: a
+    # bare "OK"/"Yes" button doesn't say what it sends, the control that was
+    # actually invoked does. `money`/`destroy`/`install` also read the title
+    # because a confirmation dialog puts the meaning there ("Confirm
+    # payment", "Delete file?") and leaves a generic "OK"/"Yes" on the button.
     if kind in ("invoke", "click"):
         m = _SEND_RE.search(ctrl_text)
         if m:
@@ -152,8 +157,15 @@ def classify(
     return tuple(c for c in CLASSES if c in reasons)
 
 
-def _parse_until(until: str) -> dt.datetime:
-    return dt.datetime.strptime(until, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
+def _parse_until(until: str) -> dt.datetime | None:
+    """None for anything that isn't a well-formed ISO-8601 UTC timestamp —
+    a malformed or empty `until` must not raise inside `decide()`, the
+    safety gate every action passes through; callers treat None as expired,
+    the same as a timestamp already in the past."""
+    try:
+        return dt.datetime.strptime(until, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
+    except (TypeError, ValueError):
+        return None
 
 
 def _is_remembered(
@@ -169,7 +181,8 @@ def _is_remembered(
     app = window.app if window else None
     if entry.app != "*" and entry.app != app:
         return False
-    if _parse_until(entry.until) <= now:
+    until = _parse_until(entry.until)
+    if until is None or until <= now:
         return False
     match = entry.match.lower()
     haystacks = [h.lower() for h in (control.name if control else None, url) if h]

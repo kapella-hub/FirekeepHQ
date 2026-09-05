@@ -43,3 +43,39 @@ def test_remember_writes_a_30_day_entry():
     pol = Policy([], [], []); now = dt.datetime(2026, 9, 5, tzinfo=dt.timezone.utc)
     policy.remember(pol, "money", "Amazon", "place order", now=now)
     assert pol.remembered[0].until == "2026-10-05T00:00:00Z"
+
+@pytest.mark.parametrize("until", ["not-a-date", ""])
+def test_malformed_remembered_until_does_not_raise_and_stays_permit(until):
+    pol = Policy([], [], [Remembered("send", "Mail", "send", until)])
+    d = policy.decide({"kind": "invoke", "ref": "r"}, C("Send"), W, None, pol, ["Mail"])
+    assert d.verdict == "permit"
+
+def _window(app):
+    return WindowInfo(app, f"{app} window", 1, Rect(0, 0, 800, 600))
+
+@pytest.mark.parametrize("chord,app,expected", [
+    ("delete", "Explorer", ("destroy",)),
+    ("delete", "Finder", ("destroy",)),
+    ("delete", "Notepad", ()),
+    ("shift+delete", "Explorer", ("destroy",)),
+    ("shift+delete", "Notepad", ()),
+    ("cmd+backspace", "Finder", ("destroy",)),
+    ("cmd+backspace", "Notepad", ()),
+    ("cmd+delete", "Finder", ("destroy",)),
+    ("cmd+delete", "Notepad", ()),
+])
+def test_destroy_chord_carve_out_is_scoped_to_explorer_and_finder(chord, app, expected):
+    win = _window(app)
+    assert policy.classify({"kind": "key", "chord": chord}, None, win, None, Policy([], [], []), [app]) == expected
+
+@pytest.mark.parametrize("chord", ["cmd+enter", "cmd+shift+d"])
+def test_send_chords_beyond_ctrl_enter(chord):
+    assert policy.classify({"kind": "key", "chord": chord}, None, W, None, Policy([], [], []), ["Mail"]) == ("send",)
+
+def test_clipboard_secret_token_shape():
+    assert policy.classify({"kind": "clipboard_set", "text": "a" * 32}, None, W, None, Policy([], [], []), ["Mail"]) == ("credential",)
+    assert policy.classify({"kind": "clipboard_set", "text": "hello world"}, None, W, None, Policy([], [], []), ["Mail"]) == ()
+
+def test_install_via_open_app_path_outside_policy_apps():
+    app = "C:\\installers\\setup.msi"
+    assert policy.classify({"kind": "open_app", "app": app}, None, W, None, Policy([], [], []), [app]) == ("install",)

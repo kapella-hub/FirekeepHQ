@@ -17,8 +17,9 @@ from typing import Protocol
 
 class HandsError(Exception):
     """A Backend operation failed. `code` is one of "stale_ref", "not_found",
-    "unsupported", "elevated_target", "permission", "backend" — a closed set
-    callers (and the approval broker) can branch on without parsing text."""
+    "unsupported", "elevated_target", "permission", "backend", "invalid_action"
+    — a closed set callers (and the approval broker) can branch on without
+    parsing text."""
 
     def __init__(self, code: str, message: str = ""):
         super().__init__(message or code)
