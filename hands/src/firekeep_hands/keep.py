@@ -23,7 +23,7 @@ import json
 import os
 from typing import Any
 
-from firekeep_client import hooklog
+from firekeep_client import hooklog, resolver
 from firekeep_client.hooks._mcp import call_tool
 from firekeep_client.transport import TransportError
 
@@ -31,11 +31,33 @@ _TIMEOUT = 5.0
 _DEFAULT_LEASE_TTL_MINUTES = 30
 
 
+def _no_keep_configured() -> bool:
+    """True when this machine has no Keep to talk to.
+
+    `resolver.resolve` is the cheapest honest answer: it reads the config file
+    and raises `ConfigError` for a missing file, a missing `[server]` section
+    or a malformed entry, and it performs no network I/O — so this costs one
+    stat and a parse, not a timeout. Any other exception counts the same way;
+    a resolver that cannot say where the Keep is means there is no Keep."""
+    try:
+        resolver.resolve("relay")
+    except Exception:  # noqa: BLE001 - every failure means "no Keep here"
+        return True
+    return False
+
+
 class KeepLink:
     def __init__(self, *, agent_id: str, machine_id: str, offline: bool | None = None, session_id: str = ""):
         self.agent_id = agent_id
         self.machine_id = machine_id
-        self.offline = offline if offline is not None else os.environ.get("FIREKEEP_HANDS_OFFLINE") == "1"
+        # An explicit argument always wins. Otherwise offline is the env
+        # switch OR simply having nowhere to call: an unconfigured machine
+        # that thinks it is online advertises a phone approval path it does
+        # not have and retries a doomed post every few seconds per permit.
+        if offline is not None:
+            self.offline = offline
+        else:
+            self.offline = os.environ.get("FIREKEEP_HANDS_OFFLINE") == "1" or _no_keep_configured()
         self.session_id = session_id
         self._fencing_token = 0
         self._holds_lease = False

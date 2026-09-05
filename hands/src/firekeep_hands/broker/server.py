@@ -45,6 +45,13 @@ log = logging.getLogger(__name__)
 _MAX_BODY = 16 * 1024
 _DRAIN_CAP = 1024 * 1024
 
+# Socket timeout per connection. Without it a client that opens a connection
+# and then goes quiet — mid-header, or mid-body while `_drain` is reading —
+# holds a handler thread for as long as it likes, and enough of them starve
+# the broker of threads at the moment a human is trying to approve something.
+# Generous for loopback, where a legitimate request completes in microseconds.
+_HANDLER_TIMEOUT_S = 10.0
+
 _CONSUME_ROUTE = re.compile(r"^/permits/([^/]{1,256})/consume$")
 _PERMIT_ROUTE = re.compile(r"^/permits/([^/]{1,256})$")
 
@@ -69,6 +76,9 @@ class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.0"
     server_version = "FirekeepHandsBroker"
     sys_version = ""
+    # `StreamRequestHandler.setup` turns this into a socket timeout, which
+    # bounds the header read and every `rfile.read` in `_drain` alike.
+    timeout = _HANDLER_TIMEOUT_S
 
     def log_message(self, fmt, *args):  # noqa: A002 - stdlib signature
         """Silence. The broker runs detached with its output at DEVNULL, and
@@ -170,18 +180,30 @@ class _Handler(BaseHTTPRequestHandler):
         self._drain()
         return self._json(404, {"error": "not found"})
 
+    def _status_only(self, status: int) -> None:
+        """Headers, no body — what a HEAD response is allowed to be."""
+        self.send_response(status)
+        self.send_header("Content-Length", "0")
+        self.send_header("Connection", "close")
+        self.end_headers()
+
     def _unsupported(self):
-        """Authenticate first, then refuse. A caller without the token learns
-        nothing about which methods or paths exist."""
-        if not self._authorised():
-            self._drain()
-            return self._json(401, {"error": "unauthorised"})
+        """Authenticate first, then refuse. Every method routes through here
+        rather than falling to the stdlib's unauthenticated 501, so a caller
+        without the token learns nothing about which methods or paths exist —
+        including through HEAD and OPTIONS, which have no handler of their
+        own in `BaseHTTPRequestHandler`."""
         self._drain()
-        return self._json(405, {"error": "method not allowed"})
+        status = 405 if self._authorised() else 401
+        if self.command == "HEAD":
+            return self._status_only(status)
+        return self._json(status, {"error": "method not allowed" if status == 405 else "unauthorised"})
 
     do_PUT = _unsupported
     do_PATCH = _unsupported
     do_DELETE = _unsupported
+    do_HEAD = _unsupported
+    do_OPTIONS = _unsupported
 
     def _create_permit(self, data: dict):
         challenge = data.get("challenge")
@@ -216,6 +238,20 @@ class _Handler(BaseHTTPRequestHandler):
             return self._json(200, {"state": "consumed"})
         current = store.get(challenge)
         return self._json(409, {"state": current.state if current else "expired"})
+
+
+class _QuietHTTPServer(ThreadingHTTPServer):
+    """`ThreadingHTTPServer` whose per-connection failures are logged, not
+    printed.
+
+    A client that hangs up mid-response — the ordinary result of the timeout
+    above firing, or of anyone pressing Ctrl+C in a `curl` — makes the
+    default `handle_error` print a full traceback to stderr. On a broker run
+    in the foreground that reads like a crash when it is routine, and the
+    connection is already gone either way."""
+
+    def handle_error(self, request, client_address):
+        log.debug("broker connection from %s failed", client_address, exc_info=True)
 
 
 class BrokerServer:
@@ -261,8 +297,10 @@ class BrokerServer:
         if self._httpd is not None:
             raise RuntimeError("broker server already started")
         self.token = secrets.token_urlsafe(32)
-        handler = type("_BoundHandler", (_Handler,), {"broker": self})
-        httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        handler = type(
+            "_BoundHandler", (_Handler,), {"broker": self, "timeout": _HANDLER_TIMEOUT_S}
+        )
+        httpd = _QuietHTTPServer(("127.0.0.1", 0), handler)
         httpd.daemon_threads = True
         self._httpd = httpd
         self.port = int(httpd.server_address[1])
@@ -367,6 +405,31 @@ def _chord_listener(cfg, store: PermitStore, listeners: dict[str, str]) -> threa
     return thread
 
 
+def build_runtime(cfg, link) -> tuple[PermitStore, dict[str, str], PhoneBridge | None]:
+    """Everything `run()` wires up before it binds a socket, in one testable
+    place: the permit store, what can approve, and the phone bridge if it is
+    both wanted and possible.
+
+    The three `phone` states are distinct on purpose, because the human
+    reading the doctor row needs to know which one they are in:
+    `off` (not opted in — the default, see `phone.py` for why),
+    `offline` (opted in, but this machine has no Keep to post tasks to),
+    `active` (opted in and connected)."""
+    store = PermitStore(ttl_s=cfg.permit_ttl_s)
+    listeners = {"chord": "unavailable", "phone": "off"}
+    _chord_listener(cfg, store, listeners)
+
+    bridge = None
+    if getattr(cfg, "phone_approvals", False):
+        if link.offline:
+            listeners["phone"] = "offline"
+        else:
+            bridge = PhoneBridge(store, link)
+            bridge.start()
+            listeners["phone"] = "active"
+    return store, listeners, bridge
+
+
 def run(argv=None) -> int:
     """The broker process. Blocks until SIGINT/SIGTERM, then stops cleanly.
 
@@ -375,20 +438,11 @@ def run(argv=None) -> int:
     main thread sits in an uninterruptible wait."""
     _configure_logging()
     cfg = load_config()
-    store = PermitStore(ttl_s=cfg.permit_ttl_s)
-    listeners = {"chord": "unavailable", "phone": "offline"}
-
-    _chord_listener(cfg, store, listeners)
-
-    bridge = None
     link = KeepLink(
         agent_id=os.environ.get("NEXUS_AGENT_ID") or f"hands-{machine_id()[:8]}",
         machine_id=machine_id(),
     )
-    if not link.offline:
-        bridge = PhoneBridge(store, link)
-        bridge.start()
-        listeners["phone"] = "active"
+    store, listeners, bridge = build_runtime(cfg, link)
 
     server = BrokerServer(store, chord=cfg.chord, listeners=listeners)
     port, _token = server.start()

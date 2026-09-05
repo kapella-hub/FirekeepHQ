@@ -21,6 +21,7 @@ on Windows and Linux CI too.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Callable
 
 from ... import HANDS_TAG
@@ -90,6 +91,12 @@ class ChordTracker:
             raise ValueError(f"no macOS keycode for {key!r}")
         return mask, keycode
 
+    def classify(self, keycode: int) -> str:
+        """`"trigger"` | `"other"` — what may be logged about a key without
+        logging the key. (No `"modifier"`: the tap watches key-down events and
+        modifiers arrive as flags on them, not as keycodes of their own.)"""
+        return "trigger" if keycode in (self._approve[1], self._deny[1]) else "other"
+
     def feed(self, keycode: int, flags: int, real: bool) -> str | None:
         if not real:
             return None
@@ -100,6 +107,32 @@ class ChordTracker:
             if keycode == required_keycode and (flags & mask) == mask:
                 return decision
         return None
+
+
+def trace_keys_enabled() -> bool:
+    """Read per call, not at import: the answer is a deliberate opt-in a
+    human makes for one debugging run."""
+    return os.environ.get("FIREKEEP_HANDS_TRACE_KEYS") == "1"
+
+
+def log_key_event(tracker: ChordTracker, keycode: int, flags: int, user_data: int,
+                  source_state_id: int) -> None:
+    """One DEBUG line per key, redacted.
+
+    `flags`, `userData` and `sourceStateID` are all logged in full because
+    they are exactly what the unverified source-state claim has to be
+    measured against in Task 15, and none of them says which key was struck.
+    The keycode does, so it is a class (`trigger`/`other`) unless
+    `FIREKEEP_HANDS_TRACE_KEYS=1` — the broker runs for months autostarted
+    and must not become a log of the human's passwords."""
+    if not log.isEnabledFor(logging.DEBUG):
+        return
+    if trace_keys_enabled():
+        log.debug("key keycode=%s flags=0x%X userData=0x%X sourceStateID=%s",
+                  keycode, flags, user_data, source_state_id)
+    else:
+        log.debug("key kind=%s flags=0x%X userData=0x%X sourceStateID=%s",
+                  tracker.classify(keycode), flags, user_data, source_state_id)
 
 
 def run_listener(tracker: ChordTracker, on_decision: Callable[[str], None]) -> None:
@@ -141,10 +174,7 @@ def run_listener(tracker: ChordTracker, on_decision: Callable[[str], None]) -> N
             flags = Quartz.CGEventGetFlags(event)
             user_data = Quartz.CGEventGetIntegerValueField(event, Quartz.kCGEventSourceUserData)
             source_state = Quartz.CGEventGetIntegerValueField(event, Quartz.kCGEventSourceStateID)
-            log.debug(
-                "key keycode=%s flags=0x%X userData=0x%X sourceStateID=%s",
-                keycode, flags, user_data, source_state,
-            )
+            log_key_event(tracker, keycode, flags, user_data, source_state)
             decision = tracker.feed(keycode, flags, event_is_real(user_data, source_state))
             if decision:
                 on_decision(decision)

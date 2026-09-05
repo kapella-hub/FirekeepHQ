@@ -29,6 +29,11 @@ class HandsConfig:
     chord: str = "ctrl+alt+y"
     deny_chord: str = "ctrl+alt+n"
     permit_ttl_s: int = 60
+    # Off until relay records WHO completed a task. A relay task can be
+    # completed by anyone holding the workspace key — the driving agent
+    # included, through the same MCP surface it already has — so with this on,
+    # the approval gate is only as strong as the key. See broker/phone.py.
+    phone_approvals: bool = False
     max_steps: int = 400
     max_nodes: int = 200
     text_budget: int = 4000

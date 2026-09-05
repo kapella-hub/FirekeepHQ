@@ -1,5 +1,43 @@
-from firekeep_client import transport
+from firekeep_client import resolver, transport
 from firekeep_hands import keep
+
+
+def test_a_machine_with_no_keep_is_offline_without_being_told(monkeypatch):
+    """An unconfigured machine that thinks it is online advertises a phone
+    approval path it does not have and retries a doomed post every few
+    seconds per permit. `resolver.resolve` answers from the config file with
+    no network I/O, so asking is nearly free."""
+    monkeypatch.delenv("FIREKEEP_HANDS_OFFLINE", raising=False)
+    monkeypatch.setattr(resolver, "resolve", lambda *a, **k: (_ for _ in ()).throw(
+        resolver.ConfigError("firekeep config not found")))
+    assert keep.KeepLink(agent_id="a", machine_id="m").offline is True
+
+
+def test_a_configured_machine_is_online(monkeypatch):
+    monkeypatch.delenv("FIREKEEP_HANDS_OFFLINE", raising=False)
+    monkeypatch.setattr(resolver, "resolve", lambda *a, **k: object())
+    assert keep.KeepLink(agent_id="a", machine_id="m").offline is False
+
+
+def test_any_resolver_failure_counts_as_no_keep(monkeypatch):
+    monkeypatch.delenv("FIREKEEP_HANDS_OFFLINE", raising=False)
+    monkeypatch.setattr(resolver, "resolve", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("odd")))
+    assert keep.KeepLink(agent_id="a", machine_id="m").offline is True
+
+
+def test_an_explicit_offline_argument_wins_over_both(monkeypatch):
+    monkeypatch.delenv("FIREKEEP_HANDS_OFFLINE", raising=False)
+    monkeypatch.setattr(resolver, "resolve", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("odd")))
+    assert keep.KeepLink(agent_id="a", machine_id="m", offline=False).offline is False
+    monkeypatch.setattr(resolver, "resolve", lambda *a, **k: object())
+    monkeypatch.setenv("FIREKEEP_HANDS_OFFLINE", "1")
+    assert keep.KeepLink(agent_id="a", machine_id="m", offline=False).offline is False
+
+
+def test_the_env_switch_still_forces_offline_on_a_configured_machine(monkeypatch):
+    monkeypatch.setenv("FIREKEEP_HANDS_OFFLINE", "1")
+    monkeypatch.setattr(resolver, "resolve", lambda *a, **k: object())
+    assert keep.KeepLink(agent_id="a", machine_id="m").offline is True
 
 
 def test_offline_makes_every_call_a_noop(monkeypatch):

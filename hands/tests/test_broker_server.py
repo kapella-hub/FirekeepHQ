@@ -1,6 +1,7 @@
 import json, urllib.request, urllib.error
 import pytest
 from firekeep_hands import paths
+from firekeep_hands.broker import server as server_module
 from firekeep_hands.broker.permits import PermitStore
 from firekeep_hands.broker.server import BrokerServer
 from firekeep_hands.broker.client import BrokerClient
@@ -82,6 +83,25 @@ def test_every_route_rejects_a_missing_or_wrong_bearer(broker):
     assert exc.value.code == 401
 
 
+def test_head_and_options_go_through_the_same_bearer_gate(broker):
+    """Without these, the stdlib answers HEAD and OPTIONS with an
+    unauthenticated 501 — a probe that tells an unauthenticated caller the
+    broker is there."""
+    srv, store, port, token = broker
+    for method in ("HEAD", "OPTIONS"):
+        assert _req(port, "wrong-token", method, "/health")[0] == 401
+        assert _req(port, token, method, "/health")[0] == 405
+    # HEAD must not carry a body, whatever the status
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/health", method="HEAD",
+                                 headers={"Authorization": f"Bearer {token}"})
+    try:
+        urllib.request.urlopen(req, timeout=2)
+        body = b""
+    except urllib.error.HTTPError as exc:
+        body = exc.read()
+    assert body == b""
+
+
 def test_there_is_no_route_that_approves_a_permit(broker):
     """The whole point of the broker: nothing over HTTP can approve. Only a
     real chord or the phone bridge writes `approved`."""
@@ -155,6 +175,53 @@ def test_broker_json_is_written_privately(isolated_home):
             assert stat.S_IMODE(info.stat().st_mode) == 0o600
     finally:
         srv.stop()
+
+
+def test_a_stalled_client_cannot_hold_a_handler_thread_forever(isolated_home, monkeypatch):
+    """A connection that goes quiet mid-request must be dropped. Enough of
+    them otherwise starve the broker of threads at the moment a human is
+    trying to approve something."""
+    import socket
+    import time
+
+    monkeypatch.setattr(server_module, "_HANDLER_TIMEOUT_S", 0.5)
+    srv = BrokerServer(PermitStore(ttl_s=60), chord="ctrl+alt+y",
+                       listeners={"chord": "unavailable", "phone": "off"})
+    port, _token = srv.start()
+    sock = socket.create_connection(("127.0.0.1", port), timeout=5)
+    try:
+        sock.sendall(b"GET /health HTTP/1.0\r\n")   # headers deliberately never terminated
+        started = time.monotonic()
+        sock.settimeout(5)
+        assert sock.recv(1024) == b""               # server gave up and closed
+        assert time.monotonic() - started < 4
+    finally:
+        sock.close()
+        srv.stop()
+
+
+def test_a_dropped_connection_does_not_print_a_traceback(isolated_home, capsys):
+    """The ordinary consequence of the timeout above firing. The stdlib
+    prints a full traceback for it, which on a foreground broker reads like a
+    crash when the connection is simply gone."""
+    srv = BrokerServer(PermitStore(ttl_s=60), chord="ctrl+alt+y",
+                       listeners={"chord": "unavailable", "phone": "off"})
+    srv.start()
+    try:
+        capsys.readouterr()
+        try:
+            raise ConnectionAbortedError("client hung up")
+        except ConnectionAbortedError:
+            srv._httpd.handle_error(None, ("127.0.0.1", 1234))
+        captured = capsys.readouterr()
+        assert captured.err == "" and "Traceback" not in captured.out
+    finally:
+        srv.stop()
+
+
+def test_the_shipped_handler_timeout_is_bounded():
+    assert 0 < server_module._HANDLER_TIMEOUT_S <= 30
+    assert server_module._Handler.timeout == server_module._HANDLER_TIMEOUT_S
 
 
 def test_client_wait_gives_up_on_an_unknown_challenge(broker):

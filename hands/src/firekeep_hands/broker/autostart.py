@@ -141,9 +141,19 @@ def uninstall() -> None:
 def _stop_running_broker() -> None:
     """Terminate the broker described by broker.json, then remove the file.
 
-    The pid is only trusted when the broker at that port answers /health with
-    the token from the same file: pids are recycled, and a stale file must
-    not become an instruction to kill some unrelated process."""
+    What is actually checked, stated exactly: that *a* broker is listening on
+    the port in this file and accepts the token in this file. That is strong
+    evidence the file is current rather than a leftover from a process that
+    died — a stale file's port is usually closed or held by something that
+    rejects the token — so it is what stands between "uninstall" and killing
+    an unrelated process that inherited a recycled pid.
+
+    It is not proof that the pid field names the listening process. The pid
+    and the port were written together by the same broker in the same file,
+    and nothing but a broker writes this file, so they agree in every case
+    short of a corrupted or hand-edited `broker.json`. The residual is one
+    SIGTERM to a wrong pid in that case, which is why the kill is guarded by
+    the health check rather than done on the pid alone."""
     path = paths.broker_info_path()
     try:
         info = json.loads(path.read_text(encoding="utf-8"))

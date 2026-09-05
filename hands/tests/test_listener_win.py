@@ -1,7 +1,9 @@
+import logging
+
 import pytest
 
 from firekeep_hands.broker import parse_chord
-from firekeep_hands.broker.listeners.win import ChordTracker, kb_event_is_real
+from firekeep_hands.broker.listeners.win import ChordTracker, kb_event_is_real, log_key_event
 
 
 def test_injected_flags_are_not_real():
@@ -113,6 +115,48 @@ def test_parse_chord_refuses_anything_a_human_could_press_by_accident():
 def test_an_unparseable_chord_is_refused_at_construction():
     with pytest.raises(ValueError):
         ChordTracker("y", "n")
+
+
+def test_debug_logging_does_not_record_which_key_was_pressed(caplog, monkeypatch):
+    """The broker watches every keystroke on the machine and is meant to run
+    autostarted for months. DEBUG must not turn it into a log of the human's
+    passwords, so only the class of the key is recorded."""
+    monkeypatch.delenv("FIREKEEP_HANDS_TRACE_KEYS", raising=False)
+    t = ChordTracker("ctrl+alt+y", "ctrl+alt+n")
+    with caplog.at_level(logging.DEBUG, logger="firekeep_hands.broker.listeners.win"):
+        for vk in (ord("P"), ord("A"), ord("S"), ord("W"), 0x30, 0x31):   # a "password"
+            log_key_event(t, vk, True, True, 0x00)
+    messages = "\n".join(r.getMessage() for r in caplog.records)
+    assert messages                                 # it did log something
+    assert "vk=" not in messages
+    for vk in (ord("P"), ord("A"), ord("S"), ord("W"), 0x30, 0x31):
+        assert f"0x{vk:02X}" not in messages and str(vk) not in messages
+    assert "kind=other" in messages and "real=True" in messages
+
+
+def test_the_key_class_is_still_enough_to_debug_a_chord(caplog, monkeypatch):
+    monkeypatch.delenv("FIREKEEP_HANDS_TRACE_KEYS", raising=False)
+    t = ChordTracker("ctrl+alt+y", "ctrl+alt+n")
+    with caplog.at_level(logging.DEBUG, logger="firekeep_hands.broker.listeners.win"):
+        log_key_event(t, 0xA2, True, True, 0x00)
+        log_key_event(t, ord("Y"), True, False, 0x10)
+    assert "kind=modifier" in caplog.text
+    assert "kind=trigger" in caplog.text and "flags=0x10 real=False" in caplog.text
+
+
+def test_raw_key_codes_need_an_explicit_opt_in(caplog, monkeypatch):
+    monkeypatch.setenv("FIREKEEP_HANDS_TRACE_KEYS", "1")
+    t = ChordTracker("ctrl+alt+y", "ctrl+alt+n")
+    with caplog.at_level(logging.DEBUG, logger="firekeep_hands.broker.listeners.win"):
+        log_key_event(t, ord("P"), True, True, 0x00)
+    assert "vk=0x50" in caplog.text
+
+
+def test_classify_names_only_the_three_kinds():
+    t = ChordTracker("ctrl+alt+y", "ctrl+alt+n")
+    assert t.classify(0xA2) == "modifier" and t.classify(0x12) == "modifier"
+    assert t.classify(ord("Y")) == "trigger" and t.classify(ord("N")) == "trigger"
+    assert t.classify(ord("P")) == "other"
 
 
 def test_nothing_windows_specific_is_imported_at_module_import():

@@ -1,7 +1,11 @@
+import logging
+
 import pytest
 
 from firekeep_hands import HANDS_TAG
-from firekeep_hands.broker.listeners.mac import ChordTracker, event_is_real, KEYCODES, FLAG_CONTROL, FLAG_ALT
+from firekeep_hands.broker.listeners.mac import (
+    ChordTracker, event_is_real, log_key_event, KEYCODES, FLAG_CONTROL, FLAG_ALT,
+)
 
 
 def test_tagged_or_non_hid_events_are_not_real():
@@ -63,6 +67,48 @@ def test_a_chord_needing_command_needs_the_command_flag():
 def test_an_unparseable_chord_is_refused_at_construction():
     with pytest.raises(ValueError):
         ChordTracker("y", "n")
+
+
+def test_debug_logging_does_not_record_which_key_was_pressed(caplog, monkeypatch):
+    monkeypatch.delenv("FIREKEEP_HANDS_TRACE_KEYS", raising=False)
+    t = ChordTracker("ctrl+alt+y", "ctrl+alt+n")
+    typed = [KEYCODES["p"], KEYCODES["a"], KEYCODES["s"], KEYCODES["w"]]
+    with caplog.at_level(logging.DEBUG, logger="firekeep_hands.broker.listeners.mac"):
+        for code in typed:
+            log_key_event(t, code, FLAG_CONTROL, 0, 1)
+    messages = "\n".join(r.getMessage() for r in caplog.records)
+    assert messages and "keycode=" not in messages
+    for code in typed:
+        assert f"keycode={code}" not in messages
+    assert "kind=other" in messages
+
+
+def test_the_measurement_fields_survive_redaction(caplog, monkeypatch):
+    """flags, userData and sourceStateID say nothing about which key was
+    struck, and they are exactly what the unverified source-state claim has
+    to be measured against — so they are logged in full."""
+    monkeypatch.delenv("FIREKEEP_HANDS_TRACE_KEYS", raising=False)
+    t = ChordTracker("ctrl+alt+y", "ctrl+alt+n")
+    with caplog.at_level(logging.DEBUG, logger="firekeep_hands.broker.listeners.mac"):
+        log_key_event(t, KEYCODES["y"], FLAG_CONTROL | FLAG_ALT, HANDS_TAG, 2)
+    messages = "\n".join(r.getMessage() for r in caplog.records)
+    assert "kind=trigger" in messages
+    assert "flags=0xC0000" in messages
+    assert f"userData=0x{HANDS_TAG:X}" in messages and "sourceStateID=2" in messages
+
+
+def test_raw_key_codes_need_an_explicit_opt_in(caplog, monkeypatch):
+    monkeypatch.setenv("FIREKEEP_HANDS_TRACE_KEYS", "1")
+    t = ChordTracker("ctrl+alt+y", "ctrl+alt+n")
+    with caplog.at_level(logging.DEBUG, logger="firekeep_hands.broker.listeners.mac"):
+        log_key_event(t, KEYCODES["p"], 0, 0, 1)
+    assert f"keycode={KEYCODES['p']}" in "\n".join(r.getMessage() for r in caplog.records)
+
+
+def test_classify_names_the_trigger_keys_only():
+    t = ChordTracker("ctrl+alt+y", "ctrl+alt+n")
+    assert t.classify(KEYCODES["y"]) == "trigger" and t.classify(KEYCODES["n"]) == "trigger"
+    assert t.classify(KEYCODES["p"]) == "other"
 
 
 def test_nothing_macos_specific_is_imported_at_module_import():

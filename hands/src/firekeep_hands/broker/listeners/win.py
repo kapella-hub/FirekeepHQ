@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import os
 from typing import Callable
 
 from .. import parse_chord
@@ -100,7 +101,19 @@ class ChordTracker:
     a second for a held key, so without edge-triggering a human holding the
     chord for half a second would answer every question in the queue instead
     of the one in front of them — the phone path grants one permit per tap
-    and the keyboard has to match it."""
+    and the keyboard has to match it.
+
+    Both held sets can go stale if a key-up is delivered somewhere this hook
+    is not — a UAC prompt or a fast user switch taking the keyboard mid-press
+    — and the two failures point in opposite directions, both safe. A
+    phantom MODIFIER only ever adds to `_held`, and `required <= self._held`
+    is a superset test, so the chord still fires; the cost is that a chord
+    with an extra modifier held would also fire, which grants nothing the
+    human did not press. A phantom TRIGGER sits in `_pressed` and suppresses
+    the next press of that key as if it were auto-repeat, so the human's next
+    chord does nothing and they press it again — one lost approval, and the
+    press-release cycle clears it. Fails closed: a missed key-up can cost an
+    approval, never cause one."""
 
     def __init__(self, approve: str, deny: str):
         approve_mods, approve_key = parse_chord(approve)
@@ -111,6 +124,15 @@ class ChordTracker:
         # Trigger keys currently down. Only ever holds the two trigger
         # virtual-keys, so it cannot grow with ordinary typing.
         self._pressed: set[int] = set()
+
+    def classify(self, vk: int) -> str:
+        """`"modifier"` | `"trigger"` | `"other"` — what may be logged about a
+        key without logging the key. See `log_key_event`."""
+        if vk in _MODIFIER_VKS:
+            return "modifier"
+        if vk == self._approve[1] or vk == self._deny[1]:
+            return "trigger"
+        return "other"
 
     def feed(self, vk: int, down: bool, real: bool) -> str | None:
         if not real:
@@ -141,6 +163,30 @@ class ChordTracker:
         return None
 
 
+def trace_keys_enabled() -> bool:
+    """Read per call, not at import: the answer is a deliberate opt-in a
+    human makes for one debugging run."""
+    return os.environ.get("FIREKEEP_HANDS_TRACE_KEYS") == "1"
+
+
+def log_key_event(tracker: ChordTracker, vk: int, down: bool, real: bool, flags: int) -> None:
+    """One DEBUG line per key, redacted.
+
+    The broker sees every keystroke on the machine, and it is meant to run
+    autostarted for months — so DEBUG must not turn it into a keystroke log
+    of the human's passwords. What is recorded is the class of the key
+    (`modifier`/`trigger`/`other`), never which one, plus the flags and the
+    real/synthetic verdict, which is all the chord logic depends on. The raw
+    virtual-key needs `FIREKEEP_HANDS_TRACE_KEYS=1` on top of DEBUG."""
+    if not log.isEnabledFor(logging.DEBUG):
+        return
+    if trace_keys_enabled():
+        log.debug("key vk=0x%02X down=%s flags=0x%02X real=%s", vk, down, flags, real)
+    else:
+        log.debug("key kind=%s down=%s flags=0x%02X real=%s",
+                  tracker.classify(vk), down, flags, real)
+
+
 def run_listener(tracker: ChordTracker, on_decision: Callable[[str], None]) -> None:
     """Install the hook and pump messages until the process ends. Blocking;
     the broker runs this on its own thread.
@@ -164,9 +210,7 @@ def run_listener(tracker: ChordTracker, on_decision: Callable[[str], None]) -> N
                 ks = ctypes.cast(lParam, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
                 down = wParam in (WM_KEYDOWN, WM_SYSKEYDOWN)
                 real = kb_event_is_real(ks.flags)
-                log.debug(
-                    "key vk=0x%02X down=%s flags=0x%02X real=%s", ks.vkCode, down, ks.flags, real
-                )
+                log_key_event(tracker, ks.vkCode, down, real, ks.flags)
                 decision = tracker.feed(ks.vkCode, down, real)
                 if decision:
                     on_decision(decision)

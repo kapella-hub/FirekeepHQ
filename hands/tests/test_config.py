@@ -18,6 +18,14 @@ def test_roundtrip_and_unknown_keys_survive(isolated_home):
     assert again.domains == ["example.com"] and again.remembered[0].cls == "send"
 
 
+def test_phone_approvals_default_off_and_round_trip(isolated_home):
+    """Relay records no actor on a task update, so a phone approval proves
+    only that a workspace-key holder completed the task. It stays opt-in."""
+    assert config.load_config().phone_approvals is False
+    cfg = config.load_config(); cfg.phone_approvals = True; config.save_config(cfg)
+    assert config.load_config().phone_approvals is True
+
+
 def test_corrupt_policy_is_treated_as_empty_not_fatal(isolated_home):
     p = isolated_home / "hands" / "policy.json"; p.parent.mkdir(parents=True); p.write_text("{nope")
     assert config.load_policy().apps == []

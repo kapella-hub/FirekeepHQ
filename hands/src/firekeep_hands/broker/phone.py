@@ -1,13 +1,24 @@
 """The phone path: a pending permit becomes a relay task the human can
 answer from the dashboard, wherever they are.
 
-This is the second of the two ways a permit is granted, and it exists
-because the first one requires the human to be at the keyboard. It is not a
-weaker path: the relay task is answered by a person authenticated to the
-Keep, and the bridge only ever copies their answer across — `permit_task_state`
-returning anything other than the two literals `"approve"` and `"deny"` (a
-task still open, a Keep that is down, a garbled reply) leaves the permit
-pending.
+**This path is OFF by default (`phone_approvals`, default False) and this is
+the reason.** Relay records no actor on a task update — `relay/app/tasks.py`
+`update_task` writes status, result and assignee and never the completing
+principal — so "the task says approve" means "somebody holding the workspace
+key completed it", not "a person decided". The driving agent holds that key
+and reaches `relay_task_list` and `relay_task_update` through the same MCP
+surface it already has, so with this on it can post a step for approval,
+complete its own `hands_permit:` task with the result `approve`, and be
+granted the permit within one poll. A local one-time code would not fix it
+either: Hands can screenshot the screen the code is on. Turning
+`phone_approvals` on means deliberately trusting every holder of the
+workspace key, and it stays off until relay records who completed a task
+(PR2). The chord path has no such hole — it needs a physical keystroke.
+
+Given that it is on, the bridge only ever copies an answer across:
+`permit_task_state` returning anything other than the two literals
+`"approve"` and `"deny"` (a task still open, a Keep that is down, a garbled
+reply) leaves the permit pending.
 
 `tick()` is one poll and is what the tests drive; `run()` is `tick()` in a
 loop. Nothing in `tick()` may raise: it runs on a daemon thread whose death
