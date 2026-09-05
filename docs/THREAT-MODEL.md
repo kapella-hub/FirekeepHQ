@@ -400,9 +400,18 @@ evidence path and leave the machine entirely whenever the runtime asks for one.
 - **Prompt injection through observed UI text.** Unchanged from threat 9 below,
   with a wider blast radius: the injected instruction now reaches a tool that can
   click. Permits and the allowlist bound the damage; they do not remove the risk.
-- **`action_before` does not gate.** Hands declares the task to Cortex and reads
-  back an action id; a `block` verdict from the policy engine is not honoured, so
-  the Keep cannot veto a Hands task in this release. The gate that works is local.
+- **`action_before` gates only on an explicit `block`.** Hands declares the task
+  to Cortex; a `block` decision refuses `hands_task_start` (lease released, ledger
+  marked abandoned). `allow`, `rethink`, no answer and an unreachable Keep all let
+  the task start — the Keep is a veto, not a gate, and the gate that does the
+  everyday work is local. **OPEN.**
+- **Two live Hands servers sharing one agent id.** A lease held by our own agent
+  id is reclaimed on the assumption that the holder is a dead session of ours,
+  because relay carries no liveness signal; two live servers on one machine under
+  the same `NEXUS_AGENT_ID` are indistinguishable from one live and one dead, so
+  the second takes the lease. A per-process holder id would close it but changes
+  the agent-id contract shared with `action_before` and relay tasks. **OPEN**,
+  PR2.
 
 ## 6. Threats, ranked
 

@@ -55,9 +55,12 @@ fail; the fourth does not:
    **not** register — a registered capability with no wheel is a gateway backend
    that fails to start, which shows up as tools that quietly stopped existing.
 3. Writes `hands` into `~/.firekeep/dexes.json`.
-4. Installs the broker's autostart: a Scheduled Task named
-   `FirekeepHandsBroker` at logon on Windows, a LaunchAgent labelled
-   `ai.firekeep.hands-broker` on macOS. If this fails, `enable` says so and names
+4. Installs the broker's autostart: on Windows a per-user `Run` registry value
+   named `FirekeepHandsBroker` under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
+   that launches `pythonw.exe -m firekeep_hands.broker run` at logon (no console
+   window; no elevation — `schtasks` refuses an unelevated user on Windows 11,
+   which is how this was found), on macOS a LaunchAgent labelled
+   `ai.firekeep.hands-broker`. If this fails, `enable` says so and names
    `firekeep-hands-broker run` — but still reports success and exits zero, since
    the wheel is installed and registered by then. `--no-autostart` skips the step
    silently; start the broker yourself with `firekeep-hands-broker run`, or
@@ -68,13 +71,13 @@ registry once, at startup.
 
 ### What each OS asks for
 
-**Windows** asks for nothing beyond the logon task. There is no per-app consent
+**Windows** asks for nothing beyond the `Run` value. There is no per-app consent
 gate for UI Automation, screen capture or synthetic input, so the only way any
 of the three can be unavailable is a dependency that failed to import, and that
 is exactly what `firekeep hands status` reports (`accessibility`, `screen`,
-`input`). The Scheduled Task is created at LIMITED rights on purpose: a
-low-level keyboard hook and a loopback socket both need no privilege, and
-running the broker elevated would only widen what a bug in it could reach.
+`input`). The broker runs as you, unelevated, on purpose: a low-level keyboard
+hook and a loopback socket both need no privilege, and running the broker
+elevated would only widen what a bug in it could reach.
 
 **macOS** asks for three separate TCC permissions, and they are not
 interchangeable:
@@ -462,10 +465,12 @@ live agent one keystroke into a bank transfer look exactly alike.
 
 Everything on the Keep path is best-effort: a five-second timeout, every failure
 logged and swallowed, and no network call attempted at all when the machine has
-no Keep configured. One consequence to be explicit about: **`action_before`'s
-verdict is not enforced.** Hands reads the action id out of the reply and nothing
-else, so the Keep's policy engine cannot block a Hands task in this release. The
-gate that works is local: the six classes and the broker.
+no Keep configured. The Keep's answer to `action_before` is honoured in exactly
+one case: an explicit **`block`** decision makes `hands_task_start` refuse with
+the policy engine's reason, release the lease it had just taken and mark the
+ledger `abandoned` (no `action_after` is sent — nothing happened). `allow`,
+`rethink`, no answer at all and an unreachable Keep all let the task start. The
+gate that does the everyday work is still local: the six classes and the broker.
 
 ## The browser
 
@@ -544,13 +549,18 @@ risk. Anthropic's own computer-use guidance — isolate the environment, withhol
 credentials, allowlist domains, confirm consequential actions with a human — is
 the baseline this design assumes, not a stronger claim than it makes.
 
-**The broker draws nothing on your screen.** It is a loopback service and an
-input listener, with no window, no notification and no prompt of its own. Hands
-builds a description of the step from the *routed* control's own name and the
-window's app, capped and stripped of anything unprintable, and hands it back to
-the runtime as `needs_permit.title` — but **the runtime is what shows it to you**,
-and on the chord path the runtime is also the thing you are gating. If you are
-approving with the chord, you are trusting your agent to have told you honestly
+**The broker's own notice is a toast, not a prompt.** When a permit becomes
+pending the broker raises an OS notification (a Windows balloon, a macOS
+notification) carrying the step's title, its classes and the chord to press, and
+lists the same permits in `firekeep hands status` from
+`~/.firekeep/hands/pending.json`. That title is the one Hands built from the
+*routed* control's own name and the window's app, capped and stripped of anything
+unprintable — never the model's words. But the toast is informational: the chord
+still approves the **oldest pending** permit, a notification can be missed, and
+a second permit can arrive between reading one and pressing. On the chord path
+the runtime that asked for the step is also the thing you are gating, so read
+the toast, not the chat. If you are approving with the chord, you are trusting
+what the broker showed you and your agent to have told you honestly
 what it is about to do; look at the screen before you press it. The dashboard
 renders the broker's own text on the phone path, which is the only path where
 that guarantee is structural.
@@ -592,7 +602,7 @@ firekeep hands disable            # unregister, remove the broker autostart
 firekeep hands disable --purge    # …and delete ~/.firekeep/hands entirely
 ```
 
-`disable` removes the registry entry and the logon task or LaunchAgent. The
+`disable` removes the registry entry and the `Run` value or LaunchAgent. The
 `hands_*` tools disappear on the next agent session — the gateway reads the
 registry once, at startup, so a session already running keeps them until it ends.
 The wheel stays installed and idle; `--purge` additionally deletes
