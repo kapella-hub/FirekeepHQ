@@ -21,6 +21,7 @@
 - **Phone approvals are OPT-IN in PR1** (amended 2026-09-05 after the Task 6 review): relay's `update_task` records no actor, so any holder of the workspace key — the driving agent included — could complete a `hands_permit:` task. `HandsConfig.phone_approvals` defaults to `False`; the broker starts the `PhoneBridge` only when it is `True` and a Keep is configured; `/health` reports phone `off` | `offline` | `active`; the guide and threat model disclose that turning it on trusts every key holder; PR2 adds the completing principal to relay tasks so the broker can require a human member. `KeepLink.offline` also defaults `True` when the kit has no server configured (`resolver.resolve("relay")` raises). Broker DEBUG logs never contain raw key codes unless `FIREKEEP_HANDS_TRACE_KEYS=1`.
 - **No bare model coordinates.** `click` and `scroll` take a `ref` from the current observation (or `"window"` for scroll); a point is always computed by Hands from an observed rect.
 - **Perception budget:** ≤ 200 controls per observe, ≤ 4000 chars of text, screenshots downscaled to ≤ 1280 px wide PNG, ≤ 400 steps per task, one before/after image pair per step.
+- **Typing budget (added 2026-09-05 after the Task 7 review):** a `type` action is capped at `MAX_TYPE_CHARS = 500` in `routing.py` (`invalid_action` above it — long values go through `set_value`), and the Windows backend re-checks the elevation guard every 100 characters while pacing keystrokes, so the guard cannot decay over a long injection while focus moves.
 - **Evidence:** `~/.firekeep/hands/evidence/<task_id>/{task.json,steps.jsonl,NNN-before.png,NNN-after.png}`, sha256 chain per line, pruned after 14 days at `hands_task_start`. Keep-side evidence in PR1 = `action_before`/`action_after` (cortex MCP tools) + relay lease `hands:<machine_id>`; no replay POST route (PR2).
 - **Hands files live under `~/.firekeep/hands/`** (resolved through `firekeep_client.resolver._config_path().parent / "hands"` so `FIREKEEP_CONFIG` isolates tests): `config.json`, `policy.json`, `broker.json` (0600), `machine_id`, `chrome-profile/`, `evidence/`.
 - **Both platforms from day one.** Every backend method has a Windows and a macOS implementation in this PR; Linux gets `hands_status` reporting `backend: "unsupported"` and every other tool refusing.
@@ -1727,6 +1728,7 @@ def test_permit_is_bound_to_the_exact_action(session, store):
 def test_no_broker_fails_closed_for_protected_only(session_without_broker):
     s = session_without_broker; s.task_start("x", ["Mail"]); s.observe()
     assert s.act({"kind": "invoke", "ref": "c1"})["ok"] is True
+    s.observe()   # every act invalidates refs (step 13) — amended 2026-09-05 during execution
     r = s.act({"kind": "invoke", "ref": "send"})
     assert r["ok"] is False and "broker" in r["error"]
 
