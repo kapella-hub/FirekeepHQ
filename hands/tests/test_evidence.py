@@ -1,4 +1,6 @@
-import datetime as dt, hashlib, json
+import datetime as dt
+import hashlib
+import json
 from firekeep_hands import evidence, paths
 
 
@@ -21,9 +23,12 @@ def test_ledger_writes_chained_lines_and_images(isolated_home):
 
 
 def test_prune_removes_only_old_tasks(isolated_home):
-    root = paths.evidence_root(); root.mkdir(parents=True)
+    root = paths.evidence_root()
+    root.mkdir(parents=True)
     for name, started in (("old", "2026-01-01T00:00:00Z"), ("new", "2026-09-04T00:00:00Z")):
-        d = root / name; d.mkdir(); (d / "task.json").write_text(json.dumps({"started": started}))
+        d = root / name
+        d.mkdir()
+        (d / "task.json").write_text(json.dumps({"started": started}))
     now = dt.datetime(2026, 9, 5, tzinfo=dt.timezone.utc)
     assert evidence.prune(root, older_than_days=14, now=now) == 1
     assert not (root / "old").exists() and (root / "new").exists()
@@ -38,9 +43,12 @@ def test_ledger_steps_returns_recorded_lines(isolated_home):
 
 
 def test_prune_leaves_unreadable_or_missing_task_json_alone(isolated_home):
-    root = paths.evidence_root(); root.mkdir(parents=True)
+    root = paths.evidence_root()
+    root.mkdir(parents=True)
     (root / "no-task-json").mkdir()
-    bad = root / "bad-json"; bad.mkdir(); (bad / "task.json").write_text("not json")
+    bad = root / "bad-json"
+    bad.mkdir()
+    (bad / "task.json").write_text("not json")
     now = dt.datetime(2026, 9, 5, tzinfo=dt.timezone.utc)
     assert evidence.prune(root, older_than_days=14, now=now) == 0
     assert (root / "no-task-json").exists() and (root / "bad-json").exists()

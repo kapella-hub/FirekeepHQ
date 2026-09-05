@@ -40,7 +40,8 @@ def test_remembered_approval_downgrades_to_allow_until_expiry():
     assert policy.decide({"kind": "invoke", "ref": "r"}, C("Send"), W, None, pol, ["Mail"], now=late).verdict == "permit"
 
 def test_remember_writes_a_30_day_entry():
-    pol = Policy([], [], []); now = dt.datetime(2026, 9, 5, tzinfo=dt.timezone.utc)
+    pol = Policy([], [], [])
+    now = dt.datetime(2026, 9, 5, tzinfo=dt.timezone.utc)
     policy.remember(pol, "money", "Amazon", "place order", now=now)
     assert pol.remembered[0].until == "2026-10-05T00:00:00Z"
 

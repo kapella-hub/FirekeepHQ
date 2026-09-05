@@ -21,7 +21,8 @@ def test_chord_requires_real_modifiers_and_trigger():
 
 def test_injected_events_never_count_even_for_modifiers():
     t = ChordTracker("ctrl+alt+y", "ctrl+alt+n")
-    t.feed(0xA2, True, False); t.feed(0xA4, True, False)
+    t.feed(0xA2, True, False)
+    t.feed(0xA4, True, False)
     assert t.feed(ord("Y"), True, False) is None
     assert t.feed(ord("Y"), True, True) is None      # modifiers were injected, so they do not count
 
@@ -39,7 +40,8 @@ def test_the_trigger_alone_is_not_the_chord():
 
 def test_releasing_a_modifier_breaks_the_chord():
     t = ChordTracker("ctrl+alt+y", "ctrl+alt+n")
-    t.feed(0x11, True, True); t.feed(0x12, True, True)
+    t.feed(0x11, True, True)
+    t.feed(0x12, True, True)
     assert t.feed(ord("Y"), True, True) == "approve"
     t.feed(ord("Y"), False, True)             # a fresh press, not a repeat
     t.feed(0x12, False, True)                 # alt up
@@ -51,7 +53,8 @@ def test_holding_the_chord_answers_exactly_one_question():
     gesture must grant one permit, the way one tap on the phone does — a
     human holding the chord for half a second must not empty the queue."""
     t = ChordTracker("ctrl+alt+y", "ctrl+alt+n")
-    t.feed(0xA2, True, True); t.feed(0xA4, True, True)
+    t.feed(0xA2, True, True)
+    t.feed(0xA4, True, True)
     assert t.feed(ord("Y"), True, True) == "approve"
     for _ in range(20):                       # auto-repeat while still held
         assert t.feed(ord("Y"), True, True) is None
@@ -61,7 +64,8 @@ def test_holding_the_chord_answers_exactly_one_question():
 
 def test_a_repeat_of_one_trigger_does_not_block_the_other():
     t = ChordTracker("ctrl+alt+y", "ctrl+alt+n")
-    t.feed(0xA2, True, True); t.feed(0xA4, True, True)
+    t.feed(0xA2, True, True)
+    t.feed(0xA4, True, True)
     assert t.feed(ord("Y"), True, True) == "approve"
     assert t.feed(ord("Y"), True, True) is None
     assert t.feed(ord("N"), True, True) == "deny"
@@ -70,7 +74,8 @@ def test_a_repeat_of_one_trigger_does_not_block_the_other():
 def test_left_and_right_modifiers_are_the_same_modifier():
     for ctrl, alt in ((0xA2, 0xA4), (0xA3, 0xA5), (0x11, 0x12)):
         t = ChordTracker("ctrl+alt+y", "ctrl+alt+n")
-        t.feed(ctrl, True, True); t.feed(alt, True, True)
+        t.feed(ctrl, True, True)
+        t.feed(alt, True, True)
         assert t.feed(ord("Y"), True, True) == "approve"
 
 
@@ -78,21 +83,24 @@ def test_an_injected_modifier_release_cannot_disarm_a_real_chord():
     """Symmetric to the down case: synthetic input is ignored entirely, so
     malware cannot use it to manipulate the tracker's held set either way."""
     t = ChordTracker("ctrl+alt+y", "ctrl+alt+n")
-    t.feed(0xA2, True, True); t.feed(0xA4, True, True)
+    t.feed(0xA2, True, True)
+    t.feed(0xA4, True, True)
     t.feed(0xA4, False, False)                # injected alt-up: ignored
     assert t.feed(ord("Y"), True, True) == "approve"
 
 
 def test_an_unrelated_key_is_not_a_decision():
     t = ChordTracker("ctrl+alt+y", "ctrl+alt+n")
-    t.feed(0xA2, True, True); t.feed(0xA4, True, True)
+    t.feed(0xA2, True, True)
+    t.feed(0xA4, True, True)
     assert t.feed(ord("K"), True, True) is None
     assert t.feed(0x0D, True, True) is None   # Enter
 
 
 def test_a_chord_with_a_named_trigger_key():
     t = ChordTracker("ctrl+shift+f9", "ctrl+shift+f10")
-    t.feed(0xA2, True, True); t.feed(0xA0, True, True)
+    t.feed(0xA2, True, True)
+    t.feed(0xA0, True, True)
     assert t.feed(0x78, True, True) == "approve"     # VK_F9
     assert t.feed(0x79, True, True) == "deny"        # VK_F10
 

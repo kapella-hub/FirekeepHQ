@@ -11,10 +11,19 @@ from firekeep_hands.broker.__main__ import main
 
 
 class FakeLink:
-    def __init__(self, offline): self.offline = offline; self.posted = []
-    def post_permit_task(self, **kw): self.posted.append(kw); return "task-" + kw["challenge"]
-    def permit_task_state(self, challenge): return "pending"
-    def close_permit_task(self, task_id, result): pass
+    def __init__(self, offline):
+        self.offline = offline
+        self.posted = []
+
+    def post_permit_task(self, **kw):
+        self.posted.append(kw)
+        return "task-" + kw["challenge"]
+
+    def permit_task_state(self, challenge):
+        return "pending"
+
+    def close_permit_task(self, task_id, result):
+        pass
 
 
 @pytest.fixture(autouse=True)
@@ -50,7 +59,8 @@ def test_phone_is_active_only_when_opted_in_and_connected():
         assert listeners["phone"] == "active" and bridge is not None and bridge.is_alive()
     finally:
         if bridge is not None:
-            bridge.stop(); bridge.join(timeout=3)
+            bridge.stop()
+            bridge.join(timeout=3)
 
 
 def test_opted_in_but_no_keep_reports_offline_and_starts_nothing():

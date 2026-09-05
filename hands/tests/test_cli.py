@@ -1,7 +1,6 @@
 import hashlib
 import json
 
-import pytest
 
 from firekeep_hands import cli, paths
 from firekeep_hands.config import Remembered, load_config, load_policy, save_policy

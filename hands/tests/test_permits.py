@@ -7,7 +7,8 @@ class Clock:
 
 
 def _store():
-    c = Clock(); return PermitStore(ttl_s=60, clock=c), c
+    c = Clock()
+    return PermitStore(ttl_s=60, clock=c), c
 
 
 def test_request_is_idempotent_and_expires():
@@ -20,7 +21,8 @@ def test_request_is_idempotent_and_expires():
 
 def test_oldest_pending_is_the_one_a_chord_approves():
     s, c = _store()
-    s.request(challenge="a", title="A", classes=("send",), task_id="t", step_index=1); c.t += 1
+    s.request(challenge="a", title="A", classes=("send",), task_id="t", step_index=1)
+    c.t += 1
     s.request(challenge="b", title="B", classes=("money",), task_id="t", step_index=2)
     assert s.decide_oldest("approve", via="chord").challenge == "a"
     assert s.get("a").state == "approved" and s.get("a").via == "chord" and s.get("b").state == "pending"
@@ -39,7 +41,8 @@ def test_denied_and_expired_cannot_be_consumed_or_reapproved():
     s.request(challenge="d", title="x", classes=("send",), task_id="t", step_index=0)
     s.decide("d", "deny", via="chord")
     assert s.decide("d", "approve", via="chord") is None and s.consume("d") is False
-    s.request(challenge="e", title="x", classes=("send",), task_id="t", step_index=1); c.t += 61
+    s.request(challenge="e", title="x", classes=("send",), task_id="t", step_index=1)
+    c.t += 61
     assert s.decide("e", "approve", via="chord") is None
 
 
@@ -91,7 +94,8 @@ def test_decide_oldest_ignores_expired_and_returns_none_when_nothing_pends():
 
 def test_pending_lists_oldest_first_and_drops_resolved():
     s, c = _store()
-    s.request(challenge="a", title="A", classes=("send",), task_id="t", step_index=0); c.t += 1
+    s.request(challenge="a", title="A", classes=("send",), task_id="t", step_index=0)
+    c.t += 1
     s.request(challenge="b", title="B", classes=("send",), task_id="t", step_index=1)
     assert [p.challenge for p in s.pending()] == ["a", "b"]
     s.decide("a", "deny", via="chord")

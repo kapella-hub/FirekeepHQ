@@ -2,7 +2,8 @@ from firekeep_hands import ids
 
 
 def test_machine_id_is_stable_and_private(isolated_home):
-    a = ids.machine_id(); b = ids.machine_id()
+    a = ids.machine_id()
+    b = ids.machine_id()
     assert a == b and len(a) == 32 and int(a, 16) >= 0
 
 

@@ -68,7 +68,8 @@ def test_online_calls_map_to_the_right_tools(monkeypatch):
     link.renew_lease()
     assert link.post_permit_task(challenge="c", title="Send", classes=("send",), task_id="t", step_index=2, expires_at="x") == "task-1"
     assert link.permit_task_state("c") == "approve"
-    link.release_lease(); link.action_after("A1", "done", "ok")
+    link.release_lease()
+    link.action_after("A1", "done", "ok")
     tools = [(s, t) for s, t, _ in seen]
     assert tools == [("cortex", "action_before"), ("relay", "relay_lease"), ("relay", "relay_heartbeat"),
                      ("relay", "relay_task_post"), ("relay", "relay_task_list"), ("relay", "relay_release"),

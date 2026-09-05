@@ -61,7 +61,9 @@ def test_enable_from_local_path_uses_that_path(registry_home, monkeypatch, tmp_p
     monkeypatch.setattr(cli, "_pip_install", lambda python, spec: calls.append(spec))
     monkeypatch.setattr(dexes, "is_installed", lambda m: True)
     monkeypatch.setattr(cli, "_run_hands_broker", lambda argv: 0)
-    src = tmp_path / "hands"; src.mkdir(); (src / "pyproject.toml").write_text("[project]\nname='x'\n")
+    src = tmp_path / "hands"
+    src.mkdir()
+    (src / "pyproject.toml").write_text("[project]\nname='x'\n")
     assert cli.cmd_hands(_args(action="enable", source=str(src))) == 0
     assert calls == [str(src)]
 

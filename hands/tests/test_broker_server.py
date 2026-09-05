@@ -1,4 +1,6 @@
-import json, urllib.request, urllib.error
+import json
+import urllib.request
+import urllib.error
 import pytest
 from firekeep_hands import paths
 from firekeep_hands.broker import server as server_module
@@ -21,8 +23,10 @@ def _req(port, token, method, path, body=None):
     req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", data=data, method=method,
                                  headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=2) as r: return r.status, json.loads(r.read() or b"null")
-    except urllib.error.HTTPError as e: return e.code, json.loads(e.read() or b"null")
+        with urllib.request.urlopen(req, timeout=2) as r:
+            return r.status, json.loads(r.read() or b"null")
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read() or b"null")
 
 
 def test_health_requires_token_and_writes_broker_json(broker):
@@ -51,7 +55,7 @@ def test_client_from_disk_and_wait(broker):
     c = BrokerClient.from_disk()
     assert c is not None
     c.request(challenge="w", title="x", classes=["send"], task_id="t", step_index=0)
-    import threading, time
+    import threading
     threading.Timer(0.3, lambda: store.decide("w", "approve", via="chord")).start()
     assert c.wait("w", timeout_s=3)["state"] == "approved"
     assert c.consume("w") is True
@@ -164,7 +168,8 @@ def test_stop_removes_our_broker_json_and_releases_the_port(isolated_home):
 def test_broker_json_is_written_privately(isolated_home):
     """0600 on POSIX; on Windows `state._private` shells out to icacls and the
     mode bits do not carry the same meaning, so only the POSIX case asserts."""
-    import sys, stat
+    import sys
+    import stat
     store = PermitStore(ttl_s=60)
     srv = BrokerServer(store, chord="ctrl+alt+y", listeners={"chord": "unavailable", "phone": "offline"})
     srv.start()

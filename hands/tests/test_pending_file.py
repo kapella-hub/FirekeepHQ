@@ -120,7 +120,9 @@ def test_a_write_failure_never_fails_a_permit(isolated_home, monkeypatch):
 def test_each_permit_is_announced_once(isolated_home):
     store, shown = _wired()
     store.request(challenge="c", title="Send it", classes=("send",), task_id="t", step_index=0)
-    store.get("c"); store.pending(); store.get("c")
+    store.get("c")
+    store.pending()
+    store.get("c")
     assert len(shown) == 1
     assert shown[0] == ("Send it", ("send",), "ctrl+alt+y", "ctrl+alt+n")
 

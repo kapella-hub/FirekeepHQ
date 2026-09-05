@@ -12,7 +12,8 @@ def test_observe_find_invoke_and_set_value_are_recorded():
     obs = be.observe(app=None, region=None, max_nodes=200, text_budget=4000, screenshot=False, max_width=1280)
     assert [c.ref for c in obs.controls] == ["c1", "c2"] and obs.generation == 1
     assert be.find("save", role=None, app=None, limit=5)[0].ref == "c1"
-    be.invoke(obs.controls[0]); be.set_value(obs.controls[1], "hello")
+    be.invoke(obs.controls[0])
+    be.set_value(obs.controls[1], "hello")
     assert be.calls[-2:] == [("invoke", "c1"), ("set_value", "c2", "hello")] and be.values["c2"] == "hello"
 
 
