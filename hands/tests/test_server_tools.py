@@ -250,6 +250,36 @@ def test_backend_work_all_runs_on_one_dedicated_thread():
         worker.shutdown()
 
 
+def test_shutdown_hands_the_machine_back_and_stops_the_worker(session):
+    """Whatever ends the process — stdin EOF, Ctrl+C, SIGTERM — the last
+    thing that runs has to close the task and release the lease, or the next
+    run on this machine is refused by its own dead predecessor."""
+    _text(server.dispatch(session, "hands_task_start", {"goal": "x", "apps": ["Notepad"]}))
+    worker = server.Worker()
+    server.shutdown(session, worker)
+
+    assert session.task_id is None
+    assert session.link.released is True
+    assert session.link.after == [("A1", "abandoned", "server shut down with the task open")]
+    with pytest.raises(RuntimeError):  # the pool is closed to new work
+        worker.run(lambda: None)
+
+
+def test_shutdown_is_safe_with_no_session_and_no_task(session):
+    worker = server.Worker()
+    server.shutdown(None, worker)  # start-up failed before a session existed
+    worker2 = server.Worker()
+    server.shutdown(session, worker2)  # a session that never started a task
+    assert session.link.released is False
+
+
+def test_sigterm_becomes_the_interrupt_that_runs_the_teardown():
+    """SIGTERM's default action ends the process outright, running no
+    `finally` anywhere — which is exactly how a lease gets stranded."""
+    with pytest.raises(KeyboardInterrupt):
+        server._raise_on_sigterm(15, None)
+
+
 def test_the_worker_propagates_the_return_value_and_the_exception():
     worker = server.Worker()
     try:

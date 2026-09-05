@@ -120,6 +120,74 @@ def test_an_offline_link_never_claims_the_keep_decided(monkeypatch):
     assert link.last_decision == keep.KeepDecision(None, "")
 
 
+def _lease_replies(monkeypatch, replies):
+    """Answers `relay_lease` from `replies` in order and records every call."""
+    seen = []
+
+    def fake(service, tool, args, **kw):
+        seen.append((service, tool, args))
+        if tool == "relay_lease":
+            return replies.pop(0)
+        return {}
+
+    monkeypatch.setattr(keep, "call_tool", fake)
+    return seen
+
+
+def test_our_own_stranded_lease_is_released_and_retaken(monkeypatch):
+    """A server that exited without hands_task_end leaves its lease held for
+    the full TTL. The next run on the same machine, same agent, must not be
+    locked out for half an hour by its own dead predecessor."""
+    seen = _lease_replies(monkeypatch, [
+        {"acquired": False, "held_by": "a", "fencing_token": 4, "expires_in": 1700},
+        {"acquired": True, "fencing_token": 5},
+    ])
+    link = keep.KeepLink(agent_id="a", machine_id="m", offline=False)
+    result = link.acquire_lease()
+
+    assert result["acquired"] is True
+    assert [t for _s, t, _a in seen] == ["relay_lease", "relay_release", "relay_lease"]
+    assert seen[1][2] == {"resource_id": "hands:m", "agent_id": "a", "fencing_token": 4}
+    assert link._fencing_token == 5      # ours, from the successful retake
+
+
+def test_another_agents_lease_is_never_taken_and_its_token_never_adopted(monkeypatch):
+    seen = _lease_replies(monkeypatch, [
+        {"acquired": False, "held_by": "someone-else", "fencing_token": 9, "expires_in": 1700},
+    ])
+    link = keep.KeepLink(agent_id="a", machine_id="m", offline=False)
+    result = link.acquire_lease()
+
+    assert result["acquired"] is False and result["held_by"] == "someone-else"
+    assert [t for _s, t, _a in seen] == ["relay_lease"]   # no release, no retry
+    assert link._fencing_token == 0
+    link.release_lease()
+    assert [t for _s, t, _a in seen] == ["relay_lease"]   # and nothing sent afterwards
+
+
+def test_the_reclaim_happens_at_most_once_per_link(monkeypatch):
+    """A live peer sharing this agent id must not be robbed over and over by
+    a caller that keeps retrying."""
+    seen = _lease_replies(monkeypatch, [
+        {"acquired": False, "held_by": "a", "fencing_token": 4},
+        {"acquired": False, "held_by": "a", "fencing_token": 6},
+        {"acquired": False, "held_by": "a", "fencing_token": 6},
+    ])
+    link = keep.KeepLink(agent_id="a", machine_id="m", offline=False)
+    link.acquire_lease()
+    link.acquire_lease()
+    assert [t for _s, t, _a in seen].count("relay_release") == 1
+
+
+def test_reclaim_can_be_switched_off(monkeypatch):
+    seen = _lease_replies(monkeypatch, [
+        {"acquired": False, "held_by": "a", "fencing_token": 4},
+    ])
+    link = keep.KeepLink(agent_id="a", machine_id="m", offline=False)
+    assert link.acquire_lease(reclaim_own=False)["acquired"] is False
+    assert [t for _s, t, _a in seen] == ["relay_lease"]
+
+
 def test_transport_errors_are_swallowed(monkeypatch):
     def boom(*a, **k): raise transport.TransportError("down")
     monkeypatch.setattr(keep, "call_tool", boom)

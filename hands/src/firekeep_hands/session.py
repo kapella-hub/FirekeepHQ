@@ -310,6 +310,31 @@ class HandsSession:
             self._reset()
         return result
 
+    def abandon(self, summary: str = "server shut down with the task open") -> dict | None:
+        """Close an open task on the way out, and never raise doing it.
+
+        This is what the MCP server calls in its shutdown `finally`. Without
+        it a run that ends any way other than `hands_task_end` — the runtime
+        closed, the process killed, the driver walking away on a
+        `needs_permit` — leaves the machine lease held for its full TTL, and
+        the NEXT run on this machine is refused for half an hour by its own
+        dead predecessor. Observed on real hardware, not a hypothetical.
+
+        Returns the closing summary, or None when there was no task. Any
+        failure is logged and swallowed: shutdown is not a place to raise."""
+        if self.task_id is None:
+            return None
+        try:
+            return self.task_end("abandoned", summary)
+        except Exception as exc:  # noqa: BLE001 — a teardown must not raise
+            hooklog.log_failure("hands", f"abandon failed for {self.task_id}: {exc}", exc)
+            try:
+                self.link.release_lease()
+            except Exception as release_exc:  # noqa: BLE001 — the lease is the point
+                hooklog.log_failure("hands", f"lease release failed: {release_exc}", release_exc)
+            self._reset()
+            return None
+
     def _reset(self) -> None:
         self.task_id = None
         self.goal = ""

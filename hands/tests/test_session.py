@@ -8,6 +8,9 @@ transport (HTTP), the Keep (cortex/relay) and the platform backend are faked.
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from firekeep_hands.backends.base import (
@@ -982,6 +985,41 @@ def test_raw_coordinates_are_refused(session):
     r = session.act({"kind": "click", "x": 10, "y": 10})
     assert r["ok"] is False and r["error"].startswith("invalid_action")
     assert session.ledger.steps() == []  # never became a step
+
+
+def test_abandon_closes_an_open_task_and_gives_the_machine_back(session):
+    """What the server runs on its way out. A run that ends any way other
+    than hands_task_end used to leave the lease held for its full TTL, and
+    the next run on this machine was refused by its own dead predecessor."""
+    session.task_start("x", ["Notepad"])
+    session.act({"kind": "wait", "seconds": 0})
+    closed = session.abandon()
+    assert closed["outcome"] == "abandoned" and closed["steps"] == 1
+    assert session.link.released is True
+    assert session.link.after == [("A1", "abandoned", "server shut down with the task open")]
+    assert session.task_id is None
+    assert json.loads((Path(closed["evidence"]) / "task.json").read_text(
+        encoding="utf-8"))["outcome"] == "abandoned"
+
+
+def test_abandon_with_no_task_open_does_nothing(session):
+    assert session.abandon() is None
+    assert session.link.released is False
+
+
+def test_abandon_still_releases_the_lease_when_the_close_path_blows_up(session):
+    """`task_end` gives up on the Keep before it reaches `release_lease`, so
+    the teardown has to finish the job itself. The lease is the whole point
+    of this method."""
+    session.task_start("x", ["Notepad"])
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("cortex exploded")
+
+    session.link.action_after = boom
+    assert session.abandon() is None
+    assert session.link.released is True
+    assert session.task_id is None
 
 
 def test_task_end_closes_the_ledger_and_resets(session):

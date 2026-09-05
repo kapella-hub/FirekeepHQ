@@ -27,6 +27,7 @@ import asyncio
 import base64
 import json
 import os
+import signal
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
@@ -314,10 +315,50 @@ def build_server(session: HandsSession, worker: Worker) -> Server:
     return server
 
 
+def _raise_on_sigterm(signum, _frame):
+    """SIGTERM's default action ends the process outright, running no
+    `finally` anywhere — which is exactly how a lease gets stranded. Turning
+    it into the same KeyboardInterrupt a Ctrl+C produces gives `serve` its
+    one chance to hand the machine back."""
+    raise KeyboardInterrupt(f"signal {signum}")
+
+
+def _install_sigterm() -> object:
+    """Returns the previous handler, or None if it could not be installed
+    (not the main thread, or a platform without SIGTERM)."""
+    sigterm = getattr(signal, "SIGTERM", None)
+    if sigterm is None:
+        return None
+    try:
+        return signal.signal(sigterm, _raise_on_sigterm)
+    except (ValueError, OSError, RuntimeError):
+        return None
+
+
+def shutdown(session: HandsSession | None, worker: Worker) -> None:
+    """Give the machine back, whatever ended the process.
+
+    Runs the teardown on the worker thread (the session belongs to it) and
+    synchronously rather than through the event loop, which by this point may
+    already be tearing itself down and cancelling anything awaited. Nothing
+    here is allowed to raise: this is the last code that runs."""
+    if session is not None:
+        try:
+            closed = worker.run(session.abandon)
+            if closed is not None:
+                hooklog.log_failure(
+                    "hands", f"shut down with {closed['task_id']} open; lease released")
+        except Exception as exc:  # noqa: BLE001 — nothing may escape a shutdown
+            hooklog.log_failure("hands", f"shutdown teardown failed: {exc}", exc)
+    worker.shutdown()
+
+
 async def serve() -> None:
     from mcp.server.stdio import stdio_server
 
     worker = Worker()
+    session = None
+    previous_sigterm = _install_sigterm()
     try:
         # First submission, so this thread is the one COM binds to.
         session = await worker.call(build_session)
@@ -325,7 +366,13 @@ async def serve() -> None:
         async with stdio_server() as (read_stream, write_stream):
             await server.run(read_stream, write_stream, server.create_initialization_options())
     finally:
-        worker.shutdown()
+        shutdown(session, worker)
+        sigterm = getattr(signal, "SIGTERM", None)
+        if previous_sigterm is not None and sigterm is not None:
+            try:
+                signal.signal(sigterm, previous_sigterm)
+            except (ValueError, OSError, RuntimeError):
+                pass
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -334,7 +381,13 @@ def main(argv: list[str] | None = None) -> None:
         description="Run the Firekeep Hands MCP server on stdio.",
     )
     parser.parse_args(argv)
-    asyncio.run(serve())
+    try:
+        asyncio.run(serve())
+    except KeyboardInterrupt:
+        # Ctrl+C, or the SIGTERM handler above. `serve`'s own `finally` has
+        # already handed the machine back by the time this is caught; there is
+        # nothing here for a traceback to tell anyone.
+        pass
 
 
 if __name__ == "__main__":

@@ -108,6 +108,9 @@ class KeepLink:
         self._fencing_token = 0
         self._holds_lease = False
         self._lease_ttl_minutes = _DEFAULT_LEASE_TTL_MINUTES
+        # One reclaim per link. A live peer sharing this agent id must not be
+        # robbed of the lease over and over by a retrying caller.
+        self._reclaimed_once = False
 
     def _call(self, service: str, tool: str, build_arguments) -> Any:
         """The one place that talks to the Keep: offline short-circuits
@@ -184,13 +187,59 @@ class KeepLink:
             },
         )
 
-    def acquire_lease(self, ttl_minutes: int = _DEFAULT_LEASE_TTL_MINUTES) -> dict | None:
-        self._lease_ttl_minutes = ttl_minutes
-        result = self._call(
+    def _lease_call(self, ttl_minutes: int) -> Any:
+        return self._call(
             "relay",
             "relay_lease",
             lambda: {"resource_id": f"hands:{self.machine_id}", "agent_id": self.agent_id, "ttl_minutes": ttl_minutes},
         )
+
+    def _is_our_own_stale_lease(self, result: Any) -> bool:
+        return (
+            isinstance(result, dict)
+            and result.get("acquired") is False
+            and result.get("held_by") == self.agent_id
+        )
+
+    def acquire_lease(self, ttl_minutes: int = _DEFAULT_LEASE_TTL_MINUTES,
+                      reclaim_own: bool = True) -> dict | None:
+        """Take the machine lease, reclaiming one this agent left behind.
+
+        A Hands server that exits without `hands_task_end` — the runtime
+        closed, the process crashed, the driver walked away on a
+        `needs_permit` — leaves its lease held for the full TTL, and the next
+        run on the same machine is refused for half an hour by its own dead
+        predecessor. Observed on real hardware, which is why this exists.
+
+        The reclaim is deliberately narrow. It fires only when relay says the
+        holder is THIS agent id (the resource id already pins the machine),
+        only once per link, and it passes the holder's fencing token straight
+        to `relay_release` without ever adopting it into `self._fencing_token`
+        — another agent's token must never end up in ours.
+
+        The residual risk is stated plainly: two LIVE Hands servers on one
+        machine sharing a `NEXUS_AGENT_ID` are indistinguishable from one
+        live and one dead, so the second would take the lease from the first
+        rather than be refused. Relay's answer carries no liveness signal to
+        separate them. See the task report for the PID-in-holder-id fix that
+        would."""
+        self._lease_ttl_minutes = ttl_minutes
+        result = self._lease_call(ttl_minutes)
+        if reclaim_own and not self._reclaimed_once and self._is_our_own_stale_lease(result):
+            self._reclaimed_once = True
+            token = result.get("fencing_token")
+            hooklog.log_failure(
+                "hands",
+                f"reclaiming the hands:{self.machine_id} lease left by our own "
+                f"agent {self.agent_id!r} (fencing token {token})",
+            )
+            self._call(
+                "relay",
+                "relay_release",
+                lambda: {"resource_id": f"hands:{self.machine_id}",
+                         "agent_id": self.agent_id, "fencing_token": token},
+            )
+            result = self._lease_call(ttl_minutes)
         if not isinstance(result, dict):
             return None
         # relay's real response marks a lost race with "acquired": False (and
