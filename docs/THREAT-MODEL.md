@@ -350,7 +350,10 @@ evidence path and leave the machine entirely whenever the runtime asks for one.
   was shown, and Hands computes the point from that control's own rect.
 - **The permit text is built by Hands, not by the model** — from the routed
   control's own name and the window's app, whitespace-collapsed, stripped of
-  unprintable characters and capped at 60 characters.
+  unprintable characters and capped at 60 characters. And it is *checked*, not
+  merely built: a permit already standing at that challenge under a different
+  title or different classes refuses the step instead of spending it, so getting
+  in first buys nothing.
 - **Typing is bounded.** 500 characters per `type` action, with the Windows
   elevation guard re-checked every 100 characters so it cannot decay mid-injection
   while focus moves.
@@ -368,9 +371,18 @@ evidence path and leave the machine entirely whenever the runtime asks for one.
   of the token buys the ability to *ask*, not the ability to answer: the permit
   still requires a real human chord (or a phone tap) to exist at all. What such a
   process gains is the ability to spend an approval the human granted for
-  something else, in the window before it is consumed or expires. Note also that
-  the spec's claim that nothing secret is stored on disk is not true as built —
-  the bearer token is in `broker.json`, minted per broker run.
+  something else, in the window before it is consumed or expires, and to
+  **pre-create permits for steps that have not happened yet** — every input to a
+  challenge id is reachable by it (`machine_id` is a file, `session_id` is in
+  `evidence/<task>/task.json`, `task_id` and `step_index` come back in tool
+  results), so it can fill the human's toasts and `pending.json` with prompts
+  Hands never asked for. What it can no longer do is change *what the human
+  approves*: `_gate` recomputes the honest title and classes on its own side and
+  refuses the step outright — before consuming anything — when the permit
+  standing at that challenge describes something else, on the first request and
+  on the retry after an expiry alike. Note also that the spec's claim that
+  nothing secret is stored on disk is not true as built — the bearer token is in
+  `broker.json`, minted per broker run.
 - **Kernel-level input injection defeats the real-input filter.** A kernel-mode
   driver can originate events with no injection bit set, and the broker trusts the
   OS's flag. This filter stops user-mode malware and honest mistakes, not a

@@ -20,6 +20,7 @@ from firekeep_hands.backends.base import (
     UnsupportedBackend,
     WindowInfo,
 )
+from firekeep_hands import ids
 from firekeep_hands.backends.fake import FakeBackend
 from firekeep_hands.broker.permits import PermitStore
 from firekeep_hands.config import HandsConfig, Policy, Remembered
@@ -548,6 +549,99 @@ def test_status_on_an_unsupported_platform_still_answers():
     st = s.status()
     assert st["backend"] == "unsupported"
     assert st["permissions"]["accessibility"] == "missing"
+
+
+# -- who writes the sentence the human approves -----------------------------
+#
+# The permit-text guarantee ("built by Hands, not by the model") held only for
+# permits the Hands server registered FIRST. `PermitStore.request` is idempotent
+# while a permit is live, so it hands back the existing permit — title and all —
+# and `_gate` never looked at what came back. Every input to the challenge id is
+# reachable by a process running as the same user: machine_id is a file,
+# session_id is in evidence/<task>/task.json, task_id and step_index come back in
+# tool results, and broker.json carries the token.
+
+
+def _challenge_for(session, action, step_index=None):
+    """The challenge id the next `act` on this action will compute — derived
+    here exactly the way an attacker holding broker.json would."""
+    return ids.challenge_id_for(
+        session.machine_id, session.session_id, session.task_id,
+        session.step_index if step_index is None else step_index,
+        ids.action_hash(action),
+    )
+
+
+@pytest.mark.parametrize("session", ["Mail"], indirect=True)
+def test_a_permit_registered_first_by_someone_else_is_refused_not_displayed(session, store):
+    """Pre-register the challenge for a `send` step under a harmless-sounding
+    sentence and the broker's toast, pending.json and `firekeep hands status`
+    would all have shown the human that sentence for a step that sends mail."""
+    session.task_start("x", ["Mail"])
+    session.observe()
+    action = {"kind": "invoke", "ref": "send"}
+    challenge = _challenge_for(session, action)
+    store.request(challenge=challenge, title="open example.com in the browser",
+                  classes=["boundary"], task_id=session.task_id, step_index=0)
+
+    r = session.act(action)
+    assert r["ok"] is False and r["error"].startswith("permit_tampered")
+    assert "needs_permit" not in r          # never sent to wait on somebody else's prompt
+    assert session.backend.calls == []      # and never reached the desktop
+    assert store.get(challenge).state == "pending"   # not consumed, not answered for us
+
+
+@pytest.mark.parametrize("session", ["Mail"], indirect=True)
+def test_the_same_title_under_wider_classes_is_refused_too(session, store):
+    """The classes are half of what the human reads. A permit that says
+    `["boundary"]` for a step Hands classified `["send"]` describes a
+    different decision even under an identical sentence."""
+    session.task_start("x", ["Mail"])
+    session.observe()
+    action = {"kind": "invoke", "ref": "send"}
+    challenge = _challenge_for(session, action)
+    store.request(challenge=challenge, title='invoke "Send" in Mail',
+                  classes=["boundary"], task_id=session.task_id, step_index=0)
+
+    assert session.act(action)["error"].startswith("permit_tampered")
+
+
+def test_a_permit_replaced_after_it_expired_cannot_carry_the_old_step():
+    """The retry path never calls `request`, so nothing there had looked at
+    what the broker holds. An unanswered permit EXPIRES, which frees the
+    challenge for a fresh one — wait out the TTL, re-register the same
+    challenge with a sentence of your choosing, and the human chords on that
+    while the runtime spends it on the real action."""
+    clock = [1000.0]
+    store = PermitStore(ttl_s=60, clock=lambda: clock[0])
+    session = build_session("Mail", broker=FakeBrokerClient(store))
+    session.task_start("x", ["Mail"])
+    session.observe()
+    action = {"kind": "invoke", "ref": "send"}
+    challenge = session.act(action)["needs_permit"]["challenge"]
+
+    clock[0] += 120                       # the human never answered; it lapsed
+    store.request(challenge=challenge, title="open example.com in the browser",
+                  classes=["boundary"], task_id=session.task_id, step_index=0)
+    store.decide(challenge, "approve", via="chord")   # they chord on THAT sentence
+
+    session.observe()
+    r = session.act(action, permit=challenge)
+    assert r["ok"] is False and r["error"].startswith("permit_tampered")
+    assert store.get(challenge).state == "approved"   # refused without spending it
+    assert session.backend.calls == []
+
+
+@pytest.mark.parametrize("session", ["Mail"], indirect=True)
+def test_the_permit_hands_registered_itself_is_never_read_as_tampered(session, store):
+    """The check has to be invisible on every honest path, including the
+    retry that follows an ordinary approval."""
+    session.task_start("x", ["Mail"])
+    session.observe()
+    challenge = session.act({"kind": "invoke", "ref": "send"})["needs_permit"]["challenge"]
+    store.decide(challenge, "approve", via="chord")
+    session.observe()
+    assert session.act({"kind": "invoke", "ref": "send"}, permit=challenge)["ok"] is True
 
 
 # -- boundary, and the task-scoped widening that makes it bearable ----------

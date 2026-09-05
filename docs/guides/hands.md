@@ -225,6 +225,15 @@ approved for one step cannot be replayed on a different one, on the same button
 one step later, or by a second agent. Hands recomputes the id from the action it
 is about to run and refuses a permit that does not match it.
 
+It recomputes the **sentence**, too. The broker's permit store is idempotent
+while a permit is live, so a process running as the same user — one that has read
+`broker.json` — could register a challenge before Hands got to it and put its own
+words in front of the human for a step it did not describe. So before spending
+anything, Hands compares the title and classes the broker is holding against the
+ones it just built from the routed control. A mismatch refuses the step with
+`permit_tampered` and leaves the permit unspent, on the first request and on a
+retry after an expiry alike. Getting in first buys nothing.
+
 ## What needs approval
 
 A step is protected when its **effect** falls in one of six classes. The classes

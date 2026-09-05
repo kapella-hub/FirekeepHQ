@@ -557,10 +557,12 @@ class HandsSession:
         """The permit half of `act`, returning either `{"permit": ...}` once
         an approval has been consumed, or the refusal to hand back.
 
-        Fails closed in three distinct ways, all of them naming the broker,
-        because they are three different things to fix: no broker at all, a
-        broker that stopped answering between the health check and the
-        request, and a permit that is not (or is no longer) approved."""
+        Fails closed in four distinct ways, three of them naming the broker,
+        because they are different things to fix: no broker at all, a broker
+        that stopped answering between the health check and the request, a
+        permit that is not (or is no longer) approved, and a permit already
+        standing under a description that is not the one just computed here
+        (see `_tampered`)."""
         broker = self._ensure_broker()
         if broker is None:
             return {"ok": False, "error": _BROKER_DOWN, "classes": list(decision.classes)}
@@ -588,7 +590,20 @@ class HandsSession:
                 # than send the model to wait on a permit nobody is holding.
                 self.broker = None
                 return {"ok": False, "error": _BROKER_DOWN, "classes": list(decision.classes)}
+            tampered = self._tampered(reply, challenge, title, decision.classes)
+            if tampered is not None:
+                return tampered
             return {"ok": False, "needs_permit": needs}
+
+        # The same check on the retry path, and it is not redundant. This
+        # branch never calls `request`, so nothing above has looked at what the
+        # broker is actually holding — and a permit that EXPIRED unanswered
+        # stops being live, which lets the next `request` mint a fresh one with
+        # a fresh title. Wait out the TTL, re-register the same challenge with
+        # a sentence of your choosing, and the human chords on that.
+        tampered = self._tampered(broker.get(challenge), challenge, title, decision.classes)
+        if tampered is not None:
+            return tampered
 
         if not broker.consume(challenge):
             return {"ok": False, "error": "permit not approved, expired or already used",
@@ -596,6 +611,47 @@ class HandsSession:
 
         granted = broker.get(challenge) or {}
         return {"permit": {"challenge": challenge, "via": granted.get("via")}}
+
+    def _tampered(self, reply: object, challenge: str, title: str,
+                  classes: tuple[str, ...]) -> dict | None:
+        """Refuse when the permit the broker is holding does not describe the
+        step we are about to run. None when it does — or when there is no
+        permit at all, which `consume` refuses on its own.
+
+        This is what keeps rule 2 of this module's docstring true against a
+        process running as the same user. `PermitStore.request` is idempotent
+        while a permit is live: it returns the EXISTING permit, title and all.
+        Every input to the challenge id is reachable by such a process —
+        `machine_id` is a file, `session_id` is in `evidence/<task>/task.json`,
+        `task_id` and `step_index` come back in tool results, and `broker.json`
+        gives it the token — so it can pre-register the challenge for a future
+        `money` step under the sentence "open example.com in the browser", let
+        Hands ask for that step, and have the toast, `pending.json` and
+        `firekeep hands status` all show the human ITS sentence. The permit
+        stays bound to the real action, so this was never a way to act
+        unapproved; it was a way to obtain informed-looking consent for
+        something else, which is precisely the property the permit text
+        exists to establish.
+
+        It cannot be defeated by getting in first, because the honest title is
+        recomputed here, on this side, every time."""
+        if not isinstance(reply, dict):
+            return None
+        their_title = reply.get("title")
+        their_classes = list(reply.get("classes") or [])
+        if their_title == title and their_classes == list(classes):
+            return None
+        hooklog.log_failure(
+            "hands",
+            f"permit {challenge} already existed describing something else: "
+            f"{their_title!r} {their_classes} vs {title!r} {list(classes)} — refusing",
+        )
+        return {
+            "ok": False,
+            "error": ("permit_tampered: a permit for this step already existed with a "
+                      "different description; refusing"),
+            "classes": list(classes),
+        }
 
     def _widen(self, action: dict, control: Control | None, window: WindowInfo | None,
                url: str | None, decision) -> None:
