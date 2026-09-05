@@ -913,7 +913,7 @@ The desktop operator, and the registry's first `role: "capability"` entry. Every
 | `firekeep hands status` | platform, backend + OS permissions, broker/chord/phone, pending permits (from `pending.json`, only while the broker answers), policy counts, last task |
 | `firekeep hands allow app\|domain\|list\|forget` | the app and domain allowlists that suppress the `boundary` class |
 | `firekeep hands chord [set\|set-deny] <chord>` | print or change the approve/deny chords (defaults `ctrl+alt+y` / `ctrl+alt+n`); needs a broker restart |
-| `firekeep hands config [set <key> <value>]` | print or edit `config.json`, type-checked against the dataclass field |
+| `firekeep hands config [set <key> <value>]` | print or edit `config.json`, type-checked against the dataclass field — and by the same rules on every load, so a hand-edited value that is not the right type is dropped with a log line and the default stands rather than raising deep inside the broker or the step guard |
 | `firekeep hands evidence [<task_id>]` | list tasks, or print one task's hash-chained steps |
 
 **Not bundled, and not PyPI-installable yet.** Unlike the three dex wheels, `firekeep-hands` does not arrive with a release — the pyobjc set alone is tens of megabytes and a capability with real OS permissions is opt-in on principle. `HANDS_PYPI_PUBLISHED` is still `False` (the squat guard, 2026-09-05): until the name is published through the `pypi-hands` trusted publisher, a bare `enable` and `--pypi` both refuse rather than `pip install`-ing a name a third party could claim, and `--from <checkout>/hands` is the only working path. `HANDS_WHEEL_SPEC` in `client/firekeep_client/cli.py` is the one place in the kit that names the source.
