@@ -81,10 +81,14 @@ unconditional.
 A plain, diffable dotfile, written atomically (same-directory temp file +
 `os.replace`) and owner-only (`0600` on POSIX, an owner ACL on Windows), derived
 from the same home dir as the config so `FIREKEEP_CONFIG` relocates it with the
-rest of the kit. `source` records where the CODE came from,
-not who asked for it — everything today is `bundled`; the dev-mode side-loading
-rung (SDK ladder 3) is what will ever write anything else, and doctor will mark
-it loudly when it does.
+rest of the kit. `source` records where the CODE came from, not who asked for
+it. The three dexes are always `bundled` — their wheels arrive with the release
+and the bootstrap checksum-verifies them. `hands` is the exception and always
+will be: it is the one wheel that is never bundled, so `firekeep hands enable`
+stamps `checkout` (installed from `--from <dir>`) or `pypi` (installed from the
+published name). The dev-mode side-loading rung (SDK ladder 3) is what will add
+further values. Nothing reads the field yet — it is a record for a human
+reading their own registry, and for the doctor row that rung will add.
 
 **Reads never raise.** A corrupt or hand-mangled registry is logged to the hook
 log and treated as empty: a JSON typo costs you your dexes for that session, and

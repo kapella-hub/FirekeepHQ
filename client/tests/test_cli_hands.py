@@ -68,6 +68,34 @@ def test_enable_from_local_path_uses_that_path(registry_home, monkeypatch, tmp_p
     assert calls == [str(src)]
 
 
+def test_the_registry_records_where_the_hands_wheel_actually_came_from(
+    registry_home, monkeypatch, tmp_path
+):
+    """`source` is provenance, and Hands is the one wheel the bootstrap never
+    bundles — so the registry's `"bundled"` default would have written a false
+    statement about this machine into the user's own file."""
+    monkeypatch.setattr(cli, "_pip_install", lambda python, spec: None)
+    monkeypatch.setattr(dexes, "is_installed", lambda m: True)
+    monkeypatch.setattr(cli, "_run_hands_broker", lambda argv: 0)
+
+    src = tmp_path / "hands"
+    src.mkdir()
+    assert cli.cmd_hands(_args(action="enable", source=str(src))) == 0
+    assert dexes.read_registry()["hands"]["source"] == "checkout"
+
+    dexes.remove("hands")
+    monkeypatch.setattr(cli, "HANDS_PYPI_PUBLISHED", True)
+    assert cli.cmd_hands(_args(action="enable", pypi=True)) == 0
+    assert dexes.read_registry()["hands"]["source"] == "pypi"
+
+
+def test_a_dex_registered_without_a_source_is_still_bundled(registry_home):
+    """The default keeps every existing caller — and the two tests in
+    test_dexes.py that pin it — saying exactly what they said before."""
+    dexes.add("symdex")
+    assert dexes.read_registry()["symdex"]["source"] == "bundled"
+
+
 def test_enable_refuses_to_register_when_import_probe_fails(registry_home, monkeypatch, capsys):
     monkeypatch.setattr(cli, "_pip_install", lambda python, spec: None)
     monkeypatch.setattr(dexes, "is_installed", lambda m: False)

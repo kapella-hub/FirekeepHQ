@@ -2229,7 +2229,12 @@ def cmd_hands(args) -> int:
                   f"(no module '{manifest.import_probe}') — not registering it",
                   file=sys.stderr)
             return 1
-        dexes.add("hands")
+        # Provenance, recorded truthfully. Hands is the one wheel the bootstrap
+        # never bundles, so stamping the registry's `"bundled"` default here
+        # would put a false statement about where this machine's code came from
+        # into the user's own file. `--from` installed a local directory or
+        # wheel; anything else came off PyPI.
+        dexes.add("hands", source="checkout" if getattr(args, "source", None) else "pypi")
         rc = 0
         if not getattr(args, "no_autostart", False):
             rc = _run_hands_broker(["install-autostart"])

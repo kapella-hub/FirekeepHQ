@@ -211,26 +211,35 @@ def _manifest(name: str) -> DexManifest:
     return manifest
 
 
-def _stamp() -> dict:
+def _stamp(source: str = "bundled") -> dict:
     return {
         "added_at": datetime.datetime.now(datetime.timezone.utc).strftime(
             "%Y-%m-%dT%H:%M:%SZ"
         ),
-        # `source` is where the CODE came from, not who asked for it. Everything
-        # milestone 1 registers is a bundled, checksum-verified wheel; the
-        # dev-mode side-loading rung (ROADMAP §5, SDK ladder rung 3) is what
-        # will write anything else here, and doctor will mark it loudly.
-        "source": "bundled",
+        # `source` is where the CODE came from, not who asked for it. The three
+        # dexes are bundled, checksum-verified wheels and default to that;
+        # `hands` is the one entry that never can be — it is installed on
+        # demand by `firekeep hands enable`, from a checkout (`--from`) or from
+        # PyPI — so it passes its own value rather than inheriting a default
+        # that would state, in the user's own registry file, something untrue
+        # about where the code on their machine came from.
+        "source": str(source),
     }
 
 
-def add(name: str) -> DexManifest:
+def add(name: str, *, source: str = "bundled") -> DexManifest:
     """Register a dex. Idempotent — re-adding keeps the original `added_at`
-    rather than churning the stamp (and the file's mtime) on every re-run."""
+    rather than churning the stamp (and the file's mtime) on every re-run.
+
+    `source` defaults to `"bundled"`, which is right for every dex: their
+    wheels arrive with the release and are checksum-verified by the bootstrap.
+    A caller that installed the code itself passes what it actually did —
+    `"checkout"` or `"pypi"` — because this field is provenance, and a
+    provenance field that is a constant records nothing."""
     manifest = _manifest(name)
     entries = read_registry()
     if name not in entries:
-        entries[name] = _stamp()
+        entries[name] = _stamp(source)
         write_registry(entries)
     return manifest
 
