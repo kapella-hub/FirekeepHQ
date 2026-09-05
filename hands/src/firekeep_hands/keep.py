@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import dataclass
 from typing import Any
 
 from firekeep_client import hooklog, resolver
@@ -29,6 +30,46 @@ from firekeep_client.transport import TransportError
 
 _TIMEOUT = 5.0
 _DEFAULT_LEASE_TTL_MINUTES = 30
+
+
+@dataclass(frozen=True)
+class KeepDecision:
+    """What cortex said about a proposed action.
+
+    `decision` is cortex's own vocabulary — "allow", "rethink" or "block"
+    (`cortex/app/agent_gateway/models.py`) — or None when there was no
+    answer at all: offline, unreachable, or a reply that did not carry one.
+    None is NOT a block. Hands has to keep working with no Keep, so only an
+    explicit refusal refuses.
+
+    `reason` is the advisory text cortex sent with it, joined. The response
+    has no single "reason" field; the advisories are where a human-readable
+    explanation lives, and a block with nothing to show the human would be a
+    refusal they cannot act on."""
+
+    decision: str | None
+    reason: str = ""
+
+    @property
+    def blocked(self) -> bool:
+        return self.decision == "block"
+
+
+def _decision_from(result: Any) -> KeepDecision:
+    if not isinstance(result, dict):
+        return KeepDecision(None)
+    decision = result.get("decision")
+    if not isinstance(decision, str):
+        return KeepDecision(None)
+    advisories = result.get("advisories")
+    messages = []
+    if isinstance(advisories, list):
+        for advisory in advisories:
+            if isinstance(advisory, dict):
+                message = str(advisory.get("message") or "").strip()
+                if message:
+                    messages.append(message)
+    return KeepDecision(decision, "; ".join(messages))
 
 
 def _no_keep_configured() -> bool:
@@ -59,6 +100,11 @@ class KeepLink:
         else:
             self.offline = os.environ.get("FIREKEEP_HANDS_OFFLINE") == "1" or _no_keep_configured()
         self.session_id = session_id
+        # What the Keep said about the last `action_before`. Kept as an
+        # attribute rather than folded into the return value so the existing
+        # `-> action_id | None` contract stays intact for every caller that
+        # only wants the id.
+        self.last_decision = KeepDecision(None)
         self._fencing_token = 0
         self._holds_lease = False
         self._lease_ttl_minutes = _DEFAULT_LEASE_TTL_MINUTES
@@ -114,6 +160,10 @@ class KeepLink:
                 "confidence": 0.6,
             }
         result = self._call("cortex", "action_before", build)
+        # The full `ActionBeforeResponse` comes back, not just an id. The
+        # decision half lands on `last_decision` for a caller that wants to
+        # honour a block; the id is still the return value.
+        self.last_decision = _decision_from(result)
         return result.get("action_id") if isinstance(result, dict) else None
 
     def action_after(self, action_id: str | None, outcome: str, summary: str) -> None:

@@ -246,6 +246,20 @@ class HandsSession:
         self.step_index = 0
         self.last_obs = None
         self.action_id = self.link.action_before(goal=goal, task_id=task_id, apps=task_apps)
+
+        # The Keep gets a say in whether this task starts at all. Only an
+        # explicit "block" stops it: no answer, an unreachable Keep, or
+        # "rethink" all proceed, because Hands must keep working offline and
+        # a silent Keep is not a refusing one. No `action_after` is sent for
+        # a blocked task — cortex refused it, so there is no outcome to
+        # reconcile.
+        decision = getattr(self.link, "last_decision", None)
+        if decision is not None and getattr(decision, "blocked", False):
+            reason = decision.reason or "the Keep blocked this task"
+            self.link.release_lease()
+            ledger.close("abandoned", f"blocked by the Keep: {reason}")
+            self._reset()
+            raise HandsError("blocked", reason)
         return {
             "ok": True,
             "task_id": task_id,
@@ -432,7 +446,10 @@ class HandsSession:
                 return gate
             permit_record = gate["permit"]
 
-        before = self._capture() if permit_record is not None else None
+        # A navigation is a browser step even though it arrives through
+        # `act`, so its evidence comes from the page, not the desktop.
+        in_browser = routed.route == "browser"
+        before = self._capture(via_browser=in_browser) if permit_record is not None else None
         index = self.step_index
         outcome, error, extra, evidence_error = "ok", None, None, None
         try:
@@ -447,7 +464,7 @@ class HandsSession:
                 # routing does not know about would raise a TypeError here.
                 hooklog.log_failure("hands", f"step {index} failed: {exc}", exc)
                 outcome, error = "error", f"backend: {exc}"
-            after = self._capture() if permit_record is not None else None
+            after = self._capture(via_browser=in_browser) if permit_record is not None else None
             if outcome == "ok":
                 self._update_focus_hint(routed)
             evidence_error = self._record(
@@ -622,14 +639,22 @@ class HandsSession:
         elif routed.kind in ("focus_app", "open_app"):
             self._focus_hint = None
 
-    def _capture(self) -> bytes | None:
+    def _capture(self, *, via_browser: bool = False) -> bytes | None:
         """A before/after screenshot for a protected step — best effort.
+
+        A browser step is photographed through the browser: the page is what
+        the human approved, and on a machine where the browser is not the
+        foreground window a desktop grab would show something else entirely.
 
         The permit has already been consumed by the time this runs, so a
         machine that cannot screenshot (no `mss`, no Screen Recording
-        permission) must not turn the human's approval into a refusal. A
-        failure is logged and the ledger line simply carries no image."""
+        permission, a CDP transport that just dropped) must not turn the
+        human's approval into a refusal. A failure is logged and the ledger
+        line simply carries no image."""
         try:
+            if via_browser:
+                return self._require_browser().screenshot(
+                    max_width=self.config.screenshot_max_width)
             observation = self.backend.observe(
                 app=None, region=None, max_nodes=1, text_budget=0,
                 screenshot=True, max_width=self.config.screenshot_max_width,
@@ -684,6 +709,10 @@ class HandsSession:
         tab = kwargs.get("tab")
         index = self.step_index
         payload: dict = {}
+        # Non-empty classes means the permit gate ran and a human approved,
+        # so this step gets the same before/after pair a native protected
+        # step does — photographed through the browser.
+        before = self._capture(via_browser=True) if classes else None
         outcome, error, evidence_error = "ok", None, None
         try:
             try:
@@ -712,9 +741,10 @@ class HandsSession:
                 # transport raises its own errors, not only HandsError.
                 hooklog.log_failure("hands", f"browser step {index} failed: {exc}", exc)
                 outcome, error = "error", f"backend: {exc}"
+            after = self._capture(via_browser=True) if classes else None
             evidence_error = self._record(
                 index, _redact(ledger_action, classes, control), "browser",
-                classes, permit_record, None, None, outcome, error,
+                classes, permit_record, before, after, outcome, error,
             )
         finally:
             self._advance()

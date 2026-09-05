@@ -20,6 +20,7 @@ from firekeep_hands.backends.base import (
 from firekeep_hands.backends.fake import FakeBackend
 from firekeep_hands.broker.permits import PermitStore
 from firekeep_hands.config import HandsConfig, Policy, Remembered
+from firekeep_hands.keep import KeepDecision
 from firekeep_hands.session import HandsSession
 
 # -- doubles ---------------------------------------------------------------
@@ -103,10 +104,13 @@ class FakeLink:
 
     offline = True
 
-    def __init__(self, *, acquired: bool = True):
+    def __init__(self, *, acquired: bool = True, decision: KeepDecision | None = None):
         self._acquired = acquired
         # What relay/app/leases.py sends back on a lost race.
         self.lease_extra = {"held_by": "agent-7", "expires_in": 900}
+        # What cortex said about the task. The real KeepLink sets this from
+        # the ActionBeforeResponse; None means it never answered.
+        self.last_decision = decision or KeepDecision(None)
         self.before: list[tuple] = []
         self.after: list[tuple] = []
         self.leases: list[int] = []
@@ -427,6 +431,33 @@ def test_the_lease_refusal_degrades_when_relay_says_less():
     assert str(ei.value).startswith("hands is leased by another session — ")
 
 
+def test_a_keep_block_stops_the_task_and_gives_the_machine_back():
+    """The Keep gets a say in whether a task starts. A block that left the
+    lease held would lock the machine for half an hour over a task that never
+    ran."""
+    link = FakeLink(decision=KeepDecision("block", "this looks like the incident from Tuesday"))
+    s = build_session("Notepad", link=link)
+    with pytest.raises(HandsError) as ei:
+        s.task_start("do the thing", ["Notepad"])
+    assert ei.value.code == "blocked"
+    assert str(ei.value) == "this looks like the incident from Tuesday"
+    assert link.released is True
+    assert s.task_id is None and s.ledger is None
+    assert link.after == []  # cortex refused it; there is no outcome to reconcile
+
+
+@pytest.mark.parametrize("decision", [
+    KeepDecision(None),                       # offline, or no answer at all
+    KeepDecision("allow"),
+    KeepDecision("rethink", "are you sure?"),  # advisory, not a refusal
+])
+def test_anything_short_of_an_explicit_block_proceeds(decision):
+    link = FakeLink(decision=decision)
+    s = build_session("Notepad", link=link)
+    assert s.task_start("x", ["Notepad"])["ok"] is True
+    assert s.task_id is not None and link.released is False
+
+
 def test_a_second_task_start_is_refused_while_one_is_open(session):
     session.task_start("first", ["Notepad"])
     with pytest.raises(HandsError) as ei:
@@ -519,7 +550,7 @@ def test_browser_navigate_goes_through_the_policy_gate(session, store):
     assert broker_title(session) == "open evil.example in the browser"
     store.decide(ch, "approve", via="chord")
     ok = session.browser_op("navigate", url="https://evil.example/x", permit=ch)
-    assert ok["ok"] and browser.calls[-1] == ("navigate", "https://evil.example/x")
+    assert ok["ok"] and ("navigate", "https://evil.example/x") in browser.calls
     assert session.ledger.steps()[-1]["route"] == "browser"
 
 
@@ -602,7 +633,8 @@ def test_a_web_button_is_classified_like_a_native_one(session, store):
     store.decide(ch, "approve", via="chord")
     ok = session.browser_op("click", ref="g1-d3", permit=ch)
     assert ok["ok"] and ok["classes"] == ["money"]
-    assert browser.calls[-1] == ("click", "g1-d3")
+    # Bracketed by the before/after evidence pair, so not the last call.
+    assert ("click", "g1-d3") in browser.calls
     assert session.ledger.steps()[-1]["permit"] == {"challenge": ch, "via": "chord"}
 
 
@@ -618,17 +650,50 @@ def test_filling_a_password_input_is_a_credential_step(session, store):
     ch = r["needs_permit"]["challenge"]
     store.decide(ch, "approve", via="chord")
     assert session.browser_op("fill", ref="g1-d2", text="hunter2", permit=ch)["ok"]
-    assert browser.calls[-1] == ("fill", "g1-d2", "hunter2")  # the real text runs
+    assert ("fill", "g1-d2", "hunter2") in browser.calls  # the real text runs
     line = session.ledger.steps()[-1]
     assert line["action"]["text"] == "<redacted:credential>"  # but is never stored
 
 
 def test_an_ordinary_web_click_needs_no_permit(session):
-    session.browser = FakeBrowser()
+    browser = FakeBrowser()
+    session.browser = browser
     session.task_start("x", ["Notepad"])
     session.browser_op("find", query="Save")
     r = session.browser_op("click", ref="g1-d1")
     assert r["ok"] is True and r["classes"] == []
+    assert ("screenshot",) not in browser.calls  # unprotected: no evidence images
+    assert session.ledger.steps()[-1]["before"] is None
+
+
+def test_a_protected_browser_step_is_photographed_through_the_browser(session, store):
+    """The page is what the human approved. A desktop grab would show
+    whatever happened to be in front on a machine where the browser is not."""
+    browser = FakeBrowser()
+    session.browser = browser
+    session.task_start("x", ["Notepad"])
+    session.browser_op("find", query="order")
+    ch = session.browser_op("click", ref="g1-d3")["needs_permit"]["challenge"]
+    store.decide(ch, "approve", via="chord")
+    assert session.browser_op("click", ref="g1-d3", permit=ch)["ok"]
+
+    line = session.ledger.steps()[-1]
+    assert line["before"] and line["after"]
+    assert (session.ledger.dir / f"{line['step_index']:03d}-before.png").exists()
+    assert browser.calls.count(("screenshot",)) == 2
+
+
+def test_a_protected_navigation_is_photographed_too(session, store):
+    browser = FakeBrowser()
+    session.browser = browser
+    session.task_start("x", ["Notepad"])
+    r = session.browser_op("navigate", url="https://evil.example/x")
+    ch = r["needs_permit"]["challenge"]
+    store.decide(ch, "approve", via="chord")
+    assert session.browser_op("navigate", url="https://evil.example/x", permit=ch)["ok"]
+    line = session.ledger.steps()[-1]
+    assert line["before"] and line["after"]
+    assert browser.calls.count(("screenshot",)) == 2
 
 
 def test_an_unlabelled_link_is_judged_by_where_it_goes(session):

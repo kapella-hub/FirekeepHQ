@@ -1,3 +1,5 @@
+import pytest
+
 from firekeep_client import resolver, transport
 from firekeep_hands import keep
 
@@ -74,6 +76,48 @@ def test_online_calls_map_to_the_right_tools(monkeypatch):
     assert seen[1][2]["resource_id"] == "hands:m" and seen[5][2]["fencing_token"] == 7
     assert seen[2][2]["resource_id"] == "hands:m" and seen[2][2]["fencing_token"] == 7 and seen[2][2]["agent_id"] == "a"
     assert seen[3][2]["title"] == "hands_permit:c" and seen[4][2]["title"] == "hands_permit:c"
+
+
+def test_the_keeps_decision_is_kept_alongside_the_action_id(monkeypatch):
+    """cortex answers `action_before` with a whole `ActionBeforeResponse`,
+    not just an id. The decision half lands on `last_decision` so a caller
+    can honour a block; the reason comes from the advisories, which is the
+    only human-readable text in that response."""
+    monkeypatch.setattr(keep, "call_tool", lambda *a, **k: {
+        "decision": "block",
+        "action_id": "A9",
+        "tier": "full",
+        "advisories": [{"code": "contested", "message": "this contradicts Tuesday's runbook"},
+                       {"code": "contested", "message": "and it deletes the backup"}],
+    })
+    link = keep.KeepLink(agent_id="a", machine_id="m", offline=False)
+    assert link.action_before(goal="g", task_id="t", apps=[]) == "A9"
+    assert link.last_decision.blocked is True
+    assert link.last_decision.reason == (
+        "this contradicts Tuesday's runbook; and it deletes the backup")
+
+
+@pytest.mark.parametrize("reply,expected", [
+    ({"decision": "allow", "action_id": "A1"}, "allow"),
+    ({"decision": "rethink", "action_id": "A1", "advisories": []}, "rethink"),
+    ({"action_id": "A1"}, None),          # a reply with no decision at all
+    ({}, None),
+    (None, None),                          # offline, or the call failed
+    ("not a dict", None),
+])
+def test_only_an_explicit_block_reads_as_blocked(monkeypatch, reply, expected):
+    monkeypatch.setattr(keep, "call_tool", lambda *a, **k: reply)
+    link = keep.KeepLink(agent_id="a", machine_id="m", offline=False)
+    link.action_before(goal="g", task_id="t", apps=[])
+    assert link.last_decision.decision == expected
+    assert link.last_decision.blocked is False
+
+
+def test_an_offline_link_never_claims_the_keep_decided(monkeypatch):
+    monkeypatch.setattr(keep, "call_tool", lambda *a, **k: pytest.fail("called while offline"))
+    link = keep.KeepLink(agent_id="a", machine_id="m", offline=True)
+    link.action_before(goal="g", task_id="t", apps=[])
+    assert link.last_decision == keep.KeepDecision(None, "")
 
 
 def test_transport_errors_are_swallowed(monkeypatch):
