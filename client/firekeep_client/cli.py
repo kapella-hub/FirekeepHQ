@@ -154,6 +154,16 @@ EMPTY_REGISTRY_HINT = (
     "then `firekeep dex add docdex`"
 )
 
+# The PyPI spec `firekeep hands enable` installs by default. Hands is NOT
+# bundled by the bootstrap (a capability that moves the mouse is opt-in, spec
+# §3.1), so this is the one place in the kit that names the wheel's source.
+HANDS_WHEEL_SPEC = "firekeep-hands>=0.1,<0.2"
+
+# Flip to True in the release that first publishes firekeep-hands through the
+# `pypi-hands` trusted publisher (Task 13). Until then a bare `pip install
+# firekeep-hands` could resolve to whoever registers the name first.
+HANDS_PYPI_PUBLISHED = False
+
 
 def _current_link(home: Path | None = None) -> Path:
     return (home if home is not None else _firekeep_home()) / CURRENT_LINK_NAME
@@ -1235,6 +1245,8 @@ def _check_dexes() -> list[tuple[str, str, str]]:
         rows.append(_check_docdex())
     if any(m.name == "maildex" for m in registered):
         rows.append(_check_maildex())
+    if any(m.name == "hands" for m in registered):
+        rows.append(_check_hands())
     return rows
 
 
@@ -1328,6 +1340,26 @@ def _check_maildex() -> tuple[str, str, str]:
     except Exception as exc:  # noqa: BLE001 - a check never breaks the doctor run
         return ("maildex", "warn", f"cannot read maildex state: {exc}")
     return ("maildex", "warn" if failures else "ok", detail)
+
+
+def _check_hands() -> tuple[str, str, str]:
+    """Hands' own row: wheel present, broker answering, and what approves.
+
+    The broker is the safety boundary — with it down every protected step is
+    refused (fail closed), so its absence is the one thing this row must say
+    loudly. Permissions (accessibility, screen recording, input monitoring)
+    are the wheel's to report; `firekeep hands status` shows them."""
+    if not dexes.is_installed(dexes.KNOWN_DEXES["hands"]):
+        return ("hands", "fail", "registered but the wheel is missing — `firekeep hands enable`")
+    health = read_broker_health()
+    if not health:
+        return ("hands", "warn",
+                "broker not running — protected steps are refused until it is "
+                "(`firekeep-hands-broker run`, or re-run `firekeep hands enable`)")
+    listeners = health.get("listeners") or {}
+    return ("hands", "ok",
+            f"broker up · chord {health.get('chord', '?')} ({listeners.get('chord', '?')}) "
+            f"· phone {listeners.get('phone', '?')}")
 
 
 def _check_backup(cfg=None, *, reachable: bool = True) -> tuple[str, str, str]:
@@ -2101,6 +2133,113 @@ def cmd_docdex(args) -> int:
         # argparse inside the wheel exits rather than returns. `firekeep` must
         # hand back an int from every command — dispatch is what calls sys.exit.
         return int(exc.code or 0)
+
+
+def _hands_dir() -> Path:
+    return _config_path().parent / "hands"
+
+
+def read_broker_health(timeout: float = 1.0) -> dict | None:
+    """The approval broker's /health, or None when it is not running.
+
+    Stdlib only and read from disk first: `broker.json` names the loopback
+    port and bearer token the running broker chose. No file, or a refused
+    connection, both mean "not running" — doctor must not hang on it."""
+    import urllib.error
+    import urllib.request
+    path = _hands_dir() / "broker.json"
+    try:
+        info = json.loads(path.read_text(encoding="utf-8"))
+        port, token = int(info["port"]), str(info["token"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/health", headers={"Authorization": f"Bearer {token}"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 — loopback only
+            data = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) and data.get("ok") else None
+
+
+def _run_hands_broker(argv: list[str]) -> int:
+    """Run the wheel's broker console script (install-autostart etc.) in-process."""
+    try:
+        from firekeep_hands.broker.__main__ import main as broker_main
+    except ImportError:
+        print("firekeep: firekeep-hands is not importable in this venv — run "
+              "`firekeep hands enable`", file=sys.stderr)
+        return 1
+    return int(broker_main(argv) or 0)
+
+
+def cmd_hands(args) -> int:
+    """`firekeep hands enable|disable|status|allow|chord|config|evidence`.
+
+    enable/disable are the kit's own (they touch the venv and the registry —
+    spec §3.1: Hands is installed on demand, never bundled). Everything else
+    is a translator onto `firekeep_hands.cli.main`, imported lazily so a kit
+    without the wheel keeps every other command working.
+
+    PyPI squat guard (2026-09-05 ruling): `firekeep-hands` is not published
+    yet, so a bare `enable` (no `--from`, no `--pypi`) refuses rather than
+    `pip install`-ing a name a third party could still claim.
+    """
+    action = getattr(args, "action", None) or "status"
+    manifest = dexes.KNOWN_DEXES["hands"]
+
+    if action == "enable":
+        source = (getattr(args, "source", None) or "").strip()
+        if not source:
+            if getattr(args, "pypi", False) and HANDS_PYPI_PUBLISHED:
+                source = HANDS_WHEEL_SPEC
+            else:
+                print("firekeep: firekeep-hands is not yet published to PyPI — install from a "
+                      "checkout: `firekeep hands enable --from <checkout>/hands`", file=sys.stderr)
+                return 2
+        print(f"firekeep: installing {source} into this kit's venv …")
+        try:
+            _pip_install(sys.executable, source)
+        except Exception as exc:  # noqa: BLE001 — pip's failure text is the diagnosis
+            print(f"firekeep: install failed: {exc}", file=sys.stderr)
+            return 1
+        if not dexes.is_installed(manifest):
+            print("firekeep: firekeep-hands installed but not importable "
+                  f"(no module '{manifest.import_probe}') — not registering it",
+                  file=sys.stderr)
+            return 1
+        dexes.add("hands")
+        rc = 0
+        if not getattr(args, "no_autostart", False):
+            rc = _run_hands_broker(["install-autostart"])
+            if rc:
+                print("firekeep: broker autostart could not be installed — start it by "
+                      "hand with `firekeep-hands-broker run`", file=sys.stderr)
+        print("firekeep: Hands is registered — your runtimes get the hands_* tools on "
+              "the next agent session.\n"
+              "firekeep: approve consequential steps with the chord "
+              "(`firekeep hands chord` shows it) or from the dashboard on your phone.")
+        return 0
+
+    if action == "disable":
+        if "hands" in dexes.read_registry():
+            dexes.remove("hands")
+        _run_hands_broker(["uninstall-autostart"])
+        if getattr(args, "purge", False):
+            shutil.rmtree(_hands_dir(), ignore_errors=True)
+        print("firekeep: Hands is off — the tools disappear on the next agent session"
+              + (" and its local files are gone." if getattr(args, "purge", False)
+                 else "; `firekeep hands disable --purge` also removes its files."))
+        return 0
+
+    try:
+        from firekeep_hands import cli as hands_cli
+    except ImportError:
+        print("firekeep: Hands is not installed — run `firekeep hands enable`", file=sys.stderr)
+        return 1
+    return int(hands_cli.main([action, *list(getattr(args, "rest", []) or [])]) or 0)
 
 
 def _register_maildex() -> None:
@@ -3028,6 +3167,22 @@ def _build_parser() -> argparse.ArgumentParser:
                          help="how far back the first sync reaches (add; default 90)")
     maildex.add_argument("--account", metavar="ID", help="sync one account by id")
     maildex.set_defaults(func=cmd_maildex)
+
+    p_hands = sub.add_parser(
+        "hands", help="desktop operator — enable, disable, status, allow, chord, config, evidence")
+    p_hands.add_argument("action", nargs="?", default="status",
+                         choices=["enable", "disable", "status", "allow", "chord", "config", "evidence"])
+    # nargs="*", NOT argparse.REMAINDER: REMAINDER after a positional swallows
+    # `--from X` into `rest` and leaves `source` None — the exact command the
+    # live smoke depends on. With "*" the options still parse wherever they sit.
+    p_hands.add_argument("rest", nargs="*")
+    p_hands.add_argument("--from", dest="source", default=None,
+                         help="wheel source for enable: a local checkout dir or a pip spec")
+    p_hands.add_argument("--pypi", action="store_true",
+                         help="enable: install the published wheel from PyPI (HANDS_WHEEL_SPEC)")
+    p_hands.add_argument("--no-autostart", action="store_true")
+    p_hands.add_argument("--purge", action="store_true", help="with disable: delete ~/.firekeep/hands")
+    p_hands.set_defaults(func=cmd_hands)
 
     backup = sub.add_parser(
         "backup",
