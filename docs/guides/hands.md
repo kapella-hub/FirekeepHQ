@@ -187,7 +187,9 @@ declared.
 ```
 hands_task_start(goal="write today's note and save it", apps=["notepad"])
   -> {"ok": true, "task_id": "h-3f9c21a04b7e", "evidence": "…/hands/evidence/h-3f9c21a04b7e",
-      "max_steps": 400, "keep": "online"}
+      "max_steps": 400, "keep": {"online": true, "action_id": "a4f1…"}}
+     # action_id is the Keep's receipt for this task. `online: true` with
+     # `action_id: null` means the Keep answered and did not take it.
 
 hands_act({"kind": "open_app", "app": "notepad"})
   -> {"ok": true, "step_index": 0, "route": "os", "classes": []}
@@ -493,7 +495,7 @@ firekeep hands evidence h-3f9c21a04b7e     # one task's steps
 
 | Reaches the Keep | How |
 |---|---|
-| The task itself | `action_before` at start (goal, machine, declared apps — an explicit `block` decision refuses the start; `rethink`, `allow` and silence proceed) and `action_after` at end (success, outcome, summary) |
+| The task itself | `action_before` at start (goal, machine, declared apps — an explicit `block` decision refuses the start; `rethink`, `allow` and silence proceed) and `action_after` at end (success, outcome, summary). The action id it returns is the Keep's receipt, and it is surfaced in three places on purpose: `hands_task_start`'s result, `hands_status`, and `keep_action_id` in the task's `task.json` (shown by `firekeep hands evidence <task>`). A machine with a Keep, `online: true`, and no action id is a Keep that did not take the task — which is a state that once persisted for a whole release behind a connectivity flag that said "online" while every call was being rejected |
 | One operator per machine | a relay lease on `hands:<machine_id>`, taken at `task_start`, renewed via `relay_heartbeat` every 10 steps, released at `task_end` |
 | Pending approvals | relay tasks titled `hands_permit:<challenge>` — **only when phone approvals are on** |
 

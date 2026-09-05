@@ -264,6 +264,28 @@ def test_evidence_shows_task_steps(isolated_home, capsys):
     assert f"#0 click [permit] ok classes=send permit=chord before={before_sha8} after={after_sha8}" in out
 
 
+def test_evidence_names_the_keep_action_when_there_is_one(isolated_home, capsys):
+    """The id cortex minted is the only proof the Keep ACCEPTED the task
+    rather than rejecting it into an error string nobody read — which is what
+    happened for a whole release. Its absence is equally informative, so it is
+    printed only when present."""
+    led = Ledger("t4", goal="g", apps=[], machine_id="m", session_id="s")
+    led.note_keep_action("act-9f21")
+    led.close("done", "ok")
+
+    assert cli.main(["evidence", "t4"]) == 0
+    assert "keep action: act-9f21" in capsys.readouterr().out
+
+
+def test_evidence_says_nothing_about_the_keep_when_it_never_answered(isolated_home, capsys):
+    led = Ledger("t5", goal="g", apps=[], machine_id="m", session_id="s")
+    led.note_keep_action(None)          # offline, unreachable, or refused
+    led.close("done", "ok")
+
+    assert cli.main(["evidence", "t5"]) == 0
+    assert "keep action" not in capsys.readouterr().out
+
+
 def test_evidence_unknown_task_exits_1(isolated_home, capsys):
     assert cli.main(["evidence", "does-not-exist"]) == 1
     assert capsys.readouterr().err

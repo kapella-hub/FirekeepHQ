@@ -426,6 +426,10 @@ def _cmd_evidence(args) -> int:
         print(f"  goal: {data['goal']}")
     if data.get("apps"):
         print(f"  apps: {', '.join(data['apps'])}")
+    if data.get("keep_action_id"):
+        # Present only when cortex actually minted one, so its absence on a
+        # machine with a Keep is itself the answer to "did the Keep see this?".
+        print(f"  keep action: {data['keep_action_id']}")
     if data.get("summary"):
         print(f"  summary: {data['summary']}")
 

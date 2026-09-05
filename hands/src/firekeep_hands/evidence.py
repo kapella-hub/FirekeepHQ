@@ -174,6 +174,29 @@ class Ledger:
         state._private(self._steps_path)
         return line
 
+    def note_keep_action(self, action_id: str | None) -> None:
+        """Record the id cortex minted for this task, if it minted one.
+
+        Written as its own step rather than folded into the opening
+        `task.json` because it is not known then: `action_before` is called
+        after the ledger exists, and its answer is the only proof the Keep
+        actually accepted the task rather than 422'ing it into a string
+        nobody read. A missing key means no id — offline, unreachable, or
+        refused — which is exactly the distinction `firekeep hands evidence`
+        needs to be able to show.
+
+        Best-effort, like every other write here: a task whose record cannot
+        be updated is still a task that runs."""
+        if not action_id:
+            return
+        try:
+            data = self._read_task_json()
+            data["keep_action_id"] = str(action_id)
+            self._write_task_json(data)
+        except Exception as exc:  # noqa: BLE001 — bookkeeping never breaks a task
+            hooklog.log_failure(
+                "hands", f"could not record the keep action id for {self.task_id}: {exc}", exc)
+
     def close(self, outcome: str, summary: str) -> None:
         """`steps.jsonl` is the one store of record for the actual steps —
         `task.json["steps"]` is only a count, so closing a task never

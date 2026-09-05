@@ -169,6 +169,9 @@ class HandsSession:
                 "step_index": self.step_index,
                 "steps_left": max(0, self.config.max_steps - self.step_index),
                 "evidence": str(self.ledger.dir) if self.ledger else None,
+                # Same reason it is in `task_start`'s result: null here on a
+                # link that is not offline means the Keep never took the task.
+                "action_id": self.action_id,
             }
         return {
             "ok": True,
@@ -250,6 +253,9 @@ class HandsSession:
         self.step_index = 0
         self.last_obs = None
         self.action_id = self.link.action_before(goal=goal, task_id=task_id, apps=task_apps)
+        # Before the block check on purpose: a task cortex refused still has an
+        # action record on the Keep, and the evidence directory should name it.
+        ledger.note_keep_action(self.action_id)
 
         # The Keep gets a say in whether this task starts at all. Only an
         # explicit "block" stops it: no answer, an unreachable Keep, or
@@ -279,7 +285,17 @@ class HandsSession:
             "apps": task_apps,
             "evidence": str(ledger.dir),
             "max_steps": self.config.max_steps,
-            "keep": "offline" if getattr(self.link, "offline", True) else "online",
+            # A dict, matching `status()`'s `keep` — and carrying the action
+            # id, which is the only thing that distinguishes a Keep that
+            # ACCEPTED this task from one that is merely reachable. A
+            # connectivity flag said "online" for a whole release while every
+            # `action_before` was being rejected as a 422 and turned into an
+            # error string nobody read; `action_id: null` on a link that is
+            # not offline is that failure, visible in the tool result.
+            "keep": {
+                "online": not getattr(self.link, "offline", True),
+                "action_id": self.action_id,
+            },
         }
 
     def task_end(self, outcome: str, summary: str = "") -> dict:

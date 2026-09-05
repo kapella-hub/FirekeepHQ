@@ -20,7 +20,7 @@ from firekeep_hands.backends.base import (
     UnsupportedBackend,
     WindowInfo,
 )
-from firekeep_hands import ids
+from firekeep_hands import ids, paths
 from firekeep_hands.backends.fake import FakeBackend
 from firekeep_hands.broker.permits import PermitStore
 from firekeep_hands.config import HandsConfig, Policy, Remembered
@@ -475,6 +475,48 @@ def test_anything_short_of_an_explicit_block_proceeds(decision):
     s = build_session("Notepad", link=link)
     assert s.task_start("x", ["Notepad"])["ok"] is True
     assert s.task_id is not None and link.released is False
+
+
+def test_task_start_reports_the_action_id_the_keep_minted(session):
+    """`keep: "online"` came from a connectivity flag, and said "online" for a
+    whole release while every `action_before` was being rejected as a 422 and
+    turned into an error string nobody read. The action id is the only field
+    that distinguishes a Keep that ACCEPTED the task from one that merely
+    answers, so it is in the tool result, in `hands_status`, and in
+    `task.json` — a live smoke can assert on it."""
+    session.link.offline = False
+    started = session.task_start("x", ["Notepad"])
+    assert started["keep"] == {"online": True, "action_id": "A1"}
+    assert session.status()["task"]["action_id"] == "A1"
+    assert json.loads((Path(started["evidence"]) / "task.json").read_text(
+        encoding="utf-8"))["keep_action_id"] == "A1"
+
+
+def test_a_keep_that_never_answered_reports_no_action_id(session):
+    """None is not a failure to report — it IS the report. A link that is
+    online with no action id is a Keep that did not take the task."""
+    class Silent(FakeLink):
+        def action_before(self, *, goal, task_id, apps):
+            return None
+
+    s = build_session("Notepad", link=Silent())
+    started = s.task_start("x", ["Notepad"])
+    assert started["keep"]["action_id"] is None
+    task_json = json.loads((Path(started["evidence"]) / "task.json").read_text(encoding="utf-8"))
+    assert "keep_action_id" not in task_json
+
+
+def test_a_blocked_task_still_records_the_action_id_cortex_minted():
+    """cortex refused it, but the action record exists on the Keep and the
+    evidence directory should name it — the id is written before the block
+    check for exactly that reason."""
+    link = FakeLink(decision=KeepDecision("block", "no"))
+    s = build_session("Notepad", link=link)
+    with pytest.raises(HandsError):
+        s.task_start("x", ["Notepad"])
+    directory = next((paths.evidence_root()).iterdir())
+    assert json.loads((directory / "task.json").read_text(
+        encoding="utf-8"))["keep_action_id"] == "A1"
 
 
 def test_a_second_task_start_is_refused_while_one_is_open(session):
