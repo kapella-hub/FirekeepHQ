@@ -77,6 +77,18 @@ _FIELD_TYPES: dict[str, object] = {
 }
 
 
+# Fields whose whole job is to name a target, and which are therefore
+# meaningless blank. Deliberately NOT `ref` (resolved against the observation,
+# which refuses an unknown one), `text`/`value` (an empty string is a legitimate
+# thing to type or set) or `chord` (`_REQUIRED_KEYS` already demands it and a
+# blank one simply matches no chord).
+_MUST_NAME_SOMETHING: dict[str, tuple[str, ...]] = {
+    "open_app": ("app",),
+    "focus_app": ("app",),
+    "open_url": ("url",),
+}
+
+
 def _check_types(kind: str, action: dict) -> None:
     for key, expected in _FIELD_TYPES.items():
         if key not in action:
@@ -140,6 +152,20 @@ def route(action: dict, observation: Observation | None) -> Routed:
         raise HandsError("invalid_action", f"{kind} is missing required key(s): {missing}")
 
     _check_types(kind, action)
+
+    # A blank target is not a target. `_check_types` proves these are strings;
+    # this proves they NAME something. An empty `app` reached the classifier as
+    # a name it exempted (nothing to compare, so nothing crossed) and then
+    # reached the backend, where Windows' `_window_element("")` matches the
+    # first window whose title contains the empty string — i.e. any window at
+    # all. A model that sends `{"kind": "focus_app", "app": ""}` was asking to
+    # be pointed at whatever is in front, ungated.
+    for key in _MUST_NAME_SOMETHING.get(kind, ()):
+        if not str(action[key]).strip():
+            raise HandsError(
+                "invalid_action",
+                f"{kind}'s {key!r} must name something — it is empty or blank",
+            )
 
     if kind == "wait" and action["seconds"] > 10:
         raise HandsError("invalid_action", "wait seconds must be <= 10")

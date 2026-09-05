@@ -487,6 +487,7 @@ def test_task_start_reports_the_action_id_the_keep_minted(session):
     session.link.offline = False
     started = session.task_start("x", ["Notepad"])
     assert started["keep"] == {"online": True, "action_id": "A1"}
+    assert started["keep_action_id"] == "A1"     # the same id under both spellings
     assert session.status()["task"]["action_id"] == "A1"
     assert json.loads((Path(started["evidence"]) / "task.json").read_text(
         encoding="utf-8"))["keep_action_id"] == "A1"
@@ -756,6 +757,22 @@ def test_the_widening_dies_with_the_task_and_never_reaches_the_policy_file(sessi
 
 
 @pytest.mark.parametrize("session", ["Mail"], indirect=True)
+@pytest.mark.parametrize("action", [
+    {"kind": "focus_app", "app": ""},
+    {"kind": "open_app", "app": "  "},
+    {"kind": "open_url", "url": ""},
+])
+def test_a_blank_target_never_reaches_the_desktop(session, action):
+    """On Windows a blank `app` made `_window_element("")` match any window at
+    all, and the classifier exempted the blank rather than crossing on it — so
+    this was a way to operate whatever was in front with no permit."""
+    session.task_start("x", ["Notepad"])
+    r = session.act(action)
+    assert r["ok"] is False and r["error"].startswith("invalid_action")
+    assert session.backend.calls == []
+    assert session.ledger.steps() == []      # never became a step
+
+
 def test_a_refused_boundary_step_widens_nothing(session):
     """Only a CONSUMED permit declares the app. A step the human never
     answered must leave the task exactly as it found it."""

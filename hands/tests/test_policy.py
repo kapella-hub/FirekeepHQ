@@ -142,6 +142,27 @@ def test_kinds_that_target_no_window_are_not_boundary_steps():
                            _NOTHING, []) == ()
 
 
+@pytest.mark.parametrize("app", ["", "   ", "\t"])
+def test_a_blank_app_the_model_chose_is_a_crossing_not_an_exemption(app):
+    """The empty-name exemption is for a window Hands could not READ. This
+    name is one the model WROTE, and "" names nothing that could have been
+    declared — so it must not inherit the exemption. `routing` refuses it
+    first; this is the second layer, and both have to be wrong for a blank to
+    reach the desktop."""
+    for kind in ("focus_app", "open_app"):
+        assert policy.classify({"kind": kind, "app": app}, None, W, None,
+                               _NOTHING, ["Mail"]) == ("boundary",)
+        assert policy.boundary_apps({"kind": kind, "app": app}, None, W, None,
+                                    _NOTHING, ["Mail"]) == [app]
+
+
+def test_a_blank_app_is_a_crossing_even_when_something_is_allowlisted():
+    """The blank check runs before the declared-set lookup, so a policy that
+    happens to allowlist an app cannot launder it."""
+    assert policy.classify({"kind": "open_app", "app": ""}, None, W, None,
+                           Policy(["Terminal"], [], []), ["Mail", ""]) == ("boundary",)
+
+
 def test_an_unnamed_window_is_not_treated_as_a_crossing():
     """A backend that could not name the foreground window returns "". Reading
     that as "an app you did not declare" would put a permit in front of every

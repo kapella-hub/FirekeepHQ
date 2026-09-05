@@ -296,6 +296,11 @@ class HandsSession:
                 "online": not getattr(self.link, "offline", True),
                 "action_id": self.action_id,
             },
+            # The same id, top level, under the name the live-smoke checklist
+            # asks for. One fact spelled twice is a small price for a script
+            # written against either spelling working — and the nesting is what
+            # makes `keep` mean the same thing here as it does in `status()`.
+            "keep_action_id": self.action_id,
         }
 
     def task_end(self, outcome: str, summary: str = "") -> dict:

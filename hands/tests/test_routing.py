@@ -94,6 +94,34 @@ def test_the_accessibility_route_for_set_value_stays_uncapped():
     r = routing.route({"kind": "set_value", "ref": "e", "value": "x" * 4000}, _obs())
     assert r.route == "accessibility" and len(r.payload["value"]) == 4000
 
+@pytest.mark.parametrize("bad", [
+    {"kind": "focus_app", "app": ""},
+    {"kind": "focus_app", "app": "   "},
+    {"kind": "open_app", "app": ""},
+    {"kind": "open_app", "app": "\t\n"},
+    {"kind": "open_url", "url": ""},
+    {"kind": "open_url", "url": "  "},
+])
+def test_a_blank_target_is_not_a_target(bad):
+    """An empty `app` was exempted by the classifier — nothing to compare, so
+    nothing crossed — and then reached the backend, where Windows'
+    `_window_element("")` matches the first window whose title contains the
+    empty string, i.e. any window at all. `{"kind": "focus_app", "app": ""}`
+    was a request to be pointed at whatever is in front, ungated."""
+    with pytest.raises(HandsError) as ei:
+        routing.route(bad, _obs())
+    assert ei.value.code == "invalid_action"
+    assert "name something" in str(ei.value)
+
+
+@pytest.mark.parametrize("fine", [
+    {"kind": "type", "text": ""},                       # typing nothing is legitimate
+    {"kind": "set_value", "ref": "e", "value": ""},     # clearing a field is legitimate
+])
+def test_an_empty_string_is_still_fine_where_it_means_something(fine):
+    routing.route(fine, _obs())
+
+
 def test_scroll_window_needs_no_ref():
     r = routing.route({"kind": "scroll", "ref": "window", "dy": -3}, _obs())
     assert r.route == "pixel" and r.point is None and r.payload["dy"] == -3

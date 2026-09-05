@@ -98,12 +98,17 @@ def _named(value: str, names) -> bool:
 
 
 def _app_declared(app: str, policy: Policy, task_apps: list[str]) -> bool:
-    """An empty app name is not evidence of a crossing.
+    """An OBSERVED app name that is empty is not evidence of a crossing.
 
     A backend that could not name the foreground window returns `""`, and
     treating that as "an app you did not declare" would put a permit in front
     of every step on a machine where window naming is unavailable — a refusal
-    the human cannot act on, because there is nothing to add to `apps`."""
+    the human cannot act on, because there is nothing to add to `apps`.
+
+    That exemption is for names Hands OBSERVED, and only there. Where the name
+    is a string the model chose (`open_app`/`focus_app`), a blank is the
+    opposite: not "we could not tell" but "I did not say", and `boundary_apps`
+    treats it as a crossing rather than calling this."""
     return not app or _named(app, list(task_apps) + list(policy.apps))
 
 
@@ -152,6 +157,13 @@ def boundary_apps(
         return [host or str(target)]
     if kind in ("open_app", "focus_app"):
         app = str(action.get("app", ""))
+        # A blank here is a crossing, not an exemption. `_app_declared`'s
+        # empty-name rule exists for a window Hands could not READ; this name
+        # is one the model WROTE, and "" names nothing that could have been
+        # declared. `routing` refuses it before this is reached, so both
+        # layers have to be wrong for a blank to operate the desktop.
+        if not app.strip():
+            return [app]
         return [] if _app_declared(app, policy, task_apps) else [app]
     if kind in _WINDOW_SCOPED:
         return [app for app in _target_apps(control, window)
