@@ -25,9 +25,13 @@ them:
    A model that gets an exception cannot recover; one that gets an error
    string can.
 
-There is deliberately no auto-remember path in this release: an approval is
-good for exactly one step, and `firekeep hands allow` is the only thing that
-writes a standing allowance into `policy.json`.
+There is deliberately no auto-remember path in this release. A permit is still
+spent on exactly one step, and `firekeep hands allow` is the only thing that
+writes a standing allowance into `policy.json`. The single exception is
+task-scoped and dies with the task: consuming a `boundary` permit adds the app
+(or, for a navigation, the host) that was approved to `self.task_apps`, so the
+human is asked once to enter an app rather than once per click inside it.
+Nothing about that reaches disk, another task, or `policy.remembered`.
 """
 from __future__ import annotations
 
@@ -43,7 +47,7 @@ from . import ids, paths
 from .backends.base import Control, HandsError, Observation, Rect, WindowInfo
 from .broker.client import BrokerClient
 from .evidence import Ledger, prune
-from .policy import decide
+from .policy import BROWSER_APP, boundary_apps, decide
 from .routing import Routed, route
 
 _DETAILS = ("summary", "controls", "screenshot")
@@ -494,6 +498,7 @@ class HandsSession:
             if "error" in gate or "needs_permit" in gate:
                 return gate
             permit_record = gate["permit"]
+            self._widen(action, control, window, action.get("url"), decision)
 
         # A navigation is a browser step even though it arrives through
         # `act`, so its evidence comes from the page, not the desktop.
@@ -591,6 +596,31 @@ class HandsSession:
 
         granted = broker.get(challenge) or {}
         return {"permit": {"challenge": challenge, "via": granted.get("via")}}
+
+    def _widen(self, action: dict, control: Control | None, window: WindowInfo | None,
+               url: str | None, decision) -> None:
+        """Add the app (or host) a consumed `boundary` permit approved to this
+        task's declared set, for the life of this task only.
+
+        Without it, making `boundary` the catch-all it is documented to be
+        would demand a chord per click in an undeclared app — which is not
+        security, it is a queue of prompts nobody reads by the fifth one. With
+        it the human is asked once, "may this task operate Mail", and the
+        answer holds until `hands_task_end`.
+
+        Three things it deliberately is not. It is not `policy.remembered`:
+        nothing is written to disk and the next task starts from the apps it
+        declares. It does not widen any other class — a `send` or a `money`
+        step inside the now-declared app still needs its own permit, because
+        the app is the scope, not the permission. And it names the app from
+        `policy.boundary_apps`, the same function that raised the class, so
+        what gets added can never be a different app than the one the human
+        was shown."""
+        if "boundary" not in decision.classes:
+            return
+        for name in boundary_apps(action, control, window, url, self.policy, self.task_apps):
+            if name:
+                self.task_apps.append(name)
 
     def _permit_title(self, routed: Routed, window: WindowInfo | None) -> str:
         """What the human sees. Built from the ROUTED step — the control the
@@ -841,15 +871,20 @@ class HandsSession:
             policy_action = {"kind": "click", "ref": ref}
         else:
             policy_action = {"kind": "set_value", "ref": ref, "value": str(kwargs.get("text", ""))}
-        window = WindowInfo("browser", self._browser_page.get("title", ""), 0, Rect(0, 0, 0, 0))
-        decision = decide(policy_action, control, window, self._browser_page.get("url"),
-                          self.policy, self.task_apps)
+        window = WindowInfo(BROWSER_APP, self._browser_page.get("title", ""), 0, Rect(0, 0, 0, 0))
+        url = self._browser_page.get("url")
+        decision = decide(policy_action, control, window, url, self.policy, self.task_apps)
         if decision.verdict != "permit":
             return {"classes": decision.classes, "permit": None, "control": control}
         routed = Routed(policy_action["kind"], "browser", control, None, {})
         gate = self._gate(ledger_action, routed, window, decision, kwargs.get("permit"))
         if "error" in gate or "needs_permit" in gate:
             return gate
+        # A consumed `boundary` here approved operating the browser at all, so
+        # the rest of the task's clicks in it are not re-prompted. Which SITE
+        # it may reach is unaffected: that is the domain allowlist's job, and
+        # every navigation still goes through it.
+        self._widen(policy_action, control, window, url, decision)
         return {"classes": decision.classes, "permit": gate["permit"], "control": control}
 
     def _browser_control(self, ref: str) -> Control | None:
@@ -877,7 +912,7 @@ class HandsSession:
             name=name,
             value=value,
             rect=Rect(*(int(v) for v in rect)),
-            app="browser",
+            app=BROWSER_APP,
             patterns=("Value",) if role in _FILLABLE_ROLES else ("Invoke",),
         )
 
@@ -935,9 +970,12 @@ class HandsSession:
         """Block until the human answers, or `wait_s` (capped at 55s so the
         call returns inside an MCP client's timeout).
 
-        Approving here never widens anything: there is no auto-remember in
-        this release, so the permit authorises the single step it was minted
-        for and nothing else."""
+        The permit this unblocks authorises the single step it was minted for
+        and nothing else — there is no auto-remember in this release, and
+        nothing here writes to `policy.json`. The one thing a consumed permit
+        does carry forward is task-scoped: approving a `boundary` step adds
+        that app (or host) to the apps this task declared, so the next click
+        inside it is not a second prompt. It dies with the task."""
         broker = self._ensure_broker()
         if broker is None:
             return {"state": "unavailable", "challenge": challenge, "error": _BROKER_DOWN}

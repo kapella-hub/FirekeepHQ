@@ -338,8 +338,13 @@ evidence path and leave the machine entirely whenever the runtime asks for one.
 - **Effects, not verbs, decide protection.** Six classes (`send`, `money`,
   `destroy`, `credential`, `install`, `boundary`) are computed by Hands from the
   routed action and its observed target, never from a label the model supplies.
-  `boundary` is the catch-all: any app not declared or allowlisted, any domain not
-  allowlisted.
+  `boundary` is the catch-all, and it is keyed on where a step LANDS rather than
+  on the two "switch app" verbs: any click, keystroke, typed string, value set or
+  scroll whose target window or control belongs to an app that was not declared
+  or allowlisted, plus any domain not allowlisted. A task started with `apps=[]`
+  therefore cannot operate the window that happens to be in front. Consuming a
+  `boundary` permit declares that app (or that exact host) for the remainder of
+  that task only — in memory, never in `policy.json`, and for no other class.
 - **No model-supplied coordinates.** Actions carrying `x`/`y`/`point` are
   rejected; every pointer action resolves a `ref` from the observation the runtime
   was shown, and Hands computes the point from that control's own rect.

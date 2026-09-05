@@ -61,7 +61,10 @@ TOOLS = [
         name="hands_task_start",
         description=(
             "Begin an operator task. Declares the goal and the apps you expect to touch; "
-            "anything outside them is a boundary step that needs approval."
+            "acting in any app outside them — clicking, typing, a keystroke, not just "
+            "switching to it — is a boundary step that needs approval. Approving one "
+            "adds that app to this task for the rest of it, so declare what you know "
+            "you need and you will not be asked again. Use \"browser\" for web steps."
         ),
         inputSchema={
             "type": "object",

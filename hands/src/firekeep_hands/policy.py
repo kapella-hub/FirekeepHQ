@@ -49,6 +49,23 @@ _INSTALL_RE = re.compile(
 # shape rather than a word list since a generated API key never repeats.
 _SECRET_TOKEN_RE = re.compile(r"^[A-Za-z0-9_\-]{32,}$")
 
+# The kinds whose target is a WINDOW or a control inside one, rather than an
+# app named in the payload (`open_app`/`focus_app`) or a URL (`open_url`).
+#
+# This tuple is what makes `boundary` the catch-all three documents say it is.
+# Until it existed the class only fired on the app *crossing* — the two "switch
+# app" verbs and a navigation — so a task started with `apps=[]` could click,
+# type and invoke its way through whatever window happened to be in front,
+# permit-free, as long as the control's own text tripped none of the other five
+# classes. The banking window somebody left open is the case that matters.
+_WINDOW_SCOPED = ("click", "invoke", "set_value", "type", "key", "scroll")
+
+# The browser is ONE app for this purpose. Which site it may reach is the
+# domain allowlist's job (`open_url` below), so a task that declared "browser"
+# is not re-prompted on every page it clicks in. `HandsSession` builds its
+# browser steps with this app name on both the control and the window.
+BROWSER_APP = "browser"
+
 _SEND_CHORDS = {"ctrl+enter", "cmd+enter", "cmd+shift+d"}
 _DESTROY_CHORDS = {"delete", "shift+delete", "cmd+backspace", "cmd+delete"}
 _DESTROY_APPS = {"explorer", "finder"}
@@ -67,6 +84,79 @@ def _control_text(control: Control | None) -> str:
     if control is None:
         return ""
     return f"{control.name} {control.value}"
+
+
+def _named(value: str, names) -> bool:
+    """Exact, case-insensitive membership.
+
+    Case matters here in practice and not in principle: a human writes
+    `apps=["notepad"]` and Windows reports the window as `"Notepad"`, and a
+    boundary prompt on every click of a task the human explicitly scoped is
+    the fastest way to teach somebody to stop reading the prompts."""
+    needle = str(value).lower()
+    return any(needle == str(n).lower() for n in names)
+
+
+def _app_declared(app: str, policy: Policy, task_apps: list[str]) -> bool:
+    """An empty app name is not evidence of a crossing.
+
+    A backend that could not name the foreground window returns `""`, and
+    treating that as "an app you did not declare" would put a permit in front
+    of every step on a machine where window naming is unavailable — a refusal
+    the human cannot act on, because there is nothing to add to `apps`."""
+    return not app or _named(app, list(task_apps) + list(policy.apps))
+
+
+def _target_apps(control: Control | None, window: WindowInfo | None) -> list[str]:
+    """Which app a window-scoped step lands in, from both things that know.
+
+    Both, not one: `hands_find(app=…)` can hand back a control in an app that
+    is not the foreground window, so the control's own app is the more
+    accurate answer when it has one — and a control with no app at all leaves
+    the window as the only witness. Either being undeclared is a crossing."""
+    apps: list[str] = []
+    for app in ((control.app if control is not None else ""), (window.app if window else "")):
+        app = str(app or "")
+        if app and not _named(app, apps):
+            apps.append(app)
+    return apps
+
+
+def boundary_apps(
+    action: dict,
+    control: Control | None,
+    window: WindowInfo | None,
+    url: str | None,
+    policy: Policy,
+    task_apps: list[str],
+) -> list[str]:
+    """Every name this action steps outside of: app names for anything that
+    targets a window or a control, the URL's host for `open_url`.
+
+    One function, two callers, on purpose. `_classify_with_reasons` uses it to
+    raise the `boundary` class, and `HandsSession` uses it to know what to add
+    to the task once a human has approved the crossing. Deriving the second
+    from anything else is how a widening and a classification drift apart —
+    and a widening that names a different app than the one that was approved
+    is a hole, not a bug."""
+    kind = action.get("kind")
+    if kind == "open_url":
+        target = action.get("url") or url
+        if not target:
+            return []
+        host = (urlsplit(str(target)).hostname or "").lower()
+        # The allowlist matches a parent domain; a task-scoped widening does
+        # not. The human approved `pay.example.com`, not `example.com`.
+        if host_allowed(policy, str(target)) or _named(host, task_apps):
+            return []
+        return [host or str(target)]
+    if kind in ("open_app", "focus_app"):
+        app = str(action.get("app", ""))
+        return [] if _app_declared(app, policy, task_apps) else [app]
+    if kind in _WINDOW_SCOPED:
+        return [app for app in _target_apps(control, window)
+                if not _app_declared(app, policy, task_apps)]
+    return []
 
 
 def _classify_with_reasons(
@@ -133,14 +223,9 @@ def _classify_with_reasons(
         if app.lower().endswith(_INSTALL_EXTENSIONS) and app not in policy.apps:
             reasons["install"] = app
 
-    if kind == "open_url":
-        target = action.get("url") or url
-        if target and not host_allowed(policy, target):
-            reasons["boundary"] = target
-    elif kind in ("open_app", "focus_app"):
-        app = action.get("app", "")
-        if app not in task_apps and app not in policy.apps:
-            reasons["boundary"] = app
+    crossed = boundary_apps(action, control, window, url, policy, task_apps)
+    if crossed:
+        reasons["boundary"] = crossed[0]
 
     return reasons
 

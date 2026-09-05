@@ -113,7 +113,7 @@ Eight tools. Three of them are the loop; the rest are bookkeeping.
 | Tool | What it does |
 |---|---|
 | `hands_status` | Platform, backend health, permissions, broker, chord, current task. |
-| `hands_task_start(goal, apps=[])` | Opens a task: prunes aged evidence, mints a task id, opens the ledger, takes the machine lease, tells the Keep. `apps` declares what you expect to touch; anything outside it is a `boundary` step. |
+| `hands_task_start(goal, apps=[])` | Opens a task: prunes aged evidence, mints a task id, opens the ledger, takes the machine lease, tells the Keep. `apps` declares what you expect to touch; **acting** in any app outside it — a click, a keystroke, not only switching to it — is a `boundary` step. Use `"browser"` for web steps. |
 | `hands_observe(detail, app, region, max_nodes)` | `detail` is `summary`, `controls` (the default) or `screenshot`. Returns the active window and its interactive controls, each with a `ref` you act on. |
 | `hands_find(query, role, app, limit)` | Controls matching text in the active window, folded into the current observation so their refs are live. |
 | `hands_act(action, permit=None)` | One step. Routed, classified, gated, executed, ledgered. |
@@ -211,6 +211,8 @@ hands_request_permit("a1b2c3…")                   # the human presses ctrl+alt
 
 hands_act({"kind": "focus_app", "app": "excel"}, permit="a1b2c3…")
   -> {"ok": true, "step_index": 3, "route": "os", "classes": ["boundary"]}
+     # "excel" has now joined this task's apps: clicking and typing in it are
+     # not re-prompted, and it is forgotten at hands_task_end
 
 hands_task_end("done", "note saved")
   -> {"ok": true, "steps": 4, "outcome": "done", …}
@@ -237,7 +239,33 @@ that exact step is consumed, once, before anything reaches the desktop.
 | `destroy` | control text or window title matches `\b(delete\|remove\|erase\|format\|uninstall\|empty (the )?(trash\|recycle bin)\|discard\|shred\|factory reset\|permanently)\b`, or a `key` action whose chord is `delete`, `shift+delete`, `cmd+backspace` or `cmd+delete` **while Explorer or Finder is in front** |
 | `credential` | a `type`/`set_value` into a control whose role is `PasswordBox` (Windows), `AXSecureTextField` (macOS) or a web `<input type="password">`; or into a control whose text matches `\b(password\|passcode\|passphrase\|otp\|2fa\|verification code\|secret\|api key\|token)\b`; or a `clipboard_set` whose text matches `^[A-Za-z0-9_\-]{32,}$` |
 | `install` | control text or window title matches `\b(install\|run as administrator\|allow access\|grant\|enable extension\|add extension\|trust this)\b`, or an `open_app` whose target ends in `.msi`, `.exe`, `.pkg`, `.dmg` or `.app` and is not allowlisted |
-| `boundary` | an `open_url` to a host outside the domain allowlist, or an `open_app`/`focus_app` naming an app neither declared in `hands_task_start(apps=…)` nor allowlisted |
+| `boundary` | any `click`, `invoke`, `set_value`, `type`, `key` or `scroll` whose target window or control belongs to an app neither declared in `hands_task_start(apps=…)` nor allowlisted; an `open_app`/`focus_app` naming such an app; or an `open_url` to a host outside the domain allowlist. App names match case-insensitively |
+
+`boundary` is the catch-all, and it means what it says: the class is not about
+the two "switch app" verbs, it is about **where the step lands**. A task started
+with `apps=[]` cannot click in the banking window somebody left open, or type
+into it, or send it a keystroke, without a permit — the app it is operating is
+enough on its own, whatever the control happens to be called.
+
+Three details make that liveable rather than a queue of prompts.
+
+- **Approving a crossing declares that app for the rest of the task.** Consume a
+  `boundary` permit for Mail and Mail joins this task's `apps`; the next click in
+  it is not a second question. This is scoped to the task and dies with it —
+  nothing is written to `policy.json`, and the next task starts from what it
+  declares. It widens *that app only*: a `send` inside it is still its own
+  permit, because the app is the scope, not the permission.
+- **The browser is one app**, named `browser`. Declare it (or approve it once)
+  and clicking through a page is not re-prompted per site. Which sites the
+  browser may *reach* is unaffected — that stays the domain allowlist's job, and
+  every navigation is still classified on its host. A host approved inside one
+  task is remembered for that task exactly, not for its parent domain; the
+  parent-domain match is what `firekeep hands allow domain` is for.
+- **Three kinds are outside the rule**, because they land on no window: `wait`
+  reaches nothing, `clipboard_set` is machine-wide rather than scoped to
+  whatever is in front, and an unnamed window (a backend that could not read
+  the foreground app) is not read as a crossing — a permit nothing could be
+  added to `apps` to clear is a refusal the human cannot act on.
 
 Two deliberate asymmetries are worth knowing. `send` reads only the clicked
 control's own name, because a bare "OK" or "Yes" button does not say what it
@@ -331,10 +359,16 @@ to it being a `boundary` step, matching the host exactly or as a subdomain.
 `policy.json` also carries a `remembered` list — approvals that stand for a
 while, so a human is not asked the same question every time — and `decide()` does
 consult it. **Nothing writes an entry to it in this release.** There is no
-auto-remember path: an approval is good for exactly the one step it was minted
-for. `allow forget` removes remembered entries, which is only useful against a
-file you edited by hand. Treat the standing-approval story as unbuilt rather than
-as a feature you have not found yet.
+auto-remember path: a permit is spent on exactly the one step it was minted for.
+`allow forget` removes remembered entries, which is only useful against a file
+you edited by hand. Treat the standing-approval story as unbuilt rather than as a
+feature you have not found yet.
+
+The one thing an approval carries beyond its step is task-scoped and lives in
+memory: a consumed `boundary` permit adds the app (or, for a navigation, the
+host) it approved to that task's declared `apps`, so entering an app is asked
+once rather than once per click. It ends with `hands_task_end`, never touches
+`policy.json`, and widens no other class.
 
 ### Phone approvals, and what turning them on trusts
 
@@ -487,12 +521,16 @@ browser yourself**, which is the point, and the moment you do, that session is
 inside the agent's reach for as long as it stays signed in. `browser` in
 `config.json` selects `auto`, `chrome` or `edge`.
 
-Navigation is the one browser operation that can leave the ground the task
-declared, so it routes back through `hands_act` as an `open_url` and gets the
-`boundary` class like anything else. `click` and `fill` are classified in place
+Navigation is the browser operation that can leave the ground the task declared,
+so it routes back through `hands_act` as an `open_url` and is classified on its
+host against the domain allowlist. `click` and `fill` are classified in place
 against the page's own descriptors, and go through the same permit gate a native
-step goes through. Every op is a ledgered step against the same budget: a task
-that clicks its way through a page has done that many things.
+step goes through — including `boundary`, for which the browser counts as the
+single app `browser`. Declare it in `hands_task_start(apps=["browser"])`, or
+approve the first crossing once, and the rest of the task's clicks in it are not
+re-prompted; which sites it may reach is still the allowlist's decision, per
+navigation. Every op is a ledgered step against the same budget: a task that
+clicks its way through a page has done that many things.
 
 Controls come from a DOM probe that stamps each ref with the scan that minted it
 — `g<generation>-d<N>`, where the generation counter lives on the page and bumps

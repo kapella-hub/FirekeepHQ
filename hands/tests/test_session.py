@@ -550,6 +550,117 @@ def test_status_on_an_unsupported_platform_still_answers():
     assert st["permissions"]["accessibility"] == "missing"
 
 
+# -- boundary, and the task-scoped widening that makes it bearable ----------
+
+
+@pytest.mark.parametrize("session", ["Mail"], indirect=True)
+def test_a_click_in_an_app_the_task_never_declared_needs_a_permit(session, store):
+    """A task started with `apps=[]` used to be able to operate whatever
+    window was in front — the human's banking window included — permit-free,
+    as long as the control's own text tripped none of the other five classes.
+    That is the case `boundary` exists for."""
+    session.task_start("read something", [])
+    session.observe()
+    r = session.act({"kind": "invoke", "ref": "c1"})   # "Save": no other class
+    assert r["ok"] is False and r["needs_permit"]["classes"] == ["boundary"]
+    assert r["needs_permit"]["reason"] == "boundary: Mail"
+    assert session.backend.calls == []                  # never reached the desktop
+
+
+@pytest.mark.parametrize("session", ["Mail"], indirect=True)
+def test_approving_the_crossing_declares_that_app_for_the_rest_of_the_task(session, store):
+    """Otherwise the catch-all would demand a chord per click, which is not
+    security — it is a queue of prompts nobody reads by the fifth one."""
+    session.task_start("read something", [])
+    session.observe()
+    ch = session.act({"kind": "invoke", "ref": "c1"})["needs_permit"]["challenge"]
+    store.decide(ch, "approve", via="chord")
+    session.observe()
+    assert session.act({"kind": "invoke", "ref": "c1"}, permit=ch)["ok"] is True
+
+    session.observe()
+    again = session.act({"kind": "invoke", "ref": "c1"})
+    assert again["ok"] is True and again["classes"] == []
+    assert session.task_apps == ["Mail"]
+    assert session.status()["task"]["apps"] == ["Mail"]
+
+
+@pytest.mark.parametrize("session", ["Mail"], indirect=True)
+def test_the_widening_scopes_the_app_and_grants_nothing_else(session, store):
+    """The app is the scope, not the permission. A `send` inside the app the
+    human just let this task into is still its own question."""
+    session.task_start("read something", [])
+    session.observe()
+    ch = session.act({"kind": "invoke", "ref": "c1"})["needs_permit"]["challenge"]
+    store.decide(ch, "approve", via="chord")
+    session.observe()
+    session.act({"kind": "invoke", "ref": "c1"}, permit=ch)
+
+    session.observe()
+    r = session.act({"kind": "invoke", "ref": "send"})
+    assert r["ok"] is False and r["needs_permit"]["classes"] == ["send"]
+
+
+@pytest.mark.parametrize("session", ["Mail"], indirect=True)
+def test_the_widening_dies_with_the_task_and_never_reaches_the_policy_file(session, store):
+    """`firekeep hands allow` stays the only writer of a standing allowance.
+    This one is a field on the session and nothing else."""
+    session.task_start("read something", [])
+    session.observe()
+    ch = session.act({"kind": "invoke", "ref": "c1"})["needs_permit"]["challenge"]
+    store.decide(ch, "approve", via="chord")
+    session.observe()
+    session.act({"kind": "invoke", "ref": "c1"}, permit=ch)
+    assert session.policy.remembered == [] and session.policy.apps == []
+
+    session.task_end("done", "ok")
+    session.task_start("read something else", [])
+    session.observe()
+    assert session.act({"kind": "invoke", "ref": "c1"})["needs_permit"]["classes"] == ["boundary"]
+
+
+@pytest.mark.parametrize("session", ["Mail"], indirect=True)
+def test_a_refused_boundary_step_widens_nothing(session):
+    """Only a CONSUMED permit declares the app. A step the human never
+    answered must leave the task exactly as it found it."""
+    session.task_start("read something", [])
+    session.observe()
+    assert "needs_permit" in session.act({"kind": "invoke", "ref": "c1"})
+    assert session.task_apps == []
+
+
+def test_a_navigation_widens_the_host_it_approved_not_its_parent_domain(session, store):
+    """A second navigation to the host the human just approved is not a second
+    question; a sibling under the same parent domain still is."""
+    session.browser = FakeBrowser()
+    session.task_start("x", ["Notepad", "browser"])
+    ch = session.browser_op("navigate", url="https://pay.example.com/a")[
+        "needs_permit"]["challenge"]
+    store.decide(ch, "approve", via="chord")
+    assert session.browser_op("navigate", url="https://pay.example.com/a", permit=ch)["ok"]
+
+    assert session.browser_op("navigate", url="https://pay.example.com/b")["ok"] is True
+    later = session.browser_op("navigate", url="https://other.example.com/c")
+    assert later["ok"] is False and later["needs_permit"]["classes"] == ["boundary"]
+
+
+def test_a_task_that_never_declared_the_browser_is_asked_once_to_enter_it(session, store):
+    """The browser is one app for this purpose. Which SITE it may reach stays
+    the domain allowlist's job, so declaring it does not re-prompt per page —
+    and every navigation is still classified on its host."""
+    session.browser = FakeBrowser()
+    session.task_start("x", ["Notepad"])
+    session.browser_op("find", query="Save")
+    r = session.browser_op("click", ref="g1-d1")
+    assert r["ok"] is False and r["needs_permit"]["classes"] == ["boundary"]
+
+    ch = r["needs_permit"]["challenge"]
+    store.decide(ch, "approve", via="chord")
+    assert session.browser_op("click", ref="g1-d1", permit=ch)["ok"] is True
+    assert session.task_apps == ["Notepad", "browser"]
+    assert session.browser_op("click", ref="g1-d1")["classes"] == []
+
+
 # -- the browser -----------------------------------------------------------
 
 
@@ -583,7 +694,7 @@ def test_browser_navigate_to_an_allowlisted_host_is_not_a_boundary(session):
 def test_browser_direct_ops_are_ledgered_steps(session):
     browser = FakeBrowser()
     session.browser = browser
-    session.task_start("x", ["Notepad"])
+    session.task_start("x", ["Notepad", "browser"])
     assert session.browser_op("open")["ok"]
     assert session.browser_op("find", query="Save")["controls"][0]["ref"] == "g1-d1"
     assert session.browser_op("click", ref="g1-d1")["ok"]
@@ -612,7 +723,7 @@ def test_a_ref_the_page_has_moved_on_from_is_a_ledgered_error(session):
     as a failed step."""
     browser = FakeBrowser()
     session.browser = browser
-    session.task_start("x", ["Notepad"])
+    session.task_start("x", ["Notepad", "browser"])
     session.browser_op("find", query="Save")
     browser.scene = []  # the page moved on between the scan and the click
     r = session.browser_op("click", ref="g1-d1")
@@ -640,7 +751,7 @@ def test_a_web_button_is_classified_like_a_native_one(session, store):
     an application; the surface is not a reason to ask the human less often."""
     browser = FakeBrowser()
     session.browser = browser
-    session.task_start("x", ["Notepad"])
+    session.task_start("x", ["Notepad", "browser"])
     session.browser_op("find", query="order")
     r = session.browser_op("click", ref="g1-d3")
     assert r["ok"] is False and r["needs_permit"]["classes"] == ["money"]
@@ -661,7 +772,7 @@ def test_a_web_button_is_classified_like_a_native_one(session, store):
 def test_filling_a_password_input_is_a_credential_step(session, store):
     browser = FakeBrowser()
     session.browser = browser
-    session.task_start("x", ["Notepad"])
+    session.task_start("x", ["Notepad", "browser"])
     session.browser_op("find", query="password")
     r = session.browser_op("fill", ref="g1-d2", text="hunter2")
     assert r["ok"] is False and r["needs_permit"]["classes"] == ["credential"]
@@ -678,7 +789,7 @@ def test_filling_a_password_input_is_a_credential_step(session, store):
 def test_an_ordinary_web_click_needs_no_permit(session):
     browser = FakeBrowser()
     session.browser = browser
-    session.task_start("x", ["Notepad"])
+    session.task_start("x", ["Notepad", "browser"])
     session.browser_op("find", query="Save")
     r = session.browser_op("click", ref="g1-d1")
     assert r["ok"] is True and r["classes"] == []
@@ -691,7 +802,7 @@ def test_a_protected_browser_step_is_photographed_through_the_browser(session, s
     whatever happened to be in front on a machine where the browser is not."""
     browser = FakeBrowser()
     session.browser = browser
-    session.task_start("x", ["Notepad"])
+    session.task_start("x", ["Notepad", "browser"])
     session.browser_op("find", query="order")
     ch = session.browser_op("click", ref="g1-d3")["needs_permit"]["challenge"]
     store.decide(ch, "approve", via="chord")
@@ -708,7 +819,7 @@ def test_the_evidence_pair_is_taken_on_the_tab_the_step_targets(session, store):
     on whichever one happens to be current."""
     browser = FakeBrowser()
     session.browser = browser
-    session.task_start("x", ["Notepad"])
+    session.task_start("x", ["Notepad", "browser"])
     session.browser_op("find", query="order", tab="t7")
     ch = session.browser_op("click", ref="g1-d3", tab="t7")["needs_permit"]["challenge"]
     store.decide(ch, "approve", via="chord")
@@ -734,7 +845,7 @@ def test_the_site_named_in_a_permit_is_the_one_the_page_is_on(session):
     reports no URL — so the session asks the browser where it is."""
     browser = FakeBrowser(page={"url": "https://bank.example/transfer", "title": "Transfer"})
     session.browser = browser
-    session.task_start("x", ["Notepad"])
+    session.task_start("x", ["Notepad", "browser"])
     session.browser_op("find", query="order")
     assert ("current_url", None) in browser.calls
     r = session.browser_op("click", ref="g1-d3")
@@ -773,7 +884,7 @@ def test_a_protected_navigation_is_photographed_too(session, store):
 
 def test_an_unlabelled_link_is_judged_by_where_it_goes(session):
     session.browser = FakeBrowser()
-    session.task_start("x", ["Notepad"])
+    session.task_start("x", ["Notepad", "browser"])
     session.browser_op("find", query="/account")
     r = session.browser_op("click", ref="g1-d4")
     assert r["ok"] is False and r["needs_permit"]["classes"] == ["destroy"]
@@ -802,7 +913,7 @@ def test_the_page_title_is_what_the_classifier_reads_not_the_url(session):
               "title": "os — operating system interfaces"},
     )
     session.browser = browser
-    session.task_start("x", ["Notepad"])
+    session.task_start("x", ["Notepad", "browser"])
     session.browser_op("read")
     session.browser_op("find", query="Run")
     assert session.browser_op("click", ref="g1-d1")["ok"] is True
@@ -936,11 +1047,16 @@ def test_a_backend_failure_is_recorded_not_raised(session):
     assert session.step_index == 1  # a failed step still costs budget
 
 
+@pytest.mark.parametrize("session", ["Mail"], indirect=True)
 def test_an_exception_the_backend_never_declared_is_still_a_recorded_step(session, store):
     """`uiautomation` raises `comtypes.COMError` straight out of a pattern
     call. Letting one past the recorder would leave a consumed permit, an
     action that may well have run, no ledger line, an uncounted step and refs
-    that were never invalidated."""
+    that were never invalidated.
+
+    The window is Mail because the declared app is: since `boundary` became
+    the catch-all it is documented to be, a scene in Mail behind a Notepad
+    window is a boundary step, and this test is about the recorder."""
     session.backend.scene = _password_scene("Mail")
     session.task_start("x", ["Mail"])
     session.observe()
