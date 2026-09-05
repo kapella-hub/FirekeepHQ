@@ -381,12 +381,16 @@ evidence path and leave the machine entirely whenever the runtime asks for one.
   DEBUG so it can be measured; until it is, the Hands marker is the half of that
   filter known to hold. The Windows injected-flag rejection *is* verified
   (2026-09-05, this PC).
-- **The broker renders no prompt of its own.** It has no window and no
-  notification. On the chord path the human sees the step description only if the
-  runtime relays `needs_permit.title` to them — and the runtime is the thing being
-  gated. A model cannot forge that text (Hands builds it from the routed control),
-  but it can decline to show it, or bury it. The phone path is the only one where
-  the human reads the broker's own text on a surface the model does not draw.
+- **The broker's own notice is informational.** A pending permit raises an OS
+  notification (Windows balloon, macOS notification) with the step title, its
+  classes and the chord, and `firekeep hands status` lists the pending set from
+  `pending.json` — text Hands built from the routed control, which a model cannot
+  forge. But a toast can be missed or arrive while the human is already reaching
+  for the chord, the chord approves the **oldest pending** permit regardless, and
+  on the chord path the runtime that asked for the step is the thing being gated.
+  The phone path remains the only one where the human reads the broker's text on
+  a surface the model does not draw. **OPEN** residual: a permit arriving between
+  reading the toast and pressing the chord.
 - **Phone approvals, when opted in, trust every holder of the workspace API
   key.** Relay's `update_task` records status, result and assignee and **not the
   completing principal**, so an approved `hands_permit:` task proves only that
@@ -427,7 +431,7 @@ evidence path and leave the machine entirely whenever the runtime asks for one.
 | 8 | Dependency CVE in a shipped wheel | **Now scanned** — `pip-audit` per dependency set in CI |
 | 9 | Prompt injection reaching a tool call | **OPEN, out of our control** — the runtime's boundary, not ours; the gateway is advisory (§5.4) |
 | 10 | Unauthenticated field-failure collector fabricates/floods failure data | **Mitigated, residual accepted** — enum-value validation, released-version allowlist, mail budget, locked state, sealed caps (§5.7); data stays low-integrity by construction and is labelled `integrity: "unverified"` downstream |
-| 11 | A compromised runtime with Hands enabled operates the human's desktop | **Mitigated, residuals OPEN** — the broker is a separate process with no grant route, injected input is rejected, permits are one-use and bound to the exact step, classification is on effects not model labels, fail closed (§5.8). Residuals: same-user permit theft, kernel-level injection, screenshots to the model provider, the unverified macOS source-state filter, and the broker rendering no prompt of its own |
+| 11 | A compromised runtime with Hands enabled operates the human's desktop | **Mitigated, residuals OPEN** — the broker is a separate process with no grant route, injected input is rejected, permits are one-use and bound to the exact step, classification is on effects not model labels, fail closed (§5.8). Residuals: same-user permit theft, kernel-level injection, screenshots to the model provider, the unverified macOS source-state filter, and the broker's notification being informational (the chord approves the oldest pending permit whether or not the toast was read) |
 | 12 | Phone approvals approved by a key holder who is not the human | **OPEN, mitigated only by the default** — relay records no completing principal, so any workspace-key holder (the driving agent included) can complete a `hands_permit:` task. `phone_approvals` is `False` by default and the guide discloses the trade; PR2 stamps the principal (§5.8) |
 
 Threat 5 deserves emphasis because it is the one the product's own design creates:

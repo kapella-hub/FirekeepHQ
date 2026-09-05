@@ -96,7 +96,7 @@ inside the process — the broker's own `/health` is what answers that, and
 ### Checking it
 
 ```bash
-firekeep hands status     # platform, backend, permissions, broker, policy, last task
+firekeep hands status     # platform, backend, permissions, broker, pending permits, policy, last task
 firekeep doctor           # one `hands` row alongside everything else
 ```
 
@@ -387,7 +387,7 @@ Every task writes a directory under `~/.firekeep/hands/evidence/<task_id>/`:
 ```
 task.json           goal, apps, machine_id, session_id, started, ended, outcome, summary, steps
 steps.jsonl         one hash-chained JSON line per step
-NNN-before.png      before/after images, for protected native steps only
+NNN-before.png      before/after images, for protected steps only (native and browser)
 NNN-after.png
 ```
 
@@ -405,10 +405,10 @@ Three details that surprise people:
 
 - **`task.json["steps"]` is a count, not a list.** `steps.jsonl` is the one store
   of record; closing a task never duplicates its whole log into a second file.
-- **Screenshots are captured for protected *native* steps only.** An ordinary
-  click leaves a ledger line with `before` and `after` both null — and so does a
-  browser step, permitted or not, since `hands_browser` records no images at all.
-  Capture is also best-effort:
+- **Screenshots are captured for protected steps only.** An ordinary click
+  leaves a ledger line with `before` and `after` both null; a permitted step —
+  native or browser — gets a pair, taken through the desktop backend or through
+  the browser's own capture respectively. Capture is also best-effort:
   the permit has already been consumed by then, so a machine that cannot
   screenshot must not turn the human's approval into a refusal — the failure is
   logged and the line simply carries no image.
@@ -437,7 +437,7 @@ firekeep hands evidence h-3f9c21a04b7e     # one task's steps
 
 | Reaches the Keep | How |
 |---|---|
-| The task itself | `action_before` at start (goal, machine, declared apps) and `action_after` at end (success, outcome, summary) |
+| The task itself | `action_before` at start (goal, machine, declared apps — an explicit `block` decision refuses the start; `rethink`, `allow` and silence proceed) and `action_after` at end (success, outcome, summary) |
 | One operator per machine | a relay lease on `hands:<machine_id>`, taken at `task_start`, renewed via `relay_heartbeat` every 10 steps, released at `task_end` |
 | Pending approvals | relay tasks titled `hands_permit:<challenge>` — **only when phone approvals are on** |
 
@@ -453,15 +453,19 @@ rather than proceeding with a lease that enforces nothing.
 A lease call that merely *failed* — no Keep, unreachable server, personal mode —
 is not a refusal, and Hands keeps working.
 
-**A crashed session's lease is indistinguishable from a live one, and there is no
-override.** If a previous Hands session died holding `hands:<machine_id>` — the
-runtime was killed, the machine lost power mid-task — the lease stays held until
-its TTL runs out, and every `hands_task_start` until then refuses with that dead
-session named as the holder. The TTL is **30 minutes** from when the lease was
-taken or last renewed, and the refusal prints the wall-clock time it lapses, so
-the answer is to wait for that time. `hands_task_start` takes no force flag in
-this release, deliberately: from here, a stale lease that is safe to break and a
-live agent one keystroke into a bank transfer look exactly alike.
+**Your own dead session is reclaimed; anyone else's lease is not.** The server
+releases the lease when it shuts down — stdin closing, Ctrl+C, SIGTERM — and marks
+the open task `abandoned` in the ledger. If it died harder than that (the machine
+lost power mid-task), the next `hands_task_start` finds the lease held by *its own
+agent id* and reclaims it once, on the assumption that a holder with our identity
+on our machine is a dead session of ours; relay carries no liveness signal, so two
+live servers sharing one `NEXUS_AGENT_ID` are indistinguishable from one live and
+one dead, and the second would take the lease — see the threat model. A lease held
+by a *different* agent id is never taken: `hands_task_start` refuses with that
+holder named and the wall-clock time the lease lapses (its TTL is **30 minutes**
+from when it was taken or last renewed), and there is no force flag in this
+release, deliberately: from here, a stale lease that is safe to break and a live
+agent one keystroke into a bank transfer look exactly alike.
 
 Everything on the Keep path is best-effort: a five-second timeout, every failure
 logged and swallowed, and no network call attempted at all when the machine has
@@ -583,10 +587,13 @@ on. Spelled out above; it is the largest open item in this release.
 **Standing approvals do not exist.** Nothing writes a `remembered` entry, so
 every protected step asks every time.
 
-**A stale machine lease locks you out for up to 30 minutes.** There is no force
-flag; see [Evidence](#what-reaches-the-keep-and-what-does-not).
+**Another agent's stale machine lease locks you out for up to 30 minutes.** Your
+own dead session's lease is reclaimed; a different agent id's is not, and there is
+no force flag; see [Evidence](#what-reaches-the-keep-and-what-does-not).
 
-**The Keep cannot veto a task.** `action_before` records; it does not block.
+**The Keep can only veto a task, and only explicitly.** An `action_before`
+`block` decision refuses the start; anything short of that — `rethink`, `allow`,
+silence, an unreachable Keep — lets it proceed.
 
 **No Linux.** `hands_status` reports the backend as unsupported and every other
 tool refuses. AT-SPI is a later job.
@@ -615,8 +622,8 @@ harmless still works.
 
 ## Verified
 
-Live checks as of the date shown, on the machine shown. This table is the honest
-record, not a plan — a row that says "not yet" means nobody has done it.
+Live checks as of the date shown (UTC), on the machine shown. This table is the
+honest record, not a plan — a row that says "not yet" means nobody has done it.
 
 | What | Status | When / where |
 |---|---|---|
