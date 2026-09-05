@@ -25,8 +25,11 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 
-# Every directory that builds a wheel handed to a customer.
-SHIPPED_PACKAGES = ("client", "symdex", "docdex")
+# Every directory that builds a wheel handed to a customer. maildex and hands were
+# added after this tuple was last updated — both verified to already comply
+# (LicenseRef-Firekeep-BUSL-1.1 in pyproject.toml; no README License section leads
+# with an OSI name) and added here now rather than leaving the gap to be found later.
+SHIPPED_PACKAGES = ("client", "symdex", "docdex", "maildex", "hands")
 
 EXPECTED_LICENCE = "LicenseRef-Firekeep-BUSL-1.1"
 

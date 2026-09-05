@@ -13,6 +13,12 @@
 # keeps resolving them. GitHub Pages is the one public distribution channel —
 # every customer installs the same artifacts.
 #
+# firekeep_hands-*.whl rides along in this same dist/ and gh-pages publish (and gets
+# a PyPI leg below), but NEITHER bootstrap ever names it — `firekeep hands enable` is
+# the only install path (see hands/README.md). Its presence in SHA256SUMS/gh-pages/the
+# GitHub Release is just distribution, never installation; guarded by
+# client/tests/test_make_release.py::test_hands_is_not_a_bundled_wheel.
+#
 # ARTIFACTS GO TO A SEPARATE PUBLIC REPO: kapella-hub/firekeep-dist, served at
 # https://kapella-hub.github.io/firekeep-dist. The product source is public now;
 # the split remains useful because it keeps accumulated binary release history
@@ -197,6 +203,12 @@ jobs:
           (cd symdex && python -m build --wheel --outdir ../dist)
           (cd docdex && python -m build --wheel --outdir ../dist)
           (cd maildex && python -m build --wheel --outdir ../dist)
+          # firekeep-hands: built here so it ships through the SAME dist/gh-pages/GitHub
+          # Release channel as the other wheels (and gets a checksum in SHA256SUMS, which
+          # sums every *.whl in the dir generically — see make_release.py:write_sums).
+          # NEVER add it to install.sh/install.ps1's per-name wheel lookups: those are what
+          # make a wheel bundled, and hands must stay opt-in (`firekeep hands enable`).
+          (cd hands && python -m build --wheel --outdir ../dist)
 
       - name: Fresh-wheel MCP compatibility smoke
         run: |
@@ -343,10 +355,16 @@ jobs:
           # doctrine. (The original rationale for "unconditional" — every
           # release must land in its own directory even when re-run — is
           # presence, which this preserves.)
+          # NOTE: like the pre-existing maildex glob below it, `firekeep_hands-*.whl` here
+          # is unquoted and un-nullglob'd — rerunning a tag published BEFORE hands existed
+          # (no gh/<version>/firekeep_hands-*.whl on disk) leaves the glob literal and this
+          # `cp` fails the step. Accepted precedent, not fixed here: reruns of that old a
+          # tag are not expected, and the same fragility already exists for maildex.
           if [ -f "gh/${VERSION}/SHA256SUMS" ]; then
             echo "::notice::${VERSION} is already published to firekeep-dist — reusing the served release; this rerun re-signs and overwrites nothing."
             cp "gh/${VERSION}/"firekeep_client-*.whl "gh/${VERSION}/"firekeep_symdex-*.whl \
                "gh/${VERSION}/"firekeep_docdex-*.whl "gh/${VERSION}/"firekeep_maildex-*.whl \
+               "gh/${VERSION}/"firekeep_hands-*.whl \
                "gh/${VERSION}/SHA256SUMS" "gh/${VERSION}/install.sh" "gh/${VERSION}/install.ps1" dist/
             if [ -f "gh/${VERSION}/SHA256SUMS.minisig" ]; then
               cp "gh/${VERSION}/SHA256SUMS.minisig" dist/
@@ -361,7 +379,8 @@ jobs:
           # served" is to serve them: a version directory whose sums describe
           # files it does not carry is a sums file that lies about its own tree.
           cp dist/firekeep_client-*.whl dist/firekeep_symdex-*.whl \
-             dist/firekeep_docdex-*.whl dist/firekeep_maildex-*.whl dist/uv-* \
+             dist/firekeep_docdex-*.whl dist/firekeep_maildex-*.whl \
+             dist/firekeep_hands-*.whl dist/uv-* \
              dist/SHA256SUMS dist/install.sh dist/install.ps1 "gh/${VERSION}/"
           # The signature rides with its SHA256SUMS. Conditional because unsigned
           # builds (no FIREKEEP_SIGNING_KEY secret yet) produce no .minisig — the
@@ -460,6 +479,7 @@ jobs:
           fi
           assets=(dist/firekeep_client-*.whl dist/firekeep_symdex-*.whl \
                   dist/firekeep_docdex-*.whl dist/firekeep_maildex-*.whl \
+                  dist/firekeep_hands-*.whl \
                   dist/uv-* dist/SHA256SUMS dist/install.sh dist/install.ps1)
           if [ -f dist/SHA256SUMS.minisig ]; then
             assets+=(dist/SHA256SUMS.minisig)
@@ -537,23 +557,25 @@ jobs:
           fi
 
   # --- PyPI (Trusted Publishing / OIDC) --------------------------------------
-  # Publishes firekeep-client, firekeep-symdex, firekeep-docdex and firekeep-maildex to
-  # PyPI so `pip install firekeep-client` works and the official MCP registry can
-  # reference a public package (server.json at the repo root; docs/RELEASE-GITHUB.md
-  # "PyPI and the MCP registry"). No token secret: OIDC trusted publishing, ONE MATRIX LEG
-  # PER PACKAGE with its own GitHub environment ("pypi" for the client, "pypi-symdex"
-  # for symdex, "pypi-docdex" for docdex, "pypi-maildex" for maildex) — PyPI refuses two
-  # pending publishers sharing an identical (owner, repo, workflow, environment)
-  # tuple, so the environment is the disambiguator, and it also keeps each leg's
-  # OIDC token scoped to exactly one project. Each environment must exist in this
-  # repo's settings BEFORE the tag, and each name must have a pending publisher on
-  # PyPI. A missing or misconfigured publisher fails its leg
-  # loudly without touching the dist-host publication above — the same
-  # misconfiguration ethos as release signing. skip-existing only on the DEX
-  # legs, which bump on their own cadences: an already-published dex
-  # version is a no-op, not an error, while a re-tagged client version still
-  # fails (PyPI versions are immutable, and re-tagging a published client
-  # version is a mistake worth hearing about).
+  # Publishes firekeep-client, firekeep-symdex, firekeep-docdex, firekeep-maildex and
+  # firekeep-hands to PyPI so `pip install firekeep-client` works and the official MCP
+  # registry can reference a public package (server.json at the repo root;
+  # docs/RELEASE-GITHUB.md "PyPI and the MCP registry"). No token secret: OIDC trusted
+  # publishing, ONE MATRIX LEG PER PACKAGE with its own GitHub environment ("pypi" for
+  # the client, "pypi-symdex" for symdex, "pypi-docdex" for docdex, "pypi-maildex" for
+  # maildex, "pypi-hands" for hands) — PyPI refuses two pending publishers sharing an
+  # identical (owner, repo, workflow, environment) tuple, so the environment is the
+  # disambiguator, and it also keeps each leg's OIDC token scoped to exactly one
+  # project. Each environment must exist in this repo's settings BEFORE the tag, and
+  # each name must have a pending publisher on PyPI. A missing or misconfigured
+  # publisher fails its leg loudly without touching the dist-host publication above —
+  # the same misconfiguration ethos as release signing (`fail-fast: false` means the
+  # other legs, including the client, still publish). skip-existing on every leg but
+  # the client, which bump on their own cadences: an already-published version is a
+  # no-op, not an error, while a re-tagged client version still fails (PyPI versions
+  # are immutable, and re-tagging a published client version is a mistake worth
+  # hearing about). hands is 0.1.0 and will not bump in lockstep with the client tag
+  # either, so it needs skip-existing exactly like the dexes even though it is not one.
   pypi:
     needs: release
     runs-on: ubuntu-latest
@@ -572,6 +594,9 @@ jobs:
             skip_existing: true
           - package_dir: maildex
             environment: pypi-maildex
+            skip_existing: true
+          - package_dir: hands
+            environment: pypi-hands
             skip_existing: true
     environment: ${{ matrix.environment }}
     permissions:

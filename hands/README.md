@@ -16,3 +16,18 @@ therefore unsupported; it will import cleanly only where a Client Kit install al
 
 See [`docs/guides/hands.md`](../docs/guides/hands.md) for the full design: what Hands can
 perceive and do, the approval broker, protected-class actions, and the platform backends.
+
+## Running the test suite locally
+
+Because the wheel imports `firekeep_client` at runtime without declaring it, installing
+`hands` alone is not enough — install the checkout's client first, exactly like
+`firekeep hands enable` finds it:
+
+```bash
+pip install -e client -e "hands[test]"
+pytest hands/tests -q --ignore=hands/tests/live
+```
+
+`hands/tests/live/` holds manual, real-target tests (e.g. driving an actual Notepad or
+TextEdit window); they self-skip outside an interactive desktop, and `--ignore` skips
+collecting them at all rather than relying on that.

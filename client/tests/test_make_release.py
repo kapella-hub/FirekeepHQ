@@ -443,3 +443,19 @@ def test_signing_requires_the_bootstrap_placeholder(tmp_path, monkeypatch):
     monkeypatch.setenv(make_release.SIGNING_KEY_ENV, sec_text)
     with pytest.raises(SystemExit, match="placeholder"):
         make_release.main(["make_release.py", "1.2.3", str(tmp_path)])
+
+
+# --- firekeep-hands is built/published but never bundled -----------------------
+
+def test_hands_is_not_a_bundled_wheel():
+    """hands is a separately-built, separately-published wheel (`firekeep hands
+    enable` installs it on demand) — unlike symdex/docdex/maildex it must NEVER be
+    named by make_release.py (the bundled-release manifest builder) or either
+    bootstrap, which would make the installer fetch or verify it unconditionally
+    for every customer."""
+    from pathlib import Path
+    src = (Path(__file__).resolve().parents[1] / "scripts" / "make_release.py").read_text(encoding="utf-8")
+    assert "firekeep_hands" not in src and "firekeep-hands" not in src
+    for boot in ("install.sh", "install.ps1"):
+        text = (Path(__file__).resolve().parents[1] / "bootstrap" / boot).read_text(encoding="utf-8")
+        assert "firekeep_hands" not in text and "firekeep-hands" not in text

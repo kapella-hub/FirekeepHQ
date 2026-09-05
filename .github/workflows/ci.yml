@@ -41,6 +41,16 @@ jobs:
           - name: symdex
             install: pip install -e "symdex[test]"
             test: pytest symdex/tests -q
+          # hands (firekeep-hands): never bundled by the bootstrap, installed on demand
+          # by `firekeep hands enable`. Its wheel imports firekeep_client from the kit
+          # venv and deliberately does NOT declare it (the PyPI name is a third
+          # party's — client/firekeep_client/cli.py:553-575) so the checkout's client
+          # must be installed first, exactly as `firekeep hands enable` finds it.
+          # `--ignore=hands/tests/live` skips the live/manual suite (it self-skips
+          # anyway; ignoring is faster and explicit about intent).
+          - name: hands
+            install: pip install -e client -e "hands[test]"
+            test: pytest hands/tests -q --ignore=hands/tests/live
           # Shared libraries — no requirements files of their own (deps live in
           # cortex/requirements.txt). All tests use fakeredis; no live backends.
           - name: shared-modules
@@ -195,6 +205,38 @@ jobs:
           }
         shell: pwsh
 
+  hands-windows:
+    name: hands (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      # hands' Windows backend (UI Automation trees, tagged SendInput, mss screenshots)
+      # only resolves its platform-marker dependencies (uiautomation, mss) here — the
+      # ubuntu `hands` matrix entry above never installs or exercises that backend at
+      # all, mirroring symdex-windows above it for the same reason: a platform branch
+      # with no CI on the other side is an untested branch.
+      #
+      # The wheel imports firekeep_client from the kit venv and does NOT declare it
+      # (the PyPI name is a third party's), so the checkout's client installs first —
+      # exactly as `firekeep hands enable` finds it.
+      - run: pip install -e client -e "hands[test]"
+      # On failure, surface the pytest tail as ONE ::error:: annotation: annotations
+      # are publicly readable on this repo while raw job logs require auth, and
+      # nobody on the team has a Windows box — this job must be debuggable from the
+      # public API alone.
+      - run: |
+          python -m pytest hands/tests -q --ignore=hands/tests/live 2>&1 | Tee-Object -FilePath pytest-out.txt
+          if ($LASTEXITCODE -ne 0) {
+            $tail = (Get-Content pytest-out.txt -Tail 60) -join '%0A'
+            Write-Output "::error title=hands (windows) pytest failure::$tail"
+            exit 1
+          }
+        shell: pwsh
+
   security:
     name: Dependency CVEs + SBOM
     runs-on: ubuntu-latest
@@ -339,6 +381,14 @@ jobs:
     # tree-sitter-language-pack, a bundle of many third-party grammars the
     # gate had never seen. Base installs only (no [all]/[test] extras) --
     # base is what a customer's `pip install` actually resolves.
+    #
+    # hands (firekeep-hands) is gated too even though it is opt-in, not bundled —
+    # it is still a wheel a customer's `firekeep hands enable` installs, and its
+    # licence obligations don't depend on how it was fetched. It also needs the
+    # checkout's client installed first (undeclared dependency, see hands/README.md).
+    # This ubuntu runner only resolves hands' platform-marker-free base deps
+    # (mcp, websocket-client, pillow) -- uiautomation/mss (win32) and the pyobjc
+    # trio (darwin) never install here, so this leg alone does not gate them.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -366,6 +416,11 @@ jobs:
           python -m venv /tmp/venv-docdex
           /tmp/venv-docdex/bin/pip install -q ./docdex
           /tmp/venv-docdex/bin/python scripts/check_licenses.py
+      - name: Gate hands (firekeep-hands wheel) dependencies
+        run: |
+          python -m venv /tmp/venv-hands
+          /tmp/venv-hands/bin/pip install -q ./client ./hands
+          /tmp/venv-hands/bin/python scripts/check_licenses.py
 
   benchmarks:
     name: benchmarks (LongMemEval harness)

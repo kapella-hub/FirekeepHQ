@@ -238,21 +238,34 @@ cd client && python -m pytest tests/test_e2e_bootstrap.py -m e2e -q
 ## PyPI and the MCP registry
 
 The `pypi` job in `release.yml` publishes `firekeep-client`, `firekeep-symdex`,
-and `firekeep-docdex` to PyPI on every `client-v*` tag via **Trusted Publishing**
-(OIDC — no token secret to mint, rotate, or leak). It fails loudly on a
-missing or misconfigured publisher without touching the dist-host
-publication; `skip-existing` makes an already-published symdex version a
-no-op, since symdex bumps on its own cadence.
+`firekeep-docdex`, `firekeep-maildex` and `firekeep-hands` to PyPI on every
+`client-v*` tag via **Trusted Publishing** (OIDC — no token secret to mint,
+rotate, or leak). It fails loudly on a missing or misconfigured publisher
+without touching the dist-host publication; `skip-existing` makes an
+already-published version a no-op on every leg but the client, since those
+bump on their own cadence (hands is 0.1.0 and will not track the client tag
+either, even though it is not a dex).
 
-**One-time setup — DONE 2026-08-13:** trusted publishers exist on pypi.org
-(account `kapella`) for all three names — owner `kapella-hub`, repository
-`FirekeepHQ`, workflow `release.yml`, environment **`pypi`** for
-`firekeep-client`, **`pypi-symdex`** for `firekeep-symdex`, and
-**`pypi-docdex`** for `firekeep-docdex`. The
+**One-time setup — DONE 2026-08-13 for client/symdex/docdex:** trusted
+publishers exist on pypi.org (account `kapella`) for those three names —
+owner `kapella-hub`, repository `FirekeepHQ`, workflow `release.yml`,
+environment **`pypi`** for `firekeep-client`, **`pypi-symdex`** for
+`firekeep-symdex`, and **`pypi-docdex`** for `firekeep-docdex`. The
 environments differ ON PURPOSE: PyPI refuses two pending publishers sharing
 an identical (owner, repo, workflow, environment) tuple, and per-package
-environments keep each matrix leg's OIDC token scoped to one project. All three
-GitHub environments exist in the repo settings.
+environments keep each matrix leg's OIDC token scoped to one project.
+
+**`pypi-maildex`** (for `firekeep-maildex`) follows the identical pattern; this
+file was never updated when that leg was added to `release.yml`, so its
+one-time setup is undocumented here — confirm on pypi.org before relying on
+it. **`pypi-hands`** (for `firekeep-hands`) is new and confirmed **NOT YET
+DONE**: create its trusted publisher on pypi.org before the next `client-v*`
+tag. For either, note that a GitHub environment named in a workflow is
+auto-created on first reference, so the loud failure on a missing trusted
+publisher comes from PyPI rejecting the OIDC token because no pending
+publisher exists for that (owner, repo, workflow, environment) tuple, not
+from a missing GitHub environment. `fail-fast: false` on the matrix means the
+other legs, including the client, still publish even if one is missing.
 
 The separate `mcp-registry` job waits for the complete PyPI matrix, then polls
 PyPI until the exact `firekeep-client` version and its

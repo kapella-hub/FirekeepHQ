@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Regenerate NOTICE (root, client/, symdex/, docdex/) from the actual dependency set.
+"""Regenerate NOTICE (root, client/, symdex/, docdex/, maildex/, hands/) from the
+actual dependency set.
 
-Builds one throwaway venv per shipped component -- exactly the four targets
+Builds one throwaway venv per shipped component -- exactly the targets
 scripts/check_licenses.py is already gated against in CI (see
 .github/workflows/ci.yml's `licenses` job) -- installs each component's base
 dependencies into its own clean environment (never the ambient interpreter,
@@ -9,9 +10,17 @@ which accumulates packages from unrelated projects), runs both
 `check_licenses.py --attributions` (which licence each package carries) and
 `check_licenses.py --license-texts` (that licence's actual bundled text,
 where locatable) inside each venv to read what actually got installed, and
-merges the results into NOTICE -- written identically to all four of
-NOTICE_PATHS, not just the repo root, since PEP 639 license-files globs
-can't reach outside a package's own directory.
+merges the results into NOTICE -- written identically to all of NOTICE_PATHS,
+not just the repo root, since PEP 639 license-files globs can't reach outside
+a package's own directory.
+
+CAVEAT for the `hands` component: its platform-marker dependencies
+(uiautomation/mss on win32, the pyobjc trio on darwin) only resolve on the
+host this script is run from -- a single run on any one platform therefore
+produces an INCOMPLETE hands section, missing whichever backend's deps that
+host's markers excluded. Run it once per platform and merge by hand, or
+accept the gap and say so in the commit -- this script does not do that
+merge for you.
 
 This intentionally does NOT re-implement licence classification or licence-
 file discovery: all of that logic lives in check_licenses.py (`classify`,
@@ -37,27 +46,38 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CHECK_LICENSES = REPO_ROOT / "scripts" / "check_licenses.py"
 
-# NOTICE is vendored into four places, all with identical content: PEP 639
+# NOTICE is vendored into six places, all with identical content: PEP 639
 # `license-files` globs cannot reach outside a package's own directory (the
 # same constraint documented in docs/LICENSING.md for LICENSE itself), so
-# client/, symdex/, and docdex/ each need their own copy for it to land in their
-# wheel's METADATA, and the root copy is what COPY NOTICE . in the root
-# Dockerfile puts into the shipped server image. Writing all four from one
-# generator (rather than hand-copying, the way LICENSE is kept in sync
-# today) is what keeps them from drifting apart.
+# client/, symdex/, docdex/, maildex/ and hands/ each need their own copy for
+# it to land in their wheel's METADATA, and the root copy is what COPY NOTICE .
+# in the root Dockerfile puts into the shipped server image. Writing all six
+# from one generator (rather than hand-copying, the way LICENSE is kept in
+# sync today) is what keeps them from drifting apart.
+#
+# maildex and hands were added to the repo after this list was last updated,
+# and each was hand-copied identical to the other four in the meantime (see
+# tests/test_check_licenses.py / tests/test_package_licence_consistency.py) --
+# added here now so the NEXT regeneration keeps all six in sync instead of
+# silently reintroducing the gap.
 NOTICE_PATHS = [
     REPO_ROOT / "NOTICE",
     REPO_ROOT / "client" / "NOTICE",
     REPO_ROOT / "symdex" / "NOTICE",
     REPO_ROOT / "docdex" / "NOTICE",
+    REPO_ROOT / "maildex" / "NOTICE",
+    REPO_ROOT / "hands" / "NOTICE",
 ]
 
 # (component label, install args passed to `pip install`) -- mirrors the
-# `licenses` CI job's four venvs exactly: cortex/requirements.txt covers
+# `licenses` CI job's venvs exactly: cortex/requirements.txt covers
 # bridge/relay/sentinel too (their deps are a subset of it); client/, symdex/,
-# and docdex/ are the three packages shipped to every customer as wheels. Base
-# installs only (no [all]/[test]/[anthropic]/[gemini]/[benchmark] extras) --
-# base is what a customer's `pip install` actually resolves.
+# docdex/, maildex/ and hands/ are the packages shipped as wheels (hands is
+# opt-in -- `firekeep hands enable` -- rather than bundled by the bootstrap,
+# but it is still a wheel a customer installs and its dependencies still need
+# attributing). Base installs only (no [all]/[test]/[anthropic]/[gemini]/
+# [benchmark] extras) -- base is what a customer's `pip install` actually
+# resolves. See the module docstring for the hands platform-marker caveat.
 COMPONENTS: list[tuple[str, str, list[str]]] = [
     (
         "Server (Cortex / Bridge / Relay / Sentinel)",
@@ -78,6 +98,22 @@ COMPONENTS: list[tuple[str, str, list[str]]] = [
         "Docdex (firekeep-docdex)",
         "docdex",
         ["-q", str(REPO_ROOT / "docdex")],
+    ),
+    (
+        "Maildex (firekeep-maildex)",
+        "maildex",
+        ["-q", str(REPO_ROOT / "maildex")],
+    ),
+    (
+        # Installed alongside client, matching the CI licence-gate venv
+        # (.github/workflows/ci.yml "Gate hands" step) and the real install
+        # shape: hands imports firekeep_client at runtime without declaring
+        # it as a dependency, so a hands-only venv never reflects what a kit
+        # install actually resolves. firekeep-client is excluded from the
+        # NOTICE output regardless (FIRST_PARTY_DISTRIBUTIONS).
+        "Hands (firekeep-hands)",
+        "hands",
+        ["-q", str(REPO_ROOT / "client"), str(REPO_ROOT / "hands")],
     ),
 ]
 
@@ -190,10 +226,11 @@ def render_notice(component_records: list[tuple[str, list[dict]]]) -> str:
         "",
         "This file covers Python dependencies installed into the shipped",
         "server image (cortex/requirements.txt, which also covers bridge,",
-        "relay, and sentinel) and the three client wheels distributed to every",
-        "customer (firekeep-client, firekeep-symdex, firekeep-docdex). It does not",
-        "cover the bundled datastore container images (Neo4j, Redis, Qdrant,",
-        "Ollama) —",
+        "relay, and sentinel), the four client wheels bundled by the bootstrap",
+        "for every customer (firekeep-client, firekeep-symdex, firekeep-docdex,",
+        "firekeep-maildex), and the opt-in firekeep-hands wheel (`firekeep hands",
+        "enable`). It does not cover the bundled datastore container images",
+        "(Neo4j, Redis, Qdrant, Ollama) —",
         "see docs/THIRD-PARTY-DATASTORES.md for those.",
         "",
         "Below, each dependency is identified by name, version, and the",
@@ -207,11 +244,11 @@ def render_notice(component_records: list[tuple[str, list[dict]]]) -> str:
         f"Generated {datetime.now(timezone.utc).strftime('%Y-%m-%d')} by "
         "scripts/generate_notice.py. Regenerate after any dependency change;",
         "do not hand-edit the package list or the appendix below. This exact",
-        "file is vendored, unchanged, at client/NOTICE, symdex/NOTICE, and",
-        "docdex/NOTICE too",
+        "file is vendored, unchanged, at client/NOTICE, symdex/NOTICE,",
+        "docdex/NOTICE, maildex/NOTICE, and hands/NOTICE too",
         "(PEP 639 license-files globs cannot reach outside a package's own",
         "directory, so each wheel needs its own copy to carry it) — the",
-        "generator writes all four from this one render, so they cannot",
+        "generator writes all six from this one render, so they cannot",
         "drift apart.",
         "",
     ]

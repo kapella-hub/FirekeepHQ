@@ -122,10 +122,12 @@ def _truncate_for_print(detail: str) -> str:
 
 
 # This repo's own distributions appear alongside their dependencies after
-# `pip install ./client`, `./symdex`, `./docdex` or `./maildex`. They are governed
-# by the repository's licence checks, not the third-party dependency policy below.
+# `pip install ./client`, `./symdex`, `./docdex`, `./maildex` or `./hands`. They are
+# governed by the repository's licence checks, not the third-party dependency policy
+# below.
 FIRST_PARTY_DISTRIBUTIONS = frozenset(
-    {"firekeep-client", "firekeep-symdex", "firekeep-docdex", "firekeep-maildex"}
+    {"firekeep-client", "firekeep-symdex", "firekeep-docdex", "firekeep-maildex",
+     "firekeep-hands"}
 )
 
 # Packages excluded from attribution output: venv bootstrap tooling that is
