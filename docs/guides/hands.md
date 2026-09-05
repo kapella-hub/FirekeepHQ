@@ -575,10 +575,11 @@ clicks its way through a page has done that many things.
 A browser click is dispatched at a **viewport coordinate**, so the probe scrolls
 the element to the centre of the view before it measures, and the click is
 refused with `stale_ref` when the rect it reports is still entirely outside the
-viewport. For a protected click that check runs *before* the permit is spent —
-and therefore before you are asked — so a step you then deny has already focused
-the element and scrolled the page to it; the page's own focus handlers see that,
-the click never happens. That second case is an element that could not be scrolled to —
+viewport. For a protected click that check runs on the first attempt, before
+Hands answers `needs_permit` — so before you are asked — and again on the retry
+before the permit is spent. A step you then deny has therefore already focused
+the element and scrolled the page to it; the page's own focus handlers see
+that, the click never happens. That second case is an element that could not be scrolled to —
 fixed-position content parked off-screen, a transformed container — and clicking
 its coordinates anyway would land on whatever else occupies that point, which is
 not the element that was classified and approved. There is no

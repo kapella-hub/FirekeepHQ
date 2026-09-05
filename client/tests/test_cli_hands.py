@@ -92,8 +92,11 @@ def test_the_registry_records_where_the_hands_wheel_actually_came_from(
 def test_dex_add_sends_a_capability_to_its_own_command(registry_home, monkeypatch, capsys):
     """`firekeep dex add hands` would stamp `source: "bundled"` — the false
     provenance the `source` argument exists to avoid — and skip the broker
-    autostart. It points at `firekeep hands enable` and registers nothing."""
-    monkeypatch.setattr(dexes, "is_installed", lambda m: True)
+    autostart. It points at `firekeep hands enable` and registers nothing —
+    and it says so BEFORE the install probe, because the wheel not being
+    there yet is the common case and "not installed" would send the user to
+    the wrong command."""
+    monkeypatch.setattr(dexes, "is_installed", lambda m: False)
     assert cli.cmd_dex(types.SimpleNamespace(action="add", name="hands")) == 1
     assert "firekeep hands enable" in capsys.readouterr().err
     assert "hands" not in dexes.read_registry()

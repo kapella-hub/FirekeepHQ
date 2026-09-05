@@ -106,8 +106,9 @@ def _declared_names(policy: Policy, task_apps: list[str], *, browser_step: bool)
     real Windows image name — Yandex ships `browser.exe` — so a NATIVE step in
     a window whose process is called "browser" must not be cleared by a
     declaration that was about the web. Outside a browser step the token is
-    dropped from the declared set, and such a window is judged by its own name
-    like any other."""
+    dropped from the declared set — from the task's declaration AND from the
+    allowlist — so a window whose own name is that token can never be cleared:
+    every native step in it is a crossing. Fail-closed on purpose."""
     names = list(task_apps) + list(policy.apps)
     if browser_step:
         return names
