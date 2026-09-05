@@ -54,6 +54,7 @@ def test_the_launch_argv_falls_back_to_the_console_interpreter_when_pythonw_is_m
     present and pythonw.exe absent the fallback is the console interpreter;
     with both present pythonw wins; with neither on disk the intended spelling
     is kept (that is the pure-function case above)."""
+    pytest.importorskip("winreg")   # the fallback is a Windows-only concern; POSIX tmp paths would not round-trip through PureWindowsPath
     scripts = tmp_path / "Scripts"
     scripts.mkdir()
     script = str(scripts / "firekeep-hands-broker.exe")

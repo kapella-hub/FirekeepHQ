@@ -116,6 +116,11 @@ def backend(monkeypatch):
     monkeypatch.setattr(win_module, "_import_optional", fake_import)
     monkeypatch.setattr(win_module, "_process_info", lambda pid: ("notepad", False))
     monkeypatch.setattr(win_module, "_set_dpi_aware", lambda: None)
+    # `_top_level_elements` asks Win32 whether each fake hwnd is a visible
+    # window. On a desktop it can be (a handle can coincide with a real one);
+    # on a CI runner's session-0 desktop it never is, and every fake window
+    # silently vanished. The fake scene decides what is visible.
+    monkeypatch.setattr(win_module, "_window_is_visible", lambda hwnd: True)
     be = win_module.WinBackend()
     return types.SimpleNamespace(be=be, window=window, save=save, editor=editor,
                                  module=win_module)
@@ -218,6 +223,11 @@ def test_a_password_field_is_reported_as_a_passwordbox_with_no_value(monkeypatch
                                       "mss": types.ModuleType("mss")}[name])
     monkeypatch.setattr(win_module, "_process_info", lambda pid: ("notepad", False))
     monkeypatch.setattr(win_module, "_set_dpi_aware", lambda: None)
+    # `_top_level_elements` asks Win32 whether each fake hwnd is a visible
+    # window. On a desktop it can be (a handle can coincide with a real one);
+    # on a CI runner's session-0 desktop it never is, and every fake window
+    # silently vanished. The fake scene decides what is visible.
+    monkeypatch.setattr(win_module, "_window_is_visible", lambda hwnd: True)
     obs = _observe(win_module.WinBackend())
 
     by_name = {c.name: c for c in obs.controls}
@@ -364,6 +374,11 @@ def test_a_missing_uiautomation_is_reported_not_raised(monkeypatch):
     from firekeep_hands.backends import win as win_module
 
     monkeypatch.setattr(win_module, "_set_dpi_aware", lambda: None)
+    # `_top_level_elements` asks Win32 whether each fake hwnd is a visible
+    # window. On a desktop it can be (a handle can coincide with a real one);
+    # on a CI runner's session-0 desktop it never is, and every fake window
+    # silently vanished. The fake scene decides what is visible.
+    monkeypatch.setattr(win_module, "_window_is_visible", lambda hwnd: True)
     monkeypatch.setattr(win_module, "_import_optional",
                         lambda name: (_ for _ in ()).throw(ImportError("no " + name)))
     be = win_module.WinBackend()

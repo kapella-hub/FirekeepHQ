@@ -48,7 +48,10 @@ class PhoneBridge(threading.Thread):
         self.store = store
         self.link = link
         self.poll_s = float(poll_s)
-        self._stop = threading.Event()
+        # Not `_stop`: `threading.Thread` owns a private `_stop()` method that
+        # `join()` calls on Python 3.11, and an Event under that name makes
+        # every join raise "'Event' object is not callable".
+        self._stop_event = threading.Event()
         # challenge -> relay task id, for tasks this bridge opened and has
         # not yet closed. Kept here rather than read back off the permit so
         # a swept permit still leaves a task to close.
@@ -61,13 +64,13 @@ class PhoneBridge(threading.Thread):
     # -- the loop ---------------------------------------------------------
 
     def run(self) -> None:
-        while not self._stop.is_set():
+        while not self._stop_event.is_set():
             self.tick()
-            if self._stop.wait(self.poll_s):
+            if self._stop_event.wait(self.poll_s):
                 break
 
     def stop(self) -> None:
-        self._stop.set()
+        self._stop_event.set()
 
     def tick(self) -> None:
         """Post, poll, close. Each step guards itself so a Keep that fails

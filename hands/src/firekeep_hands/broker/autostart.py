@@ -34,7 +34,7 @@ import plistlib
 import signal
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from .. import paths
 from . import pending
@@ -74,10 +74,13 @@ def broker_launch_argv(script_path: str) -> list[str]:
     script: `pythonw` is the windowless interpreter beside `python.exe` in
     the same venv, so a logon does not flash a console window at the human,
     and `-m` needs no second executable on disk to stay in step with it."""
-    scripts = Path(script_path).parent
+    # PureWindowsPath, not Path: this describes a Windows command, and the
+    # pure-function tests feed it `C:\...` strings on the ubuntu CI job too,
+    # where a PosixPath would read the whole thing as one file name.
+    scripts = PureWindowsPath(script_path).parent
     pythonw = scripts / "pythonw.exe"
     console = scripts / "python.exe"
-    if not pythonw.exists() and console.exists():
+    if not os.path.exists(str(pythonw)) and os.path.exists(str(console)):
         # An embeddable or otherwise stripped interpreter ships no pythonw. A
         # Run value naming a missing exe launches nothing and shows no error,
         # so fall back to the console interpreter: a window at logon beats a
