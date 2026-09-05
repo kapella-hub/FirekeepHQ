@@ -94,7 +94,13 @@ class ChordTracker:
     nor change the held set. That second half matters: if injected modifier
     presses accumulated, a program could hold the chord's modifiers down
     invisibly and wait for the human to press a bare `y` for some other
-    reason."""
+    reason.
+
+    One press is one answer. Windows repeats `WM_KEYDOWN` about thirty times
+    a second for a held key, so without edge-triggering a human holding the
+    chord for half a second would answer every question in the queue instead
+    of the one in front of them — the phone path grants one permit per tap
+    and the keyboard has to match it."""
 
     def __init__(self, approve: str, deny: str):
         approve_mods, approve_key = parse_chord(approve)
@@ -102,19 +108,30 @@ class ChordTracker:
         self._approve = (approve_mods, _trigger_vk(approve_key))
         self._deny = (deny_mods, _trigger_vk(deny_key))
         self._held: set[str] = set()
+        # Trigger keys currently down. Only ever holds the two trigger
+        # virtual-keys, so it cannot grow with ordinary typing.
+        self._pressed: set[int] = set()
 
     def feed(self, vk: int, down: bool, real: bool) -> str | None:
         if not real:
             return None
         modifier = _MODIFIER_VKS.get(vk)
         if modifier is not None:
+            # Modifier repeats are harmless: adding to a set twice is adding
+            # to it once.
             if down:
                 self._held.add(modifier)
             else:
                 self._held.discard(modifier)
             return None
-        if not down:
+        if vk != self._approve[1] and vk != self._deny[1]:
             return None
+        if not down:
+            self._pressed.discard(vk)
+            return None
+        if vk in self._pressed:
+            return None  # auto-repeat of a key already answered with
+        self._pressed.add(vk)
         for decision, (required, trigger_vk) in (
             ("approve", self._approve),
             ("deny", self._deny),

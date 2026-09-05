@@ -30,6 +30,7 @@ def test_injected_events_never_count_even_for_modifiers():
 def test_the_trigger_alone_is_not_the_chord():
     t = ChordTracker("ctrl+alt+y", "ctrl+alt+n")
     assert t.feed(ord("Y"), True, True) is None
+    t.feed(ord("Y"), False, True)
     t.feed(0xA2, True, True)                  # ctrl only
     assert t.feed(ord("Y"), True, True) is None
 
@@ -38,8 +39,30 @@ def test_releasing_a_modifier_breaks_the_chord():
     t = ChordTracker("ctrl+alt+y", "ctrl+alt+n")
     t.feed(0x11, True, True); t.feed(0x12, True, True)
     assert t.feed(ord("Y"), True, True) == "approve"
+    t.feed(ord("Y"), False, True)             # a fresh press, not a repeat
     t.feed(0x12, False, True)                 # alt up
     assert t.feed(ord("Y"), True, True) is None
+
+
+def test_holding_the_chord_answers_exactly_one_question():
+    """Windows repeats WM_KEYDOWN ~30 times a second for a held key. One
+    gesture must grant one permit, the way one tap on the phone does — a
+    human holding the chord for half a second must not empty the queue."""
+    t = ChordTracker("ctrl+alt+y", "ctrl+alt+n")
+    t.feed(0xA2, True, True); t.feed(0xA4, True, True)
+    assert t.feed(ord("Y"), True, True) == "approve"
+    for _ in range(20):                       # auto-repeat while still held
+        assert t.feed(ord("Y"), True, True) is None
+    t.feed(ord("Y"), False, True)             # released
+    assert t.feed(ord("Y"), True, True) == "approve"
+
+
+def test_a_repeat_of_one_trigger_does_not_block_the_other():
+    t = ChordTracker("ctrl+alt+y", "ctrl+alt+n")
+    t.feed(0xA2, True, True); t.feed(0xA4, True, True)
+    assert t.feed(ord("Y"), True, True) == "approve"
+    assert t.feed(ord("Y"), True, True) is None
+    assert t.feed(ord("N"), True, True) == "deny"
 
 
 def test_left_and_right_modifiers_are_the_same_modifier():

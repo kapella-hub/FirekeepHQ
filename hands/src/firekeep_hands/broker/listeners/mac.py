@@ -109,8 +109,11 @@ def run_listener(tracker: ChordTracker, on_decision: Callable[[str], None]) -> N
     Listen-only (`kCGEventTapOptionListenOnly`) so the tap can never swallow
     or alter a keystroke — the broker watches the keyboard, it does not
     stand in the way of it."""
+    # pyobjc's Quartz re-exports CoreFoundation, so CFRunLoop* and
+    # kCFRunLoopCommonModes are attributes of this one module. Reaching them
+    # through a `Quartz.CoreFoundation` submodule is not a spelling pyobjc
+    # guarantees.
     import Quartz
-    from Quartz import CoreFoundation
 
     # Two out-of-band types the system posts to a tap it has disabled: after
     # a callback took too long, and after the user disabled it. Re-enable, or
@@ -128,6 +131,11 @@ def run_listener(tracker: ChordTracker, on_decision: Callable[[str], None]) -> N
                 log.warning("event tap disabled (%s); re-enabling", event_type)
                 if state["tap"] is not None:
                     Quartz.CGEventTapEnable(state["tap"], True)
+                return event
+            if Quartz.CGEventGetIntegerValueField(event, Quartz.kCGKeyboardEventAutorepeat):
+                # A held key is one gesture, not thirty a second. Filtered
+                # here rather than in the tracker because macOS says so on
+                # the event itself, and one press must answer one question.
                 return event
             keycode = Quartz.CGEventGetIntegerValueField(event, Quartz.kCGKeyboardEventKeycode)
             flags = Quartz.CGEventGetFlags(event)
@@ -157,9 +165,9 @@ def run_listener(tracker: ChordTracker, on_decision: Callable[[str], None]) -> N
     state["tap"] = tap
 
     source = Quartz.CFMachPortCreateRunLoopSource(None, tap, 0)
-    CoreFoundation.CFRunLoopAddSource(
-        CoreFoundation.CFRunLoopGetCurrent(), source, CoreFoundation.kCFRunLoopCommonModes
+    Quartz.CFRunLoopAddSource(
+        Quartz.CFRunLoopGetCurrent(), source, Quartz.kCFRunLoopCommonModes
     )
     Quartz.CGEventTapEnable(tap, True)
     log.info("event tap installed")
-    CoreFoundation.CFRunLoopRun()
+    Quartz.CFRunLoopRun()
