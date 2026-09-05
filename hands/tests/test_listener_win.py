@@ -97,6 +97,24 @@ def test_a_chord_with_a_named_trigger_key():
     assert t.feed(0x79, True, True) == "deny"        # VK_F10
 
 
+def test_delete_and_enter_follow_the_label_on_a_pc_keyboard():
+    """The mirror of the macOS table's note: a PC's Del IS the forward
+    delete, and Windows sends VK_RETURN for the keypad's Enter as well, so
+    these names resolve differently on each platform on purpose."""
+    from firekeep_hands.broker.listeners.win import _NAMED_VKS
+    assert _NAMED_VKS["delete"] == _NAMED_VKS["forwarddelete"] == 0x2E
+    assert _NAMED_VKS["backspace"] == 0x08
+    assert _NAMED_VKS["enter"] == _NAMED_VKS["return"] == 0x0D
+
+
+def test_every_named_trigger_the_grammar_accepts_has_a_virtual_key():
+    """Windows has a VK for every name in the shared vocabulary, so no chord
+    a human can write parses here and then fails to build."""
+    from firekeep_hands.broker import NAMED_TRIGGER_KEYS
+    for name in sorted(NAMED_TRIGGER_KEYS):
+        ChordTracker(f"ctrl+alt+{name}", "ctrl+alt+n")
+
+
 def test_parse_chord_accepts_the_documented_aliases():
     assert parse_chord("ctrl+alt+y") == (frozenset({"ctrl", "alt"}), "y")
     assert parse_chord("Control+Option+Y") == (frozenset({"ctrl", "alt"}), "y")

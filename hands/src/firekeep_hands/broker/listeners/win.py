@@ -48,9 +48,18 @@ _MODIFIER_VKS = {
     0x5B: "cmd", 0x5C: "cmd",
 }
 
+# Two names resolve differently here than in `listeners/mac.py`, in both
+# cases because each table follows the label printed on that platform's
+# keyboard — which is what the human reads when they pick a chord.
+# `delete` is the PC's Del, a forward delete, so it and `forwarddelete` are
+# the same VK here while on a Mac `delete` is the backspace-labelled key.
+# `enter` and `return` are both VK_RETURN because Windows sends that for the
+# keypad's Enter too (only an extended-key flag separates them), whereas
+# macOS gives the keypad its own keycode.
 _NAMED_VKS = {
     "space": 0x20, "enter": 0x0D, "return": 0x0D, "tab": 0x09,
-    "escape": 0x1B, "esc": 0x1B, "backspace": 0x08, "delete": 0x2E,
+    "escape": 0x1B, "esc": 0x1B, "backspace": 0x08,
+    "delete": 0x2E, "forwarddelete": 0x2E,
     "insert": 0x2D, "home": 0x24, "end": 0x23, "pageup": 0x21, "pagedown": 0x22,
     "left": 0x25, "up": 0x26, "right": 0x27, "down": 0x28,
     **{f"f{n}": 0x70 + n - 1 for n in range(1, 13)},

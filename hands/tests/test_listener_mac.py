@@ -31,6 +31,38 @@ def test_every_letter_has_a_keycode_and_they_are_distinct():
     assert KEYCODES["y"] == 16 and KEYCODES["n"] == 45      # the shipped default chords
 
 
+def test_the_named_keys_are_the_physical_mac_keycodes():
+    """The four that were wrong until 2026-09-05. `delete` on a Mac keyboard
+    is the key a PC calls backspace; 117 is the separate forward delete, and
+    the keypad's Enter is its own key, not Return."""
+    assert KEYCODES["return"] == 36
+    assert KEYCODES["enter"] == 76
+    assert KEYCODES["delete"] == 51 and KEYCODES["backspace"] == 51
+    assert KEYCODES["forwarddelete"] == 117
+
+
+def test_the_chord_table_matches_the_backend_that_presses_the_keys():
+    """A chord and a keypress must name the same physical key, or the human
+    approves with one key while Hands presses another. `backends/mac.py` is
+    the reference; this fails if either table drifts."""
+    backend = pytest.importorskip("firekeep_hands.backends.mac")
+    reference = getattr(backend, "_KEYCODES", None)
+    if reference is None:
+        pytest.skip("backends/mac.py exposes no keycode table to compare against")
+    assert KEYCODES == reference
+
+
+def test_every_named_trigger_the_grammar_accepts_is_mapped_or_refused_clearly():
+    """`parse_chord` accepts a shared vocabulary; a name macOS has no keycode
+    for must fail loudly at construction, not silently never fire."""
+    from firekeep_hands.broker import NAMED_TRIGGER_KEYS
+    for name in sorted(NAMED_TRIGGER_KEYS):
+        if name in KEYCODES:
+            continue
+        with pytest.raises(ValueError, match="no macOS keycode"):
+            ChordTracker(f"ctrl+alt+{name}", "ctrl+alt+n")
+
+
 def test_any_synthetic_source_state_is_rejected():
     """kCGEventSourceStateHIDSystemState is 1; a private or combined-session
     source is something a program created."""

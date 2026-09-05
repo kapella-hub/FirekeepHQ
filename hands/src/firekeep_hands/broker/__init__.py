@@ -39,7 +39,7 @@ NAMED_TRIGGER_KEYS = frozenset(
     {f"f{n}" for n in range(1, 13)}
     | {
         "space", "enter", "return", "tab", "escape", "esc", "backspace",
-        "delete", "insert", "home", "end", "pageup", "pagedown",
+        "delete", "forwarddelete", "insert", "home", "end", "pageup", "pagedown",
         "up", "down", "left", "right",
     }
 )

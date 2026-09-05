@@ -49,6 +49,18 @@ _FLAG_FOR_MODIFIER = {
 # Virtual keycodes are positional, not character-based — they name the
 # physical key on an ANSI layout regardless of what it types — so this table
 # is static rather than derived from the character.
+#
+# `backends/mac.py`'s `_KEYCODES` is the reference for these values and this
+# table matches it key for key; a chord and a keypress must mean the same
+# physical key or a human's chord names one key while Hands presses another.
+# The four that were wrong here until 2026-09-05, and what they are:
+# `delete` is 51, the key actually labelled "delete" on a Mac keyboard (what
+# a PC calls backspace), `forwarddelete` is 117, `return` is 36 and `enter`
+# is 76, the keypad's own key. Note this makes `delete` name a different
+# physical key on each platform — `listeners/win.py` maps it to VK_DELETE,
+# the PC's forward-delete Del — which is right: each table follows the label
+# printed on that platform's keyboard, which is what the human reads when
+# they choose a chord.
 KEYCODES = {
     "a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7, "c": 8, "v": 9,
     "b": 11, "q": 12, "w": 13, "e": 14, "r": 15, "y": 16, "t": 17,
@@ -56,8 +68,8 @@ KEYCODES = {
     "8": 28, "0": 29,
     "o": 31, "u": 32, "i": 34, "p": 35, "l": 37, "j": 38, "k": 40,
     "n": 45, "m": 46,
-    "return": 36, "enter": 36, "tab": 48, "space": 49, "backspace": 51,
-    "delete": 117, "escape": 53, "esc": 53,
+    "return": 36, "tab": 48, "space": 49, "delete": 51, "backspace": 51,
+    "escape": 53, "esc": 53, "enter": 76, "forwarddelete": 117,
     "home": 115, "pageup": 116, "end": 119, "pagedown": 121,
     "left": 123, "right": 124, "down": 125, "up": 126,
     "f1": 122, "f2": 120, "f3": 99, "f4": 118, "f5": 96, "f6": 97,
