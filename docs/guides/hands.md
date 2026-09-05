@@ -614,8 +614,14 @@ record, not a plan — a row that says "not yet" means nobody has done it.
 | Windows pointer accuracy at four points across the virtual desktop | **Verified** | 2026-09-05, Windows 11 |
 | Windows broker hook installed, and a `SendInput` chord rejected with `flags=0x10` | **Verified** | 2026-09-05, Windows 11 |
 | Real Chrome, full flow, including a 12-second idle gap | **Verified** | 2026-09-05, Windows 11 |
-| A **real human** chord press accepted | **Not yet** | needs a person at the keyboard; Task 15 |
-| Anything at all on macOS — AX tree, CGEvent input, `screencapture`, TCC prompts, the LaunchAgent | **Not yet** | Task 15, on the MacBook |
-| The macOS source-state filter (`kCGEventSourceStateHIDSystemState`) against real hardware events | **Not yet** | Task 15; the marker filter is the half known to hold until then |
-| Phone approvals end to end through the dashboard | **Not yet** | Task 15 |
-| Multi-monitor pointer maths on real hardware | **Not yet** | Task 15 |
+| End to end through the real MCP server over stdio: `firekeep hands enable --from <checkout>/hands`, `firekeep doctor` `hands` row, then a Notepad task — open, focus, observe, `set_value` through UI Automation, `ctrl+a`/`ctrl+c`, typed text, a screenshot, close, dismiss the save prompt, end — eight ledgered steps with an intact hash chain | **Verified** | 2026-09-05, Windows 11, from a scratch kit venv |
+| Injected approve chord against a *running* broker: the permit stayed `pending`, `consume` was refused, the DEBUG log carried event kinds only (no key codes) | **Verified** | 2026-09-05, Windows 11 |
+| Browser boundary: navigating to a host that is not allowlisted returned `needs_permit` with class `boundary`; after `firekeep hands allow domain example.com` the same task loaded the page (`loaded: true`), read it and ended cleanly | **Verified** | 2026-09-05, Windows 11, real Chrome |
+| `firekeep hands disable`-style teardown of the broker (`uninstall-autostart` stopped the running broker and removed `broker.json`) | **Verified** | 2026-09-05, Windows 11 |
+| Windows autostart at logon | **Fixed after the check** | 2026-09-05: `schtasks /Create /SC ONLOGON` was "Access is denied" for an unelevated user, so the Windows autostart is now a per-user `Run` registry value launching `pythonw.exe -m firekeep_hands.broker run`; the Run-value path itself was verified writable and removable unelevated, and a logon has not yet been observed |
+| A session that dies with a task open | **Fixed after the check** | 2026-09-05: the next `hands_task_start` on the same machine was refused for the full 30-minute lease; the server now releases the lease on shutdown and reclaims a lease held by its own agent id |
+| A **real human** chord press accepted | **Not yet** | needs a person at the keyboard |
+| Anything at all on macOS — AX tree, CGEvent input, `screencapture`, TCC prompts, the LaunchAgent | **Not yet** | no Mac was reachable from the build session; `hands/scripts/demo_textedit.md` is the runbook |
+| The macOS source-state filter (`kCGEventSourceStateHIDSystemState`) against real hardware events | **Not yet** | measured by the live test in `hands/tests/live/test_mac_textedit.py`; the marker filter is the half known to hold until then |
+| Phone approvals end to end through the dashboard | **Not yet** | off by default; needs a phone and the opt-in |
+| Multi-monitor pointer maths on real hardware | **Not yet** | single display on the build machine; the arithmetic is unit-tested |

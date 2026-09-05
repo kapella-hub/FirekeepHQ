@@ -1149,7 +1149,11 @@ class PhoneBridge(threading.Thread):
     # on a permit leaving pending for any other reason -> link.close_permit_task(task_id, result=state)
 
 # autostart.py
-def install() -> None      # win32: schtasks /Create /TN FirekeepHandsBroker /TR "<Scripts>\firekeep-hands-broker.exe run" /SC ONLOGON /RL LIMITED /F ; then start it now (subprocess.Popen detached)
+# AMENDED 2026-09-05 after the live smoke: `schtasks /Create /SC ONLOGON` is "Access is denied" for an
+# unelevated user on Windows 11 (also with /RU), so the Windows autostart is a per-user Run value —
+# HKCU\Software\Microsoft\Windows\CurrentVersion\Run  FirekeepHandsBroker = "<venv>\Scripts\pythonw.exe" -m firekeep_hands.broker run
+# (pythonw: no console window at logon). Task 6c replaces the schtasks code; the LaunchAgent path is unchanged.
+def install() -> None      # win32: write the Run value; then start it now (pythonw, detached, windowless) unless /health answers
                            # darwin: write ~/Library/LaunchAgents/ai.firekeep.hands-broker.plist (ProgramArguments [<bin>/firekeep-hands-broker, run], RunAtLoad, KeepAlive) + launchctl bootstrap gui/<uid> <plist>
 def uninstall() -> None    # schtasks /Delete /TN FirekeepHandsBroker /F ; launchctl bootout gui/<uid>/ai.firekeep.hands-broker + remove plist ; then kill the pid in broker.json if alive
 def command_for(platform: str, script_path: str) -> list[str]   # pure, tested: the argv install() would run
