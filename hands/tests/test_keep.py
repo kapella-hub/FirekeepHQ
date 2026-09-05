@@ -17,6 +17,7 @@ def test_online_calls_map_to_the_right_tools(monkeypatch):
         seen.append((service, tool, args))
         return {"cortex.action_before": {"action_id": "A1"},
                 "relay.relay_lease": {"status": "acquired", "fencing_token": 7},
+                "relay.relay_heartbeat": {"status": "extended"},
                 "relay.relay_task_post": {"status": "created", "task": {"id": "task-1"}},
                 "relay.relay_task_list": {"tasks": [{"id": "task-1", "status": "completed", "result": "approve"}]},
                 }.get(f"{service}.{tool}", {})
@@ -24,14 +25,17 @@ def test_online_calls_map_to_the_right_tools(monkeypatch):
     link = keep.KeepLink(agent_id="a", machine_id="m", offline=False)
     assert link.action_before(goal="g", task_id="t", apps=["X"]) == "A1"
     assert link.acquire_lease()["fencing_token"] == 7
+    link.renew_lease()
     assert link.post_permit_task(challenge="c", title="Send", classes=("send",), task_id="t", step_index=2, expires_at="x") == "task-1"
     assert link.permit_task_state("c") == "approve"
     link.release_lease(); link.action_after("A1", "done", "ok")
     tools = [(s, t) for s, t, _ in seen]
-    assert tools == [("cortex", "action_before"), ("relay", "relay_lease"), ("relay", "relay_task_post"),
-                     ("relay", "relay_task_list"), ("relay", "relay_release"), ("cortex", "action_after")]
-    assert seen[1][2]["resource_id"] == "hands:m" and seen[4][2]["fencing_token"] == 7
-    assert seen[2][2]["title"] == "hands_permit:c" and seen[3][2]["title"] == "hands_permit:c"
+    assert tools == [("cortex", "action_before"), ("relay", "relay_lease"), ("relay", "relay_heartbeat"),
+                     ("relay", "relay_task_post"), ("relay", "relay_task_list"), ("relay", "relay_release"),
+                     ("cortex", "action_after")]
+    assert seen[1][2]["resource_id"] == "hands:m" and seen[5][2]["fencing_token"] == 7
+    assert seen[2][2]["resource_id"] == "hands:m" and seen[2][2]["fencing_token"] == 7 and seen[2][2]["agent_id"] == "a"
+    assert seen[3][2]["title"] == "hands_permit:c" and seen[4][2]["title"] == "hands_permit:c"
 
 
 def test_transport_errors_are_swallowed(monkeypatch):
@@ -97,3 +101,131 @@ def test_close_permit_task_calls_relay_task_update(monkeypatch):
     link = keep.KeepLink(agent_id="a", machine_id="m", offline=False)
     link.close_permit_task("task-1", "approve")
     assert seen == [("relay", "relay_task_update", {"task_id": "task-1", "status": "cancelled", "result": "approve"})]
+
+
+def test_action_before_sends_cortexs_real_argument_shape(monkeypatch):
+    """Pins the exact arg dict against cortex/app/mcp_server.py:1542's real
+    `action_before(session_id, agent_id, action_type, target, preview="",
+    intent="", expected_changes=None, success_criteria: list[str]|None=None,
+    confidence=None)` — a future drift back to the simplified shorthand
+    (no session_id/agent_id, success_criteria as a string) should fail here,
+    not silently no-op against the real server."""
+    seen = []
+    def fake(service, tool, args, **kw):
+        seen.append((service, tool, args))
+        return {"action_id": "A1"}
+    monkeypatch.setattr(keep, "call_tool", fake)
+    link = keep.KeepLink(agent_id="a", machine_id="m", offline=False, session_id="s1")
+    assert link.action_before(goal="g", task_id="t", apps=["Notepad", "Mail"]) == "A1"
+    service, tool, args = seen[0]
+    assert (service, tool) == ("cortex", "action_before")
+    assert args == {
+        "session_id": "s1",
+        "agent_id": "a",
+        "action_type": "hands_task",
+        "target": "desktop:m",
+        "preview": "apps: Notepad, Mail",
+        "intent": "g",
+        "success_criteria": ["task ends with outcome=done"],
+        "confidence": 0.6,
+    }
+    assert isinstance(args["success_criteria"], list)
+    assert isinstance(args["session_id"], str) and isinstance(args["agent_id"], str)
+    assert isinstance(args["confidence"], float)
+
+
+def test_action_before_falls_back_to_task_id_when_no_session_id(monkeypatch):
+    seen = []
+    def fake(service, tool, args, **kw):
+        seen.append(args)
+        return {"action_id": "A1"}
+    monkeypatch.setattr(keep, "call_tool", fake)
+    link = keep.KeepLink(agent_id="a", machine_id="m", offline=False)  # no session_id given
+    link.action_before(goal="g", task_id="t1", apps=[])
+    assert seen[0]["session_id"] == "t1"
+    assert seen[0]["preview"] == ""
+
+
+def test_action_after_sends_cortexs_real_argument_shape(monkeypatch):
+    """Pins the exact arg dict against cortex/app/mcp_server.py:1599's real
+    `action_after(action_id, success: bool, actual_changes=None,
+    observed_criteria_met=None, deviation_notes="", exit_status=None)` — it
+    has no `outcome`/`summary` fields at all."""
+    seen = []
+    def fake(service, tool, args, **kw):
+        seen.append((service, tool, args))
+        return {}
+    monkeypatch.setattr(keep, "call_tool", fake)
+    link = keep.KeepLink(agent_id="a", machine_id="m", offline=False)
+
+    link.action_after("A1", "done", "saved the file")
+    assert seen == [("cortex", "action_after", {
+        "action_id": "A1",
+        "success": True,
+        "deviation_notes": "done: saved the file",
+    })]
+    assert isinstance(seen[0][2]["success"], bool)
+
+    seen.clear()
+    link.action_after("A1", "failed", "could not click Send")
+    assert seen[0][2]["success"] is False
+    assert seen[0][2]["deviation_notes"] == "failed: could not click Send"
+
+
+def test_action_after_truncates_deviation_notes_to_500_chars(monkeypatch):
+    seen = []
+    def fake(service, tool, args, **kw):
+        seen.append(args)
+        return {}
+    monkeypatch.setattr(keep, "call_tool", fake)
+    link = keep.KeepLink(agent_id="a", machine_id="m", offline=False)
+    link.action_after("A1", "done", "x" * 600)
+    assert len(seen[0]["deviation_notes"]) == 500
+
+
+def test_acquire_lease_lost_race_does_not_hold_and_release_sends_nothing(monkeypatch):
+    seen = []
+    def fake(service, tool, args, **kw):
+        seen.append((service, tool, args))
+        if (service, tool) == ("relay", "relay_lease"):
+            return {"acquired": False, "held_by": "x"}
+        return {}
+    monkeypatch.setattr(keep, "call_tool", fake)
+    link = keep.KeepLink(agent_id="a", machine_id="m", offline=False)
+
+    result = link.acquire_lease()
+    assert result == {"acquired": False, "held_by": "x"}
+
+    seen.clear()
+    link.release_lease()
+    assert seen == []  # lost the race: never send relay_release at all
+
+
+def test_renew_lease_calls_relay_heartbeat_not_relay_lease(monkeypatch):
+    """relay_heartbeat is relay's actual TTL-extension primitive
+    (relay/app/mcp_server.py:434) — re-calling relay_lease while already
+    holding it only reports the holder, it does not extend the TTL."""
+    seen = []
+    def fake(service, tool, args, **kw):
+        seen.append((service, tool, args))
+        if (service, tool) == ("relay", "relay_lease"):
+            return {"fencing_token": 9}
+        return {}
+    monkeypatch.setattr(keep, "call_tool", fake)
+    link = keep.KeepLink(agent_id="a", machine_id="m", offline=False)
+    link.acquire_lease()
+
+    seen.clear()
+    link.renew_lease()
+    assert seen == [("relay", "relay_heartbeat", {"resource_id": "hands:m", "fencing_token": 9, "agent_id": "a"})]
+
+
+def test_renew_lease_is_a_noop_without_a_held_lease(monkeypatch):
+    seen = []
+    def fake(service, tool, args, **kw):
+        seen.append((service, tool, args))
+        return {}
+    monkeypatch.setattr(keep, "call_tool", fake)
+    link = keep.KeepLink(agent_id="a", machine_id="m", offline=False)  # never acquired a lease
+    link.renew_lease()
+    assert seen == []

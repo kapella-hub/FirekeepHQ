@@ -32,11 +32,13 @@ _DEFAULT_LEASE_TTL_MINUTES = 30
 
 
 class KeepLink:
-    def __init__(self, *, agent_id: str, machine_id: str, offline: bool | None = None):
+    def __init__(self, *, agent_id: str, machine_id: str, offline: bool | None = None, session_id: str = ""):
         self.agent_id = agent_id
         self.machine_id = machine_id
         self.offline = offline if offline is not None else os.environ.get("FIREKEEP_HANDS_OFFLINE") == "1"
+        self.session_id = session_id
         self._fencing_token = 0
+        self._holds_lease = False
         self._lease_ttl_minutes = _DEFAULT_LEASE_TTL_MINUTES
 
     def _call(self, service: str, tool: str, arguments: dict) -> Any:
@@ -55,26 +57,48 @@ class KeepLink:
             return None
 
     def action_before(self, *, goal: str, task_id: str, apps: list[str]) -> str | None:
+        """cortex/app/mcp_server.py:1542 (`action_before`) is the source of
+        truth for this call's shape, not the simplified
+        `action_before(action_type, target, intent, success_criteria,
+        confidence)` shorthand documented elsewhere (e.g. this repo's
+        CLAUDE.md) — the real tool REQUIRES `session_id` and `agent_id` (no
+        defaults) and types `success_criteria` as a list, not a string.
+        `apps` has no field of its own in that shape, so it rides in
+        `preview`. `session_id` falls back to `task_id` when this KeepLink
+        wasn't given one — either way it must be non-empty for the call to
+        validate server-side."""
         result = self._call(
             "cortex",
             "action_before",
             {
+                "session_id": self.session_id or task_id,
+                "agent_id": self.agent_id,
                 "action_type": "hands_task",
                 "target": f"desktop:{self.machine_id}",
+                "preview": f"apps: {', '.join(apps)}" if apps else "",
                 "intent": goal,
-                "success_criteria": "task ends with outcome=done",
+                "success_criteria": ["task ends with outcome=done"],
                 "confidence": 0.6,
             },
         )
         return result.get("action_id") if isinstance(result, dict) else None
 
     def action_after(self, action_id: str | None, outcome: str, summary: str) -> None:
+        """cortex/app/mcp_server.py:1599 (`action_after`) wants a boolean
+        `success`, not the `outcome`/`summary` strings this method takes from
+        its caller — `outcome == "done"` is the boolean, and both strings are
+        folded into `deviation_notes` (server-capped at 2048 chars; truncated
+        to 500 here to match the ledger's own summary length)."""
         if action_id is None:
             return
         self._call(
             "cortex",
             "action_after",
-            {"action_id": action_id, "outcome": outcome, "summary": summary},
+            {
+                "action_id": action_id,
+                "success": outcome == "done",
+                "deviation_notes": f"{outcome}: {summary}"[:500],
+            },
         )
 
     def acquire_lease(self, ttl_minutes: int = _DEFAULT_LEASE_TTL_MINUTES) -> dict | None:
@@ -87,22 +111,46 @@ class KeepLink:
         if not isinstance(result, dict):
             return None
         # relay's real response marks a lost race with "acquired": False (and
-        # still hands back the OTHER holder's fencing_token, for visibility).
-        # Default True when the key is absent — the brief's own fixture omits
-        # it — but never let a losing result overwrite a token we already hold.
+        # still hands back the OTHER holder's fencing_token, for visibility
+        # only). Default True when the key is absent — the brief's own
+        # fixture omits it — but never let a losing result overwrite a token
+        # we already hold, and remember that we don't currently hold the
+        # lease so release_lease() below knows to send nothing.
         if result.get("acquired", True):
             self._fencing_token = result.get("fencing_token", self._fencing_token)
+            self._holds_lease = True
+        else:
+            self._holds_lease = False
         return result
 
     def renew_lease(self) -> None:
-        self.acquire_lease(self._lease_ttl_minutes)
+        """Extends the TTL on the lease we currently hold via relay's actual
+        renewal primitive, `relay_heartbeat(resource_id, fencing_token,
+        agent_id)` (`relay/app/mcp_server.py:434`) — re-calling `relay_lease`
+        while we already hold it only returns holder info, it does not
+        extend the TTL. No-op when we don't currently hold a lease (no
+        fencing token to renew)."""
+        if not self._holds_lease:
+            return
+        self._call(
+            "relay",
+            "relay_heartbeat",
+            {"resource_id": f"hands:{self.machine_id}", "fencing_token": self._fencing_token, "agent_id": self.agent_id},
+        )
 
     def release_lease(self) -> None:
+        """No-op if we don't currently hold the lease — e.g. right after a
+        lost `acquire_lease()` race — rather than send `relay_release` with a
+        stale or foreign `fencing_token`, which would be worse than doing
+        nothing."""
+        if not self._holds_lease:
+            return
         self._call(
             "relay",
             "relay_release",
             {"resource_id": f"hands:{self.machine_id}", "agent_id": self.agent_id, "fencing_token": self._fencing_token},
         )
+        self._holds_lease = False
 
     def post_permit_task(
         self,
