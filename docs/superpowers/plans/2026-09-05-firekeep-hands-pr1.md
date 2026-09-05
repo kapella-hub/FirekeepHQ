@@ -976,12 +976,19 @@ def prune(root: Path, *, older_than_days: int, now=None) -> int   # returns coun
 
 # keep.py
 class KeepLink:
-    def __init__(self, *, agent_id: str, machine_id: str, offline: bool | None = None)   # offline defaults to env FIREKEEP_HANDS_OFFLINE == "1"
-    def action_before(self, *, goal: str, task_id: str, apps: list[str]) -> str | None    # cortex action_before(action_type="hands_task", target=f"desktop:{machine_id}", intent=goal, success_criteria="task ends with outcome=done", confidence=0.6) -> action_id
+    def __init__(self, *, agent_id: str, machine_id: str, offline: bool | None = None, session_id: str = "")   # offline defaults to env FIREKEEP_HANDS_OFFLINE == "1"
+    def action_before(self, *, goal: str, task_id: str, apps: list[str]) -> str | None
+        # cortex's REAL tool (cortex/app/mcp_server.py:1542) requires session_id + agent_id and a LIST success_criteria:
+        # {"session_id": self.session_id or task_id, "agent_id": agent_id, "action_type": "hands_task", "target": f"desktop:{machine_id}",
+        #  "intent": goal, "preview": "apps: …", "success_criteria": ["task ends with outcome=done"], "confidence": 0.6} -> result["action_id"]
     def action_after(self, action_id: str | None, outcome: str, summary: str) -> None
+        # cortex action_after (mcp_server.py:1599) takes success: bool + deviation_notes, not outcome/summary:
+        # {"action_id": action_id, "success": outcome == "done", "deviation_notes": f"{outcome}: {summary}"[:500]}
+        # (Amended 2026-09-05 during execution: the original plan text sent fields the server's pydantic model rejects,
+        #  which KeepLink would have swallowed into a permanent silent no-op. A test pins both dicts.)
     def acquire_lease(self, ttl_minutes: int = 30) -> dict | None   # relay_lease(resource_id=f"hands:{machine_id}", agent_id, ttl_minutes)
-    def renew_lease(self) -> None
-    def release_lease(self) -> None                                 # relay_release(resource_id, agent_id, fencing_token)
+    def renew_lease(self) -> None                                   # relay_heartbeat(resource_id, fencing_token, agent_id) — relay's extension primitive (mcp_server.py:434); re-calling relay_lease would only report the holder. No-op without a token.
+    def release_lease(self) -> None                                 # relay_release(resource_id, agent_id, fencing_token); no-op when acquire_lease returned {"acquired": False, ...} (lost race — never adopt another holder's token)
     def post_permit_task(self, *, challenge: str, title: str, classes: tuple[str, ...], task_id: str, step_index: int, expires_at: str) -> str | None   # relay_task_post(title=f"hands_permit:{challenge}", assigner=agent_id, description=…, priority="high", context=json)
     def permit_task_state(self, challenge: str) -> str | None       # relay_task_list(title=f"hands_permit:{challenge}", limit=1) -> "approve"|"deny"|"pending"|None
     def close_permit_task(self, task_id: str, result: str) -> None  # relay_task_update(task_id, status="cancelled", result=result)
@@ -1682,7 +1689,7 @@ TOOLS = [
 ]
 ```
 
-`call_tool` dispatches to the session, returns `[t.TextContent(text=json.dumps(result))]`, plus `t.ImageContent(data=b64, mimeType="image/png")` for `detail == "screenshot"` and `hands_browser screenshot`; every `HandsError` becomes `{"ok": false, "error": code + ": " + message}` (never an MCP protocol error, so the model can recover). `main()` builds `backend = load_backend()`, `broker = BrokerClient.from_disk()` (re-probed on every protected `act` when `None`, so a broker started mid-session is picked up), `link = KeepLink(agent_id=os.environ.get("NEXUS_AGENT_ID", "hands"), machine_id=machine_id())`, `session_id = os.environ.get("FIREKEEP_SESSION_ID") or uuid4().hex[:12]`, and serves stdio.
+`call_tool` dispatches to the session, returns `[t.TextContent(text=json.dumps(result))]`, plus `t.ImageContent(data=b64, mimeType="image/png")` for `detail == "screenshot"` and `hands_browser screenshot`; every `HandsError` becomes `{"ok": false, "error": code + ": " + message}` (never an MCP protocol error, so the model can recover). `main()` builds `backend = load_backend()`, `broker = BrokerClient.from_disk()` (re-probed on every protected `act` when `None`, so a broker started mid-session is picked up), `session_id = os.environ.get("FIREKEEP_SESSION_ID") or uuid4().hex[:12]`, `link = KeepLink(agent_id=os.environ.get("NEXUS_AGENT_ID", "hands"), machine_id=machine_id(), session_id=session_id)` (cortex's `action_before` requires a session id — Task 5 amendment), and serves stdio.
 
 - [ ] **Step 1: Failing tests** (`FakeBackend`, an in-process `PermitStore`-backed fake `BrokerClient`, a `FakeLink`):
 
