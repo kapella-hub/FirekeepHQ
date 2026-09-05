@@ -2069,6 +2069,16 @@ def cmd_dex(args) -> int:
         if name in registry:
             print(f"firekeep: {name} is already registered — nothing to do.")
             return 0
+        # A capability is registered by its own command, which also installs
+        # the wheel, records where it came from and sets up its broker. The
+        # generic `add` would stamp it `source: "bundled"` — a false statement
+        # about a wheel the bootstrap never bundles — and skip the autostart.
+        if manifest.role == "capability":
+            print(f"firekeep: {name} is a capability — enable it with "
+                  f"`firekeep {name} enable` (that installs the wheel, records its "
+                  f"source and sets up its broker); `firekeep dex add` is for indexes.",
+                  file=sys.stderr)
+            return 1
         # Prove the code is there BEFORE writing the entry. Registering a dex
         # whose wheel is absent trades a clear error now for a silent missing
         # tool next session, which is the harder failure to diagnose by far.

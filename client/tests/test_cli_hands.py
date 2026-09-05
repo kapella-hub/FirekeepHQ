@@ -89,6 +89,16 @@ def test_the_registry_records_where_the_hands_wheel_actually_came_from(
     assert dexes.read_registry()["hands"]["source"] == "pypi"
 
 
+def test_dex_add_sends_a_capability_to_its_own_command(registry_home, monkeypatch, capsys):
+    """`firekeep dex add hands` would stamp `source: "bundled"` — the false
+    provenance the `source` argument exists to avoid — and skip the broker
+    autostart. It points at `firekeep hands enable` and registers nothing."""
+    monkeypatch.setattr(dexes, "is_installed", lambda m: True)
+    assert cli.cmd_dex(types.SimpleNamespace(action="add", name="hands")) == 1
+    assert "firekeep hands enable" in capsys.readouterr().err
+    assert "hands" not in dexes.read_registry()
+
+
 def test_a_dex_registered_without_a_source_is_still_bundled(registry_home):
     """The default keeps every existing caller — and the two tests in
     test_dexes.py that pin it — saying exactly what they said before."""

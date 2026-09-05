@@ -230,7 +230,9 @@ def test_the_browser_token_clears_a_browser_step_and_never_a_native_window():
     # The same declaration clears the step it was meant for.
     assert policy.classify(click, control, native, None, _NOTHING, ["browser"],
                            browser_step=True) == ()
-    # And a native window really called "browser" is still declarable by name
-    # once the task means the program rather than the web.
+    # And a native window really called "browser" can NOT be declared by name
+    # in any spelling: the token always means the Hands-managed browser, so
+    # every native step in such a program stays a crossing (fail-closed; the
+    # guide says so).
     assert policy.classify(click, control, native, None, _NOTHING,
                            ["browser", "Browser.exe"]) == ("boundary",)

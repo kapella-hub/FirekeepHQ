@@ -295,9 +295,12 @@ Three details make that liveable rather than a queue of prompts.
   without `.exe`: `chrome`, `msedge`, `notepad`, `explorer`. Matching is
   case-insensitive, so `apps=["notepad"]` and `apps=["Notepad"]` are the same
   declaration. **`browser` is a reserved token and not an app name**: Yandex
-  ships `browser.exe`, so a native step in a window whose process is called
-  "browser" is judged by its own name and is never cleared by a declaration
-  that was about the web.
+  ships `browser.exe`, and a native step in a window whose process is literally
+  called "browser" is never cleared by any declaration — not `apps=["browser"]`,
+  not `firekeep hands allow app browser`, in any spelling — because the token
+  always means the Hands-managed browser. Every native step in such a program
+  asks for a permit in this release; that is the fail-closed side of the reserved
+  word, and the one crossing a declaration cannot settle.
 - **Three kinds are outside the rule**, because they land on no window: `wait`
   reaches nothing, `clipboard_set` is machine-wide rather than scoped to
   whatever is in front, and an unnamed window (a backend that could not read
@@ -572,7 +575,10 @@ clicks its way through a page has done that many things.
 A browser click is dispatched at a **viewport coordinate**, so the probe scrolls
 the element to the centre of the view before it measures, and the click is
 refused with `stale_ref` when the rect it reports is still entirely outside the
-viewport. That second case is an element that could not be scrolled to —
+viewport. For a protected click that check runs *before* the permit is spent —
+and therefore before you are asked — so a step you then deny has already focused
+the element and scrolled the page to it; the page's own focus handlers see that,
+the click never happens. That second case is an element that could not be scrolled to —
 fixed-position content parked off-screen, a transformed container — and clicking
 its coordinates anyway would land on whatever else occupies that point, which is
 not the element that was classified and approved. There is no
