@@ -41,6 +41,17 @@ def test_unknown_or_stale_ref_is_rejected():
     with pytest.raises(HandsError):
         routing.route({"kind": "click", "ref": "b"}, None)
 
+def test_type_is_capped_so_a_long_string_is_not_a_long_window_of_stray_keys():
+    """Typed text is paced character by character, so its length is a
+    duration during which keystrokes land wherever the foreground is. Past
+    the cap the answer is set_value on the field, which delivers the text to
+    one named control in one step."""
+    assert routing.route({"kind": "type", "text": "x" * routing.MAX_TYPE_CHARS}, _obs()).route == "input"
+    with pytest.raises(HandsError) as ei:
+        routing.route({"kind": "type", "text": "x" * (routing.MAX_TYPE_CHARS + 1)}, _obs())
+    assert ei.value.code == "invalid_action"
+    assert "set_value" in str(ei.value)
+
 def test_scroll_window_needs_no_ref():
     r = routing.route({"kind": "scroll", "ref": "window", "dy": -3}, _obs())
     assert r.route == "pixel" and r.point is None and r.payload["dy"] == -3

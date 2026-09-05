@@ -257,12 +257,18 @@ def parse_chord(chord: str) -> tuple[list[str], str]:
         raise HandsError("invalid_action", f"not a chord: {chord!r}")
     *modifiers, trigger = parts
     canonical: list[str] = []
+    # De-duplicated by the virtual-key each name resolves to, not by the
+    # spelling: "ctrl+control+s" and "cmd+win+s" name one physical key twice,
+    # and pressing it twice would leave a second key-down with no key-up
+    # after the release sweep.
+    held: set[int] = set()
     for modifier in modifiers:
         vk = _MODIFIER_VKS.get(modifier)
         if vk is None:
             raise HandsError("invalid_action", f"unknown modifier {modifier!r} in {chord!r}")
-        if modifier in canonical:
-            raise HandsError("invalid_action", f"modifier {modifier!r} repeated in {chord!r}")
+        if vk in held:
+            continue
+        held.add(vk)
         canonical.append(modifier)
     if not _trigger_is_known(trigger):
         raise HandsError("invalid_action", f"unknown key {trigger!r} in {chord!r}")
@@ -358,20 +364,64 @@ def build_scroll(x: int, y: int, dy: int,
     ]
 
 
+def _last_error() -> int:
+    """`ctypes.get_last_error` exists only on Windows; this keeps `send()`'s
+    error path callable from a test on any host."""
+    getter = getattr(ctypes, "get_last_error", None)
+    return getter() if getter is not None else 0
+
+
+def _release_stuck_keys(delivered: list[INPUT]) -> None:
+    """Lift whatever the delivered prefix of a short batch left held down.
+
+    A chord is modifiers-down, key, modifiers-up. If `SendInput` stops after
+    the first two events, Ctrl is *physically held as far as Windows is
+    concerned* — every subsequent keystroke the human types becomes a
+    Ctrl-chord, and nothing in the system will lift it. Raising without
+    sweeping would leave the machine in that state.
+
+    Best effort by construction: this runs while an error is already being
+    raised, so its own failure is swallowed rather than masking the first.
+    """
+    held: list[tuple[int, int]] = []
+    for event in delivered:
+        if event.type != INPUT_KEYBOARD:
+            continue
+        flags = event.union.ki.dwFlags
+        if flags & KEYEVENTF_UNICODE:
+            continue  # VK_PACKET: not a key, nothing latches on it
+        key = (event.union.ki.wVk, flags & KEYEVENTF_EXTENDEDKEY)
+        if flags & KEYEVENTF_KEYUP:
+            if key in held:
+                held.remove(key)
+        elif key not in held:
+            held.append(key)
+    if not held:
+        return
+    # Reverse order, the same way a chord releases: innermost key first.
+    release = [_key_event(vk, 0, extra | KEYEVENTF_KEYUP) for vk, extra in reversed(held)]
+    array = (INPUT * len(release))(*release)
+    try:
+        user32().SendInput(len(release), array, ctypes.sizeof(INPUT))
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def send(batch: list[INPUT]) -> int:
     """Deliver a batch atomically. A short count means another process holds
     the input desktop (a UAC prompt, the lock screen, an elevated window's
     UIPI barrier) — an error rather than a partial, silently half-typed
-    action."""
+    action, and never a modifier left stuck down."""
     if not batch:
         return 0
     array = (INPUT * len(batch))(*batch)
     sent = user32().SendInput(len(batch), array, ctypes.sizeof(INPUT))
     if sent != len(batch):
+        error = _last_error()
+        _release_stuck_keys([array[i] for i in range(sent)])
         raise HandsError(
             "backend",
-            f"SendInput delivered {sent}/{len(batch)} events "
-            f"(GetLastError {ctypes.get_last_error()})",
+            f"SendInput delivered {sent}/{len(batch)} events (GetLastError {error})",
         )
     return sent
 

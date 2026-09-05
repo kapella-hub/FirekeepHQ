@@ -20,6 +20,19 @@ _ACCESSIBILITY_INVOKE_PATTERNS = {"Invoke", "AXPress"}
 _ACCESSIBILITY_VALUE_PATTERNS = {"Value", "AXValue"}
 _FORBIDDEN_KEYS = ("x", "y", "point", "coordinates")
 
+# The longest string a `type` action may carry.
+#
+# Typed text is delivered one character at a time and paced (the receiving
+# control needs the gap to read each one correctly), so a long string is a
+# long *window* during which the keystrokes keep landing wherever the
+# foreground happens to be — and the foreground is not something Hands
+# controls. A few hundred characters is a form field; four thousand is a
+# document, which belongs in `set_value` on the field itself, where the text
+# arrives at one named control in one step and cannot be sprayed anywhere
+# else. The cap lives here rather than in a backend so both platforms and
+# the session agree on it.
+MAX_TYPE_CHARS = 500
+
 # kind -> required payload keys. `scroll`'s "ref" is either a control ref or
 # the literal "window"; both cases are still keyed by "ref" here.
 _REQUIRED_KEYS: dict[str, tuple[str, ...]] = {
@@ -89,7 +102,14 @@ def route(action: dict, observation: Observation | None) -> Routed:
         return Routed(kind, "pixel", control, control.rect.center(), payload)
 
     if kind == "type":
-        return Routed(kind, "input", None, None, {"text": action["text"]})
+        text = action["text"]
+        if len(text) > MAX_TYPE_CHARS:
+            raise HandsError(
+                "invalid_action",
+                f"text longer than {MAX_TYPE_CHARS} characters — "
+                "use set_value on the field",
+            )
+        return Routed(kind, "input", None, None, {"text": text})
 
     if kind == "key":
         return Routed(kind, "shortcut", None, None, {"chord": action["chord"]})

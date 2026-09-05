@@ -11,7 +11,7 @@ import types
 
 import pytest
 
-from firekeep_hands.backends.base import HandsError, Rect
+from firekeep_hands.backends.base import HandsError, Rect, WindowInfo
 
 HWND = 0x30530
 
@@ -317,6 +317,38 @@ def test_open_app_refuses_a_name_cmd_would_read_as_syntax(backend):
         with pytest.raises(HandsError) as exc:
             backend.be.open_app(bad)
         assert exc.value.code == "invalid_action"
+
+
+def _window_info(app, elevated):
+    return WindowInfo(app, f"{app} window", 1, Rect(0, 0, 800, 600), elevated)
+
+
+def test_type_text_rechecks_the_elevation_guard_between_chunks(backend, monkeypatch):
+    """Every other action is instantaneous, so one guard up front says it
+    all. Typing is paced, so a long string is a stretch of time in which the
+    foreground can become something Hands must not type into."""
+    from firekeep_hands.backends import _win_input as wi
+
+    sent = []
+    monkeypatch.setattr(wi, "send_text", lambda text: sent.append(text))
+    # Safe for the first chunk, elevated from then on.
+    monkeypatch.setattr(backend.be, "active_window",
+                        lambda: _window_info("notepad", False) if not sent
+                        else _window_info("consent", True))
+
+    with pytest.raises(HandsError) as exc:
+        backend.be.type_text("x" * 250)
+    assert exc.value.code == "elevated_target"
+    assert sent == ["x" * 100], "typing kept going after the foreground turned elevated"
+
+
+def test_type_text_sends_a_short_string_in_one_chunk(backend, monkeypatch):
+    from firekeep_hands.backends import _win_input as wi
+
+    sent = []
+    monkeypatch.setattr(wi, "send_text", lambda text: sent.append(text))
+    backend.be.type_text("hands live")
+    assert sent == ["hands live"]
 
 
 def test_windows_lists_the_top_level_windows(backend, monkeypatch):

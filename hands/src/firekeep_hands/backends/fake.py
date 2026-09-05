@@ -53,11 +53,14 @@ class FakeBackend:
     def find(self, query: str, *, role: str | None, app: str | None,
              limit: int) -> list[Control]:
         needle = query.lower()
+        # Case-folded, like the real backends: an app name is something a
+        # caller typed, and the platforms report it in the OS's own case.
+        app_needle = app.lower() if app is not None else None
         matches = []
         for c in self.scene:
             if role is not None and c.role != role:
                 continue
-            if app is not None and c.app != app:
+            if app_needle is not None and c.app.lower() != app_needle:
                 continue
             if needle in c.name.lower() or needle in c.value.lower():
                 matches.append(c)

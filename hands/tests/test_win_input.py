@@ -73,6 +73,81 @@ def test_navigation_keys_are_marked_extended():
         assert not inp.union.ki.dwFlags & wi.KEYEVENTF_EXTENDEDKEY
 
 
+def test_a_modifier_named_twice_is_pressed_once():
+    """"ctrl+control+s" names one physical key twice. Pressing it twice would
+    leave a second key-down with no key-up behind the release sweep, which is
+    a Ctrl stuck down for the human afterwards."""
+    def shape(chord):
+        return [(i.union.ki.wVk, bool(i.union.ki.dwFlags & wi.KEYEVENTF_KEYUP))
+                for i in wi.build_key_chord(chord)]
+
+    assert shape("ctrl+control+s") == shape("ctrl+s")
+    assert shape("cmd+win+shift+a") == shape("cmd+shift+a")
+
+
+def test_a_short_send_lifts_the_keys_the_delivered_prefix_left_down(monkeypatch):
+    """SendInput stopping mid-chord leaves Ctrl held as far as Windows is
+    concerned, and nothing else in the system will lift it — every key the
+    human types next becomes a Ctrl-chord."""
+    batches = []
+
+    class ShortSendInput:
+        def SendInput(self, count, array, size):
+            batches.append([array[i] for i in range(count)])
+            return 1 if len(batches) == 1 else count  # only the first event lands
+
+    monkeypatch.setattr(wi, "user32", ShortSendInput)
+    monkeypatch.setattr(wi, "_last_error", lambda: 5)
+
+    with pytest.raises(HandsError) as exc:
+        wi.send(wi.build_key_chord("ctrl+shift+s"))
+    assert exc.value.code == "backend"
+    assert "1/6" in str(exc.value)
+
+    assert len(batches) == 2, "no release sweep was sent"
+    assert [(i.union.ki.wVk, bool(i.union.ki.dwFlags & wi.KEYEVENTF_KEYUP))
+            for i in batches[1]] == [(0x11, True)]
+
+
+def test_a_complete_send_sweeps_nothing(monkeypatch):
+    batches = []
+
+    class FullSendInput:
+        def SendInput(self, count, array, size):
+            batches.append([array[i] for i in range(count)])
+            return count
+
+    monkeypatch.setattr(wi, "user32", FullSendInput)
+    assert wi.send(wi.build_key_chord("ctrl+s")) == 4
+    assert len(batches) == 1
+
+
+def test_the_sweep_keeps_the_extended_flag_and_ignores_unicode(monkeypatch):
+    """A nav key pressed with EXTENDEDKEY must be released with it, or the
+    release names the numpad key instead. Unicode events carry VK_PACKET,
+    which is not a key and latches nothing."""
+    batches = []
+
+    class ShortSendInput:
+        def SendInput(self, count, array, size):
+            batches.append([array[i] for i in range(count)])
+            return 2 if len(batches) == 1 else count
+
+    monkeypatch.setattr(wi, "user32", ShortSendInput)
+    monkeypatch.setattr(wi, "_last_error", lambda: 0)
+    with pytest.raises(HandsError):
+        wi.send(wi.build_key_chord("ctrl+delete"))
+    assert [(i.union.ki.wVk, i.union.ki.dwFlags) for i in batches[1]] == [
+        (0x2E, wi.KEYEVENTF_EXTENDEDKEY | wi.KEYEVENTF_KEYUP),
+        (0x11, wi.KEYEVENTF_KEYUP),
+    ]
+
+    batches.clear()
+    with pytest.raises(HandsError):
+        wi.send(wi.build_text("ab"))
+    assert len(batches) == 1, "a Unicode packet is not a key and needs no sweep"
+
+
 def test_unknown_modifier_and_unknown_key_are_refused():
     with pytest.raises(HandsError) as bad_modifier:
         wi.build_key_chord("hyper+s")

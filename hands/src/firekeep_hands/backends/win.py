@@ -56,6 +56,9 @@ _VISIT_BUDGET_PER_NODE = 20
 _MIN_VISIT_BUDGET = 2000
 _FIND_MAX_NODES = 500
 
+# Characters typed between two elevation re-checks. See `type_text`.
+_TYPE_GUARD_CHUNK = 100
+
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 TOKEN_QUERY = 0x0008
 TOKEN_ELEVATION = 20
@@ -512,7 +515,7 @@ class WinBackend:
         if window is not None and window.elevated:
             raise HandsError(
                 "elevated_target",
-                f"{window.app or window.title!r} runs elevated; Windows blocks input "
+                f"{(window.app or window.title)!r} runs elevated; Windows blocks input "
                 "from Hands to it, and Hands would not send it if it did not",
             )
 
@@ -555,8 +558,22 @@ class WinBackend:
         wi.send_click(point[0], point[1], button, double)
 
     def type_text(self, text: str) -> None:
+        """Typed in chunks, with the elevation guard re-checked between them.
+
+        Every other action is instantaneous, so one check up front is the
+        whole story. Typing is not: characters are paced, so a long string is
+        a stretch of time during which the foreground can change underneath
+        the keystrokes — including to something elevated. `routing.py` caps
+        the length; this bounds how far the keys can run past a foreground
+        that has become off-limits. The chunk check costs one UI Automation
+        round trip per hundred characters, which is also comfortably longer
+        than the inter-character pace, so it introduces no extra stutter.
+        """
         self._guard(self.active_window())
-        wi.send_text(text)
+        for start in range(0, len(text), _TYPE_GUARD_CHUNK):
+            if start:
+                self._guard(self.active_window())
+            wi.send_text(text[start:start + _TYPE_GUARD_CHUNK])
 
     def key(self, chord: str) -> None:
         self._guard(self.active_window())

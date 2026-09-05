@@ -32,10 +32,16 @@ pytestmark = pytest.mark.skipif(
 )
 
 SEED = "firekeep-hands-live-seed"
-# Long enough, and non-ASCII enough, to be a regression test for the two bugs
-# the first live run found: unpaced Unicode injection (which produced the
-# right length and the wrong characters) and UTF-16 expansion.
-TYPED = "hands live: the quick brown fox jumps over 13 lazy dogs, café"
+# 219 characters, numbered so a corrupt run is legible in the output, and
+# non-ASCII so UTF-16 expansion is exercised. The length is deliberate on two
+# counts: it is a regression test for the unpaced-injection bug (which
+# produced the right character *count* and the wrong characters), and it
+# crosses `_TYPE_GUARD_CHUNK` twice, so the elevation re-check between chunks
+# has to hand back to typing without dropping the boundary character.
+TYPED = " ".join(
+    f"[{n}] the quick brown fox jumps over 13 lazy dogs, café."
+    for n in range(1, 5)
+)
 STEM = "firekeep-hands-live"
 
 
@@ -188,8 +194,18 @@ def test_notepad_round_trip(tmp_path):
                     continue
                 if _window(backend) is None:
                     break
+                # Never send Ctrl+W on faith. The path that reaches cleanup
+                # most often is the body failing *because* focus could not be
+                # brought forward — precisely when a blind keystroke lands on
+                # whatever the human actually has in front. A tab left open is
+                # the cheap failure; closing someone else's is not.
                 backend.focus_app(STEM)
                 time.sleep(0.5)
+                if _foreground_is_ours(backend) is None:
+                    print("cleanup: could not bring the scratch tab forward, so "
+                          "Notepad is deliberately left open rather than sending "
+                          "Ctrl+W to another window")
+                    break
                 backend.key("ctrl+w")
                 time.sleep(1.0)
             # Only a Notepad this test started, never one the human already had.

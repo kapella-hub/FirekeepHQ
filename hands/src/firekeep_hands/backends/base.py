@@ -100,7 +100,12 @@ class Backend(Protocol):
 
     def focus_app(self, app: str) -> bool: ...
 
-    def open_app(self, app: str) -> bool: ...
+    def open_app(self, app: str) -> bool:
+        """True means the launch was *requested*, not that the app is running
+        or that a window exists — Windows' `start` and macOS' `open` both
+        return as soon as they have handed the request on. A caller that
+        needs the window has to poll `windows()` for it."""
+        ...
 
     def clipboard_get(self) -> str: ...
 
