@@ -19,6 +19,12 @@ it belongs to the capability broker, not the dex family. The name is what
 enforces the understanding/action boundary, which is why *Actiondex* is on the
 explicitly-not-building list.
 
+That day has arrived, and the rule held: **Hands** operates a desktop — it
+clicks, types and sends — so it is called `hands`, not *Actiondex*. It lives in
+the same registry file as the dexes, under a different `role`, gated by a
+separate approval broker. [`hands.md`](hands.md) is its guide; the registry side
+is [below](#the-registry-model).
+
 The premise underneath the whole model: **Firekeep targets general use, so no
 domain dex is privileged.** Code intelligence is one peer among documents, mail,
 calendars. A general-use product whose code dex auto-installs has its identity
@@ -40,6 +46,17 @@ What registration decides:
 |---|---|---|
 | `mcp-stdio` (symdex) | The gateway mounts a backend for it, so its MCP tools exist in the agent's tool list | No backend, no tools. The wheel sits installed and idle |
 | `ingest-client` (docdex) | Its background sync trigger runs, and `firekeep doctor` accounts for it | No background sync. `firekeep docdex …` still works — folder control is a human's either way |
+
+**The file is really the client's *capability* registry**, and the dexes were
+only its first residents. `DexManifest` carries a `role` field — `index` (the
+default; symdex, docdex, maildex) or `capability` (hands) — and the difference is
+what the entry does with its domain: a dex **indexes** it, a capability
+**operates** it. The gateway does not read `role` at all; `kind` still decides
+mounting, which is why `hands` mounts through the same unchanged `mcp-stdio`
+path. What reads it is everything a human looks at: `firekeep dex list` prints
+`operates desktop` where a dex prints `indexes code`, doctor labels the row, and
+the seeding rule below refuses to seed one. See
+[`hands.md`](hands.md) for the capability that exists today.
 
 `firekeep_client/dexes.py` owns both halves: `KNOWN_DEXES` (the manifests this
 client ships knowledge of) and the installed registry file. The gateway's local
@@ -86,9 +103,16 @@ firekeep dex add docdex
 firekeep dex remove symdex
 ```
 
-`list` prints every known dex with its state — `registered`, `available` (wheel
+`list` prints every known entry with its state — `registered`, `available` (wheel
 present, not registered), `not installed` (no wheel), or `registered (wheel
-missing!)` — plus a one-line description each. With an empty registry it closes
+missing!)` — plus a one-line description each, and the verb its `role` earns
+(`symdex … indexes code`, `hands … operates desktop`). Capabilities are listed
+alongside the dexes rather than hidden behind their own command: what the file
+holds should be visible from the command that reports on the file. `add` and
+`remove` still work on `hands`, but `firekeep hands enable` is the command to
+use: `enable` installs the wheel first and sets up the approval broker's
+autostart, and `firekeep hands disable` tears that autostart down again, which
+`dex remove` does not. With an empty registry it closes
 with the offer, not a warning: `none registered — add code intelligence with
 firekeep dex add symdex`.
 
@@ -114,6 +138,15 @@ a third question). Since client 1.2.0 there is exactly one behavior:
 - **Registry file exists** → untouched, forever. Your choices are yours — a
   dex removed with `firekeep dex remove` stays removed across every update.
   **Removals stick**; `remove` is the off-switch.
+
+**A capability is never seeded**, in either branch. The seed writes exactly
+`{"symdex", "docdex"}` and will never grow to include a `role: "capability"`
+entry, because the reasoning that makes default-on right for an index is exactly
+what makes it wrong for a capability: an index that arrives uninvited costs you
+some disk and some background work, while a capability that arrives uninvited can
+move your mouse. Hands is registered only by a human typing `firekeep hands
+enable`, and unlike the dexes its wheel is not bundled with the release either —
+`enable` installs it on demand. See [`hands.md`](hands.md#turn-it-on).
 
 (The 2026-08-19 simplification replaced the earlier two-row migration, which
 forked on whether the config carried a `[server]` section to distinguish
@@ -159,6 +192,7 @@ field a third-party `dex.json` would need, and nothing client-internal.
 | `console_script` | `firekeep-symdex` | The executable the gateway launches (`mcp-stdio` only) |
 | `import_probe` | `firekeep_symdex` | The module `dex add` proves is present before registering |
 | `description` | … | The line `dex list` prints |
+| `role` | `index` (default) \| `capability` | Whether the entry indexes its domain or operates it. Not read by the gateway; read by `dex list`, doctor, the seeding rule and the docs |
 
 The SDK ladder, in order, each rung gated by the one before (ROADMAP §5): (1)
 this manifest + registry, designed as if public; (2) docdex ships as consumer #2

@@ -125,6 +125,49 @@ def test_doctor_hands_row_reports_broker(registry_home, monkeypatch):
     assert "broker not running" in rows["hands"][2]
 
 
+def test_doctor_hands_row_warns_when_nothing_can_approve(registry_home, monkeypatch):
+    """A broker that is UP but has no approval path refuses every protected step
+    just as completely as one that is down, and says so nowhere else. With phone
+    approvals off by default, a failed chord listener is exactly that state, so
+    the row must warn and name the fix on both platforms — doctor cannot tell
+    which one broke the listener."""
+    dexes.add("hands")
+    monkeypatch.setattr(dexes, "is_installed", lambda m: True)
+    monkeypatch.setattr(cli, "read_broker_health", lambda timeout=1.0: {
+        "ok": True, "chord": "ctrl+alt+y",
+        "listeners": {"chord": "unavailable", "phone": "off"}})
+    row = dict((r[0], r) for r in cli._check_dexes())["hands"]
+    assert row[1] == "warn"
+    assert "Input Monitoring" in row[2]
+    assert "firekeep hands enable" in row[2]
+    assert "phone_approvals true" in row[2]
+
+
+def test_doctor_hands_row_stays_ok_when_the_phone_can_approve(registry_home, monkeypatch):
+    """The phone is a real approval path. A dead chord listener with phone
+    approvals ACTIVE is degraded, not broken, and must not warn."""
+    dexes.add("hands")
+    monkeypatch.setattr(dexes, "is_installed", lambda m: True)
+    monkeypatch.setattr(cli, "read_broker_health", lambda timeout=1.0: {
+        "ok": True, "chord": "ctrl+alt+y",
+        "listeners": {"chord": "unavailable", "phone": "active"}})
+    row = dict((r[0], r) for r in cli._check_dexes())["hands"]
+    assert row[1] == "ok"
+
+
+def test_doctor_hands_row_warns_when_phone_is_opted_in_but_offline(registry_home, monkeypatch):
+    """`offline` means opted in with no Keep to post to — an approval path that
+    does not exist, so it counts the same as `off`."""
+    dexes.add("hands")
+    monkeypatch.setattr(dexes, "is_installed", lambda m: True)
+    monkeypatch.setattr(cli, "read_broker_health", lambda timeout=1.0: {
+        "ok": True, "chord": "ctrl+alt+y",
+        "listeners": {"chord": "unavailable", "phone": "offline"}})
+    row = dict((r[0], r) for r in cli._check_dexes())["hands"]
+    assert row[1] == "warn"
+    assert "phone approvals are offline" in row[2]
+
+
 def test_parser_keeps_from_out_of_rest():
     from firekeep_client import cli
     args = cli._build_parser().parse_args(["hands", "enable", "--from", "X:/hands", "--no-autostart"])

@@ -2,7 +2,8 @@
 
 **Date:** 2026-07-26
 **Scope:** all four services (Cortex, Bridge, Sentinel, Relay), the dashboard, the
-client kit, and the URL crawler.
+client kit, the URL crawler, and — where a human has opted into it — the Hands
+desktop operator (§5.8).
 **Supersedes:** `cortex/docs/SECURITY_REVIEW.md` (2026-03-02), which covered Cortex
 v0.1.0 only and predates auth, the vault, the agent gateway and the crawler. That
 file is kept as a record of what was reviewed then, not as current state.
@@ -40,6 +41,16 @@ Everything below is one of those two.
 
 Note the asymmetry: the vault is encrypted at rest and the memories are not. An
 attacker with filesystem access to the Qdrant volume does not need any key.
+
+Three more exist **only on a workstation whose human has enabled Hands** (§5.8),
+and on such a machine they outrank everything above, because they are not data
+about the customer's systems — they are the systems:
+
+| Asset | Where | Why it matters |
+|---|---|---|
+| The logged-in desktop session | the workstation | Every application the human is signed into is reachable by a click, without a credential. |
+| The Hands browser profile | `~/.firekeep/hands/chrome-profile` | Whatever the human signed into *through* Hands stays signed in, inside the agent's reach. |
+| The broker's bearer token | `~/.firekeep/hands/broker.json`, `0600`, minted per broker run | Lets a same-user process ask for and spend permits. It cannot grant one; see the residuals in §5.8. |
 
 ## 3. Trust boundaries
 
@@ -269,6 +280,130 @@ replay — `details.batch` (`"<segment-name>|<signature-hash>"`) is the
 deterministic key any downstream consumer (the dashboard view, a future aggregate
 reader) must use to collapse it, because Sentinel's own `XADD` does not dedup.
 
+### 5.8 Hands — the desktop operator
+
+`firekeep-hands` is an **opt-in** capability: not bundled with a release, never
+seeded into the registry, installed and registered only by a human running
+`firekeep hands enable`. A machine that has not run it has none of this surface.
+A machine that has is a different security proposition from every other part of
+Firekeep, because the thing being protected is no longer a database — it is the
+person's own computer and every application they are signed into. Behaviour,
+limits and the CLI are [`docs/guides/hands.md`](guides/hands.md).
+
+**Assets.** The machine itself, at the privilege of the user's own login. Every
+application session that login already holds — mail, chat, bank, source control —
+reachable through a click, not through a credential. `~/.firekeep/hands/`, which
+holds `config.json`, the allowlist `policy.json`, `broker.json` (the broker's
+loopback port and per-run bearer token, `0600`), the evidence ledgers, and
+`chrome-profile/`, the dedicated browser profile that holds whatever the human
+has signed into *through Hands*. Screenshots, which exist transiently on the
+evidence path and leave the machine entirely whenever the runtime asks for one.
+
+**Attacker models.**
+
+1. **A compromised or merely over-eager runtime.** The model drives the MCP
+   server directly and can attempt any action, at any time, for any reason —
+   including reasons it invented. This is the primary model, and it is the one
+   the whole design is shaped around.
+2. **Prompt-injected UI text.** A web page or an application's own content is
+   read into the model's context by `hands_observe`. Anything the model reads may
+   be an instruction. This is not hypothetical and is not solved.
+3. **Local malware running as the same user.** It can read `broker.json`, talk to
+   the broker's loopback API, and synthesise keystrokes. It cannot elevate; it
+   does not need to.
+4. **A holder of the workspace API key who is not the machine's human** — a
+   second agent, a teammate, anything with the key. Relevant only when phone
+   approvals have been turned on.
+
+**Mitigations.**
+
+- **The broker is a separate process.** The permit store lives outside the MCP
+  server the model drives, so a compromised runtime is not one function call away
+  from approving itself. The loopback API can create, read and consume a permit;
+  **no route grants one**. Approval enters only through the OS input listener or
+  the phone bridge.
+- **Injected input is rejected.** Windows: a `WH_KEYBOARD_LL` hook requires both
+  `LLKHF_INJECTED` (`0x10`) and `LLKHF_LOWER_IL_INJECTED` (`0x02`) clear, so every
+  key `SendInput` delivers — Hands' own typing included — is ignored. macOS: a
+  `CGEventTap` rejects events carrying Hands' `kCGEventSourceUserData` marker and
+  events whose source state is not `kCGEventSourceStateHIDSystemState`.
+- **Permits are bound to the step.** The challenge id is derived from machine,
+  agent session, task, step index and a hash of the action dict; the server
+  recomputes it from the action about to run and refuses a mismatch. One use, 60 s
+  TTL, memory only, expiry applied to approved permits as well as pending ones,
+  and `denied`/`expired`/`consumed` terminal.
+- **Fail closed.** No broker, or a broker that stops answering between the health
+  check and the request, refuses the protected step. A restarted broker holds no
+  permits.
+- **Effects, not verbs, decide protection.** Six classes (`send`, `money`,
+  `destroy`, `credential`, `install`, `boundary`) are computed by Hands from the
+  routed action and its observed target, never from a label the model supplies.
+  `boundary` is the catch-all: any app not declared or allowlisted, any domain not
+  allowlisted.
+- **No model-supplied coordinates.** Actions carrying `x`/`y`/`point` are
+  rejected; every pointer action resolves a `ref` from the observation the runtime
+  was shown, and Hands computes the point from that control's own rect.
+- **The permit text is built by Hands, not by the model** — from the routed
+  control's own name and the window's app, whitespace-collapsed, stripped of
+  unprintable characters and capped at 60 characters.
+- **Typing is bounded.** 500 characters per `type` action, with the Windows
+  elevation guard re-checked every 100 characters so it cannot decay mid-injection
+  while focus moves.
+- **Evidence is tamper-evident.** Per-task `steps.jsonl` with a sha256 chain over
+  each line; a dropped, reordered or edited line breaks every chain after it.
+- **One operator per machine**, enforced by a relay lease on
+  `hands:<machine_id>`; a refused lease aborts the task rather than proceeding.
+
+**Residuals, all OPEN.**
+
+- **A process running as the same user can read `broker.json` and consume permits
+  it did not earn.** The token is `0600` and the socket is loopback-only, which
+  means a caller needs read access to the user's own `~/.firekeep` — a real limit
+  and not a strong one, since a same-user process has it. This is why possession
+  of the token buys the ability to *ask*, not the ability to answer: the permit
+  still requires a real human chord (or a phone tap) to exist at all. What such a
+  process gains is the ability to spend an approval the human granted for
+  something else, in the window before it is consumed or expires. Note also that
+  the spec's claim that nothing secret is stored on disk is not true as built —
+  the bearer token is in `broker.json`, minted per broker run.
+- **Kernel-level input injection defeats the real-input filter.** A kernel-mode
+  driver can originate events with no injection bit set, and the broker trusts the
+  OS's flag. This filter stops user-mode malware and honest mistakes, not a
+  rootkit. Out of scope, as it is for the hardware products this design compares
+  itself to.
+- **Screenshots reach the runtime's model provider.** `hands_observe(detail=
+  "screenshot")` and region zooms send the screen to whatever cloud model is
+  driving. Accessibility trees are the default precisely because they are not
+  this, but there is no per-task screenshot switch in this release; the control is
+  the runtime not asking.
+- **The macOS source-state filter is unverified on real hardware.** It is
+  implemented as specified and logs `(keycode, flags, userData, sourceStateID)` at
+  DEBUG so it can be measured; until it is, the Hands marker is the half of that
+  filter known to hold. The Windows injected-flag rejection *is* verified
+  (2026-09-05, this PC).
+- **The broker renders no prompt of its own.** It has no window and no
+  notification. On the chord path the human sees the step description only if the
+  runtime relays `needs_permit.title` to them — and the runtime is the thing being
+  gated. A model cannot forge that text (Hands builds it from the routed control),
+  but it can decline to show it, or bury it. The phone path is the only one where
+  the human reads the broker's own text on a surface the model does not draw.
+- **Phone approvals, when opted in, trust every holder of the workspace API
+  key.** Relay's `update_task` records status, result and assignee and **not the
+  completing principal**, so an approved `hands_permit:` task proves only that
+  somebody with the key completed it. The driving agent holds that key and reaches
+  `relay_task_list`/`relay_task_update` through the MCP surface it already has, so
+  it can complete its own permit task and be granted the permit within one poll. A
+  local one-time code would not close it either — Hands can screenshot the screen
+  the code is on. **This is why `phone_approvals` defaults to `False`**; PR2 closes
+  it by stamping the verified principal on relay task updates, at which point the
+  broker can require a human member.
+- **Prompt injection through observed UI text.** Unchanged from threat 9 below,
+  with a wider blast radius: the injected instruction now reaches a tool that can
+  click. Permits and the allowlist bound the damage; they do not remove the risk.
+- **`action_before` does not gate.** Hands declares the task to Cortex and reads
+  back an action id; a `block` verdict from the policy engine is not honoured, so
+  the Keep cannot veto a Hands task in this release. The gate that works is local.
+
 ## 6. Threats, ranked
 
 | # | Threat | State |
@@ -283,6 +418,8 @@ reader) must use to collapse it, because Sentinel's own `XADD` does not dedup.
 | 8 | Dependency CVE in a shipped wheel | **Now scanned** — `pip-audit` per dependency set in CI |
 | 9 | Prompt injection reaching a tool call | **OPEN, out of our control** — the runtime's boundary, not ours; the gateway is advisory (§5.4) |
 | 10 | Unauthenticated field-failure collector fabricates/floods failure data | **Mitigated, residual accepted** — enum-value validation, released-version allowlist, mail budget, locked state, sealed caps (§5.7); data stays low-integrity by construction and is labelled `integrity: "unverified"` downstream |
+| 11 | A compromised runtime with Hands enabled operates the human's desktop | **Mitigated, residuals OPEN** — the broker is a separate process with no grant route, injected input is rejected, permits are one-use and bound to the exact step, classification is on effects not model labels, fail closed (§5.8). Residuals: same-user permit theft, kernel-level injection, screenshots to the model provider, the unverified macOS source-state filter, and the broker rendering no prompt of its own |
+| 12 | Phone approvals approved by a key holder who is not the human | **OPEN, mitigated only by the default** — relay records no completing principal, so any workspace-key holder (the driving agent included) can complete a `hands_permit:` task. `phone_approvals` is `False` by default and the guide discloses the trade; PR2 stamps the principal (§5.8) |
 
 Threat 5 deserves emphasis because it is the one the product's own design creates:
 Firekeep exists to make agents act on stored memory. Anything that can write a

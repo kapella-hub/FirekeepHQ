@@ -31,8 +31,11 @@ def dex_home(tmp_path, monkeypatch):
 
 @pytest.fixture
 def registry_home(tmp_path, monkeypatch):
-    """Like `dex_home`, but leaves `is_installed` at its real probe — for tests
-    that care whether a dex's wheel is ACTUALLY present (hands' is not)."""
+    """Like `dex_home`, but leaves `is_installed` at its real probe, for a test
+    that wants to choose its own answer per manifest rather than take
+    `dex_home`'s blanket True. A test using this fixture should still stub the
+    probe for any dex whose state it asserts on: what is installed in the venv
+    running the suite is not something a test can assume."""
     monkeypatch.setenv("FIREKEEP_CONFIG", str(tmp_path / "config"))
     monkeypatch.setenv("FIREKEEP_LOG_DIR", str(tmp_path / "logs"))
     return tmp_path
@@ -250,8 +253,21 @@ def test_parser_rejects_an_unknown_action(dex_home):
 # --------------------------------------------------------------------------- #
 
 
-def test_dex_list_labels_capabilities(registry_home, capsys):
+def test_dex_list_labels_capabilities(registry_home, monkeypatch, capsys):
+    """The point of this test is the VERB — `operates desktop` for a capability
+    against `indexes code` for a dex — not which wheels happen to be in the
+    venv running it.
+
+    The wheel probe is therefore stubbed rather than trusted. It used to be
+    left real, on the reasoning that hands' wheel "is not present": true on a
+    clean CI runner, false on any machine with `hands/src` on `PYTHONPATH` or
+    an editable install, where `_dex_state` reports `available` and the
+    assertion failed for a reason that has nothing to do with what is being
+    tested. Stubbing it also means the day CI installs the wheel — which the
+    hands CI job now does — this test does not start failing.
+    """
     from firekeep_client import cli
+    monkeypatch.setattr(dexes, "is_installed", lambda manifest: manifest.name != "hands")
     cli.cmd_dex(type("A", (), {"action": "list"})())
     out = capsys.readouterr().out
     assert "hands  [not installed]  operates desktop" in out

@@ -1347,8 +1347,17 @@ def _check_hands() -> tuple[str, str, str]:
 
     The broker is the safety boundary — with it down every protected step is
     refused (fail closed), so its absence is the one thing this row must say
-    loudly. Permissions (accessibility, screen recording, input monitoring)
-    are the wheel's to report; `firekeep hands status` shows them."""
+    loudly. A running broker that nothing can APPROVE through is the same
+    outcome reached quietly, and phone approvals being off by default is what
+    makes it reachable: a machine whose chord listener could not install has no
+    approval path at all, and every protected step fails closed with no
+    diagnosis anywhere. That case warns too, and names the fix.
+
+    The remedy text carries BOTH platforms' fixes in one string on purpose.
+    Doctor cannot tell why a listener failed — `/health` reports only that it is
+    unavailable — and the machine reading this row is not necessarily the one
+    the broker runs on. Permissions (accessibility, screen recording, input
+    monitoring) are the wheel's to report; `firekeep hands status` shows them."""
     if not dexes.is_installed(dexes.KNOWN_DEXES["hands"]):
         return ("hands", "fail", "registered but the wheel is missing — `firekeep hands enable`")
     health = read_broker_health()
@@ -1357,9 +1366,19 @@ def _check_hands() -> tuple[str, str, str]:
                 "broker not running — protected steps are refused until it is "
                 "(`firekeep-hands-broker run`, or re-run `firekeep hands enable`)")
     listeners = health.get("listeners") or {}
+    chord, phone = listeners.get("chord", "?"), listeners.get("phone", "?")
+    if chord == "unavailable" and phone != "active":
+        return ("hands", "warn",
+                "broker up but NOTHING can approve — the chord listener is unavailable "
+                f"and phone approvals are {phone}, so every protected step is refused. "
+                "macOS: grant Input Monitoring to this kit's python "
+                "(System Settings → Privacy & Security → Input Monitoring) and restart "
+                "the broker. Windows: re-run `firekeep hands enable` to recreate the "
+                "logon task. Or opt in to phone approvals with `firekeep hands config "
+                "set phone_approvals true` after reading what that trusts in "
+                "docs/guides/hands.md")
     return ("hands", "ok",
-            f"broker up · chord {health.get('chord', '?')} ({listeners.get('chord', '?')}) "
-            f"· phone {listeners.get('phone', '?')}")
+            f"broker up · chord {health.get('chord', '?')} ({chord}) · phone {phone}")
 
 
 def _check_backup(cfg=None, *, reachable: bool = True) -> tuple[str, str, str]:
