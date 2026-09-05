@@ -130,13 +130,15 @@ class FakeLink:
 
 
 class FakeBrowser:
-    """Records operations; `d1`/`d2` are the only live refs, so anything else
-    raises `stale_ref` the way the DOM probe does."""
+    """Records operations. Refs are generation-stamped (`g<gen>-d<N>`) and
+    only the current generation is live, so a ref from an older scan raises
+    `stale_ref` the way the DOM probe does."""
 
     def __init__(self):
         self.calls: list[tuple] = []
-        self.live = {"d1", "d2"}
+        self.live = {"g1-d1", "g1-d2"}
         self.url = "about:blank"
+        self.loaded = True
 
     def open(self) -> dict:
         self.calls.append(("open",))
@@ -149,7 +151,7 @@ class FakeBrowser:
     def navigate(self, url, *, tab=None) -> dict:
         self.calls.append(("navigate", url))
         self.url = url
-        return {"url": url, "title": "Page"}
+        return {"url": url, "title": "Page", "loaded": self.loaded}
 
     def read(self, *, tab=None, budget=4000) -> dict:
         self.calls.append(("read",))
@@ -157,7 +159,7 @@ class FakeBrowser:
 
     def find(self, query, *, tab=None, limit=10) -> list[dict]:
         self.calls.append(("find", query))
-        return [{"ref": "d1", "role": "button", "name": query}][:limit]
+        return [{"ref": "g1-d1", "role": "button", "name": query}][:limit]
 
     def click(self, ref, *, tab=None) -> None:
         if ref not in self.live:
@@ -408,7 +410,17 @@ def test_find_on_a_missing_app_is_an_empty_list_not_an_error(session):
     assert session.find("save", app="Nothing")["controls"] == []
 
 
+def test_observe_and_find_need_an_open_task(session):
+    """An observation is a tree — and maybe a picture — of the human's own
+    screen, so it belongs inside a declared task with a ledger and a lease.
+    Only hands_status answers with no task."""
+    assert session.observe()["error"].startswith("no_task")
+    assert session.find("save")["error"].startswith("no_task")
+    assert session.status()["ok"] is True
+
+
 def test_observe_detail_levels(session):
+    session.task_start("x", ["Notepad"])
     summary = session.observe(detail="summary")
     assert "controls" not in summary and summary["control_count"] == 4
     controls = session.observe(detail="controls")
@@ -477,8 +489,8 @@ def test_browser_direct_ops_are_ledgered_steps(session):
     session.browser = browser
     session.task_start("x", ["Notepad"])
     assert session.browser_op("open")["ok"]
-    assert session.browser_op("find", query="Send")["controls"][0]["ref"] == "d1"
-    assert session.browser_op("click", ref="d1")["ok"]
+    assert session.browser_op("find", query="Send")["controls"][0]["ref"] == "g1-d1"
+    assert session.browser_op("click", ref="g1-d1")["ok"]
     assert session.browser_op("read")["text"] == "hello"
     assert session.browser_op("screenshot")["screenshot_png"].startswith(b"\x89PNG")
     steps = session.ledger.steps()
@@ -486,12 +498,27 @@ def test_browser_direct_ops_are_ledgered_steps(session):
     assert session.step_index == 5
 
 
-def test_browser_click_on_a_stale_ref_is_an_error_not_a_raise(session):
+def test_browser_click_on_a_ref_from_an_older_scan_is_an_error_not_a_raise(session):
     session.browser = FakeBrowser()
     session.task_start("x", ["Notepad"])
-    r = session.browser_op("click", ref="d9")
+    r = session.browser_op("click", ref="g0-d1")
     assert r["ok"] is False and r["error"].startswith("stale_ref")
     assert session.ledger.steps()[-1]["outcome"] == "error"
+
+
+def test_a_navigation_that_never_loaded_is_still_an_ok_step_with_the_flag(session):
+    """Task 9's `navigate` no longer raises on a missing load event; it
+    reports `loaded: False`. That is a step that happened, so the ledger says
+    "ok" and the runtime is told to look before it acts."""
+    browser = FakeBrowser()
+    browser.loaded = False
+    session.browser = browser
+    session.policy.domains.append("example.com")
+    session.task_start("x", ["Notepad"])
+    r = session.browser_op("navigate", url="https://example.com/slow")
+    assert r["ok"] is True and r["loaded"] is False
+    assert r["url"] == "https://example.com/slow"
+    assert session.ledger.steps()[-1]["outcome"] == "ok"
 
 
 def test_unknown_browser_op_is_refused(session):

@@ -255,9 +255,15 @@ class HandsSession:
         later `ref` resolves against, so an observation is what makes acting
         possible at all.
 
-        No task is required. Looking changes nothing and leaves no ledger
-        line; a runtime being able to see before it commits to a task is
-        worth more than the symmetry."""
+        Requires an open task, and for accountability rather than
+        bookkeeping: an observation is a tree — and possibly a screenshot —
+        of the human's own screen, which may leave this machine for a cloud
+        model. It has to sit inside a declared task with a ledger and a
+        lease. Looking still costs no step; only `hands_status` works with no
+        task at all."""
+        guard = self._no_task()
+        if guard is not None:
+            return guard
         if detail not in _DETAILS:
             raise HandsError("invalid_action", f"detail must be one of {list(_DETAILS)}")
         observation = self.backend.observe(
@@ -287,11 +293,17 @@ class HandsSession:
              limit: int = 10) -> dict:
         """Search the current window (or a named app) by control text.
 
+        Requires an open task for the same reason `observe` does — this reads
+        the human's screen.
+
         The matches are folded into `last_obs` rather than returned and
         forgotten: `route` only resolves refs it can see in the current
         observation, so a ref this hands out would otherwise be dead on
-        arrival. A control that both calls found keeps the *newer* entry —
-        its rect may have moved."""
+        arrival. Existing entries are kept; a control that both calls found
+        keeps the *newer* entry, since its rect may have moved."""
+        guard = self._no_task()
+        if guard is not None:
+            return guard
         matches = self.backend.find(query, role=role, app=app, limit=int(limit))
         self._merge_into_observation(matches)
         return {"ok": True, "count": len(matches),
@@ -341,9 +353,9 @@ class HandsSession:
             permit_record = gate["permit"]
 
         before = self._capture() if permit_record is not None else None
-        outcome, error = "ok", None
+        outcome, error, extra = "ok", None, None
         try:
-            self._execute(routed, window)
+            extra = self._execute(routed, window)
         except HandsError as exc:
             outcome, error = "error", f"{exc.code}: {exc}"
         after = self._capture() if permit_record is not None else None
@@ -355,8 +367,11 @@ class HandsSession:
             before_png=before, after_png=after, outcome=outcome, error=error,
         )
         self._advance()
-        return {"ok": outcome == "ok", "step_index": index, "route": routed.route,
-                "classes": list(decision.classes), "error": error}
+        result = {"ok": outcome == "ok", "step_index": index, "route": routed.route,
+                  "classes": list(decision.classes), "error": error}
+        if extra:
+            result.update(extra)
+        return result
 
     def _gate(self, action: dict, routed: Routed, window: WindowInfo | None,
               decision, permit: str | None) -> dict:
@@ -424,10 +439,16 @@ class HandsSession:
             return f"set the clipboard on {where}"
         return f"{routed.kind} in {where}"
 
-    def _execute(self, routed: Routed, window: WindowInfo | None) -> None:
+    def _execute(self, routed: Routed, window: WindowInfo | None) -> dict | None:
         """Routed step -> backend call. `routing` already chose accessibility
         over pixels and resolved every ref, so this is a dispatch table and
-        nothing more; no decision is taken here."""
+        nothing more; no decision is taken here.
+
+        Returns whatever the call knows that the caller does not — today only
+        `open_url`, whose `{"url", "title", "loaded"}` is merged into the tool
+        result. A navigation that finished without the load event is still a
+        step that happened (`outcome: "ok"`); `loaded: False` is how the
+        runtime learns to look before it acts."""
         kind, payload, point = routed.kind, routed.payload, routed.point
         if kind == "invoke":
             if routed.route == "accessibility":
@@ -455,11 +476,13 @@ class HandsSession:
         elif kind == "open_app":
             self.backend.open_app(payload["app"])
         elif kind == "open_url":
-            self._require_browser().navigate(payload["url"])
+            result = self._require_browser().navigate(payload["url"])
+            return result if isinstance(result, dict) else None
         elif kind == "clipboard_set":
             self.backend.clipboard_set(payload["text"])
         else:  # wait
             time.sleep(max(0.0, min(10.0, float(payload["seconds"]))))
+        return None
 
     def _capture(self) -> bytes | None:
         """A before/after screenshot for a protected step — best effort.
@@ -574,9 +597,17 @@ class HandsSession:
 
     # -- step bookkeeping --------------------------------------------------
 
-    def _step_guard(self) -> dict | None:
+    def _no_task(self) -> dict | None:
+        """Everything but `hands_status` needs a declared task behind it — a
+        ledger to record into and a lease saying this machine is ours."""
         if self.task_id is None:
             return {"ok": False, "error": "no_task: call hands_task_start first"}
+        return None
+
+    def _step_guard(self) -> dict | None:
+        guard = self._no_task()
+        if guard is not None:
+            return guard
         if self.step_index >= self.config.max_steps:
             return {"ok": False, "error":
                     f"budget: this task has used its {self.config.max_steps} step budget; "

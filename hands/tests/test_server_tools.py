@@ -119,6 +119,7 @@ def test_a_hands_error_is_a_normal_result_not_a_protocol_error():
     """The model has to be able to read the failure and recover from it, so
     nothing below the tool layer is allowed to raise out of `dispatch`."""
     session = build_session(backend=UnsupportedBackend())
+    _text(server.dispatch(session, "hands_task_start", {"goal": "x"}))
     result = _text(server.dispatch(session, "hands_observe", {}))
     assert result["ok"] is False
     assert result["error"].startswith("unsupported: ")
@@ -128,9 +129,22 @@ def test_an_unexpected_exception_is_also_a_normal_result(session):
     def boom(**_kwargs):
         raise RuntimeError("uiautomation exploded")
 
+    _text(server.dispatch(session, "hands_task_start", {"goal": "x"}))
     session.backend.observe = boom
     result = _text(server.dispatch(session, "hands_observe", {}))
     assert result["ok"] is False and "uiautomation exploded" in result["error"]
+
+
+def test_only_hands_status_answers_without_a_task(session):
+    for name, arguments in [
+        ("hands_observe", {}),
+        ("hands_find", {"query": "save"}),
+        ("hands_act", {"action": {"kind": "wait", "seconds": 0}}),
+        ("hands_browser", {"op": "tabs"}),
+    ]:
+        result = _text(server.dispatch(session, name, arguments))
+        assert result["error"] == "no_task: call hands_task_start first", name
+    assert _text(server.dispatch(session, "hands_status", {}))["ok"] is True
 
 
 def test_an_unknown_tool_is_a_normal_result(session):
@@ -139,6 +153,7 @@ def test_an_unknown_tool_is_a_normal_result(session):
 
 
 def test_a_screenshot_rides_alongside_as_an_image_block(session):
+    _text(server.dispatch(session, "hands_task_start", {"goal": "x"}))
     blocks = server.dispatch(session, "hands_observe", {"detail": "screenshot"})
     assert len(blocks) == 2
     payload = _text(blocks)

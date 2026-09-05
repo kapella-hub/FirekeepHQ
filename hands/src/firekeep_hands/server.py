@@ -90,7 +90,10 @@ TOOLS = [
     ),
     t.Tool(
         name="hands_find",
-        description="Find controls by name/value text in the active window (or a named app).",
+        description=(
+            "Find controls by name/value text in the active window (or a named app). "
+            "Refs from hands_find are actable until the next act."
+        ),
         inputSchema={
             "type": "object",
             "required": ["query"],
