@@ -12,6 +12,17 @@ DOM probe (`_dom_probe.js`) at the moment of the call — never a point cached
 from when the ref was minted, and never a point synthesized by this module.
 A page that scrolled or reflowed in between gets clicked in the right place,
 or the probe reports the ref gone (`stale_ref`) and nothing is dispatched.
+
+`fill` inserts at the caret, it does not replace: `Input.insertText` types
+into whatever the field already contains, at the current cursor position —
+the same as a person typing. Nothing here clears existing text first;
+replacing it is the caller's job (select-all, then fill), and `Browser` has
+no select-all primitive of its own — that lives above this module, if a
+caller needs it.
+
+Only the top-level document is ever probed or acted on — no `<iframe>`
+crossing, no shadow DOM piercing. A control that lives inside either is
+invisible to `find`/`scan` and cannot be clicked or filled.
 """
 from __future__ import annotations
 
@@ -72,11 +83,19 @@ class Browser:
     # -- navigation and reading ------------------------------------------
 
     def navigate(self, url: str, *, tab: str | None = None) -> dict:
+        """`{"url", "title", "loaded"}` — `loaded` is False if
+        `Page.loadEventFired` had not arrived within 10s, which is
+        information for the caller to act on, not a Hands error: a slow
+        page (or one that never fires `load`, e.g. it keeps streaming) still
+        leaves `url`/`title` at whatever the target reports at that point,
+        which is usually already useful."""
         target_id, session = self._resolve(tab)
         self._ensure_transport().send("Page.navigate", {"url": url}, session=session)
-        self._ensure_transport().wait_event(
+        event = self._ensure_transport().wait_event(
             "Page.loadEventFired", session=session, timeout=10.0)
-        return self._tab_info(target_id)
+        info = self._tab_info(target_id)
+        info["loaded"] = event is not None
+        return info
 
     def read(self, *, tab: str | None = None, budget: int = 4000) -> dict:
         target_id, session = self._resolve(tab)
@@ -114,6 +133,10 @@ class Browser:
             )
 
     def fill(self, ref: str, text: str, *, tab: str | None = None) -> None:
+        """Inserts `text` at the caret — appends to whatever the field
+        already contains, exactly like a person typing. Does not select-all
+        or clear first; see the module docstring if the caller wants a
+        replace instead of an insert."""
         self._locate(ref, tab)  # focuses the element; raises stale_ref if gone
         _target_id, session = self._resolve(tab)
         self._ensure_transport().send("Input.insertText", {"text": text}, session=session)

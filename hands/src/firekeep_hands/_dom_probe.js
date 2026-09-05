@@ -18,15 +18,39 @@
 //              harmless side effect for the click case, since every element
 //              this probe tags is already natively focusable.
 //
-// Refs are re-minted on every scan/find call ("d" + the element's 1-based
-// position in the interactive-element list); a ref from a previous call is
-// only safe to reuse — via "focus" — as long as the page has not been
-// re-scanned since. That is the same staleness contract `browser.py`
-// documents for `click`/`fill`.
+// Refs are re-minted on every scan/find call (`"g" + generation + "-d" +
+// the element's 1-based position`), where `generation` is a counter kept on
+// `window.__hands_gen` and bumped once per scan/find — so it survives
+// across separate `Runtime.evaluate` calls the way any other page-global
+// state does, but resets if the page itself navigates or reloads (a fresh
+// page has no `window.__hands_gen` yet, same as a fresh generation 0).
+// "focus" checks a ref's baked-in generation against the CURRENT one before
+// even looking at the DOM: a ref from any scan/find but the most recent one
+// is rejected as stale, regardless of whether its `data-hands-ref` attribute
+// happens to still be sitting on some element (an earlier scan tags visible
+// elements; nothing goes back and strips that attribute from an element a
+// later scan didn't revisit, so the literal string could otherwise still
+// resolve to the wrong, no-longer-current node).
+//
+// TOP-LEVEL DOCUMENT ONLY: `document.querySelectorAll` does not cross into
+// `<iframe>` content documents or pierce shadow DOM (`shadowRoot`), so a
+// control that lives inside either is invisible to `scan`/`find` and cannot
+// be `click`ed or `fill`ed. No workaround here — see `browser.py`'s module
+// docstring for the same limitation stated from the Python side.
 (function () {
     var SELECTOR = 'a[href], button, input, select, textarea, ' +
         '[role="button"], [role="link"], [contenteditable], [onclick]';
     var NAME_LIMIT = 80;
+    var REF_PATTERN = /^g(\d+)-d\d+$/;
+
+    function currentGeneration() {
+        return typeof window.__hands_gen === "number" ? window.__hands_gen : 0;
+    }
+
+    function nextGeneration() {
+        window.__hands_gen = currentGeneration() + 1;
+        return window.__hands_gen;
+    }
 
     function isVisible(el) {
         var rect = el.getBoundingClientRect();
@@ -100,6 +124,7 @@
     }
 
     function scan(maxNodes) {
+        var gen = nextGeneration();
         var nodes = document.querySelectorAll(SELECTOR);
         var controls = [];
         var truncated = false;
@@ -112,7 +137,7 @@
                 truncated = true;
                 break;
             }
-            var ref = "d" + (i + 1);
+            var ref = "g" + gen + "-d" + (i + 1);
             el.setAttribute("data-hands-ref", ref);
             controls.push(describe(el, ref));
         }
@@ -134,9 +159,20 @@
     }
 
     function focus(ref) {
+        var match = REF_PATTERN.exec(String(ref == null ? "" : ref));
+        if (!match) {
+            return { ok: false, reason: "malformed" };
+        }
+        if (parseInt(match[1], 10) !== currentGeneration()) {
+            // Minted by an earlier scan/find, superseded by a later one —
+            // reject on the generation mismatch alone, without even
+            // querying the DOM (see the module comment above for why the
+            // DOM lookup below is not, by itself, a sufficient check).
+            return { ok: false, reason: "stale" };
+        }
         var el = document.querySelector('[data-hands-ref="' + ref + '"]');
         if (!el) {
-            return { ok: false };
+            return { ok: false, reason: "not_found" };
         }
         try {
             el.focus();

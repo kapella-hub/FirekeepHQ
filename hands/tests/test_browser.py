@@ -142,7 +142,20 @@ def test_navigate_sends_page_navigate_then_waits_for_load(
     # Page.navigate must be sent BEFORE the wait, not after.
     assert [c[0] for c in fake.calls].index("Page.navigate") < \
         [c[0] for c in fake.calls].index("wait_event:Page.loadEventFired")
-    assert result == {"url": "https://example.com", "title": "Example Domain"}
+    assert result == {"url": "https://example.com", "title": "Example Domain", "loaded": True}
+
+
+def test_navigate_reports_loaded_false_on_a_wait_event_timeout(
+    browser: Browser, fake: FakeTransport
+) -> None:
+    """`wait_event` returns `None` on a timeout, never a raise — `navigate`
+    must surface that as `loaded: False` rather than silently discarding it
+    (a slow, or never-quiescent, page is not a Hands error)."""
+    fake.wait_event_result = None
+
+    result = browser.navigate("https://example.com")
+
+    assert result == {"url": "https://example.com", "title": "Example Domain", "loaded": False}
 
 
 def test_read_returns_url_title_and_trimmed_text(browser: Browser, fake: FakeTransport) -> None:

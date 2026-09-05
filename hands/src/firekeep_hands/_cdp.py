@@ -36,6 +36,21 @@ from .backends.base import HandsError
 _LAUNCH_TIMEOUT_S = 15.0
 _POLL_INTERVAL_S = 0.1
 
+# The socket's post-connect read timeout: short enough that `_recv_loop`
+# notices `close()` promptly, long enough to be a rare, harmless wakeup
+# rather than a busy loop. This is NOT a signal that anything is wrong — an
+# idle gap this long (an LLM thinking between actions) is the normal rhythm
+# of a Hands session, which is exactly what the recv-loop bug below was
+# missing.
+_RECV_POLL_TIMEOUT_S = 1.0
+
+# A ceiling per (session, method) event bucket: nothing in this module ever
+# calls `wait_event` for a method no one is polling for, so an unbounded
+# buffer would only grow if a caller genuinely stopped listening — a leak,
+# not a feature. Oldest entries are dropped first, matching `wait_event`'s
+# FIFO consumption.
+_MAX_BUFFERED_EVENTS_PER_KEY = 200
+
 
 def _windows_candidates(name: str) -> list[Path]:
     import os
@@ -78,6 +93,26 @@ def _candidates_for(name: str) -> list[Path | str]:
     if system == "Darwin":
         return _macos_candidates(name)
     return _linux_candidates(name)
+
+
+def _terminate_and_wait(process: subprocess.Popen, timeout: float = 5.0) -> None:
+    """`terminate()`, escalating to `kill()` if the process outlives
+    `timeout`, waiting after each step. Every failure path that gives up on
+    a launched browser routes through this — a `terminate()`/`kill()` with
+    no matching `wait()` leaves the process unreaped and, worse, gives no
+    guarantee the browser (and its lock on Hands' profile directory) is
+    actually gone before this function returns."""
+    process.terminate()
+    try:
+        process.wait(timeout=timeout)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    process.kill()
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        pass  # nothing more this process can do; the OS reaps it eventually
 
 
 def _resolve_binary(kind: str) -> Path:
@@ -164,8 +199,13 @@ class CdpTransport:
             port, ws_path = cls._wait_for_devtools_port(active_port_file, process)
             ws_url = f"ws://127.0.0.1:{port}{ws_path}"
             ws = websocket.create_connection(ws_url, timeout=10)
+            # The `timeout=10` above governs the connect/handshake only; once
+            # connected, shorten it to `_RECV_POLL_TIMEOUT_S` so `_recv_loop`
+            # wakes up regularly to notice `close()` rather than blocking for
+            # up to 10s on shutdown.
+            ws.settimeout(_RECV_POLL_TIMEOUT_S)
         except Exception:
-            process.terminate()
+            _terminate_and_wait(process)
             raise
         return cls(ws, process)
 
@@ -186,7 +226,7 @@ class CdpTransport:
                 if len(lines) >= 2 and lines[0].strip().isdigit():
                     return int(lines[0].strip()), lines[1].strip()
             time.sleep(_POLL_INTERVAL_S)
-        process.terminate()
+        _terminate_and_wait(process)
         raise HandsError("backend", "timed out waiting for the browser's DevTools port")
 
     # -- JSON-RPC ---------------------------------------------------------
@@ -258,15 +298,17 @@ class CdpTransport:
             self._ws.close()
         except Exception:  # noqa: BLE001 - already tearing down
             pass
+        # `_recv_loop` is blocked in `recv()` for at most
+        # `_RECV_POLL_TIMEOUT_S`, and `_ws.close()` above typically wakes it
+        # sooner by making that `recv()` raise — either way, join it so the
+        # thread is actually gone before `close()` returns rather than left
+        # racing the process teardown below.
+        self._recv_thread.join(timeout=_RECV_POLL_TIMEOUT_S + 2.0)
         if self._process is not None:
             try:
                 self._process.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                self._process.terminate()
-                try:
-                    self._process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    self._process.kill()
+                _terminate_and_wait(self._process)
 
     # -- internals: the receive loop ---------------------------------------
 
@@ -274,7 +316,19 @@ class CdpTransport:
         while True:
             try:
                 raw = self._ws.recv()
-            except Exception:  # noqa: BLE001 - socket closed/errored; stop quietly
+            except websocket.WebSocketTimeoutException:
+                # An idle socket, not a dead one — `ws.settimeout` above
+                # means every `recv()` times out this often by design.
+                # Treating this as a disconnect was a real bug (found in
+                # review): any ~10s gap with no CDP traffic — an LLM
+                # thinking between actions, the normal rhythm of a Hands
+                # session — silently killed this thread for good, after
+                # which every later `send()` timed out against a perfectly
+                # healthy browser.
+                continue
+            except (websocket.WebSocketConnectionClosedException, OSError):
+                break
+            except Exception:  # noqa: BLE001 - any other read failure ends the loop too
                 break
             if not raw:
                 continue
@@ -295,7 +349,10 @@ class CdpTransport:
                 continue
             key = (message.get("sessionId"), method)
             with self._cond:
-                self._events.setdefault(key, []).append(message.get("params", {}))
+                bucket = self._events.setdefault(key, [])
+                bucket.append(message.get("params", {}))
+                if len(bucket) > _MAX_BUFFERED_EVENTS_PER_KEY:
+                    del bucket[: len(bucket) - _MAX_BUFFERED_EVENTS_PER_KEY]
                 self._cond.notify_all()
         # The socket is gone: wake every waiter so nothing blocks forever on
         # a browser that just died.
