@@ -1,0 +1,40 @@
+[project]
+name = "firekeep-hands"
+version = "0.1.0"
+description = "Firekeep Hands — a screen-aware operator for your computer, behind your Keep's approval broker"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "LicenseRef-Firekeep-BUSL-1.1"
+license-files = ["LICENSE", "NOTICE"]
+dependencies = [
+    "mcp>=1.0.0,<2.0.0",
+    "websocket-client>=1.7,<2.0",
+    "pillow>=10.0,<12.0",
+    "uiautomation>=2.0.18; sys_platform == 'win32'",
+    "mss>=9.0,<11.0; sys_platform == 'win32'",
+    "pyobjc-framework-Quartz>=10.0; sys_platform == 'darwin'",
+    "pyobjc-framework-ApplicationServices>=10.0; sys_platform == 'darwin'",
+    "pyobjc-framework-Cocoa>=10.0; sys_platform == 'darwin'",
+]
+
+[project.optional-dependencies]
+test = ["pytest", "pytest-timeout"]
+
+[project.scripts]
+firekeep-hands = "firekeep_hands.server:main"
+firekeep-hands-broker = "firekeep_hands.broker.__main__:main"
+
+[project.urls]
+Homepage = "https://firekeep.ai"
+Documentation = "https://firekeep.ai/docs.html"
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/firekeep_hands"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+timeout = 60
