@@ -83,7 +83,7 @@
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `client/tests/test_dexes.py` (it already fixes `FIREKEEP_CONFIG` to a tmp dir in its fixtures — reuse the same fixture name the file uses for an isolated registry):
+Append to `client/tests/test_dexes.py` (its `registry_home` fixture at `:21-27` sets `FIREKEEP_CONFIG`/`FIREKEEP_LOG_DIR` to a tmp dir; `test_cli_dex.py` and the new `test_cli_hands.py` import or redefine the same fixture — copy those seven lines into a file that lacks it):
 
 ```python
 def test_manifest_role_defaults_to_index():
@@ -103,7 +103,7 @@ def test_hands_manifest_is_a_capability_mounted_as_mcp_stdio():
     assert m.role == "capability"
 
 
-def test_hands_is_never_seeded(isolated_registry):
+def test_hands_is_never_seeded(registry_home):
     from firekeep_client import dexes
     dexes.ensure_migrated()
     assert set(dexes.read_registry()) == {"symdex", "docdex"}
@@ -112,7 +112,7 @@ def test_hands_is_never_seeded(isolated_registry):
 Append to `client/tests/test_cli_dex.py` (use its existing capsys/registry fixtures):
 
 ```python
-def test_dex_list_labels_capabilities(isolated_registry, capsys):
+def test_dex_list_labels_capabilities(registry_home, capsys):
     from firekeep_client import cli
     cli.cmd_dex(type("A", (), {"action": "list"})())
     out = capsys.readouterr().out
@@ -210,7 +210,7 @@ def _args(**kw):
     return types.SimpleNamespace(**base)
 
 
-def test_enable_installs_registers_and_installs_autostart(isolated_registry, monkeypatch, capsys):
+def test_enable_installs_registers_and_installs_autostart(registry_home, monkeypatch, capsys):
     calls = []
     monkeypatch.setattr(cli, "_pip_install", lambda python, spec: calls.append(("pip", spec)))
     monkeypatch.setattr(dexes, "is_installed", lambda m: True)
@@ -221,7 +221,7 @@ def test_enable_installs_registers_and_installs_autostart(isolated_registry, mon
     assert "next agent session" in capsys.readouterr().out
 
 
-def test_enable_from_local_path_uses_that_path(isolated_registry, monkeypatch, tmp_path):
+def test_enable_from_local_path_uses_that_path(registry_home, monkeypatch, tmp_path):
     calls = []
     monkeypatch.setattr(cli, "_pip_install", lambda python, spec: calls.append(spec))
     monkeypatch.setattr(dexes, "is_installed", lambda m: True)
@@ -231,7 +231,7 @@ def test_enable_from_local_path_uses_that_path(isolated_registry, monkeypatch, t
     assert calls == [str(src)]
 
 
-def test_enable_refuses_to_register_when_import_probe_fails(isolated_registry, monkeypatch, capsys):
+def test_enable_refuses_to_register_when_import_probe_fails(registry_home, monkeypatch, capsys):
     monkeypatch.setattr(cli, "_pip_install", lambda python, spec: None)
     monkeypatch.setattr(dexes, "is_installed", lambda m: False)
     assert cli.cmd_hands(_args(action="enable")) == 1
@@ -239,7 +239,7 @@ def test_enable_refuses_to_register_when_import_probe_fails(isolated_registry, m
     assert "not importable" in capsys.readouterr().err
 
 
-def test_disable_deregisters_and_removes_autostart(isolated_registry, monkeypatch):
+def test_disable_deregisters_and_removes_autostart(registry_home, monkeypatch):
     dexes.add("hands")
     calls = []
     monkeypatch.setattr(cli, "_run_hands_broker", lambda argv: calls.append(tuple(argv)) or 0)
@@ -248,7 +248,7 @@ def test_disable_deregisters_and_removes_autostart(isolated_registry, monkeypatc
     assert calls == [("uninstall-autostart",)]
 
 
-def test_disable_purge_removes_hands_dir(isolated_registry, monkeypatch, tmp_path):
+def test_disable_purge_removes_hands_dir(registry_home, monkeypatch, tmp_path):
     hands_dir = dexes.registry_path().parent / "hands"
     (hands_dir / "evidence").mkdir(parents=True)
     monkeypatch.setattr(cli, "_run_hands_broker", lambda argv: 0)
@@ -277,7 +277,7 @@ def test_delegation_without_wheel_explains_enable(monkeypatch, capsys):
     assert "firekeep hands enable" in capsys.readouterr().err
 
 
-def test_doctor_hands_row_reports_broker(isolated_registry, monkeypatch):
+def test_doctor_hands_row_reports_broker(registry_home, monkeypatch):
     dexes.add("hands")
     monkeypatch.setattr(dexes, "is_installed", lambda m: True)
     monkeypatch.setattr(cli, "read_broker_health", lambda timeout=1.0: {"ok": True, "chord": "ctrl+alt+y", "listeners": {"chord": "active", "phone": "active"}})
@@ -444,15 +444,53 @@ Subparser (beside `docdex` in `main()`):
     p_hands = sub.add_parser("hands", help="desktop operator — enable, disable, status, allow, chord, config, evidence")
     p_hands.add_argument("action", nargs="?", default="status",
                          choices=["enable", "disable", "status", "allow", "chord", "config", "evidence"])
-    p_hands.add_argument("rest", nargs=argparse.REMAINDER)
+    # nargs="*", NOT argparse.REMAINDER: REMAINDER after a positional swallows
+    # `--from X` into `rest` and leaves `source` None — the exact command the
+    # live smoke depends on. With "*" the options still parse wherever they sit.
+    p_hands.add_argument("rest", nargs="*")
     p_hands.add_argument("--from", dest="source", default=None,
                          help="wheel source for enable: a local checkout dir or a pip spec")
+    p_hands.add_argument("--pypi", action="store_true",
+                         help="enable: install the published wheel from PyPI (HANDS_WHEEL_SPEC)")
     p_hands.add_argument("--no-autostart", action="store_true")
     p_hands.add_argument("--purge", action="store_true", help="with disable: delete ~/.firekeep/hands")
     p_hands.set_defaults(func=cmd_hands)
 ```
 
 (Match how the file dispatches — if it uses an `if args.command == "dex"` chain instead of `set_defaults(func=…)`, add the `hands` branch in the same chain.)
+
+**PyPI squat guard (ruling, 2026-09-05):** `https://pypi.org/pypi/firekeep-hands/json` returns 404 today — nobody owns the name, and the repo's rule for the other wheels (`cli.py:553-555`, `:569-571`) is never to `pip install` a bare name a third party could claim. So `enable` resolves its source as: `--from <path-or-spec>` wins; else `--pypi` installs `HANDS_WHEEL_SPEC` **only if** `HANDS_PYPI_PUBLISHED` is `True`; else it refuses:
+
+```python
+# Flip to True in the release that first publishes firekeep-hands through the
+# `pypi-hands` trusted publisher (Task 13). Until then a bare `pip install
+# firekeep-hands` could resolve to whoever registers the name first.
+HANDS_PYPI_PUBLISHED = False
+```
+
+```python
+        source = (getattr(args, "source", None) or "").strip()
+        if not source:
+            if getattr(args, "pypi", False) and HANDS_PYPI_PUBLISHED:
+                source = HANDS_WHEEL_SPEC
+            else:
+                print("firekeep: firekeep-hands is not yet published to PyPI — install from a "
+                      "checkout: `firekeep hands enable --from <checkout>/hands`", file=sys.stderr)
+                return 2
+```
+
+Update the first test accordingly (`_args(action="enable", source=None)` → exit 2 with that message; a `monkeypatch.setattr(cli, "HANDS_PYPI_PUBLISHED", True)` + `pypi=True` variant installs `HANDS_WHEEL_SPEC`), and add one parser-level test:
+
+```python
+def test_parser_keeps_from_out_of_rest():
+    from firekeep_client import cli
+    args = cli._build_parser().parse_args(["hands", "enable", "--from", "X:/hands", "--no-autostart"])
+    assert (args.action, args.source, args.no_autostart, args.rest) == ("enable", "X:/hands", True, [])
+    args = cli._build_parser().parse_args(["hands", "allow", "domain", "example.com"])
+    assert (args.action, args.rest) == ("allow", ["domain", "example.com"])
+```
+
+(`_build_parser` is whatever `main()` uses to construct the parser — if the parser is built inline in `main()`, extract it into `_build_parser()` first; that is a pure refactor.)
 
 - [ ] **Step 4: Run the suite**
 
@@ -592,7 +630,9 @@ testpaths = ["tests"]
 timeout = 60
 ```
 
-`hands/README.md`: three paragraphs — what Hands is (one sentence from the spec §1), how it is turned on (`firekeep hands enable`), and a pointer to `docs/guides/hands.md`. Copy `symdex/LICENSE` and `symdex/NOTICE` verbatim.
+`hands/README.md`: three paragraphs — what Hands is (one sentence from the spec §1), how it is turned on (`firekeep hands enable` — the supported install; the wheel imports `firekeep_client` from the kit venv and deliberately does **not** declare it as a dependency, because the PyPI name `firekeep-client` is owned by a third party, so a bare `pip install firekeep-hands` outside the kit venv is unsupported), and a pointer to `docs/guides/hands.md`. Copy `symdex/LICENSE` and `symdex/NOTICE` verbatim.
+
+**Platform-module rule for every backend/listener module (T6, T7, T8):** nothing OS-specific at import time. `ctypes.WinDLL(...)`, `import uiautomation`, `import Quartz` and friends happen inside the functions that use them (or in a module-level `_user32()` accessor cached on first call). The pure parts — struct layouts, `kb_event_is_real`, `ChordTracker`, `event_is_real`, `KEYCODES`, the INPUT builders — must import and run on Linux CI and on the other platform. Struct fields use fixed-width ctypes (`c_int32`, `c_uint32`, `c_uint16`, `c_size_t`), never `wintypes.LONG`/`DWORD` (`c_long` is 8 bytes on Linux x64, which would make `INPUT` measure 48 there).
 
 `hands/tests/conftest.py`:
 
@@ -1342,23 +1382,29 @@ def run(argv) -> int:
 `listeners/win.py` — ctypes (verified in the 2026-09-05 probe: `LLKHF_INJECTED` is set on `SendInput` events; declare `argtypes`):
 
 ```python
-import ctypes, ctypes.wintypes as w
+import ctypes
 WH_KEYBOARD_LL = 13; WM_KEYDOWN = 0x0100; WM_SYSKEYDOWN = 0x0104; WM_KEYUP = 0x0101; WM_SYSKEYUP = 0x0105
 LLKHF_LOWER_IL_INJECTED = 0x02; LLKHF_INJECTED = 0x10
 
-class KBDLLHOOKSTRUCT(ctypes.Structure):
-    _fields_ = [("vkCode", w.DWORD), ("scanCode", w.DWORD), ("flags", w.DWORD), ("time", w.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
-
-HOOKPROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, ctypes.c_int, w.WPARAM, w.LPARAM)
-user32 = ctypes.WinDLL("user32", use_last_error=True)
-user32.SetWindowsHookExW.argtypes = [ctypes.c_int, HOOKPROC, w.HINSTANCE, w.DWORD]; user32.SetWindowsHookExW.restype = w.HHOOK
-user32.CallNextHookEx.argtypes = [w.HHOOK, ctypes.c_int, w.WPARAM, w.LPARAM]; user32.CallNextHookEx.restype = ctypes.c_ssize_t
-user32.GetMessageW.argtypes = [ctypes.POINTER(w.MSG), w.HWND, w.UINT, w.UINT]
+class KBDLLHOOKSTRUCT(ctypes.Structure):          # fixed-width: importable and correct on every host
+    _fields_ = [("vkCode", ctypes.c_uint32), ("scanCode", ctypes.c_uint32), ("flags", ctypes.c_uint32),
+                ("time", ctypes.c_uint32), ("dwExtraInfo", ctypes.c_size_t)]
 
 def kb_event_is_real(flags: int) -> bool:
     return not (flags & LLKHF_INJECTED) and not (flags & LLKHF_LOWER_IL_INJECTED)
 
 def run_listener(tracker, on_decision):
+    # Everything Win32 is resolved HERE, not at import: this module's pure parts
+    # (kb_event_is_real, ChordTracker) are unit-tested on Linux CI and macOS.
+    import ctypes.wintypes as w
+    HOOKPROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, ctypes.c_int, w.WPARAM, w.LPARAM)
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetModuleHandleW.argtypes = [w.LPCWSTR]; kernel32.GetModuleHandleW.restype = w.HMODULE
+    user32.SetWindowsHookExW.argtypes = [ctypes.c_int, HOOKPROC, w.HINSTANCE, w.DWORD]; user32.SetWindowsHookExW.restype = w.HHOOK
+    user32.CallNextHookEx.argtypes = [w.HHOOK, ctypes.c_int, w.WPARAM, w.LPARAM]; user32.CallNextHookEx.restype = ctypes.c_ssize_t
+    user32.GetMessageW.argtypes = [ctypes.POINTER(w.MSG), w.HWND, w.UINT, w.UINT]
+
     def proc(nCode, wParam, lParam):
         if nCode >= 0:
             ks = ctypes.cast(lParam, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
@@ -1368,6 +1414,8 @@ def run_listener(tracker, on_decision):
                 on_decision(decision)
         return user32.CallNextHookEx(None, nCode, wParam, lParam)
     cb = HOOKPROC(proc)                      # keep a reference for the life of the hook
+    # hMod=None is what the 2026-09-05 probe used and what was seen to work
+    # (a low-level hook runs in the installing process; no DLL handle needed).
     hook = user32.SetWindowsHookExW(WH_KEYBOARD_LL, cb, None, 0)
     if not hook:
         raise OSError(ctypes.get_last_error())
@@ -1375,6 +1423,8 @@ def run_listener(tracker, on_decision):
     while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
         user32.TranslateMessage(ctypes.byref(msg)); user32.DispatchMessageW(ctypes.byref(msg))
 ```
+
+(Drop the `kernel32`/`GetModuleHandleW` lines above if unused. The probe declared `HOOKPROC` with `CFUNCTYPE(c_long, …)` and it worked; `WINFUNCTYPE(c_ssize_t, …)` is the documented calling convention/LRESULT width on x64 — keep `WINFUNCTYPE`, and if the live test in Task 15 shows the hook not firing, fall back to the probe's exact declaration.)
 
 `ChordTracker.feed(vk, down, real)`: injected events are ignored entirely (return None, no state change); real modifier down/up toggles `held`; a real trigger-key down with `held ⊇ required` returns the decision.
 
@@ -1448,23 +1498,35 @@ KEYEVENTF_KEYUP, KEYEVENTF_UNICODE = 0x0002, 0x0004
 MOUSEEVENTF_MOVE, MOUSEEVENTF_ABSOLUTE = 0x0001, 0x8000
 MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL = 0x0002, 0x0004, 0x0008, 0x0010, 0x0800
 
+# Fixed-width fields on purpose: wintypes.LONG is c_long, which is 8 bytes on
+# Linux x64 and would make these structs measure wrong on the CI host that runs
+# the layout test. No WinDLL at import time — see the platform-module rule (T3).
 class MOUSEINPUT(ctypes.Structure):
-    _fields_ = [("dx", w.LONG), ("dy", w.LONG), ("mouseData", w.DWORD), ("dwFlags", w.DWORD), ("time", w.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+    _fields_ = [("dx", ctypes.c_int32), ("dy", ctypes.c_int32), ("mouseData", ctypes.c_uint32),
+                ("dwFlags", ctypes.c_uint32), ("time", ctypes.c_uint32), ("dwExtraInfo", ctypes.c_size_t)]
 class KEYBDINPUT(ctypes.Structure):
-    _fields_ = [("wVk", w.WORD), ("wScan", w.WORD), ("dwFlags", w.DWORD), ("time", w.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+    _fields_ = [("wVk", ctypes.c_uint16), ("wScan", ctypes.c_uint16), ("dwFlags", ctypes.c_uint32),
+                ("time", ctypes.c_uint32), ("dwExtraInfo", ctypes.c_size_t)]
 class HARDWAREINPUT(ctypes.Structure):
-    _fields_ = [("uMsg", w.DWORD), ("wParamL", w.WORD), ("wParamH", w.WORD)]
+    _fields_ = [("uMsg", ctypes.c_uint32), ("wParamL", ctypes.c_uint16), ("wParamH", ctypes.c_uint16)]
 class _U(ctypes.Union):
     _fields_ = [("mi", MOUSEINPUT), ("ki", KEYBDINPUT), ("hi", HARDWAREINPUT)]
 class INPUT(ctypes.Structure):
-    _anonymous_ = ("union",)
-    _fields_ = [("type", w.DWORD), ("union", _U)]
+    _fields_ = [("type", ctypes.c_uint32), ("union", _U)]   # named, so tests read inp.union.ki / inp.union.mi
+
+_user32 = None
+def user32():
+    global _user32
+    if _user32 is None:
+        _user32 = ctypes.WinDLL("user32", use_last_error=True)
+        _user32.SendInput.argtypes = [ctypes.c_uint, ctypes.POINTER(INPUT), ctypes.c_int]
+        _user32.SendInput.restype = ctypes.c_uint
+    return _user32
 
 def send(batch: list[INPUT]) -> int:
     if not batch: return 0
     arr = (INPUT * len(batch))(*batch)
-    user32.SendInput.argtypes = [w.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
-    n = user32.SendInput(len(batch), arr, ctypes.sizeof(INPUT))
+    n = user32().SendInput(len(batch), arr, ctypes.sizeof(INPUT))
     if n != len(batch): raise HandsError("backend", f"SendInput sent {n}/{len(batch)} (err {ctypes.get_last_error()})")
     return n
 ```
@@ -1777,11 +1839,14 @@ ci.yml: add a matrix entry
 
 ```yaml
           - name: hands
-            install: pip install -e "hands[test]"
+            # The wheel imports firekeep_client from the kit venv and does NOT
+            # declare it (the PyPI name is a third party's) — install the
+            # checkout's client first, exactly as `firekeep hands enable` finds it.
+            install: pip install -e client -e "hands[test]"
             test: pytest hands/tests -q --ignore=hands/tests/live
 ```
 
-and a `hands-windows` job mirroring `symdex-windows` (`pip install -e "hands[test]"`, `pytest hands/tests -q --ignore=hands/tests/live`), plus a license gate step "Gate hands (firekeep-hands wheel) dependencies" mirroring the docdex one. If `scripts/check_licenses.py` carries a first-party allowlist, add `firekeep-hands`.
+and a `hands-windows` job mirroring `symdex-windows` (`pip install -e client -e "hands[test]"`, `pytest hands/tests -q --ignore=hands/tests/live`), plus a license gate step "Gate hands (firekeep-hands wheel) dependencies" mirroring the docdex one at `ci.yml:364-368` (`pip install -q ./client ./hands` into the throwaway venv so the import-time dependency is present). If `scripts/check_licenses.py` carries a first-party allowlist, add `firekeep-hands`. The same `pip install -e client -e "hands[test]"` is how a developer runs the hands suite locally; write it into `hands/README.md`.
 
 - [ ] **Step 3: Run** `python -m pytest tests/test_requirements_lock.py client/tests/test_make_release.py -q` → PASS; `python -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml')); yaml.safe_load(open('.github/workflows/release.yml'))"` → no error.
 - [ ] **Step 4: Commit** — `git commit -m "ci: build, test, license-gate and publish the firekeep-hands wheel; it is never bundled"`.
@@ -1824,6 +1889,7 @@ macOS, on the MacBook (a Claude Code session there; the worktree branch pushed f
 
 - [ ] `firekeep hands enable --from <checkout>/hands`; grant Accessibility + Screen Recording to the terminal/python when macOS prompts; Input Monitoring to the broker; `firekeep doctor` `hands` row `ok`.
 - [ ] `hands/scripts/demo_textedit.md`: TextEdit, type, ⌘S to `~/.firekeep/hands/demo.txt`; then the protected + injected (`python -c` posting a CGEvent chord with `HANDS_TAG`) + phone checks as above.
+- [ ] **Measure, do not assume, the macOS source-state claim.** With the broker's tap running in a debug mode that logs every key event's `(keycode, flags, userData, sourceStateID)`, post an **untagged** chord via `CGEventCreateKeyboardEvent(None, …)` + `CGEventPost(kCGHIDEventTap, …)` and record what `kCGEventSourceStateID` reports for it versus a real key press. If synthetic events also report `1` (HID system state), then the tag is the only discriminator for Hands' own events and untagged synthetic input from another process is NOT filtered — write the guide's "Honest limits" and the threat model's residual from the observed values, and drop the source-state sentence from the Global Constraints in a follow-up commit on this branch.
 
 - [ ] Fill the "Verified" table in `docs/guides/hands.md` with dates, OS builds and outcomes exactly as observed (a failed row stays a failed row). Commit: `docs(hands): verified on Windows and macOS`.
 
