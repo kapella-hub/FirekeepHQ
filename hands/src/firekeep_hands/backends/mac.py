@@ -65,6 +65,12 @@ _MAX_VISITED_NODES = 20_000
 # the thing being searched for is often deep in a menu.
 _FIND_MAX_NODES = 2_000
 
+# Both shell-outs sit on the MCP server's request path, so neither may block
+# it forever. `screencapture` can stall on a hung window server; `open` can
+# block while Gatekeeper verifies a first launch, which is why it gets longer.
+_SCREENCAPTURE_TIMEOUT = 10
+_OPEN_TIMEOUT = 15
+
 # CGEventFlags. Same four bits the broker's listener reads off real key
 # events; spelled out again here rather than imported, because a backend must
 # not depend on the broker.
@@ -219,10 +225,23 @@ class MacBackend:
 
     def find(self, query: str, *, role: str | None, app: str | None,
              limit: int) -> list[Control]:
+        """A search that matches nothing returns nothing, including when the
+        app named is not running — the same semantics as `FakeBackend`, which
+        callers are written against. `observe` still raises `not_found` there,
+        because being asked to observe a named app and finding none is a
+        failed instruction rather than an empty result.
+
+        Note this bumps the observation generation, since it observes to
+        search."""
         needle = query.lower()
         matches: list[Control] = []
-        observation = self.observe(app=app, region=None, max_nodes=_FIND_MAX_NODES,
-                                   text_budget=0, screenshot=False, max_width=0)
+        try:
+            observation = self.observe(app=app, region=None, max_nodes=_FIND_MAX_NODES,
+                                       text_budget=0, screenshot=False, max_width=0)
+        except HandsError as exc:
+            if exc.code == "not_found":
+                return []
+            raise
         for control in observation.controls:
             if role is not None and control.role != role:
                 continue
@@ -349,7 +368,11 @@ class MacBackend:
         else:
             argv = ["open", "-a", app]
         try:
-            completed = subprocess.run(argv, check=False)
+            completed = subprocess.run(argv, check=False, timeout=_OPEN_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            # `open` returns as soon as the launch is handed off; taking
+            # longer than this means it is stuck, not that the app is slow.
+            return False
         except OSError as exc:
             raise HandsError("backend", f"could not run open: {exc}") from exc
         return completed.returncode == 0
@@ -419,7 +442,10 @@ class MacBackend:
             app=app_name,
             title=str(self._ax.attr(window, "AXTitle") or ""),
             pid=pid,
-            rect=self._rect(window),
+            # A window is still worth reporting when its geometry will not
+            # read — it is identified by pid and title, and the screenshot
+            # path already falls back to the full screen for a zero rect.
+            rect=self._rect(window) or Rect(0, 0, 0, 0),
             # No UAC analogue on macOS — see the module docstring.
             elevated=False,
         )
@@ -493,6 +519,12 @@ class MacBackend:
                 return None
         elif role not in _INTERACTIVE_ROLES:
             return None
+        rect = self._rect(element)
+        if rect is None:
+            # An element Hands cannot locate is one it cannot safely click.
+            # Dropping it is better than handing back a control whose centre
+            # is somewhere else entirely.
+            return None
         actions = self._ax.actions(element)
         patterns = []
         if "AXPress" in actions:
@@ -505,7 +537,7 @@ class MacBackend:
             role=role,
             name=name,
             value=self._value(element, role),
-            rect=self._rect(element),
+            rect=rect,
             app=app_name,
             patterns=tuple(patterns),
             enabled=True if enabled is None else bool(enabled),
@@ -528,11 +560,14 @@ class MacBackend:
         value = self._ax.attr(element, "AXValue")
         return "" if value is None else str(value)
 
-    def _rect(self, element) -> Rect:
+    def _rect(self, element) -> Rect | None:
+        """None when the geometry cannot be read, never a zero rect: a caller
+        would take `Rect(0, 0, 0, 0).center()` for a real target and click the
+        top-left of the main display, which on macOS is the Apple menu."""
         position = self._ax.point(self._ax.attr(element, "AXPosition"))
         size = self._ax.size(self._ax.attr(element, "AXSize"))
         if position is None or size is None:
-            return Rect(0, 0, 0, 0)
+            return None
         return Rect(round(position[0]), round(position[1]),
                     round(size[0]), round(size[1]))
 
@@ -615,8 +650,9 @@ class MacBackend:
                 argv += ["-R", f"{rect.x},{rect.y},{rect.w},{rect.h}"]
             argv.append(str(target))
             try:
-                subprocess.run(argv, check=True)
-            except (subprocess.CalledProcessError, OSError) as exc:
+                subprocess.run(argv, check=True, timeout=_SCREENCAPTURE_TIMEOUT)
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
+                    OSError) as exc:
                 raise HandsError("backend", f"screencapture failed: {exc}") from exc
             raw = target.read_bytes()
         finally:
@@ -625,7 +661,14 @@ class MacBackend:
 
     @staticmethod
     def _downscale(raw: bytes, max_width: int) -> bytes:
-        from PIL import Image
+        try:
+            from PIL import Image
+        except ImportError as exc:
+            # Pillow is a declared dependency, so this means a broken install
+            # rather than a bug — but it must arrive as a HandsError like
+            # every other backend failure, not an ImportError the caller has
+            # no branch for.
+            raise HandsError("backend", f"pillow missing: {exc}") from exc
 
         image = Image.open(io.BytesIO(raw))
         image.load()

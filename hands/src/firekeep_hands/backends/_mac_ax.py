@@ -1,7 +1,12 @@
-"""The pyobjc façade — the one place in Hands that names an Apple framework
-symbol, so `mac.py` can be unit-tested against fake modules and so a single
-file is all that needs patching if an API turns out to behave differently on
-real hardware.
+"""The pyobjc façade — the one place in Hands that IMPORTS an Apple framework,
+and the only place that calls the accessibility and AppKit APIs, so `mac.py`
+can be unit-tested against fake modules and a single file is what gets patched
+if an API behaves differently on real hardware.
+
+Not a complete wall: `mac.py` builds CGEvents off the `quartz` handle this
+class exposes, because wrapping eight event constructors would relocate the
+backend's logic without hiding anything. Every framework *import* is still
+here, and the AX and AppKit surfaces are fully behind methods.
 
 PLATFORM-MODULE RULE: nothing is imported at module level. `Quartz`,
 `ApplicationServices` and `AppKit` are resolved inside `AX.__init__`, so this
@@ -124,19 +129,35 @@ class AX:
         return value if error == _AX_SUCCESS else None
 
     def children(self, element) -> list:
-        value = self.attr(element, "AXChildren")
-        if isinstance(value, (list, tuple)):
-            return list(value)
-        return []
+        return self._as_list(self.attr(element, "AXChildren"))
 
     def actions(self, element) -> tuple[str, ...]:
         try:
             error, names = self.services.AXUIElementCopyActionNames(element, None)
         except Exception:  # noqa: BLE001
             return ()
-        if error != _AX_SUCCESS or not names:
+        if error != _AX_SUCCESS:
             return ()
-        return tuple(str(name) for name in names)
+        return tuple(str(name) for name in self._as_list(names))
+
+    @staticmethod
+    def _as_list(value) -> list:
+        """Array-valued AX attributes arrive as an NSArray proxy: a sequence
+        that is **not** a `list` or `tuple` subclass.
+
+        An `isinstance(value, (list, tuple))` check here passes every test
+        (where the value is a real list) and returns nothing at all on a Mac —
+        so every element looks childless, the walk finds one empty app, `find`
+        returns nothing and every `invoke` is `stale_ref`, silently, because
+        `AXFocusedWindow` keeps working. Iterating is the only test that holds
+        for both. `str`/`bytes` are excluded because iterating them would
+        succeed and produce nonsense."""
+        if value is None or isinstance(value, (str, bytes)):
+            return []
+        try:
+            return list(value)
+        except TypeError:
+            return []
 
     def settable(self, element, name: str) -> bool:
         try:
@@ -173,12 +194,12 @@ class AX:
         if value is None:
             return None
 
-        # pyobjc's NSPoint/NSSize are sequence-like as well as attributed,
-        # so this branch also catches an already-bridged struct.
-        if isinstance(value, (tuple, list)) and len(value) == 2:
-            pair = self._as_floats(value[0], value[1])
-            if pair is not None:
-                return pair
+        # Any two-element sequence — a plain tuple, or a bridged NSPoint /
+        # NSSize, which is sequence-like without being a tuple subclass (the
+        # same trap as `_as_list` above).
+        pair = self._sequence_pair(value)
+        if pair is not None:
+            return pair
 
         pair = self._as_floats(getattr(value, attributes[0], None),
                                getattr(value, attributes[1], None))
@@ -191,16 +212,30 @@ class AX:
                                    getattr(unwrapped, attributes[1], None))
             if pair is not None:
                 return pair
-            if isinstance(unwrapped, (tuple, list)) and len(unwrapped) == 2:
-                pair = self._as_floats(unwrapped[0], unwrapped[1])
-                if pair is not None:
-                    return pair
+            pair = self._sequence_pair(unwrapped)
+            if pair is not None:
+                return pair
 
         match = re.search(
             _PAIR_IN_REPR.format(a=repr_keys[0], b=repr_keys[1]), repr(value))
         if match:
             return float(match.group(1)), float(match.group(2))
         return None
+
+    @staticmethod
+    def _sequence_pair(value) -> tuple[float, float] | None:
+        """Two numbers out of anything indexable of length two, without
+        asking what class it is. An AXValueRef has no length, so it falls
+        through rather than being mistaken for a point."""
+        if value is None or isinstance(value, (str, bytes)):
+            return None
+        try:
+            if len(value) != 2:
+                return None
+            first, second = value[0], value[1]
+        except (TypeError, IndexError, KeyError):
+            return None
+        return AX._as_floats(first, second)
 
     @staticmethod
     def _as_floats(a, b) -> tuple[float, float] | None:
@@ -218,6 +253,10 @@ class AX:
             result = getter(value, ax_type, None)
         except Exception:  # noqa: BLE001 - wrong AXValue type, or no wrapper
             return None
+        # STRICT `tuple` on purpose, unlike everywhere else in this file:
+        # pyobjc packs multiple return values into a real Python tuple, while
+        # a bridged CGPoint is a 2-sequence that is not one. Accepting any
+        # 2-sequence here would read a returned point as (success, value).
         if isinstance(result, tuple) and len(result) == 2:
             succeeded, unwrapped = result
             return unwrapped if succeeded else None

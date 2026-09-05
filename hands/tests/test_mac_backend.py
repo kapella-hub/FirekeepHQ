@@ -18,6 +18,7 @@ hardware check is Task 15.
 """
 from __future__ import annotations
 
+import collections.abc
 import io
 import re
 import subprocess
@@ -33,6 +34,26 @@ from firekeep_hands.backends.base import Control, HandsError, Rect
 AX_SUCCESS = 0
 AX_ATTRIBUTE_UNSUPPORTED = -25205
 AX_ACTION_UNSUPPORTED = -25206
+
+
+class NSArrayLike(collections.abc.Sequence):
+    """What pyobjc actually hands back for an array-valued AX attribute: a
+    proxy over a CFArrayRef that implements the sequence protocol but is
+    **not** a `list` or `tuple` subclass.
+
+    The fakes use it everywhere pyobjc would, because a fake that returns a
+    plain list hides the whole class of bug where the backend
+    isinstance-checks against `(list, tuple)`: green here, an empty
+    accessibility tree on hardware."""
+
+    def __init__(self, items):
+        self._items = list(items)
+
+    def __getitem__(self, index):
+        return self._items[index]
+
+    def __len__(self):
+        return len(self._items)
 
 
 class Recorder:
@@ -266,7 +287,7 @@ def install_fakes(monkeypatch) -> Frameworks:
         assert out is None, "pyobjc out-parameter must be passed as None"
         rec.record("AXUIElementCopyAttributeValue", element, name)
         if name == "AXChildren":
-            return (AX_SUCCESS, list(element.children))
+            return (AX_SUCCESS, NSArrayLike(element.children))
         if name in element.attrs:
             return (AX_SUCCESS, element.attrs[name])
         return (AX_ATTRIBUTE_UNSUPPORTED, None)
@@ -274,7 +295,7 @@ def install_fakes(monkeypatch) -> Frameworks:
     def AXUIElementCopyActionNames(element, out):
         assert out is None, "pyobjc out-parameter must be passed as None"
         rec.record("AXUIElementCopyActionNames", element)
-        return (AX_SUCCESS, list(element.actions))
+        return (AX_SUCCESS, NSArrayLike(element.actions))
 
     def AXUIElementIsAttributeSettable(element, name, out):
         assert out is None, "pyobjc out-parameter must be passed as None"
@@ -380,7 +401,7 @@ def install_fakes(monkeypatch) -> Frameworks:
             return fw.frontmost
 
         def runningApplications(self):
-            return list(fw.running)
+            return NSArrayLike(fw.running)
 
     class NSWorkspace:
         @staticmethod
@@ -446,6 +467,40 @@ def test_no_framework_import_at_module_level(module_name):
 
 
 # --- observe ---------------------------------------------------------------
+
+
+def test_children_accepts_an_nsarray_proxy(fw):
+    """pyobjc returns AXChildren as an NSArray proxy: a sequence, but not a
+    list or tuple subclass. An isinstance check against (list, tuple) passes
+    every test where the fake returns a real list and finds an empty
+    accessibility tree on hardware — silently, because AXFocusedWindow keeps
+    working, so `observe` still names the right window while reporting no
+    controls at all."""
+    import ApplicationServices
+
+    from firekeep_hands.backends._mac_ax import AX
+
+    raw = ApplicationServices.AXUIElementCopyAttributeValue(
+        fw.app, "AXChildren", None)[1]
+    assert not isinstance(raw, (list, tuple)), "the fake stopped mirroring pyobjc"
+    assert len(raw) == 1
+
+    assert AX().children(fw.app) == [fw.nodes["window"]]
+
+
+def test_action_names_accept_an_nsarray_proxy_too(fw):
+    from firekeep_hands.backends._mac_ax import AX
+
+    assert AX().actions(fw.nodes["save"]) == ("AXPress",)
+
+
+def test_a_bridged_point_need_not_be_a_tuple_subclass(fw):
+    """The same trap for geometry: a bridged NSPoint is sequence-like without
+    being a tuple."""
+    from firekeep_hands.backends._mac_ax import AX
+
+    assert AX().point(NSArrayLike([12.4, 34.6])) == (12.4, 34.6)
+    assert AX().size(NSArrayLike([100, 50])) == (100.0, 50.0)
 
 
 def test_observe_yields_refs_rects_patterns_and_a_first_generation(backend):
@@ -557,6 +612,33 @@ def test_observing_an_unknown_app_is_not_found(backend):
     assert excinfo.value.code == "not_found"
 
 
+def test_a_control_with_unreadable_geometry_is_skipped(backend, fw):
+    """A Rect(0, 0, 0, 0) would put `center()` on the Apple menu, so a control
+    Hands cannot locate is not offered at all."""
+    del fw.nodes["save"].attrs["AXPosition"]
+    refs = [c.ref for c in observe(backend).controls]
+    assert "p42:0.0" not in refs
+    assert "p42:0.1" in refs
+
+
+def test_a_window_with_unreadable_geometry_is_still_reported(backend, fw):
+    """A window is identified by pid and title, and the screenshot path falls
+    back to the full screen for a zero rect — so it stays."""
+    del fw.nodes["window"].attrs["AXSize"]
+    window = backend.active_window()
+    assert window is not None
+    assert window.title == "Untitled" and window.rect == Rect(0, 0, 0, 0)
+
+
+def test_a_screenshot_with_no_window_rect_captures_the_whole_screen(
+        backend, fw, monkeypatch):
+    del fw.nodes["window"].attrs["AXSize"]
+    run = png_writer()
+    monkeypatch.setattr(subprocess, "run", run)
+    observe(backend, screenshot=True)
+    assert "-R" not in run.seen[0]
+
+
 def test_observing_a_named_app_uses_that_app(backend, fw):
     obs = observe(backend, app="com.apple.TextEdit")
     assert obs.window is not None and obs.window.pid == 42
@@ -594,6 +676,14 @@ def test_find_filters_by_role_and_honours_the_limit(backend):
 def test_find_matches_a_value_as_well_as_a_name(backend):
     assert [c.ref for c in backend.find("body text", role=None, app=None, limit=5)] \
         == ["p42:0.1"]
+
+
+def test_find_on_an_app_that_is_not_running_is_empty_not_an_error(backend):
+    """FakeBackend's semantics, which the session layer is written against: a
+    search that matches nothing returns nothing. `observe` still raises,
+    because being told to observe a named app is an instruction, not a
+    query."""
+    assert backend.find("save", role=None, app="Nope", limit=5) == []
 
 
 # --- invoke / set_value / staleness ---------------------------------------
@@ -834,6 +924,55 @@ def test_a_screenshot_of_a_region_captures_that_region(backend, monkeypatch):
     assert argv[argv.index("-R") + 1] == "10,20,30,40"
 
 
+def test_screencapture_runs_under_a_timeout(backend, monkeypatch):
+    """Both shell-outs sit on the MCP server's request path; neither may block
+    it forever."""
+    seen = []
+
+    def run(argv, **kwargs):
+        seen.append(kwargs)
+        from PIL import Image
+
+        Image.new("RGB", (10, 10)).save(argv[-1], format="PNG")
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    observe(backend, screenshot=True)
+    assert seen[0]["timeout"] == 10
+
+
+def test_a_hung_screencapture_is_a_backend_error(backend, monkeypatch):
+    def run(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, kwargs.get("timeout", 0))
+
+    monkeypatch.setattr(subprocess, "run", run)
+    with pytest.raises(HandsError) as excinfo:
+        observe(backend, screenshot=True)
+    assert excinfo.value.code == "backend"
+
+
+def test_a_broken_pillow_install_is_a_backend_error_not_an_import_error(
+        backend, monkeypatch):
+    # The PNG is built BEFORE Pillow is taken away, so the fake screencapture
+    # still works and the only thing that can fail is the downscale.
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (40, 20)).save(buffer, format="PNG")
+    raw = buffer.getvalue()
+
+    def run(argv, **kwargs):
+        with open(argv[-1], "wb") as handle:
+            handle.write(raw)
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setitem(sys.modules, "PIL", None)
+    with pytest.raises(HandsError) as excinfo:
+        observe(backend, screenshot=True)
+    assert excinfo.value.code == "backend"
+
+
 def test_no_screen_permission_refuses_before_shelling_out(backend, fw, monkeypatch):
     fw.screen = False
     run = png_writer()
@@ -897,6 +1036,18 @@ def test_open_app_reports_a_failure_rather_than_raising(backend, monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", run)
     assert backend.open_app("Nope") is False
+
+
+def test_open_app_runs_under_a_timeout_and_a_hang_is_just_false(backend, monkeypatch):
+    seen = []
+
+    def run(argv, **kwargs):
+        seen.append(kwargs)
+        raise subprocess.TimeoutExpired(argv, kwargs.get("timeout", 0))
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert backend.open_app("TextEdit") is False
+    assert seen[0]["timeout"] == 15
 
 
 def test_focus_app_activates_the_running_application(backend, fw):
