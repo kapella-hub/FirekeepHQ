@@ -276,7 +276,13 @@ Three details make that liveable rather than a queue of prompts.
   browser may *reach* is unaffected — that stays the domain allowlist's job, and
   every navigation is still classified on its host. A host approved inside one
   task is remembered for that task exactly, not for its parent domain; the
-  parent-domain match is what `firekeep hands allow domain` is for.
+  parent-domain match is what `firekeep hands allow domain` is for. The name
+  `browser` covers `hands_browser` steps, which act on the page through the DOM.
+  A *native* `hands_act` aimed at the browser's own window — its toolbar, a
+  download bar — is that process, and on Windows the app name is the image name
+  without `.exe`: `chrome`, `msedge`, `notepad`, `explorer`. Matching is
+  case-insensitive, so `apps=["notepad"]` and `apps=["Notepad"]` are the same
+  declaration.
 - **Three kinds are outside the rule**, because they land on no window: `wait`
   reaches nothing, `clipboard_set` is machine-wide rather than scoped to
   whatever is in front, and an unnamed window (a backend that could not read

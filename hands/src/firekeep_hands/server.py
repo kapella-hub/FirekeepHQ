@@ -151,7 +151,9 @@ TOOLS = [
         name="hands_browser",
         description=(
             "Operate the Hands-managed browser: op=open|tabs|navigate|read|find|click|fill|"
-            "screenshot. Navigating to a host outside the allowlist is a boundary step. "
+            "screenshot. Navigating to a host outside the allowlist is a boundary step, and "
+            "so is clicking or filling unless the task declared \"browser\" in its apps — "
+            "declare it up front, or approve the first one and the rest are not re-prompted. "
             "navigate always acts on the current tab; tab is ignored for it in this release."
         ),
         inputSchema={
