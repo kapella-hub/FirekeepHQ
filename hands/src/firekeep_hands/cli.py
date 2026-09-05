@@ -20,19 +20,30 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
-import re
 import sys
 from pathlib import Path
 
 from . import backends, paths
 from .broker import parse_chord, pending
 from .broker.client import BrokerClient
-from .config import HandsConfig, load_config, load_policy, save_config, save_policy
+from .config import (
+    FALSE_WORDS,
+    HandsConfig,
+    INT_RE,
+    TRUE_WORDS,
+    load_config,
+    load_policy,
+    save_config,
+    save_policy,
+)
 
 _RESTART_NOTE = "restart the broker to apply: `firekeep-hands-broker run`, or log out and in"
-_TRUE_WORDS = {"true", "1", "yes"}
-_FALSE_WORDS = {"false", "0", "no"}
-_INT_RE = re.compile(r"-?\d+")
+# Imported, not redefined: `config.load_config` applies the same rules when it
+# reads a hand-edited `config.json`, and two copies would be two answers to
+# "is `"on"` true?" between the file and the command that sets it.
+_TRUE_WORDS = TRUE_WORDS
+_FALSE_WORDS = FALSE_WORDS
+_INT_RE = INT_RE
 
 
 # -- argument parsing -------------------------------------------------------
