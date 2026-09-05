@@ -8,6 +8,15 @@ listener thread or the phone bridge thread. If you are adding a route here
 and it writes `approved`, stop — that is the boundary this whole wheel
 exists to hold.
 
+What the human is asked to approve is announced by the broker itself — an OS
+notification, plus `pending.json` for `firekeep hands status` — rather than
+by the runtime, because the runtime is the thing being gated and would
+otherwise be the only description of the step the human ever saw. That is
+informational and not a second gate: the chord approves the oldest pending
+permit whatever the notification said, so a permit arriving between the
+human reading it and pressing would be the one approved. See `notify.py` and
+`PermitAnnouncer` below.
+
 The socket binds 127.0.0.1 only and the bearer token is minted per run and
 written 0600 alongside the port, so a process on the machine needs read
 access to the user's own `~/.firekeep` to talk to the broker at all. That is
@@ -35,6 +44,7 @@ from .. import paths
 from ..config import _write_json_atomic, load_config
 from ..ids import machine_id
 from ..keep import KeepLink
+from . import notify, pending
 from .permits import PermitStore
 from .phone import PhoneBridge
 
@@ -422,6 +432,45 @@ def _chord_listener(cfg, store: PermitStore, listeners: dict[str, str]) -> threa
     return thread
 
 
+class PermitAnnouncer:
+    """Tells the human what is waiting, every time the pending set changes.
+
+    Two channels, because they answer different questions. The OS
+    notification is a push — it reaches someone who is not looking at a
+    terminal, which is the whole point, since the chord approves the oldest
+    pending permit and the only other description of that step comes from the
+    runtime being gated. `pending.json` is the pull: what `firekeep hands
+    status` reads when the toast was missed or is not believed.
+
+    Informational, not a gate: the chord still approves the oldest pending
+    permit whatever the toast said, and a permit arriving between the human
+    reading it and pressing would be the one approved. See `notify.py`.
+
+    Each permit is announced once. A permit resolving, expiring or being
+    consumed rewrites the file but raises no new toast — the human answered
+    it, or it timed out, and neither is news."""
+
+    def __init__(self, chord: str, deny_chord: str, notifier=notify.announce):
+        self.chord = chord
+        self.deny_chord = deny_chord
+        self._notify = notifier
+        self._announced: set[str] = set()
+
+    def __call__(self, store: PermitStore) -> None:
+        waiting = store.pending()
+        pending.write_pending(store, chord=self.chord, deny_chord=self.deny_chord)
+        live = {permit.challenge for permit in waiting}
+        self._announced &= live          # forget what is no longer waiting
+        for permit in waiting:
+            if permit.challenge in self._announced:
+                continue
+            self._announced.add(permit.challenge)
+            try:
+                self._notify(permit.title, permit.classes, self.chord, self.deny_chord)
+            except Exception as exc:  # noqa: BLE001 - a toast never fails a permit
+                log.debug("could not announce permit %s: %s", permit.challenge, exc)
+
+
 def build_runtime(cfg, link) -> tuple[PermitStore, dict[str, str], PhoneBridge | None]:
     """Everything `run()` wires up before it binds a socket, in one testable
     place: the permit store, what can approve, and the phone bridge if it is
@@ -432,9 +481,14 @@ def build_runtime(cfg, link) -> tuple[PermitStore, dict[str, str], PhoneBridge |
     `off` (not opted in — the default, see `phone.py` for why),
     `offline` (opted in, but this machine has no Keep to post tasks to),
     `active` (opted in and connected)."""
+    # The listener may fall back to the default chords when the config names
+    # an unusable one, so the announcer is built AFTER it — the toast has to
+    # name the chord that will actually work.
     store = PermitStore(ttl_s=cfg.permit_ttl_s)
     listeners = {"chord": "unavailable", "phone": "off"}
     _chord_listener(cfg, store, listeners)
+    store.set_on_change(PermitAnnouncer(cfg.chord, cfg.deny_chord))
+    pending.write_pending(store, chord=cfg.chord, deny_chord=cfg.deny_chord)
 
     bridge = None
     if getattr(cfg, "phone_approvals", False):
@@ -489,4 +543,7 @@ def run(argv=None) -> int:
         if bridge is not None:
             bridge.stop()
         server.stop()
+        # Nothing is waiting on a broker that has stopped, and a leftover
+        # file would have `status` describing approvals nobody can grant.
+        pending.clear_pending()
     return 0

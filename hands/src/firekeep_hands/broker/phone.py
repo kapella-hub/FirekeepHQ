@@ -15,6 +15,11 @@ either: Hands can screenshot the screen the code is on. Turning
 workspace key, and it stays off until relay records who completed a task
 (PR2). The chord path has no such hole — it needs a physical keystroke.
 
+Note what the phone path has that the chord path needs `notify.py` for: the
+relay task carries the step's title and classes, so a person answering from
+the dashboard is reading what they are approving. A chord is just a
+keystroke, which is why the broker announces the pending permit itself.
+
 Given that it is on, the bridge only ever copies an answer across:
 `permit_task_state` returning anything other than the two literals
 `"approve"` and `"deny"` (a task still open, a Keep that is down, a garbled

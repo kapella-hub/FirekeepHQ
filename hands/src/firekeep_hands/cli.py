@@ -25,7 +25,7 @@ import sys
 from pathlib import Path
 
 from . import backends, paths
-from .broker import parse_chord
+from .broker import parse_chord, pending
 from .broker.client import BrokerClient
 from .config import HandsConfig, load_config, load_policy, save_config, save_policy
 
@@ -101,6 +101,31 @@ def main(argv: list[str] | None = None) -> int:
 
 # -- status -----------------------------------------------------------------
 
+def _print_pending(health_chord: str) -> None:
+    """What is waiting for a chord right now, named by the broker itself.
+
+    The chord approves the OLDEST pending permit, so they are printed oldest
+    first and only the first line says which key to press — pressing it twice
+    answers two different questions. Read from `pending.json` rather than
+    over HTTP so this works without the bearer token and cannot hang on a
+    wedged broker; only called when `/health` has already answered, so the
+    file is known to be current."""
+    state = pending.read_pending()
+    permits = state.get("permits") or []
+    if not permits:
+        return
+    chord = state.get("chord") or health_chord or "the approval chord"
+    deny = state.get("deny_chord")
+    print(f"pending permits: {len(permits)} — press {chord} to approve the first"
+          + (f", {deny} to deny it" if deny else ""))
+    for index, row in enumerate(permits):
+        classes = ", ".join(str(c) for c in (row.get("classes") or [])) or "unclassified"
+        left = row.get("expires_in_s")
+        countdown = f" — {left:g}s left" if isinstance(left, (int, float)) else ""
+        marker = "→" if index == 0 else " "
+        print(f"  {marker} {row.get('title') or '(untitled step)'} ({classes}){countdown}")
+
+
 def _cmd_status(args) -> int:
     print(f"platform: {sys.platform}")
 
@@ -132,6 +157,7 @@ def _cmd_status(args) -> int:
             if listeners.get("phone") == "off":
                 print("phone approvals are off — `firekeep hands config set phone_approvals true` "
                       "turns them on; docs/guides/hands.md explains what that trusts")
+            _print_pending(health.get("chord") or "")
 
     policy = load_policy()
     print(f"policy: {len(policy.apps)} apps, {len(policy.domains)} domains, "

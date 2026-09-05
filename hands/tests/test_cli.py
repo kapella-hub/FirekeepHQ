@@ -39,6 +39,72 @@ def test_status_reports_broker_health_and_phone_off_hint(isolated_home, monkeypa
     assert "phone approvals are off" in out
 
 
+def _running_broker(monkeypatch, pending_count=1):
+    class _FakeClient:
+        def health(self):
+            return {"ok": True, "chord": "ctrl+alt+y",
+                    "listeners": {"chord": "active", "phone": "off"}, "pending": pending_count}
+
+    monkeypatch.setattr(cli.BrokerClient, "from_disk", classmethod(lambda cls, timeout=2.0: _FakeClient()))
+
+
+def test_status_lists_what_is_waiting_for_a_chord(isolated_home, monkeypatch, capsys):
+    """The chord approves the oldest pending permit, and until this line the
+    only description of that step came from the runtime being gated."""
+    from firekeep_hands.broker import pending
+    from firekeep_hands.broker.permits import PermitStore
+
+    store = PermitStore(ttl_s=60)
+    store.request(challenge="a", title='Invoke "Send" in Mail', classes=("send",),
+                  task_id="t", step_index=1)
+    store.request(challenge="b", title="Empty the Trash", classes=("destroy",),
+                  task_id="t", step_index=2)
+    pending.write_pending(store, chord="ctrl+alt+y", deny_chord="ctrl+alt+n")
+
+    _running_broker(monkeypatch, pending_count=2)
+    assert cli.main(["status"]) == 0
+    out = capsys.readouterr().out
+    assert "pending permits: 2 — press ctrl+alt+y to approve the first" in out
+    assert "ctrl+alt+n to deny it" in out
+    assert 'Invoke "Send" in Mail (send)' in out
+    assert "Empty the Trash (destroy)" in out
+    # the oldest is marked, because that is the one the chord answers
+    first, second = [line for line in out.splitlines() if "Mail" in line or "Trash" in line]
+    assert first.strip().startswith("→") and not second.strip().startswith("→")
+
+
+def test_status_says_nothing_about_permits_when_none_are_waiting(isolated_home, monkeypatch, capsys):
+    _running_broker(monkeypatch, pending_count=0)
+    assert cli.main(["status"]) == 0
+    assert "pending permits:" not in capsys.readouterr().out
+
+
+def test_status_does_not_read_a_stale_pending_file_when_the_broker_is_down(isolated_home, capsys):
+    """Nothing removes pending.json when a broker is killed, so the list is
+    only trustworthy once /health has answered."""
+    from firekeep_hands.broker import pending
+    from firekeep_hands.broker.permits import PermitStore
+
+    store = PermitStore(ttl_s=60)
+    store.request(challenge="a", title="Left over from a dead broker", classes=("send",),
+                  task_id="t", step_index=0)
+    pending.write_pending(store, chord="ctrl+alt+y", deny_chord="ctrl+alt+n")
+
+    assert cli.main(["status"]) == 0
+    out = capsys.readouterr().out
+    assert "not running" in out and "Left over" not in out
+
+
+def test_status_survives_a_corrupt_pending_file(isolated_home, monkeypatch, capsys):
+    from firekeep_hands.broker import pending
+
+    pending.pending_path().write_text("{not json", encoding="utf-8")
+    _running_broker(monkeypatch)
+    assert cli.main(["status"]) == 0
+    out = capsys.readouterr().out
+    assert "pending permits:" not in out and "policy:" in out
+
+
 def test_status_shows_last_task(isolated_home, capsys):
     led = Ledger("t-status", goal="g", apps=["Notepad"], machine_id="m", session_id="s")
     led.record(step_index=0, action={"kind": "wait"}, route="none", classes=(), permit=None,
