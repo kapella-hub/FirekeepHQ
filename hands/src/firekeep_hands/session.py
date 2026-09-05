@@ -82,6 +82,17 @@ _SECRET_KEYS = ("text", "value")
 _SECRET_KINDS = ("type", "set_value", "browser.fill")
 _REDACTED = "<redacted:credential>"
 
+# What a browser or navigation call is allowed to contribute to a tool
+# result. Merging its whole payload would let a page-derived key overwrite
+# `ok`, `error`, `route` or `step_index` — the fields the runtime steers on.
+_BROWSER_RESULT_KEYS = frozenset(
+    {"loaded", "url", "title", "text", "controls", "tabs", "screenshot_png"}
+)
+# A `find` that returns hundreds of controls is not a better answer, it is a
+# context window spent. The perception budget in `HandsConfig` bounds the
+# native side; this bounds the two the caller can name directly.
+_FIND_LIMIT_CEILING = 50
+
 
 def _clean(text: object, limit: int = _TITLE_LIMIT) -> str:
     """Printable, whitespace-collapsed and length-capped.
@@ -181,17 +192,24 @@ class HandsSession:
         }
 
     def _approvals_text(self, health: dict | None, listeners: dict) -> str:
+        """The phone sentence is present in both branches on purpose. Someone
+        reading this because a step was refused needs to know both ways of
+        approving one exist, and a machine with no broker running is exactly
+        where someone is deciding how to set approvals up."""
         if health is None:
             return (
                 "No approval broker is running, so every protected step is refused. "
-                "Start it with `firekeep-hands-broker run`."
+                "Start it with `firekeep-hands-broker run`. Phone approvals are off by "
+                "default; turn them on with `firekeep hands config set phone_approvals "
+                "true` and restart the broker. docs/guides/hands.md explains what that "
+                "trusts."
             )
-        phone = listeners.get("phone", "off")
         return (
             f"A protected step needs the {health.get('chord')} chord on this keyboard "
             f"(listener: {listeners.get('chord', 'unknown')}). Phone approvals are "
-            f"{phone}; turn them on with `firekeep hands config set phone_approvals true` "
-            "and restart the broker. docs/guides/hands.md explains what that trusts."
+            f"{listeners.get('phone', 'off')}; turn them on with "
+            "`firekeep hands config set phone_approvals true` and restart the broker. "
+            "docs/guides/hands.md explains what that trusts."
         )
 
     # -- task lifecycle ----------------------------------------------------
@@ -242,24 +260,40 @@ class HandsSession:
         """Close the ledger, tell the Keep how it went, release the machine.
 
         The browser is deliberately left open: a human may be part way
-        through a login in it, and closing it would throw that away."""
+        through a login in it, and closing it would throw that away.
+
+        Releasing the machine does NOT depend on the evidence write
+        succeeding. A read-only disk or a locked file would otherwise strand
+        the lease for its full thirty minutes and lock the human out of their
+        own desktop over a bookkeeping failure — so the close is attempted,
+        reported if it fails, and the lease comes back either way."""
         if self.task_id is None:
             raise HandsError("no_task", "no task is open")
         if outcome not in _OUTCOMES:
             raise HandsError("invalid_action", f"outcome must be one of {list(_OUTCOMES)}")
-        self.ledger.close(outcome, summary)
+        evidence_error = None
+        try:
+            self.ledger.close(outcome, summary)
+            steps = len(self.ledger.steps())
+        except Exception as exc:  # noqa: BLE001 — the lease must come back regardless
+            hooklog.log_failure("hands", f"could not close ledger {self.task_id}: {exc}", exc)
+            evidence_error, steps = f"the evidence ledger did not close: {exc}", self.step_index
         result = {
             "ok": True,
             "task_id": self.task_id,
             "outcome": outcome,
             "summary": summary,
-            "steps": len(self.ledger.steps()),
+            "steps": steps,
             "evidence": str(self.ledger.dir),
         }
-        self.link.action_after(self.action_id, outcome, summary)
-        self.link.release_lease()
-        self.last_task = dict(result)
-        self._reset()
+        if evidence_error:
+            result["evidence_error"] = evidence_error
+        try:
+            self.link.action_after(self.action_id, outcome, summary)
+            self.link.release_lease()
+        finally:
+            self.last_task = dict(result)
+            self._reset()
         return result
 
     def _reset(self) -> None:
@@ -296,7 +330,11 @@ class HandsSession:
         observation = self.backend.observe(
             app=app,
             region=Rect(*region) if region else None,
-            max_nodes=int(max_nodes or self.config.max_nodes),
+            # Clamped to the configured ceiling, never merely defaulted to it:
+            # `max_nodes` is multiplied into the backend's walk allowance, and
+            # that walk runs on the one thread every other tool call queues
+            # behind. A caller asking for a million nodes gets the budget.
+            max_nodes=_clamp(max_nodes, self.config.max_nodes, self.config.max_nodes),
             text_budget=self.config.text_budget,
             screenshot=detail == "screenshot",
             max_width=self.config.screenshot_max_width,
@@ -331,7 +369,8 @@ class HandsSession:
         guard = self._no_task()
         if guard is not None:
             return guard
-        matches = self.backend.find(query, role=role, app=app, limit=int(limit))
+        matches = self.backend.find(query, role=role, app=app,
+                                    limit=_clamp(limit, 10, _FIND_LIMIT_CEILING))
         self._merge_into_observation(matches)
         return {"ok": True, "count": len(matches),
                 "controls": [_control_json(c) for c in matches]}
@@ -358,7 +397,16 @@ class HandsSession:
         before anything is recorded — nothing happened, so nothing is a step
         and nothing costs budget. Everything from the permit check onward
         does cost a step, including a backend failure: a step that was
-        attempted is part of the record whether or not it worked."""
+        attempted is part of the record whether or not it worked.
+
+        That last rule is why execution is wrapped in a bare `except
+        Exception` and why `_advance` sits in a `finally`. The exceptions a
+        real backend throws are not all `HandsError` — `uiautomation` raises
+        `comtypes.COMError` straight out of a pattern call — and letting one
+        past this point would leave a consumed permit, an action that may
+        well have run, no ledger line, an uncounted step, and a stale
+        observation still holding refs. Every one of those is worse than a
+        recorded failure."""
         guard = self._step_guard()
         if guard is not None:
             return guard
@@ -385,27 +433,53 @@ class HandsSession:
             permit_record = gate["permit"]
 
         before = self._capture() if permit_record is not None else None
-        outcome, error, extra = "ok", None, None
-        try:
-            extra = self._execute(routed, window)
-        except HandsError as exc:
-            outcome, error = "error", f"{exc.code}: {exc}"
-        after = self._capture() if permit_record is not None else None
-        if outcome == "ok":
-            self._update_focus_hint(routed)
-
         index = self.step_index
-        self.ledger.record(
-            step_index=index, action=_redact(action, decision.classes, control),
-            route=routed.route, classes=decision.classes, permit=permit_record,
-            before_png=before, after_png=after, outcome=outcome, error=error,
-        )
-        self._advance()
+        outcome, error, extra, evidence_error = "ok", None, None, None
+        try:
+            try:
+                extra = self._execute(routed, window)
+            except HandsError as exc:
+                outcome, error = "error", f"{exc.code}: {exc}"
+            except Exception as exc:  # noqa: BLE001 — see the docstring: a step
+                # that was attempted is a step that gets recorded and counted,
+                # whatever the backend threw. `uiautomation` raises bare
+                # `comtypes.COMError`s from its pattern calls, and a field type
+                # routing does not know about would raise a TypeError here.
+                hooklog.log_failure("hands", f"step {index} failed: {exc}", exc)
+                outcome, error = "error", f"backend: {exc}"
+            after = self._capture() if permit_record is not None else None
+            if outcome == "ok":
+                self._update_focus_hint(routed)
+            evidence_error = self._record(
+                index, _redact(action, decision.classes, control), routed.route,
+                decision.classes, permit_record, before, after, outcome, error,
+            )
+        finally:
+            self._advance()
         result = {"ok": outcome == "ok", "step_index": index, "route": routed.route,
                   "classes": list(decision.classes), "error": error}
-        if extra:
-            result.update(extra)
+        result.update(_browser_payload(extra))
+        if evidence_error:
+            result["evidence_error"] = evidence_error
         return result
+
+    def _record(self, index, action, route_, classes, permit, before, after,
+                outcome, error) -> str | None:
+        """Append the step to the ledger. Returns a message if the write
+        failed — evidence is best-effort at the moment of writing, because a
+        full disk must not turn a step that ran into a step the caller is
+        told failed. It IS reported back rather than swallowed: a caller
+        acting on an unrecorded step should know the record is missing."""
+        try:
+            self.ledger.record(
+                step_index=index, action=action, route=route_, classes=classes,
+                permit=permit, before_png=before, after_png=after,
+                outcome=outcome, error=error,
+            )
+        except Exception as exc:  # noqa: BLE001 — never lose the step over the record
+            hooklog.log_failure("hands", f"could not ledger step {index}: {exc}", exc)
+            return f"step {index} ran but was not recorded: {exc}"
+        return None
 
     def _gate(self, action: dict, routed: Routed, window: WindowInfo | None,
               decision, permit: str | None) -> dict:
@@ -456,17 +530,30 @@ class HandsSession:
         """What the human sees. Built from the ROUTED step — the control the
         observation actually resolved and the window it lives in — never from
         a caller-supplied string, because the broker renders whatever it is
-        given and this is the one sentence the approval rests on."""
+        given and this is the one sentence the approval rests on.
+
+        Three kinds have no observed control to name, only a string the
+        runtime chose: an app to open, an app to focus, a chord to press.
+        Those are still shown, because refusing to say WHICH app would make
+        the prompt useless — but they are rendered in their own shape,
+        `... the runtime asked for: "..."`, and never in the
+        `invoke "X" in Y` form reserved for something Hands actually
+        observed. A human seeing the second form is looking at a real
+        control; the first form is a request, and reads like one."""
         where = _clean(window.app or window.title, 40) if window is not None else "this machine"
         if routed.control is not None:
             return f'{routed.kind} "{_clean(routed.control.name)}" in {where}'
         if routed.kind == "open_url":
             host = urlsplit(str(routed.payload.get("url", ""))).hostname or "an unnamed host"
             return f"open {_clean(host)} in the browser"
-        if routed.kind in ("open_app", "focus_app"):
-            return f'{routed.kind} {_clean(routed.payload.get("app", ""))}'
+        if routed.kind == "open_app":
+            return f'open the app the runtime asked for: "{_clean(routed.payload.get("app", ""))}"'
+        if routed.kind == "focus_app":
+            return ("switch to the app the runtime asked for: "
+                    f'"{_clean(routed.payload.get("app", ""))}"')
         if routed.kind == "key":
-            return f'press {_clean(routed.payload.get("chord", ""), 24)} in {where}'
+            return (f'press the keys the runtime asked for: '
+                    f'"{_clean(routed.payload.get("chord", ""), 24)}" in {where}')
         if routed.kind == "type":
             return f"type text into {where}"
         if routed.kind == "clipboard_set":
@@ -595,36 +682,42 @@ class HandsSession:
             classes, permit_record, control = gated["classes"], gated["permit"], gated["control"]
 
         tab = kwargs.get("tab")
-        payload: dict = {}
-        outcome, error = "ok", None
-        try:
-            browser = self._require_browser()
-            if op == "open":
-                payload = browser.open()
-            elif op == "tabs":
-                payload = {"tabs": browser.tabs()}
-            elif op == "read":
-                payload = browser.read(tab=tab, budget=self.config.text_budget)
-            elif op == "find":
-                payload = {"controls": browser.find(str(kwargs.get("query", "")), tab=tab,
-                                                    limit=int(kwargs.get("limit", 10)))}
-            elif op == "click":
-                browser.click(str(kwargs.get("ref", "")), tab=tab)
-            elif op == "fill":
-                browser.fill(str(kwargs.get("ref", "")), str(kwargs.get("text", "")), tab=tab)
-            else:  # screenshot
-                payload = {"screenshot_png": browser.screenshot(
-                    tab=tab, max_width=self.config.screenshot_max_width)}
-        except HandsError as exc:
-            outcome, error = "error", f"{exc.code}: {exc}"
-
         index = self.step_index
-        self.ledger.record(
-            step_index=index, action=_redact(ledger_action, classes, control),
-            route="browser", classes=classes, permit=permit_record,
-            before_png=None, after_png=None, outcome=outcome, error=error,
-        )
-        self._advance()
+        payload: dict = {}
+        outcome, error, evidence_error = "ok", None, None
+        try:
+            try:
+                browser = self._require_browser()
+                if op == "open":
+                    payload = browser.open()
+                elif op == "tabs":
+                    payload = {"tabs": browser.tabs()}
+                elif op == "read":
+                    payload = browser.read(tab=tab, budget=self.config.text_budget)
+                elif op == "find":
+                    payload = {"controls": browser.find(
+                        str(kwargs.get("query", "")), tab=tab,
+                        limit=_clamp(kwargs.get("limit"), 10, _FIND_LIMIT_CEILING))}
+                elif op == "click":
+                    browser.click(str(kwargs.get("ref", "")), tab=tab)
+                elif op == "fill":
+                    browser.fill(str(kwargs.get("ref", "")), str(kwargs.get("text", "")), tab=tab)
+                else:  # screenshot
+                    payload = {"screenshot_png": browser.screenshot(
+                        tab=tab, max_width=self.config.screenshot_max_width)}
+            except HandsError as exc:
+                outcome, error = "error", f"{exc.code}: {exc}"
+            except Exception as exc:  # noqa: BLE001 — same rule as `act`: an
+                # attempted step is a recorded, counted step. The CDP
+                # transport raises its own errors, not only HandsError.
+                hooklog.log_failure("hands", f"browser step {index} failed: {exc}", exc)
+                outcome, error = "error", f"backend: {exc}"
+            evidence_error = self._record(
+                index, _redact(ledger_action, classes, control), "browser",
+                classes, permit_record, None, None, outcome, error,
+            )
+        finally:
+            self._advance()
         if outcome == "ok":
             if op == "find":
                 self._browser_controls = {
@@ -636,7 +729,9 @@ class HandsSession:
                 self._focus_hint = control
         result = {"ok": outcome == "ok", "step_index": index, "route": "browser",
                   "op": op, "classes": list(classes), "error": error}
-        result.update(payload)
+        result.update(_browser_payload(payload))
+        if evidence_error:
+            result["evidence_error"] = evidence_error
         return result
 
     def _gate_browser(self, op: str, kwargs: dict, ledger_action: dict) -> dict:
@@ -828,6 +923,25 @@ def _lease_refusal(lease: dict) -> str:
         "%Y-%m-%dT%H:%M:%SZ")
     return (f"hands is leased by {holder} until {expires_at} — "
             "wait for it to lapse or end that session")
+
+
+def _browser_payload(payload: object) -> dict:
+    """The part of a browser result that may be merged into a tool result."""
+    if not isinstance(payload, dict):
+        return {}
+    return {k: v for k, v in payload.items() if k in _BROWSER_RESULT_KEYS}
+
+
+def _clamp(value: object, default: int, ceiling: int) -> int:
+    """A caller-supplied count, bounded. `None` means "use the default";
+    anything that is not a whole number is a refusal rather than a silent
+    fallback, because a caller that asked for `"lots"` has a bug and should
+    be told so."""
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise HandsError("invalid_action", f"expected a whole number, not {type(value).__name__}")
+    return max(1, min(value, ceiling))
 
 
 def _first_tab(payload: object) -> dict:

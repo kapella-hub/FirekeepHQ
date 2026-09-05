@@ -49,6 +49,47 @@ _REQUIRED_KEYS: dict[str, tuple[str, ...]] = {
     "wait": ("seconds",),
 }
 
+# What each field must BE, not just that it is present. A JSON-RPC client can
+# put any type in any field — `hands_act`'s schema declares `action` as a bare
+# object and does not describe its inside — and every one of these values is
+# either passed to an OS call or compared numerically further down. Without
+# this, `{"kind": "wait", "seconds": "3"}` raised a bare TypeError from the
+# `> 10` comparison below, and `{"kind": "scroll", "dy": "3"}` carried a
+# string all the way into the backend.
+_NUMBER = object()
+_FIELD_TYPES: dict[str, object] = {
+    "ref": str,
+    "value": str,
+    "text": str,
+    "chord": str,
+    "app": str,
+    "url": str,
+    "button": str,
+    "double": bool,
+    "dy": _NUMBER,
+    "seconds": _NUMBER,
+}
+
+
+def _check_types(kind: str, action: dict) -> None:
+    for key, expected in _FIELD_TYPES.items():
+        if key not in action:
+            continue
+        value = action[key]
+        if expected is _NUMBER:
+            # `bool` is a subclass of `int`, and `True` is not a scroll
+            # distance — reject it explicitly rather than scroll by 1.
+            ok = isinstance(value, (int, float)) and not isinstance(value, bool)
+            wanted = "a number"
+        else:
+            ok = isinstance(value, expected)
+            wanted = f"a {expected.__name__}"
+        if not ok:
+            raise HandsError(
+                "invalid_action",
+                f"{kind}'s {key!r} must be {wanted}, not {type(value).__name__}",
+            )
+
 
 @dataclass(frozen=True)
 class Routed:
@@ -79,6 +120,8 @@ def route(action: dict, observation: Observation | None) -> Routed:
     missing = [k for k in required if k not in action]
     if missing:
         raise HandsError("invalid_action", f"{kind} is missing required key(s): {missing}")
+
+    _check_types(kind, action)
 
     if kind == "wait" and action["seconds"] > 10:
         raise HandsError("invalid_action", "wait seconds must be <= 10")

@@ -19,7 +19,14 @@ class HandsError(Exception):
     """A Backend operation failed. `code` is one of "stale_ref", "not_found",
     "unsupported", "elevated_target", "permission", "backend", "invalid_action"
     — a closed set callers (and the approval broker) can branch on without
-    parsing text."""
+    parsing text.
+
+    `HandsSession` raises the same exception for three failures that are not a
+    backend's: "no_task" (a step was attempted before `hands_task_start`),
+    "budget" (the task has spent its step allowance) and "busy" (a task is
+    already open, or another session holds this machine's lease). They are
+    listed here because the set is only closed if it is written down in one
+    place."""
 
     def __init__(self, code: str, message: str = ""):
         super().__init__(message or code)

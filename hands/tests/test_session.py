@@ -488,6 +488,10 @@ def test_status_without_a_broker_says_protected_steps_are_refused(session_withou
     st = session_without_broker.status()
     assert st["broker"] == {"running": False}
     assert "refused" in st["approvals"]
+    # Someone reading this is deciding how to set approvals up, which is
+    # exactly when the phone opt-in is worth naming.
+    assert "phone_approvals true" in st["approvals"]
+    assert "docs/guides/hands.md" in st["approvals"]
 
 
 def test_status_on_an_unsupported_platform_still_answers():
@@ -790,6 +794,121 @@ def test_a_backend_failure_is_recorded_not_raised(session):
     assert r["ok"] is False and r["error"].startswith("elevated_target")
     assert session.ledger.steps()[-1]["outcome"] == "error"
     assert session.step_index == 1  # a failed step still costs budget
+
+
+def test_an_exception_the_backend_never_declared_is_still_a_recorded_step(session, store):
+    """`uiautomation` raises `comtypes.COMError` straight out of a pattern
+    call. Letting one past the recorder would leave a consumed permit, an
+    action that may well have run, no ledger line, an uncounted step and refs
+    that were never invalidated."""
+    session.backend.scene = _password_scene("Mail")
+    session.task_start("x", ["Mail"])
+    session.observe()
+
+    def boom(control):
+        raise RuntimeError("COMError -2147220991")
+
+    session.backend.invoke = boom
+    r = session.act({"kind": "invoke", "ref": "pw"})
+    assert r["ok"] is False and r["error"].startswith("backend: ")
+    assert session.ledger.steps()[-1]["outcome"] == "error"
+    assert session.step_index == 1
+    assert session.last_obs is None
+
+
+def test_a_ledger_that_cannot_be_written_still_counts_the_step(session):
+    session.task_start("x", ["Notepad"])
+
+    def boom(**_kwargs):
+        raise OSError("no space left on device")
+
+    session.ledger.record = boom
+    r = session.act({"kind": "wait", "seconds": 0})
+    assert r["ok"] is True and "not recorded" in r["evidence_error"]
+    assert session.step_index == 1
+
+
+def test_a_browser_failure_the_transport_never_declared_is_recorded(session):
+    browser = FakeBrowser()
+    session.browser = browser
+    session.task_start("x", ["Notepad"])
+
+    def boom(**_kwargs):
+        raise RuntimeError("the websocket closed")
+
+    browser.tabs = boom
+    r = session.browser_op("tabs")
+    assert r["ok"] is False and r["error"].startswith("backend: ")
+    assert session.ledger.steps()[-1]["outcome"] == "error"
+    assert session.step_index == 1
+
+
+@pytest.mark.parametrize("action", [
+    {"kind": "scroll", "ref": "window", "dy": "3"},
+    {"kind": "wait", "seconds": "3"},
+    {"kind": "type", "text": 7},
+    {"kind": "key", "chord": ["ctrl", "enter"]},
+    {"kind": "invoke", "ref": 1},
+    {"kind": "open_url", "url": None},
+    {"kind": "scroll", "ref": "window", "dy": True},
+])
+def test_a_field_of_the_wrong_type_never_reaches_the_backend(session, action):
+    session.task_start("x", ["Notepad"])
+    session.observe()
+    r = session.act(action)
+    assert r["ok"] is False and r["error"].startswith("invalid_action")
+    assert session.backend.calls == []
+    assert session.ledger.steps() == []
+
+
+def test_perception_budgets_are_clamped_not_merely_defaulted(session):
+    session.task_start("x", ["Notepad"])
+    session.observe(max_nodes=1_000_000)
+    assert session.backend.observes[-1]["max_nodes"] == session.config.max_nodes
+    session.find("save", limit=1_000_000)
+    session.observe(max_nodes=2)
+    assert session.backend.observes[-1]["max_nodes"] == 2
+    with pytest.raises(HandsError) as ei:
+        session.observe(max_nodes="lots")
+    assert ei.value.code == "invalid_action"
+
+
+def test_task_end_releases_the_machine_even_when_the_ledger_will_not_close(session):
+    """A read-only disk must not strand the lease for its full half hour and
+    lock the human out of their own desktop."""
+    session.task_start("x", ["Notepad"])
+    session.act({"kind": "wait", "seconds": 0})
+
+    def boom(_outcome, _summary):
+        raise OSError("read-only file system")
+
+    session.ledger.close = boom
+    end = session.task_end("done", "ok")
+    assert end["ok"] is True and end["steps"] == 1
+    assert "did not close" in end["evidence_error"]
+    assert session.link.released is True and session.link.after == [("A1", "done", "ok")]
+    assert session.task_id is None
+
+
+def test_a_model_supplied_app_name_is_never_shown_as_an_observed_control(session, broker):
+    """`invoke "Send" in Mail` means Hands saw that control. A string the
+    runtime chose gets its own shape so the human can tell them apart."""
+    session.task_start("x", ["Notepad"])
+    session.act({"kind": "open_app", "app": 'Notepad" in Mail'})
+    title = broker.requested[-1][1]
+    assert title == 'open the app the runtime asked for: "Notepad" in Mail"'
+    assert not title.startswith("invoke ")
+
+
+def test_a_browser_payload_cannot_overwrite_the_step_result(session):
+    browser = FakeBrowser()
+    session.browser = browser
+    session.task_start("x", ["Notepad"])
+    browser.read = lambda **_kw: {"url": "u", "title": "t", "text": "hi",
+                                  "ok": False, "error": "injected", "step_index": 99}
+    r = session.browser_op("read")
+    assert r["ok"] is True and r["error"] is None and r["step_index"] == 0
+    assert r["text"] == "hi"
 
 
 def test_raw_coordinates_are_refused(session):

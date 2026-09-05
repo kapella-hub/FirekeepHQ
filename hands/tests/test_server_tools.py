@@ -92,6 +92,25 @@ def test_required_arguments_match_the_spec(server_tools):
     assert required["hands_task_end"] == ["outcome"]
 
 
+def test_perception_arguments_advertise_their_bounds(server_tools):
+    by_name = {tool.name: tool.inputSchema["properties"] for tool in server_tools}
+    assert by_name["hands_observe"]["max_nodes"] == {
+        "type": "integer", "minimum": 1, "maximum": 200}
+    assert by_name["hands_find"]["limit"] == {"type": "integer", "minimum": 1, "maximum": 50}
+    assert by_name["hands_browser"]["limit"] == {"type": "integer", "minimum": 1, "maximum": 50}
+
+
+def test_the_browser_schema_is_closed_and_declares_every_op(server_tools):
+    browser = next(tool for tool in server_tools if tool.name == "hands_browser")
+    assert browser.inputSchema["additionalProperties"] is False
+    assert set(browser.inputSchema["properties"]["op"]["enum"]) == {
+        "open", "tabs", "navigate", "read", "find", "click", "fill", "screenshot"}
+    # Everything the session honours must be declared, or a closed schema
+    # would reject an argument the implementation actually reads.
+    for key in ("url", "ref", "text", "query", "limit", "tab", "permit"):
+        assert key in browser.inputSchema["properties"], key
+
+
 def test_act_describes_the_permit_loop(server_tools):
     act = next(tool for tool in server_tools if tool.name == "hands_act")
     assert "needs_permit" in act.description
@@ -145,6 +164,15 @@ def test_only_hands_status_answers_without_a_task(session):
         result = _text(server.dispatch(session, name, arguments))
         assert result["error"] == "no_task: call hands_task_start first", name
     assert _text(server.dispatch(session, "hands_status", {}))["ok"] is True
+
+
+def test_every_declared_schema_actually_validates(server_tools):
+    """The SDK validates arguments against these before dispatch, so a schema
+    that does not parse would fail every call to that tool at runtime."""
+    import jsonschema
+
+    for tool in server_tools:
+        jsonschema.Draft202012Validator.check_schema(tool.inputSchema)
 
 
 def test_an_unknown_tool_is_a_normal_result(session):

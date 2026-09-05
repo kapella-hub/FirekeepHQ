@@ -84,7 +84,11 @@ TOOLS = [
                 "app": {"type": "string"},
                 "region": {"type": "array", "items": {"type": "integer"},
                            "minItems": 4, "maxItems": 4},
-                "max_nodes": {"type": "integer"},
+                # The ceiling here is the shipped `HandsConfig.max_nodes`; the
+                # session clamps to whatever THIS machine has configured, so
+                # the schema is the advertised bound and the session is the
+                # enforced one.
+                "max_nodes": {"type": "integer", "minimum": 1, "maximum": 200},
             },
         },
     ),
@@ -101,7 +105,7 @@ TOOLS = [
                 "query": {"type": "string"},
                 "role": {"type": "string"},
                 "app": {"type": "string"},
-                "limit": {"type": "integer"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50},
             },
         },
     ),
@@ -148,12 +152,19 @@ TOOLS = [
         inputSchema={
             "type": "object",
             "required": ["op"],
+            # Closed on purpose: everything this tool honours is declared, so
+            # an argument that is not here is a mistake worth telling the
+            # caller about rather than one silently dropped on the floor.
+            "additionalProperties": False,
             "properties": {
-                "op": {"type": "string"},
+                "op": {"type": "string",
+                       "enum": ["open", "tabs", "navigate", "read", "find",
+                                "click", "fill", "screenshot"]},
                 "url": {"type": "string"},
                 "ref": {"type": "string"},
                 "text": {"type": "string"},
                 "query": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50},
                 "tab": {"type": "string"},
                 "permit": {"type": "string"},
             },
