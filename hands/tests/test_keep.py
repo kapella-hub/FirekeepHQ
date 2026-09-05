@@ -1,3 +1,6 @@
+import ast
+from pathlib import Path
+
 import pytest
 
 from firekeep_client import resolver, transport
@@ -260,7 +263,12 @@ def test_action_before_sends_cortexs_real_argument_shape(monkeypatch):
     intent="", expected_changes=None, success_criteria: list[str]|None=None,
     confidence=None)` — a future drift back to the simplified shorthand
     (no session_id/agent_id, success_criteria as a string) should fail here,
-    not silently no-op against the real server."""
+    not silently no-op against the real server.
+
+    `action_type` is `"other"`: cortex's `ActionType` is a closed Literal and
+    the old `"hands_task"` 422'd every call, which the MCP tool turned into a
+    string nobody looked at. `test_the_action_type_hands_sends_is_one_cortex_
+    accepts` below reads the server's own models.py so this cannot drift."""
     seen = []
     def fake(service, tool, args, **kw):
         seen.append((service, tool, args))
@@ -273,9 +281,9 @@ def test_action_before_sends_cortexs_real_argument_shape(monkeypatch):
     assert args == {
         "session_id": "s1",
         "agent_id": "a",
-        "action_type": "hands_task",
+        "action_type": "other",
         "target": "desktop:m",
-        "preview": "apps: Notepad, Mail",
+        "preview": "hands_task · apps: Notepad, Mail",
         "intent": "g",
         "success_criteria": ["task ends with outcome=done"],
         "confidence": 0.6,
@@ -294,7 +302,9 @@ def test_action_before_falls_back_to_task_id_when_no_session_id(monkeypatch):
     link = keep.KeepLink(agent_id="a", machine_id="m", offline=False)  # no session_id given
     link.action_before(goal="g", task_id="t1", apps=[])
     assert seen[0]["session_id"] == "t1"
-    assert seen[0]["preview"] == ""
+    # The marker is unconditional — it is the only place "hands_task" survives
+    # now that `action_type` has to be one of cortex's five.
+    assert seen[0]["preview"] == "hands_task"
 
 
 def test_action_after_sends_cortexs_real_argument_shape(monkeypatch):
@@ -395,3 +405,136 @@ def test_action_before_and_post_permit_task_never_raise_on_non_str_apps_or_class
     assert link.post_permit_task(
         challenge="c", title="t", classes=(1,), task_id="t", step_index=0, expires_at="x"
     ) == "task-1"
+
+
+# -- the Keep has to actually accept what we send it ------------------------
+
+
+def _sent_action_before(monkeypatch, *, goal="g", apps=()):
+    """The exact argument dict `action_before` puts on the wire."""
+    seen = []
+
+    def fake(service, tool, args, **kw):
+        seen.append(args)
+        return {"action_id": "A1"}
+
+    monkeypatch.setattr(keep, "call_tool", fake)
+    link = keep.KeepLink(agent_id="a", machine_id="m", offline=False, session_id="s1")
+    link.action_before(goal=goal, task_id="t", apps=list(apps))
+    return seen[0]
+
+
+def test_a_long_goal_and_a_long_app_list_are_truncated_to_cortexs_maxima(monkeypatch):
+    """`Prediction.intent` is max_length=512 and `Action.preview` is
+    max_length=2048. Over either one the whole POST is a 422 and the Keep
+    records nothing — the same silent failure the action_type bug caused."""
+    args = _sent_action_before(monkeypatch, goal="g" * 900, apps=["app" * 40] * 60)
+    assert len(args["intent"]) == 512
+    assert args["intent"] == "g" * 512
+    assert len(args["preview"]) == 2048
+    assert args["preview"].startswith("hands_task · apps: ")
+
+
+def test_an_in_band_error_string_from_the_keep_is_logged_not_swallowed(monkeypatch):
+    """The cortex MCP tools answer an HTTP error with a formatted STRING, and
+    `call_tool` returns it without raising. Every caller here tests for a dict
+    and degrades to None, so before this the 422 was completely invisible —
+    which is how the wrong action_type reached a shipped branch."""
+    logged = []
+    monkeypatch.setattr(keep.hooklog, "log_failure",
+                        lambda hook, message, exc=None: logged.append(message))
+    monkeypatch.setattr(keep, "call_tool",
+                        lambda *a, **k: "Error 422: action.type is not a valid enumeration member")
+    link = keep.KeepLink(agent_id="a", machine_id="m", offline=False)
+
+    assert link.action_before(goal="g", task_id="t", apps=[]) is None
+    assert link.last_decision.decision is None
+    assert len(logged) == 1
+    assert "cortex.action_before" in logged[0] and "not an object" in logged[0]
+    assert "422" in logged[0]  # the body is what names the fault
+
+
+def test_a_normal_dict_reply_is_never_logged_as_a_failure(monkeypatch):
+    logged = []
+    monkeypatch.setattr(keep.hooklog, "log_failure",
+                        lambda hook, message, exc=None: logged.append(message))
+    monkeypatch.setattr(keep, "call_tool", lambda *a, **k: {"action_id": "A1"})
+    link = keep.KeepLink(agent_id="a", machine_id="m", offline=False)
+    assert link.action_before(goal="g", task_id="t", apps=[]) == "A1"
+    assert logged == []
+
+
+# -- the tripwire -----------------------------------------------------------
+#
+# These read cortex's own source rather than a copy of its rules. The wheel is
+# also tested outside this checkout (CI builds it and runs the suite from the
+# installed package), where the server tree simply is not there — hence the
+# skip rather than a failure.
+
+_MODELS = Path(__file__).resolve().parents[2] / "cortex" / "app" / "agent_gateway" / "models.py"
+
+
+def _cortex_models() -> ast.Module:
+    if not _MODELS.is_file():
+        pytest.skip(f"{_MODELS} is not in this tree (the wheel is being tested standalone)")
+    return ast.parse(_MODELS.read_text(encoding="utf-8"))
+
+
+def _literal_members(module: ast.Module, name: str) -> list[str]:
+    """The strings in a module-level `Name = Literal["a", "b", ...]`."""
+    for node in module.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(isinstance(t, ast.Name) and t.id == name for t in node.targets):
+            continue
+        value = node.value
+        assert isinstance(value, ast.Subscript), f"{name} is no longer a Literal[...]"
+        members = value.slice.elts if isinstance(value.slice, ast.Tuple) else [value.slice]
+        return [m.value for m in members if isinstance(m, ast.Constant)]
+    raise AssertionError(f"{name} is not defined in {_MODELS}")
+
+
+def _field_max_length(module: ast.Module, class_name: str, field: str) -> int:
+    """The `max_length=` on `class <class_name>: <field>: ... = Field(...)`."""
+    for node in ast.walk(module):
+        if not isinstance(node, ast.ClassDef) or node.name != class_name:
+            continue
+        for statement in node.body:
+            if not isinstance(statement, ast.AnnAssign):
+                continue
+            if not (isinstance(statement.target, ast.Name) and statement.target.id == field):
+                continue
+            call = statement.value
+            assert isinstance(call, ast.Call), f"{class_name}.{field} is no longer a Field(...)"
+            for keyword in call.keywords:
+                if keyword.arg == "max_length" and isinstance(keyword.value, ast.Constant):
+                    return int(keyword.value.value)
+            raise AssertionError(f"{class_name}.{field} declares no max_length")
+    raise AssertionError(f"{class_name}.{field} is not in {_MODELS}")
+
+
+def test_the_action_type_hands_sends_is_one_cortex_accepts(monkeypatch):
+    """`Action.type` is typed with a CLOSED `ActionType` Literal, so a value
+    outside it is a 422 the MCP layer turns into a string and nothing raises.
+    This is the guard that would have caught `"hands_task"`."""
+    members = _literal_members(_cortex_models(), "ActionType")
+    assert members, "ActionType has no members"
+    assert _sent_action_before(monkeypatch)["action_type"] in members
+
+
+def test_the_free_text_hands_sends_respects_cortexs_declared_maxima(monkeypatch):
+    module = _cortex_models()
+    intent_max = _field_max_length(module, "Prediction", "intent")
+    preview_max = _field_max_length(module, "Action", "preview")
+    notes_max = _field_max_length(module, "Outcome", "deviation_notes")
+
+    args = _sent_action_before(monkeypatch, goal="g" * 5000, apps=["app" * 40] * 60)
+    assert len(args["intent"]) <= intent_max
+    assert len(args["preview"]) <= preview_max
+
+    seen = []
+    monkeypatch.setattr(keep, "call_tool",
+                        lambda service, tool, args, **kw: seen.append(args) or {})
+    link = keep.KeepLink(agent_id="a", machine_id="m", offline=False)
+    link.action_after("A1", "done", "x" * 5000)
+    assert len(seen[0]["deviation_notes"]) <= notes_max

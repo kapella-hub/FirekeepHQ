@@ -31,6 +31,27 @@ from firekeep_client.transport import TransportError
 _TIMEOUT = 5.0
 _DEFAULT_LEASE_TTL_MINUTES = 30
 
+# cortex's `action_type` vocabulary is a CLOSED Literal —
+# `ActionType = Literal["edit_file", "run_command", "call_api", "delete",
+# "other"]` in `cortex/app/agent_gateway/models.py` — and `Action.type` is
+# typed with it, so FastAPI answers anything else with a 422. A Hands task is
+# none of the first four, so it goes in as "other" and says what it really is
+# in `preview`.
+#
+# This is not a tidiness fix. Sending "hands_task" made every POST 422; the
+# MCP tool catches `HTTPStatusError` and returns `_format_error(exc)`, a
+# STRING, which `call_tool` hands back without raising — so `action_id` was
+# always None, `action_after` no-opped, and the `block` veto three documents
+# describe could never fire. `tests/test_keep.py` holds a tripwire that parses
+# cortex's own models.py so this cannot drift back silently.
+_ACTION_TYPE = "other"
+_HANDS_MARKER = "hands_task"
+# Two more closed limits from the same file: `Action.preview` is
+# `Field(max_length=2048)` and `Prediction.intent` is `Field(max_length=512)`.
+# Either one exceeded is a second 422 queued behind the first.
+_MAX_PREVIEW = 2048
+_MAX_INTENT = 512
+
 
 @dataclass(frozen=True)
 class KeepDecision:
@@ -130,13 +151,28 @@ class KeepLink:
             return None
         try:
             arguments = build_arguments()
-            return call_tool(service, tool, arguments, timeout=_TIMEOUT)
+            result = call_tool(service, tool, arguments, timeout=_TIMEOUT)
         except TransportError as exc:
             hooklog.log_failure("hands", f"{service}.{tool} failed: {exc}", exc)
             return None
         except Exception as exc:  # noqa: BLE001 — best-effort: never raise into the caller
             hooklog.log_failure("hands", f"{service}.{tool} failed: {exc}", exc)
             return None
+        # An in-band MCP error is a STRING, not a raise: the cortex and relay
+        # tools catch `HTTPStatusError`/`RequestError` and return formatted
+        # text, and `call_tool` passes it through verbatim. Every caller here
+        # tests `isinstance(result, dict)` and degrades to None, so without
+        # this line a 422 or a 500 was completely invisible — which is exactly
+        # how `action_type: "hands_task"` survived to a shipped branch. The
+        # body is what names the fault, so it is what gets logged.
+        if result is not None and not isinstance(result, dict):
+            hooklog.log_failure(
+                "hands",
+                f"{service}.{tool} answered with {type(result).__name__}, not an object: "
+                f"{str(result)[:300]}",
+            )
+            return None
+        return result
 
     def action_before(self, *, goal: str, task_id: str, apps: list[str]) -> str | None:
         """cortex/app/mcp_server.py:1542 (`action_before`) is the source of
@@ -145,20 +181,26 @@ class KeepLink:
         confidence)` shorthand documented elsewhere (e.g. this repo's
         CLAUDE.md) — the real tool REQUIRES `session_id` and `agent_id` (no
         defaults) and types `success_criteria` as a list, not a string.
-        `apps` has no field of its own in that shape, so it rides in
-        `preview`. `session_id` falls back to `task_id` when this KeepLink
-        wasn't given one — either way it must be non-empty for the call to
-        validate server-side. `apps` elements are coerced with `str()` before
-        joining — this method must not raise on a caller passing e.g. a list
-        of ints."""
+        `action_type` is `"other"` because cortex's `ActionType` is a closed
+        Literal that has never had a Hands member (see `_ACTION_TYPE` above);
+        the marker and `apps` both ride in `preview`, which is the only free
+        text field in that shape. `session_id` falls back to `task_id` when
+        this KeepLink wasn't given one — either way it must be non-empty for
+        the call to validate server-side. `apps` elements are coerced with
+        `str()` before joining — this method must not raise on a caller
+        passing e.g. a list of ints — and both free-text fields are truncated
+        to the maxima cortex declares, because over either one the whole
+        request 422s and the Keep records nothing at all."""
         def build():
+            joined = ", ".join(str(a) for a in apps)
+            preview = f"{_HANDS_MARKER} · apps: {joined}" if joined else _HANDS_MARKER
             return {
                 "session_id": self.session_id or task_id,
                 "agent_id": self.agent_id,
-                "action_type": "hands_task",
+                "action_type": _ACTION_TYPE,
                 "target": f"desktop:{self.machine_id}",
-                "preview": f"apps: {', '.join(str(a) for a in apps)}" if apps else "",
-                "intent": goal,
+                "preview": preview[:_MAX_PREVIEW],
+                "intent": str(goal)[:_MAX_INTENT],
                 "success_criteria": ["task ends with outcome=done"],
                 "confidence": 0.6,
             }
@@ -173,8 +215,9 @@ class KeepLink:
         """cortex/app/mcp_server.py:1599 (`action_after`) wants a boolean
         `success`, not the `outcome`/`summary` strings this method takes from
         its caller — `outcome == "done"` is the boolean, and both strings are
-        folded into `deviation_notes` (server-capped at 2048 chars; truncated
-        to 500 here to match the ledger's own summary length)."""
+        folded into `deviation_notes` (`Outcome.deviation_notes` is
+        `Field(max_length=512)`; truncated to 500 here to match the ledger's
+        own summary length, which keeps it inside that cap as well)."""
         if action_id is None:
             return
         self._call(
