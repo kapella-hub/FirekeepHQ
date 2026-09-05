@@ -229,3 +229,18 @@ def test_renew_lease_is_a_noop_without_a_held_lease(monkeypatch):
     link = keep.KeepLink(agent_id="a", machine_id="m", offline=False)  # never acquired a lease
     link.renew_lease()
     assert seen == []
+
+
+def test_action_before_and_post_permit_task_never_raise_on_non_str_apps_or_classes(monkeypatch):
+    """apps/classes elements that aren't strings must not raise TypeError out
+    of ', '.join(...) — that construction has to happen inside the same
+    guarded region as the call itself, not in the caller's own frame before
+    _call is ever reached."""
+    def fake(service, tool, args, **kw):
+        return {"action_id": "A1", "task": {"id": "task-1"}}
+    monkeypatch.setattr(keep, "call_tool", fake)
+    link = keep.KeepLink(agent_id="a", machine_id="m", offline=False)
+    assert link.action_before(goal="g", task_id="t", apps=[1, None]) == "A1"
+    assert link.post_permit_task(
+        challenge="c", title="t", classes=(1,), task_id="t", step_index=0, expires_at="x"
+    ) == "task-1"

@@ -41,13 +41,24 @@ class KeepLink:
         self._holds_lease = False
         self._lease_ttl_minutes = _DEFAULT_LEASE_TTL_MINUTES
 
-    def _call(self, service: str, tool: str, arguments: dict) -> Any:
+    def _call(self, service: str, tool: str, build_arguments) -> Any:
         """The one place that talks to the Keep: offline short-circuits
-        before any call is attempted, and every failure mode (network,
-        in-band MCP error, anything else) degrades to None."""
+        before anything else is attempted, and every failure mode — network,
+        an in-band MCP error, or a caller's OWN argument construction raising
+        (e.g. `", ".join(...)` on a non-str element) — degrades to None
+        rather than escaping into the caller.
+
+        `build_arguments` is a zero-arg callable, invoked HERE inside the
+        guarded region rather than in the caller's frame: a dict literal
+        passed as an ordinary argument is evaluated before this method is
+        even entered, which is exactly how an earlier version of this class
+        broke its own "never raises" contract (`action_before`/
+        `post_permit_task` building a dict inline, with a `", ".join(...)`
+        inside it, in their own frame)."""
         if self.offline:
             return None
         try:
+            arguments = build_arguments()
             return call_tool(service, tool, arguments, timeout=_TIMEOUT)
         except TransportError as exc:
             hooklog.log_failure("hands", f"{service}.{tool} failed: {exc}", exc)
@@ -66,21 +77,21 @@ class KeepLink:
         `apps` has no field of its own in that shape, so it rides in
         `preview`. `session_id` falls back to `task_id` when this KeepLink
         wasn't given one — either way it must be non-empty for the call to
-        validate server-side."""
-        result = self._call(
-            "cortex",
-            "action_before",
-            {
+        validate server-side. `apps` elements are coerced with `str()` before
+        joining — this method must not raise on a caller passing e.g. a list
+        of ints."""
+        def build():
+            return {
                 "session_id": self.session_id or task_id,
                 "agent_id": self.agent_id,
                 "action_type": "hands_task",
                 "target": f"desktop:{self.machine_id}",
-                "preview": f"apps: {', '.join(apps)}" if apps else "",
+                "preview": f"apps: {', '.join(str(a) for a in apps)}" if apps else "",
                 "intent": goal,
                 "success_criteria": ["task ends with outcome=done"],
                 "confidence": 0.6,
-            },
-        )
+            }
+        result = self._call("cortex", "action_before", build)
         return result.get("action_id") if isinstance(result, dict) else None
 
     def action_after(self, action_id: str | None, outcome: str, summary: str) -> None:
@@ -94,7 +105,7 @@ class KeepLink:
         self._call(
             "cortex",
             "action_after",
-            {
+            lambda: {
                 "action_id": action_id,
                 "success": outcome == "done",
                 "deviation_notes": f"{outcome}: {summary}"[:500],
@@ -106,7 +117,7 @@ class KeepLink:
         result = self._call(
             "relay",
             "relay_lease",
-            {"resource_id": f"hands:{self.machine_id}", "agent_id": self.agent_id, "ttl_minutes": ttl_minutes},
+            lambda: {"resource_id": f"hands:{self.machine_id}", "agent_id": self.agent_id, "ttl_minutes": ttl_minutes},
         )
         if not isinstance(result, dict):
             return None
@@ -135,7 +146,7 @@ class KeepLink:
         self._call(
             "relay",
             "relay_heartbeat",
-            {"resource_id": f"hands:{self.machine_id}", "fencing_token": self._fencing_token, "agent_id": self.agent_id},
+            lambda: {"resource_id": f"hands:{self.machine_id}", "fencing_token": self._fencing_token, "agent_id": self.agent_id},
         )
 
     def release_lease(self) -> None:
@@ -148,7 +159,7 @@ class KeepLink:
         self._call(
             "relay",
             "relay_release",
-            {"resource_id": f"hands:{self.machine_id}", "agent_id": self.agent_id, "fencing_token": self._fencing_token},
+            lambda: {"resource_id": f"hands:{self.machine_id}", "agent_id": self.agent_id, "fencing_token": self._fencing_token},
         )
         self._holds_lease = False
 
@@ -162,37 +173,39 @@ class KeepLink:
         step_index: int,
         expires_at: str,
     ) -> str | None:
-        description = (
-            f"Approve or deny '{title}' [{', '.join(classes) or 'none'}] "
-            f"for task {task_id} step {step_index}; expires {expires_at}."
-        )
-        context = json.dumps(
-            {
-                "title": title,
-                "classes": list(classes),
-                "task_id": task_id,
-                "step_index": step_index,
-                "expires_at": expires_at,
-            }
-        )
-        result = self._call(
-            "relay",
-            "relay_task_post",
-            {
+        """`classes` elements are coerced with `str()` before joining into
+        `description` — this must not raise on a caller passing e.g. a tuple
+        of ints, the same failure mode `action_before` had for `apps`."""
+        def build():
+            classes_text = ", ".join(str(c) for c in classes) or "none"
+            description = (
+                f"Approve or deny '{title}' [{classes_text}] "
+                f"for task {task_id} step {step_index}; expires {expires_at}."
+            )
+            context = json.dumps(
+                {
+                    "title": title,
+                    "classes": list(classes),
+                    "task_id": task_id,
+                    "step_index": step_index,
+                    "expires_at": expires_at,
+                }
+            )
+            return {
                 "title": f"hands_permit:{challenge}",
                 "assigner": self.agent_id,
                 "description": description,
                 "priority": "high",
                 "context": context,
-            },
-        )
+            }
+        result = self._call("relay", "relay_task_post", build)
         if not isinstance(result, dict):
             return None
         task = result.get("task")
         return task.get("id") if isinstance(task, dict) else None
 
     def permit_task_state(self, challenge: str) -> str | None:
-        result = self._call("relay", "relay_task_list", {"title": f"hands_permit:{challenge}", "limit": 1})
+        result = self._call("relay", "relay_task_list", lambda: {"title": f"hands_permit:{challenge}", "limit": 1})
         if not isinstance(result, dict):
             return None
         tasks = result.get("tasks")
@@ -209,4 +222,4 @@ class KeepLink:
         return None
 
     def close_permit_task(self, task_id: str, result: str) -> None:
-        self._call("relay", "relay_task_update", {"task_id": task_id, "status": "cancelled", "result": result})
+        self._call("relay", "relay_task_update", lambda: {"task_id": task_id, "status": "cancelled", "result": result})

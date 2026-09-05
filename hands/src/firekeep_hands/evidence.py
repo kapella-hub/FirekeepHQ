@@ -54,6 +54,20 @@ def _parse_iso(value: object) -> dt.datetime | None:
         return None
 
 
+def _read_json_lenient(path: Path) -> dict:
+    """The parsed object if `path` holds a JSON object, else `{}` — for a
+    missing file, unreadable file, invalid JSON, or JSON that isn't an
+    object. Never raises; a failure is logged via `hooklog`, not propagated.
+    Shared by `Ledger._read_task_json` and `prune`: both treat "couldn't
+    read this task.json" as "know nothing about it", never as a crash."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 — a corrupt/missing task.json degrades to "empty"
+        hooklog.log_failure("hands", f"could not read {path}: {exc}", exc)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 class Ledger:
     """One task's evidence directory: `paths.evidence_root() / task_id`."""
 
@@ -96,12 +110,7 @@ class Ledger:
             return ""
 
     def _read_task_json(self) -> dict:
-        try:
-            data = json.loads(self._task_json_path.read_text(encoding="utf-8"))
-        except Exception as exc:  # noqa: BLE001 — a corrupt task.json degrades to "empty", not a crash
-            hooklog.log_failure("hands", f"could not read {self._task_json_path}: {exc}", exc)
-            return {}
-        return data if isinstance(data, dict) else {}
+        return _read_json_lenient(self._task_json_path)
 
     def _write_task_json(self, data: dict) -> None:
         path = self._task_json_path
@@ -166,11 +175,14 @@ class Ledger:
         return line
 
     def close(self, outcome: str, summary: str) -> None:
+        """`steps.jsonl` is the one store of record for the actual steps —
+        `task.json["steps"]` is only a count, so closing a task never
+        duplicates its whole hash-chained log into a second file."""
         data = self._read_task_json()
         data["ended"] = _now_iso()
         data["outcome"] = outcome
         data["summary"] = summary
-        data["steps"] = self.steps()
+        data["steps"] = len(self.steps())
         self._write_task_json(data)
 
     def steps(self) -> list[dict]:
@@ -205,12 +217,8 @@ def prune(root: Path, *, older_than_days: int, now: dt.datetime | None = None) -
         task_json = child / "task.json"
         if not task_json.exists():
             continue
-        try:
-            data = json.loads(task_json.read_text(encoding="utf-8"))
-        except Exception as exc:  # noqa: BLE001 — unreadable/corrupt task.json means "leave it alone"
-            hooklog.log_failure("hands", f"prune: could not read {task_json}: {exc}", exc)
-            continue
-        started = _parse_iso(data.get("started") if isinstance(data, dict) else None)
+        data = _read_json_lenient(task_json)
+        started = _parse_iso(data.get("started"))
         if started is None or started >= cutoff:
             continue
         try:

@@ -52,3 +52,17 @@ def test_record_with_permit_dict_round_trips(isolated_home):
     line = led.record(step_index=0, action={"kind": "click"}, route="permit", classes=("send",), permit=permit,
                       before_png=None, after_png=None, outcome="ok", error=None)
     assert line["permit"] == permit and line["classes"] == ["send"]
+
+
+def test_close_stores_step_count_not_full_steps_list(isolated_home):
+    """steps.jsonl is the one store of record for the actual step data;
+    task.json["steps"] is only a count, not a duplicate of that log."""
+    led = evidence.Ledger("t4", goal="g", apps=[], machine_id="m", session_id="s")
+    led.record(step_index=0, action={"kind": "wait"}, route="none", classes=(), permit=None,
+               before_png=None, after_png=None, outcome="ok", error=None)
+    led.record(step_index=1, action={"kind": "wait"}, route="none", classes=(), permit=None,
+               before_png=None, after_png=None, outcome="ok", error=None)
+    led.close("done", "saved")
+    data = json.loads((led.dir / "task.json").read_text())
+    assert data["steps"] == 2
+    assert isinstance(data["steps"], int)
