@@ -3930,12 +3930,23 @@ function loadRelayTasks() {
             }},
             { label: 'Title', key: 'title', render: function(t) {
                 var prioIcon = t.priority === 'critical' ? '<span style="color:var(--red);font-weight:700">!! </span>' : (t.priority === 'high' ? '<span style="color:var(--amber);font-weight:700">! </span>' : '');
-                return prioIcon + '<strong>' + esc(t.title || '') + '</strong>';
+                var html = prioIcon + '<strong>' + esc(t.title || '') + '</strong>';
+                if ((t.title || '').indexOf('hands_permit:') === 0 && t.description) {
+                    html += '<div style="color:var(--text-secondary);font-size:12px;margin-top:2px">' + esc(t.description) + '</div>';
+                }
+                return html;
             }},
             { label: 'Assignee', key: 'assignee', render: function(t) { return esc(t.assignee || 'Unassigned'); } },
             { label: 'Created', key: 'created_at', render: function(t) { return relTime(t.created_at); } },
             { label: 'ID', key: 'id', mono: true, render: function(t) { return '<span style="font-size:11px">' + esc((t.id || '').substring(0, 12)) + '</span>'; } },
-            { label: '', key: '_delete', render: function(t) { return '<button class="btn-delete-task" data-task-id="' + esc(t.id || '') + '" title="Delete task" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:14px;padding:2px 6px">&times;</button>'; } }
+            { label: '', key: '_delete', render: function(t) {
+                var isHandsPermit = (t.title || '').indexOf('hands_permit:') === 0;
+                if (isHandsPermit && t.status === 'pending') {
+                    return '<button class="btn btn-sm btn-hands-approve" data-task-id="' + esc(t.id || '') + '">Approve</button> '
+                        + '<button class="btn btn-sm btn-outline btn-hands-deny" data-task-id="' + esc(t.id || '') + '" style="border-color:var(--red);color:var(--red)">Deny</button>';
+                }
+                return '<button class="btn-delete-task" data-task-id="' + esc(t.id || '') + '" title="Delete task" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:14px;padding:2px 6px">&times;</button>';
+            } }
         ], tasks, { empty: 'No tasks' });
 
         // Attach delete handlers
@@ -3948,6 +3959,14 @@ function loadRelayTasks() {
             });
         });
 
+        // Attach Hands permit Approve/Deny handlers
+        c.querySelectorAll('.btn-hands-approve').forEach(function(btn) {
+            btn.addEventListener('click', function() { decideHandsPermit(this.getAttribute('data-task-id'), true); });
+        });
+        c.querySelectorAll('.btn-hands-deny').forEach(function(btn) {
+            btn.addEventListener('click', function() { decideHandsPermit(this.getAttribute('data-task-id'), false); });
+        });
+
         markRefreshed('relay-tasks');
     }).catch(function(e) { c.innerHTML = '<div class="empty-state">Failed to load tasks: ' + esc(e.message) + '</div>'; });
 }
@@ -3957,6 +3976,22 @@ function deleteRelayTask(taskId) {
     fetchJSON(url, { method: 'DELETE' })
         .then(function() { toast('Task ' + taskId + ' deleted', 'success'); loadRelayTasks(); })
         .catch(function(e) { toast('Delete failed: ' + e.message, 'error'); });
+}
+
+// Firekeep Hands posts a relay task titled `hands_permit:<challenge>` when a
+// protected step needs a human's phone approval; the approval broker polls
+// the task and reads `completed` + result starting `approve` as approve,
+// `cancelled`/`failed` (or `completed` with any other result) as deny.
+function decideHandsPermit(taskId, approve) {
+    mcpCall(CONFIG.RELAY_API, 'relay_task_update', approve
+        ? { task_id: taskId, status: 'completed', result: 'approve' }
+        : { task_id: taskId, status: 'cancelled', result: 'deny' })
+    .then(function(r) {
+        if (r.error) throw new Error(r.error.message);
+        toast(approve ? 'Approved' : 'Denied', 'success');
+        loadRelayTasks();
+    })
+    .catch(function(e) { toast('Failed: ' + e.message, 'error'); });
 }
 
 function postRelay(e) {
