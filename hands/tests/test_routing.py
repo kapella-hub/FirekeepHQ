@@ -34,6 +34,24 @@ def test_invalid_actions_are_rejected(bad):
         routing.route(bad, _obs())
     assert ei.value.code == "invalid_action"
 
+@pytest.mark.parametrize("bad", [
+    ["kind", "wait"],
+    "wait",
+    42,
+    None,
+    {"kind": {"nested": "object"}},
+    {"kind": 7},
+    {"kind": None},
+])
+def test_a_malformed_envelope_is_an_invalid_action_not_a_type_error(bad):
+    """The envelope before its contents: a list made the forbidden-key scan
+    raise TypeError and a dict `kind` made the lookup raise "unhashable
+    type", both of which reached the caller as an internal failure."""
+    with pytest.raises(HandsError) as ei:
+        routing.route(bad, _obs())
+    assert ei.value.code == "invalid_action"
+
+
 def test_unknown_or_stale_ref_is_rejected():
     with pytest.raises(HandsError) as ei:
         routing.route({"kind": "click", "ref": "zzz"}, _obs())

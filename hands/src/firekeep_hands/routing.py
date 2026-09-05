@@ -109,10 +109,22 @@ def _resolve_control(ref: str, observation: Observation | None) -> Control:
 
 
 def route(action: dict, observation: Observation | None) -> Routed:
+    # The envelope before its contents. `hands_act` declares `action` as a
+    # bare object and a JSON-RPC client can send anything at all: a list made
+    # the `in` scan below raise TypeError, and a dict `kind` made the lookup
+    # raise "unhashable type". Both reached the caller as `backend: …`, which
+    # tells a model its machine broke rather than that it sent nonsense.
+    if not isinstance(action, dict):
+        raise HandsError(
+            "invalid_action", f"an action must be an object, not {type(action).__name__}")
+
     if any(k in action for k in _FORBIDDEN_KEYS):
         raise HandsError("invalid_action", "raw coordinates are not an accepted action shape")
 
     kind = action.get("kind")
+    if not isinstance(kind, str):
+        raise HandsError(
+            "invalid_action", f"an action's 'kind' must be a string, not {type(kind).__name__}")
     required = _REQUIRED_KEYS.get(kind)
     if required is None:
         raise HandsError("invalid_action", f"unknown action kind {kind!r}")

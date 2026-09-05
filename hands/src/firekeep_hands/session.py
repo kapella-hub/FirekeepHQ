@@ -256,9 +256,17 @@ class HandsSession:
         decision = getattr(self.link, "last_decision", None)
         if decision is not None and getattr(decision, "blocked", False):
             reason = decision.reason or "the Keep blocked this task"
-            self.link.release_lease()
-            ledger.close("abandoned", f"blocked by the Keep: {reason}")
-            self._reset()
+            # The reset belongs in a `finally` for the same reason it does in
+            # `task_end`: a raising `ledger.close` here would leave the
+            # session believing a task is open moments after the lease that
+            # backed it was handed back.
+            try:
+                self.link.release_lease()
+                ledger.close("abandoned", f"blocked by the Keep: {reason}")
+            except Exception as exc:  # noqa: BLE001 — the refusal is what matters
+                hooklog.log_failure("hands", f"cleanup after a Keep block failed: {exc}", exc)
+            finally:
+                self._reset()
             raise HandsError("blocked", reason)
         return {
             "ok": True,
@@ -304,8 +312,16 @@ class HandsSession:
             result["evidence_error"] = evidence_error
         try:
             self.link.action_after(self.action_id, outcome, summary)
-            self.link.release_lease()
         finally:
+            # The release sits in the `finally` alongside the reset, not
+            # after `action_after` in the try: telling the Keep how it went
+            # is bookkeeping, and bookkeeping must never be what decides
+            # whether the human gets their machine back. Guarded separately
+            # so a failure here cannot replace the exception it is unwinding.
+            try:
+                self.link.release_lease()
+            except Exception as exc:  # noqa: BLE001 — the lease is the point
+                hooklog.log_failure("hands", f"lease release failed: {exc}", exc)
             self.last_task = dict(result)
             self._reset()
         return result
@@ -584,6 +600,12 @@ class HandsSession:
         control; the first form is a request, and reads like one."""
         where = _clean(window.app or window.title, 40) if window is not None else "this machine"
         if routed.control is not None:
+            if routed.route == "browser":
+                # "in browser" tells the human nothing they need. Which SITE
+                # is about to be ordered from is the whole question, and a
+                # navigation prompt already names its host — a click prompt
+                # should not be vaguer than the navigation that reached it.
+                return f'{routed.kind} "{_clean(routed.control.name)}" on {self._browser_host()}'
             return f'{routed.kind} "{_clean(routed.control.name)}" in {where}'
         if routed.kind == "open_url":
             host = urlsplit(str(routed.payload.get("url", ""))).hostname or "an unnamed host"
@@ -664,12 +686,13 @@ class HandsSession:
         elif routed.kind in ("focus_app", "open_app"):
             self._focus_hint = None
 
-    def _capture(self, *, via_browser: bool = False) -> bytes | None:
+    def _capture(self, *, via_browser: bool = False, tab: str | None = None) -> bytes | None:
         """A before/after screenshot for a protected step — best effort.
 
-        A browser step is photographed through the browser: the page is what
-        the human approved, and on a machine where the browser is not the
-        foreground window a desktop grab would show something else entirely.
+        A browser step is photographed through the browser, on the tab the
+        step targets: the page is what the human approved, and on a machine
+        where the browser is not the foreground window — or where the step
+        named a background tab — anything else would show the wrong thing.
 
         The permit has already been consumed by the time this runs, so a
         machine that cannot screenshot (no `mss`, no Screen Recording
@@ -679,7 +702,7 @@ class HandsSession:
         try:
             if via_browser:
                 return self._require_browser().screenshot(
-                    max_width=self.config.screenshot_max_width)
+                    tab=tab, max_width=self.config.screenshot_max_width)
             observation = self.backend.observe(
                 app=None, region=None, max_nodes=1, text_budget=0,
                 screenshot=True, max_width=self.config.screenshot_max_width,
@@ -737,7 +760,7 @@ class HandsSession:
         # Non-empty classes means the permit gate ran and a human approved,
         # so this step gets the same before/after pair a native protected
         # step does — photographed through the browser.
-        before = self._capture(via_browser=True) if classes else None
+        before = self._capture(via_browser=True, tab=tab) if classes else None
         outcome, error, evidence_error = "ok", None, None
         try:
             try:
@@ -766,7 +789,7 @@ class HandsSession:
                 # transport raises its own errors, not only HandsError.
                 hooklog.log_failure("hands", f"browser step {index} failed: {exc}", exc)
                 outcome, error = "error", f"backend: {exc}"
-            after = self._capture(via_browser=True) if classes else None
+            after = self._capture(via_browser=True, tab=tab) if classes else None
             evidence_error = self._record(
                 index, _redact(ledger_action, classes, control), "browser",
                 classes, permit_record, before, after, outcome, error,
@@ -778,6 +801,7 @@ class HandsSession:
                 self._browser_controls = {
                     str(c.get("ref")): c for c in payload.get("controls", []) if c.get("ref")
                 }
+                self._refresh_page_url(tab)
             elif op in ("read", "open", "tabs"):
                 self._remember_page(payload if op == "read" else _first_tab(payload))
             elif op in ("click", "fill") and control is not None:
@@ -848,6 +872,31 @@ class HandsSession:
             app="browser",
             patterns=("Value",) if role in _FILLABLE_ROLES else ("Invoke",),
         )
+
+    def _browser_host(self) -> str:
+        host = urlsplit(str(self._browser_page.get("url", ""))).hostname
+        return _clean(host or "an unnamed site", 40)
+
+    def _refresh_page_url(self, tab: str | None) -> None:
+        """Ask the browser where it currently is, cheaply.
+
+        A `find` is often the only browser call a task makes before clicking,
+        and the probe's result carries no URL — so without this the permit
+        prompt for that click could not name the site, which is the one thing
+        it most needs to say. `current_url` is a single `Target.getTargetInfo`
+        call, no page evaluation.
+
+        The page title is dropped whenever the URL changed: a title from the
+        previous page is worse than none, because the classifier reads it the
+        way it reads a window title."""
+        try:
+            url = str(self._require_browser().current_url(tab))
+        except Exception as exc:  # noqa: BLE001 — a missing URL is not a failed step
+            hooklog.log_failure("hands", f"could not read the current url: {exc}", exc)
+            return
+        previous = self._browser_page
+        title = previous.get("title", "") if url == previous.get("url") else ""
+        self._browser_page = {"url": url, "title": title}
 
     def _remember_page(self, data: object) -> None:
         """The page a browser step last reported. It is the browser's

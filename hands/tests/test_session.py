@@ -23,6 +23,7 @@ from firekeep_hands.backends.base import (
 from firekeep_hands.backends.fake import FakeBackend
 from firekeep_hands.broker.permits import PermitStore
 from firekeep_hands.config import HandsConfig, Policy, Remembered
+from firekeep_hands.evidence import Ledger
 from firekeep_hands.keep import KeepDecision
 from firekeep_hands.session import HandsSession
 
@@ -209,8 +210,12 @@ class FakeBrowser:
         self.calls.append(("fill", ref, text))
 
     def screenshot(self, *, tab=None, max_width=1280) -> bytes:
-        self.calls.append(("screenshot",))
+        self.calls.append(("screenshot", tab))
         return b"\x89PNG\r\n\x1a\nbrowser"
+
+    def current_url(self, tab=None) -> str:
+        self.calls.append(("current_url", tab))
+        return self.page["url"]
 
 
 # -- fixtures --------------------------------------------------------------
@@ -629,8 +634,10 @@ def test_a_web_button_is_classified_like_a_native_one(session, store):
     session.browser_op("find", query="order")
     r = session.browser_op("click", ref="g1-d3")
     assert r["ok"] is False and r["needs_permit"]["classes"] == ["money"]
-    assert r["needs_permit"]["title"] == 'click "Place order" in browser'
-    assert browser.calls == [("find", "order")]  # never dispatched
+    # Names the SITE, not "in browser": which shop is about to be ordered
+    # from is the whole question the human is being asked.
+    assert r["needs_permit"]["title"] == 'click "Place order" on shop.example'
+    assert ("click", "g1-d3") not in browser.calls  # never dispatched
 
     ch = r["needs_permit"]["challenge"]
     store.decide(ch, "approve", via="chord")
@@ -665,7 +672,7 @@ def test_an_ordinary_web_click_needs_no_permit(session):
     session.browser_op("find", query="Save")
     r = session.browser_op("click", ref="g1-d1")
     assert r["ok"] is True and r["classes"] == []
-    assert ("screenshot",) not in browser.calls  # unprotected: no evidence images
+    assert ("screenshot", None) not in browser.calls  # unprotected: no evidence images
     assert session.ledger.steps()[-1]["before"] is None
 
 
@@ -683,7 +690,33 @@ def test_a_protected_browser_step_is_photographed_through_the_browser(session, s
     line = session.ledger.steps()[-1]
     assert line["before"] and line["after"]
     assert (session.ledger.dir / f"{line['step_index']:03d}-before.png").exists()
-    assert browser.calls.count(("screenshot",)) == 2
+    assert browser.calls.count(("screenshot", None)) == 2
+
+
+def test_the_evidence_pair_is_taken_on_the_tab_the_step_targets(session, store):
+    """A protected click on a named tab must be photographed on that tab, not
+    on whichever one happens to be current."""
+    browser = FakeBrowser()
+    session.browser = browser
+    session.task_start("x", ["Notepad"])
+    session.browser_op("find", query="order", tab="t7")
+    ch = session.browser_op("click", ref="g1-d3", tab="t7")["needs_permit"]["challenge"]
+    store.decide(ch, "approve", via="chord")
+    assert session.browser_op("click", ref="g1-d3", tab="t7", permit=ch)["ok"]
+    assert browser.calls.count(("screenshot", "t7")) == 2
+    assert ("screenshot", None) not in browser.calls
+
+
+def test_the_site_named_in_a_permit_is_the_one_the_page_is_on(session):
+    """A find is often the only browser call before a click, and the DOM probe
+    reports no URL — so the session asks the browser where it is."""
+    browser = FakeBrowser(page={"url": "https://bank.example/transfer", "title": "Transfer"})
+    session.browser = browser
+    session.task_start("x", ["Notepad"])
+    session.browser_op("find", query="order")
+    assert ("current_url", None) in browser.calls
+    r = session.browser_op("click", ref="g1-d3")
+    assert r["needs_permit"]["title"] == 'click "Place order" on bank.example'
 
 
 def test_a_protected_navigation_is_photographed_too(session, store):
@@ -696,7 +729,7 @@ def test_a_protected_navigation_is_photographed_too(session, store):
     assert session.browser_op("navigate", url="https://evil.example/x", permit=ch)["ok"]
     line = session.ledger.steps()[-1]
     assert line["before"] and line["after"]
-    assert browser.calls.count(("screenshot",)) == 2
+    assert browser.calls.count(("screenshot", None)) == 2
 
 
 def test_an_unlabelled_link_is_judged_by_where_it_goes(session):
@@ -927,6 +960,62 @@ def test_a_field_of_the_wrong_type_never_reaches_the_backend(session, action):
     assert r["ok"] is False and r["error"].startswith("invalid_action")
     assert session.backend.calls == []
     assert session.ledger.steps() == []
+
+
+@pytest.mark.parametrize("action", [
+    ["kind", "wait"],                       # a list, not an object
+    "wait",
+    42,
+    None,
+    {"kind": {"nested": "object"}},         # unhashable: broke the lookup
+    {"kind": 7},
+    {"kind": None},
+    {},
+])
+def test_a_malformed_action_envelope_is_refused_not_crashed(session, action):
+    """`hands_act` declares `action` as a bare object, so a client can send
+    anything. Every one of these used to surface as `backend: …`, which tells
+    a model its machine broke rather than that it sent nonsense."""
+    session.task_start("x", ["Notepad"])
+    r = session.act(action)
+    assert r["ok"] is False and r["error"].startswith("invalid_action")
+    assert session.backend.calls == [] and session.ledger.steps() == []
+
+
+def test_the_keep_block_path_resets_even_when_the_cleanup_faults():
+    """A raising `ledger.close` must not leave the session believing a task
+    is open moments after the lease behind it was handed back."""
+    link = FakeLink(decision=KeepDecision("block", "no"))
+    s = build_session("Notepad", link=link)
+    original = Ledger.close
+
+    def boom(self, *_args, **_kwargs):
+        raise OSError("read-only file system")
+
+    Ledger.close = boom
+    try:
+        with pytest.raises(HandsError) as ei:
+            s.task_start("x", ["Notepad"])
+    finally:
+        Ledger.close = original
+    assert ei.value.code == "blocked"
+    assert s.task_id is None and s.ledger is None
+    assert link.released is True
+
+
+def test_task_end_releases_even_when_telling_the_keep_fails(session):
+    """Reconciling with the Keep is bookkeeping. Bookkeeping must never be
+    what decides whether the human gets their machine back."""
+    session.task_start("x", ["Notepad"])
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("cortex exploded")
+
+    session.link.action_after = boom
+    with pytest.raises(RuntimeError):
+        session.task_end("done", "ok")
+    assert session.link.released is True
+    assert session.task_id is None
 
 
 def test_perception_budgets_are_clamped_not_merely_defaulted(session):

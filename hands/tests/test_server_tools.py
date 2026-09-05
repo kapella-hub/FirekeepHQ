@@ -175,6 +175,16 @@ def test_every_declared_schema_actually_validates(server_tools):
         jsonschema.Draft202012Validator.check_schema(tool.inputSchema)
 
 
+@pytest.mark.parametrize("action", [["kind", "wait"], "wait", 42, {"kind": {"a": 1}}])
+def test_a_malformed_action_reaches_the_model_as_invalid_action(session, action):
+    """The whole way out, not just at the routing layer: a client that sends
+    a garbage envelope must be told it sent garbage, not that the machine
+    broke."""
+    _text(server.dispatch(session, "hands_task_start", {"goal": "x"}))
+    result = _text(server.dispatch(session, "hands_act", {"action": action}))
+    assert result["ok"] is False and result["error"].startswith("invalid_action")
+
+
 def test_an_unknown_tool_is_a_normal_result(session):
     result = _text(server.dispatch(session, "hands_teleport", {}))
     assert result["ok"] is False and "hands_teleport" in result["error"]
