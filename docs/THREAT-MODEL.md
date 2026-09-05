@@ -342,9 +342,15 @@ evidence path and leave the machine entirely whenever the runtime asks for one.
   on the two "switch app" verbs: any click, keystroke, typed string, value set or
   scroll whose target window or control belongs to an app that was not declared
   or allowlisted, plus any domain not allowlisted. A task started with `apps=[]`
-  therefore cannot operate the window that happens to be in front. Consuming a
-  `boundary` permit declares that app (or that exact host) for the remainder of
-  that task only — in memory, never in `policy.json`, and for no other class.
+  therefore cannot operate the window that happens to be in front, and a blank
+  app name — which the classifier once exempted, and which Windows resolves to
+  any window at all — is refused outright. Consuming a `boundary` permit
+  declares that app (or that exact host) for the remainder of that task only —
+  in memory, never in `policy.json`, and for no other class. What it declares
+  is **exactly what the permit sentence named**: apps and hosts are kept in
+  separate task-scoped lists, and a control in a different app from the
+  foreground window is named in the prompt rather than widened silently
+  alongside it.
 - **No model-supplied coordinates.** Actions carrying `x`/`y`/`point` are
   rejected; every pointer action resolves a `ref` from the observation the runtime
   was shown, and Hands computes the point from that control's own rect.

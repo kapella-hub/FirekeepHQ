@@ -192,9 +192,45 @@ def test_a_task_scoped_host_matches_exactly_where_the_allowlist_matches_a_parent
     purpose. A host a human approved once inside one task does not: they
     approved `pay.example.com`, not everything under `example.com`."""
     action = {"kind": "open_url", "url": "https://pay.example.com/x"}
-    assert policy.classify(action, None, W, action["url"], _NOTHING,
-                           ["Mail", "pay.example.com"]) == ()
-    assert policy.classify(action, None, W, action["url"], _NOTHING,
-                           ["Mail", "example.com"]) == ("boundary",)
+    assert policy.classify(action, None, W, action["url"], _NOTHING, ["Mail"],
+                           task_hosts=["pay.example.com"]) == ()
+    assert policy.classify(action, None, W, action["url"], _NOTHING, ["Mail"],
+                           task_hosts=["example.com"]) == ("boundary",)
     assert policy.classify(action, None, W, action["url"],
                            Policy([], ["example.com"], []), ["Mail"]) == ()
+
+
+def test_an_app_declaration_never_clears_a_navigation_to_a_host_of_that_name():
+    """Apps and hosts were one list, and a name is a name once both live in
+    the same bag: `apps=["intranet"]` cleared `http://intranet/secret`. An app
+    declaration says which programs are in scope, not where the browser may
+    go."""
+    action = {"kind": "open_url", "url": "http://intranet/secret"}
+    assert policy.classify(action, None, W, action["url"], _NOTHING,
+                           ["intranet"]) == ("boundary",)
+    assert policy.classify(action, None, W, action["url"], _NOTHING, [],
+                           task_hosts=["intranet"]) == ()
+    assert policy.classify(action, None, W, action["url"],
+                           Policy(["intranet"], [], []), []) == ("boundary",)
+
+
+def test_the_browser_token_clears_a_browser_step_and_never_a_native_window():
+    """`browser` is a reserved declaration token, and also a real Windows
+    image name — Yandex ships `browser.exe`. A native step in a window whose
+    process is called "browser" must not be cleared by a declaration that was
+    about the web."""
+    native = WindowInfo("browser", "Some window", 1, Rect(0, 0, 800, 600))
+    control = Control("r", "Button", "Save", "", Rect(0, 0, 10, 10), "browser", ("Invoke",))
+    click = {"kind": "click", "ref": "r"}
+
+    assert policy.classify(click, control, native, None, _NOTHING,
+                           ["browser"]) == ("boundary",)
+    assert policy.classify(click, control, native, None, Policy(["browser"], [], []),
+                           []) == ("boundary",)
+    # The same declaration clears the step it was meant for.
+    assert policy.classify(click, control, native, None, _NOTHING, ["browser"],
+                           browser_step=True) == ()
+    # And a native window really called "browser" is still declarable by name
+    # once the task means the program rather than the web.
+    assert policy.classify(click, control, native, None, _NOTHING,
+                           ["browser", "Browser.exe"]) == ("boundary",)

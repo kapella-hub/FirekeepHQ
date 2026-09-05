@@ -272,7 +272,17 @@ Three details make that liveable rather than a queue of prompts.
   it is not a second question. This is scoped to the task and dies with it —
   nothing is written to `policy.json`, and the next task starts from what it
   declares. It widens *that app only*: a `send` inside it is still its own
-  permit, because the app is the scope, not the permission.
+  permit, because the app is the scope, not the permission. **What is added is
+  exactly what the permit sentence named**, never a second app derived
+  alongside it — so when a control lives in a different app from the window in
+  front, the prompt says `invoke "Save" in Excel (window: Notepad)` and the
+  task gains Excel, not both.
+- **Approved hosts are a separate list from approved apps**, shown as `hosts`
+  beside `apps` in `hands_status`. They were one list, and a name is a name
+  once both live in the same bag: a task declaring `apps=["intranet"]` cleared
+  a navigation to `http://intranet/`. An app declaration says which programs
+  are in scope; where the browser may go is the domain allowlist plus the
+  hosts this task has had approved.
 - **The browser is one app**, named `browser`. Declare it (or approve it once)
   and clicking through a page is not re-prompted per site. Which sites the
   browser may *reach* is unaffected — that stays the domain allowlist's job, and
@@ -284,7 +294,10 @@ Three details make that liveable rather than a queue of prompts.
   download bar — is that process, and on Windows the app name is the image name
   without `.exe`: `chrome`, `msedge`, `notepad`, `explorer`. Matching is
   case-insensitive, so `apps=["notepad"]` and `apps=["Notepad"]` are the same
-  declaration.
+  declaration. **`browser` is a reserved token and not an app name**: Yandex
+  ships `browser.exe`, so a native step in a window whose process is called
+  "browser" is judged by its own name and is never cleared by a declaration
+  that was about the web.
 - **Three kinds are outside the rule**, because they land on no window: `wait`
   reaches nothing, `clipboard_set` is machine-wide rather than scoped to
   whatever is in front, and an unnamed window (a backend that could not read

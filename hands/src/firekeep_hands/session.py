@@ -47,7 +47,7 @@ from . import ids, paths
 from .backends.base import Control, HandsError, Observation, Rect, WindowInfo
 from .broker.client import BrokerClient
 from .evidence import Ledger, prune
-from .policy import BROWSER_APP, boundary_apps, decide
+from .policy import BROWSER_APP, decide
 from .routing import Routed, route
 
 _DETAILS = ("summary", "controls", "screenshot")
@@ -132,6 +132,12 @@ class HandsSession:
         self.task_id: str | None = None
         self.goal: str = ""
         self.task_apps: list[str] = []
+        # Hosts this task has had approved, kept apart from `task_apps` on
+        # purpose: one list made `apps=["intranet"]` clear a navigation to
+        # `http://intranet/`, because a name is a name once both live in the
+        # same bag. An app declaration says which programs are in scope; where
+        # the browser may GO is the domain allowlist plus this.
+        self.task_hosts: list[str] = []
         self.ledger: Ledger | None = None
         self.action_id: str | None = None
         self.step_index = 0
@@ -166,6 +172,10 @@ class HandsSession:
                 "task_id": self.task_id,
                 "goal": self.goal,
                 "apps": list(self.task_apps),
+                # Both lists are shown because both grow: a consumed boundary
+                # permit widens one or the other, and "why was that allowed?"
+                # is answered by seeing what this task has been let into.
+                "hosts": list(self.task_hosts),
                 "step_index": self.step_index,
                 "steps_left": max(0, self.config.max_steps - self.step_index),
                 "evidence": str(self.ledger.dir) if self.ledger else None,
@@ -388,6 +398,7 @@ class HandsSession:
         self.task_id = None
         self.goal = ""
         self.task_apps = []
+        self.task_hosts = []
         self.ledger = None
         self.action_id = None
         self.step_index = 0
@@ -511,7 +522,7 @@ class HandsSession:
             # "type into the password box you just clicked" a credential step.
             control = self._focus_hint
         decision = decide(action, control, window, action.get("url"),
-                          self.policy, self.task_apps)
+                          self.policy, self.task_apps, task_hosts=self.task_hosts)
 
         permit_record = None
         if decision.verdict == "permit":
@@ -519,7 +530,7 @@ class HandsSession:
             if "error" in gate or "needs_permit" in gate:
                 return gate
             permit_record = gate["permit"]
-            self._widen(action, control, window, action.get("url"), decision)
+            self._widen(gate.get("widen"), decision)
 
         # A navigation is a browser step even though it arrives through
         # `act`, so its evidence comes from the page, not the desktop.
@@ -592,7 +603,7 @@ class HandsSession:
             self.machine_id, self.session_id, self.task_id,
             self.step_index, ids.action_hash(action),
         )
-        title = self._permit_title(routed, window)
+        title, widen_apps, widen_hosts = self._titled(routed, window, decision.classes)
         needs = {
             "challenge": challenge,
             "title": title,
@@ -631,7 +642,11 @@ class HandsSession:
                     "needs_permit": needs}
 
         granted = broker.get(challenge) or {}
-        return {"permit": {"challenge": challenge, "via": granted.get("via")}}
+        # The widening travels with the permit, carrying exactly the names the
+        # title just put in front of the human. It is NOT recomputed later:
+        # that is precisely how the two drifted apart.
+        return {"permit": {"challenge": challenge, "via": granted.get("via")},
+                "widen": {"apps": widen_apps, "hosts": widen_hosts}}
 
     def _tampered(self, reply: object, challenge: str, title: str,
                   classes: tuple[str, ...]) -> dict | None:
@@ -674,10 +689,9 @@ class HandsSession:
             "classes": list(classes),
         }
 
-    def _widen(self, action: dict, control: Control | None, window: WindowInfo | None,
-               url: str | None, decision) -> None:
-        """Add the app (or host) a consumed `boundary` permit approved to this
-        task's declared set, for the life of this task only.
+    def _widen(self, widen: object, decision) -> None:
+        """Add what a consumed `boundary` permit approved to this task's scope,
+        for the life of this task only.
 
         Without it, making `boundary` the catch-all it is documented to be
         would demand a chord per click in an undeclared app — which is not
@@ -685,25 +699,55 @@ class HandsSession:
         it the human is asked once, "may this task operate Mail", and the
         answer holds until `hands_task_end`.
 
-        Three things it deliberately is not. It is not `policy.remembered`:
-        nothing is written to disk and the next task starts from the apps it
-        declares. It does not widen any other class — a `send` or a `money`
-        step inside the now-declared app still needs its own permit, because
-        the app is the scope, not the permission. And it names the app from
-        `policy.boundary_apps`, the same function that raised the class, so
-        what gets added can never be a different app than the one the human
-        was shown."""
-        if "boundary" not in decision.classes:
-            return
-        for name in boundary_apps(action, control, window, url, self.policy, self.task_apps):
-            if name:
-                self.task_apps.append(name)
+        `widen` comes from `_gate`, which got it from `_titled` — the same call
+        that built the sentence the human read. It is deliberately NOT
+        recomputed here from `policy.boundary_apps`, which is what this used to
+        do: that function reports the control's app AND the window's app, while
+        the title named only the window's, so a model could foreground a
+        declared app, reach an undeclared one by `hands_find(app=…)`, and have
+        the human approve a sentence about Notepad while the task gained Excel.
+        Deriving the widening from anything but the title reopens that.
 
-    def _permit_title(self, routed: Routed, window: WindowInfo | None) -> str:
-        """What the human sees. Built from the ROUTED step — the control the
-        observation actually resolved and the window it lives in — never from
-        a caller-supplied string, because the broker renders whatever it is
-        given and this is the one sentence the approval rests on.
+        Apps and hosts are separate for the same reason they are separate in
+        `policy.boundary_apps`: a name in the app list must not clear a
+        navigation to a host of that name.
+
+        Three things it deliberately is not. It is not `policy.remembered`:
+        nothing is written to disk and the next task starts from what it
+        declares. It does not widen any other class — a `send` inside the
+        now-declared app still needs its own permit, because the app is the
+        scope, not the permission. And it never adds a name the human was not
+        shown."""
+        if "boundary" not in decision.classes or not isinstance(widen, dict):
+            return
+        for name in widen.get("apps") or ():
+            if name and not _already(name, self.task_apps):
+                self.task_apps.append(name)
+        for host in widen.get("hosts") or ():
+            if host and not _already(host, self.task_hosts):
+                self.task_hosts.append(host)
+
+    def _permit_title(self, routed: Routed, window: WindowInfo | None,
+                      classes: tuple[str, ...] = ()) -> str:
+        return self._titled(routed, window, classes)[0]
+
+    def _titled(self, routed: Routed, window: WindowInfo | None,
+                classes: tuple[str, ...]) -> tuple[str, list[str], list[str]]:
+        """`(title, apps, hosts)` — the sentence the human is shown, and
+        EXACTLY the names that sentence puts in front of them.
+
+        One function returning all three because they have to agree. The
+        widening used to recompute its own list from `policy.boundary_apps`,
+        which returns the control's app AND the window's app; the title named
+        only the window's. So a model could foreground a declared app, reach
+        an undeclared one with `hands_find(app="Excel")`, click it, and the
+        human would approve `invoke "Save" in Notepad` while the task silently
+        gained Excel. The title now names the control's app when it differs,
+        with the window as context, and the widening is whatever this returned.
+
+        Built from the ROUTED step — never from a caller-supplied string —
+        because the broker renders whatever it is given and this is the one
+        sentence the approval rests on.
 
         Three kinds have no observed control to name, only a string the
         runtime chose: an app to open, an app to focus, a chord to press.
@@ -713,31 +757,50 @@ class HandsSession:
         `invoke "X" in Y` form reserved for something Hands actually
         observed. A human seeing the second form is looking at a real
         control; the first form is a request, and reads like one."""
-        where = _clean(window.app or window.title, 40) if window is not None else "this machine"
+        window_app = str(window.app or "") if window is not None else ""
+        where = _clean(window_app or (window.title if window else ""), 40) or "this machine"
         if routed.control is not None:
             if routed.route == "browser":
                 # "in browser" tells the human nothing they need. Which SITE
                 # is about to be ordered from is the whole question, and a
                 # navigation prompt already names its host — a click prompt
                 # should not be vaguer than the navigation that reached it.
-                return f'{routed.kind} "{_clean(routed.control.name)}" on {self._browser_host()}'
-            return f'{routed.kind} "{_clean(routed.control.name)}" in {where}'
+                # The suffix appears only when this step is a crossing, so the
+                # sentence names the thing the task is about to gain.
+                title = f'{routed.kind} "{_clean(routed.control.name)}" on {self._browser_host()}'
+                if "boundary" in classes:
+                    title += " (in the browser)"
+                return title, [BROWSER_APP], []
+            control_app = str(routed.control.app or "")
+            target = control_app or window_app
+            title = f'{routed.kind} "{_clean(routed.control.name)}" in {_clean(target, 40) or where}'
+            if control_app and window_app and control_app.lower() != window_app.lower():
+                # The control is not in the window that is in front. Say both:
+                # the app being operated is what the approval is about, and the
+                # foreground is what the human is actually looking at.
+                title += f" (window: {_clean(window_app, 40)})"
+            return title, ([target] if target else []), []
         if routed.kind == "open_url":
-            host = urlsplit(str(routed.payload.get("url", ""))).hostname or "an unnamed host"
-            return f"open {_clean(host)} in the browser"
+            host = urlsplit(str(routed.payload.get("url", ""))).hostname or ""
+            return (f"open {_clean(host or 'an unnamed host')} in the browser",
+                    [], ([host] if host else []))
         if routed.kind == "open_app":
-            return f'open the app the runtime asked for: "{_clean(routed.payload.get("app", ""))}"'
+            app = str(routed.payload.get("app", ""))
+            return (f'open the app the runtime asked for: "{_clean(app)}"',
+                    ([app] if app.strip() else []), [])
         if routed.kind == "focus_app":
+            app = str(routed.payload.get("app", ""))
             return ("switch to the app the runtime asked for: "
-                    f'"{_clean(routed.payload.get("app", ""))}"')
+                    f'"{_clean(app)}"', ([app] if app.strip() else []), [])
         if routed.kind == "key":
             return (f'press the keys the runtime asked for: '
-                    f'"{_clean(routed.payload.get("chord", ""), 24)}" in {where}')
+                    f'"{_clean(routed.payload.get("chord", ""), 24)}" in {where}',
+                    ([window_app] if window_app else []), [])
         if routed.kind == "type":
-            return f"type text into {where}"
+            return f"type text into {where}", ([window_app] if window_app else []), []
         if routed.kind == "clipboard_set":
-            return f"set the clipboard on {where}"
-        return f"{routed.kind} in {where}"
+            return f"set the clipboard on {where}", ([window_app] if window_app else []), []
+        return f"{routed.kind} in {where}", ([window_app] if window_app else []), []
 
     def _execute(self, routed: Routed, window: WindowInfo | None) -> dict | None:
         """Routed step -> backend call. `routing` already chose accessibility
@@ -950,7 +1013,12 @@ class HandsSession:
             policy_action = {"kind": "set_value", "ref": ref, "value": str(kwargs.get("text", ""))}
         window = WindowInfo(BROWSER_APP, self._browser_page.get("title", ""), 0, Rect(0, 0, 0, 0))
         url = self._browser_page.get("url")
-        decision = decide(policy_action, control, window, url, self.policy, self.task_apps)
+        # `browser_step=True` is what lets the reserved `browser` token count
+        # here and nowhere else — a NATIVE window whose process happens to be
+        # called "browser" (Yandex ships `browser.exe`) must not be cleared by
+        # a declaration that was about the web.
+        decision = decide(policy_action, control, window, url, self.policy, self.task_apps,
+                          task_hosts=self.task_hosts, browser_step=True)
         if decision.verdict != "permit":
             return {"classes": decision.classes, "permit": None, "control": control}
         routed = Routed(policy_action["kind"], "browser", control, None, {})
@@ -959,9 +1027,10 @@ class HandsSession:
             return gate
         # A consumed `boundary` here approved operating the browser at all, so
         # the rest of the task's clicks in it are not re-prompted. Which SITE
-        # it may reach is unaffected: that is the domain allowlist's job, and
-        # every navigation still goes through it.
-        self._widen(policy_action, control, window, url, decision)
+        # it may reach is unaffected: that is the domain allowlist's job plus
+        # this task's approved hosts, and every navigation still goes through
+        # both.
+        self._widen(gate.get("widen"), decision)
         return {"classes": decision.classes, "permit": gate["permit"], "control": control}
 
     def _browser_control(self, ref: str) -> Control | None:
@@ -1124,6 +1193,13 @@ class HandsSession:
 
 def _error(exc: HandsError) -> dict:
     return {"ok": False, "error": f"{exc.code}: {exc}"}
+
+
+def _already(name: str, names: list[str]) -> bool:
+    """Case-insensitive membership, matching `policy._named`'s rule — a task
+    widened with "Notepad" must not gain "notepad" as a second entry."""
+    needle = str(name).lower()
+    return any(needle == str(n).lower() for n in names)
 
 
 def _redact(action: dict, classes: tuple[str, ...], control: Control | None) -> dict:

@@ -97,7 +97,24 @@ def _named(value: str, names) -> bool:
     return any(needle == str(n).lower() for n in names)
 
 
-def _app_declared(app: str, policy: Policy, task_apps: list[str]) -> bool:
+def _declared_names(policy: Policy, task_apps: list[str], *, browser_step: bool) -> list[str]:
+    """The app names this step may land in without a permit.
+
+    `browser` is a RESERVED token, not an app: it is what a task declares to
+    say "web steps are in scope", and `HandsSession` stamps it on the window
+    and control it synthesises for a `hands_browser` click. But it is also a
+    real Windows image name — Yandex ships `browser.exe` — so a NATIVE step in
+    a window whose process is called "browser" must not be cleared by a
+    declaration that was about the web. Outside a browser step the token is
+    dropped from the declared set, and such a window is judged by its own name
+    like any other."""
+    names = list(task_apps) + list(policy.apps)
+    if browser_step:
+        return names
+    return [n for n in names if str(n).lower() != BROWSER_APP]
+
+
+def _app_declared(app: str, declared: list[str]) -> bool:
     """An OBSERVED app name that is empty is not evidence of a crossing.
 
     A backend that could not name the foreground window returns `""`, and
@@ -109,7 +126,7 @@ def _app_declared(app: str, policy: Policy, task_apps: list[str]) -> bool:
     is a string the model chose (`open_app`/`focus_app`), a blank is the
     opposite: not "we could not tell" but "I did not say", and `boundary_apps`
     treats it as a crossing rather than calling this."""
-    return not app or _named(app, list(task_apps) + list(policy.apps))
+    return not app or _named(app, declared)
 
 
 def _target_apps(control: Control | None, window: WindowInfo | None) -> list[str]:
@@ -134,16 +151,28 @@ def boundary_apps(
     url: str | None,
     policy: Policy,
     task_apps: list[str],
+    *,
+    task_hosts: list[str] | None = None,
+    browser_step: bool = False,
 ) -> list[str]:
     """Every name this action steps outside of: app names for anything that
     targets a window or a control, the URL's host for `open_url`.
 
-    One function, two callers, on purpose. `_classify_with_reasons` uses it to
-    raise the `boundary` class, and `HandsSession` uses it to know what to add
-    to the task once a human has approved the crossing. Deriving the second
-    from anything else is how a widening and a classification drift apart —
-    and a widening that names a different app than the one that was approved
-    is a hole, not a bug."""
+    `task_apps` holds APP names and `task_hosts` holds HOSTS, and they are two
+    lists rather than one because they were one and it was wrong: a task
+    declaring `apps=["intranet"]` cleared a navigation to `http://intranet/`,
+    because a name is a name once both live in the same bag. An app
+    declaration says which programs are in scope; where the browser may GO is
+    the domain allowlist's question, plus whatever hosts this task has already
+    had approved.
+
+    `browser_step` says whether this is a `hands_browser` click or fill, which
+    decides whether the reserved `browser` token counts — see
+    `_declared_names`.
+
+    One function, two callers, on purpose: `_classify_with_reasons` raises the
+    class from it, and `HandsSession` widens the task from what its permit
+    title named. Both must agree about what was crossed."""
     kind = action.get("kind")
     if kind == "open_url":
         target = action.get("url") or url
@@ -152,9 +181,10 @@ def boundary_apps(
         host = (urlsplit(str(target)).hostname or "").lower()
         # The allowlist matches a parent domain; a task-scoped widening does
         # not. The human approved `pay.example.com`, not `example.com`.
-        if host_allowed(policy, str(target)) or _named(host, task_apps):
+        if host_allowed(policy, str(target)) or _named(host, task_hosts or []):
             return []
         return [host or str(target)]
+    declared = _declared_names(policy, task_apps, browser_step=browser_step)
     if kind in ("open_app", "focus_app"):
         app = str(action.get("app", ""))
         # A blank here is a crossing, not an exemption. `_app_declared`'s
@@ -164,10 +194,10 @@ def boundary_apps(
         # layers have to be wrong for a blank to operate the desktop.
         if not app.strip():
             return [app]
-        return [] if _app_declared(app, policy, task_apps) else [app]
+        return [] if _app_declared(app, declared) else [app]
     if kind in _WINDOW_SCOPED:
         return [app for app in _target_apps(control, window)
-                if not _app_declared(app, policy, task_apps)]
+                if not _app_declared(app, declared)]
     return []
 
 
@@ -178,6 +208,9 @@ def _classify_with_reasons(
     url: str | None,
     policy: Policy,
     task_apps: list[str],
+    *,
+    task_hosts: list[str] | None = None,
+    browser_step: bool = False,
 ) -> dict[str, str]:
     """The class -> matched-text map `classify` and `decide` both need;
     `decide` additionally uses the matched text to build its `reason`."""
@@ -235,7 +268,8 @@ def _classify_with_reasons(
         if app.lower().endswith(_INSTALL_EXTENSIONS) and app not in policy.apps:
             reasons["install"] = app
 
-    crossed = boundary_apps(action, control, window, url, policy, task_apps)
+    crossed = boundary_apps(action, control, window, url, policy, task_apps,
+                            task_hosts=task_hosts, browser_step=browser_step)
     if crossed:
         reasons["boundary"] = crossed[0]
 
@@ -249,8 +283,12 @@ def classify(
     url: str | None,
     policy: Policy,
     task_apps: list[str],
+    *,
+    task_hosts: list[str] | None = None,
+    browser_step: bool = False,
 ) -> tuple[str, ...]:
-    reasons = _classify_with_reasons(action, control, window, url, policy, task_apps)
+    reasons = _classify_with_reasons(action, control, window, url, policy, task_apps,
+                                     task_hosts=task_hosts, browser_step=browser_step)
     return tuple(c for c in CLASSES if c in reasons)
 
 
@@ -294,10 +332,14 @@ def decide(
     policy: Policy,
     task_apps: list[str],
     now: dt.datetime | None = None,
+    *,
+    task_hosts: list[str] | None = None,
+    browser_step: bool = False,
 ) -> Decision:
     if now is None:
         now = dt.datetime.now(dt.timezone.utc)
-    reasons = _classify_with_reasons(action, control, window, url, policy, task_apps)
+    reasons = _classify_with_reasons(action, control, window, url, policy, task_apps,
+                                     task_hosts=task_hosts, browser_step=browser_step)
     remaining = tuple(
         c
         for c in CLASSES

@@ -722,6 +722,31 @@ def test_approving_the_crossing_declares_that_app_for_the_rest_of_the_task(sessi
     assert session.status()["task"]["apps"] == ["Mail"]
 
 
+def test_the_widening_declares_only_the_app_the_sentence_named(session, store):
+    """The hole this closes: `boundary_apps` reports the control's app AND the
+    window's, while the title named only the window's. So a model could
+    foreground a DECLARED app, reach an undeclared one with
+    `hands_find(app="Excel")`, click it, and the human would approve
+    `invoke "Save" in Notepad` while the task silently gained Excel as well."""
+    session.task_start("x", ["Notepad"])            # Notepad is declared; Excel is not
+    session.backend.scene = [
+        Control("x1", "Button", "Save", "", Rect(0, 0, 10, 10), "Excel", ("Invoke",)),
+    ]
+    session.observe()                                # window is still Notepad
+    r = session.act({"kind": "invoke", "ref": "x1"})
+    assert r["needs_permit"]["classes"] == ["boundary"]
+
+    title = broker_title(session)
+    assert "Excel" in title                          # the app being operated
+    assert "window: Notepad" in title                # and the one in front, as context
+
+    ch = r["needs_permit"]["challenge"]
+    store.decide(ch, "approve", via="chord")
+    session.observe()
+    assert session.act({"kind": "invoke", "ref": "x1"}, permit=ch)["ok"] is True
+    assert session.task_apps == ["Notepad", "Excel"]   # Excel only — never both apps
+
+
 @pytest.mark.parametrize("session", ["Mail"], indirect=True)
 def test_the_widening_scopes_the_app_and_grants_nothing_else(session, store):
     """The app is the scope, not the permission. A `send` inside the app the
@@ -780,6 +805,21 @@ def test_a_refused_boundary_step_widens_nothing(session):
     session.observe()
     assert "needs_permit" in session.act({"kind": "invoke", "ref": "c1"})
     assert session.task_apps == []
+
+
+def test_an_approved_host_lands_in_task_hosts_and_never_in_task_apps(session, store):
+    """Apps and hosts are separate lists because they were one and it was
+    wrong: `apps=["intranet"]` cleared a navigation to `http://intranet/`."""
+    session.browser = FakeBrowser()
+    session.task_start("x", ["Notepad", "browser"])
+    ch = session.browser_op("navigate", url="https://pay.example.com/a")[
+        "needs_permit"]["challenge"]
+    store.decide(ch, "approve", via="chord")
+    assert session.browser_op("navigate", url="https://pay.example.com/a", permit=ch)["ok"]
+
+    assert session.task_hosts == ["pay.example.com"]
+    assert session.task_apps == ["Notepad", "browser"]     # unchanged
+    assert session.status()["task"]["hosts"] == ["pay.example.com"]
 
 
 def test_a_navigation_widens_the_host_it_approved_not_its_parent_domain(session, store):
