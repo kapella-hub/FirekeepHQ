@@ -13,6 +13,8 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import threading
+import uuid
 from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any
@@ -85,9 +87,18 @@ def _read_json(path: Path) -> dict | None:
 def _write_json_atomic(path: Path, payload: dict) -> None:
     """Temp file + os.replace in the same directory, then tighten
     permissions on both: a reader never sees a half-written file, and the
-    settings never land world-readable even momentarily."""
+    settings never land world-readable even momentarily.
+
+    The temp name carries a thread id and a random suffix, not just the pid.
+    With the pid alone, two threads of one process raced for the same temp
+    path and clobbered each other: measured on Windows on 2026-09-05, 48 of
+    50 concurrent writes of `pending.json` failed with WinError 32 (the file
+    is in use), each one swallowed by its caller and each one leaving the
+    real file stale. Uniqueness per caller costs nothing and every writer
+    here gets it, not just the one that was caught."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.parent / f"{path.name}.tmp-{os.getpid()}"
+    unique = f"{os.getpid()}-{threading.get_ident()}-{uuid.uuid4().hex[:8]}"
+    tmp = path.parent / f"{path.name}.tmp-{unique}"
     try:
         tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
         state._private(tmp)

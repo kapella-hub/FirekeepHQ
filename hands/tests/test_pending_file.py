@@ -161,6 +161,58 @@ def test_a_store_with_no_watcher_behaves_exactly_as_before(isolated_home):
     assert not pending.pending_path().exists()
 
 
+def test_fifty_threads_requesting_at_once_leave_a_readable_file(isolated_home, caplog):
+    """The announcer runs outside the store lock by design, so real threads
+    write this file concurrently. Before the temp name carried a thread id
+    they collided on one `<name>.tmp-<pid>` path and most writes were lost —
+    swallowed into a debug line, leaving a stale file that told the human
+    the wrong thing about what a chord would approve."""
+    import logging
+    import threading
+
+    shown = []
+    lock = threading.Lock()
+
+    def record(*args):
+        with lock:
+            shown.append(args[0])
+
+    announcer = PermitAnnouncer("ctrl+alt+y", "ctrl+alt+n", notifier=record)
+    store = PermitStore(ttl_s=600, on_change=announcer)   # the real wall clock
+
+    count = 50
+    start = threading.Barrier(count)
+    errors = []
+
+    def request(index):
+        try:
+            start.wait(timeout=10)
+            store.request(challenge=f"c{index:02d}", title=f"step {index}",
+                          classes=("send",), task_id="t", step_index=index)
+        except Exception as exc:  # noqa: BLE001 - reported, not swallowed
+            errors.append(exc)
+
+    with caplog.at_level(logging.DEBUG, logger="firekeep_hands.broker.pending"):
+        threads = [threading.Thread(target=request, args=(i,)) for i in range(count)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+
+    assert errors == []
+    assert all(not thread.is_alive() for thread in threads)
+    # nothing was swallowed
+    assert [r.getMessage() for r in caplog.records if "could not write" in r.getMessage()] == []
+    # the file parses and holds every permit
+    state = pending.read_pending()
+    assert {row["challenge"] for row in state["permits"]} == {f"c{i:02d}" for i in range(count)}
+    assert len(store.pending()) == count
+    # and each permit was announced exactly once
+    assert sorted(shown) == sorted(f"step {i}" for i in range(count))
+    # no temp files left behind
+    assert list(pending.pending_path().parent.glob("pending.json.tmp*")) == []
+
+
 def test_the_watcher_is_never_called_while_the_store_lock_is_held(isolated_home):
     """It writes a file and can spawn a process. Holding the lock across
     that would stall every HTTP handler and the chord listener, and would

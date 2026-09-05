@@ -448,23 +448,32 @@ class PermitAnnouncer:
 
     Each permit is announced once. A permit resolving, expiring or being
     consumed rewrites the file but raises no new toast — the human answered
-    it, or it timed out, and neither is news."""
+    it, or it timed out, and neither is news.
+
+    Its own lock, because it deliberately runs OUTSIDE the store's: several
+    threads reach here at once, and without it "announced once" was only a
+    read-then-write race away from twice, and two threads could interleave
+    their writes of the same file. The lock is never held while the store's
+    is, so the two cannot deadlock — `_fire_change` releases before calling."""
 
     def __init__(self, chord: str, deny_chord: str, notifier=notify.announce):
         self.chord = chord
         self.deny_chord = deny_chord
         self._notify = notifier
         self._announced: set[str] = set()
+        self._lock = threading.Lock()
 
     def __call__(self, store: PermitStore) -> None:
-        waiting = store.pending()
-        pending.write_pending(store, chord=self.chord, deny_chord=self.deny_chord)
-        live = {permit.challenge for permit in waiting}
-        self._announced &= live          # forget what is no longer waiting
-        for permit in waiting:
-            if permit.challenge in self._announced:
-                continue
-            self._announced.add(permit.challenge)
+        with self._lock:
+            waiting = store.pending()
+            pending.write_pending(store, chord=self.chord, deny_chord=self.deny_chord)
+            live = {permit.challenge for permit in waiting}
+            self._announced &= live          # forget what is no longer waiting
+            fresh = [p for p in waiting if p.challenge not in self._announced]
+            self._announced |= {p.challenge for p in fresh}
+        # Spawning is outside the lock: a slow notifier must not hold up the
+        # next permit's write, and the "announced once" bookkeeping is done.
+        for permit in fresh:
             try:
                 self._notify(permit.title, permit.classes, self.chord, self.deny_chord)
             except Exception as exc:  # noqa: BLE001 - a toast never fails a permit

@@ -1373,8 +1373,8 @@ def _check_hands() -> tuple[str, str, str]:
                 f"and phone approvals are {phone}, so every protected step is refused. "
                 "macOS: grant Input Monitoring to this kit's python "
                 "(System Settings → Privacy & Security → Input Monitoring) and restart "
-                "the broker. Windows: re-run `firekeep hands enable` to recreate the "
-                "logon task. Or opt in to phone approvals with `firekeep hands config "
+                "the broker. Windows: re-run `firekeep hands enable` to restore the "
+                "startup entry. Or opt in to phone approvals with `firekeep hands config "
                 "set phone_approvals true` after reading what that trusts in "
                 "docs/guides/hands.md")
     return ("hands", "ok",
