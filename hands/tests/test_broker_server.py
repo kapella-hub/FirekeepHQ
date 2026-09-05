@@ -200,8 +200,27 @@ def test_a_stalled_client_cannot_hold_a_handler_thread_forever(isolated_home, mo
         srv.stop()
 
 
-def test_a_dropped_connection_does_not_print_a_traceback(isolated_home, capsys):
-    """The ordinary consequence of the timeout above firing. The stdlib
+def _handle_error_for(srv, exc, monkeypatch):
+    """Drive the server's handle_error with `exc` in flight, capturing what
+    it reports to the kit's failure log."""
+    reported = []
+    monkeypatch.setattr(server_module.hooklog, "log_failure",
+                        lambda *args, **kw: reported.append(args))
+    try:
+        raise exc
+    except type(exc):
+        srv._httpd.handle_error(None, ("127.0.0.1", 1234))
+    return reported
+
+
+@pytest.mark.parametrize("exc", [
+    ConnectionAbortedError("client hung up"),
+    ConnectionResetError("client vanished"),
+    BrokenPipeError("write to a closed socket"),
+    TimeoutError("the handler timeout fired"),
+])
+def test_a_dropped_connection_is_quiet(isolated_home, capsys, monkeypatch, exc):
+    """The ordinary consequence of the handler timeout firing. The stdlib
     prints a full traceback for it, which on a foreground broker reads like a
     crash when the connection is simply gone."""
     srv = BrokerServer(PermitStore(ttl_s=60), chord="ctrl+alt+y",
@@ -209,12 +228,46 @@ def test_a_dropped_connection_does_not_print_a_traceback(isolated_home, capsys):
     srv.start()
     try:
         capsys.readouterr()
-        try:
-            raise ConnectionAbortedError("client hung up")
-        except ConnectionAbortedError:
-            srv._httpd.handle_error(None, ("127.0.0.1", 1234))
+        reported = _handle_error_for(srv, exc, monkeypatch)
         captured = capsys.readouterr()
         assert captured.err == "" and "Traceback" not in captured.out
+        assert reported == []          # a disconnect is not a failure to report
+    finally:
+        srv.stop()
+
+
+def test_a_bug_in_a_route_handler_is_reported_not_swallowed(isolated_home, monkeypatch):
+    """The broker must never hide its own faults. With FIREKEEP_HANDS_LOG
+    unset a DEBUG line goes nowhere, so a broken route would refuse every
+    approval on the machine in total silence."""
+    srv = BrokerServer(PermitStore(ttl_s=60), chord="ctrl+alt+y",
+                       listeners={"chord": "unavailable", "phone": "off"})
+    srv.start()
+    try:
+        reported = _handle_error_for(srv, ValueError("a bug in a route handler"), monkeypatch)
+        assert len(reported) == 1
+        component, message = reported[0][0], reported[0][1]
+        assert component == "hands-broker"
+        assert "a bug in a route handler" in message
+        assert isinstance(reported[0][2], ValueError)
+    finally:
+        srv.stop()
+
+
+def test_an_unexpected_error_is_loud_enough_to_see_without_configuring_logging(
+        isolated_home, monkeypatch, caplog):
+    """ERROR, not DEBUG: `logging.lastResort` puts it on stderr even when
+    nothing has configured logging."""
+    import logging
+    srv = BrokerServer(PermitStore(ttl_s=60), chord="ctrl+alt+y",
+                       listeners={"chord": "unavailable", "phone": "off"})
+    srv.start()
+    try:
+        with caplog.at_level(logging.DEBUG, logger="firekeep_hands.broker.server"):
+            _handle_error_for(srv, RuntimeError("boom"), monkeypatch)
+        levels = {r.levelno for r in caplog.records}
+        assert logging.ERROR in levels
+        assert any(r.exc_info for r in caplog.records)
     finally:
         srv.stop()
 

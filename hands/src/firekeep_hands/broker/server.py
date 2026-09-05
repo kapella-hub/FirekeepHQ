@@ -241,17 +241,34 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 class _QuietHTTPServer(ThreadingHTTPServer):
-    """`ThreadingHTTPServer` whose per-connection failures are logged, not
-    printed.
+    """`ThreadingHTTPServer` that silences client disconnects and nothing
+    else.
 
-    A client that hangs up mid-response — the ordinary result of the timeout
-    above firing, or of anyone pressing Ctrl+C in a `curl` — makes the
+    A client hanging up mid-response — the ordinary result of the handler
+    timeout firing, or of anyone pressing Ctrl+C in a `curl` — makes the
     default `handle_error` print a full traceback to stderr. On a broker run
     in the foreground that reads like a crash when it is routine, and the
-    connection is already gone either way."""
+    connection is gone either way, so it goes to DEBUG.
+
+    Every other exception is a bug in a route handler, and quietening those
+    would be much worse than the noise it saves: with `FIREKEEP_HANDS_LOG`
+    unset, DEBUG goes nowhere, so a broken `_create_permit` would fail every
+    approval on the machine and say nothing anywhere. Those are written to
+    the kit's failure log AND logged at ERROR, which reaches stderr through
+    `logging.lastResort` even when nothing has configured logging at all."""
 
     def handle_error(self, request, client_address):
-        log.debug("broker connection from %s failed", client_address, exc_info=True)
+        exc = sys.exc_info()[1]
+        # ConnectionError covers BrokenPipeError, ConnectionResetError and
+        # ConnectionAbortedError; socket.timeout has been an alias of
+        # TimeoutError since 3.10, and this wheel requires 3.10+.
+        if isinstance(exc, (ConnectionError, TimeoutError)):
+            log.debug("broker connection from %s ended early", client_address, exc_info=True)
+            return
+        hooklog.log_failure(
+            "hands-broker", f"unhandled error serving {client_address}: {exc}", exc
+        )
+        log.error("unhandled error serving %s", client_address, exc_info=True)
 
 
 class BrokerServer:
