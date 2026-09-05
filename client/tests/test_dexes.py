@@ -433,3 +433,31 @@ def test_install_leaves_a_users_registry_alone(install_env, registry_home):
     dexes.write_registry({"docdex": {}})
     assert install_env.main(["install", "--runtime", "claude", "--non-interactive"]) == 0
     assert list(dexes.read_registry()) == ["docdex"]
+
+
+# --------------------------------------------------------------------------- #
+# role — index vs. capability (Firekeep Hands PR1 Task 1)                       #
+# --------------------------------------------------------------------------- #
+
+
+def test_manifest_role_defaults_to_index():
+    from firekeep_client import dexes
+    assert dexes.DexManifest.__dataclass_fields__["role"].default == "index"
+    assert dexes.KNOWN_DEXES["symdex"].role == "index"
+    assert dexes.KNOWN_DEXES["docdex"].role == "index"
+
+
+def test_hands_manifest_is_a_capability_mounted_as_mcp_stdio():
+    from firekeep_client import dexes
+    m = dexes.KNOWN_DEXES["hands"]
+    assert (m.id, m.name, m.title, m.indexes) == ("firekeep.hands", "hands", "Hands", "desktop")
+    assert m.kind == "mcp-stdio"
+    assert m.console_script == "firekeep-hands"
+    assert m.import_probe == "firekeep_hands"
+    assert m.role == "capability"
+
+
+def test_hands_is_never_seeded(registry_home):
+    from firekeep_client import dexes
+    dexes.ensure_migrated()
+    assert set(dexes.read_registry()) == {"symdex", "docdex"}

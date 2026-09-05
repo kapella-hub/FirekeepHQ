@@ -56,6 +56,11 @@ class DexManifest:
     console_script: str
     import_probe: str
     description: str
+    # "index" (symdex, docdex, maildex) or "capability" (hands). The gateway
+    # does not read it — `kind` decides mounting — but `dex list`, doctor and
+    # the docs do: a capability OPERATES its domain rather than indexing it,
+    # and is never part of the default seed (ensure_migrated).
+    role: str = "index"
 
 
 KNOWN_DEXES: dict[str, DexManifest] = {
@@ -97,6 +102,21 @@ KNOWN_DEXES: dict[str, DexManifest] = {
             "Email — a mailbox you connect read-only, recent mail extracted into "
             "recall. Always private to you: never shared, and it cannot send."
         ),
+    ),
+    "hands": DexManifest(
+        id="firekeep.hands",
+        name="hands",
+        title="Hands",
+        indexes="desktop",
+        kind="mcp-stdio",
+        console_script="firekeep-hands",
+        import_probe="firekeep_hands",
+        description=(
+            "Desktop operator — your runtime observes and operates this "
+            "computer's apps and a Hands-managed browser; consequential steps "
+            "wait for your chord or phone tap. Opt in with `firekeep hands enable`."
+        ),
+        role="capability",
     ),
 }
 
@@ -251,6 +271,10 @@ def ensure_migrated(*, installing: bool = False) -> None:
     maildex is deliberately not in the default set. A connector with no account
     indexes nothing, so registering it here would buy a doctor row and no mail;
     `firekeep maildex add` registers it at the moment it becomes real.
+
+    hands is likewise never seeded: a capability that can move the mouse is
+    opt-in by `firekeep hands enable`, which installs the wheel and registers
+    it in one step.
 
     Called from `cmd_install` (installing=True) and from gateway startup, which
     is what covers an update that never re-ran install. `installing` does not

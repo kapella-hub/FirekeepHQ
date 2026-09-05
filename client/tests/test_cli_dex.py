@@ -29,6 +29,15 @@ def dex_home(tmp_path, monkeypatch):
     return tmp_path
 
 
+@pytest.fixture
+def registry_home(tmp_path, monkeypatch):
+    """Like `dex_home`, but leaves `is_installed` at its real probe — for tests
+    that care whether a dex's wheel is ACTUALLY present (hands' is not)."""
+    monkeypatch.setenv("FIREKEEP_CONFIG", str(tmp_path / "config"))
+    monkeypatch.setenv("FIREKEEP_LOG_DIR", str(tmp_path / "logs"))
+    return tmp_path
+
+
 def _out(capsys):
     captured = capsys.readouterr()
     return captured.out + captured.err
@@ -234,3 +243,16 @@ def test_is_installed_never_raises_on_a_broken_probe():
 def test_parser_rejects_an_unknown_action(dex_home):
     with pytest.raises(SystemExit):
         cli._build_parser().parse_args(["dex", "enable", "symdex"])
+
+
+# --------------------------------------------------------------------------- #
+# role — capabilities are labeled differently from indexes                     #
+# --------------------------------------------------------------------------- #
+
+
+def test_dex_list_labels_capabilities(registry_home, capsys):
+    from firekeep_client import cli
+    cli.cmd_dex(type("A", (), {"action": "list"})())
+    out = capsys.readouterr().out
+    assert "hands  [not installed]  operates desktop" in out
+    assert "symdex  [" in out and "indexes code" in out

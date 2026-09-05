@@ -1984,8 +1984,9 @@ def cmd_dex(args) -> int:
     if action == "list":
         print("firekeep dexes — the domain indexes this Keep understands\n")
         for manifest in dexes.KNOWN_DEXES.values():
+            verb = "operates" if manifest.role == "capability" else "indexes"
             print(f"  {manifest.name}  [{_dex_state(manifest, registry)}]  "
-                  f"indexes {manifest.indexes}")
+                  f"{verb} {manifest.indexes}")
             print(f"      {manifest.description}")
         # Names in the file with no manifest here: a hand-edited entry, or a dex
         # from a newer client after a rollback. The gateway ignores them; a
