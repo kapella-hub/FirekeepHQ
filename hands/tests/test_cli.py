@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from firekeep_hands import cli
+from firekeep_hands import cli, paths
 from firekeep_hands.config import Remembered, load_config, load_policy, save_policy
 from firekeep_hands.evidence import Ledger
 
@@ -46,6 +46,18 @@ def test_status_shows_last_task(isolated_home, capsys):
     assert cli.main(["status"]) == 0
     out = capsys.readouterr().out
     assert "last task: t-status" in out and "1 steps" in out
+
+
+def test_status_does_not_crash_when_broker_client_raises(isolated_home, monkeypatch, capsys):
+    def _raise(cls, timeout=2.0):
+        raise OSError("broker.json is corrupt")
+
+    monkeypatch.setattr(cli.BrokerClient, "from_disk", classmethod(_raise))
+    assert cli.main(["status"]) == 0
+    out = capsys.readouterr().out
+    assert "broker: unavailable (broker.json is corrupt)" in out
+    # status keeps going past the broken broker client
+    assert "policy:" in out and "last task: none" in out
 
 
 # -- allow --------------------------------------------------------------
@@ -200,6 +212,32 @@ def test_evidence_malformed_step_line_reported(isolated_home, capsys):
     assert cli.main(["evidence", "t3"]) == 0
     out = capsys.readouterr().out
     assert "#? not json at all" in out
+
+
+def test_evidence_rejects_dotdot_relative_task_id(isolated_home, capsys):
+    root = paths.evidence_root()
+    root.mkdir(parents=True, exist_ok=True)
+    # A decoy directory OUTSIDE the evidence root that "../decoy" would reach
+    # if `evidence <task_id>` built its path without checking containment.
+    decoy = root.parent / "decoy-secret"
+    decoy.mkdir(parents=True)
+    (decoy / "task.json").write_text(json.dumps({"started": "2026-01-01T00:00:00Z", "goal": "top-secret"}))
+
+    assert cli.main(["evidence", "../decoy-secret"]) == 1
+    out, err = capsys.readouterr()
+    assert "top-secret" not in out
+    assert err
+
+
+def test_evidence_rejects_absolute_path_task_id(isolated_home, tmp_path, capsys):
+    decoy = tmp_path / "decoy-abs"
+    decoy.mkdir(parents=True)
+    (decoy / "task.json").write_text(json.dumps({"started": "2026-01-01T00:00:00Z", "goal": "top-secret"}))
+
+    assert cli.main(["evidence", str(decoy)]) == 1
+    out, err = capsys.readouterr()
+    assert "top-secret" not in out
+    assert err
 
 
 # -- usage -------------------------------------------------------------

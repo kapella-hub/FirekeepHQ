@@ -114,20 +114,24 @@ def _cmd_status(args) -> int:
         for key in sorted(perms):
             print(f"  {key}: {perms[key]}")
 
-    client = BrokerClient.from_disk()
-    health = client.health() if client is not None else None
-    if health is None:
-        print("broker: not running — start it with `firekeep-hands-broker run` "
-              "or re-run `firekeep hands enable`")
+    try:
+        client = BrokerClient.from_disk()
+        health = client.health() if client is not None else None
+    except Exception as exc:  # noqa: BLE001 - a broken broker client is a status line, not a crash
+        print(f"broker: unavailable ({exc})")
     else:
-        listeners = health.get("listeners") or {}
-        print(
-            f"broker: chord {health.get('chord', '?')} ({listeners.get('chord', '?')}) · "
-            f"phone {listeners.get('phone', '?')} · pending {health.get('pending', 0)}"
-        )
-        if listeners.get("phone") == "off":
-            print("phone approvals are off — `firekeep hands config set phone_approvals true` "
-                  "turns them on; docs/guides/hands.md explains what that trusts")
+        if health is None:
+            print("broker: not running — start it with `firekeep-hands-broker run` "
+                  "or re-run `firekeep hands enable`")
+        else:
+            listeners = health.get("listeners") or {}
+            print(
+                f"broker: chord {health.get('chord', '?')} ({listeners.get('chord', '?')}) · "
+                f"phone {listeners.get('phone', '?')} · pending {health.get('pending', 0)}"
+            )
+            if listeners.get("phone") == "off":
+                print("phone approvals are off — `firekeep hands config set phone_approvals true` "
+                      "turns them on; docs/guides/hands.md explains what that trusts")
 
     policy = load_policy()
     print(f"policy: {len(policy.apps)} apps, {len(policy.domains)} domains, "
@@ -338,6 +342,30 @@ def _format_step(line: str) -> str:
     )
 
 
+def _resolve_task_dir(root: Path, task_id: str) -> Path | None:
+    """`root / task_id`, or None when `task_id` is not a single plain path
+    component directly under `root`.
+
+    `evidence <task_id>` prints file contents, so `task_id` is untrusted
+    input from a command line and must not be allowed to name anything
+    outside the evidence root: a `..`-relative id (`../secrets`) or an
+    absolute path (`/etc/passwd`, `C:\\Users\\...`) would otherwise let this
+    read arbitrary files — pathlib's `/` operator silently discards the left
+    side when the right side is itself absolute, so an absolute `task_id`
+    replacing `root` entirely is exactly the failure mode being guarded
+    against, not a hypothetical. Checked two ways: `task_id` must equal its
+    own `Path(...).name` (catches every separator, `.`, and `..` segment
+    regardless of `/` vs `\\`), and the resolved directory's parent must
+    still be the resolved root (catches anything the first check missed,
+    e.g. via a symlink)."""
+    if not task_id or task_id in (".", "..") or task_id != Path(task_id).name:
+        return None
+    task_dir = root / task_id
+    if task_dir.resolve().parent != root.resolve():
+        return None
+    return task_dir
+
+
 def _cmd_evidence(args) -> int:
     root = paths.evidence_root()
     task_id = getattr(args, "task_id", None)
@@ -349,9 +377,8 @@ def _cmd_evidence(args) -> int:
             print(f"{tid}  {started or '?'}  {outcome}  {steps} steps")
         return 0
 
-    task_dir = root / task_id
-    task_json = task_dir / "task.json"
-    if not task_dir.is_dir() or not task_json.exists():
+    task_dir = _resolve_task_dir(root, task_id)
+    if task_dir is None or not task_dir.is_dir() or not (task_dir / "task.json").exists():
         print(f"evidence: no such task {task_id!r}", file=sys.stderr)
         return 1
 
