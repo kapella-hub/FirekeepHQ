@@ -27,10 +27,16 @@ _FORBIDDEN_KEYS = ("x", "y", "point", "coordinates")
 # long *window* during which the keystrokes keep landing wherever the
 # foreground happens to be — and the foreground is not something Hands
 # controls. A few hundred characters is a form field; four thousand is a
-# document, which belongs in `set_value` on the field itself, where the text
-# arrives at one named control in one step and cannot be sprayed anywhere
-# else. The cap lives here rather than in a backend so both platforms and
-# the session agree on it.
+# document, which belongs in `set_value` on a field that exposes a Value or
+# AXValue pattern, where the text arrives at one named control in one call and
+# cannot be sprayed anywhere else. The cap lives here rather than in a backend
+# so both platforms and the session agree on it.
+#
+# It bounds `set_value` as well, but only on the `pixel+type` fallback: a
+# control with no value pattern is driven by click + select-all + type_text,
+# which is the same paced injection under another name — so the escape hatch
+# this message points at turns back into `type` exactly where it is not one.
+# The accessibility route stays uncapped; nothing is typed there.
 MAX_TYPE_CHARS = 500
 
 # kind -> required payload keys. `scroll`'s "ref" is either a control ref or
@@ -148,7 +154,24 @@ def route(action: dict, observation: Observation | None) -> Routed:
         control = _resolve_control(action["ref"], observation)
         payload = {"value": action["value"]}
         if _ACCESSIBILITY_VALUE_PATTERNS.intersection(control.patterns):
+            # The accessibility route hands the whole string to the control in
+            # one call. Nothing is typed, so nothing can be sprayed anywhere,
+            # and the cap below would only refuse a document for no reason.
             return Routed(kind, "accessibility", control, None, payload)
+        # But this route is click + select-all + type_text, which is exactly
+        # the paced injection MAX_TYPE_CHARS exists to bound — the escape
+        # hatch the `type` cap points people at turns back into `type` when
+        # the control has no value pattern. Measured before this: a 4000
+        # character value routed here with `len == 4000`, about a hundred
+        # seconds of keystrokes landing wherever the foreground goes.
+        if len(action["value"]) > MAX_TYPE_CHARS:
+            raise HandsError(
+                "invalid_action",
+                f"this control exposes no Value/AXValue pattern, so set_value is "
+                f"delivered as {len(action['value'])} keystrokes — over the "
+                f"{MAX_TYPE_CHARS} character cap. Shorten it, or target a field "
+                "that exposes a value pattern",
+            )
         return Routed(kind, "pixel+type", control, control.rect.center(), payload)
 
     if kind == "click":

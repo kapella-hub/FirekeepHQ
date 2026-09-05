@@ -142,7 +142,7 @@ anything else happens:
 | `kind` | Required keys | Route it takes |
 |---|---|---|
 | `invoke` | `ref` | the control's own Invoke/AXPress pattern, else a pixel click at its rect centre |
-| `set_value` | `ref`, `value` | the Value/AXValue pattern, else click + select-all + type |
+| `set_value` | `ref`, `value` | the Value/AXValue pattern, uncapped; else click + select-all + type, capped at **500 characters** like `type` |
 | `click` | `ref` (+ optional `button`, `double`) | pixel click at the control's rect centre |
 | `type` | `text` | synthetic keystrokes, capped at **500 characters** |
 | `key` | `chord` | a keyboard shortcut |
@@ -165,12 +165,19 @@ The 500-character cap on `type` is not arbitrary. Typed text is delivered one
 character at a time and paced, so a long string is a long window during which the
 keystrokes keep landing wherever the foreground happens to be, and the foreground
 is not something Hands controls. A few hundred characters is a form field; four
-thousand is a document, and a document belongs in `set_value` on the field
-itself, where it arrives at one named control in one step. Above the cap the
-action is refused with `invalid_action` and told to use `set_value`. On Windows
-the elevation guard is additionally re-checked every 100 characters while typing,
-so a guard that was true when the step started cannot decay silently while focus
-moves under it.
+thousand is a document, and a document belongs in `set_value` on a field that
+exposes a Value or AXValue pattern, where it arrives at one named control in a
+single call. Above the cap the action is refused with `invalid_action` and told
+to use `set_value`. On Windows the elevation guard is additionally re-checked
+every 100 characters while typing, so a guard that was true when the step started
+cannot decay silently while focus moves under it.
+
+**That escape hatch is only an escape hatch on the accessibility route.** A
+control with no value pattern falls back to click + select-all + type, which is
+the same paced injection under another name — so `set_value` is capped at the
+same 500 characters *on that route only*, and the refusal says the control
+exposes no value pattern rather than repeating the advice that led there. A
+control that does expose one takes any length: nothing is typed.
 
 ### A worked example
 

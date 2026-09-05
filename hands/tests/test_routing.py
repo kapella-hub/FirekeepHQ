@@ -62,13 +62,37 @@ def test_unknown_or_stale_ref_is_rejected():
 def test_type_is_capped_so_a_long_string_is_not_a_long_window_of_stray_keys():
     """Typed text is paced character by character, so its length is a
     duration during which keystrokes land wherever the foreground is. Past
-    the cap the answer is set_value on the field, which delivers the text to
-    one named control in one step."""
+    the cap the answer is set_value on a field that exposes a value pattern,
+    which delivers the text to one named control in one call."""
     assert routing.route({"kind": "type", "text": "x" * routing.MAX_TYPE_CHARS}, _obs()).route == "input"
     with pytest.raises(HandsError) as ei:
         routing.route({"kind": "type", "text": "x" * (routing.MAX_TYPE_CHARS + 1)}, _obs())
     assert ei.value.code == "invalid_action"
     assert "set_value" in str(ei.value)
+
+def test_the_pixel_fallback_for_set_value_is_capped_the_same_way_type_is():
+    """`pixel+type` is click + select-all + type_text — the same paced
+    injection the `type` cap exists to bound, reached by the very escape hatch
+    that cap points people at. Uncapped, a 4000 character value routed here
+    with len == 4000: about a hundred seconds of keystrokes landing wherever
+    the foreground goes."""
+    long_value = "x" * (routing.MAX_TYPE_CHARS + 1)
+    with pytest.raises(HandsError) as ei:
+        routing.route({"kind": "set_value", "ref": "p", "value": long_value}, _obs())
+    assert ei.value.code == "invalid_action"
+    assert str(routing.MAX_TYPE_CHARS) in str(ei.value)
+    assert "no Value/AXValue pattern" in str(ei.value)
+
+    at_the_cap = "x" * routing.MAX_TYPE_CHARS
+    assert routing.route({"kind": "set_value", "ref": "p", "value": at_the_cap},
+                         _obs()).route == "pixel+type"
+
+def test_the_accessibility_route_for_set_value_stays_uncapped():
+    """Nothing is typed there — the whole string goes to the control in one
+    call — so capping it would refuse a document for no reason. This is the
+    route the `type` cap's own advice sends people to."""
+    r = routing.route({"kind": "set_value", "ref": "e", "value": "x" * 4000}, _obs())
+    assert r.route == "accessibility" and len(r.payload["value"]) == 4000
 
 def test_scroll_window_needs_no_ref():
     r = routing.route({"kind": "scroll", "ref": "window", "dy": -3}, _obs())
