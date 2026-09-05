@@ -31,6 +31,7 @@ writes a standing allowance into `policy.json`.
 """
 from __future__ import annotations
 
+import datetime as dt
 import secrets
 import sys
 import time
@@ -64,6 +65,22 @@ _TITLE_LIMIT = 60
 _BROKER_DOWN = (
     "approval broker unreachable — protected step refused; run `firekeep hands status`"
 )
+
+# The DOM probe names a password field by its type; the classifier knows the
+# native spelling. Mapping it here is what makes a web login field and a
+# Windows PasswordBox the same kind of target.
+_BROWSER_ROLES = {"password": "PasswordBox"}
+_FILLABLE_ROLES = frozenset({"password", "input", "textarea", "textbox", "searchbox", "combobox"})
+
+# Mirrors `policy._CREDENTIAL_ROLES`. Duplicated rather than imported because
+# redaction must not depend on a private name in another module — and because
+# it has to hold even when `decide` DROPPED the credential class thanks to a
+# remembered allowance. A human choosing not to be asked again is not a human
+# choosing to write their password into a file.
+_CREDENTIAL_ROLES = frozenset({"PasswordBox", "AXSecureTextField"})
+_SECRET_KEYS = ("text", "value")
+_SECRET_KINDS = ("type", "set_value", "browser.fill")
+_REDACTED = "<redacted:credential>"
 
 
 def _clean(text: object, limit: int = _TITLE_LIMIT) -> str:
@@ -105,6 +122,17 @@ class HandsSession:
         self.step_index = 0
         self.last_obs: Observation | None = None
         self.last_task: dict | None = None
+        # What the last click/invoke/set_value targeted. `type` carries no ref
+        # of its own — the keystrokes land wherever focus happens to be — so
+        # this is the only thing that can tell the classifier a password box
+        # is about to receive them. Best-effort by construction: a human (or
+        # the app) can move focus between the two steps and Hands cannot know.
+        self._focus_hint: Control | None = None
+        # The last page scan, by ref, and the page it came from. Browser steps
+        # are classified from these the way native ones are classified from
+        # the observation.
+        self._browser_controls: dict[str, dict] = {}
+        self._browser_page: dict[str, str] = {"url": "", "title": ""}
 
     # -- status ------------------------------------------------------------
 
@@ -191,11 +219,7 @@ class HandsSession:
             # Close the directory we just opened rather than leave an empty
             # task behind: a refused start is itself worth a record.
             ledger.close("abandoned", "another Hands session holds this machine's lease")
-            raise HandsError(
-                "busy",
-                "another Hands session holds this machine's lease; wait for it to finish "
-                "(the lease expires on its own) or check `firekeep hands status`",
-            )
+            raise HandsError("busy", _lease_refusal(lease))
 
         self.task_id = task_id
         self.goal = goal
@@ -246,6 +270,9 @@ class HandsSession:
         self.action_id = None
         self.step_index = 0
         self.last_obs = None
+        self._focus_hint = None
+        self._browser_controls = {}
+        self._browser_page = {"url": "", "title": ""}
 
     # -- perception --------------------------------------------------------
 
@@ -342,7 +369,12 @@ class HandsSession:
             return _error(exc)
 
         window = self.backend.active_window()
-        decision = decide(action, routed.control, window, action.get("url"),
+        control = routed.control
+        if control is None and routed.kind == "type":
+            # Typing has no target of its own; the focus hint is what makes
+            # "type into the password box you just clicked" a credential step.
+            control = self._focus_hint
+        decision = decide(action, control, window, action.get("url"),
                           self.policy, self.task_apps)
 
         permit_record = None
@@ -359,11 +391,13 @@ class HandsSession:
         except HandsError as exc:
             outcome, error = "error", f"{exc.code}: {exc}"
         after = self._capture() if permit_record is not None else None
+        if outcome == "ok":
+            self._update_focus_hint(routed)
 
         index = self.step_index
         self.ledger.record(
-            step_index=index, action=action, route=routed.route,
-            classes=decision.classes, permit=permit_record,
+            step_index=index, action=_redact(action, decision.classes, control),
+            route=routed.route, classes=decision.classes, permit=permit_record,
             before_png=before, after_png=after, outcome=outcome, error=error,
         )
         self._advance()
@@ -477,12 +511,29 @@ class HandsSession:
             self.backend.open_app(payload["app"])
         elif kind == "open_url":
             result = self._require_browser().navigate(payload["url"])
+            # A new document: every ref from the old one is gone, and the
+            # probe's generation counter has reset behind us.
+            self._browser_controls = {}
+            self._remember_page(result)
             return result if isinstance(result, dict) else None
         elif kind == "clipboard_set":
             self.backend.clipboard_set(payload["text"])
         else:  # wait
             time.sleep(max(0.0, min(10.0, float(payload["seconds"]))))
         return None
+
+    def _update_focus_hint(self, routed: Routed) -> None:
+        """Remember what a step targeted, so the next `type` can be judged by
+        where the keystrokes are about to land.
+
+        Only the three kinds that move focus set it. `focus_app`/`open_app`
+        clear it: focus has gone somewhere this session knows nothing about,
+        and a stale hint is worse than none — it would let a `type` be judged
+        against a control in a window that is no longer in front."""
+        if routed.kind in ("click", "invoke", "set_value") and routed.control is not None:
+            self._focus_hint = routed.control
+        elif routed.kind in ("focus_app", "open_app"):
+            self._focus_hint = None
 
     def _capture(self) -> bytes | None:
         """A before/after screenshot for a protected step — best effort.
@@ -504,14 +555,23 @@ class HandsSession:
     # -- the browser -------------------------------------------------------
 
     def browser_op(self, op: str, **kwargs) -> dict:
-        """One browser step.
+        """One browser step, gated exactly like a native one.
 
-        Navigation goes back through `act` so the boundary class in
-        `policy.py` applies to it exactly as it would to any other action —
-        a URL is the one browser operation that can leave the task's declared
-        ground. The rest run directly, and are still ledgered steps against
-        the same budget: a task that clicks its way through a page has done
-        that many things, whatever surface it did them on."""
+        Navigation goes back through `act` so the boundary class applies to a
+        URL the way it would to any other action. `click` and `fill` are
+        classified here instead: a web page's "Place order" is the same
+        decision as a native one, and a password `<input>` is the same
+        credential target as a `PasswordBox` — the surface a button is drawn
+        on is not a reason to ask the human less often.
+
+        The synthetic `Control` those two are judged against comes from the
+        last page scan, so a ref this session has not seen is refused rather
+        than run unclassified: the descriptor and the ref age together, and
+        acting on a ref with no descriptor would be acting with no classifier.
+
+        Everything else runs directly, and every op is a ledgered step
+        against the same budget: a task that clicks its way through a page
+        has done that many things, whatever surface it did them on."""
         if op in _BROWSER_NAVIGATE:
             url = kwargs.get("url")
             if not url:
@@ -523,6 +583,16 @@ class HandsSession:
             return guard
         if op not in _BROWSER_DIRECT:
             return {"ok": False, "error": f"invalid_action: unknown browser op {op!r}"}
+
+        ledger_action = _browser_action(op, kwargs)
+        classes: tuple[str, ...] = ()
+        permit_record = None
+        control = None
+        if op in ("click", "fill"):
+            gated = self._gate_browser(op, kwargs, ledger_action)
+            if "error" in gated or "needs_permit" in gated:
+                return gated
+            classes, permit_record, control = gated["classes"], gated["permit"], gated["control"]
 
         tab = kwargs.get("tab")
         payload: dict = {}
@@ -550,15 +620,95 @@ class HandsSession:
 
         index = self.step_index
         self.ledger.record(
-            step_index=index, action=_browser_action(op, kwargs), route="browser",
-            classes=(), permit=None, before_png=None, after_png=None,
-            outcome=outcome, error=error,
+            step_index=index, action=_redact(ledger_action, classes, control),
+            route="browser", classes=classes, permit=permit_record,
+            before_png=None, after_png=None, outcome=outcome, error=error,
         )
         self._advance()
+        if outcome == "ok":
+            if op == "find":
+                self._browser_controls = {
+                    str(c.get("ref")): c for c in payload.get("controls", []) if c.get("ref")
+                }
+            elif op in ("read", "open", "tabs"):
+                self._remember_page(payload if op == "read" else _first_tab(payload))
+            elif op in ("click", "fill") and control is not None:
+                self._focus_hint = control
         result = {"ok": outcome == "ok", "step_index": index, "route": "browser",
-                  "op": op, "error": error}
+                  "op": op, "classes": list(classes), "error": error}
         result.update(payload)
         return result
+
+    def _gate_browser(self, op: str, kwargs: dict, ledger_action: dict) -> dict:
+        """Classify a browser `click`/`fill` and, if it is protected, run it
+        through the same permit gate a native step goes through.
+
+        The action handed to `policy.decide` is deliberately spelled as its
+        native equivalent (`click` / `set_value`) — the classifier keys
+        `send` off click-like kinds and `credential` off `set_value` into a
+        password role, and a web button should reach exactly those rules. The
+        hash the permit is bound to is still the real browser action, so the
+        permit cannot be replayed on the native surface or on a different op."""
+        ref = str(kwargs.get("ref", ""))
+        control = self._browser_control(ref)
+        if control is None:
+            return {"ok": False, "error":
+                    f"stale_ref: {ref!r} is not in the current page scan; "
+                    "run hands_browser op=find again"}
+        if op == "click":
+            policy_action = {"kind": "click", "ref": ref}
+        else:
+            policy_action = {"kind": "set_value", "ref": ref, "value": str(kwargs.get("text", ""))}
+        window = WindowInfo("browser", self._browser_page.get("title", ""), 0, Rect(0, 0, 0, 0))
+        decision = decide(policy_action, control, window, self._browser_page.get("url"),
+                          self.policy, self.task_apps)
+        if decision.verdict != "permit":
+            return {"classes": decision.classes, "permit": None, "control": control}
+        routed = Routed(policy_action["kind"], "browser", control, None, {})
+        gate = self._gate(ledger_action, routed, window, decision, kwargs.get("permit"))
+        if "error" in gate or "needs_permit" in gate:
+            return gate
+        return {"classes": decision.classes, "permit": gate["permit"], "control": control}
+
+    def _browser_control(self, ref: str) -> Control | None:
+        """The last scan's description of `ref`, as a `Control` the classifier
+        can read. None when this session never saw that ref — which is a
+        refusal, not a fall-through to running it unclassified.
+
+        `href` stands in for `value` only on an element with no accessible
+        name: an unlabelled link is best described by where it goes, but a
+        labelled one must be judged by its label. Folding the URL in
+        regardless would classify a link to documentation about `remove` as
+        destructive and turn ordinary reading into an approval queue."""
+        found = self._browser_controls.get(ref)
+        if found is None:
+            return None
+        role = str(found.get("role", ""))
+        name = str(found.get("name", ""))
+        value = str(found.get("value", "")) or (str(found.get("href", "")) if not name else "")
+        rect = list(found.get("rect") or [0, 0, 0, 0])[:4]
+        while len(rect) < 4:
+            rect.append(0)
+        return Control(
+            ref=ref,
+            role=_BROWSER_ROLES.get(role, role),
+            name=name,
+            value=value,
+            rect=Rect(*(int(v) for v in rect)),
+            app="browser",
+            patterns=("Value",) if role in _FILLABLE_ROLES else ("Invoke",),
+        )
+
+    def _remember_page(self, data: object) -> None:
+        """The page a browser step last reported. It is the browser's
+        equivalent of a window title, and the classifier reads it the way it
+        reads one — a "Confirm payment" page names what a bare "OK" button
+        will not. The URL is kept separately and deliberately NOT used as the
+        title: a path is not a description, and matching destructive words
+        against one would flag every click on a documentation page."""
+        if isinstance(data, dict) and ("url" in data or "title" in data):
+            self._browser_page = {"url": str(data.get("url") or ""),
+                                  "title": str(data.get("title") or "")}
 
     def _require_browser(self):
         if self.browser is None:
@@ -619,7 +769,20 @@ class HandsSession:
         the observation. That last one is the important half — anything Hands
         just did may have moved or destroyed the very controls it was looking
         at, so every ref minted before this point is now suspect and the
-        runtime is made to look again."""
+        runtime is made to look again.
+
+        The page scan is deliberately NOT dropped here, and the difference is
+        not laziness. A native `hands_observe` costs no step, so "look again,
+        then retry with the permit" lands on the same step index and the
+        approval still fits the action. A browser `find` IS a step, so
+        clearing per step would move the index between the refusal and the
+        retry and make a browser permit impossible to spend. The probe keeps
+        its own guard anyway: refs carry the scan generation they were minted
+        in, a navigation resets that counter, and `data-hands-ref` resolves to
+        the specific element it was set on rather than a position — so a ref
+        this session still holds a description for is a ref the page still
+        agrees is that element. `_execute` drops the scan on navigation, where
+        the whole document changes underneath it."""
         if self.step_index and self.step_index % _RENEW_EVERY == 0:
             self.link.renew_lease()
         self.step_index += 1
@@ -631,6 +794,46 @@ class HandsSession:
 
 def _error(exc: HandsError) -> dict:
     return {"ok": False, "error": f"{exc.code}: {exc}"}
+
+
+def _redact(action: dict, classes: tuple[str, ...], control: Control | None) -> dict:
+    """The ledger's copy of an action, with a typed secret replaced.
+
+    Only the ledger copy: the challenge the human approved is hashed from the
+    real action, and the real action is what runs. Evidence should say a
+    password was typed into that field at that moment — it should not be the
+    place the password ends up living for `evidence_retention_days`."""
+    if action.get("kind") not in _SECRET_KINDS:
+        return action
+    role = control.role if control is not None else None
+    if "credential" not in classes and role not in _CREDENTIAL_ROLES:
+        return action
+    return {k: (_REDACTED if k in _SECRET_KEYS else v) for k, v in action.items()}
+
+
+def _lease_refusal(lease: dict) -> str:
+    """Who has the machine and until when.
+
+    relay answers a lost race with `{"acquired": False, "held_by": …,
+    "expires_in": <seconds>}` (`relay/app/leases.py`), so the wall-clock
+    expiry is computed here — a countdown in seconds is not something a human
+    reading an error message can act on. Both fields degrade to a plain
+    "another session" / "it lapses" if relay ever stops sending them."""
+    holder = str(lease.get("held_by") or "another session")
+    try:
+        seconds = max(0, int(lease.get("expires_in")))
+    except (TypeError, ValueError):
+        return (f"hands is leased by {holder} — wait for it to lapse or end that session")
+    expires_at = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=seconds)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+    return (f"hands is leased by {holder} until {expires_at} — "
+            "wait for it to lapse or end that session")
+
+
+def _first_tab(payload: object) -> dict:
+    """The current tab out of an `open`/`tabs` result, for the page context."""
+    tabs = payload.get("tabs") if isinstance(payload, dict) else None
+    return tabs[0] if isinstance(tabs, list) and tabs and isinstance(tabs[0], dict) else {}
 
 
 def _control_json(control: Control) -> dict:

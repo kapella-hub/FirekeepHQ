@@ -111,7 +111,9 @@ TOOLS = [
             "Do one thing: {kind: invoke|set_value|click|type|key|scroll|focus_app|open_app|"
             "open_url|clipboard_set|wait, ...}. Refs come from hands_observe/hands_find; raw "
             "coordinates are refused. A protected step returns needs_permit — call "
-            "hands_request_permit, then repeat the same action with permit=<challenge>."
+            "hands_request_permit, then repeat the same action with permit=<challenge>. "
+            "type has no ref, so it is judged against the control you last clicked; that "
+            "is best-effort, and focus can move without Hands knowing."
         ),
         inputSchema={
             "type": "object",

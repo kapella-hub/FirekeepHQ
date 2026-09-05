@@ -19,7 +19,7 @@ from firekeep_hands.backends.base import (
 )
 from firekeep_hands.backends.fake import FakeBackend
 from firekeep_hands.broker.permits import PermitStore
-from firekeep_hands.config import HandsConfig, Policy
+from firekeep_hands.config import HandsConfig, Policy, Remembered
 from firekeep_hands.session import HandsSession
 
 # -- doubles ---------------------------------------------------------------
@@ -105,6 +105,8 @@ class FakeLink:
 
     def __init__(self, *, acquired: bool = True):
         self._acquired = acquired
+        # What relay/app/leases.py sends back on a lost race.
+        self.lease_extra = {"held_by": "agent-7", "expires_in": 900}
         self.before: list[tuple] = []
         self.after: list[tuple] = []
         self.leases: list[int] = []
@@ -120,7 +122,10 @@ class FakeLink:
 
     def acquire_lease(self, ttl_minutes: int = 30):
         self.leases.append(ttl_minutes)
-        return {"acquired": self._acquired, "fencing_token": 7}
+        reply = {"acquired": self._acquired, "fencing_token": 7}
+        if not self._acquired:
+            reply.update(self.lease_extra)
+        return reply
 
     def renew_lease(self):
         self.renewed += 1
@@ -129,37 +134,62 @@ class FakeLink:
         self.released = True
 
 
-class FakeBrowser:
-    """Records operations. Refs are generation-stamped (`g<gen>-d<N>`) and
-    only the current generation is live, so a ref from an older scan raises
-    `stale_ref` the way the DOM probe does."""
+def _page_scene() -> list[dict]:
+    """What the DOM probe reports for a small page. `role: "password"` is the
+    probe's own spelling for `input[type=password]`, and its value is always
+    blank — the probe never reads a password field's contents."""
+    return [
+        {"ref": "g1-d1", "role": "button", "name": "Save draft", "value": "",
+         "rect": [0, 0, 80, 20], "href": ""},
+        {"ref": "g1-d2", "role": "password", "name": "Password", "value": "",
+         "rect": [0, 30, 200, 24], "href": ""},
+        {"ref": "g1-d3", "role": "button", "name": "Place order", "value": "",
+         "rect": [0, 60, 120, 30], "href": ""},
+        {"ref": "g1-d4", "role": "a", "name": "", "value": "",
+         "rect": [0, 100, 60, 16], "href": "/account/delete"},
+    ]
 
-    def __init__(self):
+
+class FakeBrowser:
+    """Records operations against a fixed page scene. Refs are
+    generation-stamped (`g<gen>-d<N>`) and only what is in the scene is live,
+    so anything else raises `stale_ref` the way the DOM probe does."""
+
+    def __init__(self, scene: list[dict] | None = None, page: dict | None = None):
         self.calls: list[tuple] = []
-        self.live = {"g1-d1", "g1-d2"}
-        self.url = "about:blank"
+        self.scene = _page_scene() if scene is None else list(scene)
+        self.page = dict(page or {"url": "https://shop.example/cart", "title": "Cart — Shop"})
         self.loaded = True
+
+    @property
+    def live(self) -> set[str]:
+        return {c["ref"] for c in self.scene}
+
+    def _tab(self) -> dict:
+        return {"id": "t1", "url": self.page["url"], "title": self.page["title"]}
 
     def open(self) -> dict:
         self.calls.append(("open",))
-        return {"tabs": [{"id": "t1", "url": self.url, "title": "New Tab"}]}
+        return {"tabs": [self._tab()]}
 
     def tabs(self) -> list[dict]:
         self.calls.append(("tabs",))
-        return [{"id": "t1", "url": self.url, "title": "New Tab"}]
+        return [self._tab()]
 
     def navigate(self, url, *, tab=None) -> dict:
         self.calls.append(("navigate", url))
-        self.url = url
+        self.page = {"url": url, "title": "Page"}
         return {"url": url, "title": "Page", "loaded": self.loaded}
 
     def read(self, *, tab=None, budget=4000) -> dict:
         self.calls.append(("read",))
-        return {"url": self.url, "title": "Page", "text": "hello"[:budget]}
+        return {"url": self.page["url"], "title": self.page["title"], "text": "hello"[:budget]}
 
     def find(self, query, *, tab=None, limit=10) -> list[dict]:
         self.calls.append(("find", query))
-        return [{"ref": "g1-d1", "role": "button", "name": query}][:limit]
+        needle = query.lower()
+        return [c for c in self.scene
+                if needle in c["name"].lower() or needle in c["href"].lower()][:limit]
 
     def click(self, ref, *, tab=None) -> None:
         if ref not in self.live:
@@ -382,6 +412,19 @@ def test_task_start_refuses_when_another_session_holds_the_machine():
         s.task_start("x", ["Notepad"])
     assert ei.value.code == "busy"
     assert s.task_id is None
+    # The human needs to know who has it and how long to wait, not just "no".
+    message = str(ei.value)
+    assert "hands is leased by agent-7 until 20" in message
+    assert "wait for it to lapse or end that session" in message
+
+
+def test_the_lease_refusal_degrades_when_relay_says_less():
+    link = FakeLink(acquired=False)
+    link.lease_extra = {}
+    s = build_session("Notepad", link=link)
+    with pytest.raises(HandsError) as ei:
+        s.task_start("x", ["Notepad"])
+    assert str(ei.value).startswith("hands is leased by another session — ")
 
 
 def test_a_second_task_start_is_refused_while_one_is_open(session):
@@ -489,7 +532,7 @@ def test_browser_direct_ops_are_ledgered_steps(session):
     session.browser = browser
     session.task_start("x", ["Notepad"])
     assert session.browser_op("open")["ok"]
-    assert session.browser_op("find", query="Send")["controls"][0]["ref"] == "g1-d1"
+    assert session.browser_op("find", query="Save")["controls"][0]["ref"] == "g1-d1"
     assert session.browser_op("click", ref="g1-d1")["ok"]
     assert session.browser_op("read")["text"] == "hello"
     assert session.browser_op("screenshot")["screenshot_png"].startswith(b"\x89PNG")
@@ -498,10 +541,28 @@ def test_browser_direct_ops_are_ledgered_steps(session):
     assert session.step_index == 5
 
 
-def test_browser_click_on_a_ref_from_an_older_scan_is_an_error_not_a_raise(session):
+def test_a_browser_ref_this_session_never_scanned_is_refused_unclassified(session):
+    """No descriptor means no classifier, and running it anyway would be the
+    one way a web button could reach the page ungated. Refused before the
+    browser is touched, so it never becomes a step."""
     session.browser = FakeBrowser()
     session.task_start("x", ["Notepad"])
     r = session.browser_op("click", ref="g0-d1")
+    assert r["ok"] is False and r["error"].startswith("stale_ref")
+    assert session.ledger.steps() == []
+    assert session.browser.calls == []
+
+
+def test_a_ref_the_page_has_moved_on_from_is_a_ledgered_error(session):
+    """The other staleness: this session has the descriptor, but the page
+    itself has changed under it. That one reaches the browser and comes back
+    as a failed step."""
+    browser = FakeBrowser()
+    session.browser = browser
+    session.task_start("x", ["Notepad"])
+    session.browser_op("find", query="Save")
+    browser.scene = []  # the page moved on between the scan and the click
+    r = session.browser_op("click", ref="g1-d1")
     assert r["ok"] is False and r["error"].startswith("stale_ref")
     assert session.ledger.steps()[-1]["outcome"] == "error"
 
@@ -521,6 +582,94 @@ def test_a_navigation_that_never_loaded_is_still_an_ok_step_with_the_flag(sessio
     assert session.ledger.steps()[-1]["outcome"] == "ok"
 
 
+def test_a_web_button_is_classified_like_a_native_one(session, store):
+    """A "Place order" drawn in a page is the same decision as one drawn by
+    an application; the surface is not a reason to ask the human less often."""
+    browser = FakeBrowser()
+    session.browser = browser
+    session.task_start("x", ["Notepad"])
+    session.browser_op("find", query="order")
+    r = session.browser_op("click", ref="g1-d3")
+    assert r["ok"] is False and r["needs_permit"]["classes"] == ["money"]
+    assert r["needs_permit"]["title"] == 'click "Place order" in browser'
+    assert browser.calls == [("find", "order")]  # never dispatched
+
+    ch = r["needs_permit"]["challenge"]
+    store.decide(ch, "approve", via="chord")
+    ok = session.browser_op("click", ref="g1-d3", permit=ch)
+    assert ok["ok"] and ok["classes"] == ["money"]
+    assert browser.calls[-1] == ("click", "g1-d3")
+    assert session.ledger.steps()[-1]["permit"] == {"challenge": ch, "via": "chord"}
+
+
+def test_filling_a_password_input_is_a_credential_step(session, store):
+    browser = FakeBrowser()
+    session.browser = browser
+    session.task_start("x", ["Notepad"])
+    session.browser_op("find", query="password")
+    r = session.browser_op("fill", ref="g1-d2", text="hunter2")
+    assert r["ok"] is False and r["needs_permit"]["classes"] == ["credential"]
+    assert "hunter2" not in r["needs_permit"]["title"]
+
+    ch = r["needs_permit"]["challenge"]
+    store.decide(ch, "approve", via="chord")
+    assert session.browser_op("fill", ref="g1-d2", text="hunter2", permit=ch)["ok"]
+    assert browser.calls[-1] == ("fill", "g1-d2", "hunter2")  # the real text runs
+    line = session.ledger.steps()[-1]
+    assert line["action"]["text"] == "<redacted:credential>"  # but is never stored
+
+
+def test_an_ordinary_web_click_needs_no_permit(session):
+    session.browser = FakeBrowser()
+    session.task_start("x", ["Notepad"])
+    session.browser_op("find", query="Save")
+    r = session.browser_op("click", ref="g1-d1")
+    assert r["ok"] is True and r["classes"] == []
+
+
+def test_an_unlabelled_link_is_judged_by_where_it_goes(session):
+    session.browser = FakeBrowser()
+    session.task_start("x", ["Notepad"])
+    session.browser_op("find", query="/account")
+    r = session.browser_op("click", ref="g1-d4")
+    assert r["ok"] is False and r["needs_permit"]["classes"] == ["destroy"]
+
+
+def test_a_navigation_drops_the_page_scan(session):
+    """A new document means new refs. The probe's generation counter resets
+    on navigation, so a ref from the old page must not be classified against
+    the old page's description of it."""
+    session.browser = FakeBrowser()
+    session.policy.domains.append("shop.example")
+    session.task_start("x", ["Notepad"])
+    session.browser_op("find", query="Save")
+    assert session.browser_op("navigate", url="https://shop.example/other")["ok"]
+    r = session.browser_op("click", ref="g1-d1")
+    assert r["ok"] is False and r["error"].startswith("stale_ref")
+
+
+def test_the_page_title_is_what_the_classifier_reads_not_the_url(session):
+    """A URL is a path, not a description. Reading documentation about
+    `remove` must not put every click behind an approval."""
+    browser = FakeBrowser(
+        scene=[{"ref": "g1-d1", "role": "button", "name": "Run it", "value": "",
+                "rect": [0, 0, 60, 20], "href": ""}],
+        page={"url": "https://docs.example/library/os.html#os.remove",
+              "title": "os — operating system interfaces"},
+    )
+    session.browser = browser
+    session.task_start("x", ["Notepad"])
+    session.browser_op("read")
+    session.browser_op("find", query="Run")
+    assert session.browser_op("click", ref="g1-d1")["ok"] is True
+
+    browser.page = {"url": "https://shop.example/x", "title": "Confirm payment"}
+    session.browser_op("read")
+    session.browser_op("find", query="Run")
+    r = session.browser_op("click", ref="g1-d1")
+    assert r["ok"] is False and r["needs_permit"]["classes"] == ["money"]
+
+
 def test_unknown_browser_op_is_refused(session):
     session.browser = FakeBrowser()
     session.task_start("x", ["Notepad"])
@@ -532,6 +681,80 @@ def test_browser_ops_need_an_open_task(session):
     session.browser = FakeBrowser()
     r = session.browser_op("open")
     assert r["ok"] is False and r["error"].startswith("no_task")
+
+
+# -- the focus hint, and what the ledger keeps -----------------------------
+
+
+def _password_scene(app: str) -> list[Control]:
+    return [
+        Control("pw", "PasswordBox", "Password", "", Rect(0, 0, 200, 24), app, ("Invoke", "Value")),
+        Control("note", "Edit", "Notes", "", Rect(0, 40, 200, 24), app, ("Value",)),
+    ]
+
+
+def test_typing_after_clicking_a_password_box_is_a_credential_step(session, store):
+    """`type` carries no ref, so without the focus hint the classifier has
+    nothing to look at and a typed password is unprotected."""
+    session.backend.scene = _password_scene("Notepad")
+    session.task_start("x", ["Notepad"])
+    session.observe()
+    assert session.act({"kind": "invoke", "ref": "pw"})["ok"]
+    r = session.act({"kind": "type", "text": "hunter2"})
+    assert r["ok"] is False and r["needs_permit"]["classes"] == ["credential"]
+
+
+def test_the_focus_hint_is_dropped_when_focus_leaves_for_another_app(session):
+    session.backend.scene = _password_scene("Notepad")
+    session.task_start("x", ["Notepad"])
+    session.observe()
+    session.act({"kind": "invoke", "ref": "pw"})
+    session.act({"kind": "focus_app", "app": "Notepad"})
+    assert session.act({"kind": "type", "text": "hunter2"})["ok"] is True
+
+
+def test_typing_into_an_ordinary_field_is_not_a_credential_step(session):
+    session.backend.scene = _password_scene("Notepad")
+    session.task_start("x", ["Notepad"])
+    session.observe()
+    session.act({"kind": "invoke", "ref": "note"})
+    assert session.act({"kind": "type", "text": "shopping list"})["ok"] is True
+
+
+def test_a_typed_secret_never_reaches_the_ledger(session, store):
+    session.backend.scene = _password_scene("Notepad")
+    session.task_start("x", ["Notepad"])
+    session.observe()
+    session.act({"kind": "invoke", "ref": "pw"})
+    ch = session.act({"kind": "type", "text": "hunter2"})["needs_permit"]["challenge"]
+    store.decide(ch, "approve", via="chord")
+    assert session.act({"kind": "type", "text": "hunter2"}, permit=ch)["ok"]
+
+    assert session.backend.calls[-1] == ("type", "hunter2")  # the real text runs
+    line = session.ledger.steps()[-1]
+    assert line["action"]["text"] == "<redacted:credential>"
+    assert "hunter2" not in (session.ledger.dir / "steps.jsonl").read_text(encoding="utf-8")
+
+
+def test_a_remembered_allowance_stops_the_asking_but_not_the_redaction(session):
+    """`decide` drops a remembered class, so the credential class is gone by
+    the time the ledger line is written. The role is still a password box and
+    the text is still a secret."""
+    session.backend.scene = _password_scene("Notepad")
+    session.policy.remembered.append(
+        Remembered("credential", "Notepad", "password", "2099-01-01T00:00:00Z"))
+    session.task_start("x", ["Notepad"])
+    session.observe()
+    r = session.act({"kind": "set_value", "ref": "pw", "value": "hunter2"})
+    assert r["ok"] is True and r["classes"] == []
+    assert session.backend.values["pw"] == "hunter2"
+    assert session.ledger.steps()[-1]["action"]["value"] == "<redacted:credential>"
+
+
+def test_an_ordinary_typed_string_is_kept_verbatim(session):
+    session.task_start("x", ["Notepad"])
+    session.act({"kind": "clipboard_set", "text": "just a note"})
+    assert session.ledger.steps()[-1]["action"]["text"] == "just a note"
 
 
 # -- execution routes ------------------------------------------------------

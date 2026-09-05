@@ -209,3 +209,33 @@ def test_focus_rejects_a_ref_from_a_stale_generation() -> None:
     assert scan2["controls"][0]["ref"] == "g2-d1"
     assert stale_focus == {"ok": False, "reason": "stale"}
     assert fresh_focus["ok"] is True
+
+
+def test_a_password_input_reports_its_own_role_and_never_its_contents() -> None:
+    """The input's TYPE wins over an author-supplied `role`, and neither the
+    name nor the value carries what is already typed in the box. The session
+    maps this role onto PasswordBox, which is what makes a browser `fill`
+    classify as a credential step."""
+    specs = [
+        {"tag": "INPUT", "text": "", "value": "hunter2",
+         "attrs": {"type": "password", "role": "textbox"},
+         "rect": {"left": 0, "top": 0, "width": 200, "height": 24}},
+    ]
+    control = _run_probe(specs, {"op": "scan", "max_nodes": 200})["controls"][0]
+
+    assert control["role"] == "password"
+    assert control["value"] == ""
+    assert "hunter2" not in control["name"]
+
+
+def test_a_normal_input_still_reports_its_tag_or_explicit_role() -> None:
+    specs = [
+        {"tag": "INPUT", "text": "", "value": "alice", "attrs": {"type": "text"},
+         "rect": {"left": 0, "top": 0, "width": 200, "height": 24}},
+        {"tag": "DIV", "text": "Go", "attrs": {"role": "button"},
+         "rect": {"left": 0, "top": 30, "width": 40, "height": 20}},
+    ]
+    controls = _run_probe(specs, {"op": "scan", "max_nodes": 200})["controls"]
+
+    assert controls[0]["role"] == "input" and controls[0]["value"] == "alice"
+    assert controls[1]["role"] == "button"

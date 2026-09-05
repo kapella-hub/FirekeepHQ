@@ -1,7 +1,9 @@
 // The Hands DOM probe: a single self-contained IIFE, evaluated in the page
 // via `Runtime.evaluate` with `returnByValue: true`. `browser.py` prepends a
-// `const __hands = {...};` line ahead of this file's source before sending
-// it, so every entry point reads its arguments off that one object rather
+// `window.__hands = {...};` assignment ahead of this file's source before
+// sending it (an assignment, not a `const`, because a second evaluate in the
+// same page would otherwise throw on the redeclaration), so every entry point
+// reads its arguments off that one object rather
 // than through separate `Runtime.evaluate` parameters — CDP's evaluate takes
 // a bare expression string, not a function plus arguments.
 //
@@ -71,7 +73,7 @@
         return text.length > NAME_LIMIT ? text.slice(0, NAME_LIMIT) : text;
     }
 
-    function accessibleName(el) {
+    function accessibleName(el, role) {
         var getAttr = el.getAttribute ? el.getAttribute.bind(el) : function () { return null; };
         var ariaLabel = getAttr("aria-label");
         if (ariaLabel) {
@@ -93,18 +95,34 @@
         if (title) {
             return truncateText(title);
         }
-        if ("value" in el && el.value) {
+        // Never the value of a password field: that fallback would put the
+        // secret already sitting in the box into the control's NAME, which
+        // travels to the model and into the evidence ledger.
+        if (role !== "password" && "value" in el && el.value) {
             return truncateText(el.value);
         }
         return "";
     }
 
     function roleOf(el) {
+        // The TYPE decides before any author-supplied `role` attribute: a
+        // password box is a password box even if the page labels it
+        // `role="textbox"`, and the session maps this onto the PasswordBox
+        // role the classifier treats as a credential target. Checking the
+        // explicit role first would let a page opt its own password field
+        // out of that protection.
+        var tag = String(el.tagName || "").toLowerCase();
+        if (tag === "input") {
+            var type = el.getAttribute ? el.getAttribute("type") : null;
+            if (String(type == null ? "" : type).toLowerCase() === "password") {
+                return "password";
+            }
+        }
         var explicit = el.getAttribute ? el.getAttribute("role") : null;
         if (explicit) {
             return explicit;
         }
-        return String(el.tagName || "").toLowerCase();
+        return tag;
     }
 
     function rectOf(el) {
@@ -113,11 +131,15 @@
     }
 
     function describe(el, ref) {
+        var role = roleOf(el);
         return {
             ref: ref,
-            role: roleOf(el),
-            name: accessibleName(el),
-            value: "value" in el ? String(el.value == null ? "" : el.value) : "",
+            role: role,
+            // A password field's contents never leave the page — same rule
+            // the Windows backend applies to a PasswordBox.
+            value: role !== "password" && "value" in el
+                ? String(el.value == null ? "" : el.value) : "",
+            name: accessibleName(el, role),
             rect: rectOf(el),
             href: el.getAttribute ? String(el.getAttribute("href") || "") : "",
         };
