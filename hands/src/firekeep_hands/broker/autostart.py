@@ -74,7 +74,16 @@ def broker_launch_argv(script_path: str) -> list[str]:
     script: `pythonw` is the windowless interpreter beside `python.exe` in
     the same venv, so a logon does not flash a console window at the human,
     and `-m` needs no second executable on disk to stay in step with it."""
-    pythonw = Path(script_path).parent / "pythonw.exe"
+    scripts = Path(script_path).parent
+    pythonw = scripts / "pythonw.exe"
+    console = scripts / "python.exe"
+    if not pythonw.exists() and console.exists():
+        # An embeddable or otherwise stripped interpreter ships no pythonw. A
+        # Run value naming a missing exe launches nothing and shows no error,
+        # so fall back to the console interpreter: a window at logon beats a
+        # broker that silently never starts. (A path with neither on disk —
+        # the pure-function tests — keeps the intended pythonw spelling.)
+        pythonw = console
     return [str(pythonw), "-m", "firekeep_hands.broker", "run"]
 
 

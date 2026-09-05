@@ -48,6 +48,21 @@ def test_the_launch_argv_matches_the_run_value():
     assert value == '"' + argv[0] + '" ' + " ".join(argv[1:])
 
 
+def test_the_launch_argv_falls_back_to_the_console_interpreter_when_pythonw_is_missing(tmp_path):
+    """An embeddable or stripped interpreter ships no pythonw.exe; a Run value
+    naming a missing exe launches nothing and shows nothing. With python.exe
+    present and pythonw.exe absent the fallback is the console interpreter;
+    with both present pythonw wins; with neither on disk the intended spelling
+    is kept (that is the pure-function case above)."""
+    scripts = tmp_path / "Scripts"
+    scripts.mkdir()
+    script = str(scripts / "firekeep-hands-broker.exe")
+    (scripts / "python.exe").write_bytes(b"")
+    assert autostart.broker_launch_argv(script)[0] == str(scripts / "python.exe")
+    (scripts / "pythonw.exe").write_bytes(b"")
+    assert autostart.broker_launch_argv(script)[0] == str(scripts / "pythonw.exe")
+
+
 def test_command_for_win32_now_refuses_because_there_is_no_command():
     with pytest.raises(ValueError, match="registry value"):
         autostart.command_for("win32", r"C:\v\Scripts\firekeep-hands-broker.exe")
@@ -82,7 +97,9 @@ def test_schtasks_is_never_invoked_only_explained():
 
 
 class FakeKey:
-    def __init__(self, store, access): self.store = store; self.access = access
+    def __init__(self, store, access):
+        self.store = store
+        self.access = access
     def __enter__(self): return self
     def __exit__(self, *exc): return False
 

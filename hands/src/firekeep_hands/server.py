@@ -148,7 +148,8 @@ TOOLS = [
         name="hands_browser",
         description=(
             "Operate the Hands-managed browser: op=open|tabs|navigate|read|find|click|fill|"
-            "screenshot. Navigating to a host outside the allowlist is a boundary step."
+            "screenshot. Navigating to a host outside the allowlist is a boundary step. "
+            "navigate always acts on the current tab; tab is ignored for it in this release."
         ),
         inputSchema={
             "type": "object",

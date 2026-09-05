@@ -195,7 +195,7 @@ class FakeBrowser:
         return [self._tab()]
 
     def navigate(self, url, *, tab=None) -> dict:
-        self.calls.append(("navigate", url))
+        self.calls.append(("navigate", url, tab))
         self.page = {"url": url, "title": "Page"}
         return {"url": url, "title": "Page", "loaded": self.loaded}
 
@@ -568,7 +568,7 @@ def test_browser_navigate_goes_through_the_policy_gate(session, store):
     assert broker_title(session) == "open evil.example in the browser"
     store.decide(ch, "approve", via="chord")
     ok = session.browser_op("navigate", url="https://evil.example/x", permit=ch)
-    assert ok["ok"] and ("navigate", "https://evil.example/x") in browser.calls
+    assert ok["ok"] and ("navigate", "https://evil.example/x", None) in browser.calls
     assert session.ledger.steps()[-1]["route"] == "browser"
 
 
@@ -717,6 +717,18 @@ def test_the_evidence_pair_is_taken_on_the_tab_the_step_targets(session, store):
     assert ("screenshot", None) not in browser.calls
 
 
+def test_navigate_acts_on_the_current_tab_as_the_tool_description_says(session):
+    """The routed payload for `open_url` carries only the URL, so a `tab`
+    never reaches `Browser.navigate`. `hands_browser`'s description says so;
+    this is what keeps the two from drifting apart."""
+    browser = FakeBrowser()
+    session.browser = browser
+    session.policy.domains.append("shop.example")
+    session.task_start("x", ["Notepad"])
+    assert session.browser_op("navigate", url="https://shop.example/x", tab="t7")["ok"]
+    assert ("navigate", "https://shop.example/x", None) in browser.calls
+
+
 def test_the_site_named_in_a_permit_is_the_one_the_page_is_on(session):
     """A find is often the only browser call before a click, and the DOM probe
     reports no URL — so the session asks the browser where it is."""
@@ -727,6 +739,23 @@ def test_the_site_named_in_a_permit_is_the_one_the_page_is_on(session):
     assert ("current_url", None) in browser.calls
     r = session.browser_op("click", ref="g1-d3")
     assert r["needs_permit"]["title"] == 'click "Place order" on bank.example'
+
+
+def test_a_hash_only_navigation_keeps_the_page_title_for_the_classifier(session):
+    """A single-page app opens its "Confirm payment" dialog on a hash route; the
+    URL changes only in its fragment, so the page — and the title the
+    classifier reads — is the same one. A different path is a different page."""
+    browser = FakeBrowser(page={"url": "https://shop.example/pay", "title": "Confirm payment"})
+    session.browser = browser
+    session.task_start("x", ["Notepad"])
+    session.browser_op("read")
+    assert session._browser_page["title"] == "Confirm payment"
+    browser.page["url"] = "https://shop.example/pay#confirm"
+    session.browser_op("find", query="order")
+    assert session._browser_page["title"] == "Confirm payment"
+    browser.page["url"] = "https://shop.example/thanks"
+    session.browser_op("find", query="order")
+    assert session._browser_page["title"] == ""
 
 
 def test_a_protected_navigation_is_photographed_too(session, store):

@@ -109,6 +109,9 @@ def test_the_browser_schema_is_closed_and_declares_every_op(server_tools):
     # would reject an argument the implementation actually reads.
     for key in ("url", "ref", "text", "query", "limit", "tab", "permit"):
         assert key in browser.inputSchema["properties"], key
+    # `tab` is honoured by every op except navigate; the description has to
+    # say so, or a runtime will believe it can navigate a background tab.
+    assert "navigate always acts on the current tab" in browser.description
 
 
 def test_act_describes_the_permit_loop(server_tools):

@@ -903,7 +903,14 @@ class HandsSession:
             hooklog.log_failure("hands", f"could not read the current url: {exc}", exc)
             return
         previous = self._browser_page
-        title = previous.get("title", "") if url == previous.get("url") else ""
+        # Compare without the fragment: a single-page app that opens its
+        # "Confirm payment" dialog on a hash route (`/pay` -> `/pay#confirm`)
+        # is still the same page, and dropping its title there would blind the
+        # classifier exactly where it needs the title most.
+        import urllib.parse
+        same_page = (urllib.parse.urldefrag(url).url
+                     == urllib.parse.urldefrag(str(previous.get("url") or "")).url)
+        title = previous.get("title", "") if same_page else ""
         self._browser_page = {"url": url, "title": title}
 
     def _remember_page(self, data: object) -> None:
