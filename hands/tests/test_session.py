@@ -357,6 +357,43 @@ def test_refs_go_stale_after_any_action(session):
     assert r["ok"] is False and r["error"].startswith("stale_ref")
 
 
+def test_allow_takes_effect_on_a_running_session(session):
+    """`firekeep hands allow` writes the policy file; a session built BEFORE
+    that must pick the change up mid-run, not only on the next launch. This is
+    the founder-demo §5 gap: the gateway snapshotted the policy once at
+    start-up and never reloaded it, so an allowed app/host was still refused."""
+    from firekeep_hands.config import Policy, save_policy
+
+    session.task_start("switch apps", ["Notepad"])
+    session.observe()
+    # Excel is neither declared by the task nor in the (empty) allowlist, so
+    # focusing it is a boundary crossing that demands a permit.
+    r = session.act({"kind": "focus_app", "app": "Excel"})
+    assert r["ok"] is False and r["needs_permit"]["classes"] == ["boundary"]
+
+    # The human runs `firekeep hands allow app Excel`, which writes the file.
+    save_policy(Policy(apps=["Excel"], domains=[], remembered=[]))
+
+    # Same session, very next step (mid-task): the allowance is honoured with
+    # no permit. A per-TASK reload would still miss this; the refresh is
+    # per-act on purpose.
+    session.observe()
+    ok = session.act({"kind": "focus_app", "app": "Excel"})
+    assert ok["ok"] is True
+    assert session.backend.calls[-1] == ("focus_app", "Excel")
+
+
+def test_status_reports_the_policy_file_not_the_startup_snapshot(session):
+    """`hands_status` answers "why was that refused?"; it must show the live
+    allowlist, so a human who just ran `allow` sees the count change without
+    restarting the session."""
+    from firekeep_hands.config import Policy, save_policy
+
+    assert session.status()["policy"]["domains"] == 0
+    save_policy(Policy(apps=[], domains=["example.com"], remembered=[]))
+    assert session.status()["policy"]["domains"] == 1
+
+
 def test_budget_and_lifecycle(session):
     session.config.max_steps = 2
     session.task_start("x", ["Notepad"])

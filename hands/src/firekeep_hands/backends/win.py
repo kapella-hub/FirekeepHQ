@@ -551,6 +551,41 @@ class WinBackend:
         if pattern is None:
             raise HandsError("unsupported", f"{control.ref!r} has no ValuePattern")
         pattern.SetValue(value)
+        # A PasswordBox's contents are never read back (secure): trust the set,
+        # exactly as observe() never reads its value.
+        if control.role == "PasswordBox":
+            return
+        # ValuePattern.SetValue silently no-ops on some controls — observed on
+        # the tabbed Windows 11 Notepad Save dialog's filename Edit (founder
+        # demo, 2026-09-06): it returned success and left the default name, so
+        # the file saved to the wrong place with no error. Verify the value
+        # actually landed and, when it did not, fall back to focusing the field
+        # and typing it, then re-verify — a wrong-but-silent save is worse than
+        # a loud failure.
+        if _text_property(pattern, "Value") == value:
+            return
+        self._type_value(element, value)
+        if _text_property(pattern, "Value") != value:
+            raise HandsError(
+                "set_value_failed",
+                f"{control.ref!r}: neither ValuePattern.SetValue nor typing set the value",
+            )
+
+    def _type_value(self, element, value: str) -> None:
+        """Fallback for a ValuePattern that accepted SetValue and did nothing:
+        focus the field, select whatever is in it, and type the value over it.
+        The elevation guard already ran in `_resolve`, so the window behind
+        this element is known non-elevated; the value is short (a filename or
+        path), so it is sent in one shot rather than through `type_text`'s
+        chunked re-guard."""
+        try:
+            element.SetFocus()
+        except Exception:  # noqa: BLE001 — an element that will not take focus
+            # may already have it; typing is the fallback, not a second step
+            # that must also succeed.
+            pass
+        wi.send_key_chord("ctrl+a")
+        wi.send_text(value)
 
     def click(self, point: tuple[int, int], *, button: str = "left",
               double: bool = False) -> None:

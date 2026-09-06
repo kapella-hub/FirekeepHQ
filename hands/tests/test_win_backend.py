@@ -264,6 +264,76 @@ def test_set_value_uses_the_value_pattern(backend):
     assert backend.editor._value.set_values == ["hands live"]
 
 
+def test_set_value_falls_back_to_typing_when_the_pattern_silently_no_ops(backend, monkeypatch):
+    """ValuePattern.SetValue returns success and does nothing on some controls
+    — the tabbed Windows 11 Notepad Save-dialog filename field (founder demo,
+    2026-09-06), which saved the default name to the Desktop. The backend now
+    verifies the value landed and, when it did not, focuses the field and
+    types it."""
+    from firekeep_hands.backends import _win_input as wi
+
+    editor = _observe(backend.be).controls[1]
+    pat = backend.editor._value
+    # A pattern that accepts SetValue and keeps its old value.
+    monkeypatch.setattr(pat, "SetValue", lambda v: pat.set_values.append(v))
+    typed, chords = [], []
+    monkeypatch.setattr(wi, "send_key_chord", lambda chord: chords.append(chord))
+    # Typing is what actually lands the value, so mirror that into the fake.
+    monkeypatch.setattr(wi, "send_text",
+                        lambda text: (typed.append(text), setattr(pat, "Value", text)))
+
+    backend.be.set_value(editor, r"C:\Users\mogan\.firekeep\hands\demo.txt")
+    assert pat.set_values == [r"C:\Users\mogan\.firekeep\hands\demo.txt"]  # tried the pattern first
+    assert chords == ["ctrl+a"]                                           # cleared the field
+    assert typed == [r"C:\Users\mogan\.firekeep\hands\demo.txt"]          # then typed it
+
+
+def test_set_value_raises_when_neither_the_pattern_nor_typing_take(backend, monkeypatch):
+    """A wrong-but-silent save is the failure this fixes, so when the value
+    lands nowhere the step fails loudly rather than reporting success."""
+    from firekeep_hands.backends import _win_input as wi
+
+    editor = _observe(backend.be).controls[1]
+    pat = backend.editor._value
+    monkeypatch.setattr(pat, "SetValue", lambda v: None)      # no-op
+    monkeypatch.setattr(wi, "send_key_chord", lambda chord: None)
+    monkeypatch.setattr(wi, "send_text", lambda text: None)   # typing lands nothing either
+
+    with pytest.raises(HandsError) as exc:
+        backend.be.set_value(editor, "demo.txt")
+    assert exc.value.code == "set_value_failed"
+
+
+def test_set_value_never_reads_back_a_password_field(monkeypatch):
+    """A PasswordBox's contents are never read — not to verify a set, either.
+    So a password set trusts the pattern and never falls back to typing (which
+    would also require reading the value back to confirm)."""
+    secret = FakeControl("EditControl", "Password", (10, 100, 300, 130), (42, 7),
+                         value=FakePattern("old"), is_password=True)
+    window, _, _ = _scene(extra_children=(secret,))
+    fake_uia = _fake_module(window)
+    monkeypatch.setitem(sys.modules, "uiautomation", fake_uia)
+    from firekeep_hands.backends import win as win_module
+    from firekeep_hands.backends import _win_input as wi
+
+    monkeypatch.setattr(win_module, "_import_optional",
+                        lambda name: {"uiautomation": fake_uia,
+                                      "mss": types.ModuleType("mss")}[name])
+    monkeypatch.setattr(win_module, "_process_info", lambda pid: ("notepad", False))
+    monkeypatch.setattr(win_module, "_set_dpi_aware", lambda: None)
+    monkeypatch.setattr(win_module, "_window_is_visible", lambda hwnd: True)
+    # SetValue no-ops; a non-password field would fall back to typing, a
+    # password field must not.
+    monkeypatch.setattr(secret._value, "SetValue", lambda v: None)
+    typed = []
+    monkeypatch.setattr(wi, "send_text", lambda text: typed.append(text))
+
+    be = win_module.WinBackend()
+    pw = next(c for c in _observe(be).controls if c.role == "PasswordBox")
+    be.set_value(pw, "hunter2")     # returns, does not raise, does not type
+    assert typed == []
+
+
 def test_invoke_without_an_invoke_pattern_is_unsupported(backend):
     editor = _observe(backend.be).controls[1]
     with pytest.raises(HandsError) as exc:

@@ -13,11 +13,20 @@ paths follow below.
 > text area, then `{"kind": "type", "text": "Hands was here <today's date>"}`.
 > Save it as `%USERPROFILE%\.firekeep\hands\demo.txt`: press `ctrl+shift+s`,
 > `hands_find` the file-name box and the Save button (the dialog is a new
-> window — observe again), `set_value` the path, `invoke` Save. Then
-> `hands_task_end` with outcome "done" and a one-line summary.
+> window — observe again), `click` the file-name box, `type` the path, then
+> `invoke` Save. Then `hands_task_end` with outcome "done" and a one-line
+> summary.
 
 Expected: every step returns `ok: true`, no `needs_permit`; `demo.txt`
 exists; `firekeep hands evidence` lists the task with at least six steps.
+
+> **Why click-then-type, not `set_value`:** the tabbed Windows 11 Notepad
+> Save dialog's filename field ignores the accessibility `ValuePattern` —
+> `set_value` there returned success and silently left the default name,
+> saving to the Desktop (founder demo, 2026-09-06). Hands now verifies a
+> `set_value` landed and falls back to typing when it did not, so `set_value`
+> also works here; click-then-type is spelled out because it is the reliable
+> path on every Notepad build.
 
 ## 2. Protected step — chord approval
 

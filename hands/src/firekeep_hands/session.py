@@ -46,12 +46,24 @@ from firekeep_client import hooklog
 from . import ids, paths
 from .backends.base import Control, HandsError, Observation, Rect, WindowInfo
 from .broker.client import BrokerClient
+from .config import load_policy
 from .evidence import Ledger, prune
 from .policy import BROWSER_APP, decide
 from .routing import Routed, route
 
 _DETAILS = ("summary", "controls", "screenshot")
 _OUTCOMES = ("done", "failed", "abandoned")
+
+
+def _policy_mtime() -> float | None:
+    """The policy file's last-modified time, or None when it does not exist
+    yet. The one input to the reload decision below — kept a module function
+    so a test can stub it and so `__init__` and the refresh read it the same
+    way."""
+    try:
+        return paths.policy_path().stat().st_mtime
+    except OSError:
+        return None
 _BROWSER_DIRECT = ("open", "tabs", "read", "find", "click", "fill", "screenshot")
 _BROWSER_NAVIGATE = ("navigate", "open_url")
 
@@ -126,6 +138,11 @@ class HandsSession:
         self.browser = browser
         self.config = config
         self.policy = policy
+        # The gateway builds this session once and hands it a policy snapshot.
+        # Track the file's mtime so `_refresh_policy` can pick up a later
+        # `firekeep hands allow` on THIS running session instead of only the
+        # next one (see that method).
+        self._policy_mtime = _policy_mtime()
         self.session_id = session_id
         self.machine_id = ids.machine_id()
 
@@ -163,6 +180,7 @@ class HandsSession:
         map is reported verbatim rather than summarised: `phone` reads `off`,
         `offline` or `active`, and those three mean different things to the
         person deciding whether to walk away from the keyboard."""
+        self._refresh_policy()  # so the reported counts match the file on disk
         broker = self._ensure_broker()
         health = broker.health() if broker is not None else None
         listeners = dict(health.get("listeners") or {}) if health else {}
@@ -509,6 +527,7 @@ class HandsSession:
         guard = self._step_guard()
         if guard is not None:
             return guard
+        self._refresh_policy()
 
         try:
             routed = route(action, self.last_obs)
@@ -921,6 +940,7 @@ class HandsSession:
             return guard
         if op not in _BROWSER_DIRECT:
             return {"ok": False, "error": f"invalid_action: unknown browser op {op!r}"}
+        self._refresh_policy()
 
         ledger_action = _browser_action(op, kwargs)
         classes: tuple[str, ...] = ()
@@ -1155,6 +1175,33 @@ class HandsSession:
         if self.broker is None:
             self.broker = BrokerClient.from_disk()
         return self.broker
+
+    def _refresh_policy(self) -> None:
+        """Re-read the policy file when it changed on disk since we last loaded
+        it, so `firekeep hands allow ...` (which writes the file) takes effect
+        on THIS running session, not only the next one.
+
+        The gateway builds the session once at start-up and snapshotted the
+        policy; without this, an allowlist edit mid-session is invisible and a
+        `boundary` permit keeps being demanded for an app or host the human
+        just allowed — the exact gap the founder demo hit at section 5. A cheap
+        stat on the hot path, a full reload only when the mtime moves: the same
+        shape as `_ensure_broker`'s re-probe. Called on every acting path
+        (native and browser) so a domain allowed mid-task is honoured on the
+        very next retry, which per-task reload would miss.
+
+        Never raises, and never widens on a bad read: `load_policy` returns an
+        EMPTY policy for an unreadable/partial file, which fails CLOSED (fewer
+        allowances → more permits), and any other failure keeps the last-good
+        policy rather than dropping the session's guardrails."""
+        try:
+            mtime = _policy_mtime()
+            if mtime == self._policy_mtime:
+                return
+            self.policy = load_policy()
+            self._policy_mtime = mtime
+        except Exception as exc:  # noqa: BLE001 — a reload must never cost a step
+            hooklog.log_failure("hands", f"policy reload skipped: {exc}", exc)
 
     # -- step bookkeeping --------------------------------------------------
 
