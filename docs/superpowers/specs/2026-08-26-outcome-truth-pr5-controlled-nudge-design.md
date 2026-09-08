@@ -430,3 +430,34 @@ accounting; the post-treatment risk restated (population entry is itself
 agent behavior). No threshold was weakened; every change corrects a
 mechanical impossibility or strengthens the inferential standard.
 
+## Addendum — T0 (2026-09-08)
+
+The experiment started. Recorded per D4, D9 and D14; every value below is
+the one the live Keep holds, read back after the flip, not a plan.
+
+- **`GRADING_NUDGE_T0` = `2026-09-08T15:27:42+00:00`.** Set in the VPS
+  `/opt/Firekeep/.env` together with `GRADING_NUDGE_ENABLED=true`, followed
+  by an env-only recreate of the four cortex containers (no image rebuild).
+  Read back from `GET /autopilot/compliance`: `arm_comparison.status` moved
+  from `not_started` to `ok`, `t0` echoes the value above, `confirmatory`
+  stays `false` as D14 requires.
+- **Treatment arm = A** (D9 coin: first hex digit of revision commit
+  `47d8e17` is 4, even). The block reports `treatment_arm: "A"`,
+  `control_arm: "B"`.
+- **PR4 readout snapshot**, committed before the flip as D4 requires:
+  `docs/superpowers/specs/2026-09-08-outcome-truth-pr4-readout-snapshot.md`
+  (PR4-H1 and PR4-H2 both held, read as the mild-nudge + in-repo-text
+  bundle per the Interference section above).
+- **Verdict-of-record date = T0 + 28 days = 2026-10-06.** The single dated
+  `arm_comparison` snapshot taken on that date and committed as a further
+  addendum here is the H1′/H2′ readout (D14). Every view before it is
+  operational monitoring only. If the D8 floors are unmet on that date,
+  `insufficient_n` is the registered readout.
+- Control-arm check at T0: `GET /briefing` for the deployment owner (hashes
+  to B) returned `experiment_group: "B"`, the `grading_nudge` section
+  `status: "ok"`, `shown: false`, empty text, and no nudge line in
+  `rendered`. At T0 the block classified 235 `pre_t0` and 237 `no_arm`
+  sessions and zero in either arm, as expected for a fresh window.
+
+Nothing else was touched: `TREATMENT_ARM`, the nudge text, the thresholds
+and every registered constant are as committed at `47d8e17`.
