@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import hashlib
 
-from firekeep_client import hooklog, resolver, state, transport
+from firekeep_client import escalation, hooklog, resolver, state, transport
 from firekeep_client.hooks import never_raise, runbooks
 
 _HOOK = "post_tool"
@@ -81,19 +81,18 @@ def run(payload: dict) -> int:
     if tool_name == "Bash":
         chash = runbooks.local_command_hash(tool_input.get("command") or "")
     action_id = state.pop_action(session_id, command_hash=chash)
-    if not action_id:
-        return 0  # no pre-hook entry for this tool call — nothing to reconcile
 
     actual_changes: list[str] = []
     deviation_notes = None
     success = True
     exit_status: int | None = None
 
+    file_path = (tool_input.get("file_path") or tool_input.get("filePath")
+                 or tool_input.get("path") or "")
+
     if tool_name in _EDIT_TOOLS:
-        file_path = (tool_input.get("file_path") or tool_input.get("filePath")
-                     or tool_input.get("path") or "")
         success = bool(tool_response.get("success", True))
-        if file_path and success:
+        if file_path and success and action_id:
             new_sha = _sha256(file_path)
             old_sha = state.read_prestate(action_id) or ""
             if new_sha and new_sha != old_sha:
@@ -109,6 +108,15 @@ def run(payload: dict) -> int:
         stderr = tool_response.get("stderr", "") or ""
         if stderr:
             deviation_notes = stderr[:500]
+
+    # Escalation evidence is recorded for EVERY Bash/Edit/Write call, tracked or
+    # not: the counters must not go quiet just because pre_tool failed to queue an
+    # action, which is exactly when a session is most likely to be in trouble.
+    escalation.record_outcome(session_id, tool_name=tool_name,
+                              file_path=file_path, success=success)
+
+    if not action_id:
+        return 0  # no pre-hook entry for this tool call — nothing to reconcile
 
     outcome = {"success": success, "actual_changes": actual_changes}
     if deviation_notes:

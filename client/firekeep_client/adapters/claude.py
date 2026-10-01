@@ -37,7 +37,7 @@ from firekeep_client.adapters.base import (
 # deletes OUR file, never a hand-written ~/.claude/commands/personal.md a user owns.
 COMMAND_MARKER = "firekeep-owned: personal-mode toggle"
 
-# (Claude event, hook core, matcher | None, timeout) — 7 lifecycle hooks -> hook-core entry points.
+# (Claude event, hook core, matcher | None, timeout) — 8 lifecycle hooks -> hook-core entry points.
 #
 # SessionEnd is what makes the presence lifecycle correct: Stop fires at EVERY
 # assistant turn end, so the deregister that used to ride it deleted presence
@@ -57,6 +57,15 @@ CLAUDE_HOOKS = (
     # path in pre_tool and never reaches the network.
     ("PreToolUse", "pre_tool", "^(Edit|Write|Bash)$", 5),
     ("PostToolUse", "post_tool", "^(Edit|Write|MultiEdit|Bash)$", 10),
+    # PostToolUseFailure since 2026-09-13: a FAILED tool call is dispatched here,
+    # NOT to PostToolUse, so without this row every failure was invisible to the
+    # whole client. Measured with a sentinel — a marker written into the escalation
+    # scratch file by a shell that is not a Claude Code tool, then `exit 1` through
+    # the real Bash tool, then read back intact: post_tool had not run. The matcher
+    # is deliberately identical to PostToolUse's, so a tool's successes and its
+    # failures land on the same terms; escalation.nudge counts them, and
+    # post_tool_failure.run is single-purpose and never blocks (exit 0 always).
+    ("PostToolUseFailure", "post_tool_failure", "^(Edit|Write|MultiEdit|Bash)$", 10),
 )
 
 

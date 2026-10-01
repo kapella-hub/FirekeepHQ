@@ -24,6 +24,7 @@ import hashlib
 import urllib.parse
 
 from firekeep_client import (
+    escalation,
     hooklog,
     promptrecall,
     resolver,
@@ -199,11 +200,20 @@ def run(payload: dict) -> dict:
     # the hook nothing but its own timeout.
     recall_block = promptrecall.nudge(cfg, payload)
 
-    if not inbox and not recall_block:
+    # 7. Escalation: when this session has COUNTED evidence the main model is stuck
+    # — a run of failed commands, or one file edited in circles — say so, name the
+    # evidence, and name the agent to hand it to. Evidence only; the architectural
+    # half of this feature is standing policy (session_start), not a heuristic, for
+    # the reason firekeep_client.escalation records: difficulty is not countable.
+    escalation_block = escalation.nudge(cfg, payload)
+
+    if not inbox and not recall_block and not escalation_block:
         return {}
     parts = []
     if inbox:
         parts.append("[relay] " + "\n".join(inbox))
     if recall_block:
         parts.append(recall_block)
+    if escalation_block:
+        parts.append(escalation_block)
     return {"systemMessage": "\n\n".join(parts)}

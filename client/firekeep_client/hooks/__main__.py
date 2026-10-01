@@ -42,6 +42,7 @@ from firekeep_client import hooklog, resolver
 from firekeep_client.stdio import force_utf8_stdio, pin_import_paths
 from firekeep_client.hooks import (
     post_tool,
+    post_tool_failure,
     pre_tool,
     precompact,
     prompt,
@@ -66,8 +67,9 @@ _CORE_MODULES = {
     "precompact": precompact,
     "pre_tool": pre_tool,
     "post_tool": post_tool,
+    "post_tool_failure": post_tool_failure,
 }
-_INT_CORES = frozenset({"pre_tool", "post_tool"})
+_INT_CORES = frozenset({"pre_tool", "post_tool", "post_tool_failure"})
 _DICT_CORES = frozenset({"session_start", "stop", "session_end", "prompt", "precompact"})
 
 # Cores whose text must reach the MODEL, and the Claude Code event name that

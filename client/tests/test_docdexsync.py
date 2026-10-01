@@ -453,6 +453,10 @@ def test_session_start_appends_the_sync_nudge(docdex_home, monkeypatch):
     monkeypatch.setattr(_mcp, "call_tool", lambda *a, **k: {})
     monkeypatch.setattr(session_start.symdexindex, "index_nudge", lambda cfg, p: "")
     monkeypatch.setattr(session_start.docdexsync, "sync_nudge", lambda cfg: "|DOCDEX|")
+    # Neutralised so this test measures the docdex nudge's position, not whatever
+    # else the briefing carries: escalation's standing policy is always-on prose,
+    # and it sits last.
+    monkeypatch.setattr(session_start.escalation, "standing_policy", lambda cfg: "")
 
     out = session_start.run({})
     assert out["systemMessage"].startswith("BRIEF")

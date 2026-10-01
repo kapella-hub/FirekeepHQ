@@ -19,8 +19,8 @@ import platform
 import urllib.parse
 
 from firekeep_client import (
-    autoupdate, docdexsync, hooklog, maildexsync, nightshiftdrain, report, resolver,
-    serverupdate, state, symdexindex, transport, updater,
+    autoupdate, docdexsync, escalation, hooklog, maildexsync, nightshiftdrain, report,
+    resolver, serverupdate, state, symdexindex, transport, updater,
 )
 from firekeep_client.hooks import _mcp, never_raise, runbooks
 
@@ -178,4 +178,8 @@ def run(payload: dict) -> dict:
             + symdexindex.index_nudge(cfg, payload)
             + docdexsync.sync_nudge(cfg)
             + maildexsync.sync_nudge(cfg)
-            + nightshiftdrain.drain_nudge(cfg)}
+            + nightshiftdrain.drain_nudge(cfg)
+            # Standing escalation policy — the half of the escalation feature that
+            # is judgement rather than counting, stated once here where it costs
+            # one line instead of on every prompt where it would be noise.
+            + escalation.standing_policy(cfg)}

@@ -549,6 +549,10 @@ def test_session_start_appends_the_sync_nudge(maildex_home, monkeypatch):
     monkeypatch.setattr(session_start.symdexindex, "index_nudge", lambda cfg, p: "")
     monkeypatch.setattr(session_start.docdexsync, "sync_nudge", lambda cfg: "")
     monkeypatch.setattr(session_start.maildexsync, "sync_nudge", lambda cfg: "|MAILDEX|")
+    # Neutralised so this test measures the mail nudge's position, not whatever
+    # else the briefing carries: escalation's standing policy is always-on prose,
+    # and it sits last.
+    monkeypatch.setattr(session_start.escalation, "standing_policy", lambda cfg: "")
 
     out = session_start.run({})
     assert out["systemMessage"].startswith("BRIEF")
@@ -569,6 +573,10 @@ def test_session_start_keeps_both_ingest_nudges_in_registry_order(
     monkeypatch.setattr(session_start.symdexindex, "index_nudge", lambda cfg, p: "")
     monkeypatch.setattr(session_start.docdexsync, "sync_nudge", lambda cfg: "|DOCDEX|")
     monkeypatch.setattr(session_start.maildexsync, "sync_nudge", lambda cfg: "|MAILDEX|")
+    # Neutralised so this test measures ingest order, not whatever else the
+    # briefing carries: escalation's standing policy is always-on prose, and it
+    # sits last.
+    monkeypatch.setattr(session_start.escalation, "standing_policy", lambda cfg: "")
 
     msg = session_start.run({})["systemMessage"]
     assert msg == "BRIEF|DOCDEX||MAILDEX|"

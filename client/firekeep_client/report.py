@@ -50,8 +50,8 @@ CONNECTIVITY_STAGES = ("cortex", "bridge", "sentinel", "relay", "server",
 RUNTIME_STAGES = (
     # hook-core names, hyphenated (exhaustiveness test pins these against
     # hooks.__main__._CORE_MODULES) + the two gateway seams
-    "session-start", "prompt", "pre-tool", "post-tool", "stop", "session-end",
-    "precompact", "gateway-call", "gateway-dispatch",
+    "session-start", "prompt", "pre-tool", "post-tool", "post-tool-failure",
+    "stop", "session-end", "precompact", "gateway-call", "gateway-dispatch",
 )
 ERRORS = (
     "permission-denied", "disk-full", "not-found", "dns-failure",
