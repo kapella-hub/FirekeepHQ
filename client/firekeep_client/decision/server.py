@@ -42,7 +42,7 @@ from typing import Any, Callable
 
 import anyio
 
-from firekeep_client import hooklog, resolver, transport
+from firekeep_client import background, hooklog, jobobject, resolver, transport
 from firekeep_client.stdio import force_utf8_stdio, pin_import_paths
 from firekeep_client.decision.board import BOARD_CSP, BOARD_HTML, render_answers
 
@@ -559,6 +559,44 @@ def _bypass_notice() -> str:
     )
 
 
+# Runs in a helper interpreter, not here: os.startfile is ShellExecute, which
+# CreateProcess-es the browser as OUR child — and this server is a gateway
+# backend inside the gateway's kill-on-close Job Object (jobobject.py).
+_STARTFILE = "import os, sys; os.startfile(sys.argv[1])"
+
+
+def _open_browser_outside_job(url: str) -> bool:
+    """Windows: start the browser from a helper launched with
+    CREATE_BREAKAWAY_FROM_JOB, so it outlives the agent session.
+
+    A browser cold-started inside the job would die with the gateway — taking
+    every window the human later opened in it. The helper is out of the job, so
+    the browser it starts is too. The URL rides as an argv element: board URLs
+    carry `&`, which `cmd /c start` would read as a command separator. Waits for
+    the helper's exit code so "True only when a launch was observed" holds.
+    False (hooklogged) sends the caller to plain webbrowser.open — a browser
+    inside the job beats no browser. Never raises.
+    """
+    proc = None
+    try:
+        # os_name pinned: only reached on win32, and a Linux test run of this
+        # branch must exercise the Windows recipe, not the POSIX one.
+        kwargs = background.popen_kwargs(os_name="nt")  # hidden console, no inherited streams
+        proc = jobobject.popen_outside_job([sys.executable, "-c", _STARTFILE, url], **kwargs)
+        rc = proc.wait(timeout=10)
+        if rc == 0:
+            return True
+        hooklog.log_failure("decision", f"breakaway browser helper rc={rc} — trying webbrowser")
+    except Exception as e:  # noqa: BLE001 — fall through to webbrowser
+        if proc is not None:
+            try:
+                proc.kill()  # a hung helper must not launch a second browser late
+            except Exception:  # noqa: BLE001
+                pass
+        hooklog.log_failure("decision", f"breakaway browser helper raised: {e!r} — trying webbrowser")
+    return False
+
+
 def _open_browser(url: str) -> bool:
     """Open the human's browser at ``url``; True only when a launch was observed.
 
@@ -588,6 +626,8 @@ def _open_browser(url: str) -> bool:
                 hooklog.log_failure(
                     "decision", f"open(1) raised: {e!r} — trying webbrowser",
                 )
+        if sys.platform == "win32" and _open_browser_outside_job(url):
+            return True
         ok = bool(webbrowser.open(url))
         if not ok:
             hooklog.log_failure(

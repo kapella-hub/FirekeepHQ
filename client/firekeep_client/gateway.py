@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from firekeep_client import dexes, report
+from firekeep_client import dexes, jobobject, report
 from firekeep_client.adapters.base import (
     CHAT_INSTRUCTIONS,
     CHAT_INSTRUCTIONS_HASH,
@@ -459,6 +459,11 @@ def run(runtime: str | None = None) -> int:
     # export, no headers, everything else unchanged.
     if runtime:
         os.environ["FIREKEEP_RUNTIME"] = runtime
+    # Before the first backend can start (they start lazily on the first
+    # request, and Gateway() spawns nothing): every backend and its uv-trampoline
+    # grandchild then inherits a kill-on-close job, so no firekeep-*.exe outlives
+    # this process however it dies. Never raises. See jobobject.py.
+    jobobject.contain_process_tree()
     gateway = Gateway()
     try:
         for line in sys.stdin:

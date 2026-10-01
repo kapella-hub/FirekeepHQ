@@ -20,6 +20,7 @@ prompt's frozen constraints):
 import functools
 import json
 import re
+import subprocess
 import threading
 import time
 import urllib.error
@@ -552,6 +553,74 @@ def test_open_browser_raise_from_open1_still_tries_webbrowser(monkeypatch):
     attempts = []
     monkeypatch.setattr(server.sys, "platform", "darwin")
     monkeypatch.setattr(server.subprocess, "run", boom)
+    monkeypatch.setattr(server.webbrowser, "open", lambda url: attempts.append(url) or True)
+    assert _REAL_OPEN_BROWSER("http://127.0.0.1:1/board/x") is True
+    assert attempts == ["http://127.0.0.1:1/board/x"]
+
+
+class _FakeHelper:
+    def __init__(self, rc=0, raise_on_wait=None):
+        self.rc = rc
+        self.raise_on_wait = raise_on_wait
+        self.killed = False
+
+    def wait(self, timeout=None):
+        if self.raise_on_wait is not None:
+            raise self.raise_on_wait
+        return self.rc
+
+    def kill(self):
+        self.killed = True
+
+
+def test_open_browser_on_windows_launches_outside_the_gateway_job(monkeypatch):
+    """The gateway holds every backend in a kill-on-close Job Object, and the
+    decision server is a backend. A browser cold-started by webbrowser.open
+    (os.startfile -> CreateProcess) would join that job and die with the agent
+    session — every browser window the human then opened in it included. The
+    win32 opener must route through a breakaway helper instead."""
+    launches = []
+    helper = _FakeHelper(rc=0)
+    monkeypatch.setattr(server.sys, "platform", "win32")
+    monkeypatch.setattr(server.jobobject, "popen_outside_job",
+                        lambda argv, **kw: launches.append((argv, kw)) or helper)
+
+    def _no_webbrowser(*a, **k):
+        raise AssertionError("webbrowser.open would launch the browser inside the job")
+
+    monkeypatch.setattr(server.webbrowser, "open", _no_webbrowser)
+    url = "http://127.0.0.1:1/board/x?a=1&b=2"
+    assert _REAL_OPEN_BROWSER(url) is True
+    (argv, kwargs), = launches
+    # The URL is an argv element, never shell text: `&` must not reach cmd.exe.
+    assert argv[0] == server.sys.executable and argv[-1] == url
+    assert "cmd" not in argv
+    assert kwargs["creationflags"] & server.background.CREATE_NO_WINDOW
+
+
+@pytest.mark.parametrize("helper", [
+    _FakeHelper(rc=1),
+    _FakeHelper(raise_on_wait=subprocess.TimeoutExpired(cmd="helper", timeout=10)),
+])
+def test_open_browser_on_windows_falls_back_to_webbrowser(monkeypatch, helper):
+    attempts, failures = [], []
+    monkeypatch.setattr(server.hooklog, "log_failure",
+                        lambda hook, msg: failures.append((hook, msg)))
+    monkeypatch.setattr(server.sys, "platform", "win32")
+    monkeypatch.setattr(server.jobobject, "popen_outside_job", lambda argv, **kw: helper)
+    monkeypatch.setattr(server.webbrowser, "open", lambda url: attempts.append(url) or True)
+    assert _REAL_OPEN_BROWSER("http://127.0.0.1:1/board/x") is True
+    assert attempts == ["http://127.0.0.1:1/board/x"]
+    assert failures, "a failed breakaway launch must leave a hooklog trace"
+
+
+def test_open_browser_on_windows_spawn_error_falls_back(monkeypatch):
+    def boom(argv, **kw):
+        raise OSError("no exec")
+
+    attempts = []
+    monkeypatch.setattr(server.sys, "platform", "win32")
+    monkeypatch.setattr(server.jobobject, "popen_outside_job", boom)
     monkeypatch.setattr(server.webbrowser, "open", lambda url: attempts.append(url) or True)
     assert _REAL_OPEN_BROWSER("http://127.0.0.1:1/board/x") is True
     assert attempts == ["http://127.0.0.1:1/board/x"]

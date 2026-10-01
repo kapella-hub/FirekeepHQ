@@ -528,6 +528,50 @@ see "Field failure reporting" below for what the row means and the full picture.
 `RENDERED_GENERIC_INSTRUCTIONS_HASH` (the hook-free text's OWN hash — checked against the
 four's hash it would read "edited" forever).
 
+## Gateway process lifetime — the Windows Job Object (`firekeep_client.jobobject`)
+
+Every gateway backend is a `firekeep-*.exe` uv trampoline that spawns its own
+`python.exe`, so one gateway is a two-level process tree per backend. A host that
+**kills** the gateway rather than closing its stdin (TerminateProcess: no `finally`, no `Backend.close()`) leaves that tree to Windows, which
+does not reap it. The 2026-09-16 orphaned-shim leak was a stdin-EOF hang in `shim.serve()`
+(fixed in `shim.py`, regression test `test_shim_eof_exit.py`); the job object is the
+defence-in-depth half, so the next hang in any backend — or its grandchild — cannot leak
+the same way.
+
+`gateway.run()` calls `jobobject.contain_process_tree()` before any backend starts: the
+gateway's python process assigns **itself** to a new job with
+`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK`. Assign-self is one
+call, race-free (no window between a child's creation and its assignment) and covers
+grandchildren by inheritance. The handle is non-inheritable and parked in a module global
+that is never closed — closing it is what kills the tree, so process exit is the only
+thing that does. Consequence worth knowing: **every** gateway exit, clean or not, now ends
+every backend with it. Measured on Windows 11 against a parent job carrying libuv's flags
+(the normal case — Node hosts spawn the gateway into libuv's job, which sets
+`SILENT_BREAKAWAY_OK`): nesting succeeds and plain children land in the gateway's job. If the host's job refuses nesting,
+`AssignProcessToJobObject` fails, the gateway logs at debug and serves without the
+guarantee — it never refuses to start. A complete no-op off Windows.
+
+**Launches that must outlive the session** opt out per launch with
+`CREATE_BREAKAWAY_FROM_JOB` via `jobobject.popen_outside_job` — today two: the browser the
+Decision Board opens (`decision/server.py`; `webbrowser.open` would cold-start the browser
+*inside* the job and kill it, with every window the human then opened, at session end) and
+apps opened by Hands' `open_app` (`hands/.../backends/win.py`, a duplicated helper because
+the hands wheel does not depend on the client kit). Both start `os.startfile` from a
+breakaway helper interpreter, so the URL or path rides as an argv element and never meets
+`cmd.exe`. If the enclosing job forbids breakaway (WinError 5 — only possible when the
+gateway's own job was not applied and the host's is strict) they launch inside it, the
+pre-job behaviour. The hook-spawned background workers (`background.py`: auto-update,
+symdex index, docdex/maildex sync, night shift) are children of the *host*, not the
+gateway, and are unaffected.
+
+**Opt out:** `FIREKEEP_NO_JOB_OBJECT=1` (any of `1/true/yes/on`) in the gateway's
+environment. The test suite sets it in `conftest.py` so `gateway.run()` under test never
+puts pytest in a kill-on-close job. Guards: `client/tests/test_jobobject.py` — the
+decision logic against a fake kernel32 on every OS, plus two real Windows tests: a
+contained parent spawns a child and grandchild and is hard-killed, and both must be gone
+within 5 s (red without the job: the child outlived the parent); a breakaway child must
+survive the same kill.
+
 ## Anonymous install reporting (`firekeep doctor --report`, client 1.5.0)
 
 Closes a gap a 2026-08-20 audit named precisely: nothing about install success or
