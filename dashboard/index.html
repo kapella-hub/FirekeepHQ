@@ -3937,6 +3937,12 @@ function loadRelayTasks() {
                 return html;
             }},
             { label: 'Assignee', key: 'assignee', render: function(t) { return esc(t.assignee || 'Unassigned'); } },
+            // Relay stamps the VERIFIED credential behind each task write
+            // (created_by / completed_by). Assigner and assignee are labels a
+            // caller chooses; these are what the API key proved. The Hands
+            // broker refuses a phone approval whose completed_by is the
+            // credential that requested it.
+            { label: 'Completed by', key: 'completed_by', render: function(t) { return renderTaskPrincipal(t.completed_by); } },
             { label: 'Created', key: 'created_at', render: function(t) { return relTime(t.created_at); } },
             { label: 'ID', key: 'id', mono: true, render: function(t) { return '<span style="font-size:11px">' + esc((t.id || '').substring(0, 12)) + '</span>'; } },
             { label: '', key: '_delete', render: function(t) {
@@ -3971,6 +3977,14 @@ function loadRelayTasks() {
     }).catch(function(e) { c.innerHTML = '<div class="empty-state">Failed to load tasks: ' + esc(e.message) + '</div>'; });
 }
 
+function renderTaskPrincipal(p) {
+    if (!p || !p.credential_id) return '<span style="color:var(--text-secondary)">&mdash;</span>';
+    var tip = 'member ' + (p.member_id || '?') + ' · credential ' + p.credential_id
+        + ' · workspace ' + (p.workspace_id || '?') + (p.authenticated ? '' : ' · unauthenticated (auth disabled)');
+    return '<span class="font-mono" style="font-size:11px" title="' + esc(tip) + '">'
+        + esc(p.credential_id.substring(0, 12)) + (p.authenticated ? '' : ' (anon)') + '</span>';
+}
+
 function deleteRelayTask(taskId) {
     var url = CONFIG.RELAY_API + '/tasks/' + encodeURIComponent(taskId);
     fetchJSON(url, { method: 'DELETE' })
@@ -3982,6 +3996,9 @@ function deleteRelayTask(taskId) {
 // protected step needs a human's phone approval; the approval broker polls
 // the task and reads `completed` + result starting `approve` as approve,
 // `cancelled`/`failed` (or `completed` with any other result) as deny.
+// An approve counts only if relay's `completed_by` stamp — the credential
+// this dashboard's proxy key verified as — differs from the credential that
+// posted the task (and is in the broker's `phone_approvers`, when set).
 function decideHandsPermit(taskId, approve) {
     mcpCall(CONFIG.RELAY_API, 'relay_task_update', approve
         ? { task_id: taskId, status: 'completed', result: 'approve' }

@@ -480,6 +480,12 @@ class PermitAnnouncer:
                 log.debug("could not announce permit %s: %s", permit.challenge, exc)
 
 
+def _approvers(cfg) -> tuple[str, ...]:
+    """`phone_approvers` as credential ids: comma-separated, blanks dropped."""
+    raw = str(getattr(cfg, "phone_approvers", "") or "")
+    return tuple(part.strip() for part in raw.split(",") if part.strip())
+
+
 def build_runtime(cfg, link) -> tuple[PermitStore, dict[str, str], PhoneBridge | None]:
     """Everything `run()` wires up before it binds a socket, in one testable
     place: the permit store, what can approve, and the phone bridge if it is
@@ -504,7 +510,7 @@ def build_runtime(cfg, link) -> tuple[PermitStore, dict[str, str], PhoneBridge |
         if link.offline:
             listeners["phone"] = "offline"
         else:
-            bridge = PhoneBridge(store, link)
+            bridge = PhoneBridge(store, link, approvers=_approvers(cfg))
             bridge.start()
             listeners["phone"] = "active"
     return store, listeners, bridge

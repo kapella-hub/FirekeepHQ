@@ -20,3 +20,13 @@ def test_dashboard_offers_approve_and_deny_for_hands_permits():
     assert "result: 'approve'" in src and "status: 'completed'" in src
     assert "result: 'deny'" in src and "status: 'cancelled'" in src
     assert "function decideHandsPermit(" in src
+
+
+def test_relay_tasks_show_the_verified_completing_credential():
+    """Relay stamps the verified principal on task writes (THREAT-MODEL #12).
+    The Relay tab shows `completed_by`, so a person can see WHICH credential
+    resolved a permit task, not just the assignee label a caller chose."""
+    src = HTML.read_text(encoding="utf-8")
+    assert "label: 'Completed by', key: 'completed_by'" in src
+    assert "function renderTaskPrincipal(" in src
+    assert "renderTaskPrincipal(t.completed_by)" in src
