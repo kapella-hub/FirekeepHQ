@@ -46,6 +46,7 @@ async def _emit_stream_receipt(
     query: ContextQuery,
     accessed_ids: list[str],
     result_count: int,
+    stores: list[str] | None = None,
 ) -> None:
     """Best-effort parity with the non-streaming recall receipt (main.py
     `memory_recall`, ~line 1291-1342). Bumps `memory:access_counts` +
@@ -63,7 +64,12 @@ async def _emit_stream_receipt(
         # this module at load time, so importing back from `app.main` at
         # module scope would be a circular import. By request time `app.main`
         # is fully loaded.
-        from app.main import _bump_untagged_counter, _replay_emit
+        from app.main import (
+            _bump_recall_store_mix,
+            _bump_untagged_counter,
+            _replay_emit,
+            _store_counts,
+        )
 
         if accessed_ids:
             now_iso = datetime.now(timezone.utc).isoformat()
@@ -76,6 +82,10 @@ async def _emit_stream_receipt(
             await pipe.execute()
 
         await _bump_untagged_counter(redis_client, sid)
+        # The SSE path never merges legs, so it reports no "both" rows — a
+        # graph hit arrives as its own "graph" frame.
+        store_counts = _store_counts(stores or [])
+        await _bump_recall_store_mix(redis_client, store_counts)
         await _replay_emit(
             "memory_read",
             session_id=sid,
@@ -91,6 +101,7 @@ async def _emit_stream_receipt(
                 # `accessed_ids`/`memory_ids` but must still be counted here,
                 # or SSE recalls with graph hits would under-report.
                 "result_count": result_count,
+                "store_counts": store_counts,
                 "namespace": query.namespace,
                 # OWM: the ids RETURNED, so a nightly pass can join which
                 # sessions saw which memories to how those sessions ended.
@@ -125,6 +136,7 @@ def create_streaming_router(
             # uses (`main.py`: `s.metadata.get("id")`, truthy-filtered), built
             # up as source frames go by instead of over `result.sources`.
             accessed_ids: list[str] = []
+            stores: list[str] = []
             source_count = 0
             try:
                 async for event in rag_engine.recall_streaming(
@@ -137,6 +149,7 @@ def create_streaming_router(
 
                     if event_type == "source":
                         source_count += 1
+                        stores.append(event["data"].get("store", ""))
                         mid = (event["data"].get("metadata") or {}).get("id")
                         if mid:
                             accessed_ids.append(mid)
@@ -150,7 +163,7 @@ def create_streaming_router(
                 # closing the SSE blind spot means the receipt must fire
                 # either way, and it must never raise into the response.
                 await _emit_stream_receipt(
-                    redis_client, sid, aid, query, accessed_ids, source_count
+                    redis_client, sid, aid, query, accessed_ids, source_count, stores
                 )
 
         return StreamingResponse(
