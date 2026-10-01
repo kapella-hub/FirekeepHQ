@@ -168,6 +168,60 @@ async def _bump_untagged_counter(redis_client: redis.asyncio.Redis, session_id: 
         logger.warning("Untagged counter bump failed: %s", exc)
 
 
+_RECALL_STORES = ("vector", "graph", "both")
+_RECALL_STORE_MIX_RETENTION_DAYS = 35
+
+
+def _store_counts(stores) -> dict[str, int]:
+    """How many RETURNED recall rows came from each leg.
+
+    "graph" is a row only the graph leg produced; "both" is a vector memory
+    the graph leg matched and boosted (engine/rag.py::_merge_and_boost). Either
+    is the graph leg changing what the caller saw — the question the
+    2026-09-30 LongMemEval legs could answer only for a bench store (zero
+    graph rows in 2,000 recalls) and this counter answers for real traffic.
+    """
+    counts = {s: 0 for s in _RECALL_STORES}
+    for store in stores:
+        if store in counts:
+            counts[store] += 1
+    return counts
+
+
+async def _bump_recall_store_mix(
+    redis_client: redis.asyncio.Redis,
+    counts: dict[str, int],
+    budget_bound: bool = False,
+) -> None:
+    """Add one recall's per-leg row counts to today's store-mix hash.
+
+    A daily hash rather than a replay-stream scan, for the same reason
+    `_bump_untagged_counter` is: the readout (`GET /admin/recall-store-mix`)
+    then costs N HGETALLs instead of an XRANGE over every event. Never raises.
+
+    `budget_bound` marks a recall whose returned context reached its
+    token_budget. On the 2026-10-01 LongMemEval sweep the 600-token default,
+    not top_k, capped evidence coverage at ~0.70 for every top_k from 3 to 8 —
+    but those memories are long chat turns. This is the production check of
+    whether short agent-written memories hit the same ceiling.
+    """
+    try:
+        key = f"cortex:recall_store_mix:{datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
+        pipe = redis_client.pipeline()
+        pipe.hincrby(key, "recalls", 1)
+        if counts.get("graph") or counts.get("both"):
+            pipe.hincrby(key, "recalls_with_graph", 1)
+        if budget_bound:
+            pipe.hincrby(key, "recalls_budget_bound", 1)
+        for store, n in counts.items():
+            if n:
+                pipe.hincrby(key, f"rows_{store}", n)
+        pipe.expire(key, 86400 * _RECALL_STORE_MIX_RETENTION_DAYS)
+        await pipe.execute()
+    except Exception as exc:
+        logger.warning("Recall store-mix bump failed: %s", exc)
+
+
 MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024  # 10 MB
 
 # Health check cache (10-second TTL to reduce backend probing)
@@ -973,6 +1027,7 @@ def _get_request_id(request: Request) -> str | None:
 # Execution order (outer -> inner): CORS -> RequestID -> FirekeepKeyAuth -> RequestBodySize -> App
 from auth.asgi import FirekeepKeyAuthMiddleware
 from auth.config import get_auth_settings as _get_auth_settings
+from auth.middleware import require_scope
 
 app.add_middleware(RequestBodySizeLimitMiddleware)
 
@@ -1315,6 +1370,11 @@ async def memory_recall(
     sid = request.headers.get("X-Session-Id", "unknown")
     aid = request.headers.get("X-Agent-Id", "unknown")
     await _bump_untagged_counter(redis_client, sid)
+    store_counts = _store_counts(s.store for s in result.sources)
+    await _bump_recall_store_mix(
+        redis_client, store_counts,
+        budget_bound=result.tokens_used >= query.token_budget,
+    )
     await _replay_emit(
         "memory_read",
         session_id=sid,
@@ -1325,6 +1385,11 @@ async def memory_recall(
             # None for deliberate calls; "prompt-hook" for pushed recall.
             "trigger": query.trigger,
             "result_count": len(result.sources),
+            # Which leg produced each RETURNED row — see _store_counts.
+            "store_counts": store_counts,
+            # Whether the token budget, not top_k, decided how much came back.
+            "tokens_used": result.tokens_used,
+            "token_budget": query.token_budget,
             # `top_score` is RecallResponse.score, which is max() over scores
             # that have been through _min_max_normalize -- so it is exactly 1.0
             # whenever any result survives, by construction. Measured live
@@ -1670,6 +1735,49 @@ async def get_untagged_calls(
         counts[date] = n
         total += n
     return {"total": total, "by_day": counts}
+
+
+@app.get("/admin/recall-store-mix")
+async def get_recall_store_mix(
+    redis_client: Annotated[redis.asyncio.Redis, Depends(get_redis)],
+    identity: Annotated[dict, Depends(require_scope("admin"))],
+    days: int = 7,
+) -> dict:
+    """How often the graph leg (and the token budget) shape what recall returns.
+
+    Counts across every workspace, so admin-only. `graph_share` is the fraction
+    of recalls where at least one returned row came from the graph leg (graph-
+    only or a graph-boosted vector row) — the production answer to whether
+    RECALL_GRAPH_ENABLED should stay on. Covers /memory/recall and its SSE twin.
+    """
+    days = max(1, min(days, _RECALL_STORE_MIX_RETENTION_DAYS))
+    now = datetime.now(timezone.utc)
+    fields = (
+        "recalls", "recalls_with_graph", "recalls_budget_bound",
+        *(f"rows_{s}" for s in _RECALL_STORES),
+    )
+    totals = {f: 0 for f in fields}
+    by_day: dict[str, dict[str, int]] = {}
+    for i in range(days):
+        date = (now - timedelta(days=i)).strftime("%Y-%m-%d")
+        raw = await redis_client.hgetall(f"cortex:recall_store_mix:{date}") or {}
+        day = {}
+        for f in fields:
+            val = raw.get(f) if f in raw else raw.get(f.encode(), 0)
+            day[f] = int(val or 0)
+            totals[f] += day[f]
+        by_day[date] = day
+    recalls = totals["recalls"]
+    return {
+        "days": days,
+        "totals": totals,
+        "graph_share": round(totals["recalls_with_graph"] / recalls, 4) if recalls else None,
+        # Non-streaming recalls only — the SSE path does no token trimming.
+        "budget_bound_share": (
+            round(totals["recalls_budget_bound"] / recalls, 4) if recalls else None
+        ),
+        "by_day": by_day,
+    }
 
 
 @app.get("/memory/contributors")

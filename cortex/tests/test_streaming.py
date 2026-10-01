@@ -483,6 +483,40 @@ class TestStreamReceiptParity:
         assert payload["namespace"] == "default"
 
     @pytest.mark.asyncio
+    async def test_stream_receipt_and_store_mix_count_each_leg(
+        self, mock_graph, mock_vector, wired_replay_emitter
+    ):
+        """The SSE twin feeds the same store-mix counter as POST /memory/recall,
+        so GET /admin/recall-store-mix covers both paths."""
+        mock_vector.search.return_value = [
+            {"id": "v1", "score": 0.85, "text": "Fix login timeout",
+             "metadata": {"id": "v1"}},
+            {"id": "v2", "score": 0.6, "text": "Auth module update",
+             "metadata": {"id": "v2"}},
+        ]
+
+        rag = RAGEngine(graph=mock_graph, vector=mock_vector)
+        test_app = _stream_app(rag, mock_graph, mock_vector, wired_replay_emitter)
+
+        async with _async_client(test_app) as client:
+            resp = await client.post(
+                "/memory/recall/stream",
+                json={"task": "fix auth", "top_k": 5},
+                headers={"X-Session-Id": "sess-stream-mix", "X-Agent-Id": "agent-a"},
+            )
+            _ = resp.text
+
+        timeline = await get_session_timeline(
+            wired_replay_emitter, "sess-stream-mix", event_type="memory_read"
+        )
+        payload = timeline["events"][0]["payload"]
+        assert payload["store_counts"] == {"vector": 2, "graph": 0, "both": 0}
+        (key,) = await wired_replay_emitter.keys("cortex:recall_store_mix:*")
+        mix = await wired_replay_emitter.hgetall(key)
+        assert mix["recalls"] == "1" and mix["rows_vector"] == "2"
+        assert "recalls_with_graph" not in mix
+
+    @pytest.mark.asyncio
     async def test_stream_bumps_access_counts_and_last_recalled(
         self, mock_graph, mock_vector, wired_replay_emitter
     ):

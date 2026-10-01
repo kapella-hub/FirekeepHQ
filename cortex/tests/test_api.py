@@ -834,7 +834,12 @@ class TestRecallAccessCounts:
             "/memory/recall", json={"task": "Fix auth bug", "format": "raw"}
         )
         assert resp.status_code == 200
-        mock_redis._pipeline.hincrby.assert_not_called()
+        # The recall store-mix counter shares this pipeline mock and DOES
+        # hincrby (it is counting the graph row); the access-count key must not.
+        assert not any(
+            c.args and c.args[0] == "memory:access_counts"
+            for c in mock_redis._pipeline.hincrby.call_args_list
+        )
 
 
 class TestRecallTrigger:
