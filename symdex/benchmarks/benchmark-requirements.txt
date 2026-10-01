@@ -1,5 +1,8 @@
 # Exact environment used for the polyglot-targeted-symbol-v2 canonical run.
 # Generated from the Python 3.12.8 benchmark virtual environment on 2026-08-01.
+# Security bumps after the canonical run (2026-10-01, Dependabot): pyjwt 2.13.0 -> 2.15.1,
+# urllib3 2.7.0 -> 2.8.0. The canonical run itself used the old pins; neither is on the
+# benchmark's measured path (both arrive transitively via the HTTP/SDK clients).
 -e .
 annotated-types==0.8.0
 anthropic==0.120.0
@@ -32,7 +35,7 @@ pydantic==2.13.4
 pydantic-core==2.46.4
 pydantic-settings==2.14.2
 pygments==2.20.0
-pyjwt==2.13.0
+pyjwt==2.15.1
 pytest==9.1.1
 pytest-asyncio==1.4.0
 pytest-cov==7.1.0
@@ -54,5 +57,5 @@ tree-sitter-language-pack==0.13.0
 tree-sitter-yaml==0.7.2
 typing-extensions==4.16.0
 typing-inspection==0.4.2
-urllib3==2.7.0
+urllib3==2.8.0
 uvicorn==0.51.0
