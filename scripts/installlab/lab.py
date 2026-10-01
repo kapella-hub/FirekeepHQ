@@ -36,6 +36,7 @@ import shutil
 import subprocess
 import sys
 import time
+import types
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -502,6 +503,69 @@ def assess(scenario: str, exit_code: int, output: str) -> list[str]:
     return failures
 
 
+# --------------------------------------------------------------------- recording
+
+
+def _run_and_record(
+    argv: list[str], *, timeout: int, cast_path: Path
+) -> tuple[int, str]:
+    """Run a command, streaming its output and stamping every line with elapsed ms.
+
+    A plain `subprocess.run(capture_output=True)` gives the transcript but throws
+    the TIMING away, and timing is most of what a terminal demo is: the pause
+    while uv provisions Python, the long quiet during an image pull, the burst
+    when thirteen containers report healthy. Replaying real text at invented
+    speed would be a reconstruction pretending to be a recording.
+
+    Writes an asciinema-shaped cast (a header line, then [elapsed_seconds, "o",
+    text] events) so the same file can feed our own player OR `asciinema play`
+    without a converter.
+    """
+    cast_path.parent.mkdir(parents=True, exist_ok=True)
+    started = time.monotonic()
+    lines: list[str] = []
+    events: list[list] = []
+
+    # encoding="utf-8" EXPLICITLY. `text=True` alone decodes with the system
+    # locale, which on Windows is cp1252 -- and container output is UTF-8, so
+    # every box-drawing and braille glyph arrived as U+FFFD. That is not a
+    # cosmetic loss: the demo renderer identifies progress widgets BY their
+    # braille glyphs, and mojibake made 3,000 spinner frames unrecognisable and
+    # therefore unfilterable. Decode at the boundary, once, correctly.
+    process = subprocess.Popen(
+        argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace", bufsize=1,
+    )
+    try:
+        assert process.stdout is not None
+        for line in process.stdout:
+            elapsed = round(time.monotonic() - started, 3)
+            lines.append(line)
+            events.append([elapsed, "o", redact(line)])
+            if time.monotonic() - started > timeout:
+                process.kill()
+                raise subprocess.TimeoutExpired(argv, timeout)
+        process.wait(timeout=30)
+    finally:
+        if process.poll() is None:
+            process.kill()
+
+    header = {
+        "version": 2, "width": 100, "height": 32,
+        "title": "Firekeep — one command",
+        # Deliberately recorded: a player that compresses idle time must be able
+        # to state the REAL duration rather than the played one.
+        "duration": round(time.monotonic() - started, 3),
+    }
+    with cast_path.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps(header) + "\n")
+        for event in events:
+            handle.write(json.dumps(event) + "\n")
+    print(f"lab: cast written -> {cast_path} "
+          f"({len(events)} events, {header['duration']:.0f}s real)")
+    return process.returncode, "".join(lines)
+
+
 # ------------------------------------------------------------------------ server lab
 
 DIND_IMAGE = "docker:27-dind"
@@ -558,7 +622,8 @@ def server_lab(scenario: str = "oneshot", timeout: int = 3600) -> Result:
         "docker info >/dev/null 2>&1 || { echo 'lab: no docker daemon reachable'; exit 90; }\n"
         f"{body}\n"
     )
-    completed = subprocess.run(
+    cast_path = RUNS / "server" / f"{scenario}.cast.json"
+    returncode, output = _run_and_record(
         [
             "docker", "run", "--rm", "--name", "firekeep-lab-server",
             "--network", "container:firekeep-lab-dind",
@@ -567,10 +632,10 @@ def server_lab(scenario: str = "oneshot", timeout: int = 3600) -> Result:
             "-v", "firekeep-lab-root:/root",
             SERVER_IMAGE, "bash", "-c", script,
         ],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-        errors="replace", timeout=timeout,
+        timeout=timeout,
+        cast_path=cast_path,
     )
-    output = completed.stdout or ""
+    completed = types.SimpleNamespace(returncode=returncode, stdout=output)
     header = (
         f"# server lab scenario: {scenario}\n# exit: {completed.returncode}\n"
         f"# command:\n{script}\n{'=' * 72}\n"

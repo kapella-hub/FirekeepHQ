@@ -1,0 +1,220 @@
+<title>Firekeep — one command</title>
+<style>
+  /* Light is the base palette; dark is redefined for BOTH the explicit
+     [data-theme] choice and the prefers-color-scheme default, so the page is
+     never left borrowing the host's colours. */
+  :root {
+    --page:#f6f5f3; --ink:#1b1a18; --muted:#6b6560;
+    --term-bg:#14110f; --term-ink:#e8e2d9; --term-dim:#8a8178;
+    --ember:#e0642a; --flame:#f2a03d; --ok:#5bb98b; --rule:#dedad4;
+  }
+  :root:not([data-theme="light"]) { }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --page:#121110; --ink:#eceae7; --muted:#9a938c; --rule:#2b2825;
+    }
+  }
+  :root[data-theme="dark"] {
+    --page:#121110; --ink:#eceae7; --muted:#9a938c; --rule:#2b2825;
+  }
+
+  * { box-sizing:border-box; }
+  body {
+    margin:0; padding:clamp(16px,4vw,48px); background:var(--page); color:var(--ink);
+    font:15px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  .wrap { max-width:920px; margin:0 auto; }
+  h1 { font-size:clamp(22px,3.4vw,30px); margin:0 0 6px; letter-spacing:-0.02em; }
+  .sub { color:var(--muted); margin:0 0 22px; max-width:60ch; }
+
+  .term {
+    background:var(--term-bg); border-radius:10px; overflow:hidden;
+    box-shadow:0 18px 50px rgba(0,0,0,.28); border:1px solid rgba(255,255,255,.06);
+  }
+  .bar {
+    display:flex; align-items:center; gap:8px; padding:10px 14px;
+    background:rgba(255,255,255,.045); border-bottom:1px solid rgba(255,255,255,.06);
+  }
+  .dot { width:11px; height:11px; border-radius:50%; }
+  .bar .title {
+    margin-left:8px; color:var(--term-dim); font-size:12px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  .clock {
+    margin-left:auto; color:var(--term-dim); font-size:12px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+    font-variant-numeric:tabular-nums;
+  }
+  /* The scroller is the only thing that scrolls; the page body never does
+     horizontally, whatever a long line does. */
+  .screen {
+    height:clamp(300px,52vh,460px); overflow-y:auto; overflow-x:auto;
+    padding:14px 16px 20px;
+    font:13px/1.55 ui-mono, ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    color:var(--term-ink); white-space:pre; scrollbar-width:thin;
+  }
+  .screen::-webkit-scrollbar { width:8px; height:8px; }
+  .screen::-webkit-scrollbar-thumb { background:rgba(255,255,255,.14); border-radius:4px; }
+
+  .l-cmd    { color:#fff; }
+  .l-cmd .p { color:var(--ember); }
+  .l-fk     { color:var(--flame); }
+  .l-ok     { color:var(--ok); }
+  .l-prompt { color:#fff; }
+  .l-head   { color:var(--flame); font-weight:600; }
+  .skip {
+    color:var(--term-dim); font-style:italic; opacity:.85;
+    border-left:2px solid rgba(255,255,255,.14); padding-left:8px; margin:3px 0;
+  }
+  .cursor {
+    display:inline-block; width:8px; height:15px; background:var(--flame);
+    vertical-align:-2px; animation:blink 1.05s steps(1) infinite;
+  }
+  @keyframes blink { 50% { opacity:0; } }
+
+  .controls { display:flex; gap:10px; align-items:center; margin-top:14px; flex-wrap:wrap; }
+  button {
+    font:inherit; font-size:13px; padding:7px 14px; border-radius:7px; cursor:pointer;
+    border:1px solid var(--rule); background:transparent; color:var(--ink);
+  }
+  button:hover { border-color:var(--ember); color:var(--ember); }
+  .note { color:var(--muted); font-size:12.5px; margin:0; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .cursor { animation:none; }
+  }
+</style>
+
+<div class="wrap">
+  <h1>One command. Two questions.</h1>
+  <p class="sub">
+    A real recording of <code>curl -fsSL https://firekeep.ai/latest/install.sh | sh</code>
+    on a clean Ubuntu box with Docker — client kit, server, and the machine enrolled
+    against it. Nothing here is a mockup.
+  </p>
+
+  <div class="term">
+    <div class="bar">
+      <span class="dot" style="background:#ff5f57"></span>
+      <span class="dot" style="background:#febc2e"></span>
+      <span class="dot" style="background:#28c840"></span>
+      <span class="title">root@vps — bash</span>
+      <span class="clock" id="clock">0:00</span>
+    </div>
+    <div class="screen" id="screen" role="img" aria-label="Terminal recording: one command installs the Firekeep client, provisions the server, enrols the machine, and firekeep doctor reports every check OK."></div>
+  </div>
+
+  <div class="controls">
+    <button id="replay">Replay</button>
+    <button id="skip">Skip to end</button>
+    <p class="note" id="note"></p>
+  </div>
+
+  <p class="note" style="margin-top:14px; max-width:70ch">Real run: 294s on a clean Ubuntu container with Docker. 252s of image pulls and model download are compressed in playback and marked ⏩ where they occur. Progress bars and repeated status rows are dropped; no line is reworded. One substitution: the distribution host (http://dist:8000 → https://firekeep.ai), because the recording installs a build that is not published yet. Join code truncated.</p>
+</div>
+
+<script>
+const CAST = [{"t": 25.17, "text": "firekeep: fetching uv (x86_64-unknown-linux-gnu)", "skipped": 0.0}, {"t": 25.17, "text": "firekeep: fetching firekeep_client-1.0.1-py3-none-any.whl", "skipped": 0.0}, {"t": 25.17, "text": "firekeep: fetching firekeep_symdex-0.2.16-py3-none-any.whl", "skipped": 0.0}, {"t": 25.17, "text": "firekeep: fetching firekeep_docdex-0.1.1-py3-none-any.whl", "skipped": 0.0}, {"t": 25.17, "text": "firekeep: provisioning Python 3.12 into venvs/1.0.1", "skipped": 0.0}, {"t": 26.09, "text": "Using CPython 3.12.11", "skipped": 0.0}, {"t": 26.1, "text": "Creating virtual environment at: /root/.firekeep/venvs/1.0.1", "skipped": 0.0}, {"t": 26.1, "text": "firekeep: installing firekeep_client-1.0.1-py3-none-any.whl + firekeep_symdex-0.2.16-py3-none-any.whl + firekeep_docdex-0.1.1-py3-none-any.whl", "skipped": 0.0}, {"t": 26.18, "text": "Using Python 3.12.11 environment at: /root/.firekeep/venvs/1.0.1", "skipped": 0.0}, {"t": 26.51, "text": "Resolved 42 packages in 331ms", "skipped": 0.0}, {"t": 28.24, "text": "Prepared 42 packages in 1.72s", "skipped": 0.0}, {"t": 28.27, "text": "Installed 42 packages in 34ms", "skipped": 0.0}, {"t": 28.27, "text": " + annotated-types==0.8.0", "skipped": 0.0}, {"t": 28.27, "text": " + anyio==4.14.2", "skipped": 0.0}, {"t": 28.27, "text": " + attrs==26.1.0", "skipped": 0.0}, {"t": 28.27, "text": " + certifi==2026.7.22", "skipped": 0.0}, {"t": 28.27, "text": " + cffi==2.1.1", "skipped": 0.0}, {"t": 28.27, "text": " + click==8.4.2", "skipped": 0.0}, {"t": 28.27, "text": " + cryptography==50.0.0", "skipped": 0.0}, {"t": 28.27, "text": " + firekeep-client==1.0.1 (from file:///root/.firekeep/bin/firekeep_client-1.0.1-py3-none-any.whl)", "skipped": 0.0}, {"t": 28.27, "text": " + firekeep-docdex==0.1.1 (from file:///root/.firekeep/bin/firekeep_docdex-0.1.1-py3-none-any.whl)", "skipped": 0.0}, {"t": 28.27, "text": " + firekeep-symdex==0.2.16 (from file:///root/.firekeep/bin/firekeep_symdex-0.2.16-py3-none-any.whl)", "skipped": 0.0}, {"t": 28.27, "text": " + h11==0.16.0", "skipped": 0.0}, {"t": 28.27, "text": " + httpcore==1.0.9", "skipped": 0.0}, {"t": 28.27, "text": " + httpx==0.28.1", "skipped": 0.0}, {"t": 28.27, "text": " + httpx-sse==0.4.3", "skipped": 0.0}, {"t": 28.27, "text": " + idna==3.18", "skipped": 0.0}, {"t": 28.27, "text": " + jsonschema==4.26.0", "skipped": 0.0}, {"t": 28.27, "text": " + jsonschema-specifications==2025.9.1", "skipped": 0.0}, {"t": 28.27, "text": " + lxml==6.1.1", "skipped": 0.0}, {"t": 28.27, "text": " + mcp==1.29.0", "skipped": 0.0}, {"t": 28.27, "text": " + pathspec==1.1.1", "skipped": 0.0}, {"t": 28.27, "text": " + pycparser==3.0", "skipped": 0.0}, {"t": 28.27, "text": " + pydantic==2.13.4", "skipped": 0.0}, {"t": 28.27, "text": " + pydantic-core==2.46.4", "skipped": 0.0}, {"t": 28.27, "text": " + pydantic-settings==2.15.0", "skipped": 0.0}, {"t": 28.27, "text": " + pyjwt==2.13.0", "skipped": 0.0}, {"t": 28.27, "text": " + pypdf==6.16.1", "skipped": 0.0}, {"t": 28.27, "text": " + python-docx==1.2.0", "skipped": 0.0}, {"t": 28.27, "text": " + python-dotenv==1.2.3", "skipped": 0.0}, {"t": 28.27, "text": " + python-multipart==0.0.32", "skipped": 0.0}, {"t": 28.27, "text": " + referencing==0.37.0", "skipped": 0.0}, {"t": 28.27, "text": " + rpds-py==2026.6.3", "skipped": 0.0}, {"t": 28.27, "text": " + sse-starlette==3.4.8", "skipped": 0.0}, {"t": 28.27, "text": " + starlette==1.6.0", "skipped": 0.0}, {"t": 28.27, "text": " + tree-sitter==0.26.0", "skipped": 0.0}, {"t": 28.27, "text": " + tree-sitter-c-sharp==0.23.5", "skipped": 0.0}, {"t": 28.27, "text": " + tree-sitter-embedded-template==0.25.0", "skipped": 0.0}, {"t": 28.27, "text": " + tree-sitter-language-pack==0.13.0", "skipped": 0.0}, {"t": 28.27, "text": " + tree-sitter-yaml==0.7.2", "skipped": 0.0}, {"t": 28.27, "text": " + truststore==0.10.4", "skipped": 0.0}, {"t": 28.27, "text": " + typing-extensions==4.16.0", "skipped": 0.0}, {"t": 28.27, "text": " + typing-inspection==0.4.4", "skipped": 0.0}, {"t": 28.27, "text": " + uvicorn==0.52.3", "skipped": 0.0}, {"t": 28.29, "text": "firekeep: current -> venvs/1.0.1", "skipped": 0.0}, {"t": 28.49, "text": "firekeep: configuring ~/.firekeep/config (Enter accepts the [default])", "skipped": 0.0}, {"t": 28.49, "text": "Agent identity (attributes every memory, session, and replay event) [root]: ", "skipped": 0.0}, {"t": 28.49, "text": "Where is your Firekeep server?", "skipped": 0.0}, {"t": 28.49, "text": "  1  Set one up on this machine  (installs the server here with Docker)", "skipped": 0.0}, {"t": 28.49, "text": "  2  I have a join code       (Dashboard -> Devices, or from a teammate)", "skipped": 0.0}, {"t": 28.49, "text": "  3  It is already running    (you know its address and have a key)", "skipped": 0.0}, {"t": 28.49, "text": "  4  Not yet                  (finish the client; `firekeep doctor` will", "skipped": 0.0}, {"t": 28.49, "text": "                               tell you how to finish the job later)", "skipped": 0.0}, {"t": 28.49, "text": "Choose [1]: Also use an MCP client we don't ship an adapter for (Cursor, Windsurf, Gemini CLI, …)? Paste the path to its rules/AGENTS.md file, or press Enter to skip: firekeep: running from the installed venv — skipping pip (re-rendering adapters only; to UPGRADE, unpack a newer kit and run ./install from it)", "skipped": 0.0}, {"t": 28.5, "text": "firekeep: installed into /root/.firekeep", "skipped": 0.0}, {"t": 28.5, "text": "firekeep: registered MCP servers: firekeep (gateway: memory, sessions, relay, monitoring, code, decisions)", "skipped": 0.0}, {"t": 28.5, "text": "firekeep: tip — `/personal` (Claude) or `firekeep personal` toggles a private session where Firekeep is fully bypassed (nothing logged/recalled); it auto-clears at session end.", "skipped": 0.0}, {"t": 28.5, "text": "firekeep: wrote launcher /root/.firekeep/shims/firekeep", "skipped": 0.0}, {"t": 28.5, "text": "firekeep: added /root/.firekeep/shims to PATH in /root/.profile", "skipped": 0.0}, {"t": 28.5, "text": "firekeep: run `source /root/.profile` or open a new terminal to use `firekeep`", "skipped": 0.0}, {"t": 28.5, "text": "firekeep: setting up the server on this machine (`firekeep init`) — this takes a few minutes.", "skipped": 0.0}, {"t": 28.54, "text": "firekeep: verified server bundle downloaded to /root/.firekeep/server", "skipped": 0.0}, {"t": 28.54, "text": "  Firekeep Installer", "skipped": 0.0}, {"t": 28.58, "text": "[OK] Docker and Docker Compose available", "skipped": 0.0}, {"t": 28.59, "text": "[OK] Host address: 172.19.0.3 (detected)", "skipped": 0.0}, {"t": 28.59, "text": "     Used for the SSH target in tunnel join codes and the CORS origin.", "skipped": 0.0}, {"t": 28.59, "text": "     Change it any time: set VPS_IP in .env, then run: bash update.sh", "skipped": 0.0}, {"t": 28.59, "text": "[OK] Neo4j password generated (stored in .env, mode 0600)", "skipped": 0.0}, {"t": 28.6, "text": "[OK] Vault encryption key generated", "skipped": 0.0}, {"t": 28.6, "text": "[OK] .env configured", "skipped": 0.0}, {"t": 29.34, "text": "Pulling published images (IMAGE_TAG=v0.4.4)...", "skipped": 0.0}, {"t": 29.35, "text": "Build provenance: GIT_SHA=unknown BUILD_TIME=2026-08-18T03:15:07Z APP_VERSION=v0.4.4", "skipped": 0.0}, {"t": 29.36, "text": "[OK] Dashboard credentials generated", "skipped": 0.0}, {"t": 34.9, "text": "[GENERATED] FIREKEEP_WORKSPACE_ID", "skipped": 1.5}, {"t": 34.9, "text": "[GENERATED] FIREKEEP_OWNER_MEMBER_ID", "skipped": 0.0}, {"t": 34.9, "text": "[MINTED] FIREKEEP_INTERNAL_KEY  (device_id=firekeep-internal scopes=[\"memory:write\",\"session:read\",\"eval:read\",\"eval:write\"])", "skipped": 0.0}, {"t": 34.9, "text": "[MINTED] DASHBOARD_API_KEY  (device_id=firekeep-dashboard scopes=[\"*\"])", "skipped": 0.0}, {"t": 34.9, "text": "[MINTED] RELAY_INTERNAL_API_KEY  (device_id=firekeep-relay scopes=[\"session:write\"])", "skipped": 0.0}, {"t": 34.9, "text": "  ADMIN API KEY — shown ONCE, not written to disk.", "skipped": 0.0}, {"t": 34.9, "text": "  Store it in your password manager now:", "skipped": 0.0}, {"t": 34.9, "text": "    nxs_<redacted-by-lab>", "skipped": 0.0}, {"t": 34.9, "text": "  Use it with deploy/firekeep-admin to issue teammate keys.", "skipped": 0.0}, {"t": 34.9, "text": "bootstrap-keys: done (4 key(s) minted)", "skipped": 0.0}, {"t": 262.58, "text": "Checking the embedding models (~3.3GB on a first install)...", "skipped": 223.7}, {"t": 292.93, "text": "[OK] models ready", "skipped": 26.3}, {"t": 292.95, "text": "  Cortex API       [OK]", "skipped": 0.0}, {"t": 292.96, "text": "  Cortex MCP       [OK]", "skipped": 0.0}, {"t": 292.96, "text": "  FirekeepBridge   [OK]", "skipped": 0.0}, {"t": 292.98, "text": "  FirekeepSentinel [OK]", "skipped": 0.0}, {"t": 292.99, "text": "  FirekeepRelay    [OK]", "skipped": 0.0}, {"t": 292.99, "text": "  Dashboard        [OK]", "skipped": 0.0}, {"t": 293.0, "text": "  ╔══════════════════════════════════════════════╗", "skipped": 0.0}, {"t": 293.0, "text": "  ║             Firekeep is running!             ║", "skipped": 0.0}, {"t": 293.0, "text": "  ╚══════════════════════════════════════════════╝", "skipped": 0.0}, {"t": 293.0, "text": "  Dashboard:     http://localhost:8040  (loopback only — BIND_ADDR=127.0.0.1)", "skipped": 0.0}, {"t": 293.0, "text": "  Dashboard login: written to dashboard/.htpasswd.cred (mode 0600) — read once, then delete", "skipped": 0.0}, {"t": 293.0, "text": "  MCP Endpoints:", "skipped": 0.0}, {"t": 293.0, "text": "    Cortex:      http://localhost:8080/mcp", "skipped": 0.0}, {"t": 293.0, "text": "    Bridge:      http://localhost:8070/mcp", "skipped": 0.0}, {"t": 293.0, "text": "    Sentinel:    http://localhost:8060/mcp", "skipped": 0.0}, {"t": 293.0, "text": "    Relay:       http://localhost:8050/mcp", "skipped": 0.0}, {"t": 293.0, "text": "  REST APIs:", "skipped": 0.0}, {"t": 293.0, "text": "    Cortex API:  http://localhost:8100", "skipped": 0.0}, {"t": 293.0, "text": "  Vault:         Enabled (secrets encrypted at rest in Redis)", "skipped": 0.0}, {"t": 293.01, "text": "  Auth:          ENFORCED — every API call needs an X-API-Key header", "skipped": 0.0}, {"t": 293.01, "text": "  ╔══════════════════════════════════════════════════════════════╗", "skipped": 0.0}, {"t": 293.01, "text": "  ║  ADMIN API KEY - shown once at the START of this run, and    ║", "skipped": 0.0}, {"t": 293.01, "text": "  ║  again here because it is NOT stored anywhere on disk.       ║", "skipped": 0.0}, {"t": 293.01, "text": "  ║  Put it in your password manager NOW:                        ║", "skipped": 0.0}, {"t": 293.01, "text": "  ╠══════════════════════════════════════════════════════════════╣", "skipped": 0.0}, {"t": 293.01, "text": "  ║                                                              ║", "skipped": 0.0}, {"t": 293.01, "text": "  ║    nxs_<redacted-by-lab>      ║", "skipped": 0.0}, {"t": 293.01, "text": "  ║                                                              ║", "skipped": 0.0}, {"t": 293.01, "text": "  ╚══════════════════════════════════════════════════════════════╝", "skipped": 0.0}, {"t": 293.01, "text": "  Your first authenticated call:", "skipped": 0.0}, {"t": 293.01, "text": "    curl -H \"X-API-Key: nxs_<redacted-by-lab>\" \\", "skipped": 0.0}, {"t": 293.01, "text": "      http://localhost:8100/auth/keys", "skipped": 0.0}, {"t": 293.01, "text": "  Add each client device (never share the admin key):", "skipped": 0.0}, {"t": 293.01, "text": "    Open Dashboard -> Devices -> Add device", "skipped": 0.0}, {"t": 293.01, "text": "    # server-shell fallback:", "skipped": 0.0}, {"t": 293.01, "text": "    deploy/firekeep-admin invite --agent <device-name> --json", "skipped": 0.0}, {"t": 293.01, "text": "  The dashboard needs no key from you — its nginx injects the", "skipped": 0.0}, {"t": 293.01, "text": "  admin-scoped DASHBOARD_API_KEY from .env on every /api/ proxy.", "skipped": 0.0}, {"t": 293.01, "text": "  Run 'bash update.sh' to update after git pull.", "skipped": 0.0}, {"t": 293.01, "text": "  Remove later: 'firekeep uninstall' takes off the client kit; add", "skipped": 0.0}, {"t": 293.01, "text": "                --server (or run this deployment's uninstall.sh) to also", "skipped": 0.0}, {"t": 293.01, "text": "                remove the stack and ALL its data.", "skipped": 0.0}, {"t": 293.01, "text": "🔒 Ports are bound to 127.0.0.1 — reachable only from this", "skipped": 0.0}, {"t": 293.01, "text": "   machine. To reach the dashboard from your laptop, tunnel:", "skipped": 0.0}, {"t": 293.01, "text": "     ssh -L 8040:127.0.0.1:8040 <user>@172.19.0.3", "skipped": 0.0}, {"t": 293.01, "text": "   To publish them instead, set BIND_ADDR=0.0.0.0 in .env and run", "skipped": 0.0}, {"t": 293.01, "text": "   'bash update.sh' — and note a host firewall will not contain", "skipped": 0.0}, {"t": 293.01, "text": "   them: Docker's DOCKER chain is traversed before ufw's rules.", "skipped": 0.0}, {"t": 293.01, "text": "   Use DOCKER-USER, or prefer a TLS reverse proxy.", "skipped": 0.0}, {"t": 293.03, "text": "firekeep: enrolling this machine against the server it just built…", "skipped": 0.0}, {"t": 293.34, "text": "WARNING: this code redeems over plain http to 127.0.0.1. Your credential is generated locally and is not sent during enrollment, but it IS sent as X-API-Key on every request afterwards, in cleartext on this transport. The join code itself crosses the network now. Continue only on a trusted network.", "skipped": 0.0}, {"t": 293.36, "text": "[server] updating: api_key <unset> -> <replaced>", "skipped": 0.0}, {"t": 293.36, "text": "[server] updating: credential_id <unset> -> 0f3da072b0ddf17e", "skipped": 0.0}, {"t": 293.36, "text": "[server] updating: device_id <unset> -> f1d897078c13068c", "skipped": 0.0}, {"t": 293.36, "text": "[server] updating: credential_expires_at <unset> -> 2026-11-16T03:19:31.422214+00:00", "skipped": 0.0}, {"t": 293.36, "text": "joined as root on device f1d897078c13068c — credential 0f3da072b0ddf17e expires 2026-11-16T03:19:31.422214+00:00", "skipped": 0.0}, {"t": 293.38, "text": "[OK] cortex: http://127.0.0.1:8100", "skipped": 0.0}, {"t": 293.38, "text": "[OK] bridge: http://127.0.0.1:8070", "skipped": 0.0}, {"t": 293.38, "text": "[OK] sentinel: http://127.0.0.1:8060", "skipped": 0.0}, {"t": 293.38, "text": "[OK] relay: http://127.0.0.1:8050", "skipped": 0.0}, {"t": 293.38, "text": "[OK] versions: client 1.0.1, cortex v0.4.4", "skipped": 0.0}, {"t": 293.38, "text": "[OK] client-version: client 1.0.1 is current", "skipped": 0.0}, {"t": 293.38, "text": "[OK] agent-id: agent_id=root", "skipped": 0.0}, {"t": 293.38, "text": "[OK] current-link: /root/.firekeep/current -> /root/.firekeep/venvs/1.0.1", "skipped": 0.0}, {"t": 293.38, "text": "[OK] venv-scripts: /root/.firekeep/current/bin", "skipped": 0.0}, {"t": 293.38, "text": "[OK] dexes: none registered — add code intelligence with `firekeep dex add symdex`", "skipped": 0.0}, {"t": 293.38, "text": "[OK] codex-mcp: /root/.codex/config.toml", "skipped": 0.0}, {"t": 293.38, "text": "[OK] claude-instructions: current (h=098720e04d20) in /root/.claude/CLAUDE.md", "skipped": 0.0}, {"t": 293.38, "text": "[OK] codex-instructions: current (h=098720e04d20) in /root/.codex/AGENTS.md", "skipped": 0.0}, {"t": 293.38, "text": "[OK] kiro-instructions: current (h=098720e04d20) in /root/.kiro/steering/firekeep-instructions.md", "skipped": 0.0}, {"t": 293.38, "text": "[OK] opencode-instructions: current (h=098720e04d20) in /root/.config/opencode/AGENTS.md", "skipped": 0.0}, {"t": 293.38, "text": "[OK] config-perms: mode 0o600", "skipped": 0.0}, {"t": 293.38, "text": "[OK] credential-expiry: credential valid for 89d", "skipped": 0.0}, {"t": 293.38, "text": "[OK] personal-mode: off (team mode)", "skipped": 0.0}, {"t": 293.38, "text": "firekeep: this machine is connected. Check it with: firekeep doctor", "skipped": 0.0}, {"t": 293.68, "text": "  To add your laptop or another machine, run THIS on it (the code is single-use and expires):", "skipped": 0.0}, {"t": 293.68, "text": "    curl -fsSL https://firekeep.ai/latest/install | FIREKEEP_JOIN=fk_join_eyJ2Ijox… sh", "skipped": 0.0}, {"t": 293.68, "text": "  For any machine after that:  deploy/firekeep-admin invite --agent <name>", "skipped": 0.0}, {"t": 293.79, "text": "[OK] cortex: http://127.0.0.1:8100", "skipped": 0.0}, {"t": 293.79, "text": "[OK] bridge: http://127.0.0.1:8070", "skipped": 0.0}, {"t": 293.79, "text": "[OK] sentinel: http://127.0.0.1:8060", "skipped": 0.0}, {"t": 293.79, "text": "[OK] relay: http://127.0.0.1:8050", "skipped": 0.0}, {"t": 293.79, "text": "[OK] versions: client 1.0.1, cortex v0.4.4", "skipped": 0.0}, {"t": 293.79, "text": "[OK] client-version: client 1.0.1 is current", "skipped": 0.0}, {"t": 293.79, "text": "[OK] agent-id: agent_id=root", "skipped": 0.0}, {"t": 293.79, "text": "[OK] current-link: /root/.firekeep/current -> /root/.firekeep/venvs/1.0.1", "skipped": 0.0}, {"t": 293.79, "text": "[OK] venv-scripts: /root/.firekeep/current/bin", "skipped": 0.0}, {"t": 293.79, "text": "[OK] dexes: none registered — add code intelligence with `firekeep dex add symdex`", "skipped": 0.0}, {"t": 293.79, "text": "[OK] codex-mcp: /root/.codex/config.toml", "skipped": 0.0}, {"t": 293.79, "text": "[OK] claude-instructions: current (h=098720e04d20) in /root/.claude/CLAUDE.md", "skipped": 0.0}, {"t": 293.79, "text": "[OK] codex-instructions: current (h=098720e04d20) in /root/.codex/AGENTS.md", "skipped": 0.0}, {"t": 293.79, "text": "[OK] kiro-instructions: current (h=098720e04d20) in /root/.kiro/steering/firekeep-instructions.md", "skipped": 0.0}, {"t": 293.79, "text": "[OK] opencode-instructions: current (h=098720e04d20) in /root/.config/opencode/AGENTS.md", "skipped": 0.0}, {"t": 293.79, "text": "[OK] config-perms: mode 0o600", "skipped": 0.0}, {"t": 293.79, "text": "[OK] credential-expiry: credential valid for 89d", "skipped": 0.0}, {"t": 293.79, "text": "[OK] personal-mode: off (team mode)", "skipped": 0.0}, {"t": 293.79, "text": "Using another MCP client (Cursor, Windsurf, Gemini CLI, …)? `firekeep install --runtime generic --agents-md <path>`", "skipped": 0.0}];
+const REAL = 294.1;
+const COMMAND = "curl -fsSL https://firekeep.ai/latest/install.sh | sh";
+
+const screenEl = document.getElementById("screen");
+const clockEl  = document.getElementById("clock");
+const noteEl   = document.getElementById("note");
+const reduced  = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+function mmss(s) {
+  s = Math.max(0, Math.round(s));
+  return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+}
+
+// Classification is presentation only — it colours a line, never rewrites it.
+function classOf(text) {
+  if (/^\\[OK\\]/.test(text) || /^\s+(Cortex|Bridge|Sentinel|Relay|Dashboard)\s+\\[OK\\]/.test(text)) return "l-ok";
+  if (/^firekeep:/.test(text)) return "l-fk";
+  if (/^(Where is your Firekeep server\\?|Choose|Agent identity)/.test(text)) return "l-prompt";
+  if (/^(=+|Firekeep is running!|\s*Firekeep Installer)/.test(text)) return "l-head";
+  return "";
+}
+
+let timer = null;
+
+function reset() {
+  clearTimeout(timer);
+  screenEl.innerHTML = "";
+  clockEl.textContent = "0:00";
+  noteEl.textContent = "";
+}
+
+function line(text, cls) {
+  const div = document.createElement("div");
+  if (cls) div.className = cls;
+  div.textContent = text;
+  screenEl.appendChild(div);
+  screenEl.scrollTop = screenEl.scrollHeight;
+  return div;
+}
+
+function renderAll() {
+  reset();
+  const cmd = line("", "l-cmd");
+  cmd.innerHTML = '<span class="p">$</span> ' + COMMAND.replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+  for (const f of CAST) {
+    if (f.skipped > 0) line("⏩ " + mmss(f.skipped) + " of image pulls and model download", "skip");
+    line(f.text, classOf(f.text));
+  }
+  clockEl.textContent = mmss(REAL);
+  noteEl.textContent = "Real elapsed: " + mmss(REAL) + ".";
+}
+
+function typeCommand(done) {
+  const el = line("", "l-cmd");
+  const cursor = document.createElement("span");
+  cursor.className = "cursor";
+  let i = 0;
+  (function step() {
+    el.innerHTML = '<span class="p">$</span> ' +
+      COMMAND.slice(0, i).replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+    el.appendChild(cursor);
+    if (i++ <= COMMAND.length) timer = setTimeout(step, 26);
+    else { cursor.remove(); timer = setTimeout(done, 420); }
+  })();
+}
+
+function play() {
+  if (reduced) { renderAll(); return; }
+  reset();
+  typeCommand(() => {
+    let i = 0;
+    (function step() {
+      if (i >= CAST.length) {
+        clockEl.textContent = mmss(REAL);
+        noteEl.textContent = "Real elapsed: " + mmss(REAL) + ". Playback compresses the waiting.";
+        return;
+      }
+      const f = CAST[i++];
+      if (f.skipped > 0) line("⏩ " + mmss(f.skipped) + " of image pulls and model download", "skip");
+      line(f.text, classOf(f.text));
+      clockEl.textContent = mmss(f.t);
+      // Pace by the REAL inter-line gap, clamped: fast enough to watch, slow
+      // enough that a burst of output still reads as a burst.
+      const gap = i < CAST.length ? Math.min(340, Math.max(18, (CAST[i].t - f.t) * 90)) : 0;
+      timer = setTimeout(step, gap);
+    })();
+  });
+}
+
+document.getElementById("replay").addEventListener("click", play);
+document.getElementById("skip").addEventListener("click", () => { clearTimeout(timer); renderAll(); });
+
+// Start when it is actually on screen, so a hero demo is not already finished
+// by the time the visitor scrolls to it.
+if (reduced) {
+  renderAll();
+} else {
+  const io = new IntersectionObserver((entries) => {
+    if (entries.some(e => e.isIntersecting)) { io.disconnect(); play(); }
+  }, { threshold: 0.35 });
+  io.observe(screenEl);
+}
+</script>
