@@ -452,8 +452,9 @@ evidence path and leave the machine entirely whenever the runtime asks for one.
   stamps and a Keep with `AUTH_ENABLED=false` (every caller the same anonymous
   owner) refuse every phone approval. **Residual, OPEN:** without
   `phone_approvers`, any *other* authenticated credential — a second machine's
-  kit key, a teammate's, a key the agent minted or enrolled elsewhere — can
-  approve, because the auth layer has no notion of a human member (the owner's
+  kit key (and so an agent running there), a teammate's — can approve (an
+  agent cannot mint one itself: minting needs `admin` and enrolment an
+  admin-issued join code), because the auth layer has no notion of a human member (the owner's
   dashboard key and agent keys share a member id). With `phone_approvers` pinned
   to the dashboard credential, the dashboard's basic-auth password becomes the
   boundary: an agent that can read it (it has been stored in the vault, which

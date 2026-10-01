@@ -456,7 +456,9 @@ device's).
 
 **What is still trusted, in plain words.** Without `phone_approvers`, any *other*
 authenticated credential in the workspace can approve — a second machine's kit
-key, a teammate's, a second agent minted its own key. Relay cannot say which
+key, a teammate's, a separately minted service key — and an agent on another
+machine you enrolled holds one of those. (An agent cannot mint a key itself: that
+needs `admin`, and enrolment needs an admin-issued join code.) Relay cannot say which
 credentials belong to a person: the owner's dashboard key and the owner's agent
 keys carry the same member id, and the auth layer has no "human" flag. Pinning
 `phone_approvers` to the dashboard's credential is the closest thing to
