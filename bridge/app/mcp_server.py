@@ -163,6 +163,44 @@ def _verified_member_id() -> str | None:
         return None
 
 
+def _auth_enabled() -> bool:
+    from auth.config import get_auth_settings
+
+    return bool(get_auth_settings().ENABLED)
+
+
+def _caller_cortex_key() -> str | None:
+    """The credential for a SYNCHRONOUS Cortex call made on this caller's behalf.
+
+    Cortex authorizes a recall by the key that arrives — its workspace, its
+    member, its member-private (docdex/maildex) visibility. Bridge's own
+    configured key (``FIREKEEP_API_KEY``, i.e. ``FIREKEEP_BRIDGE_KEY``) is
+    minted with ``member_id=$OWNER_MEMBER_ID`` (deploy/bootstrap-keys.sh), so a
+    proactive recall sent with it answered ANY teammate's ctx_update with the
+    deployment owner's member-private chunks, which then rendered into that
+    teammate's shadow (2026-10-01 audit, F1). The fix is to present the key the
+    caller presented — the pattern cortex-mcp's ``_CallerKeyAuth`` already uses.
+
+    - Auth enabled: the live request's ``X-API-Key`` (FirekeepKeyAuthMiddleware
+      has already validated it, or the request would never have arrived). If it
+      is somehow absent this returns None and the caller SKIPS the call. It
+      never falls back to the service key — that fallback is the deputy.
+    - Auth disabled: there is exactly one principal (the anonymous deployment
+      owner), so the configured key is the caller's key. Kept byte-identical to
+      the pre-fix behaviour: personal mode must not change.
+
+    The key is read per request and never persisted.
+    """
+    if not _auth_enabled():
+        return settings.FIREKEEP_API_KEY
+    try:
+        headers = get_http_request().headers
+    except Exception:
+        return None
+    key = (headers.get("x-api-key") or "").strip()
+    return key or None
+
+
 # Living Instructions round 2 — the measurement contract
 # (docs/superpowers/specs/2026-08-11-living-instructions-design.md). Five
 # attribution headers, attached by the gateway and hook cores from client
@@ -278,6 +316,17 @@ async def _trigger_eval(
     fire-and-forget effects, so either can fail alone), and Cortex honors it
     only under eval:grade. It is best effort, never authoritative: computed
     eval grading still derives from persisted session state, not this param.
+
+    CREDENTIAL — deliberately the Bridge SERVICE key, not the caller's. This is
+    the one Cortex call that must not forward the live caller key: Cortex
+    honors the task_result hint only under ``eval:grade``, a SERVICE_ONLY scope
+    minted solely onto FIREKEEP_BRIDGE_KEY (auth/keys.py,
+    deploy/bootstrap-keys.sh), so a member key would drop the hint and log an
+    ERROR on every completion. It is also not the F1 leak shape: it returns
+    only a bool to this process (nothing reaches the caller), it runs detached,
+    the reaper calls it with no caller at all, and the hint it carries is the
+    stored grade complete_session returned after its ownership check — never
+    caller input.
     """
     import httpx
     headers: dict[str, str] = {}
@@ -332,12 +381,24 @@ async def _trigger_eval(
     return False
 
 
-async def _trigger_skill_evaluate(api_url: str, session_id: str, skill_worthy: bool = False) -> bool:
-    """Fire-and-forget POST /skill/evaluate on Cortex."""
+async def _trigger_skill_evaluate(
+    api_url: str, session_id: str, skill_worthy: bool = False,
+    *, api_key: str | None = None,
+) -> bool:
+    """Fire-and-forget POST /skill/evaluate on Cortex.
+
+    ``api_key`` is the CALLER's credential (``_caller_cortex_key()``), never
+    the service key: this runs synchronously inside ctx_complete_session on the
+    caller's behalf. Under auth a missing caller key skips the call rather than
+    sending one keyless (which Cortex's front gate would 401 anyway).
+    """
     import httpx
+    if api_key is None and _auth_enabled():
+        logger.debug("Skill evaluate skipped for session %s: no caller key", session_id)
+        return False
     headers: dict[str, str] = {}
-    if settings.FIREKEEP_API_KEY:
-        headers["X-API-Key"] = settings.FIREKEEP_API_KEY
+    if api_key:
+        headers["X-API-Key"] = api_key
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.post(
@@ -455,7 +516,9 @@ async def ctx_start_session(
                 mgr=mgr,
                 agent_id=agent_id,
                 api_url=settings.FIREKEEP_API_URL,
-                api_key=settings.FIREKEEP_API_KEY,
+                # The CALLER's key, never the service key: these memories are
+                # returned to the caller (see _caller_cortex_key, F1).
+                api_key=_caller_cortex_key(),
                 top_k=settings.PRIOR_ART_TOP_K,
                 min_score=settings.PRIOR_ART_MIN_SCORE,
                 in_flight_max=settings.PRIOR_ART_IN_FLIGHT_MAX,
@@ -533,11 +596,16 @@ async def ctx_update(
             # session_id was already resolved above (header first, pointer as
             # fallback) — reuse it so proactive results attach to the session
             # the write landed in, not whatever the shared pointer names now.
-            if session_id:
+            # The CALLER's key, never the service key: these memories render
+            # into the caller's shadow, so Cortex must filter them by the
+            # caller's member (see _caller_cortex_key, F1). None under auth
+            # means no usable caller key — skip rather than fall back.
+            caller_key = _caller_cortex_key()
+            if session_id and (caller_key is not None or not _auth_enabled()):
                 memories = await fetch_relevant_memories(
                     content,
                     api_url=settings.FIREKEEP_API_URL,
-                    api_key=settings.FIREKEEP_API_KEY,
+                    api_key=caller_key,
                     # Deliberately NOT settings.FIREKEEP_NAMESPACE. That value
                     # ("default") is the namespace Bridge WRITES distillates
                     # under, and on Cortex a namespace is a category, not a
@@ -777,7 +845,8 @@ async def ctx_complete_session(
     result["eval_triggered"] = "dispatched"
 
     # Skill synthesis: trigger async (fire-and-forget)
-    skill_ok = await _trigger_skill_evaluate(settings.FIREKEEP_API_URL, sid, skill_worthy)
+    skill_ok = await _trigger_skill_evaluate(
+        settings.FIREKEEP_API_URL, sid, skill_worthy, api_key=_caller_cortex_key())
     result["skill_synthesis_triggered"] = skill_ok
 
     if task_result is not None and task_result not in TASK_RESULTS:
