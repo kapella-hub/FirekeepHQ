@@ -583,3 +583,29 @@ async def test_untagged_calls_stays_readable_when_auth_is_off(main_app, monkeypa
         resp = await client.get("/admin/untagged-calls?days=2")
     assert resp.status_code == 200
     assert resp.json()["total"] == 6
+
+
+@pytest.mark.asyncio
+async def test_recall_store_mix_is_admin_only_when_auth_is_on(main_app, auth_on):
+    """Counts span every workspace, so a teammate key cannot read them."""
+    _main_overrides(MagicMock(), fakeredis.aioredis.FakeRedis(decode_responses=True))
+    async with _client(main_app) as client:
+        statuses = {
+            who: (await client.get("/admin/recall-store-mix", headers=auth_on[who])).status_code
+            for who in ("agent", "relay", "dashboard", "admin_only")
+        }
+        unkeyed = (await client.get("/admin/recall-store-mix")).status_code
+    assert statuses == {"agent": 403, "relay": 403, "dashboard": 200, "admin_only": 200}
+    assert unkeyed == 401
+
+
+@pytest.mark.asyncio
+async def test_recall_store_mix_stays_readable_when_auth_is_off(main_app, monkeypatch):
+    """The readout exists to measure the owner's own production traffic, and
+    on an auth-off box nobody can hold admin -- same gate as untagged-calls."""
+    monkeypatch.setattr(keys, "_AUTH_ENABLED", False)
+    _main_overrides(MagicMock(), fakeredis.aioredis.FakeRedis(decode_responses=True))
+    async with _client(main_app) as client:
+        resp = await client.get("/admin/recall-store-mix?days=2")
+    assert resp.status_code == 200
+    assert resp.json()["graph_share"] is None
