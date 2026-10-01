@@ -159,13 +159,53 @@ Cortex still yields the in-flight line; both are wrapped in `asyncio.wait_for`
 (httpx's own timeout applies per phase, so a host that accepts and then stalls
 can spend it twice); nothing found returns `{}` rather than empty lists, making
 "nothing to say" and "Cortex was down" the same shape on the wire; and the call
-site has a final `try/except` under all of it. Bridge already carried
-`NB_FIREKEEP_API_URL` and `NB_FIREKEEP_API_KEY` (the SP1a internal key) for
-proactive recall and the eval trigger — no new compose env. `NB_PRIOR_ART_ENABLED`
-gates it. Guards: `bridge/tests/test_prior_art.py` (23 tests, including the
+site has a final `try/except` under all of it. The recall leg presents the
+**caller's** key, not Bridge's configured `NB_FIREKEEP_API_KEY` — see "Bridge
+acts for the live caller" below. `NB_PRIOR_ART_ENABLED` gates it. Guards: `bridge/tests/test_prior_art.py` (23 tests, including the
 byte-exact trigger, the pinned block, and a hanging Cortex bounded by the
 deadline); the suite's `disable_prior_art` autouse fixture keeps every other
 session-start test off the network.
+
+## Bridge acts for the live caller (2026-10-01 — `bridge/app/mcp_server.py`)
+
+Every **synchronous** Cortex call Bridge makes on a caller's behalf presents the
+key that caller presented, resolved per request by `_caller_cortex_key()` and
+never persisted: proactive recall in `ctx_update`, the prior-art recall in
+`ctx_start_session`, and the `POST /skill/evaluate` trigger in
+`ctx_complete_session`. This is the pattern cortex-mcp's `_CallerKeyAuth` already
+used for its REST proxy.
+
+Why: Bridge's configured key (`NB_FIREKEEP_API_KEY` = `FIREKEEP_BRIDGE_KEY`) is
+minted by `deploy/bootstrap-keys.sh` with `member_id=$OWNER_MEMBER_ID`. Cortex
+filters member-private recall (docdex, maildex) by the member behind the key it
+receives, so a teammate's `ctx_update(category="plan", ...)` came back carrying
+the **owner's** member-private chunks and rendered them into the teammate's
+shadow (`ctx_get_shadow` → "Relevant Past Experience"). Found by the 2026-10-01
+authz audit (F1).
+
+| Auth | Key presented | Missing caller key |
+|---|---|---|
+| enabled | the request's `X-API-Key` | the call is **skipped** — never the service key, which is the deputy |
+| disabled | `NB_FIREKEEP_API_KEY`, unchanged | n/a — one principal (the owner) |
+
+**One deliberate exception: the eval trigger.** `_trigger_eval` keeps the
+Bridge service key. Cortex honors its `task_result` hint (outcome truth D8) only
+under `eval:grade`, a `SERVICE_ONLY` scope minted solely onto
+`FIREKEEP_BRIDGE_KEY`; a member key would drop the hint and log an ERROR on every
+completion. It is also not the leak shape: it returns only a bool to Bridge, runs
+detached, is called by the reaper with no caller at all, and the hint it carries
+is the stored grade `complete_session` returned after its ownership check.
+
+**Out of scope here, still service-keyed:** the distillation worker
+(`bridge/app/distiller.py`) runs after completion with no caller in context and
+writes with the service key, so a distillate is attributed to the owner member.
+Carrying the initiating member into that write needs a delegated-attribution
+contract with Cortex (see the threat model, §5.9).
+
+Guards: `bridge/tests/test_mcp_session_security.py` — including an end-to-end
+case where a fake Cortex returns the owner's member-private chunk only to an
+owner-member key, and Bob's `ctx_update` must present Bob's key and leave that
+chunk out of his shadow.
 
 ## Shadow Residency Contract (Bridge — Phase C, `bridge/app/residency.py`)
 `ctx_get_shadow()` with no argument is a FULL restore, byte-identical to what it has always returned. **That is the default and it is always correct.** A caller may opt into a delta by passing back `since=<shadow_cursor>` — the opaque cursor from an earlier response in the SAME conversation — which asserts exactly one thing: *the earlier shadow is still visible in my context*. `residency.py` is pure functions, no I/O; the wiring is in `mcp_server.py`'s `ctx_get_shadow`.

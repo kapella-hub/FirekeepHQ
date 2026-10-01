@@ -479,6 +479,30 @@ evidence path and leave the machine entirely whenever the runtime asks for one.
   the agent-id contract shared with `action_before` and relay tasks. **OPEN**,
   PR2.
 
+### 5.9 Intra-workspace member isolation (2026-10-01)
+
+Members of one workspace are separate principals: a teammate's key carries its
+own `member_id`, and member-private content (docdex/maildex corpus chunks,
+`visibility=member`) is filtered by it. The 2026-10-01 authz audit found that
+boundary bypassed wherever a service acted for a caller with a credential minted
+for the **deployment owner** — every service key `deploy/bootstrap-keys.sh` mints
+carries `member_id=$OWNER_MEMBER_ID`.
+
+**Fixed 2026-10-01 — Bridge recalls with the caller's key (F1, Bridge half).**
+Bridge's proactive recall (`ctx_update`), prior-art recall (`ctx_start_session`)
+and skill-evaluate trigger now present the live caller's `X-API-Key`; with auth
+on, a missing caller key skips the call instead of falling back to the service
+key. Before, Bob's `ctx_update` returned the owner's member-private chunks into
+Bob's shadow. The eval trigger keeps the service key on purpose (`eval:grade`;
+it returns nothing to the caller) — see `docs/guides/bridge-context-and-briefing.md`.
+
+**OPEN:**
+- Cortex `GET /briefing` fetches Bridge/Relay data with `FIREKEEP_INTERNAL_KEY`
+  (the Cortex half of F1; fixed separately).
+- Bridge's distillation worker writes with the service key, so every distillate
+  is attributed to the owner member, not the member who did the work; a
+  delegated-attribution contract is needed to fix it honestly.
+
 ## 6. Threats, ranked
 
 | # | Threat | State |
