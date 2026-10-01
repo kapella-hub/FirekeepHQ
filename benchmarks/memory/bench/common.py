@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -121,6 +122,21 @@ def parse_date_tag(tags: list[str]) -> str | None:
         if isinstance(tag, str) and tag.startswith(_DATE_TAG_PREFIX):
             return tag[len(_DATE_TAG_PREFIX):]
     return None
+
+
+def lm_date_iso(date: str | None) -> str | None:
+    """LongMemEval's "2023/05/30 (Tue) 23:40" as RFC 3339 UTC, or None.
+
+    The dataset's dates carry no timezone; they are read as UTC on both sides
+    (question_date as recall's `as_of`, session dates as `occurred_at`), so
+    the offsets cancel."""
+    if not date:
+        return None
+    try:
+        parsed = datetime.strptime(date.split(" (")[0] + date.split(")")[-1], "%Y/%m/%d %H:%M")
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=timezone.utc).isoformat()
 
 
 def is_abstention(question_id: str) -> bool:

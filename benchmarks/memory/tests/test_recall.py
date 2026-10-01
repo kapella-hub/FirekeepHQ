@@ -67,3 +67,15 @@ async def test_run_recall_records_error_row(tmp_path):
     assert stats.errored == 1
     row = json.loads(out.read_text().splitlines()[0])
     assert row["error"]
+
+
+def test_recall_body_sends_the_question_date_as_as_of():
+    # "10 days ago" is relative to the question's own date, not the day the
+    # benchmark runs (TEMPORAL_RECALL_ENABLED, cortex/app/engine/temporal.py).
+    body = recall.recall_body(FIXTURE_ROWS[0], recall.CONFIGS["bench"])
+    assert body["as_of"] == "2023-05-20T10:00:00+00:00"
+
+
+def test_recall_body_omits_as_of_without_a_parseable_date():
+    row = {**FIXTURE_ROWS[0], "question_date": "not a date"}
+    assert "as_of" not in recall.recall_body(row, recall.CONFIGS["bench"])

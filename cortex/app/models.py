@@ -14,6 +14,14 @@ def normalize_namespace(ns: str) -> str:
     return ns.lower().strip().replace("-", "_")
 
 
+def _as_utc(v: datetime | None) -> datetime | None:
+    """A naive datetime is read as UTC, so a window and a payload timestamp
+    always compare in one timezone."""
+    if v is None:
+        return None
+    return v.replace(tzinfo=timezone.utc) if v.tzinfo is None else v.astimezone(timezone.utc)
+
+
 # ---------------------------------------------------------------------------
 # Request Models
 # ---------------------------------------------------------------------------
@@ -48,6 +56,11 @@ class ContextQuery(BaseModel):
     project: str | None = Field(default=None, max_length=200)
     token_budget: int = Field(default=600, ge=50, le=10000)
     format: Literal["synthesized", "raw"] = Field(default="synthesized")
+    # The moment the task is asked about — what "10 days ago" or "last
+    # Tuesday" in `task` is relative to (engine/temporal.py). Absent means
+    # now. Used ONLY to place a relative-time window; decay still ages
+    # memories against the real clock.
+    as_of: datetime | None = Field(default=None)
 
     model_config = {
         "json_schema_extra": {
@@ -71,6 +84,11 @@ class ContextQuery(BaseModel):
     def _normalize_namespace(cls, v: str | None) -> str | None:
         return normalize_namespace(v) if v is not None else None
 
+    @field_validator("as_of")
+    @classmethod
+    def _as_of_utc(cls, v: datetime | None) -> datetime | None:
+        return _as_utc(v)
+
 
 class ActionLog(BaseModel):
     """Record of an agent action and its outcome, optionally with a resolution."""
@@ -90,6 +108,11 @@ class ActionLog(BaseModel):
 
     # Team continuity
     project: str | None = Field(default=None, max_length=200)
+    # When the remembered thing HAPPENED, when that differs from when it is
+    # being written (an imported email, a backfilled log). Absent means now —
+    # recall's relative-time window falls back to `timestamp`. Not an identity
+    # input, so it never re-keys a point.
+    occurred_at: datetime | None = Field(default=None)
     # Access tracking (written by RAG engine, synced by memory_agent)
     access_count: int = Field(default=0, ge=0)
     last_recalled_at: str | None = Field(default=None)
@@ -99,6 +122,11 @@ class ActionLog(BaseModel):
     @classmethod
     def lowercase_project(cls, v: str | None) -> str | None:
         return v.lower().strip() if v else None
+
+    @field_validator("occurred_at")
+    @classmethod
+    def _occurred_at_utc(cls, v: datetime | None) -> datetime | None:
+        return _as_utc(v)
 
     model_config = {
         "json_schema_extra": {

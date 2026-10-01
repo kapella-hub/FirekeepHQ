@@ -18,6 +18,7 @@ from bench.common import (
     parse_date_tag,
     parse_session_tag,
     run_work_dir,
+    lm_date_iso,
     sanitize_namespace,
 )
 
@@ -30,11 +31,18 @@ CONFIGS: dict[str, dict] = {
 
 
 def recall_body(row: dict, config: dict) -> dict:
-    return {
+    body = {
         "task": row["question"][:2000],
         "namespace": sanitize_namespace(row["question_id"]),
         **config,
     }
+    # "10 days ago" in a question is relative to the question's own date, not
+    # the wall clock the benchmark runs on. Inert unless the server has
+    # TEMPORAL_RECALL_ENABLED; omitted when the row carries no parseable date.
+    as_of = lm_date_iso(row.get("question_date"))
+    if as_of:
+        body["as_of"] = as_of
+    return body
 
 
 def extract_hits(response_json: dict) -> list[dict]:

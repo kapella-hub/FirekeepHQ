@@ -21,6 +21,7 @@ import httpx
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.http.exceptions import UnexpectedResponse
 from qdrant_client.models import (
+    DatetimeRange,
     Distance,
     FieldCondition,
     Filter,
@@ -138,7 +139,7 @@ _PROMOTED_PAYLOAD_KEYS = {
 # or because they were just promoted (_PROMOTED_PAYLOAD_KEYS). Single source of
 # truth: extend _PROMOTED_PAYLOAD_KEYS and this set updates automatically.
 _EXCLUDED_FROM_NESTED_METADATA = (
-    {"source", "tags", "domain", "timestamp", "visibility", "committed"}
+    {"source", "tags", "domain", "timestamp", "visibility", "committed", "occurred_at"}
     | _PROMOTED_PAYLOAD_KEYS
 )
 
@@ -191,6 +192,7 @@ def _projected_metadata(payload: dict | None, point_id: str) -> dict[str, Any]:
         "tags": payload.get("tags", []),
         "domain": payload.get("domain", ""),
         "timestamp": payload.get("timestamp", ""),
+        **({"occurred_at": payload["occurred_at"]} if payload.get("occurred_at") else {}),
         # `or {}`, not a `{}` default: a payload carrying an explicit
         # metadata=None makes `**` raise TypeError, and this projection runs
         # on every recall result. GC tolerates that shape (`payload.get(
@@ -286,6 +288,29 @@ def _merge_lifecycle(existing: dict | None, fresh: dict) -> dict:
     if existing.get("last_confirmed_at"):
         merged["last_confirmed_at"] = existing["last_confirmed_at"]
     return merged
+
+
+def time_window_condition(start: datetime, end: datetime) -> Filter:
+    """Event time in ``[start, end]``: ``occurred_at`` where a point has one,
+    else ``timestamp``.
+
+    A point written with an explicit ``occurred_at`` (an imported email, a
+    backfilled log) is placed by when it happened, never by when it was
+    written; every other point happened when it was written. Both fields hold
+    RFC 3339 strings, which Qdrant's DatetimeRange compares as instants.
+    """
+    window = DatetimeRange(gte=start, lte=end)
+    return Filter(
+        should=[
+            FieldCondition(key="occurred_at", range=window),
+            Filter(
+                must=[
+                    IsEmptyCondition(is_empty=PayloadField(key="occurred_at")),
+                    FieldCondition(key="timestamp", range=window),
+                ]
+            ),
+        ]
+    )
 
 
 def namespace_condition(namespace: str | None) -> Filter | FieldCondition | None:
@@ -899,6 +924,15 @@ class VectorClient:
                     if "committed" in metadata
                     else {}
                 ),
+                # Event time when it differs from write time (ActionLog.
+                # occurred_at): top-level so recall's relative-time window
+                # can range-filter it. Present-only — absence means "happened
+                # when written", and the window falls back to `timestamp`.
+                **(
+                    {"occurred_at": metadata["occurred_at"]}
+                    if metadata.get("occurred_at")
+                    else {}
+                ),
                 "metadata": {
                     k: v
                     for k, v in metadata.items()
@@ -1050,6 +1084,7 @@ class VectorClient:
         workspace_id: str | None = None,
         score_threshold: float | None = None,
         member_id: str | None = None,
+        time_window: tuple[datetime, datetime] | None = None,
     ) -> list[dict[str, Any]]:
         """Embed query and search Qdrant for similar vectors.
 
@@ -1066,6 +1101,11 @@ class VectorClient:
                 corpus chunks match only for their owner (Docdex §4.4); None
                 — every non-corpus caller — matches no private chunks
                 (fail closed).
+            time_window: Only points whose event time falls in
+                ``[start, end]`` — ``occurred_at`` when the point has one,
+                otherwise ``timestamp`` (written-at). Recall uses this as a
+                SECOND search beside the unfiltered one, never instead of it
+                (engine/rag.py, engine/temporal.py).
 
         Returns:
             List of dicts with id, score, text, and metadata.
@@ -1102,6 +1142,8 @@ class VectorClient:
             ns_clause = namespace_condition(namespace)
             if ns_clause is not None:
                 filter_conditions.append(ns_clause)
+            if time_window is not None:
+                filter_conditions.append(time_window_condition(*time_window))
             if not include_archived:
                 must_not_conditions.append(
                     FieldCondition(

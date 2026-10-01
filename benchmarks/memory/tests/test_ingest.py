@@ -289,3 +289,12 @@ async def test_semaphore_bounds_concurrency(tmp_path):
     assert stats.learn_calls == 12  # 4 rows * 3 sessions * 1 pair each
     # With concurrency=3, max_in_flight should never exceed 3
     assert max_in_flight <= 3
+
+
+def test_learn_payloads_send_the_session_date_as_occurred_at():
+    # The session HAPPENED on its haystack date; recall's relative-time window
+    # places it there (ActionLog.occurred_at). The lm_date tag stays for scoring.
+    payloads = ingest.learn_payloads(FIXTURE_ROWS[0])
+    date = FIXTURE_ROWS[0]["haystack_dates"][0]
+    assert payloads[0]["occurred_at"].endswith("+00:00")
+    assert f"lm_date:{date}" in payloads[0]["tags"]
