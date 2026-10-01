@@ -203,25 +203,31 @@ real:
   predates the fetch. A cautious first installer can pin out of band via
   `FIREKEEP_SIGNING_PUB` (the published `latest/signing.pub` is a transparency
   copy, not a trust anchor).
-- **Enforcement is off by default, and while it is, absence is
-  attacker-choosable.** Releases predating signing have no `.minisig`, so
-  absence is a one-line warning, not a failure, until
-  `[dist] require_signed = true` — the flip waits until every supported version
-  is signed. Named plainly: an attacker with host write access can just publish
-  *unsigned* and the default installs it with a warning — tolerating absence is
-  the explicit cost of the migration default, removed only by flipping
-  `require_signed`. The warning is therefore made impossible to lose: the
-  background auto-update runs detached with stderr on DEVNULL, so the client
-  persists an unsigned-install marker and the next session-start briefing
-  prints it once. An *invalid* signature is fatal regardless of the flag:
-  invalid is tampering evidence, absence is history. **Active in the field
-  since 2026-08-12:** keys minted (ID `7D6D83D1240D4A61`, private half in the
-  `FIREKEEP_SIGNING_KEY` Actions secret and offline with the operator), the
-  public key pinned from client 0.1.42, and release 0.1.42 published signed —
-  the workflow's serve-verification byte-compared the live `.minisig` against
-  the built one. `require_signed` stays default-false for one release cycle
-  (a flipped default with a misconfigured secret would stall every client's
-  updates; 0.1.42 is the production evidence the flip waits for).
+- **Enforcement is ON by default (flipped 2026-10-01); absence now refuses.**
+  `[dist] require_signed` defaults to `true`: a release whose signature cannot
+  be verified — no `.minisig`, sums unfetchable, verification unavailable on
+  that Python, or no pinned key — fails the update before anything is
+  downloaded or executed, and the error names the override. The flip waited on
+  production evidence: keys minted 2026-08-12 (ID `7D6D83D1240D4A61`, private
+  half in the `FIREKEEP_SIGNING_KEY` Actions secret and offline with the
+  operator), the public key pinned from client 0.1.42, every release since
+  served with a byte-verified `.minisig`, and at the flip every version on the
+  release host (1.5.0 through 1.6.1 — releases predating signing are no longer
+  served at all) verified against the pinned key with `require_signed=true`.
+  An *invalid* signature was always fatal and still is, with no override:
+  invalid is tampering evidence, absence is history. Residuals of the flip,
+  named plainly: (a) an operator can opt out with `[dist] require_signed =
+  false` in `~/.firekeep/config` — there is deliberately no environment-variable
+  override, so a process environment cannot quietly disable it — and under
+  that opt-out absence is attacker-choosable again, warned on stderr and by an
+  unsigned-install marker the next session-start briefing prints once; (b)
+  enforcement is a property of the INSTALLED client, so it protects updates
+  *from* the first release carrying the flip onward; (c) a release published
+  unsigned (CI secret missing — `make_release.py` still builds unsigned rather
+  than failing) is refused by every client and stalls the fleet's updates until
+  re-published signed. The background auto-update's stderr is DEVNULL, so a
+  refusal persists a one-shot marker the next briefing prints rather than
+  failing silently every day.
 - **Downgrade/freeze window.** `latest.json` is unsigned, so a compromised host
   can still replay an older *signed* release or pin the fleet to one. It cannot
   introduce new code.
@@ -445,7 +451,7 @@ evidence path and leave the machine entirely whenever the runtime asks for one.
 | # | Threat | State |
 |---|---|---|
 | 1 | Unauthenticated read of the vault over the network | **Fixed** — three independent layers (§5.1) |
-| 2 | Release-host compromise → arbitrary code on every dev machine | **Mitigated, active since 2026-08-12** — signed `SHA256SUMS` verified against the Ed25519 key pinned in client 0.1.42+; residuals: TOFU first install, enforce-off default (flip pending one cycle of production evidence), unsigned-downgrade window (§5.6) |
+| 2 | Release-host compromise → arbitrary code on every dev machine | **Mitigated, active since 2026-08-12** — signed `SHA256SUMS` verified against the Ed25519 key pinned in client 0.1.42+; enforcement on by default since 2026-10-01 (`[dist] require_signed`, opt-out documented); residuals: TOFU first install, the operator opt-out, unsigned-downgrade window (§5.6) |
 | 3 | A new route under a skip-list prefix is silently public | **Partly mitigated** — prefix/exact split; no test enumerates skip-list reachability |
 | 4 | `.env` read → total compromise (VAULT_KEY, Neo4j, all keys) | **Accepted** — plaintext by design; `chmod 600` documented. Sentinel no longer mounts it. |
 | 5 | Compromised agent with a valid non-admin key poisons memory | **OPEN, unmitigated** — writes are attributed but not validated, and poisoned memories are recalled like any other |

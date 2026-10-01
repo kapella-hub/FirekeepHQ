@@ -245,16 +245,19 @@ and the caller falls back to the stdlib default context.
 
 **Release signing (docs/RELEASE-SIGNING.md — read it before touching keys or the verify
 path):** `make_release.py` signs `SHA256SUMS` (Ed25519, minisign format, `SHA256SUMS.minisig`)
-when the `FIREKEEP_SIGNING_KEY` CI secret is set — absent secret = loud UNSIGNED release, set-but-
-garbage secret = failed release. SHA256SUMS now also lists `install.sh`/`install.ps1`, so the
+when the `FIREKEEP_SIGNING_KEY` CI secret is set — absent secret = loud UNSIGNED release (which
+every client now refuses, so treat it as a release blocker), set-but-garbage secret = failed release. SHA256SUMS now also lists `install.sh`/`install.ps1`, so the
 signature covers the script `firekeep update` executes: `updater.fetch_signed_sums` verifies the
 target release's sums against `signing.PINNED_PUBLIC_KEY` (`client/firekeep_client/signing.py`
 — pure-stdlib RFC 8032 verifier, pinned since client 0.1.42 to key `7D6D83D1240D4A61` minted
 2026-08-12 per the runbook; the import boundary is why it isn't `cryptography`), `updater.bootstrap_sha256` refuses a
 `latest.json` that disagrees with the signed entry, and the trusted comment's `version:` token
-kills cross-version replay. Verify-if-present: no pinned key or no published `.minisig` →
-warn/skip (until `[dist] require_signed = true`, default false FOR NOW); an INVALID signature
-is always fatal. The bootstraps carry a best-effort mirror (baked `__FIREKEEP_SIGNING_PUB_DEFAULT__`
+kills cross-version replay. **Enforced by default since 2026-10-01:** `[dist] require_signed`
+defaults to `true` (absent or blank = true), so no pinned key, no published `.minisig`, unfetchable
+sums or an unverifiable signature → `updater.UnverifiedReleaseError`, refusing the update with the
+exact opt-out line in the message (`require_signed = false` under `[dist]` in `~/.firekeep/config`;
+no env-var override, deliberately). Under that opt-out the same cases warn/skip instead. An INVALID
+signature is always fatal, under any setting. The bootstraps carry a best-effort mirror (baked `__FIREKEEP_SIGNING_PUB_DEFAULT__`
 placeholder, `FIREKEEP_SIGNING_PUB` override — which `firekeep update` now exports from the CLIENT's
 pinned key, so the update path isn't circular on the host-baked one; `minisign`-binary-if-present;
 absence never breaks a bare machine). **Security-review plumbing fixes (2026-08-05):** the verified
@@ -266,14 +269,14 @@ bytes to the client's verification fetch and attacker bytes to the bootstrap's r
 `test_install_sh_two_fetch_split_no_longer_works`, request-log-proven, + the executable ps1 twin).
 `--to X.Y.Z` verifies the TARGET's sums (what gets installed; latest's too when they differ — those
 anchor the executed `latest/` bootstrap), so rollbacks are signed and an unsigned old target fails
-under `require_signed`. Because the detached auto-update's stderr is DEVNULL, an unsigned-release
-warning also persists a one-shot scratch marker (`state.note_unsigned_update`) that the next
-`session_start` briefing prints. CI publishes `install.sh`/`install.ps1` under `<version>/` (the
+under `require_signed`. Because the detached auto-update's stderr is DEVNULL, both outcomes persist a
+one-shot scratch marker (`state.note_unsigned_update`) that the next `session_start` briefing prints:
+an `UnverifiedReleaseError` refusal under the default, an unsigned install under the opt-out. CI publishes `install.sh`/`install.ps1` under `<version>/` (the
 sums list them, so the dir must serve them) and the verify step byte-compares the SERVED
 `<version>/SHA256SUMS.minisig` against the built one on signed builds. `generate_signing_key.py`
 creates the secret 0600 at open (`O_EXCL`), no chmod-after window. First install stays TOFU;
-`latest.json` stays unsigned (downgrade residual); absence stays attacker-choosable until
-`require_signed` flips — all stated in `docs/THREAT-MODEL.md` §5.6. Guards:
+`latest.json` stays unsigned (downgrade residual); absence is attacker-choosable only on a machine
+that opted out of `require_signed` — all stated in `docs/THREAT-MODEL.md` §5.6. Guards:
 `client/tests/test_signing.py`, signing halves of `test_updater.py` / `test_cli_update.py` /
 `test_make_release.py` / both bootstrap test files, and `tests/test_release_workflow.py`'s
 signature-served class.

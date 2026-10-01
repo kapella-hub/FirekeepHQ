@@ -6,6 +6,9 @@ import pytest
 
 from firekeep_client import cli, updater
 
+# Captured before the update_env fixture stubs it, for the end-to-end signing tests.
+_REAL_FETCH_SIGNED_SUMS = updater.fetch_signed_sums
+
 
 @pytest.fixture
 def update_env(tmp_path, monkeypatch):
@@ -178,16 +181,25 @@ def test_update_to_pins_a_version_and_allows_rollback(update_env, monkeypatch):
 # --- release-signing wiring (the check must actually run on the update path) ----
 
 
+def _opt_out_of_require_signed(update_env):
+    cfg_path = update_env["home"] / "config"
+    cfg_path.write_text(cfg_path.read_text(encoding="utf-8")
+                        + "require_signed = false\n", encoding="utf-8")
+
+
 def test_update_prints_the_unsigned_warning(update_env, monkeypatch, capsys):
-    """Absence under require_signed=false must be a clear one-line warning, not
-    silence — a teammate should be able to see their update ran unverified."""
+    """Absence under an explicit require_signed=false must be a clear one-line
+    warning, not silence — a teammate should be able to see their update ran
+    unverified."""
+    _opt_out_of_require_signed(update_env)
     _manifest(monkeypatch, "9.9.9")
     monkeypatch.setattr(cli.updater, "download", _fake_download())
-    monkeypatch.setattr(
-        cli.updater, "fetch_signed_sums",
-        lambda base, version, **kw: updater.SignedSums(None, False,
-                                                       "release 9.9.9 is not signed"),
-    )
+
+    def _fss(base, version, *, require_signed, **kw):
+        assert require_signed is False, "the explicit opt-out must reach fetch_signed_sums"
+        return updater.SignedSums(None, False, "release 9.9.9 is not signed")
+
+    monkeypatch.setattr(cli.updater, "fetch_signed_sums", _fss)
     assert cli.main(["update"]) == 0
     assert "WARNING: release 9.9.9 is not signed" in capsys.readouterr().err
     assert len(update_env["execs"]) == 1, "a warning must not block the update"
@@ -604,6 +616,104 @@ def test_update_to_an_unsigned_target_fails_under_require_signed(update_env, mon
     assert update_env["execs"] == []
 
 
+def test_update_threads_require_signed_true_by_default(update_env, monkeypatch):
+    """The fixture's config has no require_signed line: the shipped default must
+    reach every fetch_signed_sums call (target AND latest on a --to rollback)."""
+    _manifest(monkeypatch, "9.9.9")
+    seen = []
+
+    def _fss(base, version, *, require_signed, **kw):
+        seen.append((version, require_signed))
+        return updater.SignedSums(None, False, None)
+
+    monkeypatch.setattr(cli.updater, "fetch_signed_sums", _fss)
+    monkeypatch.setattr(cli.updater, "download", _fake_download())
+    assert cli.main(["update", "--to", "0.0.1"]) == 0
+    assert seen == [("0.0.1", True), ("9.9.9", True)]
+
+
+def _real_signed_host(monkeypatch, *, sig_missing):
+    """Drive the REAL fetch_signed_sums (the fixture stubs it) against a fake
+    release host, with a throwaway key pinned in place of the production one."""
+    from firekeep_client import signing
+    pub, sec = signing.generate_keypair()
+    sums = f"{'ab' * 32}  firekeep_client-9.9.9-py3-none-any.whl\n".encode()
+    sig = signing.sign(
+        sums, sec, trusted_comment="timestamp:1\tfile:SHA256SUMS\tversion:9.9.9\thashed",
+    ).encode()
+
+    def _read(url, timeout):
+        if url.endswith("SHA256SUMS.minisig"):
+            if sig_missing:
+                import urllib.error
+                raise urllib.error.URLError("404")
+            return sig
+        if url.endswith("SHA256SUMS"):
+            return sums
+        raise AssertionError(f"unexpected fetch: {url}")
+
+    monkeypatch.setattr(signing, "PINNED_PUBLIC_KEY", pub)
+    monkeypatch.setattr(updater, "_read_url", _read)
+    monkeypatch.setattr(cli.updater, "fetch_signed_sums", _REAL_FETCH_SIGNED_SUMS)
+
+
+def test_default_config_refuses_an_unsigned_release_with_the_override(update_env, monkeypatch, capsys):
+    """End to end on the default config: an unsigned latest is refused before
+    anything is downloaded or executed, and the message says how to allow it."""
+    _manifest(monkeypatch, "9.9.9")
+    _real_signed_host(monkeypatch, sig_missing=True)
+    monkeypatch.setattr(cli.updater, "download",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not download")))
+    rc = cli.main(["update"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "release 9.9.9 is not signed" in err
+    assert "require_signed = false" in err and "~/.firekeep/config" in err
+    assert update_env["execs"] == []
+
+
+def test_a_refused_update_persists_a_notice_for_the_next_session(update_env, monkeypatch):
+    """The background auto-update — the path almost every install updates through —
+    runs detached with stderr on DEVNULL. Without a persisted notice an unsigned
+    release would be refused every day and nobody would ever learn why."""
+    from firekeep_client import state
+    _manifest(monkeypatch, "9.9.9")
+    _real_signed_host(monkeypatch, sig_missing=True)
+    assert cli.main(["update"]) == 1
+    notice = state.consume_unsigned_update_notice()
+    assert notice is not None
+    assert "9.9.9" in notice and "REFUSED" in notice
+    assert "require_signed = false" in notice
+    assert state.consume_unsigned_update_notice() is None, "one-shot"
+
+
+def test_a_tampered_signature_persists_no_override_notice(update_env, monkeypatch):
+    """Only the overridable refusals get the 'set require_signed = false' notice;
+    tampering evidence must never be framed as a config problem."""
+    from firekeep_client import state
+    _manifest(monkeypatch, "9.9.9")
+
+    def _boom(base, version, **kw):
+        raise updater.UpdateError("SIGNATURE VERIFICATION FAILED for release 9.9.9")
+
+    monkeypatch.setattr(cli.updater, "fetch_signed_sums", _boom)
+    assert cli.main(["update"]) == 1
+    notice = state.consume_unsigned_update_notice()
+    assert notice is None or "require_signed = false" not in notice
+
+
+def test_default_config_installs_a_signed_release_and_hands_the_verified_sums(update_env, monkeypatch):
+    """The flip must not break the normal path: a signed release verifies under the
+    default and the verified bytes reach the bootstrap."""
+    _manifest(monkeypatch, "9.9.9")
+    _real_signed_host(monkeypatch, sig_missing=False)
+    monkeypatch.setattr(cli.updater, "bootstrap_sha256", lambda m, s, *, windows: "cd" * 32)
+    monkeypatch.setattr(cli.updater, "download", _fake_download())
+    assert cli.main(["update"]) == 0
+    assert len(update_env["execs"]) == 1
+    assert update_env["handed"][0] is not None
+
+
 def test_update_to_with_a_verified_target_hands_the_targets_sums(update_env, monkeypatch):
     """The handed file must be the TARGET's sums — they are what the bootstrap
     verifies FIREKEEP_VERSION=target's artifacts against; latest's sums would fail
@@ -629,6 +739,7 @@ def test_update_persists_the_unsigned_notice_for_the_next_session(update_env, mo
     one-line unsigned warning reaches nobody. cmd_update must persist a marker the
     next session_start briefing prints (and consumes)."""
     from firekeep_client import state
+    _opt_out_of_require_signed(update_env)
     _manifest(monkeypatch, "9.9.9")
     monkeypatch.setattr(
         cli.updater, "fetch_signed_sums",

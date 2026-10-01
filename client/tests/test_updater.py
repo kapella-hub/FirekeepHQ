@@ -154,8 +154,10 @@ def test_download_rejects_a_checksum_mismatch(tmp_path, monkeypatch):
 # The trust chain under test: the client PINS a public key (signing.PINNED_PUBLIC_KEY,
 # from the previously installed version); the release host serves SHA256SUMS +
 # SHA256SUMS.minisig; verification anchors the bootstrap hash to the SIGNED sums.
-# verify-if-present: absence warns (require_signed=false, today's default), an INVALID
-# signature is fatal regardless — invalid is tampering evidence, absence is history.
+# require_signed defaults TRUE (flipped once every published release was signed):
+# absence refuses with an actionable override; under an explicit
+# `[dist] require_signed = false` absence only warns. An INVALID signature is fatal
+# regardless — invalid is tampering evidence, absence is history.
 
 from firekeep_client import signing  # noqa: E402  (grouped with the tests that use it)
 
@@ -272,7 +274,7 @@ def test_unfetchable_sums_warns_or_fails_by_flag(monkeypatch):
     monkeypatch.setattr(updater, "_read_url", _boom)
     out = updater.fetch_signed_sums("http://gl/rel", "9.9.9", require_signed=False)
     assert out.verified is False and "skipping signature verification" in out.warning
-    with pytest.raises(updater.UpdateError, match="signature verification"):
+    with pytest.raises(updater.UnverifiedReleaseError, match="verify release 9.9.9's signature"):
         updater.fetch_signed_sums("http://gl/rel", "9.9.9", require_signed=True)
 
 
@@ -314,14 +316,22 @@ def test_signed_sums_missing_the_bootstrap_entry_is_malformed():
 
 
 @pytest.mark.parametrize("raw,expected", [
-    ("", False), ("false", False), ("no", False), ("0", False),
+    (None, True),  # key absent from [dist] -> the default
+    ("false", False), ("no", False), ("0", False), ("off", False), ("FALSE", False),
     ("true", True), ("1", True), ("yes", True), ("on", True),
 ])
 def test_require_signed_config_parsing(raw, expected):
     text = "[dist]\nbase_url = http://gl/rel\n"
-    if raw:
+    if raw is not None:
         text += f"require_signed = {raw}\n"
     assert updater.require_signed(_cfg(text)) is expected
+
+
+def test_require_signed_blank_value_means_unset_so_the_default_applies():
+    """`require_signed =` (blank) is "unset", not "disabled" — the same rule
+    autoupdate.is_enabled applies to `auto_update =`. Only the explicit disable
+    words turn a security default off."""
+    assert updater.require_signed(_cfg("[dist]\nrequire_signed =\n")) is True
 
 
 def test_require_signed_garbage_fails_loud():
@@ -331,8 +341,54 @@ def test_require_signed_garbage_fails_loud():
         updater.require_signed(_cfg("[dist]\nrequire_signed = ture\n"))
 
 
-def test_require_signed_defaults_false_without_a_dist_section():
-    assert updater.require_signed(_cfg("[identity]\nagent_id = t\n")) is False
+def test_require_signed_defaults_true_without_a_dist_section():
+    """Every published release (1.5.0 .. 1.6.1 at the flip) carries a verifying
+    SHA256SUMS.minisig, so refusing unsigned releases is now the shipped default."""
+    assert updater.require_signed(_cfg("[identity]\nagent_id = t\n")) is True
+
+
+def test_require_signed_explicit_false_is_the_override():
+    assert updater.require_signed(_cfg("[dist]\nrequire_signed = false\n")) is False
+
+
+@pytest.mark.parametrize("case", ["no_key", "sums_unfetchable", "sig_missing", "verify_unavailable"])
+def test_every_refusal_under_require_signed_names_the_override(monkeypatch, case):
+    """Under the new default a teammate who never touched [dist] hits these. Each
+    must say WHY it refused and give the exact line that allows it — and be an
+    UnverifiedReleaseError so cmd_update can persist it for the detached
+    auto-update (whose stderr is DEVNULL)."""
+    import urllib.error
+    rel = _release()
+    _pin(monkeypatch, "" if case == "no_key" else rel["pub"])
+    if case == "sums_unfetchable":
+        def _boom(url, timeout):
+            raise urllib.error.URLError("conn refused")
+        monkeypatch.setattr(updater, "_read_url", _boom)
+    else:
+        _serve(monkeypatch, rel, sig_missing=(case == "sig_missing"))
+    if case == "verify_unavailable":
+        def _unavailable(*a, **k):
+            raise signing.VerifyUnavailable("this Python build lacks blake2b")
+        monkeypatch.setattr(signing, "verify", _unavailable)
+    with pytest.raises(updater.UnverifiedReleaseError) as info:
+        updater.fetch_signed_sums("http://gl/rel", "9.9.9", require_signed=True)
+    msg = str(info.value)
+    assert "require_signed = false" in msg
+    assert "~/.firekeep/config" in msg
+    assert "[dist]" in msg
+    assert isinstance(info.value, updater.UpdateError), "cmd_update's handler must still catch it"
+
+
+def test_an_invalid_signature_is_not_an_overridable_refusal(monkeypatch):
+    """Tampering evidence must never be presented as something a config line fixes."""
+    rel = _release()
+    _pin(monkeypatch, rel["pub"])
+    rel["sums"] += b"0" * 64 + b"  injected.whl\n"
+    _serve(monkeypatch, rel)
+    with pytest.raises(updater.UpdateError) as info:
+        updater.fetch_signed_sums("http://gl/rel", "9.9.9", require_signed=True)
+    assert not isinstance(info.value, updater.UnverifiedReleaseError)
+    assert "require_signed = false" not in str(info.value)
 
 
 def test_dist_ssl_context_none_without_truststore(monkeypatch):

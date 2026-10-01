@@ -39,6 +39,15 @@ class UpdateError(Exception):
     traceback at a teammate."""
 
 
+class UnverifiedReleaseError(UpdateError):
+    """[dist] require_signed refused a release whose signature could not be verified
+    (absent, unfetchable, unverifiable here, or no pinned key) — the overridable
+    refusals. Distinct from a signature that verifies as INVALID, which is plain
+    UpdateError because no configuration overrides tampering evidence. cmd_update
+    persists this one for the next session, since the background auto-update's
+    stderr goes nowhere."""
+
+
 @dataclass(frozen=True)
 class Manifest:
     version: str
@@ -123,10 +132,12 @@ def _read_url(url: str, timeout: float) -> bytes:
 #     where the pinned key predates the fetch.
 #   - the manifest (latest.json) is unsigned, so a host compromise can still replay an
 #     older SIGNED release (downgrade/freeze). It cannot introduce new code.
-#   - verify-if-present: releases predating signing have no .minisig, so absence is a
-#     WARNING while [dist] require_signed=false (the default until every supported
-#     version is signed). An INVALID signature is fatal regardless of that flag —
-#     invalid is tampering evidence, absence is history.
+#   - [dist] require_signed defaults TRUE (flipped 2026-10-01, once every release on
+#     the host — 1.5.0 .. 1.6.1 — verified against the pinned key): a release whose
+#     signature cannot be verified is REFUSED, with the override named in the error.
+#     Under an explicit `require_signed = false`, absence is a WARNING instead. An
+#     INVALID signature is fatal regardless of that flag — invalid is tampering
+#     evidence, absence is history.
 
 @dataclass(frozen=True)
 class SignedSums:
@@ -136,17 +147,27 @@ class SignedSums:
     warning: "str | None"   # one-line, caller-printed explanation when not verified
 
 
+#: Appended to every overridable refusal. Exact config text, so a teammate can act on
+#: it without reading docs; the docs then say what that choice gives up.
+_REQUIRE_SIGNED_OVERRIDE = (
+    "unsigned releases are refused by default; to accept them anyway, add "
+    "`require_signed = false` under [dist] in ~/.firekeep/config "
+    "(see docs/RELEASE-SIGNING.md for what that gives up)"
+)
+
+
 def require_signed(cfg) -> bool:
-    """[dist] require_signed — default false FOR NOW (flips once every supported
-    release is signed). Garbage values fail loud: silently reading a mistyped
-    security flag as false would be the worst of both worlds."""
+    """[dist] require_signed — default TRUE. Only an explicit disable word turns it off;
+    a blank value is "unset" (the default), the same rule as [dist] auto_update.
+    Garbage values fail loud: silently reading a mistyped security flag either way
+    would be the worst of both worlds."""
     if not cfg.has_section("dist"):
-        return False
-    raw = cfg.get("dist", "require_signed", fallback="").strip().lower()
-    if raw in ("", "0", "false", "no", "off"):
-        return False
-    if raw in ("1", "true", "yes", "on"):
         return True
+    raw = cfg.get("dist", "require_signed", fallback="").strip().lower()
+    if raw in ("", "1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
     raise UpdateError(f"[dist] require_signed = {raw!r} is not a boolean (use true or false)")
 
 
@@ -157,7 +178,8 @@ def fetch_signed_sums(base: str, version: str, *, require_signed: bool,
 
       no pinned key            -> nothing to verify against; silent skip (pre-mint
                                   builds), unless require_signed, which then fails.
-      sums/.minisig unfetchable-> warning (or hard failure under require_signed).
+      sums/.minisig unfetchable-> UnverifiedReleaseError under require_signed (the
+                                  default), a warning when it is explicitly off.
       signature INVALID        -> UpdateError, ALWAYS — require_signed only governs
                                   absence, never validity.
       verified                 -> the sums text is signature-anchored; the caller can
@@ -171,10 +193,11 @@ def fetch_signed_sums(base: str, version: str, *, require_signed: bool,
     pinned = signing.PINNED_PUBLIC_KEY.strip()
     if not pinned:
         if require_signed:
-            raise UpdateError(
-                "[dist] require_signed = true, but this client build pins no release "
-                "signing key (firekeep_client/signing.py PINNED_PUBLIC_KEY is empty) — "
-                "update from a build that pins one, or unset require_signed"
+            raise UnverifiedReleaseError(
+                "this client build pins no release signing key "
+                "(firekeep_client/signing.py PINNED_PUBLIC_KEY is empty), so no release "
+                "can be verified — refusing to update. Reinstall from a build that pins "
+                f"one; {_REQUIRE_SIGNED_OVERRIDE}"
             )
         return SignedSums(text=None, verified=False, warning=None)
 
@@ -183,9 +206,10 @@ def fetch_signed_sums(base: str, version: str, *, require_signed: bool,
         sums_bytes = _read_url(sums_url, timeout)
     except (urllib.error.URLError, OSError) as exc:
         if require_signed:
-            raise UpdateError(
-                f"cannot fetch {sums_url} for signature verification "
-                f"([dist] require_signed = true): {exc}"
+            raise UnverifiedReleaseError(
+                f"cannot fetch {sums_url} to verify release {version}'s signature "
+                f"({exc}) — refusing to update. If this is a transient outage, retry "
+                f"later; {_REQUIRE_SIGNED_OVERRIDE}"
             ) from exc
         return SignedSums(None, False,
                           f"cannot fetch SHA256SUMS for {version} ({exc}); "
@@ -197,9 +221,9 @@ def fetch_signed_sums(base: str, version: str, *, require_signed: bool,
         sig_bytes = _read_url(sig_url, timeout)
     except (urllib.error.URLError, OSError) as exc:
         if require_signed:
-            raise UpdateError(
-                f"release {version} is not signed (no SHA256SUMS.minisig) and "
-                f"[dist] require_signed = true — refusing to update. ({exc})"
+            raise UnverifiedReleaseError(
+                f"release {version} is not signed (no SHA256SUMS.minisig: {exc}) — "
+                f"refusing to update; {_REQUIRE_SIGNED_OVERRIDE}"
             ) from exc
         return SignedSums(sums_text, False,
                           f"release {version} is not signed (no SHA256SUMS.minisig); "
@@ -209,9 +233,9 @@ def fetch_signed_sums(base: str, version: str, *, require_signed: bool,
         trusted = signing.verify(sums_bytes, sig_bytes.decode("utf-8", "replace"), pinned)
     except signing.VerifyUnavailable as exc:
         if require_signed:
-            raise UpdateError(
-                f"cannot verify the release signature ({exc}) and "
-                f"[dist] require_signed = true — refusing to update"
+            raise UnverifiedReleaseError(
+                f"cannot verify release {version}'s signature on this machine ({exc}) — "
+                f"refusing to update; {_REQUIRE_SIGNED_OVERRIDE}"
             ) from exc
         return SignedSums(sums_text, False,
                           f"release signature present but unverifiable ({exc}); "

@@ -328,8 +328,10 @@ def test_ps1_guards_every_network_fetch_with_try_catch():
 
         # That catch block must actually Die with a download-failed message, not just
         # exist — EXCEPT the best-effort .minisig fetch, whose catch must WARN and
-        # continue (a missing signature is history, not an error, until
-        # [dist] require_signed flips) and must NOT Die.
+        # continue and must NOT Die. The bootstrap is deliberately best-effort (a
+        # bare-machine first install is TOFU); enforcement lives client-side in
+        # [dist] require_signed (default true), which refuses before this script
+        # is ever exec'd on the update path.
         catch_body = []
         for j in range(catch_idx + 1, len(lines)):
             catch_body.append(lines[j])
