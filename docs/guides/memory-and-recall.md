@@ -74,6 +74,49 @@ Coverage note: works for every runtime (it rides the MCP tool response, not
 hooks). The code-level push (post-tool "you just wrote a near-duplicate of an
 existing function") is deliberately round 2 — it needs care to not be a nag.
 
+## Embedding model A/B — qwen3-embedding:0.6b does not replace mxbai (2026-10-01)
+
+**Verdict: keep `mxbai-embed-large`.** In 2026, Qwen3-Embedding-0.6B is the
+open-model pick that public leaderboards favour, so it was tested against the
+shipped model on the identity-v2 LongMemEval-S store and failed a rule
+written down before any results.
+
+**Setup.** The same 124,263 points (same ids and payloads) were re-embedded
+from their stored text through cortex's own document path (2,000-char cap,
+shrink-to-fit, no prefix) into a second collection. Queries got Qwen3's
+query-side instruction (`Instruct: Given a task or question, retrieve
+memories relevant to it
+Query:`, via an `EMBED_QUERY_PREFIX` setting on the
+unmerged branch `feat/embed-query-instruction`). Recall only, graph leg and
+temporal recall off. Results: `benchmarks/memory/results/*-embed-*.json`.
+
+**The rule.** Ship only if top-3 recall, coverage and MRR on the default row
+all match or beat mxbai, and top-10 recall and coverage don't drop.
+
+| Floor | Model | R@3 | Cov@3 | MRR@3 | R@10 | Cov@10 |
+|---|---|---|---|---|---|---|
+| 0.35 | mxbai | 0.921 | 0.700 | 0.904 | 0.977 | 0.928 |
+| 0.35 | qwen3 | 0.887 | 0.690 | 0.873 | 0.915 | 0.841 |
+| 0.0 | mxbai | 0.921 | 0.700 | 0.904 | 0.977 | 0.928 |
+| 0.0 | qwen3 | 0.919 | **0.715** | 0.899 | **0.981** | **0.946** |
+
+- **At production's floor, qwen3 loses badly.** Its cosine scores sit lower
+  (≈0.44–0.46 for good matches), so `RECALL_SCORE_FLOOR=0.35` cuts real
+  evidence: top-10 coverage −8.7 points. mxbai is unaffected by the floor on
+  this store; its two rows are identical.
+- **With the floor removed it's mixed.** qwen3 finds more of the evidence
+  (Cov@3 +1.5, Cov@10 +1.8) but ranks slightly worse at the top (R@3 −0.2,
+  MRR −0.5; single-session-user R@3 −4.7). That fails the rule.
+- Cost was not the deciding factor, but it points the same way. qwen3 takes
+  1.5 GB of VRAM against mxbai's 0.77 GB, re-embeds at ~13 memories/s on an
+  RTX 5080, and a production switch means re-embedding the whole store.
+
+**If you revisit this:** an embedder swap is a set of coupled changes, not a
+config flip. `RECALL_SCORE_FLOOR`, `SKILL_MATCH_SCORE_FLOOR`, the 0.85
+near-duplicate threshold and `DREAM_CLUSTER_THRESHOLD` are all raw-cosine
+values tuned for mxbai. Asymmetric models also need the query-side prefix.
+Re-measure on this harness with each floor recalibrated, not just set to 0.
+
 ## Intelligence Features (Cortex)
 
 - **Memory types**: `reference` (no age decay by default), `procedural` (180d), `episodic` (90d), `transient` (14d). Direct learns default to episodic unless the caller supplies a type; the sleep-cycle LLM classifies knowledge extracted from raw event streams.
