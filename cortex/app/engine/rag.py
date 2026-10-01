@@ -326,8 +326,10 @@ class RAGEngine:
         vector_entries = self._normalize_vector(vector_results)
         graph_entries = self._format_graph_entries(graph_results, query.task)
 
-        # Wire query_resolutions for error-related queries.
-        if _ERROR_PATTERN.search(query.task):
+        # Wire query_resolutions for error-related queries. Resolutions are a
+        # Neo4j read too, so the graph-leg switch turns them off with it — a
+        # half-off ablation would measure nothing.
+        if self._settings.RECALL_GRAPH_ENABLED and _ERROR_PATTERN.search(query.task):
             resolution_entries = await self._fetch_resolutions(query.task)
             graph_entries.extend(resolution_entries)
 
@@ -457,6 +459,8 @@ class RAGEngine:
                 return "vector", []
 
         async def _graph_search() -> tuple[str, list[dict[str, Any]]]:
+            if not self._settings.RECALL_GRAPH_ENABLED:
+                return "graph", []
             try:
                 results = await self._graph.query_related(
                     query.task, limit=query.top_k,
@@ -595,6 +599,8 @@ class RAGEngine:
             return [], True
 
         async def _safe_graph() -> list[dict[str, Any]]:
+            if not self._settings.RECALL_GRAPH_ENABLED:
+                return []
             try:
                 if self._settings.MULTIHOP_ENABLED:
                     return await self._graph.query_related_multihop(

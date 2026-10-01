@@ -348,6 +348,11 @@ services:
       RECALL_TOP_K: ${RECALL_TOP_K:-3}
       RECALL_SYNTHESIS_ENABLED: ${RECALL_SYNTHESIS_ENABLED:-false}
       RECALL_SCORE_FLOOR: ${RECALL_SCORE_FLOOR:-0.35}
+      # Whether recall's graph leg runs at all — see
+      # docs/guides/cortex-configuration.md. This fallback WINS over the code
+      # default when .env is silent, so it is pinned equal to it by
+      # cortex/tests/test_recall_graph_switch.py.
+      RECALL_GRAPH_ENABLED: ${RECALL_GRAPH_ENABLED:-true}
       # Outcome-Weighted Memory (recall ranking term)
       OWM_ENABLED: ${OWM_ENABLED:-true}
       OWM_WEIGHT: ${OWM_WEIGHT:-0.15}
