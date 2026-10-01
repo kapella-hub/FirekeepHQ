@@ -11,6 +11,14 @@ from pathlib import PurePosixPath
 
 from fastmcp import FastMCP
 
+try:
+    from fastmcp.server.dependencies import get_http_request
+except ImportError:  # the tests' FakeFastMCP stub has no dependencies module
+    def get_http_request(*_args, **_kwargs):
+        """Fallback when fastmcp does not provide get_http_request: no
+        verified principal, so task writes carry no stamp (fail closed)."""
+        raise RuntimeError("get_http_request unavailable")
+
 from app.config import get_settings
 from app.pubsub import broadcast, get_backlog, get_active_channels
 from app.bulletin import post_bulletin, read_bulletin, get_bulletin_count
@@ -480,6 +488,23 @@ async def relay_lease_status(resource_id: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _verified_principal() -> dict | None:
+    """The verified principal stamp of the caller behind this tool call.
+
+    FirekeepKeyAuthMiddleware (installed on /mcp in __main__) attaches the
+    identity of the X-API-Key to the request scope; the stamp is read from
+    there and nowhere else — `assigner`, `assignee` and X-Agent-Id are labels
+    the caller chooses. Outside an HTTP request (in-memory clients, tests)
+    there is no principal and None is returned, which a consumer such as the
+    Hands broker reads as "unknown writer" and refuses on."""
+    try:
+        scope = get_http_request().scope
+    except Exception:  # noqa: BLE001 — no HTTP context, no principal
+        return None
+    from app.tasks import principal_stamp_from_scope
+    return principal_stamp_from_scope(scope)
+
+
 @mcp.tool()
 async def relay_task_post(
     title: str,
@@ -493,7 +518,9 @@ async def relay_task_post(
     """Create a task and assign it to an agent.
 
     Tasks appear in the assignee's inbox on their next turn. Use this to
-    delegate work to another agent in a multi-agent workflow.
+    delegate work to another agent in a multi-agent workflow. Relay records
+    the verified credential that created the task as `created_by`; the
+    assigner argument is a display label only.
 
     Args:
         title: Short task description (e.g. "Write tests for auth middleware")
@@ -512,6 +539,7 @@ async def relay_task_post(
         task = await handle_post_task(
             r, title=title, assignee=assignee, assigner=assigner,
             description=description, priority=priority, files=files, context=context,
+            created_by=_verified_principal(),
         )
         return {"status": "created", "task": task}
     except Exception as e:
@@ -530,7 +558,8 @@ async def relay_task_list(
     """List tasks, optionally filtered and ordered oldest-first.
 
     Use this to check your inbox (filter by your agent ID) or see all
-    pending work across agents.
+    pending work across agents. Each task carries `created_by`, `updated_by`
+    and `completed_by` when relay could verify who wrote it.
 
     Args:
         assignee: Filter by assigned agent ID
@@ -562,7 +591,9 @@ async def relay_task_update(
     """Update a task's status or reassign it.
 
     Call this when you start working on a task (status="in-progress"),
-    finish it (status="completed"), or need to hand it off.
+    finish it (status="completed"), or need to hand it off. Relay records
+    your verified credential as `updated_by`, and as `completed_by` when the
+    task is left completed, failed, cancelled or rejected.
 
     Args:
         task_id: The task ID (e.g. "task-abc12345")
@@ -573,7 +604,8 @@ async def relay_task_update(
     try:
         r = await get_redis()
         from app.tasks import update_task
-        task = await update_task(r, task_id, status, result, assignee)
+        task = await update_task(r, task_id, status, result, assignee,
+                                 principal=_verified_principal())
         if task is None:
             return {"error": f"Task {task_id} not found"}
 

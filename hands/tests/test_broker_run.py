@@ -17,10 +17,10 @@ class FakeLink:
 
     def post_permit_task(self, **kw):
         self.posted.append(kw)
-        return "task-" + kw["challenge"]
+        return {"id": "task-" + kw["challenge"], "status": "pending"}
 
-    def permit_task_state(self, challenge):
-        return "pending"
+    def permit_task(self, challenge, task_id):
+        return {"id": task_id, "status": "pending"}
 
     def close_permit_task(self, task_id, result):
         pass
@@ -42,9 +42,9 @@ def no_real_hook(monkeypatch):
 
 
 def test_phone_approvals_are_off_by_default(no_real_hook):
-    """Relay records no actor on a task update, so a completed permit task
-    proves only that someone holding the workspace key completed it — the
-    driving agent included. Opt-in until relay names the approver."""
+    """Relay now stamps who completed a permit task and the bridge refuses
+    the requesting credential, but any OTHER key holder in the workspace can
+    still approve unless `phone_approvers` is pinned. Still opt-in."""
     store, listeners, bridge = server.build_runtime(HandsConfig(), FakeLink(offline=False))
     assert HandsConfig().phone_approvals is False
     assert listeners["phone"] == "off"
@@ -61,6 +61,16 @@ def test_phone_is_active_only_when_opted_in_and_connected():
         if bridge is not None:
             bridge.stop()
             bridge.join(timeout=3)
+
+
+def test_phone_approvers_reach_the_bridge_as_a_clean_tuple():
+    cfg = HandsConfig(phone_approvals=True, phone_approvers=" cred-a, ,cred-b ")
+    store, listeners, bridge = server.build_runtime(cfg, FakeLink(offline=False))
+    try:
+        assert bridge.approvers == ("cred-a", "cred-b")
+    finally:
+        bridge.stop()
+        bridge.join(timeout=3)
 
 
 def test_opted_in_but_no_keep_reports_offline_and_starts_nothing():

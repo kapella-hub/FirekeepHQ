@@ -6,6 +6,23 @@ Tasks are stored as individual hashes with a sorted set index for ordering.
 Redis keys:
     nr:task:{id}     — Hash with task fields
     nr:tasks         — Sorted set of task IDs scored by creation time
+
+Who wrote a task (THREAT-MODEL row 12, §5.8). Three optional fields hold the
+VERIFIED principal of a write, as a JSON object
+``{workspace_id, member_id, credential_id, authenticated}``:
+
+    created_by    — the caller that created the task
+    updated_by    — the caller of the most recent update
+    completed_by  — the caller of the most recent write that left the task in a
+                    terminal state (completed/failed/cancelled/rejected).
+                    Cleared when a task is reopened, and cleared — never
+                    inherited — when that write carried no verified principal.
+
+Each history entry carries the same object under ``by``. The principal comes
+from the auth layer (``auth.principal.principal_from_scope``), never from
+``assigner``/``assignee``/``X-Agent-Id``, which are display labels. With auth
+disabled every caller is the deployment's anonymous owner, stamped
+``authenticated: false`` — every writer looks the same, and says so.
 """
 
 import json
@@ -19,6 +36,9 @@ TASK_INDEX_KEY = "nr:tasks"
 TASK_PREFIX = "nr:task:"
 TASK_TTL_SECONDS = 86400 * 7  # 7 days
 
+TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "rejected"})
+_PRINCIPAL_FIELDS = ("created_by", "updated_by", "completed_by")
+
 VALID_STATUSES = frozenset({
     "pending", "in-progress", "completed", "failed", "cancelled",
     # A2A-compatible states
@@ -26,6 +46,37 @@ VALID_STATUSES = frozenset({
     "input-required",   # agent needs clarification
     "rejected",         # invalid/unauthorized task
 })
+
+
+def _principal_stamp(identity: dict) -> dict:
+    """The audit-relevant subset of a verified identity. Scopes are dropped:
+    they describe what a key may do, not who holds it."""
+    return {
+        "workspace_id": str(identity.get("workspace_id") or ""),
+        "member_id": str(identity.get("member_id") or ""),
+        "credential_id": str(identity.get("credential_id") or ""),
+        "authenticated": identity.get("authenticated") is True,
+    }
+
+
+def principal_stamp_from_scope(scope) -> dict | None:
+    """The stamp for the request behind an ASGI ``scope``, or None when unknowable.
+
+    An identity attached by FirekeepKeyAuthMiddleware is authenticated by
+    construction (it carries no ``authenticated`` key of its own). With auth
+    disabled, ``principal_from_scope`` returns the anonymous owner, which
+    says ``authenticated: False`` itself. Auth enabled with no identity
+    attached is a wiring fault: nothing is stamped, and a reader treats an
+    absent stamp as "unknown writer", never as somebody in particular."""
+    try:
+        identity = (scope.get("state") or {}).get("identity")
+        if identity is not None:
+            return _principal_stamp({**identity, "authenticated": True})
+        from auth.principal import principal_from_scope
+        return _principal_stamp(principal_from_scope(scope))
+    except Exception as exc:  # noqa: BLE001 — an unknowable writer is recorded as absent
+        logger.debug("no verified principal for this task write: %s", exc)
+        return None
 
 
 async def create_task(
@@ -37,12 +88,18 @@ async def create_task(
     priority: str = "normal",
     files: list[str] | None = None,
     context: str = "",
+    created_by: dict | None = None,
 ) -> dict:
-    """Create a new task and add to the index."""
+    """Create a new task and add to the index.
+
+    ``created_by`` is the verified principal stamp of the caller (see the
+    module docstring); omitted when the caller is unknowable."""
     task_id = "task-" + str(uuid.uuid4())[:8]
     now = time.time()
 
     initial_history = [{"state": "pending", "timestamp": now}]
+    if created_by is not None:
+        initial_history[0]["by"] = created_by
     task = {
         "id": task_id,
         "title": title,
@@ -57,6 +114,8 @@ async def create_task(
         "updated_at": now,
         "history": json.dumps(initial_history),
     }
+    if created_by is not None:
+        task["created_by"] = json.dumps(created_by)
 
     key = f"{TASK_PREFIX}{task_id}"
     await redis.hset(key, mapping=task)
@@ -67,6 +126,8 @@ async def create_task(
     # Return with parsed JSON fields
     task["files"] = files or []
     task["history"] = initial_history
+    if created_by is not None:
+        task["created_by"] = created_by
     return task
 
 
@@ -136,6 +197,19 @@ def _parse_task(raw: dict) -> dict:
             task[k] = float(task[k])
         except (ValueError, KeyError):
             pass
+    for k in _PRINCIPAL_FIELDS:
+        if k not in task:
+            continue
+        try:
+            parsed = json.loads(task[k])
+        except (json.JSONDecodeError, TypeError):
+            parsed = None
+        # A stamp that does not parse is not a stamp. Dropping it is the
+        # fail-closed reading: a consumer gating on it sees "unknown writer".
+        if isinstance(parsed, dict):
+            task[k] = parsed
+        else:
+            del task[k]
     return task
 
 
@@ -164,8 +238,16 @@ async def update_task(
     status: str | None = None,
     result: str | None = None,
     assignee: str | None = None,
+    principal: dict | None = None,
 ) -> dict | None:
-    """Update task fields. Returns updated task or None if not found."""
+    """Update task fields. Returns updated task or None if not found.
+
+    ``principal`` is the verified stamp of the caller. It becomes
+    ``updated_by``, and ``completed_by`` whenever the task is terminal after
+    this write — including a write that changes only ``result`` on an
+    already-completed task, because otherwise a second writer could rewrite a
+    human's answer under the human's name. With no principal both fields are
+    removed rather than left naming the previous writer."""
     key = f"{TASK_PREFIX}{task_id}"
     exists = await redis.exists(key)
     if not exists:
@@ -182,14 +264,35 @@ async def update_task(
             history = json.loads(history_raw) if history_raw else []
         except (json.JSONDecodeError, TypeError):
             history = []
-        history.append({"state": status, "timestamp": time.time()})
+        entry = {"state": status, "timestamp": time.time()}
+        if principal is not None:
+            entry["by"] = principal
+        history.append(entry)
         updates["history"] = json.dumps(history)
     if result is not None:
         updates["result"] = result
     if assignee is not None:
         updates["assignee"] = assignee
 
-    await redis.hset(key, mapping=updates)
+    resulting_status = status if status is not None else await redis.hget(key, "status")
+    removals = []
+    if principal is not None:
+        updates["updated_by"] = json.dumps(principal)
+    else:
+        removals.append("updated_by")
+    if principal is not None and resulting_status in TERMINAL_STATUSES:
+        updates["completed_by"] = json.dumps(principal)
+    else:
+        removals.append("completed_by")
+
+    # One transaction: the fields this write sets and the stale stamps it
+    # clears land together, so no reader sees this write's result under the
+    # previous writer's name.
+    async with redis.pipeline(transaction=True) as pipe:
+        pipe.hset(key, mapping=updates)
+        if removals:
+            pipe.hdel(key, *removals)
+        await pipe.execute()
 
     # Return full task
     raw = await redis.hgetall(key)

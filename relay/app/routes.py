@@ -147,7 +147,7 @@ async def handle_get_tasks(
 async def handle_post_task(
     redis, *, title: str, assignee: str | None = None, assigner: str = "unknown",
     description: str = "", priority: str = "normal", files: list[str] | None = None,
-    context: str = "",
+    context: str = "", created_by: dict | None = None,
 ) -> dict:
     """Create a task WITH the two side effects the MCP tool has always had.
 
@@ -162,7 +162,10 @@ async def handle_post_task(
     from app.config import get_settings
     from app.mcp_server import _replay_emit
 
-    task = await create_task(redis, title, assignee, assigner, description, priority, files, context)
+    task = await create_task(
+        redis, title, assignee, assigner, description, priority, files, context,
+        created_by=created_by,
+    )
     msg = f"Task for {assignee}: {title}" if assignee else f"New task: {title}"
     await broadcast(
         redis, "tasks", msg, assigner, ["task-assigned"],
@@ -385,6 +388,7 @@ async def route_post_task(request: Request) -> JSONResponse:
             isinstance(files, list) and all(isinstance(f, str) for f in files)
         ):
             return JSONResponse({"error": "files must be a list of strings"}, status_code=400)
+        from app.tasks import principal_stamp_from_scope
         r = await _get_redis()
         task = await handle_post_task(
             r, title=title, assignee=(body.get("assignee") or None),
@@ -392,6 +396,7 @@ async def route_post_task(request: Request) -> JSONResponse:
             description=str(body.get("description") or ""),
             priority=str(body.get("priority") or "normal"),
             files=files, context=str(body.get("context") or ""),
+            created_by=principal_stamp_from_scope(request.scope),
         )
         return JSONResponse({"status": "created", "task": task}, status_code=201)
     except Exception as e:

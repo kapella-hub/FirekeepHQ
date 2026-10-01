@@ -26,13 +26,16 @@ def test_roundtrip_and_unknown_keys_survive(isolated_home):
 
 
 def test_phone_approvals_default_off_and_round_trip(isolated_home):
-    """Relay records no actor on a task update, so a phone approval proves
-    only that a workspace-key holder completed the task. It stays opt-in."""
+    """Any workspace credential other than the requester's can still approve
+    unless `phone_approvers` is pinned, so the phone path stays opt-in."""
     assert config.load_config().phone_approvals is False
+    assert config.load_config().phone_approvers == ""
     cfg = config.load_config()
     cfg.phone_approvals = True
+    cfg.phone_approvers = "cred-dashboard"
     config.save_config(cfg)
     assert config.load_config().phone_approvals is True
+    assert config.load_config().phone_approvers == "cred-dashboard"
 
 
 def test_corrupt_policy_is_treated_as_empty_not_fatal(isolated_home):

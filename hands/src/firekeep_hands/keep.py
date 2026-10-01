@@ -51,6 +51,30 @@ _HANDS_MARKER = "hands_task"
 # Either one exceeded is a second 422 queued behind the first.
 _MAX_PREVIEW = 2048
 _MAX_INTENT = 512
+# How many tasks under one `hands_permit:<challenge>` title `permit_task`
+# looks through for its own id. Honest permits produce one; more means
+# somebody posted decoys, and the broker's own is still found among them.
+_PERMIT_TITLE_SCAN = 20
+
+
+def answer_from_task(task: Any) -> str | None:
+    """What a permit task's status says: "approve", "deny", "pending", or None.
+
+    This reads only the status and result. WHO answered is a separate
+    question the phone bridge asks of the task's principal stamps before it
+    honours an approve (`broker/phone.py`); an approve here is a claim, not
+    a grant."""
+    if not isinstance(task, dict):
+        return None
+    status = task.get("status")
+    if status == "completed":
+        text = str(task.get("result") or "").strip().lower()
+        return "approve" if text.startswith("approve") else "deny"
+    if status in ("cancelled", "failed", "rejected"):
+        return "deny"
+    if status in ("pending", "in-progress", "working", "input-required"):
+        return "pending"
+    return None
 
 
 @dataclass(frozen=True)
@@ -342,7 +366,10 @@ class KeepLink:
         step_index: int,
         expires_at: str,
     ) -> str | None:
-        """`classes` elements are coerced with `str()` before joining into
+        """The task relay created — its `id`, and its `created_by` stamp when
+        relay records one — or None.
+
+        `classes` elements are coerced with `str()` before joining into
         `description` — this must not raise on a caller passing e.g. a tuple
         of ints, the same failure mode `action_before` had for `apps`."""
         def build():
@@ -371,23 +398,29 @@ class KeepLink:
         if not isinstance(result, dict):
             return None
         task = result.get("task")
-        return task.get("id") if isinstance(task, dict) else None
+        if not isinstance(task, dict) or not task.get("id"):
+            return None
+        return task
 
-    def permit_task_state(self, challenge: str) -> str | None:
-        result = self._call("relay", "relay_task_list", lambda: {"title": f"hands_permit:{challenge}", "limit": 1})
+    def permit_task(self, challenge: str, task_id: str) -> dict | None:
+        """The relay task this broker posted for `challenge`, read back BY ID.
+
+        Relay has no get-by-id tool, so this lists by title and picks the
+        id. Reading "the newest task with this title" instead would let any
+        key holder post a decoy `hands_permit:<challenge>` task, complete it
+        themselves and have it stand in for the broker's own."""
+        result = self._call(
+            "relay", "relay_task_list",
+            lambda: {"title": f"hands_permit:{challenge}", "limit": _PERMIT_TITLE_SCAN},
+        )
         if not isinstance(result, dict):
             return None
         tasks = result.get("tasks")
-        if not isinstance(tasks, list) or not tasks:
+        if not isinstance(tasks, list):
             return None
-        status = tasks[0].get("status")
-        if status == "completed":
-            text = str(tasks[0].get("result") or "").strip().lower()
-            return "approve" if text.startswith("approve") else "deny"
-        if status in ("cancelled", "failed"):
-            return "deny"
-        if status in ("pending", "in-progress"):
-            return "pending"
+        for task in tasks:
+            if isinstance(task, dict) and task.get("id") == task_id:
+                return task
         return None
 
     def close_permit_task(self, task_id: str, result: str) -> None:

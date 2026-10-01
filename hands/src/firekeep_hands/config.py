@@ -41,11 +41,17 @@ class HandsConfig:
     chord: str = "ctrl+alt+y"
     deny_chord: str = "ctrl+alt+n"
     permit_ttl_s: int = 60
-    # Off until relay records WHO completed a task. A relay task can be
-    # completed by anyone holding the workspace key — the driving agent
-    # included, through the same MCP surface it already has — so with this on,
-    # the approval gate is only as strong as the key. See broker/phone.py.
+    # Off by default. Relay now stamps who completed a permit task and the
+    # broker refuses an approve from the credential that requested it (the
+    # machine's kit key, which the driving agent shares), from an
+    # unauthenticated Keep, and from a relay too old to stamp. Any OTHER
+    # credential in the workspace can still approve unless `phone_approvers`
+    # pins who may. See broker/phone.py.
     phone_approvals: bool = False
+    # Comma-separated credential ids allowed to approve from the phone —
+    # typically the dashboard's. Empty means any authenticated credential in
+    # the workspace other than the requester's.
+    phone_approvers: str = ""
     max_steps: int = 400
     max_nodes: int = 200
     text_budget: int = 4000

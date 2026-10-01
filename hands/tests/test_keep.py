@@ -50,7 +50,7 @@ def test_offline_makes_every_call_a_noop(monkeypatch):
     monkeypatch.setattr(keep, "call_tool", lambda *a, **k: called.append(a))
     link = keep.KeepLink(agent_id="a", machine_id="m", offline=True)
     assert link.action_before(goal="g", task_id="t", apps=[]) is None
-    assert link.acquire_lease() is None and link.permit_task_state("c") is None
+    assert link.acquire_lease() is None and link.permit_task("c", "task-1") is None
     assert called == []
 
 
@@ -69,8 +69,8 @@ def test_online_calls_map_to_the_right_tools(monkeypatch):
     assert link.action_before(goal="g", task_id="t", apps=["X"]) == "A1"
     assert link.acquire_lease()["fencing_token"] == 7
     link.renew_lease()
-    assert link.post_permit_task(challenge="c", title="Send", classes=("send",), task_id="t", step_index=2, expires_at="x") == "task-1"
-    assert link.permit_task_state("c") == "approve"
+    assert link.post_permit_task(challenge="c", title="Send", classes=("send",), task_id="t", step_index=2, expires_at="x")["id"] == "task-1"
+    assert keep.answer_from_task(link.permit_task("c", "task-1")) == "approve"
     link.release_lease()
     link.action_after("A1", "done", "ok")
     tools = [(s, t) for s, t, _ in seen]
@@ -197,7 +197,7 @@ def test_transport_errors_are_swallowed(monkeypatch):
     monkeypatch.setattr(keep, "call_tool", boom)
     link = keep.KeepLink(agent_id="a", machine_id="m", offline=False)
     assert link.action_before(goal="g", task_id="t", apps=[]) is None
-    assert link.permit_task_state("c") is None
+    assert link.permit_task("c", "task-1") is None
 
 
 def test_arbitrary_exceptions_are_also_swallowed(monkeypatch):
@@ -207,43 +207,50 @@ def test_arbitrary_exceptions_are_also_swallowed(monkeypatch):
     assert link.action_before(goal="g", task_id="t", apps=[]) is None
     assert link.acquire_lease() is None
     assert link.post_permit_task(challenge="c", title="t", classes=(), task_id="t", step_index=0, expires_at="x") is None
-    assert link.permit_task_state("c") is None
+    assert link.permit_task("c", "task-1") is None
     link.release_lease()
     link.renew_lease()
     link.action_after("A1", "done", "ok")
     link.close_permit_task("task-1", "approve")
 
 
-def test_permit_task_state_maps_every_relay_status(monkeypatch):
-    def make_fake(tasks):
-        def fake(service, tool, args, **kw):
-            if (service, tool) == ("relay", "relay_task_list"):
-                return {"tasks": tasks}
-            return {}
-        return fake
+def test_answer_from_task_maps_every_relay_status():
+    answer = keep.answer_from_task
+    assert answer({"id": "1", "status": "completed", "result": "approve: go ahead"}) == "approve"
+    assert answer({"id": "1", "status": "completed", "result": "no"}) == "deny"
+    assert answer({"id": "1", "status": "cancelled", "result": None}) == "deny"
+    assert answer({"id": "1", "status": "failed", "result": None}) == "deny"
+    assert answer({"id": "1", "status": "rejected", "result": None}) == "deny"
+    assert answer({"id": "1", "status": "pending", "result": None}) == "pending"
+    assert answer({"id": "1", "status": "in-progress", "result": None}) == "pending"
+    assert answer({"id": "1", "status": "working", "result": None}) == "pending"
+    assert answer({"id": "1", "status": "", "result": None}) is None
+    assert answer(None) is None
 
+
+def test_permit_task_reads_the_task_it_posted_by_id_not_the_newest_by_title(monkeypatch):
+    """A second task under the same `hands_permit:` title — a decoy anyone
+    with the key can post — must never stand in for the broker's own."""
+    seen = []
+    def fake(service, tool, args, **kw):
+        seen.append(args)
+        return {"tasks": [
+            {"id": "task-decoy", "status": "completed", "result": "approve"},
+            {"id": "task-1", "status": "pending", "result": None},
+        ]}
+    monkeypatch.setattr(keep, "call_tool", fake)
     link = keep.KeepLink(agent_id="a", machine_id="m", offline=False)
+    assert link.permit_task("c", "task-1")["id"] == "task-1"
+    assert link.permit_task("c", "task-gone") is None
+    assert seen[0]["title"] == "hands_permit:c" and seen[0]["limit"] > 1
 
-    monkeypatch.setattr(keep, "call_tool", make_fake([{"id": "1", "status": "completed", "result": "approve: go ahead"}]))
-    assert link.permit_task_state("c") == "approve"
 
-    monkeypatch.setattr(keep, "call_tool", make_fake([{"id": "1", "status": "completed", "result": "no"}]))
-    assert link.permit_task_state("c") == "deny"
-
-    monkeypatch.setattr(keep, "call_tool", make_fake([{"id": "1", "status": "cancelled", "result": None}]))
-    assert link.permit_task_state("c") == "deny"
-
-    monkeypatch.setattr(keep, "call_tool", make_fake([{"id": "1", "status": "failed", "result": None}]))
-    assert link.permit_task_state("c") == "deny"
-
-    monkeypatch.setattr(keep, "call_tool", make_fake([{"id": "1", "status": "pending", "result": None}]))
-    assert link.permit_task_state("c") == "pending"
-
-    monkeypatch.setattr(keep, "call_tool", make_fake([{"id": "1", "status": "in-progress", "result": None}]))
-    assert link.permit_task_state("c") == "pending"
-
-    monkeypatch.setattr(keep, "call_tool", make_fake([]))
-    assert link.permit_task_state("c") is None
+def test_post_permit_task_returns_relays_principal_stamp(monkeypatch):
+    stamp = {"workspace_id": "ws", "member_id": "m", "credential_id": "cred-kit", "authenticated": True}
+    monkeypatch.setattr(keep, "call_tool", lambda *a, **k: {"task": {"id": "task-1", "created_by": stamp}})
+    link = keep.KeepLink(agent_id="a", machine_id="m", offline=False)
+    assert link.post_permit_task(challenge="c", title="t", classes=(), task_id="t",
+                                 step_index=0, expires_at="x")["created_by"] == stamp
 
 
 def test_close_permit_task_calls_relay_task_update(monkeypatch):
@@ -404,7 +411,7 @@ def test_action_before_and_post_permit_task_never_raise_on_non_str_apps_or_class
     assert link.action_before(goal="g", task_id="t", apps=[1, None]) == "A1"
     assert link.post_permit_task(
         challenge="c", title="t", classes=(1,), task_id="t", step_index=0, expires_at="x"
-    ) == "task-1"
+    )["id"] == "task-1"
 
 
 # -- the Keep has to actually accept what we send it ------------------------
