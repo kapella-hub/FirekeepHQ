@@ -84,11 +84,16 @@ async def test_get_event_count(redis):
 
 
 async def test_push_event_respects_maxlen(redis):
-    for i in range(20):
+    # push_event trims with MAXLEN ~ (approximate). Real Redis only trims
+    # whole stream nodes (stream-node-max-entries, default 100), so 20 events
+    # against maxlen=10 are never trimmed at all — fakeredis >= 2.39 models
+    # that, where older versions trimmed exactly and a `<= 15` bound passed by
+    # accident. What "respects maxlen" can honestly promise: far more events
+    # than maxlen + one node stay bounded by maxlen + one node.
+    for i in range(300):
         await push_event(redis, "test", "t", f"event {i}", maxlen=10)
     count = await get_event_count(redis)
-    # approximate trimming means count might be slightly above maxlen
-    assert count <= 15
+    assert 10 <= count <= 10 + 100
 
 
 async def test_trim_by_age(redis):
