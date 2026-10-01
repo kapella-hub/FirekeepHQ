@@ -779,7 +779,7 @@ class VectorClient:
         try:
             if query:
                 # Semantic search
-                vector = await self.embed_query(query)
+                vector = await self._embed(self.as_query(query))
                 results = await self._client.query_points(
                     collection_name=self._collection,
                     query=vector,
@@ -1072,7 +1072,7 @@ class VectorClient:
             List of dicts with id, score, text, and metadata.
         """
         try:
-            vector = await self.embed_query(query)
+            vector = await self._embed(self.as_query(query))
 
             filter_conditions = []
             must_not_conditions = []
@@ -1260,14 +1260,18 @@ class VectorClient:
 
         return all_embeddings
 
-    async def embed_query(self, query: str) -> list[float]:
-        """Embed text that will SEARCH stored documents (EMBED_QUERY_PREFIX).
+    def as_query(self, query: str) -> str:
+        """Text to embed when ``query`` will SEARCH stored documents.
 
         Asymmetric embedders (Qwen3-Embedding, e5, nomic) are trained with an
-        instruction on the query side only; a stored document must never get
-        it, so writes, near-duplicate checks and clustering keep `_embed`.
+        instruction on the query side only (EMBED_QUERY_PREFIX); a stored
+        document must never get it, so writes, near-duplicate checks and
+        clustering embed their text as-is. Kept a plain string step in front
+        of ``_embed`` so ``_embed`` stays the one embedding seam.
         """
-        return await self._embed(f"{self._query_prefix}{query}" if self._query_prefix else query)
+        # getattr: test doubles build this class without __init__.
+        prefix = getattr(self, "_query_prefix", "")
+        return f"{prefix}{query}" if prefix else query
 
     async def _embed(self, text: str) -> list[float]:
         """Generate an embedding vector via the LLM embeddings endpoint.

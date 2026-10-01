@@ -78,7 +78,7 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL: str = "mxbai-embed-large"
     EMBEDDING_DIM: int = 1024
     # Prepended to text embedded as a SEARCH QUERY (recall, the semantic memory
-    # listing, skill matching) and never to a stored document. Asymmetric
+    # listing, skill matching — VectorClient.as_query) and never to a stored document. Asymmetric
     # embedders want it — Qwen3-Embedding:
     #   "Instruct: Given a task or question, retrieve memories relevant to it\nQuery:"
     # e5: "query: ", nomic-embed-text: "search_query: ". A literal "\n" in the

@@ -138,7 +138,12 @@ async def _embed_with_cache_warm(vector, q: str, timeout: float) -> list:
     "exception was never retrieved" warning, and the strong reference in
     `_WARMING` keeps it alive until it finishes.
     """
-    task = asyncio.ensure_future(vector.embed_query(q))
+    # Query-side instruction for asymmetric embedders (VectorClient.as_query).
+    # isinstance, not truthiness: a test double's attribute is not a prefix.
+    prefix = getattr(vector, "_query_prefix", "")
+    task = asyncio.ensure_future(
+        vector._embed(f"{prefix}{q}" if isinstance(prefix, str) and prefix else q)
+    )
     try:
         return await asyncio.wait_for(asyncio.shield(task), timeout)
     except asyncio.TimeoutError:

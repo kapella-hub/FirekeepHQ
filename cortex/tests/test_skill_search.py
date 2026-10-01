@@ -123,10 +123,6 @@ def vector():
     v = MagicMock()
     v._client = AsyncMock()
     v._embed = AsyncMock(return_value=[1.0, 0.0, 0.0])
-    # The real embed_query adds EMBED_QUERY_PREFIX (empty here) and calls
-    # _embed. Resolve _embed at CALL time so a test that swaps it (failure,
-    # hang) is still the thing a skill query reaches.
-    v.embed_query = lambda q: v._embed(q)
     return v
 
 
