@@ -3051,9 +3051,10 @@ def cmd_update(args) -> int:
         # the bootstrap will install, so `--to <older>` must verify THAT version's sums,
         # not latest's (security review, MEDIUM: verifying manifest.version while the
         # bootstrap pinned FIREKEEP_VERSION=target left every rollback unsigned, even
-        # under require_signed=true). verify-if-present — absence warns (until
-        # [dist] require_signed flips), an invalid signature is always fatal inside
-        # fetch_signed_sums itself.
+        # under require_signed=true). Under [dist] require_signed (default true) an
+        # unverifiable target is refused (UnverifiedReleaseError, persisted below);
+        # under an explicit `false` absence only warns. An invalid signature is
+        # always fatal inside fetch_signed_sums itself.
         req_signed = updater.require_signed(cfg)
         signed = updater.fetch_signed_sums(base, target, require_signed=req_signed)
         # The bootstrap SCRIPT we execute is always latest/'s, whose bytes are listed in
@@ -3080,7 +3081,7 @@ def cmd_update(args) -> int:
             # require_signed=false, and an invisible warning is no warning).
             state.note_unsigned_update(
                 f"client update to {target} ran WITHOUT a verified release signature "
-                f"({warnings[0]}); [dist] require_signed=false tolerates this — "
+                f"({warnings[0]}); your [dist] require_signed = false allows this — "
                 f"see docs/RELEASE-SIGNING.md"
             )
         # The checksum is REQUIRED here: we are about to EXECUTE this script. Verifying uv
@@ -3110,6 +3111,16 @@ def cmd_update(args) -> int:
     except resolver.ConfigMigrationConflict as exc:
         print(f"firekeep: {exc}", file=sys.stderr)
         return 3
+    except updater.UnverifiedReleaseError as exc:
+        print(f"firekeep: {exc}", file=sys.stderr)
+        # The mirror of the installed-unsigned notice above: the background
+        # auto-update (how almost every install updates) runs with stderr on
+        # DEVNULL, so a refusal printed only here would recur daily, unseen.
+        # Persist it for the next session-start briefing. Only the overridable
+        # refusals take this path — an INVALID signature is plain UpdateError and
+        # must never be framed as something `require_signed = false` fixes.
+        state.note_unsigned_update(f"client update to {target} was REFUSED: {exc}")
+        return 1
     except (resolver.ConfigError, updater.UpdateError) as exc:
         print(f"firekeep: {exc}", file=sys.stderr)
         return 1

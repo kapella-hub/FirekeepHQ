@@ -335,9 +335,16 @@ build time — the right outcome, and the reason not to hard-code `docker.io` th
   update path is signed as of 2026-08-12: keys minted (ID 7D6D83D1240D4A61), the public
   key pinned in `client/firekeep_client/signing.py`, `FIREKEEP_SIGNING_KEY` set in
   Actions — releases from client 0.1.42 on publish a verified `SHA256SUMS.minisig`.
-  Residuals stay honest: TOFU first install, `require_signed` still default-false (flip
-  planned one release after signing proves itself in production), unsigned `latest.json`
-  downgrade window — see `docs/THREAT-MODEL.md` §5.6 and `docs/RELEASE-SIGNING.md`.
+  `[dist] require_signed` defaults to **true** since 2026-10-01 (every release on the
+  host, 1.5.0–1.6.1, verified against the pinned key at the flip): an unverifiable
+  release is refused with the opt-out line in the error (`require_signed = false` under
+  `[dist]` in `~/.firekeep/config`; no env-var override), and the refusal is persisted for
+  the next session briefing because the background auto-update's stderr goes nowhere.
+  Consequence for releases: a build published UNSIGNED (missing CI secret) now stalls
+  every client's updates — treat a missing `FIREKEEP_SIGNING_KEY` as a release blocker.
+  Residuals stay honest: TOFU first install, the per-machine opt-out, unsigned
+  `latest.json` downgrade window — see `docs/THREAT-MODEL.md` §5.6 and
+  `docs/RELEASE-SIGNING.md`.
 - **CI gates** (`.github/workflows/ci.yml`): `security` runs `pip-audit --strict` over
   each shipped dependency set in its own clean venv and uploads CycloneDX SBOMs;
   `secrets` runs the gitleaks binary over the working tree and full history. Both are

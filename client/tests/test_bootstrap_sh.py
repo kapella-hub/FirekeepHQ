@@ -408,9 +408,11 @@ def test_install_sh_verifies_and_proceeds_when_minisign_accepts(tmp_path, artifa
 
 
 def test_install_sh_warns_but_continues_when_the_release_is_unsigned(tmp_path, artifact_server):
-    """verify-if-present: releases predating signing publish no .minisig, and
-    `firekeep update --to <old>` must keep working — with a visible one-line warning,
-    never silence and never a failure (until [dist] require_signed flips client-side)."""
+    """The bootstrap's own check is verify-if-present: with no .minisig it warns
+    visibly and continues — never silence, never a failure. That is deliberate: a
+    bare-machine first install is TOFU anyway, and on the update path enforcement
+    happens client-side ([dist] require_signed, default true), which refuses an
+    unsigned release before this script is ever exec'd."""
     proc = subprocess.run(
         ["sh", str(BOOTSTRAP)], capture_output=True, text=True,
         env=_sign_env(tmp_path, artifact_server, _stub_minisign(tmp_path, 0)),

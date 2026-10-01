@@ -383,9 +383,9 @@ jobs:
              dist/firekeep_hands-*.whl dist/uv-* \
              dist/SHA256SUMS dist/install.sh dist/install.ps1 "gh/${VERSION}/"
           # The signature rides with its SHA256SUMS. Conditional because unsigned
-          # builds (no FIREKEEP_SIGNING_KEY secret yet) produce no .minisig — the
-          # client treats absence as a warning, never as an error, until
-          # [dist] require_signed flips.
+          # builds (no FIREKEEP_SIGNING_KEY secret) produce no .minisig. NOTE: since
+          # [dist] require_signed defaults true, clients REFUSE an unsigned release —
+          # an unsigned publish stalls every client's update until it is re-signed.
           if [ -f dist/SHA256SUMS.minisig ]; then
             cp dist/SHA256SUMS.minisig "gh/${VERSION}/"
           fi

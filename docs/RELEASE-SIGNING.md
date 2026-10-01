@@ -5,9 +5,13 @@ private half lives in the `FIREKEEP_SIGNING_KEY` Actions secret and offline at
 the operator's key directory (keep a password-manager copy too), the public half
 is pinned in `client/firekeep_client/signing.py`. Releases from client 0.1.42 on
 publish a `SHA256SUMS.minisig` that the workflow byte-verifies against the served
-copy. `require_signed` stays default-false for one release cycle — flip it (step
-5 below) only after a signed release has proven itself in production, because a
-flipped default with a misconfigured secret stalls every client's updates.
+copy. **Enforcement is on by default since 2026-10-01** (step 5 below): with
+`[dist] require_signed` defaulting to `true`, a client refuses any release whose
+signature it cannot verify. The flip waited for production evidence — at the
+flip, every version served by the release host (1.5.0 through 1.6.1) verified
+against the pinned key. The cost it accepts: a release published **unsigned**
+(the CI secret missing) is now refused by every client and stalls the fleet's
+updates until it is re-published signed — see step 2.
 
 ## What is signed, and what that protects
 
@@ -42,7 +46,8 @@ client's anchor rather than only the host-baked one. `firekeep update --to X.Y.Z
 verifies the **target** version's sums (what actually gets installed) and, when
 the target is not the latest, additionally the latest version's sums (which
 anchor the `latest/` bootstrap script being executed); under `require_signed`
-an unsigned target release fails the update, naming the flag.
+(the default) an unsigned target release fails the update, and the error gives
+the exact opt-out line.
 
 Threat displaced: a compromised **release host** can serve only bytes the signing
 key signed. Threats NOT displaced (stated, not papered over):
@@ -52,16 +57,19 @@ key signed. Threats NOT displaced (stated, not papered over):
   installer can pin out of band: `FIREKEEP_SIGNING_PUB=<pubkey> curl ... | sh`
   (with `minisign` installed). `latest/signing.pub` is published for
   transparency/out-of-band comparison — it is **not** a trust anchor.
-- **Absence is attacker-choosable while `[dist] require_signed = false` (the
-  migration default).** An attacker with host write access does not need to
-  forge a signature — they can simply publish *unsigned*, and the default
-  tolerates that with a one-line warning. This is the explicit, accepted cost of
-  the migration window (releases predating signing have no `.minisig`, and
-  breaking `--to <old>` would be worse); it is removed entirely by flipping
-  `require_signed` once every supported release is signed. So the warning cannot
-  be invisible: when the update ran detached (the background auto-update, stderr
-  on DEVNULL), the client persists an "installed without a verified signature"
-  marker and the **next session-start briefing prints it** — one line, once.
+- **Absence is refused by default — unless an operator opts out.** Since
+  2026-10-01 `[dist] require_signed` defaults to `true`: an unsigned (or
+  unverifiable) release fails the update with an error that names the override.
+  An operator who sets `require_signed = false` under `[dist]` in
+  `~/.firekeep/config` re-opens the old migration-window hole on that machine:
+  an attacker with host write access need not forge a signature, they can
+  simply publish *unsigned*, and the opt-out tolerates it with a one-line
+  warning. There is deliberately no environment-variable override — the config
+  file is `0600` and owned by the user; a process environment is not. Neither
+  outcome is invisible when the update ran detached (the background auto-update,
+  stderr on DEVNULL): the client persists a one-shot marker — "installed without
+  a verified signature" under the opt-out, "update REFUSED: …" under the default
+  — and the **next session-start briefing prints it** once.
 - **Downgrade/freeze.** `latest.json` is unsigned; a compromised host can replay
   an older signed release. It cannot introduce new code.
 - **Signing-key or CI compromise.** Signing moves trust from the host to the key.
@@ -105,7 +113,11 @@ import boundary forbids third-party crypto libs; RFC 8032 vectors pin it).
    CI signing **skips gracefully** while the secret is absent: the release builds
    unsigned and the log says `UNSIGNED (FIREKEEP_SIGNING_KEY is not set)`. A
    secret that is set but unusable **fails the release** — misconfiguration must
-   never silently ship unsigned.
+   never silently ship unsigned. **Since enforcement became the default
+   (step 5), "skips gracefully" is no longer graceful downstream:** every client
+   refuses an unsigned release, so publishing one stalls the fleet's updates
+   (each client's briefing shows the refusal) until the version is re-published
+   signed. Treat a missing secret as a release blocker.
 
 3. **Pin the public key in the client**: paste the base64 line of
    `firekeep-signing.pub` into `PINNED_PUBLIC_KEY` in
@@ -118,11 +130,15 @@ import boundary forbids third-party crypto libs; RFC 8032 vectors pin it).
    the version directory, and every client that installs this (or any later)
    version verifies all subsequent updates.
 
-5. **Later — flip enforcement.** Once every version you still support is signed,
-   set `[dist] require_signed = true` in `~/.firekeep/config` (fleet-wide via your
-   config management, or make it the shipped default in a future release). Until
-   then, a missing signature is a one-line warning; an INVALID signature is
-   always fatal regardless of the flag.
+5. **Flip enforcement — DONE 2026-10-01.** `require_signed` is now the shipped
+   default (`updater.require_signed` returns `true` when `[dist]` omits it or
+   leaves it blank). Evidence at the flip: every version on the release host
+   (1.5.0, 1.5.1, 1.5.2, 1.5.4–1.5.8, 1.6.0, 1.6.1) verified against the pinned
+   key through `updater.fetch_signed_sums(..., require_signed=True)`; nothing
+   older is served. Enforcement lives in the INSTALLED client, so it protects
+   updates from the first release that carries the flip. To opt a machine out,
+   add `require_signed = false` under `[dist]` in `~/.firekeep/config`. An
+   INVALID signature is always fatal regardless of the flag.
 
 ## Verifying by hand (anyone, any release)
 
@@ -183,8 +199,8 @@ releases that verify. Move fast, in this order:
 | Keygen | `client/scripts/generate_signing_key.py` (or `minisign -G -W`) |
 | Bootstrap best-effort check | `client/bootstrap/install.sh` step 3b / `install.ps1` step 2b (baked key placeholder `__FIREKEEP_SIGNING_PUB_DEFAULT__`, override `FIREKEEP_SIGNING_PUB` — exported by `firekeep update` from the pinned key) |
 | Verified-sums hand-off | `FIREKEEP_SUMS_FILE` (written 0600 by `cli._write_verified_sums`; honoured by the bootstraps only alongside `FIREKEEP_VERSION`; no network sums fetch under it) |
-| Unsigned-update notice | `state.note_unsigned_update` → printed once by the next session-start briefing (covers the detached auto-update, whose stderr is DEVNULL) |
+| Unsigned-update / refusal notice | `state.note_unsigned_update` → printed once by the next session-start briefing (covers the detached auto-update, whose stderr is DEVNULL); written for an unsigned install under the opt-out, and for an `UnverifiedReleaseError` refusal under the default |
 | Published signature | `<base>/<version>/SHA256SUMS.minisig` (CI's verify step polls it and byte-compares against the built signature) |
 | Transparency copy of the public key | `<base>/latest/signing.pub` (not a trust anchor) |
-| Enforcement flag | `~/.firekeep/config` → `[dist] require_signed` (default `false` for now) |
+| Enforcement flag | `~/.firekeep/config` → `[dist] require_signed` (default `true` since 2026-10-01; `false` opts out; no env-var override) |
 | Threat-model entry | `docs/THREAT-MODEL.md` §5.6, ranked item #2 |
