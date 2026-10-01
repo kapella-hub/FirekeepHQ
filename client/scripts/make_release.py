@@ -144,6 +144,13 @@ def sign_release(out_dir: Path, version: str, secret_key_text: str) -> str:
 
 def main(argv: list[str]) -> int:
     args = list(argv[1:])
+    # --require-signing: the release workflow's switch. Clients REFUSE an unsigned
+    # release (`[dist] require_signed` defaults true), so a real publish that lost
+    # FIREKEEP_SIGNING_KEY must fail HERE, not stall every client's update. Local and
+    # smoke builds (scripts/installlab/dist.py) omit it and stay unsigned on purpose.
+    require_signing = "--require-signing" in args
+    if require_signing:
+        args.remove("--require-signing")
     dist_base = None
     if "--dist-base" in args:
         i = args.index("--dist-base")
@@ -164,6 +171,12 @@ def main(argv: list[str]) -> int:
         raise SystemExit(
             f"version mismatch: tag says {version} (expects {expected}) "
             f"but the built wheel is {wheel.name}"
+        )
+    if require_signing and not os.environ.get(SIGNING_KEY_ENV, "").strip():
+        raise SystemExit(
+            f"--require-signing: {SIGNING_KEY_ENV} is not set. Clients refuse unsigned "
+            f"releases ([dist] require_signed defaults true), so publishing this would "
+            f"stall every client's update. Restore the secret (docs/RELEASE-SIGNING.md)."
         )
     install_sh, install_ps1 = out_dir / "install.sh", out_dir / "install.ps1"
     for script in (install_sh, install_ps1):

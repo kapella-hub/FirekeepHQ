@@ -459,3 +459,34 @@ def test_hands_is_not_a_bundled_wheel():
     for boot in ("install.sh", "install.ps1"):
         text = (Path(__file__).resolve().parents[1] / "bootstrap" / boot).read_text(encoding="utf-8")
         assert "firekeep_hands" not in text and "firekeep-hands" not in text
+
+
+def test_require_signing_refuses_an_unsigned_build(tmp_path):
+    """Since `[dist] require_signed` defaults true, every client REFUSES an unsigned
+    release — so a publish that silently lost FIREKEEP_SIGNING_KEY would stall the
+    whole fleet's updates until someone re-signed it. The release workflow passes
+    --require-signing so a missing secret fails the build instead of the fleet."""
+    _populate_dist_dir(tmp_path)
+    _dex_wheels(tmp_path)
+    with pytest.raises(SystemExit, match="FIREKEEP_SIGNING_KEY"):
+        make_release.main(["make_release.py", "1.2.3", str(tmp_path), "--require-signing"])
+    assert not (tmp_path / "latest.json").exists(), "refuse BEFORE writing any artifact"
+    assert not (tmp_path / "SHA256SUMS").exists()
+
+
+def test_require_signing_accepts_a_signed_build(tmp_path, monkeypatch):
+    _sh, _ps1, pub_text, _sec = _signed_dist_dir(tmp_path, monkeypatch)
+    rc = make_release.main(["make_release.py", "1.2.3", str(tmp_path), "--require-signing"])
+    assert rc == 0
+    signing.verify((tmp_path / "SHA256SUMS").read_bytes(),
+                   (tmp_path / "SHA256SUMS.minisig").read_text(), pub_text)
+
+
+def test_release_workflow_requires_signing():
+    """The flag only protects the fleet if the real release job passes it."""
+    wf = (Path(__file__).resolve().parents[2] / ".github" / "workflows" / "release.yml").read_text(
+        encoding="utf-8")
+    calls = [ln for ln in wf.splitlines()
+             if "scripts/make_release.py" in ln and not ln.lstrip().startswith("#")]
+    assert calls, "release.yml no longer calls make_release.py"
+    assert all("--require-signing" in ln for ln in calls), calls
