@@ -702,11 +702,27 @@ async def serve(service, endpoint, http_client=None, stdio_streams=None,
     owns_client = http_client is None
     try:
         async with _open_stdio(stdio_streams) as (stdio_read, stdio_write):
-            async with streamable_http_client(
-                endpoint.mcp_url, http_client=client
-            ) as (http_read, http_write, _get_session_id):
-                await _bridge(stdio_read, stdio_write, http_read, http_write,
-                              req_transform=req_transform, resp_transform=resp_transform)
+            try:
+                async with streamable_http_client(
+                    endpoint.mcp_url, http_client=client
+                ) as (http_read, http_write, _get_session_id):
+                    await _bridge(stdio_read, stdio_write, http_read, http_write,
+                                  req_transform=req_transform, resp_transform=resp_transform)
+            finally:
+                # Close the send side, or `stdio_server.__aexit__` never returns.
+                # Its task group joins BOTH pumps, and `stdout_writer` ends only
+                # once this stream is closed -- `_bridge` returning on stdin EOF
+                # was not enough, so the join parked forever and the shim stayed
+                # alive (measured 2026-09-16: still running 25 s after its
+                # gateway was hard-killed, against a control that exited on the
+                # same EOF; with this close it exits in ~0.05 s). That is the
+                # orphan mechanism behind the 2026-08-25 census (71 shims, 59
+                # with a dead parent) -- not a missing Windows job object.
+                # Masked in production by `Backend.close()`'s terminate() on a
+                # clean gateway shutdown; exposed whenever the host kills the
+                # gateway instead of closing its stdin. `aclose()` is
+                # idempotent, so the injected-streams test path is unaffected.
+                await stdio_write.aclose()
     finally:
         if owns_client:
             await client.aclose()
