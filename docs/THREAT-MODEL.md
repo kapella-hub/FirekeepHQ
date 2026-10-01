@@ -329,9 +329,10 @@ evidence path and leave the machine entirely whenever the runtime asks for one.
 3. **Local malware running as the same user.** It can read `broker.json`, talk to
    the broker's loopback API, and synthesise keystrokes. It cannot elevate; it
    does not need to.
-4. **A holder of the workspace API key who is not the machine's human** — a
-   second agent, a teammate, anything with the key. Relevant only when phone
-   approvals have been turned on.
+4. **A holder of a workspace API key who is not the machine's human** — the
+   driving agent (which shares the machine's kit key), a second agent, a
+   teammate, anything with a key. Relevant only when phone approvals have been
+   turned on.
 
 **Mitigations.**
 
@@ -432,16 +433,35 @@ evidence path and leave the machine entirely whenever the runtime asks for one.
   The phone path remains the only one where the human reads the broker's text on
   a surface the model does not draw. **OPEN** residual: a permit arriving between
   reading the toast and pressing the chord.
-- **Phone approvals, when opted in, trust every holder of the workspace API
-  key.** Relay's `update_task` records status, result and assignee and **not the
-  completing principal**, so an approved `hands_permit:` task proves only that
-  somebody with the key completed it. The driving agent holds that key and reaches
-  `relay_task_list`/`relay_task_update` through the MCP surface it already has, so
-  it can complete its own permit task and be granted the permit within one poll. A
-  local one-time code would not close it either — Hands can screenshot the screen
-  the code is on. **This is why `phone_approvals` defaults to `False`**; PR2 closes
-  it by stamping the verified principal on relay task updates, at which point the
-  broker can require a human member.
+- **Phone approvals, when opted in, trust every workspace credential except
+  the requester's — narrowed, not closed (2026-10-01).** Until 2026-10-01 relay's
+  `update_task` recorded status, result and assignee and **not the completing
+  principal**, so the driving agent — which holds the machine's kit key and
+  reaches `relay_task_list`/`relay_task_update` through the gateway — could
+  complete its own `hands_permit:` task and be granted the permit within one
+  poll. Relay now stamps every task write with the principal the auth layer
+  verified (`created_by`, `updated_by`, `completed_by`, and `by` on each history
+  entry; never `X-Agent-Id`/assigner/assignee). `completed_by` is the last writer
+  that left the task terminal, so rewriting only the `result` of a human-resolved
+  task restamps it, and it is cleared — never inherited — on a reopen or an
+  unverified write. The broker honours an approve only when both stamps exist,
+  both are authenticated, the workspaces match, the completing credential is
+  **not** the posting one, and — when `phone_approvers` is set — it is on that
+  list; it reads its own task by id so a same-title decoy cannot stand in.
+  Everything else denies the permit and logs why: a relay that predates the
+  stamps and a Keep with `AUTH_ENABLED=false` (every caller the same anonymous
+  owner) refuse every phone approval. **Residual, OPEN:** without
+  `phone_approvers`, any *other* authenticated credential — a second machine's
+  kit key, a teammate's, a key the agent minted or enrolled elsewhere — can
+  approve, because the auth layer has no notion of a human member (the owner's
+  dashboard key and agent keys share a member id). With `phone_approvers` pinned
+  to the dashboard credential, the dashboard's basic-auth password becomes the
+  boundary: an agent that can read it (it has been stored in the vault, which
+  `vault:read` reaches) and reach the dashboard approves as the dashboard. A
+  local one-time code would not close it — Hands can screenshot the screen the
+  code is on. **`phone_approvals` therefore still defaults to `False`.** Closing
+  it needs a credential class the auth layer marks as human-held — a
+  dashboard-session principal agents cannot mint — which is not built.
 - **Prompt injection through observed UI text.** Unchanged from threat 9 below,
   with a wider blast radius: the injected instruction now reaches a tool that can
   click. Permits and the allowlist bound the damage; they do not remove the risk.
@@ -473,7 +493,7 @@ evidence path and leave the machine entirely whenever the runtime asks for one.
 | 9 | Prompt injection reaching a tool call | **OPEN, out of our control** — the runtime's boundary, not ours; the gateway is advisory (§5.4) |
 | 10 | Unauthenticated field-failure collector fabricates/floods failure data | **Mitigated, residual accepted** — enum-value validation, released-version allowlist, mail budget, locked state, sealed caps (§5.7); data stays low-integrity by construction and is labelled `integrity: "unverified"` downstream |
 | 11 | A compromised runtime with Hands enabled operates the human's desktop | **Mitigated, residuals OPEN** — the broker is a separate process with no grant route, injected input is rejected, permits are one-use and bound to the exact step, classification is on effects not model labels, fail closed (§5.8). Residuals: same-user permit theft, kernel-level injection, screenshots to the model provider, the unverified macOS source-state filter, and the broker's notification being informational (the chord approves the oldest pending permit whether or not the toast was read) |
-| 12 | Phone approvals approved by a key holder who is not the human | **OPEN, mitigated only by the default** — relay records no completing principal, so any workspace-key holder (the driving agent included) can complete a `hands_permit:` task. `phone_approvals` is `False` by default and the guide discloses the trade; PR2 stamps the principal (§5.8) |
+| 12 | Phone approvals approved by a key holder who is not the human | **Partly mitigated (2026-10-01), residual OPEN** — relay stamps the verified principal on every task write and the broker refuses an approve from the requesting credential (the kit key the driving agent shares), from an unauthenticated Keep, or from a relay too old to stamp. Residual: any *other* workspace credential can still approve unless `phone_approvers` pins the approvers, and a pinned dashboard credential is only as strong as its basic-auth password; the auth layer has no human-member notion. `phone_approvals` stays `False` by default (§5.8) |
 
 Threat 5 deserves emphasis because it is the one the product's own design creates:
 Firekeep exists to make agents act on stored memory. Anything that can write a
