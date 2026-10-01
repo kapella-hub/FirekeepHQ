@@ -21,6 +21,11 @@ class FakeBackend:
         self.text = text
         self._permissions = dict(permissions) if permissions else dict(_DEFAULT_PERMISSIONS)
         self.calls: list[tuple] = []
+        # What `focus_app` / `open_app` answer. A real backend says False when
+        # no visible window matches or the OS refuses the launch; tests flip
+        # these to prove the session does not report such a step as done.
+        self.focus_result = True
+        self.open_result = True
         self.values: dict[str, str] = {}
         self._generation = 0
         self._clipboard = ""
@@ -88,11 +93,11 @@ class FakeBackend:
 
     def focus_app(self, app: str) -> bool:
         self.calls.append(("focus_app", app))
-        return True
+        return self.focus_result
 
     def open_app(self, app: str) -> bool:
         self.calls.append(("open_app", app))
-        return True
+        return self.open_result
 
     def clipboard_get(self) -> str:
         return self._clipboard

@@ -147,8 +147,8 @@ anything else happens:
 | `type` | `text` | synthetic keystrokes, capped at **500 characters** |
 | `key` | `chord` | a keyboard shortcut |
 | `scroll` | `ref` (or the literal `"window"`), `dy` | wheel at the control's centre, or the window's |
-| `focus_app` | `app` | the OS |
-| `open_app` | `app` | the OS |
+| `focus_app` | `app` | the OS — `not_found` when no visible window matches: not running, on another virtual desktop (DWM-cloaked), or minimised off-screen. `ok: true` means the window is in front, not merely that one was asked for |
+| `open_app` | `app` | the OS — `ok: true` means the launch was handed to the OS, not that a window exists yet; a `backend` error means the OS did not accept it |
 | `open_url` | `url` | the Hands-managed browser |
 | `clipboard_set` | `text` | the OS clipboard |
 | `wait` | `seconds` (≤ 10) | nothing |

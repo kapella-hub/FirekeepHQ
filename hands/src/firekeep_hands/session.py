@@ -854,9 +854,22 @@ class HandsSession:
         elif kind == "scroll":
             self.backend.scroll(point or _window_centre(window), payload["dy"])
         elif kind == "focus_app":
-            self.backend.focus_app(payload["app"])
+            # The backend answers False when nothing it can see matches — the
+            # app is not running, its window is on another virtual desktop
+            # (DWM-cloaked), or it is minimised off-screen. Dropping that
+            # answer, as this once did, reported the switch as done and let
+            # the next `type` land in whatever was actually in front.
+            if not self.backend.focus_app(payload["app"]):
+                raise HandsError(
+                    "not_found",
+                    f'no visible window matches "{payload["app"]}" — it is not '
+                    "running, is on another desktop, or is minimised off-screen",
+                )
         elif kind == "open_app":
-            self.backend.open_app(payload["app"])
+            # True means the launch was handed to the OS, not that a window
+            # exists (backends/base.py) — but False means it was not even that.
+            if not self.backend.open_app(payload["app"]):
+                raise HandsError("backend", f'the OS did not accept launching "{payload["app"]}"')
         elif kind == "open_url":
             result = self._require_browser().navigate(payload["url"])
             # A new document: every ref from the old one is gone, and the

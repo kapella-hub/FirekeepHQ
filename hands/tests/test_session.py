@@ -1589,3 +1589,40 @@ def test_task_end_closes_the_ledger_and_resets(session):
     with pytest.raises(HandsError) as ei:
         session.task_end("done")
     assert ei.value.code == "no_task"
+
+
+# -- focus_app / open_app report what the backend answered ------------------
+#
+# Seen live 2026-09-06 on Windows: the Settings window was DWM-cloaked on
+# another virtual desktop, `WinBackend.focus_app` returned False three times,
+# and `hands_act` reported every one as `ok: true`. The runtime then typed
+# into whatever was actually in front. A step the backend could not perform
+# is an error the runtime has to see, the same way `set_value_failed` is.
+
+
+def test_focus_app_that_finds_no_window_is_an_error_not_a_success(session):
+    session.task_start("x", ["Notepad"])
+    session.backend.focus_result = False
+    result = session.act({"kind": "focus_app", "app": "Notepad"})
+    assert result["ok"] is False
+    assert result["error"].startswith("not_found:")
+    assert "Notepad" in result["error"]
+    assert session.backend.calls[-1] == ("focus_app", "Notepad")
+    # Attempted is recorded: the failure is a ledgered step, not a vanished one.
+    assert session.ledger.steps()[-1]["outcome"] == "error"
+
+
+def test_open_app_the_os_refused_is_an_error_not_a_success(session):
+    session.task_start("x", ["Notepad"])
+    session.backend.open_result = False
+    result = session.act({"kind": "open_app", "app": "Notepad"})
+    assert result["ok"] is False
+    assert result["error"].startswith("backend:")
+    assert "Notepad" in result["error"]
+
+
+def test_focus_app_and_open_app_that_worked_still_report_ok(session):
+    session.task_start("x", ["Notepad"])
+    assert session.act({"kind": "focus_app", "app": "Notepad"})["ok"] is True
+    assert session.act({"kind": "open_app", "app": "Notepad"})["ok"] is True
+    assert session.act({"kind": "open_app", "app": "Notepad"})["error"] is None
