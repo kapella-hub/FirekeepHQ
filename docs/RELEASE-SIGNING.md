@@ -11,7 +11,9 @@ signature it cannot verify. The flip waited for production evidence — at the
 flip, every version served by the release host (1.5.0 through 1.6.1) verified
 against the pinned key. The cost it accepts: a release published **unsigned**
 (the CI secret missing) is now refused by every client and stalls the fleet's
-updates until it is re-published signed — see step 2.
+updates until it is re-published signed — see step 2. Since 2026-10-01 the release workflow passes `make_release.py --require-signing`,
+so a missing secret fails the release job instead of publishing that unsigned release;
+local and smoke builds omit the flag and stay unsigned on purpose.
 
 ## What is signed, and what that protects
 

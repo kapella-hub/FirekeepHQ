@@ -289,13 +289,14 @@ jobs:
       - name: Assemble release (SHA256SUMS + latest.json + signature)
         # FIREKEEP_SIGNING_KEY (unencrypted minisign secret key, minted per
         # docs/RELEASE-SIGNING.md) makes make_release sign SHA256SUMS and bake the
-        # public key into the bootstraps. ABSENT -> the release is built UNSIGNED,
-        # with a loud log line — releases must not break before keys are minted.
+        # public key into the bootstraps. ABSENT -> the job FAILS (--require-signing):
+        # clients refuse unsigned releases since [dist] require_signed defaults true,
+        # so an unsigned publish would stall every client's update until re-signed.
         env:
           FIREKEEP_SIGNING_KEY: ${{ secrets.FIREKEEP_SIGNING_KEY }}
         run: |
           cp client/bootstrap/install.sh client/bootstrap/install.ps1 dist/
-          python client/scripts/make_release.py "${VERSION}" dist --dist-base "https://kapella-hub.github.io/firekeep-dist"
+          python client/scripts/make_release.py "${VERSION}" dist --dist-base "https://kapella-hub.github.io/firekeep-dist" --require-signing
 
       # The deploy key is written to disk and used via GIT_SSH_COMMAND rather than
       # ssh-agent: an agent is per-process and the several git invocations below
