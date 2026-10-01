@@ -3,9 +3,9 @@
      does not belong in a prompt. Nothing here was reworded in the move. -->
 
 # API Endpoints
-- `POST /memory/recall` — Dual-retrieval RAG query, returns Markdown for LLM injection
+- `POST /memory/recall` — Dual-retrieval RAG query, returns Markdown for LLM injection. Optional `as_of` (RFC 3339; naive = UTC; default now) is what a relative time in `task` ("10 days ago", "last Tuesday") is measured from — see "Relative-time recall" in [`memory-and-recall.md`](memory-and-recall.md). Rows found by that time window carry `metadata.in_time_window: true`.
 - `POST /memory/recall/stream` — SSE streaming recall (progressive results). Honors `project` scoping and the `RECALL_SCORE_FLOOR` score threshold on the vector search leg, and skips description-less graph nodes, mirroring the non-streaming `/memory/recall` path.
-- `POST /memory/learn` — Logs actions/outcomes/resolutions to both graph + vector (parallel writes)
+- `POST /memory/learn` — Logs actions/outcomes/resolutions to both graph + vector (parallel writes). Optional `occurred_at` (RFC 3339; naive = UTC) records when the remembered thing happened if that is not now (an imported email, a backfilled log); stored top-level on the point and returned in recall metadata. Not an identity input. Neither field is exposed as an MCP tool parameter yet — REST only.
 - `POST /memory/stream` — High-volume event ingest → Redis queue (pipeline batching)
 - `POST /memory/feedback` — Submit feedback on memory usefulness (accumulates useful/not-useful counters that nudge recall ranking; also exposed as the `memory_feedback` MCP tool — see docs/guides/knowledge-autopilot.md)
 - `GET /memory/stats` — Memory statistics (counts, domains, tags, DLQ depth)

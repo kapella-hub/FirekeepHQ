@@ -348,6 +348,9 @@ services:
       RECALL_TOP_K: ${RECALL_TOP_K:-3}
       RECALL_SYNTHESIS_ENABLED: ${RECALL_SYNTHESIS_ENABLED:-false}
       RECALL_SCORE_FLOOR: ${RECALL_SCORE_FLOOR:-0.35}
+      # Relative-time recall ("10 days ago") — docs/guides/cortex-configuration.md.
+      # Pinned equal to the code default by cortex/tests/test_temporal_recall.py.
+      TEMPORAL_RECALL_ENABLED: ${TEMPORAL_RECALL_ENABLED:-true}
       # Outcome-Weighted Memory (recall ranking term)
       OWM_ENABLED: ${OWM_ENABLED:-true}
       OWM_WEIGHT: ${OWM_WEIGHT:-0.15}

@@ -1444,6 +1444,7 @@ async def memory_learn(
                 "project": log.project,
                 "workspace_id": principal["workspace_id"],
                 "member_id": principal["member_id"],
+                **({"occurred_at": log.occurred_at.isoformat()} if log.occurred_at else {}),
             },
             namespace=log.namespace,
             point_id=memory_id,

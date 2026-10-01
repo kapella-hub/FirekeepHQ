@@ -74,6 +74,63 @@ Coverage note: works for every runtime (it rides the MCP tool response, not
 hooks). The code-level push (post-tool "you just wrote a near-duplicate of an
 existing function") is deliberately round 2 — it needs care to not be a nag.
 
+## Relative-time recall — "what did I buy 10 days ago" (2026-10-01)
+
+Why it exists: semantic search cannot resolve a relative time. "10 days ago"
+carries no meaning an embedding can match to a date, so the day in question
+ranks no higher than any other. On the identity-v2 LongMemEval-S store
+(2026-09-30, 470 scored questions), **8 of the 11 questions recall still
+missed at top-10 named a relative time**, and temporal-reasoning was the
+weakest type at top-3 (R@3 0.866, Cov@3 0.585).
+
+**Mechanism.** `engine/temporal.py::parse_time_window` turns the first
+relative-time expression in the task into a window around `ContextQuery.as_of`
+(default now): `N day(s)/week(s)/month(s)/year(s) ago` (digits or
+one..twelve / a / an / a couple of), `yesterday`, `last <weekday>`,
+`last week/month/year`. Windows are deliberately loose (days ±1, weeks ±3,
+months ±10, years ±45). Questions that ask *for* a duration ("how many weeks
+ago did I…") name no anchor and parse to nothing. `rag._windowed_vector`
+runs a second vector search restricted to the window (`vector.time_window_condition`:
+`occurred_at` where a point has one, else `timestamp`), `_merge_windowed`
+unions it into the unfiltered hits, and `_order_results` interleaves the
+in-window lane and everything else (W1, U1, W2, U2, …). The unfiltered search
+always runs and always keeps half the slots, so a wrong parse costs at most
+half of a recall, and a query naming no time is unchanged. A failing window
+search logs and is ignored; it never marks recall degraded.
+
+**Why a separate `occurred_at`.** Production memories are written when things
+happen, so `timestamp` is their event time. An imported email or a backfilled
+log is not. `ActionLog.occurred_at` records that when it differs. It is
+not an identity input, and decay still ages memories by `timestamp`, so
+adding it changes nothing else.
+
+**Measured (recall-only, graph leg off — identical rankings on/off, see
+`RECALL_GRAPH_ENABLED`):**
+
+| Variant | Temporal R@3 | Temporal Cov@3 | Worst other-type drop @3 | Overall R@10 | Overall Cov@10 | Verdict |
+|---|---|---|---|---|---|---|
+| baseline | 0.866 | 0.585 | — | 0.977 | 0.928 | — |
+| A: in-window rows first | 0.898 | 0.600 | multi-session −0.8 | 0.979 | **0.923** | rejected |
+| **B: lanes take turns** | **0.890** | **0.602** | multi-session MRR −0.4 | **0.981** | **0.931** | **shipped** |
+
+Both variants were judged against one rule written down before any result:
+temporal R@3 and Cov@3 must improve, no other type may drop more than 1 point
+at top-3, and overall top-10 recall and coverage may not drop. **A failed on
+top-10 coverage.** The windowed search fetches `top_k` rows, so listing
+in-window rows first let them take every slot. That made A a near-hard
+filter: a multi-session question with evidence outside the window ("which
+book did I finish a week ago?", where the book was started earlier) lost it.
+B was registered after A's failure analysis and before it ran. It is the
+second variant tried on the same 470 questions, so its margin is weaker
+evidence than a first-try pass would be. Only 25 questions parse a window
+at all, and every changed question legitimately named a time. Results:
+`benchmarks/memory/results/*temporal-*.json`.
+
+**Not covered:** the SSE twin (`/memory/recall/stream`) applies no window,
+the same pre-existing gap as its missing lifecycle multipliers. Neither
+`as_of` nor `occurred_at` is an MCP tool parameter yet. The grammar is
+English-only. Absolute dates ("on March 3rd") are not parsed.
+
 ## Intelligence Features (Cortex)
 
 - **Memory types**: `reference` (no age decay by default), `procedural` (180d), `episodic` (90d), `transient` (14d). Direct learns default to episodic unless the caller supplies a type; the sleep-cycle LLM classifies knowledge extracted from raw event streams.

@@ -145,6 +145,18 @@ class Settings(BaseSettings):
     AGENT_CONFIDENCE_DECAY_DAYS: int = 180
     AGENT_BATCH_LIMIT: int = 100
 
+    # Relative-time recall (engine/temporal.py): when a recall task names a
+    # relative time ("10 days ago", "last Tuesday"), a second vector search
+    # restricted to that window runs beside the unfiltered one, and the two
+    # lanes take turns in the results (engine/rag.py::_order_results) — so the
+    # named time gets half the slots and can never take all of them. No
+    # relative time named => recall is unchanged. /memory/recall only: the SSE
+    # path does not apply it (it also skips the lifecycle multipliers;
+    # pre-existing gap). Measured on LongMemEval-S 2026-10-01: temporal-
+    # reasoning R@3 0.866 -> 0.890, overall R@10 0.977 -> 0.981, no question
+    # type down more than 0.4 points (docs/guides/memory-and-recall.md).
+    TEMPORAL_RECALL_ENABLED: bool = True
+
     # Multi-hop Graph Traversal
     MULTIHOP_ENABLED: bool = True
     MULTIHOP_MAX_HOPS: int = 3

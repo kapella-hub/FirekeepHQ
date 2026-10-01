@@ -93,6 +93,10 @@ services:
       VAULT_ENABLED: "false"
       # 60/min (the default) would strangle a ~300k-call ingest.
       RATE_LIMIT: "100000/minute"
+      # Relative-time recall A/B — recall-only, flip it and force-recreate
+      # cortex-api between legs. Needs as_of in the recall body and occurred_at
+      # on the points; bench.recall and bench.ingest send both.
+      TEMPORAL_RECALL_ENABLED: "${TEMPORAL_RECALL_ENABLED:-true}"
       # --- Dreaming A/B (see README "Dreaming A/B: the regression gate") -------
       # OFF for the "before" leg; flip DREAM_ENABLED to "true" and re-create
       # cortex-api for the "after" leg. The other three are BENCH-ONLY overrides

@@ -20,6 +20,7 @@ import httpx
 from app.config import Settings, get_settings
 from app.db.graph import Neo4jClient
 from app.db.vector import VectorClient
+from app.engine.temporal import parse_time_window
 from app.models import ContextQuery, MemorySource, RecallResponse
 from app.owm import compute_efficacy
 
@@ -165,6 +166,64 @@ def _state_in_scope(
         if have_ns != want_namespace:
             return False
     return True
+
+
+def _merge_windowed(
+    unfiltered: list[dict[str, Any]], windowed: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Union of the unfiltered and time-window vector hits, deduped by id.
+
+    Every point the windowed search returned is marked `in_time_window`,
+    including one the unfiltered search also found. Dict copies, so the
+    search results themselves are never mutated.
+    """
+    in_window = {str(r.get("id")) for r in windowed}
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for r in [*unfiltered, *windowed]:
+        rid = str(r.get("id"))
+        if rid in seen:
+            continue
+        seen.add(rid)
+        if rid in in_window:
+            r = {**r, "metadata": {**(r.get("metadata") or {}), "in_time_window": True}}
+        merged.append(r)
+    return merged
+
+
+def _in_window(entry: dict[str, Any]) -> bool:
+    md = entry.get("metadata")
+    return bool(isinstance(md, dict) and md.get("in_time_window"))
+
+
+def _order_results(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Score order — or, when the query named a relative time, two lanes taken
+    in turn.
+
+    Only a query naming a relative time ("10 days ago") marks any row
+    `in_time_window` (see `_dual_retrieve`); for every other query this is
+    exactly the old score order, ties included (the sort is stable).
+
+    When rows ARE marked, the in-window lane and the everything-else lane
+    (other vector hits and graph rows) are interleaved W1, U1, W2, U2, … each
+    in score order. That gives the named time half the slots without letting
+    it take all of them: listing in-window rows first measured as a near-hard
+    filter on LongMemEval-S (2026-10-01) — with a window holding top_k rows,
+    out-of-window evidence for a multi-session question ("which book did I
+    finish a week ago" — the book was started earlier) never made the cut.
+    """
+    by_score = sorted(entries, key=lambda e: e["score"], reverse=True)
+    windowed = [e for e in by_score if _in_window(e)]
+    if not windowed:
+        return by_score
+    rest = [e for e in by_score if not _in_window(e)]
+    ordered: list[dict[str, Any]] = []
+    for i in range(max(len(windowed), len(rest))):
+        if i < len(windowed):
+            ordered.append(windowed[i])
+        if i < len(rest):
+            ordered.append(rest[i])
+    return ordered
 
 
 def _min_max_normalize(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -358,8 +417,9 @@ class RAGEngine:
             merged, include_archived=include_archived
         )
 
-        # Sort descending by score, take top_k (or more for re-ranking).
-        merged.sort(key=lambda e: e["score"], reverse=True)
+        # Sort descending by score, take top_k (or more for re-ranking). A
+        # relative-time window the query named gets every other slot.
+        merged = _order_results(merged)
 
         # Re-ranking pass (gated behind config).
         if self._settings.RERANK_ENABLED:
@@ -543,8 +603,10 @@ class RAGEngine:
         *,
         workspace_id: str | None = None,
         member_id: str | None = None,
+        time_window: tuple[datetime, datetime] | None = None,
     ) -> list[dict[str, Any]]:
         """The one workspace-filtered vector path for regular and SSE recall."""
+        extra = {"time_window": time_window} if time_window is not None else {}
         return await self._vector.search(
             query.task,
             top_k=query.top_k,
@@ -555,7 +617,38 @@ class RAGEngine:
             workspace_id=workspace_id,
             score_threshold=self._settings.RECALL_SCORE_FLOOR,
             member_id=member_id,
+            **extra,
         )
+
+    async def _windowed_vector(
+        self,
+        query: ContextQuery,
+        *,
+        workspace_id: str | None,
+        member_id: str | None,
+    ) -> list[dict[str, Any]]:
+        """Vector hits inside the relative-time window the query names, or [].
+
+        "What did I buy 10 days ago" has no words an embedding can match to
+        a date, so the unfiltered search ranks that day's memories no higher
+        than any other day's. This second search asks only about the named
+        window; `_dual_retrieve` merges it INTO the unfiltered results (never
+        replacing them), and `_order_results` gives in-window rows every other
+        slot. Best
+        effort: a failure here logs and returns [], it never degrades recall.
+        """
+        if not self._settings.TEMPORAL_RECALL_ENABLED:
+            return []
+        window = parse_time_window(query.task, query.as_of or datetime.now(timezone.utc))
+        if window is None:
+            return []
+        try:
+            return await self._search_vector(
+                query, workspace_id=workspace_id, member_id=member_id, time_window=window
+            )
+        except Exception:
+            logger.warning("Time-window vector search failed; recall continues without it", exc_info=True)
+            return []
 
     async def _dual_retrieve(
         self,
@@ -612,9 +705,13 @@ class RAGEngine:
                 logger.exception("Graph query failed")
                 return []
 
-        (vector_results, vector_degraded), graph_results = await asyncio.gather(
-            _safe_vector(), _safe_graph()
+        (vector_results, vector_degraded), graph_results, windowed = await asyncio.gather(
+            _safe_vector(),
+            _safe_graph(),
+            self._windowed_vector(query, workspace_id=workspace_id, member_id=member_id),
         )
+        if windowed:
+            vector_results = _merge_windowed(vector_results, windowed)
         return vector_results, graph_results, vector_degraded
 
     # ------------------------------------------------------------------
@@ -1121,7 +1218,7 @@ class RAGEngine:
             if len(selected) >= top_k:
                 break
             selected.append(entry)
-        selected.sort(key=lambda e: e["score"], reverse=True)
+        selected = _order_results(selected)
         return selected
 
     @staticmethod
