@@ -77,6 +77,37 @@ _FOREGROUND_POLL_SECONDS = 0.02
 # of these is refused rather than parsed.
 _CMD_METACHARACTERS = '&|<>^"\n\r'
 
+# Launching the human's applications OUTSIDE the gateway's Job Object. The
+# Firekeep gateway (client/firekeep_client/jobobject.py) puts itself — and so
+# every backend, this server included — in a KILL_ON_JOB_CLOSE job, so nothing
+# it spawns outlives it. An app opened through Hands is the human's, not ours:
+# launched inside that job it would be killed, unsaved work and all, the moment
+# the agent session ended. The job sets BREAKAWAY_OK for exactly this, and a
+# launch opts out with CREATE_BREAKAWAY_FROM_JOB. Duplicated from
+# firekeep_client.jobobject.popen_outside_job rather than imported: this wheel
+# does not depend on the client kit. Literals, so the Linux run can assert them.
+_CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+_CREATE_NO_WINDOW = 0x08000000
+_ERROR_ACCESS_DENIED = 5
+# os.startfile is ShellExecute, which CreateProcess-es the app as OUR child —
+# so a path is started from a breakaway helper interpreter instead.
+_STARTFILE = "import os, sys; os.startfile(sys.argv[1])"
+_STARTFILE_TIMEOUT_S = 10
+
+
+def _popen_outside_job(argv, **kwargs) -> subprocess.Popen:
+    """Popen with CREATE_BREAKAWAY_FROM_JOB. WinError 5 means the enclosing job
+    forbids breakaway (the gateway's own job was not applied and the host's is
+    strict): launch inside it — the pre-job behaviour — rather than not at all."""
+    base = kwargs.pop("creationflags", 0)
+    try:
+        return subprocess.Popen(argv, creationflags=base | _CREATE_BREAKAWAY_FROM_JOB, **kwargs)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) != _ERROR_ACCESS_DENIED:
+            raise
+        return subprocess.Popen(argv, creationflags=base, **kwargs)
+
+
 _CLIPBOARD_ATTEMPTS = 10
 _CLIPBOARD_RETRY_SECONDS = 0.05
 
@@ -651,11 +682,22 @@ class WinBackend:
         looks_like_path = os.path.isabs(expanded) or any(
             sep and sep in expanded for sep in (os.sep, os.altsep))
         if looks_like_path and os.path.exists(expanded):
-            os.startfile(expanded)  # noqa: S606 - a real path the caller named
+            helper = _popen_outside_job(  # noqa: S603 - a real path the caller named
+                [sys.executable, "-c", _STARTFILE, expanded],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, creationflags=_CREATE_NO_WINDOW,
+            )
+            try:
+                rc = helper.wait(timeout=_STARTFILE_TIMEOUT_S)
+            except subprocess.TimeoutExpired:
+                helper.kill()
+                raise HandsError("backend", f"timed out opening {app!r}") from None
+            if rc != 0:
+                raise HandsError("backend", f"could not open {app!r} (helper rc={rc})")
             return True
-        subprocess.Popen(  # noqa: S603
+        _popen_outside_job(  # noqa: S603
             ["cmd", "/c", "start", "", app],
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            creationflags=_CREATE_NO_WINDOW,
         )
         return True
 

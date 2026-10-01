@@ -399,6 +399,79 @@ def test_open_app_refuses_a_name_cmd_would_read_as_syntax(backend):
         assert exc.value.code == "invalid_action"
 
 
+_BREAKAWAY = 0x01000000  # CREATE_BREAKAWAY_FROM_JOB
+
+
+class _Launches:
+    """Records Popen calls; optionally fails the first with a WinError."""
+
+    def __init__(self, first_winerror=None, rc=0):
+        self.first_winerror = first_winerror
+        self.rc = rc
+        self.calls = []
+
+    def __call__(self, argv, **kwargs):
+        self.calls.append((argv, kwargs))
+        if self.first_winerror is not None and len(self.calls) == 1:
+            exc = OSError(self.first_winerror, "simulated")
+            exc.winerror = self.first_winerror
+            raise exc
+        return types.SimpleNamespace(wait=lambda timeout=None: self.rc, kill=lambda: None)
+
+
+def _no_startfile(*a, **k):
+    raise AssertionError("os.startfile would launch the app inside the gateway's job")
+
+
+def test_open_app_by_name_launches_outside_the_gateway_job(backend, monkeypatch):
+    """The gateway holds every backend — this one included — in a kill-on-close
+    Job Object. An app the human asked Hands to open is theirs: it must
+    survive the agent session ending, so the launch breaks away from the job."""
+    launches = _Launches()
+    monkeypatch.setattr(backend.module.sys, "platform", "win32")
+    monkeypatch.setattr(backend.module.subprocess, "Popen", launches)
+    assert backend.be.open_app("notepad") is True
+    (argv, kwargs), = launches.calls
+    assert argv == ["cmd", "/c", "start", "", "notepad"]
+    assert kwargs["creationflags"] & _BREAKAWAY
+
+
+def test_open_app_falls_back_inside_the_job_when_breakaway_is_denied(backend, monkeypatch):
+    """WinError 5: the enclosing job forbids breakaway (the gateway's own job
+    was not applied and the host's is strict). Launch anyway — the pre-job
+    behaviour — rather than fail the action."""
+    launches = _Launches(first_winerror=5)
+    monkeypatch.setattr(backend.module.sys, "platform", "win32")
+    monkeypatch.setattr(backend.module.subprocess, "Popen", launches)
+    assert backend.be.open_app("notepad") is True
+    assert len(launches.calls) == 2
+    assert not launches.calls[1][1]["creationflags"] & _BREAKAWAY
+
+
+def test_open_app_by_path_starts_it_from_a_breakaway_helper(backend, monkeypatch, tmp_path):
+    target = tmp_path / "tool.exe"
+    target.write_bytes(b"")
+    launches = _Launches(rc=0)
+    monkeypatch.setattr(backend.module.sys, "platform", "win32")
+    monkeypatch.setattr(backend.module.subprocess, "Popen", launches)
+    monkeypatch.setattr(backend.module.os, "startfile", _no_startfile, raising=False)
+    assert backend.be.open_app(str(target)) is True
+    (argv, kwargs), = launches.calls
+    assert argv[0] == backend.module.sys.executable and argv[-1] == str(target)
+    assert kwargs["creationflags"] & _BREAKAWAY
+
+
+def test_open_app_by_path_reports_a_helper_that_could_not_open_it(backend, monkeypatch, tmp_path):
+    target = tmp_path / "tool.exe"
+    target.write_bytes(b"")
+    monkeypatch.setattr(backend.module.sys, "platform", "win32")
+    monkeypatch.setattr(backend.module.subprocess, "Popen", _Launches(rc=1))
+    monkeypatch.setattr(backend.module.os, "startfile", _no_startfile, raising=False)
+    with pytest.raises(HandsError) as exc:
+        backend.be.open_app(str(target))
+    assert exc.value.code == "backend"
+
+
 def _window_info(app, elevated):
     return WindowInfo(app, f"{app} window", 1, Rect(0, 0, 800, 600), elevated)
 

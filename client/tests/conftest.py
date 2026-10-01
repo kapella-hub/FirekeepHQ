@@ -120,6 +120,10 @@ def _isolate_firekeep_home(tmp_path, monkeypatch):
     # leak X-Firekeep-* headers into an unrelated test's exact-header assertions,
     # and the cache must never carry one fake home's hash into the next test.
     monkeypatch.delenv("FIREKEEP_RUNTIME", raising=False)
+    # gateway.run() puts its OWN process in a kill-on-close Job Object on
+    # Windows; a test calling it would put the pytest process there for the rest
+    # of the session. test_jobobject.py opts back in for its own tests.
+    monkeypatch.setenv("FIREKEEP_NO_JOB_OBJECT", "1")
     _resolver._ATTRIBUTION_CACHE.clear()
     yield
     os.environ.pop("FIREKEEP_RUNTIME", None)
