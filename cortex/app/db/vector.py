@@ -421,6 +421,7 @@ class VectorClient:
         self._http_client = httpx.AsyncClient(timeout=30.0)
         self._embed_retry_attempts = max(1, settings.EMBED_RETRY_ATTEMPTS)
         self._embed_max_chars = max(1, settings.EMBED_MAX_CHARS)
+        self._query_prefix = settings.EMBED_QUERY_PREFIX.replace("\\n", "\n")
         # Identity-v2 D5: transitional lifecycle bridge, see upsert().
         self._v1_bridge_enabled = settings.MEMORY_ID_V1_BRIDGE
         # LRU embedding cache: hash(text) -> embedding vector
@@ -778,7 +779,7 @@ class VectorClient:
         try:
             if query:
                 # Semantic search
-                vector = await self._embed(query)
+                vector = await self.embed_query(query)
                 results = await self._client.query_points(
                     collection_name=self._collection,
                     query=vector,
@@ -1071,7 +1072,7 @@ class VectorClient:
             List of dicts with id, score, text, and metadata.
         """
         try:
-            vector = await self._embed(query)
+            vector = await self.embed_query(query)
 
             filter_conditions = []
             must_not_conditions = []
@@ -1258,6 +1259,15 @@ class VectorClient:
                 ) from exc
 
         return all_embeddings
+
+    async def embed_query(self, query: str) -> list[float]:
+        """Embed text that will SEARCH stored documents (EMBED_QUERY_PREFIX).
+
+        Asymmetric embedders (Qwen3-Embedding, e5, nomic) are trained with an
+        instruction on the query side only; a stored document must never get
+        it, so writes, near-duplicate checks and clustering keep `_embed`.
+        """
+        return await self._embed(f"{self._query_prefix}{query}" if self._query_prefix else query)
 
     async def _embed(self, text: str) -> list[float]:
         """Generate an embedding vector via the LLM embeddings endpoint.

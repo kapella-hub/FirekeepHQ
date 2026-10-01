@@ -138,7 +138,7 @@ async def _embed_with_cache_warm(vector, q: str, timeout: float) -> list:
     "exception was never retrieved" warning, and the strong reference in
     `_WARMING` keeps it alive until it finishes.
     """
-    task = asyncio.ensure_future(vector._embed(q))
+    task = asyncio.ensure_future(vector.embed_query(q))
     try:
         return await asyncio.wait_for(asyncio.shield(task), timeout)
     except asyncio.TimeoutError:

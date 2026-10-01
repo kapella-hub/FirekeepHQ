@@ -77,6 +77,15 @@ class Settings(BaseSettings):
     # mxbai-embed-large (1024-dim); .env.example + the ollama-pull service agree.
     EMBEDDING_MODEL: str = "mxbai-embed-large"
     EMBEDDING_DIM: int = 1024
+    # Prepended to text embedded as a SEARCH QUERY (recall, the semantic memory
+    # listing, skill matching) and never to a stored document. Asymmetric
+    # embedders want it — Qwen3-Embedding:
+    #   "Instruct: Given a task or question, retrieve memories relevant to it\nQuery:"
+    # e5: "query: ", nomic-embed-text: "search_query: ". A literal "\n" in the
+    # value (two characters, as an env var naturally carries it) becomes a
+    # newline. Empty (the default, right for mxbai-embed-large) embeds queries
+    # exactly as before. Changing it changes every query vector — measure first.
+    EMBED_QUERY_PREFIX: str = ""
 
     # RAG Engine
     BOOST_FACTOR: float = 1.5
