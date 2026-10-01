@@ -416,32 +416,56 @@ once rather than once per click. It ends with `hands_task_end`, never touches
 
 ```bash
 firekeep hands config set phone_approvals true
+firekeep hands config set phone_approvers <credential-id>   # recommended: the dashboard's
 firekeep-hands-broker run            # or log out and back in
 ```
 
 With them on and a Keep configured, the broker posts each pending permit as a
 relay task titled `hands_permit:<challenge>`, and the dashboard's Relay tab draws
 Approve and Deny buttons on that row. Approve completes the task with the result
-`approve`; Deny cancels it. The broker polls, reads the answer, and mints or
-refuses the permit. `firekeep hands status` and the doctor row report the phone
-listener as one of three words: `off` (not opted in), `offline` (opted in, but
-this machine has no Keep to post to), or `active`.
+`approve`; Deny cancels it. The broker polls the task it posted — by its id, not
+"the newest task with that title", so a decoy task cannot stand in for it —
+reads the answer, and mints or refuses the permit. `firekeep hands status` and
+the doctor row report the phone listener as one of three words: `off` (not opted
+in), `offline` (opted in, but this machine has no Keep to post to), or `active`.
 
-Here is what you are agreeing to, in plain words. **Relay does not record who
-completed a task.** It writes the status, the result and the assignee, and never
-the completing principal. So "the task says approve" means "somebody holding the
-workspace API key completed it" — not "a person decided". The agent driving Hands
-holds that key and reaches `relay_task_list` and `relay_task_update` through the
-same MCP surface it already has. With phone approvals on, that agent can post its
-own step for approval, complete its own `hands_permit:` task with the result
-`approve`, and be granted the permit within one poll. A local one-time code would
-not close it either, because Hands can screenshot the screen the code is on.
+**Who answered is checked (since 2026-10-01).** Relay stamps every task write
+with the principal the auth layer verified from the API key — `created_by` when
+the broker posts the permit task, `completed_by` when somebody resolves it —
+never with `X-Agent-Id`, the assigner or the assignee, which are labels a caller
+chooses. The broker honours an **approve** only when all of these hold:
 
-Turning `phone_approvals` on is therefore a deliberate decision to trust every
-holder of the workspace key, the driving agent included. It stays off until relay
-stamps the verified principal on a task update, which is the PR2 fix. The chord
-path has no equivalent hole: it needs a physical keystroke that no process can
-forge.
+- both stamps are present — a relay older than this release records neither;
+- both are `authenticated` — with `AUTH_ENABLED=false` on the Keep every caller
+  is the same anonymous owner, so nobody can be told apart from the agent;
+- they are in the same workspace;
+- the completing credential is **not** the one that posted the task. The broker
+  posts with this machine's kit key, and the agent driving Hands reaches relay
+  through the same gateway with the same key — so this is the rule that stops
+  the agent approving its own step;
+- when `phone_approvers` is set, the completing credential is on that list.
+
+Anything else **denies** the permit at once — the step fails rather than waiting
+out its minute — writes the reason to the broker log and `hooks.log`, and closes
+the relay task as `refused: <reason>`, which is what the dashboard row then shows.
+A **deny** is never checked: refusing a step is the safe direction, and anybody
+may. The Relay tab's *Completed by* column shows the credential relay stamped,
+which is also how you find the dashboard's credential id to put in
+`phone_approvers` (or list keys as an admin and take the `firekeep-dashboard`
+device's).
+
+**What is still trusted, in plain words.** Without `phone_approvers`, any *other*
+authenticated credential in the workspace can approve — a second machine's kit
+key, a teammate's, a second agent minted its own key. Relay cannot say which
+credentials belong to a person: the owner's dashboard key and the owner's agent
+keys carry the same member id, and the auth layer has no "human" flag. Pinning
+`phone_approvers` to the dashboard's credential is the closest thing to
+"require a human" this release has. Even then, the dashboard credential is only
+as human as its basic-auth password: an agent that can read that password (it
+has lived in the vault, readable with `vault:read`) and reach the dashboard can
+approve as the dashboard. A local one-time code would not close that either,
+because Hands can screenshot the screen the code is on. The chord path has no
+equivalent hole: it needs a physical keystroke that no process can forge.
 
 ## Modes
 
@@ -513,7 +537,7 @@ firekeep hands evidence h-3f9c21a04b7e     # one task's steps
 |---|---|
 | The task itself | `action_before` at start (goal, machine, declared apps — an explicit `block` decision refuses the start; `rethink`, `allow` and silence proceed) and `action_after` at end (success, outcome, summary). The action id it returns is the Keep's receipt, and it is surfaced in three places on purpose: `hands_task_start`'s result, `hands_status`, and `keep_action_id` in the task's `task.json` (shown by `firekeep hands evidence <task>`). A machine with a Keep, `online: true`, and no action id is a Keep that did not take the task — which is a state that once persisted for a whole release behind a connectivity flag that said "online" while every call was being rejected |
 | One operator per machine | a relay lease on `hands:<machine_id>`, taken at `task_start`, renewed via `relay_heartbeat` every 10 steps, released at `task_end` |
-| Pending approvals | relay tasks titled `hands_permit:<challenge>` — **only when phone approvals are on** |
+| Pending approvals | relay tasks titled `hands_permit:<challenge>` — **only when phone approvals are on**. Relay stamps each one with the verified credential that posted it (`created_by`) and the one that resolved it (`completed_by`) |
 
 | Does not reach the Keep | Why |
 |---|---|
@@ -685,8 +709,10 @@ under `FIREKEEP_HANDS_LOG=DEBUG` precisely so the measurement can be made. Until
 it is, the marker half of the filter is the half known to hold. See
 [Verified](#verified).
 
-**Phone approvals trust every holder of the workspace key** when you turn them
-on. Spelled out above; it is the largest open item in this release.
+**Phone approvals trust every workspace credential except the requester's**
+unless you pin `phone_approvers`, and even pinned they trust whoever holds the
+dashboard's basic-auth password. Spelled out above; it is the largest open item
+in this release.
 
 **Standing approvals do not exist.** Nothing writes a `remembered` entry, so
 every protected step asks every time.
@@ -745,5 +771,5 @@ honest record, not a plan — a row that says "not yet" means nobody has done it
 | A **real human** chord press accepted | **Not yet** | needs a person at the keyboard |
 | Anything at all on macOS — AX tree, CGEvent input, `screencapture`, TCC prompts, the LaunchAgent | **Not yet** | no Mac was reachable from the build session; `hands/scripts/demo_textedit.md` is the runbook |
 | The macOS source-state filter (`kCGEventSourceStateHIDSystemState`) against real hardware events | **Not yet** | measured by the live test in `hands/tests/live/test_mac_textedit.py`; the marker filter is the half known to hold until then |
-| Phone approvals end to end through the dashboard | **Not yet** | off by default; needs a phone and the opt-in |
+| Phone approvals end to end through the dashboard | **Not yet** | off by default; needs a phone, the opt-in and an authenticated Keep. The principal check (2026-10-01) is unit-tested in relay and the broker, not exercised live |
 | Multi-monitor pointer maths on real hardware | **Not yet** | single display on the build machine; the arithmetic is unit-tested |
