@@ -12,7 +12,7 @@ import httpx
 from tqdm import tqdm
 
 from bench.common import (
-    DATA_DIR, WORK_DIR, date_tag, load_dataset, sanitize_namespace, session_tag,
+    DATA_DIR, WORK_DIR, date_tag, lm_date_iso, load_dataset, sanitize_namespace, session_tag,
 )
 
 _log = logging.getLogger(__name__)
@@ -59,7 +59,7 @@ def _build_payload(ns: str, sid: str, date: str, user: str, assistant: str) -> d
     Shared by learn_payloads (dry-run / test inspection) and ingest()'s
     do_unit (the actual network path) so the two can never drift apart.
     """
-    return {
+    payload = {
         "action": user,
         "outcome": assistant,
         "tags": [session_tag(sid), date_tag(date)],
@@ -67,6 +67,12 @@ def _build_payload(ns: str, sid: str, date: str, user: str, assistant: str) -> d
         "domain": "longmemeval",
         "memory_type": "episodic",
     }
+    # When the session HAPPENED, so recall's relative-time window can place
+    # it (ActionLog.occurred_at). The lm_date tag stays: scoring reads it.
+    occurred_at = lm_date_iso(date)
+    if occurred_at:
+        payload["occurred_at"] = occurred_at
+    return payload
 
 
 def learn_payloads(row: dict) -> list[dict]:

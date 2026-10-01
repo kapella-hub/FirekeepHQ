@@ -97,6 +97,10 @@ services:
       # `up -d --force-recreate cortex-api` between legs — the ingested store
       # is shared and needs no re-ingest. Give each leg its own --run-label.
       RECALL_GRAPH_ENABLED: "${RECALL_GRAPH_ENABLED:-true}"
+      # Relative-time recall A/B — recall-only, flip it and force-recreate
+      # cortex-api between legs. Needs as_of in the recall body and occurred_at
+      # on the points; bench.recall and bench.ingest send both.
+      TEMPORAL_RECALL_ENABLED: "${TEMPORAL_RECALL_ENABLED:-true}"
       # --- Dreaming A/B (see README "Dreaming A/B: the regression gate") -------
       # OFF for the "before" leg; flip DREAM_ENABLED to "true" and re-create
       # cortex-api for the "after" leg. The other three are BENCH-ONLY overrides
