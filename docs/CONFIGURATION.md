@@ -58,8 +58,9 @@ cp .env.example .env
 
 `AUTH_ENABLED` defaults to **`true`**. Every MCP and REST request needs a valid
 `X-API-Key` header; `/health`, `/version` and `/.well-known/agent.json` are the
-only pre-auth paths (plus `/docs`, `/redoc`, `/openapi.json` and the keyless
-`/dashboard` HTML shell on Cortex REST).
+only pre-auth paths (plus `/docs`, `/redoc`, `/openapi.json` and the exact
+pre-credential enrollment routes on Cortex REST; Cortex's legacy keyless
+`/dashboard` HTML shell was removed 2026-10-01).
 
 The default flipped on 2026-07-26. It used to be `false`, which meant every
 caller on a fresh install was anonymous and held the `admin` scope — enough to

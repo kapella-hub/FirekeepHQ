@@ -46,33 +46,26 @@ https://{$FIREKEEP_OFFICE_HOST:firekeep.office}, https://localhost {
 
     # ---- REST surfaces (prefix-strip, mirrors dashboard nginx convention) ----
 
-    # Cortex's EMBEDDED dashboard (mounted by cortex-api itself at
-    # /dashboard — see cortex/app/dashboard.py) is a browser SPA that
-    # cannot attach X-API-Key, so auth/asgi.py's FirekeepKeyAuthMiddleware
-    # exempts only the literal shell paths GET /dashboard and /dashboard/
-    # (app/main.py's AUTH_SKIP_EXACT_PATHS — an EXACT match, not a prefix,
-    # as of 2026-07-26). Every /dashboard/api/* route — including the
-    # destructive DELETE /dashboard/api/dlq/clear — is now auth-gated at
-    # the middleware layer, closing the hole where GET /dashboard/api/memories
-    # returned real memory content to any unauthenticated caller. This
-    # Caddy block is therefore REDUNDANT defense-in-depth, not the sole
-    # fix it once was — keep it anyway: this office front is public, and a
-    # second layer that fails closed even if the auth wiring ever regresses
-    # is worth the two lines. This handle matcher (/api/cortex/dashboard*)
-    # is more specific than the /api/cortex/* proxy below, and Caddy
-    # auto-sorts `handle` blocks by matcher specificity regardless of file
-    # order, so it always wins and short-circuits to 404 here — verified
-    # via `caddy adapt` (see deploy/README or task history). The embedded
-    # dashboard stays reachable for the owner via SSH/localhost on the
-    # cortex-api port, which the office compose override
-    # (docker-compose.office.yml) rebinds to 127.0.0.1:8100 — and even
-    # there, its /api/* calls now need a valid X-API-Key. Do NOT remove
-    # this block to "simplify" routing — that drops the second layer
-    # through the public front. The real unified dashboard (dashboard/
-    # nginx SPA on :8040) is unaffected: it lives at a different path
-    # entirely and is never proxied through /api/cortex/*, and it already
-    # carries a valid key on every /api/cortex/* call via nginx's
-    # DASHBOARD_API_KEY injection (dashboard/nginx.conf.template).
+    # Cortex mounts a /dashboard router (cortex/app/dashboard.py) that now
+    # serves only JSON under /dashboard/api/* — every route auth-gated at the
+    # middleware layer, none on the auth skip list. Cortex's own legacy HTML
+    # dashboard, whose keyless shell paths were the last /dashboard skip-list
+    # entries, was removed 2026-10-01 (docs/THREAT-MODEL.md §5.2). Before the
+    # 2026-07-26 fix a /dashboard PREFIX skip let GET /dashboard/api/memories
+    # return real memory content to any unauthenticated caller; this Caddy
+    # block was the first fix and is now REDUNDANT defense-in-depth — keep it
+    # anyway: this office front is public, and a second layer that fails
+    # closed even if the auth wiring ever regresses is worth the two lines.
+    # This handle matcher (/api/cortex/dashboard*) is more specific than the
+    # /api/cortex/* proxy below, and Caddy auto-sorts `handle` blocks by
+    # matcher specificity regardless of file order, so it always wins and
+    # short-circuits to 404 here — verified via `caddy adapt` (see
+    # deploy/README or task history). Do NOT remove this block to "simplify"
+    # routing — that drops the second layer through the public front. The
+    # unified dashboard (dashboard/ nginx SPA on :8040) is unaffected: it is
+    # never proxied through this front's /api/cortex/*; nginx proxies it to
+    # cortex directly and injects DASHBOARD_API_KEY on every call
+    # (dashboard/nginx.conf.template).
     handle /api/cortex/dashboard* {
         respond 404
     }

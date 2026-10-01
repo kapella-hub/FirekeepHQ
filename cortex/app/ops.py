@@ -274,15 +274,10 @@ def create_ops_router() -> APIRouter:
         of POST /dashboard/api/dlq/retry).
 
         REVERSED 2026-07-26: /dashboard/api/dlq/retry used to be documented
-        as a deliberate key-free exception "for the embedded SPA". That
-        rationale no longer holds — closing the unauthenticated-dashboard
-        hole (app/main.py's AUTH_SKIP_EXACT_PATHS) also gates
-        GET /dashboard/api/{memories,graph,stats,dlq}, so the embedded
-        cortex-native SPA (app/static/dashboard.html) can no longer populate
-        its DLQ tab at all; a key-free Retry button next to a tab that can't
-        load protects nothing and stayed a real unauthenticated
-        mutating endpoint. It is now auth-gated like every other route
-        under /dashboard/api/*."""
+        as a deliberate key-free exception "for the embedded SPA". It is now
+        auth-gated like every other route under /dashboard/api/*, and that
+        embedded cortex-native SPA (app/static/dashboard.html) was removed
+        outright on 2026-10-01 (docs/THREAT-MODEL.md §5.2)."""
         result = await retry_event_dlq(limit=limit)
         return {"queue": "event_dlq", **result}
 

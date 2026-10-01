@@ -26,7 +26,7 @@ app/
 ├── exceptions.py      # FirekeepCortexError hierarchy
 ├── main.py            # FastAPI app, lifespan, routes, DI, router integration
 ├── mcp_server.py      # MCP server (Streamable HTTP; 30 tools — core memory (recall/learn/stream/health/handoff/feedback; `feedback` also emits a `memory_feedback` replay event, added 2026-08-24) + replay/eval/vault/corpus/knowledge/skills/agent-gateway feature tools + runbook_ack)
-├── dashboard.py       # Web dashboard router (memory browser, graph viz, DLQ)
+├── dashboard.py       # Dashboard data API (/dashboard/api/* JSON for the :8040 SPA; no HTML — the legacy cortex-served SPA was removed 2026-10-01)
 ├── webhooks.py        # Webhook registration and event firing
 ├── stats.py           # Memory statistics endpoint
 ├── transfer.py        # Export/import API (JSONL streaming)
@@ -34,8 +34,6 @@ app/
 ├── embedding_admin.py # Embedding model admin (status, re-embed)
 ├── lifecycle.py       # Knowledge lifecycle (deprecate, confirm, history, backlinks)
 ├── contradiction.py   # Automatic contradiction detection & supersession
-├── static/
-│   └── dashboard.html # Self-contained dashboard SPA (zero dependencies)
 ├── db/
 │   ├── graph.py       # Neo4j async client, Cypher queries
 │   └── vector.py      # Qdrant async client, embedding + search

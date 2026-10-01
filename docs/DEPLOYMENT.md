@@ -705,8 +705,8 @@ the old `firekeepcortex_*` volumes. Keep them as a rollback for at least a week.
   want watched and point `NS_WATCH_PATHS` at them.
 - **API keys** — `AUTH_ENABLED=true` is the default; a valid `X-API-Key` is required on
   all MCP and REST endpoints except the pre-auth paths (`/health`, `/version`,
-  `/.well-known/agent.json`, and Cortex's `/docs`, `/redoc`, `/openapi.json`, its keyless
-  `/dashboard` HTML shell, and the public enrollment routes `/enroll`, `/enroll/anchor`,
+  `/.well-known/agent.json`, and Cortex's `/docs`, `/redoc`, `/openapi.json` and the
+  public enrollment routes `/enroll`, `/enroll/anchor`,
   `/members/invites/accept`, `/members/invites/anchor` — a device enrolling has no key
   yet). Keys are minted per-agent via `deploy/bootstrap-keys.sh` /
   `deploy/firekeep-admin` — there is no single shared `API_KEY` (see

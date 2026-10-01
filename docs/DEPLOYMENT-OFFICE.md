@@ -195,10 +195,13 @@ curl -s -o /dev/null -w '%{http_code}\n' https://<host>/api/cortex/health       
 #     (see deploy/Caddyfile) before auth even runs, so that path proves the
 #     Caddy layer, not the auth layer. Probe the auth layer directly against
 #     cortex-api (run from the box, e.g. over SSH or the office compose
-#     override's 127.0.0.1:8100 rebind): the HTML shell stays keyless, its
-#     /api/* data routes do not.
+#     override's 127.0.0.1:8100 rebind): no /dashboard path is keyless. The
+#     legacy HTML shell was removed 2026-10-01, so /dashboard/ is 401 without
+#     a key (no longer skip-listed) and 404 with one; the /api/* data routes
+#     the :8040 SPA uses are gated.
 curl -s -o /dev/null -w '%{http_code}\n' https://<host>/api/cortex/dashboard/api/memories             # expect: 404 (Caddy, not auth)
-curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8100/dashboard/                              # expect: 200 (shell, keyless)
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8100/dashboard/                              # expect: 401 (shell removed, not exempt)
+curl -s -o /dev/null -w '%{http_code}\n' -H "X-API-Key: $KEY" http://127.0.0.1:8100/dashboard/           # expect: 404 (shell removed)
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8100/dashboard/api/memories                  # expect: 401 (keyless, gated)
 curl -s -o /dev/null -w '%{http_code}\n' -H "X-API-Key: $KEY" http://127.0.0.1:8100/dashboard/api/memories # expect: 200
 # 5. confused-deputy closed: non-admin key calling vault_retrieve through cortex-mcp

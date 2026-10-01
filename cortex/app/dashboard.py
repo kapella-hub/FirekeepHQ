@@ -1,7 +1,15 @@
-"""FirekeepCortex web dashboard — FastAPI router.
+"""FirekeepCortex dashboard data API — FastAPI router.
 
-Serves a single-page dashboard for monitoring memories, graph state,
-and the dead-letter queue.
+JSON endpoints under ``/dashboard/api/*`` (memories, graph, stats, DLQ,
+memory maintenance). Every route is auth-gated like any other REST route; the
+unified dashboard SPA (``dashboard/index.html``, port 8040) reaches them through
+nginx, which injects ``DASHBOARD_API_KEY``.
+
+There is no HTML here. Cortex used to serve a second, older dashboard SPA of
+its own at ``GET /dashboard/`` (``app/static/dashboard.html``), keyless via an
+exact auth skip-list entry. It was removed 2026-10-01 together with those
+skip-list entries (docs/THREAT-MODEL.md §5.2). The ``/dashboard`` prefix is kept
+only because the 8040 SPA calls these paths.
 """
 
 from __future__ import annotations
@@ -9,11 +17,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
-from fastapi.responses import HTMLResponse
 
 from app.config import get_settings
 from auth.middleware import require_scope
@@ -22,8 +28,6 @@ from app.db.vector import VectorClient
 from app.workers import gc as gc_worker
 
 logger = logging.getLogger(__name__)
-
-_STATIC_DIR = Path(__file__).parent / "static"
 
 # Maintenance audit entries written before the archive-first rewrite carry only
 # `evicted_at` -- the pass they came from could only hard-delete. They are
@@ -37,19 +41,8 @@ def create_dashboard_router(
     vector: VectorClient,
     redis_client: Any,
 ) -> APIRouter:
-    """Create the dashboard router with injected database clients."""
+    """Create the dashboard data-API router with injected database clients."""
     router = APIRouter(prefix="/dashboard", tags=["dashboard"])
-
-    @router.get("/", response_class=HTMLResponse)
-    async def dashboard_page():
-        """Serve the dashboard HTML page."""
-        html_path = _STATIC_DIR / "dashboard.html"
-        if not html_path.exists():
-            return HTMLResponse(
-                content="<h1>Dashboard HTML not found</h1>",
-                status_code=404,
-            )
-        return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
 
     @router.get("/api/memories")
     async def api_memories(

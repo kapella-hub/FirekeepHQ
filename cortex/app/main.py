@@ -978,32 +978,25 @@ app.add_middleware(RequestBodySizeLimitMiddleware)
 
 # Auth skip list, split into prefix vs. exact matches (auth/asgi.py:
 # skip_paths does path.startswith(prefix); skip_exact_paths matches the
-# literal path only). "/dashboard" MUST be exact, not prefix: a bare
-# "/dashboard" prefix exempts everything under it, including
-# GET /dashboard/api/memories — which returned real memory content to any
-# unauthenticated caller (verified against a running instance 2026-07-26,
-# fixed here). The dashboard.py router serves exactly two shell paths for
-# the HTML page (GET /dashboard and GET /dashboard/, which FastAPI's
-# redirect_slashes sends /dashboard -> /dashboard/ 307); everything under
-# /dashboard/api/* is now auth-gated like every other REST route,
-# including the previously-key-free POST /dashboard/api/dlq/retry (see the
-# reversal note on that route in cortex/app/ops.py). A login-less HTML
-# shell with no secrets in it is fine; a login-less data/mutation API is
-# not. The nginx-fronted unified dashboard (dashboard/index.html, port
-# 8040) is unaffected: nginx already injects X-API-Key: DASHBOARD_API_KEY
-# on every /api/cortex/* proxy call (dashboard/nginx.conf.template), which
-# is how that SPA already reaches other auth-gated routes today (e.g.
-# /ops/dlq/retry-events, /patterns/, /evals/summary — none of those are on
-# any skip list). Cortex's OWN embedded SPA
-# (cortex/app/static/dashboard.html), served directly by this process with
-# no key of its own, loses its data tabs when AUTH_ENABLED=true — that is
-# the intended, not accidental, consequence of closing this hole.
+# literal path only). Every entry here is a route reachable with no key, so
+# keep both lists as short as possible (docs/THREAT-MODEL.md §5.1).
+#
+# "/dashboard" and "/dashboard/" are deliberately ABSENT. They were exact
+# skips for cortex's own legacy HTML dashboard (app/static/dashboard.html),
+# which was removed 2026-10-01 together with those two entries
+# (THREAT-MODEL §5.2). Before that, "/dashboard" was once a PREFIX skip,
+# which exempted GET /dashboard/api/memories and returned real memory content
+# to unauthenticated callers (2026-07-26). Everything under /dashboard/api/*
+# is auth-gated like any other REST route; the unified dashboard (dashboard/
+# index.html, port 8040) reaches it with X-API-Key: DASHBOARD_API_KEY, which
+# nginx injects on every /api/cortex/* proxy call
+# (dashboard/nginx.conf.template). Do not re-add a /dashboard entry: there
+# is no keyless page left to serve. Guarded by
+# tests/test_legacy_dashboard_removed.py.
 AUTH_SKIP_PREFIXES: tuple[str, ...] = (
     "/health", "/version", "/docs", "/redoc", "/openapi.json",
 )
 AUTH_SKIP_EXACT_PATHS: tuple[str, ...] = (
-    "/dashboard",
-    "/dashboard/",
     "/enroll",
     "/enroll/anchor",
     "/members/invites/accept",
