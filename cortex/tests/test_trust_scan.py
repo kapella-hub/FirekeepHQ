@@ -28,7 +28,10 @@ def r():
 async def test_keeps_only_gateway_types(r):
     now_ms = 1_800_000_000_000
     await _xadd(r, etype="memory.read", agent="a", session="s", action_id="x", ts_ms=now_ms)
-    await _xadd(r, etype="agent.action.predict", agent="a", session="s", action_id="p1", ts_ms=now_ms)
+    # +1 ms: an explicit stream ID must exceed the last one — real Redis (and
+    # fakeredis >= 2.39) reject an equal ID with "equal or smaller than the
+    # target stream top item".
+    await _xadd(r, etype="agent.action.predict", agent="a", session="s", action_id="p1", ts_ms=now_ms + 1)
     events, scanned, truncated, invalid = await trust.scan_gateway_events(r, window_days=3650, cap=100)
     types = {e["event_type"] for e in events}
     assert types == {"agent.action.predict"}
