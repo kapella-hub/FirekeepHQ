@@ -62,7 +62,9 @@ about the customer's systems — they are the systems:
    ┌─ boundary 1: auth ───▼──────────────────────────────────────┐
    │  FirekeepKeyAuthMiddleware on all 5 surfaces                │
    │  skip list: /health /version /.well-known/agent.json        │
-   │             + /docs /redoc /openapi.json /dashboard (Cortex)│
+   │             + /docs /redoc /openapi.json (Cortex)           │
+   │  exact (Cortex): /enroll /enroll/anchor                     │
+   │    /members/invites/accept /members/invites/anchor          │
    └──────────────────────┬──────────────────────────────────────┘
    ┌─ boundary 2: scope ──▼──────────────────────────────────────┐
    │  require_scope (FastAPI) / require_scope_asgi (Starlette)   │
@@ -120,6 +122,9 @@ This has happened once: `/dashboard` was a *prefix* skip, which exempted
 `/dashboard/api/memories` and served 4,066 memories to unauthenticated callers.
 Fixed by splitting prefix and exact matching, but the class remains — the skip
 list is a place where a one-word change has no local signal that it is dangerous.
+Since 2026-10-01 no `/dashboard` path is on either list at all: the exact entries
+existed only for the legacy cortex-served shell, removed with it (§5.2), and
+`cortex/tests/test_legacy_dashboard_removed.py` fails if one is re-added.
 
 ### 5.2 The dashboard `:8040`
 
@@ -128,9 +133,16 @@ nginx with basic auth, injecting an admin-scoped `DASHBOARD_API_KEY` on every
 
 - The basic-auth file is the only thing between a reachable dashboard and admin
   authority. It is generated with SHA-512 crypt; an earlier version used apr1-MD5.
-- **OPEN:** there is a second, older dashboard served by cortex-api itself at
-  `/dashboard/`. It has no key mechanism at all, so under `AUTH_ENABLED=true` its
-  data tabs simply fail. It is superseded but still shipped.
+- **Fixed 2026-10-01:** there was a second, older dashboard served by cortex-api
+  itself at `/dashboard/`. It had no key mechanism at all, so under
+  `AUTH_ENABLED=true` its data tabs simply failed; it was superseded but still
+  shipped, keyless via two exact skip-list entries. Removed: the `GET /dashboard/`
+  HTML route in `cortex/app/dashboard.py`, the `cortex/app/static/dashboard.html`
+  asset, and the `/dashboard` and `/dashboard/` entries in `app/main.py`'s
+  `AUTH_SKIP_EXACT_PATHS`. Both paths now 404 (401 first without a key, since
+  they are no longer exempt). The auth-gated JSON routes under `/dashboard/api/*`
+  stay: the `:8040` SPA calls them through nginx with `DASHBOARD_API_KEY`. Guarded
+  by `cortex/tests/test_legacy_dashboard_removed.py`.
 
 ### 5.3 The URL crawler
 

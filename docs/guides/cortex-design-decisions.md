@@ -13,7 +13,7 @@
 - **Cypher injection prevention**: Dynamic labels/relationship types are sanitized to alphanumeric + underscore only
 - **Fulltext index search**: Neo4j Lucene-backed fulltext index for relevance-scored graph queries (falls back to CONTAINS on `ClientError` only)
 - **Case-insensitive resolution queries**: `query_resolutions` uses `toLower()` on both sides for reliable matching
-- **API key authentication**: shared per-key ASGI validator (auth/asgi.py FirekeepKeyAuthMiddleware) over the whole app when AUTH_ENABLED=true; prefix-skips /health, /version, /docs, /redoc, /openapi.json; exact-skips only /dashboard and /dashboard/ (the HTML shell — everything under /dashboard/api/* is gated, not exempt); fail-closed 503 when Redis DB 7 is unreachable while enabled
+- **API key authentication**: shared per-key ASGI validator (auth/asgi.py FirekeepKeyAuthMiddleware) over the whole app when AUTH_ENABLED=true; prefix-skips /health, /version, /docs, /redoc, /openapi.json; exact-skips only the pre-credential enrollment paths (/enroll, /enroll/anchor, /members/invites/accept, /members/invites/anchor); no /dashboard path is exempt (the legacy HTML shell and its two exact entries were removed 2026-10-01, and everything under /dashboard/api/* is gated); fail-closed 503 when Redis DB 7 is unreachable while enabled
 - **Rate limiting**: slowapi-based rate limiting (configurable, default 60/min)
 - **Memory decay**: Type-specific exponential recall decay (reference=off, procedural=180d, episodic=90d, transient=14d by default); decay changes rank, not lifecycle state
 - **LLM re-ranking**: Optional re-ranking pass via LLM (gated behind RERANK_ENABLED config), shared httpx client, robust score parsing with word-boundary regex

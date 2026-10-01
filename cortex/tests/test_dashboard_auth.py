@@ -4,8 +4,10 @@ GET /dashboard/api/memories (and every other /dashboard/api/* route) used to
 bypass FirekeepKeyAuthMiddleware entirely because /dashboard was on the
 PREFIX skip list — verified against a running instance to return real
 memory content (4,066 records) to an unauthenticated caller on the public
-internet. The fix moves /dashboard to an EXACT skip (app/main.py's
-AUTH_SKIP_EXACT_PATHS) so only the bare HTML shell stays keyless.
+internet. The first fix moved /dashboard to an EXACT skip so only the bare
+HTML shell stayed keyless; on 2026-10-01 that legacy shell was removed and
+/dashboard left the skip lists entirely (tests/test_legacy_dashboard_removed.py
+pins the removal). What remains here is the data API the :8040 SPA uses.
 
 Wires the REAL create_dashboard_router + the REAL FirekeepKeyAuthMiddleware
 (mirrors cortex/tests/test_auth_consolidation.py's mini-app pattern) so
@@ -30,7 +32,7 @@ from auth.asgi import FirekeepKeyAuthMiddleware
 # app/main.py happens to contain, so a future edit to one can't silently
 # make both say the same (possibly wrong) thing.
 SKIP_PREFIXES = ("/health", "/version", "/docs", "/redoc", "/openapi.json")
-SKIP_EXACT = ("/dashboard", "/dashboard/", "/enroll", "/enroll/anchor")
+SKIP_EXACT = ("/enroll", "/enroll/anchor", "/members/invites/accept", "/members/invites/anchor")
 
 
 class _StubVector:
@@ -95,23 +97,6 @@ def _app(redis) -> FastAPI:
 
 def _client(app) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
-
-
-class TestDashboardShellStaysKeyless:
-    @pytest.mark.asyncio
-    async def test_dashboard_root_no_key_200(self, redis, auth_env):
-        async with _client(_app(redis)) as c:
-            resp = await c.get("/dashboard")
-        # FastAPI redirects the bare prefix to the registered "/" (307), or
-        # serves it directly -- either way it must NOT be 401.
-        assert resp.status_code != 401
-
-    @pytest.mark.asyncio
-    async def test_dashboard_root_slash_no_key_200(self, redis, auth_env):
-        async with _client(_app(redis)) as c:
-            resp = await c.get("/dashboard/")
-        assert resp.status_code == 200
-        assert "text/html" in resp.headers["content-type"]
 
 
 class TestDashboardApiRequiresKey:
@@ -290,9 +275,9 @@ class TestDashboardApiRequiresKey:
 class TestNestedPathIsNotSwallowedByExactMatch:
     @pytest.mark.asyncio
     async def test_deep_nested_path_still_gated(self, redis, auth_env):
-        """/dashboard/api/dlq/retry is 3 segments deep -- confirms the exact
-        skip list isn't accidentally doing prefix-ish matching some other
-        way (e.g. via a startswith fallback)."""
+        """/dashboard/api/dlq/retry is 3 segments deep -- confirms nothing on
+        the skip lists exempts it by prefix-ish matching (e.g. via a
+        startswith fallback)."""
         async with _client(_app(redis)) as c:
             resp = await c.post("/dashboard/api/dlq/retry")
         assert resp.status_code == 401

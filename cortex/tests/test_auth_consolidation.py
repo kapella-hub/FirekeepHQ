@@ -28,7 +28,7 @@ from vault.api import create_vault_router
 # service-only eval:grade scope, which create_key rejects outright.
 NON_ADMIN_SCOPES = sorted(ENROLLABLE_SCOPES)
 
-SKIP_PATHS = ("/health", "/version", "/docs", "/redoc", "/openapi.json", "/dashboard")
+SKIP_PATHS = ("/health", "/version", "/docs", "/redoc", "/openapi.json")
 
 # Mirrors app.main's production CORS config (allow_origins from Settings.CORS_ORIGINS).
 CORS_ORIGIN = "http://localhost:3000"
@@ -274,11 +274,12 @@ class TestMainWiring:
             "/health", "/version", "/docs", "/redoc", "/openapi.json",
         )
 
-    def test_dashboard_is_exact_skip_not_prefix(self):
+    def test_dashboard_is_on_no_skip_list(self):
         """Regression guard for the unauthenticated-dashboard hole
-        (2026-07-26): /dashboard must be an EXACT skip, never a prefix —
-        a prefix match would silently exempt /dashboard/api/memories,
-        which returned real memory content to any unauthenticated caller."""
+        (2026-07-26, when a /dashboard PREFIX skip exempted
+        /dashboard/api/memories) and for the legacy shell's removal
+        (2026-10-01, which dropped the remaining EXACT /dashboard entries).
+        No /dashboard path may appear on either list."""
         import app.main as main_mod
 
         mw = next(
@@ -286,10 +287,11 @@ class TestMainWiring:
             if m.cls.__name__ == "FirekeepKeyAuthMiddleware"
         )
         assert mw.kwargs["skip_exact_paths"] == (
-            "/dashboard", "/dashboard/", "/enroll", "/enroll/anchor",
+            "/enroll", "/enroll/anchor",
             "/members/invites/accept", "/members/invites/anchor",
         )
-        assert "/dashboard" not in mw.kwargs["skip_paths"]
+        every_skip = mw.kwargs["skip_paths"] + mw.kwargs["skip_exact_paths"]
+        assert not any(p.startswith("/dashboard") for p in every_skip)
 
     def test_cors_is_outermost_of_auth(self):
         """user_middleware[0] is outermost (Starlette wraps in reverse of the

@@ -42,7 +42,7 @@
 ### Non-Goals
 
 - FirekeepCortex does NOT run its own LLM inference server. It calls an external OpenAI-compatible API (Ollama, vLLM, OpenAI, etc.).
-- No user-facing UI in v1. *(Superseded: Firekeep now ships a unified web dashboard on port 8040, and Cortex itself registers a `/dashboard` router.)*
+- No user-facing UI in v1. *(Superseded: Firekeep now ships a unified web dashboard on port 8040. Cortex registers a `/dashboard` router that serves only the auth-gated `/dashboard/api/*` JSON that dashboard calls; Cortex's own legacy HTML dashboard was removed 2026-10-01.)*
 - No multi-tenancy or authentication in v1. Single-tenant deployment assumed. *(Superseded: scope-based per-key auth is implemented via a shared ASGI validator and is **ON by default** as of 2026-07-26 — `AUTH_ENABLED=true`. It was opt-in and default-off until then, which meant a stock install treated every caller as an anonymous admin. Even when explicitly disabled, the admin-gated surface now refuses anonymous callers. Multi-tenancy remains out of scope: the tenant boundary is the customer's own deployment.)*
 - No horizontal scaling of Neo4j or Qdrant in v1. Single-node deployments.
 
