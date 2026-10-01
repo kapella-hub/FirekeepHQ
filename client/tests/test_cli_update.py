@@ -698,8 +698,7 @@ def test_a_tampered_signature_persists_no_override_notice(update_env, monkeypatc
 
     monkeypatch.setattr(cli.updater, "fetch_signed_sums", _boom)
     assert cli.main(["update"]) == 1
-    notice = state.consume_unsigned_update_notice()
-    assert notice is None or "require_signed = false" not in notice
+    assert state.consume_unsigned_update_notice() is None
 
 
 def test_default_config_installs_a_signed_release_and_hands_the_verified_sums(update_env, monkeypatch):
