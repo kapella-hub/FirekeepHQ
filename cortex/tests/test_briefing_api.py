@@ -122,6 +122,58 @@ def test_briefing_envelope_shape(monkeypatch):
     assert "entitlement" not in body
 
 
+def _fake_validated_key(monkeypatch, principal: dict, key: str) -> None:
+    """require_scope validates X-API-Key against Redis DB 7; stand in for it."""
+    from auth import keys, middleware
+
+    async def _validate(api_key, redis_client=None):
+        return dict(principal) if api_key == key else None
+
+    monkeypatch.setattr(keys, "_AUTH_ENABLED", True)
+    monkeypatch.setattr(middleware, "validate_key", _validate)
+
+
+def test_briefing_forwards_the_live_caller_key_to_user_scoped_sections(monkeypatch):
+    """Ported from ae1f973. Bob asking for agent_id=alice reaches Bridge and
+    Relay as Bob — with his own key — never as the workspace service key."""
+    app = _make_app(monkeypatch)
+    _fake_validated_key(monkeypatch, {
+        "workspace_id": "workspace-team", "member_id": "member-bob",
+        "credential_id": "credential-bob", "scopes": ["session:read"],
+        "authenticated": True,
+    }, "nxs_bob")
+    empty = {"status": "empty", "error": None, "data": {}}
+    tasks = AsyncMock(return_value=empty)
+    bulletins = AsyncMock(return_value=empty)
+    resumable = AsyncMock(return_value=empty)
+    monkeypatch.setattr(S, "tasks_section", tasks)
+    monkeypatch.setattr(S, "bulletins_section", bulletins)
+    monkeypatch.setattr(S, "resumable_sessions_section", resumable)
+
+    resp = TestClient(app).get("/briefing?agent_id=alice", headers={"X-API-Key": "nxs_bob"})
+
+    assert resp.status_code == 200
+    for mock in (tasks, bulletins, resumable):
+        assert mock.await_args.kwargs["caller_api_key"] == "nxs_bob"
+    assert resumable.await_args.args[2] == "alice"
+
+
+def test_briefing_forwards_no_key_when_auth_is_disabled(monkeypatch):
+    from auth import keys
+
+    app = _make_app(monkeypatch)
+    monkeypatch.setattr(keys, "_AUTH_ENABLED", False)
+    empty = {"status": "empty", "error": None, "data": {}}
+    resumable = AsyncMock(return_value=empty)
+    monkeypatch.setattr(S, "resumable_sessions_section", resumable)
+
+    # A stray header on an auth-off box is not a verified credential.
+    resp = TestClient(app).get("/briefing?agent_id=x", headers={"X-API-Key": "nxs_unverified"})
+
+    assert resp.status_code == 200
+    assert resumable.await_args.kwargs["caller_api_key"] is None
+
+
 def test_briefing_server_version_matches_version_module(monkeypatch):
     client = TestClient(_make_app(monkeypatch))
     resp = client.get("/briefing?agent_id=x")

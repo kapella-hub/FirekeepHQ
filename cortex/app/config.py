@@ -682,7 +682,9 @@ class Settings(BaseSettings):
 
     # Briefing aggregator upstreams (SP1b) — the GET /briefing router fans out
     # to Relay + Sentinel REST for the environment / tasks / bulletins sections.
-    # All outbound calls attach internal_key_headers(FIREKEEP_INTERNAL_KEY).
+    # Only the deployment-wide environment section uses FIREKEEP_INTERNAL_KEY;
+    # tasks / bulletins / resumable_sessions present the live caller's own key
+    # (app/briefing/api.py), since 2026-10-01.
     RELAY_URL: str = "http://relay:8050"
     SENTINEL_URL: str = "http://sentinel:8060"
 

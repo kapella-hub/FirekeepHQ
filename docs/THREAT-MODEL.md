@@ -580,6 +580,30 @@ narrowed by hand on deployed keys — reconciliation only ever adds.
   `memory:read` can be dropped from `deploy/bootstrap-keys.sh` and narrowed by hand
   on deployed keys.
 
+### 5.11 The briefing as a confused deputy
+
+**Cortex half mitigated 2026-10-01; closed only together with the Bridge fix.**
+`GET /briefing` requires `session:read` of its caller, then fanned out to Bridge
+(`GET /sessions?agent_id=…`) and Relay (`/presence/{agent_id}`, `/tasks`,
+`/bulletin`) with `FIREKEEP_INTERNAL_KEY` — a workspace service credential — for
+whatever `agent_id` the caller put in the query string. So Bob's
+`GET /briefing?agent_id=alice` returned Alice's paused and active session goals and
+her presence, with Cortex vouching for the read. The three user-scoped sections now
+present the live caller's own `X-API-Key` (the key `require_scope` just verified;
+nothing when auth is off), so Bridge and Relay authorize the read against the
+person actually asking. `caller_api_key` is a required keyword on each builder: a
+section that forgets it fails with a `TypeError` rather than falling back to a
+service key. The environment section keeps the internal key — it reads
+deployment-wide Sentinel state, not anyone's data. Guarded by
+`cortex/tests/test_briefing_sections_outbound.py` and `test_briefing_api.py`.
+
+**Residual, OPEN until Bridge lands its half:** forwarding Bob's key is only as
+strong as the check behind it. Bridge's `GET /sessions` is scope-gated
+(`session:read`, which every member key holds) but not owner-filtered, so Bob's own
+key still lists Alice's sessions — through the briefing or by calling Bridge
+directly. Relay's tasks and bulletins are workspace-visible by design, so for those
+two sections the change removes the deputy without changing what Bob can see.
+
 ## 6. Threats, ranked
 
 | # | Threat | State |
@@ -597,6 +621,7 @@ narrowed by hand on deployed keys — reconciliation only ever adds.
 | 11 | A compromised runtime with Hands enabled operates the human's desktop | **Mitigated, residuals OPEN** — the broker is a separate process with no grant route, injected input is rejected, permits are one-use and bound to the exact step, classification is on effects not model labels, fail closed (§5.8). Residuals: same-user permit theft, kernel-level injection, screenshots to the model provider, the unverified macOS source-state filter, and the broker's notification being informational (the chord approves the oldest pending permit whether or not the toast was read) |
 | 12 | Phone approvals approved by a key holder who is not the human | **Partly mitigated (2026-10-01), residual OPEN** — relay stamps the verified principal on every task write and the broker refuses an approve from the requesting credential (the kit key the driving agent shares), from an unauthenticated Keep, or from a relay too old to stamp. Residual: any *other* workspace credential can still approve unless `phone_approvers` pins the approvers, and a pinned dashboard credential is only as strong as its basic-auth password; the auth layer has no human-member notion. `phone_approvals` stays `False` by default (§5.8) |
 | 13 | A valid key of any scope deletes another member's data, approves its own skill, re-embeds the store, or reads teammates' recall queries | **Mitigated 2026-10-01** — scope + `memory_type` + workspace checks on `/skills/{id}`, `admin` for review decisions and re-embedding, member-scoped `/audit`, scopes declared on every core memory route (§5.10). Residuals: review decisions allowed on auth-disabled boxes, unattributed audit history hidden from members, `GET /skills` and `/memory/contributors` not workspace-filtered |
+| 14 | `GET /briefing?agent_id=<teammate>` reads a teammate's sessions and presence with the internal service key | **Cortex half mitigated 2026-10-01** — user-scoped sections present the caller's own key (§5.11). **OPEN** until Bridge filters `GET /sessions` by the verified owner member |
 
 Threat 5 deserves emphasis because it is the one the product's own design creates:
 Firekeep exists to make agents act on stored memory. Anything that can write a
