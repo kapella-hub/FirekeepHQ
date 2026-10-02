@@ -244,7 +244,7 @@ jobs:
             *)   echo "::error::unexpected response from /vault/secrets ($code)"; exit 1 ;;
           esac
 
-      - name: Assert a memory round-trips — rejected unkeyed, works with the minted key
+      - name: Assert a memory round-trips — rejected unkeyed, written by the worker key, read back by a reader
         # Two-sided ON PURPOSE. The keyed round-trip alone is not a test of
         # this fix: it passes just as happily against a wide-open stack, so if
         # the default ever flipped back to unauthenticated this job would stay
@@ -282,9 +282,31 @@ jobs:
             -d '{"domain":"smoke","action":"ran the install smoke test",
                  "outcome":"the stack accepted a write"}'
           sleep 5
-          BODY=$(curl -fsS -X POST http://127.0.0.1:8100/memory/recall \
+
+          # (3) The internal key is a WORKER key: memory:write, no memory:read.
+          # Since /memory/* declares its scopes (2026-10-01) its recall must be
+          # REFUSED -- the half that proves the scope gate is live, not just auth.
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8100/memory/recall \
             -H 'Content-Type: application/json' \
             -H "X-API-Key: $KEY" \
+            -d '{"task":"install smoke test","format":"raw"}')
+          echo "internal-key POST /memory/recall -> $code"
+          if [ "$code" != "403" ]; then
+            echo "::error::the worker key read memory (got $code, want 403) -- /memory/recall lost its memory:read gate"
+            exit 1
+          fi
+
+          # (4) ...and the write comes BACK through a key that may read: the
+          # dashboard key, also minted into .env by bootstrap-keys.sh.
+          READ_KEY="$(grep '^DASHBOARD_API_KEY=' .env | cut -d= -f2- || true)"
+          if [ -z "$READ_KEY" ]; then
+            echo "::error::install.sh did not mint DASHBOARD_API_KEY into .env"
+            exit 1
+          fi
+          echo "::add-mask::$READ_KEY"
+          BODY=$(curl -fsS -X POST http://127.0.0.1:8100/memory/recall \
+            -H 'Content-Type: application/json' \
+            -H "X-API-Key: $READ_KEY" \
             -d '{"task":"install smoke test","format":"raw"}')
           echo "$BODY"
           echo "$BODY" | grep -q "smoke" || { echo "::error::recall did not return the written memory"; exit 1; }
