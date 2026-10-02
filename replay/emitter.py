@@ -150,8 +150,16 @@ async def emit(
     namespace: str = "default",
     duration_ms: int | None = None,
     error: str | None = None,
+    workspace_id: str | None = None,
+    member_id: str | None = None,
 ) -> str | None:
     """Emit a trace event to the replay stream.
+
+    `workspace_id` / `member_id` are the VERIFIED principal of the request that
+    caused the event (never a self-asserted header). They are written only when
+    given, so every other emitter's stream schema is unchanged; a reader that
+    scopes by them (cortex/app/audit.py) must treat their absence as
+    "unattributed", not as "anyone's".
 
     Returns the Redis stream entry ID on success, or None on failure.
     NEVER raises — all errors are caught and logged at DEBUG level.
@@ -194,6 +202,10 @@ async def emit(
             "duration_ms": str(duration_ms) if duration_ms is not None else "",
             "error": error or "",
         }
+        if workspace_id:
+            fields["workspace_id"] = workspace_id
+        if member_id:
+            fields["member_id"] = member_id
 
         # Append to global stream with approximate max length
         stream_id = await _redis.xadd(

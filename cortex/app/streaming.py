@@ -19,6 +19,7 @@ from app.db.graph import Neo4jClient
 from app.db.vector import VectorClient
 from app.engine.rag import RAGEngine
 from app.models import ContextQuery
+from auth.middleware import require_any_scope
 from auth.principal import request_principal
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,7 @@ async def _emit_stream_receipt(
     query: ContextQuery,
     accessed_ids: list[str],
     result_count: int,
+    principal: dict | None = None,
 ) -> None:
     """Best-effort parity with the non-streaming recall receipt (main.py
     `memory_recall`, ~line 1291-1342). Bumps `memory:access_counts` +
@@ -80,6 +82,8 @@ async def _emit_stream_receipt(
             "memory_read",
             session_id=sid,
             agent_id=aid,
+            workspace_id=(principal or {}).get("workspace_id"),
+            member_id=(principal or {}).get("member_id"),
             payload={
                 "query": query.task[:200],
                 "top_k": query.top_k,
@@ -109,7 +113,12 @@ def create_streaming_router(
     """Create and return the streaming recall router."""
     router = APIRouter(tags=["streaming"])
 
-    @router.post("/memory/recall/stream")
+    # Same scope as POST /memory/recall: an ungated stream twin would be the
+    # way around that gate.
+    @router.post(
+        "/memory/recall/stream",
+        dependencies=[Depends(require_any_scope("memory:read", "admin"))],
+    )
     async def recall_stream(
         request: Request,
         query: ContextQuery,
@@ -150,7 +159,8 @@ def create_streaming_router(
                 # closing the SSE blind spot means the receipt must fire
                 # either way, and it must never raise into the response.
                 await _emit_stream_receipt(
-                    redis_client, sid, aid, query, accessed_ids, source_count
+                    redis_client, sid, aid, query, accessed_ids, source_count,
+                    principal=principal,
                 )
 
         return StreamingResponse(

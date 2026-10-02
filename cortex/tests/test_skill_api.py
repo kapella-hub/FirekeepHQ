@@ -222,6 +222,9 @@ def test_patch_clears_needs_rereview(mock_vector, mock_settings):
 
 
 def test_delete_skill(mock_vector, mock_settings):
+    # DELETE verifies its target is a skill in the caller's workspace first
+    # (test_skill_route_authorization.py), so the lookup must return one.
+    mock_vector._client.retrieve = AsyncMock(return_value=[_make_mock_point()])
     mock_vector._client.delete = AsyncMock()
     client = TestClient(_make_app(mock_vector, mock_settings))
     resp = client.delete("/skills/abc")
@@ -278,6 +281,7 @@ class TestSkillsMigrationFreezeGate:
     def test_delete_skill_204_when_not_frozen(self, mock_vector, mock_settings):
         from app.config import Settings, get_settings
 
+        mock_vector._client.retrieve = AsyncMock(return_value=[_make_mock_point()])
         mock_vector._client.delete = AsyncMock()
         app = _make_app(mock_vector, mock_settings)
         app.dependency_overrides[get_settings] = lambda: Settings(MIGRATION_FREEZE=False)

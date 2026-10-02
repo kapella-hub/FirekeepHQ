@@ -82,8 +82,10 @@ SCOPES = {
 # construction — same mechanism that keeps `admin` out).
 SERVICE_ONLY_SCOPES: frozenset[str] = frozenset({"eval:grade"})
 ENROLLABLE_SCOPES: frozenset[str] = frozenset(SCOPES - {"admin", "*"} - SERVICE_ONLY_SCOPES)
-# NOTE: memory:*/session:*/relay:* are not yet demanded by any route —
-# reserved for SP4 per-route enforcement. Do not delete (SP1a §4.2).
+# memory:read / memory:write are demanded by the core /memory/* routes and the
+# /skills router since 2026-10-01 (docs/THREAT-MODEL.md section 5.10), in
+# addition to the lifecycle/dashboard/procedures routes that already used them.
+# Do not delete any of these (SP1a §4.2).
 # twin:read was removed 2026-07: the twin module is deleted; the scope dangled.
 
 # ---------------------------------------------------------------------------

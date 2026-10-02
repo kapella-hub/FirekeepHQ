@@ -31,6 +31,7 @@ from app.embedding_admin import create_embedding_router
 from app.engine.rag import RAGEngine
 from app.lifecycle import create_lifecycle_router
 from app.migration_gate import require_not_frozen
+from auth.middleware import require_any_scope
 from app.ops import create_ops_router
 from app.ops_backups import create_ops_backups_router
 from app.exceptions import (
@@ -71,6 +72,15 @@ logging.basicConfig(
     datefmt="%Y-%m-%dT%H:%M:%S%z",
 )
 logger = logging.getLogger(__name__)
+
+# Core memory routes declare the scope they exercise (2026-10-01). Before this
+# they were reachable by ANY valid key -- a `session:write`-only relay key could
+# recall the deployment owner's memory and write into it. `admin` rides along
+# for the reason recorded in docs/guides/replay-evals-patterns.md: only "*" is a
+# superset in `scopes_allow`, and a literal ["admin"] key must not lose a route
+# it could always reach.
+_MEMORY_READ = Depends(require_any_scope("memory:read", "admin"))
+_MEMORY_WRITE = Depends(require_any_scope("memory:write", "admin"))
 
 MAX_BATCH_SIZE = 100
 
@@ -436,32 +446,11 @@ def _register_feature_routers(app: FastAPI) -> None:
     except Exception as exc:  # noqa: BLE001
         logger.warning("Autopilot router not registered: %s", exc)
 
-    # Audit endpoints (/audit/*)
+    # Audit endpoints (/audit/*) — replay:read, member-scoped for non-admins.
     try:
-        from app.audit import get_memory_audit, get_memory_access_summary
-        from fastapi import APIRouter as _AR, Query as _Q
+        from app.audit import create_audit_router
 
-        audit_router = _AR(prefix="/audit", tags=["audit"])
-
-        @audit_router.get("/memory")
-        async def audit_memory(
-            action: str | None = _Q(default=None),
-            memory_chain_id: str | None = _Q(default=None),
-            agent_id: str | None = _Q(default=None),
-            namespace: str | None = _Q(default=None),
-            limit: int = _Q(default=50, ge=1, le=200),
-        ):
-            return {"events": await get_memory_audit(
-                app.state.replay_redis, action=action,
-                memory_chain_id=memory_chain_id, agent_id=agent_id,
-                namespace=namespace, limit=limit,
-            )}
-
-        @audit_router.get("/memory/summary")
-        async def audit_memory_summary():
-            return await get_memory_access_summary(app.state.replay_redis)
-
-        app.include_router(audit_router)
+        app.include_router(create_audit_router(lambda: app.state.replay_redis))
         logger.info("Audit router registered at /audit/*")
     except Exception as exc:
         logger.warning("Audit router not registered (non-critical): %s", exc)
@@ -1265,7 +1254,7 @@ async def health(
         return result
 
 
-@app.post("/memory/recall", response_model=RecallResponse)
+@app.post("/memory/recall", response_model=RecallResponse, dependencies=[_MEMORY_READ])
 @limiter.limit(lambda: get_settings().RATE_LIMIT)
 async def memory_recall(
     request: Request,
@@ -1312,6 +1301,8 @@ async def memory_recall(
         "memory_read",
         session_id=sid,
         agent_id=aid,
+        workspace_id=principal["workspace_id"],
+        member_id=principal["member_id"],
         payload={
             "query": query.task[:200],
             "top_k": query.top_k,
@@ -1354,7 +1345,8 @@ async def memory_recall(
     return result
 
 
-@app.post("/memory/learn", response_model=LearnResponse, dependencies=[Depends(require_not_frozen)])
+@app.post("/memory/learn", response_model=LearnResponse,
+          dependencies=[_MEMORY_WRITE, Depends(require_not_frozen)])
 @limiter.limit(lambda: get_settings().RATE_LIMIT)
 async def memory_learn(
     request: Request,
@@ -1543,6 +1535,8 @@ async def memory_learn(
         "memory_write",
         session_id=sid,
         agent_id=aid,
+        workspace_id=principal["workspace_id"],
+        member_id=principal["member_id"],
         payload={
             "action_summary": log.action[:200],
             "memory_type": log.memory_type,
@@ -1557,7 +1551,8 @@ async def memory_learn(
     return learn_response
 
 
-@app.post("/memory/stream", response_model=StreamResponse, dependencies=[Depends(require_not_frozen)])
+@app.post("/memory/stream", response_model=StreamResponse,
+          dependencies=[_MEMORY_WRITE, Depends(require_not_frozen)])
 @limiter.limit(lambda: get_settings().RATE_LIMIT)
 async def memory_stream(
     request: Request,
@@ -1597,7 +1592,8 @@ async def memory_stream(
     return StreamResponse(status="queued", queued=len(events))
 
 
-@app.post("/memory/feedback", response_model=FeedbackResponse, dependencies=[Depends(require_not_frozen)])
+@app.post("/memory/feedback", response_model=FeedbackResponse,
+          dependencies=[_MEMORY_WRITE, Depends(require_not_frozen)])
 @limiter.limit(lambda: get_settings().RATE_LIMIT)
 async def memory_feedback(
     request: Request,
@@ -1665,7 +1661,7 @@ async def get_untagged_calls(
     return {"total": total, "by_day": counts}
 
 
-@app.get("/memory/contributors")
+@app.get("/memory/contributors", dependencies=[_MEMORY_READ])
 async def get_memory_contributors(
     request: Request,
     project: str | None = None,
@@ -1741,7 +1737,7 @@ async def get_memory_contributors(
     ]
 
 
-@app.post("/memory/handoff")
+@app.post("/memory/handoff", dependencies=[_MEMORY_READ])
 async def post_memory_handoff(
     request: Request,
     req: HandoffRequest,

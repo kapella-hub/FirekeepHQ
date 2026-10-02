@@ -104,7 +104,7 @@ Keys minted by `deploy/bootstrap-keys.sh`:
 | Key | Where it lands | Scopes |
 |-----|----------------|--------|
 | `FIREKEEP_INTERNAL_KEY` | `.env` | `memory:write`, `session:read`, `eval:read`, `eval:write` — deliberately **not** admin |
-| `FIREKEEP_BRIDGE_KEY` | `.env`, wired to ONLY the bridge container | `memory:write`, `session:read`, `eval:read`, `eval:write`, `eval:grade` — the only credential in the fleet carrying `eval:grade`, a service-only scope no admin key can mint |
+| `FIREKEEP_BRIDGE_KEY` | `.env`, wired to ONLY the bridge container | `memory:read`, `memory:write`, `session:read`, `eval:read`, `eval:write`, `eval:grade` (`memory:read` since 2026-10-01 — Bridge's prior-art and proactive recall call `POST /memory/recall`, which now declares it; **transitional**: once those paths forward the caller's key, drop it from `bootstrap-keys.sh` and narrow existing keys by hand, since reconciliation never narrows) — the only credential in the fleet carrying `eval:grade`, a service-only scope no admin key can mint |
 | `DASHBOARD_API_KEY` | `.env`, injected by dashboard nginx as `X-API-Key` on `/api/*` | `*` (admin) — behind nginx basic auth |
 | admin key | printed once to the terminal, never written to disk | `*` |
 

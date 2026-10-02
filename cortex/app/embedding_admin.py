@@ -9,7 +9,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+
+from auth.middleware import require_any_scope, require_scope
 
 from app.config import get_settings
 from app.db.vector import VectorClient
@@ -21,7 +23,14 @@ def create_embedding_router(vector: VectorClient) -> APIRouter:
     """Create and return the embedding admin router."""
     router = APIRouter(prefix="/admin/embeddings", tags=["admin"])
 
-    @router.get("/status")
+    # Until 2026-10-01 none of these routes declared a scope, so any valid key
+    # could POST /reembed?model=<anything> and rewrite every vector in the
+    # store under a model of its choosing -- a store-wide integrity and
+    # availability lever. Re-embedding and its progress are admin. The status
+    # read stays on memory:read: it is model name, dimensions and counts, and
+    # the dashboard's status widget calls it on auth-disabled boxes too, where
+    # no caller can hold admin (auth/keys.py ANONYMOUS_SCOPES).
+    @router.get("/status", dependencies=[Depends(require_any_scope("memory:read", "admin"))])
     async def embedding_status() -> dict[str, Any]:
         """Return current embedding model name, vector dimensions, cache size, total vectors."""
         try:
@@ -31,7 +40,7 @@ def create_embedding_router(vector: VectorClient) -> APIRouter:
             logger.error("Failed to get embedding info: %s", exc)
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    @router.post("/reembed")
+    @router.post("/reembed", dependencies=[Depends(require_scope("admin"))])
     async def trigger_reembed(model: str | None = None) -> dict[str, Any]:
         """Trigger re-embedding of all vectors. Returns the Celery task ID."""
         from app.workers.reembed import reembed_all
@@ -48,7 +57,7 @@ def create_embedding_router(vector: VectorClient) -> APIRouter:
             "model": effective_model,
         }
 
-    @router.get("/reembed/{task_id}")
+    @router.get("/reembed/{task_id}", dependencies=[Depends(require_scope("admin"))])
     async def reembed_progress(task_id: str) -> dict[str, Any]:
         """Check re-embedding task progress."""
         from app.workers.reembed import celery_app

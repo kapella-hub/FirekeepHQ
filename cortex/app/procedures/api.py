@@ -1,9 +1,10 @@
 """GET /procedures — what the dashboard reads.
 
-Scope note: unlike the skills router (which declares no dependencies= and
-contains no require_scope at all), these routes are gated. Accepting a proposal
-is still a PATCH /skills/{id} and therefore still as ungated as it is today —
-retrofitting a gate onto a shipped surface belongs in its own change.
+Scope note: accepting a proposal is a PATCH /skills/{id}. Since 2026-10-01
+that route requires memory:write and a skill in the caller's workspace;
+step_specs edits stay open to agent keys, while review decisions (status,
+flags, rewriting a non-draft skill) require admin -- see
+docs/THREAT-MODEL.md section 5.10.
 
 TENANCY. `memory:read` is a permission, not a boundary: it is held by every
 agent key in the deployment, and these two reads returned EVERY workspace's

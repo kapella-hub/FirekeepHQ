@@ -165,7 +165,8 @@ it touches nothing (see step 2).
      stay up. See `MIGRATION_FREEZE` in
      [`docs/guides/cortex-configuration.md`](cortex-configuration.md) for the
      exact route list — including the one write path it does NOT cover.
-     `POST /admin/embeddings/reembed` is that path: it isn't gated, and it
+     `POST /admin/embeddings/reembed` is that path: it has no freeze gate
+     (it is admin-scoped since 2026-10-01, which is a different gate), and it
      only enqueues Celery work, which `cortex-worker` being stopped for this
      freeze means it sits queued and fires the moment the worker restarts at
      unfreeze (step 7) — do not trigger it during the window.

@@ -107,6 +107,26 @@ CAPTURED_2="$(printf '%s\n' "$OUT2" | grep -oE 'nxs_[0-9a-f]{48}' | head -n1 || 
 DBSIZE2="$(docker exec "$CONTAINER" redis-cli -n 7 DBSIZE)"
 [ "$DBSIZE1" = "$DBSIZE2" ] || { echo "FAIL: DBSIZE changed $DBSIZE1 -> $DBSIZE2"; exit 1; }
 
+# --- Run 3: scope reconciliation on a key provisioned before a scope existed --
+# A deployment bootstrapped before 2026-10-01 holds a bridge key WITHOUT
+# memory:read, and POST /memory/recall now declares it. ensure_env_key must add
+# the missing scope in place (union only, same plaintext, no mint), and must
+# never remove a scope an operator added by hand.
+BRIDGE_HASH="$(printf '%s' "$BRIDGE_KEY_1" | { sha256sum 2>/dev/null || shasum -a 256; } | awk '{print $1}')"
+docker exec "$CONTAINER" redis-cli -n 7 HSET "auth:key:${BRIDGE_HASH}" scopes     '["memory:write","session:read","eval:read","eval:write","eval:grade","relay:read"]' > /dev/null
+OUT3="$(bash deploy/bootstrap-keys.sh)"
+echo "$OUT3" | grep -q '\[RECONCILED\] FIREKEEP_BRIDGE_KEY scopes += memory:read'     || { echo "FAIL: bridge key scopes not reconciled"; echo "$OUT3"; exit 1; }
+echo "$OUT3" | grep -q '0 key(s) minted' || { echo "FAIL: reconciliation minted keys"; echo "$OUT3"; exit 1; }
+echo "$OUT3" | grep -qE 'nxs_[0-9a-f]{48}' && { echo "FAIL: reconciliation leaked a plaintext"; exit 1; }
+SCOPES3="$(docker exec "$CONTAINER" redis-cli -n 7 HGET "auth:key:${BRIDGE_HASH}" scopes)"
+for want in memory:read memory:write eval:grade relay:read; do
+    echo "$SCOPES3" | grep -q "\"$want\"" || { echo "FAIL: reconciled scopes lost/missed $want: $SCOPES3"; exit 1; }
+done
+OUT4="$(bash deploy/bootstrap-keys.sh)"
+echo "$OUT4" | grep -q 'RECONCILED' && { echo "FAIL: reconciliation is not idempotent"; echo "$OUT4"; exit 1; }
+# Restore the canonical set so the layout check below sees the declared scopes.
+docker exec "$CONTAINER" redis-cli -n 7 HSET "auth:key:${BRIDGE_HASH}" scopes     '["memory:read","memory:write","session:read","eval:read","eval:write","eval:grade"]' > /dev/null
+
 # --- Layout check: the REAL validator accepts the bootstrapped key -----------
 "$PYTHON_BIN" - "$INTERNAL_KEY_1" "$RELAY_KEY_1" "$WORKSPACE_ID" "$OWNER_MEMBER_ID" "$BRIDGE_KEY_1" <<'PY'
 import asyncio, sys
@@ -146,7 +166,7 @@ async def main():
     assert bridge["member_id"] == sys.argv[4], bridge
     assert "agent_id" not in bridge, bridge
     assert set(bridge["scopes"]) == {
-        "memory:write", "session:read", "eval:read", "eval:write", "eval:grade",
+        "memory:read", "memory:write", "session:read", "eval:read", "eval:write", "eval:grade",
     }, bridge
     assert "admin" not in bridge["scopes"] and "*" not in bridge["scopes"], bridge
 

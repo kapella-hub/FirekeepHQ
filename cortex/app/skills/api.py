@@ -18,6 +18,9 @@ from app.skills.search import search_skill_points
 from app.models import (
     SkillRequest, SkillResponse, SkillPatchRequest, SkillEvaluateRequest
 )
+from auth import keys as _auth_keys
+from auth.middleware import require_any_scope
+from auth.principal import deployment_workspace_id
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +32,92 @@ LAST_RECALLED_KEY = "memory:last_recalled"
 # matching. Everything else (skill_status, stale, needs_rereview) is lifecycle
 # bookkeeping the embedding never encoded, and stays a cheap payload-only write.
 SEMANTIC_PATCH_FIELDS = ("content", "trigger", "symptoms")
+
+# Every write route on this router is authenticated by the global key
+# middleware, and until 2026-10-01 that was ALL it was: any valid key -- the
+# narrowest service key included -- could DELETE any Qdrant point by id (a
+# member-private memory as easily as a skill, since nothing checked
+# memory_type), and could PATCH its own poisoned draft to `active`, which IS
+# the human approval act. `admin` is kept alongside `memory:write` for the
+# reason given in docs/guides/replay-evals-patterns.md: `scopes_allow` treats
+# only "*" as a superset, so a literal ["admin"] key would otherwise lose a
+# route it could always reach.
+_skill_write = require_any_scope("memory:write", "admin")
+_skill_read = require_any_scope("memory:read", "admin")
+
+# PATCH fields that record a REVIEW decision -- what the dashboard's review
+# queue sends, and nothing else does. An agent key may author and refine a
+# draft; deciding that a skill is fit to be shown to every agent (or retiring
+# one, or clearing a flag the ladder/staleness sweep raised for a human) is the
+# human act, so it needs review authority, not memory:write.
+_REVIEW_PATCH_FIELDS = ("skill_status", "needs_rereview", "stale")
+
+
+def _has_review_authority(identity: dict[str, Any]) -> bool:
+    """Admin (or "*") when auth is enforced; anyone when it is not.
+
+    The auth-disabled branch is deliberate and narrow: with AUTH_ENABLED=false
+    no key middleware is installed, every caller -- the dashboard and every
+    agent alike -- IS the anonymous deployment-owner principal, and there is no
+    identity left to tell a human from an agent. Refusing here would only break
+    the dashboard review queue on those boxes while protecting nothing, which
+    is why this is NOT require_scope("admin") (whose auth-off branch refuses
+    admin to everyone, correctly, for secrets). Recorded as a residual in
+    docs/THREAT-MODEL.md section 5.10.
+    """
+    if not _auth_keys._AUTH_ENABLED:
+        return True
+    return _auth_keys.scopes_allow(identity.get("scopes", []), "admin")
+
+
+def _require_review_authority(identity: dict[str, Any], what: str) -> None:
+    if not _has_review_authority(identity):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"{what} is a skill review decision and requires 'admin' "
+                f"(the dashboard review queue); key has {identity.get('scopes', [])}"
+            ),
+        )
+
+
+async def _load_owned_skill(
+    vector: VectorClient, settings: Any, skill_id: str, identity: dict[str, Any],
+) -> Any:
+    """The skill point `skill_id`, or 404 -- never another kind of point.
+
+    A point that is not `memory_type == "skill"` (a memory, a corpus chunk, a
+    dream, another member's private document) or that lives in another
+    workspace is reported exactly like a missing one, so an id guessed or
+    lifted from a recall result discloses nothing. A point with NO recorded
+    workspace belongs to the deployment's own -- the rule
+    workspace_migration.backfill_memories and procedures/api.py already apply.
+
+    A lookup FAILURE refuses (503): without the point there is no way to verify
+    what the id names, and the destructive routes must not act on a guess.
+    """
+    try:
+        points = await vector._client.retrieve(
+            collection_name=settings.QDRANT_COLLECTION,
+            ids=[skill_id],
+            with_payload=True,
+            with_vectors=False,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Skill %s lookup failed: %s", skill_id, exc)
+        raise HTTPException(
+            status_code=503,
+            detail="Skill store unavailable; nothing was changed",
+        ) from exc
+    if not points:
+        raise HTTPException(status_code=404, detail="Skill not found")
+    payload = points[0].payload or {}
+    if payload.get("memory_type") != "skill":
+        raise HTTPException(status_code=404, detail="Skill not found")
+    owner_ws = payload.get("workspace_id") or deployment_workspace_id()
+    if owner_ws != identity.get("workspace_id"):
+        raise HTTPException(status_code=404, detail="Skill not found")
+    return points[0]
 
 
 def create_skills_router(
@@ -128,11 +217,15 @@ def create_skills_router(
             await _record_skill_usage(request, [r.id for r in results])
             try:
                 from app.main import _replay_emit
+                from auth.principal import request_principal
 
                 sid = request.headers.get("X-Session-Id", "unknown")
                 aid = request.headers.get("X-Agent-Id", "unknown")
+                principal = request_principal(request)
                 await _replay_emit(
                     "memory_read", session_id=sid, agent_id=aid,
+                    workspace_id=principal.get("workspace_id"),
+                    member_id=principal.get("member_id"),
                     payload={
                         "memory_ids": [r.id for r in results][:50],
                         "result_count": len(results),
@@ -146,18 +239,14 @@ def create_skills_router(
     @router.get("/skills/{skill_id}", response_model=SkillResponse)
     async def get_skill(
         skill_id: str,
+        identity: dict = Depends(_skill_read),
         vector: VectorClient = Depends(get_vector),
     ):
         settings = settings_fn()
-        points = await vector._client.retrieve(
-            collection_name=settings.QDRANT_COLLECTION,
-            ids=[skill_id],
-            with_payload=True,
-            with_vectors=False,
-        )
-        if not points:
-            raise HTTPException(status_code=404, detail="Skill not found")
-        return _point_to_response(points[0])
+        # Same guard as the write routes: this returned ANY point's content by
+        # id, so a member-private memory id read back through here verbatim.
+        point = await _load_owned_skill(vector, settings, skill_id, identity)
+        return _point_to_response(point)
 
     @router.post("/skills", response_model=SkillResponse, status_code=201,
                 dependencies=[Depends(require_not_frozen)])
@@ -268,18 +357,31 @@ def create_skills_router(
         skill_id: str,
         req: SkillPatchRequest,
         request: Request,
+        identity: dict = Depends(_skill_write),
         vector: VectorClient = Depends(get_vector),
     ):
         settings = settings_fn()
-        points = await vector._client.retrieve(
-            collection_name=settings.QDRANT_COLLECTION,
-            ids=[skill_id],
-            with_payload=True,
-            with_vectors=False,
-        )
-        if not points:
-            raise HTTPException(status_code=404, detail="Skill not found")
+        points = [await _load_owned_skill(vector, settings, skill_id, identity)]
         current = points[0].payload or {}
+        # Review decisions need review authority. Checked BEFORE any write and
+        # against the request as a whole, so a refused PATCH changes nothing.
+        review_fields = [f for f in _REVIEW_PATCH_FIELDS if getattr(req, f) is not None]
+        if req.clear_duplicate_of:
+            review_fields.append("clear_duplicate_of")
+        if review_fields:
+            _require_review_authority(identity, "Setting " + ", ".join(review_fields))
+        # Rewriting what an APPROVED (or trial/deprecated) skill says is
+        # approval by the back door: the text agents are shown changes and no
+        # human saw it. A draft is still its author's to refine. step_specs are
+        # deliberately NOT here -- skill_add_step_specs compiles them onto
+        # existing skills over MCP with the caller's key, and arming a
+        # procedure is already admin-only (PUT /procedures/{id}/mode).
+        semantic = [f for f in SEMANTIC_PATCH_FIELDS if getattr(req, f) is not None]
+        if semantic and current.get("skill_status", "draft") != "draft":
+            _require_review_authority(
+                identity,
+                f"Editing {', '.join(semantic)} of a {current.get('skill_status')} skill",
+            )
         updates: dict[str, Any] = {}
         if req.skill_status is not None:
             updates["skill_status"] = req.skill_status
@@ -405,19 +507,20 @@ def create_skills_router(
     async def delete_skill(
         skill_id: str,
         request: Request,
+        identity: dict = Depends(_skill_write),
         vector: VectorClient = Depends(get_vector),
     ):
         settings = settings_fn()
+        # Deleting is a review decision (the dashboard's Reject / Delete); no
+        # agent-facing tool deletes a skill. This route used to delete whatever
+        # point id it was handed -- skill or not, any workspace -- and went
+        # ahead even when the lookup failed. Now the point is verified first,
+        # and an unverifiable one is refused (503), never deleted blind.
+        _require_review_authority(identity, "Deleting a skill")
+        point = await _load_owned_skill(vector, settings, skill_id, identity)
         # Deleting a fleet DRAFT is the human saying "no" — the only rejection
         # signal that exists, and it vanishes with the point, so record it first.
-        try:
-            points = await vector._client.retrieve(
-                collection_name=settings.QDRANT_COLLECTION, ids=[skill_id],
-                with_payload=True, with_vectors=False,
-            )
-            current = (points[0].payload or {}) if points else {}
-        except Exception:  # noqa: BLE001 — a lookup failure must not block the delete
-            current = {}
+        current = point.payload or {}
         if current.get("origin_job") and current.get("skill_status") == "draft":
             from app.fleet import ledger as _ledger
             _r = getattr(request.app.state, "redis_client", None)
