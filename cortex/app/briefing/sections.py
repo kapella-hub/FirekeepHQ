@@ -614,10 +614,17 @@ async def environment_section(http_client, settings) -> Section:
     }}
 
 
-async def tasks_section(http_client, settings, agent_id: str) -> Section:
-    """Relay pending task inbox for this agent."""
+async def tasks_section(
+    http_client, settings, agent_id: str, *, caller_api_key: str | None,
+) -> Section:
+    """Relay pending task inbox for this agent.
+
+    Fetched with the CALLER's key, never FIREKEEP_INTERNAL_KEY: `agent_id` is a
+    caller-supplied query parameter, so a service key here would answer for
+    whichever agent the caller names (see resumable_sessions_section).
+    """
     body = await _get_json(
-        http_client, f"{settings.RELAY_URL}/tasks", settings.FIREKEEP_INTERNAL_KEY,
+        http_client, f"{settings.RELAY_URL}/tasks", caller_api_key,
         params={"assignee": agent_id, "status": "pending", "limit": 3},
     )
     tasks = body.get("tasks", []) or []
@@ -625,10 +632,10 @@ async def tasks_section(http_client, settings, agent_id: str) -> Section:
     return {"status": status, "error": None, "data": {"count": len(tasks), "tasks": tasks}}
 
 
-async def bulletins_section(http_client, settings) -> Section:
-    """Relay bulletin board headlines."""
+async def bulletins_section(http_client, settings, *, caller_api_key: str | None) -> Section:
+    """Relay bulletin board headlines, read with the caller's key."""
     body = await _get_json(
-        http_client, f"{settings.RELAY_URL}/bulletin", settings.FIREKEEP_INTERNAL_KEY,
+        http_client, f"{settings.RELAY_URL}/bulletin", caller_api_key,
         params={"limit": 2},
     )
     posts = body.get("posts", []) or []
@@ -636,7 +643,9 @@ async def bulletins_section(http_client, settings) -> Section:
     return {"status": status, "error": None, "data": {"posts": posts}}
 
 
-async def resumable_sessions_section(http_client, settings, agent_id: str) -> Section:
+async def resumable_sessions_section(
+    http_client, settings, agent_id: str, *, caller_api_key: str | None,
+) -> Section:
     """Bridge paused+active sessions fanned in with Relay presence for crash check.
 
     Bridge /sessions is primary (its failure -> section unavailable). Relay
@@ -648,8 +657,19 @@ async def resumable_sessions_section(http_client, settings, agent_id: str) -> Se
     it — same session_id, or a presence that predates the session's last
     update (see `_presence_is_live_for`). A newer-than presence for an
     unrelated process must NOT suppress the crash flag (audit defect #20).
+
+    CONFUSED DEPUTY, closed 2026-10-01. `agent_id` comes from the caller's
+    query string, and these fetches used FIREKEEP_INTERNAL_KEY — a workspace
+    service credential — so `GET /briefing?agent_id=alice` by Bob returned
+    Alice's session goals and presence, with Cortex vouching for the read.
+    They now present the LIVE caller's own key (`caller_api_key`, None when
+    auth is off), so Bridge and Relay authorize the read against the person
+    actually asking. Keyword-only and required on purpose: a builder that
+    forgets it is a TypeError, not a silent fall-back to a service key. This
+    closes the Cortex half; Bob's key still lists Alice's sessions until Bridge
+    filters GET /sessions by the verified owner member (the Bridge-side fix).
     """
-    key = settings.FIREKEEP_INTERNAL_KEY
+    key = caller_api_key
     paused = await _get_json(http_client, f"{settings.BRIDGE_URL}/sessions", key,
                              params={"status": "paused", "agent_id": agent_id, "limit": 3})
     active = await _get_json(http_client, f"{settings.BRIDGE_URL}/sessions", key,

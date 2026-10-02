@@ -68,6 +68,13 @@ def create_briefing_router(section_timeout: float = 2.0) -> APIRouter:
         st = request.app.state
         settings = get_settings()
         scopes = identity.get("scopes", [])
+        # The outbound user-scoped sections (tasks, bulletins, resumable
+        # sessions) act FOR this caller, so they carry this caller's key — the
+        # one require_scope just verified — never a service key. Auth-off: the
+        # caller is the anonymous principal and nothing is forwarded.
+        caller_api_key = (
+            request.headers.get("X-API-Key") if identity.get("authenticated") else None
+        )
         briefing_id = uuid.uuid4().hex
         ab_group = random.choice(["treatment", "control"])
         # PR5 D1: member-level arm, from the SAME verified member string
@@ -78,8 +85,10 @@ def create_briefing_router(section_timeout: float = 2.0) -> APIRouter:
         # concurrently); render.py imposes the display order.
         builders: dict[str, Awaitable[Section]] = {
             "environment": S.environment_section(st.http_client, settings),
-            "tasks": S.tasks_section(st.http_client, settings, agent_id),
-            "bulletins": S.bulletins_section(st.http_client, settings),
+            "tasks": S.tasks_section(
+                st.http_client, settings, agent_id, caller_api_key=caller_api_key),
+            "bulletins": S.bulletins_section(
+                st.http_client, settings, caller_api_key=caller_api_key),
             "quality": S.quality_section(st.replay_redis),
             "strategy_tips": S.strategy_tips_section(st.replay_redis, goal, briefing_id, ab_group),
             "observed": S.observed_patterns_section(st.replay_redis, agent_id, goal),
@@ -98,7 +107,8 @@ def create_briefing_router(section_timeout: float = 2.0) -> APIRouter:
             ),
             "discipline": S.discipline_section(st.redis_client, st.replay_redis),
             "dlq": S.dlq_section(),
-            "resumable_sessions": S.resumable_sessions_section(st.http_client, settings, agent_id),
+            "resumable_sessions": S.resumable_sessions_section(
+                st.http_client, settings, agent_id, caller_api_key=caller_api_key),
             "grading_nudge": S.grading_nudge_section(st.replay_redis, briefing_id, arm),
         }
 

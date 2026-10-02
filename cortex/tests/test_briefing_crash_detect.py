@@ -53,7 +53,8 @@ def _routes(presence):
 async def test_orphaned_active_no_presence_is_crashed():
     # 404 -> our client returns {} -> treated as no presence
     client = _Client(_routes(_Resp({})))
-    sec = await S.resumable_sessions_section(client, _SETTINGS, agent_id="moganes")
+    sec = await S.resumable_sessions_section(
+        client, _SETTINGS, agent_id="moganes", caller_api_key="nxs_caller")
     reasons = {s["reason"] for s in sec["data"]["sessions"]}
     assert "crashed" in reasons
     assert sec["data"]["crash_check"]["presence_live"] is False
@@ -64,7 +65,8 @@ async def test_matching_session_id_presence_not_crashed():
     presence = _Resp({"agent_id": "moganes", "session_id": "act1",
                       "started_at": str(_SESS_UPDATED_EPOCH + 999), "status": "active"})
     client = _Client(_routes(presence))
-    sec = await S.resumable_sessions_section(client, _SETTINGS, agent_id="moganes")
+    sec = await S.resumable_sessions_section(
+        client, _SETTINGS, agent_id="moganes", caller_api_key="nxs_caller")
     # Same session id -> alive -> NOT flagged crashed.
     assert all(s["reason"] != "crashed" for s in sec["data"]["sessions"])
     assert sec["data"]["crash_check"]["presence_live"] is True
@@ -78,7 +80,8 @@ async def test_different_session_newer_presence_still_crashed():
     presence = _Resp({"agent_id": "moganes", "session_id": "other-session",
                       "started_at": str(_SESS_UPDATED_EPOCH + 3600), "status": "active"})
     client = _Client(_routes(presence))
-    sec = await S.resumable_sessions_section(client, _SETTINGS, agent_id="moganes")
+    sec = await S.resumable_sessions_section(
+        client, _SETTINGS, agent_id="moganes", caller_api_key="nxs_caller")
     reasons = {s["reason"] for s in sec["data"]["sessions"]}
     assert "crashed" in reasons
     assert sec["data"]["crash_check"]["presence_live"] is False
@@ -90,6 +93,7 @@ async def test_different_session_predating_presence_is_alive():
     presence = _Resp({"agent_id": "moganes", "session_id": "other-session",
                       "started_at": str(_SESS_UPDATED_EPOCH - 3600), "status": "active"})
     client = _Client(_routes(presence))
-    sec = await S.resumable_sessions_section(client, _SETTINGS, agent_id="moganes")
+    sec = await S.resumable_sessions_section(
+        client, _SETTINGS, agent_id="moganes", caller_api_key="nxs_caller")
     assert all(s["reason"] != "crashed" for s in sec["data"]["sessions"])
     assert sec["data"]["crash_check"]["presence_live"] is True
