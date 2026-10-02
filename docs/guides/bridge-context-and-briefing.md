@@ -70,7 +70,11 @@ pre-outcome-truth, label-only behavior on every terminal call: any caller
 presenting the matching `agent_id` label can complete, abandon, or take it
 over, exactly as before this PR shipped. Narrowed, not eliminated — every
 session an identity-aware client creates FROM NOW ON is bound at birth; the
-residual is sessions that predate binding.
+residual is sessions that predate binding. **Closed 2026-10-01:** a legacy
+session now belongs to the deployment owner member alone, on every terminal
+call and every read — see "Session ownership" below. (A legacy session still
+never stores a grade: `complete_session` keeps reporting
+`task_result_dropped`, because there is no verified binding to attribute it to.)
 
 **First-graded-wins, and re-completion reports the AUTHORITATIVE stored
 grade, never the caller's own submission.** `complete_session` reads the
@@ -206,6 +210,70 @@ Guards: `bridge/tests/test_mcp_session_security.py` — including an end-to-end
 case where a fake Cortex returns the owner's member-private chunk only to an
 owner-member key, and Bob's `ctx_update` must present Bob's key and leave that
 chunk out of his shadow.
+
+## Session ownership (2026-10-01 — `bridge/app/session.py` `session_owned_by`)
+
+A session belongs to the **verified workspace + member** that started it, taken
+from the authenticated request (`auth/principal.py`) and written once into the
+session hash as `owner_member` and `owner_workspace`. `X-Agent-Id` and the
+`agent_id` tool argument are display labels and authorize nothing — two members
+can share a label (`default`, `codex`), and anyone can type someone else's.
+Before this (2026-10-01 authz audit, F3) `ctx_list_sessions` listed every
+member's sessions, `ctx_get_shadow` returned any of them in full, and
+`ctx_update` — through the label pointer or an `X-Session-Id` header — wrote
+into them, poisoning the victim's post-compaction restore and the memory
+distilled from it.
+
+One predicate, `session_owned_by(meta, caller)`, gates every path:
+
+| Surface | Not the caller's session |
+|---|---|
+| `ctx_list_sessions` | not listed; `agent_id` narrows, never widens |
+| `ctx_get_shadow` | reads exactly like a missing session; through another member's label pointer, like no pointer at all (the id is not leaked) |
+| `ctx_update` (named, `X-Session-Id`, or label pointer) | refused before any write or status message |
+| `ctx_complete_session`, `ctx_resume_session`, `ctx_abandon_session` | refused ("belongs to a different verified owner") |
+| `ctx_start_session`, `ctx_resume_session` under a label whose pointer names another member's session | refused ("agent_id … is in use by another member's session"); that session is never paused and the pointer never moved |
+| `GET /sessions`, `GET /sessions/{id}` | not listed / `404`, same as missing |
+| `POST /sessions/{agent_id}/context` | `404`, nothing written |
+
+**Legacy sessions** (no `owner_member` — started before outcome-truth PR1, or
+outside any request context) belong to the **deployment owner member**
+(`FIREKEEP_OWNER_MEMBER_ID`) in the deployment workspace, and to no one else:
+fail closed for every teammate without locking the owner out of their own
+pre-existing history. Sessions bound before `owner_workspace` existed match on
+member alone. With **auth disabled** every caller is that owner principal, so
+personal mode sees exactly what it saw before.
+
+**Workspace-wide reads** — `GET /sessions` and `GET /sessions/{id}` only — need
+the service-only scope `session:read:workspace` (or `"*"`). It is minted onto
+`FIREKEEP_INTERNAL_KEY`, the key Cortex's OWM, skill scoring/synthesis and
+pattern workers read sessions with; `deploy/bootstrap-keys.sh`
+(`ensure_key_scope`, run by `update.sh`) adds it in place to an internal key
+minted before 2026-10-01. Until then those workers see only the owner's
+sessions — closed, not open. Prior art's "in flight" line is confined to the
+caller's workspace; teammates' goals stay visible inside it by design.
+
+**The label pointer is still shared.** `nb:active:{agent_id}` stays keyed by
+label; start/resume read it, refuse when it names an existing session another
+member owns, and hand the value they checked to the Lua script as a
+compare-and-set (`ARGV[5]`), retrying if it moved. The consequence: two members
+using one label cannot both hold it — the second is refused until the first's
+session ends, and should pick a distinct `agent_id`. Member-namespaced pointer
+keys would remove that, at the cost of a pointer migration; not done here.
+
+**Relay's decision writes.** Relay persists FirekeepScope decisions through
+`POST /sessions/{agent_id}/context` with `RELAY_INTERNAL_API_KEY`, which carries
+the deployment owner's member. Those writes now land only in the owner's (and
+legacy) sessions: a teammate's `origin:"mcp"` scope decisions are refused
+with a `404` that Relay's best-effort `_persist_to_bridge` does not inspect,
+until Relay forwards the initiating member's credential. Refusing is deliberate — Relay takes the target `agent_id` from the
+scope session body, so a deputy scope here would let Bob write into Alice's
+shadow through a scope session named after her.
+
+Guards: `bridge/tests/test_session_ownership.py` (predicate + a fakeredis
+Bob-vs-Alice sweep over every tool), `test_rest_session_ownership.py`,
+`test_verified_session_attribution.py` (start binding, the pointer guard, and
+— where `lupa` is installed — the Lua compare-and-set itself).
 
 ## Shadow Residency Contract (Bridge — Phase C, `bridge/app/residency.py`)
 `ctx_get_shadow()` with no argument is a FULL restore, byte-identical to what it has always returned. **That is the default and it is always correct.** A caller may opt into a delta by passing back `since=<shadow_cursor>` — the opaque cursor from an earlier response in the SAME conversation — which asserts exactly one thing: *the earlier shadow is still visible in my context*. `residency.py` is pure functions, no I/O; the wiring is in `mcp_server.py`'s `ctx_get_shadow`.

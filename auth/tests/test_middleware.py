@@ -57,11 +57,14 @@ class TestScopes:
             # Service-only: honored exclusively by POST /evals/sessions/{id}/compute's
             # task_result hint, minted only onto the dedicated Bridge credential.
             "eval:grade",
+            # Service-only (2026-10-01): workspace-wide Bridge session reads
+            # over REST, minted only onto FIREKEEP_INTERNAL_KEY.
+            "session:read:workspace",
         }
         assert SCOPES == expected
 
     def test_scope_count(self):
-        assert len(SCOPES) == 14
+        assert len(SCOPES) == 15
 
 
 @pytest.fixture

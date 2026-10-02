@@ -35,7 +35,7 @@ class FirekeepKeyAuthMiddleware:
 
     On success the verified identity is attached to
     scope["state"]["identity"] = {"workspace_id", "member_id",
-    "credential_id", "scopes"} so
+    "credential_id", "scopes", "authenticated": True} so
     downstream handlers can trust it over self-declared X-Agent-Id.
     """
 
@@ -122,6 +122,11 @@ class FirekeepKeyAuthMiddleware:
             "member_id": identity["member_id"],
             "credential_id": identity["credential_id"],
             "scopes": identity["scopes"],
+            # Marks a principal this middleware verified against the key
+            # store, as distinct from the auth-disabled anonymous principal
+            # (authenticated=False, auth/principal.py). validate_key already
+            # returns it; it was dropped here when the four fields were copied.
+            "authenticated": True,
         }
         await self.app(scope, receive, send)
 

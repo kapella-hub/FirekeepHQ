@@ -266,7 +266,7 @@ run_capture() {  # stdin = simulated bootstrap output -> echoes captured key
 
 # Shape taken from deploy/bootstrap-keys.sh's actual fresh-run output.
 GOT="$(run_capture <<EOF
-[MINTED] FIREKEEP_INTERNAL_KEY  (agent_id=firekeep-internal scopes=["memory:write","session:read","eval:read","eval:write"])
+[MINTED] FIREKEEP_INTERNAL_KEY  (agent_id=firekeep-internal scopes=["memory:write","session:read","eval:read","eval:write","session:read:workspace"])
 [MINTED] DASHBOARD_API_KEY  (agent_id=firekeep-dashboard scopes=["*"])
 [MINTED] RELAY_INTERNAL_API_KEY  (agent_id=firekeep-relay scopes=["session:write"])
 [MINTED] FIREKEEP_BRIDGE_KEY  (agent_id=firekeep-bridge scopes=["memory:read","memory:write","session:read","eval:read","eval:write","eval:grade"])
@@ -518,6 +518,22 @@ case "$BOOTSTRAP" in
     *'ensure_env_key FIREKEEP_BRIDGE_KEY firekeep-bridge '"'"'["memory:read","memory:write","session:read","eval:read","eval:write","eval:grade"]'"'"*)
         pass "bridge key carries exactly the internal scopes plus memory:read and eval:grade" ;;
     *) fail "bridge key carries exactly the internal scopes plus memory:read and eval:grade" ;;
+esac
+
+# --- the internal key reads Bridge sessions workspace-wide (2026-10-01) ------
+# Bridge's REST session routes show a session:read key only its own member's
+# sessions; Cortex's workers read every session with FIREKEEP_INTERNAL_KEY, so
+# that key alone carries the service-only session:read:workspace — minted for
+# new installs AND added in place to a key minted before the scope existed.
+case "$BOOTSTRAP" in
+    *'ensure_env_key FIREKEEP_INTERNAL_KEY  firekeep-internal  '"'"'["memory:write","session:read","eval:read","eval:write","session:read:workspace"]'"'"*)
+        pass "internal key is minted with session:read:workspace" ;;
+    *) fail "internal key is minted with session:read:workspace" ;;
+esac
+case "$BOOTSTRAP" in
+    *'ensure_key_scope FIREKEEP_INTERNAL_KEY session:read:workspace'*)
+        pass "existing internal keys are upgraded to session:read:workspace" ;;
+    *) fail "existing internal keys are upgraded to session:read:workspace" ;;
 esac
 
 # --- vault_status_line must not claim a control that is not serving ----------

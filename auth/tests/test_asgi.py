@@ -83,6 +83,10 @@ class TestEnabled:
         assert "agent_id" not in body["identity"]
         assert body["identity"]["scopes"] == ["replay:read", "eval:read"]
         assert body["identity"]["credential_id"] == seeded_key["key_id"]
+        # The verified marker (2026-10-01): distinguishes a principal this
+        # middleware checked against the key store from the auth-disabled
+        # anonymous owner (authenticated=False).
+        assert body["identity"]["authenticated"] is True
 
     @pytest.mark.asyncio
     async def test_missing_key_401(self, redis):
