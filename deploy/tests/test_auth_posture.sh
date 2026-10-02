@@ -269,7 +269,7 @@ GOT="$(run_capture <<EOF
 [MINTED] FIREKEEP_INTERNAL_KEY  (agent_id=firekeep-internal scopes=["memory:write","session:read","eval:read","eval:write"])
 [MINTED] DASHBOARD_API_KEY  (agent_id=firekeep-dashboard scopes=["*"])
 [MINTED] RELAY_INTERNAL_API_KEY  (agent_id=firekeep-relay scopes=["session:write"])
-[MINTED] FIREKEEP_BRIDGE_KEY  (agent_id=firekeep-bridge scopes=["memory:write","session:read","eval:read","eval:write","eval:grade"])
+[MINTED] FIREKEEP_BRIDGE_KEY  (agent_id=firekeep-bridge scopes=["memory:read","memory:write","session:read","eval:read","eval:write","eval:grade"])
 
 ============================================================
   ADMIN API KEY — shown ONCE, not written to disk.
@@ -513,9 +513,11 @@ case "$BOOTSTRAP" in
     *) fail "mints FIREKEEP_BRIDGE_KEY" ;;
 esac
 case "$BOOTSTRAP" in
-    *'ensure_env_key FIREKEEP_BRIDGE_KEY firekeep-bridge '"'"'["memory:write","session:read","eval:read","eval:write","eval:grade"]'"'"*)
-        pass "bridge key carries exactly the internal scopes plus eval:grade" ;;
-    *) fail "bridge key carries exactly the internal scopes plus eval:grade" ;;
+    # memory:read (2026-10-01) is TRANSITIONAL: Bridge's prior-art/proactive
+    # recall use this key until they forward the caller's (see bootstrap-keys.sh).
+    *'ensure_env_key FIREKEEP_BRIDGE_KEY firekeep-bridge '"'"'["memory:read","memory:write","session:read","eval:read","eval:write","eval:grade"]'"'"*)
+        pass "bridge key carries exactly the internal scopes plus memory:read and eval:grade" ;;
+    *) fail "bridge key carries exactly the internal scopes plus memory:read and eval:grade" ;;
 esac
 
 # --- vault_status_line must not claim a control that is not serving ----------

@@ -586,6 +586,29 @@ class TestSessionContextPropagation:
             assert call_kwargs.kwargs.get("session_id") == "unknown"
             assert call_kwargs.kwargs.get("agent_id") == "unknown"
 
+    def test_recall_and_learn_events_carry_the_verified_principal(
+        self, test_client, mock_graph, mock_vector
+    ):
+        """/audit/* scopes non-admin callers by these two fields; an event
+        without them is invisible to every non-admin (cortex/app/audit.py)."""
+        from auth.principal import deployment_owner_member_id
+
+        mock_graph.query_related.return_value = []
+        mock_vector.search.return_value = []
+        mock_graph.merge_action_log.return_value = "graph-id-1"
+        mock_vector.upsert.return_value = "vector-id-1"
+
+        with patch("app.main._replay_emit", new_callable=AsyncMock) as mock_emit:
+            assert test_client.post(
+                "/memory/recall", json={"task": "principal stamping"}).status_code == 200
+            assert test_client.post(
+                "/memory/learn", json={"action": "a", "outcome": "o"}).status_code == 200
+
+        stamped = {c.args[0]: c.kwargs for c in mock_emit.call_args_list}
+        for event_type in ("memory_read", "memory_write"):
+            assert stamped[event_type]["workspace_id"] == deployment_workspace_id()
+            assert stamped[event_type]["member_id"] == deployment_owner_member_id()
+
     def test_learn_propagates_session_and_agent_id(
         self, test_client, mock_graph, mock_vector
     ):

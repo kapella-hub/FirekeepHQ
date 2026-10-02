@@ -497,11 +497,88 @@ Bob's shadow. The eval trigger keeps the service key on purpose (`eval:grade`;
 it returns nothing to the caller) — see `docs/guides/bridge-context-and-briefing.md`.
 
 **OPEN:**
-- Cortex `GET /briefing` fetches Bridge/Relay data with `FIREKEEP_INTERNAL_KEY`
-  (the Cortex half of F1; fixed separately).
 - Bridge's distillation worker writes with the service key, so every distillate
   is attributed to the owner member, not the member who did the work; a
   delegated-attribution contract is needed to fix it honestly.
+
+### 5.10 Authenticated is not authorized: Cortex route scopes
+
+**Mitigated 2026-10-01.** The global key middleware (§5.1) proves a caller holds
+*some* valid key. Until this date that was the only check on a set of Cortex routes
+that destroy data or reveal another member's, so every valid key — the narrowest
+service key, a teammate's laptop key, a leaked relay key — could:
+
+- **Delete any Qdrant point.** `DELETE /skills/{id}` deleted whatever id it was
+  handed, with no `memory_type` check, no workspace check and no scope, and went
+  ahead even when the lookup failed. Point ids come back in every recall result, so
+  a teammate's member-private document chunk was one call away.
+- **Approve its own skill.** `PATCH /skills/{id} {"skill_status": "active"}` is the
+  human approval act (it stamps `approved_by: "human"`), and nothing distinguished
+  the agent that drafted a poisoned skill from the human reviewing it.
+  `GET /skills/{id}` likewise returned any point's content by id.
+- **Re-embed the whole store** under a model of its choosing
+  (`POST /admin/embeddings/reembed?model=`).
+- **Read every member's recall queries** from `/audit/memory`, which returned each
+  `memory_read` event's query text to any caller.
+- **Use the core memory routes with any scope at all** — `/memory/recall`, `/learn`,
+  `/stream`, `/feedback`, `/contributors`, `/handoff` declared none, so a
+  `session:write`-only key could read and write the owner's memory.
+
+What changed. The memory routes declare `memory:read` / `memory:write` (each "or
+`admin`", because only `*` is a scope superset and a literal `["admin"]` key must
+not lose a route it always had); the streaming recall twin is gated the same way.
+`/skills/{id}` resolves the id to a point that is `memory_type == "skill"` in the
+caller's workspace and answers 404 for anything else, and 503 — never a blind
+delete — when the lookup fails. Review decisions (deleting a skill, any
+`skill_status` change, the `needs_rereview` / `stale` / `clear_duplicate_of` flags,
+and rewriting the text of a non-draft skill) require `admin`, which the dashboard's
+key holds and no member or service key does; an agent can still refine a draft and
+compile `step_specs`. Re-embedding is `admin`. `/audit/*` requires `replay:read`,
+never crosses a workspace, and shows a non-admin only the events stamped with its
+own `member_id` — `memory_read`/`memory_write` events now carry the verified
+`workspace_id`/`member_id` as stream fields. Guarded by
+`cortex/tests/test_peripheral_route_authorization.py`,
+`test_skill_route_authorization.py` and `test_audit_authorization.py`, which drive
+real minted keys through the real dependencies.
+
+Before any route was gated, every legitimate caller and the scopes its key carries
+was enumerated (the table is in the commit message). One needed a minting change:
+Bridge's prior-art and proactive recall call `/memory/recall` with
+`FIREKEEP_BRIDGE_KEY`, which had `memory:write` but not `memory:read`, and both
+swallow failures — gating without the scope would have silenced them on every
+deployment with no error anywhere. `deploy/bootstrap-keys.sh` now declares
+`memory:read` on that key and **reconciles scopes on already-provisioned keys**
+(union only, never narrowing), so `update.sh` fixes existing deployments in place.
+That grant is **transitional**: Bridge is moving those recalls to the caller's own
+key, after which `memory:read` should leave the bridge key's declared list and be
+narrowed by hand on deployed keys — reconciliation only ever adds.
+
+**Residuals.**
+
+- **Auth-disabled boxes allow review decisions.** With `AUTH_ENABLED=false` no
+  middleware runs and every caller is the anonymous deployment owner, so there is
+  no identity left to separate a human from an agent; refusing would only break the
+  dashboard review queue. Same posture as the rest of an auth-off box.
+- **Memory poisoning by a valid key is unchanged (threat 5).** These gates stop an
+  agent from *approving* or *rewriting an approved* skill, not from writing ordinary
+  memories, which every member key may do and recall will surface.
+- **Unattributed audit events are hidden from non-admins.** Events from before this
+  change, and server-written receipts (the briefing's skill-exposure receipt), carry
+  no member; a member cannot see their own pre-upgrade history. Fail-closed by
+  choice.
+- **Three skills routes still declare no scope:** `POST /skills`, `GET /skills`
+  and `POST /skill/evaluate`. Any valid key can file a draft skill; since a draft
+  now needs `admin` to become visible to agents, the blast radius is review-queue
+  noise, not poisoning. **OPEN.**
+- **Two cross-workspace reads remain on routes not covered here:** `GET /skills`
+  (the list) and `GET /memory/contributors` filter by project, not by workspace.
+  Both are bounded to holders of `memory:read` in a deployment that today runs one
+  workspace; they matter the day a second workspace shares a store. **OPEN.**
+- **The owner's service keys are owner-member principals.** `FIREKEEP_BRIDGE_KEY`
+  carries the deployment owner's `member_id`. Bridge's synchronous recall paths now
+  forward the live caller's key (§5.9), so the bridge key's transitional
+  `memory:read` can be dropped from `deploy/bootstrap-keys.sh` and narrowed by hand
+  on deployed keys.
 
 ## 6. Threats, ranked
 
@@ -519,6 +596,7 @@ it returns nothing to the caller) — see `docs/guides/bridge-context-and-briefi
 | 10 | Unauthenticated field-failure collector fabricates/floods failure data | **Mitigated, residual accepted** — enum-value validation, released-version allowlist, mail budget, locked state, sealed caps (§5.7); data stays low-integrity by construction and is labelled `integrity: "unverified"` downstream |
 | 11 | A compromised runtime with Hands enabled operates the human's desktop | **Mitigated, residuals OPEN** — the broker is a separate process with no grant route, injected input is rejected, permits are one-use and bound to the exact step, classification is on effects not model labels, fail closed (§5.8). Residuals: same-user permit theft, kernel-level injection, screenshots to the model provider, the unverified macOS source-state filter, and the broker's notification being informational (the chord approves the oldest pending permit whether or not the toast was read) |
 | 12 | Phone approvals approved by a key holder who is not the human | **Partly mitigated (2026-10-01), residual OPEN** — relay stamps the verified principal on every task write and the broker refuses an approve from the requesting credential (the kit key the driving agent shares), from an unauthenticated Keep, or from a relay too old to stamp. Residual: any *other* workspace credential can still approve unless `phone_approvers` pins the approvers, and a pinned dashboard credential is only as strong as its basic-auth password; the auth layer has no human-member notion. `phone_approvals` stays `False` by default (§5.8) |
+| 13 | A valid key of any scope deletes another member's data, approves its own skill, re-embeds the store, or reads teammates' recall queries | **Mitigated 2026-10-01** — scope + `memory_type` + workspace checks on `/skills/{id}`, `admin` for review decisions and re-embedding, member-scoped `/audit`, scopes declared on every core memory route (§5.10). Residuals: review decisions allowed on auth-disabled boxes, unattributed audit history hidden from members, `GET /skills` and `/memory/contributors` not workspace-filtered |
 
 Threat 5 deserves emphasis because it is the one the product's own design creates:
 Firekeep exists to make agents act on stored memory. Anything that can write a

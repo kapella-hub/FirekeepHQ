@@ -887,7 +887,7 @@ services:
       NB_MCP_PORT: "8070"
       NB_FIREKEEP_API_URL: http://cortex-api:8000
       # Task 5: bridge's OWN dedicated key (minted by deploy/bootstrap-keys.sh;
-      # scopes memory:write/session:read/eval:read/eval:write/eval:grade — NOT
+      # scopes memory:read/memory:write/session:read/eval:read/eval:write/eval:grade — NOT
       # admin), not the shared FIREKEEP_INTERNAL_KEY. eval:grade is
       # SERVICE_ONLY_SCOPES: it authorizes the task_result grade hint on
       # POST /evals/sessions/{id}/compute (cortex/app/evals/api.py) and no

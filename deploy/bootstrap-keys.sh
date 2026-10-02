@@ -22,7 +22,16 @@ set -euo pipefail
 #      the failure, so with auth ON the decisions would have silently stopped
 #      persisting with nothing but a warning in relay's log. Plaintext -> .env.
 #   4. FIREKEEP_BRIDGE_KEY — Bridge's own dedicated credential (Task 5). Scopes:
-#      memory:write, session:read, eval:read, eval:write, eval:grade. The last
+#      memory:read, memory:write, session:read, eval:read, eval:write,
+#      eval:grade. memory:read (2026-10-01) because Bridge's prior-art and
+#      proactive-recall paths POST /memory/recall with this key, and that
+#      route now declares memory:read — without it both would 403, and both
+#      swallow the failure, so they would simply go quiet. TRANSITIONAL: needed
+#      only while Bridge recalls with its own key. Once Bridge forwards the
+#      caller's key on those paths (fix/bridge-session-ownership), drop
+#      memory:read from the list below — and narrow already-provisioned keys
+#      by hand (HSET auth:key:<hash> scopes ...), because reconciliation only
+#      ever adds. The last
 #      scope is SERVICE-ONLY (auth/keys.py SERVICE_ONLY_SCOPES): it authorizes
 #      the task_result grade hint on POST /evals/sessions/{id}/compute
 #      (cortex/app/evals/api.py _hint_authorized) and is minted onto this ONE
@@ -44,8 +53,16 @@ set -euo pipefail
 #
 # Idempotency:
 #   - env-backed keys: if .env carries the key and its hash is registered,
-#     nothing happens. If .env has the key but Redis lost it (down -v), the
-#     hash is re-registered — same plaintext, NO rotation.
+#     no key is minted or rotated. If .env has the key but Redis lost it
+#     (down -v), the hash is re-registered — same plaintext, NO rotation.
+#   - scope reconciliation (2026-10-01): a registered env-backed key that is
+#     MISSING a scope declared below gets it added in place ([RECONCILED]).
+#     Union only — a scope is never removed, so an operator's deliberate
+#     widening survives, and narrowing stays a manual act. Without this a
+#     newly gated route 403s every deployment provisioned before the scope
+#     was declared, because the key already exists and was never revisited
+#     (the reason the Relay task routes were left ungated —
+#     docs/guides/relay-coordination.md).
 #   - admin key: marker auth:bootstrap:admin_hash records the admin key hash;
 #     if that hash is still registered, nothing is minted.
 #
@@ -108,6 +125,32 @@ ensure_deployment_id() {  # $1=env var  $2=prefix
 
 key_registered() { [ "$("${REDIS[@]}" EXISTS "auth:key:$1")" = "1" ]; }
 
+# Scope tokens of a JSON array of plain strings, one per line. Deliberately
+# jq-free (this script needs only bash, redis-cli and openssl); scope names are
+# [a-z:*] and never contain a quote, so the token grep is exact.
+scope_tokens() { printf '%s' "$1" | grep -oE '"[^"]*"' | tr -d '"' || true; }
+
+reconcile_scopes() {  # $1=hash  $2=declared scopes-json  -> prints added scopes
+    local hash="$1" declared="$2" stored merged added="" s
+    stored="$("${REDIS[@]}" HGET "auth:key:${hash}" scopes)"
+    merged="$stored"
+    while IFS= read -r s; do
+        [ -n "$s" ] || continue
+        if ! scope_tokens "$stored" | grep -qxF -- "$s"; then
+            added="${added:+$added,}$s"
+            if [ "$(scope_tokens "$merged" | wc -l)" -eq 0 ]; then
+                merged="[\"$s\"]"
+            else
+                merged="${merged%]},\"$s\"]"
+            fi
+        fi
+    done < <(scope_tokens "$declared")
+    if [ -n "$added" ]; then
+        "${REDIS[@]}" HSET "auth:key:${hash}" scopes "$merged" > /dev/null
+        printf '%s' "$added"
+    fi
+}
+
 register_hash() {  # $1=hash  $2=device_id  $3=scopes-json
     local hash="$1" credential_id
     credential_id="$(openssl rand -hex 8)"
@@ -167,7 +210,13 @@ ensure_env_key() {  # $1=env var  $2=device_id  $3=scopes-json
     else
         hash="$(sha256 "$key")"
         if key_registered "$hash"; then
-            echo "[OK] $var already provisioned"
+            local added
+            added="$(reconcile_scopes "$hash" "$scopes")"
+            if [ -n "$added" ]; then
+                echo "[RECONCILED] $var scopes += $added (plaintext unchanged)"
+            else
+                echo "[OK] $var already provisioned"
+            fi
         else
             register_hash "$hash" "$device_id" "$scopes"
             echo "[RE-REGISTERED] $var hash (Redis had lost it; plaintext unchanged)"
@@ -197,7 +246,7 @@ fi
 ensure_env_key FIREKEEP_INTERNAL_KEY  firekeep-internal  '["memory:write","session:read","eval:read","eval:write"]'
 ensure_env_key DASHBOARD_API_KEY firekeep-dashboard '["*"]'
 ensure_env_key RELAY_INTERNAL_API_KEY firekeep-relay '["session:write"]'
-ensure_env_key FIREKEEP_BRIDGE_KEY firekeep-bridge '["memory:write","session:read","eval:read","eval:write","eval:grade"]'
+ensure_env_key FIREKEEP_BRIDGE_KEY firekeep-bridge '["memory:read","memory:write","session:read","eval:read","eval:write","eval:grade"]'
 
 # --- 5: owner admin key (printed once, never stored) -------------------------
 #
