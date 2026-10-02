@@ -531,7 +531,7 @@ case "$BOOTSTRAP" in
     *) fail "internal key is minted with session:read:workspace" ;;
 esac
 case "$BOOTSTRAP" in
-    *'ensure_key_scope FIREKEEP_INTERNAL_KEY session:read:workspace'*)
+    *'added="$(reconcile_scopes "$hash" "$scopes")"'*)
         pass "existing internal keys are upgraded to session:read:workspace" ;;
     *) fail "existing internal keys are upgraded to session:read:workspace" ;;
 esac
