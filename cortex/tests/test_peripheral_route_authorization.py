@@ -58,11 +58,27 @@ def _required_scope_sets(route: APIRoute) -> list[set[str]]:
     return found
 
 
+def _api_routes(routes):
+    """Every APIRoute, on either FastAPI route-table shape.
+
+    0.128 flattens included routers into `app.routes`; 0.140+ wraps each in an
+    `_IncludedRouter` with no `.path` (see test_auth_admin_router_gating.py).
+    `fastapi>=0.115,<1` spans both, so a flat scan passes on a dev box and finds
+    nothing in CI. The factories below include routers WITHOUT a prefix, so a
+    nested route's own path is already the served path."""
+    for r in routes:
+        if isinstance(r, APIRoute):
+            yield r
+        inner = getattr(r, "original_router", None)
+        if inner is not None:
+            yield from _api_routes(inner.routes)
+
+
 def _route(application, path: str, method: str) -> APIRoute:
     routes = application.routes if hasattr(application, "routes") else application
     matches = [
-        r for r in routes
-        if isinstance(r, APIRoute) and r.path == path and method.upper() in r.methods
+        r for r in _api_routes(routes)
+        if r.path == path and method.upper() in r.methods
     ]
     assert len(matches) == 1, f"{method} {path}: {len(matches)} routes"
     return matches[0]
@@ -129,9 +145,10 @@ def test_route_declares_its_required_scope(factory, path, method, expected):
 
 def test_every_embedding_admin_route_is_scoped():
     """A route added to the router later must not ship ungated by omission."""
-    for route in _embedding_app().routes:
-        if isinstance(route, APIRoute):
-            assert _required_scope_sets(route), f"{route.path} declares no scope"
+    routes = list(_api_routes(_embedding_app().routes))
+    assert routes, "found no routes -- the walk is broken, not the gate"
+    for route in routes:
+        assert _required_scope_sets(route), f"{route.path} declares no scope"
 
 
 def test_reembed_refuses_anonymous_when_auth_is_disabled(monkeypatch):
