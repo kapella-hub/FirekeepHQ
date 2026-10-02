@@ -248,7 +248,7 @@ personal mode sees exactly what it saw before.
 the service-only scope `session:read:workspace` (or `"*"`). It is minted onto
 `FIREKEEP_INTERNAL_KEY`, the key Cortex's OWM, skill scoring/synthesis and
 pattern workers read sessions with; `deploy/bootstrap-keys.sh`
-(`ensure_key_scope`, run by `update.sh`) adds it in place to an internal key
+(`ensure_env_key`'s scope reconciliation, run by `update.sh`) adds it in place to an internal key
 minted before 2026-10-01. Until then those workers see only the owner's
 sessions — closed, not open. Prior art's "in flight" line is confined to the
 caller's workspace; teammates' goals stay visible inside it by design.
