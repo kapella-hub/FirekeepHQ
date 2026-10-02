@@ -8,12 +8,31 @@ from starlette.requests import Request
 
 import app.mcp_server as mcp_mod
 from app.mcp_server import handle_post_session_context
+from app.session import Caller
+
+# The deployment owner (auth/principal.py defaults). Relay's service key
+# carries this member; sess-001 below is a legacy (pre-owner_member) session,
+# which belongs to the deployment owner alone (F3, 2026-10-01).
+OWNER = Caller("workspace-local", "member-owner")
+OWNER_IDENTITY = {
+    "workspace_id": "workspace-local", "member_id": "member-owner",
+    "credential_id": "cred-relay", "scopes": ["session:write"],
+    "authenticated": True,
+}
+
+
+@pytest.fixture(autouse=True)
+def deployment_ids(monkeypatch):
+    monkeypatch.setenv("FIREKEEP_WORKSPACE_ID", "workspace-local")
+    monkeypatch.setenv("FIREKEEP_OWNER_MEMBER_ID", "member-owner")
 
 
 @pytest.fixture
 def mock_redis():
     r = AsyncMock()
     r.get = AsyncMock(return_value="sess-001")
+    r.hgetall = AsyncMock(return_value={"status": "active", "agent_id": "agent-x"})
+    r.hget = AsyncMock(return_value="active")
     r.lpush = AsyncMock()
     r.ltrim = AsyncMock()
     r.llen = AsyncMock(return_value=1)
@@ -30,6 +49,7 @@ class TestHandlePostSessionContext:
         result = await handle_post_session_context(
             mgr, agent_id="agent-x", category="decision",
             content="FirekeepScope screen sc_a1-1 resolved", key="sc_a1",
+            caller=OWNER,
         )
         assert result["component_count"] == 1
         mock_redis.lpush.assert_called_once()
@@ -42,7 +62,8 @@ class TestHandlePostSessionContext:
         mgr = SessionManager(mock_redis, Settings())
 
         with pytest.raises(ValueError, match="No active session"):
-            await handle_post_session_context(mgr, agent_id="agent-x", category="decision", content="x")
+            await handle_post_session_context(
+                mgr, agent_id="agent-x", category="decision", content="x", caller=OWNER)
 
     @pytest.mark.asyncio
     async def test_raises_value_error_for_bad_category(self, mock_redis):
@@ -51,7 +72,9 @@ class TestHandlePostSessionContext:
         mgr = SessionManager(mock_redis, Settings())
 
         with pytest.raises(ValueError):
-            await handle_post_session_context(mgr, agent_id="agent-x", category="not-a-real-category", content="x")
+            await handle_post_session_context(
+                mgr, agent_id="agent-x", category="not-a-real-category", content="x",
+                caller=OWNER)
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +135,7 @@ class TestPostSessionContextRouteScopeGate:
         request = _make_request(
             "target-agent",
             {"category": "decision", "content": "resolved", "key": "sc_a1"},
-            identity={"agent_id": "relay-service", "scopes": ["session:write"], "key_id": "k1"},
+            identity=OWNER_IDENTITY,
         )
         response = await mcp_mod._post_session_context(request)
 

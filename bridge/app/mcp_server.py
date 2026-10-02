@@ -29,7 +29,16 @@ from app.config import get_settings
 from app.prior_art import assemble_prior_art, render_prior_art
 from app.proactive_recall import fetch_relevant_memories
 from app.redis_client import get_redis, close_redis
-from app.session import SessionManager, TASK_RESULTS, _experiment_group, member_token
+from app.session import (
+    Caller,
+    SessionAccessError,
+    SessionManager,
+    TASK_RESULTS,
+    _experiment_group,
+    member_token,
+    session_in_workspace,
+    session_owned_by,
+)
 from app.shadow import assemble_shadow
 from app import residency
 
@@ -167,6 +176,64 @@ def _auth_enabled() -> bool:
     from auth.config import get_auth_settings
 
     return bool(get_auth_settings().ENABLED)
+
+
+def _verified_workspace_id() -> str | None:
+    """The authenticated workspace behind this request, or None when
+    unknowable — the workspace twin of _verified_member_id."""
+    try:
+        from auth.principal import principal_from_scope
+        return principal_from_scope(get_http_request().scope).get("workspace_id")
+    except Exception:
+        return None
+
+
+_NO_PRINCIPAL = (
+    "No verified principal for this request; refusing session access. "
+    "Check that the client sends a valid X-API-Key."
+)
+
+
+def _verified_caller() -> Caller | None:
+    """The VERIFIED principal (workspace + member) every session tool gates on.
+
+    Read through _verified_member_id so there is exactly one member seam.
+    X-Agent-Id and the tool's agent_id argument are display labels and never
+    reach this. Outside an HTTP request:
+      - auth disabled: the deployment owner — the only principal that mode
+        has (auth/principal.py anonymous_principal), so personal mode and the
+        in-memory test transport behave exactly as before;
+      - auth enabled: None, and every caller of this fails closed.
+    """
+    from auth.principal import deployment_owner_member_id, deployment_workspace_id
+
+    member = _verified_member_id()
+    if member is None:
+        if _auth_enabled():
+            return None
+        return Caller(deployment_workspace_id(), deployment_owner_member_id())
+    return Caller(_verified_workspace_id() or deployment_workspace_id(), member)
+
+
+def _caller_from_identity(identity: dict) -> Caller:
+    """A REST route's caller, from the identity require_scope_asgi returned
+    (the middleware-attached principal, or the anonymous owner when auth is
+    disabled). A missing member owns nothing."""
+    return Caller(
+        str(identity.get("workspace_id") or ""),
+        str(identity.get("member_id") or ""),
+    )
+
+
+def _workspace_wide_reader(identity: dict) -> bool:
+    """``session:read:workspace`` — the SERVICE scope (auth/keys.py
+    SERVICE_ONLY_SCOPES) that lets Cortex's background workers (OWM, skill
+    scoring/synthesis, the pattern engine) read every session in their own
+    workspace over REST. Wildcard owner/dashboard keys hold it via "*". Never
+    honoured by the MCP tools, which always list the caller's own sessions."""
+    from auth.keys import scopes_allow
+
+    return scopes_allow(identity.get("scopes") or [], "session:read:workspace")
 
 
 def _caller_cortex_key() -> str | None:
@@ -471,17 +538,27 @@ async def ctx_start_session(
     """
     agent_id = _default_agent_id(agent_id)
     attribution = _attribution_from_headers()
+    caller = _verified_caller()
+    if caller is None:
+        return {"error": _NO_PRINCIPAL}
     owner_member = _verified_member_id()
     mgr = await _get_manager()
-    result = await mgr.start_session(
-        goal, agent_id=agent_id, tags=tags, project=project, briefing_id=briefing_id,
-        runtime=attribution.get("runtime"),
-        client_version=attribution.get("client_version"),
-        instr_rendered=attribution.get("instr_rendered"),
-        instr_expected=attribution.get("instr_expected"),
-        instr_gateway=attribution.get("instr_gateway"),
-        owner_member=owner_member,
-    )
+    try:
+        result = await mgr.start_session(
+            goal, agent_id=agent_id, tags=tags, project=project, briefing_id=briefing_id,
+            runtime=attribution.get("runtime"),
+            client_version=attribution.get("client_version"),
+            instr_rendered=attribution.get("instr_rendered"),
+            instr_expected=attribution.get("instr_expected"),
+            instr_gateway=attribution.get("instr_gateway"),
+            owner_member=owner_member,
+            owner_workspace=caller.workspace_id if owner_member else None,
+            # Guards the label pointer: never pause or repoint a session that
+            # another member owns (F3, see SessionManager._guard_pointer).
+            caller=caller,
+        )
+    except (ValueError, RuntimeError) as e:
+        return {"error": str(e)}
 
     # Replay: trace session start. briefing_id and the attribution headers ride
     # this payload — compute_session_eval reads them from the timeline it
@@ -519,6 +596,7 @@ async def ctx_start_session(
                 # The CALLER's key, never the service key: these memories are
                 # returned to the caller (see _caller_cortex_key, F1).
                 api_key=_caller_cortex_key(),
+                caller=caller,
                 top_k=settings.PRIOR_ART_TOP_K,
                 min_score=settings.PRIOR_ART_MIN_SCORE,
                 in_flight_max=settings.PRIOR_ART_IN_FLIGHT_MAX,
@@ -557,11 +635,16 @@ async def ctx_update(
     # falls back to the shared active pointer when it is None — every
     # pre-header client's behavior, unchanged.
     header_session_id = _header_session_id()
+    caller = _verified_caller()
+    if caller is None:
+        return {"error": _NO_PRINCIPAL}
     mgr = await _get_manager()
     try:
+        # caller: the write lands only in a session the verified caller owns,
+        # whether named by X-Session-Id or resolved via the label pointer (F3).
         result = await mgr.update(
             category, content, key=key, agent_id=agent_id,
-            session_id=header_session_id,
+            session_id=header_session_id, caller=caller,
         )
     except ValueError as e:
         return {"error": str(e)}
@@ -569,6 +652,11 @@ async def ctx_update(
     # Replay: trace context update — resolved the same way the write itself
     # was (header first), so the event lands on the session actually written.
     session_id = header_session_id or await mgr.get_active_session_id(agent_id)
+    if session_id and not header_session_id and not await mgr.owns(session_id, caller):
+        # The label pointer moved between the write and this re-read; the
+        # snapshot and proactive memories below must not land in a session
+        # the caller does not own.
+        session_id = None
     if session_id:
         # Context snapshots only at decision points (plan/decision categories)
         ctx_ref = None
@@ -645,6 +733,9 @@ async def ctx_get_shadow(session_id: str | None = None, agent_id: str = "default
             document. Omitting it is always correct.
     """
     agent_id = _default_agent_id(agent_id)
+    caller = _verified_caller()
+    if caller is None:
+        return {"error": _NO_PRINCIPAL, "delta": False}
     mgr = await _get_manager()
     # Precedence: explicit param > connection header > active pointer (cortex's
     # documented order). The header step keeps two terminals sharing one
@@ -653,13 +744,22 @@ async def ctx_get_shadow(session_id: str | None = None, agent_id: str = "default
     # copied from the current implementation, which uses `is None`, not falsiness.
     if session_id is None:
         session_id = _header_session_id()
-    if session_id is None:
+    via_pointer = session_id is None
+    if via_pointer:
         session_id = await mgr.get_active_session_id(agent_id)
+    no_session = {"error": "No active session. Start one with ctx_start_session.", "delta": False}
     if not session_id:
-        return {"error": "No active session. Start one with ctx_start_session.", "delta": False}
+        return no_session
 
     data = await mgr.get_session_data(session_id)
-    if not data:
+    # A session the verified caller does not own reads exactly like one that
+    # does not exist — no goal, no status, no shadow (F3). ctx_list_sessions
+    # used to hand out every member's session ids, and this returned any of
+    # them in full. Reached through another member's label pointer, it reads
+    # like no pointer at all, so not even the id leaks.
+    if not data or not session_owned_by(data, caller):
+        if via_pointer and data:
+            return no_session
         return {"error": f"Session {session_id} not found.", "delta": False}
 
     # AMENDED 2026-07-30 (C1 + C2).
@@ -790,12 +890,17 @@ async def ctx_complete_session(
         for e in (task_evidence or []) if isinstance(e, str) and e.strip()
     ][:_MAX_EVIDENCE_ITEMS] if graded else []
 
+    caller = _verified_caller()
+    if caller is None:
+        return {"error": _NO_PRINCIPAL}
     mgr = await _get_manager()
     try:
         result = await mgr.complete_session(
             session_id=session_id, outcome=outcome, agent_id=agent_id,
             task_result=graded, task_evidence=evidence,
             verified_member=_verified_member_id(),
+            # Full ownership predicate incl. workspace and the legacy rule (F3).
+            caller=caller,
         )
     except (ValueError, RuntimeError) as e:
         return {"error": str(e)}
@@ -875,16 +980,20 @@ async def ctx_abandon_session(session_id: str | None = None, agent_id: str = "de
     if session_id is None:
         session_id = _header_session_id()
 
+    caller = _verified_caller()
+    if caller is None:
+        return {"error": _NO_PRINCIPAL}
     mgr = await _get_manager()
     try:
         # Resolve and FREEZE one SID before touching the manager's mutating
         # call — explicit > header (above) > active-pointer, read here
         # rather than left for SessionManager.abandon_session to resolve
-        # later. owner_member is immutable (Task 1: written once, in
-        # start_session), so reading it here and checking it before the
-        # manager call below is authorization-safe: it cannot change between
+        # later. owner_member/owner_workspace are immutable (written once, in
+        # start_session), so reading them here and checking before the
+        # manager call below is authorization-safe: they cannot change between
         # this read and that call. Legacy-unbound sessions (no owner_member)
-        # keep today's label-only behavior — an explicit D13 residual.
+        # are abandonable only by the deployment owner (F3, 2026-10-01 —
+        # this closed the D13 label-only residual; see session_owned_by).
         resolved_sid = session_id
         if resolved_sid is None:
             resolved_sid = await mgr.get_active_session_id(agent_id)
@@ -894,8 +1003,7 @@ async def ctx_abandon_session(session_id: str | None = None, agent_id: str = "de
         data = await mgr.get_session_data(resolved_sid)
         if not data:
             raise ValueError(f"Session {resolved_sid} not found")
-        owner_member = data.get("owner_member") or ""
-        if owner_member and _verified_member_id() != owner_member:
+        if not session_owned_by(data, caller):
             raise ValueError(
                 f"Session {resolved_sid} belongs to a different verified owner")
 
@@ -921,15 +1029,22 @@ async def ctx_abandon_session(session_id: str | None = None, agent_id: str = "de
 async def ctx_list_sessions(
     status: str | None = None, agent_id: str | None = None, limit: int = 10
 ) -> dict:
-    """List recent sessions.
+    """List your recent sessions.
+
+    Only sessions that belong to you (your verified identity) are listed;
+    agent_id narrows that list, it never widens it.
 
     Args:
         status: Filter by status — "active", "paused", "completed", "abandoned".
         agent_id: Filter by agent ID.
         limit: Maximum number of sessions to return.
     """
+    caller = _verified_caller()
+    if caller is None:
+        return {"sessions": [], "error": _NO_PRINCIPAL}
     mgr = await _get_manager()
-    sessions = await mgr.list_sessions(status=status, agent_id=agent_id, limit=limit)
+    sessions = await mgr.list_sessions(
+        status=status, agent_id=agent_id, limit=limit, caller=caller)
     return {"sessions": sessions}
 
 
@@ -952,11 +1067,16 @@ async def ctx_resume_session(
             only use this for a deliberate hand-off.
     """
     agent_id = _default_agent_id(agent_id)
+    caller = _verified_caller()
+    if caller is None:
+        return {"error": _NO_PRINCIPAL}
     mgr = await _get_manager()
     try:
         await mgr.resume_session(
             session_id, agent_id=agent_id, takeover=takeover,
             verified_member=_verified_member_id(),
+            # Full ownership predicate + label-pointer guard (F3).
+            caller=caller,
         )
     except ValueError as e:
         return {"error": str(e)}
@@ -1025,7 +1145,9 @@ async def _list_sessions(request: StarletteRequest) -> StarletteJSONResponse:
     GET /briefing aggregator (resumable-sessions source) and the
     session-resumption flow."""
     try:
-        require_scope_asgi(request, "session:read")
+        identity = require_scope_asgi(request, "session:read")
+        caller = _caller_from_identity(identity)
+        workspace_wide = _workspace_wide_reader(identity)
         status_filter = request.query_params.get("status")
         agent_filter = request.query_params.get("agent_id")
         try:
@@ -1035,8 +1157,11 @@ async def _list_sessions(request: StarletteRequest) -> StarletteJSONResponse:
         limit = min(max(limit, 1), 200)
 
         mgr = await _get_manager()
+        # The caller's own sessions; a session:read:workspace service key sees
+        # its whole workspace (F3). agent_id stays a filter, never authority.
         sessions = await mgr.list_sessions(
             status=status_filter, agent_id=agent_filter, limit=limit,
+            caller=caller, workspace_wide=workspace_wide,
         )
 
         # Enrich with files for the briefing's resumables view (active sessions only, to limit cost)
@@ -1058,11 +1183,18 @@ async def _list_sessions(request: StarletteRequest) -> StarletteJSONResponse:
 async def _get_session(request: StarletteRequest) -> StarletteJSONResponse:
     """REST endpoint: get a single session by ID including its shadow data."""
     try:
-        require_scope_asgi(request, "session:read")
+        identity = require_scope_asgi(request, "session:read")
+        caller = _caller_from_identity(identity)
         session_id = request.path_params["session_id"]
         mgr = await _get_manager()
         data = await mgr.get_session_data(session_id)
-        if data is None:
+        visible = data is not None and (
+            session_owned_by(data, caller)
+            or (_workspace_wide_reader(identity)
+                and session_in_workspace(data, caller.workspace_id))
+        )
+        if not visible:
+            # Missing and not-yours are deliberately indistinguishable (F3).
             return StarletteJSONResponse({"error": "Session not found"}, status_code=404)
         shadow = assemble_shadow(data)
         return StarletteJSONResponse({
@@ -1079,21 +1211,33 @@ async def _get_session(request: StarletteRequest) -> StarletteJSONResponse:
         return StarletteJSONResponse({"error": str(e)}, status_code=500)
 
 
-async def handle_post_session_context(mgr: SessionManager, *, agent_id: str, category: str, content: str, key: str | None = None) -> dict:
+async def handle_post_session_context(
+    mgr: SessionManager, *, agent_id: str, category: str, content: str,
+    caller: Caller, key: str | None = None,
+) -> dict:
     """Testable handler — REST equivalent of the ctx_update MCP tool.
 
     Lets Relay persist Bridge decisions for origin:"mcp" scope sessions
     (SP2 D-S18), which have no local companion to call ctx_update over MCP.
     Raises ValueError on bad input or no active Bridge session for agent_id,
     same as ctx_update.
+
+    ``caller`` is required: the write lands only in a session the verified
+    caller owns (F3). The path's agent_id names a label pointer, and labels
+    are self-asserted — any session:write holder could otherwise write into
+    whatever session another member's label points at. Relay calls this with
+    its own service key (the deployment owner member), so until Relay forwards
+    the initiating member's credential, teammates' scope decisions are refused
+    here rather than written into a session Relay cannot prove they own.
     """
-    return await mgr.update(category, content, key=key, agent_id=agent_id)
+    return await mgr.update(category, content, key=key, agent_id=agent_id, caller=caller)
 
 
 @mcp.custom_route("/sessions/{agent_id}/context", methods=["POST"], name="post_session_context")
 async def _post_session_context(request: StarletteRequest) -> StarletteJSONResponse:
     try:
-        require_scope_asgi(request, "session:write")
+        identity = require_scope_asgi(request, "session:write")
+        caller = _caller_from_identity(identity)
         agent_id = request.path_params["agent_id"]
         body = await request.json()
         category = body.get("category")
@@ -1103,10 +1247,15 @@ async def _post_session_context(request: StarletteRequest) -> StarletteJSONRespo
             return StarletteJSONResponse({"error": "category and content are required"}, status_code=400)
 
         mgr = await _get_manager()
-        result = await handle_post_session_context(mgr, agent_id=agent_id, category=category, content=content, key=key)
+        result = await handle_post_session_context(
+            mgr, agent_id=agent_id, category=category, content=content, key=key,
+            caller=caller,
+        )
         return StarletteJSONResponse(result)
     except ScopeError as e:
         return StarletteJSONResponse({"error": e.detail}, status_code=e.status_code)
+    except SessionAccessError as e:
+        return StarletteJSONResponse({"error": str(e)}, status_code=404)
     except ValueError as e:
         return StarletteJSONResponse({"error": str(e)}, status_code=400)
     except Exception as e:

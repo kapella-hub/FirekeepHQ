@@ -75,12 +75,19 @@ SCOPES = {
     # enrollable, never anonymous, never retro-granted to an old enrolled
     # credential. See SERVICE_ONLY_SCOPES below.
     "eval:grade",
+    # Service-only (2026-10-01, authz audit F3): read EVERY Bridge session in
+    # the key's own workspace over REST (GET /sessions, GET /sessions/{id}).
+    # Without it a session:read key sees only its own member's sessions. Minted
+    # by deploy/bootstrap-keys.sh onto FIREKEEP_INTERNAL_KEY alone — the key
+    # Cortex's background workers (OWM, skill scoring/synthesis, the pattern
+    # engine) read sessions with. Wildcard ("*") owner/dashboard keys pass it.
+    "session:read:workspace",
 }
 # Scopes a SERVICE key may carry but no member credential ever receives:
 # not enrollable, not anonymous, never unioned onto old enrolled credentials
 # (the keys.py:495 union adds ENROLLABLE_SCOPES, which excludes these by
 # construction — same mechanism that keeps `admin` out).
-SERVICE_ONLY_SCOPES: frozenset[str] = frozenset({"eval:grade"})
+SERVICE_ONLY_SCOPES: frozenset[str] = frozenset({"eval:grade", "session:read:workspace"})
 ENROLLABLE_SCOPES: frozenset[str] = frozenset(SCOPES - {"admin", "*"} - SERVICE_ONLY_SCOPES)
 # memory:read / memory:write are demanded by the core /memory/* routes and the
 # /skills router since 2026-10-01 (docs/THREAT-MODEL.md section 5.10), in

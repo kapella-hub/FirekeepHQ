@@ -331,3 +331,243 @@ class TestFinishClearsEveryPointer:
         await manager.complete_session(session_id="sess-1", agent_id="owner")
         deleted = [c.args[0] for c in mock_redis._pipeline.delete.call_args_list]
         assert deleted == []
+
+
+
+# ===========================================================================
+# Member ownership (2026-10-01 authz audit, F3)
+#
+# A session belongs to the VERIFIED workspace+member that started it. The
+# agent_id label is self-asserted, so two members can share one ("codex",
+# "default") or Bob can simply type Alice's. Before this, ctx_list_sessions
+# listed every member's sessions, ctx_get_shadow returned any of them in full,
+# and ctx_update (pointer or X-Session-Id path) wrote into them — poisoning the
+# victim's post-compaction restore and the memory distilled from it. Ported
+# from ae1f973's test_session_ownership.py, adapted to main's owner_member
+# binding (no runtime-keyed pointers).
+# ===========================================================================
+
+import fakeredis.aioredis  # noqa: E402
+import pytest_asyncio  # noqa: E402
+from unittest.mock import patch  # noqa: E402
+
+from app.session import Caller, session_owned_by  # noqa: E402
+
+WS = "workspace-local"
+OWNER = "member-owner"  # auth/principal.py's default deployment owner
+ALICE = Caller(WS, "member-alice")
+BOB = Caller(WS, "member-bob")
+DEPLOYMENT_OWNER = Caller(WS, OWNER)
+
+
+@pytest.fixture
+def deployment_ids(monkeypatch):
+    monkeypatch.setenv("FIREKEEP_WORKSPACE_ID", WS)
+    monkeypatch.setenv("FIREKEEP_OWNER_MEMBER_ID", OWNER)
+
+
+class TestOwnershipPredicate:
+    def test_bound_session_belongs_to_its_member_only(self, deployment_ids):
+        meta = {"owner_member": "member-alice", "owner_workspace": WS}
+        assert session_owned_by(meta, ALICE)
+        assert not session_owned_by(meta, BOB)
+        # The deployment owner gets no override on a teammate's session.
+        assert not session_owned_by(meta, DEPLOYMENT_OWNER)
+
+    def test_workspace_is_part_of_the_match(self, deployment_ids):
+        meta = {"owner_member": "member-alice", "owner_workspace": WS}
+        assert not session_owned_by(meta, Caller("workspace-other", "member-alice"))
+
+    def test_session_bound_before_owner_workspace_matches_on_member(self, deployment_ids):
+        meta = {"owner_member": "member-alice"}
+        assert session_owned_by(meta, ALICE)
+        assert not session_owned_by(meta, BOB)
+
+    def test_legacy_unowned_session_belongs_to_the_deployment_owner_only(
+            self, deployment_ids):
+        """Fail closed for every other member without locking the owner out
+        of the history that predates owner_member."""
+        legacy = {"agent_id": "codex", "status": "paused"}
+        assert session_owned_by(legacy, DEPLOYMENT_OWNER)
+        assert not session_owned_by(legacy, BOB)
+        assert not session_owned_by(legacy, Caller("workspace-other", OWNER))
+        assert session_owned_by({**legacy, "owner_member": ""}, DEPLOYMENT_OWNER)
+
+    def test_no_verified_caller_owns_nothing(self, deployment_ids):
+        assert not session_owned_by({"owner_member": "member-alice"}, None)
+        assert not session_owned_by({}, None)
+        assert not session_owned_by({}, Caller(WS, ""))
+
+
+@pytest_asyncio.fixture
+async def alice_world(deployment_ids):
+    """Alice's live session under the label 'codex', plus a legacy session."""
+    r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    await r.hset("nb:session:s-alice", mapping={
+        "goal": "Alice's private task", "status": "active", "agent_id": "codex",
+        "owner_member": "member-alice", "owner_workspace": WS, "tags": "[]",
+        "created_at": "2026-10-01T00:00:00+00:00",
+        "updated_at": "2026-10-01T00:00:00+00:00",
+    })
+    await r.set("nb:session:s-alice:plan", "ALICE-PLAN: rotate the prod keys")
+    await r.set("nb:active:codex", "s-alice")
+    await r.hset("nb:session:s-legacy", mapping={
+        "goal": "pre-upgrade work", "status": "paused", "agent_id": "old-agent",
+        "tags": "[]", "created_at": "2026-07-01T00:00:00+00:00",
+        "updated_at": "2026-07-01T00:00:00+00:00",
+    })
+    await r.zadd("nb:sessions", {"s-alice": 2.0, "s-legacy": 1.0})
+    yield r
+    await r.aclose()
+
+
+def _as_member(r, member: str, *, header_sid: str | None = None):
+    """Run MCP tools as `member` (via the _verified_member_id seam every
+    session tool reads), against a real SessionManager over fakeredis."""
+    from app import mcp_server
+    from app.session import SessionManager
+
+    return [
+        patch.object(mcp_server, "_get_manager",
+                     new=AsyncMock(return_value=SessionManager(r, Settings()))),
+        patch.object(mcp_server, "_verified_member_id", return_value=member),
+        patch.object(mcp_server, "get_http_headers", return_value={}),
+        patch.object(mcp_server, "_header_session_id", return_value=header_sid),
+        patch.object(mcp_server, "_replay_emit", new=AsyncMock()),
+        patch.object(mcp_server, "_trigger_eval", new=AsyncMock(return_value=True)),
+        patch.object(mcp_server, "_trigger_skill_evaluate",
+                     new=AsyncMock(return_value=True)),
+        patch("app.session._replay_emit", new=AsyncMock()),
+    ]
+
+
+class _Patches:
+    def __init__(self, patches):
+        self._patches = patches
+
+    def __enter__(self):
+        for p in self._patches:
+            p.start()
+
+    def __exit__(self, *exc):
+        for p in reversed(self._patches):
+            p.stop()
+
+
+class TestBobCannotReachAliceSession:
+    @pytest.mark.asyncio
+    async def test_bob_cannot_list_read_update_resume_complete_or_abandon(
+            self, alice_world):
+        """The shared label 'codex' and a known session id must authorize
+        nothing for another member."""
+        from app import mcp_server
+
+        r = alice_world
+        before = await r.hgetall("nb:session:s-alice")
+        with _Patches(_as_member(r, "member-bob")):
+            listed = await mcp_server.ctx_list_sessions()
+            by_label = await mcp_server.ctx_list_sessions(agent_id="codex")
+            shadow_named = await mcp_server.ctx_get_shadow("s-alice", agent_id="codex")
+            shadow_pointer = await mcp_server.ctx_get_shadow(agent_id="codex")
+            update_pointer = await mcp_server.ctx_update(
+                "plan", "BOB-PLAN: exfiltrate", agent_id="codex")
+            resumed = await mcp_server.ctx_resume_session(
+                "s-alice", agent_id="codex", takeover=True)
+            completed = await mcp_server.ctx_complete_session(
+                "s-alice", outcome="hijacked", agent_id="codex")
+            abandoned = await mcp_server.ctx_abandon_session(
+                "s-alice", agent_id="codex")
+
+        assert listed == {"sessions": []}
+        assert by_label == {"sessions": []}
+        assert shadow_named == {"error": "Session s-alice not found.", "delta": False}
+        # Through Alice's label pointer it reads like no pointer at all — the
+        # id it names is not leaked either.
+        assert shadow_pointer["error"].startswith("No active session")
+        assert "s-alice" not in update_pointer["error"]
+        assert "No active session for agent_id 'codex'" in update_pointer["error"]
+        for result in (resumed, completed, abandoned):
+            assert "different verified owner" in result["error"]
+
+        assert await r.get("nb:session:s-alice:plan") == "ALICE-PLAN: rotate the prod keys"
+        assert await r.hgetall("nb:session:s-alice") == before
+        assert await r.get("nb:active:codex") == "s-alice"
+
+    @pytest.mark.asyncio
+    async def test_bob_cannot_write_through_an_x_session_id_header(self, alice_world):
+        from app import mcp_server
+
+        r = alice_world
+        with _Patches(_as_member(r, "member-bob", header_sid="s-alice")):
+            result = await mcp_server.ctx_update(
+                "decision", "BOB: Alice approved the wire transfer")
+            shadow = await mcp_server.ctx_get_shadow()
+
+        assert "not found for the verified caller" in result["error"]
+        assert await r.lrange("nb:session:s-alice:decisions", 0, -1) == []
+        assert shadow["error"] == "Session s-alice not found."
+
+    @pytest.mark.asyncio
+    async def test_alice_keeps_full_access_to_her_own_session(self, alice_world):
+        from app import mcp_server
+
+        r = alice_world
+        with _Patches(_as_member(r, "member-alice")):
+            listed = await mcp_server.ctx_list_sessions()
+            update = await mcp_server.ctx_update("progress", "step 2 done", agent_id="codex")
+            shadow = await mcp_server.ctx_get_shadow(agent_id="codex")
+
+        assert [s["session_id"] for s in listed["sessions"]] == ["s-alice"]
+        assert update["status"] == "ok"
+        assert "ALICE-PLAN" in shadow["shadow"]
+        assert "step 2 done" in shadow["shadow"]
+
+    @pytest.mark.asyncio
+    async def test_legacy_session_is_the_deployment_owners_alone(self, alice_world):
+        from app import mcp_server
+
+        r = alice_world
+        with _Patches(_as_member(r, "member-bob")):
+            bob_list = await mcp_server.ctx_list_sessions()
+            bob_shadow = await mcp_server.ctx_get_shadow("s-legacy")
+            bob_abandon = await mcp_server.ctx_abandon_session(
+                "s-legacy", agent_id="old-agent")
+        with _Patches(_as_member(r, OWNER)):
+            owner_list = await mcp_server.ctx_list_sessions()
+            owner_shadow = await mcp_server.ctx_get_shadow("s-legacy")
+
+        assert bob_list == {"sessions": []}
+        assert bob_shadow["error"] == "Session s-legacy not found."
+        assert "different verified owner" in bob_abandon["error"]
+        assert await r.hget("nb:session:s-legacy", "status") == "paused"
+        assert [s["session_id"] for s in owner_list["sessions"]] == ["s-legacy"]
+        assert owner_shadow["goal"] == "pre-upgrade work"
+
+
+@pytest.mark.asyncio
+async def test_mcp_list_never_goes_workspace_wide_even_for_a_wildcard_key(
+        alice_world, monkeypatch):
+    """session:read:workspace (held by "*" keys) widens the REST routes for
+    Cortex's workers only; the MCP tool always lists the caller's own."""
+    from starlette.requests import Request
+
+    import auth.config as config_module
+    from auth.config import AuthSettings
+    from app import mcp_server
+    from app.session import SessionManager
+
+    monkeypatch.setattr(config_module, "get_auth_settings",
+                        lambda: AuthSettings(ENABLED=True))
+    dashboard = Request({"type": "http", "method": "POST", "path": "/mcp",
+                         "headers": [], "state": {"identity": {
+                             "workspace_id": WS, "member_id": "member-bob",
+                             "credential_id": "cred-bob", "scopes": ["*"],
+                             "authenticated": True}}})
+    with (
+        patch.object(mcp_server, "get_http_request", return_value=dashboard),
+        patch.object(mcp_server, "_get_manager", new=AsyncMock(
+            return_value=SessionManager(alice_world, Settings()))),
+    ):
+        listed = await mcp_server.ctx_list_sessions()
+
+    assert listed == {"sessions": []}

@@ -185,8 +185,13 @@ async def fetch_team_memories(
         return []
 
 
-async def fetch_in_flight(mgr, agent_id: str, limit: int = 3) -> list[dict]:
+async def fetch_in_flight(mgr, agent_id: str, limit: int = 3, caller=None) -> list[dict]:
     """Active sessions belonging to agents OTHER than the caller, newest first.
+
+    With ``caller`` (the verified principal), the scan is confined to the
+    caller's WORKSPACE. Inside it, teammates' goals stay visible on purpose —
+    "who is mid-flight on similar work" is the feature — so this is a
+    workspace boundary, not a member one.
 
     The caller's own sessions are excluded rather than merely deduplicated —
     including the session `start_session` created two lines earlier would tell
@@ -196,7 +201,13 @@ async def fetch_in_flight(mgr, agent_id: str, limit: int = 3) -> list[dict]:
     Returns [] on ANY failure. Never raises.
     """
     try:
-        sessions = await mgr.list_sessions(status="active", limit=IN_FLIGHT_SCAN_LIMIT)
+        if caller is None:
+            sessions = await mgr.list_sessions(status="active", limit=IN_FLIGHT_SCAN_LIMIT)
+        else:
+            sessions = await mgr.list_sessions(
+                status="active", limit=IN_FLIGHT_SCAN_LIMIT,
+                caller=caller, workspace_wide=True,
+            )
     except Exception as exc:
         logger.debug("Prior-art in-flight lookup failed (non-fatal): %s", exc)
         return []
@@ -228,6 +239,7 @@ async def assemble_prior_art(
     agent_id: str,
     api_url: str,
     api_key: str | None = None,
+    caller=None,
     top_k: int = 3,
     min_score: float = 0.55,
     in_flight_max: int = 3,
@@ -264,7 +276,8 @@ async def assemble_prior_art(
                 ),
                 "recall",
             ),
-            _leg(fetch_in_flight(mgr, agent_id, limit=in_flight_max), "in-flight"),
+            _leg(fetch_in_flight(mgr, agent_id, limit=in_flight_max, caller=caller),
+                 "in-flight"),
         )
     except Exception as exc:  # pragma: no cover — both legs already swallow
         logger.info("Prior-art assembly skipped (non-fatal): %s", exc)

@@ -133,10 +133,17 @@ class TestGetSingleSessionRouteScopeGate:
             return_value={"goal": "g", "outcome": "", "duration_seconds": None}
         )
         monkeypatch.setattr(mcp_mod, "_get_manager", AsyncMock(return_value=manager))
+        # A legacy (unowned) session is the deployment owner's alone (F3), so
+        # the caller here is the owner's member — the shape the middleware
+        # attaches. Non-owner reads are covered in test_rest_session_ownership.
+        monkeypatch.setenv("FIREKEEP_WORKSPACE_ID", "workspace-local")
+        monkeypatch.setenv("FIREKEEP_OWNER_MEMBER_ID", "member-owner")
 
         request = _make_single_session_request(
             "sess-001",
-            identity={"agent_id": "relay-service", "scopes": ["session:read"], "key_id": "k1"},
+            identity={"workspace_id": "workspace-local", "member_id": "member-owner",
+                      "credential_id": "cred-1", "scopes": ["session:read"],
+                      "authenticated": True},
         )
         response = await mcp_mod._get_session(request)
 

@@ -496,7 +496,29 @@ key. Before, Bob's `ctx_update` returned the owner's member-private chunks into
 Bob's shadow. The eval trigger keeps the service key on purpose (`eval:grade`;
 it returns nothing to the caller) — see `docs/guides/bridge-context-and-briefing.md`.
 
+**Fixed 2026-10-01 — Bridge sessions are owned by workspace + member (F3).**
+Any teammate key could list every member's sessions, read their full shadow by
+id, write into them through the shared label pointer or an `X-Session-Id`
+header, and pause another member's live session by starting one under her
+label. Every Bridge session tool and REST route now gates on the verified
+principal (`bridge/app/session.py` `session_owned_by`); `X-Agent-Id` is a label,
+never a gate. Legacy sessions with no recorded owner belong to the deployment
+owner alone. Workspace-wide REST reads need the new service-only scope
+`session:read:workspace`, minted onto `FIREKEEP_INTERNAL_KEY` for Cortex's
+workers. Details: `docs/guides/bridge-context-and-briefing.md` "Session
+ownership".
+
 **OPEN:**
+- Relay takes a scope session's target `agent_id` from the request body and
+  writes into Bridge with its owner-member service key. Bridge now refuses
+  those writes for any session the owner does not own — teammates'
+  `origin:"mcp"` scope decisions stop persisting — until Relay binds the
+  initiating principal.
+- Bridge's label pointer (`nb:active:{agent_id}`) is still shared across
+  members: a label held by one member's live session is refused to another
+  (availability, not confidentiality).
+- Prior art's "in flight" line shows teammates' active-session goals inside one
+  workspace, by design.
 - Bridge's distillation worker writes with the service key, so every distillate
   is attributed to the owner member, not the member who did the work; a
   delegated-attribution contract is needed to fix it honestly.
@@ -597,12 +619,12 @@ service key. The environment section keeps the internal key — it reads
 deployment-wide Sentinel state, not anyone's data. Guarded by
 `cortex/tests/test_briefing_sections_outbound.py` and `test_briefing_api.py`.
 
-**Residual, OPEN until Bridge lands its half:** forwarding Bob's key is only as
-strong as the check behind it. Bridge's `GET /sessions` is scope-gated
-(`session:read`, which every member key holds) but not owner-filtered, so Bob's own
-key still lists Alice's sessions — through the briefing or by calling Bridge
-directly. Relay's tasks and bulletins are workspace-visible by design, so for those
-two sections the change removes the deputy without changing what Bob can see.
+**Closed for sessions 2026-10-01, with the Bridge half (§5.9):** forwarding Bob's
+key is only as strong as the check behind it, and Bridge's `GET /sessions` now
+returns only the verified caller's own sessions (workspace-wide reads need the
+service-only `session:read:workspace`). Relay's tasks and bulletins are
+workspace-visible by design, so for those two sections the change removes the
+deputy without changing what Bob can see.
 
 ## 6. Threats, ranked
 
@@ -621,7 +643,8 @@ two sections the change removes the deputy without changing what Bob can see.
 | 11 | A compromised runtime with Hands enabled operates the human's desktop | **Mitigated, residuals OPEN** — the broker is a separate process with no grant route, injected input is rejected, permits are one-use and bound to the exact step, classification is on effects not model labels, fail closed (§5.8). Residuals: same-user permit theft, kernel-level injection, screenshots to the model provider, the unverified macOS source-state filter, and the broker's notification being informational (the chord approves the oldest pending permit whether or not the toast was read) |
 | 12 | Phone approvals approved by a key holder who is not the human | **Partly mitigated (2026-10-01), residual OPEN** — relay stamps the verified principal on every task write and the broker refuses an approve from the requesting credential (the kit key the driving agent shares), from an unauthenticated Keep, or from a relay too old to stamp. Residual: any *other* workspace credential can still approve unless `phone_approvers` pins the approvers, and a pinned dashboard credential is only as strong as its basic-auth password; the auth layer has no human-member notion. `phone_approvals` stays `False` by default (§5.8) |
 | 13 | A valid key of any scope deletes another member's data, approves its own skill, re-embeds the store, or reads teammates' recall queries | **Mitigated 2026-10-01** — scope + `memory_type` + workspace checks on `/skills/{id}`, `admin` for review decisions and re-embedding, member-scoped `/audit`, scopes declared on every core memory route (§5.10). Residuals: review decisions allowed on auth-disabled boxes, unattributed audit history hidden from members, `GET /skills` and `/memory/contributors` not workspace-filtered |
-| 14 | `GET /briefing?agent_id=<teammate>` reads a teammate's sessions and presence with the internal service key | **Cortex half mitigated 2026-10-01** — user-scoped sections present the caller's own key (§5.11). **OPEN** until Bridge filters `GET /sessions` by the verified owner member |
+| 14 | `GET /briefing?agent_id=<teammate>` reads a teammate's sessions and presence with the internal service key | **Mitigated 2026-10-01** — user-scoped sections present the caller's own key (§5.11) and Bridge filters `GET /sessions` by the verified owner member (§5.9) |
+| 15 | A teammate key reads or writes another member's sessions or member-private memory inside one workspace | **Partly mitigated (2026-10-01)** — Bridge recalls with the caller's key and gates every session path on workspace+member (§5.9); OPEN: Relay's unbound `agent_id`, owner-attributed distillates |
 
 Threat 5 deserves emphasis because it is the one the product's own design creates:
 Firekeep exists to make agents act on stored memory. Anything that can write a

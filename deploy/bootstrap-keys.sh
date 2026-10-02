@@ -5,8 +5,13 @@ set -euo pipefail
 #
 # Mints (only if absent):
 #   1. FIREKEEP_INTERNAL_KEY  — internal service key (bridge distiller, workers).
-#      Scopes: memory:write, session:read, eval:read, eval:write (NOT admin — a leaked
-#      internal key cannot mint keys or read vault). Plaintext -> .env.
+#      Scopes: memory:write, session:read, eval:read, eval:write,
+#      session:read:workspace (NOT admin — a leaked internal key cannot mint
+#      keys or read vault). The last scope is SERVICE-ONLY (2026-10-01): Bridge
+#      lists/reads only the caller's own sessions over REST unless the key holds
+#      it, and Cortex's workers (OWM, skill scoring/synthesis, patterns) need
+#      every session in the workspace. A key minted before it existed is
+#      upgraded in place by ensure_key_scope below. Plaintext -> .env.
 #   2. DASHBOARD_API_KEY — dashboard nginx proxy key (spec §4.4b: the
 #      dashboard IS the owner's admin surface). Scopes: ["*"]. Plaintext -> .env.
 #   3. RELAY_INTERNAL_API_KEY — Relay's outbound key for the ONE call it makes
@@ -224,6 +229,31 @@ ensure_env_key() {  # $1=env var  $2=device_id  $3=scopes-json
     fi
 }
 
+# ensure_env_key never re-scopes a key that is already registered, so a
+# service scope added after a deployment minted its keys would never reach it.
+# This adds ONE scope to an existing env-backed key's record, in place, if it
+# is missing — plaintext, hash and credential_id unchanged. Matching on the
+# quoted token keeps "session:read" from satisfying "session:read:workspace".
+ensure_key_scope() {  # $1=env var  $2=scope
+    local var="$1" scope="$2" key hash current updated
+    key="$(env_get "$var")"
+    [ -n "$key" ] || return 0
+    hash="$(sha256 "$key")"
+    key_registered "$hash" || return 0
+    current="$("${REDIS[@]}" HGET "auth:key:${hash}" scopes)"
+    case "$current" in
+        *"\"${scope}\""*) return 0 ;;
+        "[]"|"") updated="[\"${scope}\"]" ;;
+        "["*"]") updated="${current%]},\"${scope}\"]" ;;
+        *)
+            echo "ERROR: $var scopes are not a JSON array: $current" >&2
+            exit 1
+            ;;
+    esac
+    "${REDIS[@]}" HSET "auth:key:${hash}" scopes "$updated" > /dev/null
+    echo "[UPGRADED] $var  (+${scope})"
+}
+
 # --- preconditions (fail loudly — Reliability Principle) --------------------
 
 if ! command -v openssl > /dev/null; then
@@ -243,7 +273,8 @@ fi
 
 # --- 1+2: env-backed service keys -------------------------------------------
 
-ensure_env_key FIREKEEP_INTERNAL_KEY  firekeep-internal  '["memory:write","session:read","eval:read","eval:write"]'
+ensure_env_key FIREKEEP_INTERNAL_KEY  firekeep-internal  '["memory:write","session:read","eval:read","eval:write","session:read:workspace"]'
+ensure_key_scope FIREKEEP_INTERNAL_KEY session:read:workspace
 ensure_env_key DASHBOARD_API_KEY firekeep-dashboard '["*"]'
 ensure_env_key RELAY_INTERNAL_API_KEY firekeep-relay '["session:write"]'
 ensure_env_key FIREKEEP_BRIDGE_KEY firekeep-bridge '["memory:read","memory:write","session:read","eval:read","eval:write","eval:grade"]'

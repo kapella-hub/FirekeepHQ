@@ -106,6 +106,28 @@ CAPTURED_2="$(printf '%s\n' "$OUT2" | grep -oE 'nxs_[0-9a-f]{48}' | head -n1 || 
 }
 DBSIZE2="$(docker exec "$CONTAINER" redis-cli -n 7 DBSIZE)"
 [ "$DBSIZE1" = "$DBSIZE2" ] || { echo "FAIL: DBSIZE changed $DBSIZE1 -> $DBSIZE2"; exit 1; }
+echo "$OUT2" | grep -q '\[UPGRADED\]' && { echo "FAIL: second run upgraded a key"; echo "$OUT2"; exit 1; }
+
+# --- Run 3: an internal key minted before session:read:workspace existed ----
+# ensure_env_key never re-scopes a registered record, so a deployment that
+# minted FIREKEEP_INTERNAL_KEY before 2026-10-01 would keep Cortex's workers
+# confined to the owner's own Bridge sessions forever. ensure_key_scope adds
+# the scope in place: same plaintext, same hash, same credential_id.
+INTERNAL_HASH="$(printf '%s' "$INTERNAL_KEY_1" | sha256sum | awk '{print $1}')"
+INTERNAL_CRED_1="$(docker exec "$CONTAINER" redis-cli -n 7 HGET "auth:key:${INTERNAL_HASH}" credential_id)"
+docker exec "$CONTAINER" redis-cli -n 7 HSET "auth:key:${INTERNAL_HASH}" scopes \
+    '["memory:write","session:read","eval:read","eval:write"]' > /dev/null
+OUT3="$(bash deploy/bootstrap-keys.sh)"
+echo "$OUT3" | grep -q '\[UPGRADED\] FIREKEEP_INTERNAL_KEY  (+session:read:workspace)' \
+    || { echo "FAIL: pre-existing internal key not upgraded"; echo "$OUT3"; exit 1; }
+echo "$OUT3" | grep -q '0 key(s) minted' || { echo "FAIL: upgrade run minted keys"; echo "$OUT3"; exit 1; }
+UPGRADED_SCOPES="$(docker exec "$CONTAINER" redis-cli -n 7 HGET "auth:key:${INTERNAL_HASH}" scopes)"
+[ "$UPGRADED_SCOPES" = '["memory:write","session:read","eval:read","eval:write","session:read:workspace"]' ] \
+    || { echo "FAIL: upgraded scopes wrong: $UPGRADED_SCOPES"; exit 1; }
+INTERNAL_CRED_3="$(docker exec "$CONTAINER" redis-cli -n 7 HGET "auth:key:${INTERNAL_HASH}" credential_id)"
+[ "$INTERNAL_CRED_1" = "$INTERNAL_CRED_3" ] || { echo "FAIL: upgrade changed credential_id"; exit 1; }
+OUT4="$(bash deploy/bootstrap-keys.sh)"
+echo "$OUT4" | grep -q '\[UPGRADED\]' && { echo "FAIL: upgrade is not idempotent"; echo "$OUT4"; exit 1; }
 
 # --- Run 3: scope reconciliation on a key provisioned before a scope existed --
 # A deployment bootstrapped before 2026-10-01 holds a bridge key WITHOUT
@@ -141,7 +163,10 @@ async def main():
     assert ident["workspace_id"] == sys.argv[3], ident
     assert ident["member_id"] == sys.argv[4], ident
     assert "agent_id" not in ident, ident
-    assert set(ident["scopes"]) == {"memory:write", "session:read", "eval:read", "eval:write"}, ident
+    assert set(ident["scopes"]) == {
+        "memory:write", "session:read", "eval:read", "eval:write",
+        "session:read:workspace",
+    }, ident
     assert ident["authenticated"] is True
 
     # Relay's outbound key. It exists for exactly one call — Bridge's

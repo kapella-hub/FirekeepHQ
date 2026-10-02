@@ -37,5 +37,21 @@ async def test_scopes_endpoint_separates_service_scopes():
         route for route in create_auth_router().routes
         if route.path == "/auth/scopes" and "GET" in route.methods)
     body = await route.endpoint(identity={"scopes": ["admin"]})
-    assert body["service_only"] == ["eval:grade"]
+    assert body["service_only"] == ["eval:grade", "session:read:workspace"]
     assert "eval:grade" not in body["scopes"]
+    assert "session:read:workspace" not in body["scopes"]
+
+
+@pytest.mark.asyncio
+async def test_create_key_rejects_workspace_session_read(auth_redis):
+    """A member key that could read every teammate's Bridge sessions would undo
+    the F3 ownership fix (2026-10-01) — it is bootstrap-only, like eval:grade."""
+    with pytest.raises(ValueError, match="service-only"):
+        await keys.create_key(
+            agent_id="mallory", scopes=["session:read", "session:read:workspace"])
+
+
+def test_workspace_session_read_is_never_enrollable_or_anonymous():
+    assert "session:read:workspace" in keys.SCOPES
+    assert "session:read:workspace" not in keys.ENROLLABLE_SCOPES
+    assert "session:read:workspace" not in keys.ANONYMOUS_SCOPES

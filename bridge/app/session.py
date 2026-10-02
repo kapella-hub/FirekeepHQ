@@ -6,14 +6,16 @@ import json
 import logging
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Mapping
 
 import redis
 import redis.asyncio as aioredis
 
 from app.config import Settings
 from auth.experiment import experiment_group as _experiment_group, member_token
+from auth.principal import deployment_owner_member_id, deployment_workspace_id
 
 logger = logging.getLogger(__name__)
 
@@ -66,11 +68,89 @@ async def _replay_emit(
 
 
 # --------------------------------------------------------------------------
+# Session ownership (2026-10-01 authz audit, F3)
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Caller:
+    """The VERIFIED principal acting on a session: workspace + member.
+
+    Taken only from the authenticated request (auth/principal.py) — never from
+    X-Agent-Id or the agent_id tool argument, which are self-asserted display
+    labels. credential/runtime are deliberately absent: one member's sessions
+    are that member's from every device.
+    """
+
+    workspace_id: str
+    member_id: str
+
+
+class SessionAccessError(ValueError):
+    """The verified caller does not own the session it named or resolved.
+
+    A ValueError so every existing ``except ValueError`` surface (MCP error
+    dicts, REST 400/404 mapping) already handles it without leaking a trace.
+    """
+
+
+def session_owned_by(meta: Mapping[str, Any] | None, caller: Caller | None) -> bool:
+    """Does ``caller`` own the session whose meta hash is ``meta``?
+
+    THE one ownership predicate — MCP tools and REST routes all call it.
+
+    - A session bound at start (``owner_member`` non-empty) belongs to exactly
+      that member, and — when ``owner_workspace`` was recorded (sessions
+      started after 2026-10-01) — only within that workspace. Sessions bound
+      before owner_workspace existed match on member alone.
+    - LEGACY sessions (no ``owner_member``: started before outcome-truth PR1,
+      or outside any request context) belong to the DEPLOYMENT OWNER member in
+      the deployment workspace, and to no one else. Fail closed for every other
+      member, without locking the owner out of their own pre-existing history.
+      With auth disabled every caller IS that owner, so personal mode sees
+      exactly what it saw before.
+    - No caller (auth enabled but no verified principal) owns nothing.
+    """
+    if caller is None or not caller.member_id:
+        return False
+    meta = meta or {}
+    owner_member = meta.get("owner_member") or ""
+    if owner_member:
+        if owner_member != caller.member_id:
+            return False
+        owner_workspace = meta.get("owner_workspace") or ""
+        return not owner_workspace or owner_workspace == caller.workspace_id
+    return (
+        caller.member_id == deployment_owner_member_id()
+        and caller.workspace_id == deployment_workspace_id()
+    )
+
+
+def session_in_workspace(meta: Mapping[str, Any] | None, workspace_id: str) -> bool:
+    """Is the session inside ``workspace_id``? For workspace-wide SERVICE reads
+    (``session:read:workspace``). A session with no recorded workspace predates
+    owner_workspace and belongs to the deployment workspace."""
+    recorded = (meta or {}).get("owner_workspace") or deployment_workspace_id()
+    return recorded == workspace_id
+
+
+# Returned by START/RESUME_SESSION_LUA when the label's active pointer moved
+# between the Python ownership read and the script (compare-and-set lost).
+_POINTER_MOVED = "!pointer-moved"
+_POINTER_CAS_RETRIES = 5
+
+
+# --------------------------------------------------------------------------
 # Lua scripts for atomic operations
 # --------------------------------------------------------------------------
 
 START_SESSION_LUA = """
 local active = redis.call('GET', KEYS[1])
+-- ARGV[5] (optional): the pointer value the caller's ownership check read.
+-- Anything else now means another start/resume won the race -- do nothing.
+if ARGV[5] and (active or '') ~= ARGV[5] then
+    return '""" + _POINTER_MOVED + """'
+end
 if active and active ~= '' then
     redis.call('HSET', ARGV[4] .. active, 'status', 'paused', 'updated_at', ARGV[1])
     redis.call('ZADD', KEYS[2], ARGV[2], active)
@@ -81,6 +161,10 @@ return active or ''
 
 RESUME_SESSION_LUA = """
 local active = redis.call('GET', KEYS[1])
+-- ARGV[5] (optional): compare-and-set guard, same contract as START_SESSION_LUA.
+if ARGV[5] and (active or '') ~= ARGV[5] then
+    return '""" + _POINTER_MOVED + """'
+end
 if active and active ~= '' and active ~= ARGV[1] then
     redis.call('HSET', ARGV[3] .. active, 'status', 'paused', 'updated_at', ARGV[2])
     redis.call('ZADD', KEYS[2], ARGV[4], active)
@@ -188,6 +272,38 @@ class SessionManager:
             self._proactive_key(sid),
         ]
 
+    async def owns(self, session_id: str, caller: Caller | None) -> bool:
+        """Does ``caller`` own ``session_id``? A missing session is owned by no one."""
+        meta = await self._r.hgetall(self._session_key(session_id))
+        return bool(meta) and session_owned_by(meta, caller)
+
+    async def _guard_pointer(
+        self, agent_id: str, caller: Caller, *, allow: str | None = None,
+    ) -> str:
+        """Refuse to pause or repoint a label pointer another member holds.
+
+        ``nb:active:{agent_id}`` is keyed by a SELF-ASSERTED label, so two
+        members can name the same one (a shared "default", or Bob typing
+        "alice"). start/resume pause whatever that pointer names and repoint it
+        -- which let Bob pause Alice's live session and steal her pointer
+        (F3). This reads the pointer, refuses when it names an existing session
+        the caller does not own, and returns the value read so the Lua script
+        can compare-and-set against it (a pointer that moved in between makes
+        the script a no-op and the caller retries).
+
+        ``allow`` is a session id that may be named regardless (resume's own
+        target, already ownership-checked).
+        """
+        current = await self._r.get(self._active_key(agent_id)) or ""
+        if current and current != allow:
+            meta = await self._r.hgetall(self._session_key(current))
+            if meta and not session_owned_by(meta, caller):
+                raise SessionAccessError(
+                    f"agent_id '{agent_id}' is in use by another member's "
+                    f"session. Choose a different agent_id."
+                )
+        return current
+
     # ------------------------------------------------------------------
     # _meta_key alias (used for collision check)
     # ------------------------------------------------------------------
@@ -211,7 +327,16 @@ class SessionManager:
         instr_expected: str | None = None,
         instr_gateway: str | None = None,
         owner_member: str | None = None,
+        owner_workspace: str | None = None,
+        caller: Caller | None = None,
     ) -> dict[str, str]:
+        """Create a session and make it ``agent_id``'s active one.
+
+        ``caller`` (the verified principal; the MCP tool always passes it)
+        turns on the label-pointer guard: a pointer naming another member's
+        session is never paused or repointed -- see _guard_pointer. Internal
+        callers that pass no caller keep the unguarded behaviour.
+        """
         agent_id = agent_id or self._s.DEFAULT_AGENT_ID
         now = datetime.now(timezone.utc).isoformat()
         ts = datetime.now(timezone.utc).timestamp()
@@ -221,16 +346,25 @@ class SessionManager:
 
         # Atomically pause any active session and set new active (fix #1)
         active_key = self._active_key(agent_id)
-        await self._r.eval(
-            START_SESSION_LUA,
-            2,
-            active_key,
-            self.INDEX_KEY,
-            now,   # ARGV[1]: updated_at for paused session
-            ts,    # ARGV[2]: score for zadd
-            session_id,  # ARGV[3]: new session id to set as active
-            "nb:session:",  # ARGV[4]: session key prefix for pausing previous active
-        )
+        for _attempt in range(_POINTER_CAS_RETRIES):
+            argv: list[Any] = [
+                now,   # ARGV[1]: updated_at for paused session
+                ts,    # ARGV[2]: score for zadd
+                session_id,  # ARGV[3]: new session id to set as active
+                "nb:session:",  # ARGV[4]: session key prefix for pausing previous active
+            ]
+            if caller is not None:
+                # ARGV[5]: compare-and-set on the pointer value just checked.
+                argv.append(await self._guard_pointer(agent_id, caller))
+            outcome = await self._r.eval(
+                START_SESSION_LUA, 2, active_key, self.INDEX_KEY, *argv,
+            )
+            if outcome != _POINTER_MOVED:
+                break
+        else:
+            raise RuntimeError(
+                f"agent_id '{agent_id}' active pointer contended repeatedly; retry"
+            )
 
         # Pre-registered arm assignment (outcome truth, PR4 D1) — computed
         # from the SAME owner_member written to meta below, not re-derived.
@@ -251,6 +385,9 @@ class SessionManager:
             # check before honoring a grade or a cross-member takeover; no
             # other code path may write this field.
             "owner_member": owner_member or "",
+            # Same write-once contract as owner_member (2026-10-01, F3): the
+            # verified workspace, so an ownership match is workspace+member.
+            "owner_workspace": owner_workspace or "",
             # Beside owner_member: same "" absent-default precedent as every
             # other optional meta field (Redis hashes cannot store None).
             "experiment_group": experiment_group or "",
@@ -306,8 +443,15 @@ class SessionManager:
         key: str | None = None,
         agent_id: str | None = None,
         session_id: str | None = None,
+        caller: Caller | None = None,
     ) -> dict[str, Any]:
         """Write one component into a session.
+
+        ``caller`` (the verified principal) must own the target session --
+        whether it was named (X-Session-Id) or resolved through the shared,
+        label-keyed active pointer. Checked FIRST, before any status message,
+        so a non-owner learns nothing about the session (F3). None skips the
+        check (internal callers only).
 
         ``session_id`` names the target session directly — the MCP layer
         threads the connection's X-Session-Id header through it, so a terminal
@@ -320,6 +464,20 @@ class SessionManager:
         sid = session_id or await self._r.get(self._active_key(agent_id))
         if not sid:
             raise ValueError("No active session")
+
+        if caller is not None:
+            meta = await self._r.hgetall(self._session_key(sid))
+            if meta and not session_owned_by(meta, caller):
+                if session_id is not None:
+                    raise SessionAccessError(
+                        f"Session {sid} not found for the verified caller"
+                    )
+                # Resolved through another member's label pointer: do not
+                # even reveal the id it names.
+                raise SessionAccessError(
+                    f"No active session for agent_id '{agent_id}' belongs to "
+                    f"the verified caller"
+                )
 
         # A write into a finished session is a LOST write, and it used to
         # report {"status": "ok"}. This method resolved the target from the
@@ -494,8 +652,14 @@ class SessionManager:
         task_result: str | None = None,
         task_evidence: list | None = None,
         verified_member: str | None = None,
+        caller: Caller | None = None,
     ) -> dict[str, Any]:
         """Complete a session and return the session's AUTHORITATIVE grade.
+
+        ``caller`` (2026-10-01, F3), when given, replaces the owner_member-only
+        check below with the full ownership predicate (``session_owned_by``):
+        workspace+member, and legacy unbound sessions completable only by the
+        deployment owner. Without it the pre-existing check runs unchanged.
 
         Outcome truth (PR1): a session's grade means the TASK succeeded, not
         that this RPC succeeded, so a completion attempt must not be able to
@@ -592,7 +756,11 @@ class SessionManager:
                         )
 
                     owner_member = meta.get("owner_member") or ""
-                    if owner_member and verified_member != owner_member:
+                    if caller is not None:
+                        refused = not session_owned_by(meta, caller)
+                    else:
+                        refused = bool(owner_member) and verified_member != owner_member
+                    if refused:
                         await pipe.unwatch()
                         raise ValueError(
                             f"Session {session_id} belongs to a different "
@@ -764,8 +932,15 @@ class SessionManager:
         *,
         takeover: bool = False,
         verified_member: str | None = None,
+        caller: Caller | None = None,
     ) -> dict[str, Any]:
         """Resume a session and make it the caller's active one.
+
+        ``caller`` (2026-10-01, F3), when given, applies the full ownership
+        predicate (``session_owned_by``) in place of the owner_member-only
+        check, AND guards the caller's label pointer: resuming under a label
+        whose pointer names another member's session is refused rather than
+        pausing that session (see _guard_pointer).
 
         BOUND-OWNER REFUSAL (outcome truth, PR1): a session with a non-empty
         ``owner_member`` (set once, in start_session) refuses ANY resume by a
@@ -809,7 +984,11 @@ class SessionManager:
             raise ValueError(f"Session {session_id} not found")
 
         owner_member = meta.get("owner_member") or ""
-        if owner_member and verified_member != owner_member:
+        if caller is not None:
+            refused = not session_owned_by(meta, caller)
+        else:
+            refused = bool(owner_member) and verified_member != owner_member
+        if refused:
             raise ValueError(
                 f"Session {session_id} belongs to a different verified owner"
             )
@@ -842,17 +1021,31 @@ class SessionManager:
         prev_owner_key = (
             self._active_key(owner) if owner and owner != agent_id else ""
         )
-        await self._r.eval(
-            RESUME_SESSION_LUA,
-            3,
-            active_key,
-            self.INDEX_KEY,
-            prev_owner_key,  # KEYS[3]: previous owner's active pointer ('' = none)
-            session_id,    # ARGV[1]: session to resume
-            now,           # ARGV[2]: updated_at for paused session
-            "nb:session:", # ARGV[3]: session key prefix for pausing previous active
-            ts,            # ARGV[4]: score for zadd (updates displaced session's recency)
-        )
+        for _attempt in range(_POINTER_CAS_RETRIES):
+            argv: list[Any] = [
+                session_id,    # ARGV[1]: session to resume
+                now,           # ARGV[2]: updated_at for paused session
+                "nb:session:", # ARGV[3]: session key prefix for pausing previous active
+                ts,            # ARGV[4]: score for zadd (updates displaced session's recency)
+            ]
+            if caller is not None:
+                # ARGV[5]: compare-and-set on the pointer value just checked.
+                argv.append(
+                    await self._guard_pointer(agent_id, caller, allow=session_id))
+            outcome = await self._r.eval(
+                RESUME_SESSION_LUA,
+                3,
+                active_key,
+                self.INDEX_KEY,
+                prev_owner_key,  # KEYS[3]: previous owner's active pointer ('' = none)
+                *argv,
+            )
+            if outcome != _POINTER_MOVED:
+                break
+        else:
+            raise RuntimeError(
+                f"agent_id '{agent_id}' active pointer contended repeatedly; retry"
+            )
 
         # Activate target session
         await self._r.hset(self._session_key(session_id), mapping={
@@ -873,8 +1066,17 @@ class SessionManager:
     # ------------------------------------------------------------------
 
     async def list_sessions(
-        self, status: str | None = None, agent_id: str | None = None, limit: int = 20
+        self, status: str | None = None, agent_id: str | None = None, limit: int = 20,
+        *, caller: Caller | None = None, workspace_wide: bool = False,
     ) -> list[dict[str, Any]]:
+        """Recent sessions, newest first.
+
+        With ``caller``: only sessions that caller owns (``session_owned_by``)
+        -- or, with ``workspace_wide`` (a ``session:read:workspace`` service
+        read), every session in the caller's workspace. ``agent_id`` remains a
+        label FILTER within that set, never an authority. Without a caller the
+        listing is unfiltered (internal callers only).
+        """
         results: list[dict[str, Any]] = []
         batch_size = max(limit * 3, 50)
         offset = 0
@@ -898,6 +1100,14 @@ class SessionManager:
                     continue
                 if agent_id and meta.get("agent_id") != agent_id:
                     continue
+                if caller is not None:
+                    visible = (
+                        session_in_workspace(meta, caller.workspace_id)
+                        if workspace_wide
+                        else session_owned_by(meta, caller)
+                    )
+                    if not visible:
+                        continue
                 results.append({
                     "session_id": sid,
                     "goal": meta.get("goal", ""),
