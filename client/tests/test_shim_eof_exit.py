@@ -28,7 +28,6 @@ import json
 
 import anyio
 import httpx
-import pytest
 
 from mcp.server import stdio as mcp_stdio
 

@@ -29,6 +29,7 @@ _DEP_BEARING_TESTS = (
     "test_decision_server.py",
     "test_shim_bridge.py",
     "test_shim_bypass.py",
+    "test_shim_eof_exit.py",
     "test_shim_fail_loud.py",
     "test_shim_identity.py",
     "test_shim_recovery.py",
