@@ -180,7 +180,7 @@ def _auth_enabled() -> bool:
 
 def _verified_workspace_id() -> str | None:
     """The authenticated workspace behind this request, or None when
-    unknowable — the workspace twin of _verified_member_id."""
+    unknowable — the workspace counterpart of _verified_member_id."""
     try:
         from auth.principal import principal_from_scope
         return principal_from_scope(get_http_request().scope).get("workspace_id")
