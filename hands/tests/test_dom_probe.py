@@ -22,6 +22,12 @@ _PROBE_PATH = Path(__file__).resolve().parent.parent / "src" / "firekeep_hands" 
 
 pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="node is not on PATH")
 
+# Generous on purpose: this bounds a HANG, not a slow start. A cold `node` on a
+# GitHub Windows runner (Defender scanning the binary on first launch) blew a
+# 10 s budget three times on 2026-10-02 on commits that never touched hands;
+# the probe itself runs in milliseconds once node is up.
+_NODE_TIMEOUT_S = 60
+
 # A minimal fake DOM: `spec` dicts become elements with just the methods the
 # probe calls (`getBoundingClientRect`, `getAttribute`/`setAttribute`,
 # `tagName`, `innerText`, `value`). `global.document`/`global.window` are
@@ -105,7 +111,7 @@ def _run_ops(specs: list[dict], ops: list[dict], *, viewport=(1280, 720)) -> lis
         path = Path(handle.name)
     try:
         completed = subprocess.run(
-            ["node", str(path)], capture_output=True, text=True, timeout=10,
+            ["node", str(path)], capture_output=True, text=True, timeout=_NODE_TIMEOUT_S,
         )
     finally:
         path.unlink(missing_ok=True)
@@ -119,7 +125,7 @@ def _run_probe(specs: list[dict], hands: dict, **kw) -> dict:
 
 def test_probe_source_parses() -> None:
     completed = subprocess.run(
-        ["node", "--check", str(_PROBE_PATH)], capture_output=True, text=True, timeout=10,
+        ["node", "--check", str(_PROBE_PATH)], capture_output=True, text=True, timeout=_NODE_TIMEOUT_S,
     )
     assert completed.returncode == 0, completed.stderr
 
