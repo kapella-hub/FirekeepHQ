@@ -1,0 +1,9 @@
+[
+  {
+    "id": "GHSA-ch52-4w7c-c8xp",
+    "package": "http-cache-semantics",
+    "reason": "No patched release (<= 4.2.0 is every version). Only path is the devDependency electron-builder -> @electron/get -> got -> cacheable-request, which downloads Electron on a single-user build machine; the advisory is cross-user disclosure from a SHARED cache. `npm audit fix --force` would downgrade electron-builder.",
+    "added": "2026-10-03",
+    "expires": "2026-11-03"
+  }
+]
