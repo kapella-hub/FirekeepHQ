@@ -432,6 +432,20 @@ button.btn-outline:hover { border-color: var(--accent); color: var(--accent); ba
 .data-table tbody tr:nth-child(even) { background: rgba(0,0,0,0.1); }
 .data-table tbody tr:nth-child(even):hover { background: var(--accent-glow); }
 .data-table .actions { text-align: right; }
+.two-col.vault-layout { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); }
+.two-col.vault-layout > * { min-width: 0; }
+#vaultSecretsList .data-table th, #vaultSecretsList .data-table td { padding: 10px 10px; }
+/* min-width keeps the column readable; anywhere still breaks a name longer than that */
+.vault-key { display: inline-block; min-width: 12ch; color: var(--accent); font-weight: 600; overflow-wrap: anywhere; }
+/* Measured 2026-10-03: the table's minimum width is ~530px with all five columns and
+   ~445px without "Created"; below 1300px the two-column list is narrower than that. */
+@media (max-width: 1300px) {
+    #vaultSecretsList .data-table th:nth-child(4), #vaultSecretsList .data-table td:nth-child(4) { display: none; }
+}
+@media (max-width: 1080px) { .two-col.vault-layout { grid-template-columns: minmax(0, 1fr); } }
+.vault-reveal-row td { background: var(--bg-deep); }
+.vault-reveal-value { font-family: var(--font-mono); font-size: 12px; color: var(--accent); white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-all; max-height: 200px; overflow-y: auto; padding: 8px 10px; border: 1px solid var(--accent); border-radius: var(--radius-sm); margin-bottom: 8px; user-select: all; }
+.vault-reveal-actions { display: flex; gap: 6px; justify-content: flex-end; }
 
 /* Spinner */
 .spinner { display: flex; align-items: center; justify-content: center; padding: 40px; color: var(--text-dim); font-size: 13px; gap: 12px; }
@@ -1344,10 +1358,14 @@ button.btn-outline:hover { border-color: var(--accent); color: var(--accent); ba
                 </div>
             </div>
 
-            <div class="two-col section">
+            <div class="two-col section vault-layout">
                 <div>
                     <div class="card-header">Stored Secrets <span data-freshness="vault" class="freshness"></span></div>
-                    <div class="card card-padded" id="vaultSecretsList" style="max-height:600px;overflow-y:auto">
+                    <div class="search-bar" style="gap:8px;margin-bottom:8px;align-items:center">
+                        <input type="search" id="vaultSearch" placeholder="Filter by key, category, description or tag…" autocomplete="off" aria-label="Filter secrets" style="flex:1;min-width:0">
+                        <span id="vaultSearchCount" class="text-dim" style="font-size:12px;white-space:nowrap"></span>
+                    </div>
+                    <div class="card card-padded" id="vaultSecretsList" style="max-height:600px;overflow-y:auto;overflow-x:auto">
                         <div class="spinner">Loading...</div>
                     </div>
                 </div>
@@ -5174,84 +5192,29 @@ $('memberInviteForm').addEventListener('submit', function(e) {
 
 // ===================== Vault =====================
 
+// Fetched once per load/refresh; the filter re-renders from this without a refetch.
+var _vaultSecrets = [];
+// A revealed value stays readable long enough to copy a long token, then hides itself.
+var VAULT_REVEAL_MS = 30000;
+
 function loadVaultSecrets() {
     var container = $('vaultSecretsList');
     clear(container);
     container.appendChild(spinner('Loading secrets...'));
 
     fetchJSON(CONFIG.CORTEX_API + '/vault/secrets').then(function(data) {
-        clear(container);
-
         // Vault is reachable — show enabled badge
         var badgeEl = $('vaultStatusBadge');
         clear(badgeEl);
         badgeEl.appendChild(badge('Enabled', 'badge-green'));
 
-        var secrets = Array.isArray(data) ? data : (data.secrets || []);
-        if (!secrets.length) {
-            container.appendChild(empty('No secrets stored. Use the form to store your first secret.'));
-            markRefreshed('vault');
-            return;
-        }
-
-        container.innerHTML = renderTable([
-            { label: 'Key', key: 'name', render: function(s) { return '<span style="color:var(--accent);font-weight:600">' + esc(s.name || s.key || '--') + '</span>'; } },
-            { label: 'Category', key: 'category', render: function(s) { return esc(s.category || '--'); } },
-            { label: 'Description', key: 'description', render: function(s) { return '<span style="color:var(--text-secondary)">' + esc(s.description || '--') + '</span>'; } },
-            { label: 'Created', key: 'created_at', render: function(s) { return relTime(s.created_at); } },
-            { label: '', key: '_actions', align: 'right', render: function(s) {
-                var k = esc(s.name || s.key);
-                return '<button class="btn btn-sm btn-outline vault-reveal-btn" data-key="' + k + '" style="padding:3px 10px;font-size:11px;margin-right:6px">Reveal</button>'
-                     + '<button class="btn btn-sm btn-outline vault-delete-btn" data-key="' + k + '" style="border-color:var(--red);color:var(--red);padding:3px 10px;font-size:11px">Delete</button>';
-            }}
-        ], secrets, { empty: 'No secrets stored' });
-
+        _vaultSecrets = Array.isArray(data) ? data : (data.secrets || []);
+        renderVaultSecrets();
         markRefreshed('vault');
-
-        // Attach reveal handlers
-        container.querySelectorAll('.vault-reveal-btn').forEach(function(btn) {
-            btn.addEventListener('click', function() {
-                var key = btn.dataset.key;
-                btn.disabled = true;
-                btn.textContent = '...';
-                fetchJSON(CONFIG.CORTEX_API + '/vault/secrets/' + encodeURIComponent(key)).then(function(data) {
-                    var val = data.value || data.secret || '(empty)';
-                    // Show value in a temporary tooltip next to button
-                    var tip = document.createElement('span');
-                    tip.style.cssText = 'position:absolute;background:var(--bg-deep);border:1px solid var(--accent);border-radius:var(--radius-sm);padding:6px 12px;font-family:var(--font-mono);font-size:12px;color:var(--accent);white-space:nowrap;z-index:10;margin-left:8px;box-shadow:var(--shadow-md);max-width:400px;overflow:hidden;text-overflow:ellipsis';
-                    tip.textContent = val;
-                    btn.parentNode.style.position = 'relative';
-                    btn.parentNode.appendChild(tip);
-                    btn.disabled = false;
-                    btn.textContent = 'Reveal';
-                    setTimeout(function() { if (tip.parentNode) tip.remove(); }, 5000);
-                }).catch(function(e) {
-                    toast('Reveal failed: ' + e.message, 'error');
-                    btn.disabled = false;
-                    btn.textContent = 'Reveal';
-                });
-            });
-        });
-
-        // Attach delete handlers
-        container.querySelectorAll('.vault-delete-btn').forEach(function(btn) {
-            btn.addEventListener('click', function() {
-                var key = btn.dataset.key;
-                if (!confirm('Delete secret "' + key + '"? This cannot be undone.')) return;
-                btn.disabled = true;
-                btn.textContent = '...';
-                fetchJSON(CONFIG.CORTEX_API + '/vault/secrets/' + encodeURIComponent(key), { method: 'DELETE' }).then(function() {
-                    toast('Secret "' + key + '" deleted', 'success');
-                    loadVaultSecrets();
-                }).catch(function(e) {
-                    toast('Delete failed: ' + e.message, 'error');
-                    btn.disabled = false;
-                    btn.textContent = 'Delete';
-                });
-            });
-        });
     }).catch(function(e) {
         clear(container);
+        _vaultSecrets = [];
+        if ($('vaultSearchCount')) $('vaultSearchCount').textContent = '';
         var badgeEl = $('vaultStatusBadge');
         clear(badgeEl);
         if (e.message && e.message.indexOf('503') !== -1) {
@@ -5263,6 +5226,123 @@ function loadVaultSecrets() {
         }
     });
 }
+
+// Every whitespace-separated term must appear somewhere in key, category,
+// description or tags (case-insensitive), so "polymarket wallet" narrows.
+function vaultSecretMatches(secret, q) {
+    if (!q) return true;
+    var hay = [secret.name || secret.key || '', secret.category || '', secret.description || '']
+        .concat(secret.tags || []).join(' ').toLowerCase();
+    return q.split(/\s+/).every(function(term) { return !term || hay.indexOf(term) !== -1; });
+}
+
+function renderVaultSecrets() {
+    var container = $('vaultSecretsList');
+    var q = (($('vaultSearch') && $('vaultSearch').value) || '').trim().toLowerCase();
+    var shown = _vaultSecrets.filter(function(sec) { return vaultSecretMatches(sec, q); });
+    var countEl = $('vaultSearchCount');
+    if (countEl) countEl.textContent = q ? (shown.length + ' of ' + _vaultSecrets.length) : (_vaultSecrets.length + ' secrets');
+    clear(container);
+
+    if (!_vaultSecrets.length) {
+        container.appendChild(empty('No secrets stored. Use the form to store your first secret.'));
+        return;
+    }
+    if (!shown.length) {
+        container.appendChild(empty('No secret matches "' + q + '".'));
+        return;
+    }
+
+    container.innerHTML = renderTable([
+        { label: 'Key', key: 'name', render: function(sec) { return '<span class="vault-key">' + esc(sec.name || sec.key || '--') + '</span>'; } },
+        { label: 'Category', key: 'category', render: function(sec) { return esc(sec.category || '--'); } },
+        { label: 'Description', key: 'description', render: function(sec) { return '<span style="color:var(--text-secondary)">' + esc(sec.description || '--') + '</span>'; } },
+        { label: 'Created', key: 'created_at', render: function(sec) { return relTime(sec.created_at); } },
+        { label: '', key: '_actions', align: 'right', render: function(sec) {
+            var k = esc(sec.name || sec.key);
+            return '<span style="white-space:nowrap"><button class="btn btn-sm btn-outline vault-reveal-btn" data-key="' + k + '" style="padding:3px 10px;font-size:11px;margin-right:6px">Reveal</button>'
+                 + '<button class="btn btn-sm btn-outline vault-delete-btn" data-key="' + k + '" style="border-color:var(--red);color:var(--red);padding:3px 10px;font-size:11px">Delete</button></span>';
+        }}
+    ], shown, { empty: 'No secrets stored' });
+
+    // Reveal opens a full-width row UNDER the secret, so the value wraps inside
+    // the card. It used to be a nowrap tooltip beside the button that ran off the
+    // right edge and vanished after 5 s, before a long token could be read.
+    container.querySelectorAll('.vault-reveal-btn').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            var tr = btn.closest('tr');
+            var open = tr.nextElementSibling && tr.nextElementSibling.classList.contains('vault-reveal-row') ? tr.nextElementSibling : null;
+            if (open) { hideVaultReveal(btn, open); return; }
+            var key = btn.dataset.key;
+            btn.disabled = true;
+            btn.textContent = '...';
+            fetchJSON(CONFIG.CORTEX_API + '/vault/secrets/' + encodeURIComponent(key)).then(function(data) {
+                var val = data.value != null ? String(data.value) : (data.secret || '(empty)');
+                var row = document.createElement('tr');
+                row.className = 'vault-reveal-row';
+                var td = document.createElement('td');
+                td.colSpan = tr.children.length;
+                var box = document.createElement('div');
+                box.className = 'vault-reveal-value';
+                box.textContent = val;
+                var actions = document.createElement('div');
+                actions.className = 'vault-reveal-actions';
+                var copyBtn = document.createElement('button');
+                copyBtn.className = 'btn btn-sm btn-outline';
+                copyBtn.style.cssText = 'padding:3px 10px;font-size:11px';
+                copyBtn.textContent = 'Copy';
+                copyBtn.addEventListener('click', function() {
+                    navigator.clipboard.writeText(val).then(function() { toast('Copied "' + key + '"', 'success'); },
+                        function() { toast('Copy failed — select the value and copy it manually', 'error'); });
+                });
+                var hideBtn = document.createElement('button');
+                hideBtn.className = 'btn btn-sm btn-outline';
+                hideBtn.style.cssText = 'padding:3px 10px;font-size:11px';
+                hideBtn.textContent = 'Hide';
+                hideBtn.addEventListener('click', function() { hideVaultReveal(btn, row); });
+                actions.appendChild(copyBtn);
+                actions.appendChild(hideBtn);
+                td.appendChild(box);
+                td.appendChild(actions);
+                row.appendChild(td);
+                tr.parentNode.insertBefore(row, tr.nextSibling);
+                btn.disabled = false;
+                btn.textContent = 'Hide';
+                row._vaultTimer = setTimeout(function() { hideVaultReveal(btn, row); }, VAULT_REVEAL_MS);
+            }).catch(function(e) {
+                toast('Reveal failed: ' + e.message, 'error');
+                btn.disabled = false;
+                btn.textContent = 'Reveal';
+            });
+        });
+    });
+
+    // Attach delete handlers
+    container.querySelectorAll('.vault-delete-btn').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            var key = btn.dataset.key;
+            if (!confirm('Delete secret "' + key + '"? This cannot be undone.')) return;
+            btn.disabled = true;
+            btn.textContent = '...';
+            fetchJSON(CONFIG.CORTEX_API + '/vault/secrets/' + encodeURIComponent(key), { method: 'DELETE' }).then(function() {
+                toast('Secret "' + key + '" deleted', 'success');
+                loadVaultSecrets();
+            }).catch(function(e) {
+                toast('Delete failed: ' + e.message, 'error');
+                btn.disabled = false;
+                btn.textContent = 'Delete';
+            });
+        });
+    });
+}
+
+function hideVaultReveal(btn, row) {
+    if (row._vaultTimer) clearTimeout(row._vaultTimer);
+    if (row.parentNode) row.remove();
+    btn.textContent = 'Reveal';
+}
+
+if ($('vaultSearch')) $('vaultSearch').addEventListener('input', renderVaultSecrets);
 
 if ($('vaultStoreForm')) $('vaultStoreForm').addEventListener('submit', function(e) {
     e.preventDefault();
