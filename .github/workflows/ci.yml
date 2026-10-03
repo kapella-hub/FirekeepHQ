@@ -138,7 +138,9 @@ jobs:
       - name: Build and typecheck
         run: npm run build
       - name: Audit dependencies
-        run: npm audit --audit-level=moderate
+        # npm audit at moderate+, minus studio/audit-allowlist.json: named advisories
+        # with a reason and an EXPIRY date (the gate fails again once it passes).
+        run: node scripts/audit-gate.mjs
 
   client-windows:
     name: client (windows)
