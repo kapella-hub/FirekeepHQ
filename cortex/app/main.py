@@ -31,7 +31,14 @@ from app.embedding_admin import create_embedding_router
 from app.engine.rag import RAGEngine
 from app.lifecycle import create_lifecycle_router
 from app.migration_gate import require_not_frozen
-from auth.middleware import require_any_scope
+from auth.middleware import require_any_scope, require_scope
+from auth.principal import (
+    DELEGATED_WRITE_SCOPE,
+    DelegatedAttributionError,
+    delegated_attribution,
+    has_delegated_attribution_headers,
+    request_attribution,
+)
 from app.ops import create_ops_router
 from app.ops_backups import create_ops_backups_router
 from app.exceptions import (
@@ -1345,17 +1352,31 @@ async def memory_recall(
     return result
 
 
-@app.post("/memory/learn", response_model=LearnResponse,
-          dependencies=[_MEMORY_WRITE, Depends(require_not_frozen)])
-@limiter.limit(lambda: get_settings().RATE_LIMIT)
-async def memory_learn(
+# Provenance fields every memory write records beside workspace_id/member_id
+# (2026-10-04). Nested under the point's `metadata` (vector.upsert promotes
+# only _PROMOTED_PAYLOAD_KEYS), so corpus/skill payloads are untouched.
+_PROVENANCE_KEYS = (
+    "credential_id", "runtime_id", "runtime_label", "delegated_by_credential_id",
+)
+
+
+async def _store_memory_learning(
     request: Request,
     log: ActionLog,
-    graph: Annotated[Neo4jClient, Depends(get_graph)],
-    vector: Annotated[VectorClient, Depends(get_vector)],
-    redis_client: Annotated[redis.asyncio.Redis, Depends(get_redis)],
+    graph: Neo4jClient,
+    vector: VectorClient,
+    redis_client: redis.asyncio.Redis,
+    attribution: dict[str, Any],
 ) -> LearnResponse:
-    """Store an action log in both the knowledge graph and vector store."""
+    """Store an action log in both stores, attributed to ``attribution``.
+
+    ``attribution`` is already verified (auth/principal.py
+    request_attribution or delegated_attribution): workspace, member and
+    credential come from the auth layer, ``runtime_label`` is the client's
+    display label and decides nothing. One body for both /memory/learn routes,
+    so a delegated write gets the same secret scan, point id, backfill,
+    contradiction pass and replay trace as a direct one.
+    """
     # Secret detection
     try:
         from app.secret_scan import scan_action_log
@@ -1386,13 +1407,12 @@ async def memory_learn(
     if log.resolution:
         text += f" Resolution: {log.resolution}"
 
-    # Runtime identity remains an untrusted observability label. Workspace and
-    # member provenance come only from the verified credential principal.
-    sid = request.headers.get("X-Session-Id", "unknown")
-    aid = request.headers.get("X-Agent-Id", "unknown")
-    from auth.principal import request_principal
-
-    principal = request_principal(request)
+    # agent_id stays the client's runtime label -- a DISPLAY field. Who wrote
+    # the memory is attribution's workspace/member/credential.
+    sid = attribution["session_id"]
+    aid = attribution["runtime_label"]
+    principal = attribution
+    provenance = {key: attribution.get(key) for key in _PROVENANCE_KEYS}
 
     # The Qdrant point id is derived from the text, so it is knowable BEFORE the
     # write and can be handed to the graph in the same gather. Without it the
@@ -1429,6 +1449,7 @@ async def memory_learn(
                 "project": log.project,
                 "workspace_id": principal["workspace_id"],
                 "member_id": principal["member_id"],
+                **provenance,
             },
             namespace=log.namespace,
             point_id=memory_id,
@@ -1474,6 +1495,7 @@ async def memory_learn(
                     "project": log.project,
                     "workspace_id": principal["workspace_id"],
                     "member_id": principal["member_id"],
+                    **provenance,
                     "namespace": log.namespace,
                 },
                 redis_client=redis_client,
@@ -1544,11 +1566,74 @@ async def memory_learn(
             "vector_id": str(vector_result) if vector_result else "",
             "namespace": log.namespace,
             "superseded_count": len(superseded),
+            **provenance,
         },
         outcome="success",
     )
 
     return learn_response
+
+
+@app.post("/memory/learn", response_model=LearnResponse,
+          dependencies=[_MEMORY_WRITE, Depends(require_not_frozen)])
+@limiter.limit(lambda: get_settings().RATE_LIMIT)
+async def memory_learn(
+    request: Request,
+    log: ActionLog,
+    graph: Annotated[Neo4jClient, Depends(get_graph)],
+    vector: Annotated[VectorClient, Depends(get_vector)],
+    redis_client: Annotated[redis.asyncio.Redis, Depends(get_redis)],
+) -> LearnResponse:
+    """Store knowledge attributed to the caller's verified credential."""
+    if has_delegated_attribution_headers(request):
+        # Refused, not ignored: silently dropping the header would store the
+        # write as the CALLER while the caller believes it delegated.
+        raise HTTPException(
+            status_code=400,
+            detail="Delegated attribution is accepted only at /memory/learn/delegated",
+        )
+    return await _store_memory_learning(
+        request, log, graph, vector, redis_client, request_attribution(request),
+    )
+
+
+@app.post("/memory/learn/delegated", response_model=LearnResponse,
+          dependencies=[Depends(require_not_frozen)])
+@limiter.limit(lambda: get_settings().RATE_LIMIT)
+async def memory_learn_delegated(
+    request: Request,
+    log: ActionLog,
+    graph: Annotated[Neo4jClient, Depends(get_graph)],
+    vector: Annotated[VectorClient, Depends(get_vector)],
+    redis_client: Annotated[redis.asyncio.Redis, Depends(get_redis)],
+    identity: Annotated[dict, Depends(require_scope(DELEGATED_WRITE_SCOPE))],
+) -> LearnResponse:
+    """Store knowledge FOR the member a service names (2026-10-04).
+
+    For asynchronous Firekeep services -- Bridge's distiller writes a session's
+    distillate after the member's request is long gone, and its own key is
+    minted as the deployment owner. The service key authorizes the write
+    (``memory:write:delegated``, service-only, matched literally -- a ``*``
+    key does not pass); the member and credential recorded as provenance are
+    verified against the auth store (auth/principal.py delegated_attribution).
+    """
+    from auth import keys as _keys
+
+    auth_redis = getattr(request.app.state, "auth_redis", None) or _keys._redis
+    try:
+        attribution = await delegated_attribution(
+            request, identity, redis_client=auth_redis,
+        )
+    except DelegatedAttributionError as exc:
+        # One answer for every failure: the route must not tell a caller which
+        # members or credentials exist.
+        logger.warning("Delegated memory write refused: %s", exc)
+        raise HTTPException(
+            status_code=403, detail="Delegated attribution could not be verified",
+        ) from exc
+    return await _store_memory_learning(
+        request, log, graph, vector, redis_client, attribution,
+    )
 
 
 @app.post("/memory/stream", response_model=StreamResponse,
@@ -1669,19 +1754,38 @@ async def get_memory_contributors(
     limit: int = 10000,
     vector: Annotated[VectorClient, Depends(get_vector)] = None,
 ) -> list[dict]:
-    """Return contributor stats grouped by agent_id from Qdrant payload."""
+    """Contributor stats grouped by VERIFIED member, inside the caller's view.
+
+    2026-10-04: grouped by ``member_id`` -- written from the verified principal
+    (or a verified delegation) -- not by ``agent_id``, the client-chosen
+    X-Agent-Id label, which made "who contributed" whatever a client claimed.
+    Labels are still reported, as ``agent_labels``. A point with no member is a
+    legacy one and belongs to the deployment owner (workspace_migration
+    backfills exactly that). The scroll is confined to the caller's workspace
+    and to what recall would let the caller see (visibility_should), so counts
+    and project names never cross a tenant or a teammate's private sources.
+    """
     from collections import defaultdict
 
     from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-    collection = get_settings().QDRANT_COLLECTION
+    from app.db.visibility import visibility_should
+    from auth.principal import deployment_owner_member_id, request_principal
 
-    must_conditions = []
+    collection = get_settings().QDRANT_COLLECTION
+    principal = request_principal(request)
+
+    must_conditions: list = [
+        FieldCondition(
+            key="workspace_id", match=MatchValue(value=principal["workspace_id"])
+        ),
+        Filter(should=visibility_should(principal.get("member_id"))),
+    ]
     if project:
         must_conditions.append(
             FieldCondition(key="project", match=MatchValue(value=project.lower()))
         )
-    scroll_filter = Filter(must=must_conditions) if must_conditions else None
+    scroll_filter = Filter(must=must_conditions)
 
     all_points: list = []
     offset = None
@@ -1710,13 +1814,18 @@ async def get_memory_contributors(
         ]
 
     groups: dict[str, dict] = defaultdict(lambda: {
-        "memory_count": 0, "projects": set(), "last_active": None, "domains": defaultdict(int)
+        "memory_count": 0, "projects": set(), "last_active": None,
+        "domains": defaultdict(int), "labels": set(),
     })
+    owner = deployment_owner_member_id()
     for point in all_points:
         payload = point.payload or {}
-        aid = payload.get("agent_id", "unknown")
-        g = groups[aid]
+        member = payload.get("member_id") or owner
+        g = groups[member]
         g["memory_count"] += 1
+        label = payload.get("agent_id")
+        if label and label != "unknown":
+            g["labels"].add(label)
         if payload.get("project"):
             g["projects"].add(payload["project"])
         ts = payload.get("timestamp") or payload.get("created_at")
@@ -1727,14 +1836,27 @@ async def get_memory_contributors(
 
     return [
         {
-            "contributor_id": aid,
+            "contributor_id": member,
+            "member_id": member,
+            "agent_labels": sorted(g["labels"]),
             "memory_count": g["memory_count"],
             "projects": sorted(g["projects"]),
             "last_active": g["last_active"],
             "top_domain": max(g["domains"], key=g["domains"].get) if g["domains"] else None,
         }
-        for aid, g in sorted(groups.items(), key=lambda x: -x[1]["memory_count"])
+        for member, g in sorted(groups.items(), key=lambda x: -x[1]["memory_count"])
     ]
+
+
+def _contributor_line(c: dict) -> str:
+    """One handoff line per contributor: the verified member, then its labels."""
+    labels = c.get("agent_labels") or []
+    who = f"{c['contributor_id']} ({', '.join(labels)})" if labels else c["contributor_id"]
+    return (
+        f"- {who}: {c['memory_count']} memories, "
+        f"last active {c.get('last_active', 'unknown')}, "
+        f"top domain: {c.get('top_domain', 'unknown')}"
+    )
 
 
 @app.post("/memory/handoff", dependencies=[_MEMORY_READ])
@@ -1760,10 +1882,7 @@ async def post_memory_handoff(
         vector=vector_client,
     )
     contributors_text = "\n".join(
-        f"- {c['contributor_id']}: {c['memory_count']} memories, "
-        f"last active {c.get('last_active', 'unknown')}, "
-        f"top domain: {c.get('top_domain', 'unknown')}"
-        for c in contributors_data
+        _contributor_line(c) for c in contributors_data
     ) if contributors_data else "(no contributors found)"
 
     recall_query = ContextQuery(

@@ -121,6 +121,10 @@ def _embedding_app():
     [
         (_main_app, "/memory/recall", "POST", {"memory:read", "admin"}),
         (_main_app, "/memory/learn", "POST", {"memory:write", "admin"}),
+        # Service-only, and matched LITERALLY inside the handler too
+        # (auth/principal.py delegated_attribution): "*" passes this
+        # dependency but not the delegation check.
+        (_main_app, "/memory/learn/delegated", "POST", {"memory:write:delegated"}),
         (_main_app, "/memory/stream", "POST", {"memory:write", "admin"}),
         (_main_app, "/memory/feedback", "POST", {"memory:write", "admin"}),
         (_main_app, "/memory/contributors", "GET", {"memory:read", "admin"}),

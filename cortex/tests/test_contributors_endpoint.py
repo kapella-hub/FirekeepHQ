@@ -107,19 +107,24 @@ class TestContributorsEndpoint:
         )
         assert resp.status_code == 200
 
-    def test_aggregates_points_by_agent_id(self, contributors_client):
-        """GET /memory/contributors groups points by agent_id and returns stats."""
-        # Simulate two points from the same agent
+    def test_aggregates_points_by_verified_member(self, contributors_client):
+        """GET /memory/contributors groups points by the VERIFIED member_id.
+
+        2026-10-04: it used to group by agent_id -- the client-chosen
+        X-Agent-Id label -- so "who contributed" was whatever a client said.
+        """
         point_a = MagicMock()
         point_a.payload = {
-            "agent_id": "agent-alpha",
+            "member_id": "member-alpha",
+            "agent_id": "claude",
             "project": "myapp",
             "domain": "backend",
             "timestamp": "2026-05-01T10:00:00Z",
         }
         point_b = MagicMock()
         point_b.payload = {
-            "agent_id": "agent-alpha",
+            "member_id": "member-alpha",
+            "agent_id": "codex",
             "project": "myapp",
             "domain": "frontend",
             "timestamp": "2026-05-10T12:00:00Z",
@@ -134,19 +139,83 @@ class TestContributorsEndpoint:
         data = resp.json()
         assert len(data) == 1
         entry = data[0]
-        assert entry["contributor_id"] == "agent-alpha"
+        assert entry["contributor_id"] == "member-alpha"
+        assert entry["member_id"] == "member-alpha"
+        # Labels are reported, as labels -- one member, two runtimes.
+        assert entry["agent_labels"] == ["claude", "codex"]
         assert entry["memory_count"] == 2
         assert "myapp" in entry["projects"]
         assert entry["last_active"] == "2026-05-10T12:00:00Z"
 
+    def test_one_label_used_by_two_members_is_two_contributors(self, contributors_client):
+        """Two members whose agents are both called "claude" are two people."""
+        p1 = MagicMock()
+        p1.payload = {"member_id": "member-alice", "agent_id": "claude",
+                      "timestamp": "2026-05-01T00:00:00Z"}
+        p2 = MagicMock()
+        p2.payload = {"member_id": "member-bob", "agent_id": "claude",
+                      "timestamp": "2026-05-01T00:00:00Z"}
+        contributors_client._mock_vector._client.scroll = AsyncMock(
+            return_value=([p1, p2], None))
+
+        data = contributors_client.get("/memory/contributors").json()
+        assert sorted(c["contributor_id"] for c in data) == ["member-alice", "member-bob"]
+
+    def test_a_label_naming_a_member_does_not_make_it_theirs(self, contributors_client):
+        """X-Agent-Id: member-owner on Bob's write is still Bob's write."""
+        p = MagicMock()
+        p.payload = {"member_id": "member-bob", "agent_id": "member-owner",
+                     "timestamp": "2026-05-01T00:00:00Z"}
+        contributors_client._mock_vector._client.scroll = AsyncMock(
+            return_value=([p], None))
+
+        data = contributors_client.get("/memory/contributors").json()
+        assert [c["contributor_id"] for c in data] == ["member-bob"]
+        assert data[0]["agent_labels"] == ["member-owner"]
+
+    def test_unattributed_points_belong_to_the_deployment_owner(
+        self, contributors_client, monkeypatch
+    ):
+        """workspace_migration.backfill_memories stamps legacy points with the
+        owner; a point that somehow still has none follows the same rule."""
+        monkeypatch.setenv("FIREKEEP_OWNER_MEMBER_ID", "member-boss")
+        p = MagicMock()
+        p.payload = {"agent_id": "legacy-pre-team-continuity",
+                     "timestamp": "2026-01-01T00:00:00Z"}
+        contributors_client._mock_vector._client.scroll = AsyncMock(
+            return_value=([p], None))
+
+        data = contributors_client.get("/memory/contributors").json()
+        assert [c["contributor_id"] for c in data] == ["member-boss"]
+
+    def test_scroll_is_scoped_to_the_callers_workspace_and_visibility(
+        self, contributors_client, monkeypatch
+    ):
+        """Counts and project names must not cross the tenancy boundary, nor
+        reveal a teammate's member-private (docdex/maildex) sources."""
+        monkeypatch.setattr("auth.principal.request_principal", lambda _r: {
+            "workspace_id": "workspace-a", "member_id": "member-alice",
+            "credential_id": "c", "scopes": ["memory:read"], "authenticated": True,
+        })
+        scroll = AsyncMock(return_value=([], None))
+        contributors_client._mock_vector._client.scroll = scroll
+
+        assert contributors_client.get("/memory/contributors").status_code == 200
+        flt = scroll.call_args.kwargs["scroll_filter"]
+        must = {getattr(c, "key", None): getattr(getattr(c, "match", None), "value", None)
+                for c in flt.must}
+        assert must.get("workspace_id") == "workspace-a"
+        rendered = repr(flt)
+        assert "visibility" in rendered and "member-alice" in rendered
+
     def test_sorts_by_memory_count_descending(self, contributors_client):
         """Contributors are sorted by memory_count descending."""
         p1 = MagicMock()
-        p1.payload = {"agent_id": "agent-low", "project": "x", "domain": "a", "timestamp": "2026-05-01T00:00:00Z"}
+        p1.payload = {"member_id": "agent-low", "project": "x", "domain": "a", "timestamp": "2026-05-01T00:00:00Z"}
         p2 = MagicMock()
-        p2.payload = {"agent_id": "agent-high", "project": "x", "domain": "b", "timestamp": "2026-05-01T00:00:00Z"}
+        p2.payload = {"member_id": "agent-high", "project": "x", "domain": "b", "timestamp": "2026-05-01T00:00:00Z"}
         p3 = MagicMock()
-        p3.payload = {"agent_id": "agent-high", "project": "x", "domain": "b", "timestamp": "2026-05-02T00:00:00Z"}
+        p3.payload = {"member_id": "agent-high", "project": "x", "domain": "b", "timestamp": "2026-05-02T00:00:00Z"}
 
         contributors_client._mock_vector._client.scroll = AsyncMock(
             return_value=([p1, p2, p3], None)

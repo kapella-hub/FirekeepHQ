@@ -5,7 +5,8 @@
 # API Endpoints
 - `POST /memory/recall` — Dual-retrieval RAG query, returns Markdown for LLM injection. **Scopes (2026-10-01):** `/memory/recall`, `/memory/recall/stream`, `/memory/contributors` and `/memory/handoff` require `memory:read`; `/memory/learn`, `/memory/stream` and `/memory/feedback` require `memory:write` — each "or `admin`". Before that any valid key reached them, including a `session:write`-only service key.
 - `POST /memory/recall/stream` — SSE streaming recall (progressive results). Honors `project` scoping and the `RECALL_SCORE_FLOOR` score threshold on the vector search leg, and skips description-less graph nodes, mirroring the non-streaming `/memory/recall` path.
-- `POST /memory/learn` — Logs actions/outcomes/resolutions to both graph + vector (parallel writes)
+- `POST /memory/learn` — Logs actions/outcomes/resolutions to both graph + vector (parallel writes). Records the caller's verified `workspace_id`/`member_id`/`credential_id` and a credential-namespaced `runtime_id`; `X-Agent-Id` is stored as the display label only (2026-10-04). A request carrying `X-Firekeep-Delegated-*` headers is refused 400.
+- `POST /memory/learn/delegated` — The same write, attributed to the member a SERVICE names (`X-Firekeep-Delegated-Member-Id`, optional `X-Firekeep-Delegated-Credential-Id`), verified against the auth store. Requires the service-only `memory:write:delegated`, matched literally — `*` keys are refused. Caller: Bridge's distiller with `FIREKEEP_BRIDGE_KEY`. See docs/guides/memory-and-recall.md "Write provenance".
 - `POST /memory/stream` — High-volume event ingest → Redis queue (pipeline batching)
 - `POST /memory/feedback` — Submit feedback on memory usefulness (accumulates useful/not-useful counters that nudge recall ranking; also exposed as the `memory_feedback` MCP tool — see docs/guides/knowledge-autopilot.md)
 - `GET /memory/stats` — Memory statistics (counts, domains, tags, DLQ depth)

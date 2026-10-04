@@ -626,6 +626,32 @@ service-only `session:read:workspace`). Relay's tasks and bulletins are
 workspace-visible by design, so for those two sections the change removes the
 deputy without changing what Bob can see.
 
+### 5.12 Who wrote a memory: verified write provenance (2026-10-04)
+
+**Fixed 2026-10-04 — attribution is the verified principal, not the label.**
+`/memory/learn` verified the caller's member but stored no credential and no
+runtime, so the only "who" a reader could see on a memory was `agent_id` — the
+self-asserted `X-Agent-Id` — and `GET /memory/contributors` grouped by it. A
+memory's author was whatever its client claimed. Every write now records the
+verified `workspace_id`, `member_id` and `credential_id`, plus a `runtime_id`
+derived from the credential and the label (`auth/principal.py`
+`request_attribution`); `agent_id` stays, as a display field.
+`/memory/contributors` groups by verified member and is now confined to the
+caller's workspace and recall visibility (it was neither, so a teammate's
+member-private source names and counts were visible there — the row 13 residual).
+
+**New service-only contract — `POST /memory/learn/delegated`.** A key holding
+`memory:write:delegated` *literally* (not via `*`) names the member it writes
+for; Cortex verifies that member is active in the key's own workspace and that
+a named credential belongs to them, and answers every failure with one 403.
+The service is still trusted to name the right member — the scope is minted onto
+one service key only — so this narrows who can mis-attribute, it does not make
+mis-attribution impossible for that key's holder.
+
+**Residuals:** re-learning identical text in one workspace updates one point, and
+it then names the latest writer's member under the first writer's label
+(`_merge_lifecycle`); graph nodes carry `member_id` but not the credential.
+
 ## 6. Threats, ranked
 
 | # | Threat | State |
@@ -650,8 +676,11 @@ Threat 5 deserves emphasis because it is the one the product's own design create
 Firekeep exists to make agents act on stored memory. Anything that can write a
 memory can influence a future agent's behaviour, and there is no provenance
 weighting that would let a reader distinguish a poisoned memory from a good one.
-`agent_id` attribution records who wrote it, which supports forensics after the
-fact but prevents nothing.
+Until 2026-10-04 this paragraph claimed "`agent_id` attribution records who wrote
+it" — that was false: `agent_id` is the client-chosen `X-Agent-Id` label. Every
+write now records the verified `member_id` and `credential_id` (and, for a
+service writing on a member's behalf, the service's credential) — §5.12. That
+supports forensics after the fact; it still prevents nothing.
 
 ## 7. Not claimed
 
