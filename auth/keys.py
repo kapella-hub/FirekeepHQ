@@ -82,12 +82,22 @@ SCOPES = {
     # Cortex's background workers (OWM, skill scoring/synthesis, the pattern
     # engine) read sessions with. Wildcard ("*") owner/dashboard keys pass it.
     "session:read:workspace",
+    # Service-only (2026-10-04, delegated attribution): POST
+    # /memory/learn/delegated, where a service names the member it writes FOR
+    # (auth/principal.py delegated_attribution). Minted by
+    # deploy/bootstrap-keys.sh onto FIREKEEP_BRIDGE_KEY alone -- the key
+    # Bridge's background distiller writes session distillates with -- and
+    # honoured only as a LITERAL scope: a "*" key (the dashboard's, injected
+    # by nginx) does not pass it.
+    "memory:write:delegated",
 }
 # Scopes a SERVICE key may carry but no member credential ever receives:
 # not enrollable, not anonymous, never unioned onto old enrolled credentials
 # (the keys.py:495 union adds ENROLLABLE_SCOPES, which excludes these by
 # construction — same mechanism that keeps `admin` out).
-SERVICE_ONLY_SCOPES: frozenset[str] = frozenset({"eval:grade", "session:read:workspace"})
+SERVICE_ONLY_SCOPES: frozenset[str] = frozenset(
+    {"eval:grade", "session:read:workspace", "memory:write:delegated"}
+)
 ENROLLABLE_SCOPES: frozenset[str] = frozenset(SCOPES - {"admin", "*"} - SERVICE_ONLY_SCOPES)
 # memory:read / memory:write are demanded by the core /memory/* routes and the
 # /skills router since 2026-10-01 (docs/THREAT-MODEL.md section 5.10), in

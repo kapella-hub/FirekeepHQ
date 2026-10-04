@@ -67,9 +67,11 @@ def _request(identity: dict | None = None) -> Request:
 # audit-blocker-7 class with a new door.
 # session:read:workspace joined 2026-10-01: service-only like eval:grade —
 # the auth-disabled owner principal reads its own sessions, not a service view.
+# memory:write:delegated joined 2026-10-04: it names ANOTHER member as a
+# write's author, which a caller that presented no key can never be trusted to do.
 WITHHELD_FROM_ANONYMOUS = {
     "admin", "vault:read", "dex:docdex", "dex:maildex", "eval:grade",
-    "session:read:workspace",
+    "session:read:workspace", "memory:write:delegated",
 }
 
 

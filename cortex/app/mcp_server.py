@@ -317,12 +317,19 @@ async def memory_handoff(
         resp.raise_for_status()
         contributors = resp.json()
         if contributors:
-            lines = [
-                f"- {c['contributor_id']}: {c['memory_count']} memories, "
-                f"last active {c.get('last_active', 'unknown')}, "
-                f"top domain: {c.get('top_domain', 'unknown')}"
-                for c in contributors
-            ]
+            lines = []
+            for c in contributors:
+                # contributor_id is the verified member (2026-10-04); the
+                # runtime labels it wrote through follow, as labels.
+                labels = c.get("agent_labels") or []
+                who = c["contributor_id"]
+                if labels:
+                    who = f"{who} ({', '.join(labels)})"
+                lines.append(
+                    f"- {who}: {c['memory_count']} memories, "
+                    f"last active {c.get('last_active', 'unknown')}, "
+                    f"top domain: {c.get('top_domain', 'unknown')}"
+                )
             contributors_text = "Contributors:\n" + "\n".join(lines)
     except Exception:
         pass

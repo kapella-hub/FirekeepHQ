@@ -60,11 +60,14 @@ class TestScopes:
             # Service-only (2026-10-01): workspace-wide Bridge session reads
             # over REST, minted only onto FIREKEEP_INTERNAL_KEY.
             "session:read:workspace",
+            # Service-only (2026-10-04): write a memory attributed to the
+            # member a service acts for, minted only onto FIREKEEP_BRIDGE_KEY.
+            "memory:write:delegated",
         }
         assert SCOPES == expected
 
     def test_scope_count(self):
-        assert len(SCOPES) == 15
+        assert len(SCOPES) == 16
 
 
 @pytest.fixture
