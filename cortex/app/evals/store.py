@@ -6,12 +6,15 @@ Eval results are stored alongside replay data since they're derived from it.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import redis
 import redis.asyncio as aioredis
 
 from app.evals.models import EvalResult, EvalSummary
+
+if TYPE_CHECKING:
+    from replay.authz import ReplayScope
 
 logger = logging.getLogger(__name__)
 
@@ -93,12 +96,60 @@ async def get_eval(r: aioredis.Redis, session_id: str) -> EvalResult | None:
         return None
 
 
-async def get_eval_summary(r: aioredis.Redis, limit: int = 50) -> EvalSummary:
-    """Compute aggregate eval metrics across recent sessions."""
-    try:
-        # Get recent session IDs from the index
+async def _visible_evals(
+    r: aioredis.Redis, limit: int, scope: "ReplayScope | None",
+) -> list[EvalResult]:
+    """The newest ``limit`` evals ``scope`` may read, newest first.
+
+    Unscoped: the newest ``limit`` index entries, exactly as before. Scoped:
+    walk the index newest-first in pages until ``limit`` VISIBLE evals are
+    found (bounded by ``_SCOPED_SCAN_MAX`` index entries), so a member's
+    summary is not just "whatever of mine happens to sit in the global top
+    ``limit``".
+    """
+    if scope is None:
         session_ids = await r.zrevrange(_EVAL_INDEX, 0, limit - 1)
-        if not session_ids:
+        found = [await get_eval(r, sid) for sid in session_ids]
+        return [e for e in found if e]
+
+    from replay.authz import event_visible
+
+    visible: list[EvalResult] = []
+    for start in range(0, _SCOPED_SCAN_MAX, _SCOPED_SCAN_PAGE):
+        page = await r.zrevrange(_EVAL_INDEX, start, start + _SCOPED_SCAN_PAGE - 1)
+        for sid in page:
+            eval_result = await get_eval(r, sid)
+            if eval_result and event_visible(
+                    {"workspace_id": eval_result.workspace_id,
+                     "member_id": eval_result.member_id}, scope):
+                visible.append(eval_result)
+                if len(visible) >= limit:
+                    return visible
+        if len(page) < _SCOPED_SCAN_PAGE:
+            break
+    return visible
+
+
+_SCOPED_SCAN_PAGE = 200
+_SCOPED_SCAN_MAX = 2000
+
+
+async def get_eval_summary(
+    r: aioredis.Redis,
+    limit: int = 50,
+    *,
+    scope: "ReplayScope | None" = None,
+) -> EvalSummary:
+    """Compute aggregate eval metrics across recent sessions.
+
+    ``scope`` (``replay.authz.ReplayScope``, from the REST router) confines
+    the summary — aggregates and the ``recent_evals`` session ids alike — to
+    evals the caller may read. None is the unfiltered internal path (the
+    briefing's aggregate-only quality section).
+    """
+    try:
+        evals = await _visible_evals(r, limit, scope)
+        if not evals:
             return EvalSummary()
 
         all_metrics: dict[str, list[float]] = {}
@@ -106,10 +157,7 @@ async def get_eval_summary(r: aioredis.Redis, limit: int = 50) -> EvalSummary:
         with_failures = 0
         recent: list[dict[str, Any]] = []
 
-        for sid in session_ids:
-            eval_result = await get_eval(r, sid)
-            if not eval_result:
-                continue
+        for eval_result in evals:
 
             total += 1
             if eval_result.has_failures:

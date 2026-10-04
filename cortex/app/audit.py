@@ -12,8 +12,11 @@ valid key — Bob could read what Alice had been asking her memory. Now:
   recorded workspace predates attribution and belongs to this deployment);
 * a caller WITHOUT admin sees only events stamped with its own `member_id`.
   Events that carry no member — everything emitted before attribution, plus
-  receipts the server writes for itself — are hidden from such a caller: an
-  unattributable event is not evidence that it is theirs;
+  receipts the server writes for itself — belong to the deployment OWNER
+  member (2026-10-04, aligned with replay/authz.py and Bridge's
+  session_owned_by): visible to that member's keys, admin or not, and hidden
+  from every other member — an unattributable event is not evidence that it
+  is theirs;
 * an admin ("admin" or "*", i.e. the owner and the dashboard) sees the whole
   workspace. With auth disabled the single anonymous principal IS the
   deployment owner, and is treated the same way, so a personal box keeps its
@@ -31,6 +34,7 @@ from fastapi import APIRouter, Depends, Query
 
 from auth import keys as _auth_keys
 from auth.middleware import require_scope
+from replay.authz import ReplayScope, event_visible
 
 logger = logging.getLogger(__name__)
 
@@ -48,13 +52,12 @@ def _audit_scope(identity: dict[str, Any]) -> tuple[str | None, str | None]:
 
 
 def _visible(fields: dict[str, Any], workspace_id: str | None, member_id: str | None) -> bool:
-    event_ws = fields.get("workspace_id") or ""
-    if workspace_id and event_ws and event_ws != workspace_id:
-        return False
-    if member_id is not None:
-        # Fail closed: a non-admin sees an event only when it is provably theirs.
-        return bool(member_id) and fields.get("member_id") == member_id
-    return True
+    """The ONE replay visibility predicate (replay/authz.py), so /audit and
+    /replay can never disagree about who owns an event. No filters at all is
+    the unscoped internal call."""
+    if workspace_id is None and member_id is None:
+        return True
+    return event_visible(fields, ReplayScope(workspace_id or "", member_id))
 
 
 def create_audit_router(

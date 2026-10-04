@@ -151,3 +151,18 @@ async def test_auth_disabled_owner_keeps_the_whole_history(monkeypatch):
         resp = await client.get("/audit/memory")
     assert resp.status_code == 200
     assert len(resp.json()["events"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_the_deployment_owner_member_sees_unattributed_events_without_admin():
+    """Brief rule 5 (the policy Bridge's session_owned_by and every replay read
+    use): an event with no recorded member belongs to the deployment OWNER
+    member — including the owner's enrolled, non-admin runtime keys — and to
+    no other member. #45 hid it from every non-admin, owner included."""
+    owner = deployment_owner_member_id()
+    events = await get_memory_audit(_redis(owner), workspace_id=WS, member_id=owner)
+    texts = [e["payload"].get("query") or e["payload"].get("action_summary") for e in events]
+    assert texts == ["owner wrote", "legacy query"]
+    # Another workspace's member with the owner's id does not inherit it.
+    assert await get_memory_audit(
+        _redis(owner), workspace_id="workspace-other", member_id=owner) == []
