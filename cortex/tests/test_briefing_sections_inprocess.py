@@ -252,7 +252,10 @@ def _filtering_scroll(points):
     MatchAny(["active", "trial"]) (Task 3), not a single MatchValue, so this
     tests set-membership rather than equality."""
     async def _scroll(*, scroll_filter, limit, **_kwargs):
-        conditions = {c.key: _match_set(c.match) for c in (scroll_filter.must or [])}
+        # Keyed conditions only: the nested workspace Filter is evaluated in
+        # test_cortex_authz_residuals.py.
+        conditions = {c.key: _match_set(c.match) for c in (scroll_filter.must or [])
+                      if hasattr(c, "key")}
         matched = [
             p for p in points
             if all((p.payload or {}).get(k) in v for k, v in conditions.items())

@@ -14,6 +14,7 @@ import logging
 from typing import Any
 
 from app.config import get_settings
+from app.db.visibility import workspace_condition
 from app.dreams.store import profile_point_id
 from app.evals.store import get_eval_summary
 from app.patterns.store import get_relevant_patterns, get_observed_patterns, record_tip_shown
@@ -344,7 +345,8 @@ async def _trial_fallback(vector, settings, must: list, goal: str,
 
 async def skills_section(vector, settings, goal: str, project: str | None, *,
                          session_id: str | None = None,
-                         agent_id: str | None = None) -> Section:
+                         agent_id: str | None = None,
+                         workspace_id: str | None = None) -> Section:
     """Recallable (active + trial) skills for the session goal.
 
     Semantic cosine match (floored at SKILL_MATCH_SCORE_FLOOR) when a goal is present;
@@ -377,6 +379,16 @@ async def skills_section(vector, settings, goal: str, project: str | None, *,
             FieldCondition(key="skill_status", match=MatchAny(any=["active", "trial"]))]
     if project:
         must.append(FieldCondition(key="project", match=MatchValue(value=project.lower())))
+    # Tenancy, as GET /skills applies it (2026-10-04). GET /briefing always
+    # passes the verified caller's workspace; None (a direct caller with no
+    # principal) narrows to the deployment's own, never to "every workspace".
+    # Appended LAST: the trial fallback below rewrites skill_status by key, and
+    # a nested Filter has none.
+    if workspace_id is None:
+        from auth.principal import deployment_workspace_id
+
+        workspace_id = deployment_workspace_id()
+    must.append(workspace_condition(workspace_id))
     # The briefing's own embed budget, NOT the endpoint's. `GET /skills?q=` runs
     # under no per-section cap and waits ~10s for a cold CPU embed; this section
     # is hard-capped at 2.0s and must give up sooner. Sharing one number gave the
