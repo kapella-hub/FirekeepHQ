@@ -21,6 +21,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from qdrant_client.models import Filter, IsEmptyCondition
 
 from app.skills.api import create_skills_router
 
@@ -44,13 +45,27 @@ def _match_values(match):
     return set(values) if values is not None else {match.value}
 
 
+def _cond_matches(payload, c):
+    """One condition. Nested Filters and IsEmpty arrive with the workspace
+    condition GET /skills appends (app/db/visibility.py workspace_condition):
+    an unattributed point belongs to the deployment workspace."""
+    if isinstance(c, Filter):
+        return _matches(payload, c)
+    if isinstance(c, IsEmptyCondition):
+        return (payload or {}).get(c.is_empty.key) in (None, [])
+    return (payload or {}).get(c.key) in _match_values(c.match)
+
+
 def _matches(payload, flt):
-    """Evaluate a Qdrant Filter's must/must_not the way _filtering_scroll does."""
+    """Evaluate a Qdrant Filter's must/should/must_not the way _filtering_scroll does."""
     for c in (getattr(flt, "must", None) or []):
-        if (payload or {}).get(c.key) not in _match_values(c.match):
+        if not _cond_matches(payload, c):
             return False
+    should = getattr(flt, "should", None) or []
+    if should and not any(_cond_matches(payload, c) for c in should):
+        return False
     for c in (getattr(flt, "must_not", None) or []):
-        if (payload or {}).get(c.key) in _match_values(c.match):
+        if _cond_matches(payload, c):
             return False
     return True
 
@@ -228,7 +243,10 @@ def test_filter_is_carried_through_verbatim(vector, settings):
     captured = {}
 
     async def _qp(*, query_filter, **kw):
-        captured["must"] = {c.key: c.match.value for c in (query_filter.must or [])}
+        # Keyed conditions only; the nested workspace Filter has no key and is
+        # pinned in test_cortex_authz_residuals.py.
+        captured["must"] = {c.key: c.match.value for c in (query_filter.must or [])
+                            if hasattr(c, "key")}
         captured["score_threshold"] = kw.get("score_threshold")
         res = MagicMock()
         res.points = []

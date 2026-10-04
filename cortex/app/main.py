@@ -1685,12 +1685,25 @@ async def memory_feedback(
     feedback: FeedbackRequest,
     vector: Annotated[VectorClient, Depends(get_vector)],
     redis_client: Annotated[redis.asyncio.Redis, Depends(get_redis)],
+    # The same dependency as the route's gate (FastAPI runs it once per
+    # request), named here so the verified principal is in hand.
+    identity: Annotated[dict, _MEMORY_WRITE],
 ) -> FeedbackResponse:
     """Record relevance feedback for recalled memories.
 
     Updates the Qdrant payload metadata for each referenced memory point
     with the feedback signal (useful/not useful) and optional comment.
+
+    Only points the caller could recall are voted on (its workspace; another
+    member's member-private point only for an operator), and a verified
+    credential's repeat vote replaces its earlier one -- see
+    VectorClient.set_feedback. An out-of-scope id counts as not updated.
     """
+    from auth import keys as _auth_keys
+
+    authenticated = bool(identity.get("authenticated"))
+    operator = not authenticated or _auth_keys.scopes_allow(
+        identity.get("scopes", []), "admin")
     updated = 0
     timestamp = datetime.now(timezone.utc).isoformat()
     for memory_id in feedback.memory_ids:
@@ -1700,6 +1713,15 @@ async def memory_feedback(
                 useful=feedback.useful,
                 comment=feedback.comment,
                 timestamp=timestamp,
+                # "" (never None) so a principal missing its workspace matches
+                # nothing rather than skipping the check.
+                workspace_id=identity.get("workspace_id") or "",
+                member_id=identity.get("member_id"),
+                see_private=operator,
+                # The CREDENTIAL, not the member: dashboard-minted and
+                # firekeep-admin keys all carry the owner's member_id, so a
+                # member ballot would merge distinct people into one vote.
+                voter=identity.get("credential_id") if authenticated else None,
             )
             updated += 1
         except Exception:
@@ -1727,12 +1749,31 @@ async def memory_feedback(
     return FeedbackResponse(status="recorded", updated=updated)
 
 
-@app.get("/admin/untagged-calls")
+_REQUIRE_ADMIN = require_any_scope("admin")
+
+
+async def _operator_when_enforced(request: Request) -> None:
+    """Admin when auth is enforced; the anonymous owner when it is not.
+
+    NOT require_scope("admin"): with auth off no caller can hold admin
+    (auth/keys.py ANONYMOUS_SCOPES), and the dashboard's discipline card calls
+    this on personal boxes too. Same split as skills/api.py
+    `_has_review_authority`.
+    """
+    from auth import keys as _auth_keys
+
+    if _auth_keys._AUTH_ENABLED:
+        await _REQUIRE_ADMIN(request)
+
+
+@app.get("/admin/untagged-calls", dependencies=[Depends(_operator_when_enforced)])
 async def get_untagged_calls(
     redis_client: Annotated[redis.asyncio.Redis, Depends(get_redis)],
     days: int = 1,
 ) -> dict:
-    """Return untagged-call counts for the past N days. Used by the session_start hook core's discipline check."""
+    """Return untagged-call counts for the past N days (the dashboard's card;
+    the session_start hook core's discipline check reads the same counter
+    in-process through GET /briefing). Deployment-wide, so operator-only."""
     days = max(1, min(days, 30))  # clamp to [1, 30] to bound the Redis loop
     now = datetime.now(timezone.utc)
     counts: dict[str, int] = {}
@@ -1769,16 +1810,16 @@ async def get_memory_contributors(
 
     from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-    from app.db.visibility import visibility_should
+    from app.db.visibility import visibility_should, workspace_condition
     from auth.principal import deployment_owner_member_id, request_principal
 
     collection = get_settings().QDRANT_COLLECTION
     principal = request_principal(request)
 
     must_conditions: list = [
-        FieldCondition(
-            key="workspace_id", match=MatchValue(value=principal["workspace_id"])
-        ),
+        # The caller's workspace; an unattributed (pre-backfill) point is the
+        # deployment workspace's, as GET /skills and _load_owned_skill treat it.
+        workspace_condition(principal["workspace_id"]),
         Filter(should=visibility_should(principal.get("member_id"))),
     ]
     if project:

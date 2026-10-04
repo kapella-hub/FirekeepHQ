@@ -1358,8 +1358,37 @@ class VectorClient:
         useful: bool,
         comment: str | None,
         timestamp: str,
+        *,
+        workspace_id: str | None = None,
+        member_id: str | None = None,
+        see_private: bool = True,
+        voter: str | None = None,
     ) -> None:
         """Accumulate feedback counters on a memory point.
+
+        SCOPE (2026-10-04). ``workspace_id`` confines the vote to a point the
+        caller's workspace owns (no recorded workspace = the deployment's), and
+        unless ``see_private`` (an operator: admin, or auth disabled) a
+        ``visibility="member"`` point must be the caller's own. A point outside
+        that scope raises exactly like a missing one, so an id lifted from
+        elsewhere discloses nothing and the REST route's ``updated`` simply
+        excludes it. ``workspace_id=None`` skips the check -- the REST route
+        always passes it (pinned by tests/test_cortex_authz_residuals.py).
+
+        ONE VOTE PER CREDENTIAL. With ``voter`` set (the verified credential
+        id, auth enabled) that key's ballot lives in ``feedback_votes`` and the
+        counters move by the DIFFERENCE: a repeat is a no-op on the counts, a
+        flip moves one count across, last vote wins. The credential and not
+        the member, because keys minted by the dashboard or firekeep-admin all
+        carry the deployment owner's member_id -- a member ballot would merge
+        distinct people. The cost is one ballot per machine, not per person.
+        Without ``voter`` each call adds one, as before -- the auth-disabled
+        path, where every caller is the same anonymous owner and deduping would
+        collapse a personal box's thumbs into one. Counts recorded before
+        ballots existed carry no voter and stay in the totals untouched. This
+        keeps the Beta-shrink premise honest: ``compute_efficacy(1, 1,
+        prior=4)`` is "one reader's thumb", and forty thumbs from the same key
+        were saturating the clamp.
 
         Counters, not last-write-wins: the original implementation wrote three
         flat fields (feedback_useful/comment/timestamp), so a second thumb
@@ -1383,17 +1412,38 @@ class VectorClient:
         if not points:
             raise VectorStoreError(f"Memory {memory_id} not found")
         payload = points[0].payload or {}
+        if workspace_id is not None:
+            from app.db.visibility import payload_in_workspace, payload_visible_to_member
+
+            if not payload_in_workspace(payload, workspace_id) or (
+                not see_private and not payload_visible_to_member(payload, member_id)
+            ):
+                raise VectorStoreError(f"Memory {memory_id} not found")
         useful_count = int(payload.get("feedback_useful_count", 0) or 0)
         not_useful_count = int(payload.get("feedback_not_useful_count", 0) or 0)
-        if useful:
-            useful_count += 1
-        else:
-            not_useful_count += 1
-        update: dict[str, Any] = {
+        update: dict[str, Any] = {}
+        previous: bool | None = None
+        if voter:
+            votes = dict(payload.get("feedback_votes") or {})
+            previous = votes.get(voter)
+            votes[voter] = bool(useful)
+            update["feedback_votes"] = votes
+        if previous is None or previous != bool(useful):
+            if useful:
+                useful_count += 1
+            else:
+                not_useful_count += 1
+            if previous is not None:
+                # A flip withdraws this member's earlier ballot.
+                if previous:
+                    useful_count = max(0, useful_count - 1)
+                else:
+                    not_useful_count = max(0, not_useful_count - 1)
+        update.update({
             "feedback_useful_count": useful_count,
             "feedback_not_useful_count": not_useful_count,
             "feedback_last_at": timestamp,
-        }
+        })
         if comment:
             update["feedback_last_comment"] = comment[:500]
         await self._client.set_payload(
