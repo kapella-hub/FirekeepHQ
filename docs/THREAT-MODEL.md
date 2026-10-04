@@ -806,16 +806,26 @@ first OPEN bullet of §5.9.
 
 **Residuals.**
 
-- **Owner-member service keys can act as the owner in Relay.** Every key
-  `deploy/bootstrap-keys.sh` mints carries the owner's `member_id`, and Relay's
-  MCP tools declare no scope, so a leaked `FIREKEEP_INTERNAL_KEY` reads the
-  owner's DMs and releases the owner's leases. **OPEN** until the member-bound
-  tools require `relay:read` / `relay:write`.
+- **Owner-member service keys — closed by scope.** Every key
+  `deploy/bootstrap-keys.sh` mints carries the owner's `member_id`, so binding
+  records to members alone would have made a leaked `FIREKEEP_INTERNAL_KEY` the
+  owner inside Relay. Member-bound tools and routes now require `relay:read` /
+  `relay:write`, which no service key carries; the internal key's two Relay
+  writes (Sentinel's alert broadcast, Cortex's fleet `POST /tasks`) are
+  authorized by the service-only `relay:write:service`, reconciled onto existing
+  keys by `update.sh`. The same gate keeps service keys out of `relay_task_update`,
+  i.e. out of Hands phone approvals (row 12). Guard:
+  `relay/tests/test_service_scope_auth.py`.
 - **Presence labels are first-come.** Unbound (pre-upgrade) presence rows are
   adopted by their next verified writer, because strict owner-only would
   freeze every teammate's presence — rows never expire. A teammate can adopt
   another member's label in that window; no stored data is exposed (older DMs
   stay owner-only) and the real owner's next register is refused loudly.
+- **A service's label can be squatted.** Sentinel broadcasts as `sentinel`
+  with the internal key, which is not an admin key; a teammate who registers a
+  presence row under `sentinel` makes every alert broadcast refused until an
+  admin removes the row. Availability only, and it needs an authenticated
+  teammate.
 - **A DM to an unbound label is owner-only.** A message sent while its
   recipient has no presence row reaches only the deployment owner (and the
   dashboard), never the intended teammate.
@@ -847,7 +857,7 @@ first OPEN bullet of §5.9.
 | 15 | A teammate key reads or writes another member's sessions or member-private memory inside one workspace | **Partly mitigated (2026-10-01, 2026-10-04)** — Bridge recalls with the caller's key and gates every session path on workspace+member (§5.9); distillates are written for the session's verified owner (§5.12, row 16); `/memory/feedback` refuses a teammate's member-private memory and `/memory/contributors` honours visibility (§5.10.1, §5.12). Relay's scope-session `agent_id` is now bound to the verified member and Relay writes decisions with the owner's key (§5.14, row 18) |
 | 16 | A memory's author is a self-asserted label; distillates of every member's sessions are attributed to the owner | **Mitigated 2026-10-04** — writes record the verified member and credential, contributors group by member inside the caller's workspace and visibility, and Bridge distils through the literal-scope `/memory/learn/delegated` naming the session's verified owner (§5.12; this closes row 15's "owner-attributed distillates"). Residuals: the one service key holding `memory:write:delegated` can name any active member; identical-text relearns name the latest writer |
 | 17 | A teammate key reads another member's replay timeline, events, context snapshots or evals | **Mitigated 2026-10-04** — every replay/eval read is filtered per event by the verified writer's stamp; unattributed history belongs to the deployment owner; service keys still compute all evals (§5.13). Residual: events can still be *written* into another member's session id and skew its in-process metrics |
-| 18 | A teammate key reads another member's Relay DMs, posts as her, or releases her leases; Relay writes scope decisions into Bridge as the owner | **Mitigated 2026-10-04** — every Relay record is owned by the verified member that wrote it and checked on read and mutation; scope decisions reach Bridge only with the owning member's key (§5.14). Residuals: owner-member service keys act as the owner in Relay until the tools declare `relay:*` scopes, first-come presence labels at upgrade |
+| 18 | A teammate key reads another member's Relay DMs, posts as her, or releases her leases; Relay writes scope decisions into Bridge as the owner | **Mitigated 2026-10-04** — every Relay record is owned by the verified member that wrote it and checked on read and mutation; scope decisions reach Bridge only with the owning member's key (§5.14). Member-bound operations require `relay:read`/`relay:write`, and the internal key's two Relay writes use the service-only `relay:write:service`. Residuals: first-come presence labels at upgrade, owner-only DMs to unbound labels, single-workspace reads |
 
 Threat 5 deserves emphasis because it is the one the product's own design creates:
 Firekeep exists to make agents act on stored memory. Anything that can write a

@@ -69,9 +69,12 @@ def _request(identity: dict | None = None) -> Request:
 # the auth-disabled owner principal reads its own sessions, not a service view.
 # memory:write:delegated joined 2026-10-04: it names ANOTHER member as a
 # write's author, which a caller that presented no key can never be trusted to do.
+# relay:write:service joined 2026-10-04: service-only; the anonymous owner
+# already holds relay:write, which every gate that honours the service scope
+# also accepts.
 WITHHELD_FROM_ANONYMOUS = {
     "admin", "vault:read", "dex:docdex", "dex:maildex", "eval:grade",
-    "session:read:workspace", "memory:write:delegated",
+    "session:read:workspace", "memory:write:delegated", "relay:write:service",
 }
 
 

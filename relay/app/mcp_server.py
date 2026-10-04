@@ -186,6 +186,37 @@ def _bridge_key(caller: Caller) -> str | None:
     return _caller_api_key() if caller.authenticated else get_settings().FIREKEEP_API_KEY
 
 
+_READ = ("relay:read",)
+_WRITE = ("relay:write",)
+# Sentinel's alert broadcast and Cortex's fleet POST /tasks run on
+# FIREKEEP_INTERNAL_KEY, which carries the service-only relay:write:service
+# and no member relay scope (auth/keys.py).
+_WRITE_OR_SERVICE = ("relay:write", "relay:write:service")
+
+
+def _scope_refusal(required: tuple[str, ...]) -> dict | None:
+    """None when the caller's key satisfies one of ``required``; otherwise the
+    error dict the tool returns. Same check as the REST routes
+    (auth.asgi.require_scope_asgi): with auth disabled the anonymous owner's
+    scopes (which include relay:read/relay:write) are checked without a
+    wildcard; with auth on and no identity attached, refuse."""
+    from types import SimpleNamespace
+
+    from auth.asgi import ScopeError, require_scope_asgi
+
+    req = _http_request()
+    target = req if req is not None and hasattr(req, "scope") else SimpleNamespace(scope={})
+    refusal = None
+    for scope in required:
+        try:
+            require_scope_asgi(target, scope)
+            return None
+        except ScopeError as e:
+            refusal = e
+    status = "forbidden" if refusal.status_code == 403 else "unauthorized"
+    return {"error": refusal.detail, "status": status}
+
+
 def _forbidden(message: str) -> dict:
     return {"error": message, "status": "forbidden"}
 
@@ -235,6 +266,9 @@ async def relay_broadcast(channel: str, content: str, sender: str = "anonymous",
         tags: Optional categorization tags
     """
     try:
+        refused = _scope_refusal(_WRITE_OR_SERVICE)
+        if refused:
+            return refused
         _validate_name(channel, "channel")
         _validate_name(sender, "sender")
         if len(content) > _MAX_CONTENT_SIZE:
@@ -295,6 +329,9 @@ async def relay_post(content: str, author: str = "anonymous", tags: list[str] | 
         ttl_hours: How long the post persists (default from config)
     """
     try:
+        refused = _scope_refusal(_WRITE)
+        if refused:
+            return refused
         _validate_name(author, "author")
         if len(content) > _MAX_CONTENT_SIZE:
             return {"error": "Content too large (max 64KB)"}
@@ -349,6 +386,9 @@ async def relay_claim(resource_id: str, agent_id: str = "default", ttl_minutes: 
         ttl_minutes: How long the claim lasts (default from config)
     """
     try:
+        refused = _scope_refusal(_WRITE)
+        if refused:
+            return refused
         resource_id = _normalize_resource_id(resource_id)
         _validate_name(agent_id, "agent_id")
         caller = _caller()
@@ -388,6 +428,9 @@ async def relay_release(resource_id: str, agent_id: str = "default", fencing_tok
         fencing_token: Optional lease fencing token. Recommended for lease release.
     """
     try:
+        refused = _scope_refusal(_WRITE)
+        if refused:
+            return refused
         resource_id = _normalize_resource_id(resource_id)
         _validate_name(agent_id, "agent_id")
         caller = _caller()
@@ -503,6 +546,9 @@ async def relay_lease(resource_id: str, agent_id: str = "default", ttl_minutes: 
         ttl_minutes: How long the lease lasts (default from config)
     """
     try:
+        refused = _scope_refusal(_WRITE)
+        if refused:
+            return refused
         resource_id = _normalize_resource_id(resource_id)
         _validate_name(agent_id, "agent_id")
         caller = _caller()
@@ -541,6 +587,9 @@ async def relay_heartbeat(resource_id: str, fencing_token: int, agent_id: str = 
         agent_id: Your agent identifier
     """
     try:
+        refused = _scope_refusal(_WRITE)
+        if refused:
+            return refused
         resource_id = _normalize_resource_id(resource_id)
         caller = _caller()
         if caller is None:
@@ -628,6 +677,9 @@ async def relay_task_post(
         context: Additional context the assignee needs
     """
     try:
+        refused = _scope_refusal(_WRITE)
+        if refused:
+            return refused
         if len(title) > 500:
             return {"error": "Title too long (max 500 chars)"}
         r = await get_redis()
@@ -698,6 +750,9 @@ async def relay_task_update(
         assignee: Reassign to a different agent
     """
     try:
+        refused = _scope_refusal(_WRITE)
+        if refused:
+            return refused
         r = await get_redis()
         from app.tasks import update_task
         task = await update_task(r, task_id, status, result, assignee,
@@ -735,6 +790,9 @@ async def relay_task_delete(task_id: str) -> dict:
         task_id: The task ID to delete (e.g. "task-abc12345")
     """
     try:
+        refused = _scope_refusal(_WRITE)
+        if refused:
+            return refused
         r = await get_redis()
         from app.tasks import delete_task
         deleted = await delete_task(r, task_id)
@@ -772,6 +830,9 @@ async def relay_register(
         session_id: Bridge session ID (optional, can be backfilled later via heartbeat)
     """
     try:
+        refused = _scope_refusal(_WRITE)
+        if refused:
+            return refused
         _validate_name(agent_id, "agent_id")
         caller = _caller()
         if caller is None:
@@ -808,6 +869,9 @@ async def relay_heartbeat_presence(
         goal: Current session goal (optional, updates displayed goal)
     """
     try:
+        refused = _scope_refusal(_WRITE)
+        if refused:
+            return refused
         _validate_name(agent_id, "agent_id")
         caller = _caller()
         if caller is None:
@@ -828,6 +892,9 @@ async def relay_deregister(agent_id: str) -> dict:
         agent_id: Your agent identifier
     """
     try:
+        refused = _scope_refusal(_WRITE)
+        if refused:
+            return refused
         _validate_name(agent_id, "agent_id")
         caller = _caller()
         if caller is None:
@@ -907,6 +974,9 @@ async def scope_start(
         bridge_session_id: Optional Bridge session ID to link decisions to
     """
     try:
+        refused = _scope_refusal(_WRITE)
+        if refused:
+            return refused
         _validate_name(agent_id, "agent_id")
         caller = _caller()
         if caller is None:
@@ -949,6 +1019,9 @@ async def scope_ask(
         goal: Session goal (used only when scope_id is omitted)
     """
     try:
+        refused = _scope_refusal(_WRITE)
+        if refused:
+            return refused
         caller = _caller()
         if caller is None:
             return dict(_NO_PRINCIPAL)
@@ -997,6 +1070,9 @@ async def scope_post(
     Args: same as scope_ask, but this tool never blocks.
     """
     try:
+        refused = _scope_refusal(_WRITE)
+        if refused:
+            return refused
         caller = _caller()
         if caller is None:
             return dict(_NO_PRINCIPAL)
@@ -1039,6 +1115,9 @@ async def scope_check(scope_id: str) -> dict:
         scope_id: Session ID returned by scope_start/scope_ask/scope_post
     """
     try:
+        refused = _scope_refusal(_READ)
+        if refused:
+            return refused
         caller = _caller()
         if caller is None:
             return dict(_NO_PRINCIPAL)
@@ -1069,6 +1148,9 @@ async def scope_complete(scope_id: str) -> dict:
         scope_id: Session ID returned by scope_start/scope_ask/scope_post
     """
     try:
+        refused = _scope_refusal(_WRITE)
+        if refused:
+            return refused
         caller = _caller()
         if caller is None:
             return dict(_NO_PRINCIPAL)
@@ -1104,6 +1186,9 @@ async def relay_send_dm(to_agent_id: str, content: str, from_id: str = "anonymou
         from_id: Your agent identifier
     """
     try:
+        refused = _scope_refusal(_WRITE)
+        if refused:
+            return refused
         _validate_name(to_agent_id, "to_agent_id")
         _validate_name(from_id, "from_id")
         if len(content) > _MAX_CONTENT_SIZE:
@@ -1145,6 +1230,9 @@ async def relay_get_dm(agent_id: str, unread_only: bool = False, limit: int = 20
         limit: Max messages (default 20).
     """
     try:
+        refused = _scope_refusal(_READ)
+        if refused:
+            return refused
         _validate_name(agent_id, "agent_id")
         limit = min(limit, _MAX_LIMIT)
         caller = _caller()

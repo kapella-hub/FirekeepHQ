@@ -90,14 +90,23 @@ SCOPES = {
     # honoured only as a LITERAL scope: a "*" key (the dashboard's, injected
     # by nginx) does not pass it.
     "memory:write:delegated",
+    # Service-only (2026-10-04, THREAT-MODEL §5.14): FIREKEEP_INTERNAL_KEY's two
+    # Relay writes — Sentinel's alert broadcast (relay_broadcast) and Cortex's
+    # nightly fleet enqueue (POST /tasks) — and nothing else in Relay. Every
+    # member-bound Relay operation requires relay:read / relay:write, which the
+    # internal key (an owner-member principal) deliberately does not carry, so
+    # a leaked internal key cannot read the owner's DMs, release the owner's
+    # leases or complete a task (a Hands phone approval) as the owner.
+    "relay:write:service",
 }
 # Scopes a SERVICE key may carry but no member credential ever receives:
 # not enrollable, not anonymous, never unioned onto old enrolled credentials
 # (the keys.py:495 union adds ENROLLABLE_SCOPES, which excludes these by
 # construction — same mechanism that keeps `admin` out).
-SERVICE_ONLY_SCOPES: frozenset[str] = frozenset(
-    {"eval:grade", "session:read:workspace", "memory:write:delegated"}
-)
+SERVICE_ONLY_SCOPES: frozenset[str] = frozenset({
+    "eval:grade", "session:read:workspace", "memory:write:delegated",
+    "relay:write:service",
+})
 ENROLLABLE_SCOPES: frozenset[str] = frozenset(SCOPES - {"admin", "*"} - SERVICE_ONLY_SCOPES)
 # memory:read / memory:write are demanded by the core /memory/* routes and the
 # /skills router since 2026-10-01 (docs/THREAT-MODEL.md section 5.10), in

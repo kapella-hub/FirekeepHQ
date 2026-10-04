@@ -207,7 +207,10 @@ async def test_rest_post_stamps_the_key_holder_through_the_real_middleware(
     auth_redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
     api_key = "nxs_" + "a" * 48
     record = build_credential_record(
-        "cred-fleet", "firekeep-internal", ["memory:write"], datetime.now(timezone.utc), None,
+        "cred-fleet", "firekeep-internal",
+        ["memory:write", "session:read", "eval:read", "eval:write",
+         "session:read:workspace", "relay:write:service"],
+        datetime.now(timezone.utc), None,
         workspace_id="ws-1", member_id="member-owner",
     )
     await auth_redis.hset(f"auth:key:{_hash_key(api_key)}", mapping=record)
