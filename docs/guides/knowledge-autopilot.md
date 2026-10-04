@@ -80,6 +80,23 @@ nothing consumed the stored signal, and a second thumb overwrote the first
   cannot carry: a session can succeed while one recalled memory was misleading.
   Its docstring tells agents to report on knowledge they *acted on*, not merely
   saw. Works on skill ids too (stored; skill search does not consume it yet).
+- **One ballot per key, on what the caller can recall (2026-10-04).** The
+  Beta prior only means "one thumb nudges" if a thumb is one reader's: before
+  this, one key could vote the same memory forty times and pin the multiplier at
+  the clamp. With auth enabled each verified credential's vote is recorded in
+  `feedback_votes` (`{credential_id: useful}`) and the counters move by the
+  difference — a repeat changes nothing, a flip moves one count across, last
+  vote wins. The credential, not the member: keys minted by the dashboard or
+  `firekeep-admin` all carry the deployment owner's `member_id`, so a member
+  ballot would merge different people; the cost is one ballot per machine
+  rather than per person. Counts recorded before ballots existed have no voter
+  and stay in the totals. A vote on a point outside the caller's workspace, or on another
+  member's `visibility="member"` point (unless the caller is an operator: the
+  dashboard's admin key, or any caller on an auth-disabled box), is treated like
+  a missing id and not counted in `updated`. Auth-disabled boxes keep plain
+  accumulation — every caller there is the same anonymous owner, and deduping
+  would collapse all of a person's thumbs into one. See
+  [`THREAT-MODEL.md`](../THREAT-MODEL.md) §5.10.1.
 
 Settings (cortex): `FEEDBACK_ENABLED=true`, `FEEDBACK_WEIGHT=0.10`
 (deliberately below `OWM_WEIGHT=0.15` — one reader's thumb is noisier evidence

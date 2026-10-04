@@ -587,19 +587,74 @@ narrowed by hand on deployed keys — reconciliation only ever adds.
   change, and server-written receipts (the briefing's skill-exposure receipt), carry
   no member; a member cannot see their own pre-upgrade history. Fail-closed by
   choice.
-- **Three skills routes still declare no scope:** `POST /skills`, `GET /skills`
-  and `POST /skill/evaluate`. Any valid key can file a draft skill; since a draft
-  now needs `admin` to become visible to agents, the blast radius is review-queue
-  noise, not poisoning. **OPEN.**
-- **Two cross-workspace reads remain on routes not covered here:** `GET /skills`
-  (the list) and `GET /memory/contributors` filter by project, not by workspace.
-  Both are bounded to holders of `memory:read` in a deployment that today runs one
-  workspace; they matter the day a second workspace shares a store. **OPEN.**
+- **Three skills routes declared no scope** (`POST /skills`, `GET /skills`,
+  `POST /skill/evaluate`). **Closed 2026-10-04 (§5.10.1).**
+- **Two cross-workspace reads** (`GET /skills`, `GET /memory/contributors`
+  filtered by project, not workspace). **Closed 2026-10-04 (§5.10.1).**
 - **The owner's service keys are owner-member principals.** `FIREKEEP_BRIDGE_KEY`
   carries the deployment owner's `member_id`. Bridge's synchronous recall paths now
   forward the live caller's key (§5.9), so the bridge key's transitional
   `memory:read` can be dropped from `deploy/bootstrap-keys.sh` and narrowed by hand
   on deployed keys.
+
+#### 5.10.1 The Cortex residuals, closed (2026-10-04)
+
+The routes §5.10 left open, plus one it did not name:
+
+- **Skills routes gated.** `GET /skills` needs `memory:read`, `POST /skills`
+  `memory:write`, `POST /skill/evaluate` `eval:write` — each "or `admin`".
+  Evaluate takes the eval scope because it rides the same `ctx_complete_session`
+  path as `POST /evals/sessions/{id}/compute`, and Bridge sends the caller's own
+  key to both. Every caller was enumerated first: the cortex MCP skill tools and
+  night shift (through the gateway) forward an enrolled member key, which holds
+  all three; the dashboard holds `*`; no worker, CI job or client-kit path calls
+  these routes over REST. The auth-disabled anonymous principal holds all three
+  scopes, so a personal box is unchanged. No key needed a new scope.
+- **Workspace-filtered listings.** `GET /skills`, `GET /memory/contributors` and
+  the briefing's skills section (including its trial fallback) now confine their
+  Qdrant scroll to the caller's workspace, with unattributed legacy points
+  belonging to the deployment workspace only — one helper,
+  `app/db/visibility.py::workspace_condition`, the scroll-side twin of
+  `_load_owned_skill`.
+- **Feedback scoped and de-duplicated.** `POST /memory/feedback` voted on any
+  point id: another workspace's memory, or a teammate's member-private memory the
+  caller cannot even recall. A target outside the caller's workspace, or another
+  member's `visibility="member"` point (unless the caller is an operator — admin,
+  or auth disabled — as the dashboard already is for visibility), is now treated
+  exactly like a missing id. And one key could vote the same memory forty times
+  and saturate the ±`FEEDBACK_WEIGHT` clamp, defeating the Beta prior that makes
+  "one reader's thumb nudges, never yanks" true. With auth enabled each verified
+  credential now has ONE ballot per memory (`feedback_votes`), last vote wins;
+  pre-existing counts carry no voter and stay in the totals. The ballot is the
+  key's, not the member's, because dashboard- and `firekeep-admin`-minted keys
+  all carry the owner's `member_id`; a member ballot would merge different
+  people. Residual: a person holding several keys holds several ballots. Auth-disabled boxes
+  keep accumulating, because every caller there is the same anonymous owner and
+  deduping would collapse a person's thumbs into one.
+- **`GET /admin/untagged-calls`** had no gate. It now needs `admin` when auth is
+  enforced (the dashboard), and stays open on auth-disabled boxes, where no caller
+  can hold `admin` and the dashboard's discipline card would otherwise 403.
+
+Guarded by `cortex/tests/test_cortex_authz_residuals.py` (real minted keys, a fake
+Qdrant that evaluates the filter it is handed) and
+`test_briefing_skills_workspace.py` (the briefing's route and builder).
+
+**Residuals.**
+
+- **`POST /skill/evaluate` accepts any `session_id`.** The synthesis worker reads
+  the session with the internal service key and stamps the deployment workspace,
+  so a member can queue synthesis of a teammate's session; the result is a
+  `draft`, which needs `admin` to become visible to agents but is listed to every
+  `memory:read` holder in the review queue. Closing it needs an ownership check
+  against Bridge before queuing. **OPEN.**
+- **`/memory/contributors` does not apply member visibility.** Counts, project
+  names and top domain still include other members' member-private points.
+  **OPEN.**
+- **The briefing's discipline section reports the same deployment-wide untagged
+  counter** to every `session:read` caller that `/admin/untagged-calls` now
+  restricts. It is a count, not content. Accepted.
+- **Ballots are read-modify-write**, like the counters they replace: two racing
+  votes can lose one. Same benign-undercount contract as before.
 
 ### 5.11 The briefing as a confused deputy
 
@@ -683,7 +738,8 @@ workspace-visible whoever it is attributed to (unchanged, by design).
 | 10 | Unauthenticated field-failure collector fabricates/floods failure data | **Mitigated, residual accepted** — enum-value validation, released-version allowlist, mail budget, locked state, sealed caps (§5.7); data stays low-integrity by construction and is labelled `integrity: "unverified"` downstream |
 | 11 | A compromised runtime with Hands enabled operates the human's desktop | **Mitigated, residuals OPEN** — the broker is a separate process with no grant route, injected input is rejected, permits are one-use and bound to the exact step, classification is on effects not model labels, fail closed (§5.8). Residuals: same-user permit theft, kernel-level injection, screenshots to the model provider, the unverified macOS source-state filter, and the broker's notification being informational (the chord approves the oldest pending permit whether or not the toast was read) |
 | 12 | Phone approvals approved by a key holder who is not the human | **Partly mitigated (2026-10-01), residual OPEN** — relay stamps the verified principal on every task write and the broker refuses an approve from the requesting credential (the kit key the driving agent shares), from an unauthenticated Keep, or from a relay too old to stamp. Residual: any *other* workspace credential can still approve unless `phone_approvers` pins the approvers, and a pinned dashboard credential is only as strong as its basic-auth password; the auth layer has no human-member notion. `phone_approvals` stays `False` by default (§5.8) |
-| 13 | A valid key of any scope deletes another member's data, approves its own skill, re-embeds the store, or reads teammates' recall queries | **Mitigated 2026-10-01** — scope + `memory_type` + workspace checks on `/skills/{id}`, `admin` for review decisions and re-embedding, member-scoped `/audit`, scopes declared on every core memory route (§5.10). Residuals: review decisions allowed on auth-disabled boxes, unattributed audit history hidden from members, `GET /skills` and `/memory/contributors` not workspace-filtered |
+| 13 | A valid key of any scope deletes another member's data, approves its own skill, re-embeds the store, or reads teammates' recall queries | **Mitigated 2026-10-01** — scope + `memory_type` + workspace checks on `/skills/{id}`, `admin` for review decisions and re-embedding, member-scoped `/audit`, scopes declared on every core memory route (§5.10). Residuals: review decisions allowed on auth-disabled boxes, unattributed audit history hidden from members (the `GET /skills` / `/memory/contributors` workspace gap closed 2026-10-04, §5.10.1) |
+| 13a | A valid key lists other workspaces' skills, files skills or queues synthesis with any scope, or votes repeatedly — or on memory it cannot recall — to move recall ranking | **Mitigated 2026-10-04** — scopes on every `/skills` route, workspace-filtered skill and contributor listings, feedback confined to recallable points with one ballot per key, `admin` on `/admin/untagged-calls` (§5.10.1). OPEN: `/skill/evaluate` does not verify session ownership; contributors ignore member visibility |
 | 14 | `GET /briefing?agent_id=<teammate>` reads a teammate's sessions and presence with the internal service key | **Mitigated 2026-10-01** — user-scoped sections present the caller's own key (§5.11) and Bridge filters `GET /sessions` by the verified owner member (§5.9) |
 | 15 | A teammate key reads or writes another member's sessions or member-private memory inside one workspace | **Partly mitigated (2026-10-01)** — Bridge recalls with the caller's key and gates every session path on workspace+member (§5.9); OPEN: Relay's unbound `agent_id`, owner-attributed distillates |
 | 16 | A memory's author is a self-asserted label; distillates of every member's sessions are attributed to the owner | **Mitigated 2026-10-04** — writes record the verified member and credential, contributors group by member inside the caller's workspace and visibility, and Bridge distils through the literal-scope `/memory/learn/delegated` naming the session's verified owner (§5.12; this closes row 15's "owner-attributed distillates"). Residuals: the one service key holding `memory:write:delegated` can name any active member; identical-text relearns name the latest writer |
