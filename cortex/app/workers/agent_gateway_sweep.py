@@ -53,6 +53,10 @@ async def sweep_overdue_actions(prediction_redis, replay_emitter, grace_seconds:
                         event_type="agent.action.reconcile",
                         session_id=entry.get("session_id", ""),
                         agent_id=entry.get("agent_id", ""),
+                        # The predictor's verified principal (service.decide
+                        # records it); absent on pre-2026-10-04 entries.
+                        workspace_id=entry.get("workspace_id") or None,
+                        member_id=entry.get("member_id") or None,
                         payload={
                             "action_id": action_id,
                             "outcome": "unknown",

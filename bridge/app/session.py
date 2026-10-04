@@ -277,6 +277,30 @@ class SessionManager:
         meta = await self._r.hgetall(self._session_key(session_id))
         return bool(meta) and session_owned_by(meta, caller)
 
+    async def replay_owner(self, session_id: str) -> dict[str, str]:
+        """Replay-emit kwargs naming the session's owner, or ``{}``.
+
+        Replay reads are scoped per event (replay/authz.py), so Bridge's
+        events are stamped with the session's ``owner_member`` /
+        ``owner_workspace`` — the verified principal recorded at start. The
+        owner, not the caller: the reaper abandons with no caller, and every
+        caller-driven write has already passed ``session_owned_by``. A legacy
+        session (no owner_member) returns ``{}`` and its events stay
+        unattributed — the deployment owner's, as ``session_owned_by`` rules.
+        Never raises: a stamp must not cost the operation it describes.
+        """
+        try:
+            workspace, member = await self._r.hmget(
+                self._session_key(session_id), "owner_workspace", "owner_member")
+        except Exception:  # noqa: BLE001 — best-effort, like the emit itself
+            return {}
+        if not isinstance(member, str) or not member:
+            return {}
+        stamp = {"member_id": member}
+        if isinstance(workspace, str) and workspace:
+            stamp["workspace_id"] = workspace
+        return stamp
+
     async def _guard_pointer(
         self, agent_id: str, caller: Caller, *, allow: str | None = None,
     ) -> str:
@@ -426,6 +450,7 @@ class SessionManager:
             session_id=session_id,
             agent_id=agent_id,
             payload={"goal": (goal or "")[:200]},
+            **await self.replay_owner(session_id),
         )
 
         return {"session_id": session_id, "created_at": now}
@@ -584,6 +609,7 @@ class SessionManager:
             session_id=sid,
             agent_id=agent_id,
             payload=update_payload,
+            **await self.replay_owner(sid),
         )
 
         return {"status": "ok", "component_count": count}
@@ -855,6 +881,7 @@ class SessionManager:
             session_id=session_id,
             agent_id=label_owner or "unknown",
             payload=completed_payload,
+            **await self.replay_owner(session_id),
         )
 
         result: dict[str, Any] = {
@@ -923,6 +950,7 @@ class SessionManager:
             session_id=session_id,
             agent_id=meta.get("agent_id") or "unknown",
             payload={},
+            **await self.replay_owner(session_id),
         )
 
         return {"status": "abandoned", "session_id": session_id}

@@ -1733,10 +1733,16 @@ async def memory_feedback(
     sid = request.headers.get("X-Session-Id", "unknown")
     aid = request.headers.get("X-Agent-Id", "unknown")
     await _bump_untagged_counter(redis_client, sid)
+    from auth.principal import request_principal
+
+    principal = request_principal(request)
     await _replay_emit(
         "memory_feedback",
         session_id=sid,
         agent_id=aid,
+        # The verified writer — replay reads are scoped per event (replay/authz.py).
+        workspace_id=principal["workspace_id"],
+        member_id=principal["member_id"],
         payload={
             "memory_ids": feedback.memory_ids[:50],
             "useful": feedback.useful,

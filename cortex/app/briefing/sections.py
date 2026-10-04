@@ -346,7 +346,8 @@ async def _trial_fallback(vector, settings, must: list, goal: str,
 async def skills_section(vector, settings, goal: str, project: str | None, *,
                          session_id: str | None = None,
                          agent_id: str | None = None,
-                         workspace_id: str | None = None) -> Section:
+                         workspace_id: str | None = None,
+                         member_id: str | None = None) -> Section:
     """Recallable (active + trial) skills for the session goal.
 
     Semantic cosine match (floored at SKILL_MATCH_SCORE_FLOOR) when a goal is present;
@@ -454,6 +455,9 @@ async def skills_section(vector, settings, goal: str, project: str | None, *,
             await _replay_emit(
                 "memory_read", session_id=session_id or "unknown",
                 agent_id=agent_id or "unknown",
+                # The briefing caller's verified principal (briefing/api.py):
+                # replay reads are scoped per event (replay/authz.py).
+                workspace_id=workspace_id, member_id=member_id,
                 payload={"memory_ids": [s["id"] for s in skills],
                          "result_count": len(skills), "trigger": "briefing"},
             )
