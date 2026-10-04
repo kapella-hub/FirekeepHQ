@@ -157,9 +157,11 @@ async def emit(
 
     `workspace_id` / `member_id` are the VERIFIED principal of the request that
     caused the event (never a self-asserted header). They are written only when
-    given, so every other emitter's stream schema is unchanged; a reader that
-    scopes by them (cortex/app/audit.py) must treat their absence as
-    "unattributed", not as "anyone's".
+    given, so every other emitter's stream schema is unchanged. Every scoped
+    reader (replay/authz.py — /replay/*, /evals/*, /audit/*) treats their
+    absence as "unattributed": the deployment owner's, not anyone's. An emit
+    site that runs inside a request should pass them, or the event drops out
+    of its own member's timeline.
 
     Returns the Redis stream entry ID on success, or None on failure.
     NEVER raises — all errors are caught and logged at DEBUG level.

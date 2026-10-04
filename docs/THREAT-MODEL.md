@@ -725,6 +725,48 @@ workspace — the scope narrows mis-attribution to that one key, it does not
 prevent it. Memory writes still carry no `visibility`, so a distillate is
 workspace-visible whoever it is attributed to (unchanged, by design).
 
+### 5.13 Replay and evals: reads scoped per event (2026-10-04)
+
+**Mitigated 2026-10-04.** `replay:read`, `eval:read` and `eval:write` are all
+enrollable, so every member key holds them, and every `/replay/*` route accepted
+the verified identity and ignored it. Bob could read Alice's session timeline (recall
+query text, memory content snippets, file paths), inspect any event by id, rebuild
+her context snapshots — whole shadows — through `context-at`, and narrow over her
+session; `GET /evals/sessions/{sid}` returned anyone's eval, `/evals/summary` listed
+every member's session ids, and `POST /evals/sessions/{sid}/compute` computed a
+foreign eval and returned it. The cortex MCP tools (`replay_*`, `eval_*`,
+`audit_memory`) proxy these routes with the caller's own key, so they inherited it.
+
+Now one predicate (`replay/authz.py::event_visible`) decides every read, against the
+`workspace_id` / `member_id` the emitter stamped from the verified request principal:
+a non-admin key sees its own member's events, an `admin`/`*` key its workspace, and
+an unattributed event belongs to the deployment owner member only (the rule Bridge's
+`session_owned_by` uses; `/audit/*` now shares the predicate, so the owner's
+non-admin runtime keys see its pre-attribution history — the "hidden from members"
+residual in row 13 now applies to every member except the owner). A foreign event is
+answered exactly like a missing one, and counts, labels, snapshot walks and narrowing
+links never cross the boundary. Ownership is per event rather than per session
+because the session id is client-generated: a first-writer session index could be
+pre-claimed. Bridge stamps its lifecycle and context events with the session's
+recorded owner; an eval records the owner stamped on its session-start event, which
+only Bridge emits — never a vote over events anyone can write under a chosen session
+id. The two service keys (`eval:grade`, `session:read:workspace`) still compute every
+member's eval. Auth-disabled mode is unchanged. Guarded by
+`replay/tests/test_workspace_authorization.py`,
+`cortex/tests/test_eval_authorization.py`,
+`cortex/tests/test_replay_provenance_stamping.py`,
+`bridge/tests/test_replay_owner_stamp.py`.
+
+**Residuals.** Integrity, not confidentiality: any key can still *write* events into
+another member's session id (they stay attributed to the writer and invisible to the
+victim, but in-process consumers — the eval scorers, OWM, the pattern engine — read
+the session unfiltered, so injected events can skew a victim's metrics). Background
+emitters (collectors, Sentinel, Relay's coordination bus) stay unattributed, so
+their events are visible only to the owner and admins. `/evals/trends` and the
+briefing's quality/discipline sections remain workspace-wide aggregates (no session
+id, grade or event). Pre-change events and evals are unattributed until they age out
+(30 days).
+
 ## 6. Threats, ranked
 
 | # | Threat | State |
@@ -746,6 +788,7 @@ workspace-visible whoever it is attributed to (unchanged, by design).
 | 14 | `GET /briefing?agent_id=<teammate>` reads a teammate's sessions and presence with the internal service key | **Mitigated 2026-10-01** — user-scoped sections present the caller's own key (§5.11) and Bridge filters `GET /sessions` by the verified owner member (§5.9) |
 | 15 | A teammate key reads or writes another member's sessions or member-private memory inside one workspace | **Partly mitigated (2026-10-01, 2026-10-04)** — Bridge recalls with the caller's key and gates every session path on workspace+member (§5.9); distillates are written for the session's verified owner (§5.12, row 16); `/memory/feedback` refuses a teammate's member-private memory and `/memory/contributors` honours visibility (§5.10.1, §5.12). OPEN: Relay's unbound scope-session `agent_id` (§5.9) |
 | 16 | A memory's author is a self-asserted label; distillates of every member's sessions are attributed to the owner | **Mitigated 2026-10-04** — writes record the verified member and credential, contributors group by member inside the caller's workspace and visibility, and Bridge distils through the literal-scope `/memory/learn/delegated` naming the session's verified owner (§5.12; this closes row 15's "owner-attributed distillates"). Residuals: the one service key holding `memory:write:delegated` can name any active member; identical-text relearns name the latest writer |
+| 17 | A teammate key reads another member's replay timeline, events, context snapshots or evals | **Mitigated 2026-10-04** — every replay/eval read is filtered per event by the verified writer's stamp; unattributed history belongs to the deployment owner; service keys still compute all evals (§5.13). Residual: events can still be *written* into another member's session id and skew its in-process metrics |
 
 Threat 5 deserves emphasis because it is the one the product's own design creates:
 Firekeep exists to make agents act on stored memory. Anything that can write a
