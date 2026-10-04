@@ -22,13 +22,18 @@ import json
 
 import fakeredis.aioredis
 import pytest
+import pytest_asyncio
 
 from auth import keys
+from auth.workspace import ensure_workspace
 
 
-@pytest.fixture
-def redis():
-    return fakeredis.aioredis.FakeRedis(decode_responses=True)
+@pytest_asyncio.fixture
+async def redis():
+    client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    # validate_key refuses a credential whose member row is missing.
+    await ensure_workspace(client)
+    return client
 
 
 def _store(redis, api_key: str, record: dict):
@@ -39,7 +44,8 @@ def _record(scopes: list[str], **extra) -> dict:
     base = {
         "key_id": "k1",
         "credential_id": "k1",
-        "member_id": "m1",
+        "workspace_id": "workspace-local",
+        "member_id": "member-owner",
         "scopes": json.dumps(scopes),
         "created_at": "2026-07-01T00:00:00+00:00",
     }

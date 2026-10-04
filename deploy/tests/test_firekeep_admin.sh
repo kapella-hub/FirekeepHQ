@@ -96,4 +96,28 @@ if bash deploy/firekeep-admin licence status >/dev/null 2>&1; then
     echo "FAIL: 'firekeep-admin licence' dispatched instead of failing usage"; exit 1
 fi
 
-echo "PASS: firekeep-admin create/revoke/invite dispatch + scope sync + fail-fast"
+# keys audit (2026-10-04): read-only classifier. It must dispatch, refuse to
+# run blind, and know every scope auth.keys knows — a scope missing from its
+# lists would be reported as "unknown" on every key that holds it.
+AUDIT_OUT="$(FIREKEEP_ADMIN_DRY_RUN=1 bash deploy/firekeep-admin keys audit)"
+echo "$AUDIT_OUT" | grep -q "AUDIT (local Redis DB 7, read-only)" || {
+    echo "FAIL: keys audit dispatch missing"; exit 1;
+}
+if BOOTSTRAP_REDIS_CMD=false bash deploy/firekeep-admin keys audit >/dev/null 2>&1; then
+    echo "FAIL: keys audit with no Redis should exit nonzero"; exit 1
+fi
+SERVICE_ONLY_LINE="$(grep -E "^SERVICE_ONLY_SCOPES='" deploy/firekeep-admin)"
+printf '%s\n' "$SERVICE_ONLY_LINE" | "$PYTHON_BIN" -c '
+import json, sys
+literal = sys.stdin.read().split("=", 1)[1].strip().strip("\x27")
+from auth.keys import SERVICE_ONLY_SCOPES
+got = set(json.loads(literal))
+assert got == set(SERVICE_ONLY_SCOPES), f"SERVICE_ONLY_SCOPES drifted: {got} != {set(SERVICE_ONLY_SCOPES)}"
+'
+# The audit is read-only by construction: no write verb appears in it.
+AUDIT_BODY="$(sed -n '/^keys_audit()/,/^}/p' deploy/firekeep-admin)"
+if printf '%s\n' "$AUDIT_BODY" | grep -E '"\$\{REDIS\[@\]\}" (HSET|SET|ZADD|DEL|ZREM|EXPIRE|HDEL|HSETNX)\b'; then
+    echo "FAIL: keys audit issues a Redis write"; exit 1
+fi
+
+echo "PASS: firekeep-admin create/revoke/invite/audit dispatch + scope sync + fail-fast"

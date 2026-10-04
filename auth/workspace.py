@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -14,6 +16,8 @@ MEMBER_PREFIX = "auth:member:"
 MEMBER_INDEX = "auth:member_index"
 CREDENTIAL_MIGRATION_KEY = "auth:migration:workspace_credentials"
 MEMORY_MIGRATION_KEY = "auth:migration:workspace_memories"
+
+logger = logging.getLogger(__name__)
 
 
 class WorkspaceMigrationError(RuntimeError):
@@ -73,6 +77,68 @@ async def ensure_workspace(redis_client) -> Workspace:
         await pipe.execute()
 
     return Workspace(workspace_id=workspace_id, owner_member_id=owner_member_id)
+
+
+_RECORD_KEY_RE = re.compile(r"^auth:key:[0-9a-f]{64}$")
+
+
+async def attribute_unowned_credentials(redis_client, workspace: Workspace) -> list[str]:
+    """Explicitly assign every unattributed credential record to the owner.
+
+    `validate_key` refuses a record with no member/workspace/credential id
+    since 2026-10-04; before that it silently treated one as the deployment
+    owner's. This pass makes that historical meaning explicit and LOGGED
+    instead: it stamps the owner and this workspace onto any record missing
+    them, derives a credential id from the legacy key_id (or the hash prefix
+    the old validator used), and indexes a record list_keys could not see.
+
+    Runs on every Cortex boot (not behind the one-shot migration marker),
+    because records arrive outside the minting code paths — the documented
+    rescue-key recipe, a partial restore, hand edits — and because
+    deploy/bootstrap-keys.sh, which does the same in bash, never runs on the
+    office Kubernetes deployment. It scans `auth:key:*`, not the index, so an
+    unindexed record is found too. Never overwrites a field that is set: a
+    record naming another member or workspace is left for validate_key to
+    refuse and `deploy/firekeep-admin keys audit` to report.
+    """
+    attributed: list[str] = []
+    async for key in redis_client.scan_iter("auth:key:*", count=100):
+        if not _RECORD_KEY_RE.fullmatch(key):
+            continue
+        record = await redis_client.hgetall(key)
+        if not record:
+            continue
+        key_hash = key.removeprefix("auth:key:")
+        credential_id = record.get("credential_id") or record.get("key_id") or key_hash[:16]
+        changes: dict[str, str] = {}
+        if not record.get("workspace_id"):
+            changes["workspace_id"] = workspace.workspace_id
+        if not record.get("member_id"):
+            changes["member_id"] = workspace.owner_member_id
+        if not record.get("credential_id"):
+            changes["credential_id"] = credential_id
+        if not record.get("key_id"):
+            changes["key_id"] = credential_id
+        indexed = await redis_client.zscore("auth:key_index", credential_id) is not None
+        if not changes and indexed:
+            continue
+        async with redis_client.pipeline(transaction=True) as pipe:
+            if changes:
+                pipe.hset(key, mapping=changes)
+            if not indexed:
+                pipe.zadd("auth:key_index", {credential_id: datetime.now(timezone.utc).timestamp()}, nx=True)
+            await pipe.execute()
+        logger.warning(
+            "Attributed legacy credential %s (device %s) to member %s in %s: set %s%s",
+            credential_id,
+            record.get("device_id") or record.get("agent_id") or "?",
+            record.get("member_id") or workspace.owner_member_id,
+            record.get("workspace_id") or workspace.workspace_id,
+            ", ".join(sorted(changes)) or "nothing",
+            "; added to auth:key_index" if not indexed else "",
+        )
+        attributed.append(credential_id)
+    return attributed
 
 
 async def _credential_matches(redis_client, credential_id: str) -> list[tuple[str, dict[str, Any]]]:

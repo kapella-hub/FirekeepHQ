@@ -279,6 +279,15 @@ async def init_auth(redis_client=None, enabled: bool = False) -> None:
     global _AUTH_ENABLED, _redis
     _AUTH_ENABLED = enabled
     _redis = redis_client
+    if redis_client is not None:
+        # validate_key refuses a credential whose member row is missing, so the
+        # deployment workspace and owner member must exist before any key is
+        # minted or checked. Idempotent; the Cortex lifespan runs it again in
+        # migrate_single_workspace, and deploy/bootstrap-keys.sh writes the same
+        # rows for the services that never call init_auth.
+        from auth.workspace import ensure_workspace
+
+        await ensure_workspace(redis_client)
     if enabled:
         logger.info("Auth enforcement ENABLED")
     else:
@@ -583,20 +592,103 @@ async def validate_key_by_hash(key_hash: str, redis_client=None) -> dict[str, An
     function so tests and the enrollment design can ask "does this stored
     record still authenticate?" without possessing the plaintext.
     """
+    identity, _reason = await _check_record(key_hash, redis_client)
+    return identity
+
+
+# Refusal reasons a key holder may see in the 401 body. They describe the
+# holder's own record (the caller already has the plaintext), never anyone
+# else's, so naming them leaks nothing and saves an operator a Redis session.
+_REFUSED_EXPIRED = "API key expired at {expires_at}"
+_REFUSED_EXPIRY = "API key has an unreadable expiry ({expires_at!r}); refused rather than treated as never-expiring"
+_REFUSED_UNATTRIBUTED = (
+    "API key record has no recorded member/workspace/credential id; it is "
+    "refused rather than assumed to be the owner's. Run deploy/bootstrap-keys.sh "
+    "(or restart cortex-api) to attribute legacy credentials to the deployment owner"
+)
+_REFUSED_WORKSPACE = "API key belongs to another workspace"
+_REFUSED_MEMBER = "API key's member {member_id} is not active in this workspace"
+_REFUSED_SCOPES = "API key has a malformed scope document; refused"
+
+
+def _parse_expiry(expires_at: str) -> datetime | None:
+    """An aware datetime, or None for anything unreadable or naive."""
+    try:
+        parsed = datetime.fromisoformat(expires_at)
+    except (ValueError, TypeError):
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
+def _parse_scopes(raw: str | None) -> list[str] | None:
+    """The stored scope list, or None when the document is not a list of strings.
+
+    Shape is fatal: `scopes_allow` tests `"*" in scopes`, which for a dict is a
+    key lookup and for a str is a SUBSTRING test — a stored `"x*"` was a
+    wildcard grant. Unknown strings are not: a pre-2026-07 teammate key still
+    carries the retired `twin:read`, and refusing the whole credential for a
+    scope that grants nothing would lock real keys out on upgrade. They are
+    dropped from the identity instead.
+    """
+    try:
+        scopes = json.loads(raw if raw is not None else "[]")
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(scopes, list) or not all(isinstance(s, str) for s in scopes):
+        return None
+    unknown = set(scopes) - SCOPES - {"*"}
+    if unknown:
+        logger.warning("Ignoring unknown scope(s) %s on a stored credential", sorted(unknown))
+    return [s for s in scopes if s not in unknown]
+
+
+async def _check_record(
+    key_hash: str, redis_client=None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """(identity, None) for a record that authenticates, else (None, reason).
+
+    reason is None when there is no record at all ("Unknown API key").
+    """
     client = redis_client if redis_client is not None else _redis
     if client is None:
-        return None
+        return None, None
     data = await client.hgetall(f"{_KEY_PREFIX}{key_hash}")
     if not data:
-        return None
+        return None, None
+
     expires_at = data.get("expires_at")
     if expires_at:
-        try:
-            if datetime.now(timezone.utc) > datetime.fromisoformat(expires_at):
-                return None
-        except (ValueError, TypeError):
-            pass
-    scopes = json.loads(data.get("scopes", "[]"))
+        expires = _parse_expiry(expires_at)
+        if expires is None:
+            return None, _REFUSED_EXPIRY.format(expires_at=expires_at)
+        if datetime.now(timezone.utc) > expires:
+            return None, _REFUSED_EXPIRED.format(expires_at=expires_at)
+
+    # Attribution is READ, never invented. Until 2026-10-04 a missing member or
+    # workspace became the deployment owner's, so any record written without
+    # them — a hand-rolled rescue key, anything predating workspaces —
+    # authenticated as the owner. deploy/bootstrap-keys.sh and the cortex boot
+    # migration now stamp such records explicitly (and log it) instead.
+    workspace_id = data.get("workspace_id")
+    member_id = data.get("member_id")
+    credential_id = data.get("credential_id")
+    if not workspace_id or not member_id or not credential_id:
+        return None, _REFUSED_UNATTRIBUTED
+    if workspace_id != deployment_workspace_id():
+        return None, _REFUSED_WORKSPACE
+
+    member = await client.hgetall(f"auth:member:{member_id}")
+    if (
+        not member
+        or member.get("member_id") != member_id
+        or member.get("workspace_id") != workspace_id
+        or member.get("status") != "active"
+    ):
+        return None, _REFUSED_MEMBER.format(member_id=member_id)
+
+    scopes = _parse_scopes(data.get("scopes"))
+    if scopes is None:
+        return None, _REFUSED_SCOPES
     if data.get("enrolled_via"):
         # Enrolled credentials track the CURRENT member ceiling, not their
         # mint-day one. The enrollment path never narrows — every enrolled key
@@ -611,25 +703,15 @@ async def validate_key_by_hash(key_hash: str, redis_client=None) -> dict[str, An
         # (excluded from ENROLLABLE_SCOPES by construction).
         scopes = sorted(set(scopes) | ENROLLABLE_SCOPES)
     return {
-        "workspace_id": data.get("workspace_id") or deployment_workspace_id(),
-        "member_id": data.get("member_id") or deployment_owner_member_id(),
-        "credential_id": data.get("credential_id") or data.get("key_id", key_hash[:16]),
+        "workspace_id": workspace_id,
+        "member_id": member_id,
+        "credential_id": credential_id,
         "scopes": scopes,
         "authenticated": True,
-    }
+    }, None
 
 
 async def invalid_credential_detail(api_key: str, redis_client=None) -> str:
-    """Explain a failed credential without conflating expiry with absence."""
-    client = redis_client if redis_client is not None else _redis
-    if client is None:
-        return "Unknown API key"
-    data = await client.hgetall(f"{_KEY_PREFIX}{_hash_key(api_key)}")
-    expires_at = data.get("expires_at") if data else None
-    if expires_at:
-        try:
-            if datetime.now(timezone.utc) > datetime.fromisoformat(expires_at):
-                return f"API key expired at {expires_at}"
-        except (ValueError, TypeError):
-            pass
-    return "Unknown API key"
+    """Explain a failed credential without conflating refusal with absence."""
+    _identity, reason = await _check_record(_hash_key(api_key), redis_client)
+    return reason or "Unknown API key"

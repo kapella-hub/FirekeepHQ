@@ -218,6 +218,68 @@ backfill_credential_mappings() {
     done < <("${REDIS[@]}" ZRANGE auth:key_index 0 -1)
 }
 
+# The workspace record and owner member row, mirroring auth/workspace.py
+# ensure_workspace (HSETNX only: never rewrites what is there). validate_key
+# refuses a credential whose member row is missing (2026-10-04), and the
+# FastMCP services never run ensure_workspace themselves — without this a
+# freshly minted key could not authenticate at Bridge/Relay/Sentinel until
+# cortex-api had booted once.
+ensure_owner_member() {
+    local now; now="$(now_iso)"
+    "${REDIS[@]}" HSETNX auth:workspace:current workspace_id "$WORKSPACE_ID" > /dev/null
+    "${REDIS[@]}" HSETNX auth:workspace:current owner_member_id "$OWNER_MEMBER_ID" > /dev/null
+    "${REDIS[@]}" HSETNX auth:workspace:current created_at "$now" > /dev/null
+    "${REDIS[@]}" HSETNX "auth:member:${OWNER_MEMBER_ID}" member_id "$OWNER_MEMBER_ID" > /dev/null
+    "${REDIS[@]}" HSETNX "auth:member:${OWNER_MEMBER_ID}" workspace_id "$WORKSPACE_ID" > /dev/null
+    "${REDIS[@]}" HSETNX "auth:member:${OWNER_MEMBER_ID}" role owner > /dev/null
+    "${REDIS[@]}" HSETNX "auth:member:${OWNER_MEMBER_ID}" status active > /dev/null
+    "${REDIS[@]}" HSETNX "auth:member:${OWNER_MEMBER_ID}" created_at "$now" > /dev/null
+    "${REDIS[@]}" ZADD auth:member_index NX "$(date -u +%s)" "$OWNER_MEMBER_ID" > /dev/null
+}
+
+# Upgrade path for credentials with no recorded owner (2026-10-04).
+# validate_key used to give a record with no member_id/workspace_id to the
+# deployment owner, silently. It now refuses such a record, so this pass makes
+# the old meaning EXPLICIT and LOGGED before the new validators start
+# (update.sh runs this script before `compose up`): the owner and this
+# workspace are stamped onto any record missing them, a credential id is
+# derived from the legacy key_id (or the hash prefix the old validator used),
+# and a record the index never listed is indexed so it can be seen and
+# revoked. Scans auth:key:* rather than the index for that reason. A field
+# that is already set is never overwritten. Cortex runs the same pass on every
+# boot (auth/workspace.py attribute_unowned_credentials) for deployments that
+# never run this script. `deploy/firekeep-admin keys audit` is the read-only
+# view of the same records.
+attribute_legacy_credentials() {
+    local key hash wid mid cid kid device changes
+    while IFS= read -r key; do
+        [[ "$key" =~ ^auth:key:[0-9a-f]{64}$ ]] || continue
+        hash="${key#auth:key:}"
+        wid="$("${REDIS[@]}" HGET "$key" workspace_id)"
+        mid="$("${REDIS[@]}" HGET "$key" member_id)"
+        cid="$("${REDIS[@]}" HGET "$key" credential_id)"
+        kid="$("${REDIS[@]}" HGET "$key" key_id)"
+        changes=()
+        [ -n "$wid" ] || changes+=(workspace_id "$WORKSPACE_ID")
+        [ -n "$mid" ] || changes+=(member_id "$OWNER_MEMBER_ID")
+        if [ -z "$cid" ]; then
+            cid="${kid:-${hash:0:16}}"
+            changes+=(credential_id "$cid")
+        fi
+        [ -n "$kid" ] || changes+=(key_id "$cid")
+        if [ "${#changes[@]}" -gt 0 ]; then
+            "${REDIS[@]}" HSET "$key" "${changes[@]}" > /dev/null
+            device="$("${REDIS[@]}" HGET "$key" device_id)"
+            [ -n "$device" ] || device="$("${REDIS[@]}" HGET "$key" agent_id)"
+            echo "[ATTRIBUTED] credential ${cid} (device ${device:-?}) -> member ${mid:-$OWNER_MEMBER_ID}, workspace ${wid:-$WORKSPACE_ID}"
+        fi
+        if [ -z "$("${REDIS[@]}" ZSCORE auth:key_index "$cid")" ]; then
+            "${REDIS[@]}" ZADD auth:key_index NX "$(date -u +%s)" "$cid" > /dev/null
+            echo "[INDEXED] credential ${cid} was not in auth:key_index"
+        fi
+    done < <("${REDIS[@]}" --scan --pattern 'auth:key:*')
+}
+
 MINTED=0
 
 ensure_env_key() {  # $1=env var  $2=device_id  $3=scopes-json
@@ -263,6 +325,8 @@ if ! "${REDIS[@]}" PING 2>/dev/null | grep -q PONG; then
     exit 1
 fi
 
+ensure_owner_member
+
 # --- 1+2: env-backed service keys -------------------------------------------
 
 ensure_env_key FIREKEEP_INTERNAL_KEY  firekeep-internal  '["memory:write","session:read","eval:read","eval:write","session:read:workspace","relay:write:service"]'
@@ -305,7 +369,9 @@ fi
 
 # Upgrade path for credentials created before independent ID mappings existed.
 # Ambiguity is refused rather than guessed; every new record above already has
-# the mapping, so idempotent runs add nothing.
+# the mapping, so idempotent runs add nothing. Attribution runs first so a
+# record it newly indexes gets its mapping in the same run.
+attribute_legacy_credentials
 backfill_credential_mappings
 
 echo ""

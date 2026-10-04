@@ -120,3 +120,60 @@ async def test_workspace_startup_repairs_a_missing_owner_record(monkeypatch):
         assert await redis.zscore("auth:member_index", "member-owner-c") is not None
     finally:
         await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_every_boot_attributes_a_credential_written_after_the_one_shot_backfill(
+    monkeypatch,
+):
+    """The documented rescue-key recipe wrote an unattributed record.
+
+    validate_key refuses those since 2026-10-04 instead of handing them to the
+    owner, so the boot pass must stamp them even when the one-shot migration
+    marker says the workspace was migrated long ago.
+    """
+    from auth import keys
+
+    monkeypatch.setenv("FIREKEEP_WORKSPACE_ID", "workspace-r")
+    monkeypatch.setenv("FIREKEEP_OWNER_MEMBER_ID", "member-owner-r")
+    redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    await ensure_workspace(redis)
+    await redis.set(MEMORY_MIGRATION_KEY, "complete:workspace-r:0")
+    secret = "nxs_" + "r" * 48
+    key_hash = keys._hash_key(secret)
+    rescue = {  # exactly what the pre-2026-10-04 DEPLOYMENT-OFFICE recipe wrote
+        "agent_id": "rescue-admin",
+        "scopes": '["admin"]',
+        "created_at": "2026-10-04T00:00:00Z",
+        "key_id": key_hash[:16],
+    }
+    await redis.hset(f"auth:key:{key_hash}", mapping=rescue)
+    await redis.zadd("auth:key_index", {key_hash[:16]: 1})
+    unindexed_hash = "f" * 64
+    await redis.hset(
+        f"auth:key:{unindexed_hash}",
+        mapping={"scopes": '["memory:read"]', "member_id": "member-bob"},
+    )
+    try:
+        await migrate_single_workspace(redis, _Vector([]))
+
+        record = await redis.hgetall(f"auth:key:{key_hash}")
+        assert record["member_id"] == "member-owner-r"
+        assert record["workspace_id"] == "workspace-r"
+        assert record["credential_id"] == key_hash[:16]
+        identity = await keys.validate_key(secret, redis_client=redis)
+        assert identity is not None and identity["member_id"] == "member-owner-r"
+
+        # A record that names its member keeps it; only the gaps are filled,
+        # and a record list_keys could not see is now indexed.
+        other = await redis.hgetall(f"auth:key:{unindexed_hash}")
+        assert other["member_id"] == "member-bob"
+        assert other["workspace_id"] == "workspace-r"
+        assert await redis.zscore("auth:key_index", unindexed_hash[:16]) is not None
+
+        # Idempotent: a second boot changes nothing.
+        before = await redis.hgetall(f"auth:key:{key_hash}")
+        await migrate_single_workspace(redis, _Vector([]))
+        assert await redis.hgetall(f"auth:key:{key_hash}") == before
+    finally:
+        await redis.aclose()
