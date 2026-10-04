@@ -11,10 +11,20 @@ set -euo pipefail
 #      lists/reads only the caller's own sessions over REST unless the key holds
 #      it, and Cortex's workers (OWM, skill scoring/synthesis, patterns) need
 #      every session in the workspace. A key minted before it existed is
-#      added in place by ensure_env_key's scope reconciliation. Plaintext -> .env.
+#      added in place by ensure_env_key's scope reconciliation. Also
+#      relay:write:service (SERVICE-ONLY, 2026-10-04): the key's two Relay
+#      writes — Sentinel's alert broadcast and Cortex's fleet POST /tasks —
+#      which no longer pass on "any valid key" now that Relay's member-bound
+#      operations require relay:read/relay:write (an owner-member service key
+#      must not act as the owner inside Relay). Reconciled onto existing keys
+#      the same way. Plaintext -> .env.
 #   2. DASHBOARD_API_KEY — dashboard nginx proxy key (spec §4.4b: the
 #      dashboard IS the owner's admin surface). Scopes: ["*"]. Plaintext -> .env.
 #   3. RELAY_INTERNAL_API_KEY — Relay's outbound key for the ONE call it makes
+#      (UNUSED with auth on since 2026-10-04: Relay now writes scope decisions
+#      with the key of the member that owns the session — THREAT-MODEL §5.12 —
+#      and presents this key only with auth off. Kept minted until it is
+#      retired across compose, .env.example and the deploy tests.)
 #      into Bridge: POST /sessions/{agent_id}/context, which persists NexusScope
 #      decisions for origin:"mcp" sessions (relay/app/scope.py _persist_to_bridge).
 #      Bridge gates that route with require_scope_asgi(request, "session:write")
@@ -255,7 +265,7 @@ fi
 
 # --- 1+2: env-backed service keys -------------------------------------------
 
-ensure_env_key FIREKEEP_INTERNAL_KEY  firekeep-internal  '["memory:write","session:read","eval:read","eval:write","session:read:workspace"]'
+ensure_env_key FIREKEEP_INTERNAL_KEY  firekeep-internal  '["memory:write","session:read","eval:read","eval:write","session:read:workspace","relay:write:service"]'
 ensure_env_key DASHBOARD_API_KEY firekeep-dashboard '["*"]'
 ensure_env_key RELAY_INTERNAL_API_KEY firekeep-relay '["session:write"]'
 ensure_env_key FIREKEEP_BRIDGE_KEY firekeep-bridge '["memory:read","memory:write","session:read","eval:read","eval:write","eval:grade","memory:write:delegated"]'

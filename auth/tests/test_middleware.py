@@ -63,11 +63,14 @@ class TestScopes:
             # Service-only (2026-10-04): write a memory attributed to the
             # member a service acts for, minted only onto FIREKEEP_BRIDGE_KEY.
             "memory:write:delegated",
+            # Service-only (2026-10-04): FIREKEEP_INTERNAL_KEY's two Relay
+            # writes (Sentinel alert broadcast, Cortex fleet POST /tasks).
+            "relay:write:service",
         }
         assert SCOPES == expected
 
     def test_scope_count(self):
-        assert len(SCOPES) == 16
+        assert len(SCOPES) == 17
 
 
 @pytest.fixture

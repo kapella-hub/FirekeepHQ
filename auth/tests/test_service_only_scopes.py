@@ -38,7 +38,8 @@ async def test_scopes_endpoint_separates_service_scopes():
         if route.path == "/auth/scopes" and "GET" in route.methods)
     body = await route.endpoint(identity={"scopes": ["admin"]})
     assert body["service_only"] == [
-        "eval:grade", "memory:write:delegated", "session:read:workspace"]
+        "eval:grade", "memory:write:delegated", "relay:write:service",
+        "session:read:workspace"]
     assert "eval:grade" not in body["scopes"]
     assert "session:read:workspace" not in body["scopes"]
 
@@ -72,3 +73,18 @@ def test_delegated_memory_write_is_never_enrollable_or_anonymous():
     assert "memory:write:delegated" in keys.SERVICE_ONLY_SCOPES
     assert "memory:write:delegated" not in keys.ENROLLABLE_SCOPES
     assert "memory:write:delegated" not in keys.ANONYMOUS_SCOPES
+
+
+@pytest.mark.asyncio
+async def test_create_key_rejects_relay_service_writes(auth_redis):
+    """relay:write:service authorizes FIREKEEP_INTERNAL_KEY's alert broadcast
+    and fleet enqueue (2026-10-04); a member credential must never carry it."""
+    with pytest.raises(ValueError, match="service-only"):
+        await keys.create_key(
+            agent_id="mallory", scopes=["relay:write", "relay:write:service"])
+
+
+def test_relay_service_write_is_never_enrollable_or_anonymous():
+    assert "relay:write:service" in keys.SCOPES
+    assert "relay:write:service" not in keys.ENROLLABLE_SCOPES
+    assert "relay:write:service" not in keys.ANONYMOUS_SCOPES

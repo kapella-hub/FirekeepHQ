@@ -122,7 +122,7 @@ echo "$OUT3" | grep -q '\[RECONCILED\] FIREKEEP_INTERNAL_KEY scopes += session:r
     || { echo "FAIL: pre-existing internal key not upgraded"; echo "$OUT3"; exit 1; }
 echo "$OUT3" | grep -q '0 key(s) minted' || { echo "FAIL: upgrade run minted keys"; echo "$OUT3"; exit 1; }
 UPGRADED_SCOPES="$(docker exec "$CONTAINER" redis-cli -n 7 HGET "auth:key:${INTERNAL_HASH}" scopes)"
-[ "$UPGRADED_SCOPES" = '["memory:write","session:read","eval:read","eval:write","session:read:workspace"]' ] \
+[ "$UPGRADED_SCOPES" = '["memory:write","session:read","eval:read","eval:write","session:read:workspace","relay:write:service"]' ] \
     || { echo "FAIL: upgraded scopes wrong: $UPGRADED_SCOPES"; exit 1; }
 INTERNAL_CRED_3="$(docker exec "$CONTAINER" redis-cli -n 7 HGET "auth:key:${INTERNAL_HASH}" credential_id)"
 [ "$INTERNAL_CRED_1" = "$INTERNAL_CRED_3" ] || { echo "FAIL: upgrade changed credential_id"; exit 1; }
@@ -165,7 +165,7 @@ async def main():
     assert "agent_id" not in ident, ident
     assert set(ident["scopes"]) == {
         "memory:write", "session:read", "eval:read", "eval:write",
-        "session:read:workspace",
+        "session:read:workspace", "relay:write:service",
     }, ident
     assert ident["authenticated"] is True
 

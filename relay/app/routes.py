@@ -24,6 +24,21 @@ def _unauthorized() -> JSONResponse:
     return JSONResponse({"error": _NO_PRINCIPAL}, status_code=401)
 
 
+def _route_scope_refusal(request: Request, required: tuple[str, ...]) -> JSONResponse | None:
+    """None when the caller's key satisfies one of ``required`` (see
+    app.mcp_server._scope_refusal); otherwise the 401/403 response."""
+    from auth.asgi import ScopeError, require_scope_asgi
+
+    refusal = None
+    for scope in required:
+        try:
+            require_scope_asgi(request, scope)
+            return None
+        except ScopeError as e:
+            refusal = e
+    return JSONResponse({"error": refusal.detail}, status_code=refusal.status_code)
+
+
 # -- Handler functions (testable without Starlette) ---------------------
 
 async def handle_get_presence(redis, include_idle: bool = True) -> dict:
@@ -319,6 +334,9 @@ async def route_get_single_presence(request: Request) -> JSONResponse:
 
 async def route_delete_presence(request: Request) -> JSONResponse:
     try:
+        refused = _route_scope_refusal(request, ("relay:write",))
+        if refused is not None:
+            return refused
         agent_id = request.path_params["agent_id"]
         caller = caller_from_scope(request.scope)
         if caller is None:
@@ -337,6 +355,9 @@ async def route_delete_presence(request: Request) -> JSONResponse:
 
 async def route_get_dm(request: Request) -> JSONResponse:
     try:
+        refused = _route_scope_refusal(request, ("relay:read",))
+        if refused is not None:
+            return refused
         agent_id = request.path_params["agent_id"]
         unread_only = request.query_params.get("unread_only", "false").lower() == "true"
         caller = caller_from_scope(request.scope)
@@ -352,6 +373,9 @@ async def route_get_dm(request: Request) -> JSONResponse:
 
 async def route_post_dm(request: Request) -> JSONResponse:
     try:
+        refused = _route_scope_refusal(request, ("relay:write",))
+        if refused is not None:
+            return refused
         agent_id = request.path_params["agent_id"]
         body = await request.json()
         content = body.get("content", "")
@@ -373,6 +397,9 @@ async def route_post_dm(request: Request) -> JSONResponse:
 
 async def route_mark_dm_read(request: Request) -> JSONResponse:
     try:
+        refused = _route_scope_refusal(request, ("relay:write",))
+        if refused is not None:
+            return refused
         agent_id = request.path_params["agent_id"]
         caller = caller_from_scope(request.scope)
         if caller is None:
@@ -387,6 +414,9 @@ async def route_mark_dm_read(request: Request) -> JSONResponse:
 
 async def route_delete_task(request: Request) -> JSONResponse:
     try:
+        refused = _route_scope_refusal(request, ("relay:write",))
+        if refused is not None:
+            return refused
         task_id = request.path_params["task_id"]
         r = await _get_redis()
         from app.tasks import delete_task
@@ -434,12 +464,16 @@ async def route_get_tasks(request: Request) -> JSONResponse:
 async def route_post_task(request: Request) -> JSONResponse:
     """POST /tasks — REST counterpart of relay_task_post, for server-side enqueue.
 
-    Auth is the blanket key middleware and deliberately NO per-route scope
-    (same as GET/DELETE /tasks, /dm/*, /presence/*): cortex's internal key
-    carries no relay scope and deployed keys cannot be re-scoped in place
-    (spec 2026-09-02 fleet-as-gpu, decision 4).
+    Requires relay:write, or the service-only relay:write:service that
+    deploy/bootstrap-keys.sh declares on FIREKEEP_INTERNAL_KEY — the key
+    cortex's fleet_enqueue_pass posts with (and reconciles onto existing keys
+    on update.sh). Before 2026-10-04 this route carried no scope because that
+    key had no relay scope and could not be re-scoped in place.
     """
     try:
+        refused = _route_scope_refusal(request, ("relay:write", "relay:write:service"))
+        if refused is not None:
+            return refused
         try:
             body = await request.json()
         except Exception:  # noqa: BLE001 — malformed body is the caller's fault

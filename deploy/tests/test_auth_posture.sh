@@ -266,7 +266,7 @@ run_capture() {  # stdin = simulated bootstrap output -> echoes captured key
 
 # Shape taken from deploy/bootstrap-keys.sh's actual fresh-run output.
 GOT="$(run_capture <<EOF
-[MINTED] FIREKEEP_INTERNAL_KEY  (agent_id=firekeep-internal scopes=["memory:write","session:read","eval:read","eval:write","session:read:workspace"])
+[MINTED] FIREKEEP_INTERNAL_KEY  (agent_id=firekeep-internal scopes=["memory:write","session:read","eval:read","eval:write","session:read:workspace","relay:write:service"])
 [MINTED] DASHBOARD_API_KEY  (agent_id=firekeep-dashboard scopes=["*"])
 [MINTED] RELAY_INTERNAL_API_KEY  (agent_id=firekeep-relay scopes=["session:write"])
 [MINTED] FIREKEEP_BRIDGE_KEY  (agent_id=firekeep-bridge scopes=["memory:read","memory:write","session:read","eval:read","eval:write","eval:grade","memory:write:delegated"])
@@ -528,7 +528,7 @@ esac
 # that key alone carries the service-only session:read:workspace — minted for
 # new installs AND added in place to a key minted before the scope existed.
 case "$BOOTSTRAP" in
-    *'ensure_env_key FIREKEEP_INTERNAL_KEY  firekeep-internal  '"'"'["memory:write","session:read","eval:read","eval:write","session:read:workspace"]'"'"*)
+    *'ensure_env_key FIREKEEP_INTERNAL_KEY  firekeep-internal  '"'"'["memory:write","session:read","eval:read","eval:write","session:read:workspace","relay:write:service"]'"'"*)
         pass "internal key is minted with session:read:workspace" ;;
     *) fail "internal key is minted with session:read:workspace" ;;
 esac
