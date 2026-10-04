@@ -9,7 +9,9 @@ and symdex's Cortex client read FIREKEEP_INTERNAL_KEY from it — so a dex child
 could act with the deployment's service key instead of the member's enrolled
 key. These tests pin the replacement: an allowlisted environment per child, the
 member's enrolled Cortex connection passed explicitly to symdex, and a source
-guard that keeps the allowlist in step with what the children actually read.
+guard over LITERAL environment reads in the child packages. Names built from
+variables (helper functions taking the name) escape the guard and are
+classified in childenv.py by hand.
 """
 from __future__ import annotations
 
