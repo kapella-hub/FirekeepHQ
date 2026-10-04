@@ -11,6 +11,7 @@ import pytest
 from app.enroll.api import _suggested_agent_id, create_enroll_router
 from app.enroll.store import EnrollmentStore
 from auth import keys
+from auth.workspace import ensure_workspace
 
 
 TICKET = "A" * 43
@@ -144,6 +145,7 @@ def test_auth_enroll_is_not_a_route():
 async def test_admin_invite_mints_a_client_decodable_single_use_code(monkeypatch):
     redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
     await keys.init_auth(redis_client=redis, enabled=True)
+    await ensure_workspace(redis)
     admin = await keys.create_key("dashboard", ["*"])
     monkeypatch.setenv("VPS_IP", "203.0.113.9")
     # Ports published on loopback only: a tunnel really is the only way in.
@@ -184,6 +186,7 @@ async def test_invite_points_devices_at_the_address_the_ports_bind_to(monkeypatc
     """
     redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
     await keys.init_auth(redis_client=redis, enabled=True)
+    await ensure_workspace(redis)
     admin = await keys.create_key("dashboard", ["*"])
     monkeypatch.setenv("BIND_ADDR", "100.64.0.1")
     monkeypatch.setenv("VPS_IP", "203.0.113.7")
@@ -227,6 +230,7 @@ async def test_invite_points_devices_at_the_address_the_ports_bind_to(monkeypatc
 async def test_an_operator_named_http_host_still_needs_confirming(monkeypatch):
     redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
     await keys.init_auth(redis_client=redis, enabled=True)
+    await ensure_workspace(redis)
     admin = await keys.create_key("dashboard", ["*"])
     monkeypatch.delenv("BIND_ADDR", raising=False)
     app = FastAPI()
@@ -260,7 +264,163 @@ async def test_an_operator_named_http_host_still_needs_confirming(monkeypatch):
 async def test_cancelling_an_invite_also_drops_it_from_the_index():
     redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
     store = EnrollmentStore(redis)
-    _, tid, _ = await store.issue(transport="tunnel", kind="ports", host="127.0.0.1")
+    _, tid, _ = await store.issue(
+        transport="tunnel", kind="ports", host="127.0.0.1", member_id="member-owner"
+    )
     assert await store.cancel(tid) is True
     assert await redis.zscore("auth:enroll:index", tid) is None
     await redis.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Whose credential does an invite mint? (authz audit 2026-10-01, round 2)
+#
+# Until 2026-10-04 mint_invite never put a member on the ticket, and the
+# credential built at redemption fell back to the deployment owner. A teammate
+# device regenerated from the dashboard (Devices -> Regenerate, which POSTs
+# /enroll/invite with the device_id) therefore came back as the OWNER: the
+# teammate gained the owner's member-private content and every later write was
+# attributed to the wrong person.
+# ---------------------------------------------------------------------------
+
+
+async def _store_member(redis, member_id: str, *, status: str = "active") -> None:
+    await redis.hset(
+        f"auth:member:{member_id}",
+        mapping={
+            "member_id": member_id,
+            "workspace_id": "workspace-local",
+            "role": "owner" if member_id == "member-owner" else "member",
+            "status": status,
+        },
+    )
+
+
+async def _credential_for(redis, *, device_id: str, member_id: str,
+                          scopes: list[str]) -> dict:
+    """A credential attributed to `member_id`, the shape enrollment writes."""
+    await _store_member(redis, member_id)
+    credential = await keys.create_key(device_id, scopes)
+    key_hash = await redis.get(f"auth:cred:{credential['credential_id']}")
+    await redis.hset(f"auth:key:{key_hash}", mapping={"member_id": member_id})
+    return credential
+
+
+async def _invite(redis, api_key: str, **body):
+    app = FastAPI()
+    app.include_router(create_enroll_router(store=EnrollmentStore(redis), auth_enabled=True))
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as http:
+        return await http.post(
+            "/enroll/invite",
+            headers={"X-API-Key": api_key},
+            json={"transport": "tunnel", "ssh_target": "root@firekeep.example", **body},
+        )
+
+
+@pytest.fixture
+async def auth_redis():
+    redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    await keys.init_auth(redis_client=redis, enabled=True)
+    try:
+        yield redis
+    finally:
+        await keys.init_auth(redis_client=None, enabled=False)
+        await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_new_device_invite_is_issued_to_the_callers_verified_member(auth_redis):
+    admin = await _credential_for(
+        auth_redis, device_id="a" * 16, member_id="member-alice", scopes=["*"]
+    )
+    response = await _invite(auth_redis, admin["api_key"], agent="Alice's laptop")
+
+    assert response.status_code == 200, response.text
+    ticket = await auth_redis.hgetall("auth:enroll:" + response.json()["tid"])
+    assert ticket["member_id"] == "member-alice"
+
+
+@pytest.mark.asyncio
+async def test_regenerated_device_invite_keeps_the_devices_member(auth_redis):
+    admin = await _credential_for(
+        auth_redis, device_id="a" * 16, member_id="member-owner", scopes=["*"]
+    )
+    bob_device = "b" * 16
+    await _credential_for(
+        auth_redis, device_id=bob_device, member_id="member-bob", scopes=["memory:read"]
+    )
+
+    response = await _invite(
+        auth_redis, admin["api_key"], agent="Bob's laptop", device_id=bob_device
+    )
+
+    assert response.status_code == 200, response.text
+    ticket = await auth_redis.hgetall("auth:enroll:" + response.json()["tid"])
+    assert ticket["device_id"] == bob_device
+    # NOT the owner who clicked Regenerate, and not the deployment-owner fallback.
+    assert ticket["member_id"] == "member-bob"
+
+
+@pytest.mark.asyncio
+async def test_regeneration_refuses_a_device_with_no_credential(auth_redis):
+    admin = await _credential_for(
+        auth_redis, device_id="a" * 16, member_id="member-owner", scopes=["*"]
+    )
+    response = await _invite(auth_redis, admin["api_key"], device_id="c" * 16)
+
+    assert response.status_code == 404
+    assert "device" in response.json()["detail"]
+    assert await auth_redis.zcard("auth:enroll:index") == 0
+
+
+@pytest.mark.asyncio
+async def test_regeneration_refuses_a_device_whose_credentials_disagree(auth_redis):
+    admin = await _credential_for(
+        auth_redis, device_id="a" * 16, member_id="member-owner", scopes=["*"]
+    )
+    split_device = "d" * 16
+    await _credential_for(
+        auth_redis, device_id=split_device, member_id="member-bob", scopes=["memory:read"]
+    )
+    await _credential_for(
+        auth_redis, device_id=split_device, member_id="member-carol", scopes=["memory:read"]
+    )
+
+    response = await _invite(auth_redis, admin["api_key"], device_id=split_device)
+
+    assert response.status_code == 409
+    assert "more than one member" in response.json()["detail"]
+    assert await auth_redis.zcard("auth:enroll:index") == 0
+
+
+@pytest.mark.asyncio
+async def test_regeneration_refuses_a_member_who_is_no_longer_active(auth_redis):
+    admin = await _credential_for(
+        auth_redis, device_id="a" * 16, member_id="member-owner", scopes=["*"]
+    )
+    bob_device = "b" * 16
+    await _credential_for(
+        auth_redis, device_id=bob_device, member_id="member-bob", scopes=["memory:read"]
+    )
+    await auth_redis.hset("auth:member:member-bob", "status", "removed")
+
+    response = await _invite(auth_redis, admin["api_key"], device_id=bob_device)
+
+    assert response.status_code == 409
+    assert "not active" in response.json()["detail"]
+    assert await auth_redis.zcard("auth:enroll:index") == 0
+
+
+def test_redeem_explains_an_inactive_member_and_a_pre_attribution_code():
+    for outcome, fields, phrase in [
+        ("member_inactive", ["member-bob"], "no longer active"),
+        ("unattributed", [], "issued before"),
+    ]:
+        response = client(StubStore(outcome=outcome, fields=fields)).post(
+            "/enroll", json=request_body()
+        )
+        assert response.status_code == 409, outcome
+        assert phrase in response.json()["detail"], outcome
+        assert "api_key" not in response.json(), outcome

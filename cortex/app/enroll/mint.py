@@ -13,8 +13,62 @@ from pathlib import Path
 from typing import Any
 
 from auth.config import get_auth_settings
+from auth.keys import AmbiguousDeviceAttributionError, resolve_device_attribution
+from auth.principal import deployment_owner_member_id, deployment_workspace_id
+from auth.workspace import MEMBER_PREFIX
 
 from .store import EnrollmentStore
+
+
+class InviteMemberError(Exception):
+    """The invite cannot be attributed to an active member; nothing was issued."""
+
+    def __init__(self, status: int, detail: str) -> None:
+        super().__init__(detail)
+        self.status = status
+        self.detail = detail
+
+
+async def invite_member(
+    redis_client,
+    *,
+    device_id: str,
+    issuer_member_id: str,
+    workspace_id: str,
+) -> str:
+    """The member a new join code's credential will belong to.
+
+    A new device belongs to the verified member who issued the code. A
+    regenerated device keeps the member its existing credentials belong to —
+    the issuer is usually the owner clicking Regenerate on a teammate's device,
+    and until 2026-10-04 the minted credential silently became the owner's.
+    Either way the member must exist in this workspace and be active, so a
+    code is never minted for a credential that could not authenticate.
+    """
+    member_id = issuer_member_id
+    if device_id:
+        try:
+            existing = await resolve_device_attribution(device_id, redis_client)
+        except AmbiguousDeviceAttributionError as exc:
+            raise InviteMemberError(409, str(exc)) from exc
+        if existing is None or existing["workspace_id"] != workspace_id:
+            raise InviteMemberError(
+                404,
+                f"device {device_id} not found: no credential on this server "
+                "carries it, so there is nothing to regenerate. Issue a new-device "
+                "invite instead.",
+            )
+        member_id = existing["member_id"]
+
+    member = await redis_client.hgetall(f"{MEMBER_PREFIX}{member_id}")
+    if not member:
+        raise InviteMemberError(404, f"member {member_id} not found in this workspace")
+    if member.get("workspace_id") != workspace_id or member.get("status") != "active":
+        raise InviteMemberError(
+            409,
+            f"member {member_id} is not active in this workspace; nothing was issued",
+        )
+    return member_id
 
 
 def _b64url(data: bytes) -> str:
@@ -68,6 +122,7 @@ async def mint_invite(
     ca_mode: str = "",
     ssh_target: str = "",
     issuer: str = "dashboard",
+    member_id: str,
     key_expires_days: int | None = None,
     device_id: str = "",
     dist_base: str = "https://firekeep.ai",
@@ -95,6 +150,7 @@ async def mint_invite(
         ca_pem=ca_pem,
         ssh_target=ssh_target,
         issuer=issuer,
+        member_id=member_id,
         key_expires_days=key_expires_days,
         device_id=device_id,
     )
@@ -162,6 +218,18 @@ async def _run(args: argparse.Namespace) -> int:
 
     redis_client = aioredis.from_url(auth_settings.REDIS_URL, decode_responses=True)
     try:
+        # The server-shell path has no verified caller: a new device belongs to
+        # the deployment owner who holds the shell, a regenerated one keeps its
+        # existing member exactly as the API route does.
+        try:
+            member_id = await invite_member(
+                redis_client,
+                device_id=args.device_id,
+                issuer_member_id=deployment_owner_member_id(),
+                workspace_id=deployment_workspace_id(),
+            )
+        except InviteMemberError as exc:
+            raise SystemExit(exc.detail) from exc
         result = await mint_invite(
             EnrollmentStore(redis_client),
             agent_label=args.agent,
@@ -173,6 +241,7 @@ async def _run(args: argparse.Namespace) -> int:
             ca_mode=args.ca or "",
             ssh_target=args.ssh_target,
             issuer=args.issuer,
+            member_id=member_id,
             key_expires_days=args.expires_days,
             device_id=args.device_id,
             dist_base=args.dist_base,

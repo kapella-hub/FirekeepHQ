@@ -835,6 +835,25 @@ first OPEN bullet of §5.9.
   off; retiring it touches bootstrap, compose, `.env.example` and the deploy
   tests and is left as a follow-up.
 
+### 5.15 Credential attribution: who a key belongs to (2026-10-04)
+
+**Join-code regeneration — fixed.** The member a credential belongs to is what
+every member-isolation check in §5.9–5.11 keys on, so a credential minted for the
+wrong member defeats all of them at once. Until 2026-10-04 an enrollment ticket
+recorded no member: `mint_invite` never passed one, and the credential built at
+redemption fell back to the deployment owner. Dashboard **Regenerate** on a
+teammate's device (`POST /enroll/invite` with that `device_id`) therefore handed the
+teammate a credential that authenticated as the owner — the owner's member-private
+docdex/maildex content and vault entries, and every later write attributed to the
+owner. Now the ticket carries the member (the verified issuer's for a new device;
+the device's existing member, resolved from its credential records and refused on
+disagreement, for a regeneration), the member must be active in the workspace when
+the code is issued, and the redeeming Lua script re-checks the member row and the
+ticket's pinned member/device in the same atomic operation that registers the
+credential. Tickets from an older server carry no member and are refused unspent
+(`unattributed`). Guarded by `cortex/tests/test_enroll_api.py` and, against real
+Redis, `test_enroll_redis_integration.py`.
+
 ## 6. Threats, ranked
 
 | # | Threat | State |
@@ -858,6 +877,7 @@ first OPEN bullet of §5.9.
 | 16 | A memory's author is a self-asserted label; distillates of every member's sessions are attributed to the owner | **Mitigated 2026-10-04** — writes record the verified member and credential, contributors group by member inside the caller's workspace and visibility, and Bridge distils through the literal-scope `/memory/learn/delegated` naming the session's verified owner (§5.12; this closes row 15's "owner-attributed distillates"). Residuals: the one service key holding `memory:write:delegated` can name any active member; identical-text relearns name the latest writer |
 | 17 | A teammate key reads another member's replay timeline, events, context snapshots or evals | **Mitigated 2026-10-04** — every replay/eval read is filtered per event by the verified writer's stamp; unattributed history belongs to the deployment owner; service keys still compute all evals (§5.13). Residual: events can still be *written* into another member's session id and skew its in-process metrics |
 | 18 | A teammate key reads another member's Relay DMs, posts as her, or releases her leases; Relay writes scope decisions into Bridge as the owner | **Mitigated 2026-10-04** — every Relay record is owned by the verified member that wrote it and checked on read and mutation; scope decisions reach Bridge only with the owning member's key (§5.14). Member-bound operations require `relay:read`/`relay:write`, and the internal key's two Relay writes use the service-only `relay:write:service`. Residuals: first-come presence labels at upgrade, owner-only DMs to unbound labels, single-workspace reads |
+| 19 | A credential authenticates as a member it was not issued to (regenerated teammate device minted as the owner) | **Fixed 2026-10-04** — join codes carry their member, regeneration keeps the device's member, redemption re-checks the member atomically (§5.15) |
 
 Threat 5 deserves emphasis because it is the one the product's own design creates:
 Firekeep exists to make agents act on stored memory. Anything that can write a

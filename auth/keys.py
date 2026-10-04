@@ -453,6 +453,60 @@ async def list_keys(limit: int = 50) -> list[dict[str, Any]]:
     return rows
 
 
+class AmbiguousDeviceAttributionError(Exception):
+    """A device's credential records name more than one principal."""
+
+
+async def resolve_device_attribution(
+    device_id: str, redis_client=None,
+) -> dict[str, str] | None:
+    """The workspace/member a device's existing credentials belong to.
+
+    Re-issuing a device's credential (dashboard Devices -> Regenerate) must mint
+    for the member the device already belongs to, never for whoever clicked the
+    button. A device can hold several credentials mid-rotation; that is fine
+    while they all agree. Records that disagree, or one with no recorded member,
+    are corrupt attribution and raise rather than letting either side win.
+    Returns None when no indexed credential carries this device_id.
+    """
+    client = redis_client if redis_client is not None else _redis
+    if client is None or not _KEY_ID_RE.fullmatch(device_id):
+        return None
+
+    principals: set[tuple[str, str]] = set()
+    for credential_id in await client.zrange(_KEY_INDEX, 0, -1):
+        mapped_hash = await client.get(f"{_CRED_PREFIX}{credential_id}")
+        if mapped_hash:
+            records = [await client.hgetall(f"{_KEY_PREFIX}{mapped_hash}")]
+        else:
+            records = [
+                await client.hgetall(key)
+                async for key in client.scan_iter(f"{_KEY_PREFIX}{credential_id}*", count=100)
+            ]
+        for data in records:
+            if not data or data.get("device_id") != device_id:
+                continue
+            workspace_id = data.get("workspace_id")
+            member_id = data.get("member_id")
+            if not workspace_id or not member_id:
+                raise AmbiguousDeviceAttributionError(
+                    f"device {device_id} has a credential with no recorded member; "
+                    "run deploy/bootstrap-keys.sh to attribute legacy credentials"
+                )
+            principals.add((workspace_id, member_id))
+
+    if not principals:
+        return None
+    if len(principals) > 1:
+        raise AmbiguousDeviceAttributionError(
+            f"device {device_id} has credentials belonging to more than one member "
+            f"({', '.join(sorted(m for _, m in principals))}); revoke the wrong "
+            "ones before regenerating"
+        )
+    workspace_id, member_id = principals.pop()
+    return {"workspace_id": workspace_id, "member_id": member_id}
+
+
 async def revoke_key(key_id: str) -> bool:
     """Revoke an API key by its short ID.
 

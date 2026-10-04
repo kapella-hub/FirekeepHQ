@@ -37,6 +37,13 @@ if expires_epoch < tonumber(ARGV[2]) then
   return {'expired', redis.call('HGET', KEYS[1], 'expires_at') or ''}
 end
 
+-- A ticket minted before tickets recorded their member (2026-10-04) would
+-- otherwise register its credential as the deployment owner. Refuse it before
+-- anything is spent; the issuer re-issues.
+if (redis.call('HGET', KEYS[1], 'member_id') or '') == '' then
+  return {'unattributed'}
+end
+
 local ticket_scopes_json = redis.call('HGET', KEYS[1], 'scopes') or '[]'
 if ARGV[13] ~= '1' then
   return {'scope_violation', ticket_scopes_json}
@@ -58,8 +65,20 @@ end
 -- immutable ticket snapshot. Refuse a concurrent/manual ticket rewrite rather
 -- than registering metadata that no longer describes the ticket being spent.
 if ticket_scopes_json ~= ARGV[9] or
-   (redis.call('HGET', KEYS[1], 'key_expires_days') or '0') ~= ARGV[10] then
+   (redis.call('HGET', KEYS[1], 'key_expires_days') or '0') ~= ARGV[10] or
+   redis.call('HGET', KEYS[1], 'member_id') ~= ARGV[14] or
+   (redis.call('HGET', KEYS[1], 'device_id') or '') ~= ARGV[15] then
   return {'ticket_changed'}
+end
+
+-- Membership can change after a code is issued. Check it in the same atomic
+-- operation that registers the credential, so a code for a member who is gone
+-- is refused unspent instead of minting a credential that cannot authenticate.
+if redis.call('EXISTS', KEYS[6]) == 0 or
+   (redis.call('HGET', KEYS[6], 'member_id') or '') ~= ARGV[14] or
+   (redis.call('HGET', KEYS[6], 'workspace_id') or '') ~= ARGV[16] or
+   (redis.call('HGET', KEYS[6], 'status') or '') ~= 'active' then
+  return {'member_inactive', ARGV[14]}
 end
 
 if redis.call('EXISTS', KEYS[3]) == 1 then

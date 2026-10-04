@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from auth.keys import ENROLLABLE_SCOPES, build_credential_record
+from auth.workspace import MEMBER_PREFIX
 
 from .lua import ENROLL_CONSUME
 
@@ -63,11 +64,17 @@ class EnrollmentStore:
         issuer: str = "dashboard",
         key_expires_days: int | None = None,
         device_id: str = "",
-        member_id: str | None = None,
+        member_id: str,
         ticket: str | None = None,
         now: datetime | None = None,
     ) -> tuple[str, str, dict[str, str]]:
-        """Build one enrollment ticket without writing it."""
+        """Build one enrollment ticket without writing it.
+
+        `member_id` is required: redemption registers the credential for
+        exactly this member and refuses a ticket that names none.
+        """
+        if not member_id:
+            raise ValueError("member_id is required for an enrollment ticket")
         now = now or datetime.now(timezone.utc)
         expires = now + timedelta(hours=self.settings.ticket_ttl_hours)
         ticket = ticket or _b64url(secrets.token_bytes(32))
@@ -98,9 +105,7 @@ class EnrollmentStore:
             record["ssh_target"] = ssh_target
         if device_id:
             record["device_id"] = device_id
-
-        if member_id:
-            record["member_id"] = member_id
+        record["member_id"] = member_id
         return ticket, tid, record
 
     async def issue(
@@ -116,7 +121,7 @@ class EnrollmentStore:
         issuer: str = "dashboard",
         key_expires_days: int | None = None,
         device_id: str = "",
-        member_id: str | None = None,
+        member_id: str,
         ticket: str | None = None,
         now: datetime | None = None,
     ) -> tuple[str, str, dict[str, str]]:
@@ -191,6 +196,9 @@ class EnrollmentStore:
         credential_id = secrets.token_hex(8)
         existing_device_id = snapshot.get("device_id", "") if snapshot else ""
         device_id = existing_device_id or secrets.token_hex(8)
+        # No deployment-owner fallback: a ticket without a member is refused
+        # by the script ('unattributed'), never registered as the owner.
+        member_id = snapshot.get("member_id", "") if snapshot else ""
         metadata = build_credential_record(
             credential_id,
             device_id,
@@ -199,19 +207,20 @@ class EnrollmentStore:
             key_expires_days or None,
             enrolled_via=tid,
             device_label=(snapshot.get("agent_label") or None) if snapshot else None,
-            member_id=(snapshot.get("member_id") or None) if snapshot else None,
+            member_id=member_id or None,
         )
         key_ttl = key_expires_days * 86400 if key_expires_days else 0
         rate_key = f"{RATE_PREFIX}{now.strftime('%Y%m%d%H')}"
 
         raw = await self.redis.eval(
             ENROLL_CONSUME,
-            5,
+            6,
             ticket_key,
             rate_key,
             f"{KEY_PREFIX}{credential_hash}",
             f"{CREDENTIAL_PREFIX}{credential_id}",
             KEY_INDEX,
+            f"{MEMBER_PREFIX}{member_id}",
             str(self.settings.max_attempts_per_hour),
             str(int(now.timestamp())),
             now.isoformat(),
@@ -225,6 +234,9 @@ class EnrollmentStore:
             str(key_ttl),
             device_id,
             "1" if scope_shape_ok else "0",
+            member_id,
+            existing_device_id,
+            metadata["workspace_id"],
         )
         fields = [str(item) for item in raw]
         outcome = fields[0] if fields else "error"

@@ -18,7 +18,7 @@ from app.config import get_settings
 from app.version import VERSION
 
 from .advertise import advertised_host, resolve_connection
-from .mint import mint_invite
+from .mint import InviteMemberError, invite_member, mint_invite
 from .store import EnrollmentSettings, EnrollmentStore, ticket_id
 
 logger = logging.getLogger(__name__)
@@ -130,6 +130,18 @@ def _detail(
             "this join code asks for privileges the server refuses to enroll. Nothing "
             f"was issued. Tell {issuer}: the ticket was hand-edited or minted by a "
             "mismatched tool version."
+        )
+    if outcome == "member_inactive":
+        member_id = fields[0] if fields else "unknown"
+        return 409, (
+            f"this join code belongs to member {member_id}, who is no longer active "
+            f"in this workspace. The code was NOT used. Ask {issuer} for a new one."
+        )
+    if outcome == "unattributed":
+        return 409, (
+            "this join code was issued before this server recorded which member a "
+            "code belongs to, so it cannot be redeemed safely. The code was NOT "
+            f"used. Ask {issuer} for a new one."
         )
     return 409, "the enrollment ticket changed while it was being redeemed; retry"
 
@@ -265,6 +277,18 @@ def create_enroll_router(
         # process is already serving cleartext on exactly that address.
         if transport == "http" and not (req.insecure_http or server_chosen):
             raise HTTPException(status_code=400, detail="plain HTTP requires insecure_http=true")
+        # Deliberately no `member_id` request field: MemberInviteRequest
+        # subclasses InviteRequest and would inherit one it must ignore. The
+        # member comes from the verified caller, or from the device itself.
+        try:
+            member_id = await invite_member(
+                enrollment_store.redis,
+                device_id=req.device_id,
+                issuer_member_id=identity["member_id"],
+                workspace_id=identity["workspace_id"],
+            )
+        except InviteMemberError as exc:
+            raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
         return await mint_invite(
             enrollment_store,
             agent_label=req.agent,
@@ -276,6 +300,7 @@ def create_enroll_router(
             ca_mode=req.ca_mode,
             ssh_target=ssh_target,
             issuer=f"credential:{identity.get('credential_id', 'admin')}",
+            member_id=member_id,
             key_expires_days=req.expires_days,
             device_id=req.device_id,
             dist_base=req.dist_base,
