@@ -8,6 +8,29 @@ Redis keys:
     nr:scope:answer:{scope_id}:{screen_id} — SET NX arbiter, JSON answer blob
     nr:scope:events:{scope_id}           — List of JSON event dicts (append-only)
     nr:scope:__index                     — Sorted set of scope_id scored by created_at
+    nr:scope:persisted:{scope_id}:{screen_id} — SET NX marker: a deferred
+                                           decision was written to Bridge
+
+Ownership (THREAT-MODEL §5.14, 2026-10-04). A session records the verified
+``owner_workspace`` / ``owner_member`` that created it. Only that member may
+post screens into it, poll it or complete it; the owner and an admin key (the
+dashboard) may read and answer it. ``agent_id`` is the label Bridge resolves
+to a session, never the gate.
+
+Bridge decisions for origin:"mcp" sessions are written with the key of a
+principal that OWNS the scope session, so Bridge authorizes the write against
+the member whose session it is (bridge/app/session.py ``session_owned_by``):
+
+- the answerer's own key, when the answerer owns the scope session;
+- otherwise (the dashboard answering a teammate's screen) the answer is marked
+  ``bridge: "deferred"`` and written with the OWNER's key the next time the
+  owner's agent collects it (``scope_ask`` / ``scope_check``) —
+  ``collect_deferred_decisions``, once per screen.
+
+Relay never writes into a member's Bridge session with its own service key or
+an admin's key while auth is on. With auth disabled every caller owns every
+session, so the decision is written at answer time with the configured key,
+exactly as before.
 """
 
 import json
@@ -18,6 +41,8 @@ import uuid
 
 import httpx
 
+from app.principal import Caller, RelayAccessError, administers, owns
+
 logger = logging.getLogger(__name__)
 
 SESSION_PREFIX = "nr:scope:session:"
@@ -26,6 +51,7 @@ SCREENS_ORDER_PREFIX = "nr:scope:screens_order:"
 SCREEN_SEQ_PREFIX = "nr:scope:screen_seq:"
 ANSWER_PREFIX = "nr:scope:answer:"
 EVENTS_PREFIX = "nr:scope:events:"
+PERSISTED_PREFIX = "nr:scope:persisted:"
 SCOPE_INDEX = "nr:scope:__index"
 
 TTL_SECONDS = 86400 * 7           # 7 days from abandoned/completed
@@ -46,12 +72,16 @@ async def create_session(
     redis, *, agent_id: str, goal: str, origin: str,
     project: str | None = None, bridge_session_id: str | None = None,
     scope_id: str | None = None,
+    owner: Caller | None = None,
 ) -> dict:
     """Create (or, if scope_id already exists, no-op-return) a scope session.
 
     "Upsert" for a scope session means idempotent-create: session fields are
     immutable after creation, so a retried create just returns the existing
     session rather than overwriting created_at / re-indexing it.
+
+    ``owner`` (the verified creator) is recorded on the session; an existing
+    scope_id it does not own is refused as not found, without revealing it.
     """
     if origin not in VALID_ORIGINS:
         raise ValueError(f"Invalid origin: {origin!r}. Must be one of {sorted(VALID_ORIGINS)}")
@@ -62,6 +92,8 @@ async def create_session(
     if scope_id:
         existing = await get_session(redis, scope_id)
         if existing is not None:
+            if owner is not None and not owns(existing, owner):
+                raise RelayAccessError(f"Session {scope_id} not found")
             return existing
     else:
         scope_id = "sc_" + uuid.uuid4().hex[:8]
@@ -73,6 +105,8 @@ async def create_session(
         "goal": goal, "origin": origin, "status": "active",
         "created_at": now, "last_activity_at": now,
     }
+    if owner is not None:
+        session.update(owner.owner_fields())
     key = f"{SESSION_PREFIX}{scope_id}"
     await redis.hset(key, mapping=session)
     await redis.zadd(SCOPE_INDEX, {scope_id: now})
@@ -101,7 +135,29 @@ def _parse_session(raw: dict) -> dict:
     return session
 
 
-async def list_sessions(redis, *, status: str = "active", limit: int = 50) -> list[dict]:
+async def require_owned_session(redis, scope_id: str, caller: Caller, *, admin_ok: bool = False) -> dict | None:
+    """The session if ``caller`` owns it (or, with ``admin_ok``, administers it).
+
+    A session the caller may not touch raises RelayAccessError worded exactly
+    like a missing one. A missing session returns None for the auth-disabled
+    anonymous owner — so personal mode keeps its old not-found handling — and
+    raises for a verified caller."""
+    session = await get_session(redis, scope_id)
+    if session is None:
+        if caller.authenticated:
+            raise RelayAccessError(f"Session {scope_id} not found")
+        return None
+    allowed = administers(session, caller) if admin_ok else owns(session, caller)
+    if not allowed:
+        raise RelayAccessError(f"Session {scope_id} not found")
+    return session
+
+
+async def list_sessions(
+    redis, *, status: str = "active", limit: int = 50, caller: Caller | None = None,
+) -> list[dict]:
+    """With ``caller``: only the sessions it owns, or every session in its
+    workspace for an admin key (the dashboard)."""
     if status == "active":
         await abandon_stale_sessions(redis)
 
@@ -113,6 +169,8 @@ async def list_sessions(redis, *, status: str = "active", limit: int = 50) -> li
             await redis.zrem(SCOPE_INDEX, sid)  # orphaned index entry — clean up
             continue
         if status and session["status"] != status:
+            continue
+        if caller is not None and not administers(session, caller):
             continue
         session["pending_screens"] = await _has_pending_gating_screens(redis, sid)
         results.append(session)
@@ -244,7 +302,15 @@ async def get_screens(redis, scope_id: str) -> list[dict]:
 async def post_answer(
     redis, scope_id: str, screen_id: str, *, answers: dict, source: str,
     bridge_url: str | None = None, api_key: str | None = None,
+    answerer: Caller | None = None,
 ) -> dict:
+    """Resolve a screen (first answer wins) and, for an origin:"mcp" session,
+    persist the decision to Bridge.
+
+    ``api_key`` must be the ANSWERER's own credential (or the configured key
+    with auth disabled). It is presented only when ``answerer`` owns the
+    session (or no answerer is given — internal callers); otherwise the
+    decision is deferred to the owner (module docstring)."""
     if source not in VALID_SOURCES:
         raise ValueError(f"Invalid source: {source!r}. Must be one of {sorted(VALID_SOURCES)}")
 
@@ -253,8 +319,14 @@ async def post_answer(
     if raw is None:
         raise ValueError(f"Screen {screen_id} not found in session {scope_id}")
 
+    session = await get_session(redis, scope_id) if bridge_url else None
+    to_bridge = bool(session and session.get("origin") == "mcp")
+    deferred = to_bridge and answerer is not None and not owns(session, answerer)
+
     answer_key = f"{ANSWER_PREFIX}{scope_id}:{screen_id}"
     payload = {"answers": answers, "source": source, "answered_at": time.time()}
+    if deferred:
+        payload["bridge"] = "deferred"
     won = await redis.set(answer_key, json.dumps(payload), nx=True)
     if not won:
         existing = json.loads(await redis.get(answer_key))
@@ -267,17 +339,50 @@ async def post_answer(
     await _touch_activity(redis, scope_id)
     await _append_event(redis, scope_id, {"type": "screen.answered", "screen_id": screen_id, "source": source})
 
-    if bridge_url:
-        session = await get_session(redis, scope_id)
-        if session and session.get("origin") == "mcp":
-            await _persist_to_bridge(
-                bridge_url, session["agent_id"], "decision",
-                f"FirekeepScope screen {screen_id} resolved: {json.dumps(answers)}",
-                key=scope_id,
-                api_key=api_key,
-            )
+    if to_bridge and not deferred:
+        await _persist_to_bridge(
+            bridge_url, session["agent_id"], "decision",
+            _decision_text(screen_id, answers),
+            key=scope_id,
+            api_key=api_key,
+        )
 
     return {"resolved": True, "answer": payload}
+
+
+def _decision_text(screen_id: str, answers: dict) -> str:
+    return f"FirekeepScope screen {screen_id} resolved: {json.dumps(answers)}"
+
+
+async def collect_deferred_decisions(
+    redis, scope_id: str, *, bridge_url: str | None, api_key: str | None,
+) -> int:
+    """Write every deferred decision of ``scope_id`` to Bridge, once each.
+
+    Called only on behalf of the session's OWNER (scope_ask / scope_check),
+    with the owner's own ``api_key``. A SET NX marker per screen makes it
+    idempotent across polls and concurrent callers; like the answer-time write
+    it is best-effort and never retried."""
+    if not bridge_url:
+        return 0
+    session = await get_session(redis, scope_id)
+    if not session or session.get("origin") != "mcp":
+        return 0
+    written = 0
+    for screen in await get_screens(redis, scope_id):
+        answer = screen.get("answer") or {}
+        if screen.get("status") != "resolved" or answer.get("bridge") != "deferred":
+            continue
+        marker = f"{PERSISTED_PREFIX}{scope_id}:{screen['screen_id']}"
+        if not await redis.set(marker, "1", nx=True, ex=TTL_SECONDS):
+            continue
+        await _persist_to_bridge(
+            bridge_url, session["agent_id"], "decision",
+            _decision_text(screen["screen_id"], answer.get("answers") or {}),
+            key=scope_id, api_key=api_key,
+        )
+        written += 1
+    return written
 
 
 async def _persist_to_bridge(

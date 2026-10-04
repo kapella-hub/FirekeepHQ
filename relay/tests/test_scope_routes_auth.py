@@ -85,10 +85,16 @@ def redis_spy(monkeypatch):
     return spy
 
 
-WRITE_IDENTITY = {"agent_id": "caller", "scopes": ["relay:write"], "key_id": "k1"}
-READ_IDENTITY = {"agent_id": "caller", "scopes": ["relay:read"], "key_id": "k1"}
-WRONG_SCOPE_FOR_WRITE = {"agent_id": "caller", "scopes": ["relay:read"], "key_id": "k1"}
-WRONG_SCOPE_FOR_READ = {"agent_id": "caller", "scopes": ["relay:write"], "key_id": "k1"}
+# The shape FirekeepKeyAuthMiddleware attaches (auth/asgi.py). The member is
+# the deployment owner: the sessions these tests seed through create_session()
+# carry no owner, and an unowned (legacy) scope session belongs to the
+# deployment owner alone (THREAT-MODEL §5.14).
+_OWNER = {"workspace_id": "workspace-local", "member_id": "member-owner",
+          "credential_id": "k1", "authenticated": True}
+WRITE_IDENTITY = {**_OWNER, "scopes": ["relay:write"]}
+READ_IDENTITY = {**_OWNER, "scopes": ["relay:read"]}
+WRONG_SCOPE_FOR_WRITE = {**_OWNER, "scopes": ["relay:read"]}
+WRONG_SCOPE_FOR_READ = {**_OWNER, "scopes": ["relay:write"]}
 
 
 # ---------------------------------------------------------------------------

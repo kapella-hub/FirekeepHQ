@@ -19,7 +19,7 @@ from app.mcp_server import (
 )
 
 
-async def _fake_release_script(r, key: str, agent_id: str) -> int:
+async def _fake_release_script(r, key: str, agent_id: str, **_kwargs) -> int:
     """Python implementation of the Lua release script for testing."""
     holder = await r.get(key)
     if not holder:

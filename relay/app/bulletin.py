@@ -8,11 +8,20 @@ import uuid
 logger = logging.getLogger(__name__)
 
 
-async def post_bulletin(redis, content: str, author: str, tags: list[str], ttl_hours: int = 24) -> dict:
-    """Post to the bulletin board."""
+async def post_bulletin(
+    redis, content: str, author: str, tags: list[str], ttl_hours: int = 24,
+    by: dict | None = None,
+) -> dict:
+    """Post to the bulletin board.
+
+    ``by`` is the verified principal stamp of the caller (app.principal);
+    ``author`` stays a display label. Relay's own wait-queue notice posts
+    with no stamp."""
     post_id = str(uuid.uuid4())[:8]
     now = time.time()
     post_data = {"id": post_id, "content": content, "author": author, "tags": tags, "timestamp": now}
+    if by is not None:
+        post_data["by"] = by
 
     # Store post data with TTL
     post_key = f"nr:post:{post_id}"

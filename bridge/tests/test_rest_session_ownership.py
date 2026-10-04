@@ -299,9 +299,11 @@ async def test_post_context_refuses_to_write_through_another_members_label(
 @pytest.mark.asyncio
 async def test_post_context_relay_service_key_writes_only_owner_sessions(
         auth_enabled, manager, mock_redis):
-    """RELAY_INTERNAL_API_KEY carries the deployment owner's member. Until Relay
-    forwards the initiating member's credential, it can persist scope decisions
-    into the owner's sessions (and legacy ones) but not a teammate's."""
+    """RELAY_INTERNAL_API_KEY carries the deployment owner's member, so it can
+    persist scope decisions into the owner's sessions (and legacy ones) but not
+    a teammate's. Since 2026-10-04 Relay no longer presents it with auth on: it
+    writes with the key of the member that owns the scope session
+    (THREAT-MODEL §5.14). This test pins Bridge's side of that contract."""
     relay = _identity(OWNER, "credential-relay", scopes=["session:write"])
 
     _configure(mock_redis, {LEGACY_SESSION_ID: LEGACY_META})

@@ -4,6 +4,22 @@
 > session. This content is reference and decision history: read it when you are
 > working on this area, not on every task. Nothing was reworded in the move.
 
+## Who owns what (Relay, since 2026-10-04)
+Every Relay record that belongs to someone records the **verified** principal that wrote it — `owner_workspace` / `owner_member` from the key the auth middleware validated (`relay/app/principal.py`) — and every read or mutation of it checks that principal. `agent_id`, `from_id`, `sender`, `author` and `X-Agent-Id` are display / routing labels and never a gate. Before this, Bob's key could read Alice's DMs (`relay_get_dm(agent_id="alice")`), send DMs and post as her, release or heartbeat her lease, and deregister her presence (THREAT-MODEL §5.14).
+
+| Record | Who may act on it |
+|---|---|
+| Presence row (`nr:presence:{label}`) | Re-register / heartbeat / deregister: the owning member. `DELETE /presence/{label}`: the owner or an admin key (the dashboard). Reads stay workspace-visible. |
+| Label binding | A presence row binds its label to its member: nobody else may register it, or send DMs / post bulletins / broadcast under it (an admin key may). |
+| DM | `to_member` = the member the recipient label was bound to **at send time**; readable (and markable read) by that member and by an admin key. A DM to an unbound label (`dashboard`, an offline agent with no row) or written before this change is readable by the deployment owner alone. Each DM carries the verified sender as `by`. |
+| Lease / claim | Release and heartbeat need the acquiring member **and** the holder label **and** (leases) the fencing token. A token is a staleness guard, not a credential — `relay_lease_status` hands it to anyone. |
+| Bulletin / channel message | Workspace-visible by design; each carries the verified author as `by`. |
+| Scope session | Created-by member owns it: post screens, poll (`scope_ask`/`scope_check`), complete. Read and answer: the owner or an admin key. Other members get "not found". |
+
+**Legacy records** (no owner fields — everything written before the upgrade) belong to the deployment owner member alone, the policy Bridge uses (`session_owned_by`): a teammate's in-flight lease or claim is releasable only by the owner until its TTL expires, and pre-upgrade DMs are owner-only. **Presence is the deliberate exception:** rows never expire, so strict owner-only would freeze every teammate's presence on upgrade; instead the next verified writer (register or heartbeat) adopts an unbound row. Residual: a teammate could adopt another member's label before that member's agent next heartbeats — it exposes no stored data (older DMs stay owner-only) and the real owner's next register is refused loudly, so an admin removes the row from the dashboard.
+
+**Auth disabled:** every caller is the anonymous deployment owner and none of this is enforced — personal mode behaves exactly as before. **Auth enabled with no attached identity:** every member-bound tool and route refuses (`status: "unauthorized"` / 401). **Migration:** none — the Redis keys are unchanged; owner fields are added to new and refreshed records. Guards: `relay/tests/test_principal_binding_mcp.py`, `test_principal_binding_rest.py`, `test_principal_binding_scope.py`.
+
 ## Fencing Token Leases (Relay)
 Upgrades claims to leases with monotonic fencing tokens, heartbeat extension, and wait queues.
 
@@ -30,12 +46,12 @@ Default-on scope-clarification sessions (SP2). Sessions and screens live in Rela
 
 **MCP Tools:** `scope_start`, `scope_ask` (bounded long-poll, ~24s per call), `scope_post` (async), `scope_check`, `scope_complete`. `scope_answer` is deliberately not an MCP tool — answering is a human act, REST/dashboard only.
 **REST Endpoints (on Relay :8050):** `POST /scope/sessions`, `GET /scope/sessions?status=active`, `GET /scope/sessions/{scope_id}`, `POST /scope/sessions/{scope_id}/screens`, `POST /scope/sessions/{scope_id}/screens/{screen_id}/answer`, `GET /scope/sessions/{scope_id}/events?since=`. Scope-gated `relay:read`/`relay:write` via a new Starlette-level `require_scope_asgi` helper in `auth/asgi.py` (the existing FastAPI `require_scope` can't run on FastMCP's `@mcp.custom_route` handlers).
-**REST Endpoints (on Bridge :8070):** `POST /sessions/{agent_id}/context` — REST equivalent of `ctx_update`, used by Relay to persist decisions for `origin: "mcp"` sessions. This Relay→Bridge persistence requires `NR_FIREKEEP_API_KEY` to be set to a key with `session:write` scope when `AUTH_ENABLED=true`; this key currently must be provisioned manually (SP1a's automated key-bootstrap doesn't yet issue one for Relay→Bridge calls — a known follow-up, not solved by this fix).
+**REST Endpoints (on Bridge :8070):** `POST /sessions/{agent_id}/context` — REST equivalent of `ctx_update`, used by Relay to persist decisions for `origin: "mcp"` sessions. **Since 2026-10-04 Relay presents the key of a principal that owns the scope session**, so Bridge authorizes the write against the member whose session it is: the answerer's own `X-API-Key` when the answerer is the owner; otherwise (the dashboard answering a teammate's screen) the answer is stored with `bridge: "deferred"` and written with the owner's key the next time the owner's agent calls `scope_ask` or `scope_check` (once per screen — a `nr:scope:persisted:{scope_id}:{screen_id}` `SET NX` marker; best-effort, never retried, like the answer-time write). Before, Relay wrote with `RELAY_INTERNAL_API_KEY` — the deployment owner's member — for whatever label the session named, so since Bridge bound sessions to members every teammate's decision was refused. `NR_FIREKEEP_API_KEY` (`RELAY_INTERNAL_API_KEY`) is now presented only with `AUTH_ENABLED=false`, where Bridge does not check keys; it is still minted by `deploy/bootstrap-keys.sh` and is a candidate for retirement.
 **Dashboard:** Scope tab — lists active sessions, answers screens.
 **Not yet built (Phase B, blocked on SP1's `client/` kit):** local companion (CLI + browser page), PreToolUse hook gate on `AskUserQuestion`, CLAUDE.md/kiro instruction-layer wiring, sandboxed embed (mermaid/html) rendering. Until Phase B ships, FirekeepScope is opt-in (any MCP-capable agent can call the tools above) rather than default-on.
 
 ## Direct Messages (Relay)
-Agent-to-agent and dashboard-to-agent messaging. Messages stored in Redis DB 5 with 24h TTL. Delivered via poll hook or dashboard DM section.
+Agent-to-agent and dashboard-to-agent messaging. Messages stored in Redis DB 5 with 24h TTL. Delivered via poll hook or dashboard DM section. An inbox read returns only the messages addressed to the caller's member (see "Who owns what" above); the dashboard's admin key reads every inbox. To reach the dashboard, an agent DMs the label `dashboard` (unbound, so owner/admin-only).
 
 **MCP Tools:** `relay_send_dm`, `relay_get_dm` (default limit=20)
 **REST Endpoints (on Relay :8050):** `POST /dm/{agent_id}`, `GET /dm/{agent_id}`, `POST /dm/{agent_id}/read`

@@ -509,11 +509,11 @@ workers. Details: `docs/guides/bridge-context-and-briefing.md` "Session
 ownership".
 
 **OPEN:**
-- Relay takes a scope session's target `agent_id` from the request body and
-  writes into Bridge with its owner-member service key. Bridge now refuses
-  those writes for any session the owner does not own — teammates'
-  `origin:"mcp"` scope decisions stop persisting — until Relay binds the
-  initiating principal.
+- ~~Relay takes a scope session's target `agent_id` from the request body and
+  writes into Bridge with its owner-member service key, so teammates'
+  `origin:"mcp"` scope decisions stop persisting.~~ Fixed 2026-10-04 (§5.14):
+  scope sessions are owned by the verified member and Relay writes decisions
+  with the owning member's key.
 - Bridge's label pointer (`nb:active:{agent_id}`) is still shared across
   members: a label held by one member's live session is refused to another
   (availability, not confidentiality).
@@ -767,6 +767,64 @@ briefing's quality/discipline sections remain workspace-wide aggregates (no sess
 id, grade or event). Pre-change events and evals are unattributed until they age out
 (30 days).
 
+### 5.14 Relay: labels are not principals (2026-10-04)
+
+**Mitigated 2026-10-04.** Every Relay tool and route took identity from an
+argument — `agent_id`, `from_id`, `sender`, `author`, the path's `agent_id` — so
+any valid key could read another member's DMs (`relay_get_dm(agent_id="alice")`,
+`GET /dm/alice`), mark them read, send DMs and post bulletins or broadcasts as
+her, release or heartbeat her lease or claim (the fencing token is returned by
+`relay_lease_status` to anyone), overwrite or deregister her presence, and post
+into, poll or complete her FirekeepScope sessions.
+
+What changed (`relay/app/principal.py`). Each record now carries the verified
+`owner_workspace` / `owner_member` of the key that wrote it, and every read or
+mutation checks the verified caller: leases and claims need the acquiring
+member (inside the Lua script, atomically) as well as the holder label and
+token; presence rows are re-registered, refreshed and removed only by their
+member; a presence row binds its label, so nobody else may send DMs, post or
+broadcast under it; a DM records the member its recipient label was bound to
+**when it was sent**, and only that member reads it; scope sessions belong to
+their creator. DMs, bulletins and channel messages record the verified sender
+as `by`. The dashboard's `["*"]` key reads every inbox, removes any presence
+row and lists and answers every scope session in its workspace — it is the
+owner's admin surface. Legacy records (no owner) belong to the deployment owner
+alone; with auth disabled nothing is enforced and the box behaves as before.
+Guards: `relay/tests/test_principal_binding_mcp.py`,
+`test_principal_binding_rest.py`, `test_principal_binding_scope.py`.
+
+**Relay → Bridge confused deputy, closed.** Relay wrote a scope decision into
+Bridge with `RELAY_INTERNAL_API_KEY` — an owner-member service key — for
+whatever `agent_id` the scope session named. Since §5.9 Bridge refuses that for
+any session the owner does not own, so teammates' decisions silently stopped
+persisting. Relay now presents the key of a principal that **owns** the scope
+session: the answerer's own key when the answerer is the owner; otherwise the
+answer is marked deferred and written with the owner's own key when the
+owner's agent next collects it (`scope_ask` / `scope_check`). No deputy scope
+was added, and the relay key is never presented with auth on. This closes the
+first OPEN bullet of §5.9.
+
+**Residuals.**
+
+- **Owner-member service keys can act as the owner in Relay.** Every key
+  `deploy/bootstrap-keys.sh` mints carries the owner's `member_id`, and Relay's
+  MCP tools declare no scope, so a leaked `FIREKEEP_INTERNAL_KEY` reads the
+  owner's DMs and releases the owner's leases. **OPEN** until the member-bound
+  tools require `relay:read` / `relay:write`.
+- **Presence labels are first-come.** Unbound (pre-upgrade) presence rows are
+  adopted by their next verified writer, because strict owner-only would
+  freeze every teammate's presence — rows never expire. A teammate can adopt
+  another member's label in that window; no stored data is exposed (older DMs
+  stay owner-only) and the real owner's next register is refused loudly.
+- **A DM to an unbound label is owner-only.** A message sent while its
+  recipient has no presence row reaches only the deployment owner (and the
+  dashboard), never the intended teammate.
+- **Single-workspace reads.** Presence, bulletins and channel backlogs are not
+  filtered by workspace; they matter the day a second workspace shares a Relay.
+- **`RELAY_INTERNAL_API_KEY` is still minted** but is presented only with auth
+  off; retiring it touches bootstrap, compose, `.env.example` and the deploy
+  tests and is left as a follow-up.
+
 ## 6. Threats, ranked
 
 | # | Threat | State |
@@ -786,9 +844,10 @@ id, grade or event). Pre-change events and evals are unattributed until they age
 | 13 | A valid key of any scope deletes another member's data, approves its own skill, re-embeds the store, or reads teammates' recall queries | **Mitigated 2026-10-01** — scope + `memory_type` + workspace checks on `/skills/{id}`, `admin` for review decisions and re-embedding, member-scoped `/audit`, scopes declared on every core memory route (§5.10). Residuals: review decisions allowed on auth-disabled boxes, unattributed audit history hidden from members (the `GET /skills` / `/memory/contributors` workspace gap closed 2026-10-04, §5.10.1) |
 | 13a | A valid key lists other workspaces' skills, files skills or queues synthesis with any scope, or votes repeatedly — or on memory it cannot recall — to move recall ranking | **Mitigated 2026-10-04** — scopes on every `/skills` route, workspace-filtered skill and contributor listings, feedback confined to recallable points with one ballot per key, `reauthor_of` resolved as a skill in the caller's workspace, `admin` on `/admin/untagged-calls` (§5.10.1; contributors also honour member visibility, §5.12). OPEN: `/skill/evaluate` does not verify session ownership |
 | 14 | `GET /briefing?agent_id=<teammate>` reads a teammate's sessions and presence with the internal service key | **Mitigated 2026-10-01** — user-scoped sections present the caller's own key (§5.11) and Bridge filters `GET /sessions` by the verified owner member (§5.9) |
-| 15 | A teammate key reads or writes another member's sessions or member-private memory inside one workspace | **Partly mitigated (2026-10-01, 2026-10-04)** — Bridge recalls with the caller's key and gates every session path on workspace+member (§5.9); distillates are written for the session's verified owner (§5.12, row 16); `/memory/feedback` refuses a teammate's member-private memory and `/memory/contributors` honours visibility (§5.10.1, §5.12). OPEN: Relay's unbound scope-session `agent_id` (§5.9) |
+| 15 | A teammate key reads or writes another member's sessions or member-private memory inside one workspace | **Partly mitigated (2026-10-01, 2026-10-04)** — Bridge recalls with the caller's key and gates every session path on workspace+member (§5.9); distillates are written for the session's verified owner (§5.12, row 16); `/memory/feedback` refuses a teammate's member-private memory and `/memory/contributors` honours visibility (§5.10.1, §5.12). Relay's scope-session `agent_id` is now bound to the verified member and Relay writes decisions with the owner's key (§5.14, row 18) |
 | 16 | A memory's author is a self-asserted label; distillates of every member's sessions are attributed to the owner | **Mitigated 2026-10-04** — writes record the verified member and credential, contributors group by member inside the caller's workspace and visibility, and Bridge distils through the literal-scope `/memory/learn/delegated` naming the session's verified owner (§5.12; this closes row 15's "owner-attributed distillates"). Residuals: the one service key holding `memory:write:delegated` can name any active member; identical-text relearns name the latest writer |
 | 17 | A teammate key reads another member's replay timeline, events, context snapshots or evals | **Mitigated 2026-10-04** — every replay/eval read is filtered per event by the verified writer's stamp; unattributed history belongs to the deployment owner; service keys still compute all evals (§5.13). Residual: events can still be *written* into another member's session id and skew its in-process metrics |
+| 18 | A teammate key reads another member's Relay DMs, posts as her, or releases her leases; Relay writes scope decisions into Bridge as the owner | **Mitigated 2026-10-04** — every Relay record is owned by the verified member that wrote it and checked on read and mutation; scope decisions reach Bridge only with the owning member's key (§5.14). Residuals: owner-member service keys act as the owner in Relay until the tools declare `relay:*` scopes, first-come presence labels at upgrade |
 
 Threat 5 deserves emphasis because it is the one the product's own design creates:
 Firekeep exists to make agents act on stored memory. Anything that can write a
