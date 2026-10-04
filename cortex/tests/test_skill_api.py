@@ -397,7 +397,11 @@ def _filtering_scroll(points):
     of list_skills' status filter instead of just echoing back a fixed payload.
     """
     async def _scroll(*, scroll_filter, limit, **_kwargs):
-        conditions = {c.key: c.match.value for c in (scroll_filter.must or [])}
+        # Keyed conditions only: the nested workspace Filter (legacy points
+        # belong to the deployment workspace) is evaluated in
+        # test_cortex_authz_residuals.py, not by this fake.
+        conditions = {c.key: c.match.value for c in (scroll_filter.must or [])
+                      if hasattr(c, "key")}
         matched = [
             p for p in points
             if all((p.payload or {}).get(k) == v for k, v in conditions.items())
@@ -979,7 +983,8 @@ def _scroll_filter_must(mock_vector):
     call = mock_vector._client.scroll.call_args or mock_vector._client.search.call_args
     kw = call.kwargs
     flt = kw.get("scroll_filter") or kw.get("query_filter")
-    return list(flt.must)
+    # Keyed conditions only (the nested workspace Filter has no `.key`).
+    return [c for c in flt.must if hasattr(c, "key")]
 
 
 def test_status_recallable_matches_active_and_trial(mock_vector, mock_settings):

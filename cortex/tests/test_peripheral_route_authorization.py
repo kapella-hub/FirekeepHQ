@@ -130,6 +130,9 @@ def _embedding_app():
         (_main_app, "/memory/contributors", "GET", {"memory:read", "admin"}),
         (_main_app, "/memory/handoff", "POST", {"memory:read", "admin"}),
         (_streaming_app, "/memory/recall/stream", "POST", {"memory:read", "admin"}),
+        (_skills_app, "/skills", "GET", {"memory:read", "admin"}),
+        (_skills_app, "/skills", "POST", {"memory:write", "admin"}),
+        (_skills_app, "/skill/evaluate", "POST", {"eval:write", "admin"}),
         (_skills_app, "/skills/{skill_id}", "GET", {"memory:read", "admin"}),
         (_skills_app, "/skills/{skill_id}", "PATCH", {"memory:write", "admin"}),
         (_skills_app, "/skills/{skill_id}", "DELETE", {"memory:write", "admin"}),
@@ -153,6 +156,14 @@ def test_every_embedding_admin_route_is_scoped():
     assert routes, "found no routes -- the walk is broken, not the gate"
     for route in routes:
         assert _required_scope_sets(route), f"{route.path} declares no scope"
+
+
+def test_every_skills_route_is_scoped():
+    """GET/POST /skills and /skill/evaluate shipped ungated until 2026-10-04."""
+    routes = list(_api_routes(_skills_app().routes))
+    assert len(routes) >= 6, "found too few routes -- the walk is broken, not the gate"
+    for route in routes:
+        assert _required_scope_sets(route), f"{route.methods} {route.path} declares no scope"
 
 
 def test_reembed_refuses_anonymous_when_auth_is_disabled(monkeypatch):

@@ -13,6 +13,7 @@ from qdrant_client.models import (
 
 from app.config import get_settings, Settings
 from app.db.vector import VectorClient
+from app.db.visibility import workspace_condition
 from app.migration_gate import require_not_frozen
 from app.skills.search import search_skill_points
 from app.models import (
@@ -44,6 +45,10 @@ SEMANTIC_PATCH_FIELDS = ("content", "trigger", "symptoms")
 # route it could always reach.
 _skill_write = require_any_scope("memory:write", "admin")
 _skill_read = require_any_scope("memory:read", "admin")
+# POST /skill/evaluate queues a session for scoring + synthesis. It rides the
+# same ctx_complete_session path as POST /evals/sessions/{id}/compute (bridge
+# sends the caller's own key to both), so it takes the same gate.
+_skill_evaluate = require_any_scope("eval:write", "admin")
 
 # PATCH fields that record a REVIEW decision -- what the dashboard's review
 # queue sends, and nothing else does. An agent key may author and refine a
@@ -129,7 +134,8 @@ def create_skills_router(
 
     from app.main import get_vector  # imported here to avoid circular at module load
 
-    @router.post("/skill/evaluate", status_code=202)
+    @router.post("/skill/evaluate", status_code=202,
+                 dependencies=[Depends(_skill_evaluate)])
     async def evaluate_session(
         req: SkillEvaluateRequest,
         background: BackgroundTasks,
@@ -152,6 +158,7 @@ def create_skills_router(
         stale: bool | None = None,
         limit: int = 50,
         record_recall: bool = False,
+        identity: dict = Depends(_skill_read),
         vector: VectorClient = Depends(get_vector),
     ):
         settings = settings_fn()
@@ -170,6 +177,9 @@ def create_skills_router(
         must = [
             FieldCondition(key="memory_type", match=MatchValue(value="skill")),
             status_cond,
+            # Tenancy: the caller's workspace only (legacy = the deployment's),
+            # the rule _load_owned_skill applies to a single id.
+            workspace_condition(identity.get("workspace_id") or ""),
         ]
         if project:
             must.append(FieldCondition(key="project", match=MatchValue(value=project.lower())))
@@ -249,7 +259,7 @@ def create_skills_router(
         return _point_to_response(point)
 
     @router.post("/skills", response_model=SkillResponse, status_code=201,
-                dependencies=[Depends(require_not_frozen)])
+                dependencies=[Depends(_skill_write), Depends(require_not_frozen)])
     async def create_skill(
         req: SkillRequest,
         request: Request,
@@ -301,15 +311,18 @@ def create_skills_router(
         if req.reauthor_of:
             # The original must exist and belong to the caller's workspace — a
             # Night Shift worker enrolled elsewhere fails here, visibly, instead of
-            # drafting across the tenancy boundary (spec decision 6).
-            original = await vector._client.retrieve(
-                collection_name=settings.QDRANT_COLLECTION, ids=[req.reauthor_of],
-                with_payload=True, with_vectors=False,
-            )
-            orig_ws = ((original[0].payload or {}).get("workspace_id") if original else None)
-            if not original or (orig_ws and principal.get("workspace_id")
-                                and orig_ws != principal["workspace_id"]):
-                raise HTTPException(status_code=404, detail="reauthor_of skill not found")
+            # drafting across the tenancy boundary (spec decision 6). Same
+            # resolver as GET/PATCH/DELETE /skills/{id}: a point that is not a
+            # skill, or an unattributed one outside the deployment workspace,
+            # is 404 -- the bare retrieve here accepted both.
+            try:
+                await _load_owned_skill(vector, settings, req.reauthor_of, principal)
+            except HTTPException as exc:
+                if exc.status_code != 404:
+                    raise
+                # Keep the documented wire text (fleet-as-gpu plan, Task 8).
+                raise HTTPException(
+                    status_code=404, detail="reauthor_of skill not found") from exc
             payload["reauthor_of"] = req.reauthor_of
         if req.origin_job:
             payload["origin_job"] = req.origin_job
