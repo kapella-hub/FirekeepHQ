@@ -44,7 +44,14 @@ set -euo pipefail
 #      POST /auth/keys (create_key rejects it outright). docker-compose.yml
 #      wires it to ONLY the bridge service (NB_FIREKEEP_API_KEY:
 #      ${FIREKEEP_BRIDGE_KEY:-}) and blanks it explicitly in every other
-#      env_file: .env service. Plaintext -> .env.
+#      env_file: .env service. memory:write:delegated (2026-10-04) is
+#      SERVICE-ONLY too: Bridge's background distiller writes each session's
+#      distillate through POST /memory/learn/delegated, naming the session's
+#      verified owner -- without it every teammate's distillate was attributed
+#      to the deployment owner this key is minted as. Cortex matches it
+#      literally ("*" keys do not pass). A key minted before it existed gains it
+#      through ensure_env_key's scope reconciliation (update.sh); until then,
+#      with auth enabled, distillation 403s and retries. Plaintext -> .env.
 #   5. Admin key — the owner's key. Scopes: ["*"]. Plaintext printed ONCE,
 #      never written to disk.
 #
@@ -251,7 +258,7 @@ fi
 ensure_env_key FIREKEEP_INTERNAL_KEY  firekeep-internal  '["memory:write","session:read","eval:read","eval:write","session:read:workspace"]'
 ensure_env_key DASHBOARD_API_KEY firekeep-dashboard '["*"]'
 ensure_env_key RELAY_INTERNAL_API_KEY firekeep-relay '["session:write"]'
-ensure_env_key FIREKEEP_BRIDGE_KEY firekeep-bridge '["memory:read","memory:write","session:read","eval:read","eval:write","eval:grade"]'
+ensure_env_key FIREKEEP_BRIDGE_KEY firekeep-bridge '["memory:read","memory:write","session:read","eval:read","eval:write","eval:grade","memory:write:delegated"]'
 
 # --- 5: owner admin key (printed once, never stored) -------------------------
 #

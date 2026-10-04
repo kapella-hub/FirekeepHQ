@@ -328,6 +328,7 @@ class SessionManager:
         instr_gateway: str | None = None,
         owner_member: str | None = None,
         owner_workspace: str | None = None,
+        owner_credential: str | None = None,
         caller: Caller | None = None,
     ) -> dict[str, str]:
         """Create a session and make it ``agent_id``'s active one.
@@ -388,6 +389,11 @@ class SessionManager:
             # Same write-once contract as owner_member (2026-10-01, F3): the
             # verified workspace, so an ownership match is workspace+member.
             "owner_workspace": owner_workspace or "",
+            # Same write-once contract (2026-10-04): the verified credential the
+            # session was started through. The distiller names it, beside
+            # owner_member, when it writes the session's distillate FOR its
+            # owner (POST /memory/learn/delegated); Cortex re-verifies it.
+            "owner_credential": owner_credential or "",
             # Beside owner_member: same "" absent-default precedent as every
             # other optional meta field (Redis hashes cannot store None).
             "experiment_group": experiment_group or "",

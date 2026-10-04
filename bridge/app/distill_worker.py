@@ -218,7 +218,10 @@ async def process_queue_once(redis: aioredis.Redis, settings: Settings) -> int:
             succeeded += 1
         else:
             attempts += 1
-            if attempts >= MAX_ATTEMPTS:
+            # A failure the distiller marks permanent (an owner that cannot be
+            # established -- distiller.py) cannot succeed on retry: park it in
+            # the DLQ now instead of burning MAX_ATTEMPTS backoff cycles.
+            if attempts >= MAX_ATTEMPTS or result.get("permanent"):
                 await redis.lpush(
                     DLQ_KEY,
                     json.dumps({

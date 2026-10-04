@@ -172,6 +172,17 @@ def _verified_member_id() -> str | None:
         return None
 
 
+def _verified_credential_id() -> str | None:
+    """The authenticated credential behind this request, or None when
+    unknowable -- recorded at session start so the session's distillate can be
+    attributed to it later (``owner_credential``). Never a header value."""
+    try:
+        from auth.principal import principal_from_scope
+        return principal_from_scope(get_http_request().scope).get("credential_id")
+    except Exception:
+        return None
+
+
 def _auth_enabled() -> bool:
     from auth.config import get_auth_settings
 
@@ -553,6 +564,7 @@ async def ctx_start_session(
             instr_gateway=attribution.get("instr_gateway"),
             owner_member=owner_member,
             owner_workspace=caller.workspace_id if owner_member else None,
+            owner_credential=_verified_credential_id() if owner_member else None,
             # Guards the label pointer: never pause or repoint a session that
             # another member owns (F3, see SessionManager._guard_pointer).
             caller=caller,

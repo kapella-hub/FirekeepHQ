@@ -200,11 +200,37 @@ completion. It is also not the leak shape: it returns only a bool to Bridge, run
 detached, is called by the reaper with no caller at all, and the hint it carries
 is the stored grade `complete_session` returned after its ownership check.
 
-**Out of scope here, still service-keyed:** the distillation worker
-(`bridge/app/distiller.py`) runs after completion with no caller in context and
-writes with the service key, so a distillate is attributed to the owner member.
-Carrying the initiating member into that write needs a delegated-attribution
-contract with Cortex (see the threat model, §5.9).
+**Distillation writes FOR the session's owner (2026-10-04).** The distillation
+worker (`bridge/app/distiller.py`) runs after completion with no caller in
+context, so it cannot forward a live key; it still writes with the service key,
+but with auth enabled it posts to Cortex's `POST /memory/learn/delegated`
+naming the session's verified owner, so the distillate is attributed to the
+member who did the work, not the deployment owner the key is minted as:
+
+- `X-Firekeep-Delegated-Member-Id` = the session's `owner_member`, bound at
+  `ctx_start_session` from the authenticated principal. A LEGACY session (no
+  `owner_member`, `owner_workspace` or `owner_credential`) names the deployment
+  owner — the same rule `session_owned_by` applies, so that is the correct
+  attribution, not a fallback.
+- `X-Firekeep-Delegated-Credential-Id` = `owner_credential`, the verified
+  credential the session was started through (recorded write-once beside
+  `owner_member` since this change; absent on sessions started before it, and
+  never `anonymous`). Cortex re-verifies both against the auth store.
+- A session whose owner cannot be established — a workspace or credential bound
+  without a member, a malformed member, a workspace other than this
+  deployment's — is refused before any write with the permanent error
+  `owner_unverifiable`; the worker parks it in the distill DLQ at once instead
+  of retrying, and logs an ERROR. It is never written as the owner.
+- With auth disabled nothing changed: one principal, `POST /memory/learn`,
+  the same headers as before.
+
+The key needs the service-only `memory:write:delegated` (`bootstrap-keys.sh`
+declares it on `FIREKEEP_BRIDGE_KEY`; `update.sh` reconciles it onto an existing
+key). Until a deployment has run that, with auth enabled every distillation
+gets 403, retries with backoff and lands in the DLQ — requeue it after
+`update.sh` (`POST /ops/distill-dlq/requeue`). Guards:
+`bridge/tests/test_delegated_distillation.py`,
+`cortex/tests/test_delegated_memory_attribution.py`.
 
 Guards: `bridge/tests/test_mcp_session_security.py` — including an end-to-end
 case where a fake Cortex returns the owner's member-private chunk only to an
