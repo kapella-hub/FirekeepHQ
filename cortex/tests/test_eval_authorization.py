@@ -83,6 +83,11 @@ def _client(application: FastAPI) -> httpx.AsyncClient:
 
 
 async def _member_key(auth_redis, device: str, member_id: str) -> str:
+    # validate_key refuses a credential whose member row is missing or not
+    # active (2026-10-04); member invite acceptance writes it in production.
+    await auth_redis.hset(f"auth:member:{member_id}", mapping={
+        "member_id": member_id, "workspace_id": WS, "role": "member", "status": "active",
+    })
     minted = await keys.create_key(device, sorted(keys.ENROLLABLE_SCOPES))
     await auth_redis.hset(
         f"{keys._KEY_PREFIX}{keys._hash_key(minted['api_key'])}",

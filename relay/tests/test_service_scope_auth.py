@@ -56,6 +56,11 @@ def _tool_endpoint(call):
 async def client(monkeypatch, redis):
     enable_auth(monkeypatch)
     auth_redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    # The workspace + active owner member row deploy/bootstrap-keys.sh and the
+    # cortex boot write: validate_key refuses a credential whose member row is
+    # missing (credential validation integrity, 2026-10-04).
+    from auth.workspace import ensure_workspace
+    await ensure_workspace(auth_redis)
     now = datetime.now(timezone.utc)
     for key, cred, scopes in (
         (INTERNAL_KEY, "cred-internal", INTERNAL_SCOPES),
