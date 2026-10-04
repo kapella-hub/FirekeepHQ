@@ -16,12 +16,14 @@ import sys
 import sysconfig
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import Any
 
-from firekeep_client import dexes, jobobject, report
+from firekeep_client import childenv, dexes, jobobject, report
 from firekeep_client.adapters.base import (
     CHAT_INSTRUCTIONS,
     CHAT_INSTRUCTIONS_HASH,
@@ -180,6 +182,11 @@ def _console_script(name: str) -> str:
 class Backend:
     name: str
     command: list[str]
+    # Builds the child's environment at spawn (childenv.backend_environment).
+    # None inherits this process's environment — only for a Backend constructed
+    # directly; every backend the Gateway builds has one. repr=False keeps the
+    # factory (and nothing secret) out of status/debug output.
+    env_factory: Callable[[], dict[str, str]] | None = field(default=None, repr=False)
     process: subprocess.Popen | None = None
     messages: queue.Queue = field(default_factory=queue.Queue)
     request_id: int = 0
@@ -210,6 +217,7 @@ class Backend:
             text=True,
             encoding="utf-8",
             bufsize=1,
+            env=self.env_factory() if self.env_factory is not None else None,
         )
         threading.Thread(target=self._reader, daemon=True).start()
         self.request(
@@ -308,14 +316,23 @@ class Gateway:
         # cannot be seeded simply mounts no dexes.
         dexes.ensure_migrated()
         shim = _console_script("firekeep-shim")
+        # Every child gets an allowlisted environment, never this process's
+        # whole one: a gateway on a CI runner or the server-side ChatGPT tunnel
+        # can hold server service keys, and no backend may inherit them. Same
+        # launch path as before (a plain Popen inside the gateway's kill-on-close
+        # job — backends must die with the gateway). See childenv.py.
         self.backends = [
-            *(Backend(name, [shim, "--service", name]) for name in REMOTE_SERVICES),
-            *(Backend(name, [_console_script(f"firekeep-{name}")])
+            *(Backend(name, [shim, "--service", name],
+                      env_factory=partial(childenv.backend_environment, name))
+              for name in REMOTE_SERVICES),
+            *(Backend(name, [_console_script(f"firekeep-{name}")],
+                      env_factory=partial(childenv.backend_environment, name))
               for name in CORE_LOCAL_SERVERS),
             # Only dexes that HAVE an MCP server to mount. An ingest-client dex
             # (docdex) is registered for lifecycle, doctor and its sync trigger,
             # and contributes no backend here.
-            *(Backend(m.name, [_console_script(m.console_script)])
+            *(Backend(m.name, [_console_script(m.console_script)],
+                      env_factory=partial(childenv.backend_environment, m.name))
               for m in dexes.registered() if m.kind == "mcp-stdio"),
         ]
         self.protocol_version = "2025-03-26"

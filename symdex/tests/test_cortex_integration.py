@@ -162,33 +162,92 @@ class TestReviewWithHistory:
         assert result["_meta"]["cortex_available"] is False
 
 
-class TestInternalKeyInjection:
-    """Symdex->Cortex calls carry X-API-Key from FIREKEEP_INTERNAL_KEY (SP1b §11)."""
+class TestClientKeyInjection:
+    """Symdex uses only the enrolled member's credential, never a service key.
 
-    async def test_injects_internal_key_header(self, monkeypatch):
+    The gateway passes the member's key as FIREKEEP_CLIENT_API_KEY in the
+    symdex child's environment (client/firekeep_client/childenv.py). Symdex is
+    client-side only; no legitimate caller of it holds FIREKEEP_INTERNAL_KEY,
+    so that name is not read at all — an ambient copy on a dev box, CI runner
+    or server-side gateway must not turn symdex into a service-key holder.
+    """
+
+    async def test_injects_client_key_header(self, monkeypatch):
         monkeypatch.setenv("FIREKEEP_CORTEX_URL", "http://cortex:8000")
-        monkeypatch.setenv("FIREKEEP_INTERNAL_KEY", "nxs_secret")
+        monkeypatch.setenv("FIREKEEP_CLIENT_API_KEY", "nxs_alice")
+        monkeypatch.setenv("FIREKEEP_INTERNAL_KEY", "nxs_server_internal")
         from firekeep_symdex.cortex.client import CortexClient
         client = CortexClient()
         http = client._get_client()
         # httpx.Headers lookup is case-insensitive
-        assert http.headers.get("X-API-Key") == "nxs_secret"
+        assert http.headers.get("X-API-Key") == "nxs_alice"
         await client.close()
 
-    async def test_no_key_header_when_unset(self, monkeypatch):
+    async def test_internal_key_is_never_used(self, monkeypatch):
         monkeypatch.setenv("FIREKEEP_CORTEX_URL", "http://cortex:8000")
-        monkeypatch.delenv("FIREKEEP_INTERNAL_KEY", raising=False)
+        monkeypatch.delenv("FIREKEEP_CLIENT_API_KEY", raising=False)
+        monkeypatch.setenv("FIREKEEP_INTERNAL_KEY", "nxs_server_internal")
         from firekeep_symdex.cortex.client import CortexClient
         client = CortexClient()
         http = client._get_client()
         assert "x-api-key" not in http.headers  # case-insensitive membership
         await client.close()
 
-    async def test_explicit_internal_key_overrides_env(self, monkeypatch):
+    async def test_no_key_header_when_unset(self, monkeypatch):
         monkeypatch.setenv("FIREKEEP_CORTEX_URL", "http://cortex:8000")
-        monkeypatch.setenv("FIREKEEP_INTERNAL_KEY", "nxs_env")
+        monkeypatch.delenv("FIREKEEP_CLIENT_API_KEY", raising=False)
+        monkeypatch.delenv("FIREKEEP_INTERNAL_KEY", raising=False)
         from firekeep_symdex.cortex.client import CortexClient
-        client = CortexClient(internal_key="nxs_explicit")
+        client = CortexClient()
+        http = client._get_client()
+        assert "x-api-key" not in http.headers
+        await client.close()
+
+    async def test_explicit_client_key_overrides_env(self, monkeypatch):
+        monkeypatch.setenv("FIREKEEP_CORTEX_URL", "http://cortex:8000")
+        monkeypatch.setenv("FIREKEEP_CLIENT_API_KEY", "nxs_env")
+        monkeypatch.setenv("FIREKEEP_INTERNAL_KEY", "nxs_server_internal")
+        from firekeep_symdex.cortex.client import CortexClient
+        client = CortexClient(api_key="nxs_explicit")
         http = client._get_client()
         assert http.headers.get("X-API-Key") == "nxs_explicit"
+        await client.close()
+
+
+class TestCortexTrustAnchor:
+    """An https Keep behind an internal CA: the gateway passes the configured
+    `ca_path` as FIREKEEP_CORTEX_CA. It anchors the Cortex client only — never
+    SSL_CERT_FILE, which would re-anchor symdex's other https calls too."""
+
+    def test_default_verification_without_a_ca(self, monkeypatch):
+        monkeypatch.delenv("FIREKEEP_CORTEX_CA", raising=False)
+        from firekeep_symdex.cortex.client import _tls_verify
+        assert _tls_verify(None) is True
+
+    def test_ca_file_becomes_an_ssl_context(self):
+        import ssl
+
+        import certifi
+        from firekeep_symdex.cortex.client import _tls_verify
+        verify = _tls_verify(certifi.where())
+        assert isinstance(verify, ssl.SSLContext)
+        assert verify.verify_mode == ssl.CERT_REQUIRED
+        assert verify.get_ca_certs()
+
+    def test_os_trust_sentinel_still_verifies(self):
+        import ssl
+
+        from firekeep_symdex.cortex.client import _tls_verify
+        verify = _tls_verify("os")
+        assert verify is True or (
+            isinstance(verify, ssl.SSLContext) and verify.verify_mode == ssl.CERT_REQUIRED
+        )
+
+    async def test_unreadable_ca_is_an_error_result_not_a_crash(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("FIREKEEP_CORTEX_URL", "https://cortex.example")
+        monkeypatch.setenv("FIREKEEP_CORTEX_CA", str(tmp_path / "missing.pem"))
+        from firekeep_symdex.cortex.client import CortexClient
+        client = CortexClient()
+        result = await client.recall("anything")
+        assert "error" in result
         await client.close()

@@ -3,7 +3,8 @@
 import atexit
 import logging
 import os
-from typing import Any, Optional
+import ssl
+from typing import Any, Optional, Union
 
 import httpx
 
@@ -16,19 +17,58 @@ _DISABLED_RESPONSE = {
 }
 
 
+def _tls_verify(ca: Optional[str]) -> Union[bool, ssl.SSLContext]:
+    """The ``verify`` for the Cortex connection only.
+
+    ``ca`` is the Keep's configured trust anchor as the gateway passes it in
+    ``FIREKEEP_CORTEX_CA``: a CA file path, or ``"os"`` for the operating-system
+    trust store (the client kit's ``ca_path = os``). Unset means httpx's default
+    (certifi). Deliberately not ``SSL_CERT_FILE``: that would re-anchor every
+    other https call symdex makes (GitHub, LLM providers) on an internal CA.
+    A bad path raises here, inside the request's error handling, so it surfaces
+    as an error result rather than a crash at import or construction.
+    """
+    if not ca:
+        return True
+    if ca.strip().lower() == "os":
+        try:
+            import truststore  # present in the client-kit venv symdex runs in
+        except ImportError:
+            return True
+        return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    return ssl.create_default_context(cafile=ca)
+
+
 class CortexClient:
     """Thin async client for the FirekeepCortex REST API.
 
-    Reads ``FIREKEEP_CORTEX_URL`` from the environment.  When the variable is
-    empty or unset every method returns a *disabled* status dict instead of
-    raising — callers never need to guard against import or connection errors.
+    Reads ``FIREKEEP_CORTEX_URL``, the enrolled member's
+    ``FIREKEEP_CLIENT_API_KEY`` and the optional ``FIREKEEP_CORTEX_CA`` from its
+    environment. Under Firekeep the gateway resolves all three from the active
+    ``~/.firekeep/config`` and passes them to the symdex child explicitly
+    (client/firekeep_client/childenv.py). When the URL is empty or unset every
+    method returns a *disabled* status dict instead of raising — callers never
+    need to guard against import or connection errors.
+
+    ``FIREKEEP_INTERNAL_KEY`` is never read. Symdex is client-side only and no
+    legitimate caller of it holds the server's service key; an ambient copy in
+    a developer shell, a CI runner or a server-side gateway must not make
+    symdex's writes land as the service instead of the member.
     """
 
-    def __init__(self, base_url: Optional[str] = None, internal_key: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        base_url: Optional[str] = None,
+        api_key: Optional[str] = None,
+        ca: Optional[str] = None,
+    ) -> None:
         self._base_url = (base_url or os.environ.get("FIREKEEP_CORTEX_URL", "")).rstrip("/")
-        # Internal service key for outbound calls under office AUTH_ENABLED=true.
-        # Bare env var (Symdex has no Settings prefix); unset on personal VPS.
-        self._internal_key = internal_key if internal_key is not None else (os.environ.get("FIREKEEP_INTERNAL_KEY") or None)
+        self._api_key = (
+            api_key
+            if api_key is not None
+            else (os.environ.get("FIREKEEP_CLIENT_API_KEY") or None)
+        )
+        self._ca = ca if ca is not None else (os.environ.get("FIREKEEP_CORTEX_CA") or None)
         self._client: Optional[httpx.AsyncClient] = None
 
     @property
@@ -43,11 +83,12 @@ class CortexClient:
     def _get_client(self) -> httpx.AsyncClient:
         """Lazily create the httpx async client."""
         if self._client is None:
-            headers = {"X-API-Key": self._internal_key} if self._internal_key else {}
+            headers = {"X-API-Key": self._api_key} if self._api_key else {}
             self._client = httpx.AsyncClient(
                 base_url=self._base_url,
                 timeout=httpx.Timeout(30.0, connect=5.0),
                 headers=headers,
+                verify=_tls_verify(self._ca),
             )
         return self._client
 
