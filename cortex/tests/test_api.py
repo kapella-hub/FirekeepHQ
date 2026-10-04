@@ -523,6 +523,24 @@ class TestMemoryFeedback:
             assert "comment" not in p  # comment body never leaves
             assert p["updated"] == 2
 
+    def test_feedback_receipt_carries_the_verified_principal(self, test_client, mock_vector):
+        """Replay reads are scoped per event (replay/authz.py): an unstamped
+        receipt would vanish from its own member's timeline. Auth is off in this
+        client, so the verified principal is the anonymous deployment owner."""
+        from auth.principal import deployment_owner_member_id, deployment_workspace_id
+
+        mock_vector.set_feedback = AsyncMock()
+        with patch("app.main._replay_emit", new_callable=AsyncMock) as mock_emit:
+            resp = test_client.post(
+                "/memory/feedback",
+                json={"memory_ids": ["m1"], "useful": True},
+                headers={"X-Session-Id": "sess-fb", "X-Member-Id": "member-spoofed"},
+            )
+        assert resp.status_code == 200
+        call = mock_emit.call_args
+        assert call.kwargs.get("workspace_id") == deployment_workspace_id()
+        assert call.kwargs.get("member_id") == deployment_owner_member_id()
+
 
 # ---------------------------------------------------------------------------
 # Session Context Propagation (X-Session-Id / X-Agent-Id → replay emit)

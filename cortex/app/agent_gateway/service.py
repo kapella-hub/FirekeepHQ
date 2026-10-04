@@ -250,6 +250,12 @@ class AgentGatewayService:
                 "target": req.action.target,
                 # Audit only (round 2): the cwd the client hook reported.
                 "cwd": getattr(req.action, "cwd", None),
+                # The PREDICTOR's verified principal: the reconcile (from
+                # record() or the sweeper) is filed under it, because
+                # action_after carries no member of its own. Empty on direct,
+                # unverified service calls -> the reconcile stays unattributed.
+                "workspace_id": verified_workspace,
+                "member_id": verified_member,
             }
             ttl = get_settings().AGENT_RECONCILE_DEADLINE_SECONDS
             try:
@@ -276,6 +282,9 @@ class AgentGatewayService:
                 event_type="agent.action.predict",
                 session_id=req.session_id,
                 agent_id=req.agent_id,
+                # Verified writer; replay reads are scoped per event.
+                workspace_id=verified_workspace or None,
+                member_id=verified_member or None,
                 payload={
                     "action_id": action_id,
                     "action": req.action.model_dump(),
@@ -383,6 +392,8 @@ class AgentGatewayService:
                 event_type="agent.action.reconcile",
                 session_id=session_id,
                 agent_id=(entry or {}).get("agent_id") or "",
+                workspace_id=(entry or {}).get("workspace_id") or None,
+                member_id=(entry or {}).get("member_id") or None,
                 payload={
                     "action_id": req.action_id,
                     "outcome": req.outcome.model_dump(),

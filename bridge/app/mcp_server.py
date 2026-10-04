@@ -333,6 +333,21 @@ async def _ensure_replay() -> None:
         logger.debug("Replay emitter init failed (non-critical): %s", exc)
 
 
+async def _owner_stamp(session_id: str, mgr=None) -> dict:
+    """The session owner's replay-emit kwargs (SessionManager.replay_owner),
+    or ``{}``. Replay reads are scoped per event (replay/authz.py); this is
+    what keeps a member's own Bridge events in its own timeline. Never
+    raises."""
+    try:
+        if mgr is None:
+            mgr = await _get_manager()
+        stamp = await mgr.replay_owner(session_id)
+    except Exception as exc:  # noqa: BLE001 — a stamp never costs the emit
+        logger.debug("replay owner lookup failed for %s: %s", session_id, exc)
+        return {}
+    return stamp if isinstance(stamp, dict) else {}
+
+
 async def _replay_emit(event_type: str, session_id: str, agent_id: str, payload: dict, **kwargs) -> None:
     """Emit a replay event. Never raises, never blocks."""
     try:
@@ -512,7 +527,8 @@ async def after_abandon(session_id: str, agent_id: str, *, reaped: bool = False)
     payload: dict = {"outcome": "abandoned", "distilled": False}
     if reaped:
         payload["reaped"] = True
-    await _replay_emit("session_end", session_id, agent_id, payload, outcome="partial")
+    await _replay_emit("session_end", session_id, agent_id, payload, outcome="partial",
+                       **await _owner_stamp(session_id))
 
     # Detached fire-and-forget (SP0 D5) — the caller must not wait on Cortex.
     _spawn_background(_trigger_eval(settings.FIREKEEP_API_URL, session_id))
@@ -591,7 +607,10 @@ async def ctx_start_session(
             "member_token": member_token(owner_member),
         }
         payload.update(attribution)  # only the headers that actually arrived
-        await _replay_emit("session_start", sid, agent_id, payload)
+        # The owner stamp on THIS event decides who may read the session's
+        # eval (replay.authz.session_owner).
+        await _replay_emit("session_start", sid, agent_id, payload,
+                           **await _owner_stamp(sid, mgr))
 
     # Prior art — pushed at the moment of intent, AFTER the session exists.
     # Ordering is the whole safety argument: `result` is already a created
@@ -685,6 +704,7 @@ async def ctx_update(
             "ctx_update", session_id, agent_id,
             {"category": category, "content_length": len(content), "key": key},
             context_ref=ctx_ref,
+            **await _owner_stamp(session_id, mgr),
         )
 
     # Proactive recall: fetch relevant memories for qualifying categories
@@ -942,7 +962,8 @@ async def ctx_complete_session(
         payload["task_result"] = authoritative_grade
         payload["task_result_source"] = authoritative_source
     await _replay_emit(
-        "session_end", sid, agent_id, payload, outcome=authoritative_grade)
+        "session_end", sid, agent_id, payload, outcome=authoritative_grade,
+        **await _owner_stamp(sid, mgr))
 
     # D1: distillation is enqueued by SessionManager.complete_session and
     # drained by the distill worker with retry/backoff. No inline distillation.
