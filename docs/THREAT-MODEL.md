@@ -519,9 +519,8 @@ ownership".
   (availability, not confidentiality).
 - Prior art's "in flight" line shows teammates' active-session goals inside one
   workspace, by design.
-- Bridge's distillation worker writes with the service key, so every distillate
-  is attributed to the owner member, not the member who did the work; a
-  delegated-attribution contract is needed to fix it honestly.
+- ~~Bridge's distillation worker writes with the service key, so every
+  distillate is attributed to the owner member.~~ Fixed 2026-10-04 (§5.12).
 
 ### 5.10 Authenticated is not authorized: Cortex route scopes
 
@@ -648,9 +647,25 @@ The service is still trusted to name the right member — the scope is minted on
 one service key only — so this narrows who can mis-attribute, it does not make
 mis-attribution impossible for that key's holder.
 
+**Fixed 2026-10-04 — distillates belong to the member who did the work.** Bridge's
+distiller wrote every session distillate with `FIREKEEP_BRIDGE_KEY`, minted as the
+deployment owner, so every teammate's distilled session history was the owner's
+(§5.9). It now writes through `/memory/learn/delegated`, naming the session's
+`owner_member` (and `owner_credential`), bound at `ctx_start_session` from the
+verified principal — the binding is recorded synchronously, while the member's
+own request is live, before any background work. Legacy unbound sessions belong to
+the deployment owner (the §5.9 rule); a session whose owner cannot be established
+is refused and parked in the DLQ, never written as the owner. Auth-disabled
+deployments are unchanged. `FIREKEEP_BRIDGE_KEY` gains `memory:write:delegated`
+(deploy migration: `update.sh` reconciles it in place).
+
 **Residuals:** re-learning identical text in one workspace updates one point, and
 it then names the latest writer's member under the first writer's label
-(`_merge_lifecycle`); graph nodes carry `member_id` but not the credential.
+(`_merge_lifecycle`); graph nodes carry `member_id` but not the credential; a
+holder of `FIREKEEP_BRIDGE_KEY` can attribute a write to any active member of its
+workspace — the scope narrows mis-attribution to that one key, it does not
+prevent it. Memory writes still carry no `visibility`, so a distillate is
+workspace-visible whoever it is attributed to (unchanged, by design).
 
 ## 6. Threats, ranked
 
@@ -671,6 +686,7 @@ it then names the latest writer's member under the first writer's label
 | 13 | A valid key of any scope deletes another member's data, approves its own skill, re-embeds the store, or reads teammates' recall queries | **Mitigated 2026-10-01** — scope + `memory_type` + workspace checks on `/skills/{id}`, `admin` for review decisions and re-embedding, member-scoped `/audit`, scopes declared on every core memory route (§5.10). Residuals: review decisions allowed on auth-disabled boxes, unattributed audit history hidden from members, `GET /skills` and `/memory/contributors` not workspace-filtered |
 | 14 | `GET /briefing?agent_id=<teammate>` reads a teammate's sessions and presence with the internal service key | **Mitigated 2026-10-01** — user-scoped sections present the caller's own key (§5.11) and Bridge filters `GET /sessions` by the verified owner member (§5.9) |
 | 15 | A teammate key reads or writes another member's sessions or member-private memory inside one workspace | **Partly mitigated (2026-10-01)** — Bridge recalls with the caller's key and gates every session path on workspace+member (§5.9); OPEN: Relay's unbound `agent_id`, owner-attributed distillates |
+| 16 | A memory's author is a self-asserted label; distillates of every member's sessions are attributed to the owner | **Mitigated 2026-10-04** — writes record the verified member and credential, contributors group by member inside the caller's workspace and visibility, and Bridge distils through the literal-scope `/memory/learn/delegated` naming the session's verified owner (§5.12; this closes row 15's "owner-attributed distillates"). Residuals: the one service key holding `memory:write:delegated` can name any active member; identical-text relearns name the latest writer |
 
 Threat 5 deserves emphasis because it is the one the product's own design creates:
 Firekeep exists to make agents act on stored memory. Anything that can write a

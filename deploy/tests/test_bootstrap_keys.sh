@@ -141,13 +141,13 @@ echo "$OUT3" | grep -q '\[RECONCILED\] FIREKEEP_BRIDGE_KEY scopes += memory:read
 echo "$OUT3" | grep -q '0 key(s) minted' || { echo "FAIL: reconciliation minted keys"; echo "$OUT3"; exit 1; }
 echo "$OUT3" | grep -qE 'nxs_[0-9a-f]{48}' && { echo "FAIL: reconciliation leaked a plaintext"; exit 1; }
 SCOPES3="$(docker exec "$CONTAINER" redis-cli -n 7 HGET "auth:key:${BRIDGE_HASH}" scopes)"
-for want in memory:read memory:write eval:grade relay:read; do
+for want in memory:read memory:write eval:grade memory:write:delegated relay:read; do
     echo "$SCOPES3" | grep -q "\"$want\"" || { echo "FAIL: reconciled scopes lost/missed $want: $SCOPES3"; exit 1; }
 done
 OUT4="$(bash deploy/bootstrap-keys.sh)"
 echo "$OUT4" | grep -q 'RECONCILED' && { echo "FAIL: reconciliation is not idempotent"; echo "$OUT4"; exit 1; }
 # Restore the canonical set so the layout check below sees the declared scopes.
-docker exec "$CONTAINER" redis-cli -n 7 HSET "auth:key:${BRIDGE_HASH}" scopes     '["memory:read","memory:write","session:read","eval:read","eval:write","eval:grade"]' > /dev/null
+docker exec "$CONTAINER" redis-cli -n 7 HSET "auth:key:${BRIDGE_HASH}" scopes     '["memory:read","memory:write","session:read","eval:read","eval:write","eval:grade","memory:write:delegated"]' > /dev/null
 
 # --- Layout check: the REAL validator accepts the bootstrapped key -----------
 "$PYTHON_BIN" - "$INTERNAL_KEY_1" "$RELAY_KEY_1" "$WORKSPACE_ID" "$OWNER_MEMBER_ID" "$BRIDGE_KEY_1" <<'PY'
@@ -192,6 +192,7 @@ async def main():
     assert "agent_id" not in bridge, bridge
     assert set(bridge["scopes"]) == {
         "memory:read", "memory:write", "session:read", "eval:read", "eval:write", "eval:grade",
+        "memory:write:delegated",
     }, bridge
     assert "admin" not in bridge["scopes"] and "*" not in bridge["scopes"], bridge
 

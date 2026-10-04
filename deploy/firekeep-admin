@@ -7,8 +7,8 @@ set -euo pipefail
 #   firekeep-admin keys create --agent NAME [--expires-days N]
 #   firekeep-admin keys revoke CREDENTIAL_ID
 
-# eval:grade is deliberately ABSENT here: it is SERVICE-ONLY
-# (auth/keys.py SERVICE_ONLY_SCOPES), minted exclusively by
+# eval:grade and memory:write:delegated are deliberately ABSENT here: they are
+# SERVICE-ONLY (auth/keys.py SERVICE_ONLY_SCOPES), minted exclusively by
 # deploy/bootstrap-keys.sh onto the dedicated FIREKEEP_BRIDGE_KEY credential,
 # and rejected outright by create_key if listed. This literal must equal
 # auth.keys.ENROLLABLE_SCOPES exactly (auth/tests/test_enrollable_scopes.py

@@ -13,6 +13,46 @@ from app.config import Settings
 
 logger = logging.getLogger(__name__)
 
+_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+_CREDENTIAL_ID_RE = re.compile(r"^[0-9a-f]{1,64}$")
+
+
+def _auth_enabled() -> bool:
+    from auth.config import get_auth_settings
+
+    return bool(get_auth_settings().ENABLED)
+
+
+def _session_owner(data: dict[str, Any]) -> tuple[str, str] | None:
+    """(member, credential) the session's distillate belongs to, or None.
+
+    ``owner_member``/``owner_workspace``/``owner_credential`` were written ONCE,
+    at ctx_start_session, from the verified principal (session.py). A session
+    with none of them is LEGACY and belongs to the deployment owner -- the rule
+    ``session_owned_by`` applies on every Bridge path, so attributing it to the
+    owner is the correct answer, not a fallback. Anything else that does not
+    name one verifiable member of this deployment's workspace is None: refuse,
+    never write it as the owner.
+    """
+    from auth.principal import deployment_owner_member_id, deployment_workspace_id
+
+    member = (data.get("owner_member") or "").strip()
+    workspace = (data.get("owner_workspace") or "").strip()
+    credential = (data.get("owner_credential") or "").strip()
+    if not member:
+        if workspace or credential:
+            return None  # bound to something, but to no member: corrupt
+        return deployment_owner_member_id(), ""
+    if not _ID_RE.fullmatch(member):
+        return None
+    if workspace and workspace != deployment_workspace_id():
+        return None
+    # "anonymous" (a session started while auth was off) and anything that is
+    # not a credential id is simply not sent; Cortex verifies whatever is.
+    if not _CREDENTIAL_ID_RE.fullmatch(credential):
+        credential = ""
+    return member, credential
+
 # Field length limits for Cortex payloads
 _MAX_FIELD_LEN = 5000
 _MAX_TAGS = 20
@@ -145,6 +185,15 @@ class Distiller:
         project (SP0 D2) so distillates are attributed instead of landing
         as agent_id="unknown". When the session declared no project, the
         field is omitted — never fabricated.
+
+        WHO the distillate belongs to (2026-10-04): with auth enabled it is
+        written through ``POST /memory/learn/delegated`` naming the session's
+        verified owner (``_session_owner``) -- this service key is minted as
+        the deployment owner, and a plain ``/memory/learn`` attributed every
+        teammate's session to the owner. An owner that cannot be established
+        returns a PERMANENT failure without any write (the worker parks it in
+        the DLQ). With auth disabled there is one principal and the request
+        is exactly what it always was.
         """
         payload = self._build_episodic_payload(data, outcome)
         # Fall back to the session data dict so callers that pass only the
@@ -164,9 +213,28 @@ class Distiller:
         if agent_id:
             headers["X-Agent-Id"] = agent_id
 
+        endpoint = "/memory/learn"
+        if _auth_enabled():
+            owner = _session_owner(data)
+            if owner is None:
+                logger.error(
+                    "Distillation refused for session %s: its owner cannot be "
+                    "established (owner_member=%r owner_workspace=%r); not "
+                    "writing it as the deployment owner",
+                    session_id or "unknown",
+                    data.get("owner_member"), data.get("owner_workspace"),
+                )
+                return {"status": "failed", "error": "owner_unverifiable",
+                        "permanent": True}
+            member, credential = owner
+            endpoint = "/memory/learn/delegated"
+            headers["X-Firekeep-Delegated-Member-Id"] = member
+            if credential:
+                headers["X-Firekeep-Delegated-Credential-Id"] = credential
+
         try:
             resp = await self._client.post(
-                f"{self._api_url}/memory/learn",
+                f"{self._api_url}{endpoint}",
                 json=payload,
                 headers=headers,
             )

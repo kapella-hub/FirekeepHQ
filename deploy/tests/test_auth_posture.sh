@@ -269,7 +269,7 @@ GOT="$(run_capture <<EOF
 [MINTED] FIREKEEP_INTERNAL_KEY  (agent_id=firekeep-internal scopes=["memory:write","session:read","eval:read","eval:write","session:read:workspace"])
 [MINTED] DASHBOARD_API_KEY  (agent_id=firekeep-dashboard scopes=["*"])
 [MINTED] RELAY_INTERNAL_API_KEY  (agent_id=firekeep-relay scopes=["session:write"])
-[MINTED] FIREKEEP_BRIDGE_KEY  (agent_id=firekeep-bridge scopes=["memory:read","memory:write","session:read","eval:read","eval:write","eval:grade"])
+[MINTED] FIREKEEP_BRIDGE_KEY  (agent_id=firekeep-bridge scopes=["memory:read","memory:write","session:read","eval:read","eval:write","eval:grade","memory:write:delegated"])
 
 ============================================================
   ADMIN API KEY — shown ONCE, not written to disk.
@@ -515,9 +515,11 @@ esac
 case "$BOOTSTRAP" in
     # memory:read (2026-10-01) is TRANSITIONAL: Bridge's prior-art/proactive
     # recall use this key until they forward the caller's (see bootstrap-keys.sh).
-    *'ensure_env_key FIREKEEP_BRIDGE_KEY firekeep-bridge '"'"'["memory:read","memory:write","session:read","eval:read","eval:write","eval:grade"]'"'"*)
-        pass "bridge key carries exactly the internal scopes plus memory:read and eval:grade" ;;
-    *) fail "bridge key carries exactly the internal scopes plus memory:read and eval:grade" ;;
+    # memory:write:delegated (2026-10-04): the distiller writes each session's
+    # distillate FOR its verified owner via POST /memory/learn/delegated.
+    *'ensure_env_key FIREKEEP_BRIDGE_KEY firekeep-bridge '"'"'["memory:read","memory:write","session:read","eval:read","eval:write","eval:grade","memory:write:delegated"]'"'"*)
+        pass "bridge key carries the internal scopes plus memory:read, eval:grade and memory:write:delegated" ;;
+    *) fail "bridge key carries the internal scopes plus memory:read, eval:grade and memory:write:delegated" ;;
 esac
 
 # --- the internal key reads Bridge sessions workspace-wide (2026-10-01) ------
