@@ -16,6 +16,7 @@ from typing import Any
 
 import redis.asyncio as aioredis
 
+from replay.authz import ReplayScope
 from replay.reader import get_event, get_session_timeline
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,7 @@ async def narrow(
     *,
     max_depth: int = _DEFAULT_MAX_DEPTH,
     max_results: int = _DEFAULT_MAX_RESULTS,
+    scope: ReplayScope | None = None,
 ) -> dict[str, Any]:
     """Walk trace links backward from a failure event and rank suspects.
 
@@ -64,8 +66,14 @@ async def narrow(
 
     `failure_event_found` and `session_has_trace_links` are what let the caller
     say which of the three happened. Neither changes the suspect ranking.
+
+    ``scope`` (the verified caller's, from the REST router) confines the whole
+    walk: a failure event outside it reads as "no such event", and a trace
+    link or temporal neighbour into another member's events is never followed
+    or reported. None is the unfiltered internal path.
     """
-    failure = await get_event(r, failure_event_id)
+    scope_kw: dict[str, Any] = {} if scope is None else {"scope": scope}
+    failure = await get_event(r, failure_event_id, **scope_kw)
     if not failure:
         return {
             "failure_event_id": failure_event_id,
@@ -89,7 +97,7 @@ async def narrow(
 
     # Also add temporal neighbors as low-confidence inferred links
     temporal_neighbors = await _get_temporal_neighbors(
-        r, session_id, failure, window_seconds=5.0
+        r, session_id, failure, window_seconds=5.0, **scope_kw
     )
     for neighbor in temporal_neighbors:
         nid = neighbor.get("id", "")
@@ -105,7 +113,7 @@ async def narrow(
         visited.add(eid)
         total_walked += 1
 
-        event = await get_event(r, eid)
+        event = await get_event(r, eid, **scope_kw)
         if not event:
             continue
 
@@ -130,11 +138,14 @@ async def narrow(
         "suspects": suspects[:max_results],
         "total_events_walked": total_walked,
         "failure_event_found": True,
-        "session_has_trace_links": await _session_has_trace_links(r, session_id),
+        "session_has_trace_links": await _session_has_trace_links(
+            r, session_id, **scope_kw),
     }
 
 
-async def _session_has_trace_links(r: aioredis.Redis, session_id: str) -> bool:
+async def _session_has_trace_links(
+    r: aioredis.Redis, session_id: str, **scope_kw: Any,
+) -> bool:
     """Does ANY event in this session carry a trace link?
 
     Answers the question "is there data for this algorithm to walk", which is
@@ -144,7 +155,7 @@ async def _session_has_trace_links(r: aioredis.Redis, session_id: str) -> bool:
     caller's message more cautious, never less.
     """
     try:
-        timeline = await get_session_timeline(r, session_id, limit=500)
+        timeline = await get_session_timeline(r, session_id, limit=500, **scope_kw)
     except Exception:
         logger.debug("trace-link census failed for session %s", session_id)
         return False
@@ -157,6 +168,7 @@ async def _get_temporal_neighbors(
     session_id: str,
     event: dict[str, Any],
     window_seconds: float = 5.0,
+    **scope_kw: Any,
 ) -> list[dict[str, Any]]:
     """Find events in the same session within a time window of the target.
 
@@ -176,7 +188,7 @@ async def _get_temporal_neighbors(
 
         # Get session timeline in the window
         result = await get_session_timeline(
-            r, session_id, limit=20, offset=0
+            r, session_id, limit=20, offset=0, **scope_kw
         )
 
         neighbors = []

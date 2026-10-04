@@ -2,6 +2,13 @@
 
 Provides endpoints for querying trace events, inspecting context snapshots,
 and running the narrowing algorithm for root cause analysis.
+
+AUTHORIZATION. Every route requires ``replay:read`` AND reads only what the
+verified caller may see (``replay.authz``): a member its own events, an admin
+its workspace, the deployment owner the unattributed history. The scope comes
+from the identity ``require_scope`` returned — never from ``X-Agent-Id``,
+``X-Member-Id`` or any other header. An event outside the scope is answered
+exactly like an event that does not exist.
 """
 
 from __future__ import annotations
@@ -13,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from auth.middleware import require_scope
 
+from replay.authz import scope_for
 from replay.models import (
     NarrowingResponse,
     SessionSummaryResponse,
@@ -51,6 +59,7 @@ def create_replay_router(get_replay_redis) -> APIRouter:
         """Get the event timeline for a session."""
         return await get_session_timeline(
             r, session_id, event_type=event_type, limit=limit, offset=offset,
+            scope=scope_for(identity),
         )
 
     @router.get("/events/{event_id}", response_model=TraceEventResponse)
@@ -60,7 +69,7 @@ def create_replay_router(get_replay_redis) -> APIRouter:
         identity: dict = Depends(require_scope("replay:read")),
     ) -> dict[str, Any]:
         """Get a single trace event by ID."""
-        event = await get_event(r, event_id)
+        event = await get_event(r, event_id, scope=scope_for(identity))
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
         return event
@@ -73,7 +82,8 @@ def create_replay_router(get_replay_redis) -> APIRouter:
         identity: dict = Depends(require_scope("replay:read")),
     ) -> dict[str, Any]:
         """Reconstruct the context snapshot at a specific event."""
-        return await get_context_at(r, session_id, event_id)
+        return await get_context_at(
+            r, session_id, event_id, scope=scope_for(identity))
 
     @router.get("/sessions/{session_id}/summary", response_model=SessionSummaryResponse)
     async def replay_session_summary(
@@ -82,7 +92,8 @@ def create_replay_router(get_replay_redis) -> APIRouter:
         identity: dict = Depends(require_scope("replay:read")),
     ) -> dict[str, Any]:
         """Get summary statistics for a session's trace."""
-        return await get_session_summary(r, session_id)
+        return await get_session_summary(
+            r, session_id, scope=scope_for(identity))
 
     @router.post("/sessions/{session_id}/narrow", response_model=NarrowingResponse)
     async def replay_narrow(
@@ -101,6 +112,7 @@ def create_replay_router(get_replay_redis) -> APIRouter:
         return await narrow(
             r, session_id, failure_event_id,
             max_depth=max_depth, max_results=max_results,
+            scope=scope_for(identity),
         )
 
     return router

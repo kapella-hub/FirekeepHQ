@@ -1,18 +1,55 @@
-"""Eval REST API — FastAPI router mounted on Cortex."""
+"""Eval REST API — FastAPI router mounted on Cortex.
+
+AUTHORIZATION (2026-10-04). An eval describes ONE member's session — its
+metrics, grade, agents and failure event ids — and ``eval:read`` /
+``eval:write`` are enrollable, so every member key holds both. Reads therefore
+go through the same predicate as every replay read (``replay.authz``) against
+the owner stored on the eval (``EvalResult.workspace_id`` / ``member_id``,
+taken from the session's Bridge-stamped start event): a member reads its own
+sessions' evals, an admin its workspace's, the deployment owner the
+unattributed ones. An eval the caller may not read is a 404 indistinguishable
+from a missing one. ``/evals/trends`` is deliberately left workspace-wide: it
+returns only metric averages and up/down labels — no session id, grade or
+event — and splitting it per member would mostly turn it into
+"insufficient_data".
+"""
 
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Mapping
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from auth import keys as _keys
 from auth.middleware import require_any_scope, require_scope, validate_key
+from replay.authz import event_visible, scope_for
+from replay.reader import get_session_owner
 
 from app.evals.compute import compute_session_eval
+from app.evals.models import EvalResult
 from app.evals.store import get_eval, get_eval_summary
 
 logger = logging.getLogger(__name__)
+
+# Service-only scopes (auth/keys.py SERVICE_ONLY_SCOPES): never enrollable,
+# minted by deploy/bootstrap-keys.sh onto FIREKEEP_BRIDGE_KEY (eval:grade) and
+# FIREKEEP_INTERNAL_KEY (session:read:workspace). Bridge computes every
+# member's eval on every completion with a key minted onto the OWNER member,
+# so member identity cannot be what lets it through.
+_SERVICE_SCOPES = ("eval:grade", "session:read:workspace")
+
+
+def _is_service(identity: Mapping[str, Any]) -> bool:
+    scopes = identity.get("scopes") or []
+    return any(_keys.scopes_allow(scopes, s) for s in _SERVICE_SCOPES)
+
+
+def _eval_visible(result: EvalResult, identity: Mapping[str, Any]) -> bool:
+    return event_visible(
+        {"workspace_id": result.workspace_id, "member_id": result.member_id},
+        scope_for(identity),
+    )
 
 
 async def _hint_authorized(identity: dict, request: Request, session_id: str) -> bool:
@@ -64,9 +101,13 @@ def create_evals_router(get_replay_redis) -> APIRouter:
         r=Depends(get_replay_redis),
         identity: dict = Depends(require_scope("eval:read")),
     ) -> dict[str, Any]:
-        """Get eval result for a specific session."""
+        """Get eval result for a specific session.
+
+        A session the caller may not read is answered exactly like one with
+        no eval (see module doc, AUTHORIZATION).
+        """
         result = await get_eval(r, session_id)
-        if not result:
+        if not result or not _eval_visible(result, identity):
             raise HTTPException(status_code=404, detail=f"No eval found for session {session_id}")
         return result.model_dump(mode="json")
 
@@ -76,8 +117,8 @@ def create_evals_router(get_replay_redis) -> APIRouter:
         identity: dict = Depends(require_scope("eval:read")),
         limit: int = Query(default=50, ge=1, le=200),
     ) -> dict[str, Any]:
-        """Get aggregate eval metrics across recent sessions."""
-        summary = await get_eval_summary(r, limit=limit)
+        """Get aggregate eval metrics across recent sessions the caller may read."""
+        summary = await get_eval_summary(r, limit=limit, scope=scope_for(identity))
         return summary.model_dump(mode="json")
 
     @router.post("/sessions/{session_id}/compute")
@@ -131,6 +172,19 @@ def create_evals_router(get_replay_redis) -> APIRouter:
         used to be, so a stored eval records who actually asked for it and the
         "all evals are manual" signal above stays diagnosable.
         """
+        not_found = HTTPException(
+            status_code=404,
+            detail="No replay events for this session or computation failed")
+        # AUTHORIZATION (2026-10-04): eval:write is enrollable and this route
+        # RETURNS the eval, so a member may only compute a session it may
+        # read — checked BEFORE computing, so a refused call also writes
+        # nothing. Service keys (see _is_service) compute every session.
+        if not _is_service(identity):
+            scope = scope_for(identity)
+            if scope is not None and not event_visible(
+                    await get_session_owner(r, session_id), scope):
+                raise not_found
+
         if task_result is not None and not await _hint_authorized(
                 identity, request, session_id):
             task_result = None   # D8c: dropped; _hint_authorized logged why
@@ -138,7 +192,7 @@ def create_evals_router(get_replay_redis) -> APIRouter:
         result = await compute_session_eval(r, session_id, trigger=trigger,
                                             task_result_hint=task_result)
         if not result:
-            raise HTTPException(status_code=404, detail="No replay events for this session or computation failed")
+            raise not_found
         return result.model_dump(mode="json")
 
     @router.get("/trends")

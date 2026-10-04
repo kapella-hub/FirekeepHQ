@@ -238,6 +238,17 @@ async def compute_session_eval(
             member_token = _attr("member_token")
             briefing_id = _attr("briefing_id")
 
+        # Read authorization for the stored record (2026-10-04): the session's
+        # owner from its stamped session-start event. Never fails the eval —
+        # an unreadable owner degrades to unattributed, which is visible only
+        # to the deployment owner and admins (fail closed, not open).
+        owner: dict[str, str | None] = {"workspace_id": None, "member_id": None}
+        try:
+            from replay.reader import get_session_owner
+            owner = await get_session_owner(replay_redis, session_id)
+        except Exception as exc:  # noqa: BLE001 — attribution never costs the eval
+            logger.debug("eval owner lookup failed for %s: %s", session_id, exc)
+
         agents_raw = summary.get("agents", [])
         agents = (
             [a for a in agents_raw if isinstance(a, str)]
@@ -264,6 +275,8 @@ async def compute_session_eval(
             member_token=member_token,
             briefing_id=briefing_id,
             agents=agents,
+            workspace_id=owner.get("workspace_id"),
+            member_id=owner.get("member_id"),
         )
 
         # Store

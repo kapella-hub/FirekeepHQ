@@ -105,6 +105,15 @@ class EvalResult(BaseModel):
     # From get_session_summary — previously computed per session and discarded.
     agents: list[str] = []
 
+    # Who may READ this eval (2026-10-04): the session's owner, i.e. the
+    # verified workspace/member Bridge stamped on the session-start replay
+    # event (replay.authz.session_owner). Read through the same predicate as
+    # every replay event (replay.authz.event_visible). None — a session
+    # started before attribution, or a record stored before this field —
+    # means unattributed: the deployment owner's and admins', no one else's.
+    workspace_id: str | None = None
+    member_id: str | None = None
+
     # Failure analysis (only if session had failures)
     failure_event_ids: list[str] = []
     has_failures: bool = False
