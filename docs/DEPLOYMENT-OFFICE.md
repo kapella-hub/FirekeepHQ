@@ -61,8 +61,10 @@ docker compose -f docker-compose.yml -f docker-compose.office.yml up -d --build
 > alert broadcasting to Relay and its Cortex webhook firing are keyed (SP1b
 > §11, Task 32 — threads `FIREKEEP_INTERNAL_KEY` via `NS_FIREKEEP_INTERNAL_KEY`).
 > Cortex→Bridge (Skill Synthesis) is keyed. Symdex→Cortex calls are keyed
-> (SP1b §11, Task 33 — threads bare `FIREKEEP_INTERNAL_KEY`, no Settings
-> prefix, as `X-API-Key`) — this was the last dark integration. (Symdex
+> (SP1b §11, Task 33; since 2026-10-04 with the enrolled member's key the
+> gateway passes the symdex child as `FIREKEEP_CLIENT_API_KEY` — symdex no
+> longer reads `FIREKEEP_INTERNAL_KEY`, see `docs/guides/dexes.md`) — this was
+> the last dark integration. (Symdex
 > itself has no auth middleware and is loopback-only as of Task 33, so
 > inbound calls to it, e.g. Sentinel's git-reindex trigger, need no key.)
 > No known gaps remain among the SP1b §11 background integrations (Sentinel,

@@ -340,7 +340,7 @@ Code intelligence is **client-side only**. The server-side HTTP container was re
 | From → To              | Mechanism                         | Purpose                              |
 |-------------------------|-----------------------------------|--------------------------------------|
 | Bridge → Cortex        | HTTP (`/memory/learn`)            | Distill completed sessions to memory |
-| Symdex → Cortex        | HTTP from the client-stdio `firekeep-symdex` (carries `FIREKEEP_INTERNAL_KEY`) | `learn_from_changes`, `recall_with_code` — no server symdex container |
+| Symdex → Cortex        | HTTP from the client-stdio `firekeep-symdex` (carries the enrolled member's key, passed by the gateway; never `FIREKEEP_INTERNAL_KEY`) | `learn_from_changes`, `recall_with_code` — no server symdex container |
 | Sentinel → Relay       | HTTP alert-broadcast (→Relay `/mcp`; carries the internal key under office auth) | Auto-share environment alerts        |
 | Dashboard → All        | HTTP (fetch to each service)      | Unified UI                           |
 | All → Redis            | Direct connection (per-DB)        | Storage, pub/sub, streams            |

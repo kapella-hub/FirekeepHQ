@@ -228,6 +228,35 @@ The auto-index trigger is symdex's own (`FIREKEEP_NO_AUTO_INDEX`,
 `[symdex] auto_index`) and is not registry-gated today; with symdex unregistered
 its tools are absent, so an index it builds is one nothing reads.
 
+**Symdex talks to Cortex as the member.** Its three Cortex tools
+(`recall_with_code`, `learn_from_changes`, `review_with_history`) use the
+connection the gateway injects into the symdex child from `~/.firekeep/config`:
+`FIREKEEP_CORTEX_URL`, the enrolled `FIREKEEP_CLIENT_API_KEY` (none on an auth-off
+Keep) and `FIREKEEP_CORTEX_CA` (the configured `ca_path` or `os`, which anchors the
+Cortex connection only). Symdex never reads `FIREKEEP_INTERNAL_KEY` — it is
+client-side only, no legitimate caller of it holds the server's service key, so
+there is deliberately no opt-in fallback. Unenrolled or bypassed at spawn, nothing
+is injected and the tools answer "not configured". Standalone symdex (outside the
+gateway) takes the same two variables by hand; a setup that used to export
+`FIREKEEP_INTERNAL_KEY` for it must export a member key as
+`FIREKEEP_CLIENT_API_KEY` instead.
+
+### What a dex child's environment holds
+
+Every `mcp-stdio` entry — symdex, Hands, and any future one — is started with an
+**allowlisted** environment, never the gateway's whole one: the gateway may run on
+a box holding server credentials (a CI runner, the server-side ChatGPT tunnel), and
+no dex may inherit them. The allowlist, the per-child credential grants
+(`CHILD_EXTRAS`) and the reasoning are in
+[`client-kit.md`](client-kit.md#what-a-gateway-backend-child-sees--the-allowlisted-environment-firekeep_clientchildenv);
+the short version for a dex author is: a variable your dex reads must be classified
+in `client/firekeep_client/childenv.py` or it never reaches the child, and
+`client/tests/test_gateway_child_env.py` fails until it is. A credential your dex
+owns goes in `CHILD_EXTRAS[<name>]`, never in the shared list. The ingest-client
+dexes (docdex, maildex) are launched by the session hooks, not the gateway, read no
+key from the environment (they resolve the member key from the config), and are
+unaffected.
+
 ## Docdex — the documents dex
 
 `kind: ingest-client`, wheel `firekeep-docdex`, console script `firekeep-docdex`,
@@ -627,6 +656,10 @@ purpose.
 - Gateway mounting from the registry: `client/tests/test_gateway.py`,
   `client/tests/test_decision_registration.py` (pins `CORE_LOCAL_SERVERS ==
   ("decision",)`)
+- What a dex child inherits, and symdex's member connection:
+  `client/tests/test_gateway_child_env.py`; symdex's side:
+  `symdex/tests/test_cortex_integration.py` (`TestClientKeyInjection`,
+  `TestCortexTrustAnchor`)
 - CLI: `client/tests/test_cli_dex.py`, `client/tests/test_cli_docdex.py`
 - Doctor rows: `client/tests/test_cli_doctor.py`
 - The sync trigger: `client/tests/test_docdexsync.py`

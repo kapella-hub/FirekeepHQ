@@ -575,6 +575,65 @@ contained parent spawns a child and grandchild and is hard-killed, and both must
 within 5 s (red without the job: the child outlived the parent); a breakaway child must
 survive the same kill.
 
+## What a gateway backend child sees — the allowlisted environment (`firekeep_client.childenv`)
+
+The gateway runs wherever an agent runtime runs — a developer shell with a
+deployment's `.env` sourced, a CI runner, the server-side ChatGPT tunnel — and any
+of those can hold **server** credentials (`FIREKEEP_INTERNAL_KEY`,
+`FIREKEEP_BRIDGE_KEY`, `RELAY_INTERNAL_API_KEY`, `DASHBOARD_API_KEY`, `VAULT_KEY`,
+`NEO4J_PASSWORD`, …). Until 2026-10-04 every backend child inherited the gateway's
+whole environment, and symdex's Cortex client read `FIREKEEP_INTERNAL_KEY` from it,
+so symdex's Cortex writes could land as the deployment's service key instead of the
+member. Now every child the gateway builds — the four shims, `decision`, and each
+`mcp-stdio` registry entry (symdex, hands) — is started with
+`childenv.backend_environment(<name>)`, computed when the child (re)starts:
+
+- **Forwarded to every child:** what a process needs to run (Windows `SYSTEMROOT`,
+  `TEMP`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `ProgramFiles*`…; POSIX `PATH`,
+  `HOME`, `USER`, `SHELL`, `TMPDIR`, `LANG`, `TZ`, `TERM`), the desktop session
+  (`DISPLAY`, `WAYLAND_DISPLAY`, `XAUTHORITY`, `DBUS_SESSION_BUS_ADDRESS` — the
+  decision board opens a browser and Hands drives the desktop), proxy and TLS
+  (`HTTP(S)_PROXY`, `NO_PROXY`, `ALL_PROXY`, `SSL_CERT_FILE`, `SSL_CERT_DIR`,
+  `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`), the `LC_*`, `XDG_*` and `PYTHON*`
+  families, `VIRTUAL_ENV`, and the kit's own non-secret knobs (`FIREKEEP_CONFIG`,
+  `FIREKEEP_RUNTIME`, `FIREKEEP_AGENT_ID`, `FIREKEEP_BYPASS`, `NEXUS_AGENT_ID`,
+  `FIREKEEP_SESSION_ID`, the `FIREKEEP_SYMDEX_*` / `FIREKEEP_HANDS_*` /
+  `FIREKEEP_DECISION_*` settings, …). Names match case-insensitively and keep
+  their spelling.
+- **Forwarded to one child only** (`CHILD_EXTRAS`): a credential that child is
+  documented to read — symdex gets `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`,
+  `OPENAI_API_*` and `GITHUB_TOKEN` (AI summaries, GitHub indexing); decision gets
+  `FIREKEEP_DECISION_NOTIFY_TOKEN`.
+- **Never forwarded:** everything else — server keys, `FIREKEEP_JOIN`, the gateway's
+  own `FIREKEEP_TOOLSET` / `FIREKEEP_TOOLS_ALLOW`, and the install/update trust-path
+  overrides (`FIREKEEP_DIST_BASE`, `FIREKEEP_SIGNING_PUB`, …). `GIT_*` is dropped on
+  purpose: a runtime's `GIT_DIR` reaching symdex's local git reads would point them at
+  the wrong repository.
+- **Injected for symdex only:** the member's enrolled Cortex connection, resolved from
+  `~/.firekeep/config` exactly as the shims resolve theirs — `FIREKEEP_CORTEX_URL`
+  (the cortex REST base), `FIREKEEP_CLIENT_API_KEY` (the `[server] api_key`; absent on
+  an auth-off Keep) and `FIREKEEP_CORTEX_CA` (the configured `ca_path`, or `os`).
+  Nothing is injected on an unenrolled machine or while the kit is bypassed (personal
+  mode / `FIREKEEP_BYPASS`) at spawn — symdex's Cortex tools then answer "not
+  configured". A parent's own copies of those three names are dropped, never
+  forwarded: the config, not ambient environment, decides who symdex is. The shims,
+  decision and Hands need no injection — they read the key from the config through
+  `firekeep_client.resolver`.
+
+Behaviour change that came with it: nothing in the kit used to set
+`FIREKEEP_CORTEX_URL`, so `recall_with_code`, `learn_from_changes` and
+`review_with_history` returned "not configured" for every kit user who had not
+exported it by hand. They now reach Cortex as the enrolled member. Like the shims, a
+symdex child started before `/personal` is toggled keeps its connection until it
+restarts; the live marker is honoured by the hooks.
+
+**Adding a variable a child reads:** classify it in `childenv.py` — `_KIT` if any
+child may see it, `CHILD_EXTRAS[<child>]` if it is that child's own secret,
+`NOT_FORWARDED` if no gateway child needs it. `client/tests/test_gateway_child_env.py`
+scans `client/`, `symdex/`, `hands/`, `docdex/` and `maildex/` sources for literal
+environment reads and fails on an unclassified name; it also starts real child
+processes through the gateway's launch path and asserts no server credential arrives.
+
 ## Anonymous install reporting (`firekeep doctor --report`, client 1.5.0)
 
 Closes a gap a 2026-08-20 audit named precisely: nothing about install success or

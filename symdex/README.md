@@ -394,13 +394,24 @@ When [FirekeepCortex](https://firekeep.ai) — the Firekeep memory service, `cor
 
 ### Setup
 
-Set the environment variable to enable integration:
+Inside Firekeep this needs no setup. The gateway resolves the active
+`~/.firekeep/config` connection and passes it to the symdex child only:
+`FIREKEEP_CORTEX_URL` (the Cortex REST base), `FIREKEEP_CLIENT_API_KEY` (the
+enrolled member's key; absent on an auth-off Keep) and `FIREKEEP_CORTEX_CA` (the
+configured `ca_path`, or `os` for the OS trust store). Nothing is passed on an
+unenrolled machine or in personal/bypass mode, and the integration tools then
+report "not configured".
+
+Running symdex standalone, set them yourself:
 
 ```bash
 export FIREKEEP_CORTEX_URL=http://localhost:8100
+export FIREKEEP_CLIENT_API_KEY=<your member key>   # when the Keep has auth on
 ```
 
-In Firekeep the Cortex REST API is published on `:8100` (container-internal `8000` is not reachable from the client-side stdio symdex). Under `AUTH_ENABLED=true`, symdex also threads `FIREKEEP_INTERNAL_KEY` as an `X-API-Key` header on its outbound Cortex calls.
+Symdex never reads the server-side `FIREKEEP_INTERNAL_KEY`: its Cortex writes are
+the member's, never the deployment's service key. The Cortex REST API is published
+on `:8100` (container-internal `8000` is not reachable from client-side symdex).
 
 ### Integration Tools
 
