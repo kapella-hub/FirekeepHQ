@@ -100,6 +100,7 @@ def create_briefing_router(section_timeout: float = 2.0) -> APIRouter:
                 # this router) rather than "unknown", since it is a real value.
                 session_id=request.headers.get("X-Session-Id"),
                 agent_id=request.headers.get("X-Agent-Id") or agent_id,
+                workspace_id=identity["workspace_id"],
             ),
             "vault": S.vault_section(scopes),
             "profile": S.profile_section(
