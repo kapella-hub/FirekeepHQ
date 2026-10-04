@@ -212,6 +212,42 @@ echo "$AUDIT2" | grep -qE "0 unattributed, 2 refused" \
     || { echo "FAIL: post-attribution audit summary wrong"; echo "$AUDIT2"; exit 1; }
 rm -f "$GUARD"
 
+# --- Run 8: a Redis client that READS STDIN, like `docker compose exec` ------
+# In production REDIS is `docker compose exec -T redis redis-cli -n 7`, and
+# docker compose exec copies stdin even with -T. Inside
+#   while read key; do "${REDIS[@]}" HGET ...; done < <(scan)
+# the first inner call swallowed the rest of the scan, and every such loop
+# stopped after one record (found 2026-10-04: `keys audit` on the live VPS
+# reported 1 credential of 15). A plain redis-cli never reads stdin, so every
+# test above passes either way; this wrapper drains it the way compose does.
+DRAIN="$(mktemp)"
+cat > "$DRAIN" <<DRAIN_EOF
+#!/usr/bin/env bash
+cat > /dev/null
+exec docker exec $CONTAINER redis-cli -n 7 "\$@"
+DRAIN_EOF
+for n in 1 2 3; do
+    h="$(printf 'drain-%s' "$n" | sha256sum | awk '{print $1}')"
+    # Unattributed AND unmapped: both the attribution pass and
+    # backfill_credential_mappings must reach all three.
+    docker exec "$CONTAINER" redis-cli -n 7 HSET "auth:key:${h}" \
+        agent_id "drain-$n" scopes '["memory:read"]' key_id "${h:0:16}" > /dev/null
+    docker exec "$CONTAINER" redis-cli -n 7 ZADD auth:key_index "$(date +%s)" "${h:0:16}" > /dev/null
+done
+RECORDS="$(docker exec "$CONTAINER" redis-cli -n 7 --scan --pattern 'auth:key:*' | grep -cE '^auth:key:[0-9a-f]{64}$')"
+AUDIT3="$(BOOTSTRAP_REDIS_CMD="bash $DRAIN" bash deploy/firekeep-admin keys audit < /dev/null 2>&1)"
+echo "$AUDIT3" | grep -qE "^${RECORDS} credential\(s\): .* 3 unattributed" \
+    || { echo "FAIL: keys audit stopped early under a stdin-reading Redis client (expected ${RECORDS} records, 3 unattributed)"; echo "$AUDIT3"; exit 1; }
+OUT8="$(BOOTSTRAP_REDIS_CMD="bash $DRAIN" bash deploy/bootstrap-keys.sh < /dev/null)"
+[ "$(echo "$OUT8" | grep -c '\[ATTRIBUTED\] credential .* (device drain-')" = "3" ] \
+    || { echo "FAIL: attribution pass stopped early under a stdin-reading Redis client"; echo "$OUT8"; exit 1; }
+for n in 1 2 3; do
+    h="$(printf 'drain-%s' "$n" | sha256sum | awk '{print $1}')"
+    [ "$(docker exec "$CONTAINER" redis-cli -n 7 GET "auth:cred:${h:0:16}")" = "$h" ] \
+        || { echo "FAIL: backfill_credential_mappings missed drain-$n under a stdin-reading Redis client"; echo "$OUT8"; exit 1; }
+done
+rm -f "$DRAIN"
+
 # --- Layout check: the REAL validator accepts the bootstrapped key -----------
 # Deliberately NO init_auth(): it runs ensure_workspace, which would write the
 # owner member row itself and hide a bootstrap that forgot to. Bridge, Relay

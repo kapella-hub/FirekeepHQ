@@ -18,10 +18,18 @@ set -euo pipefail
 NON_ADMIN_SCOPES='["dex:docdex", "dex:maildex", "eval:read", "eval:write", "memory:read", "memory:write", "relay:read", "relay:write", "replay:read", "session:read", "session:write", "vault:read"]'
 # Never minted here; listed so `keys audit` recognises them as known scopes.
 # Must equal auth.keys.SERVICE_ONLY_SCOPES (deploy/tests/test_firekeep_admin.sh).
-SERVICE_ONLY_SCOPES='["eval:grade", "session:read:workspace"]'
+SERVICE_ONLY_SCOPES='["eval:grade", "memory:write:delegated", "relay:write:service", "session:read:workspace"]'
 API_URL="${FIREKEEP_API_URL:-http://localhost:8100}"
 ENV_FILE="${ENV_FILE:-.env}"
 IFS=' ' read -r -a REDIS <<< "${BOOTSTRAP_REDIS_CMD:-docker compose exec -T redis redis-cli -n 7}"
+
+# Every Redis call goes through rcli, with stdin closed. In production REDIS is
+# `docker compose exec -T redis redis-cli -n 7`, and docker compose exec reads
+# stdin even with -T: inside `while read ...; done < <(scan)` the first call in
+# the loop body swallowed the rest of the scan, so the loop stopped after one
+# record (`keys audit` on a live box reported 1 credential of 15, 2026-10-04).
+# Never call "${REDIS[@]}" directly.
+rcli() { "${REDIS[@]}" "$@" < /dev/null; }
 
 usage() {
     cat >&2 <<'EOF'
@@ -46,7 +54,7 @@ env_get() {
 }
 
 redis_available() {
-    "${REDIS[@]}" PING 2>/dev/null | grep -q PONG
+    rcli PING 2>/dev/null | grep -q PONG
 }
 
 valid_id() { [[ "$1" =~ ^[0-9a-f]{1,64}$ ]]; }
@@ -88,19 +96,19 @@ keys_create() {
             exit 1
         fi
         now="$(date -u +"%Y-%m-%dT%H:%M:%S+00:00")"
-        "${REDIS[@]}" HSET "auth:key:${hash}" \
+        rcli HSET "auth:key:${hash}" \
             workspace_id "$workspace_id" member_id "$member_id" \
             device_id "$agent" credential_id "$credential_id" \
             key_id "$credential_id" scopes "$NON_ADMIN_SCOPES" created_at "$now" >/dev/null
         if [ -n "$expires_days" ]; then
             expires_at="$(date -u -d "+${expires_days} days" +"%Y-%m-%dT%H:%M:%S+00:00")"
             ttl="$((expires_days * 86400))"
-            "${REDIS[@]}" HSET "auth:key:${hash}" expires_at "$expires_at" >/dev/null
-            "${REDIS[@]}" EXPIRE "auth:key:${hash}" "$ttl" >/dev/null
+            rcli HSET "auth:key:${hash}" expires_at "$expires_at" >/dev/null
+            rcli EXPIRE "auth:key:${hash}" "$ttl" >/dev/null
         fi
-        "${REDIS[@]}" SET "auth:cred:${credential_id}" "$hash" >/dev/null
-        [ -n "$ttl" ] && "${REDIS[@]}" EXPIRE "auth:cred:${credential_id}" "$ttl" >/dev/null
-        "${REDIS[@]}" ZADD auth:key_index "$(date -u +%s)" "$credential_id" >/dev/null
+        rcli SET "auth:cred:${credential_id}" "$hash" >/dev/null
+        [ -n "$ttl" ] && rcli EXPIRE "auth:cred:${credential_id}" "$ttl" >/dev/null
+        rcli ZADD auth:key_index "$(date -u +%s)" "$credential_id" >/dev/null
         printf '{"agent_id":"%s","credential_id":"%s","key_id":"%s","api_key":"%s"}\n' \
             "$agent" "$credential_id" "$credential_id" "$key"
         echo "Minted locally against Redis DB 7; the api_key is shown only once." >&2
@@ -132,11 +140,11 @@ keys_revoke() {
     fi
     redis_available || { echo "ERROR: Redis DB 7 is unreachable" >&2; exit 1; }
 
-    hash="$("${REDIS[@]}" GET "auth:cred:${credential_id}")"
+    hash="$(rcli GET "auth:cred:${credential_id}")"
     if [ -n "$hash" ]; then
         redis_key="auth:key:${hash}"
-        stored_id="$("${REDIS[@]}" HGET "$redis_key" credential_id)"
-        [ -n "$stored_id" ] || stored_id="$("${REDIS[@]}" HGET "$redis_key" key_id)"
+        stored_id="$(rcli HGET "$redis_key" credential_id)"
+        [ -n "$stored_id" ] || stored_id="$(rcli HGET "$redis_key" key_id)"
         if [ "$stored_id" != "$credential_id" ]; then
             echo "ERROR: auth:cred:${credential_id} points to a mismatched record; refusing" >&2
             exit 1
@@ -146,13 +154,13 @@ keys_revoke() {
     else
         while IFS= read -r candidate; do
             [ -n "$candidate" ] || continue
-            stored_id="$("${REDIS[@]}" HGET "$candidate" credential_id)"
-            [ -n "$stored_id" ] || stored_id="$("${REDIS[@]}" HGET "$candidate" key_id)"
+            stored_id="$(rcli HGET "$candidate" credential_id)"
+            [ -n "$stored_id" ] || stored_id="$(rcli HGET "$candidate" key_id)"
             if [ "$stored_id" = "$credential_id" ]; then
                 match="$candidate"
                 count=$((count + 1))
             fi
-        done < <("${REDIS[@]}" --scan --pattern "auth:key:${credential_id}*")
+        done < <(rcli --scan --pattern "auth:key:${credential_id}*")
     fi
     if [ "$count" -gt 1 ]; then
         echo "ERROR: credential id is ambiguous across ${count} legacy records; nothing revoked" >&2
@@ -162,8 +170,8 @@ keys_revoke() {
         printf '{"status":"not_found","credential_id":"%s"}\n' "$credential_id"
         return
     fi
-    "${REDIS[@]}" DEL "$match" "auth:cred:${credential_id}" >/dev/null
-    "${REDIS[@]}" ZREM auth:key_index "$credential_id" >/dev/null
+    rcli DEL "$match" "auth:cred:${credential_id}" >/dev/null
+    rcli ZREM auth:key_index "$credential_id" >/dev/null
     printf '{"status":"revoked","credential_id":"%s"}\n' "$credential_id"
 }
 
@@ -191,9 +199,9 @@ keys_audit() {
 
     local workspace owner known now
     workspace="$(env_get FIREKEEP_WORKSPACE_ID)"
-    [ -n "$workspace" ] || workspace="$("${REDIS[@]}" HGET auth:workspace:current workspace_id)"
+    [ -n "$workspace" ] || workspace="$(rcli HGET auth:workspace:current workspace_id)"
     owner="$(env_get FIREKEEP_OWNER_MEMBER_ID)"
-    [ -n "$owner" ] || owner="$("${REDIS[@]}" HGET auth:workspace:current owner_member_id)"
+    [ -n "$owner" ] || owner="$(rcli HGET auth:workspace:current owner_member_id)"
     known=" $(printf '%s %s' "$NON_ADMIN_SCOPES" "$SERVICE_ONLY_SCOPES" | grep -oE '"[^"]*"' | tr -d '"' | tr '\n' ' ') admin * "
     now="$(date -u +%s)"
     local doc_re='^\[[[:space:]]*("[^"]*"[[:space:]]*(,[[:space:]]*"[^"]*"[[:space:]]*)*)?\]$'
@@ -204,14 +212,14 @@ keys_audit() {
     while IFS= read -r key; do
         [[ "$key" =~ ^auth:key:[0-9a-f]{64}$ ]] || continue
         hash="${key#auth:key:}"
-        wid="$("${REDIS[@]}" HGET "$key" workspace_id)"
-        mid="$("${REDIS[@]}" HGET "$key" member_id)"
-        cid="$("${REDIS[@]}" HGET "$key" credential_id)"
-        kid="$("${REDIS[@]}" HGET "$key" key_id)"
-        scopes="$("${REDIS[@]}" HGET "$key" scopes)"
-        exp="$("${REDIS[@]}" HGET "$key" expires_at)"
-        device="$("${REDIS[@]}" HGET "$key" device_id)"
-        [ -n "$device" ] || device="$("${REDIS[@]}" HGET "$key" agent_id)"
+        wid="$(rcli HGET "$key" workspace_id)"
+        mid="$(rcli HGET "$key" member_id)"
+        cid="$(rcli HGET "$key" credential_id)"
+        kid="$(rcli HGET "$key" key_id)"
+        scopes="$(rcli HGET "$key" scopes)"
+        exp="$(rcli HGET "$key" expires_at)"
+        device="$(rcli HGET "$key" device_id)"
+        [ -n "$device" ] || device="$(rcli HGET "$key" agent_id)"
         id="${cid:-${kid:-${hash:0:16}}}"
         [ -n "$scopes" ] || scopes='[]'
         verdict="ok"; notes=""; total=$((total + 1))
@@ -238,16 +246,16 @@ keys_audit() {
             elif [ -n "$workspace" ] && [ "$wid" != "$workspace" ]; then
                 verdict="refused: belongs to workspace ${wid}"
             else
-                status="$("${REDIS[@]}" HGET "auth:member:${mid}" status)"
-                mws="$("${REDIS[@]}" HGET "auth:member:${mid}" workspace_id)"
-                mmid="$("${REDIS[@]}" HGET "auth:member:${mid}" member_id)"
+                status="$(rcli HGET "auth:member:${mid}" status)"
+                mws="$(rcli HGET "auth:member:${mid}" workspace_id)"
+                mmid="$(rcli HGET "auth:member:${mid}" member_id)"
                 if [ "$status" != "active" ] || [ "$mws" != "$wid" ] || [ "$mmid" != "$mid" ]; then
                     verdict="refused: member ${mid} is not active (row status '${status:-missing}')"
                 fi
             fi
         fi
-        [ -n "$("${REDIS[@]}" ZSCORE auth:key_index "$id")" ] || notes="${notes} not in auth:key_index;"
-        [ "$("${REDIS[@]}" GET "auth:cred:${id}")" = "$hash" ] || notes="${notes} no auth:cred mapping;"
+        [ -n "$(rcli ZSCORE auth:key_index "$id")" ] || notes="${notes} not in auth:key_index;"
+        [ "$(rcli GET "auth:cred:${id}")" = "$hash" ] || notes="${notes} no auth:cred mapping;"
 
         case "$verdict" in
             ok) n_ok=$((n_ok + 1)) ;;
@@ -256,7 +264,7 @@ keys_audit() {
             *) n_refused=$((n_refused + 1)) ;;
         esac
         printf '%-16s  %-20s  %-40s  %s%s\n' "$id" "${device:-?}" "${mid:--}" "$verdict" "${notes:+ |$notes}"
-    done < <("${REDIS[@]}" --scan --pattern 'auth:key:*')
+    done < <(rcli --scan --pattern 'auth:key:*')
 
     echo ""
     echo "${total} credential(s): ${n_ok} ok, ${n_attr} unattributed, ${n_refused} refused, ${n_expired} expired"

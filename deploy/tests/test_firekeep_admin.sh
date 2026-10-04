@@ -116,8 +116,19 @@ assert got == set(SERVICE_ONLY_SCOPES), f"SERVICE_ONLY_SCOPES drifted: {got} != 
 '
 # The audit is read-only by construction: no write verb appears in it.
 AUDIT_BODY="$(sed -n '/^keys_audit()/,/^}/p' deploy/firekeep-admin)"
-if printf '%s\n' "$AUDIT_BODY" | grep -E '"\$\{REDIS\[@\]\}" (HSET|SET|ZADD|DEL|ZREM|EXPIRE|HDEL|HSETNX)\b'; then
+printf '%s\n' "$AUDIT_BODY" | grep -q 'rcli HGET' || { echo "FAIL: audit body not found"; exit 1; }
+if printf '%s\n' "$AUDIT_BODY" | grep -E 'rcli (HSET|SET|ZADD|DEL|ZREM|EXPIRE|HDEL|HSETNX)\b'; then
     echo "FAIL: keys audit issues a Redis write"; exit 1
 fi
+
+# Every Redis call must go through rcli (stdin closed). `docker compose exec`
+# reads stdin, so a direct "${REDIS[@]}" call inside a `while read` loop eats
+# the loop's input and the loop stops after one record (2026-10-04, live VPS).
+for f in deploy/firekeep-admin deploy/bootstrap-keys.sh; do
+    direct="$(grep -nF '"${REDIS[@]}"' "$f" | grep -vE '^[0-9]+:(rcli\(\) \{|#)' || true)"
+    [ -z "$direct" ] || { echo "FAIL: $f calls \"\${REDIS[@]}\" directly, bypassing rcli:"; echo "$direct"; exit 1; }
+    grep -qE '^rcli\(\) \{ "\$\{REDIS\[@\]\}" "\$@" < /dev/null; \}$' "$f" \
+        || { echo "FAIL: $f has no stdin-closed rcli helper"; exit 1; }
+done
 
 echo "PASS: firekeep-admin create/revoke/invite/audit dispatch + scope sync + fail-fast"
