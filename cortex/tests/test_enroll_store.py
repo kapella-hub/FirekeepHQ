@@ -31,6 +31,7 @@ async def test_issue_writes_tombstone_and_inventory_atomically():
             kind="ports",
             host="127.0.0.1",
             ssh_target="bob@server",
+            member_id="member-owner",
             now=datetime(2026, 7, 31, tzinfo=timezone.utc),
         )
         assert ticket_id(ticket) == tid
@@ -71,9 +72,17 @@ async def test_consume_uses_exactly_one_eval_and_no_auth_write_helper():
     assert (outcome, fields, snapshot) == ("unknown", [], None)
     assert len(redis.eval_calls) == 1
     call = redis.eval_calls[0]
-    assert call[1] == 5
+    assert call[1] == 6
     assert call[4] == "auth:key:" + "a" * 64
     assert call[6] == KEY_INDEX
+    # The sixth key is the member row the script checks before registering.
+    assert call[7].startswith("auth:member:")
+
+
+def test_a_ticket_cannot_be_issued_without_a_member():
+    store = EnrollmentStore(fakeredis.aioredis.FakeRedis(decode_responses=True))
+    with pytest.raises(ValueError, match="member_id"):
+        store.prepare_issue(transport="tunnel", kind="ports", host="h", member_id="")
 
 
 def test_ticket_id_rejects_noncanonical_or_wrong_width_secrets():
