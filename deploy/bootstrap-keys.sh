@@ -95,6 +95,14 @@ set -euo pipefail
 ENV_FILE="${ENV_FILE:-.env}"
 IFS=' ' read -r -a REDIS <<< "${BOOTSTRAP_REDIS_CMD:-docker compose exec -T redis redis-cli -n 7}"
 
+# Every Redis call goes through rcli, with stdin closed. In production REDIS is
+# `docker compose exec -T redis redis-cli -n 7`, and docker compose exec reads
+# stdin even with -T: inside `while read ...; done < <(scan)` the first call in
+# the loop body swallowed the rest of the scan, so the loop stopped after one
+# record (`keys audit` on a live box reported 1 credential of 15, 2026-10-04).
+# Never call "${REDIS[@]}" directly.
+rcli() { "${REDIS[@]}" "$@" < /dev/null; }
+
 # --- helpers ---------------------------------------------------------------
 
 # sha256sum is GNU coreutils; macOS ships `shasum -a 256` instead. Prefer the
@@ -145,7 +153,7 @@ ensure_deployment_id() {  # $1=env var  $2=prefix
     printf '%s' "$value"
 }
 
-key_registered() { [ "$("${REDIS[@]}" EXISTS "auth:key:$1")" = "1" ]; }
+key_registered() { [ "$(rcli EXISTS "auth:key:$1")" = "1" ]; }
 
 # Scope tokens of a JSON array of plain strings, one per line. Deliberately
 # jq-free (this script needs only bash, redis-cli and openssl); scope names are
@@ -154,7 +162,7 @@ scope_tokens() { printf '%s' "$1" | grep -oE '"[^"]*"' | tr -d '"' || true; }
 
 reconcile_scopes() {  # $1=hash  $2=declared scopes-json  -> prints added scopes
     local hash="$1" declared="$2" stored merged added="" s
-    stored="$("${REDIS[@]}" HGET "auth:key:${hash}" scopes)"
+    stored="$(rcli HGET "auth:key:${hash}" scopes)"
     merged="$stored"
     while IFS= read -r s; do
         [ -n "$s" ] || continue
@@ -168,7 +176,7 @@ reconcile_scopes() {  # $1=hash  $2=declared scopes-json  -> prints added scopes
         fi
     done < <(scope_tokens "$declared")
     if [ -n "$added" ]; then
-        "${REDIS[@]}" HSET "auth:key:${hash}" scopes "$merged" > /dev/null
+        rcli HSET "auth:key:${hash}" scopes "$merged" > /dev/null
         printf '%s' "$added"
     fi
 }
@@ -176,7 +184,7 @@ reconcile_scopes() {  # $1=hash  $2=declared scopes-json  -> prints added scopes
 register_hash() {  # $1=hash  $2=device_id  $3=scopes-json
     local hash="$1" credential_id
     credential_id="$(openssl rand -hex 8)"
-    "${REDIS[@]}" HSET "auth:key:${hash}" \
+    rcli HSET "auth:key:${hash}" \
         workspace_id "$WORKSPACE_ID" \
         member_id "$OWNER_MEMBER_ID" \
         device_id "$2" \
@@ -184,38 +192,38 @@ register_hash() {  # $1=hash  $2=device_id  $3=scopes-json
         scopes "$3" \
         created_at "$(now_iso)" \
         key_id "$credential_id" > /dev/null
-    "${REDIS[@]}" SET "auth:cred:${credential_id}" "$hash" > /dev/null
-    "${REDIS[@]}" ZADD auth:key_index "$(date -u +%s)" "$credential_id" > /dev/null
+    rcli SET "auth:cred:${credential_id}" "$hash" > /dev/null
+    rcli ZADD auth:key_index "$(date -u +%s)" "$credential_id" > /dev/null
 }
 
 backfill_credential_mappings() {
     local credential_id mapped candidate stored_id count match hash ttl
     while IFS= read -r credential_id; do
         [ -n "$credential_id" ] || continue
-        mapped="$("${REDIS[@]}" GET "auth:cred:${credential_id}")"
+        mapped="$(rcli GET "auth:cred:${credential_id}")"
         [ -z "$mapped" ] || continue
         count=0; match=""
         while IFS= read -r candidate; do
             [ -n "$candidate" ] || continue
-            stored_id="$("${REDIS[@]}" HGET "$candidate" credential_id)"
-            [ -n "$stored_id" ] || stored_id="$("${REDIS[@]}" HGET "$candidate" key_id)"
+            stored_id="$(rcli HGET "$candidate" credential_id)"
+            [ -n "$stored_id" ] || stored_id="$(rcli HGET "$candidate" key_id)"
             if [ "$stored_id" = "$credential_id" ]; then
                 match="$candidate"
                 count=$((count + 1))
             fi
-        done < <("${REDIS[@]}" --scan --pattern "auth:key:${credential_id}*")
+        done < <(rcli --scan --pattern "auth:key:${credential_id}*")
         if [ "$count" -eq 1 ]; then
             hash="${match#auth:key:}"
-            "${REDIS[@]}" SET "auth:cred:${credential_id}" "$hash" > /dev/null
-            ttl="$("${REDIS[@]}" TTL "$match")"
-            [ "$ttl" -gt 0 ] && "${REDIS[@]}" EXPIRE "auth:cred:${credential_id}" "$ttl" > /dev/null
-            "${REDIS[@]}" HSET "$match" credential_id "$credential_id" \
-                device_id "$("${REDIS[@]}" HGET "$match" agent_id)" > /dev/null
+            rcli SET "auth:cred:${credential_id}" "$hash" > /dev/null
+            ttl="$(rcli TTL "$match")"
+            [ "$ttl" -gt 0 ] && rcli EXPIRE "auth:cred:${credential_id}" "$ttl" > /dev/null
+            rcli HSET "$match" credential_id "$credential_id" \
+                device_id "$(rcli HGET "$match" agent_id)" > /dev/null
             echo "[BACKFILLED] auth:cred:${credential_id}"
         elif [ "$count" -gt 1 ]; then
             echo "[REFUSED] auth:cred:${credential_id}: ${count} legacy records are ambiguous" >&2
         fi
-    done < <("${REDIS[@]}" ZRANGE auth:key_index 0 -1)
+    done < <(rcli ZRANGE auth:key_index 0 -1)
 }
 
 # The workspace record and owner member row, mirroring auth/workspace.py
@@ -226,15 +234,15 @@ backfill_credential_mappings() {
 # cortex-api had booted once.
 ensure_owner_member() {
     local now; now="$(now_iso)"
-    "${REDIS[@]}" HSETNX auth:workspace:current workspace_id "$WORKSPACE_ID" > /dev/null
-    "${REDIS[@]}" HSETNX auth:workspace:current owner_member_id "$OWNER_MEMBER_ID" > /dev/null
-    "${REDIS[@]}" HSETNX auth:workspace:current created_at "$now" > /dev/null
-    "${REDIS[@]}" HSETNX "auth:member:${OWNER_MEMBER_ID}" member_id "$OWNER_MEMBER_ID" > /dev/null
-    "${REDIS[@]}" HSETNX "auth:member:${OWNER_MEMBER_ID}" workspace_id "$WORKSPACE_ID" > /dev/null
-    "${REDIS[@]}" HSETNX "auth:member:${OWNER_MEMBER_ID}" role owner > /dev/null
-    "${REDIS[@]}" HSETNX "auth:member:${OWNER_MEMBER_ID}" status active > /dev/null
-    "${REDIS[@]}" HSETNX "auth:member:${OWNER_MEMBER_ID}" created_at "$now" > /dev/null
-    "${REDIS[@]}" ZADD auth:member_index NX "$(date -u +%s)" "$OWNER_MEMBER_ID" > /dev/null
+    rcli HSETNX auth:workspace:current workspace_id "$WORKSPACE_ID" > /dev/null
+    rcli HSETNX auth:workspace:current owner_member_id "$OWNER_MEMBER_ID" > /dev/null
+    rcli HSETNX auth:workspace:current created_at "$now" > /dev/null
+    rcli HSETNX "auth:member:${OWNER_MEMBER_ID}" member_id "$OWNER_MEMBER_ID" > /dev/null
+    rcli HSETNX "auth:member:${OWNER_MEMBER_ID}" workspace_id "$WORKSPACE_ID" > /dev/null
+    rcli HSETNX "auth:member:${OWNER_MEMBER_ID}" role owner > /dev/null
+    rcli HSETNX "auth:member:${OWNER_MEMBER_ID}" status active > /dev/null
+    rcli HSETNX "auth:member:${OWNER_MEMBER_ID}" created_at "$now" > /dev/null
+    rcli ZADD auth:member_index NX "$(date -u +%s)" "$OWNER_MEMBER_ID" > /dev/null
 }
 
 # Upgrade path for credentials with no recorded owner (2026-10-04).
@@ -255,10 +263,10 @@ attribute_legacy_credentials() {
     while IFS= read -r key; do
         [[ "$key" =~ ^auth:key:[0-9a-f]{64}$ ]] || continue
         hash="${key#auth:key:}"
-        wid="$("${REDIS[@]}" HGET "$key" workspace_id)"
-        mid="$("${REDIS[@]}" HGET "$key" member_id)"
-        cid="$("${REDIS[@]}" HGET "$key" credential_id)"
-        kid="$("${REDIS[@]}" HGET "$key" key_id)"
+        wid="$(rcli HGET "$key" workspace_id)"
+        mid="$(rcli HGET "$key" member_id)"
+        cid="$(rcli HGET "$key" credential_id)"
+        kid="$(rcli HGET "$key" key_id)"
         changes=()
         [ -n "$wid" ] || changes+=(workspace_id "$WORKSPACE_ID")
         [ -n "$mid" ] || changes+=(member_id "$OWNER_MEMBER_ID")
@@ -268,16 +276,16 @@ attribute_legacy_credentials() {
         fi
         [ -n "$kid" ] || changes+=(key_id "$cid")
         if [ "${#changes[@]}" -gt 0 ]; then
-            "${REDIS[@]}" HSET "$key" "${changes[@]}" > /dev/null
-            device="$("${REDIS[@]}" HGET "$key" device_id)"
-            [ -n "$device" ] || device="$("${REDIS[@]}" HGET "$key" agent_id)"
+            rcli HSET "$key" "${changes[@]}" > /dev/null
+            device="$(rcli HGET "$key" device_id)"
+            [ -n "$device" ] || device="$(rcli HGET "$key" agent_id)"
             echo "[ATTRIBUTED] credential ${cid} (device ${device:-?}) -> member ${mid:-$OWNER_MEMBER_ID}, workspace ${wid:-$WORKSPACE_ID}"
         fi
-        if [ -z "$("${REDIS[@]}" ZSCORE auth:key_index "$cid")" ]; then
-            "${REDIS[@]}" ZADD auth:key_index NX "$(date -u +%s)" "$cid" > /dev/null
+        if [ -z "$(rcli ZSCORE auth:key_index "$cid")" ]; then
+            rcli ZADD auth:key_index NX "$(date -u +%s)" "$cid" > /dev/null
             echo "[INDEXED] credential ${cid} was not in auth:key_index"
         fi
-    done < <("${REDIS[@]}" --scan --pattern 'auth:key:*')
+    done < <(rcli --scan --pattern 'auth:key:*')
 }
 
 MINTED=0
@@ -319,7 +327,7 @@ touch "$ENV_FILE"
 WORKSPACE_ID="$(ensure_deployment_id FIREKEEP_WORKSPACE_ID workspace)"
 OWNER_MEMBER_ID="$(ensure_deployment_id FIREKEEP_OWNER_MEMBER_ID member)"
 
-if ! "${REDIS[@]}" PING 2>/dev/null | grep -q PONG; then
+if ! rcli PING 2>/dev/null | grep -q PONG; then
     echo "ERROR: cannot reach Redis DB 7 via: ${REDIS[*]}" >&2
     echo "       (is the stack up? try: docker compose up -d redis)" >&2
     exit 1
@@ -346,15 +354,15 @@ ensure_env_key FIREKEEP_BRIDGE_KEY firekeep-bridge '["memory:read","memory:write
 # make the summary print the wrong one.
 
 ADMIN_MARKER="auth:bootstrap:admin_hash"
-ADMIN_HASH="$("${REDIS[@]}" GET "$ADMIN_MARKER")"
+ADMIN_HASH="$(rcli GET "$ADMIN_MARKER")"
 if [ -n "$ADMIN_HASH" ] && key_registered "$ADMIN_HASH"; then
-    ADMIN_CREDENTIAL_ID="$("${REDIS[@]}" HGET "auth:key:${ADMIN_HASH}" credential_id)"
+    ADMIN_CREDENTIAL_ID="$(rcli HGET "auth:key:${ADMIN_HASH}" credential_id)"
     echo "[OK] admin key already provisioned (credential_id ${ADMIN_CREDENTIAL_ID})"
 else
     ADMIN_KEY="$(mint_key)"
     ADMIN_HASH="$(sha256 "$ADMIN_KEY")"
     register_hash "$ADMIN_HASH" "admin" '["*"]'
-    "${REDIS[@]}" SET "$ADMIN_MARKER" "$ADMIN_HASH" > /dev/null
+    rcli SET "$ADMIN_MARKER" "$ADMIN_HASH" > /dev/null
     MINTED=$((MINTED + 1))
     echo ""
     echo "============================================================"
