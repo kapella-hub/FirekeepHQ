@@ -107,6 +107,11 @@ CAPTURED_2="$(printf '%s\n' "$OUT2" | grep -oE 'nxs_[0-9a-f]{48}' | head -n1 || 
 DBSIZE2="$(docker exec "$CONTAINER" redis-cli -n 7 DBSIZE)"
 [ "$DBSIZE1" = "$DBSIZE2" ] || { echo "FAIL: DBSIZE changed $DBSIZE1 -> $DBSIZE2"; exit 1; }
 echo "$OUT2" | grep -q 'RECONCILED' && { echo "FAIL: second run re-scoped a key"; echo "$OUT2"; exit 1; }
+echo "$OUT2" | grep -qE 'ATTRIBUTED|INDEXED' && { echo "FAIL: second run re-attributed a key"; echo "$OUT2"; exit 1; }
+# The owner member row validate_key now requires exists WITHOUT cortex having
+# booted: the FastMCP services never run ensure_workspace themselves.
+[ "$(docker exec "$CONTAINER" redis-cli -n 7 HGET "auth:member:${OWNER_MEMBER_ID}" status)" = "active" ]     || { echo "FAIL: bootstrap did not write the active owner member row"; exit 1; }
+[ "$(docker exec "$CONTAINER" redis-cli -n 7 HGET auth:workspace:current workspace_id)" = "$WORKSPACE_ID" ]     || { echo "FAIL: bootstrap did not write the workspace record"; exit 1; }
 
 # --- Run 3: an internal key minted before session:read:workspace existed ----
 # A deployment that minted FIREKEEP_INTERNAL_KEY before 2026-10-01 would keep
@@ -149,15 +154,81 @@ echo "$OUT4" | grep -q 'RECONCILED' && { echo "FAIL: reconciliation is not idemp
 # Restore the canonical set so the layout check below sees the declared scopes.
 docker exec "$CONTAINER" redis-cli -n 7 HSET "auth:key:${BRIDGE_HASH}" scopes     '["memory:read","memory:write","session:read","eval:read","eval:write","eval:grade","memory:write:delegated"]' > /dev/null
 
+# --- Run 6: credentials with no recorded owner (2026-10-04) -------------------
+# validate_key no longer hands an unattributed record to the owner; this script
+# must stamp the owner explicitly, and say so. The first record is exactly
+# what docs/DEPLOYMENT-OFFICE.md's rescue-key recipe wrote before 2026-10-04;
+# the second was never indexed (list_keys could not show it).
+RESCUE_KEY="nxs_$(openssl rand -hex 24)"
+RESCUE_HASH="$(printf '%s' "$RESCUE_KEY" | sha256sum | awk '{print $1}')"
+docker exec "$CONTAINER" redis-cli -n 7 HSET "auth:key:${RESCUE_HASH}"     agent_id rescue-admin scopes '["admin"]' created_at "2026-10-04T00:00:00Z"     key_id "${RESCUE_HASH:0:16}" > /dev/null
+docker exec "$CONTAINER" redis-cli -n 7 ZADD auth:key_index "$(date +%s)" "${RESCUE_HASH:0:16}" > /dev/null
+ORPHAN_HASH="$(printf 'orphan' | sha256sum | awk '{print $1}')"
+docker exec "$CONTAINER" redis-cli -n 7 HSET "auth:key:${ORPHAN_HASH}"     member_id member-bob scopes '["memory:read"]' > /dev/null
+GONE_HASH="$(printf 'gone' | sha256sum | awk '{print $1}')"
+docker exec "$CONTAINER" redis-cli -n 7 HSET "auth:key:${GONE_HASH}" \
+    workspace_id "$WORKSPACE_ID" member_id member-gone credential_id 00000000deadbeef \
+    key_id 00000000deadbeef scopes '["memory:read"]' > /dev/null
+
+# keys audit, BEFORE the attribution pass, through a Redis command that
+# refuses every write verb: the classifier must be read-only to the letter.
+GUARD="$(mktemp)"
+cat > "$GUARD" <<GUARD_EOF
+#!/usr/bin/env bash
+case "\$(printf '%s' "\${1:-}" | tr '[:lower:]' '[:upper:]')" in
+    HSET|HSETNX|HDEL|SET|DEL|ZADD|ZREM|EXPIRE|FLUSHDB) echo "WRITE BLOCKED: \$*" >&2; exit 99 ;;
+esac
+exec docker exec $CONTAINER redis-cli -n 7 "\$@"
+GUARD_EOF
+DBSIZE_PRE_AUDIT="$(docker exec "$CONTAINER" redis-cli -n 7 DBSIZE)"
+AUDIT1="$(BOOTSTRAP_REDIS_CMD="bash $GUARD" bash deploy/firekeep-admin keys audit 2>&1)" \
+    || { echo "FAIL: keys audit failed"; echo "$AUDIT1"; exit 1; }
+echo "$AUDIT1" | grep -q "WRITE BLOCKED" && { echo "FAIL: keys audit tried to write"; echo "$AUDIT1"; exit 1; }
+[ "$(docker exec "$CONTAINER" redis-cli -n 7 DBSIZE)" = "$DBSIZE_PRE_AUDIT" ] || { echo "FAIL: audit changed DBSIZE"; exit 1; }
+echo "$AUDIT1" | grep -E "^${RESCUE_HASH:0:16} .*unattributed: will be assigned to owner ${OWNER_MEMBER_ID}" > /dev/null \
+    || { echo "FAIL: audit did not flag the rescue key as unattributed"; echo "$AUDIT1"; exit 1; }
+echo "$AUDIT1" | grep -E "^00000000deadbeef .*refused: member member-gone is not active" > /dev/null \
+    || { echo "FAIL: audit did not flag a missing member"; echo "$AUDIT1"; exit 1; }
+echo "$AUDIT1" | grep -E "^${ORPHAN_HASH:0:16} .*not in auth:key_index" > /dev/null \
+    || { echo "FAIL: audit did not flag the unindexed record"; echo "$AUDIT1"; exit 1; }
+echo "$AUDIT1" | grep -qE "credential\(s\): [0-9]+ ok, 2 unattributed, 1 refused, 0 expired" \
+    || { echo "FAIL: audit summary wrong"; echo "$AUDIT1"; exit 1; }
+
+OUT6="$(bash deploy/bootstrap-keys.sh)"
+echo "$OUT6" | grep -q "\[ATTRIBUTED\] credential ${RESCUE_HASH:0:16} (device rescue-admin) -> member ${OWNER_MEMBER_ID}"     || { echo "FAIL: rescue key not attributed"; echo "$OUT6"; exit 1; }
+echo "$OUT6" | grep -q "\[INDEXED\] credential ${ORPHAN_HASH:0:16}"     || { echo "FAIL: unindexed record not indexed"; echo "$OUT6"; exit 1; }
+[ "$(docker exec "$CONTAINER" redis-cli -n 7 HGET "auth:key:${ORPHAN_HASH}" member_id)" = "member-bob" ]     || { echo "FAIL: attribution overwrote a member that was set"; exit 1; }
+echo "$OUT6" | grep -q '0 key(s) minted' || { echo "FAIL: attribution run minted keys"; echo "$OUT6"; exit 1; }
+OUT7="$(bash deploy/bootstrap-keys.sh)"
+echo "$OUT7" | grep -qE 'ATTRIBUTED|INDEXED' && { echo "FAIL: attribution is not idempotent"; echo "$OUT7"; exit 1; }
+AUDIT2="$(BOOTSTRAP_REDIS_CMD="bash $GUARD" bash deploy/firekeep-admin keys audit 2>&1)"
+echo "$AUDIT2" | grep -E "^${RESCUE_HASH:0:16} .* ok" > /dev/null \
+    || { echo "FAIL: attributed rescue key not ok in audit"; echo "$AUDIT2"; exit 1; }
+# 2 refused: member-gone, and the orphan — attribution filled its workspace
+# and credential id but never invents a member row for the member it names.
+echo "$AUDIT2" | grep -E "^${ORPHAN_HASH:0:16} .*refused: member member-bob is not active" > /dev/null \
+    || { echo "FAIL: audit did not flag the orphan's missing member"; echo "$AUDIT2"; exit 1; }
+echo "$AUDIT2" | grep -qE "0 unattributed, 2 refused" \
+    || { echo "FAIL: post-attribution audit summary wrong"; echo "$AUDIT2"; exit 1; }
+rm -f "$GUARD"
+
 # --- Layout check: the REAL validator accepts the bootstrapped key -----------
-"$PYTHON_BIN" - "$INTERNAL_KEY_1" "$RELAY_KEY_1" "$WORKSPACE_ID" "$OWNER_MEMBER_ID" "$BRIDGE_KEY_1" <<'PY'
-import asyncio, sys
+# Deliberately NO init_auth(): it runs ensure_workspace, which would write the
+# owner member row itself and hide a bootstrap that forgot to. Bridge, Relay
+# and Sentinel validate exactly like this — explicit client, no init.
+"$PYTHON_BIN" - "$INTERNAL_KEY_1" "$RELAY_KEY_1" "$WORKSPACE_ID" "$OWNER_MEMBER_ID" "$BRIDGE_KEY_1" "$RESCUE_KEY" <<'PY'
+import asyncio, os, sys
+os.environ["FIREKEEP_WORKSPACE_ID"] = sys.argv[3]
+os.environ["FIREKEEP_OWNER_MEMBER_ID"] = sys.argv[4]
 import redis.asyncio as aioredis
 from auth import middleware
 
 async def main():
     r = aioredis.from_url("redis://localhost:16379/7", decode_responses=True)
-    await middleware.init_auth(redis_client=r, enabled=True)
+    validate = middleware.validate_key
+    async def _validate(key):
+        return await validate(key, redis_client=r)
+    middleware.validate_key = _validate
     ident = await middleware.validate_key(sys.argv[1])
     assert ident is not None, "validate_key rejected the bootstrapped internal key"
     assert ident["workspace_id"] == sys.argv[3], ident
@@ -197,6 +268,11 @@ async def main():
     assert "admin" not in bridge["scopes"] and "*" not in bridge["scopes"], bridge
 
     assert await middleware.validate_key("nxs_" + "0" * 48) is None, "bogus key accepted"
+
+    rescue = await middleware.validate_key(sys.argv[6])
+    assert rescue is not None, "the attributed rescue key does not authenticate"
+    assert rescue["member_id"] == sys.argv[4], rescue
+    assert rescue["workspace_id"] == sys.argv[3], rescue
     assert ident["credential_id"] != __import__("hashlib").sha256(sys.argv[1].encode()).hexdigest()[:16]
     print(f"validate_key OK: member_id={ident['member_id']} scopes={sorted(ident['scopes'])}")
     print(f"validate_key OK: member_id={relay['member_id']} scopes={sorted(relay['scopes'])}")

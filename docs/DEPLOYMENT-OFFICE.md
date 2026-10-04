@@ -248,22 +248,31 @@ re-enrolled with fresh single-use invites.
    > a **403**, not a pass-through. Disabling auth to recover now costs you the
    > stack's protection and still does not mint a key.
 
-2. **Direct hash write** (if the script itself is unavailable) — a minimal
-   legacy-shaped record that `auth/keys.py`'s validation accepts via its
-   missing-field fallbacks. It is *not* an exact mirror of `create_key`
-   (which also writes `workspace_id`/`member_id`/`device_id`/`credential_id`,
-   an `auth:cred:{credential_id}` mapping, and indexes the zset by
-   credential_id); `bootstrap-keys.sh`'s `backfill_credential_mappings`
-   upgrades exactly this shape on its next run:
+2. **Direct hash write** (if the script itself is unavailable) — the same
+   record `create_key` writes, attributed to the deployment owner. Since
+   2026-10-04 `auth/keys.py` refuses a record with no
+   `workspace_id`/`member_id`/`credential_id` instead of quietly treating it as
+   the owner's, so all three must be written (cortex-api and
+   `bootstrap-keys.sh` would stamp them on their next run, but a rescue key is
+   needed *now*). The owner's member row must exist and be `active` — cortex-api
+   writes it on every boot; check with
+   `redis-cli -n 7 HGET auth:member:<FIREKEEP_OWNER_MEMBER_ID> status`:
    ```bash
    KEY="nxs_$(openssl rand -hex 24)"
    HASH=$(printf '%s' "$KEY" | sha256sum | cut -d' ' -f1)
+   CRED=$(openssl rand -hex 8)
+   WS=$(grep '^FIREKEEP_WORKSPACE_ID=' .env | cut -d= -f2-)
+   OWNER=$(grep '^FIREKEEP_OWNER_MEMBER_ID=' .env | cut -d= -f2-)
    docker compose exec redis redis-cli -n 7 HSET "auth:key:$HASH" \
-     agent_id rescue-admin scopes '["admin"]' \
-     created_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" key_id "${HASH:0:16}"
-   docker compose exec redis redis-cli -n 7 ZADD auth:key_index "$(date +%s)" "${HASH:0:16}"
-   echo "rescue admin key: $KEY"
+     workspace_id "$WS" member_id "$OWNER" device_id rescue-admin \
+     credential_id "$CRED" key_id "$CRED" scopes '["admin"]' \
+     created_at "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)"
+   docker compose exec redis redis-cli -n 7 SET "auth:cred:$CRED" "$HASH"
+   docker compose exec redis redis-cli -n 7 ZADD auth:key_index "$(date +%s)" "$CRED"
+   echo "rescue admin key: $KEY  (credential $CRED — revoke it when done)"
    ```
+   `deploy/firekeep-admin keys audit` (read-only) lists every stored credential
+   and whether it authenticates.
 
 **`DELETE /auth/keys/{key_id}` returns 409 (ambiguous key_id):** the short id
 matches more than one verified record and nothing was revoked. The colliding

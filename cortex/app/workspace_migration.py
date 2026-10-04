@@ -7,6 +7,7 @@ from qdrant_client.models import PayloadSchemaType
 from auth.workspace import (
     MEMORY_MIGRATION_KEY,
     WorkspaceMigrationError,
+    attribute_unowned_credentials,
     backfill_credentials,
     ensure_workspace,
 )
@@ -141,6 +142,11 @@ async def migrate_single_workspace(auth_redis, vector_client):
     entirely once the marker is present.
     """
     workspace = await ensure_workspace(auth_redis)
+    # Every boot, ahead of the marker: validate_key refuses an unattributed
+    # credential (2026-10-04), and such records can appear after the one-shot
+    # backfill ran (the rescue-key recipe, a partial restore). Logged per
+    # record; never overwrites a field that is set.
+    await attribute_unowned_credentials(auth_redis, workspace)
     if await auth_redis.get(MEMORY_MIGRATION_KEY):
         return workspace
     await backfill_credentials(auth_redis, workspace)

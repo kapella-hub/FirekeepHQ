@@ -16,6 +16,9 @@ set -euo pipefail
 # auth.keys.ENROLLABLE_SCOPES exactly (auth/tests/test_enrollable_scopes.py
 # parity check).
 NON_ADMIN_SCOPES='["dex:docdex", "dex:maildex", "eval:read", "eval:write", "memory:read", "memory:write", "relay:read", "relay:write", "replay:read", "session:read", "session:write", "vault:read"]'
+# Never minted here; listed so `keys audit` recognises them as known scopes.
+# Must equal auth.keys.SERVICE_ONLY_SCOPES (deploy/tests/test_firekeep_admin.sh).
+SERVICE_ONLY_SCOPES='["eval:grade", "session:read:workspace"]'
 API_URL="${FIREKEEP_API_URL:-http://localhost:8100}"
 ENV_FILE="${ENV_FILE:-.env}"
 IFS=' ' read -r -a REDIS <<< "${BOOTSTRAP_REDIS_CMD:-docker compose exec -T redis redis-cli -n 7}"
@@ -31,6 +34,9 @@ Usage:
             Used by `firekeep init` to enrol the server box against itself.
   firekeep-admin keys create --agent NAME [--expires-days N]
   firekeep-admin keys revoke CREDENTIAL_ID
+  firekeep-admin keys audit
+      READ-ONLY: classify every stored credential against the 2026-10-04
+      validation rules (attribution, member status, scope document, expiry).
 EOF
     exit 1
 }
@@ -161,6 +167,107 @@ keys_revoke() {
     printf '{"status":"revoked","credential_id":"%s"}\n' "$credential_id"
 }
 
+# Read-only classification of every auth:key:* record against what
+# auth/keys.py validate_key accepts since 2026-10-04 — run it BEFORE an upgrade
+# to see which credentials the stricter validator would refuse, and after one
+# to confirm nothing is left behind. Issues only GET/HGET/ZSCORE/SCAN: it
+# never writes. Verdicts:
+#   ok            authenticates as the member shown
+#   unattributed  no member/workspace/credential id. Used to be the owner's
+#                 silently; deploy/bootstrap-keys.sh (and cortex-api on every
+#                 boot) now stamp the deployment owner explicitly, so it keeps
+#                 working after the upgrade
+#   refused: ...  will NOT authenticate after the upgrade (another workspace,
+#                 an inactive/missing member, a malformed scope document, an
+#                 unreadable expiry) — revoke and re-issue it
+#   expired       already does not authenticate
+keys_audit() {
+    [ $# -eq 0 ] || usage
+    if [ "${FIREKEEP_ADMIN_DRY_RUN:-0}" = "1" ]; then
+        echo "AUDIT (local Redis DB 7, read-only)"
+        return
+    fi
+    redis_available || { echo "ERROR: Redis DB 7 is unreachable" >&2; exit 1; }
+
+    local workspace owner known now
+    workspace="$(env_get FIREKEEP_WORKSPACE_ID)"
+    [ -n "$workspace" ] || workspace="$("${REDIS[@]}" HGET auth:workspace:current workspace_id)"
+    owner="$(env_get FIREKEEP_OWNER_MEMBER_ID)"
+    [ -n "$owner" ] || owner="$("${REDIS[@]}" HGET auth:workspace:current owner_member_id)"
+    known=" $(printf '%s %s' "$NON_ADMIN_SCOPES" "$SERVICE_ONLY_SCOPES" | grep -oE '"[^"]*"' | tr -d '"' | tr '\n' ' ') admin * "
+    now="$(date -u +%s)"
+    local doc_re='^\[[[:space:]]*("[^"]*"[[:space:]]*(,[[:space:]]*"[^"]*"[[:space:]]*)*)?\]$'
+    local total=0 n_ok=0 n_attr=0 n_refused=0 n_expired=0
+    local key hash wid mid cid kid scopes exp device id verdict unknown s es status mws mmid notes
+
+    printf '%-16s  %-20s  %-40s  %s\n' CREDENTIAL DEVICE MEMBER VERDICT
+    while IFS= read -r key; do
+        [[ "$key" =~ ^auth:key:[0-9a-f]{64}$ ]] || continue
+        hash="${key#auth:key:}"
+        wid="$("${REDIS[@]}" HGET "$key" workspace_id)"
+        mid="$("${REDIS[@]}" HGET "$key" member_id)"
+        cid="$("${REDIS[@]}" HGET "$key" credential_id)"
+        kid="$("${REDIS[@]}" HGET "$key" key_id)"
+        scopes="$("${REDIS[@]}" HGET "$key" scopes)"
+        exp="$("${REDIS[@]}" HGET "$key" expires_at)"
+        device="$("${REDIS[@]}" HGET "$key" device_id)"
+        [ -n "$device" ] || device="$("${REDIS[@]}" HGET "$key" agent_id)"
+        id="${cid:-${kid:-${hash:0:16}}}"
+        [ -n "$scopes" ] || scopes='[]'
+        verdict="ok"; notes=""; total=$((total + 1))
+
+        if [ -n "$exp" ]; then
+            if ! [[ "$exp" =~ (Z|[+-][0-9]{2}:?[0-9]{2})$ ]] || ! es="$(date -u -d "$exp" +%s 2>/dev/null)"; then
+                verdict="refused: unreadable expiry '${exp}'"
+            elif [ "$es" -lt "$now" ]; then
+                verdict="expired"
+            fi
+        fi
+        if [ "$verdict" = "ok" ] && ! [[ "$scopes" =~ $doc_re ]]; then
+            verdict="refused: malformed scope document"
+        fi
+        if [ "$verdict" = "ok" ]; then
+            unknown=""
+            while IFS= read -r s; do
+                [ -n "$s" ] || continue
+                case "$known" in *" $s "*) ;; *) unknown="${unknown:+$unknown,}$s" ;; esac
+            done < <(printf '%s' "$scopes" | grep -oE '"[^"]*"' | tr -d '"' || true)
+            [ -z "$unknown" ] || notes="${notes} drops unknown scope(s) ${unknown};"
+            if [ -z "$wid" ] || [ -z "$mid" ] || [ -z "$cid" ]; then
+                verdict="unattributed: will be assigned to owner ${owner:-?}"
+            elif [ -n "$workspace" ] && [ "$wid" != "$workspace" ]; then
+                verdict="refused: belongs to workspace ${wid}"
+            else
+                status="$("${REDIS[@]}" HGET "auth:member:${mid}" status)"
+                mws="$("${REDIS[@]}" HGET "auth:member:${mid}" workspace_id)"
+                mmid="$("${REDIS[@]}" HGET "auth:member:${mid}" member_id)"
+                if [ "$status" != "active" ] || [ "$mws" != "$wid" ] || [ "$mmid" != "$mid" ]; then
+                    verdict="refused: member ${mid} is not active (row status '${status:-missing}')"
+                fi
+            fi
+        fi
+        [ -n "$("${REDIS[@]}" ZSCORE auth:key_index "$id")" ] || notes="${notes} not in auth:key_index;"
+        [ "$("${REDIS[@]}" GET "auth:cred:${id}")" = "$hash" ] || notes="${notes} no auth:cred mapping;"
+
+        case "$verdict" in
+            ok) n_ok=$((n_ok + 1)) ;;
+            unattributed*) n_attr=$((n_attr + 1)) ;;
+            expired) n_expired=$((n_expired + 1)) ;;
+            *) n_refused=$((n_refused + 1)) ;;
+        esac
+        printf '%-16s  %-20s  %-40s  %s%s\n' "$id" "${device:-?}" "${mid:--}" "$verdict" "${notes:+ |$notes}"
+    done < <("${REDIS[@]}" --scan --pattern 'auth:key:*')
+
+    echo ""
+    echo "${total} credential(s): ${n_ok} ok, ${n_attr} unattributed, ${n_refused} refused, ${n_expired} expired"
+    if [ "$n_attr" -gt 0 ]; then
+        echo "Unattributed credentials keep working: bash deploy/bootstrap-keys.sh (or a cortex-api restart) assigns them to the owner, logged."
+    fi
+    if [ "$n_refused" -gt 0 ]; then
+        echo "Refused credentials will NOT authenticate after this upgrade. Revoke and re-issue them: deploy/firekeep-admin keys revoke <CREDENTIAL>"
+    fi
+}
+
 invite() {
     local agent="" expires_days="" output_json=0 host="" base_url="" ssh_target=""
     local ca_file="" ca_mode="" insecure=0 local_only=0
@@ -270,6 +377,7 @@ case "${1:-}" in
         case "${2:-}" in
             create) shift 2; keys_create "$@" ;;
             revoke) shift 2; keys_revoke "$@" ;;
+            audit) shift 2; keys_audit "$@" ;;
             *) usage ;;
         esac
         ;;

@@ -854,6 +854,27 @@ credential. Tickets from an older server carry no member and are refused unspent
 (`unattributed`). Guarded by `cortex/tests/test_enroll_api.py` and, against real
 Redis, `test_enroll_redis_integration.py`.
 
+**Validation integrity — fixed, with a migration.** The same default lived in
+`validate_key_by_hash`: a stored record with no `member_id`/`workspace_id`
+authenticated as the deployment owner, the member's status was never read, an
+unparseable or naive `expires_at` meant "never expires", and the stored scope
+value was trusted — a dict or a string made `"*" in scopes` a key lookup or a
+substring test, so a stored `"x*"` was a wildcard. Now a record must name its
+workspace (this one), member and credential id; the member row must exist,
+match, and be `active`; the expiry must parse with a timezone; and the scope
+document must be a list of strings (unknown strings are dropped, not fatal,
+because legacy teammate keys carry the retired `twin:read`). Records that were
+relying on the owner fallback are stamped to the owner **explicitly and logged**
+by `deploy/bootstrap-keys.sh` before the services restart and by cortex-api on
+every boot; `deploy/firekeep-admin keys audit` reports, read-only, which
+credentials will authenticate. Residuals: there is still no member-removal path
+(status is enforced, but nothing yet sets it to anything but `active`);
+`auth:cred` reverse-mapping and index membership are not required; keys minted
+with `POST /auth/keys` belong to the owner by design. Guarded by
+`auth/tests/test_credential_validation_integrity.py`,
+`cortex/tests/test_workspace_backfill.py` and
+`deploy/tests/test_bootstrap_keys.sh`.
+
 ## 6. Threats, ranked
 
 | # | Threat | State |
@@ -877,7 +898,7 @@ Redis, `test_enroll_redis_integration.py`.
 | 16 | A memory's author is a self-asserted label; distillates of every member's sessions are attributed to the owner | **Mitigated 2026-10-04** — writes record the verified member and credential, contributors group by member inside the caller's workspace and visibility, and Bridge distils through the literal-scope `/memory/learn/delegated` naming the session's verified owner (§5.12; this closes row 15's "owner-attributed distillates"). Residuals: the one service key holding `memory:write:delegated` can name any active member; identical-text relearns name the latest writer |
 | 17 | A teammate key reads another member's replay timeline, events, context snapshots or evals | **Mitigated 2026-10-04** — every replay/eval read is filtered per event by the verified writer's stamp; unattributed history belongs to the deployment owner; service keys still compute all evals (§5.13). Residual: events can still be *written* into another member's session id and skew its in-process metrics |
 | 18 | A teammate key reads another member's Relay DMs, posts as her, or releases her leases; Relay writes scope decisions into Bridge as the owner | **Mitigated 2026-10-04** — every Relay record is owned by the verified member that wrote it and checked on read and mutation; scope decisions reach Bridge only with the owning member's key (§5.14). Member-bound operations require `relay:read`/`relay:write`, and the internal key's two Relay writes use the service-only `relay:write:service`. Residuals: first-come presence labels at upgrade, owner-only DMs to unbound labels, single-workspace reads |
-| 19 | A credential authenticates as a member it was not issued to (regenerated teammate device minted as the owner) | **Fixed 2026-10-04** — join codes carry their member, regeneration keeps the device's member, redemption re-checks the member atomically (§5.15) |
+| 19 | A credential authenticates as a member it was not issued to (regenerated teammate device minted as the owner; any unattributed record treated as the owner; a malformed scope document read as a wildcard) | **Fixed 2026-10-04** — join codes carry their member, regeneration keeps the device's member, redemption re-checks it atomically; validation reads attribution and member status and checks the scope document; legacy records are stamped to the owner explicitly and logged (§5.15). Residual: no member-removal path yet |
 
 Threat 5 deserves emphasis because it is the one the product's own design creates:
 Firekeep exists to make agents act on stored memory. Anything that can write a

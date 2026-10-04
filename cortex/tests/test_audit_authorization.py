@@ -101,7 +101,13 @@ def _client(application):
 
 async def _member_key(redis, device: str, member_id: str) -> dict:
     """A teammate credential: create_key mints for the owner, so re-stamp the
-    member on the stored record the way enrollment writes it."""
+    member on the stored record the way enrollment writes it. The member row
+    must exist and be active: validate_key refuses a credential whose member
+    is missing (2026-10-04); member invite acceptance writes it in production."""
+    await redis.hset(f"auth:member:{member_id}", mapping={
+        "member_id": member_id, "workspace_id": deployment_workspace_id(),
+        "role": "member", "status": "active",
+    })
     minted = await keys.create_key(device, sorted(keys.ENROLLABLE_SCOPES))
     await redis.hset(f"{keys._KEY_PREFIX}{keys._hash_key(minted['api_key'])}",
                      "member_id", member_id)

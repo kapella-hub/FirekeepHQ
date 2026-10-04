@@ -26,10 +26,18 @@ async def redis():
 
 
 async def _put(redis, key_hash: str, key_id: str, device_id: str) -> None:
-    """Write a credential record directly, bypassing create_key."""
+    """Write a credential record directly, bypassing create_key.
+
+    Legacy shape (no auth:cred mapping) but attributed: since 2026-10-04 a
+    record with no member/workspace/credential id is refused, and
+    bootstrap-keys.sh / the cortex boot pass stamp exactly these fields.
+    """
     await redis.hset(
         f"auth:key:{key_hash}",
         mapping={
+            "workspace_id": "workspace-local",
+            "member_id": "member-owner",
+            "credential_id": key_id,
             "device_id": device_id,
             "scopes": json.dumps(["memory:read"]),
             "created_at": "2026-07-30T00:00:00+00:00",

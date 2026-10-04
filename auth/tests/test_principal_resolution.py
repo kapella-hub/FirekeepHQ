@@ -12,8 +12,14 @@ from auth.principal import principal_from_scope
 
 
 @pytest.mark.asyncio
-async def test_credential_resolves_to_workspace_member_credential_and_no_agent():
+async def test_credential_resolves_to_workspace_member_credential_and_no_agent(monkeypatch):
+    monkeypatch.setenv("FIREKEEP_WORKSPACE_ID", "workspace-test")
     redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    await redis.hset(
+        "auth:member:member-alice",
+        mapping={"member_id": "member-alice", "workspace_id": "workspace-test",
+                 "role": "member", "status": "active"},
+    )
     secret = "nxs_" + "a" * 64
     key_hash = keys._hash_key(secret)
     record = keys.build_credential_record(

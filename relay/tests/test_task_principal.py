@@ -202,9 +202,16 @@ async def test_no_http_context_means_no_stamp_and_no_crash(monkeypatch, patched_
 
 @pytest.mark.asyncio
 async def test_rest_post_stamps_the_key_holder_through_the_real_middleware(
-    patched_redis, effects,
+    patched_redis, effects, monkeypatch,
 ):
+    # The deployment workspace and an active member row: validate_key refuses
+    # a credential whose workspace is not this deployment's or whose member
+    # row is missing (2026-10-04). Production writes the row at bootstrap/boot.
+    monkeypatch.setenv("FIREKEEP_WORKSPACE_ID", "ws-1")
     auth_redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    await auth_redis.hset("auth:member:member-owner", mapping={
+        "member_id": "member-owner", "workspace_id": "ws-1", "role": "owner", "status": "active",
+    })
     api_key = "nxs_" + "a" * 48
     record = build_credential_record(
         "cred-fleet", "firekeep-internal",
