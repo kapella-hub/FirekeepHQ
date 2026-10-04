@@ -23,6 +23,7 @@ from app.config import get_settings
 from app.pubsub import broadcast, get_backlog, get_active_channels
 from app.bulletin import post_bulletin, read_bulletin, get_bulletin_count
 from app.redis_client import get_redis
+from app.principal import Caller, RelayAccessError, caller_from_scope
 
 logger = logging.getLogger(__name__)
 
@@ -116,21 +117,86 @@ _VALID_RESOURCE_ID = re.compile(r'^[a-zA-Z0-9._: -]{1,200}$')
 _MAX_CONTENT_SIZE = 65536
 _MAX_LIMIT = 200
 
+# Claim release. ARGV[2..5] are app.leases.owner_args: enforce flag, caller
+# workspace, caller member, caller-is-deployment-owner. A claim records the
+# member that took it (THREAT-MODEL §5.14); a legacy claim with no owner is
+# releasable by the deployment owner alone until it expires.
 RELEASE_LUA = """
 local holder = redis.call('GET', KEYS[1])
 if not holder then return 0 end
 local data = cjson.decode(holder)
-if data.agent_id == ARGV[1] then
-    redis.call('DEL', KEYS[1])
-    return 1
-else
-    return -1
+if data.agent_id ~= ARGV[1] then return -1 end
+if ARGV[2] == '1' then
+    local om = data.owner_member
+    if type(om) == 'string' and om ~= '' then
+        if om ~= ARGV[4] or data.owner_workspace ~= ARGV[3] then return -1 end
+    elseif ARGV[5] ~= '1' then
+        return -1
+    end
 end
+redis.call('DEL', KEYS[1])
+return 1
 """
 
-async def _run_release_script(r, key: str, agent_id: str) -> int:
+async def _run_release_script(r, key: str, agent_id: str, caller: Caller | None = None) -> int:
     """Execute the atomic release Lua script. Returns 1 (released), 0 (not found), -1 (not owner)."""
-    return await r.eval(RELEASE_LUA, 1, key, agent_id)
+    from app.leases import owner_args
+    return await r.eval(RELEASE_LUA, 1, key, agent_id, *owner_args(caller))
+
+
+# ---------------------------------------------------------------------------
+# The verified caller (THREAT-MODEL §5.14)
+# ---------------------------------------------------------------------------
+
+_NO_PRINCIPAL = {
+    "error": "No verified principal: authentication is enabled but no identity is attached",
+    "status": "unauthorized",
+}
+
+
+def _http_request():
+    try:
+        return get_http_request()
+    except Exception:  # noqa: BLE001 — no HTTP context (in-memory client, tests)
+        return None
+
+
+def _caller() -> Caller | None:
+    """The verified caller of this tool call. ``agent_id`` / ``from_id`` /
+    ``sender`` / ``author`` / X-Agent-Id are labels and never reach this.
+    No HTTP context: the anonymous owner with auth disabled, None (refuse)
+    with auth enabled."""
+    req = _http_request()
+    return caller_from_scope(getattr(req, "scope", None) or {})
+
+
+def _caller_api_key() -> str | None:
+    """The caller's own X-API-Key, for a SYNCHRONOUS Bridge write made on its
+    behalf (scope decisions). Never logged, never stored."""
+    req = _http_request()
+    try:
+        return req.headers.get("x-api-key") or None
+    except Exception:  # noqa: BLE001 — a double without headers carries no key
+        return None
+
+
+def _bridge_key(caller: Caller) -> str | None:
+    """Which key a scope decision is written to Bridge with: the caller's own
+    with auth on; the configured relay key with auth off (unchanged)."""
+    return _caller_api_key() if caller.authenticated else get_settings().FIREKEEP_API_KEY
+
+
+def _forbidden(message: str) -> dict:
+    return {"error": message, "status": "forbidden"}
+
+
+async def _label_refusal(r, label: str, caller: Caller, field: str) -> dict | None:
+    from app.presence import label_held_by_other
+    if await label_held_by_other(r, label, caller):
+        return _forbidden(
+            f"{field} '{label}' is registered by another member; use your own agent label"
+        )
+    return None
 
 
 def _validate_name(name: str, field: str) -> str:
@@ -173,12 +239,19 @@ async def relay_broadcast(channel: str, content: str, sender: str = "anonymous",
         _validate_name(sender, "sender")
         if len(content) > _MAX_CONTENT_SIZE:
             return {"error": "Content too large (max 64KB)"}
+        caller = _caller()
+        if caller is None:
+            return dict(_NO_PRINCIPAL)
         r = await get_redis()
+        refused = await _label_refusal(r, sender, caller, "sender")
+        if refused:
+            return refused
         settings = get_settings()
         await broadcast(
             r, channel, content, sender, tags or [],
             backlog_size=settings.CHANNEL_BACKLOG_SIZE,
             backlog_ttl_seconds=settings.BULLETIN_TTL_HOURS * 3600,
+            by=caller.stamp(),
         )
         await _replay_emit("coordination", {"channel": channel, "message_summary": content[:200], "tags": tags or []}, agent_id=sender)
         return {"status": "sent", "channel": channel}
@@ -225,10 +298,16 @@ async def relay_post(content: str, author: str = "anonymous", tags: list[str] | 
         _validate_name(author, "author")
         if len(content) > _MAX_CONTENT_SIZE:
             return {"error": "Content too large (max 64KB)"}
+        caller = _caller()
+        if caller is None:
+            return dict(_NO_PRINCIPAL)
         r = await get_redis()
+        refused = await _label_refusal(r, author, caller, "author")
+        if refused:
+            return refused
         settings = get_settings()
         effective_ttl = ttl_hours if ttl_hours is not None else settings.BULLETIN_TTL_HOURS
-        post = await post_bulletin(r, content, author, tags or [], effective_ttl)
+        post = await post_bulletin(r, content, author, tags or [], effective_ttl, by=caller.stamp())
         await _replay_emit("coordination", {"channel": "bulletin", "message_summary": content[:200], "tags": tags or []}, agent_id=author)
         return {"status": "posted", "post": post}
     except Exception as e:
@@ -272,11 +351,16 @@ async def relay_claim(resource_id: str, agent_id: str = "default", ttl_minutes: 
     try:
         resource_id = _normalize_resource_id(resource_id)
         _validate_name(agent_id, "agent_id")
+        caller = _caller()
+        if caller is None:
+            return dict(_NO_PRINCIPAL)
         r = await get_redis()
         settings = get_settings()
         effective_ttl = ttl_minutes if ttl_minutes is not None else settings.CLAIM_TTL_MINUTES
         key = f"nr:claim:{resource_id}"
-        claim_data = json.dumps({"agent_id": agent_id, "timestamp": time.time()})
+        claim_data = json.dumps({
+            "agent_id": agent_id, "timestamp": time.time(), **caller.owner_fields(),
+        })
         acquired = await r.set(key, claim_data, nx=True, ex=effective_ttl * 60)
         if acquired:
             await _replay_emit("claim", {"resource_id": resource_id, "ttl_minutes": effective_ttl}, agent_id=agent_id)
@@ -306,10 +390,13 @@ async def relay_release(resource_id: str, agent_id: str = "default", fencing_tok
     try:
         resource_id = _normalize_resource_id(resource_id)
         _validate_name(agent_id, "agent_id")
+        caller = _caller()
+        if caller is None:
+            return dict(_NO_PRINCIPAL)
         r = await get_redis()
 
         from app.leases import release_lease
-        lease_result = await release_lease(r, resource_id, agent_id, fencing_token)
+        lease_result = await release_lease(r, resource_id, agent_id, fencing_token, caller=caller)
         if lease_result.get("released"):
             await _replay_emit("release", {"resource_id": resource_id}, agent_id=agent_id)
             return {"released": True, "resource_id": resource_id}
@@ -317,7 +404,7 @@ async def relay_release(resource_id: str, agent_id: str = "default", fencing_tok
             return lease_result
 
         key = f"nr:claim:{resource_id}"
-        result = await _run_release_script(r, key, agent_id)
+        result = await _run_release_script(r, key, agent_id, caller=caller)
         if result == 1:
             await _replay_emit("release", {"resource_id": resource_id}, agent_id=agent_id)
             return {"released": True, "resource_id": resource_id}
@@ -418,12 +505,15 @@ async def relay_lease(resource_id: str, agent_id: str = "default", ttl_minutes: 
     try:
         resource_id = _normalize_resource_id(resource_id)
         _validate_name(agent_id, "agent_id")
+        caller = _caller()
+        if caller is None:
+            return dict(_NO_PRINCIPAL)
         r = await get_redis()
         settings = get_settings()
         ttl_sec = (ttl_minutes if ttl_minutes else settings.CLAIM_TTL_MINUTES) * 60
 
         from app.leases import acquire_lease
-        result = await acquire_lease(r, resource_id, agent_id, ttl_sec)
+        result = await acquire_lease(r, resource_id, agent_id, ttl_sec, caller=caller)
 
         if result.get("acquired"):
             await _replay_emit("claim", {
@@ -452,11 +542,17 @@ async def relay_heartbeat(resource_id: str, fencing_token: int, agent_id: str = 
     """
     try:
         resource_id = _normalize_resource_id(resource_id)
+        caller = _caller()
+        if caller is None:
+            return dict(_NO_PRINCIPAL)
         r = await get_redis()
         settings = get_settings()
 
         from app.leases import heartbeat
-        return await heartbeat(r, resource_id, agent_id, fencing_token, settings.CLAIM_TTL_MINUTES * 60)
+        return await heartbeat(
+            r, resource_id, agent_id, fencing_token, settings.CLAIM_TTL_MINUTES * 60,
+            caller=caller,
+        )
     except Exception as e:
         logger.error("relay_heartbeat failed: %s", e)
         return {"error": str(e), "status": "unavailable"}
@@ -677,9 +773,15 @@ async def relay_register(
     """
     try:
         _validate_name(agent_id, "agent_id")
+        caller = _caller()
+        if caller is None:
+            return dict(_NO_PRINCIPAL)
         r = await get_redis()
         from app.presence import register
-        result = await register(r, agent_id, goal, hostname, session_id)
+        try:
+            result = await register(r, agent_id, goal, hostname, session_id, caller=caller)
+        except RelayAccessError as e:
+            return _forbidden(str(e))
         await _replay_emit("coordination", {
             "action": "presence_register",
             "hostname": hostname,
@@ -707,9 +809,12 @@ async def relay_heartbeat_presence(
     """
     try:
         _validate_name(agent_id, "agent_id")
+        caller = _caller()
+        if caller is None:
+            return dict(_NO_PRINCIPAL)
         r = await get_redis()
         from app.presence import heartbeat_presence
-        return await heartbeat_presence(r, agent_id, session_id, goal)
+        return await heartbeat_presence(r, agent_id, session_id, goal, caller=caller)
     except Exception as e:
         logger.error("relay_heartbeat_presence failed: %s", e)
         return {"error": str(e), "status": "unavailable"}
@@ -724,9 +829,12 @@ async def relay_deregister(agent_id: str) -> dict:
     """
     try:
         _validate_name(agent_id, "agent_id")
+        caller = _caller()
+        if caller is None:
+            return dict(_NO_PRINCIPAL)
         r = await get_redis()
         from app.presence import deregister
-        result = await deregister(r, agent_id)
+        result = await deregister(r, agent_id, caller=caller)
         await _replay_emit("coordination", {
             "action": "presence_deregister",
         }, agent_id=agent_id)
@@ -800,11 +908,14 @@ async def scope_start(
     """
     try:
         _validate_name(agent_id, "agent_id")
+        caller = _caller()
+        if caller is None:
+            return dict(_NO_PRINCIPAL)
         r = await get_redis()
         from app.scope import create_session
         return await create_session(
             r, agent_id=agent_id, goal=goal, origin="mcp",
-            project=project, bridge_session_id=bridge_session_id,
+            project=project, bridge_session_id=bridge_session_id, owner=caller,
         )
     except Exception as e:
         logger.error("scope_start failed: %s", e)
@@ -838,13 +949,18 @@ async def scope_ask(
         goal: Session goal (used only when scope_id is omitted)
     """
     try:
+        caller = _caller()
+        if caller is None:
+            return dict(_NO_PRINCIPAL)
         r = await get_redis()
-        from app.scope import create_session, mirror_screen, get_screens
+        from app.scope import create_session, mirror_screen, get_screens, require_owned_session
 
         if not scope_id:
             _validate_name(agent_id, "agent_id")
-            session = await create_session(r, agent_id=agent_id, goal=goal or screen.get("title", "Scoping"), origin="mcp")
+            session = await create_session(r, agent_id=agent_id, goal=goal or screen.get("title", "Scoping"), origin="mcp", owner=caller)
             scope_id = session["scope_id"]
+        else:
+            await require_owned_session(r, scope_id, caller)
 
         posted = await mirror_screen(r, scope_id, {**screen, "mode": "gating"})
         screen_id = posted["screen_id"]
@@ -853,10 +969,14 @@ async def scope_ask(
             current = await get_screens(r, scope_id)
             match = next((s for s in current if s["screen_id"] == screen_id), None)
             if match and match.get("status") == "resolved":
+                await _collect_decisions(r, scope_id, caller)
                 return {"status": "answered", "scope_id": scope_id, "screen_id": screen_id, "answers": match["answer"]["answers"]}
             await asyncio.sleep(_SCOPE_ASK_POLL_INTERVAL_SECONDS)
 
+        await _collect_decisions(r, scope_id, caller)
         return {"status": "pending", "scope_id": scope_id, "screen_id": screen_id}
+    except RelayAccessError as e:
+        return {"error": str(e), "status": "not_found"}
     except Exception as e:
         logger.error("scope_ask failed: %s", e)
         return {"error": str(e), "status": "unavailable"}
@@ -877,19 +997,38 @@ async def scope_post(
     Args: same as scope_ask, but this tool never blocks.
     """
     try:
+        caller = _caller()
+        if caller is None:
+            return dict(_NO_PRINCIPAL)
         r = await get_redis()
-        from app.scope import create_session, mirror_screen
+        from app.scope import create_session, mirror_screen, require_owned_session
 
         if not scope_id:
             _validate_name(agent_id, "agent_id")
-            session = await create_session(r, agent_id=agent_id, goal=goal or screen.get("title", "Scoping"), origin="mcp")
+            session = await create_session(r, agent_id=agent_id, goal=goal or screen.get("title", "Scoping"), origin="mcp", owner=caller)
             scope_id = session["scope_id"]
+        else:
+            await require_owned_session(r, scope_id, caller)
 
         posted = await mirror_screen(r, scope_id, {**screen, "mode": "async"})
         return {"status": "posted", "scope_id": scope_id, "screen_id": posted["screen_id"]}
+    except RelayAccessError as e:
+        return {"error": str(e), "status": "not_found"}
     except Exception as e:
         logger.error("scope_post failed: %s", e)
         return {"error": str(e), "status": "unavailable"}
+
+
+async def _collect_decisions(r, scope_id: str, caller: Caller) -> None:
+    """Write the owner's deferred scope decisions to Bridge with the owner's
+    own key (app.scope module docstring). Best-effort: never raises."""
+    try:
+        from app.scope import collect_deferred_decisions
+        await collect_deferred_decisions(
+            r, scope_id, bridge_url=get_settings().BRIDGE_URL, api_key=_bridge_key(caller),
+        )
+    except Exception as exc:  # noqa: BLE001 — the decision write is best-effort
+        logger.warning("deferred scope decision write failed for %s: %s", scope_id, exc)
 
 
 @mcp.tool()
@@ -900,12 +1039,19 @@ async def scope_check(scope_id: str) -> dict:
         scope_id: Session ID returned by scope_start/scope_ask/scope_post
     """
     try:
+        caller = _caller()
+        if caller is None:
+            return dict(_NO_PRINCIPAL)
         r = await get_redis()
-        from app.scope import get_screens
+        from app.scope import get_screens, require_owned_session
+        await require_owned_session(r, scope_id, caller)
+        await _collect_decisions(r, scope_id, caller)
         screens = await get_screens(r, scope_id)
         answered = {s["screen_id"]: s["answer"]["answers"] for s in screens if s.get("status") == "resolved"}
         pending = [s["screen_id"] for s in screens if s.get("status") != "resolved"]
         return {"scope_id": scope_id, "answered": answered, "pending": pending}
+    except RelayAccessError as e:
+        return {"error": str(e), "status": "not_found"}
     except Exception as e:
         logger.error("scope_check failed: %s", e)
         return {"error": str(e), "status": "unavailable"}
@@ -923,12 +1069,18 @@ async def scope_complete(scope_id: str) -> dict:
         scope_id: Session ID returned by scope_start/scope_ask/scope_post
     """
     try:
+        caller = _caller()
+        if caller is None:
+            return dict(_NO_PRINCIPAL)
         r = await get_redis()
-        from app.scope import complete_session
+        from app.scope import complete_session, require_owned_session
+        await require_owned_session(r, scope_id, caller)
         result = await complete_session(r, scope_id)
         if result is None:
             return {"error": f"Session {scope_id} not found", "status": "not_found"}
         return result
+    except RelayAccessError as e:
+        return {"error": str(e), "status": "not_found"}
     except Exception as e:
         logger.error("scope_complete failed: %s", e)
         return {"error": str(e), "status": "unavailable"}
@@ -956,9 +1108,19 @@ async def relay_send_dm(to_agent_id: str, content: str, from_id: str = "anonymou
         _validate_name(from_id, "from_id")
         if len(content) > _MAX_CONTENT_SIZE:
             return {"error": "Content too large (max 64KB)"}
+        caller = _caller()
+        if caller is None:
+            return dict(_NO_PRINCIPAL)
         r = await get_redis()
+        refused = await _label_refusal(r, from_id, caller, "from_id")
+        if refused:
+            return refused
         from app.dm import send_dm
-        msg = await send_dm(r, to_agent_id, content, from_id)
+        from app.presence import label_owner
+        msg = await send_dm(
+            r, to_agent_id, content, from_id,
+            by=caller.stamp(), to_owner=await label_owner(r, to_agent_id),
+        )
         await _replay_emit("coordination", {
             "action": "dm_sent",
             "to": to_agent_id,
@@ -974,6 +1136,9 @@ async def relay_send_dm(to_agent_id: str, content: str, from_id: str = "anonymou
 async def relay_get_dm(agent_id: str, unread_only: bool = False, limit: int = 20) -> dict:
     """Direct messages for an agent (newest first).
 
+    Returns only messages addressed to YOUR member (the member the label was
+    registered to when each was sent); another member's inbox reads empty.
+
     Args:
         agent_id: Inbox owner (messages sent TO you).
         unread_only: If true, only unread.
@@ -982,9 +1147,12 @@ async def relay_get_dm(agent_id: str, unread_only: bool = False, limit: int = 20
     try:
         _validate_name(agent_id, "agent_id")
         limit = min(limit, _MAX_LIMIT)
+        caller = _caller()
+        if caller is None:
+            return dict(_NO_PRINCIPAL)
         r = await get_redis()
         from app.dm import get_dms
-        messages = await get_dms(r, agent_id, unread_only, limit)
+        messages = await get_dms(r, agent_id, unread_only, limit, caller=caller)
         return {"agent_id": agent_id, "messages": messages, "count": len(messages)}
     except Exception as e:
         logger.error("relay_get_dm failed: %s", e)

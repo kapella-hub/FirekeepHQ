@@ -12,6 +12,14 @@ Fencing token flow:
     Agent B acquires lease → gets fencing_token=43
     Agent A (stale) tries to write with token=42
     System rejects: 42 < 43 → stale writer blocked
+
+Ownership (THREAT-MODEL §5.14, 2026-10-04). A lease records the verified
+``owner_workspace`` / ``owner_member`` that acquired it. Release and heartbeat
+require that member AND the holder label (as before) AND the fencing token —
+a token is a staleness guard, not a credential, and it is returned to anyone
+who asks ``relay_lease_status``. A legacy lease with no owner is releasable
+only by the deployment owner member until its TTL expires. With auth disabled
+the owner check is skipped (``enforce`` = 0), so that mode is unchanged.
 """
 
 from __future__ import annotations
@@ -21,6 +29,8 @@ import logging
 import time
 
 from redis.asyncio import Redis
+
+from app.principal import Caller, is_deployment_owner
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +45,8 @@ local fence_key = KEYS[2]
 local agent_id = ARGV[1]
 local ttl = tonumber(ARGV[2])
 local now = ARGV[3]
+local owner_workspace = ARGV[4] or ''
+local owner_member = ARGV[5] or ''
 
 -- Check if lease exists and is still held
 local existing = redis.call('GET', lease_key)
@@ -47,12 +59,17 @@ end
 local token = redis.call('INCR', fence_key)
 
 -- Create lease
-local data = cjson.encode({
+local lease = {
     holder_id = agent_id,
     fencing_token = token,
     acquired_at = now,
     ttl_seconds = ttl
-})
+}
+if owner_member ~= '' then
+    lease.owner_workspace = owner_workspace
+    lease.owner_member = owner_member
+end
+local data = cjson.encode(lease)
 redis.call('SET', lease_key, data, 'EX', ttl)
 return {1, data}
 """
@@ -71,6 +88,18 @@ end
 local data = cjson.decode(existing)
 if data.holder_id ~= agent_id then
     return -1  -- Not the holder
+end
+-- Verified-owner check: ARGV[3]=enforce, ARGV[4]=caller workspace,
+-- ARGV[5]=caller member, ARGV[6]=caller is the deployment owner
+if ARGV[3] == '1' then
+    local om = data.owner_member
+    if type(om) == 'string' and om ~= '' then
+        if om ~= ARGV[5] or data.owner_workspace ~= ARGV[4] then
+            return -3  -- Held by another member
+        end
+    elseif ARGV[6] ~= '1' then
+        return -3  -- Legacy lease: deployment owner only
+    end
 end
 if expected_token > 0 and data.fencing_token ~= expected_token then
     return -2  -- Token mismatch (stale reference)
@@ -96,6 +125,18 @@ local data = cjson.decode(existing)
 if data.holder_id ~= agent_id then
     return -1  -- Not the holder
 end
+-- Verified-owner check: ARGV[4]=enforce, ARGV[5]=caller workspace,
+-- ARGV[6]=caller member, ARGV[7]=caller is the deployment owner
+if ARGV[4] == '1' then
+    local om = data.owner_member
+    if type(om) == 'string' and om ~= '' then
+        if om ~= ARGV[6] or data.owner_workspace ~= ARGV[5] then
+            return -3  -- Held by another member
+        end
+    elseif ARGV[7] ~= '1' then
+        return -3  -- Legacy lease: deployment owner only
+    end
+end
 if data.fencing_token ~= expected_token then
     return -2  -- Token mismatch
 end
@@ -110,6 +151,22 @@ _FENCE_PREFIX = "nr:fence:"
 _WAITQ_PREFIX = "nr:waitq:"
 
 
+def owner_args(caller: Caller | None) -> list[str]:
+    """ARGV tail for the owner check: enforce flag, workspace, member, and
+    whether the caller is the deployment owner (who alone may act on a legacy
+    lease or claim). No caller (internal use) or auth disabled: not enforced."""
+    if caller is None or not caller.authenticated:
+        return ["0", "", "", "0"]
+    return [
+        "1", caller.workspace_id, caller.member_id,
+        "1" if is_deployment_owner(caller) else "0",
+    ]
+
+
+def _reason(result: int) -> str:
+    return {0: "no_active_lease", -1: "not_holder", -3: "not_owner"}.get(result, "token_mismatch")
+
+
 # ---------------------------------------------------------------------------
 # Public functions
 # ---------------------------------------------------------------------------
@@ -120,8 +177,9 @@ async def acquire_lease(
     resource_id: str,
     agent_id: str,
     ttl_seconds: int = 1800,
+    caller: Caller | None = None,
 ) -> dict:
-    """Acquire a lease on a resource.
+    """Acquire a lease on a resource, owned by ``caller``'s member when given.
 
     Returns:
         {acquired: True, fencing_token: int, ...} on success
@@ -131,9 +189,11 @@ async def acquire_lease(
     fence_key = f"{_FENCE_PREFIX}{resource_id}"
     now = str(time.time())
 
+    owner = caller.owner_fields() if caller is not None else {}
     result = await redis.eval(
         ACQUIRE_LEASE_LUA, 2, lease_key, fence_key,
         agent_id, str(ttl_seconds), now,
+        owner.get("owner_workspace", ""), owner.get("owner_member", ""),
     )
 
     acquired = result[0]
@@ -163,8 +223,10 @@ async def release_lease(
     resource_id: str,
     agent_id: str,
     fencing_token: int = 0,
+    caller: Caller | None = None,
 ) -> dict:
-    """Release a lease. Requires matching agent_id and optionally fencing_token.
+    """Release a lease. Requires matching agent_id and optionally fencing_token,
+    and — with ``caller`` — the member that acquired it.
 
     If fencing_token is 0, only agent_id is checked (backward-compatible).
     """
@@ -172,19 +234,14 @@ async def release_lease(
 
     result = await redis.eval(
         RELEASE_LEASE_LUA, 1, lease_key,
-        agent_id, str(fencing_token),
+        agent_id, str(fencing_token), *owner_args(caller),
     )
 
     if result == 1:
         # Notify wait queue
         await _notify_waitqueue(redis, resource_id)
         return {"released": True, "resource_id": resource_id}
-    elif result == 0:
-        return {"released": False, "reason": "no_active_lease"}
-    elif result == -1:
-        return {"released": False, "reason": "not_holder"}
-    else:
-        return {"released": False, "reason": "token_mismatch"}
+    return {"released": False, "reason": _reason(result)}
 
 
 async def heartbeat(
@@ -193,23 +250,20 @@ async def heartbeat(
     agent_id: str,
     fencing_token: int,
     ttl_seconds: int = 1800,
+    caller: Caller | None = None,
 ) -> dict:
-    """Extend a lease's TTL. Requires matching agent_id and fencing_token."""
+    """Extend a lease's TTL. Requires matching agent_id and fencing_token,
+    and — with ``caller`` — the member that acquired it."""
     lease_key = f"{_LEASE_PREFIX}{resource_id}"
 
     result = await redis.eval(
         HEARTBEAT_LUA, 1, lease_key,
-        agent_id, str(fencing_token), str(ttl_seconds),
+        agent_id, str(fencing_token), str(ttl_seconds), *owner_args(caller),
     )
 
     if result == 1:
         return {"extended": True, "resource_id": resource_id, "ttl_seconds": ttl_seconds}
-    elif result == 0:
-        return {"extended": False, "reason": "no_active_lease"}
-    elif result == -1:
-        return {"extended": False, "reason": "not_holder"}
-    else:
-        return {"extended": False, "reason": "token_mismatch"}
+    return {"extended": False, "reason": _reason(result)}
 
 
 async def get_lease_status(redis: Redis, resource_id: str) -> dict:

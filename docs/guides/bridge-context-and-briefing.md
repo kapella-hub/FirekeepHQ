@@ -288,13 +288,17 @@ session ends, and should pick a distinct `agent_id`. Member-namespaced pointer
 keys would remove that, at the cost of a pointer migration; not done here.
 
 **Relay's decision writes.** Relay persists FirekeepScope decisions through
-`POST /sessions/{agent_id}/context` with `RELAY_INTERNAL_API_KEY`, which carries
-the deployment owner's member. Those writes now land only in the owner's (and
-legacy) sessions: a teammate's `origin:"mcp"` scope decisions are refused
-with a `404` that Relay's best-effort `_persist_to_bridge` does not inspect,
-until Relay forwards the initiating member's credential. Refusing is deliberate — Relay takes the target `agent_id` from the
-scope session body, so a deputy scope here would let Bob write into Alice's
-shadow through a scope session named after her.
+`POST /sessions/{agent_id}/context`. Until 2026-10-04 it presented
+`RELAY_INTERNAL_API_KEY` (the deployment owner's member), so once sessions were
+member-bound every teammate's `origin:"mcp"` decision was refused here. Relay
+now presents the key of a principal that owns the scope session — the
+answerer's own key when the answerer is the owner, otherwise the owner's key
+when the owner's agent next collects the answer (`scope_ask`/`scope_check`) —
+so this route authorizes the write against the member whose session it is, and
+needs no change and no deputy scope. A deputy scope stays refused on purpose:
+the path's `agent_id` is a label, so one would let Bob write into Alice's
+shadow through a scope session named after her. See
+`docs/guides/relay-coordination.md` "Who owns what".
 
 Guards: `bridge/tests/test_session_ownership.py` (predicate + a fakeredis
 Bob-vs-Alice sweep over every tool), `test_rest_session_ownership.py`,

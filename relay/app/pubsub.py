@@ -15,9 +15,16 @@ async def broadcast(
     tags: list[str],
     backlog_size: int = 100,
     backlog_ttl_seconds: int = 86400,
+    by: dict | None = None,
 ):
-    """Publish message to channel + store in backlog."""
-    msg = json.dumps({"content": content, "sender": sender, "tags": tags, "timestamp": time.time()})
+    """Publish message to channel + store in backlog.
+
+    ``by`` is the verified principal stamp of the caller (app.principal);
+    ``sender`` stays a display label."""
+    message = {"content": content, "sender": sender, "tags": tags, "timestamp": time.time()}
+    if by is not None:
+        message["by"] = by
+    msg = json.dumps(message)
     # Publish to real-time subscribers
     await redis.publish(f"nr:channel:{channel}", msg)
     # Store in backlog for late joiners

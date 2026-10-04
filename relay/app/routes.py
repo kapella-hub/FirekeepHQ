@@ -1,4 +1,10 @@
-"""Starlette REST routes for dashboard access to presence, DMs, and status."""
+"""Starlette REST routes for dashboard access to presence, DMs, and status.
+
+Every route that reads a member's inbox, removes presence or touches a scope
+session authorizes against the VERIFIED caller (app.principal), never the
+path's ``agent_id`` label (THREAT-MODEL §5.14). The dashboard's ``["*"]`` key
+administers every member's records in its workspace.
+"""
 
 import json
 import logging
@@ -7,8 +13,15 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from app.presence import who_is_online, deregister
+from app.principal import Caller, RelayAccessError, caller_from_scope
 
 logger = logging.getLogger(__name__)
+
+_NO_PRINCIPAL = "No verified principal: authentication is enabled but no identity is attached"
+
+
+def _unauthorized() -> JSONResponse:
+    return JSONResponse({"error": _NO_PRINCIPAL}, status_code=401)
 
 
 # -- Handler functions (testable without Starlette) ---------------------
@@ -34,27 +47,38 @@ async def handle_get_single_presence(redis, agent_id: str) -> dict | None:
     return data
 
 
-async def handle_delete_presence(redis, agent_id: str) -> dict:
-    return await deregister(redis, agent_id)
+async def handle_delete_presence(redis, agent_id: str, caller: Caller | None = None) -> dict:
+    return await deregister(redis, agent_id, caller=caller)
 
 
 # -- DM handler functions -----------------------------------------------
 
-async def handle_get_dm(redis, agent_id: str, unread_only: bool = False) -> dict:
+async def handle_get_dm(redis, agent_id: str, unread_only: bool = False,
+                        caller: Caller | None = None) -> dict:
     from app.dm import get_dms
-    messages = await get_dms(redis, agent_id, unread_only)
+    messages = await get_dms(redis, agent_id, unread_only, caller=caller)
     return {"agent_id": agent_id, "messages": messages, "count": len(messages)}
 
 
-async def handle_post_dm(redis, agent_id: str, content: str, from_id: str) -> dict:
+async def handle_post_dm(redis, agent_id: str, content: str, from_id: str,
+                         caller: Caller | None = None) -> dict:
+    """Raises RelayAccessError when ``from_id`` is another member's bound label."""
     from app.dm import send_dm
-    msg = await send_dm(redis, agent_id, content, from_id)
+    from app.presence import label_held_by_other, label_owner
+    by = to_owner = None
+    if caller is not None:
+        if await label_held_by_other(redis, from_id, caller):
+            raise RelayAccessError(
+                f"from_id '{from_id}' is registered by another member; use your own agent label"
+            )
+        by, to_owner = caller.stamp(), await label_owner(redis, agent_id)
+    msg = await send_dm(redis, agent_id, content, from_id, by=by, to_owner=to_owner)
     return {"status": "sent", "message": msg}
 
 
-async def handle_mark_dm_read(redis, agent_id: str) -> dict:
+async def handle_mark_dm_read(redis, agent_id: str, caller: Caller | None = None) -> dict:
     from app.dm import mark_read
-    count = await mark_read(redis, agent_id)
+    count = await mark_read(redis, agent_id, caller=caller)
     return {"agent_id": agent_id, "marked_read": count}
 
 
@@ -189,49 +213,75 @@ async def handle_get_bulletin(redis, limit: int = 20) -> dict:
 
 # -- Scope (FirekeepScope) handler functions --------------------------------
 
-async def handle_post_scope_session(redis, *, agent_id: str, goal: str, origin: str, project=None, bridge_session_id=None, scope_id=None) -> dict:
+async def handle_post_scope_session(redis, *, agent_id: str, goal: str, origin: str, project=None,
+                                    bridge_session_id=None, scope_id=None,
+                                    caller: Caller | None = None) -> dict:
     from app.scope import create_session
     return await create_session(
         redis, agent_id=agent_id, goal=goal, origin=origin,
         project=project, bridge_session_id=bridge_session_id, scope_id=scope_id,
+        owner=caller,
     )
 
 
-async def handle_post_scope_screen(redis, scope_id: str, screen: dict) -> dict:
-    from app.scope import mirror_screen, get_session
-    session = await get_session(redis, scope_id)
+async def _scope_session_for(redis, scope_id: str, caller: Caller | None, *, admin_ok: bool) -> dict | None:
+    """The session, refusing (RelayAccessError, worded as not-found) one the
+    caller may not touch. ``caller=None`` is the unchecked internal path."""
+    from app.scope import get_session, require_owned_session
+    if caller is None:
+        return await get_session(redis, scope_id)
+    return await require_owned_session(redis, scope_id, caller, admin_ok=admin_ok)
+
+
+async def handle_post_scope_screen(redis, scope_id: str, screen: dict, caller: Caller | None = None) -> dict:
+    from app.scope import mirror_screen
+    session = await _scope_session_for(redis, scope_id, caller, admin_ok=False)
     if session is None:
         raise ValueError(f"Session {scope_id} not found")
     return await mirror_screen(redis, scope_id, screen)
 
 
-async def handle_get_scope_sessions(redis, status: str = "active", limit: int = 50) -> dict:
+async def handle_get_scope_sessions(redis, status: str = "active", limit: int = 50,
+                                    caller: Caller | None = None) -> dict:
     from app.scope import list_sessions
-    sessions = await list_sessions(redis, status=status, limit=limit)
+    sessions = await list_sessions(redis, status=status, limit=limit, caller=caller)
     return {"sessions": sessions, "count": len(sessions)}
 
 
-async def handle_get_scope_session(redis, scope_id: str) -> dict | None:
-    from app.scope import get_session, get_screens
-    session = await get_session(redis, scope_id)
+async def handle_get_scope_session(redis, scope_id: str, caller: Caller | None = None) -> dict | None:
+    from app.scope import get_screens
+    try:
+        session = await _scope_session_for(redis, scope_id, caller, admin_ok=True)
+    except RelayAccessError:
+        return None
     if session is None:
         return None
     session["screens"] = await get_screens(redis, scope_id)
     return session
 
 
-async def handle_post_scope_answer(redis, scope_id: str, screen_id: str, *, answers: dict, source: str) -> dict:
+async def handle_post_scope_answer(redis, scope_id: str, screen_id: str, *, answers: dict, source: str,
+                                   caller: Caller | None = None, caller_api_key: str | None = None) -> dict:
+    """Answer a screen as ``caller`` (its owner, or an admin key).
+
+    The Bridge decision write presents ``caller_api_key`` — the answerer's own
+    credential — and only when the answerer owns the session; an admin
+    answering a teammate's screen defers the write to the owner (app.scope).
+    The relay's configured key is used only with auth disabled, as before."""
     from app.scope import post_answer
     from app.config import get_settings
     settings = get_settings()
+    await _scope_session_for(redis, scope_id, caller, admin_ok=True)
+    api_key = caller_api_key if (caller is not None and caller.authenticated) else settings.FIREKEEP_API_KEY
     return await post_answer(
         redis, scope_id, screen_id, answers=answers, source=source,
-        bridge_url=settings.BRIDGE_URL, api_key=settings.FIREKEEP_API_KEY,
+        bridge_url=settings.BRIDGE_URL, api_key=api_key, answerer=caller,
     )
 
 
-async def handle_get_scope_events(redis, scope_id: str, since: int = 0) -> dict:
+async def handle_get_scope_events(redis, scope_id: str, since: int = 0, caller: Caller | None = None) -> dict:
     from app.scope import get_events
+    await _scope_session_for(redis, scope_id, caller, admin_ok=True)
     events = await get_events(redis, scope_id, since=since)
     return {"events": events, "count": len(events)}
 
@@ -270,8 +320,15 @@ async def route_get_single_presence(request: Request) -> JSONResponse:
 async def route_delete_presence(request: Request) -> JSONResponse:
     try:
         agent_id = request.path_params["agent_id"]
+        caller = caller_from_scope(request.scope)
+        if caller is None:
+            return _unauthorized()
         r = await _get_redis()
-        result = await handle_delete_presence(r, agent_id)
+        result = await handle_delete_presence(r, agent_id, caller=caller)
+        if result.get("reason") == "not_owner":
+            return JSONResponse(
+                {"error": f"presence '{agent_id}' belongs to another member"}, status_code=403,
+            )
         return JSONResponse(result)
     except Exception as e:
         logger.error("DELETE /presence/{agent_id} failed: %s", e)
@@ -282,8 +339,11 @@ async def route_get_dm(request: Request) -> JSONResponse:
     try:
         agent_id = request.path_params["agent_id"]
         unread_only = request.query_params.get("unread_only", "false").lower() == "true"
+        caller = caller_from_scope(request.scope)
+        if caller is None:
+            return _unauthorized()
         r = await _get_redis()
-        result = await handle_get_dm(r, agent_id, unread_only)
+        result = await handle_get_dm(r, agent_id, unread_only, caller=caller)
         return JSONResponse(result)
     except Exception as e:
         logger.error("GET /dm/{agent_id} failed: %s", e)
@@ -298,9 +358,14 @@ async def route_post_dm(request: Request) -> JSONResponse:
         from_id = body.get("from_id", "dashboard")
         if not content:
             return JSONResponse({"error": "content is required"}, status_code=400)
+        caller = caller_from_scope(request.scope)
+        if caller is None:
+            return _unauthorized()
         r = await _get_redis()
-        result = await handle_post_dm(r, agent_id, content, from_id)
+        result = await handle_post_dm(r, agent_id, content, from_id, caller=caller)
         return JSONResponse(result)
+    except RelayAccessError as e:
+        return JSONResponse({"error": str(e)}, status_code=403)
     except Exception as e:
         logger.error("POST /dm/{agent_id} failed: %s", e)
         return JSONResponse({"error": str(e)}, status_code=500)
@@ -309,8 +374,11 @@ async def route_post_dm(request: Request) -> JSONResponse:
 async def route_mark_dm_read(request: Request) -> JSONResponse:
     try:
         agent_id = request.path_params["agent_id"]
+        caller = caller_from_scope(request.scope)
+        if caller is None:
+            return _unauthorized()
         r = await _get_redis()
-        result = await handle_mark_dm_read(r, agent_id)
+        result = await handle_mark_dm_read(r, agent_id, caller=caller)
         return JSONResponse(result)
     except Exception as e:
         logger.error("POST /dm/{agent_id}/read failed: %s", e)
@@ -424,6 +492,9 @@ async def route_post_scope_session(request: Request) -> JSONResponse:
     from auth.asgi import require_scope_asgi, ScopeError
     try:
         require_scope_asgi(request, "relay:write")
+        caller = caller_from_scope(request.scope)
+        if caller is None:
+            return _unauthorized()
         body = await request.json()
         r = await _get_redis()
         result = await handle_post_scope_session(
@@ -434,10 +505,13 @@ async def route_post_scope_session(request: Request) -> JSONResponse:
             project=body.get("project"),
             bridge_session_id=body.get("bridge_session_id"),
             scope_id=body.get("scope_id"),
+            caller=caller,
         )
         return JSONResponse(result)
     except ScopeError as e:
         return JSONResponse({"error": e.detail}, status_code=e.status_code)
+    except RelayAccessError as e:
+        return JSONResponse({"error": str(e)}, status_code=404)
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
     except Exception as e:
@@ -449,10 +523,13 @@ async def route_post_scope_screen(request: Request) -> JSONResponse:
     from auth.asgi import require_scope_asgi, ScopeError
     try:
         require_scope_asgi(request, "relay:write")
+        caller = caller_from_scope(request.scope)
+        if caller is None:
+            return _unauthorized()
         scope_id = request.path_params["scope_id"]
         screen = await request.json()
         r = await _get_redis()
-        result = await handle_post_scope_screen(r, scope_id, screen)
+        result = await handle_post_scope_screen(r, scope_id, screen, caller=caller)
         return JSONResponse(result)
     except ScopeError as e:
         return JSONResponse({"error": e.detail}, status_code=e.status_code)
@@ -467,9 +544,12 @@ async def route_get_scope_sessions(request: Request) -> JSONResponse:
     from auth.asgi import require_scope_asgi, ScopeError
     try:
         require_scope_asgi(request, "relay:read")
+        caller = caller_from_scope(request.scope)
+        if caller is None:
+            return _unauthorized()
         status = request.query_params.get("status", "active")
         r = await _get_redis()
-        result = await handle_get_scope_sessions(r, status=status)
+        result = await handle_get_scope_sessions(r, status=status, caller=caller)
         return JSONResponse(result)
     except ScopeError as e:
         return JSONResponse({"error": e.detail}, status_code=e.status_code)
@@ -482,9 +562,12 @@ async def route_get_scope_session(request: Request) -> JSONResponse:
     from auth.asgi import require_scope_asgi, ScopeError
     try:
         require_scope_asgi(request, "relay:read")
+        caller = caller_from_scope(request.scope)
+        if caller is None:
+            return _unauthorized()
         scope_id = request.path_params["scope_id"]
         r = await _get_redis()
-        result = await handle_get_scope_session(r, scope_id)
+        result = await handle_get_scope_session(r, scope_id, caller=caller)
         if result is None:
             return JSONResponse({"error": "not found"}, status_code=404)
         return JSONResponse(result)
@@ -499,6 +582,9 @@ async def route_post_scope_answer(request: Request) -> JSONResponse:
     from auth.asgi import require_scope_asgi, ScopeError
     try:
         require_scope_asgi(request, "relay:write")
+        caller = caller_from_scope(request.scope)
+        if caller is None:
+            return _unauthorized()
         scope_id = request.path_params["scope_id"]
         screen_id = request.path_params["screen_id"]
         body = await request.json()
@@ -506,6 +592,7 @@ async def route_post_scope_answer(request: Request) -> JSONResponse:
         result = await handle_post_scope_answer(
             r, scope_id, screen_id,
             answers=body.get("answers", {}), source=body.get("source", "dashboard"),
+            caller=caller, caller_api_key=request.headers.get("x-api-key") or None,
         )
         if not result["resolved"]:
             return JSONResponse(result, status_code=409)
@@ -524,16 +611,21 @@ async def route_get_scope_events(request: Request) -> JSONResponse:
     from auth.asgi import require_scope_asgi, ScopeError
     try:
         require_scope_asgi(request, "relay:read")
+        caller = caller_from_scope(request.scope)
+        if caller is None:
+            return _unauthorized()
         scope_id = request.path_params["scope_id"]
         try:
             since = int(request.query_params.get("since", "0"))
         except (ValueError, TypeError):
             since = 0
         r = await _get_redis()
-        result = await handle_get_scope_events(r, scope_id, since=since)
+        result = await handle_get_scope_events(r, scope_id, since=since, caller=caller)
         return JSONResponse(result)
     except ScopeError as e:
         return JSONResponse({"error": e.detail}, status_code=e.status_code)
+    except RelayAccessError as e:
+        return JSONResponse({"error": str(e)}, status_code=404)
     except Exception as e:
         logger.error("GET /scope/sessions/{scope_id}/events failed: %s", e)
         return JSONResponse({"error": str(e)}, status_code=500)
