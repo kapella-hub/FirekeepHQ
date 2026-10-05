@@ -912,21 +912,27 @@ start event with no stamp — Bridge's `GET /sessions/{id}` with the internal ke
 now returns `owner_member`/`owner_workspace`. That fallback exists because Bridge
 began stamping start events on 2026-10-04, in the same deploy: without it every
 session in flight at that deploy would fall to the legacy rule and its own member's
-events would be re-filed, changing what eval compute grades. Steady-state cost on the
-recall path is a dict lookup; a cold session costs three replay Redis round trips
-once per process. Eval compute and `_trigger_eval` are untouched. One rule decides
+events would be re-filed, changing what eval compute grades. The Bridge read never
+runs inside a request: it is scheduled in the background (at most 4 in flight, 0.5 s
+hard timeout, a failed read not retried for that session for 30 s) and the emit that
+scheduled it keeps its claimed id; later emits use the cached answer. So recall
+latency does not depend on Bridge: a cached session is a dict lookup, a cold one
+three replay Redis round trips once per process. Eval compute and `_trigger_eval` are untouched. One rule decides
 ownership in both services: `auth.principal.owns_session`, which Bridge's
 `session_owned_by` now delegates to. Bridge's own emits were already owner-stamped
 after its ownership checks — not a gap. Auth-disabled mode checks nothing. Guarded by
 `cortex/tests/test_session_ownership_writes.py`, `auth/tests/test_owns_session.py`
 and `bridge/tests/test_rest_session_ownership.py`.
 
-**Residuals.** Replay attribution fails **open** when the owner cannot be resolved
-(Bridge unreachable, `FIREKEEP_INTERNAL_KEY` missing or without
-`session:read:workspace`): failing closed would re-file every legitimate event of
-every cold-cache unstamped session during an outage. That window covers only sessions
-whose start event carries no stamp; it is logged and counted
-(`session_owner.get_stats()["unresolved"]`), and readers still hide foreign events.
+**Residuals.** Replay attribution fails **open** while the owner is not known: the
+first emit of each unstamped session in each process (its Bridge read is still in
+flight), every emit while that read keeps failing (Bridge unreachable,
+`FIREKEEP_INTERNAL_KEY` missing or without `session:read:workspace`), and emits
+dropped past the in-flight bound. Failing closed would re-file legitimate events of
+in-flight sessions; blocking would put Bridge on the recall path. The window covers
+only sessions whose start event carries no stamp; it is logged and counted
+(`session_owner.get_stats()["unresolved"]`, `["bridge_saturated"]`), and readers
+still hide foreign events.
 A Bridge 404 — a session Bridge does not know, an expired one, or one in another
 workspace than the internal key's — falls to the legacy rule (deployment owner only);
 for an unstamped session in a second workspace that re-files its own member's events.
@@ -1036,7 +1042,7 @@ refused), `cortex/tests/test_member_removal_cli.py`,
 | 17 | A teammate key reads another member's replay timeline, events, context snapshots or evals | **Mitigated 2026-10-04** — every replay/eval read is filtered per event by the verified writer's stamp; unattributed history belongs to the deployment owner; service keys still compute all evals (§5.13). The write-side residual (events written into another member's session id) was fixed 2026-10-05 (§5.16, row 20) |
 | 18 | A teammate key reads another member's Relay DMs, posts as her, or releases her leases; Relay writes scope decisions into Bridge as the owner | **Mitigated 2026-10-04** — every Relay record is owned by the verified member that wrote it and checked on read and mutation; scope decisions reach Bridge only with the owning member's key (§5.14). Member-bound operations require `relay:read`/`relay:write`, and the internal key's two Relay writes use the service-only `relay:write:service`. Residuals: first-come presence labels at upgrade, owner-only DMs to unbound labels, single-workspace reads |
 | 19 | A credential authenticates as a member it was not issued to (regenerated teammate device minted as the owner; any unattributed record treated as the owner; a malformed scope document read as a wildcard) | **Fixed 2026-10-04** — join codes carry their member, regeneration keeps the device's member, redemption re-checks it atomically; validation reads attribution and member status and checks the scope document; legacy records are stamped to the owner explicitly and logged (§5.15). Member removal: row 21 |
-| 20 | A member key queues skill synthesis of a teammate's session (the worker reads it with the internal key and files a draft every `memory:read` holder sees), or writes replay events under a teammate's session id to skew her evals, OWM and patterns | **Fixed 2026-10-05** — `/skill/evaluate` presents the caller's key to Bridge and queues nothing unless Bridge lets it read the session (404 otherwise, 503 if Bridge is down); a request-path replay event or gateway action naming a session its verified writer does not own is filed under `"unknown"` (§5.16). Residual: attribution fails open while the owner of an unstamped session cannot be resolved |
+| 20 | A member key queues skill synthesis of a teammate's session (the worker reads it with the internal key and files a draft every `memory:read` holder sees), or writes replay events under a teammate's session id to skew her evals, OWM and patterns | **Fixed 2026-10-05** — `/skill/evaluate` presents the caller's key to Bridge and queues nothing unless Bridge lets it read the session (404 otherwise, 503 if Bridge is down); a request-path replay event or gateway action naming a session its verified writer does not own is filed under `"unknown"` (§5.16). Residual: attribution fails open while the owner of an unstamped session is not yet known (its Bridge read runs off the request path) or cannot be resolved |
 | 21 | A person who has left keeps working credentials or an outstanding join code, and there is no way to remove them | **Fixed 2026-10-05** — admin-only removal (REST, dashboard, `firekeep-admin`) flips the member to `removed` (every service refuses their keys on the next request; no auth cache exists), deletes every credential naming them, and cancels their join codes; the owner can never be removed; restore brings back the same member with a new code (§5.17). Residuals: member-private data is retained (operator-visible as before, readable by no member) with no purge tool; a removed member's `maildex.<id>` app password stays in the vault until an operator deletes it |
 
 Threat 5 deserves emphasis because it is the one the product's own design creates:

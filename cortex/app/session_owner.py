@@ -26,16 +26,28 @@ Owner resolution, cheapest first:
    Without this step those sessions would fall to the legacy rule and their
    own members' events would be re-filed — changing what eval compute grades.
 
+   **Never on the request path.** Every emit is awaited inside the recall /
+   learn / gateway request, so the Bridge read is SCHEDULED as a background
+   task and the emit that triggered it gets ``None`` (unresolved: the claimed
+   id is kept, counted). The task fills the cache for the session's later
+   emits. Bounded three ways so Bridge can neither slow Cortex nor be fanned
+   out into: a hard ``RESOLVER_TIMEOUT_SECONDS`` per read, at most
+   ``MAX_BRIDGE_LOOKUPS`` in flight (more are dropped and counted), and an
+   unresolvable answer is remembered for ``_UNRESOLVED_TTL_SECONDS`` so an
+   outage costs one read per session per window, not one per request.
+
 A session neither source can name (Bridge 404, or a legacy session with no
 recorded owner) belongs to the deployment owner — ``auth.principal.
-owns_session``'s legacy rule, the one Bridge applies. A session that cannot be
-resolved at all (Bridge unreachable, misconfigured key, an older Bridge) is
-``None``: callers decide. Replay attribution fails OPEN on it (the claimed id
-is kept and counted), ``POST /skill/evaluate`` does not use this resolver.
+owns_session``'s legacy rule, the one Bridge applies. A session not resolved
+YET, or not resolvable (Bridge unreachable, misconfigured key, an older
+Bridge), is ``None``: replay attribution fails OPEN on it. ``POST
+/skill/evaluate`` does not use this resolver (it asks Bridge synchronously with
+the caller's key and fails closed).
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections import OrderedDict
@@ -61,16 +73,23 @@ _SESSION_START_EVENT_TYPES = ("session_start", "session.started")
 
 _OWNER_TTL_SECONDS = 6 * 3600
 _UNKNOWN_TTL_SECONDS = 60
+_UNRESOLVED_TTL_SECONDS = 30
 _CACHE_MAX = 4096
 # Bridge's ctx_complete_session waits 5s for POST /skill/evaluate, and the
-# skill route's own Bridge read must fit inside that.
+# skill route's own (synchronous, fail-closed) Bridge read must fit inside it.
 BRIDGE_TIMEOUT_SECONDS = 2.0
+# The background owner read: Bridge is on the same host/network.
+RESOLVER_TIMEOUT_SECONDS = 0.5
+MAX_BRIDGE_LOOKUPS = 4
 
 _cache: OrderedDict[str, tuple["SessionOwner", float]] = OrderedDict()
+_unresolved: OrderedDict[str, float] = OrderedDict()
+_pending: dict[str, asyncio.Task] = {}
 _stats: dict[str, int] = {
     "reattributed": 0,
     "unresolved": 0,
     "bridge_lookups": 0,
+    "bridge_saturated": 0,
 }
 
 
@@ -95,6 +114,14 @@ def get_stats() -> dict[str, int]:
 
 def reset_cache() -> None:
     _cache.clear()
+    _unresolved.clear()
+    _pending.clear()
+
+
+async def drain_bridge_lookups() -> None:
+    """Wait for every scheduled Bridge owner read (tests; orderly shutdown)."""
+    while _pending:
+        await asyncio.gather(*list(_pending.values()), return_exceptions=True)
 
 
 def bridge_client(timeout: float = BRIDGE_TIMEOUT_SECONDS) -> httpx.AsyncClient:
@@ -146,17 +173,22 @@ async def _owner_from_replay(session_id: str) -> SessionOwner | None:
 async def _owner_from_bridge(
     session_id: str, settings: Any,
 ) -> tuple[SessionOwner | None, float]:
-    """(owner, cache ttl). ``(None, 0)`` = unresolvable, never cached."""
+    """(owner, cache ttl). ``(None, 0)`` = unresolvable."""
     from app.skills import internal_key_headers
 
     _stats["bridge_lookups"] += 1
     try:
-        async with bridge_client() as client:
-            response = await client.get(
-                bridge_session_url(settings.BRIDGE_URL, session_id),
-                headers=internal_key_headers(settings.FIREKEEP_INTERNAL_KEY),
+        async with bridge_client(RESOLVER_TIMEOUT_SECONDS) as client:
+            # wait_for, not just the client timeout: the bound must hold
+            # whatever the transport does.
+            response = await asyncio.wait_for(
+                client.get(
+                    bridge_session_url(settings.BRIDGE_URL, session_id),
+                    headers=internal_key_headers(settings.FIREKEEP_INTERNAL_KEY),
+                ),
+                RESOLVER_TIMEOUT_SECONDS,
             )
-    except Exception as exc:  # noqa: BLE001 — unreachable is "unresolved"
+    except Exception as exc:  # noqa: BLE001 — unreachable/slow is "unresolved"
         logger.warning("Session owner lookup: Bridge unreachable for %s: %s", session_id, exc)
         return None, 0
     if response.status_code == 404:
@@ -181,21 +213,69 @@ async def _owner_from_bridge(
     )
 
 
+def _recently_unresolved(session_id: str) -> bool:
+    until = _unresolved.get(session_id)
+    if until is None:
+        return False
+    if until < time.monotonic():
+        _unresolved.pop(session_id, None)
+        return False
+    return True
+
+
+def _mark_unresolved(session_id: str) -> None:
+    _unresolved[session_id] = time.monotonic() + _UNRESOLVED_TTL_SECONDS
+    _unresolved.move_to_end(session_id)
+    while len(_unresolved) > _CACHE_MAX:
+        _unresolved.popitem(last=False)
+
+
+async def _resolve_through_bridge(session_id: str, settings: Any) -> None:
+    try:
+        owner, ttl = await _owner_from_bridge(session_id, settings)
+        if owner is None:
+            _mark_unresolved(session_id)
+        else:
+            _remember(session_id, owner, ttl)
+    except Exception as exc:  # noqa: BLE001 — a background read never raises
+        logger.warning("Session owner lookup failed for %s: %s", session_id, exc)
+        _mark_unresolved(session_id)
+    finally:
+        _pending.pop(session_id, None)
+
+
+def _schedule_bridge_lookup(session_id: str, settings: Any) -> None:
+    """Start a background Bridge read for ``session_id`` unless one is running,
+    one failed within ``_UNRESOLVED_TTL_SECONDS``, or ``MAX_BRIDGE_LOOKUPS``
+    are already in flight (dropped and counted: a flood of fresh session ids
+    must not fan out into Bridge)."""
+    if session_id in _pending or _recently_unresolved(session_id):
+        return
+    if len(_pending) >= MAX_BRIDGE_LOOKUPS:
+        _stats["bridge_saturated"] += 1
+        return
+    if settings is None:
+        from app.config import get_settings
+        settings = get_settings()
+    _pending[session_id] = asyncio.get_running_loop().create_task(
+        _resolve_through_bridge(session_id, settings))
+
+
 async def resolve_session_owner(session_id: str, *, settings: Any = None) -> SessionOwner | None:
-    """The recorded owner of ``session_id``, or None when it cannot be resolved."""
+    """The recorded owner of ``session_id``, or None when it is not known yet.
+
+    Request-path safe: at most the replay-store lookup is awaited. When that
+    does not name an owner, a background Bridge read is scheduled and this call
+    returns None; the read fills the cache for later calls.
+    """
     owner = _cached(session_id)
     if owner is not None:
         return owner
     owner = await _owner_from_replay(session_id)
     if owner is not None:
         return _remember(session_id, owner, _OWNER_TTL_SECONDS)
-    if settings is None:
-        from app.config import get_settings
-        settings = get_settings()
-    owner, ttl = await _owner_from_bridge(session_id, settings)
-    if owner is None:
-        return None
-    return _remember(session_id, owner, ttl)
+    _schedule_bridge_lookup(session_id, settings)
+    return None
 
 
 async def attributable_session_id(
@@ -214,8 +294,9 @@ async def attributable_session_id(
     Nothing is checked — the id passes through unchanged — when auth is
     disabled (every caller is the deployment owner, rule 4), when there is no
     verified writer, for the sentinel ids, for the session-opening events, and
-    when replay is off (the event would be dropped anyway). An UNRESOLVABLE
-    owner fails open: the claimed id is kept and counted in ``unresolved``.
+    when replay is off (the event would be dropped anyway). An owner not
+    resolved yet (its Bridge read runs in the background) or unresolvable fails
+    open: the claimed id is kept and counted in ``unresolved``.
     """
     try:
         if not _auth_keys._AUTH_ENABLED or not member_id:
