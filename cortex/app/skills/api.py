@@ -86,6 +86,65 @@ def _require_review_authority(identity: dict[str, Any], what: str) -> None:
         )
 
 
+async def _verify_caller_can_read_session(
+    settings: Any, request: Request, identity: dict[str, Any], session_id: str,
+) -> None:
+    """Refuse (404) a caller who cannot read ``session_id`` in Bridge.
+
+    Before 2026-10-05 POST /skill/evaluate queued synthesis for ANY session id:
+    the worker then read that session with the internal key and wrote a draft
+    built from it into the review queue every memory:read holder lists, so a
+    member could publish a teammate's session as a skill draft
+    (docs/THREAT-MODEL.md §5.16).
+
+    The caller's OWN key is presented to Bridge's GET /sessions/{id}, so the
+    answer is Bridge's ``session_owned_by`` verbatim — the owner passes; a
+    workspace-wide reader (FIREKEEP_INTERNAL_KEY, the "*" dashboard/owner keys
+    via session:read:workspace) passes within its workspace; a legacy session
+    passes only for the deployment owner; anyone else gets Bridge's 404, which
+    is reported as 404 so a guessed id discloses nothing. Bridge's own call
+    (ctx_complete_session forwards the completing caller's key, #47) is the
+    owner's. An ``admin`` key passes without the round trip: it administers
+    the review queue this route feeds.
+
+    Fail closed: Bridge unreachable or erroring is 503, never a pass. With auth
+    disabled every caller is the deployment owner and nothing is checked.
+    """
+    if not _auth_keys._AUTH_ENABLED:
+        return
+    if _auth_keys.scopes_allow(identity.get("scopes", []), "admin"):
+        return
+    caller_key = (request.headers.get("X-API-Key") or "").strip()
+    if not identity.get("authenticated") or not caller_key:
+        raise HTTPException(status_code=401, detail="Verified caller credential is unavailable")
+
+    from app.session_owner import bridge_client, bridge_session_url
+
+    try:
+        async with bridge_client() as client:
+            response = await client.get(
+                bridge_session_url(settings.BRIDGE_URL, session_id),
+                headers={"X-API-Key": caller_key},
+            )
+    except Exception as exc:  # noqa: BLE001 — unreachable must not mean "allowed"
+        logger.warning("POST /skill/evaluate: Bridge session check failed for %s: %s",
+                       session_id, exc)
+        raise HTTPException(
+            status_code=503,
+            detail="Session authorization is temporarily unavailable; nothing was queued",
+        ) from exc
+    if response.status_code == 200:
+        return
+    if response.status_code in (401, 403, 404):
+        raise HTTPException(status_code=404, detail="Session not found")
+    logger.warning("POST /skill/evaluate: Bridge answered HTTP %d for %s",
+                   response.status_code, session_id)
+    raise HTTPException(
+        status_code=503,
+        detail="Session authorization is temporarily unavailable; nothing was queued",
+    )
+
+
 async def _load_owned_skill(
     vector: VectorClient, settings: Any, skill_id: str, identity: dict[str, Any],
 ) -> Any:
@@ -134,17 +193,23 @@ def create_skills_router(
 
     from app.main import get_vector  # imported here to avoid circular at module load
 
-    @router.post("/skill/evaluate", status_code=202,
-                 dependencies=[Depends(_skill_evaluate)])
+    @router.post("/skill/evaluate", status_code=202)
     async def evaluate_session(
         req: SkillEvaluateRequest,
+        request: Request,
         background: BackgroundTasks,
+        identity: dict = Depends(_skill_evaluate),
         vector: VectorClient = Depends(get_vector),
     ):
         """Score a session; trigger Celery synthesis task if above threshold."""
         settings = settings_fn()
         if not settings.SKILL_SYNTHESIS_ENABLED:
             return {"status": "disabled"}
+        # The synthesis worker reads the session with FIREKEEP_INTERNAL_KEY
+        # (session:read:workspace) after this returns, so the CALLER's right
+        # to read it is proven here, synchronously, or a guessed teammate
+        # session id turns the worker into a confused deputy.
+        await _verify_caller_can_read_session(settings, request, identity, req.session_id)
         background.add_task(_dispatch_synthesis, req.session_id, req.skill_worthy, settings)
         return {"status": "queued", "session_id": req.session_id}
 

@@ -652,7 +652,7 @@ Qdrant that evaluates the filter it is handed) and
   so a member can queue synthesis of a teammate's session; the result is a
   `draft`, which needs `admin` to become visible to agents but is listed to every
   `memory:read` holder in the review queue. Closing it needs an ownership check
-  against Bridge before queuing. **OPEN.**
+  against Bridge before queuing. **Closed 2026-10-05 (§5.16).**
 - **The briefing's discipline section reports the same deployment-wide untagged
   counter** to every `session:read` caller that `/admin/untagged-calls` now
   restricts. It is a count, not content. Accepted.
@@ -757,10 +757,11 @@ member's eval. Auth-disabled mode is unchanged. Guarded by
 `cortex/tests/test_replay_provenance_stamping.py`,
 `bridge/tests/test_replay_owner_stamp.py`.
 
-**Residuals.** Integrity, not confidentiality: any key can still *write* events into
+**Residuals.** Integrity, not confidentiality: any key could still *write* events into
 another member's session id (they stay attributed to the writer and invisible to the
 victim, but in-process consumers — the eval scorers, OWM, the pattern engine — read
-the session unfiltered, so injected events can skew a victim's metrics). Background
+the session unfiltered, so injected events can skew a victim's metrics) — fixed
+2026-10-05, §5.16. Background
 emitters (collectors, Sentinel, Relay's coordination bus) stay unattributed, so
 their events are visible only to the owner and admins. `/evals/trends` and the
 briefing's quality/discipline sections remain workspace-wide aggregates (no session
@@ -875,6 +876,64 @@ with `POST /auth/keys` belong to the owner by design. Guarded by
 `cortex/tests/test_workspace_backfill.py` and
 `deploy/tests/test_bootstrap_keys.sh`.
 
+### 5.16 Naming a session you do not own (2026-10-05)
+
+**Fixed 2026-10-05.** Two Cortex writes took a client-named session id on trust.
+
+*`POST /skill/evaluate`.* Any `eval:write` key (every member key) could queue skill
+synthesis for any session id. The synthesis worker then read that session with
+`FIREKEEP_INTERNAL_KEY` (`session:read:workspace`) and filed a draft built from its
+goal, outcome and shadow in the review queue every `memory:read` holder lists — a
+member could publish a teammate's session as a skill draft. The route now proves the
+caller can read the session *before* queuing: it presents the caller's own key to
+Bridge's `GET /sessions/{id}`, so the answer is Bridge's `session_owned_by` verbatim
+(the owner passes; `session:read:workspace` holders, i.e. the internal key and `*`
+keys, pass within their workspace; a legacy session passes only for the deployment
+owner). Anything Bridge refuses is reported as 404, so a guessed id discloses
+nothing. An `admin` key passes without the round trip (it administers the queue).
+Bridge unreachable or erroring is **503, nothing queued** — fail closed. Bridge's own
+call (ctx_complete_session forwards the completing caller's key, #47) is the owner's
+and keeps working; `SKILL_SYNTHESIS_ENABLED=false` still answers `disabled` first.
+
+*Replay event writes.* §5.13 stamps every event with its verified writer and hides
+foreign events from readers, but eval compute, OWM, the pattern engine and the
+autopilot compute over every event filed under a session, so events written under
+another member's `X-Session-Id` skewed her metrics. Every Cortex request-path emit
+goes through `app.main._replay_emit`, which now files an event whose verified writer
+does not own the named session under `"unknown"` (the id Cortex already uses when no
+header is sent) — the event survives, with its stamp, in the writer's own timeline.
+The agent gateway applies the same rule to `action_before`'s `session_id` at the
+REST boundary, which also keeps the prediction record (that the reconcile and the
+Celery overdue sweep emit under) and the per-session rethink counter out of a
+teammate's session. The owner comes from `cortex/app/session_owner.py`: an
+in-process cache (owners never change), then the session's `session_start` event in
+replay, which only Bridge emits and stamps with the recorded owner, then — only for a
+start event with no stamp — Bridge's `GET /sessions/{id}` with the internal key, which
+now returns `owner_member`/`owner_workspace`. That fallback exists because Bridge
+began stamping start events on 2026-10-04, in the same deploy: without it every
+session in flight at that deploy would fall to the legacy rule and its own member's
+events would be re-filed, changing what eval compute grades. Steady-state cost on the
+recall path is a dict lookup; a cold session costs three replay Redis round trips
+once per process. Eval compute and `_trigger_eval` are untouched. One rule decides
+ownership in both services: `auth.principal.owns_session`, which Bridge's
+`session_owned_by` now delegates to. Bridge's own emits were already owner-stamped
+after its ownership checks — not a gap. Auth-disabled mode checks nothing. Guarded by
+`cortex/tests/test_session_ownership_writes.py`, `auth/tests/test_owns_session.py`
+and `bridge/tests/test_rest_session_ownership.py`.
+
+**Residuals.** Replay attribution fails **open** when the owner cannot be resolved
+(Bridge unreachable, `FIREKEEP_INTERNAL_KEY` missing or without
+`session:read:workspace`): failing closed would re-file every legitimate event of
+every cold-cache unstamped session during an outage. That window covers only sessions
+whose start event carries no stamp; it is logged and counted
+(`session_owner.get_stats()["unresolved"]`), and readers still hide foreign events.
+A Bridge 404 — a session Bridge does not know, an expired one, or one in another
+workspace than the internal key's — falls to the legacy rule (deployment owner only);
+for an unstamped session in a second workspace that re-files its own member's events.
+`POST /evals/sessions/{id}/compute` still recomputes any session for an `eval:write`
+key: it reads events but writes none, and changing it is out of scope (Outcome
+Truth).
+
 ### 5.17 Removing a member (2026-10-05)
 
 **The gap — closed.** There was no way to remove a person from a workspace. Since
@@ -970,13 +1029,14 @@ refused), `cortex/tests/test_member_removal_cli.py`,
 | 11 | A compromised runtime with Hands enabled operates the human's desktop | **Mitigated, residuals OPEN** — the broker is a separate process with no grant route, injected input is rejected, permits are one-use and bound to the exact step, classification is on effects not model labels, fail closed (§5.8). Residuals: same-user permit theft, kernel-level injection, screenshots to the model provider, the unverified macOS source-state filter, and the broker's notification being informational (the chord approves the oldest pending permit whether or not the toast was read) |
 | 12 | Phone approvals approved by a key holder who is not the human | **Partly mitigated (2026-10-01), residual OPEN** — relay stamps the verified principal on every task write and the broker refuses an approve from the requesting credential (the kit key the driving agent shares), from an unauthenticated Keep, or from a relay too old to stamp. Residual: any *other* workspace credential can still approve unless `phone_approvers` pins the approvers, and a pinned dashboard credential is only as strong as its basic-auth password; the auth layer has no human-member notion. `phone_approvals` stays `False` by default (§5.8) |
 | 13 | A valid key of any scope deletes another member's data, approves its own skill, re-embeds the store, or reads teammates' recall queries | **Mitigated 2026-10-01** — scope + `memory_type` + workspace checks on `/skills/{id}`, `admin` for review decisions and re-embedding, member-scoped `/audit`, scopes declared on every core memory route (§5.10). Residuals: review decisions allowed on auth-disabled boxes, unattributed audit history hidden from members (the `GET /skills` / `/memory/contributors` workspace gap closed 2026-10-04, §5.10.1) |
-| 13a | A valid key lists other workspaces' skills, files skills or queues synthesis with any scope, or votes repeatedly — or on memory it cannot recall — to move recall ranking | **Mitigated 2026-10-04** — scopes on every `/skills` route, workspace-filtered skill and contributor listings, feedback confined to recallable points with one ballot per key, `reauthor_of` resolved as a skill in the caller's workspace, `admin` on `/admin/untagged-calls` (§5.10.1; contributors also honour member visibility, §5.12). OPEN: `/skill/evaluate` does not verify session ownership |
+| 13a | A valid key lists other workspaces' skills, files skills or queues synthesis with any scope, or votes repeatedly — or on memory it cannot recall — to move recall ranking | **Mitigated 2026-10-04** — scopes on every `/skills` route, workspace-filtered skill and contributor listings, feedback confined to recallable points with one ballot per key, `reauthor_of` resolved as a skill in the caller's workspace, `admin` on `/admin/untagged-calls` (§5.10.1; contributors also honour member visibility, §5.12). `/skill/evaluate` session ownership: fixed 2026-10-05 (§5.16, row 20) |
 | 14 | `GET /briefing?agent_id=<teammate>` reads a teammate's sessions and presence with the internal service key | **Mitigated 2026-10-01** — user-scoped sections present the caller's own key (§5.11) and Bridge filters `GET /sessions` by the verified owner member (§5.9) |
 | 15 | A teammate key reads or writes another member's sessions or member-private memory inside one workspace | **Partly mitigated (2026-10-01, 2026-10-04)** — Bridge recalls with the caller's key and gates every session path on workspace+member (§5.9); distillates are written for the session's verified owner (§5.12, row 16); `/memory/feedback` refuses a teammate's member-private memory and `/memory/contributors` honours visibility (§5.10.1, §5.12). Relay's scope-session `agent_id` is now bound to the verified member and Relay writes decisions with the owner's key (§5.14, row 18) |
 | 16 | A memory's author is a self-asserted label; distillates of every member's sessions are attributed to the owner | **Mitigated 2026-10-04** — writes record the verified member and credential, contributors group by member inside the caller's workspace and visibility, and Bridge distils through the literal-scope `/memory/learn/delegated` naming the session's verified owner (§5.12; this closes row 15's "owner-attributed distillates"). Residuals: the one service key holding `memory:write:delegated` can name any active member; identical-text relearns name the latest writer |
-| 17 | A teammate key reads another member's replay timeline, events, context snapshots or evals | **Mitigated 2026-10-04** — every replay/eval read is filtered per event by the verified writer's stamp; unattributed history belongs to the deployment owner; service keys still compute all evals (§5.13). Residual: events can still be *written* into another member's session id and skew its in-process metrics |
+| 17 | A teammate key reads another member's replay timeline, events, context snapshots or evals | **Mitigated 2026-10-04** — every replay/eval read is filtered per event by the verified writer's stamp; unattributed history belongs to the deployment owner; service keys still compute all evals (§5.13). The write-side residual (events written into another member's session id) was fixed 2026-10-05 (§5.16, row 20) |
 | 18 | A teammate key reads another member's Relay DMs, posts as her, or releases her leases; Relay writes scope decisions into Bridge as the owner | **Mitigated 2026-10-04** — every Relay record is owned by the verified member that wrote it and checked on read and mutation; scope decisions reach Bridge only with the owning member's key (§5.14). Member-bound operations require `relay:read`/`relay:write`, and the internal key's two Relay writes use the service-only `relay:write:service`. Residuals: first-come presence labels at upgrade, owner-only DMs to unbound labels, single-workspace reads |
 | 19 | A credential authenticates as a member it was not issued to (regenerated teammate device minted as the owner; any unattributed record treated as the owner; a malformed scope document read as a wildcard) | **Fixed 2026-10-04** — join codes carry their member, regeneration keeps the device's member, redemption re-checks it atomically; validation reads attribution and member status and checks the scope document; legacy records are stamped to the owner explicitly and logged (§5.15). Member removal: row 21 |
+| 20 | A member key queues skill synthesis of a teammate's session (the worker reads it with the internal key and files a draft every `memory:read` holder sees), or writes replay events under a teammate's session id to skew her evals, OWM and patterns | **Fixed 2026-10-05** — `/skill/evaluate` presents the caller's key to Bridge and queues nothing unless Bridge lets it read the session (404 otherwise, 503 if Bridge is down); a request-path replay event or gateway action naming a session its verified writer does not own is filed under `"unknown"` (§5.16). Residual: attribution fails open while the owner of an unstamped session cannot be resolved |
 | 21 | A person who has left keeps working credentials or an outstanding join code, and there is no way to remove them | **Fixed 2026-10-05** — admin-only removal (REST, dashboard, `firekeep-admin`) flips the member to `removed` (every service refuses their keys on the next request; no auth cache exists), deletes every credential naming them, and cancels their join codes; the owner can never be removed; restore brings back the same member with a new code (§5.17). Residuals: member-private data is retained (operator-visible as before, readable by no member) with no purge tool; a removed member's `maildex.<id>` app password stays in the vault until an operator deletes it |
 
 Threat 5 deserves emphasis because it is the one the product's own design creates:

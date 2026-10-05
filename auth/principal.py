@@ -44,6 +44,39 @@ def deployment_owner_member_id() -> str:
     return _deployment_id("FIREKEEP_OWNER_MEMBER_ID", _DEFAULT_OWNER_MEMBER_ID)
 
 
+def owns_session(
+    owner_member: str | None,
+    owner_workspace: str | None,
+    *,
+    member_id: str | None,
+    workspace_id: str | None,
+) -> bool:
+    """Does the member ``member_id`` in ``workspace_id`` own a Bridge session
+    whose recorded owner is ``owner_member`` / ``owner_workspace``?
+
+    THE session-ownership rule. Bridge's ``session_owned_by`` (every MCP tool
+    and REST route) and Cortex's session-owner resolver (POST /skill/evaluate,
+    replay attribution) both call it, so "owner" means one thing everywhere:
+
+    - a bound session (``owner_member`` non-empty) belongs to exactly that
+      member and, when ``owner_workspace`` was recorded (sessions started after
+      2026-10-01), only within that workspace;
+    - a LEGACY session (no ``owner_member``) belongs to the deployment owner
+      member in the deployment workspace, and to no one else;
+    - no member (no verified principal) owns nothing.
+    """
+    if not member_id:
+        return False
+    if owner_member:
+        if owner_member != member_id:
+            return False
+        return not owner_workspace or owner_workspace == workspace_id
+    return (
+        member_id == deployment_owner_member_id()
+        and workspace_id == deployment_workspace_id()
+    )
+
+
 def anonymous_principal() -> dict[str, Any]:
     """Principal for the auth-disabled, single-workspace convenience mode."""
     from auth.keys import ANONYMOUS_SCOPES

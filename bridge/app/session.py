@@ -15,7 +15,7 @@ import redis.asyncio as aioredis
 
 from app.config import Settings
 from auth.experiment import experiment_group as _experiment_group, member_token
-from auth.principal import deployment_owner_member_id, deployment_workspace_id
+from auth.principal import deployment_workspace_id, owns_session
 
 logger = logging.getLogger(__name__)
 
@@ -111,18 +111,16 @@ def session_owned_by(meta: Mapping[str, Any] | None, caller: Caller | None) -> b
       exactly what it saw before.
     - No caller (auth enabled but no verified principal) owns nothing.
     """
-    if caller is None or not caller.member_id:
+    if caller is None:
         return False
     meta = meta or {}
-    owner_member = meta.get("owner_member") or ""
-    if owner_member:
-        if owner_member != caller.member_id:
-            return False
-        owner_workspace = meta.get("owner_workspace") or ""
-        return not owner_workspace or owner_workspace == caller.workspace_id
-    return (
-        caller.member_id == deployment_owner_member_id()
-        and caller.workspace_id == deployment_workspace_id()
+    # The rule itself lives in auth/principal.py so Cortex's session-owner
+    # resolver applies exactly the same one.
+    return owns_session(
+        meta.get("owner_member") or "",
+        meta.get("owner_workspace") or "",
+        member_id=caller.member_id,
+        workspace_id=caller.workspace_id,
     )
 
 
