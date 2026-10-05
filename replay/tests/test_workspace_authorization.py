@@ -66,6 +66,10 @@ async def replay_redis():
 async def auth_on():
     redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
     await keys.init_auth(redis_client=redis, enabled=True)
+    # validate_key refuses a credential whose member row is missing (2026-10-04);
+    # production's bootstrap / cortex boot write the owner's row, so do the same.
+    from auth.workspace import ensure_workspace
+    await ensure_workspace(redis)
     try:
         yield redis
     finally:
@@ -92,6 +96,12 @@ async def _member_key(auth_redis, device: str, member_id: str,
                       workspace_id: str = WS) -> str:
     """A teammate credential: create_key mints for the owner, so re-stamp the
     member the way enrollment writes it."""
+    # A teammate's active member row, as member invite acceptance writes it.
+    if not await auth_redis.exists(f"auth:member:{member_id}"):
+        await auth_redis.hset(f"auth:member:{member_id}", mapping={
+            "member_id": member_id, "workspace_id": workspace_id,
+            "role": "member", "status": "active",
+        })
     minted = await keys.create_key(device, sorted(keys.ENROLLABLE_SCOPES))
     record = f"{keys._KEY_PREFIX}{keys._hash_key(minted['api_key'])}"
     await auth_redis.hset(record, mapping={
