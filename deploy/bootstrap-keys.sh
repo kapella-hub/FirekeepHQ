@@ -20,22 +20,16 @@ set -euo pipefail
 #      the same way. Plaintext -> .env.
 #   2. DASHBOARD_API_KEY — dashboard nginx proxy key (spec §4.4b: the
 #      dashboard IS the owner's admin surface). Scopes: ["*"]. Plaintext -> .env.
-#   3. RELAY_INTERNAL_API_KEY — Relay's outbound key for the ONE call it makes
-#      (UNUSED with auth on since 2026-10-04: Relay now writes scope decisions
-#      with the key of the member that owns the session — THREAT-MODEL §5.12 —
-#      and presents this key only with auth off. Kept minted until it is
-#      retired across compose, .env.example and the deploy tests.)
-#      into Bridge: POST /sessions/{agent_id}/context, which persists NexusScope
-#      decisions for origin:"mcp" sessions (relay/app/scope.py _persist_to_bridge).
-#      Bridge gates that route with require_scope_asgi(request, "session:write")
-#      (bridge/app/mcp_server.py:561), so that single scope is the whole
-#      requirement — deliberately NOT the internal key's set and NOT ["*"].
-#      docker-compose.yml already reads it (NR_FIREKEEP_API_KEY:
-#      ${RELAY_INTERNAL_API_KEY:-}); nothing minted it, so the var resolved
-#      empty and the write went out unkeyed. That was survivable only while
-#      auth was off by default: _persist_to_bridge is best-effort and swallows
-#      the failure, so with auth ON the decisions would have silently stopped
-#      persisting with nothing but a warning in relay's log. Plaintext -> .env.
+#   3. (retired) RELAY_INTERNAL_API_KEY — no longer minted (2026-10-05,
+#      THREAT-MODEL §5.18). It was Relay's outbound key for persisting
+#      NexusScope decisions into Bridge (POST /sessions/{agent_id}/context).
+#      Since 2026-10-04 Relay writes those with the key of the member who owns
+#      the scope session (§5.14), and with auth off Bridge checks no key, so
+#      nothing presented it. A minted copy was an owner-member credential with
+#      session:write that no code used — a liability, not a fallback. On an
+#      existing deployment retire_env_key REVOKES that record (only if it is
+#      still the firekeep-relay credential this script minted) and removes the
+#      line from .env, which every env_file service imports wholesale.
 #   4. FIREKEEP_BRIDGE_KEY — Bridge's own dedicated credential (Task 5). Scopes:
 #      memory:read, memory:write, session:read, eval:read, eval:write,
 #      eval:grade. memory:read (2026-10-01) because Bridge's prior-art and
@@ -154,6 +148,8 @@ ensure_deployment_id() {  # $1=env var  $2=prefix
 }
 
 key_registered() { [ "$(rcli EXISTS "auth:key:$1")" = "1" ]; }
+
+env_del() { sed_i "/^$1=/d" "$ENV_FILE"; }
 
 # Scope tokens of a JSON array of plain strings, one per line. Deliberately
 # jq-free (this script needs only bash, redis-cli and openssl); scope names are
@@ -316,6 +312,43 @@ ensure_env_key() {  # $1=env var  $2=device_id  $3=scopes-json
     fi
 }
 
+# Retire an env-backed service key this script used to mint: revoke its record
+# (the same three keys `firekeep-admin keys revoke` removes) and drop the .env
+# line. Revokes ONLY a record whose device is $2 — the one this script minted.
+# If an operator pointed the variable at some other credential, that
+# credential is left alone and named, so it can be revoked deliberately. The
+# .env line goes either way: nothing reads it, every env_file service would
+# still import it, and an older bootstrap-keys.sh simply mints a fresh one on
+# a rollback. A second run finds no line and does nothing.
+retire_env_key() {  # $1=env var  $2=device_id this script minted it with
+    local var="$1" device_id="$2" key hash record device cid
+    key="$(env_get "$var")"
+    if [ -n "$key" ]; then
+        hash="$(sha256 "$key")"
+        record="auth:key:${hash}"
+        if key_registered "$hash"; then
+            device="$(rcli HGET "$record" device_id)"
+            [ -n "$device" ] || device="$(rcli HGET "$record" agent_id)"
+            cid="$(rcli HGET "$record" credential_id)"
+            [ -n "$cid" ] || cid="$(rcli HGET "$record" key_id)"
+            if [ "$device" = "$device_id" ]; then
+                rcli DEL "$record" > /dev/null
+                if [ -n "$cid" ]; then
+                    rcli DEL "auth:cred:${cid}" > /dev/null
+                    rcli ZREM auth:key_index "$cid" > /dev/null
+                fi
+                echo "[REVOKED] $var (credential ${cid:-?}, device $device_id): retired, nothing presents it"
+            else
+                echo "[SKIPPED] $var names credential ${cid:-?} (device ${device:-?}), not the $device_id key this script minted; it stays live — revoke it deliberately if unused: deploy/firekeep-admin keys revoke ${cid:-CREDENTIAL_ID}" >&2
+            fi
+        fi
+    fi
+    if grep -qE "^${var}=" "$ENV_FILE" 2>/dev/null; then
+        env_del "$var"
+        echo "[RETIRED] $var removed from $ENV_FILE"
+    fi
+}
+
 # --- preconditions (fail loudly — Reliability Principle) --------------------
 
 if ! command -v openssl > /dev/null; then
@@ -335,12 +368,14 @@ fi
 
 ensure_owner_member
 
-# --- 1+2: env-backed service keys -------------------------------------------
+# --- 1, 2, 4: env-backed service keys -------------------------------------------
 
 ensure_env_key FIREKEEP_INTERNAL_KEY  firekeep-internal  '["memory:write","session:read","eval:read","eval:write","session:read:workspace","relay:write:service"]'
 ensure_env_key DASHBOARD_API_KEY firekeep-dashboard '["*"]'
-ensure_env_key RELAY_INTERNAL_API_KEY firekeep-relay '["session:write"]'
 ensure_env_key FIREKEEP_BRIDGE_KEY firekeep-bridge '["memory:read","memory:write","session:read","eval:read","eval:write","eval:grade","memory:write:delegated"]'
+
+# --- 3: retired keys -----------------------------------------------------------
+retire_env_key RELAY_INTERNAL_API_KEY firekeep-relay
 
 # --- 5: owner admin key (printed once, never stored) -------------------------
 #

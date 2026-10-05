@@ -182,8 +182,9 @@ def _caller_api_key() -> str | None:
 
 def _bridge_key(caller: Caller) -> str | None:
     """Which key a scope decision is written to Bridge with: the caller's own
-    with auth on; the configured relay key with auth off (unchanged)."""
-    return _caller_api_key() if caller.authenticated else get_settings().FIREKEEP_API_KEY
+    with auth on; none with auth off, where Bridge checks no key. Relay has
+    no service key of its own (§5.18)."""
+    return _caller_api_key() if caller.authenticated else None
 
 
 _READ = ("relay:read",)

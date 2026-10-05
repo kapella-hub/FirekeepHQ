@@ -282,12 +282,13 @@ async def handle_post_scope_answer(redis, scope_id: str, screen_id: str, *, answ
     The Bridge decision write presents ``caller_api_key`` — the answerer's own
     credential — and only when the answerer owns the session; an admin
     answering a teammate's screen defers the write to the owner (app.scope).
-    The relay's configured key is used only with auth disabled, as before."""
+    With auth disabled no key is presented: Bridge checks none, and Relay has
+    no service key of its own (§5.18)."""
     from app.scope import post_answer
     from app.config import get_settings
     settings = get_settings()
     await _scope_session_for(redis, scope_id, caller, admin_ok=True)
-    api_key = caller_api_key if (caller is not None and caller.authenticated) else settings.FIREKEEP_API_KEY
+    api_key = caller_api_key if (caller is not None and caller.authenticated) else None
     return await post_answer(
         redis, scope_id, screen_id, answers=answers, source=source,
         bridge_url=settings.BRIDGE_URL, api_key=api_key, answerer=caller,

@@ -832,9 +832,7 @@ first OPEN bullet of §5.9.
   dashboard), never the intended teammate.
 - **Single-workspace reads.** Presence, bulletins and channel backlogs are not
   filtered by workspace; they matter the day a second workspace shares a Relay.
-- **`RELAY_INTERNAL_API_KEY` is still minted** but is presented only with auth
-  off; retiring it touches bootstrap, compose, `.env.example` and the deploy
-  tests and is left as a follow-up.
+- **`RELAY_INTERNAL_API_KEY` — retired 2026-10-05 (§5.18).**
 
 ### 5.15 Credential attribution: who a key belongs to (2026-10-04)
 
@@ -1018,6 +1016,25 @@ refused), `cortex/tests/test_member_removal_cli.py`,
 `relay/tests/test_removed_member_key.py`, `tests/test_dashboard_members.py` and
 `deploy/tests/test_firekeep_admin.sh`.
 
+### 5.18 Relay leftovers: the retired service key (2026-10-05)
+
+**`RELAY_INTERNAL_API_KEY` — retired.** After §5.14 Relay presented its service
+key only with auth off, where Bridge installs no auth middleware and checks no
+key — so with auth on nothing used it, and with auth off nothing needed it. It
+was still minted on every install: an owner-member credential with
+`session:write`, in `.env`, imported by every `env_file: .env` container. A
+leaked copy could write into any owner or legacy Bridge session. Now Relay has no
+`FIREKEEP_API_KEY` setting (a lingering `NR_FIREKEEP_API_KEY` is ignored) and
+sends no key with auth off; compose and `.env.example` no longer wire it;
+`deploy/bootstrap-keys.sh` does not mint it and, on an existing deployment,
+revokes the record (record, `auth:cred` mapping, `auth:key_index` entry) **only
+if its device is `firekeep-relay`** — a variable an operator re-pointed at some
+other credential is reported and left live — and removes the `.env` line either
+way. `update.sh` runs that before `compose up`, so a relay still running the old
+image loses its best-effort scope-decision writes for the restart window only.
+Guards: `relay/tests/test_principal_binding_scope.py`,
+`deploy/tests/test_bootstrap_keys.sh` (Run R), `deploy/tests/test_auth_posture.sh`.
+
 ## 6. Threats, ranked
 
 | # | Threat | State |
@@ -1044,6 +1061,7 @@ refused), `cortex/tests/test_member_removal_cli.py`,
 | 19 | A credential authenticates as a member it was not issued to (regenerated teammate device minted as the owner; any unattributed record treated as the owner; a malformed scope document read as a wildcard) | **Fixed 2026-10-04** — join codes carry their member, regeneration keeps the device's member, redemption re-checks it atomically; validation reads attribution and member status and checks the scope document; legacy records are stamped to the owner explicitly and logged (§5.15). Member removal: row 21 |
 | 20 | A member key queues skill synthesis of a teammate's session (the worker reads it with the internal key and files a draft every `memory:read` holder sees), or writes replay events under a teammate's session id to skew her evals, OWM and patterns | **Fixed 2026-10-05** — `/skill/evaluate` presents the caller's key to Bridge and queues nothing unless Bridge lets it read the session (404 otherwise, 503 if Bridge is down); a request-path replay event or gateway action naming a session its verified writer does not own is filed under `"unknown"` (§5.16). Residual: attribution fails open while the owner of an unstamped session is not yet known (its Bridge read runs off the request path) or cannot be resolved |
 | 21 | A person who has left keeps working credentials or an outstanding join code, and there is no way to remove them | **Fixed 2026-10-05** — admin-only removal (REST, dashboard, `firekeep-admin`) flips the member to `removed` (every service refuses their keys on the next request; no auth cache exists), deletes every credential naming them, and cancels their join codes; the owner can never be removed; restore brings back the same member with a new code (§5.17). Residuals: member-private data is retained (operator-visible as before, readable by no member) with no purge tool; a removed member's `maildex.<id>` app password stays in the vault until an operator deletes it |
+| 22 | An unused owner-member service key (`RELAY_INTERNAL_API_KEY`, `session:write`) sits in every deployment's `.env` | **Fixed 2026-10-05** — no longer minted, wired or read; an existing `firekeep-relay` credential is revoked and its `.env` line removed by `update.sh` (§5.18) |
 
 Threat 5 deserves emphasis because it is the one the product's own design creates:
 Firekeep exists to make agents act on stored memory. Anything that can write a
