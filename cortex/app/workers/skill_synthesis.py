@@ -355,12 +355,19 @@ async def _run_pass() -> dict[str, Any]:
     settings = get_settings()
     synthesized = 0
 
+    from app.skills import internal_key_headers
+
     r = redis.asyncio.from_url(settings.REDIS_URL, decode_responses=True)
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
+            # The internal key (session:read:workspace) lists every session in
+            # its workspace. Unheadered, Bridge 401s under auth and this pass
+            # silently synthesized nothing; with the key unset (auth disabled)
+            # the request is unchanged.
             resp = await client.get(
                 f"{settings.BRIDGE_URL}/sessions",
                 params={"status": "completed", "limit": 100},
+                headers=internal_key_headers(settings.FIREKEEP_INTERNAL_KEY),
             )
             if resp.status_code != 200:
                 return {"status": "bridge_unavailable", "synthesized": 0}
