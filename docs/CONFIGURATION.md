@@ -108,6 +108,14 @@ Keys minted by `deploy/bootstrap-keys.sh`:
 | `DASHBOARD_API_KEY` | `.env`, injected by dashboard nginx as `X-API-Key` on `/api/*` | `*` (admin) — behind nginx basic auth |
 | admin key | printed once to the terminal, never written to disk | `*` |
 
+`RELAY_INTERNAL_API_KEY` (Relay's `NR_FIREKEEP_API_KEY`) is retired since
+2026-10-05 (`docs/THREAT-MODEL.md` §5.18): Relay writes FirekeepScope decisions
+into Bridge with the scope-session owner's own key, so nothing presented it.
+`bootstrap-keys.sh` no longer mints it; on an existing deployment it revokes the
+`firekeep-relay` credential and removes the `.env` line (`[REVOKED]` /
+`[RETIRED]`). If the variable names any other credential, that credential is
+left live and reported (`[SKIPPED]`) for you to revoke deliberately.
+
 `DASHBOARD_API_KEY` is load-bearing now, not optional: empty means nginx sends no
 header and every dashboard data tab 401s. Customer devices get credentials from
 Dashboard → Devices or `deploy/firekeep-admin invite --json`; the client creates

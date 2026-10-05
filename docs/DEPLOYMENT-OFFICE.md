@@ -47,9 +47,8 @@ cd /path/to/Firekeep
 echo 'COMPOSE_FILE=docker-compose.yml:docker-compose.office.yml' >> .env
 echo 'FIREKEEP_OFFICE_MODE=true' >> .env
 bash deploy/bootstrap-keys.sh        # idempotent — safe to re-run any time
-# -> writes FIREKEEP_INTERNAL_KEY=, DASHBOARD_API_KEY=, RELAY_INTERNAL_API_KEY=
-#    and FIREKEEP_BRIDGE_KEY= into .env
-# -> registers internal + dashboard + relay-internal + bridge + admin key hashes in Redis DB 7
+# -> writes FIREKEEP_INTERNAL_KEY=, DASHBOARD_API_KEY= and FIREKEEP_BRIDGE_KEY= into .env
+# -> registers internal + dashboard + bridge + admin key hashes in Redis DB 7
 # -> prints the ADMIN key plaintext ONCE. Save it in a password manager NOW.
 chmod 600 .env                       # bootstrap-keys.sh writes live keys here
 sed -i 's/^AUTH_ENABLED=.*/AUTH_ENABLED=true/' .env
@@ -69,10 +68,10 @@ docker compose -f docker-compose.yml -f docker-compose.office.yml up -d --build
 > inbound calls to it, e.g. Sentinel's git-reindex trigger, need no key.)
 > No known gaps remain among the SP1b §11 background integrations (Sentinel,
 > Symdex, Skill Synthesis). FirekeepScope's `origin:"mcp"` Relay→Bridge
-> persistence is also covered now: `deploy/bootstrap-keys.sh` mints
-> `RELAY_INTERNAL_API_KEY` (scopes `["session:write"]`) automatically and
-> `docker-compose.yml` wires it to `NR_FIREKEEP_API_KEY` — no manual
-> provisioning on any install that has run `install.sh`/`update.sh` since.
+> persistence needs no service key: Relay writes each decision with the key of
+> the member who owns the scope session (`docs/THREAT-MODEL.md` §5.14). The old
+> `RELAY_INTERNAL_API_KEY` is retired (§5.18) — `bootstrap-keys.sh` no longer
+> mints it, and on an existing install revokes it and removes its `.env` line.
 
 `install.sh` and `update.sh` both invoke `deploy/bootstrap-keys.sh` automatically,
 so routine updates keep the keys in place. Re-runs mint nothing if the key

@@ -12,7 +12,10 @@ class Settings(BaseSettings):
     CHANNEL_BACKLOG_SIZE: int = Field(default=100, gt=0)
     CLAIM_TTL_MINUTES: int = Field(default=30, gt=0)
     BRIDGE_URL: str = "http://bridge:8070"
-    FIREKEEP_API_KEY: str | None = None
+    # No FIREKEEP_API_KEY (NR_FIREKEEP_API_KEY) since 2026-10-05, THREAT-MODEL
+    # §5.18: Relay writes scope decisions into Bridge with the key of the
+    # member who owns the session, and with auth off Bridge checks no key.
+    # extra="ignore" keeps a lingering NR_FIREKEEP_API_KEY harmless.
 
     model_config = {"env_prefix": "NR_", "env_file": ".env", "extra": "ignore"}
 

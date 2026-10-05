@@ -22,22 +22,23 @@ until docker exec "$CONTAINER" redis-cli ping 2>/dev/null | grep -q PONG; do sle
 export ENV_FILE="$(mktemp)"
 export BOOTSTRAP_REDIS_CMD="docker exec $CONTAINER redis-cli -n 7"
 
-# --- Run 1: mints internal + dashboard + admin -------------------------------
+# --- Run 1: mints internal + dashboard + bridge + admin ----------------------
 OUT1="$(bash deploy/bootstrap-keys.sh)"
 echo "$OUT1" | grep -q '\[MINTED\] FIREKEEP_INTERNAL_KEY'  || { echo "FAIL: internal key not minted";  echo "$OUT1"; exit 1; }
 echo "$OUT1" | grep -q '\[MINTED\] DASHBOARD_API_KEY' || { echo "FAIL: dashboard key not minted"; echo "$OUT1"; exit 1; }
-echo "$OUT1" | grep -q '\[MINTED\] RELAY_INTERNAL_API_KEY' || { echo "FAIL: relay key not minted"; echo "$OUT1"; exit 1; }
+# RELAY_INTERNAL_API_KEY is retired (2026-10-05, THREAT-MODEL §5.18): a fresh
+# install must not mint it, and must not write the variable at all.
+echo "$OUT1" | grep -q 'RELAY_INTERNAL_API_KEY' && { echo "FAIL: fresh run touched the retired relay key"; echo "$OUT1"; exit 1; }
 echo "$OUT1" | grep -q '\[MINTED\] FIREKEEP_BRIDGE_KEY'  || { echo "FAIL: bridge key not minted";  echo "$OUT1"; exit 1; }
 echo "$OUT1" | grep -q 'ADMIN API KEY'                  || { echo "FAIL: admin key not printed";    echo "$OUT1"; exit 1; }
-echo "$OUT1" | grep -q '5 key(s) minted'                || { echo "FAIL: expected 5 mints";         echo "$OUT1"; exit 1; }
+echo "$OUT1" | grep -q '4 key(s) minted'                || { echo "FAIL: expected 4 mints";         echo "$OUT1"; exit 1; }
 grep -qE '^FIREKEEP_INTERNAL_KEY=nxs_[0-9a-f]{48}$'  "$ENV_FILE" || { echo "FAIL: .env internal key malformed";  exit 1; }
 grep -qE '^DASHBOARD_API_KEY=nxs_[0-9a-f]{48}$' "$ENV_FILE" || { echo "FAIL: .env dashboard key malformed"; exit 1; }
-grep -qE '^RELAY_INTERNAL_API_KEY=nxs_[0-9a-f]{48}$' "$ENV_FILE" || { echo "FAIL: .env relay key malformed"; exit 1; }
+grep -q '^RELAY_INTERNAL_API_KEY=' "$ENV_FILE" && { echo "FAIL: .env carries the retired relay key"; exit 1; }
 grep -qE '^FIREKEEP_BRIDGE_KEY=nxs_[0-9a-f]{48}$' "$ENV_FILE" || { echo "FAIL: .env bridge key malformed"; exit 1; }
 grep -qE '^FIREKEEP_WORKSPACE_ID=workspace-[0-9a-f]{32}$' "$ENV_FILE" || { echo "FAIL: workspace id missing/malformed"; exit 1; }
 grep -qE '^FIREKEEP_OWNER_MEMBER_ID=member-[0-9a-f]{32}$' "$ENV_FILE" || { echo "FAIL: owner member id missing/malformed"; exit 1; }
 INTERNAL_KEY_1="$(grep '^FIREKEEP_INTERNAL_KEY=' "$ENV_FILE" | cut -d= -f2-)"
-RELAY_KEY_1="$(grep '^RELAY_INTERNAL_API_KEY=' "$ENV_FILE" | cut -d= -f2-)"
 BRIDGE_KEY_1="$(grep '^FIREKEEP_BRIDGE_KEY=' "$ENV_FILE" | cut -d= -f2-)"
 WORKSPACE_ID="$(grep '^FIREKEEP_WORKSPACE_ID=' "$ENV_FILE" | cut -d= -f2-)"
 OWNER_MEMBER_ID="$(grep '^FIREKEEP_OWNER_MEMBER_ID=' "$ENV_FILE" | cut -d= -f2-)"
@@ -77,7 +78,7 @@ NXS_IN_OUTPUT="$(echo "$OUT1" | grep -oE 'nxs_[0-9a-f]{48}' | sort -u | wc -l)"
 }
 # ...and it must be the ADMIN key specifically, not one of the .env-backed
 # ones leaking out.
-for v in FIREKEEP_INTERNAL_KEY DASHBOARD_API_KEY RELAY_INTERNAL_API_KEY FIREKEEP_BRIDGE_KEY; do
+for v in FIREKEEP_INTERNAL_KEY DASHBOARD_API_KEY FIREKEEP_BRIDGE_KEY; do
     val="$(grep "^${v}=" "$ENV_FILE" | cut -d= -f2-)"
     [ "$CAPTURED" != "$val" ] || { echo "FAIL: capture returned $v, not the admin key"; exit 1; }
 done
@@ -89,8 +90,6 @@ echo "$OUT2" | grep -q '0 key(s) minted' || { echo "FAIL: second run minted keys
 echo "$OUT2" | grep -q 'ADMIN API KEY' && { echo "FAIL: admin key re-printed on second run"; exit 1; }
 INTERNAL_KEY_2="$(grep '^FIREKEEP_INTERNAL_KEY=' "$ENV_FILE" | cut -d= -f2-)"
 [ "$INTERNAL_KEY_1" = "$INTERNAL_KEY_2" ] || { echo "FAIL: internal key rotated"; exit 1; }
-RELAY_KEY_2="$(grep '^RELAY_INTERNAL_API_KEY=' "$ENV_FILE" | cut -d= -f2-)"
-[ "$RELAY_KEY_1" = "$RELAY_KEY_2" ] || { echo "FAIL: relay key rotated"; exit 1; }
 BRIDGE_KEY_2="$(grep '^FIREKEEP_BRIDGE_KEY=' "$ENV_FILE" | cut -d= -f2-)"
 [ "$BRIDGE_KEY_1" = "$BRIDGE_KEY_2" ] || { echo "FAIL: bridge key rotated"; exit 1; }
 
@@ -112,6 +111,55 @@ echo "$OUT2" | grep -qE 'ATTRIBUTED|INDEXED' && { echo "FAIL: second run re-attr
 # booted: the FastMCP services never run ensure_workspace themselves.
 [ "$(docker exec "$CONTAINER" redis-cli -n 7 HGET "auth:member:${OWNER_MEMBER_ID}" status)" = "active" ]     || { echo "FAIL: bootstrap did not write the active owner member row"; exit 1; }
 [ "$(docker exec "$CONTAINER" redis-cli -n 7 HGET auth:workspace:current workspace_id)" = "$WORKSPACE_ID" ]     || { echo "FAIL: bootstrap did not write the workspace record"; exit 1; }
+
+# --- Run R: an existing deployment's RELAY_INTERNAL_API_KEY is retired -------
+# Exactly what bootstrap-keys.sh minted before 2026-10-05: an owner-member
+# record, device firekeep-relay, scopes ["session:write"], indexed and mapped,
+# plaintext in .env. Nothing presents it any more, so the upgrade revokes it
+# (record, auth:cred mapping, index entry) and drops the .env line.
+RELAY_KEY="nxs_$(openssl rand -hex 24)"
+RELAY_HASH="$(printf '%s' "$RELAY_KEY" | sha256sum | awk '{print $1}')"
+RELAY_CRED="$(openssl rand -hex 8)"
+docker exec "$CONTAINER" redis-cli -n 7 HSET "auth:key:${RELAY_HASH}" \
+    workspace_id "$WORKSPACE_ID" member_id "$OWNER_MEMBER_ID" device_id firekeep-relay \
+    credential_id "$RELAY_CRED" key_id "$RELAY_CRED" scopes '["session:write"]' \
+    created_at "2026-09-01T00:00:00+00:00" > /dev/null
+docker exec "$CONTAINER" redis-cli -n 7 SET "auth:cred:${RELAY_CRED}" "$RELAY_HASH" > /dev/null
+docker exec "$CONTAINER" redis-cli -n 7 ZADD auth:key_index "$(date +%s)" "$RELAY_CRED" > /dev/null
+printf 'RELAY_INTERNAL_API_KEY=%s\n' "$RELAY_KEY" >> "$ENV_FILE"
+OUTR="$(bash deploy/bootstrap-keys.sh)"
+echo "$OUTR" | grep -q "\[REVOKED\] RELAY_INTERNAL_API_KEY (credential ${RELAY_CRED}, device firekeep-relay)" \
+    || { echo "FAIL: legacy relay key not revoked"; echo "$OUTR"; exit 1; }
+echo "$OUTR" | grep -q '\[RETIRED\] RELAY_INTERNAL_API_KEY' || { echo "FAIL: relay .env line not retired"; echo "$OUTR"; exit 1; }
+echo "$OUTR" | grep -q '0 key(s) minted' || { echo "FAIL: retirement run minted keys"; echo "$OUTR"; exit 1; }
+echo "$OUTR" | grep -qE 'nxs_[0-9a-f]{48}' && { echo "FAIL: retirement leaked a plaintext"; exit 1; }
+[ "$(docker exec "$CONTAINER" redis-cli -n 7 EXISTS "auth:key:${RELAY_HASH}")" = "0" ] || { echo "FAIL: relay key record survived"; exit 1; }
+[ "$(docker exec "$CONTAINER" redis-cli -n 7 EXISTS "auth:cred:${RELAY_CRED}")" = "0" ] || { echo "FAIL: relay credential mapping survived"; exit 1; }
+[ -z "$(docker exec "$CONTAINER" redis-cli -n 7 ZSCORE auth:key_index "$RELAY_CRED")" ] || { echo "FAIL: relay credential still indexed"; exit 1; }
+grep -q '^RELAY_INTERNAL_API_KEY=' "$ENV_FILE" && { echo "FAIL: .env still carries the retired relay key"; exit 1; }
+grep -q '^FIREKEEP_INTERNAL_KEY=' "$ENV_FILE" || { echo "FAIL: retirement removed another .env line"; exit 1; }
+OUTR2="$(bash deploy/bootstrap-keys.sh)"
+echo "$OUTR2" | grep -qE 'REVOKED|RETIRED|SKIPPED' && { echo "FAIL: retirement is not idempotent"; echo "$OUTR2"; exit 1; }
+[ "$(docker exec "$CONTAINER" redis-cli -n 7 DBSIZE)" = "$DBSIZE1" ] || { echo "FAIL: retirement left DBSIZE != fresh install"; exit 1; }
+
+# An operator who pointed the variable at some OTHER credential keeps it: the
+# script revokes only the firekeep-relay record it minted, and says so.
+OTHER_KEY="nxs_$(openssl rand -hex 24)"
+OTHER_HASH="$(printf '%s' "$OTHER_KEY" | sha256sum | awk '{print $1}')"
+docker exec "$CONTAINER" redis-cli -n 7 HSET "auth:key:${OTHER_HASH}" \
+    workspace_id "$WORKSPACE_ID" member_id "$OWNER_MEMBER_ID" device_id laptop \
+    credential_id 0123456789abcdef key_id 0123456789abcdef scopes '["memory:read"]' > /dev/null
+docker exec "$CONTAINER" redis-cli -n 7 SET auth:cred:0123456789abcdef "$OTHER_HASH" > /dev/null
+docker exec "$CONTAINER" redis-cli -n 7 ZADD auth:key_index "$(date +%s)" 0123456789abcdef > /dev/null
+printf 'RELAY_INTERNAL_API_KEY=%s\n' "$OTHER_KEY" >> "$ENV_FILE"
+OUTS="$(bash deploy/bootstrap-keys.sh 2>&1)"
+echo "$OUTS" | grep -q '\[SKIPPED\] RELAY_INTERNAL_API_KEY names credential 0123456789abcdef (device laptop)' \
+    || { echo "FAIL: a foreign credential behind the relay variable was not reported"; echo "$OUTS"; exit 1; }
+echo "$OUTS" | grep -q 'REVOKED' && { echo "FAIL: a foreign credential was revoked"; echo "$OUTS"; exit 1; }
+[ "$(docker exec "$CONTAINER" redis-cli -n 7 EXISTS "auth:key:${OTHER_HASH}")" = "1" ] || { echo "FAIL: foreign credential deleted"; exit 1; }
+grep -q '^RELAY_INTERNAL_API_KEY=' "$ENV_FILE" && { echo "FAIL: .env line kept for a foreign credential"; exit 1; }
+docker exec "$CONTAINER" redis-cli -n 7 DEL "auth:key:${OTHER_HASH}" auth:cred:0123456789abcdef > /dev/null
+docker exec "$CONTAINER" redis-cli -n 7 ZREM auth:key_index 0123456789abcdef > /dev/null
 
 # --- Run 3: an internal key minted before session:read:workspace existed ----
 # A deployment that minted FIREKEEP_INTERNAL_KEY before 2026-10-01 would keep
@@ -252,7 +300,7 @@ rm -f "$DRAIN"
 # Deliberately NO init_auth(): it runs ensure_workspace, which would write the
 # owner member row itself and hide a bootstrap that forgot to. Bridge, Relay
 # and Sentinel validate exactly like this — explicit client, no init.
-"$PYTHON_BIN" - "$INTERNAL_KEY_1" "$RELAY_KEY_1" "$WORKSPACE_ID" "$OWNER_MEMBER_ID" "$BRIDGE_KEY_1" "$RESCUE_KEY" <<'PY'
+"$PYTHON_BIN" - "$INTERNAL_KEY_1" "$RELAY_KEY" "$WORKSPACE_ID" "$OWNER_MEMBER_ID" "$BRIDGE_KEY_1" "$RESCUE_KEY" <<'PY'
 import asyncio, os, sys
 os.environ["FIREKEEP_WORKSPACE_ID"] = sys.argv[3]
 os.environ["FIREKEEP_OWNER_MEMBER_ID"] = sys.argv[4]
@@ -276,18 +324,8 @@ async def main():
     }, ident
     assert ident["authenticated"] is True
 
-    # Relay's outbound key. It exists for exactly one call — Bridge's
-    # POST /sessions/{agent_id}/context, gated by
-    # require_scope_asgi(request, "session:write") at bridge/app/mcp_server.py:561.
-    # Assert the EXACT set, not a superset: this is the least-privilege
-    # contract, and "*" here would hand Relay vault reads and key minting.
-    relay = await middleware.validate_key(sys.argv[2])
-    assert relay is not None, "validate_key rejected the bootstrapped relay key"
-    assert relay["workspace_id"] == sys.argv[3], relay
-    assert relay["member_id"] == sys.argv[4], relay
-    assert "agent_id" not in relay, relay
-    assert set(relay["scopes"]) == {"session:write"}, relay
-    assert "admin" not in relay["scopes"] and "*" not in relay["scopes"], relay
+    # The retired relay key (Run R) no longer authenticates anywhere.
+    assert await middleware.validate_key(sys.argv[2]) is None, "revoked relay key still validates"
 
     # Bridge's dedicated key (Task 5): the only credential in the fleet
     # carrying eval:grade, a SERVICE_ONLY_SCOPES member no admin-minted key
@@ -311,7 +349,6 @@ async def main():
     assert rescue["workspace_id"] == sys.argv[3], rescue
     assert ident["credential_id"] != __import__("hashlib").sha256(sys.argv[1].encode()).hexdigest()[:16]
     print(f"validate_key OK: member_id={ident['member_id']} scopes={sorted(ident['scopes'])}")
-    print(f"validate_key OK: member_id={relay['member_id']} scopes={sorted(relay['scopes'])}")
     print(f"validate_key OK: member_id={bridge['member_id']} scopes={sorted(bridge['scopes'])}")
     await r.aclose()
 

@@ -27,10 +27,10 @@ the member whose session it is (bridge/app/session.py ``session_owned_by``):
   owner's agent collects it (``scope_ask`` / ``scope_check``) —
   ``collect_deferred_decisions``, once per screen.
 
-Relay never writes into a member's Bridge session with its own service key or
-an admin's key while auth is on. With auth disabled every caller owns every
-session, so the decision is written at answer time with the configured key,
-exactly as before.
+Relay never writes into a member's Bridge session with an admin's key, and it
+has no service key of its own (retired 2026-10-05, §5.18). With auth disabled
+every caller owns every session, so the decision is written at answer time,
+with no key: Bridge checks none in that mode.
 """
 
 import json
@@ -307,8 +307,8 @@ async def post_answer(
     """Resolve a screen (first answer wins) and, for an origin:"mcp" session,
     persist the decision to Bridge.
 
-    ``api_key`` must be the ANSWERER's own credential (or the configured key
-    with auth disabled). It is presented only when ``answerer`` owns the
+    ``api_key`` must be the ANSWERER's own credential (None with auth
+    disabled, where Bridge checks no key). It is presented only when ``answerer`` owns the
     session (or no answerer is given — internal callers); otherwise the
     decision is deferred to the owner (module docstring)."""
     if source not in VALID_SOURCES:

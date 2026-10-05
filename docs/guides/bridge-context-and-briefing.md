@@ -289,7 +289,8 @@ keys would remove that, at the cost of a pointer migration; not done here.
 
 **Relay's decision writes.** Relay persists FirekeepScope decisions through
 `POST /sessions/{agent_id}/context`. Until 2026-10-04 it presented
-`RELAY_INTERNAL_API_KEY` (the deployment owner's member), so once sessions were
+`RELAY_INTERNAL_API_KEY` (the deployment owner's member; retired 2026-10-05,
+`docs/THREAT-MODEL.md` §5.18), so once sessions were
 member-bound every teammate's `origin:"mcp"` decision was refused here. Relay
 now presents the key of a principal that owns the scope session — the
 answerer's own key when the answerer is the owner, otherwise the owner's key

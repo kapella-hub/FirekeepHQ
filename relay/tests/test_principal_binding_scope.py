@@ -11,8 +11,12 @@ teammate — so teammates' decisions silently stopped persisting.
 Now: the decision is written with the key of a principal who OWNS the scope
 session — the answerer's own key when the answerer is the owner, otherwise the
 owner's key the next time the owner's agent collects the answer
-(scope_ask / scope_check). The relay service key is never presented while
-auth is on.
+(scope_ask / scope_check).
+
+§5.18 (2026-10-05): the relay service key is retired. Relay has no key of its
+own to present — not with auth on, and not with auth off, where Bridge checks
+no key at all — so an ``NR_FIREKEEP_API_KEY`` still lingering in an operator's
+environment is ignored.
 """
 
 from __future__ import annotations
@@ -22,9 +26,10 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+import app.config as config_mod
 import app.mcp_server as mcp_mod
 import app.routes as routes_mod
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.mcp_server import scope_ask, scope_check, scope_complete, scope_post, scope_start
 from app.routes import (
     route_get_scope_session,
@@ -47,7 +52,10 @@ def _wiring(monkeypatch, redis):
     monkeypatch.setattr(routes_mod, "_get_redis", _get_redis)
     monkeypatch.setattr(mcp_mod, "get_redis", _get_redis)
     monkeypatch.setattr(mcp_mod, "_replay_emit", AsyncMock())
-    monkeypatch.setattr(get_settings(), "FIREKEEP_API_KEY", RELAY_SERVICE_KEY)
+    # A deployment that has not yet run update.sh may still export the retired
+    # variable; Relay must not pick it up from there.
+    monkeypatch.setenv("NR_FIREKEEP_API_KEY", RELAY_SERVICE_KEY)
+    monkeypatch.setattr(config_mod, "_settings", None)
     monkeypatch.setattr(get_settings(), "BRIDGE_URL", "http://bridge:8070")
 
     async def _no_sleep(_s):
@@ -192,7 +200,7 @@ async def test_the_relay_service_key_is_never_presented_with_auth_on(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_auth_off_answer_persists_immediately_with_the_configured_key_as_before(monkeypatch, redis, bridge):
+async def test_auth_off_answer_persists_immediately_and_presents_no_relay_key(monkeypatch, redis, bridge):
     import auth.config as auth_config
     from auth.config import AuthSettings
 
@@ -204,4 +212,10 @@ async def test_auth_off_answer_persists_immediately_with_the_configured_key_as_b
     assert resp.status_code == 200
     bridge.post.assert_called_once()
     assert bridge.post.call_args[0][0] == "http://bridge:8070/sessions/agent-x/context"
-    assert bridge.post.call_args[1]["headers"]["X-API-Key"] == RELAY_SERVICE_KEY
+    # Bridge installs no auth middleware with auth off, so the write never
+    # needed a key; the retired relay key is no longer sent.
+    assert "X-API-Key" not in bridge.post.call_args[1]["headers"]
+
+
+def test_relay_has_no_service_key_setting():
+    assert "FIREKEEP_API_KEY" not in Settings.model_fields

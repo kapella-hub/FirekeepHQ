@@ -268,7 +268,6 @@ run_capture() {  # stdin = simulated bootstrap output -> echoes captured key
 GOT="$(run_capture <<EOF
 [MINTED] FIREKEEP_INTERNAL_KEY  (agent_id=firekeep-internal scopes=["memory:write","session:read","eval:read","eval:write","session:read:workspace","relay:write:service"])
 [MINTED] DASHBOARD_API_KEY  (agent_id=firekeep-dashboard scopes=["*"])
-[MINTED] RELAY_INTERNAL_API_KEY  (agent_id=firekeep-relay scopes=["session:write"])
 [MINTED] FIREKEEP_BRIDGE_KEY  (agent_id=firekeep-bridge scopes=["memory:read","memory:write","session:read","eval:read","eval:write","eval:grade","memory:write:delegated"])
 
 ============================================================
@@ -280,7 +279,7 @@ GOT="$(run_capture <<EOF
   Use it with deploy/firekeep-admin to issue teammate keys.
 ============================================================
 
-bootstrap-keys: done (5 key(s) minted)
+bootstrap-keys: done (4 key(s) minted)
 EOF
 )"
 check "fresh run -> captures the admin key" "$FAKE_ADMIN_KEY" "$GOT"
@@ -291,7 +290,6 @@ check "fresh run -> captures the admin key" "$FAKE_ADMIN_KEY" "$GOT"
 GOT="$(run_capture <<'EOF'
 [OK] FIREKEEP_INTERNAL_KEY already provisioned
 [OK] DASHBOARD_API_KEY already provisioned
-[OK] RELAY_INTERNAL_API_KEY already provisioned
 [OK] FIREKEEP_BRIDGE_KEY already provisioned
 [OK] admin key already provisioned (key_id 0123456789abcdef)
 
@@ -485,23 +483,30 @@ else
     pass "--insecure-no-auth on an .env with no AUTH_ENABLED line -> appends it"
 fi
 
-# --- bootstrap-keys.sh must mint Relay's outbound key -----------------------
-# compose has always read RELAY_INTERNAL_API_KEY; nothing minted it. Harmless
-# while auth was off, a silent 401 once it is on.
+# --- bootstrap-keys.sh must NOT mint Relay's retired outbound key ------------
+# 2026-10-05 (THREAT-MODEL §5.18): Relay writes scope decisions into Bridge with
+# the session owner's own key, and with auth off Bridge checks no key, so
+# RELAY_INTERNAL_API_KEY was an owner-member session:write credential nothing
+# presented. It is no longer minted; an existing one is revoked and its .env
+# line removed (behaviour: deploy/tests/test_bootstrap_keys.sh "Run R").
 echo "bootstrap-keys:"
 BOOTSTRAP="$(cat deploy/bootstrap-keys.sh)"
 case "$BOOTSTRAP" in
-    *'ensure_env_key RELAY_INTERNAL_API_KEY'*) pass "mints RELAY_INTERNAL_API_KEY" ;;
-    *) fail "mints RELAY_INTERNAL_API_KEY" ;;
+    *'ensure_env_key RELAY_INTERNAL_API_KEY'*) fail "does not mint the retired RELAY_INTERNAL_API_KEY" ;;
+    *) pass "does not mint the retired RELAY_INTERNAL_API_KEY" ;;
 esac
-# Least privilege: Bridge gates POST /sessions/{agent_id}/context on
-# session:write and that is Relay's only outbound call. "*" here would hand
-# Relay vault reads and key minting.
 case "$BOOTSTRAP" in
-    *'ensure_env_key RELAY_INTERNAL_API_KEY firekeep-relay '"'"'["session:write"]'"'"*)
-        pass "relay key is scoped to session:write only" ;;
-    *) fail "relay key is scoped to session:write only" ;;
+    *'retire_env_key RELAY_INTERNAL_API_KEY firekeep-relay'*)
+        pass "retires an existing RELAY_INTERNAL_API_KEY (firekeep-relay device only)" ;;
+    *) fail "retires an existing RELAY_INTERNAL_API_KEY (firekeep-relay device only)" ;;
 esac
+# ...and nothing in the stack reads it any more.
+if grep -qE '^[[:space:]]*NR_FIREKEEP_API_KEY:|\$\{RELAY_INTERNAL_API_KEY|^RELAY_INTERNAL_API_KEY=' \
+        docker-compose.yml docker-compose.office.yml .env.example; then
+    fail "compose and .env.example no longer wire the relay key"
+else
+    pass "compose and .env.example no longer wire the relay key"
+fi
 
 # --- bootstrap-keys.sh must mint Bridge's dedicated eval:grade key ----------
 # Task 5: eval:grade is service-only and reaches exactly one credential,

@@ -314,16 +314,17 @@ jobs:
       - name: Assert every key the stack needs to talk to itself was minted
         # Under AUTH_ENABLED=true the internal service-to-service calls are no
         # longer optional plumbing -- an unminted key means a silent 401 on a
-        # path that swallows its own failures. RELAY_INTERNAL_API_KEY is the
-        # one that was missing: docker-compose.yml has always read it
-        # (NR_FIREKEEP_API_KEY: ${RELAY_INTERNAL_API_KEY:-}) but nothing minted
-        # it, so Relay's NexusScope decision writes into Bridge went out
-        # unkeyed. Bridge gates that route on session:write, and
-        # relay/app/scope.py _persist_to_bridge is best-effort -- it would have
-        # logged a warning and dropped the decision, with nothing user-visible.
+        # path that swallows its own failures. RELAY_INTERNAL_API_KEY is
+        # deliberately absent (retired 2026-10-05, THREAT-MODEL §5.18): Relay
+        # writes NexusScope decisions into Bridge with the session owner's own
+        # key, so a fresh install must NOT mint it -- asserted below.
         run: |
           rc=0
-          for var in FIREKEEP_INTERNAL_KEY DASHBOARD_API_KEY RELAY_INTERNAL_API_KEY FIREKEEP_BRIDGE_KEY; do
+          if grep -q '^RELAY_INTERNAL_API_KEY=' .env; then
+            echo "::error::.env carries the retired RELAY_INTERNAL_API_KEY"
+            rc=1
+          fi
+          for var in FIREKEEP_INTERNAL_KEY DASHBOARD_API_KEY FIREKEEP_BRIDGE_KEY; do
             val="$(grep "^${var}=" .env | cut -d= -f2- || true)"
             if [ -z "$val" ]; then
               echo "::error::${var} is empty or absent in .env after install"
