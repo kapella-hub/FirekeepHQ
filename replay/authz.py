@@ -25,7 +25,7 @@ The rules (docs/THREAT-MODEL.md, replay section):
   caller's workspace;
 * an event with no ``workspace_id`` stamp belongs to the deployment workspace;
 * an event with no ``member_id`` stamp — emitted before attribution, or by a
-  background emitter that has no principal (collectors, sentinel, relay's bus)
+  background emitter that has no principal (collectors, sentinel)
   — belongs to the deployment OWNER member, and to no other member. The same
   legacy rule Bridge's ``session_owned_by`` applies to unowned sessions.
 * a caller whose workspace or member cannot be determined sees nothing.

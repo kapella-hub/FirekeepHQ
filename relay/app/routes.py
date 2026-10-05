@@ -214,7 +214,7 @@ async def handle_post_task(
     await _replay_emit(
         "coordination",
         {"action": "task_created", "task_id": task["id"], "assignee": assignee or ""},
-        agent_id=assigner,
+        agent_id=assigner, by=created_by,
     )
     return task
 
