@@ -20,12 +20,19 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from auth.members import (
+    STATUS_ACTIVE,
+    STATUS_REMOVED,
+    MemberRemovalError,
+    remove_member,
+    restore_member,
+)
 from auth.middleware import require_scope
-from auth.workspace import Workspace
+from auth.workspace import MEMBER_PREFIX, Workspace
 
 from app.enroll.advertise import advertised_host, resolve_connection
 from app.enroll.api import InviteRequest
-from app.enroll.mint import ca_fingerprint, encode_prepared_join
+from app.enroll.mint import ca_fingerprint, encode_prepared_join, mint_invite
 from app.enroll.store import EnrollmentStore
 
 from .store import MemberInviteError, MemberStore
@@ -147,7 +154,11 @@ def create_members_router(
         return {
             "members": members,
             "invites": invites,
-            "active_count": len(members),
+            # A removed member's row stays listed (it is attribution history)
+            # but is not an active member.
+            "active_count": sum(
+                1 for m in members if (m.get("status") or STATUS_ACTIVE) == STATUS_ACTIVE
+            ),
             "outstanding_invite_count": len(invites),
         }
 
@@ -214,5 +225,81 @@ def create_members_router(
         if not _TID_RE.fullmatch(tid) or not await member_store.cancel(tid):
             raise HTTPException(status_code=404, detail="member invite not found")
         return {"status": "cancelled", "tid": tid}
+
+    # Removal and restore (docs/THREAT-MODEL.md §5.17). The member comes from
+    # the PATH, never from a body: InviteRequest deliberately has no member_id
+    # field (enroll/api.py), and restore's body is exactly that model.
+    # `/members/invites/{tid}` cannot collide: DELETE /members/invites (no tid)
+    # would read "invites" as a member id and 404 like any unknown member.
+
+    @router.delete("/members/{member_id}")
+    async def remove_workspace_member(
+        member_id: str,
+        identity: dict = Depends(require_scope("admin")),
+    ) -> dict[str, Any]:
+        try:
+            return await remove_member(
+                redis_client,
+                member_id,
+                workspace_id=workspace.workspace_id,
+                owner_member_id=workspace.owner_member_id,
+                removed_by=f"credential:{identity.get('credential_id', 'admin')}",
+                actor_member_id=identity.get("member_id"),
+            )
+        except MemberRemovalError as exc:
+            raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
+
+    @router.post("/members/{member_id}/restore")
+    async def restore_workspace_member(
+        member_id: str,
+        request: InviteRequest,
+        identity: dict = Depends(require_scope("admin")),
+    ) -> dict[str, Any]:
+        """Reactivate a REMOVED member and mint one device join code for them.
+
+        Removal deleted every credential, so a restored member with no code
+        could never authenticate again. The code registers its credential for
+        the restored member, not for the admin who clicked. Only a removed
+        member qualifies: this is not a way to mint codes for active members.
+        """
+        # Validate the connection before changing anything, so a bad request
+        # never leaves a member restored without a code.
+        connection = _connection(
+            MemberInviteRequest(label="restore", **request.model_dump())
+        )
+        row = await redis_client.hgetall(f"{MEMBER_PREFIX}{member_id}")
+        if row and row.get("workspace_id") == workspace.workspace_id and (
+            row.get("status") != STATUS_REMOVED
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=f"member {member_id} is not removed; only a removed member can be restored",
+            )
+        issuer = f"credential:{identity.get('credential_id', 'admin')}"
+        try:
+            membership = await restore_member(
+                redis_client,
+                member_id,
+                workspace_id=workspace.workspace_id,
+                restored_by=issuer,
+            )
+        except MemberRemovalError as exc:
+            raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
+        minted = await mint_invite(
+            member_store.enrollment,
+            agent_label=membership.get("label", ""),
+            transport=connection["transport"],
+            kind=connection["kind"],
+            host=connection["host"],
+            base_url=connection["base_url"],
+            ca_pem=connection["ca_pem"],
+            ca_mode=connection["ca_mode"],
+            ssh_target=connection["ssh_target"],
+            issuer=issuer,
+            member_id=member_id,
+            key_expires_days=request.expires_days,
+            dist_base=connection["dist_base"],
+        )
+        return {"member_id": member_id, "membership": membership, **minted}
 
     return router

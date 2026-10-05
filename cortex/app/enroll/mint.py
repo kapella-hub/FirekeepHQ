@@ -188,6 +188,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--issuer", default="firekeep-admin")
     parser.add_argument("--expires-days", type=int)
     parser.add_argument("--device-id", default="")
+    # A new device for a NAMED member (e.g. one just restored with
+    # `python -m app.members.admin restore`). Must be active; refused together
+    # with --device-id, which already decides the member from the device.
+    parser.add_argument("--member-id", default="")
     parser.add_argument("--dist-base", default=os.getenv("FIREKEEP_DIST_BASE", "https://firekeep.ai"))
     parser.add_argument("--insecure-http", action="store_true")
     parser.add_argument("--json", action="store_true")
@@ -205,6 +209,11 @@ async def _run(args: argparse.Namespace) -> int:
         raise SystemExit("plain HTTP enrollment requires --insecure-http")
     if args.ca_file and args.ca_pem_b64:
         raise SystemExit("use only one of --ca-file or --ca-pem-b64")
+    if args.member_id and args.device_id:
+        raise SystemExit(
+            "use only one of --member-id or --device-id: a regenerated device "
+            "keeps the member its credentials already belong to"
+        )
     if args.ca_file:
         ca_pem = Path(args.ca_file).read_text(encoding="utf-8")
     elif args.ca_pem_b64:
@@ -220,12 +229,13 @@ async def _run(args: argparse.Namespace) -> int:
     try:
         # The server-shell path has no verified caller: a new device belongs to
         # the deployment owner who holds the shell, a regenerated one keeps its
-        # existing member exactly as the API route does.
+        # existing member exactly as the API route does. --member-id names the
+        # member instead; invite_member still requires it to be active.
         try:
             member_id = await invite_member(
                 redis_client,
                 device_id=args.device_id,
-                issuer_member_id=deployment_owner_member_id(),
+                issuer_member_id=args.member_id or deployment_owner_member_id(),
                 workspace_id=deployment_workspace_id(),
             )
         except InviteMemberError as exc:

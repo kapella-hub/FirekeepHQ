@@ -121,6 +121,32 @@ if printf '%s\n' "$AUDIT_BODY" | grep -E 'rcli (HSET|SET|ZADD|DEL|ZREM|EXPIRE|HD
     echo "FAIL: keys audit issues a Redis write"; exit 1
 fi
 
+# members (2026-10-05, THREAT-MODEL §5.17): remove/restore/list dispatch to
+# the shared Python implementation inside cortex-api, never a bash port.
+for sub in "list" "remove member-abc" "restore member-abc"; do
+    # shellcheck disable=SC2086
+    MEMBERS_OUT="$(FIREKEEP_ADMIN_DRY_RUN=1 bash deploy/firekeep-admin members $sub)"
+    echo "$MEMBERS_OUT" | grep -q "cortex-api python -m app.members.admin ${sub}" || {
+        echo "FAIL: members ${sub} dispatch wrong: $MEMBERS_OUT"; exit 1;
+    }
+done
+for bad in "" "remove" "remove a b" "remove bad*id" "purge member-abc"; do
+    # shellcheck disable=SC2086
+    if FIREKEEP_ADMIN_DRY_RUN=1 bash deploy/firekeep-admin members $bad >/dev/null 2>&1; then
+        echo "FAIL: 'members ${bad}' should exit nonzero"; exit 1
+    fi
+done
+TMP_ENV="$(mktemp)"
+printf 'AUTH_ENABLED=true\nBIND_ADDR=127.0.0.1\nVPS_IP=203.0.113.9\n' > "$TMP_ENV"
+MEMBER_INVITE_OUT="$(ENV_FILE="$TMP_ENV" FIREKEEP_ADMIN_DRY_RUN=1 USER=root bash deploy/firekeep-admin invite --member member-abc --json)"
+echo "$MEMBER_INVITE_OUT" | grep -q -- "--member-id member-abc" || {
+    echo "FAIL: invite --member not passed to mint"; echo "$MEMBER_INVITE_OUT"; rm -f "$TMP_ENV"; exit 1;
+}
+if ENV_FILE="$TMP_ENV" FIREKEEP_ADMIN_DRY_RUN=1 bash deploy/firekeep-admin invite --member 'bad id' >/dev/null 2>&1; then
+    echo "FAIL: invite --member with a malformed id should exit nonzero"; rm -f "$TMP_ENV"; exit 1
+fi
+rm -f "$TMP_ENV"
+
 # Every Redis call must go through rcli (stdin closed). `docker compose exec`
 # reads stdin, so a direct "${REDIS[@]}" call inside a `while read` loop eats
 # the loop's input and the loop stops after one record (2026-10-04, live VPS).
@@ -131,4 +157,4 @@ for f in deploy/firekeep-admin deploy/bootstrap-keys.sh; do
         || { echo "FAIL: $f has no stdin-closed rcli helper"; exit 1; }
 done
 
-echo "PASS: firekeep-admin create/revoke/invite/audit dispatch + scope sync + fail-fast"
+echo "PASS: firekeep-admin create/revoke/invite/audit/members dispatch + scope sync + fail-fast"

@@ -867,13 +867,91 @@ because legacy teammate keys carry the retired `twin:read`). Records that were
 relying on the owner fallback are stamped to the owner **explicitly and logged**
 by `deploy/bootstrap-keys.sh` before the services restart and by cortex-api on
 every boot; `deploy/firekeep-admin keys audit` reports, read-only, which
-credentials will authenticate. Residuals: there is still no member-removal path
-(status is enforced, but nothing yet sets it to anything but `active`);
+credentials will authenticate. Residuals: ~~there is still no member-removal
+path~~ (closed 2026-10-05: §5.17 sets `status: removed`);
 `auth:cred` reverse-mapping and index membership are not required; keys minted
 with `POST /auth/keys` belong to the owner by design. Guarded by
 `auth/tests/test_credential_validation_integrity.py`,
 `cortex/tests/test_workspace_backfill.py` and
 `deploy/tests/test_bootstrap_keys.sh`.
+
+### 5.17 Removing a member (2026-10-05)
+
+**The gap — closed.** There was no way to remove a person from a workspace. Since
+§5.15 `validate_key` refuses every credential whose member row is not `active`,
+but nothing ever wrote another status, so the only lever was revoking a leaver's
+devices one credential at a time — and any join code still outstanding for them
+(a device invite, the code their accepted member invite hands back on replay)
+could mint a fresh one.
+
+**The operation.** `DELETE /members/{member_id}` (admin), dashboard **Members →
+Remove** (confirm dialog), or `deploy/firekeep-admin members remove <id>` — all one
+implementation, `auth/members.py` `remove_member`. In this order, which is the
+concurrency argument: (1) the member row is set to `status: removed` (kept, never
+deleted — memories, sessions, replay and relay records stay attributed to it);
+from this write on every credential naming the member is refused by every
+service, and the redeeming Lua script refuses their join codes unspent
+(`member_inactive`), so no credential can be registered for them afterwards;
+(2) every `auth:key:*` record naming the member is deleted with its `auth:cred:`
+mapping and `auth:key_index` entry — found by a keyspace scan, so an unindexed
+record is caught too, and anything registered before (1) is found here;
+(3) their unredeemed join codes are deleted and their member invites marked
+`member_removed`; replaying an accepted invite is refused before it returns a
+code. Idempotent: a repeat reports `already_removed: true` and re-sweeps, which
+is also how a removal interrupted between (1) and (2) is finished (`keys audit`
+lists any leftover as "member not active").
+
+**Refused.** The deployment owner (`FIREKEEP_OWNER_MEMBER_ID`, or any row with
+role `owner`) can never be removed — 409. An admin cannot remove the member it
+is acting as. A removal that would leave no active member holding the owner
+role or an `admin`/`*` credential is refused; today every admin-capable
+credential (bootstrap, dashboard, `POST /auth/keys`) belongs to the owner and
+`ensure_workspace` keeps the owner active, so this check cannot fire — it is
+defense in depth, **not** a live gap. Unknown, malformed and other-workspace ids
+are one 404.
+
+**Caches — none.** Cortex REST, cortex-mcp, Bridge, Relay and Sentinel all
+authenticate per request through `FirekeepKeyAuthMiddleware` → `validate_key`,
+which reads Redis DB 7 every time; no service caches an identity, and all four
+MCP servers run `stateless_http=True`, so no MCP session outlives a request.
+The window is a request already past the middleware (one streaming recall at
+most). Bridge's distiller writes a pending distillate for the session's owner
+through `/memory/learn/delegated`, which re-checks the member is active: a
+removed member's queued distillations fail, retry within `MAX_ATTEMPTS`, and land
+in the DLQ — never re-attributed to anyone.
+
+**Their data — kept, re-stamped to nobody.** Removal transfers nothing:
+member-private memories (`visibility: member`), Bridge sessions, Relay presence,
+DMs and leases, and member-owned vault secrets stay attributed to the removed
+`member_id`. No credential can authenticate as that member, so no
+member-principal read can return their private data; operator surfaces see
+exactly what they saw before — `/memory/export` and admin vault reads were never
+member-filtered (§5.9, `docs/guides/dexes.md` "The threat boundary"), and
+removal neither widens nor narrows them. The one thing that changes risk: a
+removed member's `maildex.<id>` app password is a live credential to a
+third-party mailbox that nobody can now act for. The operator should delete it
+(`DELETE /vault/secrets/maildex.<id>`, admin) and the member should revoke it at
+their provider. Relay presence has no expiry; an admin removes it from the
+dashboard (§5.14 lets admin act on any member's Relay rows). **Not built:** a
+purge of a removed member's memories across Qdrant and Neo4j — a destructive
+multi-store operation that deserves its own reviewed change; until then the data
+is retained, unread by members, and returns to its owner on restore.
+
+**Restore.** `POST /members/{id}/restore` (admin; body = the device-invite
+connection fields) or dashboard **Restore** reactivates the **same** member and
+mints one join code whose credential belongs to them — their history and private
+memories are theirs again. Only a removed member qualifies (409 otherwise), so
+this is not a way to mint codes for active members. Shell:
+`firekeep-admin members restore <id>` then `firekeep-admin invite --member <id>`.
+Old credentials stay deleted.
+
+Guarded by `auth/tests/test_member_removal.py`,
+`cortex/tests/test_member_removal.py` (401 on Cortex, owner refused, join codes
+cancelled and — against the real redeem script when `lupa` is installed —
+refused), `cortex/tests/test_member_removal_cli.py`,
+`bridge/tests/test_removed_member_key.py`,
+`relay/tests/test_removed_member_key.py`, `tests/test_dashboard_members.py` and
+`deploy/tests/test_firekeep_admin.sh`.
 
 ## 6. Threats, ranked
 
@@ -898,7 +976,8 @@ with `POST /auth/keys` belong to the owner by design. Guarded by
 | 16 | A memory's author is a self-asserted label; distillates of every member's sessions are attributed to the owner | **Mitigated 2026-10-04** — writes record the verified member and credential, contributors group by member inside the caller's workspace and visibility, and Bridge distils through the literal-scope `/memory/learn/delegated` naming the session's verified owner (§5.12; this closes row 15's "owner-attributed distillates"). Residuals: the one service key holding `memory:write:delegated` can name any active member; identical-text relearns name the latest writer |
 | 17 | A teammate key reads another member's replay timeline, events, context snapshots or evals | **Mitigated 2026-10-04** — every replay/eval read is filtered per event by the verified writer's stamp; unattributed history belongs to the deployment owner; service keys still compute all evals (§5.13). Residual: events can still be *written* into another member's session id and skew its in-process metrics |
 | 18 | A teammate key reads another member's Relay DMs, posts as her, or releases her leases; Relay writes scope decisions into Bridge as the owner | **Mitigated 2026-10-04** — every Relay record is owned by the verified member that wrote it and checked on read and mutation; scope decisions reach Bridge only with the owning member's key (§5.14). Member-bound operations require `relay:read`/`relay:write`, and the internal key's two Relay writes use the service-only `relay:write:service`. Residuals: first-come presence labels at upgrade, owner-only DMs to unbound labels, single-workspace reads |
-| 19 | A credential authenticates as a member it was not issued to (regenerated teammate device minted as the owner; any unattributed record treated as the owner; a malformed scope document read as a wildcard) | **Fixed 2026-10-04** — join codes carry their member, regeneration keeps the device's member, redemption re-checks it atomically; validation reads attribution and member status and checks the scope document; legacy records are stamped to the owner explicitly and logged (§5.15). Residual: no member-removal path yet |
+| 19 | A credential authenticates as a member it was not issued to (regenerated teammate device minted as the owner; any unattributed record treated as the owner; a malformed scope document read as a wildcard) | **Fixed 2026-10-04** — join codes carry their member, regeneration keeps the device's member, redemption re-checks it atomically; validation reads attribution and member status and checks the scope document; legacy records are stamped to the owner explicitly and logged (§5.15). Member removal: row 21 |
+| 21 | A person who has left keeps working credentials or an outstanding join code, and there is no way to remove them | **Fixed 2026-10-05** — admin-only removal (REST, dashboard, `firekeep-admin`) flips the member to `removed` (every service refuses their keys on the next request; no auth cache exists), deletes every credential naming them, and cancels their join codes; the owner can never be removed; restore brings back the same member with a new code (§5.17). Residuals: member-private data is retained (operator-visible as before, readable by no member) with no purge tool; a removed member's `maildex.<id>` app password stays in the vault until an operator deletes it |
 
 Threat 5 deserves emphasis because it is the one the product's own design creates:
 Firekeep exists to make agents act on stored memory. Anything that can write a

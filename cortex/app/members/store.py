@@ -121,6 +121,14 @@ class MemberStore:
                         enrollment = await pipe.hgetall(f"{TICKET_PREFIX}{tid}")
                         member = await pipe.hgetall(f"{MEMBER_PREFIX}{invite['member_id']}")
                         await pipe.unwatch()
+                        # A removed member's accepted invite must not hand back
+                        # a join code (THREAT-MODEL §5.17). The redeem script
+                        # would refuse it anyway; refuse before revealing it.
+                        if member and member.get("status") != "active":
+                            raise MemberInviteError(
+                                f"member {invite['member_id']} was removed from this "
+                                "workspace; this invite no longer works"
+                            )
                         if enrollment and member:
                             return member, enrollment, True
                         raise MemberInviteError(
