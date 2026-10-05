@@ -302,52 +302,67 @@ async def get_context_snapshot(content_hash: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-async def trim_old_events() -> int:
+_TRIM_BATCH = 1000
+# Bounds one run even if XDEL ever stopped removing what XRANGE returned:
+# 1000 batches is 10x the default STREAM_MAXLEN.
+_TRIM_MAX_BATCHES = 1000
+
+
+async def trim_old_events(
+    redis_client: aioredis.Redis | None = None,
+    settings: ReplaySettings | None = None,
+) -> int:
     """Remove events older than RETENTION_DAYS from the stream.
 
-    Also cleans up session indexes that reference trimmed events.
-    Returns the number of events trimmed.
+    Scheduled daily by cortex's beat (``app.workers.replay_trim``), which
+    passes its own ``redis_client``; without one the emitter's client is used
+    (None: nothing to do). Drains every expired entry, in batches, and removes
+    each trimmed event from its session index and its ``rp:eid:`` lookup key.
+
+    Safe to run concurrently and to re-run: XDEL, ZREM and DEL are idempotent,
+    the return value counts only the entries THIS call deleted, and a session
+    index is never deleted explicitly — Redis drops a sorted set when ZREM
+    empties it, whereas a ZCARD-then-DEL could delete entries a concurrent
+    emit had just added (Relay's ``relay`` index is written constantly).
     """
-    if _redis is None:
+    r = redis_client if redis_client is not None else _redis
+    if r is None:
         return 0
 
+    trimmed = 0
     try:
-        settings = _settings or get_replay_settings()
+        settings = settings or _settings or get_replay_settings()
         cutoff = datetime.now(timezone.utc).timestamp() - (settings.RETENTION_DAYS * 86400)
         # Redis stream IDs are {milliseconds}-{seq}
         cutoff_id = f"{int(cutoff * 1000)}-0"
 
-        # Get events to trim
-        entries = await _redis.xrange(_STREAM_KEY, min="-", max=cutoff_id, count=1000)
-        if not entries:
-            return 0
+        for _ in range(_TRIM_MAX_BATCHES):
+            entries = await r.xrange(_STREAM_KEY, min="-", max=cutoff_id, count=_TRIM_BATCH)
+            if not entries:
+                break
 
-        # Collect stream IDs and event IDs for cleanup
-        stream_ids = []
-        session_events: dict[str, list[str]] = {}  # session_id → [event_ids]
-        for stream_id, fields in entries:
-            stream_ids.append(stream_id)
-            sid = fields.get("session_id", "")
-            eid = fields.get("id", "")
-            if sid and eid:
-                session_events.setdefault(sid, []).append(eid)
+            stream_ids = []
+            event_ids = []
+            session_events: dict[str, list[str]] = {}  # session_id → [event_ids]
+            for stream_id, fields in entries:
+                stream_ids.append(stream_id)
+                sid = fields.get("session_id", "")
+                eid = fields.get("id", "")
+                if eid:
+                    event_ids.append(eid)
+                    if sid:
+                        session_events.setdefault(sid, []).append(eid)
 
-        # Delete from stream
-        if stream_ids:
-            await _redis.xdel(_STREAM_KEY, *stream_ids)
+            trimmed += int(await r.xdel(_STREAM_KEY, *stream_ids) or 0)
+            for sid, eids in session_events.items():
+                await r.zrem(f"{_SESSION_IDX_PREFIX}{sid}", *eids)
+            if event_ids:
+                await r.delete(*(f"{_EVENT_IDX_PREFIX}{eid}" for eid in event_ids))
 
-        # Clean up session indexes
-        for sid, eids in session_events.items():
-            idx_key = f"{_SESSION_IDX_PREFIX}{sid}"
-            if eids:
-                await _redis.zrem(idx_key, *eids)
-            # Remove empty indexes
-            remaining = await _redis.zcard(idx_key)
-            if remaining == 0:
-                await _redis.delete(idx_key)
-
-        return len(stream_ids)
+            if len(entries) < _TRIM_BATCH:
+                break
+        return trimmed
 
     except Exception as e:
-        logger.warning("Replay trim failed: %s", e)
-        return 0
+        logger.warning("Replay trim failed after %d event(s): %s", trimmed, e)
+        return trimmed

@@ -28,7 +28,8 @@ cp .env.example .env
 | `SKILL_STALE_AFTER_DAYS` | `90` | Mark, but never delete, active skills not explicitly recalled in this many days |
 | `NB_PROACTIVE_RECALL_ENABLED` | `True` | Auto-inject memories on ctx_update |
 | `RP_ENABLED` | `True` | Enable replay trace event recording |
-| `RP_RETENTION_DAYS` | `30` | How long replay events are retained |
+| `RP_RETENTION_DAYS` | `30` | How long replay events are retained (enforced on the stream by cortex-beat's `replay-trim`) |
+| `RP_TRIM_INTERVAL_SECONDS` | `86400` | How often cortex-beat trims replay events older than `RP_RETENTION_DAYS` |
 | `BIND_ADDR` | `127.0.0.1` | Host interface the six published app ports (8040-8100) bind to, and therefore the address every device invite hands out. Loopback by default — a fresh install is reachable only from the machine it runs on, so invites fall back to an SSH tunnel. See [Binding and exposure](#binding-and-exposure). |
 | `AUTH_ENABLED` | `True` | Enforce per-key `X-API-Key` authentication on every MCP and REST surface. **Changed from `False` on 2026-07-26** — see [Authentication](#authentication). |
 | `FIREKEEP_SSH_USER` | `root` | SSH account carried by loopback-server join codes; combine with `VPS_IP` to start the client tunnel. |
