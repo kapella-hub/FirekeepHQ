@@ -1017,7 +1017,7 @@ refused), `cortex/tests/test_member_removal_cli.py`,
 `relay/tests/test_removed_member_key.py`, `tests/test_dashboard_members.py` and
 `deploy/tests/test_firekeep_admin.sh`.
 
-### 5.18 Relay leftovers: the retired service key (2026-10-05)
+### 5.18 Relay leftovers: service key, replay attribution, retention (2026-10-05)
 
 **`RELAY_INTERNAL_API_KEY` — retired.** After §5.14 Relay presented its service
 key only with auth off, where Bridge installs no auth middleware and checks no
@@ -1048,6 +1048,16 @@ on the owner-member internal key) is stamped as the owner member, which is what
 an unstamped event already meant. Events emitted before this change stay
 owner-only until they age out. Guard: `relay/tests/test_replay_stamping.py`.
 
+**Replay retention — enforced.** "Age out" above was only half true:
+`trim_old_events` was never scheduled, so `rp:events` was bounded by
+`RP_STREAM_MAXLEN` alone while each event's `rp:eid:` lookup key expired at
+`RP_RETENTION_DAYS`. Events past retention — recall text, file paths, snapshot
+references — stayed readable to the unscoped in-process readers. cortex-beat now
+runs the trim daily (`replay-trim`, `RP_TRIM_INTERVAL_SECONDS`), draining every
+expired entry, its session-index entry and its lookup key. The retention value
+is unchanged (30 days). Guards: `replay/tests/test_trim_retention.py`,
+`cortex/tests/test_replay_trim_task.py`.
+
 ## 6. Threats, ranked
 
 | # | Threat | State |
@@ -1074,7 +1084,7 @@ owner-only until they age out. Guard: `relay/tests/test_replay_stamping.py`.
 | 19 | A credential authenticates as a member it was not issued to (regenerated teammate device minted as the owner; any unattributed record treated as the owner; a malformed scope document read as a wildcard) | **Fixed 2026-10-04** — join codes carry their member, regeneration keeps the device's member, redemption re-checks it atomically; validation reads attribution and member status and checks the scope document; legacy records are stamped to the owner explicitly and logged (§5.15). Member removal: row 21 |
 | 20 | A member key queues skill synthesis of a teammate's session (the worker reads it with the internal key and files a draft every `memory:read` holder sees), or writes replay events under a teammate's session id to skew her evals, OWM and patterns | **Fixed 2026-10-05** — `/skill/evaluate` presents the caller's key to Bridge and queues nothing unless Bridge lets it read the session (404 otherwise, 503 if Bridge is down); a request-path replay event or gateway action naming a session its verified writer does not own is filed under `"unknown"` (§5.16). Residual: attribution fails open while the owner of an unstamped session is not yet known (its Bridge read runs off the request path) or cannot be resolved |
 | 21 | A person who has left keeps working credentials or an outstanding join code, and there is no way to remove them | **Fixed 2026-10-05** — admin-only removal (REST, dashboard, `firekeep-admin`) flips the member to `removed` (every service refuses their keys on the next request; no auth cache exists), deletes every credential naming them, and cancels their join codes; the owner can never be removed; restore brings back the same member with a new code (§5.17). Residuals: member-private data is retained (operator-visible as before, readable by no member) with no purge tool; a removed member's `maildex.<id>` app password stays in the vault until an operator deletes it |
-| 22 | An unused owner-member service key (`RELAY_INTERNAL_API_KEY`, `session:write`) sits in every deployment's `.env` | **Fixed 2026-10-05** — no longer minted, wired or read; an existing `firekeep-relay` credential is revoked and its `.env` line removed by `update.sh` (§5.18) |
+| 22 | Relay leftovers: an unused owner-member service key (`RELAY_INTERNAL_API_KEY`, `session:write`) in every `.env`; Relay's replay events unattributed (a member's own activity hidden from her); replay events kept past `RP_RETENTION_DAYS` | **Fixed 2026-10-05** — the key is no longer minted, wired or read, and `update.sh` revokes an existing `firekeep-relay` credential and removes its `.env` line; Relay stamps every event with the verified caller; cortex-beat trims the stream daily (§5.18). Residual: pre-change Relay events stay owner-only until trimmed |
 
 Threat 5 deserves emphasis because it is the one the product's own design creates:
 Firekeep exists to make agents act on stored memory. Anything that can write a

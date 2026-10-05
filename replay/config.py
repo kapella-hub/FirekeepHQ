@@ -1,5 +1,6 @@
 """Replay Engine configuration — shared across all services that emit events."""
 
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 
@@ -20,8 +21,10 @@ class ReplaySettings(BaseSettings):
     # Idempotency dedup window
     DEDUP_TTL_SECONDS: int = 300  # 5 minutes
 
-    # Trimming schedule (seconds between runs)
-    TRIM_INTERVAL_SECONDS: int = 3600  # 1 hour
+    # Trimming schedule (seconds between runs): cortex-beat's "replay-trim"
+    # entry runs replay.emitter.trim_old_events this often. Daily since
+    # 2026-10-05, when it was first scheduled; before that nothing read it.
+    TRIM_INTERVAL_SECONDS: int = Field(default=86400, gt=0)
 
     model_config = {"env_prefix": "RP_", "env_file": ".env", "extra": "ignore"}
 

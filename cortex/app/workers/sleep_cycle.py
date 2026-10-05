@@ -19,6 +19,7 @@ from celery import Celery
 from neo4j import GraphDatabase
 
 from app.config import get_settings
+from replay.config import get_replay_settings
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,7 @@ def _create_celery_app() -> Celery:
             "app.dreams.task",
             "app.procedures.harden",
             "app.skills.ladder",
+            "app.workers.replay_trim",
         ],
         beat_schedule={
             "sleep-cycle-consolidation": {
@@ -105,6 +107,11 @@ def _create_celery_app() -> Celery:
             "procedure-hardening": {
                 "task": "app.procedures.harden.run_procedure_hardening",
                 "schedule": timedelta(hours=s.PROCEDURE_SCHEDULE_HOURS),
+            },
+            # Enforces RP_RETENTION_DAYS on the replay stream (THREAT-MODEL §5.18).
+            "replay-trim": {
+                "task": "app.workers.replay_trim.trim_replay_events",
+                "schedule": timedelta(seconds=get_replay_settings().TRIM_INTERVAL_SECONDS),
             },
         },
     )
