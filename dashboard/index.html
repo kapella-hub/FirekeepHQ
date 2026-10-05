@@ -1339,7 +1339,7 @@ button.btn-outline:hover { border-color: var(--accent); color: var(--accent); ba
                         <div id="memberInviteResult" style="display:none;margin-top:18px">
                             <div class="flex-between" style="margin-bottom:8px"><strong>Private install command</strong><select id="memberInvitePlatform" style="padding:5px 8px;background:var(--surface-2);color:var(--text);border:1px solid var(--border);border-radius:6px"><option value="sh">macOS / Linux</option><option value="powershell">Windows PowerShell</option></select></div>
                             <pre id="memberInviteCommand" style="white-space:pre-wrap;word-break:break-all;padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:12px"></pre>
-                            <div class="flex-between"><span style="color:var(--text-dim);font-size:12px">Single use · expires in 7 days</span><button type="button" class="btn btn-sm btn-outline" id="btnCopyMemberInvite">Copy</button></div>
+                            <div class="flex-between"><span id="memberInviteExpiry" style="color:var(--text-dim);font-size:12px">Single use · expires in 7 days</span><button type="button" class="btn btn-sm btn-outline" id="btnCopyMemberInvite">Copy</button></div>
                             <details style="margin-top:10px"><summary style="cursor:pointer;color:var(--text-dim)">Already installed?</summary><pre id="memberInviteBare" style="white-space:pre-wrap;word-break:break-all;font-size:11px"></pre></details>
                         </div>
                     </div>
@@ -5123,6 +5123,7 @@ $('deviceInviteForm').addEventListener('submit', function(e) {
 // and auth, not metering. GET /members no longer carries an `entitlement` key.
 
 var _lastMemberInvite = null;
+var _memberRows = {};
 
 function loadMembers() {
     var members = $('membersList'), invites = $('memberInvitesList');
@@ -5130,11 +5131,23 @@ function loadMembers() {
     invites.innerHTML = '<div class="spinner">Loading invites...</div>';
     fetchJSON(CONFIG.CORTEX_API + '/members').then(function(data) {
         var rows = data.members || [];
+        _memberRows = {};
+        rows.forEach(function(r) { _memberRows[r.member_id] = r; });
         members.innerHTML = renderTable([
             { label: 'Member', render: function(r) { return '<strong>' + esc(r.label || (r.role === 'owner' ? 'Workspace owner' : r.member_id)) + '</strong><div style="font-size:11px;color:var(--text-dim)">' + esc(r.email || r.member_id) + '</div>'; } },
             { label: 'Role', key: 'role' },
-            { label: 'Status', render: function(r) { return '<span class="badge badge-green">' + esc(r.status || 'active') + '</span>'; } },
-            { label: 'Joined', render: function(r) { return esc(r.created_at ? new Date(r.created_at).toLocaleDateString() : '—'); } }
+            { label: 'Status', render: function(r) { var s = r.status || 'active'; return '<span class="badge ' + (s === 'active' ? 'badge-green' : 'badge-red') + '">' + esc(s) + '</span>'; } },
+            { label: 'Joined', render: function(r) { return esc(r.created_at ? new Date(r.created_at).toLocaleDateString() : '—'); } },
+            { label: '', align: 'right', render: function(r) {
+                var s = r.status || 'active';
+                // The deployment owner can never be removed (the server refuses too).
+                if (r.role === 'owner') return '';
+                // Only the id goes into the handler (ids are [A-Za-z0-9_.-] by
+                // construction); the label is looked up, never interpolated into JS.
+                if (s === 'active') return '<button class="btn btn-sm btn-outline" style="border-color:var(--red);color:var(--red)" onclick="removeMember(\'' + esc(r.member_id) + '\')">Remove</button>';
+                if (s === 'removed') return '<button class="btn btn-sm btn-outline" onclick="restoreMember(\'' + esc(r.member_id) + '\')">Restore</button>';
+                return '';
+            } }
         ], rows, { empty: 'No workspace members' });
         var pendingRows = data.invites || [];
         invites.innerHTML = renderTable([
@@ -5153,6 +5166,9 @@ function showMemberInvite(data) {
     _lastMemberInvite = data;
     $('memberInviteResult').style.display = 'block';
     $('memberInviteBare').textContent = 'firekeep join ' + data.code;
+    // A member invite lives 7 days; a restore's device code only as long as a
+    // join code (24h by default) — say what the server actually returned.
+    if (data.expires_at) $('memberInviteExpiry').textContent = 'Single use · expires ' + new Date(data.expires_at).toLocaleString();
     updateMemberInviteCommand();
 }
 
@@ -5168,6 +5184,39 @@ function cancelMemberInvite(tid) {
       .catch(function(e) { toast('Cancel failed: ' + e.message, 'error'); });
 }
 window.cancelMemberInvite = cancelMemberInvite;
+
+// Removal (docs/THREAT-MODEL.md §5.17): the row is kept for attribution, every
+// credential naming the member is deleted, their unredeemed join codes are
+// cancelled. Their member-private data stays where it is; nothing moves to you.
+function removeMember(memberId) {
+    var row = _memberRows[memberId] || {};
+    var name = row.label || memberId;
+    if (!confirm('Remove ' + name + ' from this workspace?\n\nEvery device they have will stop authenticating immediately and their pending join codes are cancelled. ' +
+        'Their memories, sessions and history stay attributed to them; their private memories are not transferred to anyone. You can restore them later.')) return;
+    fetchJSON(CONFIG.CORTEX_API + '/members/' + encodeURIComponent(memberId), { method: 'DELETE' })
+      .then(function(data) {
+          var n = (data.credentials_revoked || []).length;
+          toast(name + ' removed; ' + n + ' credential(s) revoked', 'success');
+          loadMembers();
+      })
+      .catch(function(e) { toast('Remove failed: ' + e.message, 'error'); });
+}
+window.removeMember = removeMember;
+
+// Restore reactivates the SAME member (their history and private memories are
+// theirs again) and returns one new join code for their device.
+function restoreMember(memberId) {
+    var row = _memberRows[memberId] || {};
+    var name = row.label || memberId;
+    if (!confirm('Restore ' + name + '? They get a new single-use join code; their old devices stay revoked.')) return;
+    fetchJSON(CONFIG.CORTEX_API + '/members/' + encodeURIComponent(memberId) + '/restore', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind: 'ports' })
+    }).then(function(data) {
+        showMemberInvite(data); loadMembers(); toast(name + ' restored — send them the install command', 'success');
+    }).catch(function(e) { toast('Restore failed: ' + e.message, 'error'); });
+}
+window.restoreMember = restoreMember;
 
 $('btnRefreshMembers').addEventListener('click', loadMembers);
 $('memberInvitePlatform').addEventListener('change', updateMemberInviteCommand);

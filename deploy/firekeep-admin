@@ -6,6 +6,7 @@ set -euo pipefail
 #   firekeep-admin invite [--agent NAME] [--expires-days N] [--json]
 #   firekeep-admin keys create --agent NAME [--expires-days N]
 #   firekeep-admin keys revoke CREDENTIAL_ID
+#   firekeep-admin members list|remove MEMBER_ID|restore MEMBER_ID
 
 # eval:grade, memory:write:delegated, session:read:workspace and
 # relay:write:service are deliberately ABSENT here: they are SERVICE-ONLY
@@ -37,14 +38,26 @@ Usage:
   firekeep-admin invite [--agent NAME] [--expires-days N] [--json]
       [--local] [--host HOST | --base-url URL] [--ssh-target USER@HOST]
       [--ca-file PATH | --ca os] [--insecure-http] [--dist-base URL]
+      [--member MEMBER_ID]
 
   --local   a code for THIS machine, redeemed on THIS machine over loopback.
             Used by `firekeep init` to enrol the server box against itself.
+  --member  the code's credential belongs to this (active) member instead of
+            the deployment owner — e.g. after `members restore`.
   firekeep-admin keys create --agent NAME [--expires-days N]
   firekeep-admin keys revoke CREDENTIAL_ID
   firekeep-admin keys audit
       READ-ONLY: classify every stored credential against the 2026-10-04
       validation rules (attribution, member status, scope document, expiry).
+  firekeep-admin members list
+  firekeep-admin members remove MEMBER_ID
+      Mark the member removed (row kept for attribution), delete every
+      credential naming them, cancel their unredeemed join codes. Their
+      member-private data is kept, unread by any member. The deployment
+      owner can never be removed. Idempotent.
+  firekeep-admin members restore MEMBER_ID
+      Reactivate a removed member (no credential is issued), then:
+      firekeep-admin invite --member MEMBER_ID
 EOF
     exit 1
 }
@@ -59,6 +72,7 @@ redis_available() {
 
 valid_id() { [[ "$1" =~ ^[0-9a-f]{1,64}$ ]]; }
 valid_agent() { [[ "$1" =~ ^[A-Za-z0-9_.-]{1,64}$ ]]; }
+valid_member() { [[ "$1" =~ ^[A-Za-z0-9_.-]{1,128}$ ]]; }
 
 keys_create() {
     local agent="" expires_days=""
@@ -278,7 +292,7 @@ keys_audit() {
 
 invite() {
     local agent="" expires_days="" output_json=0 host="" base_url="" ssh_target=""
-    local ca_file="" ca_mode="" insecure=0 local_only=0
+    local ca_file="" ca_mode="" insecure=0 local_only=0 member=""
     local dist_base="${FIREKEEP_DIST_BASE:-https://firekeep.ai}"
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -292,11 +306,13 @@ invite() {
             --ca) ca_mode="${2:?--ca requires a value}"; shift 2 ;;
             --dist-base) dist_base="${2:?--dist-base requires a value}"; shift 2 ;;
             --insecure-http) insecure=1; shift ;;
+            --member) member="${2:?--member requires a value}"; shift 2 ;;
             --json) output_json=1; shift ;;
             *) echo "Unknown argument: $1" >&2; usage ;;
         esac
     done
     [ -z "$agent" ] || valid_agent "$agent" || usage
+    [ -z "$member" ] || valid_member "$member" || { echo "ERROR: invalid member id" >&2; exit 1; }
     if [ "$(env_get AUTH_ENABLED)" = "false" ]; then
         echo "ERROR: this server enforces no authentication (AUTH_ENABLED=false), so there is no key to issue." >&2
         exit 1
@@ -358,6 +374,7 @@ invite() {
     [ -n "$ssh_target" ] && cmd+=(--ssh-target "$ssh_target")
     [ -n "$ca_pem_b64" ] && cmd+=(--ca-pem-b64 "$ca_pem_b64")
     [ -n "$ca_mode" ] && cmd+=(--ca "$ca_mode")
+    [ -n "$member" ] && cmd+=(--member-id "$member")
     # mint.py gates transport=http behind --insecure-http regardless of host, so
     # --local has to pass it. The gate is doing its job; loopback is the one case
     # where the answer to "is plain HTTP acceptable?" is unambiguously yes.
@@ -368,6 +385,35 @@ invite() {
         return
     fi
     "${cmd[@]}"
+}
+
+# Member removal/restore (docs/THREAT-MODEL.md §5.17). Runs the SAME Python
+# implementation as DELETE /members/{id} (auth/members.py) inside cortex-api,
+# like `invite` does for app.enroll.mint, rather than a bash port of the owner
+# and last-admin rules and the credential/join-code sweep. Like `invite`, it
+# needs docker compose; on the office Kubernetes deployment use the dashboard
+# (Members -> Remove) or `kubectl exec` the same module.
+members() {
+    local sub="${1:-}" member_id=""
+    case "$sub" in
+        list) [ $# -eq 1 ] || usage ;;
+        remove|restore)
+            [ $# -eq 2 ] || usage
+            member_id="$2"
+            valid_member "$member_id" || { echo "ERROR: invalid member id" >&2; exit 1; }
+            ;;
+        *) usage ;;
+    esac
+    local cmd=(docker compose exec -T cortex-api python -m app.members.admin "$sub")
+    [ -n "$member_id" ] && cmd+=("$member_id")
+    if [ "${FIREKEEP_ADMIN_DRY_RUN:-0}" = "1" ]; then
+        printf '%q ' "${cmd[@]}"; echo
+        return
+    fi
+    "${cmd[@]}"
+    if [ "$sub" = "restore" ]; then
+        echo "Restored ${member_id}: it holds no credential yet. Issue its join code: firekeep-admin invite --member ${member_id}" >&2
+    fi
 }
 
 admin_api_key() {
@@ -390,5 +436,6 @@ case "${1:-}" in
         esac
         ;;
     invite) shift; invite "$@" ;;
+    members) shift; members "$@" ;;
     *) usage ;;
 esac
