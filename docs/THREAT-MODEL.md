@@ -762,7 +762,8 @@ another member's session id (they stay attributed to the writer and invisible to
 victim, but in-process consumers — the eval scorers, OWM, the pattern engine — read
 the session unfiltered, so injected events can skew a victim's metrics) — fixed
 2026-10-05, §5.16. Background
-emitters (collectors, Sentinel, Relay's coordination bus) stay unattributed, so
+emitters (collectors, Sentinel) stay unattributed (Relay's own events are stamped
+since 2026-10-05, §5.18), so
 their events are visible only to the owner and admins. `/evals/trends` and the
 briefing's quality/discipline sections remain workspace-wide aggregates (no session
 id, grade or event). Pre-change events and evals are unattributed until they age out
@@ -1034,6 +1035,18 @@ way. `update.sh` runs that before `compose up`, so a relay still running the old
 image loses its best-effort scope-decision writes for the restart window only.
 Guards: `relay/tests/test_principal_binding_scope.py`,
 `deploy/tests/test_bootstrap_keys.sh` (Run R), `deploy/tests/test_auth_posture.sh`.
+
+**Relay's replay events — attributed.** Relay emitted its coordination, claim and
+release events (task created/updated/deleted, DMs, bulletins, broadcasts,
+presence, leases, claims) with no `workspace_id` / `member_id`, so under §5.13 a
+teammate's own Relay activity was visible only to the deployment owner and
+admins. Each emit now carries the verified caller's stamp — `Caller.stamp()` or
+the task's `created_by` / `updated_by` principal, never the `agent_id` /
+`from_id` / `assigner` label — and only when that caller was authenticated; with
+auth off the stream is unchanged. The REST `POST /tasks` (Cortex's fleet enqueue,
+on the owner-member internal key) is stamped as the owner member, which is what
+an unstamped event already meant. Events emitted before this change stay
+owner-only until they age out. Guard: `relay/tests/test_replay_stamping.py`.
 
 ## 6. Threats, ranked
 

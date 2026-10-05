@@ -8,6 +8,7 @@ import logging
 import re
 import time
 from pathlib import PurePosixPath
+from typing import Any, Mapping
 
 from fastmcp import FastMCP
 
@@ -90,12 +91,32 @@ async def _ensure_replay() -> None:
         pass
 
 
-async def _replay_emit(event_type: str, payload: dict, agent_id: str = "relay", **kwargs) -> None:
+def _replay_attribution(by: Mapping[str, Any] | None) -> dict:
+    """``workspace_id`` / ``member_id`` for replay.emitter.emit, from a VERIFIED
+    principal stamp (``Caller.stamp()`` or ``app.tasks`` ``created_by``).
+
+    Only an authenticated stamp attributes an event (§5.18): replay's readers
+    show an event to a non-admin key only when it carries that key's member,
+    and treat an unstamped one as the deployment owner's. With auth disabled
+    nothing is stamped, so the stream is byte-for-byte what it was. A label
+    (``agent_id``, ``from_id``, ``assigner``) never reaches this."""
+    if not by or by.get("authenticated") is not True:
+        return {}
+    attribution = {
+        "workspace_id": str(by.get("workspace_id") or "") or None,
+        "member_id": str(by.get("member_id") or "") or None,
+    }
+    return {k: v for k, v in attribution.items() if v}
+
+
+async def _replay_emit(event_type: str, payload: dict, agent_id: str = "relay", *,
+                       by: Mapping[str, Any] | None = None, **kwargs) -> None:
     try:
         await _ensure_replay()
         from replay.emitter import emit as _emit, is_enabled
         if is_enabled():
-            await _emit(event_type, session_id="relay", agent_id=agent_id, payload=payload, **kwargs)
+            await _emit(event_type, session_id="relay", agent_id=agent_id, payload=payload,
+                        **_replay_attribution(by), **kwargs)
     except Exception:
         pass
 
@@ -288,7 +309,8 @@ async def relay_broadcast(channel: str, content: str, sender: str = "anonymous",
             backlog_ttl_seconds=settings.BULLETIN_TTL_HOURS * 3600,
             by=caller.stamp(),
         )
-        await _replay_emit("coordination", {"channel": channel, "message_summary": content[:200], "tags": tags or []}, agent_id=sender)
+        await _replay_emit("coordination", {"channel": channel, "message_summary": content[:200], "tags": tags or []},
+                           agent_id=sender, by=caller.stamp())
         return {"status": "sent", "channel": channel}
     except Exception as e:
         logger.error("relay_broadcast failed: %s", e)
@@ -346,7 +368,8 @@ async def relay_post(content: str, author: str = "anonymous", tags: list[str] | 
         settings = get_settings()
         effective_ttl = ttl_hours if ttl_hours is not None else settings.BULLETIN_TTL_HOURS
         post = await post_bulletin(r, content, author, tags or [], effective_ttl, by=caller.stamp())
-        await _replay_emit("coordination", {"channel": "bulletin", "message_summary": content[:200], "tags": tags or []}, agent_id=author)
+        await _replay_emit("coordination", {"channel": "bulletin", "message_summary": content[:200], "tags": tags or []},
+                           agent_id=author, by=caller.stamp())
         return {"status": "posted", "post": post}
     except Exception as e:
         logger.error("relay_post failed: %s", e)
@@ -404,7 +427,8 @@ async def relay_claim(resource_id: str, agent_id: str = "default", ttl_minutes: 
         })
         acquired = await r.set(key, claim_data, nx=True, ex=effective_ttl * 60)
         if acquired:
-            await _replay_emit("claim", {"resource_id": resource_id, "ttl_minutes": effective_ttl}, agent_id=agent_id)
+            await _replay_emit("claim", {"resource_id": resource_id, "ttl_minutes": effective_ttl},
+                               agent_id=agent_id, by=caller.stamp())
             return {"claimed": True, "resource_id": resource_id, "agent_id": agent_id, "ttl_minutes": effective_ttl}
         # Already claimed
         holder_data = await r.get(key)
@@ -442,7 +466,7 @@ async def relay_release(resource_id: str, agent_id: str = "default", fencing_tok
         from app.leases import release_lease
         lease_result = await release_lease(r, resource_id, agent_id, fencing_token, caller=caller)
         if lease_result.get("released"):
-            await _replay_emit("release", {"resource_id": resource_id}, agent_id=agent_id)
+            await _replay_emit("release", {"resource_id": resource_id}, agent_id=agent_id, by=caller.stamp())
             return {"released": True, "resource_id": resource_id}
         if lease_result.get("reason") not in {"no_active_lease", "not_holder"}:
             return lease_result
@@ -450,7 +474,7 @@ async def relay_release(resource_id: str, agent_id: str = "default", fencing_tok
         key = f"nr:claim:{resource_id}"
         result = await _run_release_script(r, key, agent_id, caller=caller)
         if result == 1:
-            await _replay_emit("release", {"resource_id": resource_id}, agent_id=agent_id)
+            await _replay_emit("release", {"resource_id": resource_id}, agent_id=agent_id, by=caller.stamp())
             return {"released": True, "resource_id": resource_id}
         elif result == 0:
             return {"released": False, "reason": "no active lease or claim"}
@@ -567,7 +591,7 @@ async def relay_lease(resource_id: str, agent_id: str = "default", ttl_minutes: 
                 "resource_id": resource_id,
                 "fencing_token": result["fencing_token"],
                 "ttl_seconds": ttl_sec,
-            }, agent_id=agent_id)
+            }, agent_id=agent_id, by=caller.stamp())
 
         return result
     except Exception as e:
@@ -756,8 +780,9 @@ async def relay_task_update(
             return refused
         r = await get_redis()
         from app.tasks import update_task
+        principal = _verified_principal()
         task = await update_task(r, task_id, status, result, assignee,
-                                 principal=_verified_principal())
+                                 principal=principal)
         if task is None:
             return {"error": f"Task {task_id} not found"}
 
@@ -771,7 +796,8 @@ async def relay_task_update(
             backlog_ttl_seconds=get_settings().BULLETIN_TTL_HOURS * 3600,
         )
 
-        await _replay_emit("coordination", {"action": "task_updated", "task_id": task_id, "status": status or "updated"}, agent_id=task.get("assignee", "unknown"))
+        await _replay_emit("coordination", {"action": "task_updated", "task_id": task_id, "status": status or "updated"},
+                           agent_id=task.get("assignee", "unknown"), by=principal)
         return {"status": "updated", "task": task}
     except ValueError as e:
         return {"error": str(e)}
@@ -799,7 +825,8 @@ async def relay_task_delete(task_id: str) -> dict:
         deleted = await delete_task(r, task_id)
         if not deleted:
             return {"error": f"Task {task_id} not found"}
-        await _replay_emit("coordination", {"action": "task_deleted", "task_id": task_id})
+        await _replay_emit("coordination", {"action": "task_deleted", "task_id": task_id},
+                           by=_verified_principal())
         return {"status": "deleted", "task_id": task_id}
     except Exception as e:
         logger.error("relay_task_delete failed: %s", e)
@@ -847,7 +874,7 @@ async def relay_register(
         await _replay_emit("coordination", {
             "action": "presence_register",
             "hostname": hostname,
-        }, agent_id=agent_id)
+        }, agent_id=agent_id, by=caller.stamp())
         return {"status": "registered", **result}
     except Exception as e:
         logger.error("relay_register failed: %s", e)
@@ -905,7 +932,7 @@ async def relay_deregister(agent_id: str) -> dict:
         result = await deregister(r, agent_id, caller=caller)
         await _replay_emit("coordination", {
             "action": "presence_deregister",
-        }, agent_id=agent_id)
+        }, agent_id=agent_id, by=caller.stamp())
         return result
     except Exception as e:
         logger.error("relay_deregister failed: %s", e)
@@ -1211,7 +1238,7 @@ async def relay_send_dm(to_agent_id: str, content: str, from_id: str = "anonymou
             "action": "dm_sent",
             "to": to_agent_id,
             "message_preview": content[:200],
-        }, agent_id=from_id)
+        }, agent_id=from_id, by=caller.stamp())
         return {"status": "sent", "message": msg}
     except Exception as e:
         logger.error("relay_send_dm failed: %s", e)
