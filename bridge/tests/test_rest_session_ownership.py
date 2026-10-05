@@ -274,6 +274,47 @@ async def test_legacy_session_is_readable_only_by_the_deployment_owner(
 
 
 # ---------------------------------------------------------------------------
+# GET /sessions/{id} names the recorded owner (THREAT-MODEL §5.16)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_session_read_names_the_recorded_owner_for_the_internal_resolver(
+        auth_enabled, manager, mock_redis):
+    """Cortex's session-owner resolver reads this with FIREKEEP_INTERNAL_KEY to
+    decide whose replay events may be filed under a session whose start event
+    carries no owner stamp (sessions started before 2026-10-04)."""
+    _configure(mock_redis, {ALICE_SESSION_ID: ALICE_META})
+    internal_service = _identity(
+        OWNER, "credential-internal",
+        scopes=["session:read", "session:read:workspace"],
+    )
+
+    read = await mcp_mod._get_session(_request(
+        f"/sessions/{ALICE_SESSION_ID}", internal_service, session_id=ALICE_SESSION_ID))
+
+    assert read.status_code == 200
+    assert _json(read)["owner_member"] == "member-alice"
+    assert _json(read)["owner_workspace"] == WS
+
+
+@pytest.mark.asyncio
+async def test_legacy_session_read_reports_an_empty_owner_not_a_missing_one(
+        auth_enabled, manager, mock_redis):
+    """"" means legacy (the deployment owner's); an absent key means an older
+    Bridge, which the resolver must not mistake for legacy."""
+    _configure(mock_redis, {LEGACY_SESSION_ID: LEGACY_META})
+    owner = _identity(OWNER, "credential-owner-laptop")
+
+    read = await mcp_mod._get_session(_request(
+        f"/sessions/{LEGACY_SESSION_ID}", owner, session_id=LEGACY_SESSION_ID))
+
+    assert read.status_code == 200
+    body = _json(read)
+    assert body["owner_member"] == "" and body["owner_workspace"] == ""
+
+
+# ---------------------------------------------------------------------------
 # POST /sessions/{agent_id}/context — writes land only in an owned session
 # ---------------------------------------------------------------------------
 

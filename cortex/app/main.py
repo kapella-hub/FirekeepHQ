@@ -118,6 +118,18 @@ async def _replay_emit(event_type: str, session_id: str, agent_id: str, payload:
     try:
         await _ensure_replay()
         from replay.emitter import emit
+        # Every Cortex request-path emit funnels through here with the verified
+        # writer stamped. A writer that names a session it does not own (the
+        # session id is client telemetry) gets its event filed under "unknown"
+        # instead, so it cannot skew that session's eval/OWM/pattern inputs
+        # (docs/THREAT-MODEL.md §5.16; app/session_owner.py).
+        from app.session_owner import attributable_session_id
+        session_id = await attributable_session_id(
+            session_id,
+            workspace_id=kwargs.get("workspace_id"),
+            member_id=kwargs.get("member_id"),
+            event_type=event_type,
+        )
         await emit(event_type, session_id, agent_id, payload, **kwargs)
     except Exception as exc:
         logger.warning("Replay emit failed for %s: %s", event_type, exc)

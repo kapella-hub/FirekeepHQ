@@ -123,6 +123,15 @@ def is_enabled() -> bool:
     return s.ENABLED and _redis is not None
 
 
+def get_redis() -> aioredis.Redis | None:
+    """The emitter's replay Redis connection, or None when not initialized.
+
+    For in-process readers that must see exactly the store this process
+    writes to (Cortex's session-owner resolver reads a session's stamped
+    start event through it)."""
+    return _redis
+
+
 # ---------------------------------------------------------------------------
 # Emit
 # ---------------------------------------------------------------------------

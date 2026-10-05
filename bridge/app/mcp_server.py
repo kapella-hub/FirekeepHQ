@@ -1236,6 +1236,15 @@ async def _get_session(request: StarletteRequest) -> StarletteJSONResponse:
             "outcome": data.get("outcome", ""),
             "duration_seconds": data.get("duration_seconds"),
             "shadow": shadow,
+            # The recorded owner, ALWAYS present ("" = not recorded: a legacy
+            # session, the deployment owner's by session_owned_by). Cortex's
+            # session-owner resolver (cortex/app/session_owner.py) reads these
+            # with FIREKEEP_INTERNAL_KEY to decide whose replay events may be
+            # filed under this session; a response WITHOUT the keys is an older
+            # Bridge and resolves to "unknown", never to "legacy". Only the
+            # owner or a workspace-wide service reader reaches this line.
+            "owner_member": data.get("owner_member") or "",
+            "owner_workspace": data.get("owner_workspace") or "",
         })
     except ScopeError as e:
         return StarletteJSONResponse({"error": e.detail}, status_code=e.status_code)
