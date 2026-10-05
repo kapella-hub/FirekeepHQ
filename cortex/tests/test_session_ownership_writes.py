@@ -22,7 +22,9 @@ key it is shown.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -154,7 +156,20 @@ class FakeBridge:
         })
 
 
-def _install_bridge(monkeypatch, bridge: FakeBridge) -> FakeBridge:
+class SlowBridge:
+    """A Bridge that answers far later than the resolver will wait."""
+
+    def __init__(self, delay: float = 5.0):
+        self.delay = delay
+        self.calls: list[tuple[str, str | None]] = []
+
+    async def handler(self, request: httpx.Request) -> httpx.Response:
+        self.calls.append((request.url.path.rsplit("/", 1)[-1], request.headers.get("X-API-Key")))
+        await asyncio.sleep(self.delay)
+        return httpx.Response(200, json={"owner_member": ALICE, "owner_workspace": WS})
+
+
+def _install_bridge(monkeypatch, bridge) -> FakeBridge:
     monkeypatch.setattr(
         session_owner, "bridge_client",
         lambda timeout=session_owner.BRIDGE_TIMEOUT_SECONDS: httpx.AsyncClient(
@@ -387,13 +402,15 @@ async def test_delegated_distillation_write_stays_in_the_owners_session(auth_on,
 @pytest.mark.asyncio
 async def test_unstamped_session_resolves_its_owner_from_bridge_once(auth_on, replay, monkeypatch):
     """Every session in flight at the deploy that ships Bridge's start-event
-    stamps has an UNSTAMPED start event. Its owner comes from Bridge, so its
-    own member's events keep landing in it (eval grades exactly as before)."""
+    stamps has an UNSTAMPED start event. Its owner comes from Bridge — read in
+    the background after the first emit, never inside the request — so its own
+    member's events keep landing in it (eval grades exactly as before)."""
     bridge = _install_bridge(monkeypatch, FakeBridge({ALICE_SESSION: ALICE_META}, {}))
     await _start(ALICE_SESSION, None)
 
-    await _write(ALICE_SESSION, ALICE)
-    await _write(ALICE_SESSION, BOB)
+    await _write(ALICE_SESSION, ALICE)          # not known yet: kept, read scheduled
+    await session_owner.drain_bridge_lookups()
+    await _write(ALICE_SESSION, BOB)            # known now: re-filed
     await _write(ALICE_SESSION, ALICE)
 
     in_alice = [await _event(replay, eid) for eid in await _session_event_ids(replay, ALICE_SESSION)]
@@ -410,8 +427,10 @@ async def test_prior_art_recall_before_the_start_event_resolves_through_bridge(
     bridge = _install_bridge(monkeypatch, FakeBridge({ALICE_SESSION: ALICE_META}, {}))
 
     await _write(ALICE_SESSION, ALICE)
+    await session_owner.drain_bridge_lookups()
+    await _write(ALICE_SESSION, ALICE)
 
-    assert len(await _session_event_ids(replay, ALICE_SESSION)) == 1
+    assert len(await _session_event_ids(replay, ALICE_SESSION)) == 2
     assert len(bridge.calls) == 1
 
 
@@ -420,9 +439,11 @@ async def test_unknown_session_falls_to_the_deployment_owner(auth_on, replay, mo
     _install_bridge(monkeypatch, FakeBridge({}, {}))  # Bridge: 404
 
     await _write("made-up-session", OWNER)
+    await session_owner.drain_bridge_lookups()
+    await _write("made-up-session", OWNER)
     await _write("made-up-session", BOB)
 
-    assert len(await _session_event_ids(replay, "made-up-session")) == 1
+    assert len(await _session_event_ids(replay, "made-up-session")) == 2
     assert len(await _session_event_ids(replay, "unknown")) == 1
 
 
@@ -431,14 +452,66 @@ async def test_bridge_unreachable_keeps_the_claimed_session(auth_on, replay, mon
     """Fail OPEN for attribution: failing closed would re-file every
     legitimate event of every cold-cache unstamped session during an outage.
     Readers still hide foreign events (#56); the miss is counted."""
-    _install_bridge(monkeypatch, FakeBridge({}, {}, fail=httpx.ConnectError("down")))
+    bridge = _install_bridge(monkeypatch, FakeBridge({}, {}, fail=httpx.ConnectError("down")))
     await _start(ALICE_SESSION, None)
     before = session_owner.get_stats()["unresolved"]
 
     await _write(ALICE_SESSION, ALICE)
+    await session_owner.drain_bridge_lookups()
+    await _write(ALICE_SESSION, ALICE)
 
-    assert len(await _session_event_ids(replay, ALICE_SESSION)) == 2
-    assert session_owner.get_stats()["unresolved"] == before + 1
+    assert len(await _session_event_ids(replay, ALICE_SESSION)) == 3
+    assert session_owner.get_stats()["unresolved"] == before + 2
+    # The failed read is remembered: no second Bridge call within the window.
+    assert len(bridge.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_slow_bridge_never_extends_the_request(auth_on, replay, monkeypatch):
+    """Emits are awaited inside recall/learn/gateway requests. A Bridge slower
+    than any timeout costs the request nothing — the first emit only schedules
+    the read — and a timed-out read is not retried for the same session within
+    the unresolved window, so Bridge sees one call, not one per request."""
+    monkeypatch.setattr(session_owner, "RESOLVER_TIMEOUT_SECONDS", 0.2)
+    bridge = _install_bridge(monkeypatch, SlowBridge(delay=5.0))
+    await _start(ALICE_SESSION, None)
+
+    started = time.perf_counter()
+    await _write(ALICE_SESSION, BOB)
+    first = time.perf_counter() - started
+    await session_owner.drain_bridge_lookups()       # the read times out at ~0.2 s
+    started = time.perf_counter()
+    for _ in range(5):
+        await _write(ALICE_SESSION, BOB)
+    rest = time.perf_counter() - started
+
+    assert first < 0.15
+    assert rest < 0.15
+    assert len(bridge.calls) == 1
+    # Unresolved fails open: every write kept its claimed session.
+    assert len(await _session_event_ids(replay, ALICE_SESSION)) == 7
+
+
+@pytest.mark.asyncio
+async def test_bridge_lookups_are_bounded_and_a_saturated_resolver_fails_open(
+        auth_on, replay, monkeypatch):
+    """A flood of fresh session ids cannot fan out into Bridge: past
+    MAX_BRIDGE_LOOKUPS in flight, no read is started, the write keeps its
+    claimed id, and the drop is counted."""
+    monkeypatch.setattr(session_owner, "MAX_BRIDGE_LOOKUPS", 2)
+    monkeypatch.setattr(session_owner, "RESOLVER_TIMEOUT_SECONDS", 0.2)
+    bridge = _install_bridge(monkeypatch, SlowBridge(delay=5.0))
+    before = session_owner.get_stats()["bridge_saturated"]
+
+    for n in range(5):
+        await _write(f"fresh-{n}", BOB)
+    await asyncio.sleep(0)  # let the scheduled reads reach Bridge
+
+    assert len(bridge.calls) == 2
+    assert session_owner.get_stats()["bridge_saturated"] == before + 3
+    for n in range(5):
+        assert len(await _session_event_ids(replay, f"fresh-{n}")) == 1
+    await session_owner.drain_bridge_lookups()
 
 
 @pytest.mark.asyncio
