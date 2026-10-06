@@ -68,22 +68,74 @@ def create_lifecycle_router(
             await pipe.execute()
         except Exception:
             logger.exception(
-                "Restored %d memories but FAILED to write %s audit entries: %s",
+                "Changed %d memories but FAILED to write %s audit entries: %s",
                 len(entries), GC_EVICTION_LOG_KEY, [e.get("id") for e in entries],
             )
 
+    async def _scope(
+        identity: dict[str, Any], ids: list[str], *, surface: str,
+    ) -> tuple[set[str], dict[str, Any]]:
+        """Charge the write budget, then (reachable ids, actor stamp).
+
+        THREAT-MODEL §5.19: these routes once took any id from any valid key.
+        Each REQUESTED id spends one unit (before anything changes, so a
+        refused batch changes nothing); only ids the caller could recall are
+        acted on -- its workspace, a teammate's member-private point only for
+        an operator, and a revert archive only for an admin (anyone else
+        could otherwise un-archive it or knock it out of the undo). Teammates
+        may deprecate and confirm each other's workspace memories: that is
+        what the routes are for.
+        """
+        from auth import keys as _auth_keys
+        from app.write_limit import charge_memory_write
+
+        await charge_memory_write(identity, redis_client, surface=surface,
+                                  units=len(ids))
+        authenticated = bool(identity.get("authenticated"))
+        admin = _auth_keys.scopes_allow(
+            identity.get("scopes", []), "admin", allow_wildcard=authenticated)
+        reachable = await vector.reachable_ids(
+            ids,
+            workspace_id=identity.get("workspace_id"),
+            member_id=identity.get("member_id"),
+            see_private=not authenticated or admin,
+            refuse_archive_sources=() if admin else ("revert",),
+        )
+        actor = {
+            "credential_id": str(identity.get("credential_id") or ""),
+            "member_id": identity.get("member_id"),
+            "at": datetime.now(timezone.utc).isoformat(),
+        }
+        return reachable, actor
+
     @router.post("/memory/deprecate", dependencies=[Depends(require_not_frozen)])
     @limiter.limit(lambda: get_settings().RATE_LIMIT)
-    async def deprecate_memories(request: Request, body: DeprecateRequest) -> DeprecateResponse:
+    async def deprecate_memories(
+        request: Request,
+        body: DeprecateRequest,
+        identity: dict = Depends(require_scope("memory:write")),
+    ) -> DeprecateResponse:
         """Change memory status to deprecated, superseded, or archived."""
+        wanted = list(body.memory_ids)
+        if body.superseded_by:
+            wanted.append(body.superseded_by)
+        reachable, actor = await _scope(identity, wanted, surface="memory_deprecate")
+        if body.superseded_by and body.superseded_by not in reachable:
+            # The replacement must be one the caller could recall, or a good
+            # memory could be pointed at anything. Same answer as a miss.
+            return DeprecateResponse(status="updated", updated=0)
         updated = 0
+        changed: list[str] = []
         for memory_id in body.memory_ids:
+            if memory_id not in reachable:
+                continue
             try:
                 await vector.update_status(
                     memory_id=memory_id,
                     status=body.status,
                     superseded_by=body.superseded_by,
                     reason=body.reason,
+                    actor=actor,
                 )
                 # If superseding, create graph edge
                 if body.status == "superseded" and body.superseded_by:
@@ -97,22 +149,44 @@ def create_lifecycle_router(
                     except Exception:
                         logger.warning("Failed to create supersession edge for %s", memory_id)
                 updated += 1
+                changed.append(memory_id)
             except Exception:
                 logger.warning("Failed to update status for memory %s", memory_id)
+        await _append_audit([
+            {"id": memory_id, "action": body.status, "occurred_at": actor["at"],
+             "reason": body.reason, "superseded_by": body.superseded_by,
+             "credential_id": actor["credential_id"], "member_id": actor["member_id"]}
+            for memory_id in changed
+        ])
         return DeprecateResponse(status="updated", updated=updated)
 
     @router.post("/memory/confirm", dependencies=[Depends(require_not_frozen)])
     @limiter.limit(lambda: get_settings().RATE_LIMIT)
-    async def confirm_memories(request: Request, body: ConfirmRequest) -> ConfirmResponse:
+    async def confirm_memories(
+        request: Request,
+        body: ConfirmRequest,
+        identity: dict = Depends(require_scope("memory:write")),
+    ) -> ConfirmResponse:
         """Confirm memories are still valid -- resets decay, bumps confidence."""
+        reachable, actor = await _scope(identity, list(body.memory_ids),
+                                        surface="memory_confirm")
         confirmed = 0
+        changed: list[str] = []
         for memory_id in body.memory_ids:
+            if memory_id not in reachable:
+                continue
             try:
-                success = await vector.confirm_memory(memory_id)
+                success = await vector.confirm_memory(memory_id, actor=actor)
                 if success:
                     confirmed += 1
+                    changed.append(memory_id)
             except Exception:
                 logger.warning("Failed to confirm memory %s", memory_id)
+        await _append_audit([
+            {"id": memory_id, "action": "confirmed", "occurred_at": actor["at"],
+             "credential_id": actor["credential_id"], "member_id": actor["member_id"]}
+            for memory_id in changed
+        ])
         return ConfirmResponse(status="confirmed", confirmed=confirmed)
 
     @router.post("/memory/restore", dependencies=[Depends(require_not_frozen)])

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock
+from unittest.mock import ANY, AsyncMock
 
 import pytest
 from fastapi import FastAPI
@@ -26,6 +26,10 @@ def mock_vector() -> AsyncMock:
     vector.confirm_memory = AsyncMock(return_value=True)
     vector.restore_memory = AsyncMock(return_value=True)
     vector.get_memory = AsyncMock(return_value=None)
+    # Every id is reachable here; the scope itself (workspace, visibility,
+    # revert archives) is covered against a real store in
+    # test_lifecycle_write_authz.py.
+    vector.reachable_ids = AsyncMock(side_effect=lambda ids, **_kw: set(ids))
     return vector
 
 
@@ -56,7 +60,7 @@ class TestDeprecateEndpoint:
         assert data["updated"] == 1
         mock_vector.update_status.assert_called_once_with(
             memory_id="mem-1", status="deprecated", superseded_by=None,
-            reason="Outdated information",
+            reason="Outdated information", actor=ANY,
         )
 
     def test_deprecate_superseded_creates_graph_edge(

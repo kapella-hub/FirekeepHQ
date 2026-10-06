@@ -1482,6 +1482,7 @@ class VectorClient:
         reason: str | None = None,
         count_as_contradiction: bool = True,
         revert_id: str | None = None,
+        actor: dict[str, Any] | None = None,
     ) -> None:
         """Update memory lifecycle status and optionally set superseded_by.
 
@@ -1511,8 +1512,13 @@ class VectorClient:
         ``revert_id`` marks an archive made by revert-by-credential
         (app/memory_revert.py): ``archive_source="revert"`` -- still never
         purge-eligible -- and the id that batch is restored by.
+
+        ``actor`` (the REST route's verified caller: credential_id, member_id,
+        at) is stored as ``status_actor`` so the point says who changed it.
         """
         payload: dict[str, Any] = {"status": status}
+        if actor:
+            payload["status_actor"] = actor
         if superseded_by:
             payload["superseded_by"] = superseded_by
         if reason:
@@ -1563,7 +1569,9 @@ class VectorClient:
             points=[memory_id],
         )
 
-    async def confirm_memory(self, memory_id: str) -> bool:
+    async def confirm_memory(
+        self, memory_id: str, *, actor: dict[str, Any] | None = None,
+    ) -> bool:
         """Confirm a memory is still valid — bump confirmed_count, update last_confirmed_at.
 
         SP0 B2: also persists a recomputed `confidence` payload field.
@@ -1572,6 +1580,9 @@ class VectorClient:
         is what the archive scorer measures, and a memory a human has just
         vouched for is not old evidence — leaving the original timestamp would
         keep re-nominating it for archival on every pass.
+
+        ``actor`` (the REST route's verified caller) is stored as
+        ``last_confirmed_by``.
         """
         points = await self._client.retrieve(self._collection, [memory_id], with_payload=True)
         if not points:
@@ -1590,10 +1601,52 @@ class VectorClient:
                     confirmed_count=current_count + 1,
                     contradicted_count=contradicted,
                 ),
+                **({"last_confirmed_by": actor} if actor else {}),
             },
             points=[memory_id],
         )
         return True
+
+    async def reachable_ids(
+        self,
+        memory_ids: list[str],
+        *,
+        workspace_id: str | None,
+        member_id: str | None,
+        see_private: bool,
+        refuse_archive_sources: tuple[str, ...] = (),
+    ) -> set[str]:
+        """The subset of ``memory_ids`` a caller may act on.
+
+        A point the caller could recall: in ``workspace_id`` (no recorded
+        workspace = the deployment's) and, unless ``see_private`` (an
+        operator), not another member's ``visibility="member"`` point -- the
+        same scope ``set_feedback`` applies. An archive whose
+        ``archive_source`` is listed is excluded too. A foreign, unknown or
+        malformed id is simply absent from the result, so a caller cannot tell
+        them apart (THREAT-MODEL §5.19).
+        """
+        from app.db.visibility import payload_in_workspace, payload_visible_to_member
+
+        reachable: set[str] = set()
+        for memory_id in dict.fromkeys(memory_ids):
+            try:
+                points = await self._client.retrieve(
+                    self._collection, [memory_id], with_payload=True,
+                )
+            except Exception:  # malformed id: Qdrant rejects it -- treat as absent
+                continue
+            if not points:
+                continue
+            payload = points[0].payload or {}
+            if not payload_in_workspace(payload, workspace_id):
+                continue
+            if not see_private and not payload_visible_to_member(payload, member_id):
+                continue
+            if payload.get("archive_source") in refuse_archive_sources:
+                continue
+            reachable.add(memory_id)
+        return reachable
 
     async def restore_memory(
         self, memory_id: str, *, refuse_sources: tuple[str, ...] = (),

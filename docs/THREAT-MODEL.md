@@ -1123,6 +1123,31 @@ memory knows its id. CLI: `deploy/firekeep-admin memory revert|revert-undo`.
 revoking first stops the key writing while the revert runs. The revert does not
 revoke.
 
+**Fixed 2026-10-05 — `/memory/deprecate` and `/memory/confirm` were open to any key.**
+Neither route declared a scope, so any valid key — a relay-only one included —
+could archive or deprecate any memory id, mark a good memory `superseded_by` its
+own (which also creates a graph supersession edge), or confirm its own poisoned
+memory to reset its decay and raise its confidence. Both now require
+`memory:write` and act only on ids the caller could recall: its workspace, a
+teammate's member-private point only for an operator, and — for `deprecate` —
+a `superseded_by` meeting the same test (otherwise nothing changes). A
+foreign, unknown or malformed id is skipped and not counted, with the same
+response as a missing one. A revert archive is reachable only by an admin, so
+neither route can un-archive it, rewrite its `archive_source` or drop it out of
+the undo. Each requested id spends one unit of the caller's write budget, and
+the verified actor is stamped on the point (`status_actor`,
+`last_confirmed_by`) and in the `gc:eviction:log` trail. Teammates still
+deprecate and confirm each other's workspace memories: curating shared memory is
+what the routes are for, owner-only would break that, and the stamp plus the
+budget make abuse visible and bounded. No in-repo client calls either route
+(cortex-mcp has no tool for them, the dashboard and client kit do not call
+them); the in-process workers change status through `VectorClient` directly
+and are unaffected. Residuals: a member can still deprecate, supersede or
+confirm any teammate's workspace memory within the budget, `last_confirmed_by`
+keeps only the latest confirmer (the trail keeps each), and those trail entries
+count as maintenance actions in the autopilot digest and share its 1000-entry
+cap.
+
 **Residuals:**
 - The ceiling bounds rate; it does not judge content. A poisoner pacing below 300
   an hour is neither refused nor signalled, and ten poisoned memories are as
