@@ -159,10 +159,11 @@ EMPTY_REGISTRY_HINT = (
 # §3.1), so this is the one place in the kit that names the wheel's source.
 HANDS_WHEEL_SPEC = "firekeep-hands>=0.1,<0.2"
 
-# Flip to True in the release that first publishes firekeep-hands through the
-# `pypi-hands` trusted publisher (Task 13). Until then a bare `pip install
-# firekeep-hands` could resolve to whoever registers the name first.
-HANDS_PYPI_PUBLISHED = False
+# True since client 1.7.2: firekeep-hands 0.1.0 was published through the
+# `pypi-hands` trusted publisher on 2026-10-06. While it was False, a bare
+# `pip install firekeep-hands` could have resolved to whoever registered the
+# name first, so `enable` refused without `--from`.
+HANDS_PYPI_PUBLISHED = True
 
 
 def _current_link(home: Path | None = None) -> Path:
@@ -2212,9 +2213,11 @@ def cmd_hands(args) -> int:
     is a translator onto `firekeep_hands.cli.main`, imported lazily so a kit
     without the wheel keeps every other command working.
 
-    PyPI squat guard (2026-09-05 ruling): `firekeep-hands` is not published
-    yet, so a bare `enable` (no `--from`, no `--pypi`) refuses rather than
-    `pip install`-ing a name a third party could still claim.
+    Source: `--from` (a checkout dir, wheel path or pip spec) when given,
+    otherwise the published PyPI wheel (`HANDS_WHEEL_SPEC`). PyPI squat guard
+    (2026-09-05 ruling): while `HANDS_PYPI_PUBLISHED` is False, `enable`
+    without `--from` refuses rather than `pip install`-ing a name a third
+    party could still claim.
     """
     action = getattr(args, "action", None) or "status"
     manifest = dexes.KNOWN_DEXES["hands"]
@@ -2222,7 +2225,7 @@ def cmd_hands(args) -> int:
     if action == "enable":
         source = (getattr(args, "source", None) or "").strip()
         if not source:
-            if getattr(args, "pypi", False) and HANDS_PYPI_PUBLISHED:
+            if HANDS_PYPI_PUBLISHED:
                 source = HANDS_WHEEL_SPEC
             else:
                 print("firekeep: firekeep-hands is not yet published to PyPI — install from a "
@@ -3224,7 +3227,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p_hands.add_argument("--from", dest="source", default=None,
                          help="wheel source for enable: a local checkout dir or a pip spec")
     p_hands.add_argument("--pypi", action="store_true",
-                         help="enable: install the published wheel from PyPI (HANDS_WHEEL_SPEC)")
+                         help="enable: install the published wheel from PyPI (the default "
+                              "without --from; kept for scripts that pass it)")
     p_hands.add_argument("--no-autostart", action="store_true")
     p_hands.add_argument("--purge", action="store_true", help="with disable: delete ~/.firekeep/hands")
     p_hands.set_defaults(func=cmd_hands)

@@ -187,6 +187,12 @@ cd client && python -m pytest tests/test_e2e_bootstrap.py -m e2e -q
 ```
 
 
+- **1.7.2** — `firekeep hands enable` installs Firekeep Hands from PyPI.
+  `firekeep-hands` 0.1.0 was published on 2026-10-06 through the `pypi-hands`
+  trusted publisher, byte-identical to the wheel on the dist host. With it
+  published, the squat guard (`HANDS_PYPI_PUBLISHED`) is flipped, so a plain
+  `enable` installs `firekeep-hands>=0.1,<0.2`. `--from` still installs from
+  a checkout, a wheel, or a sha256-pinned URL. No other client change.
 - **1.7.1** — The per-prompt recall push now carries the server's trust
   marker. A pushed memory the agent did not write shows Cortex's
   `metadata.trust_note` (for example `claim from teammate "Bob"`), so a memory
@@ -293,9 +299,10 @@ environments keep each matrix leg's OIDC token scoped to one project.
 **`pypi-maildex`** (for `firekeep-maildex`) follows the identical pattern; this
 file was never updated when that leg was added to `release.yml`, so its
 one-time setup is undocumented here — confirm on pypi.org before relying on
-it. **`pypi-hands`** (for `firekeep-hands`) is new and confirmed **NOT YET
-DONE**: create its trusted publisher on pypi.org before the next `client-v*`
-tag. For either, note that a GitHub environment named in a workflow is
+it. **`pypi-hands`** (for `firekeep-hands`) is DONE (2026-10-06): its pending
+publisher is project `firekeep-hands`, owner `kapella-hub`, repo `FirekeepHQ`,
+workflow `release.yml`, environment `pypi-hands`, and 0.1.0 published from the
+client-v1.7.1 run. For either, note that a GitHub environment named in a workflow is
 auto-created on first reference, so the loud failure on a missing trusted
 publisher comes from PyPI rejecting the OIDC token because no pending
 publisher exists for that (owner, repo, workflow, environment) tuple, not

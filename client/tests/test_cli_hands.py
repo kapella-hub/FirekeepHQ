@@ -35,7 +35,27 @@ def _args(**kw):
     return types.SimpleNamespace(**base)
 
 
-def test_enable_with_no_source_and_pypi_not_published_refuses(registry_home, capsys):
+def test_firekeep_hands_is_published_on_pypi():
+    # Flipped in client 1.7.2: firekeep-hands 0.1.0 was published through the
+    # `pypi-hands` trusted publisher on 2026-10-06, byte-identical to the wheel
+    # on the dist host (sha256 7358bdda...). The squat guard below still
+    # protects any kit built with the flag off.
+    assert cli.HANDS_PYPI_PUBLISHED is True
+
+
+def test_bare_enable_installs_from_pypi_once_published(registry_home, monkeypatch):
+    calls = []
+    monkeypatch.setattr(cli, "_pip_install", lambda python, spec: calls.append(("pip", spec)))
+    monkeypatch.setattr(dexes, "is_installed", lambda m: True)
+    monkeypatch.setattr(cli, "_run_hands_broker", lambda argv: calls.append(("broker", tuple(argv))) or 0)
+    monkeypatch.setattr(cli, "HANDS_PYPI_PUBLISHED", True)
+    assert cli.cmd_hands(_args(action="enable")) == 0
+    assert calls == [("pip", cli.HANDS_WHEEL_SPEC), ("broker", ("install-autostart",))]
+    assert dexes.read_registry()["hands"]["source"] == "pypi"
+
+
+def test_enable_with_no_source_and_pypi_not_published_refuses(registry_home, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "HANDS_PYPI_PUBLISHED", False)
     assert cli.cmd_hands(_args(action="enable")) == 2
     err = capsys.readouterr().err
     assert "not yet published to PyPI" in err

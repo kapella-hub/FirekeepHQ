@@ -37,15 +37,16 @@ one.
 ## Turn it on
 
 ```bash
-firekeep hands enable --from <checkout>/hands
+firekeep hands enable                            # the published wheel, from PyPI
+firekeep hands enable --from <checkout>/hands    # or a checkout / wheel / pinned URL
 ```
 
-**`--from` is the only path that works today.** The wheel is not published to
-PyPI yet, so a bare `firekeep hands enable` — and `--pypi` too — refuses rather
-than `pip install`-ing a name a third party could still claim. The refusal names
-the checkout form, and exits non-zero rather than half-enabling anything. When
-the name is published this flag flips and `firekeep hands enable` installs from
-PyPI on its own.
+**PyPI is the default since client 1.7.2.** `firekeep-hands` 0.1.0 was
+published to PyPI on 2026-10-06 through the `pypi-hands` trusted publisher, so
+`firekeep hands enable` installs it from there. `--from` installs from a
+checkout, a wheel file, or a wheel URL pinned with `#sha256=` (the dist host
+carries the same signed wheel). A kit older than 1.7.2 still has the squat
+guard on: it refuses a bare `enable` and names the `--from` form.
 
 `enable` does four things, in order. The first three abort the command if they
 fail; the fourth does not:
