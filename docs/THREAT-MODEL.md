@@ -1273,7 +1273,7 @@ auth on it marks everything a claim.
 | 2 | Release-host compromise → arbitrary code on every dev machine | **Mitigated, active since 2026-08-12** — signed `SHA256SUMS` verified against the Ed25519 key pinned in client 0.1.42+; enforcement on by default since 2026-10-01 (`[dist] require_signed`, opt-out documented); residuals: TOFU first install, the operator opt-out, unsigned-downgrade window (§5.6) |
 | 3 | A new route under a skip-list prefix is silently public | **Partly mitigated** — prefix/exact split; no test enumerates skip-list reachability |
 | 4 | `.env` read → total compromise (VAULT_KEY, Neo4j, all keys) | **Accepted** — plaintext by design; `chmod 600` documented. Sentinel no longer mounts it. |
-| 5 | Compromised agent with a valid non-admin key poisons memory | **OPEN, unmitigated** — writes are attributed but not validated, and poisoned memories are recalled like any other |
+| 5 | Compromised agent with a valid non-admin key poisons memory | **Partly mitigated 2026-10-05 — bounded, reversible and visible, not prevented.** Writes are capped per credential (default 300/hour; the first refusal signals the owner), an admin can archive everything one credential wrote in a window and undo that (§5.19), deprecate/confirm/restore act only within the caller's reach and record who acted (§5.19), and recall marks every memory the reader did not write as a claim, from verified attribution (§5.20). Still open: content is not validated, ranking does not weigh trust, and a poisoner staying under the ceiling is neither refused nor signalled |
 | 6 | SSRF via the crawler | **Mitigated**, DNS rebinding accepted (§5.3) |
 | 7 | Lateral movement inside the Docker network | **Accepted** — single trust zone (§3) |
 | 8 | Dependency CVE in a shipped wheel | **Now scanned** — `pip-audit` per dependency set in CI |
@@ -1302,6 +1302,14 @@ it" — that was false: `agent_id` is the client-chosen `X-Agent-Id` label. Ever
 write now records the verified `member_id` and `credential_id` (and, for a
 service writing on a member's behalf, the service's credential) — §5.12. That
 supports forensics after the fact; it still prevents nothing.
+
+Since 2026-10-05 it also bounds and undoes. A credential can make only so many writes per
+window, and the owner hears about the first refused one (§5.19). An admin can revoke the key, then
+archive everything it wrote since a chosen time in one reversible step (§5.19). Every
+recalled memory the reader did not write is presented as a claim, named by its verified author
+rather than by the label the writer chose (§5.20). None of this tells a true memory
+from a false one. That needs ranking that weighs trust (feedback, contested
+state and who wrote it) or a review gate on agent-written procedures, and neither exists yet.
 
 ## 7. Not claimed
 
