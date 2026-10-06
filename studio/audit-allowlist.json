@@ -5,5 +5,12 @@
     "reason": "No patched release (<= 4.2.0 is every version). Only path is the devDependency electron-builder -> @electron/get -> got -> cacheable-request, which downloads Electron on a single-user build machine; the advisory is cross-user disclosure from a SHARED cache. `npm audit fix --force` would downgrade electron-builder.",
     "added": "2026-10-03",
     "expires": "2026-11-03"
+  },
+  {
+    "id": "GHSA-hp3w-g68c-fv3c",
+    "package": "sprintf-js",
+    "reason": "No patched release (1.1.3 is the latest and in range *). Only path is the devDependency electron-builder -> @electron/get -> global-agent -> roarr, a logger used while downloading Electron on the build machine; the DoS needs an attacker-controlled format string, and roarr's format strings are the library's own. `npm audit fix --force` would downgrade electron-builder.",
+    "added": "2026-10-06",
+    "expires": "2026-11-06"
   }
 ]
