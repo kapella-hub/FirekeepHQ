@@ -185,6 +185,31 @@ cd client && python -m pytest tests/test_e2e_bootstrap.py -m e2e -q
 ```
 
 
+- **1.7.0** — Hardening, and the first release that carries Firekeep Hands.
+  - **Signed updates are now required.** `[dist] require_signed` defaults to
+    true: an update whose `SHA256SUMS.minisig` does not verify against the
+    pinned key is refused, and the error names the opt-out (`require_signed =
+    false` under `[dist]`). The refusal is saved and shown in the next session
+    briefing. The release job now fails if `FIREKEEP_SIGNING_KEY` is missing,
+    so this build cannot ship unsigned.
+  - **Gateway backends.** The gateway's MCP backends get an allowlisted
+    environment instead of the whole parent environment, and symdex calls the
+    Keep with the member's key. On Windows a Job Object ends every backend
+    when the gateway exits.
+  - **The shim** exits when stdin closes, instead of hanging in
+    `stdio_server`'s join and leaving orphaned processes.
+  - **Firekeep Hands 0.1.0** (opt-in, never bundled or seeded):
+    - **Commands:** `firekeep hands enable|disable|status|allow|chord|config|evidence`,
+      and a `hands` row in `firekeep doctor`.
+    - **Policy:** reloads live, so `hands allow` takes effect mid-session.
+    - **Phone approvals:** the broker refuses one coming from the credential
+      that requested the step.
+    - **Where the wheel ships:** on the dist host beside the client, for
+      `firekeep hands enable --from`. The PyPI leg needs the `pypi-hands`
+      trusted publisher (see "PyPI and the MCP registry").
+  - **Needs the matching server.** Hands' phone-approval refusal relies on the
+    Relay that stamps the completing principal, which ships in the same day's
+    server deploy.
 - **1.6.1** — The stop hook now asks the agent, at the end of a turn, to call
   `memory_feedback` with the id of any recalled skill that guided the work
   (`useful=true/false`). That thumb is the *applied* signal the server-side skill
