@@ -305,26 +305,35 @@ def _created_sort_key(member: dict) -> str:
     return payload.get("created_at") or payload.get("timestamp") or ""
 
 
-def _attribution_of(member: dict) -> tuple[str | None, bool]:
-    """(verified member, carries provenance) for one cluster member's payload.
+def _author_of(member: dict) -> str | None:
+    """Whose one cluster member's point is -- recall's own rule
+    (app/engine/provenance.author_of): a legacy point (no ``credential_id``
+    key, owner or no ``member_id``) is the deployment owner's, a
+    ``provenance_mixed`` one is no one's."""
+    from app.engine.provenance import author_of
 
-    Mirrors app/engine/provenance.classify: a record without the
-    ``credential_id`` key predates provenance, and one already stamped
-    ``provenance_mixed`` is unattributed.
-    """
     payload = member.get("payload") or {}
     nested = payload.get("metadata") or {}
-    attributed = "credential_id" in nested and not nested.get("provenance_mixed")
-    return payload.get("member_id") or None, attributed
+    return author_of(
+        payload.get("member_id") or None,
+        has_provenance="credential_id" in nested,
+        mixed=bool(nested.get("provenance_mixed")),
+    )
 
 
 def _provenance_is_mixed(keeper: dict, cluster: list[dict]) -> bool:
-    """Would the merged text misstate who wrote it under the keeper's name?"""
-    keeper_member, keeper_attributed = _attribution_of(keeper)
-    if not keeper_attributed:
-        # Already unattributed at recall; nothing to downgrade.
+    """Would the merged text misstate who wrote it under the keeper's name?
+
+    The keeper's payload decides who recall says wrote the merged text, so the
+    merge is mixed whenever any member belongs to someone else (or to no one).
+    A legacy keeper counts too: the owner reads it as their own, so a
+    teammate's text merged under it would launder into the owner's "own".
+    """
+    keeper_author = _author_of(keeper)
+    if keeper_author is None:
+        # Already no one's at recall; nothing to downgrade.
         return False
-    return any(_attribution_of(m) != (keeper_member, True) for m in cluster)
+    return any(_author_of(m) != keeper_author for m in cluster)
 
 
 def _merge_cluster(

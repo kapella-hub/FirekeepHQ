@@ -1195,11 +1195,11 @@ the server-set `source`:
 
 | Tier | When | Claim? |
 |---|---|---|
-| `own` | provenance-era write by the caller's member | no |
-| `teammate` | provenance-era write by another member | yes |
+| `own` | the caller's member wrote it; for the deployment owner also every LEGACY point (no `credential_id` key, `member_id` absent or the owner's) | no |
+| `teammate` | another member wrote it (provenance-era, or a pre-provenance point stamped with a non-owner `member_id` — identity v2 stamped that from the member's key; the migration only ever backfills the owner) | yes |
 | `service` | delegated write (`/memory/learn/delegated`) on a member's behalf; dreams and profiles (in-process synthesis) | no only for a delegated write on the caller's own behalf |
 | `document` | a corpus chunk — third-party text whoever ingested it (maildex email, wiki pages) | always |
-| `unattributed` | no `credential_id` key (written before 2026-10-04 — its `member_id` is a migration backfill), a dedup merge across authors (`provenance_mixed`), any graph row | yes |
+| `unattributed` | a LEGACY point read by anyone but the owner; a dedup merge across authors (`provenance_mixed`, for the owner too); any graph row (owner included) | yes |
 
 A claim line carries a short marker (`— claim from teammate "Bob", 2026-10-04`,
 `— claim, unattributed, …`) INSTEAD of the label; the label renders only on the
@@ -1231,14 +1231,26 @@ authors or includes a pre-provenance record — additive, so a revert by credent
 `bridge/tests/test_recall_trust_markers.py`, `client/tests/test_promptrecall.py`
 (`TestTrustMarker`), `tests/test_dashboard_recall_trust.py`.
 
-**Deploy-time effect.** No memory on a store written before §5.12 deploys carries
-`credential_id`, so the morning after, every pre-existing memory recalls as
-`claim, unattributed` for every viewer — including the owner of a single-member
-Keep. That is rule-4 honest (a backfilled `member_id` is not an author), and it
-fades as the store turns over. Grandfathering a store that provably only ever had
-one member is a deliberate operator decision this change does not make.
+**Legacy points belong to the deployment owner (decision 2026-10-05).** No memory
+written before §5.12 deploys carries `credential_id`. Such a LEGACY point — no
+`member_id`, or the owner's (the workspace migration's backfill) — is the
+deployment owner's, the same rule Bridge (#48) and replay (§5.13) apply: the
+member `deployment_owner_member_id()` reads it as `own`, with no marker and no
+header, and every other member reads it as `claim, unattributed`. So the morning
+after deploy the owner's recall reads as it does today, and teammates see the
+pre-existing store as claims until it turns over. Graph rows deliberately do NOT
+follow the legacy rule: they are not pre-attribution — sleep-cycle extraction of
+any member's `/memory/stream` events still creates authorless rows today — so
+they stay `unattributed` for the owner too. A `provenance_mixed` merge stays a
+claim for everyone; corpus stays `document`. The memory agent applies the same
+ownership rule when deciding a merge is mixed, so a teammate's text merged under
+a legacy keeper is stamped and cannot read as the owner's own.
 
-**Residuals.** This marks claims; it does not stop an agent from acting on one —
+**Residuals.** A teammate's pre-2026-10-04 write that was attributed to the owner
+(any key with no member was the owner's until §5.15, and Bridge distilled every
+teammate's session as the owner until §5.12) reads to the owner as the owner's
+own — the legacy rule cannot tell it apart, by construction. This marks claims;
+it does not stop an agent from acting on one —
 the model can still ignore the marker (threat #9). Ranking does not yet weigh the
 tier. A `teammate` memory is still a verified teammate's: a compromised teammate
 credential produces correctly-labelled poison. Graph rows are uniformly
