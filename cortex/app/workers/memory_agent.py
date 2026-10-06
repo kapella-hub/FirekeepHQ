@@ -305,6 +305,28 @@ def _created_sort_key(member: dict) -> str:
     return payload.get("created_at") or payload.get("timestamp") or ""
 
 
+def _attribution_of(member: dict) -> tuple[str | None, bool]:
+    """(verified member, carries provenance) for one cluster member's payload.
+
+    Mirrors app/engine/provenance.classify: a record without the
+    ``credential_id`` key predates provenance, and one already stamped
+    ``provenance_mixed`` is unattributed.
+    """
+    payload = member.get("payload") or {}
+    nested = payload.get("metadata") or {}
+    attributed = "credential_id" in nested and not nested.get("provenance_mixed")
+    return payload.get("member_id") or None, attributed
+
+
+def _provenance_is_mixed(keeper: dict, cluster: list[dict]) -> bool:
+    """Would the merged text misstate who wrote it under the keeper's name?"""
+    keeper_member, keeper_attributed = _attribution_of(keeper)
+    if not keeper_attributed:
+        # Already unattributed at recall; nothing to downgrade.
+        return False
+    return any(_attribution_of(m) != (keeper_member, True) for m in cluster)
+
+
 def _merge_cluster(
     client: QdrantClient,
     cluster: list[dict],
@@ -433,6 +455,17 @@ def _merge_cluster(
         })
         for member in sorted(cluster, key=_created_sort_key, reverse=True):
             merged_payload = _merge_lifecycle(member["payload"], merged_payload)
+
+        # THREAT-MODEL §5.20: the merged text blends every member's text but
+        # is written under the KEEPER's attribution. When the cluster spans
+        # authors (or includes a pre-provenance record), recall must not
+        # present it as the keeper's own note. Additive: the credential keys
+        # stay, so a revert by credential (§5.19) still reaches this point.
+        if _provenance_is_mixed(keeper, cluster):
+            merged_payload["metadata"] = {
+                **(merged_payload.get("metadata") or {}),
+                "provenance_mixed": True,
+            }
 
         try:
             client.upsert(
