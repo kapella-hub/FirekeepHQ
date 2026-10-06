@@ -336,3 +336,73 @@ async def test_auth_disabled_still_deprecates_and_confirms(client, vector, corte
     resp = await client.post("/memory/confirm", json={"memory_ids": [_pid("good-2")]})
     assert resp.status_code == 200 and resp.json()["confirmed"] == 1
     assert [k async for k in cortex_redis.scan_iter("memory:write_limit*")] == []
+
+
+# ---------------------------------------------------------------------------
+# /memory/restore: the same reachability, budget and actor trail
+# ---------------------------------------------------------------------------
+
+_ARCHIVED = {"status": "archived", "archive_source": "gc",
+             "archived_from_status": "active"}
+
+
+@pytest_asyncio.fixture
+async def archived(vector):
+    await vector._client.upsert(collection_name=COLLECTION, points=[
+        _point("arch-good", **_ARCHIVED),
+        _point("arch-good-2", **_ARCHIVED),
+        _point("arch-foreign", ws=OTHER_WS, **_ARCHIVED),
+        _point("arch-private", visibility="member", **_ARCHIVED),
+    ])
+    return vector
+
+
+@pytest.mark.asyncio
+async def test_restore_skips_what_the_caller_could_not_recall(
+    client, auth_on, archived, cortex_redis
+):
+    alice = await _key(auth_on, ["memory:write"])
+    answers = []
+    for target in (_pid("arch-foreign"), _pid("arch-private"),
+                   _pid("never-written"), "not-a-uuid"):
+        resp = await client.post("/memory/restore", json={"memory_ids": [target]},
+                                 headers=_h(alice))
+        assert resp.status_code == 200, resp.text
+        answers.append(resp.json())
+    assert answers == [{"status": "restored", "restored": 0}] * 4
+    assert (await _payload(archived, "arch-foreign"))["status"] == "archived"
+    assert (await _payload(archived, "arch-private"))["status"] == "archived"
+
+    resp = await client.post("/memory/restore",
+                             json={"memory_ids": [_pid("arch-good")]}, headers=_h(alice))
+    assert resp.json()["restored"] == 1
+    trail = [json.loads(e) for e in await cortex_redis.lrange("gc:eviction:log", 0, -1)]
+    assert [(e["id"], e["action"], e.get("credential_id"), e.get("member_id"))
+            for e in trail] == [(_pid("arch-good"), "restored", alice["credential_id"], ALICE)]
+
+
+@pytest.mark.asyncio
+async def test_restore_spends_the_write_budget(client, auth_on, archived, monkeypatch):
+    """Archive and restore both cost budget, so cycling a point is bounded."""
+    monkeypatch.setattr(get_settings(), "MEMORY_WRITE_LIMIT_PER_CREDENTIAL", 1)
+    alice = await _key(auth_on, ["memory:write"])
+    resp = await client.post(
+        "/memory/restore",
+        json={"memory_ids": [_pid("arch-good"), _pid("arch-good-2")]},
+        headers=_h(alice))
+    assert resp.status_code == 429, resp.text
+    assert (await _payload(archived, "arch-good"))["status"] == "archived"
+
+
+@pytest.mark.asyncio
+async def test_the_dashboard_key_still_restores_and_is_not_limited(
+    client, auth_on, archived, cortex_redis, monkeypatch
+):
+    """The dashboard's Restore button presents DASHBOARD_API_KEY ("*")."""
+    monkeypatch.setattr(get_settings(), "MEMORY_WRITE_LIMIT_PER_CREDENTIAL", 1)
+    dashboard = await _key(auth_on, ["*"], member=OWNER)
+    for name in ("arch-good", "arch-good-2", "arch-private", "reverted"):
+        resp = await client.post("/memory/restore", json={"memory_ids": [_pid(name)]},
+                                 headers=_h(dashboard))
+        assert resp.status_code == 200 and resp.json()["restored"] == 1, (name, resp.text)
+    assert [k async for k in cortex_redis.scan_iter("memory:write_limit*")] == []
