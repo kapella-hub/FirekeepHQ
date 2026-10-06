@@ -1146,7 +1146,10 @@ and are unaffected. Residuals: a member can still deprecate, supersede or
 confirm any teammate's workspace memory within the budget, `last_confirmed_by`
 keeps only the latest confirmer (the trail keeps each), and those trail entries
 count as maintenance actions in the autopilot digest and share its 1000-entry
-cap.
+cap. `POST /memory/restore` now applies the same reachability, skip semantics, actor
+trail and 1-unit-per-id budget, so archive/restore cannot cycle a point for free
+(the dashboard's `*` key is admin: exempt, and still restores anything in the
+workspace).
 
 **Residuals:**
 - The ceiling bounds rate; it does not judge content. A poisoner pacing below 300

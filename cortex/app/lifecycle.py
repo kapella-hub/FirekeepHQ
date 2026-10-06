@@ -204,30 +204,38 @@ def create_lifecycle_router(
         is later re-archived starts a fresh recovery window rather than
         inheriting an already-elapsed ``purge_eligible_at``.
         """
-        # A revert-by-credential archive (app/memory_revert.py, THREAT-MODEL
-        # §5.19) comes back only through an admin: point ids are derived from
-        # the text, so the key that wrote a poisoned memory knows its id.
+        # Same scope as deprecate/confirm (THREAT-MODEL §5.19): 1 budget unit
+        # per requested id (so archive/restore cannot cycle a point for free),
+        # only ids the caller could recall, and a revert-by-credential archive
+        # only for an admin -- point ids are derived from the text, so the key
+        # that wrote a poisoned memory knows its id. The undo route restores
+        # through VectorClient directly and is unaffected.
         from auth import keys as _auth_keys
 
-        refuse = () if (identity and _auth_keys.scopes_allow(
+        reachable, actor = await _scope(identity, list(body.memory_ids),
+                                        surface="memory_restore")
+        refuse = () if _auth_keys.scopes_allow(
             identity.get("scopes", []), "admin",
             allow_wildcard=bool(identity.get("authenticated")),
-        )) else ("revert",)
+        ) else ("revert",)
         restored_ids: list[str] = []
         for memory_id in body.memory_ids:
+            if memory_id not in reachable:
+                continue
             try:
                 if await vector.restore_memory(memory_id, refuse_sources=refuse):
                     restored_ids.append(memory_id)
             except Exception:
                 logger.warning("Failed to restore memory %s", memory_id)
 
-        occurred_at = datetime.now(timezone.utc).isoformat()
         await _append_audit([
             {
                 "id": memory_id,
                 "action": "restored",
-                "occurred_at": occurred_at,
-                "agent_id": identity.get("agent_id") if identity else None,
+                "occurred_at": actor["at"],
+                "agent_id": identity.get("agent_id"),
+                "credential_id": actor["credential_id"],
+                "member_id": actor["member_id"],
             }
             for memory_id in restored_ids
         ])
