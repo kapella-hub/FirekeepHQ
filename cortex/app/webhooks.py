@@ -45,6 +45,9 @@ async def _get_webhook_client() -> httpx.AsyncClient:
 VALID_EVENTS = frozenset({
     "memory.learned",
     "memory.recalled",
+    # A credential hit the per-credential memory write ceiling (first refusal
+    # per window; payload names the credential). THREAT-MODEL §5.19.
+    "memory.write_limited",
     "stream.ingested",
     "gc.pruned",
     "session.completed",

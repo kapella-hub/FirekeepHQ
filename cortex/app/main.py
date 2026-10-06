@@ -1052,6 +1052,7 @@ async def get_rag_engine(request: Request) -> RAGEngine:
     return request.app.state.rag_engine
 
 
+
 # ---------------------------------------------------------------------------
 # Exception Handlers
 # ---------------------------------------------------------------------------
@@ -1379,6 +1380,8 @@ async def _store_memory_learning(
     vector: VectorClient,
     redis_client: redis.asyncio.Redis,
     attribution: dict[str, Any],
+    *,
+    writer: dict[str, Any],
 ) -> LearnResponse:
     """Store an action log in both stores, attributed to ``attribution``.
 
@@ -1389,6 +1392,16 @@ async def _store_memory_learning(
     so a delegated write gets the same secret scan, point id, backfill,
     contradiction pass and replay trace as a direct one.
     """
+    # Per-credential write ceiling (THREAT-MODEL §5.19), charged to ``writer``
+    # -- the verified key that ARRIVED (the route's scope dependency). On the
+    # delegated route that is the service key, which is exempt. Before
+    # anything is written.
+    from app.write_limit import charge_memory_write
+
+    await charge_memory_write(
+        writer, redis_client, surface="memory_learn", namespace=log.namespace,
+    )
+
     # Secret detection
     try:
         from app.secret_scan import scan_action_log
@@ -1595,6 +1608,8 @@ async def memory_learn(
     graph: Annotated[Neo4jClient, Depends(get_graph)],
     vector: Annotated[VectorClient, Depends(get_vector)],
     redis_client: Annotated[redis.asyncio.Redis, Depends(get_redis)],
+    # The route's gate, named so the verified key reaches the write ceiling.
+    identity: Annotated[dict, _MEMORY_WRITE],
 ) -> LearnResponse:
     """Store knowledge attributed to the caller's verified credential."""
     if has_delegated_attribution_headers(request):
@@ -1606,6 +1621,7 @@ async def memory_learn(
         )
     return await _store_memory_learning(
         request, log, graph, vector, redis_client, request_attribution(request),
+        writer=identity,
     )
 
 
@@ -1644,7 +1660,7 @@ async def memory_learn_delegated(
             status_code=403, detail="Delegated attribution could not be verified",
         ) from exc
     return await _store_memory_learning(
-        request, log, graph, vector, redis_client, attribution,
+        request, log, graph, vector, redis_client, attribution, writer=identity,
     )
 
 
@@ -1655,6 +1671,7 @@ async def memory_stream(
     request: Request,
     events: GenericEventIngest | list[GenericEventIngest],
     redis_client: Annotated[redis.asyncio.Redis, Depends(get_redis)],
+    identity: Annotated[dict, _MEMORY_WRITE],
 ) -> StreamResponse:
     """Push event(s) onto the Redis ingestion queue for background processing."""
     settings = get_settings()
@@ -1667,6 +1684,15 @@ async def memory_stream(
             status_code=422,
             detail=f"Batch size exceeds maximum of {MAX_BATCH_SIZE}",
         )
+
+    # One unit per event: the sleep cycle later writes graph nodes with no
+    # identity, so intake is the only point a credential can be charged.
+    from app.write_limit import charge_memory_write
+
+    await charge_memory_write(
+        identity, redis_client, surface="memory_stream",
+        units=len(events), namespace=events[0].namespace if events else "default",
+    )
 
     try:
         pipe = redis_client.pipeline()
