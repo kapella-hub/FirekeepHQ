@@ -11,7 +11,7 @@ import asyncio
 import logging
 import re
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping
 from datetime import datetime, timezone
 from typing import Any
 
@@ -20,6 +20,7 @@ import httpx
 from app.config import Settings, get_settings
 from app.db.graph import Neo4jClient
 from app.db.vector import VectorClient
+from app.engine import provenance
 from app.models import ContextQuery, MemorySource, RecallResponse
 from app.owm import compute_efficacy
 
@@ -60,40 +61,10 @@ def _jaccard_similarity(a: set[str], b: set[str]) -> float:
     return len(a & b) / len(a | b)
 
 
-# Attribution values that carry no information. "unknown" is what `upsert`
-# stores when no X-Agent-Id header reached /memory/learn; the legacy sentinel
-# tags the ~3.9K records written before the field existed. Rendering either on
-# every line trains a reader to skip the suffix, which costs the lines that do
-# name someone.
-_UNATTRIBUTED = {"unknown", "legacy-pre-team-continuity"}
-
-_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
-
-
-def _provenance_suffix(metadata: Any) -> str:
-    """Render "who wrote this, and when" for one recall line.
-
-    An agent reading a memory cannot otherwise tell a teammate's hard-won note
-    from a CI bot's noise — or from its own output written minutes ago, which is
-    the case that makes recall look like it is working when it is not.
-
-    Only the date is kept, not the clock: staleness is what a reader acts on, and
-    a per-line timestamp is pure cost against `token_budget`. session_id is
-    deliberately NOT rendered — 32 hex chars an LLM cannot use — but it does reach
-    `sources[].metadata`, where an auditor can join on it.
-    """
-    if not isinstance(metadata, dict):
-        return ""
-
-    agent = str(metadata.get("agent_id") or "").strip()
-    if agent.lower() in _UNATTRIBUTED:
-        agent = ""
-
-    stamp = str(metadata.get("timestamp") or "")[:10]
-    date = stamp if _ISO_DATE.fullmatch(stamp) else ""
-
-    parts = [p for p in (agent, date) if p]
-    return f" — {', '.join(parts)}" if parts else ""
+# Who wrote a recalled memory, relative to the reader, is decided in
+# app/engine/provenance.py from verified attribution (THREAT-MODEL §5.20); the
+# line suffix is rendered there too, so the rule and its rendering cannot drift.
+_provenance_suffix = provenance.provenance_suffix
 
 
 def _memory_ids_of(row: Any) -> list[str]:
@@ -223,16 +194,27 @@ async def synthesize_memories(
     llm_model: str,
     llm_api_key: str = "",
 ) -> str | None:
-    """Call LLM to synthesize entries into a task-focused paragraph. Returns None on failure."""
-    memories_text = "\n\n".join(
-        f"[{i+1}] {e.get('content', e.get('text', ''))}"
-        for i, e in enumerate(entries)
-    )
+    """Call LLM to synthesize entries into a task-focused paragraph. Returns None on failure.
+
+    An entry recall marked as a claim (THREAT-MODEL §5.20) is handed to the model
+    WITH its marker, and the system prompt then asks the model to keep that
+    attribution. With no claim present the prompt is byte-identical to the
+    pre-§5.20 one, so personal mode and the benchmark harness are unaffected.
+    """
+    def _numbered(i: int, e: dict) -> str:
+        md = e.get("metadata")
+        marker = provenance.claim_phrase(md) if isinstance(md, dict) else ""
+        prefix = f"({marker}) " if marker else ""
+        return f"[{i+1}] {prefix}{e.get('content', e.get('text', ''))}"
+
+    memories_text = "\n\n".join(_numbered(i, e) for i, e in enumerate(entries))
     system_prompt = (
         "Synthesize the following memories into a focused, concise paragraph "
         "(≤200 words) relevant to the task. Preserve specific facts, file paths, "
         "and names. Do not add information not present in the memories."
     )
+    if provenance.any_claim(entries):
+        system_prompt += provenance.SYNTHESIS_ATTRIBUTION
     payload = {
         "model": llm_model,
         "messages": [
@@ -291,12 +273,21 @@ class RAGEngine:
         workspace_id: str | None = None,
         member_id: str | None = None,
         unattributed_graph: str = "admit",
+        viewer: Mapping[str, Any] | None = None,
+        member_labels: provenance.MemberLabels | None = None,
     ) -> RecallResponse:
         """Retrieve, merge, score, and format memory context for an LLM.
 
         ``member_id`` is the caller's VERIFIED member identity, threaded into
         the vector leg so member-private corpus chunks surface only for their
         owner (Docdex §4.4); None recalls no private chunks (fail closed).
+
+        ``viewer`` is the caller's verified principal, against which every
+        result is tiered (own / teammate / service / document / unattributed,
+        THREAT-MODEL §5.20). It is deliberately separate from ``member_id``:
+        handoff tiers its narrative for the caller without widening its
+        corpus egress. None fails closed -- see ``provenance.viewer_for``.
+        ``member_labels`` resolves teammates' display names (best effort).
 
         ``unattributed_graph`` decides what a graph row that names NO vector
         memory means for a scoped request: ``"admit"`` (the default, and what
@@ -373,6 +364,12 @@ class RAGEngine:
         # Token budget trimming
         final_entries = trim_to_budget(merged, budget=query.token_budget)
 
+        # Whose is each result, relative to the caller (THREAT-MODEL §5.20).
+        # After trimming, so only what is returned costs a label lookup.
+        await provenance.annotate(
+            final_entries, provenance.viewer_for(viewer), member_labels
+        )
+
         # LLM synthesis (gated behind format and RECALL_SYNTHESIS_ENABLED)
         synthesis_text: str | None = None
         response_format = query.format
@@ -389,8 +386,14 @@ class RAGEngine:
 
         # Build context block
         if synthesis_text:
-            sources_md = self._format_markdown(final_entries, query.task, len(final_entries))
+            sources_md = self._format_markdown(
+                final_entries, query.task, len(final_entries), trust_header=False
+            )
             context_block = f"{synthesis_text}\n\n## Sources\n\n{sources_md}"
+            # The trust instruction leads the block rather than relying on the
+            # model to carry it through compression.
+            if provenance.any_claim(final_entries):
+                context_block = f"{provenance.TRUST_HEADER}\n\n{context_block}"
         else:
             context_block = self._format_markdown(final_entries, query.task, len(final_entries))
 
@@ -435,8 +438,13 @@ class RAGEngine:
         *,
         workspace_id: str | None = None,
         member_id: str | None = None,
+        viewer: Mapping[str, Any] | None = None,
+        member_labels: provenance.MemberLabels | None = None,
     ) -> AsyncGenerator[dict, None]:
         """Yield recall results progressively.
+
+        ``viewer`` / ``member_labels``: as in ``recall`` -- every source frame
+        carries the server-computed trust fields (THREAT-MODEL §5.20).
 
         Yields:
             {"type": "source", "data": MemorySource-like dict}
@@ -444,6 +452,7 @@ class RAGEngine:
             {"type": "done", "data": {"request_id": str, "total_sources": int}}
         """
         sources: list[dict[str, Any]] = []
+        trust_viewer = provenance.viewer_for(viewer)
 
         # Fire both searches concurrently, yield results as each completes
         async def _vector_search() -> tuple[str, list[dict[str, Any]]]:
@@ -482,19 +491,18 @@ class RAGEngine:
         for coro in asyncio.as_completed([vector_task, graph_task]):
             store_name, results = await coro
 
+            batch: list[dict[str, Any]] = []
             if store_name == "vector":
                 for r in results:
                     text = r.get("text", "")
                     if not text:
                         continue
-                    source = {
+                    batch.append({
                         "store": "vector",
                         "content": text,
                         "score": round(float(r.get("score", 0.0)), 4),
-                        "metadata": r.get("metadata", {}),
-                    }
-                    sources.append(source)
-                    yield {"type": "source", "data": source}
+                        "metadata": dict(r.get("metadata") or {}),
+                    })
             else:
                 for r in results:
                     name = r.get("name") or ""
@@ -514,8 +522,13 @@ class RAGEngine:
                             "label": r.get("label", "Entity"),
                         },
                     }
-                    sources.append(source)
-                    yield {"type": "source", "data": source}
+                    batch.append(source)
+            # Annotated per leg, before any frame of it leaves: a source frame
+            # never reaches a client without its server-computed trust fields.
+            await provenance.annotate(batch, trust_viewer, member_labels)
+            for source in batch:
+                sources.append(source)
+                yield {"type": "source", "data": source}
 
         # Build context block from all sources
         context_block = self._format_markdown(sources, query.task, query.top_k)
@@ -1395,14 +1408,20 @@ class RAGEngine:
         entries: list[dict[str, Any]],
         task: str = "",
         top_k: int = 5,
+        *,
+        trust_header: bool = True,
     ) -> str:
         """Build a structured Markdown block for LLM system prompt injection.
 
         Output format:
             ## Memory Recall ({n} results, confidence: {high/medium/low})
-            1. [{score}] ({source}) {content}
+            > Trust: ...            (only when a line is a claim, §5.20)
+            1. [{score}] ({source}) {content} — {who}, {date}
             ...
             > Query: "{task}" | Top {top_k} results
+
+        ``trust_header=False`` is for the synthesized path, which puts the
+        header above the synthesis instead of under ``## Sources``.
         """
         if not entries:
             return "## Memory Recall (0 results, confidence: low)\n\nNo relevant memories found."
@@ -1437,6 +1456,8 @@ class RAGEngine:
             f"## Memory Recall ({n} result{'s' if n != 1 else ''}, confidence: {confidence})",
             "",
         ]
+        if trust_header and provenance.any_claim(entries):
+            lines.extend([provenance.TRUST_HEADER, ""])
 
         # Entries are already sorted by score descending.
         for i, entry in enumerate(entries, 1):
@@ -1468,10 +1489,10 @@ class RAGEngine:
             if contested_with:
                 status_label += f" [CONTESTED by {contested_with}]"
 
-            provenance = _provenance_suffix(md)
+            who = _provenance_suffix(md)
 
             lines.append(
-                f"{i}. [{score:.0%}] ({source_label}) {content}{status_label}{provenance}"
+                f"{i}. [{score:.0%}] ({source_label}) {content}{status_label}{who}"
             )
 
         lines.append("")
