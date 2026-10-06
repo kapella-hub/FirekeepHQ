@@ -3,6 +3,7 @@
 
 Run: pytest tests/test_e2e_bootstrap.py -m e2e
 """
+import configparser
 import functools
 import http.server
 import json
@@ -285,6 +286,18 @@ def test_update_to_actually_completes_a_real_reinstall_in_place(release, tmp_pat
     home.mkdir()
     env = _bare_machine_env(home, release["base"])
     _run_bootstrap(["sh", str(CLIENT / "bootstrap" / "install.sh")], env, check=True)
+
+    # This fixture dist is built in the test job and is UNSIGNED: the client pins the
+    # real release key, and only the release job holds FIREKEEP_SIGNING_KEY. Since
+    # [dist] require_signed defaults to true (2026-10-01), `update --to` refuses it, so
+    # this test opts out the documented way. What it proves is the re-exec handoff,
+    # not signing; the refusal itself is covered by tests/test_updater.py.
+    cfg_path = home / ".firekeep" / "config"
+    cfg = configparser.ConfigParser()
+    cfg.read(cfg_path)
+    cfg.set("dist", "require_signed", "false")
+    with cfg_path.open("w") as fh:
+        cfg.write(fh)
 
     firekeep = home / ".firekeep" / "current" / "bin" / "firekeep"
     proc = _run_bootstrap(
