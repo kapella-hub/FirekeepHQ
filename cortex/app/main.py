@@ -1052,6 +1052,11 @@ async def get_rag_engine(request: Request) -> RAGEngine:
     return request.app.state.rag_engine
 
 
+# Revert one credential's writes since T (admin; THREAT-MODEL §5.19).
+from app.memory_revert import create_memory_revert_router  # noqa: E402
+
+app.include_router(create_memory_revert_router(get_vector=get_vector, get_redis=get_redis))
+
 
 # ---------------------------------------------------------------------------
 # Exception Handlers
