@@ -147,6 +147,44 @@ if ENV_FILE="$TMP_ENV" FIREKEEP_ADMIN_DRY_RUN=1 bash deploy/firekeep-admin invit
 fi
 rm -f "$TMP_ENV"
 
+# memory revert / revert-undo (docs/THREAT-MODEL.md §5.19): dispatch, the
+# exact REST body, dry run unless --apply, and refusal of malformed input
+# BEFORE anything is sent.
+REVERT_OUT="$(FIREKEEP_ADMIN_DRY_RUN=1 bash deploy/firekeep-admin memory revert \
+    --credential 0123456789abcdef --since 2026-10-05T10:00:00+00:00 2>/dev/null)"
+echo "$REVERT_OUT" | "$PYTHON_BIN" -c '
+import json, sys
+lines = sys.stdin.read().splitlines()
+assert lines[0] == "POST http://localhost:8100/admin/memory/revert", lines[0]
+body = json.loads(lines[1])
+assert body == {"credential_id": "0123456789abcdef",
+                "since": "2026-10-05T10:00:00+00:00", "apply": False}, body
+' || { echo "FAIL: memory revert dry-run body"; echo "$REVERT_OUT"; exit 1; }
+APPLY_OUT="$(FIREKEEP_ADMIN_DRY_RUN=1 bash deploy/firekeep-admin memory revert \
+    --credential 0123456789abcdef --since 2026-10-05T10:00:00Z \
+    --until 2026-10-05T12:00:00+02:00 --apply 2>/dev/null)"
+echo "$APPLY_OUT" | grep -q '"until": "2026-10-05T12:00:00+02:00", "apply": true}' \
+    || { echo "FAIL: memory revert --until/--apply not threaded"; echo "$APPLY_OUT"; exit 1; }
+UNDO_OUT="$(FIREKEEP_ADMIN_DRY_RUN=1 bash deploy/firekeep-admin memory revert-undo \
+    --revert-id 0123456789abcdef0123456789abcdef --apply)"
+echo "$UNDO_OUT" | grep -q "POST http://localhost:8100/admin/memory/revert/undo" \
+    && echo "$UNDO_OUT" | grep -q '"revert_id": "0123456789abcdef0123456789abcdef", "apply": true' \
+    || { echo "FAIL: memory revert-undo dispatch"; echo "$UNDO_OUT"; exit 1; }
+for bad in \
+    "revert --credential 'not hex' --since 2026-10-05T10:00:00+00:00" \
+    "revert --credential 0123456789abcdef --since 2026-10-05T10:00:00" \
+    "revert --credential 0123456789abcdef --since yesterday" \
+    "revert --since 2026-10-05T10:00:00+00:00" \
+    "revert-undo --revert-id abc" \
+    "purge --credential 0123456789abcdef"; do
+    # shellcheck disable=SC2086
+    if eval FIREKEEP_ADMIN_DRY_RUN=1 bash deploy/firekeep-admin memory $bad >/dev/null 2>&1; then
+        echo "FAIL: memory $bad should exit nonzero"; exit 1
+    fi
+done
+grep -q 'printf .X-API-Key: %s' deploy/firekeep-admin \
+    || { echo "FAIL: memory_api must pass the admin key on stdin, not argv"; exit 1; }
+
 # Every Redis call must go through rcli (stdin closed). `docker compose exec`
 # reads stdin, so a direct "${REDIS[@]}" call inside a `while read` loop eats
 # the loop's input and the loop stops after one record (2026-10-04, live VPS).
@@ -157,4 +195,4 @@ for f in deploy/firekeep-admin deploy/bootstrap-keys.sh; do
         || { echo "FAIL: $f has no stdin-closed rcli helper"; exit 1; }
 done
 
-echo "PASS: firekeep-admin create/revoke/invite/audit/members dispatch + scope sync + fail-fast"
+echo "PASS: firekeep-admin create/revoke/invite/audit/members/memory dispatch + scope sync + fail-fast"

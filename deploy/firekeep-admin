@@ -7,6 +7,8 @@ set -euo pipefail
 #   firekeep-admin keys create --agent NAME [--expires-days N]
 #   firekeep-admin keys revoke CREDENTIAL_ID
 #   firekeep-admin members list|remove MEMBER_ID|restore MEMBER_ID
+#   firekeep-admin memory revert --credential ID --since ISO [--until ISO] [--apply]
+#   firekeep-admin memory revert-undo --revert-id ID [--apply]
 
 # eval:grade, memory:write:delegated, session:read:workspace and
 # relay:write:service are deliberately ABSENT here: they are SERVICE-ONLY
@@ -58,6 +60,17 @@ Usage:
   firekeep-admin members restore MEMBER_ID
       Reactivate a removed member (no credential is issued), then:
       firekeep-admin invite --member MEMBER_ID
+  firekeep-admin memory revert --credential CREDENTIAL_ID --since ISO8601
+      [--until ISO8601] [--apply]
+      Archive the memories one credential wrote in [since, until) (until
+      defaults to now), in the admin key's workspace. DRY RUN unless --apply:
+      prints the count and a sample. Times need a UTC offset, e.g.
+      2026-10-05T10:00:00+00:00. Revoke the key FIRST (keys revoke), then
+      dry-run, then --apply. Reversible: the output names a revert_id.
+  firekeep-admin memory revert-undo --revert-id REVERT_ID [--apply]
+      Restore every memory that revert archived (dry run unless --apply).
+      Both call the Cortex REST API with FIREKEEP_ADMIN_KEY, else the .env
+      DASHBOARD_API_KEY (FIREKEEP_API_URL, default http://localhost:8100).
 EOF
     exit 1
 }
@@ -416,6 +429,63 @@ members() {
     fi
 }
 
+valid_iso() { [[ "$1" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]+)?)?(Z|[+-][0-9]{2}:[0-9]{2})$ ]]; }
+
+# Revert by credential (docs/THREAT-MODEL.md §5.19). Calls POST
+# /admin/memory/revert[/undo] on cortex-api -- the same selection and
+# lifecycle the route tests cover -- rather than a bash port of it. The key
+# travels in a header read from stdin, not on curl's command line.
+memory_api() {  # $1=path  $2=json body
+    if [ "${FIREKEEP_ADMIN_DRY_RUN:-0}" = "1" ]; then
+        echo "POST ${API_URL}$1"
+        echo "$2"
+        return
+    fi
+    local key
+    key="$(admin_api_key)"
+    printf 'X-API-Key: %s\n' "$key" | curl -sS --fail-with-body -X POST "${API_URL}$1" \
+        -H @- -H "Content-Type: application/json" -d "$2" \
+        || { echo; echo "ERROR: POST $1 failed (an admin key is required)." >&2; exit 1; }
+    echo
+}
+
+memory() {
+    local sub="${1:-}"
+    [ $# -gt 0 ] && shift
+    local credential="" since="" until_ts="" revert_id="" apply=false body
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --credential) credential="${2:?--credential requires a value}"; shift 2 ;;
+            --since) since="${2:?--since requires a value}"; shift 2 ;;
+            --until) until_ts="${2:?--until requires a value}"; shift 2 ;;
+            --revert-id) revert_id="${2:?--revert-id requires a value}"; shift 2 ;;
+            --apply) apply=true; shift ;;
+            *) echo "Unknown argument: $1" >&2; usage ;;
+        esac
+    done
+    case "$sub" in
+        revert)
+            valid_id "$credential" || { echo "ERROR: --credential must be a credential id (hex)" >&2; exit 1; }
+            valid_iso "$since" || { echo "ERROR: --since must be ISO 8601 with a UTC offset, e.g. 2026-10-05T10:00:00+00:00" >&2; exit 1; }
+            [ -z "$until_ts" ] || valid_iso "$until_ts" || { echo "ERROR: --until must be ISO 8601 with a UTC offset" >&2; exit 1; }
+            body="{\"credential_id\": \"${credential}\", \"since\": \"${since}\""
+            [ -n "$until_ts" ] && body="${body}, \"until\": \"${until_ts}\""
+            body="${body}, \"apply\": ${apply}}"
+            memory_api /admin/memory/revert "$body"
+            if [ "$apply" = false ]; then
+                echo "Dry run: nothing changed. Revoke the key first (keys revoke ${credential}), then re-run with --apply." >&2
+            else
+                echo "Undo with: firekeep-admin memory revert-undo --revert-id <revert_id above> --apply" >&2
+            fi
+            ;;
+        revert-undo)
+            [[ "$revert_id" =~ ^[0-9a-f]{32}$ ]] || { echo "ERROR: --revert-id must be the 32-hex revert_id a revert printed" >&2; exit 1; }
+            memory_api /admin/memory/revert/undo "{\"revert_id\": \"${revert_id}\", \"apply\": ${apply}}"
+            ;;
+        *) usage ;;
+    esac
+}
+
 admin_api_key() {
     local key="${FIREKEEP_ADMIN_KEY:-}"
     [ -n "$key" ] || key="$(env_get DASHBOARD_API_KEY)"
@@ -437,5 +507,6 @@ case "${1:-}" in
         ;;
     invite) shift; invite "$@" ;;
     members) shift; members "$@" ;;
+    memory) shift; memory "$@" ;;
     *) usage ;;
 esac

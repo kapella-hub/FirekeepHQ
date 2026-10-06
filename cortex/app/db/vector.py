@@ -159,6 +159,9 @@ _ARCHIVE_PROVENANCE_KEYS = (
     "archive_source",
     "archive_reason",
     "purge_eligible_at",
+    # Set only by a revert-by-credential archive (app/memory_revert.py), so
+    # that one revert's points can be restored as a batch.
+    "revert_id",
 )
 
 
@@ -1478,6 +1481,7 @@ class VectorClient:
         superseded_by: str | None = None,
         reason: str | None = None,
         count_as_contradiction: bool = True,
+        revert_id: str | None = None,
     ) -> None:
         """Update memory lifecycle status and optionally set superseded_by.
 
@@ -1503,6 +1507,10 @@ class VectorClient:
         must not acquire a deletion deadline as a side effect of being
         archived. ``archived_from_status`` is what lets restore_memory put the
         memory back where it was rather than guessing "active".
+
+        ``revert_id`` marks an archive made by revert-by-credential
+        (app/memory_revert.py): ``archive_source="revert"`` -- still never
+        purge-eligible -- and the id that batch is restored by.
         """
         payload: dict[str, Any] = {"status": status}
         if superseded_by:
@@ -1530,11 +1538,13 @@ class VectorClient:
                     "archived_from_status": (
                         previous if previous != "archived" else "active"
                     ),
-                    "archive_source": "manual",
+                    "archive_source": "revert" if revert_id else "manual",
                     "archive_reason": reason,
                     "purge_eligible_at": None,
                 }
             )
+            if revert_id:
+                payload["revert_id"] = revert_id
         if status == "superseded" and count_as_contradiction:
             # Increment contradicted_count and persist recomputed confidence
             points = await self._client.retrieve(self._collection, [memory_id], with_payload=True)
@@ -1585,7 +1595,9 @@ class VectorClient:
         )
         return True
 
-    async def restore_memory(self, memory_id: str) -> bool:
+    async def restore_memory(
+        self, memory_id: str, *, refuse_sources: tuple[str, ...] = (),
+    ) -> bool:
         """Bring an archived memory back, clearing its archive provenance.
 
         The memory returns to the status it held before it was archived
@@ -1599,6 +1611,11 @@ class VectorClient:
         a memory a human has just pulled back out of the archive would
         otherwise still carry the age that got it archived and be re-archived
         on the very next GC pass.
+
+        ``refuse_sources`` leaves an archive whose ``archive_source`` is listed
+        untouched (False): the restore route passes ``("revert",)`` for a
+        non-admin caller, so a revert-by-credential cannot be undone by any
+        memory:write key that knows the (text-derived) point ids.
         """
         points = await self._client.retrieve(
             self._collection, [memory_id], with_payload=True
@@ -1607,6 +1624,8 @@ class VectorClient:
             return False
         payload = points[0].payload or {}
         if payload.get("status") != "archived":
+            return False
+        if payload.get("archive_source") in refuse_sources:
             return False
 
         previous = payload.get("archived_from_status") or "active"

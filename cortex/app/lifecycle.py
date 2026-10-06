@@ -130,10 +130,19 @@ def create_lifecycle_router(
         is later re-archived starts a fresh recovery window rather than
         inheriting an already-elapsed ``purge_eligible_at``.
         """
+        # A revert-by-credential archive (app/memory_revert.py, THREAT-MODEL
+        # §5.19) comes back only through an admin: point ids are derived from
+        # the text, so the key that wrote a poisoned memory knows its id.
+        from auth import keys as _auth_keys
+
+        refuse = () if (identity and _auth_keys.scopes_allow(
+            identity.get("scopes", []), "admin",
+            allow_wildcard=bool(identity.get("authenticated")),
+        )) else ("revert",)
         restored_ids: list[str] = []
         for memory_id in body.memory_ids:
             try:
-                if await vector.restore_memory(memory_id):
+                if await vector.restore_memory(memory_id, refuse_sources=refuse):
                     restored_ids.append(memory_id)
             except Exception:
                 logger.warning("Failed to restore memory %s", memory_id)
