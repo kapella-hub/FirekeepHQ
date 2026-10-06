@@ -167,28 +167,39 @@ def _entry(content="m", raw=0.8, **md):
             "metadata": {"raw_score": raw, **md}}
 
 
+def _own(content="m", raw=0.8, **md):
+    """An entry recall annotated as the reader's own (THREAT-MODEL §5.20).
+
+    Since §5.20 the self-asserted ``agent_id`` label renders only on lines the
+    VERIFIED tier says are the reader's own (``claim`` False); on a claim line
+    the tier replaces it, and an unannotated entry shows no label at all.
+    test_recall_trust_tiers.py owns those cases; these keep the own-line shape.
+    """
+    return _entry(content, raw, claim=False, trust_tier="own", is_own=True, **md)
+
+
 def test_the_rendered_line_names_the_contributor_and_the_date():
-    out = _format_markdown([_entry(agent_id="alice", timestamp="2026-07-12T09:30:00Z")])
+    out = _format_markdown([_own(agent_id="alice", timestamp="2026-07-12T09:30:00Z")])
     assert "alice" in out, out
     assert "2026-07-12" in out, out
 
 
 def test_the_rendered_line_drops_the_clock():
     """A date answers "is this stale?". The time is per-line noise in a token budget."""
-    out = _format_markdown([_entry(agent_id="alice", timestamp="2026-07-12T09:30:00Z")])
+    out = _format_markdown([_own(agent_id="alice", timestamp="2026-07-12T09:30:00Z")])
     assert "09:30" not in out, out
 
 
 def test_an_unknown_contributor_is_not_rendered():
     """Most memories predate attribution. "unknown" on every line teaches an agent
     to skip the suffix entirely, which costs the lines that do carry a name."""
-    out = _format_markdown([_entry(agent_id="unknown", timestamp="2026-07-12T00:00:00Z")])
+    out = _format_markdown([_own(agent_id="unknown", timestamp="2026-07-12T00:00:00Z")])
     assert "unknown" not in out, out
     assert "2026-07-12" in out, "the date is still known and still useful"
 
 
 def test_the_legacy_sentinel_is_not_rendered():
-    out = _format_markdown([_entry(agent_id="legacy-pre-team-continuity")])
+    out = _format_markdown([_own(agent_id="legacy-pre-team-continuity")])
     assert "legacy" not in out, out
 
 
@@ -202,14 +213,22 @@ def test_an_entry_with_no_provenance_renders_as_before():
 def test_the_session_id_is_auditable_but_not_rendered():
     """A session id is a 32-char hex — useful to an auditor reading `sources`,
     pure noise in a line an LLM reads. It belongs in metadata only."""
-    out = _format_markdown([_entry(agent_id="alice", session_id="deadbeef" * 4)])
+    out = _format_markdown([_own(agent_id="alice", session_id="deadbeef" * 4)])
     assert "deadbeef" not in out, out
 
 
 def test_provenance_survives_a_status_label():
     """The suffix must not be swallowed by, or swallow, the lifecycle label."""
-    entry = _entry(agent_id="alice")
+    entry = _own(agent_id="alice")
     entry["_lifecycle_status"] = "superseded"
     out = _format_markdown([entry])
     assert "[SUPERSEDED]" in out, out
     assert "alice" in out, out
+
+
+def test_an_unannotated_entry_never_renders_its_self_asserted_label():
+    """No verified tier, no label: ``agent_id`` is X-Agent-Id, chosen by the
+    writer, and on its own says nothing about who wrote the memory."""
+    out = _format_markdown([_entry(agent_id="alice", timestamp="2026-07-12T09:30:00Z")])
+    assert "alice" not in out, out
+    assert "2026-07-12" in out, out

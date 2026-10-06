@@ -17,8 +17,10 @@ from fastapi.responses import StreamingResponse
 
 from app.db.graph import Neo4jClient
 from app.db.vector import VectorClient
+from app.engine.provenance import redis_member_labels
 from app.engine.rag import RAGEngine
 from app.models import ContextQuery
+from auth import keys as _auth_keys
 from auth.middleware import require_any_scope
 from auth.principal import request_principal
 
@@ -140,6 +142,12 @@ def create_streaming_router(
                     query,
                     workspace_id=principal["workspace_id"],
                     member_id=principal["member_id"],
+                    # THREAT-MODEL §5.20: tier every frame for the caller.
+                    viewer=principal,
+                    member_labels=redis_member_labels(
+                        getattr(request.app.state, "auth_redis", None)
+                        or _auth_keys._redis
+                    ),
                 ):
                     event_type = event["type"]
                     data = json.dumps(event["data"], default=str)

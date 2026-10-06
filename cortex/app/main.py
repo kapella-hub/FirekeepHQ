@@ -1279,6 +1279,16 @@ async def health(
         return result
 
 
+def _member_labels(request: Request):
+    """Teammate display names for recall's trust tiers (THREAT-MODEL §5.20)."""
+    from app.engine.provenance import redis_member_labels
+    from auth import keys as _auth_keys
+
+    return redis_member_labels(
+        getattr(request.app.state, "auth_redis", None) or _auth_keys._redis
+    )
+
+
 @app.post("/memory/recall", response_model=RecallResponse, dependencies=[_MEMORY_READ])
 @limiter.limit(lambda: get_settings().RATE_LIMIT)
 async def memory_recall(
@@ -1295,6 +1305,8 @@ async def memory_recall(
         query,
         workspace_id=principal["workspace_id"],
         member_id=principal["member_id"],
+        viewer=principal,
+        member_labels=_member_labels(request),
     )
     result.request_id = _get_request_id(request)
     result.namespace = query.namespace
@@ -1994,10 +2006,15 @@ async def post_memory_handoff(
     # and an LLM handed an out-of-scope row will fold it in indistinguishably.
     # Here the unverifiable is refused; see `RAGEngine._scope_verdict`.
     principal = request_principal(request)
+    # `viewer` (not member_id) so the narrative's input marks teammates' and
+    # unattributed memories as claims without widening the handoff's
+    # member-private corpus egress (THREAT-MODEL §5.20).
     recall_resp = await engine.recall(
         recall_query,
         workspace_id=principal["workspace_id"],
         unattributed_graph="deny",
+        viewer=principal,
+        member_labels=_member_labels(request),
     )
 
     # An unknown project must SAY it is unknown. Returning a synthesised
