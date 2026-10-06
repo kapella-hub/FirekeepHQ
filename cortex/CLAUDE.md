@@ -33,6 +33,8 @@ app/
 ├── streaming.py       # SSE streaming recall endpoint (emits a `memory_read` replay receipt + access/staleness bumps in a `finally` after the stream, 2026-08-24 — parity with the non-streaming recall path)
 ├── embedding_admin.py # Embedding model admin (status, re-embed)
 ├── lifecycle.py       # Knowledge lifecycle (deprecate, confirm, history, backlinks)
+├── write_limit.py     # Per-credential memory write ceiling (Redis DB 0 counter; learn/stream/skills; THREAT-MODEL §5.19)
+├── memory_revert.py   # POST /admin/memory/revert[/undo] — archive/restore one credential's writes in a window (admin)
 ├── contradiction.py   # Automatic contradiction detection & supersession
 ├── db/
 │   ├── graph.py       # Neo4j async client, Cypher queries
