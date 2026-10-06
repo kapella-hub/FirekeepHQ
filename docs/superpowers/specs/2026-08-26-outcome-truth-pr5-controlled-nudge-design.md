@@ -461,3 +461,53 @@ the one the live Keep holds, read back after the flip, not a plan.
 
 Nothing else was touched: `TREATMENT_ARM`, the nudge text, the thresholds
 and every registered constant are as committed at `47d8e17`.
+
+## Addendum — readout (2026-10-06)
+
+This is the H1′/H2′ verdict of record (D14). The payload is the dated
+snapshot in `2026-10-06-outcome-truth-pr5-readout-snapshot.md`, taken at
+`2026-10-06T16:13:58Z`, 46 minutes after T0 + 28 days, from the live Keep's
+`GET /autopilot/compliance`. Every value below is read from that payload.
+Nothing was recomputed.
+
+**Registered readout: `insufficient_n`.** The D8 floors are unmet, and
+D14 says that IS this experiment's result. H1′ is not supported and not
+refuted; H2′ is not passed. PR6 stays gated (D8).
+
+| D8 floor | required | arm A (treatment) | arm B (control) |
+|---|---|---|---|
+| qualifying members (≥ 5 per-protocol sessions each) | ≥ 5 per arm | 0 | 1 |
+| per-protocol sessions | ≥ 99 per arm | 0 | 28 |
+| self-success sessions (H2′) | ≥ 30 per arm | 0 | 26 |
+
+- **Why arm A is empty.** Every authenticated session in the window came
+  from one member, token `4fb97a7999af`. That is the deployment owner, who
+  hashes to B, exactly as the T0 addendum predicted. No member hashing to A
+  produced a session, so the treatment was never delivered to anyone.
+  `nudge_shown_coverage` confirms this: 0 treatment records, 0 receipts.
+  D1 disclosed that a one-member deployment has no within-deployment
+  contrast, and that is how this experiment ended.
+- **The block's own label is `balance_violated`, not `insufficient_n`.**
+  The code checks D6 balance before the D8 floors. Arm B's per-protocol
+  sessions are 100% one member, over the 50% bound. Both conditions hold,
+  and either one alone bars a verdict. The registered reading is the D14
+  one, `insufficient_n`. `confirmatory` stays `false` in the live block
+  because the code never flips it; this addendum is the record.
+- **Classification.** 60 evaluated sessions in the 30-day store: 5 `pre_t0`,
+  2 `no_arm`, and 53 arm-B ITT. Of those 53, 28 are per-protocol and 25
+  `not_exposed`, with 0 `unknown`. Runtime mix: 53 `claude`.
+- **Descriptive only, never a verdict.** Arm B graded 28 of 28 per-protocol
+  sessions (member mean 1.0). Arm B's optimism skew is 0 of 26
+  self-success sessions. On the frozen `grade_self_reported` row, 57 of 60
+  sessions carry a recognized grade (95%). Control-arm grading was already
+  at ceiling without the treatment, so even a populated arm A had little
+  room to show lift. The "Interference" section names this ambient
+  saturation as the ambiguous-null case.
+
+**What this closes.** The PR5 registration is complete. Any continuation
+needs a new dated pre-registration, per D14: for example, one that waits for
+≥ 5 members per arm, or a fleet-level comparison across deployments, which
+D1 named as the only place a one-member deployment carries information.
+`GRADING_NUDGE_ENABLED` and `GRADING_NUDGE_T0` stay as set at T0. No
+registered constant, threshold or text was changed between T0 and this
+readout.
