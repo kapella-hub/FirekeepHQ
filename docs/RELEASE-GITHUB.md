@@ -29,7 +29,9 @@ no separate enterprise or corporate edition/channel.
    `gh-pages` branch — **accumulatively**, so old `<version>/` dirs survive for
    `firekeep update --to`. It then publishes all three wheels to PyPI and, only
    after PyPI exposes the client package and ownership marker, publishes and
-   verifies the immutable version in the official MCP Registry.
+   verifies the immutable version in the official MCP Registry. That job runs
+   whenever the dist publication succeeded, so a failed hands or dex PyPI leg does not
+   skip it; it still refuses to publish until the client version is on PyPI.
 4. **Append the new version to `failure-stats/allowed-versions.txt` on the site
    host** (firekeep-site repo's deploy flow, not this repo's CI — see
    `docs/superpowers/specs/2026-08-22-field-failure-reporting-design.md`,
@@ -185,6 +187,14 @@ cd client && python -m pytest tests/test_e2e_bootstrap.py -m e2e -q
 ```
 
 
+- **1.7.1** — The per-prompt recall push now carries the server's trust
+  marker. A pushed memory the agent did not write shows Cortex's
+  `metadata.trust_note` (for example `claim from teammate "Bob"`), so a memory
+  pushed into the prompt is as clearly someone else's claim as one returned by
+  `memory_recall` (THREAT-MODEL §5.20). Needs a server that sends the marker
+  (v1.6.0); against an older server nothing changes. Release pipeline: the MCP
+  Registry publish no longer skips when a non-client PyPI leg fails; it still
+  waits for the client itself on PyPI.
 - **1.7.0** — Hardening, and the first release that carries Firekeep Hands.
   - **Signed updates are now required.** `[dist] require_signed` defaults to
     true: an update whose `SHA256SUMS.minisig` does not verify against the

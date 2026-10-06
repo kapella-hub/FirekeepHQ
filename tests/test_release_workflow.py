@@ -329,6 +329,23 @@ class TestMCPRegistryPublication:
         needs = [needs] if isinstance(needs, str) else (needs or [])
         assert "pypi" in needs
 
+    def test_a_failed_non_client_pypi_leg_does_not_skip_the_registry(self, job):
+        # A bare `needs: pypi` skips the job when ANY matrix leg fails; client
+        # 1.7.0 never reached the Registry because the hands leg had no trusted
+        # publisher. The job must run once the dist publication succeeded...
+        condition = job.get("if", "")
+        assert "!cancelled()" in condition
+        assert "needs.release.result == 'success'" in condition
+        # ...and still refuse to publish until the client itself is on PyPI,
+        # which is what keeps a failed CLIENT leg fatal.
+        names = [step.get("name", "") for step in job["steps"]]
+        wait = names.index("Wait for firekeep-client on PyPI")
+        publish = names.index("Publish to MCP Registry")
+        assert wait < publish
+        wait_run = job["steps"][wait]["run"]
+        assert "pypi.org/pypi/firekeep-client/${VERSION}/json" in wait_run
+        assert "exit 1" in wait_run
+
     def test_registry_and_licence_contracts_gate_immutable_uploads(self, wf):
         test_job = wf["jobs"]["test"]
         test_runs = "\n".join(step.get("run", "") for step in test_job["steps"])

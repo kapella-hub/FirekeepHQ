@@ -622,8 +622,17 @@ jobs:
   # firekeep-client's immutable PyPI upload (whose skip-existing is correctly
   # false). The Registry is also immutable per version, so a rerun first verifies
   # an existing exact version and skips publication only when the bytes agree.
+  #
+  # It runs once the dist publication succeeded, even when a PyPI leg failed.
+  # The Registry references only firekeep-client, and the first step below waits
+  # for that exact version (with its ownership marker) on PyPI and fails if it
+  # never appears. So a failed client leg still stops the job, but a failed
+  # hands or dex leg no longer does. Before this, client 1.7.0 never reached the
+  # Registry because the hands leg had no trusted publisher yet. A plain
+  # `needs: pypi` skips the job whenever any matrix leg fails.
   mcp-registry:
-    needs: pypi
+    needs: [release, pypi]
+    if: ${{ !cancelled() && needs.release.result == 'success' }}
     runs-on: ubuntu-latest
     environment: mcp-registry-publish
     permissions:
