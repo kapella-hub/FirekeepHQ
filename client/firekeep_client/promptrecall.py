@@ -55,6 +55,7 @@ DEFAULT_MIN_SCORE = 0.55
 DEFAULT_TIMEOUT_SECONDS = 2.5
 MAX_INJECTED = 3
 MAX_LINE_CHARS = 200
+MAX_NOTE_CHARS = 96  # the server's longest trust marker is ~80 chars
 TOP_K = 3
 MAX_TASK_CHARS = 2000  # ContextQuery.task is max_length=2000 server-side.
 
@@ -205,8 +206,18 @@ def trim_line(text: object) -> str:
 def _line(source: dict, score: float) -> str:
     """One collapsed, trimmed line. The score shown is the one that was actually
     thresholded (`_relevance`), never the normalized rank — a displayed number the
-    filter did not use would misdescribe why the memory is on screen."""
-    return f"- {trim_line(source.get('content'))} (score {score:.2f})"
+    filter did not use would misdescribe why the memory is on screen.
+
+    A memory the caller did not write carries Cortex's marker
+    (`metadata.trust_note`, THREAT-MODEL §5.20: "claim from teammate ...") —
+    rendered from the server's words, never derived here, and collapsed and
+    bounded like the snippet so it cannot break the one-line shape."""
+    md = source.get("metadata")
+    note = md.get("trust_note") if isinstance(md, dict) else None
+    marker = ""
+    if isinstance(note, str) and note.strip():
+        marker = f", {trim_line(note)[:MAX_NOTE_CHARS]}"
+    return f"- {trim_line(source.get('content'))} (score {score:.2f}{marker})"
 
 
 def select(sources, *, seen, floor: float) -> list[tuple[str, str]]:

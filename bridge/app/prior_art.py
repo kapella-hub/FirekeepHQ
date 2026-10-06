@@ -174,11 +174,16 @@ async def fetch_team_memories(
                 continue
             if raw < min_score:
                 continue
-            results.append({
+            memory = {
                 "summary": _collapse(source.get("content", ""), SUMMARY_MAX_CHARS),
                 "raw_score": raw,
                 "when": _when(metadata),
-            })
+            }
+            # THREAT-MODEL §5.20: Cortex's claim marker, carried verbatim.
+            note = metadata.get("trust_note")
+            if isinstance(note, str) and note:
+                memory["trust"] = note
+            results.append(memory)
         return results
     except Exception as exc:
         logger.debug("Prior-art recall failed (non-fatal): %s", exc)
@@ -305,7 +310,9 @@ def render_prior_art(prior_art: dict) -> str:
         "[prior art] the team may have been here before — recall before building:"
     ]
     for memory in memories:
-        lines.append(f"- {memory['summary']} (raw {memory['raw_score']:.2f})")
+        trust = memory.get("trust")
+        marker = f" — {trust}" if isinstance(trust, str) and trust else ""
+        lines.append(f"- {memory['summary']} (raw {memory['raw_score']:.2f}){marker}")
     if in_flight:
         entries = []
         for session in in_flight:

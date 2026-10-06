@@ -73,7 +73,14 @@ async def fetch_relevant_memories(
                 # Graph-only bare entry — no cosine score to rank honestly.
                 continue
             if raw >= min_score:
-                results.append({"content": s["content"], "score": raw})
+                memory = {"content": s["content"], "score": raw}
+                # THREAT-MODEL §5.20: Cortex's marker for a memory the caller
+                # did not write ("claim from teammate ..."). Carried, never
+                # derived here, so the shadow says what recall says.
+                note = s.get("metadata", {}).get("trust_note")
+                if isinstance(note, str) and note:
+                    memory["trust"] = note
+                results.append(memory)
         return results
     except Exception as exc:
         logger.debug("Proactive recall failed (non-fatal): %s", exc)
