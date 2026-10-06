@@ -1058,6 +1058,99 @@ expired entry, its session-index entry and its lookup key. The retention value
 is unchanged (30 days). Guards: `replay/tests/test_trim_retention.py`,
 `cortex/tests/test_replay_trim_task.py`.
 
+### 5.19 Memory poisoning: a write ceiling per credential, and revert by credential (2026-10-05)
+
+Threat 5 (row 5) is a compromised agent with a valid non-admin key writing
+memories every teammate's agent then recalls. §5.12 made each write name its
+verified credential; nothing used that to bound or undo the writes.
+
+**Limited 2026-10-05 — one counter per credential, across every surface.** The
+only ceiling was slowapi's `RATE_LIMIT` (60/minute) on a few REST routes, keyed
+on the client address and stored in process memory — one bucket per uvicorn
+worker, and, because cortex-mcp forwards every MCP call from its own container
+address, one bucket shared by every agent on MCP while a key used from many
+hosts escaped it. Now every memory write a member credential makes spends from
+one Redis counter (Cortex DB 0) keyed on the verified `credential_id` (its
+member when a legacy record has none; an authenticated principal with neither
+is refused), per fixed window (`cortex/app/write_limit.py`):
+
+| Write path | Counted | Why |
+|---|---|---|
+| `POST /memory/learn` (agents over cortex-mcp, the client kit, symdex `learn_from_changes`, night shift, the dashboard) | 1 per write | the primary agent write; cortex-mcp proxies onto it with the caller's own key, so MCP and REST share the counter |
+| `POST /memory/stream` | 1 per event, at intake | the sleep cycle later writes graph nodes with no workspace or credential, and those nodes are recalled (97.8% of the live graph is that unattributed extraction — `db/graph.py`), so intake is the only point a credential can be charged |
+| `POST /skills` (`skill_create`) | 1 per skill | skills reach every teammate's briefing |
+| `POST /memory/learn/delegated` (Bridge's distiller) | no — service key | attributed to the member, so revert covers it |
+| corpus / knowledge ingest | no | docdex and maildex send one document per request and a first sync is thousands; corpus has its own revert (`corpus_delete` by source); docdex sources are member-private unless `--shared`, maildex always |
+| `/memory/import` | no | `admin` only |
+| sleep cycle, dreams, memory agent, backfill, collectors, fleet | no | in-process server workers; no request credential |
+
+Default `MEMORY_WRITE_LIMIT_PER_CREDENTIAL=300` per
+`MEMORY_WRITE_LIMIT_WINDOW_SECONDS=3600`; `0` disables. Basis: the live Keep's
+replay stream held 30 `memory_write` events for the whole deployment between
+2026-10-03 13:01 and 2026-10-05 14:54 (busiest: 4 in 20 minutes, three agents);
+night shift is ≤10 writes a run; ten parallel agents on one device credential at
+20 an hour each is 200. Over the ceiling: `429`, `Retry-After`, a structured
+`MEMORY_WRITE_LIMITED` detail naming the credential, nothing written (a refused
+stream batch spends nothing), and the MCP tools say the write was NOT stored and
+when to retry. The first refusal per credential per window emits a
+`memory_write_limited` replay event stamped with the member (listed by
+`/audit/memory` and `audit_memory` with the writes) and fires the
+`memory.write_limited` webhook on the write's namespace — so the ceiling also
+detects. **Exempt:** auth-disabled deployments (one principal — unchanged; the
+LongMemEval stack runs `AUTH_ENABLED=false` and is not limited); `admin`/`*`
+keys (they can mint keys, so a ceiling would not contain them); any key holding
+a service-only scope (`FIREKEEP_BRIDGE_KEY`, `FIREKEEP_INTERNAL_KEY` —
+`install-smoke.yml`'s round trip uses the latter). A counter-store failure fails
+open, logged.
+
+**Reversible 2026-10-05 — revert by credential since T.** `POST
+/admin/memory/revert` (`admin`; refused with auth disabled, where every write is
+the one anonymous credential) selects the points in the caller's workspace whose
+`metadata.credential_id` is the named credential and whose `timestamp` falls in
+`[since, until)`, skipping existing archives. It is a dry run unless `apply`
+(count, unreadable-timestamp count, sample). `apply` archives each point through
+the ordinary lifecycle (`VectorClient.update_status`): recall excludes it, and the
+graph rows linked to it through the vector-lifecycle gate (Neo4j nodes carry no
+credential, so the vector record is what is reverted); its prior status is kept;
+it is never purge-eligible; `archive_source: "revert"`, a `revert_id`, and a
+reason naming the credential, the window and the admin credential that applied
+it; one `reverted` entry goes to the `gc:eviction:log` trail. `POST
+/admin/memory/revert/undo` restores one revert's points as a batch, and
+`POST /memory/restore` now leaves a revert archive alone unless the caller is
+`admin` — point ids are derived from the text, so the key that wrote a poisoned
+memory knows its id. CLI: `deploy/firekeep-admin memory revert|revert-undo`.
+**Runbook:** revoke the key (`firekeep-admin keys revoke`) → dry-run → `--apply`;
+revoking first stops the key writing while the revert runs. The revert does not
+revoke.
+
+**Residuals:**
+- The ceiling bounds rate; it does not judge content. A poisoner pacing below 300
+  an hour is neither refused nor signalled, and ten poisoned memories are as
+  harmful as three hundred.
+- Identical text re-learned in one workspace is one point carrying the LATEST
+  writer's provenance (§5.12). A revert can therefore archive a point a teammate
+  wrote first and the attacker re-asserted, and a poisoned write later re-asserted
+  by a teammate carries the teammate's credential and escapes. The memory agent's
+  merge keeps the keeper's provenance and refreshes `timestamp` the same way.
+- The window is on `timestamp`, the point's last-seen time (re-learn, confirm,
+  restore and merge refresh it): a credential's point written before `since` and
+  confirmed by a teammate inside the window is included (the dry run shows it); one
+  the credential wrote inside a closed window and that was touched after `until` is
+  missed (omit `until` to avoid this). An undo re-arms the clock — restored points
+  sit inside any later window for the same credential.
+- Points written before 2026-10-04 carry no `credential_id` and cannot be selected.
+- Not revertable by credential: stream-derived graph nodes (no identity at all),
+  skills and corpus chunks (no `credential_id`; an admin deletes a skill, corpus
+  has its source delete). A revert archive a teammate re-learns verbatim stays
+  archived (`_merge_lifecycle` preserves status) — the teammate's identical fact is
+  suppressed with it until restored.
+- Exempt keys are unlimited: a leaked `FIREKEEP_INTERNAL_KEY` or Bridge key, or a
+  Bridge session flood — a compromised member key completing N sessions gets N
+  distillates written for it, uncharged (each still names the member's credential,
+  so revert covers them).
+- slowapi's per-IP `RATE_LIMIT` is unchanged: per worker, and one shared bucket for
+  every MCP caller.
+
 ## 6. Threats, ranked
 
 | # | Threat | State |
