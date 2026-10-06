@@ -14,9 +14,11 @@ Inputs, and only these:
   (learn, delegated learn, corpus, skills, import) and promoted to the top-level
   payload, where client-supplied metadata cannot reach it;
 * the presence of the ``credential_id`` key -- written by the provenance-era
-  learn route and nothing else, so a record WITHOUT it predates provenance and
-  its ``member_id`` is a workspace-migration backfill, not an author (rule 4:
-  unattributed, never a trusted teammate);
+  learn route and nothing else, so a record WITHOUT it predates provenance. If
+  its ``member_id`` is absent or the owner's (a workspace-migration backfill)
+  it is LEGACY and belongs to the deployment owner (``author_of``): ``own`` to
+  the owner, an ``unattributed`` claim to everyone else -- never a trusted
+  teammate (rule 4);
 * ``delegated_by_credential_id`` on an ``action_log`` point -- a service wrote
   it on a member's behalf after ``delegated_attribution`` verified that member;
 * ``source`` -- set server-side after any client metadata, so ``corpus`` /
@@ -125,28 +127,67 @@ def _verified_member(md: Mapping[str, Any]) -> str | None:
     return str(member) if member else None
 
 
+def _owner() -> str:
+    from auth.principal import deployment_owner_member_id
+
+    return deployment_owner_member_id()
+
+
+def author_of(member: str | None, *, has_provenance: bool, mixed: bool) -> str | None:
+    """The member a memory point belongs to; None when it belongs to no one.
+
+    * ``provenance_mixed`` -- blended text of several authors: no one's.
+    * provenance-era (``credential_id`` key present): its verified ``member_id``.
+    * pre-provenance with a NON-owner ``member_id``: that member. Identity v2
+      stamped it from the member's verified key; the workspace migration only
+      ever backfills the OWNER, so a non-owner value is never a backfill.
+    * pre-provenance with no ``member_id`` or the owner's: LEGACY, and legacy
+      belongs to the deployment owner -- the rule Bridge (#48) and replay (#56)
+      already apply (decision 2026-10-05).
+    """
+    if mixed:
+        return None
+    if has_provenance:
+        return member or None
+    if member and member != _owner():
+        return member
+    return _owner()
+
+
 def classify(md: Mapping[str, Any], viewer: Viewer, *, store: str = "vector") -> dict[str, Any]:
     """Trust fields for one recalled entry (no display label yet)."""
     source = str(md.get("source") or "")
     member = _verified_member(md)
+    has_provenance = "credential_id" in md
 
     if store == "graph":
         # Graph nodes are MERGEd by content across every memory that mentions
         # them, plus sleep-cycle extraction of /memory/stream events (which
-        # record no author). No single verified writer exists.
+        # record no author). No single verified writer exists. Deliberately NOT
+        # the legacy-owner rule below: graph rows are not pre-attribution --
+        # any member's /memory/stream still creates authorless ones today.
         tier, attributed = UNATTRIBUTED, None
     elif source == "corpus":
         tier, attributed = DOCUMENT, member
     elif source in _DREAM_SOURCES:
         tier, attributed = SERVICE, member
-    elif md.get("provenance_mixed") or "credential_id" not in md or not member:
+    elif md.get("provenance_mixed") or (has_provenance and not member):
         tier, attributed = UNATTRIBUTED, None
-    elif source == "action_log" and md.get("delegated_by_credential_id"):
+    elif (
+        source == "action_log" and has_provenance
+        and md.get("delegated_by_credential_id")
+    ):
         tier, attributed = SERVICE, member
-    elif viewer.member_id and member == viewer.member_id:
-        tier, attributed = OWN, member
     else:
-        tier, attributed = TEAMMATE, member
+        author = author_of(member, has_provenance=has_provenance, mixed=False)
+        legacy = not has_provenance and author == _owner()
+        if viewer.member_id and author == viewer.member_id:
+            tier, attributed = OWN, author
+        elif legacy:
+            # The owner's by rule, but nothing verifies that to anyone else.
+            tier, attributed = UNATTRIBUTED, None
+        else:
+            tier, attributed = TEAMMATE, author
 
     if viewer.personal:
         # One principal: everything is the owner's and nothing is a claim.

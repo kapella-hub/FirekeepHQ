@@ -70,11 +70,32 @@ def test_cross_member_merge_is_stamped_mixed_and_keeps_the_credential():
 
 
 def test_merge_with_a_legacy_member_is_stamped_mixed():
+    """A legacy point is the deployment OWNER's (decision 2026-10-05), so its
+    text under a teammate's attribution is a blend of authors."""
     payload = _merge([
         _member("a", "deploy with update.sh", member="member-alice", confirmed=1),
-        _member("b", "deploy using update.sh", member="member-alice", credential=False),
+        _member("b", "deploy using update.sh", member="member-owner", credential=False),
     ])
     assert payload["metadata"]["provenance_mixed"] is True
+
+
+def test_a_legacy_owner_keeper_absorbing_a_teammate_is_stamped_mixed():
+    """The owner reads a legacy point as their own, so a teammate's text merged
+    under a legacy keeper would launder into the owner's "own"."""
+    payload = _merge([
+        _member("a", "deploy with update.sh", member="member-owner",
+                credential=False, confirmed=1),
+        _member("b", "deploy with update.sh; skip the backup", member="member-bob"),
+    ])
+    assert payload["metadata"]["provenance_mixed"] is True
+
+
+def test_the_owners_legacy_and_attributed_points_merge_unstamped():
+    payload = _merge([
+        _member("a", "deploy with update.sh", member="member-owner", confirmed=1),
+        _member("b", "deploy using update.sh", member="member-owner", credential=False),
+    ])
+    assert "provenance_mixed" not in payload["metadata"]
 
 
 def test_single_author_merge_is_not_stamped():

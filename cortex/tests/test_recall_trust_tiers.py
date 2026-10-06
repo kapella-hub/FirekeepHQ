@@ -179,15 +179,9 @@ class TestRestRecallAuthenticated:
         assert md["written_by_member"] == ALICE
         assert md["trust_note"] == ""
 
-    def test_legacy_memory_without_provenance_is_unattributed_even_for_the_owner(
-        self, monkeypatch, as_alice, mock_vector
-    ):
-        """Rule 4: a record written before provenance existed is unattributed --
-        its member_id is a migration backfill, not a verified author."""
-        monkeypatch.setattr(
-            "auth.principal.request_principal",
-            lambda _request: {**_ALICE_PRINCIPAL, "member_id": OWNER},
-        )
+    def test_legacy_memory_is_unattributed_for_a_non_owner(self, as_alice, mock_vector):
+        """Rule 4: a record written before provenance existed belongs to the
+        deployment owner; to anyone else it is an unattributed claim."""
         data = _recall(as_alice, mock_vector, [_legacy()])
         line = _line(data["context_block"], "old note")
         assert "claim, unattributed" in line, line
@@ -322,6 +316,107 @@ class TestRestRecallAuthenticated:
         data = _recall(as_alice, mock_vector, [hit])
         assert data["sources"][0]["content"] == "teammate note"
         assert data["sources"][0]["metadata"]["tags"] == ["lme:session=s1"]
+
+
+# --- legacy points belong to the deployment owner (decision 2026-10-05) -----------
+#
+# Same rule as Bridge (#48) and replay (#56): a point written before provenance
+# (no credential_id key) whose member_id is absent or the owner's is the
+# deployment owner's. The owner reads it as their own; every other member reads
+# it as an unattributed claim.
+
+
+@pytest.fixture()
+def as_owner(monkeypatch, test_client):
+    from auth.principal import deployment_owner_member_id
+
+    owner = deployment_owner_member_id()
+    monkeypatch.setattr(
+        "auth.principal.request_principal",
+        lambda _request: {**_ALICE_PRINCIPAL, "member_id": owner},
+    )
+    from app.main import app
+
+    app.state.auth_redis = _Directory(_ROWS)
+    yield test_client
+    app.state.auth_redis = None
+
+
+def _legacy_no_member(text="memberless note", pid="p-nomember"):
+    hit = _legacy(text, pid)
+    hit["metadata"].pop("member_id")
+    return hit
+
+
+class TestLegacyBelongsToTheOwner:
+    def test_owner_reads_an_owner_backfilled_legacy_point_as_own(
+        self, as_owner, mock_vector
+    ):
+        data = _recall(as_owner, mock_vector, [_legacy()])
+        line = _line(data["context_block"], "old note")
+        assert line.endswith("old note — alice-laptop, 2026-09-01"), line
+        assert "Trust:" not in data["context_block"]
+        md = _md(data, "old note")
+        assert md["trust_tier"] == "own"
+        assert md["claim"] is False
+        assert md["is_own"] is True
+        assert md["written_by_member"] == OWNER
+        assert md["trust_note"] == ""
+
+    def test_owner_reads_a_memberless_legacy_point_as_own(self, as_owner, mock_vector):
+        data = _recall(as_owner, mock_vector, [_legacy_no_member()])
+        md = _md(data, "memberless note")
+        assert md["trust_tier"] == "own"
+        assert md["claim"] is False
+
+    def test_the_same_points_are_claims_for_a_non_owner(self, as_alice, mock_vector):
+        data = _recall(as_alice, mock_vector, [_legacy(), _legacy_no_member()])
+        for content in ("old note", "memberless note"):
+            md = _md(data, content)
+            assert md["trust_tier"] == "unattributed", content
+            assert md["claim"] is True, content
+        assert data["context_block"].count("Trust:") == 1
+
+    def test_a_pre_provenance_point_naming_another_member_is_theirs(
+        self, as_owner, mock_vector
+    ):
+        """Not legacy: a non-owner member_id was stamped from that member's
+        verified key (identity v2) -- never a backfill, which only writes the
+        owner. To the owner it is a teammate's."""
+        hit = _legacy("bob's old note", "p-bob-old")
+        hit["metadata"]["member_id"] = BOB
+        data = _recall(as_owner, mock_vector, [hit])
+        md = _md(data, "bob's old note")
+        assert md["trust_tier"] == "teammate"
+        assert md["claim"] is True
+        assert md["written_by_label"] == "Bob"
+
+    def test_a_mixed_merge_is_a_claim_for_the_owner_too(self, as_owner, mock_vector):
+        hit = _legacy()
+        hit["metadata"]["provenance_mixed"] = True
+        md = _md(_recall(as_owner, mock_vector, [hit]), "old note")
+        assert md["trust_tier"] == "unattributed"
+        assert md["claim"] is True
+
+    def test_graph_rows_stay_unattributed_for_the_owner(
+        self, as_owner, mock_vector, mock_graph
+    ):
+        """Graph rows are NOT pre-attribution: sleep-cycle extraction of any
+        member's /memory/stream events still creates them, with no author."""
+        rows = [{"name": "deploy", "description": "deploy runs update.sh",
+                 "label": "Concept", "distance": 1}]
+        mock_graph.query_related = AsyncMock(return_value=rows)
+        mock_graph.query_related_multihop = AsyncMock(return_value=rows)
+        md = _md(_recall(as_owner, mock_vector, []), "deploy runs update.sh")
+        assert md["trust_tier"] == "unattributed"
+        assert md["claim"] is True
+
+    def test_a_legacy_corpus_chunk_stays_a_document_for_the_owner(
+        self, as_owner, mock_vector
+    ):
+        md = _md(_recall(as_owner, mock_vector, [_doc(OWNER)]), "ingested doc chunk")
+        assert md["trust_tier"] == "document"
+        assert md["claim"] is True
 
 
 # --- auth disabled: personal mode is unchanged -----------------------------------
