@@ -329,8 +329,19 @@ def create_skills_router(
         req: SkillRequest,
         request: Request,
         vector: VectorClient = Depends(get_vector),
+        # The route's own gate (FastAPI runs it once per request), named here
+        # so the verified key is in hand for the write ceiling.
+        identity: dict = Depends(_skill_write),
     ):
         settings = settings_fn()
+        # A skill is recalled by every teammate's briefing, so it spends from
+        # the same per-credential write budget as /memory/learn (§5.19).
+        from app.write_limit import charge_memory_write
+
+        await charge_memory_write(
+            identity, getattr(request.app.state, "redis_client", None),
+            surface="skill_create", namespace=req.namespace,
+        )
         full_content = (
             f"trigger: {req.trigger}\n"
             f"symptoms: {req.symptoms}\n"

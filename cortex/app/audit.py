@@ -114,13 +114,17 @@ async def get_memory_audit(
     the router (never from a query parameter); `member_id=None` means the
     caller may see every member's events.
     """
+    # memory_write_limited: a write the per-credential ceiling refused, listed
+    # with the writes so an owner reading the trail sees the attempt
+    # (app/write_limit.py, THREAT-MODEL §5.19).
+    writes = {"memory_write", "memory_write_limited"}
     target_types = set()
     if action == "read":
         target_types = {"memory_read"}
     elif action == "write":
-        target_types = {"memory_write"}
+        target_types = writes
     else:
-        target_types = {"memory_read", "memory_write"}
+        target_types = {"memory_read"} | writes
 
     entries = await r.xrevrange(_STREAM_KEY, count=limit * 10)
 

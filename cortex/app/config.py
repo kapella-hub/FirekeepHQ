@@ -10,6 +10,22 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:8080"]
     RATE_LIMIT: str = "60/minute"
+    # Per-credential ceiling on memory writes (docs/THREAT-MODEL.md §5.19,
+    # app/write_limit.py): /memory/learn (1 each), /memory/stream (1 per event)
+    # and POST /skills (1 each) share ONE Redis counter (Cortex DB 0) per
+    # verified credential per fixed window. Admin/"*" keys, service-only keys
+    # and auth-disabled deployments are not limited. 0 disables.
+    #
+    # Basis for 300/hour: the live Keep's replay stream held 30 memory_write
+    # events across the WHOLE deployment from 2026-10-03 13:01 to 2026-10-05
+    # 14:54 (busiest stretch: 4 in 20 minutes, three agents). Per credential the
+    # known producers are small: night shift drains <=5 tasks a run (<=10
+    # writes), symdex learn_from_changes is 1 per call, the stop hook writes
+    # nothing itself. Ten parallel agents on one device credential writing 20
+    # an hour each is 200; 300 leaves headroom over that. It bounds a poisoner
+    # to 300 writes an hour per key -- it does not detect one pacing below it.
+    MEMORY_WRITE_LIMIT_PER_CREDENTIAL: int = 300
+    MEMORY_WRITE_LIMIT_WINDOW_SECONDS: int = 3600
     ENROLL_TICKET_TTL_HOURS: int = 24
     ENROLL_TOMBSTONE_DAYS: int = 7
     ENROLL_KEY_EXPIRES_DAYS: int = 90

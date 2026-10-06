@@ -10,6 +10,7 @@ from typing import Any
 _EVENT_LABELS = {
     "memory.learned": "Memory stored",
     "memory.recalled": "Memory recalled",
+    "memory.write_limited": "Memory write limit reached",
     "stream.ingested": "Events ingested",
     "gc.pruned": "Memory GC",
     "session.completed": "Session completed",

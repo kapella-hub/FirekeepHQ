@@ -37,6 +37,8 @@ cp .env.example .env
 | `ENROLL_TOMBSTONE_DAYS` | `7` | Retain used/expired ticket metadata so retries get a precise explanation. |
 | `ENROLL_KEY_EXPIRES_DAYS` | `90` | Default enrolled device credential lifetime; `0` means never. |
 | `ENROLL_RATE_LIMIT` | `10/minute` | Enrollment route limiter. |
+| `MEMORY_WRITE_LIMIT_PER_CREDENTIAL` | `300` | Memory writes one member credential may make per window (`/memory/learn` 1, `/memory/stream` 1 per event, `POST /skills` 1), counted in Redis across every surface. Over it: `429` + `Retry-After`, nothing written, owner signalled. `admin`/`*` and service keys and auth-disabled deployments are not limited. `0` disables. See `docs/THREAT-MODEL.md` §5.19. |
+| `MEMORY_WRITE_LIMIT_WINDOW_SECONDS` | `3600` | The fixed window `MEMORY_WRITE_LIMIT_PER_CREDENTIAL` counts in. |
 | `ENROLL_MAX_ATTEMPTS_PER_HOUR` | `60` | Redis-global enrollment ceiling, independent of proxy source IP. |
 | `SECRET_SCAN_ENABLED` | `True` | Scan memory writes for secrets |
 | `SECRET_SCAN_MODE` | `warn` | `warn` (log) or `block` (reject) when secrets found |

@@ -172,6 +172,8 @@ def _format_error(exc: httpx.HTTPStatusError) -> str:
             "Error: Authentication failed. "
             "Suggestion: Check API key configuration."
         )
+    if status == 429:
+        return _format_rate_limited(exc.response)
     if status == 422:
         try:
             detail = exc.response.json().get("detail", str(exc))
@@ -185,6 +187,33 @@ def _format_error(exc: httpx.HTTPStatusError) -> str:
         f"Error: API returned {status}. "
         "Suggestion: Check FirekeepCortex logs."
     )
+
+
+def _format_rate_limited(response: httpx.Response) -> str:
+    """A 429, said so an agent can act on it.
+
+    Two shapes reach here: the per-credential memory write ceiling
+    (app/write_limit.py, THREAT-MODEL §5.19) -- a structured detail body and a
+    Retry-After header -- and slowapi's per-IP limiter, which sends neither.
+    """
+    try:
+        body = response.json()
+    except Exception:
+        body = {}
+    detail = body.get("detail") if isinstance(body, dict) else None
+    retry_after = response.headers.get("Retry-After")
+    if isinstance(detail, dict) and detail.get("error_code") == "MEMORY_WRITE_LIMITED":
+        wait = detail.get("retry_after") or retry_after
+        return (
+            "Error: memory write limit reached for this credential "
+            f"({detail.get('limit')} writes per {detail.get('window_seconds')} s). "
+            "This write was NOT stored. "
+            f"Suggestion: retry after {wait} seconds; the Keep owner has been notified."
+        )
+    message = "Error: rate limit exceeded (HTTP 429)."
+    if retry_after:
+        return f"{message} Suggestion: retry after {retry_after} seconds."
+    return f"{message} Suggestion: slow down and retry shortly."
 
 
 def _connection_error(exc: httpx.RequestError) -> str:
