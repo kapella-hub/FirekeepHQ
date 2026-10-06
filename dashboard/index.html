@@ -3168,6 +3168,18 @@ function recallMemory() {
     }).catch(function(e) { clear(c); c.appendChild(errMsg('Failed: ' + e.message)); });
 }
 
+/* >>> recallTrustNote — extracted and executed by tests/test_dashboard_recall_trust.py.
+   THREAT-MODEL §5.20: Cortex tiers each recalled memory against the viewer's
+   verified principal and ships the rendered marker as metadata.trust_note when
+   the memory is a claim (a teammate's, a service's, a document, unattributed).
+   Returns the note or ''. Callers attach it with textContent (badge()). */
+function recallTrustNote(s) {
+    var md = (s && s.metadata) || {};
+    if (md.claim !== true || typeof md.trust_note !== 'string') return '';
+    return md.trust_note.slice(0, 96);
+}
+/* <<< recallTrustNote */
+
 function renderRecallCard(s, globalScore) {
     var score = s.score != null ? s.score : globalScore;
     var pct = score != null ? Math.round(score * 100) : null;
@@ -3190,6 +3202,8 @@ function renderRecallCard(s, globalScore) {
     if (s.status && s.status !== 'active') { var sb = statusBadge(s.status); sb.style.marginLeft = '8px'; topRow.appendChild(sb); }
     var mtype = s.memory_type || (s.metadata && s.metadata.memory_type);
     if (mtype) { var b = badge(mtype, 'badge-blue'); b.style.marginLeft = '8px'; topRow.appendChild(b); }
+    var trustNote = recallTrustNote(s);
+    if (trustNote) { var tb = badge(trustNote, 'badge-yellow'); tb.style.marginLeft = '8px'; topRow.appendChild(tb); }
     kids.push(topRow);
 
     kids.push(el('div', { className: 'mem-action', textContent: s.action || s.content || s.text || '' }));
@@ -6810,6 +6824,8 @@ function renderResultCard(source) {
     headerRow.appendChild(badgeEl);
     headerRow.appendChild(scoreTrack);
     headerRow.appendChild(el('span', { textContent: pct + '%', style: { fontSize: '11px', color: 'var(--text-dim)', flexShrink: '0' } }));
+    var trustNote = recallTrustNote(source);
+    if (trustNote) headerRow.appendChild(badge(trustNote, 'badge-yellow'));
     card.appendChild(headerRow);
 
     card.appendChild(el('div', { className: 'result-title', textContent: title }));
