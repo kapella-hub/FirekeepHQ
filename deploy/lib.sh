@@ -628,14 +628,21 @@ _backup_iso_week() {
 }
 
 # backup_retention_plan <today> <entry>...
-#   entry := <dirname>:<indexed 0|1>     (indexed == has manifest.json)
+#   entry := <dirname>:<state>   state: 1 = has manifest.json (nightly),
+#                                       p = has PRE_UPDATE (update.sh snapshot),
+#                                       0 = neither
 #   echoes one `<keep|delete> <dirname> <reason>` line per entry
 #
 # The policy, in the order the rules apply:
-#   1. no manifest.json  -> KEEP, always. update.sh's ad-hoc pre-update backups
-#      and everything predating this feature are not ours to rotate; deleting a
-#      directory we did not write is how a customer loses the one archive they
-#      had. Reported as `unindexed` by the status endpoint rather than tidied.
+#   0. PRE_UPDATE marker -> keep the newest FIREKEEP_PREUPDATE_KEEP (default 3),
+#      DELETE older ones. update.sh writes the marker (backup.sh --pre-update)
+#      only on a successful snapshot. Before it existed these snapshots fell
+#      under rule 1 and were never deleted: the live Keep reached 98% disk on
+#      2026-10-06 with ~100GB of them.
+#   1. no manifest.json  -> KEEP, always. Hand-run backups and everything
+#      predating these features are not ours to rotate; deleting a directory
+#      we did not write is how a customer loses the one archive they had.
+#      Reported as `unindexed` by the status endpoint rather than tidied.
 #   2. undatable name    -> KEEP. Rotation cannot reason about it, so it does not
 #      get to act on it.
 #   3. <= 7 days old     -> KEEP (the nightly tier).
@@ -644,6 +651,8 @@ _backup_iso_week() {
 backup_retention_plan() {
     local today="${1:?today (YYYY-MM-DD) required}"; shift
     local today_epoch seen_weeks=" " entry stamp indexed day epoch age week
+    local pre_keep="${FIREKEEP_PREUPDATE_KEEP:-3}" pre_seen=0
+    case "$pre_keep" in ''|*[!0-9]*) pre_keep=3 ;; esac
 
     today_epoch="$(_backup_day_epoch "$today")" || {
         echo "ERROR: backup_retention_plan cannot parse today='$today'" >&2
@@ -661,6 +670,15 @@ backup_retention_plan() {
         stamp="${entry%:*}"
         indexed="${entry##*:}"
 
+        if [ "$indexed" = "p" ]; then
+            pre_seen=$((pre_seen + 1))
+            if [ "$pre_seen" -le "$pre_keep" ]; then
+                printf 'keep %s pre-update\n' "$stamp"
+            else
+                printf 'delete %s pre-update-superseded\n' "$stamp"
+            fi
+            continue
+        fi
         if [ "$indexed" != "1" ]; then
             printf 'keep %s unindexed\n' "$stamp"
             continue

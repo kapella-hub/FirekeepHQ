@@ -29,14 +29,19 @@ runs `deploy/backup-cron.sh` at **04:30 server time**:
    credential they are.
 3. **`manifest.json`** — stamp, mode, commit, per-file sha256 + sizes.
    The status endpoint reads it; `firekeep backup pull` verifies against
-   it. A directory without a manifest (pre-feature backups, `update.sh`'s
-   automatic pre-update snapshots) is listed as *unindexed* and is
-   **never deleted by rotation**.
+   it. A directory without a manifest is listed as *unindexed*. If it carries
+   neither a manifest nor a `PRE_UPDATE` marker (a hand-run or pre-feature
+   backup), it is **never deleted by rotation**.
 4. **Retention**, computed by a pure, table-tested policy
    (`backup_retention_plan` in `deploy/lib.sh`): keep every backup ≤7
-   days old, plus the newest per ISO-week for 4 weeks. The executor
-   re-checks `manifest.json` on every directory before `rm` — belt and
-   braces on the one irreversible operation in the feature.
+   days old, plus the newest per ISO-week for 4 weeks. `update.sh`'s
+   automatic pre-update snapshots (`backup.sh --pre-update`, which writes a
+   `PRE_UPDATE` marker only once the snapshot succeeds) are rotated on their
+   own count: the newest 3 are kept (`FIREKEEP_PREUPDATE_KEEP`) and older
+   ones deleted. Before this rule existed (2026-10-06) they were never
+   rotated, and a long-lived Keep filled its disk with them. The executor
+   re-checks for `manifest.json` or `PRE_UPDATE` on every directory before
+   `rm` — belt and braces on the one irreversible operation in the feature.
 
 Log: `/var/log/firekeep-backup.log` on the server.
 
@@ -109,6 +114,7 @@ healthy afterwards.
 |---|---|---|
 | cron schedule | `30 4 * * *` (root crontab) | edit the crontab line to move it |
 | retention | 7 nightly + 4 weekly | `backup_retention_plan` in `deploy/lib.sh` |
+| `FIREKEEP_PREUPDATE_KEEP` | `3` | how many of `update.sh`'s pre-update snapshots rotation keeps (read by the nightly cron's environment) |
 | `--hot` (backup.sh) | off | snapshot without stopping stores — may be inconsistent, marked `hot` |
 | `--exclude-models` (backup.sh) | on for cron runs | manual `backup.sh` runs still include weights unless passed |
 | pull destination | `~/FirekeepBackups` | `firekeep backup pull --dest DIR` |

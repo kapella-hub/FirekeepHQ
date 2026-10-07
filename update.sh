@@ -48,7 +48,7 @@ if [ -f SERVER_BUNDLE.json ]; then
     }
     if [ "$SKIP_RELEASE_BACKUP" -eq 0 ]; then
         echo "Backing up volumes before the release update..."
-        bash deploy/backup.sh
+        bash deploy/backup.sh --pre-update
     else
         echo "Skipping backup (--no-backup)."
     fi
@@ -188,7 +188,7 @@ if [ "$SKIP_BACKUP" -eq 1 ]; then
 else
     echo ""
     echo "Backing up volumes before the rebuild..."
-    if bash "$(dirname "$0")/deploy/backup.sh"; then
+    if bash "$(dirname "$0")/deploy/backup.sh" --pre-update; then
         echo "[OK] Backup taken. If this update goes wrong, restore with the"
         echo "     path printed above, then: docker compose up -d"
     else
