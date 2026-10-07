@@ -40,9 +40,7 @@ row: the two are different licences.
 | Redis | **7.4.10** — `redis:7.4.10-alpine` (`sha256:e7723ff7…`) | **RSALv2 or SSPLv1** (dual, source-available, **not** OSI open source) | **Not the artifact — Redis's own published licensing terms.** The image ships no licence text of any kind (verified: `find / -iname '*LICENSE*' -o -iname '*COPYING*' -o -iname '*NOTICE*'` inside it returns nothing, and it carries no licence labels). Only the version string `v=7.4.10` comes from the artifact, via `redis-server --version` | Yes **for self-hosted**. Not for a hosted Firekeep offering — see below |
 | Qdrant | **v1.13.2** — `qdrant/qdrant:v1.13.2` (`sha256:81bdf0a9…`) | Apache-2.0 | **Not the artifact — Qdrant's own published licence.** The image states Qdrant's own terms nowhere: the only hit the Redis check returns is `/usr/share/common-licenses/`, the Debian base's stock directory of *generic* licence texts, and `/qdrant` itself carries none | Yes — permissive, no redistribution restriction |
 | Ollama (runtime) | **0.32.4** — `ollama/ollama:0.32.4` (`sha256:10c13eb5…`) | MIT | **Not the artifact — Ollama's own published licence.** Same as Qdrant: the only hit is the Ubuntu base's generic `/usr/share/common-licenses/`, nothing stating Ollama's own terms. The version **is** from the artifact — `/bin/ollama --version` in the pinned image prints `client version is 0.32.4` | Yes — permissive |
-| Ollama (runtime, office-only images) | **0.32.0** — `ollama/ollama:0.32.0` (`sha256:57f573b4…`) in `docker/Dockerfile.ollama` and `docker/Dockerfile.embed` | MIT | as above | Yes — permissive |
 | Ollama model weights (customer path) | `qwen3:4b` + `mxbai-embed-large`, pulled by the customer's own `ollama-pull` container. **Not digest-pinnable** — Ollama model tags are not content-addressed the way image references are | Apache-2.0 (both) | Their published model cards (Hugging Face / ModelScope) | Yes — permissive, and not conveyed by Firekeep anyway (customer's own pull) |
-| Ollama model weights (office-only baked image) | `granite-embedding:30m` + `llama3.2:3b`, baked into `docker/Dockerfile.ollama`. Same non-pinnability caveat | Granite: Apache-2.0. **Llama 3.2: Llama 3.2 Community License (custom, not OSI open source)** | Meta's published licence text (llama.com/llama3_2/license) | **No** — attribution/notice obligations exist and are not currently met. Scoped to the office-only image, not the sold product — see below |
 
 **Only Neo4j's licence is sourced from the artifact itself.** The other three
 images ship no licence text at all, so their rows rest on the vendors' published
@@ -51,7 +49,7 @@ website said so" as different quality of answer, and the table says which is
 which rather than blurring them.
 
 Digest prefixes above are for cross-checking only. The full digests live in
-`docker-compose.yml` and the `docker/Dockerfile.*` mirrors, which are
+`docker-compose.yml`, which is
 authoritative; this file does not reproduce them because nothing would keep a
 second copy in sync. What *is* mechanically enforced is that the version tags
 named here still exist in the tree —
@@ -59,10 +57,10 @@ named here still exist in the tree —
 fails if a pin is bumped without this table being revisited, which is the only
 thing standing between a licence analysis and a stale licence analysis.
 
-None of the four datastores block the current sale model. One real gap
-exists (Llama 3.2 attribution on the office-only baked image, which today is
-internal tooling, not part of what a customer receives) and one latent risk
-is worth tracking (the office CI's Neo4j image mirror — see below).
+None of the four datastores block the current sale model. Every image is
+pulled by the customer's own Docker daemon (Model A, below). Since 2026-10-06
+this repository builds no image that mirrors a datastore or bakes model
+weights.
 
 ---
 
@@ -183,43 +181,12 @@ software or linking against it over a network.
 their Docker daemon from Docker Hub, never touched by Firekeep. This is
 sound as shipped.
 
-**A second, internal path exists and is closer to Model B.**
-`docker/Dockerfile.neo4j` in this repo is a one-line mirror
-(`FROM neo4j:5.26.28-community@sha256:36254241…`, no modification — and pinned
-to the identical digest as the compose reference, which
-`tests/test_image_pins.py` asserts, since a mirror on a different version of
-the same tag would be a distinct artifact with distinct obligations). Per this repo's own `CLAUDE.md`
-("Deploy to Kubernetes (office — two-repo pattern)"), the office GitLab CI
-pipeline builds `docker/Dockerfile.*` — described there as "infra mirrors" —
-as part of its tagged-release image builds and promotes them to Firekeep's
-own registry, from which the office Kubernetes deployment (the config
-repo's Helm chart) pulls. That pipeline configuration
-(`.gitlab-ci.yml`) is **not present in this checked-out repository** — it
-lives on the office GitLab remote per the two-repo pattern the docs
-describe — so I could not directly inspect it; the description above is
-read from `CLAUDE.md`, not independently verified against the pipeline
-itself. If that description is accurate, Firekeep's own CI is building and
-publishing a Neo4j image copy today, which is Model B, not Model A.
-
-`git log --oneline -- docker/Dockerfile.neo4j` shows exactly one commit
-touching the file — the initial bulk seed commit — and nothing since. That
-is consistent with either an actively-used mirror definition that simply
-hasn't needed a change, or a vestigial file carried over from the seed and
-never wired to anything live in this repo's own history; the commit history
-alone can't distinguish the two, which is exactly why this is flagged as
-"reportedly," not confirmed.
-
-This does **not** affect the product being sold — the office deployment
-described there is Firekeep's/Omnicron's own internal tooling
-("office deployment," dogfooding), not something a customer receives. Internal
-mirroring to a registry that never reaches parties outside the company is
-widely treated as not "conveying to other parties" in the GPLv3 sense
-(the same way companies routinely mirror Ubuntu/Postgres images to an
-internal Artifactory without triggering redistribution obligations), but
-this is a practitioner norm, not settled by GPLv3's text, and I have not had
-it reviewed. Flag for the lawyer review this file already calls for, and
-resolve the pipeline visibility gap (get the actual `.gitlab-ci.yml`
-reviewed) before treating it as settled.
+**There is no second path.** Until 2026-10-06 this repository also carried
+`docker/Dockerfile.*` one-line image mirrors, including one of Neo4j, that an
+external deployment pipeline (not part of this repository) built and pushed to
+an internal registry. They were removed on that date, so nothing in this
+repository builds, mirrors or pushes a Neo4j image, and Model A is the only
+path.
 
 **What would change the analysis for the sold product:** shipping any of
 the following would flip the customer path from Model A to Model B, and
@@ -233,16 +200,13 @@ would need the redistribution obligations above actually satisfied first:
   component, but worth re-checking if a hosted tier is ever built);
 - a Kubernetes/Helm distribution path sold to customers that pulls images
   from Firekeep's own registry instead of the customer's own `docker compose
-  up` against Docker Hub — which is exactly what the office two-repo pattern
-  already does internally, so reusing that pattern for a customer-facing
-  offering (plausible, given the tooling already exists) is the concrete
-  scenario to watch.
+  up` against Docker Hub.
 
 ### Remediation options, priced roughly, if Model B for the sold product
 ever becomes real
 
-Not needed today, but worth having priced since the office pattern already
-exists and could get reused for a customer offering without anyone
+Not needed today, but worth having priced so a future offering cannot slide
+into Model B without anyone
 re-running this analysis:
 
 1. **Buy Neo4j Enterprise Edition and redistribute that instead.** Neo4j
@@ -269,12 +233,7 @@ re-running this analysis:
    offering — e.g., a Helm chart that references the public
    `neo4j:5.26.28-community@sha256:…` reference directly rather than a
    Firekeep-mirrored one).
-   Rough cost: low for a from-scratch design; higher if it means
-   re-plumbing the office two-repo pattern's existing registry-promote
-   flow, which was built around Firekeep controlling every image it
-   deploys (consistent image provenance, `verify_pull` gating, etc.) —
-   carving out one exception for Neo4j specifically is a real but bounded
-   change.
+   Rough cost: low — it is how the shipped Docker path already works.
 
 None of these require removing Neo4j, consistent with the standing decision
 not to re-litigate that call.
@@ -283,8 +242,8 @@ not to re-litigate that call.
 
 ## Redis — the 7.4 relicense, checked against the actual pin
 
-**Pinned:** `redis:7.4.10-alpine@sha256:e7723ff7…` in `docker-compose.yml`,
-`docker-compose.test.yml` and `docker/Dockerfile.redis`.
+**Pinned:** `redis:7.4.10-alpine@sha256:e7723ff7…` in `docker-compose.yml` and
+`docker-compose.test.yml`.
 
 It was `redis:7-alpine` — a **floating** tag that moved forward within the 7.x
 line on Redis's schedule, not ours. Verified directly — `docker run --rm
@@ -434,9 +393,7 @@ for completeness, not because it's required.)
 **Runtime image, pinned:** `ollama/ollama:0.32.4@sha256:10c13eb5…` in
 `docker-compose.yml` (both the `ollama` service and the `ollama-pull` sidecar —
 `tests/test_image_pins.py` asserts the two carry the *same* digest, since a
-client and the daemon it populates should not be on different versions). The
-office-only images `docker/Dockerfile.ollama` and `docker/Dockerfile.embed` pin
-a deliberately different version, `ollama/ollama:0.32.0@sha256:57f573b4…`.
+client and the daemon it populates should not be on different versions).
 
 This was `ollama/ollama:latest` — **completely unpinned**, the worst of the
 three floating references. Two installs a month apart were literally different
@@ -468,67 +425,17 @@ at install/update time — Firekeep never possesses or transmits a copy.
 **Obligation met, and moot regardless of the licence, for the same
 conveyance reason as Neo4j above.**
 
-### Office-only baked image: Llama 3.2's licence obligations are real and not yet met
+### No Firekeep-built image bakes model weights
 
-`docker/Dockerfile.ollama` is a different situation: it **bakes model
-weights directly into a Firekeep-built image** at build time (`ollama pull
-granite-embedding:30m && ollama pull llama3.2:3b`, then the image is
-chunked and published — see the file's own header comment and
-`CLAUDE.md`'s office-deployment notes). This is unambiguous conveyance by
-Firekeep of whatever weights get baked in, the same distinction drawn for
-Neo4j's Model B above, except here it's not hypothetical — it is what this
-Dockerfile already does.
-
-- `granite-embedding:30m` — IBM Granite, Apache-2.0. No issue.
-- `llama3.2:3b` — **Meta's Llama 3.2 Community License**, a custom licence,
-  not OSI-approved open source. Confirmed obligations that attach to
-  distributing it (per the licence text at llama.com/llama3_2/license):
-  - provide a copy of the Llama 3.2 Community License Agreement alongside
-    any distributed copy;
-  - **prominently display "Built with Llama"** on any related website, UI,
-    product documentation, or about page;
-  - include a `Notice` text file bearing the attribution: *"Llama 3.2 is
-    licensed under the Llama 3.2 Community License, Copyright © Meta
-    Platforms, Inc. All Rights Reserved."*
-  - (a >700M-monthly-active-user threshold requires a separate licence from
-    Meta directly — not a concern at Firekeep's current or foreseeable
-    scale, noted for completeness only.)
-
-**None of the three obligations above are currently met** — there is no
-Llama licence text, no "Built with Llama" notice, and no attribution file
-shipped alongside `docker/Dockerfile.ollama` or its output image. This is
-scoped narrowly: `docker/Dockerfile.ollama` builds the office-only baked
-image (per `CLAUDE.md`, deployed via the config repo's Helm chart for
-Firekeep's/Omnicron's own internal use), **not** something a paying
-customer receives today. It is a real gap, just not one that touches the
-sold product yet — same caveat as the Neo4j office-mirror finding above:
-if this baked-image pattern is ever reused for a customer-facing offering,
-these three obligations become customer-facing obligations too, and must be
-satisfied before that ships.
-
-### Remediation
-
-1. **Fix the gap where it already exists (office-only image), cheaply:**
-   add the Llama 3.2 licence text and the required `Notice` file to
-   `docker/Dockerfile.ollama`'s build context, and add a "Built with Llama"
-   line to whatever internal-facing documentation describes that
-   deployment (`docs/DEPLOYMENT-OFFICE.md` or equivalent). Low cost, and
-   the honest thing to do regardless of whether this image ever reaches a
-   customer.
-2. **Or swap the office LLM to an Apache/MIT-licensed model** (e.g. reuse
-   `qwen3:4b`, already the customer-path default, instead of `llama3.2:3b`)
-   to remove the obligation rather than satisfy it. `CLAUDE.md` records
-   that this exact model choice has already moved twice (a chunked-ollama
-   saga, an abandoned qwen2.5:1.5b piggyback, then the current
-   granite+llama3.2 baked pair) for infra/replication reasons unrelated to
-   licensing — worth folding a licence-simplicity argument into whatever
-   process owns that decision next time it's revisited, rather than
-   treating this remediation as urgent on its own.
-
-Recommendation: option 1 now (cheap, fixes the current gap without
-disturbing a model choice that was already picked for unrelated
-infra reasons), with option 2 worth raising the next time that model choice
-is revisited anyway.
+Until 2026-10-06 this repository carried `docker/Dockerfile.ollama` and
+`docker/Dockerfile.embed`. An external deployment pipeline built them, baking
+`granite-embedding:30m` and `llama3.2:3b` into the image, which would have
+conveyed Llama 3.2 under its Community License: licence text, a `Notice` file
+and "Built with Llama" attribution. Both files were removed on that date.
+Nothing in this repository now bakes, mirrors or redistributes model weights.
+If a future offering ever bakes weights into a Firekeep-built image, that
+model's licence obligations attach to that offering and must be met before it
+ships.
 
 ---
 

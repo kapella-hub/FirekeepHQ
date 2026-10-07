@@ -1,7 +1,7 @@
 """Release-manifest fetch, version compare, and verified download for `firekeep update`.
 
 Stdlib-only (import boundary). Optional non-stdlib import: truststore (guarded) — OS-trust
-for RELEASE-HOST fetches only. The GitLab host is NEVER hardcoded: the bootstrap knows the
+for RELEASE-HOST fetches only. The release host is NEVER hardcoded: the bootstrap knows the
 URL it was fetched from and records it as [dist] base_url in ~/.firekeep/config, which is the
 only place this module learns it from.
 """
@@ -18,7 +18,7 @@ from firekeep_client.transport import TransportError, get_json
 
 
 def dist_ssl_context() -> "ssl.SSLContext | None":
-    """OS-trust SSL context for release-host fetches ONLY (GitHub Pages / GitLab sit
+    """OS-trust SSL context for release-host fetches ONLY (a release host can sit
     behind corporate TLS interception; the managed CPython's default bundle lacks the
     interception CA). Scoped on purpose — truststore.inject_into_ssl() would replace
     ssl.SSLContext process-wide and widen office ca_path pinning to 'pin OR OS store'

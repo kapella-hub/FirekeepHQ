@@ -314,7 +314,7 @@ async def test_backend_unavailable_flagged_on_connect_error():
 @pytest.mark.asyncio
 async def test_backend_unavailable_flagged_on_404_model_not_found():
     """Ollama with only an embedding model returns 404 for a chat model — the
-    embed-only office deploy's exact case. Must flag unavailable=True."""
+    embed-only deployment's exact case. Must flag unavailable=True."""
     resp = MagicMock()
     resp.status_code = 404
     resp.raise_for_status = MagicMock(

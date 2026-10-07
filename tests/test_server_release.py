@@ -98,8 +98,9 @@ def test_workflow_does_not_publish_a_third_party_datastore() -> None:
     Firekeep references neo4j/redis/qdrant/ollama; the customer's own daemon
     fetches them. Publishing an image that CONTAINS one makes us a redistributor
     — and for Neo4j (GPLv3) that attaches obligations to us instead of passing
-    them through. docker/Dockerfile.{neo4j,redis,qdrant,ollama} exist and would
-    do exactly that if wired into this workflow.
+    them through. The repository carries no such Dockerfile today (the
+    docker/Dockerfile.* mirrors were removed 2026-10-06); this keeps any future
+    one out of the publish matrix.
     """
     entries = _workflow()["jobs"]["publish"]["strategy"]["matrix"]["include"]
     for e in entries:

@@ -11,7 +11,7 @@ back and reported, never dropped.
 Designed to run INSIDE a cortex container (redis package + REDIS_URL present),
 without needing the script baked into the image — pipe it over stdin:
 
-    # Kubernetes / Rancher kubectl shell
+    # Kubernetes
     kubectl exec -i deploy/firekeep-cortex-api -- python - \
         < cortex/scripts/requeue_backfill_dlq.py
 

@@ -35,10 +35,8 @@ hashes are computed, so `firekeep update`'s script-verification still holds.
 nowhere to fetch from. New-teammate sugar: the wizard can prefill the server connection from
 `<dist-base>/latest/org-defaults.json` when `[server]` is unconfigured — internal hostnames
 never go to public GitHub Pages, so the public release path never publishes that file and
-the wizard simply asks instead. (It was published by the office `.gitlab-ci.yml` from the
-`ORG_DEFAULTS_JSON` CI variable; that pipeline is not part of this repo —
-`client/tests/test_ci_publishes_symdex.py` skips itself for exactly that reason — so today
-this branch is dormant on every live path.) Update awareness + auto-update: the `session_start` hook checks the dist host's
+the wizard simply asks instead. No release path in this repository publishes that file,
+so today this branch is dormant on every live path. Update awareness + auto-update: the `session_start` hook checks the dist host's
 `latest.json` once per day (failures cached too, 3s timeout, silent on any failure) and, when
 it's newer, background-auto-updates the client by default (client 0.1.20; opt out with
 `FIREKEEP_NO_AUTO_UPDATE` / `firekeep update --auto off` — see Background auto-update below), falling

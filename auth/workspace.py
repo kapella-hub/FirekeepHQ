@@ -95,8 +95,8 @@ async def attribute_unowned_credentials(redis_client, workspace: Workspace) -> l
     Runs on every Cortex boot (not behind the one-shot migration marker),
     because records arrive outside the minting code paths — the documented
     rescue-key recipe, a partial restore, hand edits — and because
-    deploy/bootstrap-keys.sh, which does the same in bash, never runs on the
-    office Kubernetes deployment. It scans `auth:key:*`, not the index, so an
+    deploy/bootstrap-keys.sh, which does the same in bash, does not run on a
+    deployment that does not use update.sh (a hand-built or Kubernetes one). It scans `auth:key:*`, not the index, so an
     unindexed record is found too. Never overwrites a field that is set: a
     record naming another member or workspace is left for validate_key to
     refuse and `deploy/firekeep-admin keys audit` to report.
