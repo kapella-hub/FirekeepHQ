@@ -192,24 +192,23 @@ class Settings(BaseSettings):
     # is honoured. It exists as a SEPARATELY TUNABLE budget — an operator who
     # wants fail-fast on a known-fast backend can lower it — but it DEFAULTS TO
     # THE SAME 300, deliberately. It was 120 for one review cycle; that was
-    # wrong, and the deployment it would have broken is the office one.
+    # wrong: it would have broken a deployment running a non-thinking model.
     #
     # The trap: "native" does not imply "fast". The native path is faster only
     # because it disables THINKING, so a non-thinking model gains nothing from
     # it while still being routed down it — the probe confirms ollama, not a
-    # thinking model. The office deploy runs llama3.2:3b, which has no thinking
-    # to disable, at a recorded ~56s per classify. Measured 2026-08-04, a
+    # thinking model. A deployment on llama3.2:3b has no thinking to disable and
+    # recorded ~56s per classify. Measured 2026-08-04, a
     # non-thinking model also ACCEPTS the flag cleanly rather than 4xx-ing, so
     # the demote-and-retry escape hatch never fires for it either:
     #     llama3:latest + think:false -> OK 3.10s, keys=['content','role']
     #     llama3:latest without flag  -> OK 0.36s, keys=['content','role']
     #     gemma3:4b     + think:false -> OK 1.94s, keys=['content','role']
-    # So at 120 the office keeps its unchanged ~56s and loses headroom from
+    # So at 120 that deployment keeps its unchanged ~56s and loses headroom from
     # 5.4x to 2.1x, for zero speedup. `classify_document` sends the WHOLE
     # document untruncated and the crawler admits 2MB pages, so a document
-    # ~2.2x the measured one would newly time out. The office helm chart (a
-    # separate config repo) sets none of these vars, so it would have inherited
-    # that with nobody deciding.
+    # ~2.2x the measured one would newly time out, and a deployment that sets
+    # none of these vars would have inherited that with nobody deciding.
     #
     # Against that: a native classify measures ~6s (8.59s end-to-end through
     # the worker), so 120 vs 300 only changes how fast a BROKEN call gives up.
@@ -618,8 +617,8 @@ class Settings(BaseSettings):
     # Raw-cosine floor for SEMANTIC skill matching (GET /skills?q=, briefing skills
     # section). Deliberately NOT RECALL_SCORE_FLOOR (0.35, above): that was tuned for
     # prose memory bodies on mxbai-embed-large/1024-dim, while a skill embeds a terse
-    # composite (trigger + symptoms + domain + steps + gotchas) and the office deploy
-    # embeds with granite-embedding:30m/384-dim. Sweep against a real corpus after ship.
+    # composite (trigger + symptoms + domain + steps + gotchas), and a deployment may
+    # embed with a smaller model (granite-embedding:30m/384-dim was one). Sweep against a real corpus after ship.
     # A too-high value cannot regress below the legacy behaviour: when nothing clears
     # the floor the matcher falls back to the pre-existing scroll + substring path.
     SKILL_MATCH_SCORE_FLOOR: float = 0.30

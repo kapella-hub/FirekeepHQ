@@ -213,18 +213,11 @@ nothing false today.
    (`docker-compose.yml` + `install.sh`) is clean today — Neo4j and Ollama
    model weights are pulled by the customer's own Docker/Ollama daemon, not
    conveyed by Firekeep, and Redis's dual RSALv2/SSPLv1 terms permit the
-   internal-component usage pattern here under the RSALv2 reading. Two
-   items are open, both scoped to internal/office tooling rather than the
-   sold product: (a) the office GitLab CI pipeline reportedly mirrors and
-   republishes a Neo4j image to Firekeep's own registry for the internal
-   Kubernetes deployment — real conveyance if the description in `CLAUDE.md`
-   is accurate, not independently verified since that pipeline config isn't
-   in this repository; (b) `docker/Dockerfile.ollama` (the office-only baked
-   image) bakes in `llama3.2:3b`, whose Llama 3.2 Community License requires
-   a licence copy, a "Built with Llama" notice, and an attribution file that
-   are not currently shipped with that image. Neither blocks the current
-   sale model; both should be resolved before any customer-facing offering
-   reuses that image-mirroring pattern.
+   internal-component usage pattern here under the RSALv2 reading. Since
+   2026-10-06 the repository builds no image that mirrors a datastore or
+   bakes model weights. The `docker/Dockerfile.*` mirrors, including a
+   Neo4j mirror and an image with `llama3.2:3b` baked in, were removed with
+   the external pipeline that used them. So no conveyance item is open.
 
 ## Why this file exists
 

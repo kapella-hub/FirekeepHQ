@@ -83,8 +83,8 @@ VERSION = tomllib.loads((CLIENT / "pyproject.toml").read_text())["project"]["ver
 @pytest.fixture
 def release(tmp_path):
     """Build a REAL release: real wheel, real mirrored uv, real make_release.py — then fan it
-    out into the REAL version-addressed layout CI now publishes, exactly as the upload() loop
-    in .gitlab-ci.yml does: BASE/latest/{install.sh,install.ps1,latest.json} (the stable
+    out into the REAL version-addressed layout release.yml publishes:
+    BASE/latest/{install.sh,install.ps1,latest.json} (the stable
     entry point) + BASE/<version>/{SHA256SUMS,uv-<target>,wheel} (every version keeps its own
     directory). Serving flat (the old shape) would silently resurrect C1/C3 — a tag-pinned
     base whose latest.json points at the release it shipped inside, forever."""

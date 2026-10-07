@@ -18,7 +18,7 @@
 # customer's own daemon pulls those from their upstream registries, exactly as
 # it does today. Publishing an image CONTAINING Neo4j would make Firekeep a
 # redistributor of GPLv3 software rather than a party that references it —
-# see docs/THIRD-PARTY-DATASTORES.md and the headers on docker/Dockerfile.*.
+# see docs/THIRD-PARTY-DATASTORES.md.
 # The four images below contain no third-party datastore.
 name: server-release
 

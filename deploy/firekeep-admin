@@ -404,8 +404,8 @@ invite() {
 # implementation as DELETE /members/{id} (auth/members.py) inside cortex-api,
 # like `invite` does for app.enroll.mint, rather than a bash port of the owner
 # and last-admin rules and the credential/join-code sweep. Like `invite`, it
-# needs docker compose; on the office Kubernetes deployment use the dashboard
-# (Members -> Remove) or `kubectl exec` the same module.
+# needs docker compose; on a deployment without it (Kubernetes) use the
+# dashboard (Members -> Remove) or `kubectl exec` the same module.
 members() {
     local sub="${1:-}" member_id=""
     case "$sub" in

@@ -371,7 +371,7 @@ services:
       SKILL_STALE_AFTER_DAYS: ${SKILL_STALE_AFTER_DAYS:-90}
       # Raw-cosine floor for semantic skill matching (GET /skills?q=, briefing skills
       # section). NOT RECALL_SCORE_FLOOR — skills embed a terse composite, and the
-      # office deploy uses a different embedding model/dim. Most likely knob to tune.
+      # a deployment on a different embedding model/dim is the most likely to need tuning.
       SKILL_MATCH_SCORE_FLOOR: ${SKILL_MATCH_SCORE_FLOOR:-0.30}
       # 10.0 for the ENDPOINT (GET /skills?q=, behind skill_recall) — it runs under
       # no per-section cap and a cold CPU embed measured 0.62s/4.63s/8.16s live, so
@@ -634,7 +634,7 @@ services:
       SKILL_STALE_AFTER_DAYS: ${SKILL_STALE_AFTER_DAYS:-90}
       # Raw-cosine floor for semantic skill matching (GET /skills?q=, briefing skills
       # section). NOT RECALL_SCORE_FLOOR — skills embed a terse composite, and the
-      # office deploy uses a different embedding model/dim. Most likely knob to tune.
+      # a deployment on a different embedding model/dim is the most likely to need tuning.
       SKILL_MATCH_SCORE_FLOOR: ${SKILL_MATCH_SCORE_FLOOR:-0.30}
       # 10.0 for the ENDPOINT (GET /skills?q=, behind skill_recall) — it runs under
       # no per-section cap and a cold CPU embed measured 0.62s/4.63s/8.16s live, so
@@ -1083,10 +1083,8 @@ services:
       # container still authenticated the old one, and every credential 401'd.
       #
       # Brand assets are a DIRECTORY mount, so new files appear without a
-      # compose change. This is deliberately not covered by
-      # docker/Dockerfile.dashboard's `COPY dashboard/brand/` — that image is
-      # the k8s/CI path; compose runs stock nginx and never builds it. Both
-      # paths need the assets, and they need them by different mechanisms.
+      # compose change: compose runs stock nginx and never builds a dashboard
+      # image.
       - ./dashboard/brand:/usr/share/nginx/html/brand:ro
     depends_on:
       cortex-api:

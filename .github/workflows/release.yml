@@ -1,4 +1,4 @@
-# Client release — GitHub port of the .gitlab-ci.yml `client-release` job.
+# Client release.
 #
 # Triggered by a `client-v<X.Y.Z>` tag. Builds the client + dex wheels (symdex,
 # docdex, maildex), mirrors the pinned uv binaries, runs make_release.py (SHA256SUMS +
@@ -73,8 +73,7 @@ jobs:
   # `client-v*` tag matches neither and used to run ZERO verification before
   # publishing. A tag on an unmerged hotfix branch would ship a wheel whose own
   # tests had never executed -- including client/tests/test_package.py, which
-  # asserts the packaged version. The GitLab pipeline this was ported from gates
-  # its release job on tests; that gate was lost in the port.
+  # asserts the packaged version. So the release job is gated on these tests.
   test:
     runs-on: ubuntu-latest
     defaults:
@@ -189,7 +188,7 @@ jobs:
           VERSION="${GITHUB_REF_NAME#client-v}"
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
           # The tag is the source of truth; both version markers must agree or the
-          # release is wrong (mirrors the GitLab guard).
+          # release is wrong.
           grep -q "^version = \"${VERSION}\"$" client/pyproject.toml \
             || { echo "tag ${GITHUB_REF_NAME} != client/pyproject.toml version"; exit 1; }
           grep -q "^__version__ = \"${VERSION}\"$" client/firekeep_client/__init__.py \

@@ -102,12 +102,6 @@ CRITICAL_FILES = {
     "bridge/Dockerfile",
     "relay/Dockerfile",
     "sentinel/Dockerfile",
-    "docker/Dockerfile.dashboard",
-    "docker/Dockerfile.embed",
-    "docker/Dockerfile.neo4j",
-    "docker/Dockerfile.ollama",
-    "docker/Dockerfile.qdrant",
-    "docker/Dockerfile.redis",
 }
 
 # Counts, so the "these must all match" assertions cannot pass vacuously. An
@@ -532,10 +526,8 @@ def test_the_two_ollama_compose_services_pin_the_same_digest():
     its model store. Split them across versions and the pull runs against a
     daemon it was not built for.
 
-    Scoped to compose deliberately: `docker/Dockerfile.ollama` and
-    `docker/Dockerfile.embed` pin `ollama/ollama:0.32.0`, an intentionally
-    different (office-only, chunked-image) version. A repo-wide "all ollama refs
-    match" assertion would be wrong.
+    Scoped to compose: these two services are the only ollama images the repo
+    builds or pulls.
     """
     refs = refs_for_repository(compose_image_refs(REPO), "ollama/ollama")
     assert len(refs) == EXPECTED_OLLAMA_COMPOSE_SERVICES, (
@@ -609,7 +601,7 @@ def test_plant_discovery_gap_is_caught(tmp_path):
     found = {_rel(pp, tmp_path) for pp in find_compose_files(tmp_path) + find_dockerfiles(tmp_path)}
     missing = CRITICAL_FILES - found
     assert missing, "a tree missing every Dockerfile was not reported as a discovery gap"
-    assert "docker/Dockerfile.redis" in missing
+    assert "sentinel/Dockerfile" in missing
 
 
 def test_plant_discovery_gap_check_is_not_vacuous(tmp_path):

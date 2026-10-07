@@ -178,7 +178,6 @@ reference material does not need to be.
 
 | Area | Guide |
 |---|---|
-| Office Kubernetes deployment | [`docs/guides/deployment-office-kubernetes.md`](docs/guides/deployment-office-kubernetes.md) |
 | The client kit — install, hooks, night shift, personal mode | [`docs/guides/client-kit.md`](docs/guides/client-kit.md) |
 | Dexes — the registry, symdex, docdex | [`docs/guides/dexes.md`](docs/guides/dexes.md) |
 | Hands — the desktop operator, its broker and its limits | [`docs/guides/hands.md`](docs/guides/hands.md) |

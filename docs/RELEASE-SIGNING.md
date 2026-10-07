@@ -108,9 +108,6 @@ import boundary forbids third-party crypto libs; RFC 8032 vectors pin it).
    - GitHub: repo → Settings → Secrets and variables → Actions →
      `FIREKEEP_SIGNING_KEY`. `.github/workflows/release.yml` already passes it to
      the assemble step.
-   - GitLab (office pipeline, when that path is active): Settings → CI/CD →
-     Variables → `FIREKEEP_SIGNING_KEY`, masked, protected; export it into the
-     environment of the job that runs `make_release.py`.
 
    CI signing **skips gracefully** while the secret is absent: the release builds
    unsigned and the log says `UNSIGNED (FIREKEEP_SIGNING_KEY is not set)`. A
