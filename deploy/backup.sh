@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Back up the four persistent volumes — the only data a customer cannot recreate.
-# Usage: bash deploy/backup.sh [output-dir]
+# Usage: bash deploy/backup.sh [output-dir] [--hot] [--exclude-models] [--pre-update]
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -24,14 +24,16 @@ STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 # which quietly turned a leading flag into a directory named `--hot`.
 HOT=0
 EXCLUDE_MODELS=0
+PRE_UPDATE=0
 OUT_BASE=""
 for arg in "$@"; do
     case "$arg" in
         --hot) HOT=1 ;;
         --exclude-models) EXCLUDE_MODELS=1 ;;
+        --pre-update) PRE_UPDATE=1 ;;
         -*)
             echo "ERROR: unknown option: $arg" >&2
-            echo "Usage: bash deploy/backup.sh [output-dir] [--hot] [--exclude-models]" >&2
+            echo "Usage: bash deploy/backup.sh [output-dir] [--hot] [--exclude-models] [--pre-update]" >&2
             exit 2
             ;;
         *) [ -n "$OUT_BASE" ] || OUT_BASE="$arg" ;;
@@ -162,6 +164,14 @@ if [ "$archived" -eq 0 ]; then
     echo "ERROR: no volumes matched prefix '${PREFIX}_' — nothing was backed up." >&2
     echo "       List actual names with: docker volume ls" >&2
     exit 1
+fi
+
+# update.sh's snapshots. The marker is what lets nightly retention rotate them
+# (keep the newest few; lib.sh backup_retention_plan rule 0). It is written
+# only here, after every check passed, so a failed snapshot never becomes
+# eligible for deletion.
+if [ "$PRE_UPDATE" -eq 1 ]; then
+    : > "$OUT_DIR/PRE_UPDATE"
 fi
 
 echo "[OK] Backup complete: $OUT_DIR"

@@ -102,9 +102,9 @@ def test_weekly_survivors_stop_at_four_weeks():
 
 
 def test_a_directory_without_a_manifest_is_never_deleted():
-    """The load-bearing rule (spec §2.4). update.sh's ad-hoc pre-update backups
-    and everything taken before this feature existed carry no manifest; rotation
-    does not own them and must not touch them, however old they are."""
+    """The load-bearing rule (spec §2.4). A hand-run backup, or anything taken
+    before this feature existed, carries no manifest and no PRE_UPDATE marker;
+    rotation does not own it and must not touch it, however old it is."""
     today = "2026-08-18"
     ancient = _d("20250101")
     plan = _plan(today, [f"{ancient}:0"])
@@ -350,3 +350,82 @@ def test_backup_cron_normalizes_perms_for_the_serving_container():
     assert "chgrp -R" in script and "chmod 0640" not in script.split("chgrp")[0]
     compose = Path(_p("docker-compose.yml")).read_text(encoding="utf-8")
     assert '"${FIREKEEP_BACKUP_GID:-63719}"' in compose
+
+
+# --- Pre-update snapshots (update.sh) ----------------------------------------
+# update.sh backs up before every rebuild. Those snapshots used to carry no
+# manifest, so rule 1 kept every one forever: the live Keep reached 98% disk
+# on 2026-10-06 with ~100GB of them. They are now marked PRE_UPDATE and rotated
+# on their own count. Directories that carry neither a manifest nor the marker
+# (hand-run backups, anything predating these features) stay untouchable.
+
+def test_only_the_newest_pre_update_snapshots_are_kept():
+    today = "2026-10-06"
+    snaps = [_d(f"202609{day:02d}", "120000") for day in (1, 2, 3, 4, 5)]
+    plan = _plan(today, [f"{s}:p" for s in snaps])
+    assert [plan[s] for s in snaps] == ["delete", "delete", "keep", "keep", "keep"]
+
+
+def test_pre_update_retention_count_is_configurable():
+    snaps = [_d(f"202609{day:02d}", "120000") for day in (1, 2, 3)]
+    args = " ".join(f'"{s}:p"' for s in snaps)
+    result = subprocess.run(
+        [BASH, "-c",
+         f'set -euo pipefail; source "{_p(LIB)}"; '
+         f'FIREKEEP_PREUPDATE_KEEP=1 backup_retention_plan "2026-10-06" {args}'],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    verdicts = {ln.split()[1]: ln.split()[0] for ln in result.stdout.splitlines() if ln.strip()}
+    assert [verdicts[s] for s in snaps] == ["delete", "delete", "keep"]
+
+
+def test_unmarked_manifestless_directories_are_still_never_deleted():
+    """The marker widens rotation to update.sh's snapshots and nothing else."""
+    today = "2026-10-06"
+    hand_run = _d("20250101")
+    snaps = [_d(f"202609{day:02d}", "120000") for day in (1, 2, 3, 4)]
+    plan = _plan(today, [f"{hand_run}:0"] + [f"{s}:p" for s in snaps])
+    assert plan[hand_run] == "keep"
+    assert plan[snaps[0]] == "delete"
+
+
+def test_cron_rotates_old_pre_update_snapshots_and_nothing_unmarked(tmp_path):
+    backups = tmp_path / "backups"
+    hand_run = backups / _d("20250101")
+    hand_run.mkdir(parents=True)
+    (hand_run / "neo4j_data.tar.gz").write_bytes(b"hand-run archive")
+    snaps = []
+    for day in (1, 2, 3, 4):
+        d = backups / _d(f"202609{day:02d}", "120000")
+        d.mkdir(parents=True)
+        (d / "neo4j_data.tar.gz").write_bytes(b"pre-update archive")
+        (d / "PRE_UPDATE").write_text("", encoding="utf-8")
+        snaps.append(d)
+
+    result, _log, _backups = _run_cron(tmp_path, VOLUME_INSPECT_EXIT=0, RUN_EXIT=0)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert hand_run.is_dir(), "rotation deleted a directory nobody marked"
+    assert not snaps[0].exists(), "the oldest of four pre-update snapshots survived"
+    assert all(s.is_dir() for s in snaps[1:]), "a recent pre-update snapshot was deleted"
+
+
+def test_backup_pre_update_flag_marks_the_snapshot(tmp_path):
+    os.environ["COMPOSE_PROJECT_NAME"] = "happyprefix"
+    try:
+        result, _log = _run_with_docker_stub(
+            BACKUP_SCRIPT, [_p(tmp_path / "out"), "--pre-update"], tmp_path,
+            VOLUME_INSPECT_EXIT=0, RUN_EXIT=0,
+        )
+    finally:
+        os.environ.pop("COMPOSE_PROJECT_NAME", None)
+    assert result.returncode == 0, result.stdout + result.stderr
+    (snapshot,) = [p for p in (tmp_path / "out").iterdir() if p.is_dir()]
+    assert (snapshot / "PRE_UPDATE").is_file()
+
+
+def test_update_sh_marks_both_of_its_backups_pre_update():
+    text = (REPO / "update.sh").read_text(encoding="utf-8")
+    calls = [ln for ln in text.splitlines() if "deploy/backup.sh" in ln and "bash" in ln]
+    assert len(calls) == 2, calls
+    assert all("--pre-update" in ln for ln in calls), calls

@@ -152,6 +152,8 @@ for d in "$BACKUPS_ROOT"/firekeep-backup-*; do
     name="$(basename "$d")"
     if [ -f "$d/manifest.json" ]; then
         entries="$entries $name:1"
+    elif [ -f "$d/PRE_UPDATE" ]; then
+        entries="$entries $name:p"
     else
         entries="$entries $name:0"
     fi
@@ -167,8 +169,8 @@ while read -r verdict name reason; do
         kept=$((kept + 1))
         continue
     fi
-    if [ ! -f "$BACKUPS_ROOT/$name/manifest.json" ]; then
-        echo "WARNING: refusing to rotate $name — it has no manifest.json." >&2
+    if [ ! -f "$BACKUPS_ROOT/$name/manifest.json" ] && [ ! -f "$BACKUPS_ROOT/$name/PRE_UPDATE" ]; then
+        echo "WARNING: refusing to rotate $name — it has neither manifest.json nor PRE_UPDATE." >&2
         kept=$((kept + 1))
         continue
     fi
