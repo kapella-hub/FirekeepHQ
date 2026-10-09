@@ -99,6 +99,16 @@ class Settings(BaseSettings):
     GRAPH_RELEVANCE_WEIGHT: float = 0.4
     CONTENT_HASH_LENGTH: int = 32
 
+    # Graph leg on/off for /memory/recall and its SSE twin. Off skips the
+    # Neo4j traversal AND the error-query resolution lookup, so recall is
+    # vector-only. Measured 2026-09-30 on the identity-v2 LongMemEval store:
+    # with the graph on, not one graph row reached a top-k slot in 2,000
+    # recalls and every ranking was identical to graph-off, while a leg took
+    # 1h55m against 27s off (Neo4j-bound). That store's graph was built by
+    # /learn chains only, so this is evidence, not a production verdict — see
+    # docs/guides/cortex-configuration.md. The default keeps dual-store recall.
+    RECALL_GRAPH_ENABLED: bool = True
+
     # Re-ranking (LLM-based; the ML GradientBoosting ranker was removed — its
     # training bridge was never built, so it never functioned).
     RERANK_ENABLED: bool = False

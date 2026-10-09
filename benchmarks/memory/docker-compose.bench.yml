@@ -93,6 +93,10 @@ services:
       VAULT_ENABLED: "false"
       # 60/min (the default) would strangle a ~300k-call ingest.
       RATE_LIMIT: "100000/minute"
+      # Graph-leg A/B. Recall-only: flip it in the shell and
+      # `up -d --force-recreate cortex-api` between legs — the ingested store
+      # is shared and needs no re-ingest. Give each leg its own --run-label.
+      RECALL_GRAPH_ENABLED: "${RECALL_GRAPH_ENABLED:-true}"
       # --- Dreaming A/B (see README "Dreaming A/B: the regression gate") -------
       # OFF for the "before" leg; flip DREAM_ENABLED to "true" and re-create
       # cortex-api for the "after" leg. The other three are BENCH-ONLY overrides
