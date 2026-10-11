@@ -222,28 +222,60 @@ The cuts remove code from `studio-service.ts`; no new logic is added there for p
 
 ### 7.2 Session correlation (Studio session ⇄ Keep session)
 
-Receipts need the Keep session id that the agent's memory calls were attributed to.
+Receipts need the Keep session id that the agent's memory calls were attributed to. They
+also need to exclude Studio's own Keep-panel reads, which travel through the same kit and
+key.
+
+**Two labels, one key.** Every Keep call made by the panel or highlights passes an explicit
+`agent_id = <kit agent id>-studio` (for example `agent-marat_pc-5a60-studio`).
+
+- Cortex records the event's `agent_id` from that parameter (`mcp_server.py` sets
+  `X-Agent-Id` from it, and `/memory/recall` stamps the `memory_read` event with it).
+- Receipts therefore drop every event carrying the `-studio` label. A Memory-tab search
+  made during a turn can never appear in that turn's receipt, even though the shim also
+  attributes it to the same session.
+
+**Studio owns session start.**
 
 - When a Studio session sends its first turn, Studio calls `ctx_start_session(goal=<session
-  name or first prompt, truncated>)` over its gateway and stores the returned id in the
-  session index as `keepSessionId`.
+  name or first prompt, truncated>, agent_id=<kit agent id>)` over its gateway. That is the
+  same label the runtime children use. Studio stores the returned id in the session index
+  as `keepSessionId`.
 - Every runtime child for that Studio session is launched with
   `FIREKEEP_SESSION_ID=<keepSessionId>`. The variable is already on the kit's `childenv.py`
   pass-through allowlist, but nothing consumes it yet.
-- **Kit change (required):** when `FIREKEEP_SESSION_ID` is set,
-  - the session-start hook resumes or adopts that session instead of starting a new one;
-  - the gateway shim's `X-Session-Id` tap uses it in preference to the per-agent stash.
 
-  This applies to all hook-capable runtimes (Claude, Kiro) and to hookless Codex, whose MCP
-  calls go through the shim.
-- Deleting or archiving a Studio session calls `ctx_complete_session`. Plain closing does
-  not, because the Studio session may be resumed.
+**Kit change (required):** when `FIREKEEP_SESSION_ID` is set,
+
+- The session-start hook **does not call `ctx_start_session` or `ctx_resume_session`.**
+  - It writes that id into the per-agent session stash and proceeds.
+  - So no adopt/resume is attempted, and the "active for another agent" refusal cannot
+    trigger.
+- The pre-flight briefing still runs and is still injected into the agent's context.
+  - **Disclosed limitation:** its `briefing_id` is not attached to the Studio-owned session.
+  - The A/B tip-shown attribution is therefore not recorded for Studio sessions.
+  - Terminal sessions are unaffected.
+- The gateway shim's `X-Session-Id` tap prefers `FIREKEEP_SESSION_ID` over both the
+  captured and the stashed id.
+  - This covers hook-capable runtimes (Claude, Kiro) and hookless Codex, whose MCP calls go
+    only through the shim.
+- The stop / session-end hooks do not complete a session whose id came from
+  `FIREKEEP_SESSION_ID`. Studio owns its lifecycle.
+
+**Lifecycle.**
+
+- Deleting or archiving a Studio session calls `ctx_complete_session(task_result=…)`. The
+  result is unset unless a mission receipt supplies one.
+- Plain closing does not complete the session, because the Studio session may be resumed.
 
 ### 7.3 Keep receipts (per turn)
 
 - When a turn completes, Studio calls `keep:receipt`.
   - The main process queries `replay_timeline(keepSessionId, event_type=memory_read|
     memory_write)` for events between the turn's start and end timestamps.
+  - It drops events whose `agent_id` ends in `-studio` (§7.2).
+  - Because Studio serializes runs, the time window then holds only that turn's agent
+    activity.
   - It also collects skill ids surfaced in those events.
 - The receipt renders under the answer: **"Keep · recalled 3 · learned 1 · skill
   recall-bench"**.
@@ -313,8 +345,12 @@ Chat always works without the Keep. Only the panel and receipts degrade.
   quit.
 - **Kit (pytest, `client/`):**
   - the `studio` preset contents, and that an unknown preset still fails closed;
-  - `FIREKEEP_SESSION_ID` adoption in the session-start hook and in the shim's
-    `X-Session-Id` tap.
+  - with `FIREKEEP_SESSION_ID` set: the session-start hook makes no start/resume call,
+    writes the stash, and still injects the briefing;
+  - the shim's `X-Session-Id` tap prefers `FIREKEEP_SESSION_ID`;
+  - end hooks leave that session open.
+- **Receipt isolation:** a panel `memory_recall` issued mid-turn (fake gateway) is excluded
+  from that turn's receipt.
 - **Packaged smoke (`smoke:package`):** replace the grid geometry and inspector assertions
   with:
   - the three-column shell;
