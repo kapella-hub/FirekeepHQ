@@ -107,6 +107,14 @@ describe("ReceiptTracker", () => {
     expect(tracker.cursors("studio-1")).toEqual({ s1: 7 });
   });
 
+  it("cursor validation accepts only non-negative integers", async () => {
+    const src = source({ s1: [read("a", ["m1"])] });
+    const tracker = new ReceiptTracker({ source: () => src, readReport: async () => ["s1"] });
+    // restore with mixed valid/invalid values: 1.5 (float), -1 (negative), 4 (valid)
+    tracker.restore("studio-1", { s1: 1.5, s2: -1, s3: 4 } as Record<string, number>);
+    expect(tracker.cursors("studio-1")).toEqual({ s3: 4 });  // only s3 (integer) kept
+  });
+
   it("one session unsupported in final collect → partial, cursors unchanged", async () => {
     const tracker = new ReceiptTracker({
       source: () => ({

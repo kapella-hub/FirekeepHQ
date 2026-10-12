@@ -56,10 +56,10 @@ export class ReceiptTracker {
 
   async collect(studioSessionId: string, runEvents: readonly RuntimeEventPayload[], final: boolean): Promise<KeepReceipt> {
     const committed = this.#cursors.get(studioSessionId) ?? {};
-    const ids = unique((await this.#deps.readReport(studioSessionId).catch(() => [])).filter((id) => SESSION_ID.test(id) && !id.startsWith("#")));
+    const ids = unique((await this.#deps.readReport(studioSessionId).catch(() => [])).filter((id) => SESSION_ID.test(id)));
     let source;
     try { source = this.#deps.source(); }
-    catch (error) { return partialReceipt(runEvents, final); }
+    catch { return partialReceipt(runEvents, final); }
     if (ids.length === 0 || !source) return partialReceipt(runEvents, final);
 
     const events: ReplayEvent[] = [];
@@ -99,7 +99,7 @@ function message(error: unknown): string {
 function validated(cursors: Readonly<Record<string, number>>): Record<string, number> {
   const result: Record<string, number> = {};
   for (const [id, value] of Object.entries(cursors)) {
-    if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+    if (typeof value === "number" && Number.isInteger(value) && value >= 0) {
       result[id] = value;
     }
   }
