@@ -79,6 +79,8 @@ export function buildTimeline(events: readonly RuntimeEvent[]): TimelineItem[] {
       const key = `approval:${payload.approvalId}`;
       const existing = positions.get(key) === undefined ? undefined : items[positions.get(key) as number];
       if (existing?.kind === "approval") upsert(key, { ...existing, decision: payload.decision });
+    } else if (payload.kind === "keep.receipt") {
+      /* rendered in Task 14 */
     }
   }
   return items;

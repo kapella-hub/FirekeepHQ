@@ -1,3 +1,5 @@
+import type { KeepReceipt } from "./keep/receipt.js";
+
 export const RUNTIME_CAPABILITIES = [
   "chat",
   "review",
@@ -107,7 +109,8 @@ export type RuntimeEventPayload =
   | { readonly kind: "approval.requested"; readonly approvalId: string; readonly title: string; readonly detail: string; readonly options: readonly string[] }
   | { readonly kind: "approval.resolved"; readonly approvalId: string; readonly decision: string }
   | { readonly kind: "usage.updated"; readonly usage: RuntimeUsage }
-  | { readonly kind: "notice"; readonly level: "info" | "warning" | "error"; readonly message: string; readonly detail?: string };
+  | { readonly kind: "notice"; readonly level: "info" | "warning" | "error"; readonly message: string; readonly detail?: string }
+  | { readonly kind: "keep.receipt"; readonly receipt: KeepReceipt };
 
 export interface RuntimeEvent extends RuntimeEventPayloadBase {
   readonly payload: RuntimeEventPayload;
