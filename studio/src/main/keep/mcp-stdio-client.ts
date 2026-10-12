@@ -29,6 +29,7 @@ export class McpStdioClient {
   #nextId = 1;
   #stderr = "";
   #closed = false;
+  #closing = false; // a deliberate close() is not a gateway death
   #ready = false;   // onExit fires only for a gateway that finished initialize
 
   private constructor(child: ChildProcessWithoutNullStreams, options: McpStdioClientOptions) {
@@ -43,7 +44,7 @@ export class McpStdioClient {
       const error = new Error(`firekeep gateway exited (${code ?? "signal"})${tail ? `: ${tail}` : ""}`);
       for (const pending of this.#pending.values()) { clearTimeout(pending.timer); pending.reject(error); }
       this.#pending.clear();
-      if (this.#ready) options.onExit?.(code, this.#stderr);
+      if (this.#ready && !this.#closing) options.onExit?.(code, this.#stderr);
     });
     child.on("error", () => undefined);
     child.stdin.on("error", () => undefined);  // EPIPE after the child died; close handles the rejection
@@ -73,6 +74,7 @@ export class McpStdioClient {
 
   async close(): Promise<void> {
     if (this.#closed) return;
+    this.#closing = true;
     await terminateProcessTree(this.#child);
     this.#closed = true;
   }
@@ -96,6 +98,7 @@ export class McpStdioClient {
 
   #receive(message: unknown): void {
     if (!message || typeof message !== "object") return;
+    if ("method" in message) return;  // server-initiated request or notification, never a response
     const { id, result, error } = message as { id?: unknown; result?: unknown; error?: { message?: string } };
     if (typeof id !== "number") return;  // notifications and server requests are ignored
     const pending = this.#pending.get(id);
