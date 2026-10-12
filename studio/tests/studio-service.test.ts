@@ -479,6 +479,157 @@ describe("StudioService Keep receipts", () => {
     expect(tracker.cursors(service.snapshot().activeSessionId)).toEqual({ k1: 1 });
   });
 
+  it("a final collect that resolves after the budget never commits, so the next turn keeps the events that arrived between prompts", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const alpha = new FakeRuntime({ id: "alpha", displayName: "Alpha", description: "", transport: "test", capabilities: ["chat"] });
+      const events = [RECALL_EVENT];
+      let calls = 0;
+      let release: (() => void) | undefined;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const tracker = new ReceiptTracker({
+        source: () => ({ timeline: async (_id, offset) => {
+          calls += 1;
+          if (calls === 2) await gate;                     // turn 1's finalize answers only after its budget
+          return { kind: "page", events: events.slice(offset), total: events.length, hasMore: false };
+        } }),
+        readReport: async () => ["k1"],
+      });
+      const service = new StudioService({ runtimes: new RuntimeRegistry([alpha]), settings: new MemorySettingsStore<StudioPersistedState>(), keep: { tracker, reportPath: () => "/x.keep", removeReport: async () => undefined } });
+      await service.initialize();
+      await service.setPrimary("alpha");
+      const sessionId = service.snapshot().activeSessionId;
+      await service.sendMessage("first");
+      await vi.waitFor(() => expect(keepReceipts(service.events())).toHaveLength(1));
+      const second = service.sendMessage("second");
+      await vi.advanceTimersByTimeAsync(2100);
+      await second;
+      expect(tracker.cursors(sessionId)).toEqual({ k1: 1 });   // promoted provisional committed
+      // Turn 2's prompt-submit recall lands, then turn 1's abandoned finalize finally answers.
+      events.push({ id: "e2", agent_id: "agent-a", event_type: "memory_read", timestamp: "t", payload: { query: "q2", memory_ids: ["m2"] } });
+      release?.();
+      await vi.advanceTimersByTimeAsync(10);
+      expect(tracker.cursors(sessionId)).toEqual({ k1: 1 });
+      await service.sendMessage("third");
+      const finals = keepReceipts(service.events()).filter((item) => item.receipt.final).map((item) => item.receipt);
+      expect(finals).toHaveLength(2);
+      expect(finals[1]).toMatchObject({ status: "measured", recalledCount: 1 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a retry whose collect answers after the budget never commits", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const alpha = new FakeRuntime({ id: "alpha", displayName: "Alpha", description: "", transport: "test", capabilities: ["chat"] });
+      const events = [RECALL_EVENT];
+      let hold = false;
+      let release: (() => void) | undefined;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const tracker = new ReceiptTracker({
+        source: () => ({ timeline: async (_id, offset) => {
+          if (hold) await gate;
+          return { kind: "page", events: events.slice(offset), total: events.length, hasMore: false };
+        } }),
+        readReport: async () => ["k1"],
+      });
+      const service = new StudioService({ runtimes: new RuntimeRegistry([alpha]), settings: new MemorySettingsStore<StudioPersistedState>(), sessions: new MemorySessionStore(), keep: { tracker, reportPath: () => "/x.keep", removeReport: async () => undefined } });
+      await service.initialize();
+      await service.setPrimary("alpha");
+      const first = service.snapshot().activeSessionId;
+      await service.sendMessage("one");
+      const runId = firstRunId(service);
+      await service.startNewSession();
+      expect(tracker.cursors(first)).toEqual({ k1: 1 });
+      hold = true;
+      const retry = service.retryReceipt(runId);
+      await vi.advanceTimersByTimeAsync(2100);
+      await retry;
+      expect(tracker.cursors(first)).toEqual({ k1: 1 });
+      events.push({ id: "e2", agent_id: "agent-a", event_type: "memory_read", timestamp: "t", payload: { query: "q2", memory_ids: ["m2"] } });
+      release?.();
+      await vi.advanceTimersByTimeAsync(10);
+      expect(tracker.cursors(first)).toEqual({ k1: 1 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a session switch during a slow finalize is refused, and no run event lands in the wrong session", async () => {
+    let hold = false;
+    let release: (() => void) | undefined;
+    let gate = new Promise<void>((resolve) => { release = resolve; });
+    const tracker = new ReceiptTracker({
+      source: () => ({ timeline: async (_id, offset) => {
+        if (hold) await gate;                                // the finalize is slow
+        return { kind: "page", events: [RECALL_EVENT].slice(offset), total: 1, hasMore: false };
+      } }),
+      readReport: async () => ["k1"],
+    });
+    const alpha = new FakeRuntime({ id: "alpha", displayName: "Alpha", description: "", transport: "test", capabilities: ["chat"] });
+    const sessions = new MemorySessionStore();
+    const service = new StudioService({ runtimes: new RuntimeRegistry([alpha]), settings: new MemorySettingsStore<StudioPersistedState>(), sessions, keep: { tracker, reportPath: () => "/x.keep", removeReport: async () => undefined } });
+    await service.initialize();
+    await service.setPrimary("alpha");
+    const first = service.snapshot().activeSessionId;
+    await service.startNewSession();
+    const other = service.snapshot().activeSessionId;
+    await service.resumeSession(first);
+    await service.sendMessage("one");
+    await vi.waitFor(() => expect(keepReceipts(service.events())).toHaveLength(1));
+    hold = true;
+    const sending = service.sendMessage("two");
+    await expect(service.resumeSession(other)).rejects.toThrow(/turn is starting/i);
+    await expect(service.startNewSession()).rejects.toThrow(/turn is starting/i);
+    await expect(service.deleteSession(other, other)).rejects.toThrow(/turn is starting/i);
+    hold = false;
+    release?.();
+    await sending;
+    expect(service.snapshot().activeSessionId).toBe(first);
+    expect(await sessions.load(other)).toEqual([]);
+    expect((await sessions.load(first)).filter((event) => event.payload.kind === "run.started")).toHaveLength(2);
+
+    // The other direction: a Send during a slow session switch is refused, so it cannot run in either session by accident.
+    await vi.waitFor(() => expect(keepReceipts(service.events()).filter((item) => !item.receipt.final)).toHaveLength(2));
+    gate = new Promise<void>((resolve) => { release = resolve; });
+    hold = true;
+    const switching = service.resumeSession(other);
+    await expect(service.sendMessage("three")).rejects.toThrow(/session is changing/i);
+    hold = false;
+    release?.();
+    await switching;
+    expect(service.snapshot().activeSessionId).toBe(other);
+    expect(alpha.runs).toHaveLength(2);
+  });
+
+  it("a throwing listener never rejects a turn through its receipt", async () => {
+    const { service, reports, timelines } = createKeepService();
+    await service.initialize();
+    await service.setPrimary("alpha");
+    reports[service.snapshot().activeSessionId] = ["k1"];
+    timelines.k1 = [RECALL_EVENT];
+    service.subscribe((event) => { if (event.payload.kind === "keep.receipt") throw new Error("renderer gone"); });
+    await expect(service.sendMessage("one")).resolves.toMatchObject({ finalText: "response from alpha" });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await expect(service.sendMessage("two")).resolves.toMatchObject({ finalText: "response from alpha" });
+  });
+
+  it("after-turn reviewers add no receipt of their own; the primary run gets exactly one provisional", async () => {
+    const { service } = createKeepService();
+    await service.initialize();
+    await service.setPrimary("alpha");
+    await service.addReviewer("alpha");
+    await service.setReviewerMode("after-turn");
+    await service.sendMessage("hi");
+    const [primaryRun, reviewRun] = service.events().filter((event) => event.payload.kind === "run.started").map((event) => event.runId);
+    expect(reviewRun).toBeDefined();
+    await vi.waitFor(() => expect(keepReceipts(service.events())).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const receipts = keepReceipts(service.events());
+    expect(receipts.map((item) => [item.runId, item.receipt.final])).toEqual([[primaryRun, false]]);
+  });
+
   it("finalizes into the session that produced the turn when the user switches sessions", async () => {
     const { service, reports, timelines, sessions } = createKeepService();
     await service.initialize();
