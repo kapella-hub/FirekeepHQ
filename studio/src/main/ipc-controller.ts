@@ -4,7 +4,6 @@ import type { StudioService } from "../core/studio-service.js";
 import type { StudioAction, StudioActionResult } from "../shared/ipc.js";
 import type { DecisionBoardTransport } from "./decision-board-client.js";
 import { LoopbackDecisionBoardClient } from "./decision-board-client.js";
-import type { VoiceInput } from "./voice-input.js";
 import type { StudioUpdateControl } from "./studio-updater.js";
 import { SESSION_COLORS } from "../core/session-store.js";
 
@@ -18,7 +17,6 @@ const decisionAnswer = z.object({
 const decisionAnswers = z.record(z.string().min(1).max(128), decisionAnswer)
   .refine((value) => Object.keys(value).length <= 64, "too many Decision Board answers");
 const MAX_CLIPBOARD_TEXT = 1_000_000;
-const language = z.string().min(2).max(35).regex(/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/);
 const actionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("bootstrap") }).strict(),
   z.object({ type: z.literal("dashboard.open") }).strict(),
@@ -54,9 +52,6 @@ const actionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("mission.complete"), taskResult: z.enum(["success", "partial", "failure"]), note: z.string().max(4_000).optional() }).strict(),
   z.object({ type: z.literal("mission.cancel") }).strict(),
   z.object({ type: z.literal("theme.set"), theme: z.enum(["system", "dark", "light"]) }).strict(),
-  z.object({ type: z.literal("voice.set"), enabled: z.boolean() }).strict(),
-  z.object({ type: z.literal("voice.input.start"), language: language.optional() }).strict(),
-  z.object({ type: z.literal("voice.input.stop") }).strict(),
   z.object({ type: z.literal("update.check") }).strict(),
   z.object({ type: z.literal("update.install") }).strict(),
   z.object({ type: z.literal("run.cancel"), runId: optionalId }).strict(),
@@ -72,11 +67,6 @@ export interface ClipboardTransport {
 }
 
 const emptyClipboard: ClipboardTransport = { readText: () => "", writeText: () => undefined };
-const unavailableVoiceInput: VoiceInput = {
-  transcribe: async () => ({ state: "unavailable", text: "", detail: "Voice input is unavailable in this Studio build." }),
-  cancel: () => false,
-};
-
 export class StudioController {
   constructor(
     readonly service: StudioService,
@@ -87,7 +77,6 @@ export class StudioController {
     readonly dashboardUrl: string | null = null,
     readonly decisionBoards: DecisionBoardTransport = new LoopbackDecisionBoardClient(),
     readonly clipboard: ClipboardTransport = emptyClipboard,
-    readonly voiceInput: VoiceInput = unavailableVoiceInput,
     readonly updates?: StudioUpdateControl,
   ) {}
 
@@ -124,11 +113,6 @@ export class StudioController {
     if (action.type === "clipboard.write") {
       this.clipboard.writeText(action.text);
       return { type: "clipboard-written" };
-    }
-    if (action.type === "voice.input.start") return { type: "voice-input", ...await this.voiceInput.transcribe(action.language) };
-    if (action.type === "voice.input.stop") {
-      const stopped = this.voiceInput.cancel();
-      return { type: "voice-input", state: "cancelled", text: "", detail: stopped ? "Voice input stopped." : "No voice input was active." };
     }
     if (action.type === "update.check") return { type: "update", state: this.updates ? await this.updates.check() : this.#updateState() };
     if (action.type === "update.install") return { type: "update", state: this.updates ? await this.updates.install() : this.#updateState() };
@@ -174,7 +158,6 @@ export class StudioController {
     else if (action.type === "mission.complete") await this.service.completeMission(action.taskResult, action.note);
     else if (action.type === "mission.cancel") this.service.cancelMission();
     else if (action.type === "theme.set") await this.service.setTheme(action.theme);
-    else if (action.type === "voice.set") await this.service.setVoice(action.enabled);
     else if (action.type === "run.cancel") this.service.cancel(action.runId);
     const sessions = action.type.startsWith("session.") || action.type.startsWith("mission.") ? await this.service.listSessions() : undefined;
     return { type: "state", snapshot: this.service.snapshot(), ...(sessions ? { sessions, events: this.service.events() } : {}) };

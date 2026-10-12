@@ -53,7 +53,6 @@ export interface StudioPersistedState {
   readonly permissionModes: Readonly<Record<string, RuntimePermissionMode>>;
   readonly nativeSessionIds: Readonly<Record<string, string>>;
   readonly tokenBudget: number | null;
-  readonly voiceEnabled: boolean;
   readonly theme: ThemeMode;
 }
 
@@ -320,11 +319,6 @@ export class StudioService {
       runs: sum.runs + item.runs,
     }), { tokens: 0, freshTokens: 0, cachedTokens: 0, costUsd: 0, runs: 0 });
     return { ...totals, totalRuns: runIds.size, measuredRuns: latestByRun.size, byRuntime };
-  }
-
-  async setVoice(enabled: boolean): Promise<void> {
-    this.#replaceState({ voiceEnabled: enabled });
-    await this.#persist();
   }
 
   async setTheme(theme: ThemeMode): Promise<void> {
@@ -1258,7 +1252,6 @@ export class StudioService {
       permissionModes: permissionRecord(stored.permissionModes),
       nativeSessionIds: stringRecord(stored.nativeSessionIds),
       tokenBudget: typeof stored.tokenBudget === "number" && Number.isSafeInteger(stored.tokenBudget) && stored.tokenBudget > 0 ? stored.tokenBudget : null,
-      voiceEnabled: stored.voiceEnabled === true,
       theme: stored.theme === "dark" || stored.theme === "light" ? stored.theme : "system",
     };
   }
@@ -1276,7 +1269,6 @@ export class StudioService {
       permissionModes: {},
       nativeSessionIds: {},
       tokenBudget: null,
-      voiceEnabled: false,
       theme: "system",
     };
   }

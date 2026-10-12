@@ -41,6 +41,13 @@ describe("slash command parsing", () => {
 });
 
 describe("slash command registry", () => {
+  it("tells /voice users the feature was removed", async () => {
+    const { commands } = setup();
+    const result = await commands.execute("/voice on");
+    expect(result.tone).toBe("warning");
+    expect(result.body).toContain("Voice was removed in Studio 0.5");
+  });
+
   it("dispatches primary and reviewer aliases through StudioService", async () => {
     const { service, commands } = setup();
     await service.initialize();

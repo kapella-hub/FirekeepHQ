@@ -7,7 +7,6 @@ export const RUNTIME_CAPABILITIES = [
   "resume",
   "models",
   "images",
-  "audio-input",
   "usage",
   "reasoning",
   "firekeep-memory",
@@ -69,7 +68,7 @@ export interface RuntimeModel {
   readonly description?: string;
   readonly isDefault?: boolean;
   readonly efforts?: readonly RuntimeEffort[];
-  readonly inputModalities?: readonly ("text" | "image" | "audio")[];
+  readonly inputModalities?: readonly ("text" | "image")[];
 }
 
 export interface RuntimeUsage {

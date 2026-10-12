@@ -384,7 +384,7 @@ function array(value: unknown): unknown[] { return Array.isArray(value) ? value 
 function string(value: unknown): string | null { return typeof value === "string" ? value : null; }
 function number(value: unknown): number | undefined { return typeof value === "number" && Number.isFinite(value) ? value : undefined; }
 function isRuntimeEffort(value: string | null): value is RuntimeEffort { return value !== null && ["low", "medium", "high", "xhigh", "max"].includes(value); }
-function isInputModality(value: unknown): value is "text" | "image" | "audio" { return value === "text" || value === "image" || value === "audio"; }
+function isInputModality(value: unknown): value is "text" | "image" { return value === "text" || value === "image"; }
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error); }
 function requireSecret(request: LoginRequest): string { if (!request.secret) throw new Error("Codex API-key login requires a key"); return request.secret; }
 

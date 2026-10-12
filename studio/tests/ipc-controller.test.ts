@@ -4,14 +4,12 @@ import { MemorySessionStore } from "../src/core/session-store.js";
 import { MemorySettingsStore } from "../src/core/settings-store.js";
 import { createCommandRegistry } from "../src/core/slash-commands.js";
 import { StudioService, type StudioPersistedState } from "../src/core/studio-service.js";
-import type { VoiceInputOutcome } from "../src/shared/ipc.js";
 import { StudioController, parseStudioAction } from "../src/main/ipc-controller.js";
 import type { DecisionBoardTransport } from "../src/main/decision-board-client.js";
-import type { VoiceInput } from "../src/main/voice-input.js";
 import type { StudioUpdateControl } from "../src/main/studio-updater.js";
 import { FakeRuntime } from "./helpers/fake-runtime.js";
 
-async function controller(openExternal: (url: string) => Promise<void> = async () => undefined, dashboardUrl: string | null = "http://keep.example:8040/", decisionBoards?: DecisionBoardTransport, clipboard?: { readText(): string; writeText(text: string): void }, voiceInput?: VoiceInput, updates?: StudioUpdateControl): Promise<StudioController> {
+async function controller(openExternal: (url: string) => Promise<void> = async () => undefined, dashboardUrl: string | null = "http://keep.example:8040/", decisionBoards?: DecisionBoardTransport, clipboard?: { readText(): string; writeText(text: string): void }, updates?: StudioUpdateControl): Promise<StudioController> {
   const service = new StudioService({
     runtimes: new RuntimeRegistry([new FakeRuntime({ id: "alpha", displayName: "Alpha", description: "test", transport: "test", capabilities: ["chat", "review", "models"] })]),
     settings: new MemorySettingsStore<StudioPersistedState>(),
@@ -22,7 +20,7 @@ async function controller(openExternal: (url: string) => Promise<void> = async (
     now: () => "2026-08-24T00:00:00.000Z",
   });
   await service.initialize();
-  return new StudioController(service, createCommandRegistry(service), "0.3.7", openExternal, async () => "C:\\workspace", dashboardUrl, decisionBoards, clipboard, voiceInput, updates);
+  return new StudioController(service, createCommandRegistry(service), "0.3.7", openExternal, async () => "C:\\workspace", dashboardUrl, decisionBoards, clipboard, updates);
 }
 
 describe("Studio IPC controller", () => {
@@ -41,9 +39,6 @@ describe("Studio IPC controller", () => {
     expect(parseStudioAction({ type: "clipboard.read" })).toEqual({ type: "clipboard.read" });
     expect(() => parseStudioAction({ type: "clipboard.read", path: "hidden" })).toThrow();
     expect(() => parseStudioAction({ type: "clipboard.write", text: "x".repeat(1_000_001) })).toThrow();
-    expect(parseStudioAction({ type: "voice.input.start", language: "en-US" })).toEqual({ type: "voice.input.start", language: "en-US" });
-    expect(parseStudioAction({ type: "voice.input.stop" })).toEqual({ type: "voice.input.stop" });
-    expect(() => parseStudioAction({ type: "voice.input.start", language: "bad language", command: "hidden" })).toThrow();
     expect(parseStudioAction({ type: "session.update", sessionId: "session-1", name: "Release plan", color: "violet" })).toEqual({ type: "session.update", sessionId: "session-1", name: "Release plan", color: "violet" });
     expect(() => parseStudioAction({ type: "session.update", sessionId: "session-1", name: "Release plan", color: "ultraviolet" })).toThrow();
     expect(parseStudioAction({ type: "update.check" })).toEqual({ type: "update.check" });
@@ -62,29 +57,6 @@ describe("Studio IPC controller", () => {
     await expect(studio.dispatch({ type: "clipboard.write", text: "copy me" })).resolves.toEqual({ type: "clipboard-written" });
     expect(clipboard.readText).toHaveBeenCalledOnce();
     expect(clipboard.writeText).toHaveBeenCalledWith("copy me");
-  });
-
-  it("delegates only typed voice start and stop operations", async () => {
-    const voiceInput: VoiceInput = {
-      transcribe: vi.fn(async (): Promise<VoiceInputOutcome> => ({ state: "complete", text: "dictated text", detail: "local" })),
-      cancel: vi.fn(() => true),
-    };
-    const studio = await controller(undefined, null, undefined, undefined, voiceInput);
-
-    await expect(studio.dispatch({ type: "voice.input.start", language: "en-US" })).resolves.toEqual({
-      type: "voice-input",
-      state: "complete",
-      text: "dictated text",
-      detail: "local",
-    });
-    await expect(studio.dispatch({ type: "voice.input.stop" })).resolves.toEqual({
-      type: "voice-input",
-      state: "cancelled",
-      text: "",
-      detail: "Voice input stopped.",
-    });
-    expect(voiceInput.transcribe).toHaveBeenCalledWith("en-US");
-    expect(voiceInput.cancel).toHaveBeenCalledOnce();
   });
 
   it("returns a complete bootstrap and delegates actions", async () => {
@@ -109,7 +81,7 @@ describe("Studio IPC controller", () => {
       check: vi.fn(async () => ready),
       install: vi.fn(async () => ready),
     };
-    const studio = await controller(undefined, null, undefined, undefined, undefined, updates);
+    const studio = await controller(undefined, null, undefined, undefined, updates);
 
     await expect(studio.dispatch({ type: "bootstrap" })).resolves.toMatchObject({ type: "bootstrap", update: current });
     await expect(studio.dispatch({ type: "update.check" })).resolves.toEqual({ type: "update", state: ready });

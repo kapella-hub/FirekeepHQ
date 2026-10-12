@@ -16,10 +16,8 @@ import { StudioDecisionBoardReceiver } from "./decision-board-receiver.js";
 import { StudioController } from "./ipc-controller.js";
 import { KiroIdeLauncher } from "./kiro-ide.js";
 import { ProcessMissionCheckRunner } from "./mission-check-runner.js";
-import { allowsMicrophoneCheck, allowsMicrophoneRequest } from "./permissions.js";
 import { createRuntimeRegistry } from "./runtime/index.js";
 import { JsonlSessionStore } from "./session-store.js";
-import { WindowsVoiceInput } from "./voice-input.js";
 import { windowThemeColors } from "./window-theme.js";
 import { HttpSignedManifestSource, StudioUpdater } from "./studio-updater.js";
 
@@ -193,29 +191,16 @@ async function createController(): Promise<StudioController> {
   return new StudioController(service, commands, app.getVersion(), (url) => shell.openExternal(url), selectWorkspace, dashboardUrl, decisionBoards, {
     readText: () => clipboard.readText(),
     writeText: (text) => clipboard.writeText(text),
-  }, new WindowsVoiceInput(), updates);
+  }, updates);
 }
 
 app.whenReady().then(async () => {
   packageSmokeTrace("app ready");
   const controller = await createController();
   activeController = controller;
-  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
-    callback(allowsMicrophoneRequest({
-      permission,
-      attachedToStudioWindow: BrowserWindow.fromWebContents(webContents) !== null,
-      isMainFrame: details.isMainFrame,
-      ...(permission === "media" && "mediaTypes" in details && details.mediaTypes
-        ? { mediaTypes: details.mediaTypes }
-        : {}),
-    }));
-  });
-  session.defaultSession.setPermissionCheckHandler((webContents, permission, _origin, details) => allowsMicrophoneCheck({
-    permission,
-    attachedToStudioWindow: webContents !== null && BrowserWindow.fromWebContents(webContents) !== null,
-    isMainFrame: details.isMainFrame,
-    ...(details.mediaType ? { mediaType: details.mediaType } : {}),
-  }));
+  // Studio needs no device or web permissions; deny every request and check.
+  session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
+  session.defaultSession.setPermissionCheckHandler(() => false);
   ipcMain.handle(STUDIO_INVOKE_CHANNEL, async (_event, action: unknown) => {
     const result = await controller.invoke(action);
     if (result.type === "bootstrap" || result.type === "state" || result.type === "command") applyThemeToAllWindows(result.snapshot.theme);
@@ -246,7 +231,6 @@ app.on("before-quit", (event) => {
   if (shutdownStarted) return;
   event.preventDefault();
   shutdownStarted = true;
-  activeController?.voiceInput.cancel();
   activeUpdater?.dispose();
   void Promise.all([
     activeController?.service.shutdown() ?? Promise.resolve(),

@@ -209,7 +209,7 @@ function grokEfforts(modelId: string): readonly RuntimeEffort[] {
   if (/grok-4\.5/i.test(modelId)) return ["low", "medium", "high"];
   return [];
 }
-function isInputModality(value: unknown): value is "text" | "image" | "audio" { return value === "text" || value === "image" || value === "audio"; }
+function isInputModality(value: unknown): value is "text" | "image" { return value === "text" || value === "image"; }
 function object(value: unknown): JsonObject { return value && typeof value === "object" && !Array.isArray(value) ? value as JsonObject : {}; }
 function array(value: unknown): unknown[] { return Array.isArray(value) ? value : []; }
 function string(value: unknown): string | undefined { return typeof value === "string" ? value : undefined; }

@@ -34,8 +34,8 @@ describe("RuntimeRegistry", () => {
   it("reports unknown runtimes and missing capabilities clearly", () => {
     const registry = new RuntimeRegistry([alpha]);
     expect(() => registry.require("missing")).toThrow(/unknown runtime.*missing/i);
-    expect(() => registry.requireCapability("alpha", "audio-input")).toThrow(
-      /Alpha.*audio-input/i,
+    expect(() => registry.requireCapability("alpha", "images")).toThrow(
+      /Alpha.*images/i,
     );
   });
 });

@@ -15,12 +15,6 @@ import type { DecisionAnswers, DecisionBoardDocument } from "./decision-board.js
 export const STUDIO_INVOKE_CHANNEL = "studio:invoke";
 export const STUDIO_EVENT_CHANNEL = "studio:event";
 
-export interface VoiceInputOutcome {
-  readonly state: "complete" | "empty" | "cancelled" | "unavailable";
-  readonly text: string;
-  readonly detail: string;
-}
-
 export interface StudioUpdateState {
   readonly phase: "disabled" | "idle" | "checking" | "current" | "available" | "downloading" | "ready" | "error";
   readonly currentVersion: string;
@@ -65,9 +59,6 @@ export type StudioAction =
   | { type: "mission.complete"; taskResult: "success" | "partial" | "failure"; note?: string }
   | { type: "mission.cancel" }
   | { type: "theme.set"; theme: ThemeMode }
-  | { type: "voice.set"; enabled: boolean }
-  | { type: "voice.input.start"; language?: string }
-  | { type: "voice.input.stop" }
   | { type: "update.check" }
   | { type: "update.install" }
   | { type: "run.cancel"; runId?: string };
@@ -98,8 +89,7 @@ export type StudioActionResult =
   | { readonly type: "clipboard-written" }
   | { readonly type: "decision"; readonly board: DecisionBoardDocument }
   | { readonly type: "decision-submitted"; readonly url: string }
-  | { readonly type: "update"; readonly state: StudioUpdateState }
-  | ({ readonly type: "voice-input" } & VoiceInputOutcome);
+  | { readonly type: "update"; readonly state: StudioUpdateState };
 
 export type StudioPushEvent =
   | { readonly type: "runtime.event"; readonly event: RuntimeEvent }

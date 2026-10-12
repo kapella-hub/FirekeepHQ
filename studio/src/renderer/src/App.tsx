@@ -16,8 +16,6 @@ import {
   KeyRound,
   LogOut,
   Maximize2,
-  Mic,
-  MicOff,
   Minimize2,
   Palette,
   PanelRightClose,
@@ -31,8 +29,6 @@ import {
   Square,
   SunMoon,
   Terminal,
-  Volume2,
-  VolumeX,
   X,
 } from "lucide-react";
 import type { CommandCompletion, CommandResult } from "../../core/slash-commands";
@@ -54,7 +50,6 @@ interface CommandCard { readonly id: string; readonly input: string; readonly re
 interface ConnectDialog { readonly runtimeId: string; readonly method: LoginMethod }
 interface ModelRefresh { readonly runtimeId: string; readonly state: "loading" | "success" | "error"; readonly message: string }
 type StudioView = "conversation" | "agents";
-type VoiceInputState = "idle" | "listening" | "stopping";
 
 const SESSION_COLOR_OPTIONS: readonly { readonly id: SessionColor; readonly label: string; readonly value: string }[] = [
   { id: "ember", label: "Ember", value: "#ff7a2f" },
@@ -86,7 +81,6 @@ export function App(): React.JSX.Element {
   const [runtimeManagerOpen, setRuntimeManagerOpen] = useState(false);
   const [connectDialog, setConnectDialog] = useState<ConnectDialog | null>(null);
   const [secret, setSecret] = useState("");
-  const [voiceInputState, setVoiceInputState] = useState<VoiceInputState>("idle");
   const [decisionBoard, setDecisionBoard] = useState<DecisionBoardDocument | null>(null);
   const [decisionLoading, setDecisionLoading] = useState<string | null>(null);
   const [followingTail, setFollowingTail] = useState(true);
@@ -100,7 +94,6 @@ export function App(): React.JSX.Element {
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
   const followingTailRef = useRef(true);
-  const voiceEnabledRef = useRef(false);
   const modelRequestRef = useRef<Record<string, number>>({});
   const surfacedBoardsRef = useRef(new Set<string>());
   const seenEventIdsRef = useRef(new Set<string>());
@@ -206,10 +199,6 @@ export function App(): React.JSX.Element {
             ignore(openDecisionBoard(boardUrl));
           }
         }
-        if (payload.kind === "message.completed" && payload.role === "assistant" && voiceEnabledRef.current && "speechSynthesis" in window) {
-          window.speechSynthesis.cancel();
-          window.speechSynthesis.speak(new SpeechSynthesisUtterance(stripMarkdown(payload.text).slice(0, 8_000)));
-        }
       } else if (event.type === "snapshot") setSnapshot(event.snapshot);
       else if (event.type === "update") setUpdateState(event.state);
       else if (event.type === "decision.available") {
@@ -237,9 +226,8 @@ export function App(): React.JSX.Element {
   }, [enqueueEvent, invoke, loadModels, openDecisionBoard, refreshDiagnostics, replaceEvents]);
 
   useEffect(() => {
-    voiceEnabledRef.current = snapshot?.voiceEnabled ?? false;
     document.documentElement.dataset.theme = snapshot?.theme ?? "system";
-  }, [snapshot?.theme, snapshot?.voiceEnabled]);
+  }, [snapshot?.theme]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -318,13 +306,12 @@ export function App(): React.JSX.Element {
         else if (runtimeManagerOpen) setRuntimeManagerOpen(false);
         else if (sessionEditorId) setSessionEditorId(null);
         else if (focusedPaneId) setFocusedPaneId(null);
-        else if (voiceInputState !== "idle") ignore(invoke({ type: "voice.input.stop" }));
         else if (snapshot?.activeRunId) ignore(invoke({ type: "run.cancel", runId: snapshot.activeRunId }));
       }
     };
     window.addEventListener("keydown", keyboard);
     return () => window.removeEventListener("keydown", keyboard);
-  }, [busy, connectDialog, focusedPaneId, invoke, runReview, runtimeManagerOpen, sessionEditorId, snapshot?.activeRunId, toggleAgentGrid, voiceInputState]);
+  }, [busy, connectDialog, focusedPaneId, invoke, runReview, runtimeManagerOpen, sessionEditorId, snapshot?.activeRunId, toggleAgentGrid]);
 
   const submit = async (): Promise<void> => {
     const input = composer.trim();
@@ -420,27 +407,6 @@ export function App(): React.JSX.Element {
     } catch { /* Keep the dialog open so the user can retry. */ }
   };
 
-  const toggleVoiceInput = async (): Promise<void> => {
-    if (voiceInputState === "stopping") return;
-    if (voiceInputState === "listening") {
-      setVoiceInputState("stopping");
-      try { await invoke({ type: "voice.input.stop" }); }
-      catch { /* invoke surfaced the actionable error. */ }
-      return;
-    }
-    setVoiceInputState("listening");
-    try {
-      const result = await invoke({ type: "voice.input.start", language: navigator.language || "en-US" });
-      if (result.type !== "voice-input") throw new Error("voice input returned an unexpected response");
-      if (result.state === "complete" && result.text) {
-        setComposer((current) => `${current}${current && !/\s$/.test(current) ? " " : ""}${result.text}`);
-      } else if (result.state === "empty" || result.state === "unavailable") setError(result.detail);
-    } catch { /* invoke surfaced the actionable error. */ }
-    finally {
-      setVoiceInputState("idle");
-      composerRef.current?.focus();
-    }
-  };
   const saveSession = async (sessionId: string, name: string, color: SessionColor): Promise<void> => {
     setSessionSaving(true);
     try {
@@ -487,7 +453,6 @@ export function App(): React.JSX.Element {
         </div>
         <div className="titlebar-actions">
           {updateState && updateState.phase !== "disabled" ? <StudioUpdateButton state={updateState} onAction={() => ignore(updateStudio())} /> : null}
-          <button className="icon-button" title={snapshot.voiceEnabled ? "Turn spoken replies off" : "Turn spoken replies on"} onClick={() => ignore(invoke({ type: "voice.set", enabled: !snapshot.voiceEnabled }).then(applyResult))}>{snapshot.voiceEnabled ? <Volume2 size={17} /> : <VolumeX size={17} />}</button>
           <button className="icon-button appearance-button" aria-label={`Appearance: ${themeLabel(snapshot.theme)}. Switch to ${nextTheme(snapshot.theme)} theme`} title={`Appearance: ${themeLabel(snapshot.theme)} · next ${nextTheme(snapshot.theme)}`} onClick={() => ignore(invoke({ type: "theme.set", theme: nextTheme(snapshot.theme) }).then(applyResult))}><SunMoon size={17} /></button>
           <button className="inspector-toggle" aria-label={rightOpen ? "Hide inspector" : "Show inspector"} title={rightOpen ? "Hide the right inspector" : "Show the right inspector"} onClick={() => setRightOpen((value) => !value)}>{rightOpen ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}<span>{rightOpen ? "Hide panel" : "Show panel"}</span></button>
         </div>
@@ -566,11 +531,10 @@ export function App(): React.JSX.Element {
             }} />
             <div className="composer-actions">
               <button type="button" className="paste-button" aria-label="Paste from clipboard" title="Paste from clipboard" onClick={() => ignore(pasteClipboard())}><ClipboardPaste size={17} /></button>
-              <button type="button" className={`mic-button ${voiceInputState !== "idle" ? "listening" : ""}`} aria-label={voiceInputState === "idle" ? "Start voice input" : voiceInputState === "listening" ? "Stop voice input" : "Stopping voice input"} title={voiceInputState === "idle" ? "Start voice input" : voiceInputState === "listening" ? "Stop voice input" : "Stopping voice input"} disabled={voiceInputState === "stopping"} onClick={() => ignore(toggleVoiceInput())}>{voiceInputState === "idle" ? <Mic size={18} /> : <MicOff size={18} />}</button>
               {snapshot.activeRunId ? <button className="send-button stop" title="Cancel run" onClick={() => ignore(invoke({ type: "run.cancel", runId: snapshot.activeRunId! }))}><Square size={15} fill="currentColor" /></button> : <button className="send-button" title="Send" disabled={!composer.trim() || busy} onClick={() => ignore(submit())}><Send size={17} /></button>}
             </div>
           </div>
-          <div className="composer-hint"><span><kbd>Enter</kbd> send · <kbd>Shift Enter</kbd> newline · <kbd>⌘K</kbd> commands</span><span>{voiceInputState !== "idle" ? <><span className="pulse-dot" /> {voiceInputState === "listening" ? "Listening · speak naturally" : "Stopping voice input"}</> : busy ? <><span className="pulse-dot" /> Agent working</> : `${snapshot.usage.freshTokens.toLocaleString()} fresh · ${snapshot.usage.tokens.toLocaleString()} total${snapshot.voiceEnabled ? " · voice replies on" : ""}`}</span></div>
+          <div className="composer-hint"><span><kbd>Enter</kbd> send · <kbd>Shift Enter</kbd> newline · <kbd>⌘K</kbd> commands</span><span>{busy ? <><span className="pulse-dot" /> Agent working</> : `${snapshot.usage.freshTokens.toLocaleString()} fresh · ${snapshot.usage.tokens.toLocaleString()} total`}</span></div>
         </div>
       </main>
 
@@ -972,7 +936,6 @@ function pathLeaf(value: string): string { return value.replace(/[\\/]+$/, "").s
 function formatTime(value: string): string { const date = new Date(value); return Number.isNaN(date.getTime()) ? "" : date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); }
 function relativeTime(value: string): string { const delta = Date.now() - new Date(value).getTime(); if (!Number.isFinite(delta) || delta < 60_000) return "now"; if (delta < 3_600_000) return `${Math.floor(delta / 60_000)}m`; if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)}h`; return `${Math.floor(delta / 86_400_000)}d`; }
 function formatUsage(usage: RuntimeUsage): string { const pieces = [usage.inputTokens !== undefined ? `${usage.inputTokens.toLocaleString()} in` : "", usage.cacheCreationInputTokens !== undefined ? `${usage.cacheCreationInputTokens.toLocaleString()} cache write` : "", usage.cachedInputTokens !== undefined ? `${usage.cachedInputTokens.toLocaleString()} cached` : "", usage.outputTokens !== undefined ? `${usage.outputTokens.toLocaleString()} out` : "", usage.reasoningTokens !== undefined ? `${usage.reasoningTokens.toLocaleString()} reasoning` : "", usage.costUsd !== undefined ? `$${usage.costUsd.toFixed(4)}` : "", usage.durationMs !== undefined ? `${(usage.durationMs / 1_000).toFixed(1)}s` : ""].filter(Boolean); return pieces.join(" · ") || `${usage.totalTokens?.toLocaleString() ?? 0} tokens`; }
-function stripMarkdown(value: string): string { return value.replace(/```[\s\S]*?```/g, " code block ").replace(/[`*_>#\[\]()~-]/g, " ").replace(/\s+/g, " ").trim(); }
 function loginMethods(runtime: RuntimeDescriptor | undefined): readonly LoginMethod[] { return runtime?.loginMethods?.length ? runtime.loginMethods : ["browser"]; }
 function methodLabel(method: LoginMethod): string { return method === "api-key" ? "API key" : method === "device" ? "Device code" : method[0]?.toUpperCase() + method.slice(1); }
 function ignore(promise: Promise<unknown>): void { void promise.catch(() => undefined); }
