@@ -187,6 +187,10 @@ cd client && python -m pytest tests/test_e2e_bootstrap.py -m e2e -q
 ```
 
 
+- **server v1.6.2** — `replay_timeline` accepts `format="json"` (the REST
+  `TimelineResponse` verbatim, with event ids, `agent_id` and `memory_ids`) and
+  `offset`. The default Markdown output is unchanged. Needed for Firekeep Studio
+  0.5 per-turn Keep receipts; older servers make Studio show "partial" receipts.
 - **1.7.2** — `firekeep hands enable` installs Firekeep Hands from PyPI.
   `firekeep-hands` 0.1.0 was published on 2026-10-06 through the `pypi-hands`
   trusted publisher, byte-identical to the wheel on the dist host. With it
