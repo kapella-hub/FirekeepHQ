@@ -62,23 +62,19 @@ export class ReceiptTracker {
     catch { return partialReceipt(runEvents, final); }
     if (ids.length === 0 || !source) return partialReceipt(runEvents, final);
 
+    // Every reported Keep session is read in parallel; each one pages sequentially from its own cursor.
+    const results = await Promise.all(ids.map((id) => readSession(source, id, committed[id] ?? 0)));
     const events: ReplayEvent[] = [];
     const after: Record<string, number> = { ...committed };
     let hitMaxPages = false;
-    for (const id of ids) {
-      let offset = committed[id] ?? 0;
-      for (let page = 0; page < MAX_PAGES; page += 1) {
-        let reply: TimelinePage;
-        try { reply = await source.timeline(id, offset, PAGE_LIMIT); }
-        catch (error) { return unavailableReceipt(message(error), final, committed); }
-        if (reply.kind === "unsupported") return partialReceipt(runEvents, final);
-        if (reply.kind === "error") return unavailableReceipt(reply.message, final, committed);
-        events.push(...reply.events);
-        offset += reply.events.length;
-        if (!reply.hasMore || reply.events.length === 0) break;
-        if (page === MAX_PAGES - 1) hitMaxPages = true;
-      }
-      after[id] = offset;
+    // Results are walked in report order, so the first failing id decides the outcome exactly as a
+    // sequential read would have, and the events keep report order.
+    for (const [index, result] of results.entries()) {
+      if (result.kind === "unsupported") return partialReceipt(runEvents, final);
+      if (result.kind === "error") return unavailableReceipt(result.message, final, committed);
+      events.push(...result.events);
+      after[ids[index]!] = result.offset;
+      hitMaxPages ||= result.hitMaxPages;
     }
     // Merge, never set: a final collect Studio stopped waiting for can resolve after a later turn committed further.
     if (final) this.commit(studioSessionId, after);
@@ -86,6 +82,30 @@ export class ReceiptTracker {
     if (hitMaxPages) return { ...receipt, detail: "more Keep activity than one receipt shows" };
     return receipt;
   }
+}
+
+type SessionRead =
+  | { readonly kind: "page"; readonly events: readonly ReplayEvent[]; readonly offset: number; readonly hitMaxPages: boolean }
+  | { readonly kind: "unsupported" }
+  | { readonly kind: "error"; readonly message: string };
+
+/** Pages one Keep session's timeline from `offset`, bounded by MAX_PAGES. Never rejects. */
+async function readSession(source: KeepTimelineSource, id: string, start: number): Promise<SessionRead> {
+  const events: ReplayEvent[] = [];
+  let offset = start;
+  let hitMaxPages = false;
+  for (let page = 0; page < MAX_PAGES; page += 1) {
+    let reply: TimelinePage;
+    try { reply = await source.timeline(id, offset, PAGE_LIMIT); }
+    catch (error) { return { kind: "error", message: message(error) }; }
+    if (reply.kind === "unsupported") return { kind: "unsupported" };
+    if (reply.kind === "error") return { kind: "error", message: reply.message };
+    events.push(...reply.events);
+    offset += reply.events.length;
+    if (!reply.hasMore || reply.events.length === 0) break;
+    if (page === MAX_PAGES - 1) hitMaxPages = true;
+  }
+  return { kind: "page", events, offset, hitMaxPages };
 }
 
 function unique(values: readonly string[]): string[] {

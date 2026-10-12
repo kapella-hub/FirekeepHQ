@@ -192,3 +192,41 @@ describe("ReceiptTracker", () => {
     });
   });
 });
+
+describe("ReceiptTracker concurrency", () => {
+  it("fetches every reported Keep session's timeline in parallel and keeps id order in the result", async () => {
+    const requested: string[] = [];
+    const release = new Map<string, (page: TimelinePage) => void>();
+    const src: KeepTimelineSource = {
+      timeline(id) {
+        requested.push(id);
+        return new Promise<TimelinePage>((resolve) => { release.set(id, resolve); });
+      },
+    };
+    const tracker = new ReceiptTracker({ source: () => src, readReport: async () => ["s1", "s2"] });
+    const collecting = tracker.collect("studio-1", [], true);
+    // Both requests are in flight before either answers.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(requested).toEqual(["s1", "s2"]);
+    release.get("s2")!({ kind: "page", events: [read("b", ["m2"])], total: 1, hasMore: false });
+    release.get("s1")!({ kind: "page", events: [read("a", ["m1"])], total: 1, hasMore: false });
+    const receipt = await collecting;
+    expect(receipt.keepSessionIds).toEqual(["s1", "s2"]);
+    expect(receipt.recalls.map((recall) => recall.query)).toEqual(["a", "b"]);
+    expect(receipt.cursorsAfter).toEqual({ s1: 1, s2: 1 });
+  });
+
+  it("the first failing id in report order decides the outcome, and nothing commits", async () => {
+    const src: KeepTimelineSource = {
+      async timeline(id) {
+        if (id === "s1") return { kind: "error", message: "s1 down" };
+        if (id === "s2") throw new Error("s2 threw");
+        return { kind: "page", events: [], total: 0, hasMore: false };
+      },
+    };
+    const tracker = new ReceiptTracker({ source: () => src, readReport: async () => ["s1", "s2", "s3"] });
+    const receipt = await tracker.collect("studio-1", [], true);
+    expect(receipt).toMatchObject({ status: "unavailable", detail: "s1 down" });
+    expect(tracker.cursors("studio-1")).toEqual({});
+  });
+});
