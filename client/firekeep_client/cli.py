@@ -87,6 +87,42 @@ def cmd_version(args) -> int:
     return 0
 
 
+# --- whoami: identity facts for Studio 0.5 -----------------------------------
+
+def cmd_whoami(args) -> int:
+    """Identity facts a local client (Firekeep Studio) needs — never the API key.
+
+    Studio must not read ~/.firekeep/config itself because the file holds the
+    key, so this is the one place it learns the agent id (spec 2026-10-11 §7.1).
+    """
+    cfg = None
+    try:
+        cfg = resolver.load_config(_config_path())
+    except resolver.ConfigMigrationConflict as exc:
+        print(f"firekeep: {exc}", file=sys.stderr)
+        return 3
+    except resolver.ConfigError:
+        cfg = None
+    agent: str | None = None
+    if cfg is not None:
+        try:
+            agent = resolver.agent_id(cfg)
+        except resolver.ConfigError:
+            agent = None
+    facts = {
+        "agent_id": agent,
+        "kit_version": __version__,
+        "personal_mode": bool(resolver.is_personal()),
+        "server_configured": bool(cfg is not None and wizard._already_connected(cfg)),
+    }
+    if getattr(args, "json", False):
+        print(json.dumps(facts))
+    else:
+        for key, value in facts.items():
+            print(f"{key}: {value}")
+    return 0 if agent else 1
+
+
 # --- install: venv, pip, ~/.firekeep bootstrap, adapter render -----------------
 
 # `configured = false` is the sentinel that makes "never set up" a REPRESENTABLE
@@ -3146,6 +3182,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
     ver = sub.add_parser("version", help="print client version + skew status")
     ver.set_defaults(func=cmd_version)
+
+    who = sub.add_parser("whoami", help="print this machine's Firekeep identity (never the key)")
+    who.add_argument("--json", action="store_true", help="one line of JSON for programs")
+    who.set_defaults(func=cmd_whoami)
 
     inst = sub.add_parser("install", help="install/refresh the client kit")
     # An unset runtime prepares every shipped adapter. Explicit --runtime (or the
