@@ -4,7 +4,6 @@ import type { RuntimeDescriptor, RuntimeEffort, RuntimeModel } from "../../../co
 import type { RuntimeDiagnostic } from "../../../core/studio-service.js";
 
 export type PermissionMode = "safe" | "standard" | "unrestricted";
-export type ReviewerMode = "off" | "manual" | "after-turn";
 
 export interface ModelRefreshState {
   readonly state: "loading" | "success" | "error";
@@ -28,9 +27,6 @@ export interface AgentChipProps {
   readonly onLoadModels: () => void;
   readonly onRefreshModels: () => void;
   readonly refresh?: ModelRefreshState | null;
-  /** Interim home of the reviewer-mode select; Task 18 moves it to Settings > Reviews. */
-  readonly reviewerMode: ReviewerMode;
-  readonly onReviewerMode: (mode: ReviewerMode) => void;
 }
 
 export function AgentChip(props: AgentChipProps): React.JSX.Element {
@@ -81,9 +77,6 @@ export function AgentChip(props: AgentChipProps): React.JSX.Element {
       </select></label>
       <label>Permissions<select disabled={!primaryRuntimeId} value={permissionMode} onChange={(event) => props.onPermission(event.target.value as PermissionMode)}>
         <option value="safe">Safe · read only</option><option value="standard">Standard · ask</option><option value="unrestricted">Unrestricted · explicit</option>
-      </select></label>
-      <label>After each turn<select value={props.reviewerMode} onChange={(event) => props.onReviewerMode(event.target.value as ReviewerMode)}>
-        <option value="off">Off</option><option value="manual">Manual</option><option value="after-turn">After every turn</option>
       </select></label>
     </div> : null}
   </div>;

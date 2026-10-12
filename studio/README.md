@@ -12,7 +12,7 @@ sessions are portable.
 
 Session usage and its next-turn guard stay visible in the left session rail, with fresh
 tokens separated from cached context and total provider traffic. The selected runtime has
-an explicit **In use** state. **Runtime Center**, opened from the primary-runtime picker,
+an explicit **In use** state. **Settings → Agents & accounts**, opened from the top-bar Settings button,
 keeps every supported agent's account, reviewer, connectivity, and Keep status available
 without occupying the right inspector. The inspector can be hidden when the conversation
 needs more visual focus. Model refreshes replace the live provider catalog and show progress,
@@ -108,7 +108,7 @@ Kiro's optional ACP usage honest when the provider omits token counts instead of
 | Kiro CLI | Stable ACP v1; live account models/efforts | Keep memory and hooks when the Client Kit's named `firekeep` agent is installed | Existing provider-owned browser/device login |
 | Grok | xAI Responses API with SSE; live language-model catalog | Provider-direct: no Keep memory, hooks, or briefing | xAI API key stored with Electron `safeStorage` |
 
-Studio shows this distinction for every agent in Runtime Center. It never implies that a
+Studio shows this distinction for every agent in Settings → Agents & accounts. It never implies that a
 provider-direct adapter has team memory merely because another installed runtime does.
 
 Kiro CLI is the Kiro runtime inside Studio. The optional Kiro IDE is an explicit external

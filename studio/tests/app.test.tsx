@@ -83,6 +83,7 @@ function installBridge(options: { readonly snapshot?: StudioSnapshot; readonly s
     if (options.actionError?.actionType === action.type) return { type: "error", message: options.actionError.message };
     if (action.type === "bootstrap") return { type: "bootstrap", appName: "Firekeep Studio", version: "0.4.0", dashboardAvailable: options.dashboardAvailable ?? true, update: options.update ?? { phase: "idle", currentVersion: "0.4.0", availableVersion: null, progressPercent: null, automatic: true, detail: "Studio checks for verified updates automatically." }, snapshot, runtimes, events: options.events ?? [], sessions };
     if (action.type === "runtime.probe") return { type: "diagnostics", items: runtimes.map((runtime) => ({ runtimeId: runtime.id, connection: !options.readyRuntimeIds || options.readyRuntimeIds.includes(runtime.id) ? { state: "ready", detail: "Ready" } : { state: "missing", detail: "Not installed" }, auth: { state: "connected", label: "Connected" } })) };
+    if (action.type === "command.execute") return { type: "command", result: { kind: "notice", title: "Doctor", body: "Kit looks healthy", tone: "success" }, snapshot, sessions, events: [] };
     if (action.type === "keep.highlights") return { type: "keep-highlights", highlights: options.highlights ?? { online: "", bulletin: "", paused: [] } };
     if (action.type === "runtime.models") return { type: "models", runtimeId: action.runtimeId, items: typeof options.models === "function" ? options.models() : options.models ?? [] };
     if (action.type === "command.complete") return { type: "completions", items: action.input === "/" ? [{ value: "/doctor", label: "/doctor", description: "Check runtimes" }] : [] };
@@ -122,7 +123,8 @@ afterEach(() => {
 
 async function openRuntimeCenter(): Promise<HTMLElement> {
   fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
-  return screen.getByRole("dialog", { name: "Runtime Center" });
+  fireEvent.click(screen.getByRole("tab", { name: "Agents & accounts" }));
+  return screen.getByRole("region", { name: "Agents & accounts" });
 }
 
 describe("Firekeep Studio renderer", () => {
@@ -162,15 +164,75 @@ describe("Firekeep Studio renderer", () => {
     expect(invoke).not.toHaveBeenCalledWith(expect.objectContaining({ type: "reviewer.mode" }));
   });
 
-  it("keeps the old Turn controls out of the Keep panel and the reviewer mode in the Agent chip", async () => {
-    const invoke = installBridge({ snapshot: state("alpha") });
+  it("keeps the old Turn controls out of the Keep panel and the reviewer mode out of the Agent chip", async () => {
+    installBridge({ snapshot: state("alpha") });
     render(<App />);
     await screen.findByRole("button", { name: /^Agent: Alpha/ });
     expect(screen.queryByText("Turn controls")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Permissions")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /^Agent: Alpha/ }));
-    fireEvent.change(screen.getByLabelText("After each turn"), { target: { value: "manual" } });
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "reviewer.mode", mode: "manual" }));
+    expect(screen.getByLabelText("Permissions")).toBeInTheDocument();
+    expect(screen.queryByLabelText("After each turn")).not.toBeInTheDocument();
+  });
+
+  it("opens Settings on Keep connection from the panel and runs doctor", async () => {
+    const invoke = installBridge({ keepStatus: { state: "unreachable", detail: "401 unauthorised", retryInMs: null } });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Run doctor" }));
+    const sheet = screen.getByRole("dialog", { name: "Settings" });
+    expect(within(sheet).getByRole("tab", { name: "Keep connection", selected: true })).toBeInTheDocument();
+    fireEvent.click(within(sheet).getByRole("button", { name: "Run doctor" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith(expect.objectContaining({ type: "command.execute", input: "/firekeep doctor" })));
+    expect(await within(sheet).findByText("Kit looks healthy")).toBeInTheDocument();
+    fireEvent.click(within(sheet).getByRole("button", { name: "Update kit" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "command.execute", input: "/firekeep update" }));
+    expect(within(sheet).getByRole("button", { name: "Turn personal mode on" })).toBeDisabled();
+    fireEvent.click(within(sheet).getByRole("button", { name: "Open dashboard" }));
+    expect(invoke).toHaveBeenCalledWith({ type: "dashboard.open" });
+  });
+
+  it("opens Settings on Keep connection from the rail warning row", async () => {
+    installBridge({ keepStatus: { state: "missing" } });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Keep not installed" }));
+    expect(within(screen.getByRole("dialog", { name: "Settings" })).getByRole("tab", { name: "Keep connection", selected: true })).toBeInTheDocument();
+  });
+
+  it("moves after-turn review to Settings > Reviews, with the default reviewer list", async () => {
+    const invoke = installBridge({ snapshot: state("alpha") });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Reviews" }));
+    fireEvent.change(screen.getByLabelText("After each turn"), { target: { value: "after-turn" } });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "reviewer.mode", mode: "after-turn" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add Beta as reviewer" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "reviewer.add", runtimeId: "beta" }));
+  });
+
+  it("closes Settings on Escape without cancelling the run, returns focus, and remembers the section", async () => {
+    const invoke = installBridge({ snapshot: { ...state("alpha"), activeRunId: "run-1" } });
+    render(<App />);
+    const opener = await screen.findByRole("button", { name: "Settings" });
+    opener.focus();
+    fireEvent.click(opener);
+    expect(screen.getByRole("dialog", { name: "Settings" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Agents & accounts", selected: true })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Appearance" }));
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Settings" })).not.toBeInTheDocument();
+    expect(opener).toHaveFocus();
+    expect(invoke.mock.calls.some(([action]) => action.type === "run.cancel")).toBe(false);
+    fireEvent.click(opener);
+    expect(screen.getByRole("tab", { name: "Appearance", selected: true })).toBeInTheDocument();
+  });
+
+  it("shows Studio updates in Settings with a Check now action", async () => {
+    const invoke = installBridge();
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Studio updates" }));
+    fireEvent.click(screen.getByRole("button", { name: "Check now" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "update.check" }));
   });
 
   it("closes the Agent popover on Escape without cancelling the active run, and returns focus", async () => {
@@ -204,14 +266,17 @@ describe("Firekeep Studio renderer", () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "primary.set", runtimeId: "beta" }));
   });
 
-  it("applies the persisted appearance and announces the next theme", async () => {
+  it("applies the persisted appearance and changes it from Settings > Appearance", async () => {
     const invoke = installBridge({ snapshot: { ...state(), theme: "light" } });
     render(<App />);
 
     await screen.findByRole("textbox", { name: /Message/i });
     await waitFor(() => expect(document.documentElement).toHaveAttribute("data-theme", "light"));
 
-    fireEvent.click(screen.getByRole("button", { name: "Appearance: Light. Switch to system theme" }));
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Appearance" }));
+    expect(screen.getByRole("radio", { name: "Light" })).toBeChecked();
+    fireEvent.click(screen.getByRole("radio", { name: "System" }));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "theme.set", theme: "system" }));
   });
 
@@ -541,11 +606,10 @@ describe("Firekeep Studio renderer", () => {
     expect(invoke).toHaveBeenCalledWith({ type: "workspace.set", path: "C:\\work\\site" });
   });
 
-  it("restores Runtime Center actions from the Settings button", async () => {
+  it("restores Runtime Center actions under Settings > Agents & accounts", async () => {
     const invoke = installBridge({ snapshot: state("alpha") });
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
-    const center = await screen.findByRole("dialog", { name: "Runtime Center" });
+    const center = await openRuntimeCenter();
     expect(within(center).getByRole("button", { name: "Alpha is in use" })).toHaveAttribute("aria-pressed", "true");
     fireEvent.click(within(center).getByRole("button", { name: "Use Beta as primary" }));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "primary.set", runtimeId: "beta" }));
@@ -553,8 +617,8 @@ describe("Firekeep Studio renderer", () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "reviewer.add", runtimeId: "beta" }));
     fireEvent.click(within(center).getByRole("button", { name: "Disconnect Beta" }));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "runtime.logout", runtimeId: "beta" }));
-    fireEvent.click(within(center).getByRole("button", { name: "Close Runtime Center" }));
-    expect(screen.queryByRole("dialog", { name: "Runtime Center" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Close Settings" }));
+    expect(screen.queryByRole("dialog", { name: "Settings" })).not.toBeInTheDocument();
   });
 
   it("closes the repo menu with Escape without cancelling the active run", async () => {

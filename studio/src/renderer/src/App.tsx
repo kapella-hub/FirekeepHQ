@@ -4,18 +4,13 @@ import {
   ArrowDownToLine,
   CheckCircle2,
   ChevronDown,
-  Code2,
   Cpu,
   ExternalLink,
   FileDiff,
   KeyRound,
-  LogOut,
   Palette,
-  RefreshCw,
   ShieldCheck,
   Sparkles,
-  SunMoon,
-  Terminal,
   X,
 } from "lucide-react";
 import type { CommandCompletion, CommandResult } from "../../core/slash-commands";
@@ -32,6 +27,7 @@ import { StudioShell } from "./layout/StudioShell.js";
 import { TopBar } from "./layout/TopBar.js";
 import { ignore } from "./util.js";
 import { CopyButton } from "./CopyButton.js";
+import { SettingsSheet, type SettingsSection } from "./settings/SettingsSheet.js";
 import { KeepPanel } from "./keep/KeepPanel.js";
 import { SessionRail } from "./rail/SessionRail.js";
 import { sessionAccentStyle } from "./rail/session-style.js";
@@ -41,12 +37,12 @@ import { AgentChip } from "./composer/AgentChip.js";
 import { DoneWhenChip } from "./composer/DoneWhenChip.js";
 import { Composer } from "./composer/Composer.js";
 import { coalesceRuntimeEvents } from "./runtime-event-buffer.js";
+import { CommandResultCard, type CommandCard } from "./conversation/CommandResultCard.js";
 import { KeepReceiptCard } from "./conversation/KeepReceiptCard.js";
 import { SecondOpinionChooser } from "./conversation/SecondOpinion.js";
 import { MissionStepper } from "./conversation/MissionStepper.js";
 import { buildTimeline, groupTimeline, type TimelineItem, type TimelineRun } from "./timeline";
 
-interface CommandCard { readonly id: string; readonly input: string; readonly result: CommandResult }
 interface ConnectDialog { readonly runtimeId: string; readonly method: LoginMethod }
 interface ModelRefresh { readonly runtimeId: string; readonly state: "loading" | "success" | "error"; readonly message: string }
 
@@ -68,7 +64,7 @@ export function App(): React.JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [keepStatus, setKeepStatus] = useState<KeepStatus | null>(null);
   const [highlights, setHighlights] = useState<KeepHighlights | null>(null);
-  const [runtimeManagerOpen, setRuntimeManagerOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<SettingsSection | null>(null);
   const [connectDialog, setConnectDialog] = useState<ConnectDialog | null>(null);
   const [secret, setSecret] = useState("");
   const [decisionBoard, setDecisionBoard] = useState<DecisionBoardDocument | null>(null);
@@ -76,6 +72,9 @@ export function App(): React.JSX.Element {
   const [followingTail, setFollowingTail] = useState(true);
   const [sessionEditorId, setSessionEditorId] = useState<string | null>(null);
   const [sessionSaving, setSessionSaving] = useState(false);
+  // The last section used this app session, and the element to hand focus back to when the sheet closes.
+  const lastSettingsSection = useRef<SettingsSection>("agents");
+  const settingsOpener = useRef<HTMLElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
   const followingTailRef = useRef(true);
@@ -271,6 +270,30 @@ export function App(): React.JSX.Element {
     finally { setBusy(false); }
   }, [applyResult, busy, invoke]);
 
+  const openSettings = useCallback((section?: SettingsSection): void => {
+    if (settingsSection === null) settingsOpener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const next = section ?? lastSettingsSection.current;
+    lastSettingsSection.current = next;
+    setSettingsSection(next);
+    ignore(refreshDiagnostics());
+  }, [refreshDiagnostics, settingsSection]);
+  const chooseSettingsSection = useCallback((section: SettingsSection): void => { lastSettingsSection.current = section; setSettingsSection(section); }, []);
+  const closeSettings = useCallback((): void => {
+    setSettingsSection(null);
+    const opener = settingsOpener.current;
+    settingsOpener.current = null;
+    if (opener?.isConnected) opener.focus();
+    else composerRef.current?.focus();
+  }, []);
+  /** Runs a kit slash command for Settings > Keep connection; the card renders inside the sheet, not the transcript. */
+  const runKitCommand = useCallback(async (input: string): Promise<CommandResult | null> => {
+    try {
+      const result = await invoke({ type: "command.execute", input });
+      applyResult(result);
+      return result.type === "command" ? result.result : null;
+    } catch { return null; }
+  }, [applyResult, invoke]);
+
   useEffect(() => {
     const keyboard = (event: KeyboardEvent): void => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
@@ -287,14 +310,13 @@ export function App(): React.JSX.Element {
         ignore(invoke({ type: "settings.keepPanel", open }).then(applyResult));
       } else if (event.key === "Escape") {
         if (connectDialog) setConnectDialog(null);
-        else if (runtimeManagerOpen) setRuntimeManagerOpen(false);
         else if (sessionEditorId) setSessionEditorId(null);
         else if (snapshot?.activeRunId) ignore(invoke({ type: "run.cancel", runId: snapshot.activeRunId }));
       }
     };
     window.addEventListener("keydown", keyboard);
     return () => window.removeEventListener("keydown", keyboard);
-  }, [applyResult, busy, connectDialog, invoke, runReview, runtimeManagerOpen, sessionEditorId, snapshot?.activeRunId, snapshot?.keepPanelOpen]);
+  }, [applyResult, busy, connectDialog, invoke, runReview, sessionEditorId, snapshot?.activeRunId, snapshot?.keepPanelOpen]);
 
   const submit = async (): Promise<void> => {
     const input = composer.trim();
@@ -495,14 +517,13 @@ export function App(): React.JSX.Element {
         recentWorkspaces={snapshot.recentWorkspaces}
         onChooseFolder={() => ignore(chooseWorkspace())}
         onSwitchWorkspace={(path) => ignore(invoke({ type: "workspace.set", path }).then(applyResult))}
-        onOpenSettings={() => { setRuntimeManagerOpen(true); ignore(refreshDiagnostics()); }}
+        onOpenSettings={() => openSettings()}
         update={updateState}
         onUpdate={() => ignore(updateStudio())}
         keepPanelOpen={snapshot.keepPanelOpen}
         onToggleKeep={() => ignore(invoke({ type: "settings.keepPanel", open: !snapshot.keepPanelOpen }).then(applyResult))}
         agentWorking={agentWorking}
         center={currentSession ? <div className="session-title-display" style={sessionAccentStyle(currentSession.color)}><span className="session-color-dot" /><span className="session-title">{currentSession.name}</span><button type="button" className="session-title-customize" aria-label={`Customize current session ${currentSession.name}`} aria-expanded={sessionEditorId === currentSession.id} title="Edit session name and color" onClick={() => setSessionEditorId((current) => current === currentSession.id ? null : currentSession.id)}><Palette size={11} /></button></div> : <span className="session-title">New session</span>}
-        actions={<button className="icon-button appearance-button" aria-label={`Appearance: ${themeLabel(snapshot.theme)}. Switch to ${nextTheme(snapshot.theme)} theme`} title={`Appearance: ${themeLabel(snapshot.theme)} · next ${nextTheme(snapshot.theme)}`} onClick={() => ignore(invoke({ type: "theme.set", theme: nextTheme(snapshot.theme) }).then(applyResult))}><SunMoon size={17} /></button>}
       />}
       rail={<SessionRail
         sessions={sessions}
@@ -511,7 +532,7 @@ export function App(): React.JSX.Element {
         onResume={(sessionId) => ignore(invoke({ type: "session.resume", sessionId }).then(applyResult))}
         onEdit={saveSession}
         keepWarning={keepWarning(keepStatus)}
-        onKeepWarning={() => { setRuntimeManagerOpen(true); ignore(refreshDiagnostics()); }}
+        onKeepWarning={() => openSettings("keep")}
         editingId={sessionEditorId}
         saving={sessionSaving}
         onToggleEdit={(sessionId) => setSessionEditorId((current) => current === sessionId ? null : sessionId)}
@@ -572,8 +593,6 @@ export function App(): React.JSX.Element {
             onLoadModels={() => { if (primaryRuntimeId && !models[primaryRuntimeId]) ignore(loadModels(primaryRuntimeId)); }}
             onRefreshModels={() => { if (primaryRuntimeId) ignore(loadModels(primaryRuntimeId)); }}
             refresh={modelRefresh?.runtimeId === primaryRuntimeId ? modelRefresh : null}
-            reviewerMode={snapshot.reviewerMode}
-            onReviewerMode={(mode) => ignore(invoke({ type: "reviewer.mode", mode }).then(applyResult))}
           /><DoneWhenChip checks={doneChecks} onChange={setDoneChecks} detect={detectTestCommand} /></>}
         />
       </main>
@@ -583,23 +602,35 @@ export function App(): React.JSX.Element {
         receipts={keepReceipts}
         invoke={keepRead}
         onInsert={insertQuote}
-        // Task 18 retargets this to Settings -> Keep connection; until then the Runtime Center is the Settings button's target.
-        onOpenKeepSettings={() => { setRuntimeManagerOpen(true); ignore(refreshDiagnostics()); }}
+        onOpenKeepSettings={() => openSettings("keep")}
         onRetry={retryKeep}
       />}
     >
 
-      {runtimeManagerOpen ? <RuntimeManagerDialog
+      {settingsSection ? <SettingsSheet
+        section={settingsSection}
+        onSection={chooseSettingsSection}
+        onClose={closeSettings}
+        suspendEscape={connectDialog !== null}
         runtimes={bootstrap.runtimes}
         diagnostics={diagnostics}
         primaryRuntimeId={snapshot.primaryRuntimeId}
         reviewerRuntimeIds={snapshot.reviewerRuntimeIds}
-        close={() => setRuntimeManagerOpen(false)}
         refresh={() => ignore(refreshDiagnostics())}
         choosePrimary={(runtimeId) => ignore(choosePrimary(runtimeId))}
         toggleReviewer={(runtimeId, reviewer) => ignore(invoke({ type: reviewer ? "reviewer.remove" : "reviewer.add", runtimeId }).then(applyResult))}
         connect={openConnect}
         disconnect={(runtimeId) => ignore(invoke({ type: "runtime.logout", runtimeId }).then(() => refreshDiagnostics()))}
+        keepStatus={keepStatus}
+        dashboardAvailable={bootstrap.dashboardAvailable}
+        runCommand={runKitCommand}
+        onOpenDashboard={() => ignore(invoke({ type: "dashboard.open" }))}
+        reviewerMode={snapshot.reviewerMode}
+        onReviewerMode={(mode) => ignore(invoke({ type: "reviewer.mode", mode }).then(applyResult))}
+        theme={snapshot.theme}
+        onTheme={(theme) => ignore(invoke({ type: "theme.set", theme }).then(applyResult))}
+        update={updateState}
+        onUpdate={() => ignore(updateStudio())}
       /> : null}
       {connectDialog ? <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setConnectDialog(null)}><form className="modal" role="dialog" aria-modal="true" aria-labelledby="connect-runtime-title" onSubmit={(event) => { event.preventDefault(); ignore(connect()); }}><button type="button" className="modal-close" aria-label="Close connection dialog" onClick={() => setConnectDialog(null)}><X size={17} /></button><span className="modal-icon"><KeyRound size={22} /></span><h2 id="connect-runtime-title">Connect {runtimeName(bootstrap.runtimes, connectDialog.runtimeId)}</h2><p>Authentication remains owned by the provider. Studio only stores API keys using your operating system's encrypted credential service.</p><label>Method<select value={connectDialog.method} onChange={(event) => setConnectDialog({ ...connectDialog, method: event.target.value as LoginMethod })}>{loginMethods(bootstrap.runtimes.find((runtime) => runtime.id === connectDialog.runtimeId)).map((method) => <option key={method} value={method}>{methodLabel(method)}</option>)}</select></label>{connectDialog.method === "api-key" ? <label>API key<input autoFocus type="password" autoComplete="off" value={secret} onChange={(event) => setSecret(event.target.value)} placeholder="Stored encrypted; never shown again" /></label> : null}<div className="modal-actions"><button type="button" onClick={() => setConnectDialog(null)}>Cancel</button><button className="primary-action" type="submit" disabled={connectDialog.method === "api-key" && !secret}>Continue securely</button></div></form></div> : null}
       {decisionBoard ? <DecisionBoardModal board={decisionBoard} close={() => setDecisionBoard(null)} submit={async (answers) => {
@@ -609,66 +640,6 @@ export function App(): React.JSX.Element {
       }} /> : null}
     </StudioShell>
   );
-}
-
-function RuntimeManagerDialog({
-  runtimes,
-  diagnostics,
-  primaryRuntimeId,
-  reviewerRuntimeIds,
-  close,
-  refresh,
-  choosePrimary,
-  toggleReviewer,
-  connect,
-  disconnect,
-}: {
-  readonly runtimes: readonly RuntimeDescriptor[];
-  readonly diagnostics: Readonly<Record<string, RuntimeDiagnostic>>;
-  readonly primaryRuntimeId: string | null;
-  readonly reviewerRuntimeIds: readonly string[];
-  readonly close: () => void;
-  readonly refresh: () => void;
-  readonly choosePrimary: (runtimeId: string) => void;
-  readonly toggleReviewer: (runtimeId: string, reviewer: boolean) => void;
-  readonly connect: (runtimeId: string) => void;
-  readonly disconnect: (runtimeId: string) => void;
-}): React.JSX.Element {
-  return <div className="modal-backdrop runtime-manager-backdrop" onMouseDown={(event) => event.target === event.currentTarget && close()}>
-    <section className="modal runtime-manager-modal" role="dialog" aria-modal="true" aria-labelledby="runtime-manager-title">
-      <button type="button" className="modal-close" aria-label="Close Runtime Center" onClick={close}><X size={17} /></button>
-      <header className="runtime-manager-header">
-        <span className="modal-icon"><Cpu size={21} /></span>
-        <div><p className="eyebrow">AGENT CONTROL</p><h2 id="runtime-manager-title">Runtime Center</h2><p>Switch the primary, assign reviewers, and manage provider accounts without keeping runtime infrastructure in the inspector.</p></div>
-        <button type="button" className="runtime-manager-refresh" onClick={refresh}><RefreshCw size={14} /> Refresh status</button>
-      </header>
-      <div className="runtime-manager-grid">
-        {runtimes.map((runtime) => {
-          const diagnostic = diagnostics[runtime.id];
-          const connected = diagnostic?.auth.state === "connected";
-          const isPrimary = runtime.id === primaryRuntimeId;
-          const reviewer = reviewerRuntimeIds.includes(runtime.id);
-          const canChat = runtime.capabilities.includes("chat");
-          const canReview = runtime.capabilities.includes("review");
-          const hasKeep = runtime.capabilities.includes("firekeep-memory");
-          return <article className={`runtime-card ${isPrimary ? "primary" : ""}`} key={runtime.id} style={{ "--runtime-accent": runtime.accent ?? "#df7e45" } as React.CSSProperties}>
-            <div className="runtime-card-top"><span className="runtime-orb">{runtime.displayName[0]}</span><div><strong>{runtime.displayName}</strong><small>{runtime.transport}</small></div><span className={`status-pill ${diagnostic?.connection.state ?? "loading"}`}>{diagnostic?.connection.state ?? "checking"}</span></div>
-            <p>{diagnostic?.auth.label ?? diagnostic?.auth.detail ?? runtime.description}</p>
-            <div className={`keep-capability ${hasKeep ? "connected" : "absent"}`}>
-              {hasKeep ? <ShieldCheck size={11} /> : <AlertTriangle size={11} />}
-              <span>{hasKeep ? `Keep memory${runtime.capabilities.includes("firekeep-hooks") ? " + automatic hooks" : " · recall on demand"}` : "Provider direct · no Keep memory"}</span>
-            </div>
-            <div className="runtime-card-actions">
-              {canChat ? <button className={`runtime-use ${isPrimary ? "active" : ""}`} aria-label={isPrimary ? `${runtime.displayName} is in use` : `Use ${runtime.displayName} as primary`} aria-pressed={isPrimary} disabled={isPrimary} onClick={() => choosePrimary(runtime.id)}>{isPrimary ? <><CheckCircle2 size={12} /> In use</> : "Use"}</button> : null}
-              {canReview ? <button className={reviewer ? "active" : ""} aria-label={reviewer ? `Remove ${runtime.displayName} reviewer` : `Add ${runtime.displayName} as reviewer`} aria-pressed={reviewer} onClick={() => toggleReviewer(runtime.id, reviewer)}>{reviewer ? "Reviewing" : "Review"}</button> : null}
-              {connected ? <button aria-label={`Disconnect ${runtime.displayName}`} title="Disconnect account" onClick={() => disconnect(runtime.id)}><LogOut size={13} /></button> : <button aria-label={`Connect ${runtime.displayName}`} onClick={() => connect(runtime.id)}><KeyRound size={13} /> Connect</button>}
-            </div>
-          </article>;
-        })}
-      </div>
-      <footer className="runtime-manager-footer"><Terminal size={13} /><span>Model, reasoning, and permission settings follow each selected runtime. Use Turn controls or <code>/model</code>, <code>/effort</code>, and <code>/permissions</code>.</span></footer>
-    </section>
-  </div>;
 }
 
 function LaunchScreen({ error }: { readonly error: string | null }): React.JSX.Element {
@@ -823,18 +794,12 @@ function safeHttpUrl(value: string | undefined): boolean {
   catch { return false; }
 }
 
-function CommandResultCard({ card }: { readonly card: CommandCard }): React.JSX.Element {
-  return <article className={`command-card ${card.result.tone ?? "neutral"}`}><header><Code2 size={15} /><code>{card.input}</code><span>{card.result.title}</span></header>{card.result.kind === "table" && card.result.rows ? <div className="table-scroll"><table><tbody>{card.result.rows.map((row, index) => <tr key={index}>{row.map((cell, cellIndex) => <td key={cellIndex}>{cell}</td>)}</tr>)}</tbody></table></div> : <div className="markdown"><RichMarkdown>{card.result.body}</RichMarkdown></div>}</article>;
-}
-
 function keepWarning(status: KeepStatus | null): string | null {
   if (!status || status.state === "starting" || status.state === "connected") return null;
   if (status.state === "missing") return "Keep not installed";
   if (status.state === "unconfigured") return "Keep not configured";
   return "Keep unreachable";
 }
-function nextTheme(theme: StudioSnapshot["theme"]): StudioSnapshot["theme"] { return theme === "system" ? "dark" : theme === "dark" ? "light" : "system"; }
-function themeLabel(theme: StudioSnapshot["theme"]): string { return theme === "system" ? "System" : theme === "dark" ? "Dark" : "Light"; }
 function runtimeName(runtimes: readonly RuntimeDescriptor[], id: string): string { return runtimes.find((runtime) => runtime.id === id)?.displayName ?? id; }
 function pretty(value: unknown): string { return typeof value === "string" ? value : JSON.stringify(value, null, 2); }
 function formatTime(value: string): string { const date = new Date(value); return Number.isNaN(date.getTime()) ? "" : date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); }
