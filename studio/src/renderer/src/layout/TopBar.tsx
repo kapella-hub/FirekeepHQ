@@ -1,11 +1,10 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { AlertTriangle, CheckCircle2, ChevronDown, Download, FolderOpen, RefreshCw, Settings, Sparkles } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronDown, Download, FolderOpen, RefreshCw, PanelRightClose, PanelRightOpen, Settings, Sparkles } from "lucide-react";
 import type { StudioUpdateState } from "../../../shared/ipc";
 import { FirekeepMark } from "../FirekeepMark.js";
+import { pathLeaf } from "../util.js";
 
-export function pathLeaf(value: string): string { return value.replace(/[\\/]+$/, "").split(/[\\/]/).at(-1) || value; }
-
-export function TopBar({ workspacePath, recentWorkspaces, onChooseFolder, onSwitchWorkspace, onOpenSettings, update, onUpdate, agentWorking = false, center, actions }: {
+export function TopBar({ workspacePath, recentWorkspaces, onChooseFolder, onSwitchWorkspace, onOpenSettings, update, onUpdate, keepPanelOpen, onToggleKeep, agentWorking = false, center, actions }: {
   readonly workspacePath: string | null;
   readonly recentWorkspaces: readonly string[];
   readonly onChooseFolder: () => void;
@@ -13,6 +12,8 @@ export function TopBar({ workspacePath, recentWorkspaces, onChooseFolder, onSwit
   readonly onOpenSettings: () => void;
   readonly update: StudioUpdateState | null;
   readonly onUpdate: () => void;
+  readonly keepPanelOpen: boolean;
+  readonly onToggleKeep: () => void;
   readonly agentWorking?: boolean;
   readonly center?: ReactNode;
   readonly actions?: ReactNode;
@@ -22,12 +23,16 @@ export function TopBar({ workspacePath, recentWorkspaces, onChooseFolder, onSwit
   useEffect(() => {
     if (!open) return;
     const close = (event: MouseEvent | KeyboardEvent): void => {
-      if (event instanceof KeyboardEvent) { if (event.key === "Escape") setOpen(false); return; }
+      if (event instanceof KeyboardEvent) {
+        // Capture phase + stopImmediatePropagation: closing the menu must not also reach App's Escape (run.cancel).
+        if (event.key === "Escape") { event.stopImmediatePropagation(); setOpen(false); }
+        return;
+      }
       if (!pickerRef.current?.contains(event.target as Node)) setOpen(false);
     };
     window.addEventListener("mousedown", close);
-    window.addEventListener("keydown", close);
-    return () => { window.removeEventListener("mousedown", close); window.removeEventListener("keydown", close); };
+    window.addEventListener("keydown", close, true);
+    return () => { window.removeEventListener("mousedown", close); window.removeEventListener("keydown", close, true); };
   }, [open]);
   const label = workspacePath ? pathLeaf(workspacePath) : "Home";
   return (
@@ -54,6 +59,7 @@ export function TopBar({ workspacePath, recentWorkspaces, onChooseFolder, onSwit
       <div className="titlebar-actions">
         {update && update.phase !== "disabled" ? <StudioUpdateButton state={update} onAction={onUpdate} /> : null}
         {actions}
+        <button type="button" className="icon-button" aria-label={keepPanelOpen ? "Hide the Keep" : "Show the Keep"} aria-pressed={keepPanelOpen} title={keepPanelOpen ? "Hide the Keep (Ctrl+\\)" : "Show the Keep (Ctrl+\\)"} onClick={onToggleKeep}>{keepPanelOpen ? <PanelRightClose size={17} /> : <PanelRightOpen size={17} />}</button>
         <button type="button" className="icon-button" aria-label="Settings" title="Settings" onClick={onOpenSettings}><Settings size={17} /></button>
       </div>
     </header>

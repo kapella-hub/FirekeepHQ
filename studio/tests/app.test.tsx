@@ -425,6 +425,72 @@ describe("Firekeep Studio renderer", () => {
     expect(invoke).toHaveBeenCalledWith({ type: "workspace.set", path: "C:\\work\\site" });
   });
 
+  it("restores Runtime Center actions from the Settings button", async () => {
+    const invoke = installBridge({ snapshot: state("alpha") });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+    const center = await screen.findByRole("dialog", { name: "Runtime Center" });
+    expect(within(center).getByRole("button", { name: "Alpha is in use" })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(within(center).getByRole("button", { name: "Use Beta as primary" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "primary.set", runtimeId: "beta" }));
+    fireEvent.click(within(center).getByRole("button", { name: "Add Beta as reviewer" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "reviewer.add", runtimeId: "beta" }));
+    fireEvent.click(within(center).getByRole("button", { name: "Disconnect Beta" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "runtime.logout", runtimeId: "beta" }));
+    fireEvent.click(within(center).getByRole("button", { name: "Close Runtime Center" }));
+    expect(screen.queryByRole("dialog", { name: "Runtime Center" })).not.toBeInTheDocument();
+  });
+
+  it("closes the repo menu with Escape without cancelling the active run", async () => {
+    const invoke = installBridge({ snapshot: { ...state("alpha"), activeRunId: "run-1", workspacePath: "C:\\work\\firekeep", recentWorkspaces: ["C:\\work\\firekeep"] } });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Workspace: firekeep" }));
+    expect(screen.getByRole("menu", { name: "Workspaces" })).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("menu", { name: "Workspaces" })).not.toBeInTheDocument());
+    expect(invoke).not.toHaveBeenCalledWith({ type: "run.cancel", runId: "run-1" });
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "run.cancel", runId: "run-1" }));
+  });
+
+  it("ignores Ctrl+Alt+\ and key repeat for the Keep toggle", async () => {
+    const invoke = installBridge();
+    render(<App />);
+    await screen.findByRole("complementary", { name: "The Keep" });
+    fireEvent.keyDown(window, { key: "\\", code: "Backslash", ctrlKey: true, altKey: true });
+    fireEvent.keyDown(window, { key: "\\", code: "Backslash", ctrlKey: true, repeat: true });
+    expect(invoke).not.toHaveBeenCalledWith(expect.objectContaining({ type: "settings.keepPanel" }));
+    expect(screen.getByRole("complementary", { name: "The Keep" })).toBeInTheDocument();
+  });
+
+  it.each([
+    ["/home/me/proj", "Workspace: proj"],
+    ["C:\\work\\site\\","Workspace: site"],
+    [null, "Workspace: Home"],
+  ])("labels the repo picker for %s", async (path, label) => {
+    installBridge({ snapshot: { ...state("alpha"), workspacePath: path } });
+    render(<App />);
+    expect(await screen.findByRole("button", { name: label })).toBeInTheDocument();
+  });
+
+  it("shows only Loading… on the launch screen", async () => {
+    Object.defineProperty(window, "firekeepStudio", { configurable: true, value: { invoke: () => new Promise(() => undefined), subscribe: () => () => undefined } });
+    render(<App />);
+    expect(await screen.findByText(/Loading…/)).toBeInTheDocument();
+    expect(screen.queryByText("THE KEEP IS WAKING")).not.toBeInTheDocument();
+    expect(screen.queryByText("One calm console for every agent you trust.")).not.toBeInTheDocument();
+  });
+
+  it("toggles the Keep panel from the top bar button", async () => {
+    const invoke = installBridge();
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Hide the Keep" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "settings.keepPanel", open: false }));
+    fireEvent.click(await screen.findByRole("button", { name: "Show the Keep" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "settings.keepPanel", open: true }));
+    expect(await screen.findByRole("complementary", { name: "The Keep" })).toBeInTheDocument();
+  });
+
   it("replaces a generic completed Bash row with a concise description", async () => {
     const base = { runId: "run-1", studioSessionId: "session-1", runtimeId: "alpha", timestamp: "2026-08-24T00:00:00.000Z" };
     installBridge({ events: [

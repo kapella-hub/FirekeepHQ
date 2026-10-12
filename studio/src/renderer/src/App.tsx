@@ -35,7 +35,8 @@ import { findDecisionBoardUrl } from "../../shared/decision-board";
 import type { KeepStatus } from "../../shared/keep";
 import { FirekeepMark } from "./FirekeepMark.js";
 import { StudioShell } from "./layout/StudioShell.js";
-import { TopBar, pathLeaf } from "./layout/TopBar.js";
+import { TopBar } from "./layout/TopBar.js";
+import { ignore, pathLeaf } from "./util.js";
 import { SessionRail } from "./rail/SessionRail.js";
 import { sessionAccentStyle } from "./rail/session-style.js";
 import { RichMarkdown } from "./RichMarkdown.js";
@@ -256,8 +257,9 @@ export function App(): React.JSX.Element {
       } else if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "r") {
         event.preventDefault();
         if (!busy) ignore(runReview());
-      } else if ((event.ctrlKey || event.metaKey) && event.code === "Backslash") {
+      } else if ((event.ctrlKey || event.metaKey) && !event.altKey && event.code === "Backslash") {
         event.preventDefault();
+        if (event.repeat) return;
         const open = !(snapshot?.keepPanelOpen ?? true);
         ignore(invoke({ type: "settings.keepPanel", open }).then(applyResult));
       } else if (event.key === "Escape") {
@@ -406,6 +408,8 @@ export function App(): React.JSX.Element {
         onOpenSettings={() => { setRuntimeManagerOpen(true); ignore(refreshDiagnostics()); }}
         update={updateState}
         onUpdate={() => ignore(updateStudio())}
+        keepPanelOpen={snapshot.keepPanelOpen}
+        onToggleKeep={() => ignore(invoke({ type: "settings.keepPanel", open: !snapshot.keepPanelOpen }).then(applyResult))}
         agentWorking={agentWorking}
         center={currentSession ? <div className="session-title-display" style={sessionAccentStyle(currentSession.color)}><span className="session-color-dot" /><span className="session-title">{currentSession.name}</span><button type="button" className="session-title-customize" aria-label={`Customize current session ${currentSession.name}`} aria-expanded={sessionEditorId === currentSession.id} title="Edit session name and color" onClick={() => setSessionEditorId((current) => current === currentSession.id ? null : currentSession.id)}><Palette size={11} /></button></div> : <span className="session-title">New session</span>}
         actions={<button className="icon-button appearance-button" aria-label={`Appearance: ${themeLabel(snapshot.theme)}. Switch to ${nextTheme(snapshot.theme)} theme`} title={`Appearance: ${themeLabel(snapshot.theme)} · next ${nextTheme(snapshot.theme)}`} onClick={() => ignore(invoke({ type: "theme.set", theme: nextTheme(snapshot.theme) }).then(applyResult))}><SunMoon size={17} /></button>}
@@ -774,4 +778,3 @@ function formatTime(value: string): string { const date = new Date(value); retur
 function formatUsage(usage: RuntimeUsage): string { const pieces = [usage.inputTokens !== undefined ? `${usage.inputTokens.toLocaleString()} in` : "", usage.cacheCreationInputTokens !== undefined ? `${usage.cacheCreationInputTokens.toLocaleString()} cache write` : "", usage.cachedInputTokens !== undefined ? `${usage.cachedInputTokens.toLocaleString()} cached` : "", usage.outputTokens !== undefined ? `${usage.outputTokens.toLocaleString()} out` : "", usage.reasoningTokens !== undefined ? `${usage.reasoningTokens.toLocaleString()} reasoning` : "", usage.costUsd !== undefined ? `$${usage.costUsd.toFixed(4)}` : "", usage.durationMs !== undefined ? `${(usage.durationMs / 1_000).toFixed(1)}s` : ""].filter(Boolean); return pieces.join(" · ") || `${usage.totalTokens?.toLocaleString() ?? 0} tokens`; }
 function loginMethods(runtime: RuntimeDescriptor | undefined): readonly LoginMethod[] { return runtime?.loginMethods?.length ? runtime.loginMethods : ["browser"]; }
 function methodLabel(method: LoginMethod): string { return method === "api-key" ? "API key" : method === "device" ? "Device code" : method[0]?.toUpperCase() + method.slice(1); }
-function ignore(promise: Promise<unknown>): void { void promise.catch(() => undefined); }

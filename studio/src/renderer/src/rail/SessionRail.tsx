@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { AlertTriangle, Palette, Plus, Sparkles } from "lucide-react";
 import { DEFAULT_SESSION_COLOR, type SessionColor, type StudioSessionSummary } from "../../../core/session-store";
+import { ignore } from "../util.js";
 import { SESSION_COLOR_OPTIONS, relativeTime, sessionAccentStyle } from "./session-style.js";
 
 export function SessionRail({ sessions, activeSessionId, onNew, onResume, onEdit, keepWarning, onKeepWarning, editingId, saving, onToggleEdit, onCloseEdit }: {
@@ -50,5 +51,3 @@ function SessionEditor({ session, saving, close, save }: { readonly session: Stu
     </form>
   );
 }
-
-function ignore(promise: Promise<unknown>): void { void promise.catch(() => undefined); }
