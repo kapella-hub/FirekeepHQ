@@ -5,7 +5,6 @@ import {
   CheckCircle2,
   ChevronDown,
   Code2,
-  Copy,
   Cpu,
   ExternalLink,
   FileDiff,
@@ -32,6 +31,8 @@ import { FirekeepMark } from "./FirekeepMark.js";
 import { StudioShell } from "./layout/StudioShell.js";
 import { TopBar } from "./layout/TopBar.js";
 import { ignore } from "./util.js";
+import { CopyButton } from "./CopyButton.js";
+import { KeepPanel } from "./keep/KeepPanel.js";
 import { SessionRail } from "./rail/SessionRail.js";
 import { sessionAccentStyle } from "./rail/session-style.js";
 import { RichMarkdown } from "./RichMarkdown.js";
@@ -434,6 +435,8 @@ export function App(): React.JSX.Element {
     return groups;
   }, [timelineRuns]);
   const newestReceiptRunId = useMemo(() => [...timelineRuns].reverse().find((run) => run.receipt)?.runId ?? null, [timelineRuns]);
+  const keepReceipts = useMemo(() => [...timelineRuns].reverse().flatMap((run) => run.receipt ? [run.receipt] : []), [timelineRuns]);
+  const insertQuote = useCallback((text: string) => setComposer((value) => `${value}${value && !value.endsWith("\n") ? "\n" : ""}${text}`), []);
   const lastAnswerId = useMemo(() => {
     for (let index = timeline.length - 1; index >= 0; index -= 1) {
       const item = timeline[index] as TimelineItem;
@@ -559,9 +562,15 @@ export function App(): React.JSX.Element {
         />
       </main>
       }
-      keepPanel={<aside className="keep-panel" aria-label="The Keep">
-        <h2>The Keep</h2>
-      </aside>}
+      keepPanel={<KeepPanel
+        status={keepStatus}
+        receipts={keepReceipts}
+        invoke={invoke}
+        onInsert={insertQuote}
+        // Task 18 retargets this to Settings -> Keep connection; until then the Runtime Center is the Settings button's target.
+        onOpenKeepSettings={() => { setRuntimeManagerOpen(true); ignore(refreshDiagnostics()); }}
+        onStatus={setKeepStatus}
+      />}
     >
 
       {runtimeManagerOpen ? <RuntimeManagerDialog
@@ -800,22 +809,6 @@ function safeHttpUrl(value: string | undefined): boolean {
 
 function CommandResultCard({ card }: { readonly card: CommandCard }): React.JSX.Element {
   return <article className={`command-card ${card.result.tone ?? "neutral"}`}><header><Code2 size={15} /><code>{card.input}</code><span>{card.result.title}</span></header>{card.result.kind === "table" && card.result.rows ? <div className="table-scroll"><table><tbody>{card.result.rows.map((row, index) => <tr key={index}>{row.map((cell, cellIndex) => <td key={cellIndex}>{cell}</td>)}</tr>)}</tbody></table></div> : <div className="markdown"><RichMarkdown>{card.result.body}</RichMarkdown></div>}</article>;
-}
-
-function CopyButton({ text }: { readonly text: string }): React.JSX.Element {
-  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
-  const copy = async (): Promise<void> => {
-    try {
-      const result = await window.firekeepStudio.invoke({ type: "clipboard.write", text });
-      if (result.type !== "clipboard-written") throw new Error("clipboard returned an unexpected response");
-      setState("copied");
-      window.setTimeout(() => setState("idle"), 1_200);
-    } catch {
-      setState("failed");
-      window.setTimeout(() => setState("idle"), 1_800);
-    }
-  };
-  return <button type="button" className={`copy-button ${state}`} aria-label="Copy response" title={state === "failed" ? "Copy failed" : state === "copied" ? "Copied" : "Copy response"} onClick={() => ignore(copy())}>{state === "copied" ? <CheckCircle2 size={14} /> : <Copy size={14} />}</button>;
 }
 
 function keepWarning(status: KeepStatus | null): string | null {

@@ -93,6 +93,8 @@ function installBridge(options: { readonly snapshot?: StudioSnapshot; readonly s
     if (action.type === "update.check" || action.type === "update.install") return { type: "update", state: options.updateResult ?? options.update ?? { phase: "current", currentVersion: "0.4.0", availableVersion: null, progressPercent: null, automatic: true, detail: "Firekeep Studio 0.4.0 is current." } };
     if (action.type === "keep.status" || action.type === "keep.retry") return { type: "keep-status", status: options.keepStatus ?? { state: "missing" } };
     if (action.type === "workspace.detectTest") return { type: "test-command", command: options.testCommand ?? null };
+    if (action.type === "keep.search") return { type: "keep-items", items: options.keepItems ?? [] };
+    if (action.type === "keep.team") return { type: "keep-team", markdown: "" };
     if (action.type === "keep.skills") return { type: "keep-items", items: options.keepItems ?? [] };
     if (action.type === "settings.keepPanel") snapshot = { ...snapshot, keepPanelOpen: action.open };
     if (action.type === "workspace.set") snapshot = { ...snapshot, workspacePath: action.path };
@@ -792,5 +794,57 @@ describe("Firekeep Studio renderer", () => {
     expect(invoke.mock.calls.some(([action]) => action.type === "run.cancel")).toBe(false);
     fireEvent.keyDown(window, { key: "Escape" });
     await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "run.cancel", runId: "run-1" }));
+  });
+  it("shows the connect card when the kit is missing, and retries", async () => {
+    const invoke = installBridge({ keepStatus: { state: "missing" } });
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Connect Studio to your team's Keep" })).toBeInTheDocument();
+    expect(screen.getByText(/irm https:\/\/firekeep.ai\/latest\/install.ps1/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "I've installed it — retry" }));
+    expect(invoke).toHaveBeenCalledWith({ type: "keep.retry" });
+  });
+
+  it("searches team memory after a 300 ms debounce and inserts a result", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const invoke = installBridge({ keepStatus: { state: "connected", agentId: "a", personalMode: false, kitVersion: "1.8.0" }, keepItems: [{ title: "VPS is on the tailnet", body: "VPS is on the tailnet\nuse srv1143982" }] });
+    render(<App />);
+    fireEvent.change(await screen.findByRole("searchbox", { name: "Search team memory" }), { target: { value: "vps" } });
+    expect(invoke).not.toHaveBeenCalledWith(expect.objectContaining({ type: "keep.search" }));
+    await act(async () => { vi.advanceTimersByTime(310); });
+    expect(invoke).toHaveBeenCalledWith({ type: "keep.search", query: "vps", kind: "memory" });
+    fireEvent.click(await screen.findByRole("button", { name: "VPS is on the tailnet" }));
+    fireEvent.click(screen.getByRole("button", { name: "Insert into composer" }));
+    expect(screen.getByRole("textbox", { name: /Message/i })).toHaveValue("> VPS is on the tailnet\n> use srv1143982\n");
+    vi.useRealTimers();
+  });
+
+  it("shows the personal-mode banner", async () => {
+    installBridge({ keepStatus: { state: "connected", agentId: "a", personalMode: true, kitVersion: "1.8.0" } });
+    render(<App />);
+    expect(await screen.findByText("Personal mode — nothing from this session is shared")).toBeInTheDocument();
+  });
+
+  it("updates live from keep-status push events", async () => {
+    const invoke = installBridge({ keepStatus: { state: "starting" } });
+    render(<App />);
+    await screen.findByRole("complementary", { name: "The Keep" });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "keep.status" }));
+    // Let the bootstrap-time keep.status round trips settle so a late reply cannot overwrite the push.
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 150)); });
+    act(() => pushStudioEvent?.({ type: "keep-status", status: { state: "unreachable", detail: "cortex unreachable at 100.91.3.51", retryInMs: null } }));
+    expect(await screen.findByText(/cortex unreachable/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run doctor" })).toBeInTheDocument();
+  });
+
+  it("loads skills when the tab opens and badges trial skills", async () => {
+    window.localStorage.removeItem("firekeep.keepTab");
+    const invoke = installBridge({ keepStatus: { state: "connected", agentId: "a", personalMode: false, kitVersion: "1.8.0" }, keepItems: [{ title: "Deploy the site", body: "[TRIAL] steps" }, { title: "Rotate keys", body: "steps" }] });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("tab", { name: "Skills" }));
+    expect(await screen.findByRole("button", { name: "Deploy the site" })).toBeInTheDocument();
+    expect(invoke).toHaveBeenCalledWith({ type: "keep.skills" });
+    expect(screen.getAllByText("TRIAL")).toHaveLength(1);
+    expect(window.localStorage.getItem("firekeep.keepTab")).toBe("skills");
+    window.localStorage.removeItem("firekeep.keepTab");
   });
 });
