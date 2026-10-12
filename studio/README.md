@@ -45,6 +45,8 @@ Studio 0.5 reorganizes the app around the Keep: a three-column layout of **sessi
 - **Removed.** Voice input and spoken replies (`/voice` now only explains this), the Grok
   runtime, `/compare`, `/consensus`, the Agents grid, and the Welcome hero. Studio stores no
   secrets.
+- **Upgrading from 0.4.** On first start, Studio 0.5 deletes 0.4's encrypted `secrets.json`
+  from its user-data folder; Studio 0.5 stores no secrets.
 
 ## Earlier versions
 

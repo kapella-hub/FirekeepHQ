@@ -14,6 +14,7 @@ import { LoopbackDecisionBoardClient } from "./decision-board-client.js";
 import { StudioDecisionBoardReceiver } from "./decision-board-receiver.js";
 import { StudioController } from "./ipc-controller.js";
 import { KiroIdeLauncher } from "./kiro-ide.js";
+import { removeLegacySecrets } from "./legacy-cleanup.js";
 import { ProcessMissionCheckRunner } from "./mission-check-runner.js";
 import { createRuntimeRegistry } from "./runtime/index.js";
 import { JsonlSessionStore } from "./session-store.js";
@@ -104,6 +105,7 @@ function broadcast(event: StudioPushEvent): void {
 async function createController(): Promise<StudioController> {
   packageSmokeTrace("creating controller");
   const userData = app.getPath("userData");
+  await removeLegacySecrets(userData);   // 0.4's encrypted API keys; 0.5 stores no secrets
   const warning = (message: string, error: unknown): void => console.warn(message, error instanceof Error ? error.message : String(error));
   const decisionBoards = new LoopbackDecisionBoardClient();
   const receiver = new StudioDecisionBoardReceiver(async (url) => {
