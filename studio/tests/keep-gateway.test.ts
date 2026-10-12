@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { KeepStatus } from "../src/shared/keep.js";
 import { BACKOFF_MS, KeepGateway, parsePausedSessions, splitNumberedItems, STUDIO_TOOLS, type McpLike } from "../src/main/keep/keep-gateway.js";
 
 function fakeMcp(reply: (name: string, args: Record<string, unknown>) => string = () => "ok"): McpLike & { calls: Array<[string, Record<string, unknown>]> } {
@@ -8,6 +9,34 @@ function fakeMcp(reply: (name: string, args: Record<string, unknown>) => string 
 const whoamiOk = async () => ({ ok: true, missing: false, output: JSON.stringify({ agent_id: "agent-a", kit_version: "1.8.0", personal_mode: false, server_configured: true }) });
 
 describe("KeepGateway", () => {
+  it("refreshIdentity re-reads whoami and emits the changed status without restarting the child", async () => {
+    const mcp = fakeMcp();
+    const connect = vi.fn(async () => mcp);
+    let personal = false;
+    const whoami = async () => ({ ok: true, missing: false, output: JSON.stringify({ agent_id: "agent-a", kit_version: personal ? "1.8.1" : "1.8.0", personal_mode: personal }) });
+    const statuses: KeepStatus[] = [];
+    const gateway = new KeepGateway({ whoami, connect, onStatus: (status) => statuses.push(status) });
+    await gateway.start();
+    personal = true;
+    const next = await gateway.refreshIdentity();
+    expect(next).toEqual({ state: "connected", agentId: "agent-a", personalMode: true, kitVersion: "1.8.1" });
+    expect(statuses.at(-1)).toEqual(next);
+    expect(gateway.status()).toEqual(next);
+    expect(connect).toHaveBeenCalledTimes(1);
+  });
+
+  it("refreshIdentity leaves a non-connected status alone and survives a failing probe", async () => {
+    const gateway = new KeepGateway({ whoami: async () => ({ ok: false, missing: true, output: "" }), connect: vi.fn() });
+    await gateway.start();
+    expect(await gateway.refreshIdentity()).toEqual({ state: "missing" });
+    const connected = new KeepGateway({ whoami: whoamiOk, connect: async () => fakeMcp() });
+    await connected.start();
+    const before = connected.status();
+    const flaky = new KeepGateway({ whoami: async () => { throw new Error("boom"); }, connect: async () => fakeMcp() });
+    expect(await flaky.refreshIdentity()).toEqual({ state: "starting" });
+    expect(connected.status()).toBe(before);
+  });
+
   it("reports missing when the kit is not installed", async () => {
     const gateway = new KeepGateway({ whoami: async () => ({ ok: false, missing: true, output: "" }), connect: vi.fn() });
     expect(await gateway.start()).toEqual({ state: "missing" });

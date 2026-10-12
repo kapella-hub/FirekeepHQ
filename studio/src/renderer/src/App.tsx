@@ -13,7 +13,7 @@ import {
   Sparkles,
   X,
 } from "lucide-react";
-import type { CommandCompletion, CommandResult } from "../../core/slash-commands";
+import type { CommandCompletion } from "../../core/slash-commands";
 import type { SessionColor, StudioSessionSummary } from "../../core/session-store";
 import type { RuntimeDiagnostic, StudioSnapshot } from "../../core/studio-service";
 import type { LoginMethod, RuntimeDescriptor, RuntimeEffort, RuntimeEvent, RuntimeModel, RuntimeUsage } from "../../core/runtime";
@@ -76,6 +76,8 @@ export function App(): React.JSX.Element {
   // The last section used this app session, and the element to hand focus back to when the sheet closes.
   const lastSettingsSection = useRef<SettingsSection>("agents");
   const settingsOpener = useRef<HTMLElement | null>(null);
+  // The last kit command run from Settings > Keep connection; it survives tab switches and closing the sheet.
+  const [kitCard, setKitCard] = useState<CommandCard | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteCompletions, setPaletteCompletions] = useState<readonly CommandCompletion[]>([]);
   const [keepSearchRequest, setKeepSearchRequest] = useState<{ readonly query: string; readonly nonce: number } | null>(null);
@@ -291,13 +293,18 @@ export function App(): React.JSX.Element {
     else composerRef.current?.focus();
   }, []);
   /** Runs a kit slash command for Settings > Keep connection; the card renders inside the sheet, not the transcript. */
-  const runKitCommand = useCallback(async (input: string): Promise<CommandResult | null> => {
+  const runKitCommand = useCallback(async (input: string): Promise<void> => {
     try {
-      const result = await invoke({ type: "command.execute", input });
+      // Straight to the bridge: a failure becomes a card in the sheet, not the global banner hidden behind it.
+      const result = await window.firekeepStudio.invoke({ type: "command.execute", input });
+      if (result.type === "error") throw new Error(result.message);
       applyResult(result);
-      return result.type === "command" ? result.result : null;
-    } catch { return null; }
-  }, [applyResult, invoke]);
+      if (result.type === "command") setKitCard({ id: crypto.randomUUID(), input, result: result.result });
+    } catch (caught) {
+      const message = (caught instanceof Error ? caught.message : String(caught)).replace(/^Error invoking remote method '[^']+':\s*/i, "");
+      setKitCard({ id: crypto.randomUUID(), input, result: { kind: "notice", title: "Command failed", body: message, tone: "danger" } });
+    }
+  }, [applyResult]);
 
   const openPalette = useCallback((): void => {
     paletteOpener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -323,6 +330,8 @@ export function App(): React.JSX.Element {
 
   useEffect(() => {
     const keyboard = (event: KeyboardEvent): void => {
+      // While Settings or the palette is open it owns the keyboard; the global shortcuts must not fire behind it.
+      if ((settingsSection !== null || paletteOpen) && (event.ctrlKey || event.metaKey)) return;
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
         if (event.repeat) return;
@@ -343,7 +352,7 @@ export function App(): React.JSX.Element {
     };
     window.addEventListener("keydown", keyboard);
     return () => window.removeEventListener("keydown", keyboard);
-  }, [applyResult, busy, connectDialog, invoke, openPalette, runReview, sessionEditorId, snapshot?.activeRunId, snapshot?.keepPanelOpen]);
+  }, [applyResult, busy, connectDialog, invoke, openPalette, paletteOpen, runReview, sessionEditorId, settingsSection, snapshot?.activeRunId, snapshot?.keepPanelOpen]);
 
   const submit = async (): Promise<void> => {
     const input = composer.trim();
@@ -660,6 +669,7 @@ export function App(): React.JSX.Element {
         keepStatus={keepStatus}
         dashboardAvailable={bootstrap.dashboardAvailable}
         runCommand={runKitCommand}
+        kitCard={kitCard}
         onOpenDashboard={() => ignore(invoke({ type: "dashboard.open" }))}
         reviewerMode={snapshot.reviewerMode}
         onReviewerMode={(mode) => ignore(invoke({ type: "reviewer.mode", mode }).then(applyResult))}

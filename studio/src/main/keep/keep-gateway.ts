@@ -58,6 +58,23 @@ export class KeepGateway implements KeepTimelineSource {
   retry(): Promise<KeepStatus> { return this.start(); }
 
   /**
+   * Re-reads the kit identity (personal mode, kit version) after a kit command changed it, and pushes the new
+   * status. The gateway child is never restarted. A probe that fails, or an identity that no longer parses,
+   * keeps the current status: a flaky probe must not flip a working connection to an error.
+   */
+  async refreshIdentity(): Promise<KeepStatus> {
+    const current = this.#status;
+    if (current.state !== "connected" || this.#stopped) return current;
+    const who = await this.#deps.whoami().catch(() => null);
+    const facts = who?.ok ? parseWhoami(who.output) : null;
+    if (!facts?.agent_id || this.#stopped || this.#status !== current) return this.#status;
+    const personalMode = facts.personal_mode === true;
+    const kitVersion = String(facts.kit_version ?? "");
+    if (personalMode === current.personalMode && kitVersion === current.kitVersion && facts.agent_id === current.agentId) return current;
+    return this.#set({ ...current, agentId: facts.agent_id, personalMode, kitVersion });
+  }
+
+  /**
    * The gateway process behind `client` exited. Wiring: pass the client whose onExit fired;
    * an exit from a client that is no longer current is ignored.
    */

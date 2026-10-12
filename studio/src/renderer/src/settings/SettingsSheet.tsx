@@ -1,11 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, CheckCircle2, ExternalLink, KeyRound, LogOut, RefreshCw, ShieldCheck, Terminal, X } from "lucide-react";
-import type { CommandResult } from "../../../core/slash-commands.js";
 import type { ReviewerMode, RuntimeDiagnostic, ThemeMode } from "../../../core/studio-service.js";
 import type { RuntimeDescriptor } from "../../../core/runtime.js";
 import type { StudioUpdateState } from "../../../shared/ipc";
 import type { KeepStatus } from "../../../shared/keep";
-import { CommandResultCard } from "../conversation/CommandResultCard.js";
+import { CommandResultCard, type CommandCard } from "../conversation/CommandResultCard.js";
 
 export type SettingsSection = "agents" | "keep" | "reviews" | "appearance" | "updates";
 
@@ -36,8 +35,10 @@ export interface SettingsSheetProps {
   // Keep connection
   readonly keepStatus: KeepStatus | null;
   readonly dashboardAvailable: boolean;
-  /** Runs a kit slash command through command.execute; resolves to its result card, or null when the call failed. */
-  readonly runCommand: (input: string) => Promise<CommandResult | null>;
+  /** Runs a kit slash command through command.execute and records the outcome (or the failure) in `kitCard`. */
+  readonly runCommand: (input: string) => Promise<void>;
+  /** The last kit command card, owned by App so it survives tab switches and closing the sheet. */
+  readonly kitCard: CommandCard | null;
   readonly onOpenDashboard: () => void;
   // Reviews
   readonly reviewerMode: ReviewerMode;
@@ -71,6 +72,18 @@ export function SettingsSheet(props: SettingsSheetProps): React.JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const trapTab = (event: React.KeyboardEvent): void => {
+    if (event.key !== "Tab") return;
+    const focusable = [...(sheetRef.current?.querySelectorAll<HTMLElement>('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])') ?? [])].filter((element) => !(element as HTMLButtonElement).disabled && element.tabIndex >= 0);
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    if (!first || !last) return;
+    const active = document.activeElement;
+    if (!sheetRef.current?.contains(active)) { event.preventDefault(); first.focus(); }
+    else if (event.shiftKey && active === first) { event.preventDefault(); last.focus(); }
+    else if (!event.shiftKey && active === last) { event.preventDefault(); first.focus(); }
+  };
+
   const moveTab = (event: React.KeyboardEvent, index: number): void => {
     const step = event.key === "ArrowDown" || event.key === "ArrowRight" ? 1 : event.key === "ArrowUp" || event.key === "ArrowLeft" ? -1 : 0;
     if (!step) return;
@@ -82,7 +95,7 @@ export function SettingsSheet(props: SettingsSheetProps): React.JSX.Element {
 
   const label = SETTINGS_SECTIONS.find((entry) => entry.id === section)!.label;
   return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-    <section ref={sheetRef} className="modal settings-sheet" role="dialog" aria-modal="true" aria-label="Settings">
+    <section ref={sheetRef} className="modal settings-sheet" role="dialog" aria-modal="true" aria-label="Settings" onKeyDown={trapTab}>
       <button type="button" className="modal-close" aria-label="Close Settings" onClick={onClose}><X size={17} /></button>
       <nav className="settings-nav">
         <h2>Settings</h2>
@@ -107,47 +120,44 @@ function AgentsSection({ runtimes, diagnostics, primaryRuntimeId, reviewerRuntim
       <div><p className="eyebrow">AGENT CONTROL</p><h3>Agents &amp; accounts</h3><p>Switch the primary, assign reviewers, and manage provider accounts without keeping runtime infrastructure in the inspector.</p></div>
       <button type="button" className="runtime-manager-refresh" onClick={refresh}><RefreshCw size={14} /> Refresh status</button>
     </header>
-      <div className="runtime-manager-grid">
-        {runtimes.map((runtime) => {
-          const diagnostic = diagnostics[runtime.id];
-          const connected = diagnostic?.auth.state === "connected";
-          const isPrimary = runtime.id === primaryRuntimeId;
-          const reviewer = reviewerRuntimeIds.includes(runtime.id);
-          const canChat = runtime.capabilities.includes("chat");
-          const canReview = runtime.capabilities.includes("review");
-          const hasKeep = runtime.capabilities.includes("firekeep-memory");
-          return <article className={`runtime-card ${isPrimary ? "primary" : ""}`} key={runtime.id} style={{ "--runtime-accent": runtime.accent ?? "#df7e45" } as React.CSSProperties}>
-            <div className="runtime-card-top"><span className="runtime-orb">{runtime.displayName[0]}</span><div><strong>{runtime.displayName}</strong><small>{runtime.transport}</small></div><span className={`status-pill ${diagnostic?.connection.state ?? "loading"}`}>{diagnostic?.connection.state ?? "checking"}</span></div>
-            <p>{diagnostic?.auth.label ?? diagnostic?.auth.detail ?? runtime.description}</p>
-            <div className={`keep-capability ${hasKeep ? "connected" : "absent"}`}>
-              {hasKeep ? <ShieldCheck size={11} /> : <AlertTriangle size={11} />}
-              <span>{hasKeep ? `Keep memory${runtime.capabilities.includes("firekeep-hooks") ? " + automatic hooks" : " · recall on demand"}` : "Provider direct · no Keep memory"}</span>
-            </div>
-            <div className="runtime-card-actions">
-              {canChat ? <button className={`runtime-use ${isPrimary ? "active" : ""}`} aria-label={isPrimary ? `${runtime.displayName} is in use` : `Use ${runtime.displayName} as primary`} aria-pressed={isPrimary} disabled={isPrimary} onClick={() => choosePrimary(runtime.id)}>{isPrimary ? <><CheckCircle2 size={12} /> In use</> : "Use"}</button> : null}
-              {canReview ? <button className={reviewer ? "active" : ""} aria-label={reviewer ? `Remove ${runtime.displayName} reviewer` : `Add ${runtime.displayName} as reviewer`} aria-pressed={reviewer} onClick={() => toggleReviewer(runtime.id, reviewer)}>{reviewer ? "Reviewing" : "Review"}</button> : null}
-              {connected ? <button aria-label={`Disconnect ${runtime.displayName}`} title="Disconnect account" onClick={() => disconnect(runtime.id)}><LogOut size={13} /></button> : <button aria-label={`Connect ${runtime.displayName}`} onClick={() => connect(runtime.id)}><KeyRound size={13} /> Connect</button>}
-            </div>
-          </article>;
-        })}
-      </div>
-      <footer className="runtime-manager-footer"><Terminal size={13} /><span>Model, reasoning, and permission settings follow each selected runtime. Use Turn controls or <code>/model</code>, <code>/effort</code>, and <code>/permissions</code>.</span></footer>
+    <div className="runtime-manager-grid">
+      {runtimes.map((runtime) => {
+        const diagnostic = diagnostics[runtime.id];
+        const connected = diagnostic?.auth.state === "connected";
+        const isPrimary = runtime.id === primaryRuntimeId;
+        const reviewer = reviewerRuntimeIds.includes(runtime.id);
+        const canChat = runtime.capabilities.includes("chat");
+        const canReview = runtime.capabilities.includes("review");
+        const hasKeep = runtime.capabilities.includes("firekeep-memory");
+        return <article className={`runtime-card ${isPrimary ? "primary" : ""}`} key={runtime.id} style={{ "--runtime-accent": runtime.accent ?? "#df7e45" } as React.CSSProperties}>
+          <div className="runtime-card-top"><span className="runtime-orb">{runtime.displayName[0]}</span><div><strong>{runtime.displayName}</strong><small>{runtime.transport}</small></div><span className={`status-pill ${diagnostic?.connection.state ?? "loading"}`}>{diagnostic?.connection.state ?? "checking"}</span></div>
+          <p>{diagnostic?.auth.label ?? diagnostic?.auth.detail ?? runtime.description}</p>
+          <div className={`keep-capability ${hasKeep ? "connected" : "absent"}`}>
+            {hasKeep ? <ShieldCheck size={11} /> : <AlertTriangle size={11} />}
+            <span>{hasKeep ? `Keep memory${runtime.capabilities.includes("firekeep-hooks") ? " + automatic hooks" : " · recall on demand"}` : "Provider direct · no Keep memory"}</span>
+          </div>
+          <div className="runtime-card-actions">
+            {canChat ? <button className={`runtime-use ${isPrimary ? "active" : ""}`} aria-label={isPrimary ? `${runtime.displayName} is in use` : `Use ${runtime.displayName} as primary`} aria-pressed={isPrimary} disabled={isPrimary} onClick={() => choosePrimary(runtime.id)}>{isPrimary ? <><CheckCircle2 size={12} /> In use</> : "Use"}</button> : null}
+            {canReview ? <button className={reviewer ? "active" : ""} aria-label={reviewer ? `Remove ${runtime.displayName} reviewer` : `Add ${runtime.displayName} as reviewer`} aria-pressed={reviewer} onClick={() => toggleReviewer(runtime.id, reviewer)}>{reviewer ? "Reviewing" : "Review"}</button> : null}
+            {connected ? <button aria-label={`Disconnect ${runtime.displayName}`} title="Disconnect account" onClick={() => disconnect(runtime.id)}><LogOut size={13} /></button> : <button aria-label={`Connect ${runtime.displayName}`} onClick={() => connect(runtime.id)}><KeyRound size={13} /> Connect</button>}
+          </div>
+        </article>;
+      })}
+    </div>
+    <footer className="runtime-manager-footer"><Terminal size={13} /><span>Model, reasoning, and permission settings follow each selected runtime. Use Turn controls or <code>/model</code>, <code>/effort</code>, and <code>/permissions</code>.</span></footer>
   </>;
 }
 
-function KeepSection({ keepStatus, dashboardAvailable, runCommand, onOpenDashboard }: SettingsSheetProps): React.JSX.Element {
+function KeepSection({ keepStatus, dashboardAvailable, runCommand, kitCard, onOpenDashboard }: SettingsSheetProps): React.JSX.Element {
   const [running, setRunning] = useState<string | null>(null);
-  const [card, setCard] = useState<{ readonly id: string; readonly input: string; readonly result: CommandResult } | null>(null);
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const connected = keepStatus?.state === "connected";
   const run = async (input: string): Promise<void> => {
     if (running) return;
     setRunning(input);
-    try {
-      const result = await runCommand(input);
-      if (mounted.current && result) setCard({ id: `${input}:${Date.now()}`, input, result });
-    } finally { if (mounted.current) setRunning(null); }
+    try { await runCommand(input); }
+    finally { if (mounted.current) setRunning(null); }
   };
   const personal = connected && keepStatus.personalMode;
   return <>
@@ -173,7 +183,7 @@ function KeepSection({ keepStatus, dashboardAvailable, runCommand, onOpenDashboa
         {dashboardAvailable ? <button type="button" onClick={onOpenDashboard}><ExternalLink size={13} /> Open dashboard</button> : null}
       </div>
       {running ? <p className="settings-running" role="status">Running <code>{running}</code>…</p> : null}
-      {card ? <CommandResultCard card={card} /> : null}
+      {kitCard ? <CommandResultCard card={kitCard} /> : null}
     </div>
   </>;
 }

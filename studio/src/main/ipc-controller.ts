@@ -83,7 +83,7 @@ export interface ClipboardTransport {
 const emptyClipboard: ClipboardTransport = { readText: () => "", writeText: () => undefined };
 
 /** The Keep panel's fixed query surface. There is deliberately no generic tool call. */
-export type KeepPanelSource = Pick<KeepGateway, "status" | "retry" | "search" | "skills" | "team" | "highlights" | "feedback">;
+export type KeepPanelSource = Pick<KeepGateway, "status" | "retry" | "refreshIdentity" | "search" | "skills" | "team" | "highlights" | "feedback">;
 
 export class StudioController {
   constructor(
@@ -153,7 +153,12 @@ export class StudioController {
     }
     if (action.type === "workspace.detectTest") return { type: "test-command", command: await this.detectTest() };
     if (action.type === "command.complete") return { type: "completions", items: this.commands.complete(action.input) };
-    if (action.type === "command.execute") return { type: "command", result: await this.commands.execute(action.input), snapshot: this.service.snapshot(), sessions: await this.service.listSessions(), events: this.service.events() };
+    if (action.type === "command.execute") {
+      const result = await this.commands.execute(action.input);
+      // personal mode and the kit version live in the kit config; re-read them so the Keep status is not stale.
+      if (/^\s*\/firekeep\s+(personal|update)(\s|$)/i.test(action.input)) await this.keep?.refreshIdentity().catch(() => undefined);
+      return { type: "command", result, snapshot: this.service.snapshot(), sessions: await this.service.listSessions(), events: this.service.events() };
+    }
     if (action.type === "message.send") await this.service.sendMessage(action.text);
     else if (action.type === "runtime.probe") return { type: "diagnostics", items: action.runtimeId ? [await this.service.probeRuntime(action.runtimeId)] : await this.service.probeAll() };
     else if (action.type === "runtime.models") return { type: "models", runtimeId: action.runtimeId, items: await this.service.listModels(action.runtimeId) };

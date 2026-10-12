@@ -191,6 +191,77 @@ describe("Firekeep Studio renderer", () => {
     expect(invoke).toHaveBeenCalledWith({ type: "dashboard.open" });
   });
 
+  it("updates the personal-mode row and button when the Keep pushes a flipped status", async () => {
+    const connected = (personalMode: boolean): KeepStatus => ({ state: "connected", agentId: "agent-a", personalMode, kitVersion: "1.8.0" });
+    const invoke = installBridge({ keepStatus: connected(false) });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Keep connection" }));
+    const sheet = screen.getByRole("dialog", { name: "Settings" });
+    const toggle = await within(sheet).findByRole("button", { name: "Turn personal mode on" });
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(toggle);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "command.execute", input: "/firekeep personal toggle" }));
+    act(() => pushStudioEvent?.({ type: "keep-status", status: connected(true) }));
+    const off = await within(sheet).findByRole("button", { name: "Turn personal mode off" });
+    expect(off).toHaveAttribute("aria-pressed", "true");
+    expect(within(sheet).getByText(/On — nothing from this session is shared/)).toBeInTheDocument();
+  });
+
+  it("keeps the Keep connection result card across tab switches and reopening, and shows failures as a card", async () => {
+    installBridge({ keepStatus: { state: "unreachable", detail: "down", retryInMs: null } });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Run doctor" }));
+    let sheet = screen.getByRole("dialog", { name: "Settings" });
+    fireEvent.click(within(sheet).getByRole("button", { name: "Run doctor" }));
+    expect(await within(sheet).findByText("Kit looks healthy")).toBeInTheDocument();
+    fireEvent.click(within(sheet).getByRole("tab", { name: "Reviews" }));
+    fireEvent.click(within(sheet).getByRole("tab", { name: "Keep connection" }));
+    expect(within(sheet).getByText("Kit looks healthy")).toBeInTheDocument();
+    fireEvent.click(within(sheet).getByRole("button", { name: "Close Settings" }));
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    sheet = screen.getByRole("dialog", { name: "Settings" });
+    expect(within(sheet).getByText("Kit looks healthy")).toBeInTheDocument();
+    expect(document.querySelector(".transcript .command-card")).toBeNull();
+  });
+
+  it("shows a failed kit command as an error card in the sheet", async () => {
+    installBridge({ keepStatus: { state: "unreachable", detail: "down", retryInMs: null }, actionError: { actionType: "command.execute", message: "kit exploded" } });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Run doctor" }));
+    const sheet = screen.getByRole("dialog", { name: "Settings" });
+    fireEvent.click(within(sheet).getByRole("button", { name: "Run doctor" }));
+    expect(await within(sheet).findByText("kit exploded")).toBeInTheDocument();
+    expect(sheet.querySelector(".command-card.danger")).not.toBeNull();
+  });
+
+  it("hides the dashboard button when the dashboard is not configured", async () => {
+    installBridge({ keepStatus: { state: "missing" }, dashboardAvailable: false });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Keep not installed" }));
+    const sheet = screen.getByRole("dialog", { name: "Settings" });
+    expect(within(sheet).getByRole("button", { name: "Run doctor" })).toBeInTheDocument();
+    expect(within(sheet).queryByRole("button", { name: "Open dashboard" })).not.toBeInTheDocument();
+  });
+
+  it("suppresses global shortcuts while Settings is open and traps Tab inside the sheet", async () => {
+    const invoke = installBridge({ snapshot: state("alpha") });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+    const sheet = screen.getByRole("dialog", { name: "Settings" });
+    fireEvent.keyDown(window, { key: "k", ctrlKey: true });
+    fireEvent.keyDown(window, { key: "\\", code: "Backslash", ctrlKey: true });
+    fireEvent.keyDown(window, { key: "r", ctrlKey: true, shiftKey: true });
+    expect(screen.queryByRole("dialog", { name: "Command palette" })).not.toBeInTheDocument();
+    expect(invoke.mock.calls.some(([action]) => action.type === "settings.keepPanel" || action.type === "review.run")).toBe(false);
+    const focusable = [...sheet.querySelectorAll<HTMLElement>("button, input, select, textarea, [tabindex]")].filter((el) => el.tabIndex >= 0 && !(el as HTMLButtonElement).disabled);
+    focusable.at(-1)!.focus();
+    fireEvent.keyDown(focusable.at(-1)!, { key: "Tab" });
+    expect(focusable[0]).toHaveFocus();
+    fireEvent.keyDown(focusable[0]!, { key: "Tab", shiftKey: true });
+    expect(focusable.at(-1)).toHaveFocus();
+  });
+
   it("opens Settings on Keep connection from the rail warning row", async () => {
     installBridge({ keepStatus: { state: "missing" } });
     render(<App />);
