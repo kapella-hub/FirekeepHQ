@@ -569,3 +569,26 @@ def test_tapless_auth_without_report_env_is_unchanged(tmp_path, monkeypatch):
     state.write_session_stash("tester", session_id="sess-stash")
     out = _run_auth_flow(shim._StashSessionAuth("tester"), _req())
     assert out.headers["X-Session-Id"] == "sess-stash"
+
+
+def test_ended_session_is_never_revived_from_report_file(tmp_path, monkeypatch):
+    """When tap sees end-tool response, it marks the session ended in the
+    report file. Tapless auth afterwards never revives it."""
+    monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
+    report = tmp_path / "studio-1.keep"
+    monkeypatch.setenv("FIREKEEP_SESSION_REPORT_FILE", str(report))
+    monkeypatch.setattr(shim, "is_bypassed", lambda: False)
+
+    tap = shim._BridgeSessionTap("tester")
+    tap.on_request(_tools_call(1, "ctx_start_session", {"goal": "g"}))
+    tap.on_response(_tool_result(1, {"session_id": "sess-mine"}))
+    assert report.read_text(encoding="utf-8") == "sess-mine\n"
+
+    tap.on_request(_tools_call(2, "ctx_complete_session", {"outcome": "done"}))
+    tap.on_response(_tool_result(2, {"status": "completed"}))
+    assert report.read_text(encoding="utf-8") == "sess-mine\n#ended sess-mine\n"
+
+    # Tapless auth should NOT revive the ended session
+    state.clear_session_stash("tester")
+    out = _run_auth_flow(shim._StashSessionAuth("tester"), _req())
+    assert "X-Session-Id" not in out.headers

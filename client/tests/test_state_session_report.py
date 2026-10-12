@@ -67,3 +67,40 @@ def test_current_session_falls_back_to_report(cache, monkeypatch):
 def test_current_session_none_without_either(cache):
     state.clear_session_stash("tester")
     assert state.current_session_id("tester") is None
+
+
+def test_end_session_removes_from_report(cache, monkeypatch):
+    report = cache / "s1.keep"
+    monkeypatch.setenv(state.SESSION_REPORT_ENV, str(report))
+    state.append_session_report("sess-a")
+    assert state.reported_session_id() == "sess-a"
+    state.end_session_report("sess-a")
+    assert state.reported_session_id() is None
+
+
+def test_end_session_preserves_later_ids(cache, monkeypatch):
+    report = cache / "s1.keep"
+    monkeypatch.setenv(state.SESSION_REPORT_ENV, str(report))
+    state.append_session_report("sess-a")
+    state.append_session_report("sess-b")
+    state.end_session_report("sess-a")
+    assert state.reported_session_id() == "sess-b"
+
+
+def test_end_session_does_not_affect_other_ids(cache, monkeypatch):
+    report = cache / "s1.keep"
+    monkeypatch.setenv(state.SESSION_REPORT_ENV, str(report))
+    state.append_session_report("sess-a")
+    state.append_session_report("sess-b")
+    state.end_session_report("sess-a")
+    assert report.read_text(encoding="utf-8") == "sess-a\nsess-b\n#ended sess-a\n"
+    assert state.reported_session_id() == "sess-b"
+
+
+def test_reader_handles_non_utf8_bytes(cache, monkeypatch):
+    report = cache / "s1.keep"
+    # Write a file with a non-UTF-8 byte
+    with open(report, "wb") as fh:
+        fh.write(b"sess-a\n\xff\nsess-b\n")
+    monkeypatch.setenv(state.SESSION_REPORT_ENV, str(report))
+    assert state.reported_session_id() == "sess-b"

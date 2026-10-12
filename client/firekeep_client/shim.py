@@ -549,6 +549,9 @@ class _BridgeSessionTap:
                 return item
             name = self._pending.pop(rid)
             if name in self._END_TOOLS:
+                # Mark the ended session in the report file before clearing.
+                if self._session_id:
+                    state.end_session_report(self._session_id)
                 self._session_id = None
                 state.clear_session_stash(self._agent)
                 return item

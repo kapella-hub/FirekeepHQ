@@ -476,15 +476,40 @@ def append_session_report(session_id: str) -> None:
         pass
 
 
+def end_session_report(session_id: str) -> None:
+    """Mark a session as ended in $FIREKEEP_SESSION_REPORT_FILE by appending
+    '#ended <id>'. No-op when the variable is unset or the id is not header-safe.
+    Never raises."""
+    try:
+        path = _report_path()
+        if not path or not isinstance(session_id, str) or not _SESSION_ID_RE.fullmatch(session_id):
+            return
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(f"#ended {session_id}\n")
+    except Exception:
+        pass
+
+
 def reported_session_id() -> str | None:
-    """The last header-safe id in $FIREKEEP_SESSION_REPORT_FILE, else None."""
+    """The last active (not ended) header-safe id in $FIREKEEP_SESSION_REPORT_FILE.
+    A line '#ended <id>' marks an id as ended; scanning in order, the last active
+    id is returned, or None. Handles non-UTF-8 bytes gracefully."""
     try:
         path = _report_path()
         if not path:
             return None
-        with open(path, encoding="utf-8") as fh:
-            ids = [line.strip() for line in fh if _SESSION_ID_RE.fullmatch(line.strip())]
-        return ids[-1] if ids else None
+        last = None
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if line.startswith("#ended "):
+                    # Extract the id after "#ended "
+                    ended_id = line[7:]  # len("#ended ") == 7
+                    if ended_id == last:
+                        last = None
+                elif _SESSION_ID_RE.fullmatch(line):
+                    last = line
+        return last
     except Exception:
         return None
 
