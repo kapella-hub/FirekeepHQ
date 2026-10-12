@@ -437,3 +437,20 @@ span.keep-receipt { cursor: default; }
 .done-when-more { display: flex; flex-direction: column; gap: 8px; padding-top: 8px; }
 .done-when-more label { display: flex; flex-direction: column; gap: 4px; }
 .done-when-more input { min-height: 32px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); color: var(--text); }
+
+.start-card { max-width: 640px; margin: clamp(28px, 6vh, 70px) auto 0; padding: 22px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); }
+.start-card h2 { margin: 10px 0 16px; font-size: 20px; letter-spacing: -0.03em; }
+.start-section { margin-top: 14px; }
+.start-section h3 { margin: 0 0 7px; color: var(--faint); font-size: 10px; font-weight: 650; letter-spacing: 0.08em; text-transform: uppercase; }
+.start-using { margin: 0; font-size: 13px; }
+.start-using .link-button { padding: 0; border: 0; background: none; color: var(--ember); font: inherit; cursor: pointer; }
+.start-agent-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px; }
+.start-agent-card { display: flex; align-items: center; gap: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-2); cursor: pointer; }
+.start-agent-card:hover { border-color: color-mix(in srgb, var(--runtime-accent) 52%, var(--line)); }
+.start-agent-card > span:nth-child(2) { min-width: 0; display: flex; flex-direction: column; flex: 1; }
+.start-agent-card small { color: var(--faint); font-size: 9px; }
+.start-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.start-chip { display: inline-flex; align-items: center; gap: 5px; padding: 5px 10px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--muted); font-size: 11px; cursor: pointer; }
+.start-chip[aria-pressed="true"] { border-color: var(--ember); color: var(--text); background: var(--ember-soft); }
+.start-paused { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 5px; }
+.start-paused button { width: 100%; padding: 7px 10px; border: 1px solid var(--line); border-radius: 9px; background: transparent; color: var(--text); font-size: 12px; text-align: left; cursor: pointer; }

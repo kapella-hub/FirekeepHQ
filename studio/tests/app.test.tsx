@@ -11,7 +11,7 @@ import type { RuntimeDescriptor, RuntimeEvent, RuntimeModel } from "../src/core/
 import { App } from "../src/renderer/src/App.js";
 import type { StudioAction, StudioActionResult, StudioBridge, StudioPushEvent, StudioUpdateState } from "../src/shared/ipc.js";
 import type { DecisionBoardDocument } from "../src/shared/decision-board.js";
-import type { KeepItem, KeepStatus } from "../src/shared/keep.js";
+import type { KeepHighlights, KeepItem, KeepStatus } from "../src/shared/keep.js";
 
 const runtimes: RuntimeDescriptor[] = [
   { id: "alpha", displayName: "Alpha", description: "Test agent", transport: "test-rpc", capabilities: ["chat", "review", "models", "reasoning", "tools", "firekeep-memory", "firekeep-hooks"], loginMethods: ["browser"], accent: "#ff7a2f" },
@@ -76,13 +76,14 @@ function draftMission(checks: MissionSnapshot["checks"] = []): MissionSnapshot {
 
 let pushStudioEvent: ((event: StudioPushEvent) => void) | null = null;
 
-function installBridge(options: { readonly snapshot?: StudioSnapshot; readonly sessions?: readonly StudioSessionSummary[]; readonly models?: readonly RuntimeModel[] | (() => readonly RuntimeModel[]); readonly dashboardAvailable?: boolean; readonly events?: readonly RuntimeEvent[]; readonly decisionBoard?: DecisionBoardDocument; readonly pushEvents?: readonly StudioPushEvent[]; readonly clipboardText?: string; readonly update?: StudioUpdateState; readonly updateResult?: StudioUpdateState; readonly keepStatus?: KeepStatus; readonly testCommand?: string | null; readonly keepItems?: readonly KeepItem[]; readonly actionError?: { readonly actionType: StudioAction["type"]; readonly message: string } } = {}): ReturnType<typeof vi.fn<(action: StudioAction) => Promise<StudioActionResult>>> {
+function installBridge(options: { readonly snapshot?: StudioSnapshot; readonly sessions?: readonly StudioSessionSummary[]; readonly models?: readonly RuntimeModel[] | (() => readonly RuntimeModel[]); readonly dashboardAvailable?: boolean; readonly events?: readonly RuntimeEvent[]; readonly decisionBoard?: DecisionBoardDocument; readonly pushEvents?: readonly StudioPushEvent[]; readonly clipboardText?: string; readonly update?: StudioUpdateState; readonly updateResult?: StudioUpdateState; readonly keepStatus?: KeepStatus; readonly testCommand?: string | null; readonly keepItems?: readonly KeepItem[]; readonly readyRuntimeIds?: readonly string[]; readonly highlights?: KeepHighlights; readonly actionError?: { readonly actionType: StudioAction["type"]; readonly message: string } } = {}): ReturnType<typeof vi.fn<(action: StudioAction) => Promise<StudioActionResult>>> {
   let snapshot = options.snapshot ?? state();
   let sessions = [...(options.sessions ?? [{ id: "session-1", name: "UI test", color: "ember" as const, createdAt: "2026-08-24T00:00:00.000Z", updatedAt: "2026-08-24T00:00:00.000Z", eventCount: 0, nativeSessionIds: {} }])];
   const invoke = vi.fn(async (action: StudioAction): Promise<StudioActionResult> => {
     if (options.actionError?.actionType === action.type) return { type: "error", message: options.actionError.message };
     if (action.type === "bootstrap") return { type: "bootstrap", appName: "Firekeep Studio", version: "0.4.0", dashboardAvailable: options.dashboardAvailable ?? true, update: options.update ?? { phase: "idle", currentVersion: "0.4.0", availableVersion: null, progressPercent: null, automatic: true, detail: "Studio checks for verified updates automatically." }, snapshot, runtimes, events: options.events ?? [], sessions };
-    if (action.type === "runtime.probe") return { type: "diagnostics", items: runtimes.map((runtime) => ({ runtimeId: runtime.id, connection: { state: "ready", detail: "Ready" }, auth: { state: "connected", label: "Connected" } })) };
+    if (action.type === "runtime.probe") return { type: "diagnostics", items: runtimes.map((runtime) => ({ runtimeId: runtime.id, connection: !options.readyRuntimeIds || options.readyRuntimeIds.includes(runtime.id) ? { state: "ready", detail: "Ready" } : { state: "missing", detail: "Not installed" }, auth: { state: "connected", label: "Connected" } })) };
+    if (action.type === "keep.highlights") return { type: "keep-highlights", highlights: options.highlights ?? { online: "", bulletin: "", paused: [] } };
     if (action.type === "runtime.models") return { type: "models", runtimeId: action.runtimeId, items: typeof options.models === "function" ? options.models() : options.models ?? [] };
     if (action.type === "command.complete") return { type: "completions", items: action.input === "/" ? [{ value: "/doctor", label: "/doctor", description: "Check runtimes" }] : [] };
     if (action.type === "decision.load" && options.decisionBoard) return { type: "decision", board: options.decisionBoard };
@@ -125,12 +126,12 @@ describe("Firekeep Studio renderer", () => {
     const invoke = installBridge();
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Agents come and go. The Keep stays." })).toBeInTheDocument();
-    expect(screen.getByText("FIREKEEP STUDIO")).toBeInTheDocument();
-    expect(screen.queryByText("A NEW KIND OF AGENT DESK")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /Choose a workspace/i }));
+    expect(await screen.findByRole("button", { name: "Use Alpha" })).toBeInTheDocument();
+    expect(document.querySelector(".start-card")).not.toBeNull();
+    expect(screen.queryByText("Agents come and go.")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Open folder/i }));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "workspace.choose" }));
-    fireEvent.click(screen.getAllByRole("button", { name: /Alpha/i })[0] as HTMLElement);
+    fireEvent.click(screen.getByRole("button", { name: "Use Alpha" }));
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "primary.set", runtimeId: "alpha" }));
     expect(await screen.findByText(/0 fresh · 0 cached/)).toBeInTheDocument();
@@ -203,7 +204,7 @@ describe("Firekeep Studio renderer", () => {
     const invoke = installBridge({ snapshot: { ...state(), theme: "light" } });
     render(<App />);
 
-    await screen.findByRole("heading", { name: "Agents come and go. The Keep stays." });
+    await screen.findByRole("textbox", { name: /Message/i });
     await waitFor(() => expect(document.documentElement).toHaveAttribute("data-theme", "light"));
 
     fireEvent.click(screen.getByRole("button", { name: "Appearance: Light. Switch to system theme" }));
@@ -213,7 +214,7 @@ describe("Firekeep Studio renderer", () => {
   it("shows slash completion", async () => {
     const invoke = installBridge();
     render(<App />);
-    await screen.findByRole("heading", { name: "Agents come and go. The Keep stays." });
+    await screen.findByRole("textbox", { name: /Message/i });
     const composer = screen.getByRole("textbox");
     fireEvent.change(composer, { target: { value: "/" } });
     expect(await screen.findByRole("option", { name: /doctor/i })).toBeInTheDocument();
@@ -265,13 +266,60 @@ describe("Firekeep Studio renderer", () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "update.install" }));
   });
 
+  it("preselects the only ready runtime and shows 'Using … · change'", async () => {
+    const invoke = installBridge({ snapshot: state(null), readyRuntimeIds: ["alpha"] });
+    render(<App />);
+    expect(await screen.findByText(/Using Alpha/)).toBeInTheDocument();
+    expect(invoke).toHaveBeenCalledWith({ type: "primary.set", runtimeId: "alpha" });
+    expect(invoke.mock.calls.filter(([a]) => a.type === "primary.set")).toHaveLength(1);
+  });
+
+  it("offers one-click cards when several runtimes are ready", async () => {
+    const invoke = installBridge({ snapshot: state(null) });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Use Beta" }));
+    expect(invoke).toHaveBeenCalledWith({ type: "primary.set", runtimeId: "beta" });
+  });
+
+  it("offers Connect when no runtime is ready", async () => {
+    installBridge({ snapshot: state(null), readyRuntimeIds: [] });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Connect Alpha" }));
+    expect(await screen.findByRole("dialog", { name: /Connect Alpha/ })).toBeInTheDocument();
+  });
+
+  it("marks the current workspace chip and switches recent workspaces", async () => {
+    const invoke = installBridge({ snapshot: { ...state("alpha"), recentWorkspaces: ["C:\\work\\firekeep", "C:\\work\\site"], workspacePath: "C:\\work\\firekeep" } as never });
+    render(<App />);
+    const card = await waitFor(() => { const el = document.querySelector(".start-card") as HTMLElement; expect(el).not.toBeNull(); return el; });
+    expect(within(card).getByRole("button", { name: "firekeep" })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(within(card).getByRole("button", { name: "site" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "workspace.set", path: "C:\\work\\site" }));
+  });
+
+  it("shows Keep highlights only when connected", async () => {
+    installBridge({ snapshot: state("alpha"), keepStatus: { state: "connected", agentId: "a", personalMode: false, kitVersion: "1.8.0" }, highlights: { online: "codex@laptop — release notes", bulletin: "Deployed v2.3", paused: [{ sessionId: "k1", goal: "Fix recall timeout" }] } });
+    render(<App />);
+    expect(await screen.findByText("Online now")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Fix recall timeout/ }));
+    expect(screen.getByRole("textbox", { name: /Message/i })).toHaveValue("Continue: Fix recall timeout");
+  });
+
+  it("hides Keep highlights when the Keep is not connected", async () => {
+    installBridge({ snapshot: state("alpha"), highlights: { online: "x", bulletin: "y", paused: [{ sessionId: "k1", goal: "Fix recall timeout" }] } });
+    render(<App />);
+    await screen.findByRole("textbox", { name: /Message/i });
+    expect(screen.queryByText("Online now")).not.toBeInTheDocument();
+    expect(screen.queryByText("Pick up where you left off")).not.toBeInTheDocument();
+  });
+
   it("makes the mission harness discoverable without exposing a process bridge", async () => {
     installBridge();
     render(<App />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "/mission" }));
+    await screen.findByRole("textbox", { name: /Message/i });
 
-    expect(screen.getByRole("textbox")).toHaveValue('/mission new "');
+    expect(screen.queryByRole("button", { name: "/mission" })).not.toBeInTheDocument();
   });
 
   it("blocks invalid mission and review actions with actionable setup affordances", async () => {

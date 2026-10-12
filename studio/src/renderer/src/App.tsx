@@ -9,7 +9,6 @@ import {
   Cpu,
   ExternalLink,
   FileDiff,
-  FolderOpen,
   KeyRound,
   LogOut,
   Palette,
@@ -27,11 +26,12 @@ import type { LoginMethod, RuntimeDescriptor, RuntimeEffort, RuntimeEvent, Runti
 import type { BootstrapResult, StudioAction, StudioActionResult, StudioUpdateState } from "../../shared/ipc";
 import type { DecisionAnswers, DecisionBoardDocument, DecisionEmbed, DecisionQuestion } from "../../shared/decision-board";
 import { findDecisionBoardUrl } from "../../shared/decision-board";
-import type { KeepStatus } from "../../shared/keep";
+import type { KeepHighlights, KeepStatus } from "../../shared/keep";
+import { StartCard } from "./start/StartCard.js";
 import { FirekeepMark } from "./FirekeepMark.js";
 import { StudioShell } from "./layout/StudioShell.js";
 import { TopBar } from "./layout/TopBar.js";
-import { ignore, pathLeaf } from "./util.js";
+import { ignore } from "./util.js";
 import { SessionRail } from "./rail/SessionRail.js";
 import { sessionAccentStyle } from "./rail/session-style.js";
 import { RichMarkdown } from "./RichMarkdown.js";
@@ -66,6 +66,7 @@ export function App(): React.JSX.Element {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [keepStatus, setKeepStatus] = useState<KeepStatus | null>(null);
+  const [highlights, setHighlights] = useState<KeepHighlights | null>(null);
   const [runtimeManagerOpen, setRuntimeManagerOpen] = useState(false);
   const [connectDialog, setConnectDialog] = useState<ConnectDialog | null>(null);
   const [secret, setSecret] = useState("");
@@ -175,6 +176,14 @@ export function App(): React.JSX.Element {
       if (modelRequestRef.current[runtimeId] === request) setModelRefresh({ runtimeId, state: "error", message: "Live model refresh failed" });
     }
   }, [invoke]);
+
+  const keepConnected = keepStatus?.state === "connected";
+  useEffect(() => {
+    if (!keepConnected) { setHighlights(null); return; }
+    let active = true;
+    ignore(invoke({ type: "keep.highlights" }).then((result) => { if (active && result.type === "keep-highlights") setHighlights(result.highlights); }));
+    return () => { active = false; };
+  }, [invoke, keepConnected]);
 
   useEffect(() => {
     let active = true;
@@ -493,7 +502,7 @@ export function App(): React.JSX.Element {
       <main className="conversation">
         <div className="transcript-frame">
           <div className="transcript" ref={transcriptRef} aria-live="polite" onScroll={updateTranscriptFollow}>
-            {timeline.length === 0 && commandCards.length === 0 ? <Welcome runtimes={bootstrap.runtimes} workspacePath={snapshot.workspacePath} onWorkspace={() => ignore(chooseWorkspace())} onChoose={(id) => void choosePrimary(id)} onCommand={(value) => { setComposer(value); composerRef.current?.focus(); }} /> : null}
+            {timeline.length === 0 && commandCards.length === 0 ? <StartCard runtimes={bootstrap.runtimes} diagnostics={diagnostics} primaryRuntimeId={snapshot.primaryRuntimeId} recentWorkspaces={snapshot.recentWorkspaces} workspacePath={snapshot.workspacePath} highlights={highlights} keepStatus={keepStatus} onPrimary={(id) => void choosePrimary(id)} onConnect={openConnect} onChooseFolder={() => ignore(chooseWorkspace())} onSwitchWorkspace={(path) => ignore(invoke({ type: "workspace.set", path }).then(applyResult))} onOpenSession={(goal) => { setComposer(`Continue: ${goal}`); composerRef.current?.focus(); }} /> : null}
             {runGroups.map(({ run, reviews }) => <RunTimeline
               key={run.id}
               run={run}
@@ -639,10 +648,6 @@ function RuntimeManagerDialog({
 
 function LaunchScreen({ error }: { readonly error: string | null }): React.JSX.Element {
   return <main className="launch-shell"><section className="launch-card" aria-live="polite"><span className="brand-mark"><FirekeepMark size={30} /></span><h1>Firekeep Studio</h1><div className="launch-status"><span className="pulse-dot" /> Loading…</div>{error ? <p className="launch-error">{error}</p> : null}</section></main>;
-}
-
-function Welcome({ runtimes, workspacePath, onWorkspace, onChoose, onCommand }: { readonly runtimes: readonly RuntimeDescriptor[]; readonly workspacePath: string | null; readonly onWorkspace: () => void; readonly onChoose: (id: string) => void; readonly onCommand: (value: string) => void }): React.JSX.Element {
-  return <section className="welcome"><span className="welcome-mark"><FirekeepMark size={30} /></span><p className="eyebrow">FIREKEEP STUDIO</p><h1 aria-label="Agents come and go. The Keep stays."><span>Agents come and go.</span><span>The Keep stays.</span></h1><p>Choose any runtime to lead, bring in another to review, and keep the work, context, and handoffs together.</p><button className="welcome-workspace" onClick={onWorkspace}><FolderOpen size={16} /><span>{workspacePath ? pathLeaf(workspacePath) : "Choose a workspace"}</span></button><div className="runtime-choices">{runtimes.map((runtime) => <button key={runtime.id} onClick={() => onChoose(runtime.id)} style={{ "--runtime-accent": runtime.accent ?? "#df7e45" } as React.CSSProperties}><span className="runtime-orb">{runtime.displayName[0]}</span><span><strong>{runtime.displayName}</strong><small>{runtime.transport}</small></span></button>)}</div><div className="quick-commands"><button onClick={() => onCommand('/mission new "')}>/mission</button><button onClick={() => onCommand("/workspace choose")}>/workspace</button><button onClick={() => onCommand("/doctor")}>/doctor</button><button onClick={() => onCommand("/reviewer add ")}>/reviewer</button><button onClick={() => onCommand("/firekeep status")}>/firekeep</button><button onClick={() => onCommand("/help")}>/help</button></div></section>;
 }
 
 interface TimelineActions {
