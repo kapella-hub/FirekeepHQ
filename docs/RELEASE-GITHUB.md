@@ -186,7 +186,7 @@ To run it by hand on macOS/Linux:
 cd client && python -m pytest tests/test_e2e_bootstrap.py -m e2e -q
 ```
 
-
+- **1.8.0** — For Firekeep Studio 0.5: a `studio` gateway toolset (reads plus `memory_feedback`; no session-writing tool); `firekeep whoami [--json]` (identity without the key); `FIREKEEP_SESSION_REPORT_FILE`, through which the bridge tap reports captured Keep session ids to the launching Studio session (Codex gets it via `env_vars`). Prompt-hook recall is now attributed to the agent's Keep session instead of `unknown`. Nothing changes when Studio is not the launcher.
 - **server v1.6.2** — `replay_timeline` accepts `format="json"` (the REST
   `TimelineResponse` verbatim, with event ids, `agent_id` and `memory_ids`) and
   `offset`. The default Markdown output is unchanged. Needed for Firekeep Studio

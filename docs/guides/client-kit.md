@@ -600,9 +600,18 @@ member. Now every child the gateway builds — the four shims, `decision`, and e
   `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`), the `LC_*`, `XDG_*` and `PYTHON*`
   families, `VIRTUAL_ENV`, and the kit's own non-secret knobs (`FIREKEEP_CONFIG`,
   `FIREKEEP_RUNTIME`, `FIREKEEP_AGENT_ID`, `FIREKEEP_BYPASS`, `NEXUS_AGENT_ID`,
-  `FIREKEEP_SESSION_ID`, the `FIREKEEP_SYMDEX_*` / `FIREKEEP_HANDS_*` /
+  `FIREKEEP_SESSION_ID`, `FIREKEEP_SESSION_REPORT_FILE`, the `FIREKEEP_SYMDEX_*` / `FIREKEEP_HANDS_*` /
   `FIREKEEP_DECISION_*` settings, …). Names match case-insensitively and keep
   their spelling.
+
+`FIREKEEP_SESSION_REPORT_FILE` (client 1.8.0) is set by Firekeep Studio on every agent it
+launches. The bridge shim's session tap appends each Keep session id it captures (one per
+line), so Studio can build per-turn receipts from the sessions the agent itself started.
+Codex receives it through `env_vars` in the rendered `config.toml`. Unset, nothing is
+written. Session ids remain in the file until the bridge shim appends `#ended <id>` when
+`ctx_complete_session` or `ctx_abandon_session` exits; the kit's own fallback
+(`state.current_session_id`) never revives an ended session.
+
 - **Forwarded to one child only** (`CHILD_EXTRAS`): a credential that child is
   documented to read — symdex gets `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`,
   `OPENAI_API_*` and `GITHUB_TOKEN` (AI summaries, GitHub indexing); decision gets
@@ -1006,6 +1015,11 @@ Background workspace indexing from the `session_start` hook core. **ON by defaul
 ## Proactive Recall (client kit — `firekeep_client.promptrecall`)
 The prompt hook consults the Keep on every user prompt and injects up to 3 genuinely relevant, not-yet-seen memories as a `[firekeep recall]` system message — usually nothing. Floors on `metadata.raw_score` (never the normalized score, whose top entry is 1.0 by construction), requests `format: "raw"` (synthesized recall's LLM pass cannot fit the 2.5s hook budget), dedupes per session, fails open, and marks itself `trigger: "prompt-hook"` so the compliance measurement can slice pushed from deliberate recall. Coverage: Claude Code + Kiro (the runtimes that deliver prompt text); details in [`memory-and-recall.md`](memory-and-recall.md).
 
+Since 1.8.0 the pushed recall carries the agent's current Keep session (`X-Session-Id`:
+the fresh stash, else Studio's report file), so it appears in that session's replay
+timeline instead of session `unknown`. A fresh agent's first prompt runs before it has
+started a Keep session and stays unattributed.
+
 ## Maildex bridge (client kit — `firekeep maildex`, `firekeep_client.maildexsync`)
 `firekeep maildex add/list/sync/remove` lazy-imports the wheel (bridge works whether or not the dex is registered; registration gates the background trigger and the doctor row). `maildexsync.py` is the docdexsync twin — same interval-bucket claim, same detached spawn (`-m firekeep_maildex.sync --all --quiet`), gated on registration + ≥1 account + staleness; `FIREKEEP_NO_AUTO_SYNC` suspends both document and mail background syncs with one switch. Doctor shows accounts · last sync · failures from local files only. Full behavior + invariants: [`docs/guides/dexes.md`](dexes.md).
 
@@ -1052,6 +1066,10 @@ An in-session escape hatch: make Firekeep go **dormant** for personal work — n
 **CLI:** `firekeep personal [on|off|status|toggle]` (default `toggle`) — flips the marker; usable in any runtime via `! firekeep personal`. **`/personal` as plain chat text works in ANY runtime** (client 0.1.16): kiro has no slash-command surface, so typing `/personal` there used to do nothing — now the hook DISPATCHER (`hooks/__main__.py::_personal_text_command`) intercepts a prompt whose text is exactly `/personal [on|off|status|toggle]` and performs the toggle itself, returning the state as a systemMessage. The intercept deliberately sits BEFORE the dispatcher's bypass gate — while personal mode is ON the prompt core is short-circuited, so an in-core intercept could never toggle OFF. Both kiro's `userPromptSubmit` and Claude's `UserPromptSubmit` deliver the message as `payload["prompt"]` (kiro shape validated empirically on kiro-cli 2.12.1; opencode's bridge maps `session.idle` to the prompt core without a prompt text, so `/personal` there still goes through `! firekeep personal` or the CLI). `firekeep doctor` shows a `personal-mode` row that WARNs when bypass is active, so it's never silently left on.
 
 **Config (client, all optional):** `FIREKEEP_BYPASS` (truthy → hard startup bypass), `FIREKEEP_PERSONAL_TTL_HOURS` (default 12; marker staleness backstop). Concurrency caveat: the marker is machine-global, so concurrent sessions share personal mode — fine for focused personal work, coarse if several run at once.
+
+## Identity and Configuration (`firekeep whoami`, `firekeep doctor`)
+
+**`firekeep whoami [--json]`** (client 1.8.0) — prints `agent_id`, `kit_version`, `personal_mode`, `server_configured` — never the API key. Exits 0 when `agent_id` is known, 1 otherwise. With `--json` the output is a single line of JSON suitable for script use; without it, the output is plain text. Usable in any runtime via `! firekeep whoami` or as a shell command.
 
 ## Session Resumption
 Automatic discovery and resumption of paused or crashed sessions on conversation start. No new tools or endpoints — purely hook-layer.
