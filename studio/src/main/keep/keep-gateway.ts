@@ -10,9 +10,10 @@ export interface McpLike {
 }
 
 export interface KeepGatewayDeps {
-  readonly command: string;
   readonly whoami: () => Promise<{ readonly ok: boolean; readonly output: string; readonly missing: boolean }>;
+  /** Spawn the gateway. The wrapper must call `gateway.handleExit(client)` (with the client it returned) from McpStdioClient's onExit. */
   readonly connect: (env: Readonly<Record<string, string>>) => Promise<McpLike>;
+  readonly now?: () => number;
   readonly sleep?: (ms: number) => Promise<void>;
   readonly onStatus?: (status: KeepStatus) => void;
 }
@@ -26,6 +27,9 @@ export const BACKOFF_MS: readonly number[] = [1000, 5000, 30_000];
 /** Tools whose `agent_id` is an attribution label. ctx_list_sessions treats it as a FILTER; others lack it. */
 const TAGGED_TOOLS = new Set(["memory_recall", "memory_feedback"]);
 
+/** Gateway must stay up this long before the consecutive-failure counter resets. */
+export const STABLE_MS = 60_000;
+
 export class KeepGateway implements KeepTimelineSource {
   readonly #deps: KeepGatewayDeps;
   #status: KeepStatus = { state: "starting" };
@@ -33,6 +37,9 @@ export class KeepGateway implements KeepTimelineSource {
   #label = "";
   #env: Record<string, string> = {};
   #stopped = false;
+  #starting: Promise<KeepStatus> | null = null;
+  #failures = 0;
+  #connectedAt = 0;
 
   constructor(deps: KeepGatewayDeps) {
     this.#deps = deps;
@@ -40,31 +47,33 @@ export class KeepGateway implements KeepTimelineSource {
 
   status(): KeepStatus { return this.#status; }
 
-  async start(): Promise<KeepStatus> {
-    if (this.#stopped) return this.#status;
-    const who = await this.#deps.whoami().catch(() => ({ ok: false, output: "", missing: true }));
-    if (who.missing) return this.#set({ state: "missing" });
-    const facts = parseWhoami(who.output);
-    if (!who.ok || !facts?.agent_id) {
-      const detail = facts ? "This machine has no Firekeep agent identity yet. Run firekeep doctor." : "Update the Firekeep kit (firekeep update) to connect Studio.";
-      return this.#set({ state: "unconfigured", detail });
-    }
-    this.#label = `${facts.agent_id}${PANEL_AGENT_SUFFIX}`;
-    this.#env = { FIREKEEP_TOOLSET: "studio", FIREKEEP_AGENT_ID: this.#label };
-    return this.#connectWithBackoff({ agentId: facts.agent_id, personalMode: facts.personal_mode === true, kitVersion: String(facts.kit_version ?? "") });
+  /** Single-flight: a call while another start/retry/reconnect runs shares its promise. */
+  start(): Promise<KeepStatus> {
+    if (this.#stopped) return Promise.resolve(this.#status);
+    if (this.#starting) return this.#starting;
+    this.#failures = 0;
+    return this.#track(this.#run());
   }
 
-  async retry(): Promise<KeepStatus> { return this.start(); }
+  retry(): Promise<KeepStatus> { return this.start(); }
 
-  handleExit(): void {
+  /**
+   * The gateway process behind `client` exited. Wiring: pass the client whose onExit fired;
+   * an exit from a client that is no longer current is ignored.
+   */
+  handleExit(client: McpLike): void {
+    if (client !== this.#mcp) return;
     this.#mcp = null;
-    if (!this.#stopped) void this.start();
+    if (this.#stopped || this.#starting) return;
+    if (this.#now() - this.#connectedAt >= STABLE_MS) this.#failures = 0;
+    this.#track(this.#reconnect());
   }
 
   async stop(): Promise<void> {
     this.#stopped = true;   // start()/handleExit() become no-ops; quit cannot respawn the gateway
-    await this.#mcp?.close().catch(() => undefined);
+    const mcp = this.#mcp;
     this.#mcp = null;
+    await mcp?.close().catch(() => undefined);
   }
 
   async search(query: string, kind: "memory" | "skill"): Promise<readonly KeepItem[]> {
@@ -109,20 +118,67 @@ export class KeepGateway implements KeepTimelineSource {
     return result.text;
   }
 
-  async #connectWithBackoff(facts: { agentId: string; personalMode: boolean; kitVersion: string }): Promise<KeepStatus> {
-    const sleep = this.#deps.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  #now(): number { return (this.#deps.now ?? Date.now)(); }
+
+  #track(promise: Promise<KeepStatus>): Promise<KeepStatus> {
+    const tracked = promise.finally(() => { if (this.#starting === tracked) this.#starting = null; });
+    this.#starting = tracked;
+    return tracked;
+  }
+
+  async #sleep(ms: number): Promise<void> {
+    await (this.#deps.sleep ?? ((n) => new Promise<void>((resolve) => setTimeout(resolve, n))))(ms);
+  }
+
+  /** Unexpected exit: report, wait the next backoff step, then reconnect (or give up to manual retry). */
+  async #reconnect(): Promise<KeepStatus> {
+    const delay = BACKOFF_MS[this.#failures];
+    this.#failures += 1;
+    if (delay === undefined) return this.#set({ state: "unreachable", detail: "Keep gateway exited", retryInMs: null });
+    this.#set({ state: "unreachable", detail: "Keep gateway exited", retryInMs: delay });
+    await this.#sleep(delay);
+    return this.#run();
+  }
+
+  async #run(): Promise<KeepStatus> {
+    if (this.#stopped) return this.#status;
+    const who = await this.#deps.whoami().catch(() => ({ ok: false, output: "", missing: true }));
+    if (this.#stopped) return this.#status;
+    if (who.missing) return this.#set({ state: "missing" });
+    const facts = parseWhoami(who.output);
+    if (!who.ok || !facts?.agent_id) {
+      const detail = facts
+        ? "This machine has no Firekeep agent identity yet. Run firekeep doctor."
+        : /invalid choice/i.test(who.output)
+          ? "Update the Firekeep kit (firekeep update) to connect Studio."
+          : "The Firekeep kit config needs attention. Run firekeep doctor.";
+      return this.#set({ state: "unconfigured", detail });
+    }
+    this.#label = `${facts.agent_id}${PANEL_AGENT_SUFFIX}`;
+    this.#env = { FIREKEEP_TOOLSET: "studio", FIREKEEP_AGENT_ID: this.#label };
+    const info = { agentId: facts.agent_id, personalMode: facts.personal_mode === true, kitVersion: String(facts.kit_version ?? "") };
     let lastError = "";
-    for (let attempt = 0; attempt <= BACKOFF_MS.length; attempt += 1) {
-      if (this.#stopped) break;
+    for (;;) {
+      if (this.#stopped) return this.#status;
+      const previous = this.#mcp;
+      this.#mcp = null;
+      await previous?.close().catch(() => undefined);
       try {
-        this.#mcp = await this.#connectOnce();
-        return this.#set({ state: "connected", ...facts });
+        const client = await this.#connectOnce();
+        if (this.#stopped) {
+          await client.close().catch(() => undefined);
+          return this.#status;
+        }
+        this.#mcp = client;
+        this.#connectedAt = this.#now();
+        return this.#set({ state: "connected", ...info });
       } catch (error) {
         lastError = error instanceof Error ? error.message : String(error);
-        const delay = BACKOFF_MS[attempt];
-        this.#set({ state: "unreachable", detail: firstLine(lastError), retryInMs: delay ?? null });
+        const delay = BACKOFF_MS[this.#failures];
+        this.#failures += 1;
         if (delay === undefined) break;
-        await sleep(delay);
+        this.#set({ state: "unreachable", detail: firstLine(lastError), retryInMs: delay });
+        await this.#sleep(delay);
       }
     }
     return this.#set({ state: "unreachable", detail: firstLine(lastError), retryInMs: null });
@@ -168,14 +224,19 @@ function firstLine(text: string): string {
   return text.trim().split(/\r?\n/)[0]?.slice(0, 160) ?? "";
 }
 
-function parseWhoami(output: string): { agent_id?: string | null; kit_version?: unknown; personal_mode?: unknown } | null {
-  try {
-    const line = output.split(/\r?\n/).map((l) => l.trim()).reverse().find((l) => l.startsWith("{"));
-    const value = JSON.parse(line ?? "");
-    return value && typeof value === "object" ? value : null;
-  } catch {
-    return null;
+function parseWhoami(output: string): { agent_id: string | null; kit_version?: unknown; personal_mode?: unknown } | null {
+  // Last JSON line that carries an agent_id key; the id itself may be null (kit reports CHANGEME that way).
+  for (const line of output.split(/\r?\n/).map((l) => l.trim()).reverse()) {
+    if (!line.startsWith("{")) continue;
+    try {
+      const value = JSON.parse(line) as Record<string, unknown>;
+      if (value && typeof value === "object" && "agent_id" in value) {
+        const id = typeof value.agent_id === "string" && value.agent_id ? value.agent_id : null;
+        return { ...value, agent_id: id };
+      }
+    } catch { /* not JSON */ }
   }
+  return null;
 }
 
 /** ctx_list_sessions returns {"sessions": [{session_id, goal, status, ...}]} (bridge/app/mcp_server.py), serialized as JSON text. */

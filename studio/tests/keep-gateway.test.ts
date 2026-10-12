@@ -9,14 +9,14 @@ const whoamiOk = async () => ({ ok: true, missing: false, output: JSON.stringify
 
 describe("KeepGateway", () => {
   it("reports missing when the kit is not installed", async () => {
-    const gateway = new KeepGateway({ command: "firekeep", whoami: async () => ({ ok: false, missing: true, output: "" }), connect: vi.fn() });
+    const gateway = new KeepGateway({ whoami: async () => ({ ok: false, missing: true, output: "" }), connect: vi.fn() });
     expect(await gateway.start()).toEqual({ state: "missing" });
   });
 
   it("spawns the studio toolset under the panel label and tags every call", async () => {
     const mcp = fakeMcp();
     const connect = vi.fn(async () => mcp);
-    const gateway = new KeepGateway({ command: "firekeep", whoami: whoamiOk, connect });
+    const gateway = new KeepGateway({ whoami: whoamiOk, connect });
     expect(await gateway.start()).toMatchObject({ state: "connected", agentId: "agent-a" });
     expect(connect).toHaveBeenCalledWith({ FIREKEEP_TOOLSET: "studio", FIREKEEP_AGENT_ID: "agent-a-studio-panel" });
     await gateway.search("vps", "memory");
@@ -28,7 +28,7 @@ describe("KeepGateway", () => {
     const connect = vi.fn()
       .mockRejectedValueOnce(new Error("firekeep gateway exited (1): unknown FIREKEEP_TOOLSET 'studio'"))
       .mockResolvedValueOnce(mcp);
-    const gateway = new KeepGateway({ command: "firekeep", whoami: whoamiOk, connect });
+    const gateway = new KeepGateway({ whoami: whoamiOk, connect });
     await gateway.start();
     expect(connect).toHaveBeenLastCalledWith({ FIREKEEP_TOOLS_ALLOW: STUDIO_TOOLS.join(","), FIREKEEP_AGENT_ID: "agent-a-studio-panel" });
   });
@@ -36,7 +36,7 @@ describe("KeepGateway", () => {
   it("backs off 1s, 5s, 30s and then waits for a manual retry", async () => {
     const sleeps: number[] = [];
     const connect = vi.fn().mockRejectedValue(new Error("firekeep gateway exited (1): cannot reach cortex"));
-    const gateway = new KeepGateway({ command: "firekeep", whoami: whoamiOk, connect, sleep: async (ms) => { sleeps.push(ms); } });
+    const gateway = new KeepGateway({ whoami: whoamiOk, connect, sleep: async (ms) => { sleeps.push(ms); } });
     const status = await gateway.start();
     expect(sleeps).toEqual([...BACKOFF_MS]);
     expect(status).toMatchObject({ state: "unreachable", retryInMs: null });
@@ -45,21 +45,21 @@ describe("KeepGateway", () => {
 
   it("asks replay_timeline for JSON and parses it", async () => {
     const mcp = fakeMcp(() => JSON.stringify({ events: [], total: 0, has_more: false }));
-    const gateway = new KeepGateway({ command: "firekeep", whoami: whoamiOk, connect: async () => mcp });
+    const gateway = new KeepGateway({ whoami: whoamiOk, connect: async () => mcp });
     await gateway.start();
     expect(await gateway.timeline("s1", 4, 200)).toEqual({ kind: "page", events: [], total: 0, hasMore: false });
     expect(mcp.calls[0]).toEqual(["replay_timeline", { session_id: "s1", offset: 4, limit: 200, format: "json" }]);
   });
 
   it("timeline() returns an error page instead of throwing when not connected", async () => {
-    const gateway = new KeepGateway({ command: "firekeep", whoami: async () => ({ ok: false, missing: true, output: "" }), connect: vi.fn() });
+    const gateway = new KeepGateway({ whoami: async () => ({ ok: false, missing: true, output: "" }), connect: vi.fn() });
     await gateway.start();
     expect(await gateway.timeline("s1", 0, 200)).toEqual({ kind: "error", message: "Keep not connected" });
   });
 
   it("only ever calls preset tools", async () => {
     const mcp = fakeMcp(() => "");
-    const gateway = new KeepGateway({ command: "firekeep", whoami: whoamiOk, connect: async () => mcp });
+    const gateway = new KeepGateway({ whoami: whoamiOk, connect: async () => mcp });
     await gateway.start();
     await gateway.search("x", "skill"); await gateway.skills(); await gateway.team(); await gateway.highlights();
     await gateway.feedback(["m1"], true); await gateway.timeline("s", 0, 1);
@@ -68,19 +68,20 @@ describe("KeepGateway", () => {
 
   it("labels only memory_recall and memory_feedback (ctx_list_sessions treats agent_id as a filter)", async () => {
     const mcp = fakeMcp(() => "");
-    const gateway = new KeepGateway({ command: "firekeep", whoami: whoamiOk, connect: async () => mcp });
+    const gateway = new KeepGateway({ whoami: whoamiOk, connect: async () => mcp });
     await gateway.start();
     await gateway.highlights(); await gateway.skills(); await gateway.feedback(["m1"], false);
     for (const [name, args] of mcp.calls) expect("agent_id" in args).toBe(name === "memory_recall" || name === "memory_feedback");
   });
 
   it("does not restart after stop()", async () => {
-    const connect = vi.fn(async () => fakeMcp());
-    const gateway = new KeepGateway({ command: "firekeep", whoami: whoamiOk, connect });
+    const first = fakeMcp();
+    const connect = vi.fn(async () => first);
+    const gateway = new KeepGateway({ whoami: whoamiOk, connect, sleep: async () => {} });
     await gateway.start();
     await gateway.stop();
-    gateway.handleExit();
-    await Promise.resolve();
+    gateway.handleExit(first);
+    for (let i = 0; i < 20; i += 1) await Promise.resolve();
     expect(connect).toHaveBeenCalledTimes(1);
   });
 });
@@ -103,13 +104,118 @@ it("parsePausedSessions reads the bridge's real {sessions:[...]} reply", () => {
 
 it("highlights surfaces paused sessions from the real reply", async () => {
   const mcp = fakeMcp((name) => name === "ctx_list_sessions" ? JSON.stringify({ sessions: [{ session_id: "a1b2c3d4", goal: "g" }] }) : "x");
-  const gateway = new KeepGateway({ command: "firekeep", whoami: whoamiOk, connect: async () => mcp });
+  const gateway = new KeepGateway({ whoami: whoamiOk, connect: async () => mcp });
   await gateway.start();
   expect((await gateway.highlights()).paused).toEqual([{ sessionId: "a1b2c3d4", goal: "g" }]);
 });
 
 it("an old kit without whoami gets the update message", async () => {
-  const gateway = new KeepGateway({ command: "firekeep", whoami: async () => ({ ok: false, missing: false, output: "error: unknown command whoami" }), connect: vi.fn() });
+  const gateway = new KeepGateway({ whoami: async () => ({ ok: false, missing: false, output: "error: argument action: invalid choice: 'whoami'" }), connect: vi.fn() });
   const status = await gateway.start();
   expect(status.state === "unconfigured" && status.detail).toContain("firekeep update");
+});
+
+describe("KeepGateway lifecycle", () => {
+  const deferred = <T,>() => { let resolve!: (v: T) => void; const promise = new Promise<T>((r) => { resolve = r; }); return { promise, resolve }; };
+
+  it("start/retry/handleExit share one in-flight promise", async () => {
+    const gate = deferred<McpLike>();
+    const connect = vi.fn(() => gate.promise);
+    const gateway = new KeepGateway({ whoami: whoamiOk, connect });
+    const a = gateway.start();
+    const b = gateway.retry();
+    expect(b).toBe(a);
+    await vi.waitFor(() => expect(connect).toHaveBeenCalledTimes(1));
+    gate.resolve(fakeMcp());
+    await a;
+    expect(connect).toHaveBeenCalledTimes(1);
+  });
+
+  it("stop() during a pending connect closes the new client and never reports connected", async () => {
+    const gate = deferred<McpLike>();
+    const mcp = fakeMcp();
+    const close = vi.spyOn(mcp, "close");
+    const gateway = new KeepGateway({ whoami: whoamiOk, connect: () => gate.promise });
+    const started = gateway.start();
+    await vi.waitFor(() => expect(gateway.status().state).toBe("starting"));
+    await new Promise((r) => setTimeout(r, 0));
+    await gateway.stop();
+    gate.resolve(mcp);
+    await started;
+    expect(close).toHaveBeenCalled();
+    expect(gateway.status().state).not.toBe("connected");
+  });
+
+  it("ignores an exit from a superseded client", async () => {
+    const old = fakeMcp(); const next = fakeMcp();
+    const connect = vi.fn().mockResolvedValueOnce(old).mockResolvedValueOnce(next);
+    const gateway = new KeepGateway({ whoami: whoamiOk, connect, sleep: async () => {} });
+    await gateway.start();
+    await gateway.retry();
+    expect(connect).toHaveBeenCalledTimes(2);
+    const statuses: string[] = [];
+    const before = gateway.status();
+    gateway.handleExit(old);
+    for (let i = 0; i < 20; i += 1) await Promise.resolve();
+    expect(gateway.status()).toBe(before);
+    expect(connect).toHaveBeenCalledTimes(2);
+    void statuses;
+  });
+
+  it("a gateway that dies after every handshake backs off 1s, 5s, 30s then waits for manual retry", async () => {
+    const sleeps: number[] = [];
+    const clients: McpLike[] = [];
+    const connect = vi.fn(async () => { const m = fakeMcp(); clients.push(m); return m; });
+    let t = 0;
+    const gateway = new KeepGateway({ whoami: whoamiOk, connect, now: () => t, sleep: async (ms) => { sleeps.push(ms); t += ms; } });
+    await gateway.start();
+    for (let i = 0; i < 4; i += 1) {
+      gateway.handleExit(clients[clients.length - 1]!);
+      await vi.waitFor(() => expect(gateway.status().state === "connected" || (gateway.status() as { retryInMs?: number | null }).retryInMs === null).toBe(true));
+    }
+    expect(sleeps).toEqual([1000, 5000, 30_000]);
+    expect(gateway.status()).toMatchObject({ state: "unreachable", retryInMs: null, detail: "Keep gateway exited" });
+    expect(connect).toHaveBeenCalledTimes(4);
+  });
+
+  it("resets the failure counter after 60s of stable uptime", async () => {
+    const sleeps: number[] = [];
+    const clients: McpLike[] = [];
+    let t = 0;
+    const gateway = new KeepGateway({ whoami: whoamiOk, now: () => t, sleep: async (ms) => { sleeps.push(ms); }, connect: async () => { const m = fakeMcp(); clients.push(m); return m; } });
+    await gateway.start();
+    for (let i = 0; i < 3; i += 1) {
+      t += 61_000;
+      gateway.handleExit(clients[clients.length - 1]!);
+      await vi.waitFor(() => expect(clients.length).toBe(i + 2));
+      await vi.waitFor(() => expect(gateway.status().state).toBe("connected"));
+    }
+    expect(sleeps).toEqual([1000, 1000, 1000]);
+  });
+});
+
+describe("KeepGateway whoami outcomes", () => {
+  it("exit 3 with no stdout asks for doctor, not a kit update", async () => {
+    const gateway = new KeepGateway({ whoami: async () => ({ ok: false, missing: false, output: "" }), connect: vi.fn() });
+    const status = await gateway.start();
+    expect(status).toMatchObject({ state: "unconfigured" });
+    expect(status.state === "unconfigured" && status.detail).toBe("The Firekeep kit config needs attention. Run firekeep doctor.");
+  });
+
+  it("agent_id null (CHANGEME) is unconfigured with the identity message", async () => {
+    const output = JSON.stringify({ agent_id: null, kit_version: "1.8.0", personal_mode: false, server_configured: true });
+    const gateway = new KeepGateway({ whoami: async () => ({ ok: false, missing: false, output }), connect: vi.fn() });
+    const status = await gateway.start();
+    expect(status.state === "unconfigured" && status.detail).toContain("no Firekeep agent identity");
+  });
+
+  it("picks the last JSON line carrying agent_id, ignoring stray JSON", async () => {
+    const mcp = fakeMcp();
+    const output = `{"warn": 1}
+${JSON.stringify({ agent_id: "agent-b", kit_version: "1.8.0", personal_mode: true, server_configured: true })}
+noise`;
+    const connect = vi.fn(async () => mcp);
+    const gateway = new KeepGateway({ whoami: async () => ({ ok: true, missing: false, output }), connect });
+    expect(await gateway.start()).toMatchObject({ state: "connected", agentId: "agent-b", personalMode: true });
+  });
 });
