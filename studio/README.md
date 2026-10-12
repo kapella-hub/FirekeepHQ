@@ -1,23 +1,64 @@
 # Firekeep Studio
 
-Firekeep Studio is Firekeep's runtime-neutral desktop agent console. Version `0.4.1`
+Firekeep Studio is Firekeep's runtime-neutral desktop agent console. Version `0.5.0`
 is a separate Electron application: it does not replace or fork the Python Client Kit.
 The kit remains the source of truth for Keep connectivity, memory, hooks, instructions,
 personal mode, and runtime configuration.
+
+## 0.5 — Window into the Keep
+
+Studio 0.5 reorganizes the app around the Keep: a three-column layout of **sessions rail**,
+**conversation**, and **Keep panel**.
+
+- **Layout.** Toggle the Keep panel with `Ctrl/Cmd+\` or the top-bar button. At window widths
+  of 1100 px and below the panel becomes a drawer over the conversation. `Ctrl/Cmd+K` opens the
+  command palette, which also searches the Keep. `Ctrl/Cmd+Shift+R` starts a review, `Enter`
+  sends and `Shift+Enter` adds a newline, and `Escape` closes the open surface or cancels the
+  active run. Settings is a sheet (it replaced the Runtime Center) with the sections
+  **Agents & accounts**, **Keep connection**, **Reviews**, **Appearance**, and **Studio updates**.
+- **Start card, Agent chip, "Done when…", Second opinion.** The Start card replaces the
+  Welcome hero. The composer's Agent chip picks the primary runtime. **Done when…** turns the
+  composer's prompt into a Mission with deterministic checks; it uses the same confirmation
+  dialog, outcome receipt, and human acceptance as before. **Second opinion** asks another
+  agent for a fresh, read-only review of an answer.
+- **The Keep link.** Studio reaches the Keep only by launching the kit's own `firekeep gateway`
+  with `FIREKEEP_TOOLSET=studio`, the kit's preset of nine tools, under the agent label
+  `<agent>-studio-panel`. The Keep panel searches memory and skills and shows who is online,
+  the bulletin board, and paused sessions. Each turn can end with a **Keep receipt** built from
+  replay: what the agent recalled and what it wrote. Receipts carry thumbs-up/down feedback,
+  sent through `memory_feedback`.
+- **Receipt states.** *Measured* is a full receipt. *Partial* means Studio could not read the
+  Keep's timeline for the turn: the Keep server is older than v1.6.2 (it rejects the JSON
+  timeline request or answers in Markdown), the kit is older than 1.8.0 (it does not write
+  the report file that names the agent's Keep sessions), or the agent's runtime did not pass
+  that file through. Studio then shows what it saw locally and notes that hook-injected recall
+  is not shown. *Unavailable* means the Keep could not be reached while collecting that turn;
+  the newest receipt offers a retry.
+- **Requirements.** Client kit 1.8.0 or later and Keep server v1.6.2 or later give full
+  receipts. With older versions Studio still works; receipts read "partial".
+- **Runtime coverage.** Studio hands each agent a `FIREKEEP_SESSION_REPORT_FILE` path. Codex
+  forwards it through the kit's `env_vars` setting, verified with codex-cli 0.153.4. Claude and
+  Kiro are expected to inherit it from the process environment but are not yet verified, so
+  their receipts may show "partial" until they are.
+- **Shutdown.** Closing Studio while a turn's receipt is still pending does not finalize that
+  receipt.
+- **Removed.** Voice input and spoken replies (`/voice` now only explains this), the Grok
+  runtime, `/compare`, `/consensus`, the Agents grid, and the Welcome hero. Studio stores no
+  secrets.
+
+## Earlier versions
 
 Studio gives every supported agent the same product role. You explicitly choose the
 primary runtime for future turns, may attach any review-capable runtime as an independent
 reviewer, and can change or hand off between them without claiming that vendor-native
 sessions are portable.
 
-Session usage and its next-turn guard stay visible in the left session rail, with fresh
-tokens separated from cached context and total provider traffic. The selected runtime has
-an explicit **In use** state. **Settings → Agents & accounts**, opened from the top-bar Settings button,
-keeps every supported agent's account, reviewer, connectivity, and Keep status available
-without occupying the right inspector. The inspector can be hidden when the conversation
-needs more visual focus. Model refreshes replace the live provider catalog and show progress,
-success, or failure. When the Client Kit has a server configured, the rail also opens its
-dashboard without sending a URL through renderer IPC.
+Session usage and its next-turn guard stay visible in the composer, with fresh tokens
+separated from cached context and total provider traffic. **Settings → Agents & accounts**
+keeps every supported agent's account, reviewer, connectivity, and Keep status available; the
+selected runtime has an explicit **In use** state. Model refreshes replace the live provider
+catalog and show progress, success, or failure. When the Client Kit has a server configured,
+Settings → Keep connection also opens its dashboard without sending a URL through renderer IPC.
 
 Sessions can be named and color-coded from the palette icon on their left-rail row—including
 inactive sessions—or from `/session rename ...` and `/session color ...`. The fixed palette is
@@ -50,21 +91,12 @@ main-process clipboard operations, so the sandboxed renderer receives no general
 
 Version 0.3.2 makes completed answers the visual result of a run and folds low-priority
 reasoning, tool, diff, usage, and status events into a subordinate **Work log**. Approval and
-warning events remain visible. The **Agents** view (`Ctrl/Cmd+\\`) tiles any chat-capable
-runtime into independently scrollable panes; selecting a pane routes the shared composer to
-that runtime without changing the configured primary, and **Use** makes the change explicit.
-Each pane keeps its provider-native continuation while sharing the Studio session and selected
-workspace. Studio still serializes active runs, so the tiled view is a supervision and handoff
-surface rather than permission for concurrent agents to write into one workspace.
+warning events remain visible. (Its tiled Agents view was removed in 0.5.)
 
-Version 0.3.3 replaces Electron's nonfunctional hosted Web Speech recognition with bounded,
-cancellable Windows dictation. The microphone is click-to-start and click-to-cancel, raw
-audio remains inside the Windows recognizer, and only the resulting text returns through
-Studio's typed IPC boundary. Unsupported platforms now report that honestly.
+Version 0.3.3 added Windows dictation and spoken replies; both were removed in 0.5.
 
-Version 0.3.4 brings the established Firekeep Beacon into every Studio brand surface and
-replaces the generic welcome copy with the product's continuity promise: agents come and
-go; the Keep stays.
+Version 0.3.4 brings the established Firekeep Beacon into every Studio brand surface with
+the product's continuity promise: agents come and go; the Keep stays.
 
 Version 0.3.5 makes each complete session row the name-and-color editor trigger while
 preserving its existing select/resume behavior. The palette icon remains a visual hint,
@@ -75,10 +107,8 @@ row only selects it, while its palette icon exclusively opens name-and-color edi
 
 Version 0.3.7 is a complete presentation pass: stronger contrast and typography, calmer
 surface depth, larger interaction targets, richer Markdown, polished session/runtime/mission
-panels, native light/dark window chrome, and a minimum-width inspector that becomes a real
-drawer instead of disappearing. Three-agent workspaces now use one balanced, tmux-style row
-when space permits. The packaged smoke verifies both themes, the session editor, the responsive
-inspector, the command surface, and the three-pane geometry against the built executable.
+panels, and native light/dark window chrome. The packaged smoke verifies both themes and the
+session editor against the built executable.
 
 Version 0.4 adds a release channel that is separate from the Python Client Kit. Packaged
 Studio checks that channel shortly after launch, verifies its manifest with Firekeep's pinned
@@ -106,10 +136,9 @@ Kiro's optional ACP usage honest when the provider omits token counts instead of
 | Codex | `codex app-server` JSONL RPC; live `model/list` | Keep memory when the managed Codex MCP block is detected; Codex exposes no hooks | Existing account or App Server-managed browser/device/API-key login |
 | Claude Code | Native `stream-json` CLI; live CLI aliases/efforts | Keep memory and automatic hooks are reported independently from the installed native configs | Existing provider-owned Claude login |
 | Kiro CLI | Stable ACP v1; live account models/efforts | Keep memory and hooks when the Client Kit's named `firekeep` agent is installed | Existing provider-owned browser/device login |
-| Grok | xAI Responses API with SSE; live language-model catalog | Provider-direct: no Keep memory, hooks, or briefing | xAI API key stored with Electron `safeStorage` |
 
-Studio shows this distinction for every agent in Settings → Agents & accounts. It never implies that a
-provider-direct adapter has team memory merely because another installed runtime does.
+Studio shows each agent's Keep status in Settings → Agents & accounts and never implies an
+agent has team memory merely because another installed runtime does.
 
 Kiro CLI is the Kiro runtime inside Studio. The optional Kiro IDE is an explicit external
 handoff via `/kiro open`; it is not a second, privileged agent implementation. When the
@@ -134,7 +163,7 @@ npm run dist
 Artifacts land in `studio/release/`. Windows builds an x64 NSIS installer. macOS builds a
 universal DMG for installation and a ZIP used by the native updater. Local builds are unsigned
 unless the operating system's release-signing identity is configured. On first launch, choose
-a primary runtime from the welcome screen, choose the workspace your agents should operate
+a primary runtime on the Start card, choose the workspace your agents should operate
 in, then connect any account whose provider CLI is not already signed in. Ordinary turns
 without an explicit workspace start from the user's home folder, never the installed
 application's launch directory; Missions still require an explicit workspace.
@@ -160,8 +189,6 @@ Useful starting points:
 - `/use codex` — choose any chat-capable runtime as primary.
 - `/reviewer add claude` and `/reviewer mode after-turn` — add automatic fresh reviews.
 - `/review all --focus security` — run configured reviewers manually.
-- `/compare all --prompt "..."` — ask each runtime independently in safe contexts.
-- `/consensus codex --focus evidence` — synthesize recent answers while retaining dissent.
 - `/handoff kiro --note "continue from the verified tests"` — explicitly transfer the work.
 - `/connect codex --method device` — launch supported non-secret provider auth.
 - `/kiro status` and `/kiro open` — inspect Kiro CLI plus the optional IDE handoff.
@@ -172,8 +199,6 @@ Useful starting points:
 - `/firekeep status`, `/firekeep doctor`, `/firekeep personal ...`, and `/firekeep update`.
 - `/update status`, `/update check`, and `/update install` — inspect or act on the separate
   Firekeep Studio release channel.
-- `/voice on` — enable spoken assistant replies. Click the microphone once to dictate and
-  click again to cancel; the editable transcript is never submitted automatically.
 
 The token guard uses total provider-reported traffic, including cached context. The usage
 card separately shows **fresh** tokens (non-cached input, cache writes, output, and other
@@ -222,25 +247,29 @@ permission settings are frozen when execution begins; reviewer runs are always f
   retain scripts, links, event handlers, or `foreignObject`. Decision Board HTML visuals run in
   script-capable opaque-origin iframes with a no-network CSP; a failed visual never prevents
   answering the board.
-- API keys travel only through the secure connection dialog and OS encryption. Slash
-  commands deliberately refuse API-key arguments so secrets cannot enter command history.
-- Reviews, comparisons, and consensus run fresh and read-only. Review output is never
-  recursively reviewed.
+- Studio persists no secrets. An API key typed into the Connect dialog is passed straight to
+  the provider's own login flow and is not kept; slash commands deliberately refuse API-key
+  arguments so secrets cannot enter command history.
+- Reviews run fresh and read-only. Review output is never recursively reviewed.
 - Mission verification commands execute locally only after a native confirmation shows the
   exact commands. Output is bounded, every check has a timeout, and cancellation terminates
   the check's process tree rather than only its shell.
-- Exactly one mission writer, reviewer, comparison, or check owns execution at a time. Studio
+- Exactly one mission writer, reviewer, or check owns execution at a time. Studio
   never runs multiple writing agents concurrently in the same workspace.
 - Provider failures never silently switch the primary runtime. Use `/handoff` explicitly.
 - Sessions are local JSONL files under Electron's user-data directory. Delete requires the
   exact session ID as confirmation; exports use an OS save dialog.
 - The workspace is selected through an OS folder dialog, persisted locally, and cannot be
   changed while a run is active.
-- On Windows, microphone input uses the installed Windows desktop speech recognizer in a
-  bounded local process; raw audio never crosses Studio IPC or reaches an agent. Electron's
-  hosted Web Speech path is deliberately not used because it exposes the API but fails at
-  runtime. Other platforms currently report voice input as unavailable. Spoken replies use
-  the operating-system/Chromium speech synthesizer and may have different platform behavior.
+- From the kit installation Studio reads exactly one thing, the dashboard URL, from
+  `~/.firekeep/config` (or the path in `FIREKEEP_CONFIG`). It never reads or stores Keep
+  credentials. Everything else about the Keep comes from running the kit's own executable
+  (on Windows `~/.firekeep/current` first, then `PATH`), chiefly `firekeep gateway`.
+- IPC is typed: the renderer sends a schema-validated, discriminated action allowlist, and no
+  action accepts a tool name.
+- Studio calls only the nine tools of the kit's `studio` preset. This is enforced twice: by
+  the gateway's toolset (`FIREKEEP_TOOLSET=studio`) and by Studio's own `STUDIO_TOOLS`
+  allowlist in `src/main/keep/`, which refuses any other tool before it is sent.
 - Studio's generic update URL is fixed in the main process. The renderer cannot supply an
   update URL, release manifest, local path, or signature. A downloaded installer is never run
   unless both the signed manifest and the artifact's exact size and SHA-256 digest verify.
