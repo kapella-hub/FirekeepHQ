@@ -1,3 +1,6 @@
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { McpStdioClient } from "../src/main/keep/mcp-stdio-client.js";
@@ -41,7 +44,18 @@ describe("McpStdioClient", () => {
   });
 
   it("rejects connect and kills the child when initialize hangs", async () => {
-    await expect(connect("hang-init", { timeoutMs: 500 })).rejects.toThrow(/timed out/);
+    const dir = mkdtempSync(join(tmpdir(), "fake-mcp-"));
+    const pidFile = join(dir, "pid");
+    try {
+      await expect(connect("hang-init", { timeoutMs: 500, env: { FAKE_MCP_MODE: "hang-init", FAKE_MCP_PIDFILE: pidFile } })).rejects.toThrow(/timed out/);
+      const pid = Number(readFileSync(pidFile, "utf8"));
+      expect(pid).toBeGreaterThan(0);
+      const alive = (): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
+      for (let i = 0; i < 30 && alive(); i += 1) await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(alive()).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("rejects an in-flight call on close() without calling onExit", async () => {

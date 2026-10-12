@@ -5,6 +5,8 @@ if (mode === "unknown-preset") {
   process.stderr.write("firekeep gateway: unknown FIREKEEP_TOOLSET 'studio' (valid: chat); refusing to start\n");
   process.exit(1);
 }
+import { writeFileSync } from "node:fs";
+if (process.env.FAKE_MCP_PIDFILE) writeFileSync(process.env.FAKE_MCP_PIDFILE, String(process.pid));
 const held = [];
 const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
 createInterface({ input: process.stdin }).on("line", (line) => {
