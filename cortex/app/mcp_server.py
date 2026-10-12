@@ -663,6 +663,8 @@ async def replay_timeline(
     session_id: str,
     event_type: str | None = None,
     limit: int = 20,
+    offset: int = 0,
+    format: str = "markdown",
 ) -> str:
     """Trace event timeline for a session (memory ops, ctx updates, claims, coordination).
 
@@ -670,15 +672,27 @@ async def replay_timeline(
         session_id: Bridge session ID.
         event_type: Optional filter (e.g. "memory_read", "ctx_update").
         limit: Max events (default 20).
+        offset: Events to skip, oldest first (default 0) — for paging.
+        format: "markdown" (default, for reading) or "json" — the timeline
+            exactly as the REST route returns it, including each event's id,
+            agent_id and full payload (e.g. memory_ids). For programs such as
+            Firekeep Studio's per-turn Keep receipts.
     """
+    if format not in ("markdown", "json"):
+        return f"Error: format must be 'markdown' or 'json', got {format!r}"
+    as_json = format == "json"
     try:
         client = await _get_client()
         params: dict = {"limit": limit}
+        if offset:
+            params["offset"] = offset
         if event_type:
             params["event_type"] = event_type
         resp = await client.get(f"/replay/sessions/{session_id}/events", params=params)
         resp.raise_for_status()
         data = resp.json()
+        if as_json:
+            return json.dumps(data)
         events = data.get("events", [])
         if not events:
             return f"No trace events found for session {session_id}"
@@ -697,9 +711,11 @@ async def replay_timeline(
             lines.append(f"\n*{data['total'] - len(events)} more events not shown*")
         return "\n".join(lines)
     except httpx.HTTPStatusError as exc:
-        return _format_error(exc)
+        message = _format_error(exc)
+        return json.dumps({"error": message}) if as_json else message
     except httpx.RequestError as exc:
-        return _connection_error(exc)
+        message = _connection_error(exc)
+        return json.dumps({"error": message}) if as_json else message
 
 
 @mcp.tool()

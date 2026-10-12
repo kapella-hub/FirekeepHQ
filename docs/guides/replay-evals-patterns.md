@@ -14,7 +14,7 @@ Structured trace log across all services. Every memory read/write, session updat
 - Sentinel emits `env_change` events for container, git, and file activity.
 - Agent Gateway emits `agent.action.predict` / `reconcile` events for the predict-then-act surface.
 
-**MCP Tools:** `replay_timeline` (default limit=20), `replay_inspect` (opt-in `brief=True` for one-line payload summary), `replay_context_at`, `replay_narrow`, `replay_summary`
+**MCP Tools:** `replay_timeline` (default limit=20; `offset` pages oldest-first; `format="json"` returns the REST `TimelineResponse` verbatim — event `id`, `agent_id`, full `payload` incl. `memory_ids` — and errors as `{"error": …}`; used by Firekeep Studio's per-turn Keep receipts), `replay_inspect` (opt-in `brief=True` for one-line payload summary), `replay_context_at`, `replay_narrow`, `replay_summary`
 
 **Read authorization — per event, from verified stamps (2026-10-04).** Every member key holds `replay:read` (it is enrollable), and the replay routes used to accept that identity and ignore it, so any member could read another's timeline — recall query text, memory snippets, file paths — inspect its events, rebuild its context snapshots and narrow over its session. Now every read goes through one predicate, `replay/authz.py::event_visible`, against the `workspace_id` / `member_id` the emitter stamped on the event (the VERIFIED principal of the request that caused it — never `X-Agent-Id` or any other header):
 - a non-admin key sees only events stamped with its own member, in its own workspace;
