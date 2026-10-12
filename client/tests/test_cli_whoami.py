@@ -31,7 +31,7 @@ def config_file(tmp_path, monkeypatch):
     monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path / "cache"))
     monkeypatch.delenv("FIREKEEP_AGENT_ID", raising=False)
     monkeypatch.setattr("firekeep_client.state._private", lambda _p: None)
-    monkeypatch.setattr("firekeep_client.resolver.is_personal", lambda *a, **k: False)
+    monkeypatch.setattr("firekeep_client.resolver.is_bypassed", lambda *a, **k: False)
     return cfg
 
 
@@ -61,15 +61,33 @@ def test_whoami_honours_agent_id_env(config_file, monkeypatch, capsys):
 
 
 def test_whoami_reports_personal_mode(config_file, monkeypatch, capsys):
-    monkeypatch.setattr("firekeep_client.resolver.is_personal", lambda *a, **k: True)
+    monkeypatch.setattr("firekeep_client.resolver.is_bypassed", lambda *a, **k: True)
     cli.main(["whoami", "--json"])
     assert json.loads(capsys.readouterr().out)["personal_mode"] is True
+
+
+def test_whoami_reports_bypass_env_as_personal_mode(config_file, monkeypatch, capsys):
+    monkeypatch.undo()  # drop is_bypassed patch; exercise the real predicate
+    monkeypatch.setenv("FIREKEEP_CONFIG", str(config_file))
+    monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(config_file.parent / "cache"))
+    monkeypatch.setenv("FIREKEEP_BYPASS", "1")
+    cli.main(["whoami", "--json"])
+    assert json.loads(capsys.readouterr().out)["personal_mode"] is True
+
+
+def test_whoami_placeholder_agent_id_is_unconfigured(config_file, capsys):
+    config_file.write_text(
+        config_file.read_text(encoding="utf-8").replace("agent_id = tester", "agent_id = CHANGEME"),
+        encoding="utf-8",
+    )
+    assert cli.main(["whoami", "--json"]) == 1
+    assert json.loads(capsys.readouterr().out)["agent_id"] is None
 
 
 def test_whoami_without_config_is_null_not_a_crash(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("FIREKEEP_CONFIG", str(tmp_path / "missing" / "config"))
     monkeypatch.delenv("FIREKEEP_AGENT_ID", raising=False)
-    monkeypatch.setattr("firekeep_client.resolver.is_personal", lambda *a, **k: False)
+    monkeypatch.setattr("firekeep_client.resolver.is_bypassed", lambda *a, **k: False)
     assert cli.main(["whoami", "--json"]) == 1
     data = json.loads(capsys.readouterr().out)
     assert data["agent_id"] is None

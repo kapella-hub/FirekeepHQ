@@ -109,10 +109,12 @@ def cmd_whoami(args) -> int:
             agent = resolver.agent_id(cfg)
         except resolver.ConfigError:
             agent = None
+    if agent == wizard.PLACEHOLDER_AGENT_ID:
+        agent = None  # the installer skeleton value is "unconfigured"
     facts = {
         "agent_id": agent,
         "kit_version": __version__,
-        "personal_mode": bool(resolver.is_personal()),
+        "personal_mode": bool(resolver.is_bypassed()),
         "server_configured": bool(cfg is not None and wizard._already_connected(cfg)),
     }
     if getattr(args, "json", False):
