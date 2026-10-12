@@ -102,7 +102,8 @@ try {
   if (!`${resolvedUserData}${sep}`.toLowerCase().startsWith(temporaryRoot)) {
     throw new Error(`refusing to remove non-temporary smoke profile: ${resolvedUserData}`);
   }
-  await rm(resolvedUserData, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  try { await rm(resolvedUserData, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
+  catch (error) { process.stderr.write(`smoke cleanup failed (ignored): ${error instanceof Error ? error.message : String(error)}\n`); }
 }
 
 function kitlessEnv(base, home) {
@@ -110,6 +111,8 @@ function kitlessEnv(base, home) {
   for (const key of Object.keys(env)) if (/^FIREKEEP_CONFIG$/i.test(key)) delete env[key];
   env.USERPROFILE = home;
   env.HOME = home;
+  env.APPDATA = join(home, "AppData", "Roaming");
+  env.LOCALAPPDATA = join(home, "AppData", "Local");
   delete env.HOMEDRIVE;
   delete env.HOMEPATH;
   const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "PATH";
@@ -278,8 +281,8 @@ async function waitForStudioLayout(cdp, timeoutMs) {
       const keep = document.querySelector(".keep-panel");
       const settings = document.querySelector('.titlebar-actions button[aria-label="Settings"]');
       const keepToggle = document.querySelector('.titlebar-actions button[aria-label="Hide the Keep"], .titlebar-actions button[aria-label="Show the Keep"]');
-      const agent = [...document.querySelectorAll("button.agent-chip")].find((button) => (button.getAttribute("aria-label") ?? "").startsWith("Agent:"));
-      if (!titlebar || !rail || !conversation || !keep || !settings || !keepToggle) return null;
+      const agent = [...document.querySelectorAll("button.agent-chip")].find((button) => { const name = button.getAttribute("aria-label") ?? ""; return name === "Choose an agent" || name.startsWith("Agent:"); });
+      if (!titlebar || !rail || !conversation || !keep || !settings || !keepToggle || !agent) return null;
       return {
         viewport: { width: innerWidth, height: innerHeight },
         titlebar: rect(titlebar),
@@ -289,13 +292,13 @@ async function waitForStudioLayout(cdp, timeoutMs) {
         settings: rect(settings),
         keepToggle: rect(keepToggle),
         keepToggleLabel: keepToggle.getAttribute("aria-label"),
-        agentChip: agent ? { ...rect(agent), label: agent.getAttribute("aria-label") } : null,
+        agentChip: { ...rect(agent), name: agent.getAttribute("aria-label") },
       };
     })()`);
     if (value) return value;
     await sleep(100);
   }
-  throw new Error("Studio controls did not render in time");
+  throw new Error("Studio controls (including the Agent chip) did not render in time");
 }
 
 function assertStudioLayout(layout) {
@@ -308,7 +311,10 @@ function assertStudioLayout(layout) {
     throw new Error(`titlebar controls intrude into Windows caption controls: ${JSON.stringify({ settings: layout.settings, keepToggle: layout.keepToggle })}`);
   }
   if (layout.keepToggleLabel !== "Hide the Keep") throw new Error(`Keep toggle should read "Hide the Keep" while open: ${layout.keepToggleLabel}`);
-  if (layout.agentChip && (layout.agentChip.right > layout.conversation.right || layout.agentChip.bottom > layout.viewport.height || layout.agentChip.width < 40)) {
+  if (layout.agentChip.name !== "Choose an agent") {
+    throw new Error(`kit-less smoke should have no primary agent ("Choose an agent"): ${JSON.stringify(layout.agentChip)}`);
+  }
+  if (layout.agentChip.right > layout.conversation.right || layout.agentChip.bottom > layout.viewport.height || layout.agentChip.width < 40) {
     throw new Error(`Agent chip is clipped: ${JSON.stringify(layout.agentChip)}`);
   }
 }
@@ -343,27 +349,37 @@ async function inspectKeepPanel(cdp, layout) {
   }
   const conversationBefore = await evaluate(cdp, `document.querySelector(".conversation")?.getBoundingClientRect().width ?? 0`);
   await pressCtrlBackslash(cdp);
-  const collapsed = await evaluate(cdp, `(() => ({
-    panelGone: !document.querySelector(".keep-panel"),
-    conversationWidth: document.querySelector(".conversation")?.getBoundingClientRect().width ?? 0,
-    toggleLabel: document.querySelector('.titlebar-actions button[aria-label="Show the Keep"]') ? "Show the Keep" : "",
-  }))()`);
+  const collapsed = await settleKeepPanel(cdp, false);
   await pressCtrlBackslash(cdp);
-  const restored = await evaluate(cdp, `(() => ({
-    panelBack: Boolean(document.querySelector(".keep-panel")),
-    toggleLabel: document.querySelector('.titlebar-actions button[aria-label="Hide the Keep"]') ? "Hide the Keep" : "",
-  }))()`);
+  const restored = await settleKeepPanel(cdp, true);
   return {
     heading,
     panelWidth: layout.keep.width,
     conversationBefore,
     conversationCollapsed: collapsed.conversationWidth,
     growth: collapsed.conversationWidth - conversationBefore,
-    panelGoneOnCollapse: collapsed.panelGone,
+    panelGoneOnCollapse: !collapsed.panelPresent,
     collapsedToggleLabel: collapsed.toggleLabel,
-    panelBackOnRestore: restored.panelBack,
+    panelBackOnRestore: restored.panelPresent,
     restoredToggleLabel: restored.toggleLabel,
   };
+}
+
+// Polls until the Keep panel reached the wanted state and the conversation width is identical across two reads.
+async function settleKeepPanel(cdp, wantPresent, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  let previous = null;
+  while (Date.now() < deadline) {
+    const state = await evaluate(cdp, `(() => ({
+      panelPresent: Boolean(document.querySelector(".keep-panel")),
+      conversationWidth: document.querySelector(".conversation")?.getBoundingClientRect().width ?? 0,
+      toggleLabel: document.querySelector('.titlebar-actions button[aria-label="Show the Keep"]') ? "Show the Keep" : document.querySelector('.titlebar-actions button[aria-label="Hide the Keep"]') ? "Hide the Keep" : "",
+    }))()`);
+    if (state.panelPresent === wantPresent && previous && previous.panelPresent === wantPresent && previous.conversationWidth === state.conversationWidth) return state;
+    previous = state;
+    await sleep(100);
+  }
+  throw new Error(`keep-panel did not settle ${wantPresent ? "open" : "closed"} within ${timeoutMs}ms: ${JSON.stringify(previous)}`);
 }
 
 function assertKeepPanel(value) {
@@ -546,9 +562,9 @@ async function inspectResponsiveDrawer(cdp) {
     return { viewport: innerWidth, left: bounds.left, right: bounds.right, width: bounds.width, position: style.position, display: style.display };
   })()`);
   await pressCtrlBackslash(cdp);
-  const hidden = await evaluate(cdp, `!document.querySelector('.keep-panel')`);
+  const hidden = !(await settleKeepPanel(cdp, false)).panelPresent;
   await pressCtrlBackslash(cdp);
-  const restored = await evaluate(cdp, `Boolean(document.querySelector('.keep-panel'))`);
+  const restored = (await settleKeepPanel(cdp, true)).panelPresent;
   await cdp.send("Emulation.clearDeviceMetricsOverride");
   await sleep(200);
   return geometry ? { ...geometry, hidden: Boolean(hidden), restored: Boolean(restored) } : null;
