@@ -126,38 +126,9 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, input:focus-
 .text-button { margin: 8px 0 0 20px; padding: 0; border: 0; background: transparent; color: var(--ember); font-size: 10px; cursor: pointer; }
 
 .conversation { grid-area: conversation; min-width: 0; min-height: 0; display: grid; grid-template-rows: 64px minmax(0, 1fr) auto; background: radial-gradient(circle at 50% -8%, color-mix(in srgb, var(--ember) 8%, transparent), transparent 31rem), linear-gradient(180deg, color-mix(in srgb, var(--surface) 18%, var(--bg)), var(--bg) 32%); }
-.conversation-toolbar { position: relative; z-index: 6; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 0 18px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--bg) 91%, transparent); backdrop-filter: blur(16px); }
-.runtime-picker { position: relative; flex: 0 1 auto; min-width: 0; }
-.runtime-picker-trigger { width: clamp(230px, 22vw, 300px); height: 46px; display: grid; grid-template-columns: 33px minmax(0, 1fr) auto 16px; align-items: center; gap: 9px; padding: 5px 10px 5px 7px; border: 1px solid var(--line); border-radius: 12px; background: linear-gradient(110deg, color-mix(in srgb, var(--surface-2) 97%, transparent), color-mix(in srgb, var(--ember) 5%, var(--surface))); color: var(--text); text-align: left; box-shadow: 0 7px 22px color-mix(in srgb, var(--shadow) 34%, transparent); cursor: pointer; }
-.runtime-picker-trigger:hover, .runtime-picker-trigger[aria-expanded="true"] { border-color: color-mix(in srgb, var(--ember) 34%, var(--line-strong)); background: var(--surface-2); }
-.runtime-picker-copy { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.runtime-picker-copy small { color: var(--faint); font-size: 9px; font-weight: 750; letter-spacing: 0.1em; line-height: 1; text-transform: uppercase; }
-.runtime-picker-copy strong { overflow: hidden; font-size: 12px; font-weight: 670; text-overflow: ellipsis; white-space: nowrap; }
-.runtime-picker-status, .runtime-option-status { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 9px; font-weight: 650; white-space: nowrap; }
-.runtime-picker-status i, .runtime-option-status i { width: 6px; height: 6px; border-radius: 999px; background: var(--faint); box-shadow: 0 0 0 3px color-mix(in srgb, var(--faint) 10%, transparent); }
-.runtime-picker-status.ready, .runtime-option-status.ready { color: var(--green); }.runtime-picker-status.ready i, .runtime-option-status.ready i { background: var(--green); box-shadow: 0 0 8px color-mix(in srgb, var(--green) 65%, transparent); }
-.runtime-picker-status.warning, .runtime-option-status.warning { color: var(--yellow); }.runtime-picker-status.warning i, .runtime-option-status.warning i { background: var(--yellow); }
-.runtime-picker-status.error, .runtime-option-status.error { color: var(--red); }.runtime-picker-status.error i, .runtime-option-status.error i { background: var(--red); }
-.runtime-picker-chevron { color: var(--faint); transition: transform 0.16s ease; }.runtime-picker-trigger[aria-expanded="true"] .runtime-picker-chevron { transform: rotate(180deg); }
-.runtime-picker-menu { position: absolute; top: calc(100% + 7px); left: 0; width: min(330px, calc(100vw - 48px)); overflow: hidden; padding: 6px; border: 1px solid var(--line-strong); border-radius: 13px; background: color-mix(in srgb, var(--surface) 97%, transparent); box-shadow: 0 20px 60px rgba(0, 0, 0, 0.56); backdrop-filter: blur(18px); }
-.runtime-picker-menu > header { display: flex; justify-content: space-between; gap: 10px; padding: 6px 7px 9px; color: var(--muted); font-size: 9px; }.runtime-picker-menu > header small { color: var(--faint); font-size: 8px; }
-.runtime-picker-options > button { width: 100%; display: grid; grid-template-columns: 31px minmax(0, 1fr) auto 17px; align-items: center; gap: 9px; padding: 8px 7px; border: 0; border-radius: 9px; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
-.runtime-picker-options > button.active { background: var(--surface-3); }.runtime-picker-options > button[aria-selected="true"] { background: color-mix(in srgb, var(--ember) 8%, var(--surface-2)); }
-.runtime-picker-options > button > span:nth-child(2) { min-width: 0; display: flex; flex-direction: column; gap: 2px; }.runtime-picker-options > button strong { overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }.runtime-picker-options > button small { overflow: hidden; color: var(--faint); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
-.runtime-picker-manage { width: 100%; display: grid; grid-template-columns: 31px minmax(0, 1fr) auto; align-items: center; gap: 9px; margin-top: 5px; padding: 9px 7px 7px; border: 0; border-top: 1px solid var(--line); background: transparent; color: var(--muted); text-align: left; cursor: pointer; }
-.runtime-picker-manage:hover { color: var(--text); }.runtime-picker-manage > svg { justify-self: center; color: var(--ember); }.runtime-picker-manage > span:nth-child(2) { min-width: 0; display: flex; flex-direction: column; gap: 2px; }.runtime-picker-manage strong { font-size: 10px; }.runtime-picker-manage small { overflow: hidden; color: var(--faint); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }.runtime-picker-count { min-width: 20px; padding: 2px 5px; border-radius: 999px; background: var(--surface-3); color: var(--muted); font-size: 8px; text-align: center; }
-.runtime-option-check { color: var(--ember); }
 select { min-width: 0; padding: 2px 20px 2px 0; border: 0; background: transparent; color: var(--text); font-size: 12px; font-weight: 600; cursor: pointer; }
 select option { background: var(--surface); color: var(--text); }
 .runtime-orb { --runtime-accent: var(--ember); flex: 0 0 auto; display: inline-grid; place-items: center; width: 29px; height: 29px; border: 1px solid color-mix(in srgb, var(--runtime-accent) 42%, transparent); border-radius: 9px; background: color-mix(in srgb, var(--runtime-accent) 13%, transparent); color: var(--runtime-accent); font-size: 12px; font-weight: 800; }
-.reviewer-strip { min-width: 0; display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 10px; }
-.reviewer-label { font-weight: 650; }
-.reviewer-empty { color: var(--faint); font-size: 9px; }
-.reviewer-chip { display: inline-flex; align-items: center; gap: 4px; padding: 4px 5px 4px 8px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface-2); color: var(--text); }
-.reviewer-chip button { display: grid; place-items: center; padding: 0; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
-.review-now { min-height: 29px; padding: 0 9px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--muted); font-size: 10px; cursor: pointer; }
-.review-now:hover:not(:disabled) { border-color: var(--line-strong); color: var(--text); }
-.review-now:disabled { opacity: 0.4; }
 
 .transcript-frame { position: relative; min-width: 0; min-height: 0; container-type: inline-size; }
 .transcript { width: 100%; height: 100%; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; scroll-behavior: smooth; padding: 34px max(28px, calc((100% - 820px) / 2)) 46px; }
@@ -330,8 +301,8 @@ kbd { padding: 1px 4px; border: 1px solid var(--line); border-radius: 4px; backg
 .model-refresh-status.success { color: var(--green); }
 .model-refresh-status.error { color: var(--red); }
 .spin { animation: spin 0.85s linear infinite; }
-.inspector-section > label, .modal > label { display: flex; flex-direction: column; gap: 6px; margin: 0 4px 14px; color: var(--muted); font-size: 10px; font-weight: 680; letter-spacing: 0.05em; text-transform: uppercase; }.inspector-section > label select, .modal select, .modal input { width: 100%; min-height: 40px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-2); color: var(--text); font-size: 11px; font-weight: 540; letter-spacing: normal; text-transform: none; }
-.inspector-section > label select:hover, .modal select:hover, .modal input:hover { border-color: var(--line-strong); }
+.inspector-section > label, .agent-popover > label, .modal > label { display: flex; flex-direction: column; gap: 6px; margin: 0 4px 14px; color: var(--muted); font-size: 10px; font-weight: 680; letter-spacing: 0.05em; text-transform: uppercase; }.inspector-section > label select, .agent-popover > label select, .modal select, .modal input { width: 100%; min-height: 40px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-2); color: var(--text); font-size: 11px; font-weight: 540; letter-spacing: normal; text-transform: none; }
+.inspector-section > label select:hover, .agent-popover > label select:hover, .modal select:hover, .modal input:hover { border-color: var(--line-strong); }
 .text-button.inline { margin: 0; font-size: 9px; text-transform: none; letter-spacing: normal; }
 
 .modal-backdrop { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 24px; background: color-mix(in srgb, #030604 76%, transparent); backdrop-filter: blur(13px) saturate(0.8); }
@@ -372,20 +343,17 @@ kbd { padding: 1px 4px; border: 1px solid var(--line); border-radius: 4px; backg
   .studio { grid-template-columns: 218px minmax(480px, 1fr) 292px; }
   .studio[data-keep-open="false"] { grid-template-columns: 218px minmax(480px, 1fr); }
   .titlebar { grid-template-columns: 218px 1fr 255px; }
-  .conversation-toolbar { padding-inline: 14px; }
 }
 @media (max-width: 1250px) { .studio-update-button span { display: none; } }
 @media (max-width: 1100px) {
   .studio, .studio[data-keep-open="false"] { grid-template-columns: 210px minmax(0, 1fr); grid-template-areas: "title title" "rail conversation"; }
   .titlebar { grid-template-columns: 210px minmax(0, 1fr) 250px; }
   .keep-panel { position: fixed; z-index: 15; top: 44px; right: 0; bottom: 0; width: min(320px, calc(100vw - 210px)); grid-area: auto; border-top: 1px solid var(--line); box-shadow: -22px 0 70px rgba(0, 0, 0, 0.48); animation: inspector-in 0.18s ease-out; }
-  .conversation-toolbar { gap: 10px; }
-  .runtime-picker-trigger { width: clamp(230px, 30vw, 280px); }
 }
 @media (max-width: 850px) {
   .studio, .studio[data-keep-open="false"] { grid-template-columns: 184px minmax(0, 1fr); }
   .titlebar { grid-template-columns: 184px minmax(0, 1fr) 216px; }
-  .session-id, .reviewer-label, .reviewer-strip > svg { display: none; }
+  .session-id { display: none; }
   .runtime-choices { grid-template-columns: repeat(2, 1fr); }
   .composer-hint > span:first-child { display: none; }
 }

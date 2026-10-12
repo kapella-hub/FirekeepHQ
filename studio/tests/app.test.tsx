@@ -168,6 +168,29 @@ describe("Firekeep Studio renderer", () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "reviewer.mode", mode: "manual" }));
   });
 
+  it("closes the Agent popover on Escape without cancelling the active run, and returns focus", async () => {
+    const invoke = installBridge({ snapshot: { ...state("alpha"), activeRunId: "run-1" } });
+    render(<App />);
+    const chip = await screen.findByRole("button", { name: /^Agent: Alpha/ });
+    fireEvent.click(chip);
+    expect(screen.getByRole("dialog", { name: "Agent settings" })).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Agent settings" })).not.toBeInTheDocument();
+    expect(chip).toHaveFocus();
+    expect(invoke.mock.calls.some(([action]) => action.type === "run.cancel")).toBe(false);
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "run.cancel", runId: "run-1" }));
+  });
+
+  it("offers Choose an agent without a primary and closes the popover on an outside click", async () => {
+    installBridge();
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Choose an agent" }));
+    expect(screen.getByRole("dialog", { name: "Agent settings" })).toBeInTheDocument();
+    fireEvent.pointerDown(document.body);
+    expect(screen.queryByRole("dialog", { name: "Agent settings" })).not.toBeInTheDocument();
+  });
+
   it("switches the primary from the Agent chip", async () => {
     const invoke = installBridge({ snapshot: state("alpha") });
     render(<App />);

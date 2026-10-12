@@ -7,7 +7,7 @@ export type PermissionMode = "safe" | "standard" | "unrestricted";
 export type ReviewerMode = "off" | "manual" | "after-turn";
 
 export interface ModelRefreshState {
-  readonly state: string;
+  readonly state: "loading" | "success" | "error";
   readonly message: string;
 }
 
@@ -37,6 +37,7 @@ export function AgentChip(props: AgentChipProps): React.JSX.Element {
   const { runtimes, primaryRuntimeId, models, selectedModel, selectedEffort, liveEfforts, permissionMode, refresh } = props;
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const choices = runtimes.filter((runtime) => runtime.capabilities.includes("chat"));
   const primary = runtimes.find((runtime) => runtime.id === primaryRuntimeId);
   const model = models.find((item) => item.id === selectedModel) ?? models.find((item) => item.isDefault);
@@ -49,15 +50,16 @@ export function AgentChip(props: AgentChipProps): React.JSX.Element {
       if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
     };
     const escape = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") setOpen(false);
+      // Capture phase + stopImmediatePropagation: closing the popover must not also reach App's Escape (run.cancel).
+      if (event.key === "Escape") { event.stopImmediatePropagation(); setOpen(false); triggerRef.current?.focus(); }
     };
     document.addEventListener("pointerdown", close);
-    document.addEventListener("keydown", escape);
-    return () => { document.removeEventListener("pointerdown", close); document.removeEventListener("keydown", escape); };
+    window.addEventListener("keydown", escape, true);
+    return () => { document.removeEventListener("pointerdown", close); window.removeEventListener("keydown", escape, true); };
   }, [open]);
 
   return <div className="agent-chip-root" ref={rootRef}>
-    <button type="button" className="agent-chip" aria-label={primary ? `Agent: ${summary}` : summary} aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+    <button ref={triggerRef} type="button" className="agent-chip" aria-label={primary ? `Agent: ${summary}` : summary} aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
       <span className="runtime-orb" style={{ "--runtime-accent": primary?.accent ?? "#df7e45" } as React.CSSProperties}>{primary?.displayName.slice(0, 1) ?? "?"}</span>
       <span className="agent-chip-text">{summary}</span>
       <ChevronDown size={13} />
