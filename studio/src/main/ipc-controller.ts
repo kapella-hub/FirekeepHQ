@@ -154,9 +154,14 @@ export class StudioController {
     if (action.type === "workspace.detectTest") return { type: "test-command", command: await this.detectTest() };
     if (action.type === "command.complete") return { type: "completions", items: this.commands.complete(action.input) };
     if (action.type === "command.execute") {
-      const result = await this.commands.execute(action.input);
-      // personal mode and the kit version live in the kit config; re-read them so the Keep status is not stale.
-      if (/^\s*\/firekeep\s+(personal|update)(\s|$)/i.test(action.input)) await this.keep?.refreshIdentity().catch(() => undefined);
+      let result: Awaited<ReturnType<typeof this.commands.execute>>;
+      try {
+        result = await this.commands.execute(action.input);
+      } finally {
+        // personal mode and the kit version live in the kit config; re-read them so the Keep status is not stale,
+        // even when the command failed part-way.
+        if (/^\s*\/firekeep\s+(personal|update)(\s|$)/i.test(action.input)) await this.keep?.refreshIdentity().catch(() => undefined);
+      }
       return { type: "command", result, snapshot: this.service.snapshot(), sessions: await this.service.listSessions(), events: this.service.events() };
     }
     if (action.type === "message.send") await this.service.sendMessage(action.text);

@@ -252,6 +252,18 @@ describe("Studio IPC controller", () => {
     expect(keep.refreshIdentity).toHaveBeenCalledTimes(expected ? 1 : 0);
   });
 
+  it("re-probes the Keep identity even when the kit command rejects", async () => {
+    const status: KeepStatus = { state: "connected", agentId: "agent", personalMode: false, kitVersion: "1.8.0" };
+    const keep: KeepPanelSource = {
+      status: vi.fn(() => status), retry: vi.fn(async () => status), refreshIdentity: vi.fn(async () => status),
+      search: vi.fn(), skills: vi.fn(), team: vi.fn(), highlights: vi.fn(), feedback: vi.fn(),
+    };
+    const studio = await controller(undefined, null, undefined, undefined, undefined, keep);
+    const withKit = new StudioController(studio.service, createCommandRegistry(studio.service, { firekeep: { execute: async () => { throw new Error("timed out"); } } as never }), "0.3.7", undefined, undefined, null, undefined, undefined, undefined, keep);
+    await expect(withKit.invoke({ type: "command.execute", input: "/firekeep update" })).resolves.toMatchObject({ type: "error" });
+    expect(keep.refreshIdentity).toHaveBeenCalledTimes(1);
+  });
+
   it("retries a Keep that is not connected", async () => {
     const unreachable: KeepStatus = { state: "unreachable", detail: "Keep gateway exited", retryInMs: null };
     const connected: KeepStatus = { state: "connected", agentId: "agent", personalMode: false, kitVersion: "1.8.0" };
