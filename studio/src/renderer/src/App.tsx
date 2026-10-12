@@ -324,7 +324,7 @@ export function App(): React.JSX.Element {
   const searchKeepFromPalette = useCallback((query: string): void => {
     closePalette(false);
     // Only a Keep that is connected (or still starting) can take the search; otherwise the panel's state card is the feedback.
-    if (keepStatus === null || keepStatus.state === "connected" || keepStatus.state === "starting") setKeepSearchRequest((previous) => ({ query, nonce: (previous?.nonce ?? 0) + 1 }));
+    if (keepStatus?.state === "connected" || keepStatus?.state === "starting") setKeepSearchRequest((previous) => ({ query, nonce: (previous?.nonce ?? 0) + 1 }));
     if (!(snapshot?.keepPanelOpen ?? true)) ignore(invoke({ type: "settings.keepPanel", open: true }).then(applyResult));
   }, [applyResult, closePalette, invoke, keepStatus, snapshot?.keepPanelOpen]);
   const clearKeepSearchRequest = useCallback(() => setKeepSearchRequest(null), []);
