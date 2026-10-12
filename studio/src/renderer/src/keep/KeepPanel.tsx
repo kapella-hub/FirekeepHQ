@@ -76,6 +76,7 @@ function ConnectedTabs({ receipts, invoke, onInsert, searchRequest, onSearchRequ
   const [tab, setTab] = useState<Tab>(readTab);
   const [detail, setDetail] = useState<KeepItem | null>(null);
   const [pending, setPending] = useState<KeepSearchRequest | null>(null);
+  const clearPending = useCallback(() => setPending(null), []);
   useEffect(() => {
     if (!searchRequest) return;
     setPending(searchRequest);
@@ -91,7 +92,7 @@ function ConnectedTabs({ receipts, invoke, onInsert, searchRequest, onSearchRequ
     </div>
     <div role="tabpanel" id="keep-tabpanel" aria-labelledby={`keep-tab-${tab}`} className="keep-tabpanel">
       {tab === "team" ? <TeamTab invoke={invoke} />
-        : <SearchTab key={tab} kind={tab === "skills" ? "skill" : "memory"} receipts={receipts} invoke={invoke} onOpen={setDetail} request={pending} onRequestApplied={() => setPending(null)} />}
+        : <SearchTab key={tab} kind={tab === "skills" ? "skill" : "memory"} receipts={receipts} invoke={invoke} onOpen={setDetail} request={pending} onRequestApplied={clearPending} />}
     </div>
     {detail ? <ItemDetail item={detail} onClose={closeDetail} onInsert={(text) => { onInsert(text); setDetail(null); }} /> : null}
   </>;

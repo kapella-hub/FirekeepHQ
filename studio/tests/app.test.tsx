@@ -757,6 +757,52 @@ describe("Firekeep Studio renderer", () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "keep.search", query: "deploy notes", kind: "memory" }));
   });
 
+  it("palette: Enter after typing a matching query runs the first command, not the Keep search", async () => {
+    const invoke = installBridge({ snapshot: state("alpha") });
+    render(<App />);
+    await screen.findByRole("button", { name: /^Agent:/ });
+    fireEvent.keyDown(window, { key: "k", ctrlKey: true });
+    const palette = await screen.findByRole("dialog", { name: "Command palette" });
+    await within(palette).findByRole("option", { name: /\/doctor/ });
+    const input = within(palette).getByRole("combobox");
+    fireEvent.change(input, { target: { value: "doc" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Message composer" })).toHaveValue("/doctor "));
+    expect(invoke).not.toHaveBeenCalledWith(expect.objectContaining({ type: "keep.search" }));
+  });
+
+  it("palette: Ctrl+K while open is a no-op and Escape still restores the original focus", async () => {
+    const invoke = installBridge({ snapshot: state("alpha") });
+    render(<App />);
+    const opener = await screen.findByRole("button", { name: /^Agent:/ });
+    opener.focus();
+    fireEvent.keyDown(window, { key: "k", ctrlKey: true });
+    await screen.findByRole("dialog", { name: "Command palette" });
+    const completeCalls = () => invoke.mock.calls.filter(([action]) => action.type === "command.complete" && action.input === "/").length;
+    const before = completeCalls();
+    fireEvent.keyDown(window, { key: "k", ctrlKey: true });
+    expect(completeCalls()).toBe(before);
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Command palette" })).not.toBeInTheDocument());
+    expect(opener).toHaveFocus();
+  });
+
+  it("palette: Search the Keep while the Keep is unreachable does not queue a search for later", async () => {
+    const invoke = installBridge({ snapshot: state("alpha"), keepStatus: { state: "unreachable", detail: "down", retryInMs: null } });
+    render(<App />);
+    await screen.findByRole("button", { name: /^Agent:/ });
+    fireEvent.keyDown(window, { key: "k", ctrlKey: true });
+    const palette = await screen.findByRole("dialog", { name: "Command palette" });
+    fireEvent.change(within(palette).getByRole("combobox"), { target: { value: "zzzz" } });
+    fireEvent.keyDown(within(palette).getByRole("combobox"), { key: "Enter" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Command palette" })).not.toBeInTheDocument());
+    expect(screen.getByRole("complementary", { name: "The Keep" })).toBeInTheDocument();
+    act(() => pushStudioEvent?.({ type: "keep-status", status: { state: "connected", agentId: "a", personalMode: false, kitVersion: "1.8.0" } }));
+    await screen.findByRole("searchbox", { name: "Search team memory" });
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(invoke).not.toHaveBeenCalledWith(expect.objectContaining({ type: "keep.search" }));
+  });
+
   it("ignores Ctrl+Alt+\ and key repeat for the Keep toggle", async () => {
     const invoke = installBridge();
     render(<App />);

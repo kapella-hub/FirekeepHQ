@@ -17,4 +17,8 @@ describe("rankCommands", () => {
   it("returns everything alphabetically for an empty query", () => {
     expect(values("")).toEqual(["/doctor", "/keep-search", "/mission", "/review", "/reviewer", "/session"]);
   });
+  it("treats whitespace as a hyphen and strips every leading slash", () => {
+    expect(values("keep search")).toEqual(["/keep-search"]);
+    expect(values("//rev")).toEqual(["/review", "/reviewer"]);
+  });
 });

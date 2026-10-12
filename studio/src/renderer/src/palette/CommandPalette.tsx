@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { CommandCompletion } from "../../../core/slash-commands.js";
 
 function bare(text: string): string {
-  return text.toLowerCase().replace(/^\//, "");
+  return text.toLowerCase().trim().replace(/\s+/g, "-").replace(/^\/+/, "");
 }
 
 function isSubsequence(query: string, text: string): boolean {
@@ -41,7 +41,7 @@ export interface CommandPaletteProps {
 
 export function CommandPalette({ open, onClose, completions, onRun, onSearchKeep }: CommandPaletteProps): React.JSX.Element | null {
   const [query, setQuery] = useState("");
-  const [active, setActive] = useState(0);
+  const [chosen, setChosen] = useState<number | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
@@ -49,7 +49,7 @@ export function CommandPalette({ open, onClose, completions, onRun, onSearchKeep
   useEffect(() => {
     if (!open) return;
     setQuery("");
-    setActive(0);
+    setChosen(null);
     inputRef.current?.focus();
     const escape = (event: KeyboardEvent): void => {
       // Capture phase + stopImmediatePropagation: closing the palette must not also reach App's Escape (run.cancel).
@@ -60,24 +60,29 @@ export function CommandPalette({ open, onClose, completions, onRun, onSearchKeep
   }, [open]);
 
   const ranked = useMemo(() => rankCommands(query, completions), [query, completions]);
-  if (!open) return null;
   const count = ranked.length + 1;
-  const activeIndex = Math.min(active, count - 1);
+  // A typed query with command matches defaults to the first command; otherwise the Keep search row.
+  const activeIndex = Math.min(chosen ?? (query.trim() !== "" && ranked.length > 0 ? 1 : 0), count - 1);
+  useEffect(() => {
+    if (open) document.getElementById(`palette-option-${activeIndex}`)?.scrollIntoView?.({ block: "nearest" });
+  }, [open, activeIndex]);
+  if (!open) return null;
   const run = (index: number): void => {
     if (index === 0) onSearchKeep(query.trim());
     else onRun(ranked[index - 1]!);
   };
   const keyDown = (event: React.KeyboardEvent): void => {
-    if (event.key === "ArrowDown") { event.preventDefault(); setActive((activeIndex + 1) % count); }
-    else if (event.key === "ArrowUp") { event.preventDefault(); setActive((activeIndex + count - 1) % count); }
+    if (event.key === "ArrowDown") { event.preventDefault(); setChosen((activeIndex + 1) % count); }
+    else if (event.key === "ArrowUp") { event.preventDefault(); setChosen((activeIndex + count - 1) % count); }
+    else if (event.key === "Tab") event.preventDefault(); // the input is the only stop: keep focus inside the dialog
     else if (event.key === "Enter") { event.preventDefault(); run(activeIndex); }
   };
   return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
     <div className="command-palette" role="dialog" aria-modal="true" aria-label="Command palette">
-      <input ref={inputRef} type="text" role="combobox" aria-expanded="true" aria-controls="palette-options" aria-activedescendant={`palette-option-${activeIndex}`} aria-label="Search commands" placeholder="Type a command, or search the Keep" value={query} onChange={(event) => { setQuery(event.target.value); setActive(0); }} onKeyDown={keyDown} />
+      <input ref={inputRef} type="text" role="combobox" aria-expanded="true" aria-autocomplete="list" aria-controls="palette-options" aria-activedescendant={`palette-option-${activeIndex}`} aria-label="Search commands" placeholder="Type a command, or search the Keep" value={query} onChange={(event) => { setQuery(event.target.value); setChosen(null); }} onKeyDown={keyDown} />
       <ul id="palette-options" role="listbox" aria-label="Commands">
-        <li id="palette-option-0" role="option" aria-selected={activeIndex === 0} onMouseEnter={() => setActive(0)} onMouseDown={(event) => event.preventDefault()} onClick={() => run(0)}>Search the Keep…</li>
-        {ranked.map((item, index) => <li key={item.value} id={`palette-option-${index + 1}`} role="option" aria-selected={activeIndex === index + 1} onMouseEnter={() => setActive(index + 1)} onMouseDown={(event) => event.preventDefault()} onClick={() => run(index + 1)}>
+        <li id="palette-option-0" role="option" aria-selected={activeIndex === 0} onMouseEnter={() => setChosen(0)} onMouseDown={(event) => event.preventDefault()} onClick={() => run(0)}>Search the Keep…</li>
+        {ranked.map((item, index) => <li key={item.value} id={`palette-option-${index + 1}`} role="option" aria-selected={activeIndex === index + 1} onMouseEnter={() => setChosen(index + 1)} onMouseDown={(event) => event.preventDefault()} onClick={() => run(index + 1)}>
           <span>{item.label}</span>{item.description ? <small>{item.description}</small> : null}
         </li>)}
       </ul>

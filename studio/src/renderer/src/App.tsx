@@ -308,7 +308,6 @@ export function App(): React.JSX.Element {
 
   const openPalette = useCallback((): void => {
     paletteOpener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    setPaletteCompletions([]);
     setPaletteOpen(true);
     ignore(invoke({ type: "command.complete", input: "/" }).then((result) => {
       if (result.type === "completions") setPaletteCompletions(result.items);
@@ -324,9 +323,11 @@ export function App(): React.JSX.Element {
   }, []);
   const searchKeepFromPalette = useCallback((query: string): void => {
     closePalette(false);
-    setKeepSearchRequest((previous) => ({ query, nonce: (previous?.nonce ?? 0) + 1 }));
+    // Only a Keep that is connected (or still starting) can take the search; otherwise the panel's state card is the feedback.
+    if (keepStatus === null || keepStatus.state === "connected" || keepStatus.state === "starting") setKeepSearchRequest((previous) => ({ query, nonce: (previous?.nonce ?? 0) + 1 }));
     if (!(snapshot?.keepPanelOpen ?? true)) ignore(invoke({ type: "settings.keepPanel", open: true }).then(applyResult));
-  }, [applyResult, closePalette, invoke, snapshot?.keepPanelOpen]);
+  }, [applyResult, closePalette, invoke, keepStatus, snapshot?.keepPanelOpen]);
+  const clearKeepSearchRequest = useCallback(() => setKeepSearchRequest(null), []);
 
   useEffect(() => {
     const keyboard = (event: KeyboardEvent): void => {
@@ -641,7 +642,7 @@ export function App(): React.JSX.Element {
         onOpenKeepSettings={() => openSettings("keep")}
         onRetry={retryKeep}
         searchRequest={keepSearchRequest}
-        onSearchRequestHandled={() => setKeepSearchRequest(null)}
+        onSearchRequestHandled={clearKeepSearchRequest}
       />}
     >
 
