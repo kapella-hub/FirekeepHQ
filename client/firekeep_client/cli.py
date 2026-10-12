@@ -315,7 +315,18 @@ def _venv_has_pip(venv: Path) -> bool:
     return True
 
 
-def _create_venv(venv: Path) -> None:
+def _is_live_venv(home: Path, venv: Path) -> bool:
+    """True when the `current` link resolves to `venv` — the install every hook runs."""
+    current = home / CURRENT_LINK_NAME
+    if not os.path.lexists(current):
+        return False
+    try:
+        return os.path.normcase(os.path.realpath(current)) == os.path.normcase(os.path.realpath(venv))
+    except OSError:
+        return False
+
+
+def _create_venv(venv: Path, home: Path) -> None:
     if _venv_bin(venv).exists():
         if _venv_has_pip(venv):
             return
@@ -323,6 +334,16 @@ def _create_venv(venv: Path) -> None:
         # bootstrap that died between `uv venv` and `uv pip install` leaves exactly this.
         # Short-circuiting here used to crash the checkout install later in _pip_install;
         # rebuild in place instead (--clear reprovisions, pip included via ensurepip).
+        #
+        # Never the LIVE venv, though: a healthy bootstrap venv is pip-less too, and a
+        # checkout whose version matches the installed one lands here. On 2026-10-12 the
+        # --clear died on executables held by running sessions, leaving Scripts/ without
+        # a stdlib, and every hook on the machine failed until the venv was rebuilt.
+        if _is_live_venv(home, venv):
+            raise RuntimeError(
+                f"{venv} is the live install (`current` points at it) and has no pip; "
+                "rebuilding it would break every running session. Bump the checkout's "
+                "version, or run `firekeep update` to repair the installed release.")
         _run([sys.executable, "-m", "venv", "--clear", str(venv)])
         return
     _run([sys.executable, "-m", "venv", str(venv)])
@@ -593,7 +614,7 @@ def cmd_install(args) -> int:
             # Checkout install: provision a fresh versioned venv at its FINAL path
             # (never moved — venvs aren't relocatable) and flip `current` to it below.
             venv = home / VENVS_DIR_NAME / _kit_version(kit)
-            _create_venv(venv)
+            _create_venv(venv, home)
         else:
             venv = Path(sys.executable).resolve().parent.parent
         python = _venv_python(venv)

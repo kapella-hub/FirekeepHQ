@@ -596,8 +596,46 @@ def test_create_venv_recreates_a_pipless_venv(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(cli, "_run", lambda cmd, **kw: calls.append(list(cmd)))
     monkeypatch.setattr(cli, "_venv_has_pip", lambda v: False)
-    cli._create_venv(venv)
+    cli._create_venv(venv, tmp_path)
     assert calls and "--clear" in calls[0], f"expected a --clear rebuild, got {calls}"
+
+
+def test_create_venv_never_clears_the_live_venv(tmp_path, monkeypatch):
+    """Live incident 2026-10-12: a checkout `install` run while the checkout's version
+    equalled the installed one targeted venvs/<V> — the venv `current` points at. The
+    bootstrap's uv venv ships no pip, so the pip-less branch `--clear`ed it; executables
+    held by running sessions stopped the clear halfway, leaving Scripts/ with no stdlib
+    or pyvenv.cfg, and every hook on the machine failed. The live venv is never cleared."""
+    venv = tmp_path / "venvs" / "1.7.2"
+    bindir = venv / ("Scripts" if cli.os.name == "nt" else "bin")
+    bindir.mkdir(parents=True)
+    cli._point_current(tmp_path, venv)
+    calls = []
+    monkeypatch.setattr(cli, "_run", lambda cmd, **kw: calls.append(list(cmd)))
+    monkeypatch.setattr(cli, "_venv_has_pip", lambda v: False)  # exactly a uv venv
+    with pytest.raises(RuntimeError, match="current"):
+        cli._create_venv(venv, tmp_path)
+    assert calls == [], f"the live venv must not be rebuilt, got {calls}"
+    assert bindir.is_dir()
+
+
+def test_checkout_install_of_the_installed_version_leaves_the_live_venv(install_env, monkeypatch, tmp_path, capsys):
+    """The incident path end to end: the checkout reads the version already installed
+    (1.2.3 here), `current` points at venvs/1.2.3, and that bootstrap venv has no pip."""
+    home, runs, _ = install_env
+    live = home / "venvs" / "1.2.3"
+    (live / ("Scripts" if os.name == "nt" else "bin")).mkdir(parents=True)
+    cli._point_current(home, live)
+    monkeypatch.setattr(cli, "_venv_has_pip", lambda v: False)
+    pips = []
+    monkeypatch.setattr(cli, "_pip_install", lambda py, *pkgs, **k: pips.append(pkgs))
+    _checkout(tmp_path, monkeypatch)
+
+    rc = cli.main(["install", "--runtime", "claude"])
+    assert rc == 1
+    assert "install failed at 'create venv'" in capsys.readouterr().err
+    assert not [r for r in runs if "venv" in r], f"live venv rebuilt: {runs}"
+    assert pips == []
 
 
 def test_create_venv_skips_a_healthy_venv(tmp_path, monkeypatch):
@@ -607,7 +645,7 @@ def test_create_venv_skips_a_healthy_venv(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(cli, "_run", lambda cmd, **kw: calls.append(list(cmd)))
     monkeypatch.setattr(cli, "_venv_has_pip", lambda v: True)
-    cli._create_venv(venv)
+    cli._create_venv(venv, tmp_path)
     assert calls == []
 
 
