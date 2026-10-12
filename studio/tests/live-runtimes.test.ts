@@ -72,7 +72,7 @@ describe.skipIf(!live)("Keep gateway smoke", () => {
       expect(team).toBeTypeOf("string");
       const page = await gateway.timeline("nonexistent-session", 0, 1);
       console.log("timeline kind", page.kind, JSON.stringify(page).slice(0, 300));
-      expect(["page", "unsupported"]).toContain(page.kind);   // "unsupported" until server v1.6.2 is deployed
+      expect(page.kind).toBe("page");   // server v1.6.2+ answers format="json"; older servers read "unsupported"
     } finally {
       await gateway.stop();
     }
