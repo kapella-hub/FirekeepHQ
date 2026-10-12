@@ -480,9 +480,14 @@ more, either Claude Desktop grew hooks or the cell is lying.
 The gateway can serve a **curated surface** instead of the full ~90 tools. Two env
 vars, read once at gateway start:
 
-- `FIREKEEP_TOOLSET=<preset>` — a named preset. One ships: **`chat`** =
-  `memory_recall`, `memory_learn`, `memory_feedback`, `skill_recall`, `skill_list`,
-  and the seven `ctx_*` session tools (prior art rides `ctx_start_session`).
+- `FIREKEEP_TOOLSET=<preset>` — a named preset. Two ship:
+  - **`chat`** (client 1.4.0) = `memory_recall`, `memory_learn`, `memory_feedback`,
+    `skill_recall`, `skill_list`, and the seven `ctx_*` session tools (prior art rides
+    `ctx_start_session`).
+  - **`studio`** (client 1.8.0) is Firekeep Studio's Keep panel surface — `memory_recall`,
+    `memory_feedback`, `skill_list`, `skill_recall`, `relay_who_is_online`, `relay_read`,
+    `ctx_list_sessions`, `replay_timeline`, `corpus_sources`. It has no session-writing
+    tool: Studio never owns a Keep session. It keeps the default handshake text.
 - `FIREKEEP_TOOLS_ALLOW=<comma,list>` — an explicit allowlist; wins over the preset.
 
 The rules are load-bearing. Filtering happens at the **routing layer**

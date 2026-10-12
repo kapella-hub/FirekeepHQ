@@ -66,6 +66,15 @@ TOOLSET_PRESETS: dict[str, frozenset[str]] = {
         "ctx_abandon_session", "ctx_list_sessions", "ctx_resume_session",
         "ctx_get_shadow",
     }),
+    # Firekeep Studio's Keep panel and per-turn receipts (Studio 0.5, spec
+    # 2026-10-11 §7.1). Reads plus knowledge feedback only: Studio never
+    # starts, updates or completes a Keep session — the agent owns those.
+    "studio": frozenset({
+        "memory_recall", "memory_feedback",
+        "skill_list", "skill_recall",
+        "relay_who_is_online", "relay_read",
+        "ctx_list_sessions", "replay_timeline", "corpus_sources",
+    }),
 }
 
 # A preset that narrows the tool surface also narrows the handshake text: the

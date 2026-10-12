@@ -151,3 +151,44 @@ def test_chat_preset_is_exactly_the_decided_surface():
         "ctx_abandon_session", "ctx_list_sessions", "ctx_resume_session",
         "ctx_get_shadow",
     }
+
+
+STUDIO_SURFACE = frozenset({
+    "memory_recall", "memory_feedback",
+    "skill_list", "skill_recall",
+    "relay_who_is_online", "relay_read",
+    "ctx_list_sessions", "replay_timeline", "corpus_sources",
+})
+
+
+def test_studio_preset_is_exactly_the_decided_surface():
+    from firekeep_client.gateway import TOOLSET_PRESETS
+
+    assert TOOLSET_PRESETS["studio"] == STUDIO_SURFACE
+
+
+def test_studio_preset_cannot_write_sessions_or_memories():
+    """Studio reads the Keep and thumbs knowledge; it never owns a session
+    (spec §7.2) and never learns on the user's behalf."""
+    from firekeep_client.gateway import TOOLSET_PRESETS
+
+    forbidden = {"ctx_start_session", "ctx_resume_session", "ctx_update",
+                 "ctx_complete_session", "ctx_abandon_session", "memory_learn",
+                 "vault_retrieve", "skill_create"}
+    assert not (TOOLSET_PRESETS["studio"] & forbidden)
+
+
+def test_studio_preset_resolves_from_env(monkeypatch):
+    monkeypatch.delenv("FIREKEEP_TOOLS_ALLOW", raising=False)
+    monkeypatch.setenv("FIREKEEP_TOOLSET", "studio")
+    label, names = _active_toolset()
+    assert label == "studio"
+    assert names == STUDIO_SURFACE
+
+
+def test_unknown_preset_message_lists_studio(monkeypatch):
+    monkeypatch.delenv("FIREKEEP_TOOLS_ALLOW", raising=False)
+    monkeypatch.setenv("FIREKEEP_TOOLSET", "studoi")
+    with pytest.raises(SystemExit) as exc:
+        _active_toolset()
+    assert "chat, studio" in str(exc.value)
