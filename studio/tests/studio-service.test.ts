@@ -39,6 +39,15 @@ function createService(): {
   return { service, alpha, beta };
 }
 
+/** A persisted default state, as a fresh install would save it. */
+async function loadDefaults(prior: StudioService): Promise<StudioPersistedState> {
+  const settings = new MemorySettingsStore<StudioPersistedState>();
+  const fresh = new StudioService({ runtimes: prior.runtimes, settings });
+  await fresh.initialize();
+  await fresh.setTheme("system");
+  return settings.value as StudioPersistedState;
+}
+
 describe("StudioService", () => {
   it("lets any chat-capable runtime become primary", async () => {
     const { service, alpha, beta } = createService();
@@ -351,12 +360,12 @@ describe("StudioService", () => {
   it("keeps recent workspaces most-recent-first, capped at 8, and only switches to known ones", async () => {
     const { service } = createService();
     await service.initialize();
-    for (let i = 0; i < 10; i += 1) await service.setWorkspace(`C:\w${i}`);
-    expect(service.snapshot().recentWorkspaces).toEqual(["C:\w9", "C:\w8", "C:\w7", "C:\w6", "C:\w5", "C:\w4", "C:\w3", "C:\w2"]);
-    await expect(service.switchToRecentWorkspace("C:\elsewhere")).rejects.toThrow(/not a recent workspace/);
-    await service.switchToRecentWorkspace("C:\w5");
-    expect(service.snapshot().workspacePath).toBe("C:\w5");
-    expect(service.snapshot().recentWorkspaces[0]).toBe("C:\w5");
+    for (let i = 0; i < 10; i += 1) await service.setWorkspace(`C:\\w${i}`);
+    expect(service.snapshot().recentWorkspaces).toEqual(["C:\\w9", "C:\\w8", "C:\\w7", "C:\\w6", "C:\\w5", "C:\\w4", "C:\\w3", "C:\\w2"]);
+    await expect(service.switchToRecentWorkspace("C:\\elsewhere")).rejects.toThrow(/not a recent workspace/);
+    await service.switchToRecentWorkspace("C:\\w5");
+    expect(service.snapshot().workspacePath).toBe("C:\\w5");
+    expect(service.snapshot().recentWorkspaces[0]).toBe("C:\\w5");
     await service.setWorkspace(null);
     expect(service.snapshot().recentWorkspaces).toHaveLength(8);
   });
@@ -371,22 +380,91 @@ describe("StudioService", () => {
     await service.setKeepPanelOpen(false);
     expect(settings.value?.keepPanelOpen).toBe(false);
 
-    const stored = { ...settings.value, recentWorkspaces: ["C:\a", 7, "  ", "x".repeat(4097), ...Array.from({ length: 10 }, (_, i) => `C:\r${i}`)] } as unknown as StudioPersistedState;
+    const stored = { ...settings.value, recentWorkspaces: ["C:\\a", 7, "  ", "x".repeat(4097), ...Array.from({ length: 10 }, (_, i) => `C:\\r${i}`)] } as unknown as StudioPersistedState;
     const restored = new MemorySettingsStore<StudioPersistedState>();
     restored.value = stored;
     const reloaded = new StudioService({ runtimes: prior.runtimes, settings: restored });
     await reloaded.initialize();
     expect(reloaded.snapshot().keepPanelOpen).toBe(false);
-    expect(reloaded.snapshot().recentWorkspaces).toEqual(["C:\a", "C:\r0", "C:\r1", "C:\r2", "C:\r3", "C:\r4", "C:\r5", "C:\r6"]);
+    expect(reloaded.snapshot().recentWorkspaces).toEqual(["C:\\a", "C:\\r0", "C:\\r1", "C:\\r2", "C:\\r3", "C:\\r4", "C:\\r5", "C:\\r6"]);
+  });
+
+  it("trims and de-duplicates stored recents, keeping the first occurrence", async () => {
+    const { service: prior } = createService();
+    const restored = new MemorySettingsStore<StudioPersistedState>();
+    restored.value = {
+      ...(await loadDefaults(prior)),
+      recentWorkspaces: [" C:\\b ", "C:\\a", "C:\\b", "C:\\a ", "C:\\c"],
+    };
+    const service = new StudioService({ runtimes: prior.runtimes, settings: restored });
+    await service.initialize();
+    expect(service.snapshot().recentWorkspaces).toEqual(["C:\\b", "C:\\a", "C:\\c"]);
+  });
+
+  it("seeds recents with the current workspace for settings saved before recents existed", async () => {
+    const { service: prior } = createService();
+    const restored = new MemorySettingsStore<StudioPersistedState>();
+    const legacy: Record<string, unknown> = { ...(await loadDefaults(prior)), workspacePath: " C:\\legacy " };
+    delete legacy.recentWorkspaces;
+    restored.value = legacy as unknown as StudioPersistedState;
+    const service = new StudioService({ runtimes: prior.runtimes, settings: restored });
+    await service.initialize();
+    expect(service.snapshot().recentWorkspaces).toEqual(["C:\\legacy"]);
+    await service.setWorkspace("C:\\new");
+    await service.switchToRecentWorkspace("C:\\legacy");
+    expect(service.snapshot().workspacePath).toBe("C:\\legacy");
   });
 
   it("cancels a quick mission's draft when a check is invalid", async () => {
     const { service } = createService();
     await service.initialize();
-    await service.setWorkspace("C:\work");
+    await service.setWorkspace("C:\\work");
     await service.setPrimary("alpha");
     await expect(service.quickMission("fix it", ["npm test", "npm run lint\nrm -rf /"])).rejects.toThrow(/check command/);
     expect(service.snapshot().mission).toMatchObject({ goal: "fix it", phase: "cancelled" });
+  });
+
+  it("holds the turn lock for the whole quick mission, so a session change cannot split it", async () => {
+    let hold = false;
+    let reached!: () => void;
+    const reachedGate = new Promise<void>((resolve) => { reached = resolve; });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    class GatedSessions extends MemorySessionStore {
+      override async setMission(id: string, mission: Parameters<MemorySessionStore["setMission"]>[1]): Promise<void> {
+        if (hold && mission?.checks.length === 1) { reached(); await gate; }
+        await super.setMission(id, mission);
+      }
+    }
+    const { service: prior } = createService();
+    const sessions = new GatedSessions();
+    const service = new StudioService({
+      runtimes: prior.runtimes,
+      settings: new MemorySettingsStore<StudioPersistedState>(),
+      sessions,
+      confirmMission: async () => false,
+    });
+    await service.initialize();
+    await service.setWorkspace("C:\\work");
+    await service.setPrimary("alpha");
+    await service.createMission("other mission");
+    await service.addMissionCheck("npm run other");
+    const other = service.snapshot().activeSessionId;
+
+    hold = true;
+    const quick = service.quickMission("quick goal", ["npm test", "npm run lint"]);
+    await reachedGate;   // paused inside the first addMissionCheck, after the session switch and draft
+    await expect(service.resumeSession(other)).rejects.toThrow(/turn is starting/i);
+    hold = false;
+    release();
+    const result = await quick;
+
+    expect(result).toMatchObject({ goal: "quick goal", phase: "draft" });   // confirmation declined
+    expect(result.checks.map((check) => check.command)).toEqual(["npm test", "npm run lint"]);
+    expect(service.snapshot().activeSessionId).not.toBe(other);
+    const otherSummary = (await sessions.list()).find((item) => item.id === other);
+    expect(otherSummary?.mission).toMatchObject({ goal: "other mission", phase: "draft" });
+    expect(otherSummary?.mission?.checks.map((check) => check.command)).toEqual(["npm run other"]);
   });
 
   it("refuses a quick mission while another turn holds the session", async () => {
@@ -398,7 +476,7 @@ describe("StudioService", () => {
       confirmMission: () => new Promise<boolean>((resolve) => { release = resolve; }),
     });
     await service.initialize();
-    await service.setWorkspace("C:\work");
+    await service.setWorkspace("C:\\work");
     await service.setPrimary("alpha");
     await service.createMission("first");
     await service.addMissionCheck("npm test");

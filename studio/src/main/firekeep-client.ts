@@ -13,17 +13,21 @@ export interface FirekeepClientResult {
 }
 
 interface FirekeepClientOptions {
+  /** A fixed executable. Without one, the kit is located again on every call (see resolveCommand). */
   readonly command?: string;
+  /** Locates the kit executable per call, so a kit installed while Studio runs is found on the next call. */
+  readonly resolveCommand?: () => string;
   readonly runner?: (args: readonly string[], options: { timeoutMs: number }) => Promise<ProcessResult>;
 }
 
 export class FirekeepClient {
-  readonly #command: string;
+  readonly #command: () => string;
   readonly #runner: (args: readonly string[], options: { timeoutMs: number }) => Promise<ProcessResult>;
 
   constructor(options: FirekeepClientOptions = {}) {
-    this.#command = options.command ?? defaultFirekeepCommand();
-    this.#runner = options.runner ?? ((args, settings) => runProcess(this.#command, args, { timeoutMs: settings.timeoutMs, outputLimit: 256 * 1024 }));
+    const fixed = options.command;
+    this.#command = fixed !== undefined ? () => fixed : (options.resolveCommand ?? defaultFirekeepCommand);
+    this.#runner = options.runner ?? ((args, settings) => runProcess(this.#command(), args, { timeoutMs: settings.timeoutMs, outputLimit: 256 * 1024 }));
   }
 
   async execute(action: string, args: readonly string[]): Promise<FirekeepClientResult> {

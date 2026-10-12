@@ -46,6 +46,17 @@ describe("FirekeepClient whoami", () => {
   });
 });
 
+describe("FirekeepClient command resolution", () => {
+  it("locates the kit again on every call, so a kit installed while Studio runs is found on Retry", async () => {
+    const resolveCommand = vi.fn(() => "firekeep-studio-test-missing-7f3a91");
+    const client = new FirekeepClient({ resolveCommand });
+    const first = await client.execute("whoami", []).catch((error: unknown) => error);
+    expect(isMissingExecutable(first)).toBe(true);
+    await client.execute("whoami", []).catch(() => undefined);
+    expect(resolveCommand).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe("isMissingExecutable", () => {
   it("recognises a spawn ENOENT error code and missing-command messages", () => {
     expect(isMissingExecutable(Object.assign(new Error("spawn firekeep.exe"), { code: "ENOENT" }))).toBe(true);

@@ -6,6 +6,7 @@ import type { DecisionBoardTransport } from "./decision-board-client.js";
 import { LoopbackDecisionBoardClient } from "./decision-board-client.js";
 import type { StudioUpdateControl } from "./studio-updater.js";
 import type { KeepGateway } from "./keep/keep-gateway.js";
+import type { KeepStatus } from "../shared/keep.js";
 import { SESSION_COLORS } from "../core/session-store.js";
 
 const id = z.string().min(1).max(128).regex(/^[a-zA-Z0-9._:-]+$/);
@@ -48,7 +49,7 @@ const actionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("settings.keepPanel"), open: z.boolean() }).strict(),
   z.object({ type: z.literal("keep.status") }).strict(),
   z.object({ type: z.literal("keep.retry") }).strict(),
-  z.object({ type: z.literal("keep.search"), query: z.string().min(1).max(500), kind: z.enum(["memory", "skill"]) }).strict(),
+  z.object({ type: z.literal("keep.search"), query: z.string().max(500).refine((value) => value.trim().length > 0, "search query cannot be blank"), kind: z.enum(["memory", "skill"]) }).strict(),
   z.object({ type: z.literal("keep.skills") }).strict(),
   z.object({ type: z.literal("keep.team") }).strict(),
   z.object({ type: z.literal("keep.highlights") }).strict(),
@@ -141,7 +142,7 @@ export class StudioController {
       return { type: "decision-submitted", url: action.url };
     }
     if (action.type === "keep.status") return { type: "keep-status", status: this.keep?.status() ?? { state: "missing" } };
-    if (action.type === "keep.retry") return { type: "keep-status", status: this.keep ? await this.keep.retry() : { state: "missing" } };
+    if (action.type === "keep.retry") return { type: "keep-status", status: await this.#retryKeep() };
     if (action.type === "keep.search") return { type: "keep-items", items: await this.#requireKeep().search(action.query, action.kind) };
     if (action.type === "keep.skills") return { type: "keep-items", items: await this.#requireKeep().skills() };
     if (action.type === "keep.team") return { type: "keep-team", markdown: await this.#requireKeep().team() };
@@ -194,6 +195,13 @@ export class StudioController {
     else if (action.type === "run.cancel") this.service.cancel(action.runId);
     const sessions = action.type.startsWith("session.") || action.type.startsWith("mission.") ? await this.service.listSessions() : undefined;
     return { type: "state", snapshot: this.service.snapshot(), ...(sessions ? { sessions, events: this.service.events() } : {}) };
+  }
+
+  /** Retry is for a Keep that is not connected; a connected gateway is never torn down and respawned. */
+  async #retryKeep(): Promise<KeepStatus> {
+    if (!this.keep) return { state: "missing" };
+    const current = this.keep.status();
+    return current.state === "connected" ? current : this.keep.retry();
   }
 
   #requireKeep(): KeepPanelSource {

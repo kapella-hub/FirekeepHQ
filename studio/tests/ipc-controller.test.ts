@@ -194,6 +194,7 @@ describe("Studio IPC controller", () => {
   it.each([
     [{ type: "keep.call", tool: "vault_retrieve", args: {} }],
     [{ type: "keep.search", query: "", kind: "memory" }],
+    [{ type: "keep.search", query: "   \t\n", kind: "memory" }],
     [{ type: "keep.search", query: "x".repeat(501), kind: "memory" }],
     [{ type: "keep.search", query: "x", kind: "vault" }],
     [{ type: "keep.feedback", memoryIds: ["bad id\n"], useful: true }],
@@ -227,6 +228,7 @@ describe("Studio IPC controller", () => {
 
     await expect(studio.dispatch({ type: "keep.status" })).resolves.toEqual({ type: "keep-status", status });
     await expect(studio.dispatch({ type: "keep.retry" })).resolves.toEqual({ type: "keep-status", status });
+    expect(keep.retry).not.toHaveBeenCalled();   // a connected gateway is never respawned by Retry
     await expect(studio.dispatch({ type: "keep.search", query: "vps", kind: "skill" })).resolves.toEqual({ type: "keep-items", items: [{ title: "t", body: "b" }] });
     expect(keep.search).toHaveBeenCalledWith("vps", "skill");
     await expect(studio.dispatch({ type: "keep.skills" })).resolves.toEqual({ type: "keep-items", items: [{ title: "s", body: "sb" }] });
@@ -235,6 +237,19 @@ describe("Studio IPC controller", () => {
     await expect(studio.invoke({ type: "keep.feedback", memoryIds: ["m1"], useful: true, comment: "helped" })).resolves.toEqual({ type: "error", message: "Keep not connected" });
     expect(keep.feedback).toHaveBeenCalledWith(["m1"], true, "helped");
     await expect(studio.invoke({ type: "keep.receipt.retry", runId: "run-1" })).resolves.toEqual({ type: "error", message: "the Keep link is unavailable" });
+  });
+
+  it("retries a Keep that is not connected", async () => {
+    const unreachable: KeepStatus = { state: "unreachable", detail: "Keep gateway exited", retryInMs: null };
+    const connected: KeepStatus = { state: "connected", agentId: "agent", personalMode: false, kitVersion: "1.8.0" };
+    const keep: KeepPanelSource = {
+      status: vi.fn(() => unreachable),
+      retry: vi.fn(async () => connected),
+      search: vi.fn(), skills: vi.fn(), team: vi.fn(), highlights: vi.fn(), feedback: vi.fn(),
+    };
+    const studio = await controller(undefined, null, undefined, undefined, undefined, keep);
+    await expect(studio.dispatch({ type: "keep.retry" })).resolves.toEqual({ type: "keep-status", status: connected });
+    expect(keep.retry).toHaveBeenCalledOnce();
   });
 
   it("reports a missing Keep without a gateway and errors on Keep queries", async () => {

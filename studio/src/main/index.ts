@@ -261,7 +261,7 @@ app.whenReady().then(async () => {
   createWindow(controller.service.snapshot().theme);
   packageSmokeTrace("window created");
   activeUpdater?.start();
-  void activeKeep?.start();
+  activeKeep?.start().catch((error) => console.warn("Keep gateway did not start", error instanceof Error ? error.message : String(error)));
   app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(controller.service.snapshot().theme); });
 }).catch((error) => {
   const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);

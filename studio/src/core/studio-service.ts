@@ -530,10 +530,13 @@ export class StudioService {
 
   async createMission(goal: string): Promise<MissionSnapshot> {
     if (this.#activeRun || this.#activeMission) throw new Error("cannot create a mission while work is active");
-    const cleanGoal = goal.trim();
-    if (!cleanGoal) throw new Error("mission goal cannot be empty");
-    if (cleanGoal.length > 20_000) throw new Error("mission goal is too long");
+    const cleanGoal = cleanMissionGoal(goal);
     if (this.#mission) await this.startNewSession();
+    return this.#createDraftMission(cleanGoal);
+  }
+
+  /** Builds and stores a draft in the active session; callers own any session switch and locking. */
+  async #createDraftMission(cleanGoal: string): Promise<MissionSnapshot> {
     const state = this.#requireState();
     const timestamp = this.#now();
     const mission: MissionSnapshot = {
@@ -643,21 +646,24 @@ export class StudioService {
   }
 
   /**
-   * Draft, checks and run in one step. The run still takes the turn lock through runMission
-   * and still needs the native confirmation; a check that cannot be added cancels the draft.
+   * Draft, checks and run in one step, all under one turn lock: no session change can land
+   * between the steps, so the checks (and a cancel on failure) always hit this quick mission's
+   * own draft. The run still needs the native confirmation.
    */
   async quickMission(goal: string, checks: readonly string[]): Promise<MissionSnapshot> {
-    // createMission does not consult the turn/session lock, so refuse up front rather than leave a draft behind.
-    if (this.#exclusive === "turn") throw new Error("a run is already active");
-    if (this.#exclusive === "session") throw new Error("cannot start work while the session is changing");
-    await this.createMission(goal);
-    try {
-      for (const check of checks) await this.addMissionCheck(check);
-    } catch (error) {
-      this.cancelMission();
-      throw error;
-    }
-    return this.runMission();
+    if (this.#activeRun || this.#activeMission) throw new Error("cannot create a mission while work is active");
+    const cleanGoal = cleanMissionGoal(goal);
+    return this.#exclusively("turn", async () => {
+      if (this.#mission) await this.#switchToNewSession();
+      await this.#createDraftMission(cleanGoal);
+      try {
+        for (const check of checks) await this.addMissionCheck(check);
+      } catch (error) {
+        this.cancelMission();
+        throw error;
+      }
+      return this.#launchMission();
+    });
   }
 
   async #launchMission(): Promise<MissionSnapshot> {
@@ -1453,13 +1459,14 @@ export class StudioService {
     const knownIds = new Set(this.runtimes.list().map((runtime) => runtime.descriptor.id));
     if (!stored || typeof stored !== "object" || stored.version !== 1) return this.#defaultState();
     const defaults = this.#defaultState();
+    const workspacePath = typeof stored.workspacePath === "string" && stored.workspacePath.trim() ? stored.workspacePath.trim() : null;
     const primary = typeof stored.primaryRuntimeId === "string" && knownIds.has(stored.primaryRuntimeId)
       ? stored.primaryRuntimeId
       : null;
     return {
       ...defaults,
       activeSessionId: typeof stored.activeSessionId === "string" ? stored.activeSessionId : defaults.activeSessionId,
-      workspacePath: typeof stored.workspacePath === "string" && stored.workspacePath.trim() ? stored.workspacePath.trim() : null,
+      workspacePath,
       primaryRuntimeId: primary,
       reviewerRuntimeIds: Array.isArray(stored.reviewerRuntimeIds) ? stored.reviewerRuntimeIds.filter((id): id is string => typeof id === "string" && knownIds.has(id)) : [],
       reviewerMode: ["off", "manual", "after-turn"].includes(stored.reviewerMode) ? stored.reviewerMode : defaults.reviewerMode,
@@ -1469,12 +1476,7 @@ export class StudioService {
       nativeSessionIds: stringRecord(stored.nativeSessionIds),
       tokenBudget: typeof stored.tokenBudget === "number" && Number.isSafeInteger(stored.tokenBudget) && stored.tokenBudget > 0 ? stored.tokenBudget : null,
       theme: stored.theme === "dark" || stored.theme === "light" ? stored.theme : "system",
-      recentWorkspaces: Array.isArray(stored.recentWorkspaces)
-        ? stored.recentWorkspaces
-          .filter((path): path is string => typeof path === "string" && path.trim().length > 0 && path.length <= MAX_WORKSPACE_PATH)
-          .map((path) => path.trim())   // setWorkspace stores trimmed paths; keep membership checks exact
-          .slice(0, MAX_RECENT_WORKSPACES)
-        : [],
+      recentWorkspaces: normalizeRecentWorkspaces(stored.recentWorkspaces, workspacePath),
       keepPanelOpen: stored.keepPanelOpen !== false,
     };
   }
@@ -1510,6 +1512,31 @@ export class StudioService {
   async #persist(): Promise<void> {
     await this.#settings.save(structuredClone(this.#requireState()));
   }
+}
+
+/**
+ * Trimmed (setWorkspace stores trimmed paths, so membership checks stay exact), de-duplicated
+ * keeping the first occurrence, capped. Settings from before recents existed seed the list with
+ * the current workspace so it is selectable again without the dialog.
+ */
+function normalizeRecentWorkspaces(stored: unknown, workspacePath: string | null): string[] {
+  const recents: string[] = [];
+  if (Array.isArray(stored)) {
+    for (const value of stored) {
+      if (typeof value !== "string" || value.length > MAX_WORKSPACE_PATH) continue;
+      const path = value.trim();
+      if (path && !recents.includes(path)) recents.push(path);
+      if (recents.length === MAX_RECENT_WORKSPACES) break;
+    }
+  }
+  return recents.length === 0 && workspacePath ? [workspacePath] : recents;
+}
+
+function cleanMissionGoal(goal: string): string {
+  const cleanGoal = goal.trim();
+  if (!cleanGoal) throw new Error("mission goal cannot be empty");
+  if (cleanGoal.length > 20_000) throw new Error("mission goal is too long");
+  return cleanGoal;
 }
 
 function primaryMissionPrompt(mission: MissionSnapshot): string {
