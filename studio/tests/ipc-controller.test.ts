@@ -219,6 +219,7 @@ describe("Studio IPC controller", () => {
       status: vi.fn(() => status),
       retry: vi.fn(async () => status),
       refreshIdentity: vi.fn(async () => status),
+      restart: vi.fn(async () => status),
       search: vi.fn(async () => [{ title: "t", body: "b" }]),
       skills: vi.fn(async () => [{ title: "s", body: "sb" }]),
       team: vi.fn(async () => "# team"),
@@ -240,22 +241,45 @@ describe("Studio IPC controller", () => {
     await expect(studio.invoke({ type: "keep.receipt.retry", runId: "run-1" })).resolves.toEqual({ type: "error", message: "the Keep link is unavailable" });
   });
 
-  it.each([["/firekeep personal toggle", true], ["/firekeep update", true], ["/firekeep personal status", true], ["/firekeep doctor", false], ["/doctor", false]])("re-probes the Keep identity after %s: %s", async (input, expected) => {
+  it.each([
+    ["/firekeep personal toggle", true, false],
+    ["/firekeep update", true, false],
+    ["/firekeep personal status", true, false],
+    ["/firekeep doctor", false, false],
+    ["/doctor", false, false],
+    ["/firekeep connect me@keep.example", false, true],
+    ["  /FIREKEEP connect me@keep.example --agent-id new-agent", false, true],
+    ["/firekeep connector", false, false],
+  ])("after %s: re-probes the identity %s, restarts the gateway %s", async (input, expected, restarts) => {
     const status: KeepStatus = { state: "connected", agentId: "agent", personalMode: false, kitVersion: "1.8.0" };
     const keep: KeepPanelSource = {
-      status: vi.fn(() => status), retry: vi.fn(async () => status), refreshIdentity: vi.fn(async () => status),
+      status: vi.fn(() => status), retry: vi.fn(async () => status), refreshIdentity: vi.fn(async () => status), restart: vi.fn(async () => status),
       search: vi.fn(), skills: vi.fn(), team: vi.fn(), highlights: vi.fn(), feedback: vi.fn(),
     };
     const studio = await controller(undefined, null, undefined, undefined, undefined, keep);
     const withKit = new StudioController(studio.service, createCommandRegistry(studio.service, { firekeep: { execute: async () => ({ ok: true, exitCode: 0, output: "done" }) } as never }), "0.3.7", undefined, undefined, null, undefined, undefined, undefined, keep);
     await withKit.invoke({ type: "command.execute", input });
     expect(keep.refreshIdentity).toHaveBeenCalledTimes(expected ? 1 : 0);
+    // The agent label is a spawn-time env var: a re-pointed kit needs a respawn, not a refresh.
+    expect(keep.restart).toHaveBeenCalledTimes(restarts ? 1 : 0);
+  });
+
+  it("restarts the Keep gateway even when /firekeep connect rejects", async () => {
+    const status: KeepStatus = { state: "connected", agentId: "agent", personalMode: false, kitVersion: "1.8.0" };
+    const keep: KeepPanelSource = {
+      status: vi.fn(() => status), retry: vi.fn(async () => status), refreshIdentity: vi.fn(async () => status), restart: vi.fn(async () => { throw new Error("spawn failed"); }),
+      search: vi.fn(), skills: vi.fn(), team: vi.fn(), highlights: vi.fn(), feedback: vi.fn(),
+    };
+    const studio = await controller(undefined, null, undefined, undefined, undefined, keep);
+    const withKit = new StudioController(studio.service, createCommandRegistry(studio.service, { firekeep: { execute: async () => { throw new Error("ssh failed"); } } as never }), "0.3.7", undefined, undefined, null, undefined, undefined, undefined, keep);
+    await expect(withKit.invoke({ type: "command.execute", input: "/firekeep connect me@keep.example" })).resolves.toMatchObject({ type: "error", message: "ssh failed" });
+    expect(keep.restart).toHaveBeenCalledTimes(1);
   });
 
   it("re-probes the Keep identity even when the kit command rejects", async () => {
     const status: KeepStatus = { state: "connected", agentId: "agent", personalMode: false, kitVersion: "1.8.0" };
     const keep: KeepPanelSource = {
-      status: vi.fn(() => status), retry: vi.fn(async () => status), refreshIdentity: vi.fn(async () => status),
+      status: vi.fn(() => status), retry: vi.fn(async () => status), refreshIdentity: vi.fn(async () => status), restart: vi.fn(async () => status),
       search: vi.fn(), skills: vi.fn(), team: vi.fn(), highlights: vi.fn(), feedback: vi.fn(),
     };
     const studio = await controller(undefined, null, undefined, undefined, undefined, keep);
@@ -269,7 +293,7 @@ describe("Studio IPC controller", () => {
     const connected: KeepStatus = { state: "connected", agentId: "agent", personalMode: false, kitVersion: "1.8.0" };
     const keep: KeepPanelSource = {
       status: vi.fn(() => unreachable),
-      retry: vi.fn(async () => connected), refreshIdentity: vi.fn(async () => connected),
+      retry: vi.fn(async () => connected), refreshIdentity: vi.fn(async () => connected), restart: vi.fn(async () => connected),
       search: vi.fn(), skills: vi.fn(), team: vi.fn(), highlights: vi.fn(), feedback: vi.fn(),
     };
     const studio = await controller(undefined, null, undefined, undefined, undefined, keep);

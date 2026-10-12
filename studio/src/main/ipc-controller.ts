@@ -83,7 +83,7 @@ export interface ClipboardTransport {
 const emptyClipboard: ClipboardTransport = { readText: () => "", writeText: () => undefined };
 
 /** The Keep panel's fixed query surface. There is deliberately no generic tool call. */
-export type KeepPanelSource = Pick<KeepGateway, "status" | "retry" | "refreshIdentity" | "search" | "skills" | "team" | "highlights" | "feedback">;
+export type KeepPanelSource = Pick<KeepGateway, "status" | "retry" | "refreshIdentity" | "restart" | "search" | "skills" | "team" | "highlights" | "feedback">;
 
 export class StudioController {
   constructor(
@@ -161,6 +161,10 @@ export class StudioController {
         // personal mode and the kit version live in the kit config; re-read them so the Keep status is not stale,
         // even when the command failed part-way.
         if (/^\s*\/firekeep\s+(personal|update)(\s|$)/i.test(action.input)) await this.keep?.refreshIdentity().catch(() => undefined);
+        // `connect` re-points the kit (server, agent id). The panel label is a spawn-time env var, so the gateway
+        // is respawned; not awaited, because a down server holds #run in backoff for up to 36 s. The new status
+        // reaches the renderer through the gateway's own keep-status broadcast.
+        if (/^\s*\/firekeep\s+connect(\s|$)/i.test(action.input)) void this.keep?.restart().catch(() => undefined);
       }
       return { type: "command", result, snapshot: this.service.snapshot(), sessions: await this.service.listSessions(), events: this.service.events() };
     }

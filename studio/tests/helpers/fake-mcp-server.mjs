@@ -18,6 +18,8 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   else if (message.method === "tools/call") {
     if (mode === "hang") return;
     if (mode === "exit-on-call") process.exit(3);
+    // The kit gateway answers initialize locally; a dead or unauthorised server surfaces only on tools/call.
+    if (mode === "tool-error") { send({ jsonrpc: "2.0", id: message.id, error: { code: -32000, message: "firekeep unavailable: cannot reach cortex (401 Unauthorized)" } }); return; }
     const { name, arguments: args } = message.params;
     const reply = (id) => ({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify({ name, args, env: { toolset: process.env.FIREKEEP_TOOLSET ?? null, allow: process.env.FIREKEEP_TOOLS_ALLOW ?? null, agent: process.env.FIREKEEP_AGENT_ID ?? null } }) }], isError: false } });
     if (mode === "ping-first") send({ jsonrpc: "2.0", id: message.id, method: "ping" });

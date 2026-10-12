@@ -1,6 +1,10 @@
+import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import type { KeepStatus } from "../src/shared/keep.js";
 import { BACKOFF_MS, KeepGateway, parsePausedSessions, splitNumberedItems, STUDIO_TOOLS, type McpLike } from "../src/main/keep/keep-gateway.js";
+import { McpStdioClient } from "../src/main/keep/mcp-stdio-client.js";
+
+const fakeServer = fileURLToPath(new URL("./helpers/fake-mcp-server.mjs", import.meta.url));
 
 function fakeMcp(reply: (name: string, args: Record<string, unknown>) => string = () => "ok"): McpLike & { calls: Array<[string, Record<string, unknown>]> } {
   const calls: Array<[string, Record<string, unknown>]> = [];
@@ -49,7 +53,7 @@ describe("KeepGateway", () => {
     expect(await gateway.start()).toMatchObject({ state: "connected", agentId: "agent-a" });
     expect(connect).toHaveBeenCalledWith({ FIREKEEP_TOOLSET: "studio", FIREKEEP_AGENT_ID: "agent-a-studio-panel" });
     await gateway.search("vps", "memory");
-    expect(mcp.calls[0]).toEqual(["memory_recall", { task: "vps", format: "raw", top_k: 8, agent_id: "agent-a-studio-panel" }]);
+    expect(mcp.calls.at(-1)).toEqual(["memory_recall", { task: "vps", format: "raw", top_k: 8, agent_id: "agent-a-studio-panel" }]);
   });
 
   it("falls back to FIREKEEP_TOOLS_ALLOW on a kit without the studio preset", async () => {
@@ -77,11 +81,12 @@ describe("KeepGateway", () => {
     const gateway = new KeepGateway({ whoami: whoamiOk, connect: async () => mcp });
     await gateway.start();
     expect(await gateway.timeline("s1", 4, 200)).toEqual({ kind: "page", events: [], total: 0, hasMore: false });
-    expect(mcp.calls[0]).toEqual(["replay_timeline", { session_id: "s1", offset: 4, limit: 200, format: "json" }]);
+    expect(mcp.calls.at(-1)).toEqual(["replay_timeline", { session_id: "s1", offset: 4, limit: 200, format: "json" }]);
   });
 
   it("timeline() maps a pre-v1.6.2 argument validation error to unsupported, other errors stay errors", async () => {
-    const failing = (text: string): McpLike => ({ closed: false, async callTool() { return { text, isError: true }; }, async close() {} });
+    // Only the timeline call fails; the connect probe (relay_who_is_online) must answer.
+    const failing = (text: string): McpLike => ({ closed: false, async callTool(name) { return name === "replay_timeline" ? { text, isError: true } : { text: "ok", isError: false }; }, async close() {} });
     for (const [text, expected] of [
       ["2 validation errors for call[replay_timeline]\noffset\n  Unexpected keyword argument", { kind: "unsupported" }],
       ["Keep timeout", { kind: "error", message: "Keep timeout" }],
@@ -272,5 +277,128 @@ noise`;
     const connect = vi.fn(async () => mcp);
     const gateway = new KeepGateway({ whoami: async () => ({ ok: true, missing: false, output }), connect });
     expect(await gateway.start()).toMatchObject({ state: "connected", agentId: "agent-b", personalMode: true });
+  });
+});
+
+describe("KeepGateway connection truthfulness", () => {
+  /** A client whose tool calls fail while `failing` is true: a reachable kit whose server is down. */
+  function switchable(): McpLike & { failing: boolean; calls: string[] } {
+    const mcp = {
+      failing: false,
+      calls: [] as string[],
+      closed: false,
+      async callTool(name: string) {
+        mcp.calls.push(name);
+        if (mcp.failing) throw new Error("firekeep unavailable: cannot reach cortex\ntraceback...");
+        return { text: "ok", isError: false };
+      },
+      async close() { mcp.closed = true; },
+    };
+    return mcp;
+  }
+
+  it("probes the server after initialize and reports connected only when the probe answers", async () => {
+    const mcp = switchable();
+    const gateway = new KeepGateway({ whoami: whoamiOk, connect: async () => mcp });
+    expect(await gateway.start()).toMatchObject({ state: "connected" });
+    expect(mcp.calls).toEqual(["relay_who_is_online"]);
+  });
+
+  it("a kit that answers initialize but whose tool calls fail reads unreachable, never connected (stdio fake)", async () => {
+    const statuses: KeepStatus[] = [];
+    const sleeps: number[] = [];
+    const gateway: KeepGateway = new KeepGateway({
+      whoami: whoamiOk,
+      connect: async (env) => {
+        const holder: { client: McpStdioClient | null } = { client: null };
+        holder.client = await McpStdioClient.connect({ command: process.execPath, args: [fakeServer], env: { ...env, FAKE_MCP_MODE: "tool-error" }, timeoutMs: 2000, onExit: () => { if (holder.client) gateway.handleExit(holder.client); } });
+        return holder.client;
+      },
+      sleep: async (ms) => { sleeps.push(ms); },
+      onStatus: (status) => statuses.push(status),
+    });
+    const status = await gateway.start();
+    expect(statuses.some((s) => s.state === "connected")).toBe(false);
+    expect(statuses[0]).toMatchObject({ state: "unreachable", retryInMs: 1000 });
+    expect(sleeps).toEqual([...BACKOFF_MS]);
+    expect(status).toMatchObject({ state: "unreachable", retryInMs: null });
+    expect(status.state === "unreachable" && status.detail).toBe("firekeep unavailable: cannot reach cortex (401 Unauthorized)");
+    await gateway.stop();
+  });
+
+  it("a probe answered with isError also keeps the status off connected", async () => {
+    const failing: McpLike = { closed: false, async callTool() { return { text: "401 Unauthorized: invalid API key\nmore", isError: true }; }, async close() {} };
+    const gateway = new KeepGateway({ whoami: whoamiOk, connect: async () => failing, sleep: async () => {} });
+    const status = await gateway.start();
+    expect(status).toMatchObject({ state: "unreachable", retryInMs: null, detail: "401 Unauthorized: invalid API key" });
+  });
+
+  it("three consecutive failed tool calls after connect demote the status to unreachable", async () => {
+    const mcp = switchable();
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    const gateway = new KeepGateway({ whoami: whoamiOk, connect: async () => mcp, sleep: () => held });
+    await gateway.start();
+    mcp.failing = true;
+    await expect(gateway.team()).rejects.toThrow(/cannot reach cortex/);
+    await expect(gateway.skills()).rejects.toThrow();
+    expect(gateway.status().state).toBe("connected");
+    expect(await gateway.timeline("s1", 0, 10)).toMatchObject({ kind: "error" });
+    await vi.waitFor(() => expect(gateway.status()).toMatchObject({ state: "unreachable", detail: "firekeep unavailable: cannot reach cortex", retryInMs: 1000 }));
+    await gateway.stop();
+    release();
+  });
+
+  it("a successful call between failures resets the counter", async () => {
+    const mcp = switchable();
+    const gateway = new KeepGateway({ whoami: whoamiOk, connect: async () => mcp, sleep: async () => {} });
+    await gateway.start();
+    mcp.failing = true;
+    await gateway.team().catch(() => undefined);
+    await gateway.team().catch(() => undefined);
+    mcp.failing = false;
+    await gateway.team();
+    mcp.failing = true;
+    await gateway.team().catch(() => undefined);
+    await gateway.team().catch(() => undefined);
+    expect(gateway.status().state).toBe("connected");
+  });
+
+  it("a pre-v1.6.2 timeline validation error counts as an answer, not a failure", async () => {
+    const old: McpLike = { closed: false, async callTool(name) { return name === "replay_timeline" ? { text: "2 validation errors for call[replay_timeline]", isError: true } : { text: "ok", isError: false }; }, async close() {} };
+    const gateway = new KeepGateway({ whoami: whoamiOk, connect: async () => old });
+    await gateway.start();
+    for (let i = 0; i < 4; i += 1) expect(await gateway.timeline("s1", 0, 10)).toEqual({ kind: "unsupported" });
+    expect(gateway.status().state).toBe("connected");
+  });
+});
+
+describe("KeepGateway whoami failure detail", () => {
+  it("a non-zero whoami shows the kit's own first error line", async () => {
+    const gateway = new KeepGateway({ whoami: async () => ({ ok: false, missing: false, output: "\n  No pyvenv.cfg file\nTraceback..." }), connect: vi.fn() });
+    expect(await gateway.start()).toEqual({ state: "unconfigured", detail: "No pyvenv.cfg file" });
+  });
+});
+
+describe("KeepGateway restart", () => {
+  it("restart() re-reads whoami and respawns the gateway under the new agent label", async () => {
+    let agent = "agent-a";
+    const closes = vi.fn();
+    const connect = vi.fn(async () => ({ ...fakeMcp(), close: async () => { closes(); } }));
+    const gateway = new KeepGateway({ whoami: async () => ({ ok: true, missing: false, output: JSON.stringify({ agent_id: agent, kit_version: "1.8.0" }) }), connect });
+    await gateway.start();
+    agent = "agent-b";
+    expect(await gateway.restart()).toMatchObject({ state: "connected", agentId: "agent-b" });
+    expect(connect).toHaveBeenLastCalledWith({ FIREKEEP_TOOLSET: "studio", FIREKEEP_AGENT_ID: "agent-b-studio-panel" });
+    expect(closes).toHaveBeenCalledTimes(1);
+  });
+
+  it("restart() after stop() (app quit) never respawns", async () => {
+    const connect = vi.fn(async () => fakeMcp());
+    const gateway = new KeepGateway({ whoami: whoamiOk, connect });
+    await gateway.start();
+    await gateway.stop();
+    await gateway.restart();
+    expect(connect).toHaveBeenCalledTimes(1);
   });
 });

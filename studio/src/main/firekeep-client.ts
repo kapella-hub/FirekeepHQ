@@ -33,7 +33,8 @@ export class FirekeepClient {
   async execute(action: string, args: readonly string[]): Promise<FirekeepClientResult> {
     if (!isAction(action)) throw new Error(`Unsupported Firekeep Client Kit operation: ${action}`);
     const argv = validateArgs(action, args);
-    const timeoutMs = action === "connect" || action === "update" || action === "night-shift" ? 10 * 60_000 : 60_000;
+    // whoami gates the Keep status card, so a hung kit must not hold it at "starting" for a minute.
+    const timeoutMs = action === "connect" || action === "update" || action === "night-shift" ? 10 * 60_000 : action === "whoami" ? 15_000 : 60_000;
     const result = await this.#runner([action, ...argv], { timeoutMs });
     const output = stripAnsi([result.stdout.trim(), result.stderr.trim()].filter(Boolean).join("\n"));
     return { ok: result.exitCode === 0 && !result.timedOut, action, output, exitCode: result.exitCode, durationMs: result.durationMs };

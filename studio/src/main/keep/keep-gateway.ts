@@ -29,6 +29,10 @@ const TAGGED_TOOLS = new Set(["memory_recall", "memory_feedback"]);
 
 /** Gateway must stay up this long before the consecutive-failure counter resets. */
 export const STABLE_MS = 60_000;
+/** Consecutive failed tool calls after which a "connected" Keep is reported unreachable and reconnected. */
+export const CALL_FAILURE_LIMIT = 3;
+/** A pre-v1.6.2 server rejects the new replay_timeline arguments: the server answered, the feature is missing. */
+const OLD_TIMELINE = /validation errors? for call\[replay_timeline\]/i;
 
 export class KeepGateway implements KeepTimelineSource {
   readonly #deps: KeepGatewayDeps;
@@ -40,6 +44,7 @@ export class KeepGateway implements KeepTimelineSource {
   #starting: Promise<KeepStatus> | null = null;
   #failures = 0;
   #connectedAt = 0;
+  #callFailures = 0;
 
   constructor(deps: KeepGatewayDeps) {
     this.#deps = deps;
@@ -56,6 +61,19 @@ export class KeepGateway implements KeepTimelineSource {
   }
 
   retry(): Promise<KeepStatus> { return this.start(); }
+
+  /**
+   * Respawns the gateway after a kit command re-pointed it (`/firekeep connect`): the agent label is a
+   * spawn-time env var, so refreshIdentity() is not enough. Waits for any in-flight start, then re-runs
+   * whoami and connect (#run closes the old child). A no-op once stop() has run (app quit).
+   */
+  async restart(): Promise<KeepStatus> {
+    if (this.#stopped) return this.#status;
+    await this.#starting?.catch(() => undefined);
+    if (this.#stopped) return this.#status;
+    this.#set({ state: "starting" });
+    return this.start();
+  }
 
   /**
    * Re-reads the kit identity (personal mode, kit version) after a kit command changed it, and pushes the new
@@ -121,22 +139,55 @@ export class KeepGateway implements KeepTimelineSource {
 
   async timeline(keepSessionId: string, offset: number, limit: number): Promise<TimelinePage> {
     try {
-      return parseTimelineReply(await this.#call("replay_timeline", { session_id: keepSessionId, offset, limit, format: "json" }));
+      return parseTimelineReply(await this.#call("replay_timeline", { session_id: keepSessionId, offset, limit, format: "json" }, OLD_TIMELINE));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       // A pre-v1.6.2 server rejects the new offset/format arguments with a pydantic validation error
       // instead of replying; that means "timeline not supported here", not a failure.
-      if (/validation errors? for call\[replay_timeline\]/i.test(message)) return { kind: "unsupported" };
+      if (OLD_TIMELINE.test(message)) return { kind: "unsupported" };
       return { kind: "error", message };
     }
   }
 
-  async #call(name: string, args: Record<string, unknown>): Promise<string> {
+  /** `answered`: an error text proving the server replied; it counts as a success for the failure counter. */
+  async #call(name: string, args: Record<string, unknown>, answered?: RegExp): Promise<string> {
     if (!STUDIO_TOOLS.includes(name)) throw new Error(`tool outside the studio preset: ${name}`);
-    if (!this.#mcp || this.#mcp.closed) throw new Error("Keep not connected");
-    const result = await this.#mcp.callTool(name, TAGGED_TOOLS.has(name) ? { ...args, agent_id: this.#label } : args);
-    if (result.isError) throw new Error(result.text.split("\n")[0] || `${name} failed`);
+    const mcp = this.#mcp;
+    if (!mcp || mcp.closed) throw new Error("Keep not connected");
+    let result: McpToolResult;
+    try {
+      result = await mcp.callTool(name, TAGGED_TOOLS.has(name) ? { ...args, agent_id: this.#label } : args);
+    } catch (error) {
+      this.#callFailed(mcp, error instanceof Error ? error.message : String(error));
+      throw error;
+    }
+    if (result.isError) {
+      const message = result.text.split("\n")[0] || `${name} failed`;
+      if (answered?.test(result.text)) this.#callFailures = 0;
+      else this.#callFailed(mcp, message);
+      throw new Error(message);
+    }
+    this.#callFailures = 0;
     return result.text;
+  }
+
+  /**
+   * The kit gateway answers locally, so a server that dies after connect shows up only as failing calls.
+   * After CALL_FAILURE_LIMIT in a row, report unreachable and reconnect through the normal backoff.
+   */
+  #callFailed(mcp: McpLike, message: string): void {
+    if (mcp !== this.#mcp) return;   // a call on a client that has since been replaced
+    this.#callFailures += 1;
+    if (this.#callFailures < CALL_FAILURE_LIMIT || this.#status.state !== "connected" || this.#starting || this.#stopped) return;
+    this.#callFailures = 0;
+    if (this.#now() - this.#connectedAt >= STABLE_MS) this.#failures = 0;
+    this.#track(this.#reconnect(firstLine(message) || "Keep calls are failing"));
+  }
+
+  /** One cheap call proves the server behind the kit answers; the kit itself answers initialize locally. */
+  async #probe(client: McpLike): Promise<void> {
+    const result = await client.callTool("relay_who_is_online", { include_idle: false });
+    if (result.isError) throw new Error(firstLine(result.text) || "relay_who_is_online failed");
   }
 
   #now(): number { return (this.#deps.now ?? Date.now)(); }
@@ -151,12 +202,12 @@ export class KeepGateway implements KeepTimelineSource {
     await (this.#deps.sleep ?? ((n) => new Promise<void>((resolve) => setTimeout(resolve, n))))(ms);
   }
 
-  /** Unexpected exit: report, wait the next backoff step, then reconnect (or give up to manual retry). */
-  async #reconnect(): Promise<KeepStatus> {
+  /** Unexpected exit or failing calls: report, wait the next backoff step, then reconnect (or give up to manual retry). */
+  async #reconnect(detail = "Keep gateway exited"): Promise<KeepStatus> {
     const delay = BACKOFF_MS[this.#failures];
     this.#failures += 1;
-    if (delay === undefined) return this.#set({ state: "unreachable", detail: "Keep gateway exited", retryInMs: null });
-    this.#set({ state: "unreachable", detail: "Keep gateway exited", retryInMs: delay });
+    if (delay === undefined) return this.#set({ state: "unreachable", detail, retryInMs: null });
+    this.#set({ state: "unreachable", detail, retryInMs: delay });
     await this.#sleep(delay);
     return this.#run();
   }
@@ -172,7 +223,8 @@ export class KeepGateway implements KeepTimelineSource {
         ? "This machine has no Firekeep agent identity yet. Run firekeep doctor."
         : /invalid choice/i.test(who.output)
           ? "Update the Firekeep kit (firekeep update) to connect Studio."
-          : "The Firekeep kit config needs attention. Run firekeep doctor.";
+          // A non-zero exit: show the kit's own first error line (e.g. a broken venv), else the generic hint.
+          : (!who.ok && firstLine(who.output)) || "The Firekeep kit config needs attention. Run firekeep doctor.";
       return this.#set({ state: "unconfigured", detail });
     }
     this.#label = `${facts.agent_id}${PANEL_AGENT_SUFFIX}`;
@@ -191,8 +243,21 @@ export class KeepGateway implements KeepTimelineSource {
           return this.#status;
         }
         if (client.closed) throw new Error("Keep gateway exited");   // died before we could adopt it
+        // Probe before adopting: an exit the probe causes reaches handleExit with a client that is not
+        // current yet, so it is ignored and this loop's backoff handles it.
+        try {
+          await this.#probe(client);
+        } catch (error) {
+          await client.close().catch(() => undefined);
+          throw error;
+        }
+        if (this.#stopped) {
+          await client.close().catch(() => undefined);
+          return this.#status;
+        }
         this.#mcp = client;
         this.#connectedAt = this.#now();
+        this.#callFailures = 0;
         return this.#set({ state: "connected", ...info });
       } catch (error) {
         lastError = error instanceof Error ? error.message : String(error);

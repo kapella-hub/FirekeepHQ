@@ -44,6 +44,15 @@ describe("FirekeepClient whoami", () => {
     expect(runner).toHaveBeenLastCalledWith(["whoami", "--json"], expect.anything());
     await expect(client.execute("whoami", ["x"])).rejects.toThrow(/no arguments/);
   });
+
+  it("gives whoami a 15 s budget (Keep status waits on it), other quick actions keep 60 s", async () => {
+    const runner = vi.fn(async () => result("{}"));
+    const client = new FirekeepClient({ runner });
+    await client.execute("whoami", []);
+    expect(runner).toHaveBeenLastCalledWith(["whoami", "--json"], { timeoutMs: 15_000 });
+    await client.execute("status", []);
+    expect(runner).toHaveBeenLastCalledWith(["status"], { timeoutMs: 60_000 });
+  });
 });
 
 describe("FirekeepClient command resolution", () => {
