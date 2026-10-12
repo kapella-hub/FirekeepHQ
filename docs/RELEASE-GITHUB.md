@@ -193,6 +193,10 @@ cd client && python -m pytest tests/test_e2e_bootstrap.py -m e2e -q
   (Codex gets it via `env_vars`). Outside Studio, two things change: prompt-hook
   recall is attributed to the agent's Keep session, and Codex's rendered
   `config.toml` gains an `env_vars` line (verified with codex-cli 0.153.4).
+  Installer fix: a checkout `firekeep install` whose version matches the
+  installed release no longer `--clear`s the live venv (`current`'s target).
+  It stops at "create venv" with the remedy instead of leaving running
+  sessions with no stdlib ("No pyvenv.cfg file" on every hook).
 - **server v1.6.2** — `replay_timeline` accepts `format="json"` (the REST
   `TimelineResponse` verbatim, with event ids, `agent_id` and `memory_ids`) and
   `offset`. The default Markdown output is unchanged. Needed for Firekeep Studio
