@@ -64,7 +64,7 @@ export class KeepGateway implements KeepTimelineSource {
   handleExit(client: McpLike): void {
     if (client !== this.#mcp) return;
     this.#mcp = null;
-    if (this.#stopped || this.#starting) return;
+    if (this.#starting) return;   // stop() nulls #mcp first, so a stopped gateway never gets here
     if (this.#now() - this.#connectedAt >= STABLE_MS) this.#failures = 0;
     this.#track(this.#reconnect());
   }
@@ -169,6 +169,7 @@ export class KeepGateway implements KeepTimelineSource {
           await client.close().catch(() => undefined);
           return this.#status;
         }
+        if (client.closed) throw new Error("Keep gateway exited");   // died before we could adopt it
         this.#mcp = client;
         this.#connectedAt = this.#now();
         return this.#set({ state: "connected", ...info });

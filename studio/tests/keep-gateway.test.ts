@@ -74,15 +74,31 @@ describe("KeepGateway", () => {
     for (const [name, args] of mcp.calls) expect("agent_id" in args).toBe(name === "memory_recall" || name === "memory_feedback");
   });
 
-  it("does not restart after stop()", async () => {
-    const first = fakeMcp();
-    const connect = vi.fn(async () => first);
-    const gateway = new KeepGateway({ whoami: whoamiOk, connect, sleep: async () => {} });
-    await gateway.start();
-    await gateway.stop();
-    gateway.handleExit(first);
-    for (let i = 0; i < 20; i += 1) await Promise.resolve();
+  it("stop() during a backoff sleep prevents any further connect", async () => {
+    let release!: () => void;
+    const sleeping = new Promise<void>((r) => { release = r; });
+    let sleepStarted = false;
+    const connect = vi.fn().mockRejectedValue(new Error("cannot reach cortex"));
+    const gateway = new KeepGateway({ whoami: whoamiOk, connect, sleep: () => { sleepStarted = true; return sleeping; } });
+    const started = gateway.start();
+    await vi.waitFor(() => expect(sleepStarted).toBe(true));
     expect(connect).toHaveBeenCalledTimes(1);
+    await gateway.stop();
+    release();
+    await started;
+    expect(connect).toHaveBeenCalledTimes(1);
+    expect(gateway.status().state).not.toBe("connected");
+  });
+
+  it("a client that is already closed on arrival goes through backoff instead of reporting connected", async () => {
+    const dead = { ...fakeMcp(), closed: true };
+    const alive = fakeMcp();
+    const sleeps: number[] = [];
+    const connect = vi.fn().mockResolvedValueOnce(dead).mockResolvedValueOnce(alive);
+    const gateway = new KeepGateway({ whoami: whoamiOk, connect, sleep: async (ms) => { sleeps.push(ms); } });
+    expect(await gateway.start()).toMatchObject({ state: "connected" });
+    expect(sleeps).toEqual([1000]);
+    expect(connect).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -153,13 +169,11 @@ describe("KeepGateway lifecycle", () => {
     await gateway.start();
     await gateway.retry();
     expect(connect).toHaveBeenCalledTimes(2);
-    const statuses: string[] = [];
     const before = gateway.status();
     gateway.handleExit(old);
     for (let i = 0; i < 20; i += 1) await Promise.resolve();
     expect(gateway.status()).toBe(before);
     expect(connect).toHaveBeenCalledTimes(2);
-    void statuses;
   });
 
   it("a gateway that dies after every handshake backs off 1s, 5s, 30s then waits for manual retry", async () => {
