@@ -73,6 +73,75 @@ describe("ReceiptTracker", () => {
     expect(receipt.cursorsAfter).toEqual({ s1: 7 });
   });
 
+  it("commit() merges cursors forward (never backwards)", async () => {
+    const src = source({ s1: [read("a", ["m1"])] });
+    const tracker = new ReceiptTracker({ source: () => src, readReport: async () => ["s1"] });
+    tracker.commit("studio-1", { s1: 5 });
+    expect(tracker.cursors("studio-1")).toEqual({ s1: 5 });
+    tracker.commit("studio-1", {});  // empty cursors don't reset
+    expect(tracker.cursors("studio-1")).toEqual({ s1: 5 });
+    tracker.commit("studio-1", { s1: 3 });  // backwards move ignored
+    expect(tracker.cursors("studio-1")).toEqual({ s1: 5 });
+    tracker.commit("studio-1", { s1: 7 });  // forward move accepted
+    expect(tracker.cursors("studio-1")).toEqual({ s1: 7 });
+  });
+
+  it("one session unsupported in final collect → partial, cursors unchanged", async () => {
+    const tracker = new ReceiptTracker({
+      source: () => ({
+        timeline: async (id) => {
+          if (id === "s2") return { kind: "unsupported" };
+          const all = { s1: [read("a", ["m1"])] }[id] ?? [];
+          return { kind: "page", events: all, total: all.length, hasMore: false };
+        },
+      }),
+      readReport: async () => ["s1", "s2"],
+    });
+    tracker.restore("studio-1", { s1: 10, s2: 20 });
+    const receipt = await tracker.collect("studio-1", [], true);
+    expect(receipt.status).toBe("partial");
+    expect(tracker.cursors("studio-1")).toEqual({ s1: 10, s2: 20 });  // unchanged
+  });
+
+  it("2100 events → exactly 10 pages with MAX_PAGES boundary detail", async () => {
+    const many = Array.from({ length: 2100 }, (_, i) => read(`e${i}`, [`m${i}`]));
+    const src = source({ s1: many });
+    const tracker = new ReceiptTracker({ source: () => src, readReport: async () => ["s1"] });
+    const receipt = await tracker.collect("studio-1", [], true);
+    expect(src.calls.map(([, offset]) => offset)).toEqual([0, 200, 400, 600, 800, 1000, 1200, 1400, 1600, 1800]);
+    expect(receipt.cursorsAfter).toEqual({ s1: 2000 });
+    expect(receipt.detail).toBe("more Keep activity than one receipt shows");
+  });
+
+  it("page with empty events and hasMore=true → terminates", async () => {
+    let callCount = 0;
+    const tracker = new ReceiptTracker({
+      source: () => ({
+        timeline: async (_id, offset) => {
+          callCount++;
+          if (offset === 0) return { kind: "page", events: [read("a", ["m1"])], total: 1, hasMore: true };
+          return { kind: "page", events: [], total: 1, hasMore: true };  // empty page but still hasMore
+        },
+      }),
+      readReport: async () => ["s1"],
+    });
+    const receipt = await tracker.collect("studio-1", [], true);
+    expect(callCount).toBe(2);  // two calls: first with data, second empty
+    expect(receipt.recalledCount).toBe(1);
+    expect(receipt.cursorsAfter).toEqual({ s1: 1 });
+  });
+
+  it("report with tombstone #ended lines → filtered out", async () => {
+    const src = source({ s1: [read("a", ["m1"])], s2: [read("b", ["m2"])] });
+    const tracker = new ReceiptTracker({
+      source: () => src,
+      readReport: async () => ["#ended s1", "s2"],  // s1 marked as ended
+    });
+    const receipt = await tracker.collect("studio-1", [], true);
+    expect(receipt.keepSessionIds).toEqual(["s2"]);
+    expect(receipt.recalledCount).toBe(1);
+  });
+
   describe("against today's server and kit (release-day compatibility, Review Focus #2)", () => {
     const toolEvents = [{ kind: "tool.started" as const, toolCallId: "1", name: "mcp__firekeep__memory_recall", input: { task: "vps" } }];
 

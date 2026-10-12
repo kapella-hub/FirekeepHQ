@@ -32,11 +32,18 @@ export class ReceiptTracker {
   }
 
   restore(studioSessionId: string, cursors: Readonly<Record<string, number>>): void {
-    this.#cursors.set(studioSessionId, { ...cursors });
+    this.#cursors.set(studioSessionId, { ...validated(cursors) });
   }
 
   commit(studioSessionId: string, cursors: Readonly<Record<string, number>>): void {
-    this.#cursors.set(studioSessionId, { ...cursors });
+    const existing = this.#cursors.get(studioSessionId) ?? {};
+    const incoming = validated(cursors);
+    const merged = { ...existing };
+    for (const [id, newOffset] of Object.entries(incoming)) {
+      const existingOffset = existing[id] ?? 0;
+      merged[id] = Math.max(existingOffset, newOffset);
+    }
+    this.#cursors.set(studioSessionId, merged);
   }
 
   cursors(studioSessionId: string): Readonly<Record<string, number>> {
@@ -49,12 +56,15 @@ export class ReceiptTracker {
 
   async collect(studioSessionId: string, runEvents: readonly RuntimeEventPayload[], final: boolean): Promise<KeepReceipt> {
     const committed = this.#cursors.get(studioSessionId) ?? {};
-    const ids = unique((await this.#deps.readReport(studioSessionId).catch(() => [])).filter((id) => SESSION_ID.test(id)));
-    const source = this.#deps.source();
+    const ids = unique((await this.#deps.readReport(studioSessionId).catch(() => [])).filter((id) => SESSION_ID.test(id) && !id.startsWith("#")));
+    let source;
+    try { source = this.#deps.source(); }
+    catch (error) { return partialReceipt(runEvents, final); }
     if (ids.length === 0 || !source) return partialReceipt(runEvents, final);
 
     const events: ReplayEvent[] = [];
     const after: Record<string, number> = { ...committed };
+    let hitMaxPages = false;
     for (const id of ids) {
       let offset = committed[id] ?? 0;
       for (let page = 0; page < MAX_PAGES; page += 1) {
@@ -66,11 +76,14 @@ export class ReceiptTracker {
         events.push(...reply.events);
         offset += reply.events.length;
         if (!reply.hasMore || reply.events.length === 0) break;
+        if (page === MAX_PAGES - 1) hitMaxPages = true;
       }
       after[id] = offset;
     }
     if (final) this.#cursors.set(studioSessionId, after);
-    return measuredReceipt(events, ids, after, final);
+    const receipt = measuredReceipt(events, ids, after, final);
+    if (hitMaxPages) return { ...receipt, detail: "more Keep activity than one receipt shows" };
+    return receipt;
   }
 }
 
@@ -80,4 +93,14 @@ function unique(values: readonly string[]): string[] {
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function validated(cursors: Readonly<Record<string, number>>): Record<string, number> {
+  const result: Record<string, number> = {};
+  for (const [id, value] of Object.entries(cursors)) {
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+      result[id] = value;
+    }
+  }
+  return result;
 }
