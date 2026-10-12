@@ -178,13 +178,6 @@ export function App(): React.JSX.Element {
     }
   }, [invoke]);
 
-  const keepConnected = keepStatus?.state === "connected";
-  useEffect(() => {
-    if (!keepConnected) { setHighlights(null); return; }
-    let active = true;
-    ignore(invoke({ type: "keep.highlights" }).then((result) => { if (active && result.type === "keep-highlights") setHighlights(result.highlights); }));
-    return () => { active = false; };
-  }, [invoke, keepConnected]);
 
   useEffect(() => {
     let active = true;
@@ -424,6 +417,15 @@ export function App(): React.JSX.Element {
   };
   const timeline = useMemo(() => buildTimeline(events), [events]);
   const timelineRuns = useMemo(() => groupTimeline(timeline), [timeline]);
+  const keepConnected = keepStatus?.state === "connected";
+  const startVisible = timeline.length === 0 && commandCards.length === 0;
+  useEffect(() => {
+    if (!keepConnected) { setHighlights(null); return; }
+    if (!startVisible) return;
+    let active = true;
+    ignore(invoke({ type: "keep.highlights" }).then((result) => { if (active && result.type === "keep-highlights") setHighlights(result.highlights); }));
+    return () => { active = false; };
+  }, [invoke, keepConnected, startVisible]);
   const runGroups = useMemo(() => {
     const groups: Array<{ run: TimelineRun; reviews: TimelineRun[] }> = [];
     for (const run of timelineRuns) {
@@ -505,7 +507,7 @@ export function App(): React.JSX.Element {
       <main className="conversation">
         <div className="transcript-frame">
           <div className="transcript" ref={transcriptRef} aria-live="polite" onScroll={updateTranscriptFollow}>
-            {timeline.length === 0 && commandCards.length === 0 ? <StartCard runtimes={bootstrap.runtimes} diagnostics={diagnostics} primaryRuntimeId={snapshot.primaryRuntimeId} recentWorkspaces={snapshot.recentWorkspaces} workspacePath={snapshot.workspacePath} highlights={highlights} keepStatus={keepStatus} onPrimary={(id) => void choosePrimary(id)} onConnect={openConnect} onChooseFolder={() => ignore(chooseWorkspace())} onSwitchWorkspace={(path) => ignore(invoke({ type: "workspace.set", path }).then(applyResult))} onOpenSession={(goal) => { setComposer(`Continue: ${goal}`); composerRef.current?.focus(); }} /> : null}
+            {startVisible ? <StartCard runtimes={bootstrap.runtimes} diagnostics={diagnostics} primaryRuntimeId={snapshot.primaryRuntimeId} recentWorkspaces={snapshot.recentWorkspaces} workspacePath={snapshot.workspacePath} highlights={highlights} keepStatus={keepStatus} onPrimary={(id) => void choosePrimary(id)} onConnect={openConnect} onChooseFolder={() => ignore(chooseWorkspace())} onSwitchWorkspace={(path) => ignore(invoke({ type: "workspace.set", path }).then(applyResult))} onOpenSession={(goal) => { setComposer(`Continue: ${goal}`); composerRef.current?.focus(); }} /> : null}
             {runGroups.map(({ run, reviews }) => <RunTimeline
               key={run.id}
               run={run}

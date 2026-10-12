@@ -39,12 +39,24 @@ export function StartCard(props: StartCardProps): React.JSX.Element {
   const primary = runtimes.find((runtime) => runtime.id === primaryRuntimeId) ?? null;
   const soleReady = !primaryRuntimeId && ready.length === 1 ? ready[0] : undefined;
 
+  const soleReadyId = soleReady?.id;
+  const { onPrimary } = props;
   useEffect(() => {
-    if (soleReady && !autoRef.current) {
+    if (soleReadyId && !autoRef.current) {
       autoRef.current = true;
-      props.onPrimary(soleReady.id);
+      onPrimary(soleReadyId);
     }
-  }, [soleReady, props]);
+  }, [soleReadyId, onPrimary]);
+
+  useEffect(() => {
+    if (!changing) return;
+    // Capture phase + stopImmediatePropagation: leaving the picker must not also reach App's Escape (run.cancel).
+    const escape = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") { event.stopImmediatePropagation(); setChanging(false); }
+    };
+    document.addEventListener("keydown", escape, true);
+    return () => document.removeEventListener("keydown", escape, true);
+  }, [changing]);
 
   const workspaces = workspacePath && !recentWorkspaces.includes(workspacePath) ? [workspacePath, ...recentWorkspaces] : recentWorkspaces;
   const showHighlights = keepStatus?.state === "connected" && highlights;
@@ -60,14 +72,14 @@ export function StartCard(props: StartCardProps): React.JSX.Element {
   );
 
   let agentRow: React.JSX.Element | null = null;
-  if (primary && !changing) {
-    agentRow = <p className="start-using">Using {primary.displayName} · <button type="button" className="link-button" onClick={() => setChanging(true)}>change</button></p>;
-  } else if (soleReady) {
-    agentRow = <p className="start-using">Using {soleReady.displayName} · <button type="button" className="link-button" onClick={() => setChanging(true)}>change</button></p>;
+  const current = primary ?? soleReady ?? null;
+  const canChange = ready.some((runtime) => runtime.id !== current?.id);
+  if (current && !changing) {
+    agentRow = <p className="start-using">Using {current.displayName}{canChange ? <> · <button type="button" className="link-button" onClick={() => setChanging(true)}>change</button></> : null}</p>;
   } else if (probed) {
     agentRow = ready.length > 0 ? cards(ready, false) : cards(chatRuntimes, true);
   }
-  if (changing && ready.length > 0) agentRow = cards(ready, false);
+  if (changing && ready.length > 0) agentRow = <>{cards(ready, false)}<p className="start-using"><button type="button" className="link-button" onClick={() => setChanging(false)}>cancel</button></p></>;
 
   return <section className="start-card" aria-label="Get started">
     <span className="welcome-mark"><FirekeepMark size={30} /></span>

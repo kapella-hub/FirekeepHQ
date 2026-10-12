@@ -290,6 +290,25 @@ describe("Firekeep Studio renderer", () => {
     expect(await screen.findByRole("dialog", { name: /Connect Alpha/ })).toBeInTheDocument();
   });
 
+  it("lets the user change the agent from the Start card and cancel back", async () => {
+    const invoke = installBridge({ snapshot: state("alpha") });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "change" }));
+    expect(screen.getByRole("button", { name: "Use Beta" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "cancel" }));
+    expect(screen.queryByRole("button", { name: "Use Beta" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "change" }));
+    fireEvent.click(screen.getByRole("button", { name: "Use Beta" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "primary.set", runtimeId: "beta" }));
+  });
+
+  it("hides 'change' when there is no other ready runtime", async () => {
+    installBridge({ snapshot: state("alpha"), readyRuntimeIds: ["alpha"] });
+    render(<App />);
+    await screen.findByText(/Using Alpha/);
+    expect(screen.queryByRole("button", { name: "change" })).not.toBeInTheDocument();
+  });
+
   it("marks the current workspace chip and switches recent workspaces", async () => {
     const invoke = installBridge({ snapshot: { ...state("alpha"), recentWorkspaces: ["C:\\work\\firekeep", "C:\\work\\site"], workspacePath: "C:\\work\\firekeep" } as never });
     render(<App />);
