@@ -27,21 +27,33 @@ Studio 0.5 reorganizes the app around the Keep: a three-column layout of **sessi
   the bulletin board, and paused sessions. Each turn can end with a **Keep receipt** built from
   replay: what the agent recalled and what it wrote. Receipts carry thumbs-up/down feedback,
   sent through `memory_feedback`.
-- **Receipt states.** *Measured* is a full receipt. *Partial* means Studio could not read the
-  Keep's timeline for the turn: the Keep server is older than v1.6.2 (it rejects the JSON
-  timeline request or answers in Markdown), the kit is older than 1.8.0 (it does not write
-  the report file that names the agent's Keep sessions), or the agent's runtime did not pass
-  that file through. Studio then shows what it saw locally and notes that hook-injected recall
-  is not shown. *Unavailable* means the Keep could not be reached while collecting that turn;
-  the newest receipt offers a retry.
+- **Receipt states.** *Measured* is a full receipt. *Partial* means the Keep could not supply
+  the turn's timeline, so Studio shows what it saw locally (the agent's own recall and learn
+  tool calls) and notes that hook-injected recall is not shown. That happens when the Keep
+  server is older than v1.6.2 (it rejects the JSON timeline request or answers in Markdown),
+  when the Keep gateway is not connected, or when no agent Keep session was reported for the
+  turn: the kit is older than 1.8.0 (it does not write the report file that names the agent's
+  Keep sessions), the agent's runtime did not pass that file through, or the file is empty or
+  unreadable. *Unavailable* means a connected Keep's timeline call failed for that turn, or
+  did not answer in time; the newest receipt offers a retry.
+- **Keep connection status.** Studio reports *Connected* only after a first tool call through
+  the kit's gateway answers, so a reachable kit whose server is down or rejects the key reads
+  *Unreachable*, not *Connected*; three failed calls in a row later on also turn it
+  *Unreachable* and start reconnecting. **Settings → Keep connection** shows the kit's own
+  error line as the detail (for example a broken kit install) next to **Run doctor**.
+  `/firekeep connect` restarts the gateway so the new server and agent label take effect.
 - **Requirements.** Client kit 1.8.0 or later and Keep server v1.6.2 or later give full
   receipts. With older versions Studio still works; receipts read "partial".
-- **Runtime coverage.** Studio hands each agent a `FIREKEEP_SESSION_REPORT_FILE` path. Codex
-  forwards it through the kit's `env_vars` setting, verified with codex-cli 0.153.4. Claude and
-  Kiro are expected to inherit it from the process environment but are not yet verified, so
-  their receipts may show "partial" until they are.
-- **Shutdown.** Closing Studio while a turn's receipt is still pending does not finalize that
-  receipt.
+- **Runtime coverage.** Studio hands each agent a `FIREKEEP_SESSION_REPORT_FILE` path. For
+  Codex, kit 1.8.0 renders `env_vars = ["FIREKEEP_SESSION_REPORT_FILE"]` into
+  each Firekeep MCP server block in `~/.codex/config.toml`, because Codex clears the
+  environment of stdio MCP servers; this was verified with codex-cli 0.153.4 during kit
+  development. Claude and Kiro are expected to inherit it from the process environment but
+  are not yet verified, so their receipts may show "partial" until they are.
+- **Shutdown.** Closing Studio does not finalize the last turn's receipt. That turn keeps the
+  receipt Studio collected when the turn ended, if one arrived before you quit, and otherwise
+  shows none. Because Keep cursors advance only on a finalized receipt, the next turn's receipt
+  in that session after you reopen it also counts the Keep activity of the unfinalized turn.
 - **Removed.** Voice input and spoken replies (`/voice` now only explains this), the Grok
   runtime, `/compare`, `/consensus`, the Agents grid, and the Welcome hero. Studio stores no
   secrets.
@@ -55,8 +67,9 @@ primary runtime for future turns, may attach any review-capable runtime as an in
 reviewer, and can change or hand off between them without claiming that vendor-native
 sessions are portable.
 
-Session usage and its next-turn guard stay visible in the composer, with fresh tokens
-separated from cached context and total provider traffic. **Settings → Agents & accounts**
+The composer always shows the session's fresh and cached token counts; clicking that line
+opens the detail, with total provider traffic, the runs that reported usage, and the
+next-turn token guard (`/budget`). **Settings → Agents & accounts**
 keeps every supported agent's account, reviewer, connectivity, and Keep status available; the
 selected runtime has an explicit **In use** state. Model refreshes replace the live provider
 catalog and show progress, success, or failure. When the Client Kit has a server configured,
@@ -263,10 +276,13 @@ permission settings are frozen when execution begins; reviewer runs are always f
   exact session ID as confirmation; exports use an OS save dialog.
 - The workspace is selected through an OS folder dialog, persisted locally, and cannot be
   changed while a run is active.
-- From the kit installation Studio reads exactly one thing, the dashboard URL, from
-  `~/.firekeep/config` (or the path in `FIREKEEP_CONFIG`). It never reads or stores Keep
-  credentials. Everything else about the Keep comes from running the kit's own executable
-  (on Windows `~/.firekeep/current` first, then `PATH`), chiefly `firekeep gateway`.
+- From `~/.firekeep` Studio reads only the dashboard URL: the `[server]` section of
+  `~/.firekeep/config` (or the file named by `FIREKEEP_CONFIG`). Credentials in that file are
+  neither used nor stored. Everything else about the Keep comes from launching the kit's own
+  executable (on Windows `~/.firekeep/current` first, then `PATH`), chiefly `firekeep whoami`
+  and `firekeep gateway`. Separately, runtime detection reads the provider config files the
+  kit writes into (`~/.claude.json`, `~/.claude/settings.json`, `~/.codex/config.toml`) to see
+  whether Firekeep is wired into Claude and Codex.
 - IPC is typed: the renderer sends a schema-validated, discriminated action allowlist, and no
   action accepts a tool name.
 - Studio calls only the nine tools of the kit's `studio` preset. This is enforced twice: by
