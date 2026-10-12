@@ -7,7 +7,6 @@ import { JsonSettingsStore } from "../core/settings-store.js";
 import { createCommandRegistry } from "../core/slash-commands.js";
 import { StudioService, type StudioPersistedState, type ThemeMode } from "../core/studio-service.js";
 import { STUDIO_EVENT_CHANNEL, STUDIO_INVOKE_CHANNEL, type StudioPushEvent } from "../shared/ipc.js";
-import { ElectronSecretStore } from "./electron-secret-store.js";
 import { ElectronUpdateClient } from "./electron-update-client.js";
 import { FirekeepClient } from "./firekeep-client.js";
 import { loadConfiguredDashboardUrl } from "./firekeep-config.js";
@@ -100,7 +99,6 @@ async function createController(): Promise<StudioController> {
   packageSmokeTrace("creating controller");
   const userData = app.getPath("userData");
   const warning = (message: string, error: unknown): void => console.warn(message, error instanceof Error ? error.message : String(error));
-  const secrets = new ElectronSecretStore(join(userData, "secrets.json"), warning);
   const decisionBoards = new LoopbackDecisionBoardClient();
   const receiver = new StudioDecisionBoardReceiver(async (url) => {
     broadcast({ type: "decision.available", board: await decisionBoards.load(url) });
@@ -110,7 +108,7 @@ async function createController(): Promise<StudioController> {
   activeDecisionReceiver = receiver;
   Object.assign(process.env, receiverEnvironment);
   const service = new StudioService({
-    runtimes: createRuntimeRegistry(secrets, app.getVersion()),
+    runtimes: createRuntimeRegistry(app.getVersion()),
     settings: new JsonSettingsStore<StudioPersistedState>(join(userData, "settings.json"), { onWarning: warning }),
     sessions: new JsonlSessionStore(join(userData, "sessions"), warning),
     cwd: () => app.getPath("home"),
