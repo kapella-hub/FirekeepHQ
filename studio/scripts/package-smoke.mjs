@@ -1,8 +1,8 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { access, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { existsSync, readdirSync } from "node:fs";
+import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve, sep } from "node:path";
+import { delimiter, join, resolve, sep } from "node:path";
 import { createServer } from "node:net";
 
 const executable = resolve(packagedExecutable());
@@ -10,9 +10,14 @@ await access(executable);
 const port = await reservePort();
 const userData = await mkdtemp(join(tmpdir(), "firekeep-studio-smoke-"));
 const startupTrace = join(userData, "startup.log");
+// Studio finds the Client Kit through USERPROFILE/.firekeep/current, firekeep(.exe) on PATH and
+// homedir()/.firekeep/config (or FIREKEEP_CONFIG). This smoke must see the kit-not-installed state
+// on any machine, so every one of those is isolated for the packaged process.
+const kitlessHome = join(userData, "kitless-home");
+await mkdir(kitlessHome, { recursive: true });
 const child = spawn(executable, ["--enable-logging=stderr", `--remote-debugging-port=${port}`, `--user-data-dir=${userData}`], {
   detached: process.platform !== "win32",
-  env: { ...process.env, FIREKEEP_STUDIO_PACKAGE_SMOKE: "1", FIREKEEP_STUDIO_PACKAGE_SMOKE_LOG: startupTrace },
+  env: kitlessEnv({ ...process.env, FIREKEEP_STUDIO_PACKAGE_SMOKE: "1", FIREKEEP_STUDIO_PACKAGE_SMOKE_LOG: startupTrace }, kitlessHome),
   stdio: ["ignore", "pipe", "pipe"],
   windowsHide: true,
 });
@@ -34,35 +39,33 @@ try {
   }
   const cdp = await connectCdp(target.webSocketDebuggerUrl);
   let layout;
+  let startCard;
+  let keepPanel;
+  let settings;
+  let palette;
   let sessionEditor;
   let lightTheme;
-  let responsiveInspector;
+  let drawer;
   let commandSurface;
   try {
+    await cdp.send("Page.bringToFront");
+    await setViewport(cdp, 1440, 900);
     layout = await waitForStudioLayout(cdp, 10_000);
     assertStudioLayout(layout);
+    startCard = await waitForStartCard(cdp, 10_000);
+    assertStartCard(startCard);
+    keepPanel = await inspectKeepPanel(cdp, layout);
+    assertKeepPanel(keepPanel);
+    settings = await inspectSettings(cdp);
+    assertSettings(settings);
     await setThemeForSmoke(cdp, "dark");
     const screenshotPath = process.env.FIREKEEP_STUDIO_SMOKE_SCREENSHOT;
     if (screenshotPath) {
-      await cdp.send("Runtime.evaluate", {
-        expression: `(() => {
-          const studio = document.querySelector(".studio");
-          const icon = document.querySelector(".brand-icon");
-          if (!studio || !icon) return false;
-          studio.setAttribute("data-busy", "true");
-          if (!icon.querySelector(".brand-activity")) {
-            const activity = document.createElement("span");
-            activity.className = "brand-activity";
-            icon.append(activity);
-          }
-          return true;
-        })()`,
-        returnByValue: true,
-      });
-      await new Promise((resolvePromise) => setTimeout(resolvePromise, 180));
       const capture = await cdp.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
       await writeFile(screenshotPath, Buffer.from(capture.data, "base64"));
     }
+    palette = await inspectPalette(cdp);
+    assertPalette(palette);
     sessionEditor = await openSessionEditorForSmoke(cdp);
     assertSessionEditor(sessionEditor);
     const sessionScreenshotPath = process.env.FIREKEEP_STUDIO_SMOKE_SESSION_SCREENSHOT;
@@ -78,8 +81,8 @@ try {
       const capture = await cdp.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
       await writeFile(lightScreenshotPath, Buffer.from(capture.data, "base64"));
     }
-    responsiveInspector = await inspectResponsiveInspector(cdp);
-    assertResponsiveInspector(responsiveInspector);
+    drawer = await inspectResponsiveDrawer(cdp);
+    assertResponsiveDrawer(drawer);
     await setThemeForSmoke(cdp, "dark");
     commandSurface = await runCommandForSmoke(cdp);
     assertCommandSurface(commandSurface);
@@ -91,7 +94,7 @@ try {
   } finally {
     await cdp.close();
   }
-  process.stdout.write(`${JSON.stringify({ executable, title: target.title, url: target.url, layout, sessionEditor, lightTheme, responsiveInspector, commandSurface })}\n`);
+  process.stdout.write(`${JSON.stringify({ executable, title: target.title, url: target.url, layout, startCard, keepPanel, settings, palette, sessionEditor, lightTheme, drawer, commandSurface })}\n`);
 } finally {
   terminateExactTree(child);
   const temporaryRoot = `${await realpath(tmpdir())}${sep}`.toLowerCase();
@@ -100,6 +103,23 @@ try {
     throw new Error(`refusing to remove non-temporary smoke profile: ${resolvedUserData}`);
   }
   await rm(resolvedUserData, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+}
+
+function kitlessEnv(base, home) {
+  const env = { ...base };
+  for (const key of Object.keys(env)) if (/^FIREKEEP_CONFIG$/i.test(key)) delete env[key];
+  env.USERPROFILE = home;
+  env.HOME = home;
+  delete env.HOMEDRIVE;
+  delete env.HOMEPATH;
+  const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "PATH";
+  const hasKit = (directory) => {
+    if (/[\\/]\.firekeep([\\/]|$)/i.test(directory)) return true;
+    try { return readdirSync(directory).some((name) => /^firekeep(\.(exe|cmd|bat|ps1))?$/i.test(name)); }
+    catch { return false; }
+  };
+  env[pathKey] = (env[pathKey] ?? "").split(delimiter).filter((directory) => directory && !hasKit(directory)).join(delimiter);
+  return env;
 }
 
 function boundedChildOutput(childProcess, limit = 32_000) {
@@ -216,62 +236,203 @@ async function connectCdp(url) {
   };
 }
 
+function rectSource() {
+  return `(element) => {
+  const value = element.getBoundingClientRect();
+  return { left: value.left, top: value.top, right: value.right, bottom: value.bottom, width: value.width, height: value.height };
+}`;
+}
+
+async function evaluate(cdp, expression) {
+  const result = await cdp.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+  if (result.exceptionDetails) throw new Error(`page evaluation failed: ${result.exceptionDetails.text} ${result.exceptionDetails.exception?.description ?? ""}`);
+  return result.result?.value;
+}
+
+function sleep(ms) { return new Promise((resolvePromise) => setTimeout(resolvePromise, ms)); }
+
+async function setViewport(cdp, width, height) {
+  await cdp.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+  await sleep(240);
+}
+
+async function pressKey(cdp, { key, code, keyCode, ctrl = false }) {
+  const base = { key, code, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode, modifiers: ctrl ? 2 : 0 };
+  await cdp.send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...base });
+  await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...base });
+  await sleep(200);
+}
+
+function pressCtrlBackslash(cdp) { return pressKey(cdp, { key: "\\", code: "Backslash", keyCode: 220, ctrl: true }); }
+function pressCtrlK(cdp) { return pressKey(cdp, { key: "k", code: "KeyK", keyCode: 75, ctrl: true }); }
+function pressEscape(cdp) { return pressKey(cdp, { key: "Escape", code: "Escape", keyCode: 27 }); }
+
 async function waitForStudioLayout(cdp, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const result = await cdp.send("Runtime.evaluate", {
-      expression: `(() => {
-        const rect = (element) => {
-          const value = element.getBoundingClientRect();
-          return { left: value.left, top: value.top, right: value.right, bottom: value.bottom, width: value.width, height: value.height };
-        };
-        const inspector = document.querySelector(".inspector-toggle");
-        const primary = document.querySelector(".runtime-picker");
-        const picker = primary?.querySelector(".runtime-picker-trigger");
-        const label = primary?.querySelector(".runtime-picker-copy small");
-        const value = primary?.querySelector(".runtime-picker-copy strong");
-        const toolbar = document.querySelector(".conversation-toolbar");
-        const update = document.querySelector(".studio-update-button");
-        const sessionTitle = document.querySelector(".session-title-display > .session-title");
-        const sessionCustomize = document.querySelector(".session-title-customize");
-        if (!inspector || !primary || !picker || !label || !value || !toolbar || !update || !sessionTitle || !sessionCustomize) return null;
-        return {
-          viewport: { width: innerWidth, height: innerHeight },
-          inspector: rect(inspector),
-          primary: rect(primary),
-          label: rect(label),
-          value: rect(value),
-          picker: rect(picker),
-          toolbar: rect(toolbar),
-          update: rect(update),
-          updateLabel: update.getAttribute("aria-label") ?? "",
-          sessionTitleParent: sessionTitle.parentElement?.tagName ?? "",
-          sessionCustomizeLabel: sessionCustomize.getAttribute("aria-label") ?? "",
-        };
-      })()`,
-      returnByValue: true,
-    });
-    if (result.result?.value) return result.result.value;
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+    const value = await evaluate(cdp, `(() => {
+      const rect = ${rectSource()};
+      const titlebar = document.querySelector(".titlebar");
+      const rail = document.querySelector(".session-rail");
+      const conversation = document.querySelector(".conversation");
+      const keep = document.querySelector(".keep-panel");
+      const settings = document.querySelector('.titlebar-actions button[aria-label="Settings"]');
+      const keepToggle = document.querySelector('.titlebar-actions button[aria-label="Hide the Keep"], .titlebar-actions button[aria-label="Show the Keep"]');
+      const agent = [...document.querySelectorAll("button.agent-chip")].find((button) => (button.getAttribute("aria-label") ?? "").startsWith("Agent:"));
+      if (!titlebar || !rail || !conversation || !keep || !settings || !keepToggle) return null;
+      return {
+        viewport: { width: innerWidth, height: innerHeight },
+        titlebar: rect(titlebar),
+        rail: rect(rail),
+        conversation: rect(conversation),
+        keep: rect(keep),
+        settings: rect(settings),
+        keepToggle: rect(keepToggle),
+        keepToggleLabel: keepToggle.getAttribute("aria-label"),
+        agentChip: agent ? { ...rect(agent), label: agent.getAttribute("aria-label") } : null,
+      };
+    })()`);
+    if (value) return value;
+    await sleep(100);
   }
   throw new Error("Studio controls did not render in time");
 }
 
 function assertStudioLayout(layout) {
-  if (layout.viewport.width - layout.inspector.right < 138) {
-    throw new Error(`inspector toggle intrudes into Windows caption controls: ${JSON.stringify(layout.inspector)}`);
+  const hidden = ["titlebar", "rail", "conversation", "keep"].filter((name) => layout[name].width <= 0 || layout[name].height <= 0);
+  if (hidden.length) throw new Error(`0.5 shell regions are not visible: ${hidden.join(", ")} ${JSON.stringify(layout)}`);
+  if (layout.keep.left < layout.conversation.right - 1 || layout.keep.width < 280) {
+    throw new Error(`keep-panel is not a right-hand column of at least 280px: ${JSON.stringify({ keep: layout.keep, conversation: layout.conversation })}`);
   }
-  if (layout.picker.width < 220 || layout.picker.right > layout.toolbar.right || layout.picker.bottom > layout.toolbar.bottom) {
-    throw new Error(`primary runtime picker is clipped: ${JSON.stringify({ picker: layout.picker, toolbar: layout.toolbar })}`);
+  if (layout.viewport.width - layout.settings.right < 138 || layout.viewport.width - layout.keepToggle.right < 138) {
+    throw new Error(`titlebar controls intrude into Windows caption controls: ${JSON.stringify({ settings: layout.settings, keepToggle: layout.keepToggle })}`);
   }
-  if (layout.label.bottom > layout.value.top + 1) {
-    throw new Error(`primary runtime label overlaps its value: ${JSON.stringify({ label: layout.label, value: layout.value })}`);
+  if (layout.keepToggleLabel !== "Hide the Keep") throw new Error(`Keep toggle should read "Hide the Keep" while open: ${layout.keepToggleLabel}`);
+  if (layout.agentChip && (layout.agentChip.right > layout.conversation.right || layout.agentChip.bottom > layout.viewport.height || layout.agentChip.width < 40)) {
+    throw new Error(`Agent chip is clipped: ${JSON.stringify(layout.agentChip)}`);
   }
-  if (!layout.updateLabel.toLowerCase().includes("studio update") || layout.update.right > layout.inspector.left) {
-    throw new Error(`Studio update control is missing or overlaps the inspector toggle: ${JSON.stringify({ update: layout.update, inspector: layout.inspector, label: layout.updateLabel })}`);
+}
+
+async function waitForStartCard(cdp, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const value = await evaluate(cdp, `(() => {
+      const card = document.querySelector(".start-card");
+      if (!card) return null;
+      const bounds = card.getBoundingClientRect();
+      return { visible: bounds.width > 0 && bounds.height > 0, width: bounds.width, heading: card.querySelector("h2")?.textContent?.trim() ?? "" };
+    })()`);
+    if (value) return value;
+    await sleep(100);
   }
-  if (layout.sessionTitleParent !== "DIV" || !layout.sessionCustomizeLabel.toLowerCase().includes("customize current session")) {
-    throw new Error(`titlebar session editing is not palette-only: ${JSON.stringify({ parent: layout.sessionTitleParent, label: layout.sessionCustomizeLabel })}`);
+  throw new Error("start-card did not render in an empty session");
+}
+
+function assertStartCard(card) {
+  if (!card.visible || card.heading !== "Start a session") throw new Error(`start-card is not visible in the empty session: ${JSON.stringify(card)}`);
+}
+
+async function inspectKeepPanel(cdp, layout) {
+  // Kit-not-installed state: PATH and the home directory are isolated for the packaged process.
+  let heading = "";
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
+    heading = (await evaluate(cdp, `document.querySelector(".keep-panel .keep-state-card h3")?.textContent?.trim() ?? ""`)) ?? "";
+    if (heading) break;
+    await sleep(150);
+  }
+  const conversationBefore = await evaluate(cdp, `document.querySelector(".conversation")?.getBoundingClientRect().width ?? 0`);
+  await pressCtrlBackslash(cdp);
+  const collapsed = await evaluate(cdp, `(() => ({
+    panelGone: !document.querySelector(".keep-panel"),
+    conversationWidth: document.querySelector(".conversation")?.getBoundingClientRect().width ?? 0,
+    toggleLabel: document.querySelector('.titlebar-actions button[aria-label="Show the Keep"]') ? "Show the Keep" : "",
+  }))()`);
+  await pressCtrlBackslash(cdp);
+  const restored = await evaluate(cdp, `(() => ({
+    panelBack: Boolean(document.querySelector(".keep-panel")),
+    toggleLabel: document.querySelector('.titlebar-actions button[aria-label="Hide the Keep"]') ? "Hide the Keep" : "",
+  }))()`);
+  return {
+    heading,
+    panelWidth: layout.keep.width,
+    conversationBefore,
+    conversationCollapsed: collapsed.conversationWidth,
+    growth: collapsed.conversationWidth - conversationBefore,
+    panelGoneOnCollapse: collapsed.panelGone,
+    collapsedToggleLabel: collapsed.toggleLabel,
+    panelBackOnRestore: restored.panelBack,
+    restoredToggleLabel: restored.toggleLabel,
+  };
+}
+
+function assertKeepPanel(value) {
+  if (value.heading !== "Connect Studio to your team's Keep") {
+    throw new Error(`keep-panel did not show the kit-not-installed state: ${JSON.stringify(value)}`);
+  }
+  if (!value.panelGoneOnCollapse || value.growth < 250 || value.collapsedToggleLabel !== "Show the Keep") {
+    throw new Error(`Ctrl+\\ did not collapse the keep-panel and widen the conversation by 250px: ${JSON.stringify(value)}`);
+  }
+  if (!value.panelBackOnRestore || value.restoredToggleLabel !== "Hide the Keep") {
+    throw new Error(`Ctrl+\\ did not restore the keep-panel: ${JSON.stringify(value)}`);
+  }
+}
+
+async function inspectPalette(cdp) {
+  await pressCtrlK(cdp);
+  const opened = await evaluate(cdp, `(() => {
+    const dialog = document.querySelector('[role="dialog"][aria-label="Command palette"]');
+    if (!dialog) return null;
+    const bounds = dialog.getBoundingClientRect();
+    return { width: bounds.width, height: bounds.height };
+  })()`);
+  await pressEscape(cdp);
+  const closed = await evaluate(cdp, `!document.querySelector('[role="dialog"][aria-label="Command palette"]')`);
+  return { opened: Boolean(opened && opened.width > 0 && opened.height > 0), size: opened, closedOnEscape: Boolean(closed) };
+}
+
+function assertPalette(value) {
+  if (!value.opened || !value.closedOnEscape) throw new Error(`Command palette (Ctrl+K / Escape) misbehaved: ${JSON.stringify(value)}`);
+}
+
+async function openSettings(cdp) {
+  const clicked = await evaluate(cdp, `(() => {
+    const button = document.querySelector('.titlebar-actions button[aria-label="Settings"]');
+    if (!button) return false;
+    button.click();
+    return true;
+  })()`);
+  if (!clicked) throw new Error("top-bar Settings button did not render");
+  await sleep(250);
+}
+
+async function clickSettingsTab(cdp, label) {
+  const clicked = await evaluate(cdp, `(() => {
+    const tab = [...document.querySelectorAll('[role="dialog"][aria-label="Settings"] [role="tab"]')].find((button) => button.textContent?.trim() === ${JSON.stringify(label)});
+    if (!tab) return false;
+    tab.click();
+    return true;
+  })()`);
+  if (!clicked) throw new Error(`Settings tab did not render: ${label}`);
+  await sleep(150);
+}
+
+async function inspectSettings(cdp) {
+  await openSettings(cdp);
+  await clickSettingsTab(cdp, "Agents & accounts");
+  const agents = await evaluate(cdp, `(() => ({
+    dialog: Boolean(document.querySelector('[role="dialog"][aria-label="Settings"]')),
+    region: Boolean(document.querySelector('[role="region"][aria-label="Agents & accounts"]')),
+    runtimeCards: document.querySelectorAll('[role="region"][aria-label="Agents & accounts"] .runtime-manager-grid > *').length,
+  }))()`);
+  await pressEscape(cdp);
+  const closed = await evaluate(cdp, `!document.querySelector('[role="dialog"][aria-label="Settings"]')`);
+  return { ...agents, closedOnEscape: Boolean(closed) };
+}
+
+function assertSettings(value) {
+  if (!value.dialog || !value.region || value.runtimeCards < 1 || !value.closedOnEscape) {
+    throw new Error(`Settings (Agents & accounts) is incomplete: ${JSON.stringify(value)}`);
   }
 }
 
@@ -347,72 +508,55 @@ async function closeSessionEditorForSmoke(cdp) {
 }
 
 async function setThemeForSmoke(cdp, desired) {
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    const result = await cdp.send("Runtime.evaluate", {
-      expression: `(() => {
-        const theme = document.documentElement.dataset.theme ?? '';
-        if (theme === ${JSON.stringify(desired)}) return { theme, clicked: false };
-        const button = document.querySelector('.appearance-button');
-        if (!button) return null;
-        button.click();
-        return { theme, clicked: true };
-      })()`,
-      returnByValue: true,
-    });
-    if (!result.result?.value) throw new Error("appearance control did not render");
-    if (result.result.value.theme === desired) break;
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 120));
+  const current = await evaluate(cdp, `document.documentElement.dataset.theme ?? ''`);
+  if (current !== desired) {
+    await openSettings(cdp);
+    await clickSettingsTab(cdp, "Appearance");
+    const picked = await evaluate(cdp, `(() => {
+      const radio = document.querySelector('[role="dialog"][aria-label="Settings"] input[name="studio-theme"][value=${JSON.stringify(desired)}]');
+      if (!radio) return false;
+      radio.click();
+      return true;
+    })()`);
+    if (!picked) throw new Error(`theme radio did not render: ${desired}`);
+    await sleep(200);
+    await pressEscape(cdp);
   }
-  const result = await cdp.send("Runtime.evaluate", {
-    expression: `(() => ({
-      theme: document.documentElement.dataset.theme ?? '',
-      body: getComputedStyle(document.body).backgroundColor,
-      titlebar: getComputedStyle(document.querySelector('.titlebar')).backgroundImage,
-      label: document.querySelector('.appearance-button')?.getAttribute('aria-label') ?? '',
-    }))()`,
-    returnByValue: true,
-  });
-  return result.result?.value;
+  return evaluate(cdp, `(() => ({
+    theme: document.documentElement.dataset.theme ?? '',
+    body: getComputedStyle(document.body).backgroundColor,
+    titlebar: getComputedStyle(document.querySelector('.titlebar')).backgroundImage,
+    settingsClosed: !document.querySelector('[role="dialog"][aria-label="Settings"]'),
+  }))()`);
 }
 
 function assertLightTheme(theme) {
-  if (!theme || theme.theme !== "light" || theme.body !== "rgb(241, 243, 239)" || !theme.label.includes("Appearance: Light")) {
+  if (!theme || theme.theme !== "light" || theme.body !== "rgb(241, 243, 239)" || !theme.settingsClosed) {
     throw new Error(`light appearance did not reach the packaged renderer: ${JSON.stringify(theme)}`);
   }
 }
 
-async function inspectResponsiveInspector(cdp) {
-  await cdp.send("Emulation.setDeviceMetricsOverride", { width: 1000, height: 760, deviceScaleFactor: 1, mobile: false });
-  await new Promise((resolvePromise) => setTimeout(resolvePromise, 240));
-  const geometry = await cdp.send("Runtime.evaluate", {
-    expression: `(() => {
-      const panel = document.querySelector('.inspector');
-      const toggle = document.querySelector('.inspector-toggle');
-      if (!panel || !toggle) return null;
-      const bounds = panel.getBoundingClientRect();
-      const style = getComputedStyle(panel);
-      toggle.click();
-      return { viewport: innerWidth, left: bounds.left, right: bounds.right, width: bounds.width, position: style.position, display: style.display };
-    })()`,
-    returnByValue: true,
-  });
-  await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
-  const hidden = await cdp.send("Runtime.evaluate", {
-    expression: `(() => {
-      const hidden = !document.querySelector('.inspector');
-      document.querySelector('.inspector-toggle')?.click();
-      return hidden;
-    })()`,
-    returnByValue: true,
-  });
-  await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+async function inspectResponsiveDrawer(cdp) {
+  await setViewport(cdp, 1000, 760);
+  const geometry = await evaluate(cdp, `(() => {
+    const panel = document.querySelector('.keep-panel');
+    if (!panel) return null;
+    const bounds = panel.getBoundingClientRect();
+    const style = getComputedStyle(panel);
+    return { viewport: innerWidth, left: bounds.left, right: bounds.right, width: bounds.width, position: style.position, display: style.display };
+  })()`);
+  await pressCtrlBackslash(cdp);
+  const hidden = await evaluate(cdp, `!document.querySelector('.keep-panel')`);
+  await pressCtrlBackslash(cdp);
+  const restored = await evaluate(cdp, `Boolean(document.querySelector('.keep-panel'))`);
   await cdp.send("Emulation.clearDeviceMetricsOverride");
-  return geometry.result?.value ? { ...geometry.result.value, hidden: Boolean(hidden.result?.value) } : null;
+  await sleep(200);
+  return geometry ? { ...geometry, hidden: Boolean(hidden), restored: Boolean(restored) } : null;
 }
 
-function assertResponsiveInspector(value) {
-  if (!value || value.position !== "fixed" || value.display === "none" || !value.hidden || Math.abs(value.right - value.viewport) > 1 || value.width < 280) {
-    throw new Error(`responsive inspector is clipped or cannot be toggled: ${JSON.stringify(value)}`);
+function assertResponsiveDrawer(value) {
+  if (!value || value.position !== "fixed" || value.display === "none" || !value.hidden || !value.restored || Math.abs(value.right - value.viewport) > 1 || value.width < 280) {
+    throw new Error(`responsive keep-panel drawer is clipped or cannot be toggled: ${JSON.stringify(value)}`);
   }
 }
 

@@ -41,6 +41,13 @@ describe("Studio release workflow", () => {
     expect(client).not.toMatch(/^import\s*\{[^}]*autoUpdater[^}]*\}\s*from\s*["']electron-updater["']/m);
   });
 
+  it("package smoke covers the 0.5 shell", async () => {
+    const smoke = await readFile("scripts/package-smoke.mjs", "utf8");
+
+    for (const text of ["keep-panel", "Connect Studio to your team's Keep", "Command palette", "start-card"]) expect(smoke).toContain(text);
+    for (const text of ["agent-grid", "inspector-toggle"]) expect(smoke).not.toContain(text);
+  });
+
   it("keeps every packaged-debug poll inside the smoke deadline", async () => {
     const smoke = await readFile("scripts/package-smoke.mjs", "utf8");
 
