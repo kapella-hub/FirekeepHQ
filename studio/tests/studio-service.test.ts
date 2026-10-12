@@ -460,6 +460,25 @@ describe("StudioService Keep receipts", () => {
     }
   });
 
+  it("promotes the measured provisional when the gateway is gone at finalize, so the next turn never recounts it", async () => {
+    const alpha = new FakeRuntime({ id: "alpha", displayName: "Alpha", description: "", transport: "test", capabilities: ["chat"] });
+    let online = true;
+    const tracker = new ReceiptTracker({
+      source: () => online ? { timeline: async (_id, offset) => ({ kind: "page", events: [RECALL_EVENT].slice(offset), total: 1, hasMore: false }) } : null,
+      readReport: async () => ["k1"],
+    });
+    const service = new StudioService({ runtimes: new RuntimeRegistry([alpha]), settings: new MemorySettingsStore<StudioPersistedState>(), keep: { tracker, reportPath: () => "/x.keep", removeReport: async () => undefined } });
+    await service.initialize();
+    await service.setPrimary("alpha");
+    await service.sendMessage("first");
+    await vi.waitFor(() => expect(keepReceipts(service.events())).toHaveLength(1));
+    online = false;
+    await service.sendMessage("second");
+    const final = keepReceipts(service.events()).map((item) => item.receipt).find((receipt) => receipt.final);
+    expect(final).toMatchObject({ status: "measured", recalledCount: 1 });
+    expect(tracker.cursors(service.snapshot().activeSessionId)).toEqual({ k1: 1 });
+  });
+
   it("finalizes into the session that produced the turn when the user switches sessions", async () => {
     const { service, reports, timelines, sessions } = createKeepService();
     await service.initialize();
@@ -559,7 +578,7 @@ describe("StudioService Keep receipts", () => {
     expect(tracker.cursors(first)).toEqual({ k1: 1 });
   });
 
-  it("deleting a session removes its report and never resurrects it with a late receipt", async () => {
+  it("deleting a session removes its report, forgets its cursors and refuses a retry into it", async () => {
     const { service, sessions, removed, tracker } = createKeepService();
     await service.initialize();
     await service.setPrimary("alpha");
@@ -605,6 +624,7 @@ describe("StudioService Keep receipts", () => {
     await service.setPrimary("alpha");
     await service.sendMessage("chat first");
     const chatRun = firstRunId(service);
+    await vi.waitFor(() => expect(keepReceipts(service.events())).toHaveLength(1));
     await service.createMission("Make it correct");
     await service.addMissionReviewer("beta");
     await service.addMissionCheck("npm test", { name: "tests", timeoutMs: 60_000 });

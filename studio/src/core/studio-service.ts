@@ -1288,10 +1288,10 @@ export class StudioService {
       const before = tracker.cursors(turn.studioSessionId);
       const collected = await withinBudget(tracker.collect(turn.studioSessionId, [...turn.events], true).catch(() => null), FINALIZE_BUDGET_MS);
       let receipt: KeepReceipt;
-      if (collected && collected.status !== "unavailable") receipt = collected;
+      if (collected?.status === "measured") receipt = collected;
       else if (turn.provisional?.status === "measured") {
-        // Keep did not answer in time: the receipt measured when the turn ended becomes final;
-        // anything that arrived later rolls into the next turn.
+        // The Keep did not measure the final (timeout, error, gateway gone): the receipt measured
+        // when the turn ended becomes final, its cursors commit, and later events roll into the next turn.
         receipt = { ...turn.provisional, final: true };
         tracker.commit(turn.studioSessionId, turn.provisional.cursorsAfter);
       } else receipt = collected ?? unavailableReceipt("Keep did not answer in time", true, before);
