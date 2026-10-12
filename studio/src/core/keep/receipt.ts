@@ -71,7 +71,8 @@ export function measuredReceipt(events: readonly ReplayEvent[], keepSessionIds: 
     memoryId: stringField(event.payload.memory_id),
   }));
   const distinct = new Set(recalls.flatMap((recall) => recall.memoryIds));
-  return { status: "measured", final, recalls, writes, recalledCount: distinct.size, learnedCount: writes.length, keepSessionIds: [...keepSessionIds], cursorsAfter: { ...cursorsAfter } };
+  const countFromIdless = recalls.filter((recall) => recall.memoryIds.length === 0).reduce((sum, recall) => sum + recall.resultCount, 0);
+  return { status: "measured", final, recalls, writes, recalledCount: distinct.size + countFromIdless, learnedCount: writes.length, keepSessionIds: [...keepSessionIds], cursorsAfter: { ...cursorsAfter } };
 }
 
 /** Fallback: Firekeep tool calls visible in the runtime stream (spec §7.3). */

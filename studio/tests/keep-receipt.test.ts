@@ -25,6 +25,18 @@ describe("parseTimelineReply", () => {
   it("reads an argument-validation failure (old server, unknown param) as unsupported", () => {
     expect(parseTimelineReply("Error executing tool replay_timeline: 1 validation error … format")).toEqual({ kind: "unsupported" });
   });
+  it("filters invalid events from JSON events array", () => {
+    const page = parseTimelineReply(JSON.stringify({
+      session_id: "s",
+      events: [
+        read("e1", "a", ["m1"]),
+        { id: "e2", event_type: "memory_read", timestamp: "t", payload: {} }, // missing agent_id
+      ],
+      total: 2,
+      has_more: false,
+    }));
+    expect(page).toEqual({ kind: "page", events: [read("e1", "a", ["m1"])], total: 2, hasMore: false });
+  });
 });
 
 describe("measuredReceipt", () => {
@@ -47,6 +59,13 @@ describe("measuredReceipt", () => {
   it("says nothing recalled only when it measured nothing", () => {
     expect(receiptLabel(measuredReceipt([], ["s1"], { s1: 0 }, true))).toBe("Keep · nothing recalled");
   });
+  it("counts resultCount for id-less recalls instead of showing confident zero", () => {
+    const receipt = measuredReceipt([
+      { id: "e1", agent_id: "agent-a", event_type: "memory_read", timestamp: "t", payload: { query: "q", trigger: null, result_count: 2, memory_ids: [] } },
+    ], ["s1"], { s1: 0 }, true);
+    expect(receipt.recalledCount).toBe(2);
+    expect(receiptLabel(receipt)).toBe("Keep · recalled 2 · learned 0");
+  });
 });
 
 describe("partialReceipt", () => {
@@ -64,6 +83,13 @@ describe("partialReceipt", () => {
   });
   it("never says nothing recalled", () => {
     expect(receiptLabel(partialReceipt([], true))).toBe("Keep · partial — hook-injected recall not shown");
+  });
+  it("recognizes memory_recall with dot notation (Codex/Kiro)", () => {
+    const receipt = partialReceipt([
+      { kind: "tool.started", toolCallId: "1", name: "firekeep.memory_recall", input: { task: "deploy" } },
+    ], true);
+    expect(receipt.recalledCount).toBe(1);
+    expect(receipt.recalls[0]?.query).toBe("deploy");
   });
 });
 
