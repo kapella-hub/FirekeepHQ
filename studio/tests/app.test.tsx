@@ -689,4 +689,16 @@ describe("Firekeep Studio renderer", () => {
     expect(screen.getByRole("button", { name: "Knowledge was right" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Knowledge was wrong" })).toBeDisabled();
   });
+
+  it("rating one recall leaves another recall with identical memory ids rateable", async () => {
+    const recalls = [{ query: "first", trigger: "agent", resultCount: 1, memoryIds: ["m1"] }, { query: "second", trigger: "agent", resultCount: 1, memoryIds: ["m1"] }];
+    const receipt = { status: "measured", final: true, recalls, writes: [], recalledCount: 1, learnedCount: 0, keepSessionIds: ["k1"], cursorsAfter: {} };
+    installBridge({ snapshot: state("alpha"), events: [{ id: "2", runId: "r1", studioSessionId: "session-1", runtimeId: "alpha", timestamp: "t", payload: { kind: "keep.receipt", receipt } }] as never });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Keep · recalled 1 · learned 0" }));
+    const rights = screen.getAllByRole("button", { name: "Knowledge was right" });
+    fireEvent.click(rights[0] as HTMLElement);
+    await waitFor(() => expect(screen.getAllByRole("button", { name: "Knowledge was right" })[0]).toBeDisabled());
+    expect(screen.getAllByRole("button", { name: "Knowledge was right" })[1]).toBeEnabled();
+  });
 });
