@@ -8,7 +8,6 @@ import {
   Code2,
   Copy,
   Cpu,
-  Download,
   Eye,
   ExternalLink,
   FileDiff,
@@ -16,9 +15,6 @@ import {
   KeyRound,
   LogOut,
   Palette,
-  PanelRightClose,
-  PanelRightOpen,
-  Plus,
   RefreshCw,
   Send,
   ShieldCheck,
@@ -30,13 +26,18 @@ import {
 } from "lucide-react";
 import type { CommandCompletion, CommandResult } from "../../core/slash-commands";
 import type { MissionSnapshot } from "../../core/mission";
-import { DEFAULT_SESSION_COLOR, type SessionColor, type StudioSessionSummary } from "../../core/session-store";
+import type { SessionColor, StudioSessionSummary } from "../../core/session-store";
 import type { RuntimeDiagnostic, StudioSnapshot } from "../../core/studio-service";
 import type { LoginMethod, RuntimeDescriptor, RuntimeEffort, RuntimeEvent, RuntimeModel, RuntimeUsage } from "../../core/runtime";
 import type { BootstrapResult, StudioAction, StudioActionResult, StudioUpdateState } from "../../shared/ipc";
 import type { DecisionAnswers, DecisionBoardDocument, DecisionEmbed, DecisionQuestion } from "../../shared/decision-board";
 import { findDecisionBoardUrl } from "../../shared/decision-board";
+import type { KeepStatus } from "../../shared/keep";
 import { FirekeepMark } from "./FirekeepMark.js";
+import { StudioShell } from "./layout/StudioShell.js";
+import { TopBar, pathLeaf } from "./layout/TopBar.js";
+import { SessionRail } from "./rail/SessionRail.js";
+import { sessionAccentStyle } from "./rail/session-style.js";
 import { RichMarkdown } from "./RichMarkdown.js";
 import { RenderBoundary } from "./RenderBoundary.js";
 import { RuntimePicker } from "./RuntimePicker.js";
@@ -46,17 +47,6 @@ import { buildTimeline, groupTimeline, type TimelineItem, type TimelineRun } fro
 interface CommandCard { readonly id: string; readonly input: string; readonly result: CommandResult }
 interface ConnectDialog { readonly runtimeId: string; readonly method: LoginMethod }
 interface ModelRefresh { readonly runtimeId: string; readonly state: "loading" | "success" | "error"; readonly message: string }
-
-const SESSION_COLOR_OPTIONS: readonly { readonly id: SessionColor; readonly label: string; readonly value: string }[] = [
-  { id: "ember", label: "Ember", value: "#ff7a2f" },
-  { id: "gold", label: "Gold", value: "#dca63a" },
-  { id: "moss", label: "Moss", value: "#65a86f" },
-  { id: "teal", label: "Teal", value: "#3da5a0" },
-  { id: "ocean", label: "Ocean", value: "#4b8fdf" },
-  { id: "violet", label: "Violet", value: "#8f83ff" },
-  { id: "rose", label: "Rose", value: "#d66d91" },
-  { id: "slate", label: "Slate", value: "#7f8997" },
-];
 
 export function App(): React.JSX.Element {
   const [bootstrap, setBootstrap] = useState<BootstrapResult | null>(null);
@@ -73,7 +63,7 @@ export function App(): React.JSX.Element {
   const [commandCards, setCommandCards] = useState<CommandCard[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [rightOpen, setRightOpen] = useState(true);
+  const [keepStatus, setKeepStatus] = useState<KeepStatus | null>(null);
   const [runtimeManagerOpen, setRuntimeManagerOpen] = useState(false);
   const [connectDialog, setConnectDialog] = useState<ConnectDialog | null>(null);
   const [secret, setSecret] = useState("");
@@ -192,6 +182,7 @@ export function App(): React.JSX.Element {
         }
       } else if (event.type === "snapshot") setSnapshot(event.snapshot);
       else if (event.type === "update") setUpdateState(event.state);
+      else if (event.type === "keep-status") setKeepStatus(event.status);
       else if (event.type === "decision.available") {
         surfacedBoardsRef.current.add(event.board.url);
         setDecisionBoard(event.board);
@@ -205,6 +196,7 @@ export function App(): React.JSX.Element {
       replaceEvents(result.events);
       setSessions([...result.sessions]);
       ignore(refreshDiagnostics());
+      ignore(invoke({ type: "keep.status" }).then((status) => { if (active && status.type === "keep-status") setKeepStatus(status.status); }));
       if (result.snapshot.primaryRuntimeId) ignore(loadModels(result.snapshot.primaryRuntimeId));
     }));
     return () => {
@@ -264,6 +256,10 @@ export function App(): React.JSX.Element {
       } else if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "r") {
         event.preventDefault();
         if (!busy) ignore(runReview());
+      } else if ((event.ctrlKey || event.metaKey) && event.code === "Backslash") {
+        event.preventDefault();
+        const open = !(snapshot?.keepPanelOpen ?? true);
+        ignore(invoke({ type: "settings.keepPanel", open }).then(applyResult));
       } else if (event.key === "Escape") {
         if (connectDialog) setConnectDialog(null);
         else if (runtimeManagerOpen) setRuntimeManagerOpen(false);
@@ -273,7 +269,7 @@ export function App(): React.JSX.Element {
     };
     window.addEventListener("keydown", keyboard);
     return () => window.removeEventListener("keydown", keyboard);
-  }, [busy, connectDialog, invoke, runReview, runtimeManagerOpen, sessionEditorId, snapshot?.activeRunId]);
+  }, [applyResult, busy, connectDialog, invoke, runReview, runtimeManagerOpen, sessionEditorId, snapshot?.activeRunId, snapshot?.keepPanelOpen]);
 
   const submit = async (): Promise<void> => {
     const input = composer.trim();
@@ -385,7 +381,6 @@ export function App(): React.JSX.Element {
   const timelineRuns = useMemo(() => groupTimeline(timeline), [timeline]);
   const primary = bootstrap?.runtimes.find((runtime) => runtime.id === snapshot?.primaryRuntimeId);
   const currentSession = sessions.find((session) => session.id === snapshot?.activeSessionId);
-  const budgetPercent = snapshot?.tokenBudget ? Math.min(100, (snapshot.usage.tokens / snapshot.tokenBudget) * 100) : 0;
   const primaryRuntimeId = snapshot?.primaryRuntimeId ?? null;
   const primaryModels = primaryRuntimeId ? models[primaryRuntimeId] ?? [] : [];
   const selectedModel = primaryRuntimeId
@@ -400,52 +395,35 @@ export function App(): React.JSX.Element {
   if (!bootstrap || !snapshot) return <LaunchScreen error={error} />;
 
   return (
-    <div className="studio" data-busy={agentWorking || undefined}>
-      <header className="titlebar">
-        <div className="brand"><span className="brand-icon" role="status" aria-label={agentWorking ? "Agent working" : "Firekeep Studio idle"}><FirekeepMark size={18} />{agentWorking ? <span className="brand-activity" /> : null}</span><span>Firekeep</span><strong>Studio</strong></div>
-        <div className="titlebar-center">
-          {currentSession ? <div className="session-title-display" style={sessionAccentStyle(currentSession.color)}><span className="session-color-dot" /><span className="session-title">{currentSession.name}</span><button type="button" className="session-title-customize" aria-label={`Customize current session ${currentSession.name}`} aria-expanded={sessionEditorId === currentSession.id} title="Edit session name and color" onClick={() => setSessionEditorId((current) => current === currentSession.id ? null : currentSession.id)}><Palette size={11} /></button></div> : <span className="session-title">New session</span>}
-          <span className="session-id">{snapshot.activeSessionId.slice(0, 12)}</span>
-        </div>
-        <div className="titlebar-actions">
-          {updateState && updateState.phase !== "disabled" ? <StudioUpdateButton state={updateState} onAction={() => ignore(updateStudio())} /> : null}
-          <button className="icon-button appearance-button" aria-label={`Appearance: ${themeLabel(snapshot.theme)}. Switch to ${nextTheme(snapshot.theme)} theme`} title={`Appearance: ${themeLabel(snapshot.theme)} · next ${nextTheme(snapshot.theme)}`} onClick={() => ignore(invoke({ type: "theme.set", theme: nextTheme(snapshot.theme) }).then(applyResult))}><SunMoon size={17} /></button>
-          <button className="inspector-toggle" aria-label={rightOpen ? "Hide inspector" : "Show inspector"} title={rightOpen ? "Hide the right inspector" : "Show the right inspector"} onClick={() => setRightOpen((value) => !value)}>{rightOpen ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}<span>{rightOpen ? "Hide panel" : "Show panel"}</span></button>
-        </div>
-      </header>
-
-      <aside className="session-rail">
-        <div className="rail-heading"><span>Sessions</span><button className="icon-button compact" title="New session" onClick={() => ignore(invoke({ type: "session.new" }).then(applyResult))}><Plus size={15} /></button></div>
-        <nav className="session-list" aria-label="Studio sessions">
-          {sessions.map((session) => (
-            <div key={session.id} className={`session-entry ${session.id === snapshot.activeSessionId ? "active" : ""} ${sessionEditorId === session.id ? "editing" : ""}`} style={sessionAccentStyle(session.color)}>
-              <button className="session-row" aria-current={session.id === snapshot.activeSessionId ? "page" : undefined} onClick={() => { if (session.id !== snapshot.activeSessionId) ignore(invoke({ type: "session.resume", sessionId: session.id }).then(applyResult)); }}>
-                <span className="session-row-heading"><span className="session-color-dot" /><span className="session-row-title">{session.name}</span></span>
-                <span className="session-row-meta">{session.mission ? `${session.mission.phase} · ` : ""}{session.eventCount} events · {relativeTime(session.updatedAt)}</span>
-              </button>
-              <button type="button" className="session-customize" aria-label={`Customize ${session.name}`} aria-expanded={sessionEditorId === session.id} onClick={() => setSessionEditorId((current) => current === session.id ? null : session.id)}><Palette size={13} /></button>
-              {sessionEditorId === session.id ? <SessionEditor session={session} saving={sessionSaving} close={() => setSessionEditorId(null)} save={(name, color) => saveSession(session.id, name, color)} /> : null}
-            </div>
-          ))}
-          {!sessions.length ? <div className="session-list-empty"><Sparkles size={17} /><span>Your next session starts here.</span></div> : null}
-        </nav>
-        <div className="rail-footer">
-          <section className="usage-summary rail-usage" aria-labelledby="session-usage-heading">
-            <div className="section-heading"><span id="session-usage-heading">Session usage</span><button className="text-button inline" onClick={() => { setComposer("/budget "); composerRef.current?.focus(); }}>Set guard</button></div>
-            <div className="usage-total"><strong>{snapshot.usage.freshTokens.toLocaleString()} fresh tokens</strong></div>
-            <div className="usage-breakdown"><span>{snapshot.usage.cachedTokens.toLocaleString()} cached</span><span>{snapshot.usage.tokens.toLocaleString()} total traffic</span></div>
-            {snapshot.tokenBudget ? <><div className="budget-track" aria-label={`${budgetPercent.toFixed(0)} percent of token guard used`}><span style={{ width: `${budgetPercent}%` }} /></div><small>{Math.max(0, snapshot.tokenBudget - snapshot.usage.tokens).toLocaleString()} before the next-turn guard</small></> : <small>No token guard · use <code>/budget set 50k</code></small>}
-            <small>{snapshot.usage.measuredRuns}/{snapshot.usage.totalRuns} runs reported usage{snapshot.usage.costUsd ? ` · $${snapshot.usage.costUsd.toFixed(4)} reported` : " · provider cost unavailable"}</small>
-          </section>
-          <button className="workspace-picker" disabled={busy} title={snapshot.workspacePath ?? "Choose a workspace"} onClick={() => ignore(chooseWorkspace())}>
-            <FolderOpen size={16} />
-            <span><small>Workspace</small><strong>{snapshot.workspacePath ? pathLeaf(snapshot.workspacePath) : "Choose folder"}</strong></span>
-          </button>
-          <span className="keep-indicator"><ShieldCheck size={14} /> Client Kit controls ready</span>
-          <div className="keep-actions"><button className="text-button" onClick={() => { setComposer("/firekeep status"); composerRef.current?.focus(); }}>Manage</button>{bootstrap.dashboardAvailable ? <button className="text-button dashboard-link" aria-label="Open Firekeep dashboard" onClick={() => ignore(invoke({ type: "dashboard.open" }))}>Dashboard <ExternalLink size={11} /></button> : null}</div>
-        </div>
-      </aside>
-
+    <StudioShell
+      busy={agentWorking}
+      keepPanelOpen={snapshot.keepPanelOpen}
+      topBar={<TopBar
+        workspacePath={snapshot.workspacePath}
+        recentWorkspaces={snapshot.recentWorkspaces}
+        onChooseFolder={() => ignore(chooseWorkspace())}
+        onSwitchWorkspace={(path) => ignore(invoke({ type: "workspace.set", path }).then(applyResult))}
+        onOpenSettings={() => { setRuntimeManagerOpen(true); ignore(refreshDiagnostics()); }}
+        update={updateState}
+        onUpdate={() => ignore(updateStudio())}
+        agentWorking={agentWorking}
+        center={currentSession ? <div className="session-title-display" style={sessionAccentStyle(currentSession.color)}><span className="session-color-dot" /><span className="session-title">{currentSession.name}</span><button type="button" className="session-title-customize" aria-label={`Customize current session ${currentSession.name}`} aria-expanded={sessionEditorId === currentSession.id} title="Edit session name and color" onClick={() => setSessionEditorId((current) => current === currentSession.id ? null : currentSession.id)}><Palette size={11} /></button></div> : <span className="session-title">New session</span>}
+        actions={<button className="icon-button appearance-button" aria-label={`Appearance: ${themeLabel(snapshot.theme)}. Switch to ${nextTheme(snapshot.theme)} theme`} title={`Appearance: ${themeLabel(snapshot.theme)} · next ${nextTheme(snapshot.theme)}`} onClick={() => ignore(invoke({ type: "theme.set", theme: nextTheme(snapshot.theme) }).then(applyResult))}><SunMoon size={17} /></button>}
+      />}
+      rail={<SessionRail
+        sessions={sessions}
+        activeSessionId={snapshot.activeSessionId}
+        onNew={() => ignore(invoke({ type: "session.new" }).then(applyResult))}
+        onResume={(sessionId) => ignore(invoke({ type: "session.resume", sessionId }).then(applyResult))}
+        onEdit={saveSession}
+        keepWarning={keepWarning(keepStatus)}
+        onKeepWarning={() => { setRuntimeManagerOpen(true); ignore(refreshDiagnostics()); }}
+        editingId={sessionEditorId}
+        saving={sessionSaving}
+        onToggleEdit={(sessionId) => setSessionEditorId((current) => current === sessionId ? null : sessionId)}
+        onCloseEdit={() => setSessionEditorId(null)}
+      />}
+      conversation={
       <main className="conversation">
         <div className="conversation-toolbar">
           <RuntimePicker runtimes={bootstrap.runtimes} selectedId={snapshot.primaryRuntimeId} diagnostics={diagnostics} onSelect={(runtimeId) => void choosePrimary(runtimeId)} onManage={() => { setRuntimeManagerOpen(true); ignore(refreshDiagnostics()); }} />
@@ -484,8 +462,9 @@ export function App(): React.JSX.Element {
           <div className="composer-hint"><span><kbd>Enter</kbd> send · <kbd>Shift Enter</kbd> newline · <kbd>⌘K</kbd> commands</span><span>{busy ? <><span className="pulse-dot" /> Agent working</> : `${snapshot.usage.freshTokens.toLocaleString()} fresh · ${snapshot.usage.tokens.toLocaleString()} total`}</span></div>
         </div>
       </main>
-
-      {rightOpen ? <aside className="inspector" aria-label="Studio inspector">
+      }
+      keepPanel={<aside className="keep-panel" aria-label="The Keep">
+        <h2>The Keep</h2>
         <MissionPanel
           mission={snapshot.mission}
           workspacePath={snapshot.workspacePath}
@@ -502,8 +481,8 @@ export function App(): React.JSX.Element {
           <label>Permissions<select disabled={!snapshot.primaryRuntimeId} value={snapshot.primaryRuntimeId ? snapshot.permissionModes[snapshot.primaryRuntimeId] ?? "standard" : "standard"} onChange={(event) => { if (snapshot.primaryRuntimeId) ignore(invoke({ type: "permission.set", runtimeId: snapshot.primaryRuntimeId, mode: event.target.value as "safe" | "standard" | "unrestricted" }).then(applyResult)); }}><option value="safe">Safe · read only</option><option value="standard">Standard · ask</option><option value="unrestricted">Unrestricted · explicit</option></select></label>
           <label>Reviewer mode<select value={snapshot.reviewerMode} onChange={(event) => ignore(invoke({ type: "reviewer.mode", mode: event.target.value as "off" | "manual" | "after-turn" }).then(applyResult))}><option value="off">Off</option><option value="manual">Manual</option><option value="after-turn">After every turn</option></select></label>
         </section>
-        <section className="inspector-section compact-info"><div><Cpu size={15} /><span>Runtime-neutral core</span></div><div><ShieldCheck size={15} /><span>Credentials stay provider-owned</span></div><div><Terminal size={15} /><span>Type <code>/help</code> for every control</span></div></section>
-      </aside> : null}
+      </aside>}
+    >
 
       {runtimeManagerOpen ? <RuntimeManagerDialog
         runtimes={bootstrap.runtimes}
@@ -523,7 +502,7 @@ export function App(): React.JSX.Element {
         if (result.type !== "decision-submitted") throw new Error("Decision Board returned an unexpected submission response");
         setDecisionBoard(null);
       }} /> : null}
-    </div>
+    </StudioShell>
   );
 }
 
@@ -646,57 +625,11 @@ function MissionPanel({
 }
 
 function LaunchScreen({ error }: { readonly error: string | null }): React.JSX.Element {
-  return <main className="launch-shell"><section className="launch-card" aria-live="polite"><span className="brand-mark"><FirekeepMark size={30} /></span><p className="eyebrow">THE KEEP IS WAKING</p><h1>Firekeep Studio</h1><p className="lede">One calm console for every agent you trust.</p><div className="launch-status"><span className="pulse-dot" /> Loading runtime core…</div>{error ? <p className="launch-error">{error}</p> : null}</section></main>;
-}
-
-function StudioUpdateButton({ state, onAction }: { readonly state: StudioUpdateState; readonly onAction: () => void }): React.JSX.Element {
-  const busy = state.phase === "checking" || state.phase === "downloading";
-  const version = state.availableVersion ?? state.currentVersion;
-  const label = state.phase === "ready"
-    ? `Restart to install Firekeep Studio ${version}`
-    : state.phase === "available"
-      ? `Download Firekeep Studio ${version}`
-      : state.phase === "downloading"
-        ? `Downloading Firekeep Studio ${version}, ${state.progressPercent ?? 0} percent`
-        : state.phase === "checking"
-          ? "Checking for Studio updates"
-          : state.phase === "error"
-            ? `Retry Studio update check: ${state.detail}`
-            : `Check for Studio updates. ${state.detail}`;
-  const text = state.phase === "ready"
-    ? "Restart to update"
-    : state.phase === "available"
-      ? `Get ${version}`
-      : state.phase === "downloading"
-        ? `${state.progressPercent ?? 0}%`
-        : null;
-  const icon = state.phase === "ready"
-    ? <Sparkles size={14} />
-    : state.phase === "available" || state.phase === "downloading"
-      ? <Download className={state.phase === "downloading" ? "update-download" : undefined} size={14} />
-      : state.phase === "error"
-        ? <AlertTriangle size={14} />
-        : state.phase === "current"
-          ? <CheckCircle2 size={14} />
-          : <RefreshCw className={state.phase === "checking" ? "spin" : undefined} size={14} />;
-  return <button type="button" className={`studio-update-button ${state.phase}`} aria-label={label} title={state.detail} disabled={busy} onClick={onAction}>{icon}{text ? <span>{text}</span> : null}</button>;
+  return <main className="launch-shell"><section className="launch-card" aria-live="polite"><span className="brand-mark"><FirekeepMark size={30} /></span><h1>Firekeep Studio</h1><div className="launch-status"><span className="pulse-dot" /> Loading…</div>{error ? <p className="launch-error">{error}</p> : null}</section></main>;
 }
 
 function Welcome({ runtimes, workspacePath, onWorkspace, onChoose, onCommand }: { readonly runtimes: readonly RuntimeDescriptor[]; readonly workspacePath: string | null; readonly onWorkspace: () => void; readonly onChoose: (id: string) => void; readonly onCommand: (value: string) => void }): React.JSX.Element {
   return <section className="welcome"><span className="welcome-mark"><FirekeepMark size={30} /></span><p className="eyebrow">FIREKEEP STUDIO</p><h1 aria-label="Agents come and go. The Keep stays."><span>Agents come and go.</span><span>The Keep stays.</span></h1><p>Choose any runtime to lead, bring in another to review, and keep the work, context, and handoffs together.</p><button className="welcome-workspace" onClick={onWorkspace}><FolderOpen size={16} /><span>{workspacePath ? pathLeaf(workspacePath) : "Choose a workspace"}</span></button><div className="runtime-choices">{runtimes.map((runtime) => <button key={runtime.id} onClick={() => onChoose(runtime.id)} style={{ "--runtime-accent": runtime.accent ?? "#df7e45" } as React.CSSProperties}><span className="runtime-orb">{runtime.displayName[0]}</span><span><strong>{runtime.displayName}</strong><small>{runtime.transport}</small></span></button>)}</div><div className="quick-commands"><button onClick={() => onCommand('/mission new "')}>/mission</button><button onClick={() => onCommand("/workspace choose")}>/workspace</button><button onClick={() => onCommand("/doctor")}>/doctor</button><button onClick={() => onCommand("/reviewer add ")}>/reviewer</button><button onClick={() => onCommand("/firekeep status")}>/firekeep</button><button onClick={() => onCommand("/help")}>/help</button></div></section>;
-}
-
-function SessionEditor({ session, saving, close, save }: { readonly session: StudioSessionSummary; readonly saving: boolean; readonly close: () => void; readonly save: (name: string, color: SessionColor) => Promise<void> }): React.JSX.Element {
-  const [name, setName] = useState(session.name);
-  const [color, setColor] = useState<SessionColor>(session.color ?? DEFAULT_SESSION_COLOR);
-  const cleanName = name.trim();
-  return (
-    <form className="session-editor" aria-label={`Edit ${session.name}`} onSubmit={(event) => { event.preventDefault(); if (cleanName && !saving) ignore(save(cleanName, color)); }}>
-      <label><span>Session name</span><input aria-label="Session name" autoFocus maxLength={120} value={name} onChange={(event) => setName(event.target.value)} /></label>
-      <fieldset><legend>Color</legend><div className="session-colors" role="radiogroup" aria-label="Session color">{SESSION_COLOR_OPTIONS.map((option) => <button key={option.id} type="button" role="radio" aria-label={option.label} aria-checked={color === option.id} className={color === option.id ? "selected" : ""} style={{ "--choice-color": option.value } as React.CSSProperties} onClick={() => setColor(option.id)}><span /></button>)}</div></fieldset>
-      <div className="session-editor-actions"><button type="button" onClick={close}>Cancel</button><button type="submit" className="primary" aria-label="Save session" disabled={!cleanName || saving}>{saving ? "Saving…" : "Save"}</button></div>
-    </form>
-  );
 }
 
 interface TimelineActions {
@@ -827,16 +760,17 @@ function CopyButton({ text }: { readonly text: string }): React.JSX.Element {
   return <button type="button" className={`copy-button ${state}`} aria-label="Copy response" title={state === "failed" ? "Copy failed" : state === "copied" ? "Copied" : "Copy response"} onClick={() => ignore(copy())}>{state === "copied" ? <CheckCircle2 size={14} /> : <Copy size={14} />}</button>;
 }
 
-function sessionAccentStyle(color: SessionColor = DEFAULT_SESSION_COLOR): React.CSSProperties {
-  return { "--session-accent": SESSION_COLOR_OPTIONS.find((option) => option.id === color)?.value ?? SESSION_COLOR_OPTIONS[0]!.value } as React.CSSProperties;
+function keepWarning(status: KeepStatus | null): string | null {
+  if (!status || status.state === "starting" || status.state === "connected") return null;
+  if (status.state === "missing") return "Keep not installed";
+  if (status.state === "unconfigured") return "Keep not configured";
+  return "Keep unreachable";
 }
 function nextTheme(theme: StudioSnapshot["theme"]): StudioSnapshot["theme"] { return theme === "system" ? "dark" : theme === "dark" ? "light" : "system"; }
 function themeLabel(theme: StudioSnapshot["theme"]): string { return theme === "system" ? "System" : theme === "dark" ? "Dark" : "Light"; }
 function runtimeName(runtimes: readonly RuntimeDescriptor[], id: string): string { return runtimes.find((runtime) => runtime.id === id)?.displayName ?? id; }
 function pretty(value: unknown): string { return typeof value === "string" ? value : JSON.stringify(value, null, 2); }
-function pathLeaf(value: string): string { return value.replace(/[\\/]+$/, "").split(/[\\/]/).at(-1) || value; }
 function formatTime(value: string): string { const date = new Date(value); return Number.isNaN(date.getTime()) ? "" : date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); }
-function relativeTime(value: string): string { const delta = Date.now() - new Date(value).getTime(); if (!Number.isFinite(delta) || delta < 60_000) return "now"; if (delta < 3_600_000) return `${Math.floor(delta / 60_000)}m`; if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)}h`; return `${Math.floor(delta / 86_400_000)}d`; }
 function formatUsage(usage: RuntimeUsage): string { const pieces = [usage.inputTokens !== undefined ? `${usage.inputTokens.toLocaleString()} in` : "", usage.cacheCreationInputTokens !== undefined ? `${usage.cacheCreationInputTokens.toLocaleString()} cache write` : "", usage.cachedInputTokens !== undefined ? `${usage.cachedInputTokens.toLocaleString()} cached` : "", usage.outputTokens !== undefined ? `${usage.outputTokens.toLocaleString()} out` : "", usage.reasoningTokens !== undefined ? `${usage.reasoningTokens.toLocaleString()} reasoning` : "", usage.costUsd !== undefined ? `$${usage.costUsd.toFixed(4)}` : "", usage.durationMs !== undefined ? `${(usage.durationMs / 1_000).toFixed(1)}s` : ""].filter(Boolean); return pieces.join(" · ") || `${usage.totalTokens?.toLocaleString() ?? 0} tokens`; }
 function loginMethods(runtime: RuntimeDescriptor | undefined): readonly LoginMethod[] { return runtime?.loginMethods?.length ? runtime.loginMethods : ["browser"]; }
 function methodLabel(method: LoginMethod): string { return method === "api-key" ? "API key" : method === "device" ? "Device code" : method[0]?.toUpperCase() + method.slice(1); }
