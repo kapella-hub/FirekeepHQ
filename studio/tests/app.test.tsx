@@ -312,7 +312,7 @@ describe("Firekeep Studio renderer", () => {
   });
 
   it("marks the current workspace chip and switches recent workspaces", async () => {
-    const invoke = installBridge({ snapshot: { ...state("alpha"), recentWorkspaces: ["C:\\work\\firekeep", "C:\\work\\site"], workspacePath: "C:\\work\\firekeep" } as never });
+    const invoke = installBridge({ snapshot: { ...state("alpha"), recentWorkspaces: ["C:\\work\\firekeep", "C:\\work\\site"], workspacePath: "C:\\work\\firekeep" } });
     render(<App />);
     const card = await waitFor(() => { const el = document.querySelector(".start-card") as HTMLElement; expect(el).not.toBeNull(); return el; });
     expect(within(card).getByRole("button", { name: "firekeep" })).toHaveAttribute("aria-pressed", "true");
