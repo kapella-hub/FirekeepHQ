@@ -35,3 +35,13 @@ describe("FirekeepClient", () => {
     await expect(client.execute("doctor", [])).resolves.toMatchObject({ ok: false, exitCode: 2, output: "partial\nfailed check" });
   });
 });
+
+describe("FirekeepClient whoami", () => {
+  it("runs whoami with fixed --json and rejects extra args", async () => {
+    const runner = vi.fn(async () => result('{"agent_id":"a"}'));
+    const client = new FirekeepClient({ runner });
+    await client.execute("whoami", []);
+    expect(runner).toHaveBeenLastCalledWith(["whoami", "--json"], expect.anything());
+    await expect(client.execute("whoami", ["x"])).rejects.toThrow(/no arguments/);
+  });
+});

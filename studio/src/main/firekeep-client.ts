@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { runProcess, type ProcessResult } from "./runtime/process.js";
 
-export type FirekeepClientAction = "status" | "doctor" | "version" | "personal" | "connect" | "update" | "night-shift";
+export type FirekeepClientAction = "status" | "doctor" | "version" | "personal" | "connect" | "update" | "night-shift" | "whoami";
 
 export interface FirekeepClientResult {
   readonly ok: boolean;
@@ -36,7 +36,7 @@ export class FirekeepClient {
   }
 }
 
-function defaultFirekeepCommand(): string {
+export function defaultFirekeepCommand(): string {
   if (process.platform !== "win32") return "firekeep";
   const profile = process.env.USERPROFILE;
   const candidates = [
@@ -50,6 +50,10 @@ function validateArgs(action: FirekeepClientAction, args: readonly string[]): st
   if (["status", "version", "update", "night-shift"].includes(action)) {
     if (args.length) throw new Error(`/firekeep ${action} takes no arguments`);
     return [];
+  }
+  if (action === "whoami") {
+    if (args.length) throw new Error("/firekeep whoami takes no arguments");
+    return ["--json"];
   }
   if (action === "doctor") {
     if (args.length === 0) return [];
@@ -74,7 +78,7 @@ function validateArgs(action: FirekeepClientAction, args: readonly string[]): st
 }
 
 function isAction(value: string): value is FirekeepClientAction {
-  return ["status", "doctor", "version", "personal", "connect", "update", "night-shift"].includes(value);
+  return ["status", "doctor", "version", "personal", "connect", "update", "night-shift", "whoami"].includes(value);
 }
 
 function stripAnsi(value: string): string {
