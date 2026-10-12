@@ -37,6 +37,7 @@ import { sessionAccentStyle } from "./rail/session-style.js";
 import { RichMarkdown } from "./RichMarkdown.js";
 import { RenderBoundary } from "./RenderBoundary.js";
 import { AgentChip } from "./composer/AgentChip.js";
+import { DoneWhenChip } from "./composer/DoneWhenChip.js";
 import { Composer } from "./composer/Composer.js";
 import { coalesceRuntimeEvents } from "./runtime-event-buffer.js";
 import { KeepReceiptCard } from "./conversation/KeepReceiptCard.js";
@@ -58,6 +59,7 @@ export function App(): React.JSX.Element {
   const [models, setModels] = useState<Record<string, readonly RuntimeModel[]>>({});
   const [modelRefresh, setModelRefresh] = useState<ModelRefresh | null>(null);
   const [composer, setComposer] = useState("");
+  const [doneChecks, setDoneChecks] = useState<readonly string[]>([]);
   const [completions, setCompletions] = useState<readonly CommandCompletion[]>([]);
   const [completionIndex, setCompletionIndex] = useState(0);
   const [commandCards, setCommandCards] = useState<CommandCard[]>([]);
@@ -92,6 +94,14 @@ export function App(): React.JSX.Element {
       setError(message.replace(/^Error invoking remote method '[^']+':\s*/i, ""));
       throw caught;
     }
+  }, []);
+
+  /** Best-effort test-command detection for the Done-when chip; failures are silent (the field just stays empty). */
+  const detectTestCommand = useCallback(async (): Promise<string | null> => {
+    try {
+      const result = await window.firekeepStudio.invoke({ type: "workspace.detectTest" });
+      return result.type === "test-command" ? result.command : null;
+    } catch { return null; }
   }, []);
 
   const replaceEvents = useCallback((next: readonly RuntimeEvent[]): void => {
@@ -283,6 +293,22 @@ export function App(): React.JSX.Element {
   const submit = async (): Promise<void> => {
     const input = composer.trim();
     if (!input || busy) return;
+    if (doneChecks.length > 0 && !input.startsWith("/")) {
+      // Checks set: Send creates and runs a mission (the main process still asks for confirmation).
+      setComposer("");
+      setCompletions([]);
+      setBusy(true);
+      try {
+        applyResult(await invoke({ type: "mission.quick", goal: input, checks: [...doneChecks] }));
+        setDoneChecks([]);
+      } catch {
+        setComposer(input);
+      } finally {
+        setBusy(false);
+        composerRef.current?.focus();
+      }
+      return;
+    }
     setComposer("");
     setCompletions([]);
     setBusy(true);
@@ -502,7 +528,7 @@ export function App(): React.JSX.Element {
           onCompletionIndex={setCompletionIndex}
           onPickCompletion={(value) => { setComposer(value); setCompletions([]); composerRef.current?.focus(); }}
           usage={{ ...snapshot.usage, tokenBudget: snapshot.tokenBudget ?? null }}
-          chips={<AgentChip
+          chips={<><AgentChip
             runtimes={bootstrap.runtimes}
             diagnostics={diagnostics}
             primaryRuntimeId={snapshot.primaryRuntimeId}
@@ -520,7 +546,7 @@ export function App(): React.JSX.Element {
             refresh={modelRefresh?.runtimeId === primaryRuntimeId ? modelRefresh : null}
             reviewerMode={snapshot.reviewerMode}
             onReviewerMode={(mode) => ignore(invoke({ type: "reviewer.mode", mode }).then(applyResult))}
-          />}
+          /><DoneWhenChip checks={doneChecks} onChange={setDoneChecks} detect={detectTestCommand} /></>}
         />
       </main>
       }

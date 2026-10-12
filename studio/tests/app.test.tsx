@@ -701,4 +701,48 @@ describe("Firekeep Studio renderer", () => {
     await waitFor(() => expect(screen.getAllByRole("button", { name: "Knowledge was right" })[0]).toBeDisabled());
     expect(screen.getAllByRole("button", { name: "Knowledge was right" })[1]).toBeEnabled();
   });
+
+  it("proposes the detected test command and sends a quick mission", async () => {
+    const invoke = installBridge({ snapshot: state("alpha"), testCommand: "npm test" });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Done when…" }));
+    const popover = screen.getByRole("dialog", { name: "Done when" });
+    await waitFor(() => expect(within(popover).getByRole("textbox")).toHaveValue("npm test"));
+    fireEvent.click(within(popover).getByRole("button", { name: "Add check" }));
+    fireEvent.change(screen.getByRole("textbox", { name: /Message/i }), { target: { value: "Fix the flaky test" } });
+    fireEvent.click(screen.getByRole("button", { name: /Send/i }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "mission.quick", goal: "Fix the flaky test", checks: ["npm test"] }));
+    expect(invoke.mock.calls.some(([action]) => action.type === "message.send")).toBe(false);
+    expect(await screen.findByRole("button", { name: "Done when…" })).toBeInTheDocument();
+  });
+
+  it("leaves the field empty with a hint when nothing is detected", async () => {
+    installBridge({ snapshot: state("alpha"), testCommand: null });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Done when…" }));
+    expect(screen.getByPlaceholderText("e.g. npm test")).toHaveValue("");
+  });
+
+  it("sends a normal chat message when no checks are confirmed", async () => {
+    const invoke = installBridge({ snapshot: state("alpha"), testCommand: "npm test" });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Done when…" }));
+    fireEvent.change(screen.getByRole("textbox", { name: /Message/i }), { target: { value: "hello" } });
+    fireEvent.click(screen.getByRole("button", { name: /Send/i }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "message.send", text: "hello" }));
+  });
+
+  it("closes the Done when popover on Escape without cancelling the active run", async () => {
+    const invoke = installBridge({ snapshot: { ...state("alpha"), activeRunId: "run-1" } });
+    render(<App />);
+    const chip = await screen.findByRole("button", { name: "Done when…" });
+    fireEvent.click(chip);
+    expect(screen.getByRole("dialog", { name: "Done when" })).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Done when" })).not.toBeInTheDocument();
+    expect(chip).toHaveFocus();
+    expect(invoke.mock.calls.some(([action]) => action.type === "run.cancel")).toBe(false);
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "run.cancel", runId: "run-1" }));
+  });
 });
