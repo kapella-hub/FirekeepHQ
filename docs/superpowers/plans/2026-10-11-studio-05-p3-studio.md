@@ -681,7 +681,8 @@ git commit -m "feat(studio): Keep receipt model and replay reply parsing"
 - Produces:
   - `interface KeepTimelineSource { timeline(keepSessionId: string, offset: number, limit: number): Promise<TimelinePage> }`
   - `interface ReceiptTrackerDeps { readonly source: () => KeepTimelineSource | null; readonly readReport: (studioSessionId: string) => Promise<readonly string[]> }`
-  - `class ReceiptTracker { constructor(deps: ReceiptTrackerDeps); restore(studioSessionId: string, cursors: Readonly<Record<string, number>>): void; collect(studioSessionId: string, runEvents: readonly RuntimeEventPayload[], final: boolean): Promise<KeepReceipt>; forget(studioSessionId: string): void }`
+  - `class ReceiptTracker { constructor(deps: ReceiptTrackerDeps); restore(studioSessionId: string, cursors: Readonly<Record<string, number>>): void; commit(studioSessionId: string, cursors: Readonly<Record<string, number>>): void; cursors(studioSessionId: string): Readonly<Record<string, number>>; collect(studioSessionId: string, runEvents: readonly RuntimeEventPayload[], final: boolean): Promise<KeepReceipt>; forget(studioSessionId: string): void }`
+  - `commit` is used when a final collect times out: the provisional receipt is promoted, and its `cursorsAfter` committed, so the cursor still advances and nothing is counted twice. `cursors` returns the committed cursors (for retry).
   - Constants `PAGE_LIMIT = 200`, `MAX_PAGES = 10`.
 - Semantics:
   - The cursor counts **all** events of a Keep session (the fetch has no `event_type` filter, so offsets stay stable).
@@ -743,6 +744,14 @@ describe("ReceiptTracker", () => {
     const receipt = await tracker.collect("studio-1", [], true);
     expect(src.calls.map(([, offset]) => offset)).toEqual([0, 200, 400]);
     expect(receipt.cursorsAfter).toEqual({ s1: 450 });
+  });
+
+  it("commit() advances cursors without a fetch (promoted provisional receipt)", async () => {
+    const src = source({ s1: [read("a", ["m1"]), read("b", ["m2"])] });
+    const tracker = new ReceiptTracker({ source: () => src, readReport: async () => ["s1"] });
+    tracker.commit("studio-1", { s1: 1 });
+    expect(tracker.cursors("studio-1")).toEqual({ s1: 1 });
+    expect((await tracker.collect("studio-1", [], true)).recalledCount).toBe(1);
   });
 
   it("restores cursors from a previous final receipt", async () => {
@@ -823,6 +832,14 @@ export class ReceiptTracker {
 
   restore(studioSessionId: string, cursors: Readonly<Record<string, number>>): void {
     this.#cursors.set(studioSessionId, { ...cursors });
+  }
+
+  commit(studioSessionId: string, cursors: Readonly<Record<string, number>>): void {
+    this.#cursors.set(studioSessionId, { ...cursors });
+  }
+
+  cursors(studioSessionId: string): Readonly<Record<string, number>> {
+    return { ...(this.#cursors.get(studioSessionId) ?? {}) };
   }
 
   forget(studioSessionId: string): void {
@@ -907,6 +924,10 @@ git commit -m "feat(studio): receipt tracker — server-ordered cursors, union, 
   - Before a turn starts, the previous pending turn's receipt is finalized (`collect(…, true)`) and emitted as `keep.receipt` with the previous turn's `runId` and `runtimeId`.
   - After a turn's primary run (and any after-turn reviewers) completes, a provisional receipt (`collect(…, false)`) is emitted.
   - Reviews launched by "Second opinion" are their own turn (they finalize the answer's receipt first).
+  - **The final collect is bounded to `FINALIZE_BUDGET_MS = 2000`.** On timeout or error, the turn's last provisional receipt is promoted: emitted with `final: true`, its `cursorsAfter` committed through `tracker.commit`. Events that arrive later roll into the next turn and are never double-counted. With no provisional receipt, an `unavailable` final receipt is emitted and cursors stay. A slow Keep therefore delays Send by at most 2 s.
+  - The provisional collect after a turn is **fire-and-forget**: the IPC reply never waits for it, and the receipt arrives as a push event.
+  - **Session switches finalize first.** `resumeSession`, `startNewSession` and `deleteSession` call `#finalizeKeepTurn()` before the active session changes, so a receipt is always written into the session that produced it.
+  - `retryReceipt(runId)` works only for the pending turn (re-collected provisionally) or the most recently finalized turn (re-collected from the cursors that were committed before it). Any older run throws `"only the latest receipt can be retried"`, so a retry never takes events from later turns.
 
 - [ ] **Step 1: Write the failing runtime env tests.** In each runtime test file, add a test with a factory spy. Claude:
 
@@ -970,6 +991,58 @@ it("emits a provisional receipt after the turn and a final one before the next p
   expect(finalFirst?.receipt.learnedCount).toBe(1);
 });
 
+it("a slow Keep delays Send by at most the finalize budget and promotes the provisional receipt", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const alpha = new FakeRuntime({ id: "alpha", displayName: "Alpha", description: "", transport: "test", capabilities: ["chat"] });
+  let calls = 0;
+  const tracker = new ReceiptTracker({
+    source: () => ({ timeline: async (_id, offset) => {
+      calls += 1;
+      if (calls > 1) return new Promise(() => undefined);           // the finalize fetch hangs
+      return { kind: "page", events: [{ id: "e1", agent_id: "a", event_type: "memory_read", timestamp: "t", payload: { memory_ids: ["m1"] } }].slice(offset), total: 1, hasMore: false };
+    } }),
+    readReport: async () => ["k1"],
+  });
+  const service = new StudioService({ runtimes: new RuntimeRegistry([alpha]), settings: new MemorySettingsStore<StudioPersistedState>(), keep: { tracker, reportPath: () => "/x.keep", removeReport: async () => undefined } });
+  await service.initialize();
+  await service.setPrimary("alpha");
+  await service.sendMessage("first");
+  await vi.waitFor(() => expect(calls).toBe(1));                    // provisional landed
+  const second = service.sendMessage("second");
+  await vi.advanceTimersByTimeAsync(2100);
+  await second;
+  const receipts = service.events().filter((event) => event.payload.kind === "keep.receipt");
+  const promoted = receipts.map((event) => (event.payload as { receipt: { final: boolean; recalledCount: number } }).receipt).find((receipt) => receipt.final);
+  expect(promoted?.recalledCount).toBe(1);
+  expect(tracker.cursors(service.snapshot().activeSessionId)).toEqual({ k1: 1 });
+  vi.useRealTimers();
+});
+
+it("finalizes into the session that produced the turn when the user switches sessions", async () => {
+  const { service, reports, timelines } = createKeepService();
+  await service.initialize();
+  await service.setPrimary("alpha");
+  const first = service.snapshot().activeSessionId;
+  reports[first] = ["k1"];
+  timelines.k1 = [];
+  await service.sendMessage("in A");
+  await service.startNewSession();
+  await service.sendMessage("in B");
+  const finalInA = service.eventsFor(first).filter((event) => event.payload.kind === "keep.receipt" && (event.payload as { receipt: { final: boolean } }).receipt.final);
+  expect(finalInA).toHaveLength(1);
+});
+
+it("retry refuses a run older than the latest finalized turn", async () => {
+  const { service } = createKeepService();
+  await service.initialize();
+  await service.setPrimary("alpha");
+  await service.sendMessage("one");
+  const firstRun = service.events().find((event) => event.payload.kind === "run.started")?.runId as string;
+  await service.sendMessage("two");
+  await service.sendMessage("three");
+  await expect(service.retryReceipt(firstRun)).rejects.toThrow(/only the latest receipt/);
+});
+
 it("a Keep failure never fails the turn", async () => {
   const alpha = new FakeRuntime({ id: "alpha", displayName: "Alpha", description: "", transport: "test", capabilities: ["chat"] });
   const tracker = new ReceiptTracker({ source: () => ({ timeline: async () => { throw new Error("gateway gone"); } }), readReport: async () => ["k1"] });
@@ -980,7 +1053,7 @@ it("a Keep failure never fails the turn", async () => {
 });
 ```
 
-If `StudioService` exposes events under another name than `events()`, use the accessor `ipc-controller.ts` uses for `{type:"state", events}`.
+If `StudioService` exposes events under another name than `events()`, use the accessor `ipc-controller.ts` uses for `{type:"state", events}`. `eventsFor(sessionId)` means "load that session's events from the session store". Use `MemorySessionStore.load(id)` directly if the service has no such accessor, and `startNewSession` means the service method behind `session.new` (App's `startNewSession` at 335-349 calls it).
 
 - [ ] **Step 3: Run to verify they fail.** Run: `npx vitest run tests/studio-service.test.ts tests/claude-runtime.test.ts tests/codex-runtime.test.ts tests/kiro-runtime.test.ts`. Expected: FAIL (`env` undefined; no `keep` option).
 
@@ -1017,6 +1090,7 @@ export async function removeReportFile(path: string): Promise<void> {
 - [ ] **Step 6: Implement the service integration** in `studio-service.ts`:
 
 ```ts
+// imports: ReceiptTracker from ./keep/receipt-tracker.js; KeepReceipt and unavailableReceipt from ./keep/receipt.js
 // options
 readonly keep?: {
   readonly tracker: ReceiptTracker;
@@ -1039,40 +1113,71 @@ readonly #keep: StudioServiceOptions["keep"];
 Then add:
 
 ```ts
-/** Finalize the previous turn's receipt before a new turn's prompt leaves (spec §7.3). */
+/** Finalize the previous turn's receipt before a new turn's prompt leaves (spec §7.3). Bounded: a slow Keep delays Send by at most FINALIZE_BUDGET_MS. */
 async #finalizeKeepTurn(): Promise<void> {
   const turn = this.#keepTurn;
   this.#keepTurn = null;
   if (!turn || !this.#keep) return;
-  await this.#emitReceipt(turn, true);
+  const tracker = this.#keep.tracker;
+  const before = tracker.cursors(turn.studioSessionId);
+  const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), FINALIZE_BUDGET_MS));
+  const collected = await Promise.race([tracker.collect(turn.studioSessionId, turn.events, true).catch(() => null), timeout]);
+  let receipt: KeepReceipt;
+  if (collected && collected.status !== "unavailable") receipt = collected;
+  else if (turn.provisional && turn.provisional.status === "measured") {
+    receipt = { ...turn.provisional, final: true };
+    tracker.commit(turn.studioSessionId, turn.provisional.cursorsAfter);
+  } else receipt = collected ?? unavailableReceipt("Keep did not answer in time", true, before);
+  this.#lastFinalized = { runId: turn.runId, runtimeId: turn.runtimeId, studioSessionId: turn.studioSessionId, events: turn.events, cursorsBefore: before };
+  this.#emitInto(turn, receipt);
 }
 
-async #provisionalKeepReceipt(): Promise<void> {
-  if (this.#keepTurn && this.#keep) await this.#emitReceipt(this.#keepTurn, false);
+/** Fire-and-forget: never awaited by sendMessage, the receipt arrives by push event. */
+#provisionalKeepReceipt(): void {
+  const turn = this.#keepTurn;
+  if (!turn || !this.#keep) return;
+  void this.#keep.tracker.collect(turn.studioSessionId, turn.events, false)
+    .then((receipt) => {
+      if (this.#keepTurn !== turn) return;   // already finalized; the final receipt wins
+      turn.provisional = receipt;
+      this.#emitInto(turn, receipt);
+    })
+    .catch(() => undefined);              // a Keep failure never fails or blocks a turn (spec §8)
 }
 
-async #emitReceipt(turn: NonNullable<StudioService["#keepTurn"]>, final: boolean): Promise<void> {
-  try {
-    const receipt = await this.#keep!.tracker.collect(turn.studioSessionId, turn.events, final);
-    this.#emit(turn.runtimeId, turn.runId, { kind: "keep.receipt", receipt });
-  } catch {
-    // A Keep failure never fails or blocks a turn (spec §8).
-  }
+/** Append to the session that produced the turn, even if another session is active now. */
+#emitInto(turn: KeepTurn, receipt: KeepReceipt): void {
+  this.#emit(turn.runtimeId, turn.runId, { kind: "keep.receipt", receipt }, undefined, turn.studioSessionId);
 }
 ```
 
-TypeScript does not allow `StudioService["#keepTurn"]`. Declare `type KeepTurn = { … }` at module level and use `KeepTurn` for the field and the parameter.
+Declare at module level:
+
+```ts
+const FINALIZE_BUDGET_MS = 2000;
+type KeepTurn = { studioSessionId: string; runId: string; runtimeId: string; events: RuntimeEventPayload[]; provisional?: KeepReceipt };
+```
+
+Also declare a field `#lastFinalized: (Omit<KeepTurn, "provisional"> & { cursorsBefore: Readonly<Record<string, number>> }) | null = null`.
+
+`#emit` currently appends to the active session. Give it an optional fifth parameter `studioSessionId` (default: the active session) that it uses both for the event's `studioSessionId` field and for the session-store append. The only caller passing it is `#emitInto`, and the push to the renderer still happens; the renderer ignores events for a session it is not showing.
 
 Wire the turn boundaries:
-- `sendMessage`: the first line after validation is `await this.#finalizeKeepTurn();`. After the reviewers block, add `await this.#provisionalKeepReceipt();`.
-- `runMission`: first line `await this.#finalizeKeepTurn();`. When `#driveMission` settles (the mission reaches a terminal or waiting phase), call `await this.#provisionalKeepReceipt();`.
+- `sendMessage`: the first line after validation is `await this.#finalizeKeepTurn();`. After the reviewers block, add `this.#provisionalKeepReceipt();` (not awaited).
+- `runMission`: first line `await this.#finalizeKeepTurn();`. When `#driveMission` settles (the mission reaches a terminal or waiting phase), call `this.#provisionalKeepReceipt();`.
+- `resumeSession`, `startNewSession` and `deleteSession`: first line `await this.#finalizeKeepTurn();`, before the active session changes.
 - `runReview` (Second opinion): first line `await this.#finalizeKeepTurn();`. Reviews never start a Keep turn, because `#run` only starts one for `mode === "primary"`.
 
 Cursor restore, and cleanup on delete:
 - In `initialize` and `resumeSession`, after the session's events are loaded, find the last `keep.receipt` event whose `receipt.final === true` and call `this.#keep?.tracker.restore(sessionId, thatReceipt.cursorsAfter)`.
 - In `deleteSession`, after `remove`, call `await this.#keep?.removeReport(sessionId); this.#keep?.tracker.forget(sessionId);`.
 
-Add `async retryReceipt(runId: string): Promise<void>`. If `this.#keepTurn?.runId === runId`, re-emit provisionally. Otherwise, find that run's events, build `KeepTurn` from them, and emit with `final: true`.
+Add `async retryReceipt(runId: string): Promise<void>`:
+- if `this.#keepTurn?.runId === runId`, call `this.#provisionalKeepReceipt()`;
+- else if `this.#lastFinalized?.runId === runId`, call `tracker.restore(sessionId, lastFinalized.cursorsBefore)`, then `collect(…, true)`, and `#emitInto` the result;
+- else throw `new Error("only the latest receipt can be retried")`.
+
+The renderer only offers retry on the newest receipt (Task 14).
 
 - [ ] **Step 7: Run.** Run: `npx vitest run && npm run typecheck`. Expected: PASS.
 
@@ -1950,7 +2055,7 @@ git commit -m "feat(studio): composer with Agent chip and one-line usage"
 - `KeepReceiptCard({ receipt, runId, onFeedback, onRetry })`:
   - collapsed, a `<button className="keep-receipt" aria-expanded>` showing `receiptLabel(receipt)`;
   - for `measured` with 0/0, the class `keep-receipt muted`;
-  - for `unavailable`, clicking calls `onRetry(runId)` → `keep.receipt.retry`.
+  - for `unavailable`, clicking calls `onRetry(runId)` → `keep.receipt.retry`, but only on the newest receipt in the session. Older unavailable receipts show the label without the retry action.
   - Expanded, it shows a list:
     - each recall shows its query, "via prompt hook" or "asked by the agent", and the result count, with 👍 and 👎 buttons (`aria-label="Knowledge was right"` / `"Knowledge was wrong"`, `title="Was this knowledge right?"`);
     - each write shows its summary.
@@ -2409,7 +2514,10 @@ it.runIf(process.env.STUDIO_LIVE_RUNTIMES === "1")("connects to the Keep through
 Run: `npm run smoke:runtimes`
 Expected: PASS. If `timeline` returns `unsupported`, the server is older than v1.6.2. That is expected before plan 1 has deployed, and it blocks Task 22's publish step.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 3: Verify every runtime forwards the report variable (manual).** The receipt mechanism assumes each runtime passes its environment into the MCP servers it starts. Codex does so through the kit's `env_vars`; Claude and Kiro are assumed to inherit. With kit 1.8.0 installed, run `npm start`. Then, for each of Codex, Claude and Kiro in turn: make it the agent, send one prompt that makes it call `ctx_start_session` (for example "start a Keep session for: smoke test"), and check `<userData>/sessions/<studioSessionId>.keep` (`%APPDATA%/Firekeep Studio/sessions/` on Windows).
+   Expected: one new line per runtime. If a runtime adds no line, its MCP launch drops the environment. Record which one, and treat receipts for that runtime as "partial" in the README until the kit renders an explicit pass-through for it.
+
+- [ ] **Step 4: Commit**
 
 ```bash
 git add tests/live-runtimes.test.ts
