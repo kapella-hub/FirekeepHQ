@@ -8,6 +8,8 @@ export interface McpStdioClientOptions {
   readonly args: readonly string[];
   readonly env: Readonly<Record<string, string>>;
   readonly timeoutMs?: number;
+  /** Studio's own version, sent as MCP clientInfo.version (the caller passes app.getVersion()). */
+  readonly clientVersion?: string;
   readonly onExit?: (code: number | null, stderrTail: string) => void;
 }
 
@@ -56,7 +58,7 @@ export class McpStdioClient {
     const child = spawnRuntime(options.command, options.args, { env: { ...process.env, ...options.env } });
     const client = new McpStdioClient(child, options);
     try {
-      await client.#request("initialize", { protocolVersion: PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: "firekeep-studio", version: "0.5.0" } });
+      await client.#request("initialize", { protocolVersion: PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: "firekeep-studio", version: options.clientVersion ?? "0.0.0-dev" } });
       client.#notify("notifications/initialized");
     } catch (error) {
       await client.close();

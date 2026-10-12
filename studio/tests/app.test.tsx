@@ -9,6 +9,7 @@ import type { StudioSnapshot } from "../src/core/studio-service.js";
 import type { StudioSessionSummary } from "../src/core/session-store.js";
 import type { RuntimeDescriptor, RuntimeEvent, RuntimeModel } from "../src/core/runtime.js";
 import { App } from "../src/renderer/src/App.js";
+import { isMacPlatform } from "../src/renderer/src/util.js";
 import type { StudioAction, StudioActionResult, StudioBridge, StudioPushEvent, StudioUpdateState } from "../src/shared/ipc.js";
 import type { DecisionBoardDocument } from "../src/shared/decision-board.js";
 import type { KeepHighlights, KeepItem, KeepStatus } from "../src/shared/keep.js";
@@ -425,7 +426,10 @@ describe("Firekeep Studio renderer", () => {
     installBridge({ snapshot: state(null), readyRuntimeIds: [] });
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "Connect Alpha" }));
-    expect(await screen.findByRole("dialog", { name: /Connect Alpha/ })).toBeInTheDocument();
+    const dialog = await screen.findByRole("dialog", { name: /Connect Alpha/ });
+    // Studio stores no secrets: an API key goes to the provider's own login.
+    expect(dialog).not.toHaveTextContent(/credential service|stored encrypted/i);
+    expect(dialog).toHaveTextContent("Studio does not store it");
   });
 
   it("lets the user change the agent from the Start card and cancel back", async () => {
@@ -462,6 +466,28 @@ describe("Firekeep Studio renderer", () => {
     expect(await screen.findByText("Online now")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Fix recall timeout/ }));
     expect(screen.getByRole("textbox", { name: /Message/i })).toHaveValue("Continue: Fix recall timeout");
+  });
+
+  it("a failed highlights read leaves the Start card bare and raises no global banner", async () => {
+    installBridge({ snapshot: state("alpha"), keepStatus: { state: "connected", agentId: "a", personalMode: false, kitVersion: "1.8.0" }, actionError: { actionType: "keep.highlights", message: "Keep not connected" } });
+    const { container } = render(<App />);
+    await screen.findByRole("textbox", { name: /Message/i });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(container.querySelector(".error-banner")).toBeNull();
+    expect(screen.queryByText("Keep not connected")).not.toBeInTheDocument();
+  });
+
+  it("the composer hint names Ctrl+K off macOS", async () => {
+    installBridge({ snapshot: state("alpha") });
+    render(<App />);
+    await screen.findByRole("textbox", { name: /Message/i });
+    expect(screen.getByText("Ctrl+K")).toBeInTheDocument();
+    expect(screen.queryByText("⌘K")).not.toBeInTheDocument();
+  });
+
+  it("isMacPlatform reads the platform from the user agent", () => {
+    expect(isMacPlatform("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) Electron/37")).toBe(true);
+    expect(isMacPlatform("Mozilla/5.0 (Windows NT 10.0; Win64; x64) Electron/37")).toBe(false);
   });
 
   it("hides Keep highlights when the Keep is not connected", async () => {
@@ -1019,6 +1045,16 @@ describe("Firekeep Studio renderer", () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "mission.quick", goal: "Fix the flaky test", checks: ["npm test"] }));
     expect(invoke.mock.calls.some(([action]) => action.type === "message.send")).toBe(false);
     expect(await screen.findByRole("button", { name: "Done when…" })).toBeInTheDocument();
+  });
+
+  it("offers only what mission.quick carries: no Name or Timeout fields", async () => {
+    installBridge({ snapshot: state("alpha"), testCommand: null });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Done when…" }));
+    const popover = screen.getByRole("dialog", { name: "Done when" });
+    expect(within(popover).queryByText("More")).not.toBeInTheDocument();
+    expect(within(popover).queryByLabelText(/Timeout/)).not.toBeInTheDocument();
+    expect(within(popover).queryByLabelText("Name")).not.toBeInTheDocument();
   });
 
   it("leaves the field empty with a hint when nothing is detected", async () => {

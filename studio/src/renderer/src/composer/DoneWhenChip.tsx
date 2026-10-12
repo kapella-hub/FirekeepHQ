@@ -14,9 +14,6 @@ const MAX_CHECKS = 8;
 export function DoneWhenChip({ checks, onChange, detect }: DoneWhenChipProps): React.JSX.Element {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState("");
-  const [moreOpen, setMoreOpen] = useState(false);
-  const [label, setLabel] = useState("");
-  const [timeout, setTimeoutValue] = useState("");
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const summary = checks.length === 0 ? "Done when…" : `Done when: ${checks[0]} ✓${checks.length > 1 ? ` +${checks.length - 1}` : ""}`;
@@ -48,8 +45,6 @@ export function DoneWhenChip({ checks, onChange, detect }: DoneWhenChipProps): R
     if (!command || checks.length >= MAX_CHECKS || checks.includes(command)) { if (command && checks.includes(command)) setDraft(""); return; }
     onChange([...checks, command]);
     setDraft("");
-    setLabel("");
-    setTimeoutValue("");
   };
 
   return <div className="agent-chip-root done-when-root" ref={rootRef}>
@@ -66,14 +61,6 @@ export function DoneWhenChip({ checks, onChange, detect }: DoneWhenChipProps): R
         <button type="button" className="primary-action" disabled={!draft.trim() || checks.length >= MAX_CHECKS} onClick={add}>Add check</button>
       </div>
       {checks.length ? <ul className="done-when-list">{checks.map((check) => <li key={check}><code>{check}</code><button type="button" className="icon-button compact" aria-label={`Remove check ${check}`} onClick={() => onChange(checks.filter((item) => item !== check))}><X size={13} /></button></li>)}</ul> : null}
-      <details open={moreOpen} onToggle={(event) => setMoreOpen((event.currentTarget as HTMLDetailsElement).open)}>
-        <summary>More</summary>
-        {moreOpen ? <div className="done-when-more">
-          <label>Name<input value={label} onChange={(event) => setLabel(event.target.value)} /></label>
-          <label>Timeout (seconds)<input type="number" min={1} value={timeout} onChange={(event) => setTimeoutValue(event.target.value)} /></label>
-          <small>Labels only for now; missions take the command.</small>
-        </div> : null}
-      </details>
     </div> : null}
   </div>;
 }

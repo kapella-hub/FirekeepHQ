@@ -134,6 +134,7 @@ async function createController(): Promise<StudioController> {
         command: defaultFirekeepCommand(),
         args: ["gateway"],
         env,
+        clientVersion: app.getVersion(),
         onExit: () => { if (holder.client) keep.handleExit(holder.client); },
       });
       return holder.client;

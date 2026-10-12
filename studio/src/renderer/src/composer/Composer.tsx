@@ -1,5 +1,6 @@
 import { ClipboardPaste, Send, Square } from "lucide-react";
 import { useState } from "react";
+import { isMacPlatform } from "../util.js";
 
 export interface CompletionItem { readonly value: string; readonly label: string; readonly description: string }
 
@@ -68,6 +69,6 @@ export function Composer(props: ComposerProps): React.JSX.Element {
       {usage.tokenBudget ? <><div className="budget-track" aria-label={`${budgetPercent.toFixed(0)} percent of token guard used`}><span style={{ width: `${budgetPercent}%` }} /></div><small>{Math.max(0, usage.tokenBudget - usage.tokens).toLocaleString()} before the next-turn guard</small></> : <small>No token guard · use <code>/budget set 50k</code></small>}
       <small>{usage.measuredRuns}/{usage.totalRuns} runs reported usage{usage.costUsd ? ` · $${usage.costUsd.toFixed(4)} reported` : " · provider cost unavailable"}</small>
     </div> : null}
-    <div className="composer-hint"><span><kbd>Enter</kbd> send · <kbd>Shift Enter</kbd> newline · <kbd>⌘K</kbd> commands</span><span>{props.busy ? <><span className="pulse-dot" /> Agent working · </> : null}<button type="button" className="usage-line" aria-expanded={usageOpen} onClick={toggleUsage}>{compactTokens(usage.freshTokens)} fresh · {compactTokens(usage.cachedTokens)} cached</button></span></div>
+    <div className="composer-hint"><span><kbd>Enter</kbd> send · <kbd>Shift Enter</kbd> newline · <kbd>{isMacPlatform() ? "⌘K" : "Ctrl+K"}</kbd> commands</span><span>{props.busy ? <><span className="pulse-dot" /> Agent working · </> : null}<button type="button" className="usage-line" aria-expanded={usageOpen} onClick={toggleUsage}>{compactTokens(usage.freshTokens)} fresh · {compactTokens(usage.cachedTokens)} cached</button></span></div>
   </div>;
 }

@@ -23,6 +23,13 @@ describe("McpStdioClient", () => {
     expect(client.closed).toBe(true);
   });
 
+  it("sends the caller's app version as clientInfo.version, with a dev default", async () => {
+    const versioned = await connect("ok", { clientVersion: "0.5.1" });
+    expect(JSON.parse((await versioned.callTool("x", {})).text).clientInfo).toEqual({ name: "firekeep-studio", version: "0.5.1" });
+    const plain = await connect("ok");
+    expect(JSON.parse((await plain.callTool("x", {})).text).clientInfo).toEqual({ name: "firekeep-studio", version: "0.0.0-dev" });
+  });
+
   it("times out a hung call without hanging the caller", async () => {
     const client = await connect("hang");
     await expect(client.callTool("memory_recall", { task: "x" })).rejects.toThrow(/timed out/);

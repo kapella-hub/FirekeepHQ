@@ -144,7 +144,7 @@ function AgentsSection({ runtimes, diagnostics, primaryRuntimeId, reviewerRuntim
         </article>;
       })}
     </div>
-    <footer className="runtime-manager-footer"><Terminal size={13} /><span>Model, reasoning, and permission settings follow each selected runtime. Use Turn controls or <code>/model</code>, <code>/effort</code>, and <code>/permissions</code>.</span></footer>
+    <footer className="runtime-manager-footer"><Terminal size={13} /><span>Model, reasoning, and permission settings follow each selected runtime. Use the Agent chip or <code>/model</code>, <code>/effort</code>, and <code>/permissions</code>.</span></footer>
   </>;
 }
 

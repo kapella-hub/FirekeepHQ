@@ -8,10 +8,12 @@ if (mode === "unknown-preset") {
 import { writeFileSync } from "node:fs";
 if (process.env.FAKE_MCP_PIDFILE) writeFileSync(process.env.FAKE_MCP_PIDFILE, String(process.pid));
 const held = [];
+let clientInfo = null;
 const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
 createInterface({ input: process.stdin }).on("line", (line) => {
   const message = JSON.parse(line);
   if (message.method === "initialize") {
+    clientInfo = message.params?.clientInfo ?? null;
     if (mode === "hang-init") return;
     send({ jsonrpc: "2.0", id: message.id, result: { protocolVersion: "2025-06-18", capabilities: {}, serverInfo: { name: "fake", version: "0" } } });
   }
@@ -21,7 +23,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     // The kit gateway answers initialize locally; a dead or unauthorised server surfaces only on tools/call.
     if (mode === "tool-error") { send({ jsonrpc: "2.0", id: message.id, error: { code: -32000, message: "firekeep unavailable: cannot reach cortex (401 Unauthorized)" } }); return; }
     const { name, arguments: args } = message.params;
-    const reply = (id) => ({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify({ name, args, env: { toolset: process.env.FIREKEEP_TOOLSET ?? null, allow: process.env.FIREKEEP_TOOLS_ALLOW ?? null, agent: process.env.FIREKEEP_AGENT_ID ?? null } }) }], isError: false } });
+    const reply = (id) => ({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify({ name, args, env: { toolset: process.env.FIREKEEP_TOOLSET ?? null, allow: process.env.FIREKEEP_TOOLS_ALLOW ?? null, agent: process.env.FIREKEEP_AGENT_ID ?? null }, clientInfo }) }], isError: false } });
     if (mode === "ping-first") send({ jsonrpc: "2.0", id: message.id, method: "ping" });
     if (mode === "split") {
       const text = `${JSON.stringify(reply(message.id))}

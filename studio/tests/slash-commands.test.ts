@@ -41,6 +41,13 @@ describe("slash command parsing", () => {
 });
 
 describe("slash command registry", () => {
+  it("/shortcuts lists the keys the app actually binds", async () => {
+    const { commands } = setup();
+    const result = await commands.execute("/shortcuts");
+    for (const key of ["`Enter` — send", "`Shift+Enter` — new line", "`Ctrl/Cmd+K`", "`Ctrl/Cmd+\\`", "`Ctrl/Cmd+Shift+R`", "`Escape`"]) expect(result.body).toContain(key);
+    expect(result.body).not.toContain("Ctrl/Cmd+Enter");
+  });
+
   it("tells /voice users the feature was removed", async () => {
     const { commands } = setup();
     const result = await commands.execute("/voice on");

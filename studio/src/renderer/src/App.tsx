@@ -481,13 +481,20 @@ export function App(): React.JSX.Element {
   const timelineRuns = useMemo(() => groupTimeline(timeline), [timeline]);
   const keepConnected = keepStatus?.state === "connected";
   const startVisible = timeline.length === 0 && commandCards.length === 0;
+  // Panel reads fail inline; they must not raise or clear the global error banner the way `invoke` does.
+  const keepRead = useCallback(async (action: StudioAction): Promise<StudioActionResult> => {
+    const result = await window.firekeepStudio.invoke(action);
+    if (result.type === "error") throw new Error(result.message);
+    return result;
+  }, []);
   useEffect(() => {
     if (!keepConnected) { setHighlights(null); return; }
     if (!startVisible) return;
     let active = true;
-    ignore(invoke({ type: "keep.highlights" }).then((result) => { if (active && result.type === "keep-highlights") setHighlights(result.highlights); }));
+    // Highlights are a background read: a failure leaves the Start card without them, never a global banner.
+    ignore(keepRead({ type: "keep.highlights" }).then((result) => { if (active && result.type === "keep-highlights") setHighlights(result.highlights); }));
     return () => { active = false; };
-  }, [invoke, keepConnected, startVisible]);
+  }, [keepRead, keepConnected, startVisible]);
   const runGroups = useMemo(() => {
     const groups: Array<{ run: TimelineRun; reviews: TimelineRun[] }> = [];
     for (const run of timelineRuns) {
@@ -500,12 +507,6 @@ export function App(): React.JSX.Element {
   }, [timelineRuns]);
   const newestReceiptRunId = useMemo(() => [...timelineRuns].reverse().find((run) => run.receipt)?.runId ?? null, [timelineRuns]);
   const keepReceipts = useMemo(() => [...timelineRuns].reverse().flatMap((run) => run.receipt ? [run.receipt] : []), [timelineRuns]);
-  // Panel reads fail inline; they must not raise or clear the global error banner the way `invoke` does.
-  const keepRead = useCallback(async (action: StudioAction): Promise<StudioActionResult> => {
-    const result = await window.firekeepStudio.invoke(action);
-    if (result.type === "error") throw new Error(result.message);
-    return result;
-  }, []);
   const retryKeep = useCallback(() => {
     const seq = keepSeq.current;
     // Retry is a user action, so a failure surfaces in the global banner rather than vanishing.
@@ -679,7 +680,7 @@ export function App(): React.JSX.Element {
         update={updateState}
         onUpdate={() => ignore(updateStudio())}
       /> : null}
-      {connectDialog ? <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setConnectDialog(null)}><form className="modal" role="dialog" aria-modal="true" aria-labelledby="connect-runtime-title" onSubmit={(event) => { event.preventDefault(); ignore(connect()); }}><button type="button" className="modal-close" aria-label="Close connection dialog" onClick={() => setConnectDialog(null)}><X size={17} /></button><span className="modal-icon"><KeyRound size={22} /></span><h2 id="connect-runtime-title">Connect {runtimeName(bootstrap.runtimes, connectDialog.runtimeId)}</h2><p>Authentication remains owned by the provider. Studio only stores API keys using your operating system's encrypted credential service.</p><label>Method<select value={connectDialog.method} onChange={(event) => setConnectDialog({ ...connectDialog, method: event.target.value as LoginMethod })}>{loginMethods(bootstrap.runtimes.find((runtime) => runtime.id === connectDialog.runtimeId)).map((method) => <option key={method} value={method}>{methodLabel(method)}</option>)}</select></label>{connectDialog.method === "api-key" ? <label>API key<input autoFocus type="password" autoComplete="off" value={secret} onChange={(event) => setSecret(event.target.value)} placeholder="Stored encrypted; never shown again" /></label> : null}<div className="modal-actions"><button type="button" onClick={() => setConnectDialog(null)}>Cancel</button><button className="primary-action" type="submit" disabled={connectDialog.method === "api-key" && !secret}>Continue securely</button></div></form></div> : null}
+      {connectDialog ? <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setConnectDialog(null)}><form className="modal" role="dialog" aria-modal="true" aria-labelledby="connect-runtime-title" onSubmit={(event) => { event.preventDefault(); ignore(connect()); }}><button type="button" className="modal-close" aria-label="Close connection dialog" onClick={() => setConnectDialog(null)}><X size={17} /></button><span className="modal-icon"><KeyRound size={22} /></span><h2 id="connect-runtime-title">Connect {runtimeName(bootstrap.runtimes, connectDialog.runtimeId)}</h2><p>Authentication stays with the provider. An API key is handed straight to the provider's own login and Studio does not store it.</p><label>Method<select value={connectDialog.method} onChange={(event) => setConnectDialog({ ...connectDialog, method: event.target.value as LoginMethod })}>{loginMethods(bootstrap.runtimes.find((runtime) => runtime.id === connectDialog.runtimeId)).map((method) => <option key={method} value={method}>{methodLabel(method)}</option>)}</select></label>{connectDialog.method === "api-key" ? <label>API key<input autoFocus type="password" autoComplete="off" value={secret} onChange={(event) => setSecret(event.target.value)} placeholder="Passed to the provider; Studio does not keep it" /></label> : null}<div className="modal-actions"><button type="button" onClick={() => setConnectDialog(null)}>Cancel</button><button className="primary-action" type="submit" disabled={connectDialog.method === "api-key" && !secret}>Continue securely</button></div></form></div> : null}
       {decisionBoard ? <DecisionBoardModal board={decisionBoard} close={() => setDecisionBoard(null)} submit={async (answers) => {
         const result = await invoke({ type: "decision.submit", url: decisionBoard.url, answers });
         if (result.type !== "decision-submitted") throw new Error("Decision Board returned an unexpected submission response");

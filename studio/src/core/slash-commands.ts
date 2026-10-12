@@ -647,7 +647,7 @@ export function createCommandRegistry(service: StudioService, integrations: Comm
       ] };
     },
   });
-  commands.register({ name: "shortcuts", summary: "Show keyboard shortcuts.", usages: ["/shortcuts"], execute: async () => ({ kind: "markdown", title: "Keyboard shortcuts", body: "- `Ctrl/Cmd+K` — command palette\n- `Ctrl/Cmd+Enter` — send\n- `Escape` — cancel or close\n- `Ctrl/Cmd+Shift+R` — review" }) });
+  commands.register({ name: "shortcuts", summary: "Show keyboard shortcuts.", usages: ["/shortcuts"], execute: async () => ({ kind: "markdown", title: "Keyboard shortcuts", body: "- `Enter` — send\n- `Shift+Enter` — new line\n- `Ctrl/Cmd+K` — command palette (also searches the Keep)\n- `Ctrl/Cmd+\\` — show or hide the Keep panel\n- `Ctrl/Cmd+Shift+R` — review the latest answer\n- `Escape` — close the open dialog or popover; otherwise cancel the active run" }) });
 
   return commands;
 }
