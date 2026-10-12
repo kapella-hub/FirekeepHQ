@@ -51,23 +51,6 @@ describe("StudioService", () => {
     expect(service.snapshot().primaryRuntimeId).toBe("beta");
   });
 
-  it("targets a pane runtime without changing the configured primary", async () => {
-    const { service, alpha, beta } = createService();
-    await service.initialize();
-    await service.setPrimary("alpha");
-
-    await service.sendMessageTo("beta", "inspect independently");
-
-    expect(alpha.runs).toHaveLength(0);
-    expect(beta.runs).toHaveLength(1);
-    expect(beta.runs[0]).toMatchObject({ prompt: "inspect independently", mode: "primary" });
-    expect(service.snapshot().primaryRuntimeId).toBe("alpha");
-    expect(service.events()).toContainEqual(expect.objectContaining({
-      runtimeId: "beta",
-      payload: expect.objectContaining({ kind: "message.completed", role: "user", text: "inspect independently" }),
-    }));
-  });
-
   it("asks for Mermaid only on visual turns without changing the visible user message", async () => {
     const { service, alpha } = createService();
     await service.initialize();

@@ -474,24 +474,6 @@ describe("Firekeep Studio renderer", () => {
     expect(workLog.closest("details")).not.toHaveAttribute("open");
   });
 
-  it("opens a selectable agent grid and sends the composer to the active pane", async () => {
-    const invoke = installBridge({ snapshot: { ...state("alpha"), reviewerRuntimeIds: ["beta"] } });
-    render(<App />);
-
-    fireEvent.click(await screen.findByRole("button", { name: "Open agent grid" }));
-    expect(screen.getByLabelText("Agent grid")).toHaveAttribute("data-count", "2");
-    expect(screen.getByRole("region", { name: "Alpha agent pane" })).toBeInTheDocument();
-    const betaPane = screen.getByRole("region", { name: "Beta agent pane" });
-    fireEvent.click(betaPane);
-
-    const composer = screen.getByRole("textbox");
-    expect(composer).toHaveAttribute("placeholder", expect.stringMatching(/Message Beta pane/i));
-    fireEvent.change(composer, { target: { value: "ask beta directly" } });
-    fireEvent.click(screen.getByTitle("Send"));
-
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "message.sendTo", runtimeId: "beta", text: "ask beta directly" }));
-  });
-
   it("opens and answers a provider Decision Board inside Studio", async () => {
     const url = "http://127.0.0.1:43123/board/board-1";
     const base = { runId: "run-1", studioSessionId: "session-1", runtimeId: "alpha", timestamp: "2026-08-24T00:00:00.000Z" };

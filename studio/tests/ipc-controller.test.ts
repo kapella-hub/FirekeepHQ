@@ -24,11 +24,13 @@ async function controller(openExternal: (url: string) => Promise<void> = async (
 }
 
 describe("Studio IPC controller", () => {
+  it("rejects the removed message.sendTo action", () => {
+    expect(() => parseStudioAction({ type: "message.sendTo", runtimeId: "alpha", text: "x" })).toThrow();
+  });
+
   it("rejects unknown, oversized, and extra-field actions", () => {
     expect(() => parseStudioAction({ type: "process.run", command: "rm" })).toThrow();
     expect(() => parseStudioAction({ type: "message.send", text: "x", command: "hidden" })).toThrow();
-    expect(parseStudioAction({ type: "message.sendTo", runtimeId: "alpha", text: "hello" })).toEqual({ type: "message.sendTo", runtimeId: "alpha", text: "hello" });
-    expect(() => parseStudioAction({ type: "message.sendTo", runtimeId: "alpha", text: "hello", command: "hidden" })).toThrow();
     expect(() => parseStudioAction({ type: "command.execute", input: "x".repeat(20_001) })).toThrow();
     expect(parseStudioAction({ type: "model.set", runtimeId: "alpha", modelId: "" })).toEqual({ type: "model.set", runtimeId: "alpha", modelId: "" });
     expect(parseStudioAction({ type: "effort.set", runtimeId: "alpha", effort: null })).toEqual({ type: "effort.set", runtimeId: "alpha", effort: null });
@@ -69,8 +71,6 @@ describe("Studio IPC controller", () => {
     const result = await studio.dispatch({ type: "message.send", text: "hello" });
     expect(result).toMatchObject({ type: "state", snapshot: { primaryRuntimeId: "alpha", workspacePath: "C:\\workspace" } });
     expect(studio.service.events()).toContainEqual(expect.objectContaining({ payload: expect.objectContaining({ role: "user", text: "hello" }) }));
-    await studio.dispatch({ type: "message.sendTo", runtimeId: "alpha", text: "pane hello" });
-    expect(studio.service.events()).toContainEqual(expect.objectContaining({ payload: expect.objectContaining({ role: "user", text: "pane hello" }) }));
   });
 
   it("exposes updater state and only typed check/install operations", async () => {

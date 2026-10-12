@@ -15,12 +15,9 @@ import {
   FolderOpen,
   KeyRound,
   LogOut,
-  Maximize2,
-  Minimize2,
   Palette,
   PanelRightClose,
   PanelRightOpen,
-  PanelsTopLeft,
   Plus,
   RefreshCw,
   Send,
@@ -49,7 +46,6 @@ import { buildTimeline, groupTimeline, type TimelineItem, type TimelineRun } fro
 interface CommandCard { readonly id: string; readonly input: string; readonly result: CommandResult }
 interface ConnectDialog { readonly runtimeId: string; readonly method: LoginMethod }
 interface ModelRefresh { readonly runtimeId: string; readonly state: "loading" | "success" | "error"; readonly message: string }
-type StudioView = "conversation" | "agents";
 
 const SESSION_COLOR_OPTIONS: readonly { readonly id: SessionColor; readonly label: string; readonly value: string }[] = [
   { id: "ember", label: "Ember", value: "#ff7a2f" },
@@ -84,11 +80,6 @@ export function App(): React.JSX.Element {
   const [decisionBoard, setDecisionBoard] = useState<DecisionBoardDocument | null>(null);
   const [decisionLoading, setDecisionLoading] = useState<string | null>(null);
   const [followingTail, setFollowingTail] = useState(true);
-  const [view, setView] = useState<StudioView>("conversation");
-  const [paneRuntimeIds, setPaneRuntimeIds] = useState<string[]>([]);
-  const [activePaneId, setActivePaneId] = useState<string | null>(null);
-  const [focusedPaneId, setFocusedPaneId] = useState<string | null>(null);
-  const [paneMenuOpen, setPaneMenuOpen] = useState(false);
   const [sessionEditorId, setSessionEditorId] = useState<string | null>(null);
   const [sessionSaving, setSessionSaving] = useState(false);
   const composerRef = useRef<HTMLTextAreaElement>(null);
@@ -264,31 +255,6 @@ export function App(): React.JSX.Element {
     finally { setBusy(false); }
   }, [applyResult, busy, hasPrimaryResponse, invoke, snapshot?.reviewerRuntimeIds.length]);
 
-  const showAgentGrid = useCallback((): void => {
-    if (!bootstrap || !snapshot) return;
-    const chatRuntimes = new Set(bootstrap.runtimes.filter((runtime) => runtime.capabilities.includes("chat")).map((runtime) => runtime.id));
-    const suggested = [...new Set([
-      snapshot.primaryRuntimeId,
-      ...snapshot.reviewerRuntimeIds,
-      ...events.map((event) => event.runtimeId),
-    ].filter((runtimeId): runtimeId is string => Boolean(runtimeId && chatRuntimes.has(runtimeId))))];
-    const fallback = bootstrap.runtimes.find((runtime) => runtime.capabilities.includes("chat"))?.id;
-    const next = suggested.length ? suggested : fallback ? [fallback] : [];
-    setPaneRuntimeIds((current) => current.length ? current.filter((runtimeId) => chatRuntimes.has(runtimeId)) : next);
-    setActivePaneId((current) => current && chatRuntimes.has(current) ? current : snapshot.primaryRuntimeId ?? next[0] ?? null);
-    setFocusedPaneId(null);
-    setPaneMenuOpen(false);
-    setView("agents");
-  }, [bootstrap, events, snapshot]);
-
-  const toggleAgentGrid = useCallback((): void => {
-    if (view === "agents") {
-      setView("conversation");
-      setFocusedPaneId(null);
-      setPaneMenuOpen(false);
-    } else showAgentGrid();
-  }, [showAgentGrid, view]);
-
   useEffect(() => {
     const keyboard = (event: KeyboardEvent): void => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
@@ -298,20 +264,16 @@ export function App(): React.JSX.Element {
       } else if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "r") {
         event.preventDefault();
         if (!busy) ignore(runReview());
-      } else if ((event.ctrlKey || event.metaKey) && event.code === "Backslash") {
-        event.preventDefault();
-        toggleAgentGrid();
       } else if (event.key === "Escape") {
         if (connectDialog) setConnectDialog(null);
         else if (runtimeManagerOpen) setRuntimeManagerOpen(false);
         else if (sessionEditorId) setSessionEditorId(null);
-        else if (focusedPaneId) setFocusedPaneId(null);
         else if (snapshot?.activeRunId) ignore(invoke({ type: "run.cancel", runId: snapshot.activeRunId }));
       }
     };
     window.addEventListener("keydown", keyboard);
     return () => window.removeEventListener("keydown", keyboard);
-  }, [busy, connectDialog, focusedPaneId, invoke, runReview, runtimeManagerOpen, sessionEditorId, snapshot?.activeRunId, toggleAgentGrid]);
+  }, [busy, connectDialog, invoke, runReview, runtimeManagerOpen, sessionEditorId, snapshot?.activeRunId]);
 
   const submit = async (): Promise<void> => {
     const input = composer.trim();
@@ -324,8 +286,6 @@ export function App(): React.JSX.Element {
         const result = await invoke({ type: "command.execute", input });
         applyResult(result);
         if (result.type === "command") setCommandCards((current) => [...current, { id: crypto.randomUUID(), input, result: result.result }]);
-      } else if (view === "agents" && activePaneId) {
-        applyResult(await invoke({ type: "message.sendTo", runtimeId: activePaneId, text: input }));
       } else applyResult(await invoke({ type: "message.send", text: input }));
     } catch {
       if (!input.startsWith("/")) setComposer(input);
@@ -436,15 +396,11 @@ export function App(): React.JSX.Element {
     ? snapshot?.selectedEfforts[primaryRuntimeId] as RuntimeEffort
     : "";
   const agentWorking = Boolean(snapshot?.activeRunId) || ["running", "verifying", "repairing", "reviewing"].includes(snapshot?.mission?.phase ?? "");
-  const paneRuntimes = (bootstrap?.runtimes ?? []).filter((runtime) => paneRuntimeIds.includes(runtime.id) && runtime.capabilities.includes("chat"));
-  const availablePaneRuntimes = (bootstrap?.runtimes ?? []).filter((runtime) => runtime.capabilities.includes("chat") && !paneRuntimeIds.includes(runtime.id));
-  const activePane = paneRuntimes.find((runtime) => runtime.id === activePaneId) ?? paneRuntimes[0];
-  const activeRunRuntimeId = snapshot?.activeRunId ? events.find((event) => event.runId === snapshot.activeRunId)?.runtimeId ?? null : null;
 
   if (!bootstrap || !snapshot) return <LaunchScreen error={error} />;
 
   return (
-    <div className="studio" data-busy={agentWorking || undefined} data-view={view}>
+    <div className="studio" data-busy={agentWorking || undefined}>
       <header className="titlebar">
         <div className="brand"><span className="brand-icon" role="status" aria-label={agentWorking ? "Agent working" : "Firekeep Studio idle"}><FirekeepMark size={18} />{agentWorking ? <span className="brand-activity" /> : null}</span><span>Firekeep</span><strong>Studio</strong></div>
         <div className="titlebar-center">
@@ -499,31 +455,22 @@ export function App(): React.JSX.Element {
             {snapshot.reviewerRuntimeIds.map((id) => <span className="reviewer-chip" key={id}>{runtimeName(bootstrap.runtimes, id)}<button aria-label={`Remove ${id} reviewer`} onClick={() => ignore(invoke({ type: "reviewer.remove", runtimeId: id }).then(applyResult))}><X size={12} /></button></span>)}
             <button className="review-now" title={!snapshot.reviewerRuntimeIds.length ? "Add a reviewer in Runtime Center" : !hasPrimaryResponse ? "Send a primary message before running a review" : "Run a review now"} disabled={!snapshot.reviewerRuntimeIds.length || !hasPrimaryResponse || busy} onClick={() => ignore(runReview())}>Run now</button>
           </div>
-          <div className="layout-controls">
-            <button type="button" className={`layout-toggle ${view === "agents" ? "active" : ""}`} aria-label={view === "agents" ? "Close agent grid" : "Open agent grid"} aria-pressed={view === "agents"} title="Toggle agent grid (Ctrl/Cmd+\\)" onClick={toggleAgentGrid}><PanelsTopLeft size={14} /><span>{view === "agents" ? "Conversation" : "Agents"}</span></button>
-            {view === "agents" && availablePaneRuntimes.length ? <div className="pane-add">
-              <button type="button" className="layout-toggle" aria-label="Add agent pane" aria-expanded={paneMenuOpen} onClick={() => setPaneMenuOpen((value) => !value)}><Plus size={14} /><span>Add</span></button>
-              {paneMenuOpen ? <div className="pane-menu" role="menu" aria-label="Available agent panes">{availablePaneRuntimes.map((runtime) => <button type="button" role="menuitem" key={runtime.id} onClick={() => { setPaneRuntimeIds((current) => [...current, runtime.id]); setActivePaneId(runtime.id); setPaneMenuOpen(false); }}><span className="runtime-orb" style={{ "--runtime-accent": runtime.accent ?? "#df7e45" } as React.CSSProperties}>{runtime.displayName[0]}</span><span><strong>{runtime.displayName}</strong><small>{runtime.transport}</small></span></button>)}</div> : null}
-            </div> : null}
-          </div>
         </div>
 
         <div className="transcript-frame">
-          {view === "conversation" ? <>
-            <div className="transcript" ref={transcriptRef} aria-live="polite" onScroll={updateTranscriptFollow}>
-              {timeline.length === 0 && commandCards.length === 0 ? <Welcome runtimes={bootstrap.runtimes} workspacePath={snapshot.workspacePath} onWorkspace={() => ignore(chooseWorkspace())} onChoose={(id) => void choosePrimary(id)} onCommand={(value) => { setComposer(value); composerRef.current?.focus(); }} /> : null}
-              {timelineRuns.map((run) => <RunTimeline key={run.id} run={run} runtime={bootstrap.runtimes.find((runtime) => runtime.id === run.runtimeId)} resolveApproval={(approvalId, decision) => ignore(invoke({ type: "approval.resolve", approvalId, decision }))} openDecision={(url) => ignore(openDecisionBoard(url))} decisionLoading={decisionLoading} />)}
-              {commandCards.map((card) => <CommandResultCard key={card.id} card={card} />)}
-              {error ? <div className="error-banner"><AlertTriangle size={16} /><span>{error}</span><button onClick={() => setError(null)}><X size={14} /></button></div> : null}
-            </div>
-            {!followingTail ? <button type="button" className="jump-latest" aria-label="Jump to latest response" onClick={jumpToLatest}><ArrowDownToLine size={14} /> Latest</button> : null}
-          </> : <AgentGrid runtimes={paneRuntimes} runs={timelineRuns} activeRuntimeId={activePane?.id ?? null} focusedRuntimeId={focusedPaneId} primaryRuntimeId={snapshot.primaryRuntimeId} workingRuntimeId={activeRunRuntimeId} diagnostics={diagnostics} commandCards={commandCards} error={error} select={(runtimeId) => setActivePaneId(runtimeId)} close={(runtimeId) => { setPaneRuntimeIds((current) => current.filter((id) => id !== runtimeId)); setActivePaneId((current) => current === runtimeId ? paneRuntimeIds.find((id) => id !== runtimeId) ?? null : current); setFocusedPaneId((current) => current === runtimeId ? null : current); }} focus={(runtimeId) => setFocusedPaneId((current) => current === runtimeId ? null : runtimeId)} makePrimary={(runtimeId) => void choosePrimary(runtimeId)} resolveApproval={(approvalId, decision) => ignore(invoke({ type: "approval.resolve", approvalId, decision }))} openDecision={(url) => ignore(openDecisionBoard(url))} decisionLoading={decisionLoading} clearError={() => setError(null)} />}
+          <div className="transcript" ref={transcriptRef} aria-live="polite" onScroll={updateTranscriptFollow}>
+            {timeline.length === 0 && commandCards.length === 0 ? <Welcome runtimes={bootstrap.runtimes} workspacePath={snapshot.workspacePath} onWorkspace={() => ignore(chooseWorkspace())} onChoose={(id) => void choosePrimary(id)} onCommand={(value) => { setComposer(value); composerRef.current?.focus(); }} /> : null}
+            {timelineRuns.map((run) => <RunTimeline key={run.id} run={run} runtime={bootstrap.runtimes.find((runtime) => runtime.id === run.runtimeId)} resolveApproval={(approvalId, decision) => ignore(invoke({ type: "approval.resolve", approvalId, decision }))} openDecision={(url) => ignore(openDecisionBoard(url))} decisionLoading={decisionLoading} />)}
+            {commandCards.map((card) => <CommandResultCard key={card.id} card={card} />)}
+            {error ? <div className="error-banner"><AlertTriangle size={16} /><span>{error}</span><button onClick={() => setError(null)}><X size={14} /></button></div> : null}
+          </div>
+          {!followingTail ? <button type="button" className="jump-latest" aria-label="Jump to latest response" onClick={jumpToLatest}><ArrowDownToLine size={14} /> Latest</button> : null}
         </div>
 
         <div className="composer-zone">
           {completions.length ? <div className="command-menu" role="listbox">{completions.slice(0, 9).map((item, index) => <button role="option" aria-selected={index === completionIndex} key={`${item.value}:${index}`} className={index === completionIndex ? "selected" : ""} onMouseDown={(event) => { event.preventDefault(); setComposer(item.value); setCompletions([]); composerRef.current?.focus(); }}><span>{item.label}</span><small>{item.description}</small></button>)}</div> : null}
           <div className="composer-shell">
-            <textarea ref={composerRef} aria-label="Message composer" value={composer} rows={1} placeholder={view === "agents" && activePane ? `Message ${activePane.displayName} pane, or type / for commands…` : snapshot.primaryRuntimeId ? `Message ${primary?.displayName ?? "your agent"}, or type / for commands…` : "Choose a primary runtime, or type /doctor…"} onChange={(event) => setComposer(event.target.value)} onKeyDown={(event) => {
+            <textarea ref={composerRef} aria-label="Message composer" value={composer} rows={1} placeholder={snapshot.primaryRuntimeId ? `Message ${primary?.displayName ?? "your agent"}, or type / for commands…` : "Choose a primary runtime, or type /doctor…"} onChange={(event) => setComposer(event.target.value)} onKeyDown={(event) => {
               if (event.key === "ArrowDown" && completions.length) { event.preventDefault(); setCompletionIndex((value) => Math.min(value + 1, completions.length - 1)); }
               else if (event.key === "ArrowUp" && completions.length) { event.preventDefault(); setCompletionIndex((value) => Math.max(value - 1, 0)); }
               else if (event.key === "Tab" && completions[completionIndex]) { event.preventDefault(); setComposer(completions[completionIndex].value); setCompletions([]); }
@@ -778,51 +725,6 @@ function RunTimeline({ run, runtime, resolveApproval, openDecision, decisionLoad
 function SafeTimelineCard(props: { readonly item: TimelineItem; readonly runtime: RuntimeDescriptor | undefined } & TimelineActions): React.JSX.Element {
   const resetKey = props.item.kind === "message" ? props.item.text : props.item.id;
   return <RenderBoundary resetKey={resetKey}><TimelineCard {...props} /></RenderBoundary>;
-}
-
-interface AgentGridProps extends TimelineActions {
-  readonly runtimes: readonly RuntimeDescriptor[];
-  readonly runs: readonly TimelineRun[];
-  readonly activeRuntimeId: string | null;
-  readonly focusedRuntimeId: string | null;
-  readonly primaryRuntimeId: string | null;
-  readonly workingRuntimeId: string | null;
-  readonly diagnostics: Readonly<Record<string, RuntimeDiagnostic>>;
-  readonly commandCards: readonly CommandCard[];
-  readonly error: string | null;
-  readonly select: (runtimeId: string) => void;
-  readonly close: (runtimeId: string) => void;
-  readonly focus: (runtimeId: string) => void;
-  readonly makePrimary: (runtimeId: string) => void;
-  readonly clearError: () => void;
-}
-
-function AgentGrid(props: AgentGridProps): React.JSX.Element {
-  const visible = props.focusedRuntimeId ? props.runtimes.filter((runtime) => runtime.id === props.focusedRuntimeId) : props.runtimes;
-  if (!visible.length) return <div className="agent-grid-empty"><PanelsTopLeft size={22} /><strong>No agent panes open</strong><span>Add a runtime from the toolbar.</span></div>;
-  return <div className={`agent-grid ${props.focusedRuntimeId ? "focused" : ""}`} data-count={visible.length} aria-label="Agent grid">{visible.map((runtime) => <AgentPane key={runtime.id} {...props} runtime={runtime} runs={props.runs.filter((run) => run.runtimeId === runtime.id)} canClose={props.runtimes.length > 1} />)}</div>;
-}
-
-function AgentPane({ runtime, runs, activeRuntimeId, focusedRuntimeId, primaryRuntimeId, workingRuntimeId, diagnostics, commandCards, error, select, close, focus, makePrimary, clearError, resolveApproval, openDecision, decisionLoading, canClose }: AgentGridProps & { readonly runtime: RuntimeDescriptor; readonly runs: readonly TimelineRun[]; readonly canClose: boolean }): React.JSX.Element {
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const followingRef = useRef(true);
-  useEffect(() => {
-    const node = scrollRef.current;
-    if (node && followingRef.current) node.scrollTo({ top: node.scrollHeight, behavior: "auto" });
-  }, [runs]);
-  const selected = activeRuntimeId === runtime.id;
-  const focused = focusedRuntimeId === runtime.id;
-  const working = workingRuntimeId === runtime.id;
-  const connection = diagnostics[runtime.id]?.connection;
-  const status = working ? "Working" : connection?.state === "ready" ? "Ready" : connection?.detail ?? "Checking";
-  return <section role="region" aria-label={`${runtime.displayName} agent pane`} tabIndex={0} className={`agent-pane ${selected ? "active" : ""}`} style={{ "--runtime-accent": runtime.accent ?? "#df7e45" } as React.CSSProperties} onClick={() => select(runtime.id)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); select(runtime.id); } }}>
-    <header className="agent-pane-header"><span className="runtime-orb">{runtime.displayName[0]}</span><div><strong>{runtime.displayName}</strong><small>{runtime.id === primaryRuntimeId ? "Primary" : "Agent pane"} · {status}</small></div><span className={`pane-status ${working ? "working" : ""}`} />{runtime.id !== primaryRuntimeId ? <button type="button" title={`Use ${runtime.displayName} as primary`} onClick={(event) => { event.stopPropagation(); makePrimary(runtime.id); }}>Use</button> : null}<button type="button" aria-label={focused ? `Restore ${runtime.displayName} pane` : `Focus ${runtime.displayName} pane`} title={focused ? "Restore grid" : "Focus pane"} onClick={(event) => { event.stopPropagation(); focus(runtime.id); }}>{focused ? <Minimize2 size={13} /> : <Maximize2 size={13} />}</button>{canClose ? <button type="button" aria-label={`Close ${runtime.displayName} pane`} title="Close pane" onClick={(event) => { event.stopPropagation(); close(runtime.id); }}><X size={13} /></button> : null}</header>
-    <div className="agent-pane-scroll" ref={scrollRef} onScroll={(event) => { const node = event.currentTarget; followingRef.current = node.scrollHeight - node.scrollTop - node.clientHeight <= 60; }}>
-      {runs.length ? runs.map((run) => <RunTimeline key={run.id} run={run} runtime={runtime} resolveApproval={resolveApproval} openDecision={openDecision} decisionLoading={decisionLoading} />) : <div className="agent-pane-empty"><Sparkles size={18} /><strong>Ready for a direct turn</strong><span>Select this pane and use the shared composer below.</span></div>}
-      {selected ? commandCards.map((card) => <CommandResultCard key={card.id} card={card} />) : null}
-      {selected && error ? <div className="error-banner"><AlertTriangle size={16} /><span>{error}</span><button onClick={(event) => { event.stopPropagation(); clearError(); }}><X size={14} /></button></div> : null}
-    </div>
-  </section>;
 }
 
 function TimelineCard({ item, runtime, resolveApproval, openDecision, decisionLoading }: { readonly item: TimelineItem; readonly runtime: RuntimeDescriptor | undefined; readonly resolveApproval: (id: string, decision: string) => void; readonly openDecision: (url: string) => void; readonly decisionLoading: string | null }): React.JSX.Element | null {

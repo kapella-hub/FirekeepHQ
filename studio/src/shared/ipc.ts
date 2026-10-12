@@ -32,7 +32,6 @@ export type StudioAction =
   | { type: "decision.load"; url: string }
   | { type: "decision.submit"; url: string; answers: DecisionAnswers }
   | { type: "message.send"; text: string }
-  | { type: "message.sendTo"; runtimeId: string; text: string }
   | { type: "command.execute"; input: string }
   | { type: "command.complete"; input: string }
   | { type: "runtime.probe"; runtimeId?: string }

@@ -35,7 +35,6 @@ try {
   const cdp = await connectCdp(target.webSocketDebuggerUrl);
   let layout;
   let sessionEditor;
-  let agentGrid = null;
   let lightTheme;
   let responsiveInspector;
   let commandSurface;
@@ -72,14 +71,6 @@ try {
       await writeFile(sessionScreenshotPath, Buffer.from(capture.data, "base64"));
     }
     await closeSessionEditorForSmoke(cdp);
-    const gridScreenshotPath = process.env.FIREKEEP_STUDIO_SMOKE_GRID_SCREENSHOT;
-    agentGrid = await openAgentGridForSmoke(cdp);
-    assertAgentGrid(agentGrid);
-    if (gridScreenshotPath) {
-      const capture = await cdp.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
-      await writeFile(gridScreenshotPath, Buffer.from(capture.data, "base64"));
-    }
-    await closeAgentGridForSmoke(cdp);
     lightTheme = await setThemeForSmoke(cdp, "light");
     assertLightTheme(lightTheme);
     const lightScreenshotPath = process.env.FIREKEEP_STUDIO_SMOKE_LIGHT_SCREENSHOT;
@@ -100,7 +91,7 @@ try {
   } finally {
     await cdp.close();
   }
-  process.stdout.write(`${JSON.stringify({ executable, title: target.title, url: target.url, layout, sessionEditor, agentGrid, lightTheme, responsiveInspector, commandSurface })}\n`);
+  process.stdout.write(`${JSON.stringify({ executable, title: target.title, url: target.url, layout, sessionEditor, lightTheme, responsiveInspector, commandSurface })}\n`);
 } finally {
   terminateExactTree(child);
   const temporaryRoot = `${await realpath(tmpdir())}${sep}`.toLowerCase();
@@ -353,100 +344,6 @@ async function closeSessionEditorForSmoke(cdp) {
     returnByValue: true,
   });
   if (!closed.result?.value) throw new Error("session editor could not close");
-}
-
-async function openAgentGridForSmoke(cdp) {
-  const opened = await cdp.send("Runtime.evaluate", {
-    expression: `(() => {
-      const button = document.querySelector('[aria-label="Open agent grid"]');
-      if (!button) return false;
-      button.click();
-      return true;
-    })()`,
-    returnByValue: true,
-  });
-  if (!opened.result?.value) throw new Error("agent-grid toggle did not render");
-  await new Promise((resolvePromise) => setTimeout(resolvePromise, 150));
-
-  for (let index = 0; index < 2; index += 1) {
-    const menuOpened = await cdp.send("Runtime.evaluate", {
-      expression: `(() => {
-        const add = document.querySelector('[aria-label="Add agent pane"]');
-        if (!add) return false;
-        add.click();
-        return true;
-      })()`,
-      returnByValue: true,
-    });
-    if (!menuOpened.result?.value) break;
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 80));
-    const selected = await cdp.send("Runtime.evaluate", {
-      expression: `(() => {
-        const option = document.querySelector('.pane-menu [role="menuitem"]');
-        if (!option) return false;
-        option.click();
-        return true;
-      })()`,
-      returnByValue: true,
-    });
-    if (!selected.result?.value) break;
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
-  }
-
-  const result = await cdp.send("Runtime.evaluate", {
-    expression: `(() => {
-      const rect = (element) => {
-        const value = element.getBoundingClientRect();
-        return { left: value.left, top: value.top, right: value.right, bottom: value.bottom, width: value.width, height: value.height };
-      };
-      const grid = document.querySelector('.agent-grid');
-      const panes = [...document.querySelectorAll('.agent-pane')];
-      const active = panes.filter((pane) => pane.classList.contains('active'));
-      const composer = document.querySelector('.composer-shell textarea');
-      if (!grid || !composer) return null;
-      return {
-        grid: rect(grid),
-        panes: panes.map(rect),
-        paneCount: panes.length,
-        activeCount: active.length,
-        placeholder: composer.getAttribute('placeholder') ?? '',
-      };
-    })()`,
-    returnByValue: true,
-  });
-  if (!result.result?.value) throw new Error("agent grid did not render in time");
-  return result.result.value;
-}
-
-function assertAgentGrid(agentGrid) {
-  if (agentGrid.paneCount !== 3 || agentGrid.activeCount !== 1) {
-    throw new Error(`agent grid selection is invalid: ${JSON.stringify(agentGrid)}`);
-  }
-  if (!agentGrid.placeholder.toLowerCase().includes("pane")) {
-    throw new Error(`agent grid composer is not pane-targeted: ${JSON.stringify(agentGrid.placeholder)}`);
-  }
-  for (const pane of agentGrid.panes) {
-    if (pane.width < 240 || pane.height < 160 || pane.left < agentGrid.grid.left || pane.right > agentGrid.grid.right + 1) {
-      throw new Error(`agent pane is clipped or unusable: ${JSON.stringify({ pane, grid: agentGrid.grid })}`);
-    }
-  }
-  const firstTop = agentGrid.panes[0].top;
-  if (agentGrid.panes.some((pane) => Math.abs(pane.top - firstTop) > 1)) {
-    throw new Error(`three agent panes did not share one tmux-style row: ${JSON.stringify(agentGrid.panes)}`);
-  }
-}
-
-async function closeAgentGridForSmoke(cdp) {
-  const result = await cdp.send("Runtime.evaluate", {
-    expression: `(() => {
-      const button = document.querySelector('[aria-label="Close agent grid"]');
-      if (!button) return false;
-      button.click();
-      return true;
-    })()`,
-    returnByValue: true,
-  });
-  if (!result.result?.value) throw new Error("agent grid could not return to the conversation");
 }
 
 async function setThemeForSmoke(cdp, desired) {

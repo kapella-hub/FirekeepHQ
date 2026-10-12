@@ -697,14 +697,6 @@ export class StudioService {
     return result;
   }
 
-  async sendMessageTo(runtimeId: string, prompt: string): Promise<RunResult> {
-    const text = prompt.trim();
-    if (!text) throw new Error("message cannot be empty");
-    this.runtimes.requireCapability(runtimeId, "chat");
-    if (this.#activeRun) throw new Error("a run is already active");
-    return this.#run(runtimeId, withStudioVisualHint(text), "primary", { displayPrompt: text });
-  }
-
   async runReview(runtimeId?: string, focus?: string): Promise<RunResult[]> {
     const state = this.#requireState();
     const reviewers = runtimeId ? [runtimeId] : [...state.reviewerRuntimeIds];

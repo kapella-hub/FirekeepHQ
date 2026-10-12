@@ -25,7 +25,6 @@ const actionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("decision.load"), url: z.string().min(1).max(512) }).strict(),
   z.object({ type: z.literal("decision.submit"), url: z.string().min(1).max(512), answers: decisionAnswers }).strict(),
   z.object({ type: z.literal("message.send"), text: z.string().min(1).max(1_000_000) }).strict(),
-  z.object({ type: z.literal("message.sendTo"), runtimeId: id, text: z.string().min(1).max(1_000_000) }).strict(),
   z.object({ type: z.literal("command.execute"), input: z.string().min(1).max(20_000) }).strict(),
   z.object({ type: z.literal("command.complete"), input: z.string().max(20_000) }).strict(),
   z.object({ type: z.literal("runtime.probe"), runtimeId: optionalId }).strict(),
@@ -124,7 +123,6 @@ export class StudioController {
     if (action.type === "command.complete") return { type: "completions", items: this.commands.complete(action.input) };
     if (action.type === "command.execute") return { type: "command", result: await this.commands.execute(action.input), snapshot: this.service.snapshot(), sessions: await this.service.listSessions(), events: this.service.events() };
     if (action.type === "message.send") await this.service.sendMessage(action.text);
-    else if (action.type === "message.sendTo") await this.service.sendMessageTo(action.runtimeId, action.text);
     else if (action.type === "runtime.probe") return { type: "diagnostics", items: action.runtimeId ? [await this.service.probeRuntime(action.runtimeId)] : await this.service.probeAll() };
     else if (action.type === "runtime.models") return { type: "models", runtimeId: action.runtimeId, items: await this.service.listModels(action.runtimeId) };
     else if (action.type === "runtime.login") {
