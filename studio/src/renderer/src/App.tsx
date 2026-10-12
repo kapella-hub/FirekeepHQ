@@ -80,6 +80,8 @@ export function App(): React.JSX.Element {
   const transcriptRef = useRef<HTMLDivElement>(null);
   const followingTailRef = useRef(true);
   const modelRequestRef = useRef<Record<string, number>>({});
+  // Bumped by every pushed keep-status; a poll/retry reply older than the latest push is dropped.
+  const keepSeq = useRef(0);
   const surfacedBoardsRef = useRef(new Set<string>());
   const seenEventIdsRef = useRef(new Set<string>());
   const pendingEventsRef = useRef<RuntimeEvent[]>([]);
@@ -195,7 +197,7 @@ export function App(): React.JSX.Element {
         }
       } else if (event.type === "snapshot") setSnapshot(event.snapshot);
       else if (event.type === "update") setUpdateState(event.state);
-      else if (event.type === "keep-status") setKeepStatus(event.status);
+      else if (event.type === "keep-status") { keepSeq.current += 1; setKeepStatus(event.status); }
       else if (event.type === "decision.available") {
         surfacedBoardsRef.current.add(event.board.url);
         setDecisionBoard(event.board);
@@ -209,7 +211,8 @@ export function App(): React.JSX.Element {
       replaceEvents(result.events);
       setSessions([...result.sessions]);
       ignore(refreshDiagnostics());
-      ignore(invoke({ type: "keep.status" }).then((status) => { if (active && status.type === "keep-status") setKeepStatus(status.status); }));
+      const seq = keepSeq.current;
+      ignore(invoke({ type: "keep.status" }).then((status) => { if (active && seq === keepSeq.current && status.type === "keep-status") setKeepStatus(status.status); }));
       if (result.snapshot.primaryRuntimeId) ignore(loadModels(result.snapshot.primaryRuntimeId));
     }));
     return () => {
@@ -438,6 +441,16 @@ export function App(): React.JSX.Element {
   }, [timelineRuns]);
   const newestReceiptRunId = useMemo(() => [...timelineRuns].reverse().find((run) => run.receipt)?.runId ?? null, [timelineRuns]);
   const keepReceipts = useMemo(() => [...timelineRuns].reverse().flatMap((run) => run.receipt ? [run.receipt] : []), [timelineRuns]);
+  // Panel reads fail inline; they must not raise or clear the global error banner the way `invoke` does.
+  const keepRead = useCallback(async (action: StudioAction): Promise<StudioActionResult> => {
+    const result = await window.firekeepStudio.invoke(action);
+    if (result.type === "error") throw new Error(result.message);
+    return result;
+  }, []);
+  const retryKeep = useCallback(() => {
+    const seq = keepSeq.current;
+    ignore(keepRead({ type: "keep.retry" }).then((result) => { if (seq === keepSeq.current && result.type === "keep-status") setKeepStatus(result.status); }));
+  }, [keepRead]);
   const insertQuote = useCallback((text: string) => setComposer((value) => `${value}${value && !value.endsWith("\n") ? "\n" : ""}${text}`), []);
   const lastAnswerId = useMemo(() => {
     for (let index = timeline.length - 1; index >= 0; index -= 1) {
@@ -567,11 +580,11 @@ export function App(): React.JSX.Element {
       keepPanel={<KeepPanel
         status={keepStatus}
         receipts={keepReceipts}
-        invoke={invoke}
+        invoke={keepRead}
         onInsert={insertQuote}
         // Task 18 retargets this to Settings -> Keep connection; until then the Runtime Center is the Settings button's target.
         onOpenKeepSettings={() => { setRuntimeManagerOpen(true); ignore(refreshDiagnostics()); }}
-        onStatus={setKeepStatus}
+        onRetry={retryKeep}
       />}
     >
 

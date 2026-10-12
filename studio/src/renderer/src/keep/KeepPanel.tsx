@@ -15,7 +15,8 @@ export interface KeepPanelProps {
   /** Appends a quoted block to the composer. */
   readonly onInsert: (text: string) => void;
   readonly onOpenKeepSettings: () => void;
-  readonly onStatus: (status: KeepStatus) => void;
+  /** Re-checks the kit; App applies the reply unless a newer push arrived meanwhile. */
+  readonly onRetry: () => void;
 }
 
 type Tab = "memory" | "skills" | "team";
@@ -36,25 +37,24 @@ export function quoteBlock(body: string): string {
   return `${body.replace(/\n+$/, "").split("\n").map((line) => `> ${line}`).join("\n")}\n`;
 }
 
-export function KeepPanel({ status, receipts, invoke, onInsert, onOpenKeepSettings, onStatus }: KeepPanelProps): React.JSX.Element {
+export function KeepPanel({ status, receipts, invoke, onInsert, onOpenKeepSettings, onRetry }: KeepPanelProps): React.JSX.Element {
   return <aside className="keep-panel" aria-label="The Keep">
     <h2>The Keep</h2>
     {!status || status.state === "starting" ? <div className="keep-skeleton" aria-busy="true" aria-label="Connecting to the Keep"><span /><span /><span /></div>
-      : status.state === "missing" ? <MissingCard invoke={invoke} onStatus={onStatus} />
+      : status.state === "missing" ? <MissingCard onRetry={onRetry} />
       : status.state === "connected" ? <>
         {status.personalMode ? <p className="keep-personal-banner" role="status">Personal mode — nothing from this session is shared</p> : null}
         <ConnectedTabs receipts={receipts} invoke={invoke} onInsert={onInsert} />
       </>
       : <div className="keep-state-card">
         <p className="keep-state-detail"><AlertTriangle size={13} /> {status.detail}</p>
-        {status.state === "unreachable" && status.retryInMs !== null ? <p className="keep-retrying">Retrying…</p> : null}
+        {status.state === "unreachable" && status.retryInMs !== null ? <p className="keep-retrying" role="status">Retrying…</p> : null}
         <button type="button" onClick={onOpenKeepSettings}>Run doctor</button>
       </div>}
   </aside>;
 }
 
-function MissingCard({ invoke, onStatus }: Pick<KeepPanelProps, "invoke" | "onStatus">): React.JSX.Element {
-  const retry = (): void => ignore(invoke({ type: "keep.retry" }).then((result) => { if (result.type === "keep-status") onStatus(result.status); }));
+function MissingCard({ onRetry }: Pick<KeepPanelProps, "onRetry">): React.JSX.Element {
   return <div className="keep-state-card">
     <h3>Connect Studio to your team's Keep</h3>
     <p>The Keep is your team's shared memory: what agents learned, the skills they built, and who is working on what.</p>
@@ -62,7 +62,7 @@ function MissingCard({ invoke, onStatus }: Pick<KeepPanelProps, "invoke" | "onSt
       <small>{label}</small>
       <div><code>{command}</code><CopyButton text={command} label={`Copy ${label} install command`} /></div>
     </div>)}
-    <button type="button" className="primary-action" onClick={retry}>I've installed it — retry</button>
+    <button type="button" className="primary-action" onClick={onRetry}>I've installed it — retry</button>
   </div>;
 }
 
@@ -99,7 +99,7 @@ function SearchTab({ kind, receipts, invoke, onOpen }: { readonly kind: "memory"
     if (!trimmed) { setItems(null); return; }
     ignore(invoke({ type: "keep.search", query: trimmed, kind }).then(
       (result) => { if (id === generation.current && result.type === "keep-items") setItems(result.items); },
-      () => { if (id === generation.current) setFailed(true); },
+      () => { if (id === generation.current) { setItems(null); setFailed(true); } },
     ));
   }, [invoke, kind]);
 

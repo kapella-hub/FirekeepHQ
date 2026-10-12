@@ -76,7 +76,7 @@ function draftMission(checks: MissionSnapshot["checks"] = []): MissionSnapshot {
 
 let pushStudioEvent: ((event: StudioPushEvent) => void) | null = null;
 
-function installBridge(options: { readonly snapshot?: StudioSnapshot; readonly sessions?: readonly StudioSessionSummary[]; readonly models?: readonly RuntimeModel[] | (() => readonly RuntimeModel[]); readonly dashboardAvailable?: boolean; readonly events?: readonly RuntimeEvent[]; readonly decisionBoard?: DecisionBoardDocument; readonly pushEvents?: readonly StudioPushEvent[]; readonly clipboardText?: string; readonly update?: StudioUpdateState; readonly updateResult?: StudioUpdateState; readonly keepStatus?: KeepStatus; readonly testCommand?: string | null; readonly keepItems?: readonly KeepItem[]; readonly readyRuntimeIds?: readonly string[]; readonly highlights?: KeepHighlights; readonly actionError?: { readonly actionType: StudioAction["type"]; readonly message: string } } = {}): ReturnType<typeof vi.fn<(action: StudioAction) => Promise<StudioActionResult>>> {
+function installBridge(options: { readonly snapshot?: StudioSnapshot; readonly sessions?: readonly StudioSessionSummary[]; readonly models?: readonly RuntimeModel[] | (() => readonly RuntimeModel[]); readonly dashboardAvailable?: boolean; readonly events?: readonly RuntimeEvent[]; readonly decisionBoard?: DecisionBoardDocument; readonly pushEvents?: readonly StudioPushEvent[]; readonly clipboardText?: string; readonly update?: StudioUpdateState; readonly updateResult?: StudioUpdateState; readonly keepStatus?: KeepStatus; readonly testCommand?: string | null; readonly keepItems?: readonly KeepItem[]; readonly keepStatusGate?: Promise<void>; readonly keepSearch?: (query: string) => Promise<StudioActionResult>; readonly keepTeam?: string; readonly readyRuntimeIds?: readonly string[]; readonly highlights?: KeepHighlights; readonly actionError?: { readonly actionType: StudioAction["type"]; readonly message: string } } = {}): ReturnType<typeof vi.fn<(action: StudioAction) => Promise<StudioActionResult>>> {
   let snapshot = options.snapshot ?? state();
   let sessions = [...(options.sessions ?? [{ id: "session-1", name: "UI test", color: "ember" as const, createdAt: "2026-08-24T00:00:00.000Z", updatedAt: "2026-08-24T00:00:00.000Z", eventCount: 0, nativeSessionIds: {} }])];
   const invoke = vi.fn(async (action: StudioAction): Promise<StudioActionResult> => {
@@ -91,10 +91,12 @@ function installBridge(options: { readonly snapshot?: StudioSnapshot; readonly s
     if (action.type === "clipboard.read") return { type: "clipboard-read", text: options.clipboardText ?? "" };
     if (action.type === "clipboard.write") return { type: "clipboard-written" };
     if (action.type === "update.check" || action.type === "update.install") return { type: "update", state: options.updateResult ?? options.update ?? { phase: "current", currentVersion: "0.4.0", availableVersion: null, progressPercent: null, automatic: true, detail: "Firekeep Studio 0.4.0 is current." } };
+    if (action.type === "keep.status" && options.keepStatusGate) await options.keepStatusGate;
     if (action.type === "keep.status" || action.type === "keep.retry") return { type: "keep-status", status: options.keepStatus ?? { state: "missing" } };
     if (action.type === "workspace.detectTest") return { type: "test-command", command: options.testCommand ?? null };
+    if (action.type === "keep.search" && options.keepSearch) return options.keepSearch(action.query);
     if (action.type === "keep.search") return { type: "keep-items", items: options.keepItems ?? [] };
-    if (action.type === "keep.team") return { type: "keep-team", markdown: "" };
+    if (action.type === "keep.team") return { type: "keep-team", markdown: options.keepTeam ?? "" };
     if (action.type === "keep.skills") return { type: "keep-items", items: options.keepItems ?? [] };
     if (action.type === "settings.keepPanel") snapshot = { ...snapshot, keepPanelOpen: action.open };
     if (action.type === "workspace.set") snapshot = { ...snapshot, workspacePath: action.path };
@@ -848,11 +850,96 @@ describe("Firekeep Studio renderer", () => {
     render(<App />);
     await screen.findByRole("complementary", { name: "The Keep" });
     await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "keep.status" }));
-    // Let the bootstrap-time keep.status round trips settle so a late reply cannot overwrite the push.
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 150)); });
     act(() => pushStudioEvent?.({ type: "keep-status", status: { state: "unreachable", detail: "cortex unreachable at 100.91.3.51", retryInMs: null } }));
     expect(await screen.findByText(/cortex unreachable/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Run doctor" })).toBeInTheDocument();
+  });
+
+  it("a keep-status push wins over a bootstrap reply that resolves later", async () => {
+    let release: () => void = () => undefined;
+    const keepStatusGate = new Promise<void>((resolve) => { release = resolve; });
+    const invoke = installBridge({ keepStatus: { state: "starting" }, keepStatusGate });
+    render(<App />);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "keep.status" }));
+    act(() => pushStudioEvent?.({ type: "keep-status", status: { state: "unreachable", detail: "cortex unreachable at 100.91.3.51", retryInMs: null } }));
+    await act(async () => { release(); await Promise.resolve(); });
+    expect(await screen.findByText(/cortex unreachable/)).toBeInTheDocument();
+  });
+
+  it("ignores a stale search response that resolves after a newer search", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const resolvers: Record<string, (items: KeepItem[]) => void> = {};
+    installBridge({ keepStatus: { state: "connected", agentId: "a", personalMode: false, kitVersion: "1.8.0" }, keepSearch: (query) => new Promise((resolve) => { resolvers[query] = (items) => resolve({ type: "keep-items", items }); }) });
+    render(<App />);
+    const box = await screen.findByRole("searchbox", { name: "Search team memory" });
+    fireEvent.change(box, { target: { value: "first" } });
+    await act(async () => { vi.advanceTimersByTime(310); });
+    fireEvent.change(box, { target: { value: "second" } });
+    await act(async () => { vi.advanceTimersByTime(310); });
+    await act(async () => { resolvers.second?.([{ title: "Second hit", body: "b" }]); });
+    await act(async () => { resolvers.first?.([{ title: "First hit", body: "b" }]); });
+    expect(screen.getByRole("button", { name: "Second hit" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "First hit" })).not.toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
+  it("a failed search shows the inline error, drops old results and leaves the global banner alone", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let fail = false;
+    installBridge({ keepStatus: { state: "connected", agentId: "a", personalMode: false, kitVersion: "1.8.0" }, keepSearch: async () => fail ? { type: "error", message: "boom" } : { type: "keep-items", items: [{ title: "Old hit", body: "b" }] } });
+    const { container } = render(<App />);
+    const box = await screen.findByRole("searchbox", { name: "Search team memory" });
+    fireEvent.change(box, { target: { value: "one" } });
+    await act(async () => { vi.advanceTimersByTime(310); });
+    expect(await screen.findByRole("button", { name: "Old hit" })).toBeInTheDocument();
+    fail = true;
+    fireEvent.change(box, { target: { value: "two" } });
+    await act(async () => { vi.advanceTimersByTime(310); });
+    expect(await screen.findByText("Could not reach the Keep. Try again.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Old hit" })).not.toBeInTheDocument();
+    expect(container.querySelector(".error-banner")).toBeNull();
+    vi.useRealTimers();
+  });
+
+  it("Escape closes the detail popover without cancelling the running turn", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const invoke = installBridge({ snapshot: { ...state("alpha"), activeRunId: "run-1" }, keepStatus: { state: "connected", agentId: "a", personalMode: false, kitVersion: "1.8.0" }, keepItems: [{ title: "A memory", body: "text" }] });
+    render(<App />);
+    fireEvent.change(await screen.findByRole("searchbox", { name: "Search team memory" }), { target: { value: "a" } });
+    await act(async () => { vi.advanceTimersByTime(310); });
+    fireEvent.click(await screen.findByRole("button", { name: "A memory" }));
+    expect(screen.getByRole("dialog", { name: "A memory" })).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "A memory" })).not.toBeInTheDocument();
+    expect(invoke.mock.calls.some(([action]) => action.type === "run.cancel")).toBe(false);
+    vi.useRealTimers();
+  });
+
+  it("clicking a recalled query fills the search box and searches once", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const receipt = { status: "measured", final: true, recalls: [{ query: "deploy vps", trigger: "agent", resultCount: 2, memoryIds: ["m1"] }], writes: [], recalledCount: 2, learnedCount: 0, keepSessionIds: ["k1"], cursorsAfter: {} };
+    const invoke = installBridge({ snapshot: state("alpha"), keepStatus: { state: "connected", agentId: "a", personalMode: false, kitVersion: "1.8.0" }, events: [{ id: "2", runId: "r1", studioSessionId: "session-1", runtimeId: "alpha", timestamp: "t", payload: { kind: "keep.receipt", receipt } }] as never });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /deploy vps/ }));
+    expect(screen.getByRole("searchbox", { name: "Search team memory" })).toHaveValue("deploy vps");
+    await act(async () => { vi.advanceTimersByTime(1000); });
+    expect(invoke.mock.calls.filter(([action]) => action.type === "keep.search")).toHaveLength(1);
+    vi.useRealTimers();
+  });
+
+  it("shows Retrying… as a status when an unreachable Keep will retry", async () => {
+    installBridge({ keepStatus: { state: "unreachable", detail: "cortex down", retryInMs: 5000 } });
+    render(<App />);
+    expect(await screen.findByText("Retrying…")).toHaveAttribute("role", "status");
+  });
+
+  it("renders the team markdown on the Team tab", async () => {
+    window.localStorage.removeItem("firekeep.keepTab");
+    installBridge({ keepStatus: { state: "connected", agentId: "a", personalMode: false, kitVersion: "1.8.0" }, keepTeam: "**codex@laptop** is on release notes" });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("tab", { name: "Team" }));
+    expect(await screen.findByText("codex@laptop")).toBeInTheDocument();
+    window.localStorage.removeItem("firekeep.keepTab");
   });
 
   it("loads skills when the tab opens and badges trial skills", async () => {
