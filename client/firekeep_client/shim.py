@@ -516,11 +516,15 @@ class _BridgeSessionTap:
                 return item
             name = params.get("name")
             rid = getattr(root, "id", None)
-            if rid is not None and (
-                name in self._CAPTURE_TOOLS
-                or name in self._END_TOOLS
-            ):
+            if rid is not None and name in self._CAPTURE_TOOLS:
                 self._pending[rid] = name
+            elif rid is not None and name in self._END_TOOLS:
+                # Remember WHICH session the call targets: an explicit id from
+                # the agent wins, else this process's captured id.
+                raw_args = params.get("arguments")
+                explicit = raw_args.get("session_id") if isinstance(raw_args, dict) else None
+                target = explicit if isinstance(explicit, str) and explicit else self._session_id
+                self._pending[rid] = (name, target)
             if name in self._INJECT_TOOLS:
                 args = params.get("arguments")
                 if isinstance(args, dict):
@@ -547,11 +551,16 @@ class _BridgeSessionTap:
             rid = getattr(root, "id", None)
             if rid is None or rid not in self._pending:
                 return item
-            name = self._pending.pop(rid)
+            entry = self._pending.pop(rid)
+            target = None
+            if isinstance(entry, tuple):
+                name, target = entry
+            else:
+                name = entry
             if name in self._END_TOOLS:
-                # Mark the ended session in the report file before clearing.
-                if self._session_id:
-                    state.end_session_report(self._session_id)
+                # Tombstone the session the call targeted before clearing.
+                if target:
+                    state.end_session_report(target)
                 self._session_id = None
                 state.clear_session_stash(self._agent)
                 return item

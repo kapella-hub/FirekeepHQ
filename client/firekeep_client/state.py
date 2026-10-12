@@ -470,7 +470,7 @@ def append_session_report(session_id: str) -> None:
         path = _report_path()
         if not path or not isinstance(session_id, str) or not _SESSION_ID_RE.fullmatch(session_id):
             return
-        with open(path, "a", encoding="utf-8") as fh:
+        with open(path, "a", encoding="utf-8", newline="\n") as fh:
             fh.write(session_id + "\n")
     except Exception:
         pass
@@ -484,7 +484,7 @@ def end_session_report(session_id: str) -> None:
         path = _report_path()
         if not path or not isinstance(session_id, str) or not _SESSION_ID_RE.fullmatch(session_id):
             return
-        with open(path, "a", encoding="utf-8") as fh:
+        with open(path, "a", encoding="utf-8", newline="\n") as fh:
             fh.write(f"#ended {session_id}\n")
     except Exception:
         pass
@@ -493,10 +493,14 @@ def end_session_report(session_id: str) -> None:
 def reported_session_id() -> str | None:
     """The last active (not ended) header-safe id in $FIREKEEP_SESSION_REPORT_FILE.
     A line '#ended <id>' marks an id as ended; scanning in order, the last active
-    id is returned, or None. Handles non-UTF-8 bytes gracefully."""
+    id is returned, or None. A file whose mtime is older than the session stash
+    TTL is ignored (a stale file must not attribute a new day's work to a dead
+    session). Handles non-UTF-8 bytes gracefully."""
     try:
         path = _report_path()
         if not path:
+            return None
+        if time.time() - os.path.getmtime(path) > _session_stash_ttl_seconds():
             return None
         last = None
         with open(path, encoding="utf-8", errors="replace") as fh:
@@ -505,6 +509,10 @@ def reported_session_id() -> str | None:
                 if line.startswith("#ended "):
                     # Extract the id after "#ended "
                     ended_id = line[7:]  # len("#ended ") == 7
+                    # Deliberately fail-closed: a tombstone clears only the
+                    # most recent id, so "K1, K2, #ended K2" yields None even
+                    # if K1 is still live. Tracking a set of ended ids would
+                    # revive sessions that ended without writing a tombstone.
                     if ended_id == last:
                         last = None
                 elif _SESSION_ID_RE.fullmatch(line):

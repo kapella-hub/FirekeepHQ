@@ -592,3 +592,50 @@ def test_ended_session_is_never_revived_from_report_file(tmp_path, monkeypatch):
     state.clear_session_stash("tester")
     out = _run_auth_flow(shim._StashSessionAuth("tester"), _req())
     assert "X-Session-Id" not in out.headers
+
+
+def test_fresh_tap_tombstones_explicit_id_on_complete(tmp_path, monkeypatch):
+    """A fresh shim (no in-process id) ending a session by explicit id still
+    tombstones THAT id, so tapless auth never revives it."""
+    monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
+    report = tmp_path / "studio-2.keep"
+    report.write_text("sess-K1\n", encoding="utf-8")
+    monkeypatch.setenv("FIREKEEP_SESSION_REPORT_FILE", str(report))
+    monkeypatch.setattr(shim, "is_bypassed", lambda: False)
+
+    tap = shim._BridgeSessionTap("tester")
+    assert tap._session_id is None
+    tap.on_request(_tools_call(1, "ctx_complete_session", {"session_id": "sess-K1"}))
+    tap.on_response(_tool_result(1, {"status": "completed"}))
+    assert report.read_text(encoding="utf-8") == "sess-K1\n#ended sess-K1\n"
+
+    state.clear_session_stash("tester")
+    out = _run_auth_flow(shim._StashSessionAuth("tester"), _req())
+    assert "X-Session-Id" not in out.headers
+
+
+def test_explicit_id_wins_over_in_process_id_on_abandon(tmp_path, monkeypatch):
+    monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
+    report = tmp_path / "studio-3.keep"
+    monkeypatch.setenv("FIREKEEP_SESSION_REPORT_FILE", str(report))
+    monkeypatch.setattr(shim, "is_bypassed", lambda: False)
+
+    tap = shim._BridgeSessionTap("tester")
+    tap.on_request(_tools_call(1, "ctx_start_session", {"goal": "g"}))
+    tap.on_response(_tool_result(1, {"session_id": "sess-mine"}))
+    tap.on_request(_tools_call(2, "ctx_abandon_session", {"session_id": "sess-other"}))
+    tap.on_response(_tool_result(2, {"status": "abandoned"}))
+    assert report.read_text(encoding="utf-8") == "sess-mine\n#ended sess-other\n"
+
+
+def test_reported_session_id_expires_with_stash_ttl(tmp_path, monkeypatch):
+    import os
+    import time
+
+    report = tmp_path / "studio-4.keep"
+    monkeypatch.setenv("FIREKEEP_SESSION_REPORT_FILE", str(report))
+    report.write_text("sess-old\n", encoding="utf-8")
+    assert state.reported_session_id() == "sess-old"
+    stale = time.time() - (state._session_stash_ttl_seconds() + 60)
+    os.utime(report, (stale, stale))
+    assert state.reported_session_id() is None
