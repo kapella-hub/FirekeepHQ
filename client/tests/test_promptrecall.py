@@ -245,6 +245,30 @@ class TestThreshold:
                             degraded=True)
         assert promptrecall.nudge(_cfg(), {"prompt": REAL_PROMPT}) == ""
 
+
+class TestPromptRecallAttribution:
+    """Hook-pushed recall used to land in session "unknown" because recall()
+    resolved cortex with no session id. Studio receipts need it attributed."""
+
+    def test_recall_sends_the_stashed_session(self, client_env, fake_recall):
+        state.write_session_stash("tester", session_id="sess-1")
+        promptrecall.recall(_cfg(), REAL_PROMPT)
+        assert fake_recall.calls[0]["kwargs"]["headers"]["X-Session-Id"] == "sess-1"
+
+    def test_recall_falls_back_to_studio_report(self, client_env, fake_recall, monkeypatch):
+        report = client_env["tmp"] / "studio.keep"
+        report.write_text("sess-reported\n", encoding="utf-8")
+        monkeypatch.setenv("FIREKEEP_SESSION_REPORT_FILE", str(report))
+        state.clear_session_stash("tester")
+        promptrecall.recall(_cfg(), REAL_PROMPT)
+        assert fake_recall.calls[0]["kwargs"]["headers"]["X-Session-Id"] == "sess-reported"
+
+    def test_recall_without_a_session_sends_no_session_header(self, client_env, fake_recall, monkeypatch):
+        monkeypatch.delenv("FIREKEEP_SESSION_REPORT_FILE", raising=False)
+        state.clear_session_stash("tester")
+        promptrecall.recall(_cfg(), REAL_PROMPT)
+        assert "X-Session-Id" not in fake_recall.calls[0]["kwargs"]["headers"]
+
     def test_source_without_a_real_score_is_dropped_not_admitted(self, client_env, fake_recall):
         """The resolution-bonus entry carries a sentinel score and no raw_score.
         Unknown relevance must fail dark, not loud."""

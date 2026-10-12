@@ -286,6 +286,15 @@ def remember(agent: str, ids: list[str]) -> None:
         hooklog.log_failure(_HOOK, f"proactive recall dedupe write failed: {e}")
 
 
+def _keep_session(cfg) -> str | None:
+    """The agent's current Keep session, so the pushed recall is attributed to
+    it in replay (Studio 0.5 receipts, spec §7.2). Best-effort: None on any error."""
+    try:
+        return state.current_session_id(resolver.agent_id(cfg))
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def recall(cfg, prompt: str) -> list:
     """POST the prompt to cortex `/memory/recall` and return its `sources`.
 
@@ -309,12 +318,15 @@ def recall(cfg, prompt: str) -> list:
     memory filed under `infrastructure` and friends — 146 of them on the live store,
     which is the defect `docs/guides/cortex-design-decisions.md` records.
 
+    It carries the agent's current Keep session (`X-Session-Id`) so the recall shows
+    in that session's replay timeline.
+
     Returns [] for a DEGRADED response (vector search down, results graph-only).
     Same call as Bridge makes: the floor below is calibrated on cosine, and a
     graph-only set is a different scale, so pushing it would be pushing noise the
     threshold cannot judge.
     """
-    ep = resolver.resolve("cortex", cfg=cfg)
+    ep = resolver.resolve("cortex", cfg=cfg, session_id=_keep_session(cfg))
     body = {
         "task": prompt[:MAX_TASK_CHARS],
         "top_k": TOP_K,
