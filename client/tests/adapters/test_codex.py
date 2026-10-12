@@ -136,3 +136,13 @@ def test_upsert_and_strip_block_treat_backslashes_literally():
     stripped = strip_block(text2, start, end)
     assert content not in stripped
     assert "firekeep-shim" not in stripped
+
+
+def test_codex_forwards_the_studio_session_report_variable(fake_home, tmp_path):
+    """Codex env_clear()s stdio MCP servers; only env_vars pass through.
+    Studio 0.5 receipts depend on this variable reaching the gateway."""
+    get_adapter("codex").render(venv_bin=tmp_path / "venv" / "Scripts")
+    parsed = tomllib.loads((fake_home / ".codex" / "config.toml").read_text())
+    for name, block in parsed["mcp_servers"].items():
+        if name.startswith("firekeep"):
+            assert block["env_vars"] == ["FIREKEEP_SESSION_REPORT_FILE"], name

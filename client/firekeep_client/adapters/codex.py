@@ -46,6 +46,9 @@ def _toml_block(venv_bin: Path) -> str:
         # TOML literal (single-quoted) string: no escape processing -> Windows backslashes safe.
         lines.append(f"command = '{cmd}'")
         lines.append(f"args = [{arglist}]")
+        # Codex clears the env of stdio MCP servers; forward what Firekeep
+        # Studio sets per run (spec 2026-10-11 §7.2).
+        lines.append('env_vars = ["FIREKEEP_SESSION_REPORT_FILE"]')
         lines.append("")
     return "\n".join(lines).rstrip()
 
