@@ -60,3 +60,17 @@ describe("buildTimeline", () => {
     ]);
   });
 });
+
+describe("keep receipts", () => {
+  it("attaches the latest keep.receipt to its run", () => {
+    const base = { studioSessionId: "s", runtimeId: "alpha", timestamp: "t" };
+    const receipt = (final: boolean) => ({ status: "measured", final, recalls: [], writes: [], recalledCount: final ? 2 : 1, learnedCount: 0, keepSessionIds: [], cursorsAfter: {} });
+    const runs = groupTimeline(buildTimeline([
+      { ...base, id: "1", runId: "r1", payload: { kind: "message.completed", messageId: "m", role: "assistant", text: "hi" } },
+      { ...base, id: "2", runId: "r1", payload: { kind: "keep.receipt", receipt: receipt(false) } },
+      { ...base, id: "3", runId: "r1", payload: { kind: "keep.receipt", receipt: receipt(true) } },
+    ] as never));
+    expect(runs[0]?.receipt?.recalledCount).toBe(2);
+    expect(runs[0]?.activity).toHaveLength(0);
+  });
+});

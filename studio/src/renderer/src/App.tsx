@@ -21,7 +21,6 @@ import {
   X,
 } from "lucide-react";
 import type { CommandCompletion, CommandResult } from "../../core/slash-commands";
-import type { MissionSnapshot } from "../../core/mission";
 import type { SessionColor, StudioSessionSummary } from "../../core/session-store";
 import type { RuntimeDiagnostic, StudioSnapshot } from "../../core/studio-service";
 import type { LoginMethod, RuntimeDescriptor, RuntimeEffort, RuntimeEvent, RuntimeModel, RuntimeUsage } from "../../core/runtime";
@@ -40,6 +39,8 @@ import { RenderBoundary } from "./RenderBoundary.js";
 import { AgentChip } from "./composer/AgentChip.js";
 import { Composer } from "./composer/Composer.js";
 import { coalesceRuntimeEvents } from "./runtime-event-buffer.js";
+import { KeepReceiptCard } from "./conversation/KeepReceiptCard.js";
+import { MissionStepper } from "./conversation/MissionStepper.js";
 import { buildTimeline, groupTimeline, type TimelineItem, type TimelineRun } from "./timeline";
 
 interface CommandCard { readonly id: string; readonly input: string; readonly result: CommandResult }
@@ -245,6 +246,14 @@ export function App(): React.JSX.Element {
     finally { setBusy(false); }
   }, [applyResult, busy, hasPrimaryResponse, invoke, snapshot?.reviewerRuntimeIds.length]);
 
+  const runSecondOpinion = useCallback(async (runtimeId: string, focus: string): Promise<void> => {
+    if (busy) return;
+    setBusy(true);
+    try { applyResult(await invoke({ type: "review.run", runtimeId, ...(focus ? { focus } : {}) })); }
+    catch { /* invoke surfaced the actionable error. */ }
+    finally { setBusy(false); }
+  }, [applyResult, busy, invoke]);
+
   useEffect(() => {
     const keyboard = (event: KeyboardEvent): void => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
@@ -378,6 +387,24 @@ export function App(): React.JSX.Element {
   };
   const timeline = useMemo(() => buildTimeline(events), [events]);
   const timelineRuns = useMemo(() => groupTimeline(timeline), [timeline]);
+  const runGroups = useMemo(() => {
+    const groups: Array<{ run: TimelineRun; reviews: TimelineRun[] }> = [];
+    for (const run of timelineRuns) {
+      const reviewOnly = run.messages.length > 0 && run.messages.every((message) => message.role === "reviewer");
+      const last = groups.at(-1);
+      if (reviewOnly && last) last.reviews.push(run);
+      else groups.push({ run, reviews: [] });
+    }
+    return groups;
+  }, [timelineRuns]);
+  const newestReceiptRunId = useMemo(() => [...timelineRuns].reverse().find((run) => run.receipt)?.runId ?? null, [timelineRuns]);
+  const lastAnswerId = useMemo(() => {
+    for (let index = timeline.length - 1; index >= 0; index -= 1) {
+      const item = timeline[index] as TimelineItem;
+      if (item.kind === "message" && item.role === "assistant" && item.complete) return item.id;
+    }
+    return null;
+  }, [timeline]);
   const primary = bootstrap?.runtimes.find((runtime) => runtime.id === snapshot?.primaryRuntimeId);
   const currentSession = sessions.find((session) => session.id === snapshot?.activeSessionId);
   const primaryRuntimeId = snapshot?.primaryRuntimeId ?? null;
@@ -392,6 +419,13 @@ export function App(): React.JSX.Element {
   const agentWorking = Boolean(snapshot?.activeRunId) || ["running", "verifying", "repairing", "reviewing"].includes(snapshot?.mission?.phase ?? "");
 
   if (!bootstrap || !snapshot) return <LaunchScreen error={error} />;
+
+  const receiptActions: ReceiptActions = {
+    // The service refuses retrying turn N while turn N+1 is pending, so retry is offered only when idle.
+    newestRunId: snapshot.activeRunId ? null : newestReceiptRunId,
+    onFeedback: async (memoryIds, useful) => { await invoke({ type: "keep.feedback", memoryIds: [...memoryIds], useful }); },
+    onRetry: (runId) => ignore(invoke({ type: "keep.receipt.retry", runId }).then(applyResult)),
+  };
 
   return (
     <StudioShell
@@ -429,7 +463,19 @@ export function App(): React.JSX.Element {
         <div className="transcript-frame">
           <div className="transcript" ref={transcriptRef} aria-live="polite" onScroll={updateTranscriptFollow}>
             {timeline.length === 0 && commandCards.length === 0 ? <Welcome runtimes={bootstrap.runtimes} workspacePath={snapshot.workspacePath} onWorkspace={() => ignore(chooseWorkspace())} onChoose={(id) => void choosePrimary(id)} onCommand={(value) => { setComposer(value); composerRef.current?.focus(); }} /> : null}
-            {timelineRuns.map((run) => <RunTimeline key={run.id} run={run} runtime={bootstrap.runtimes.find((runtime) => runtime.id === run.runtimeId)} resolveApproval={(approvalId, decision) => ignore(invoke({ type: "approval.resolve", approvalId, decision }))} openDecision={(url) => ignore(openDecisionBoard(url))} decisionLoading={decisionLoading} />)}
+            {runGroups.map(({ run, reviews }) => <RunTimeline
+              key={run.id}
+              run={run}
+              reviews={reviews}
+              runtime={bootstrap.runtimes.find((runtime) => runtime.id === run.runtimeId)}
+              runtimes={bootstrap.runtimes}
+              resolveApproval={(approvalId, decision) => ignore(invoke({ type: "approval.resolve", approvalId, decision }))}
+              openDecision={(url) => ignore(openDecisionBoard(url))}
+              decisionLoading={decisionLoading}
+              receipts={receiptActions}
+              secondOpinion={snapshot.activeRunId || busy ? null : { messageId: lastAnswerId, primaryRuntimeId: snapshot.primaryRuntimeId, onRun: (runtimeId, focus) => ignore(runSecondOpinion(runtimeId, focus)) }}
+            />)}
+            {snapshot.mission ? <MissionStepper mission={snapshot.mission} workspacePath={snapshot.workspacePath} primaryRuntimeId={snapshot.primaryRuntimeId} busy={busy} onAction={(action) => ignore(controlMission(action))} onCommand={(value) => { setComposer(value); composerRef.current?.focus(); }} /> : null}
             {commandCards.map((card) => <CommandResultCard key={card.id} card={card} />)}
             {error ? <div className="error-banner"><AlertTriangle size={16} /><span>{error}</span><button onClick={() => setError(null)}><X size={14} /></button></div> : null}
           </div>
@@ -475,14 +521,6 @@ export function App(): React.JSX.Element {
       }
       keepPanel={<aside className="keep-panel" aria-label="The Keep">
         <h2>The Keep</h2>
-        <MissionPanel
-          mission={snapshot.mission}
-          workspacePath={snapshot.workspacePath}
-          primaryRuntimeId={snapshot.primaryRuntimeId}
-          busy={busy}
-          onAction={(action) => ignore(controlMission(action))}
-          onCommand={(value) => { setComposer(value); composerRef.current?.focus(); }}
-        />
       </aside>}
     >
 
@@ -568,64 +606,6 @@ function RuntimeManagerDialog({
   </div>;
 }
 
-function MissionPanel({
-  mission,
-  workspacePath,
-  primaryRuntimeId,
-  busy,
-  onAction,
-  onCommand,
-}: {
-  readonly mission: MissionSnapshot | null;
-  readonly workspacePath: string | null;
-  readonly primaryRuntimeId: string | null;
-  readonly busy: boolean;
-  readonly onAction: (action: StudioAction) => void;
-  readonly onCommand: (value: string) => void;
-}): React.JSX.Element {
-  if (!mission) {
-    return <section className="inspector-section mission-section">
-      <div className="section-heading"><span>Mission</span><span className="status-pill">idle</span></div>
-      <div className="mission-empty"><ShieldCheck size={20} /><strong>Give an agent a goal and verify the result.</strong><p>Set the checks, choose the primary agent, and keep a clear record of what passed, what failed, and who reviewed it.</p><button disabled={busy} onClick={() => onCommand('/mission new "')}>Start a mission</button></div>
-    </section>;
-  }
-  const latestChecks = new Map<string, MissionSnapshot["checkReceipts"][number]>();
-  for (const receipt of mission.checkReceipts) latestChecks.set(receipt.checkId, receipt);
-  const passed = mission.checks.filter((check) => latestChecks.get(check.id)?.passed).length;
-  const cancellable = !["succeeded", "partial", "failed", "cancelled"].includes(mission.phase);
-  const effectiveWorkspace = workspacePath;
-  const effectivePrimary = mission.primaryRuntimeId ?? primaryRuntimeId;
-  const runBlocker = mission.phase !== "draft"
-    ? null
-    : !effectiveWorkspace
-      ? "Choose an explicit workspace before running"
-      : !effectivePrimary
-        ? "Choose a mission primary before running"
-        : mission.checks.length === 0
-          ? "Add at least one deterministic check before running"
-          : null;
-  return <section className="inspector-section mission-section">
-    <div className="section-heading"><span>Mission</span><span className={`status-pill mission-${mission.phase}`}>{mission.phase}</span></div>
-    <article className="mission-card">
-      <strong>{mission.goal}</strong>
-      <p>{effectivePrimary ?? "No primary"} · attempt {mission.attempt || "—"} · {passed}/{mission.checks.length} checks passed</p>
-      <div className="mission-progress"><span style={{ width: `${mission.checks.length ? (passed / mission.checks.length) * 100 : 0}%` }} /></div>
-      {mission.blockReason ? <small className="mission-block">{mission.blockReason}</small> : null}
-      {runBlocker ? <small className="mission-block">{runBlocker === "Add at least one deterministic check before running" ? "Add a deterministic check before running." : `${runBlocker}.`}</small> : null}
-      {mission.outcome ? <small className="mission-outcome">{mission.outcome.taskResult} · {mission.outcome.taskResultSource}</small> : <small>Task result · unknown</small>}
-      <div className="mission-actions">
-        {mission.phase === "draft" ? <button disabled={busy || Boolean(runBlocker)} title={runBlocker ?? "Run mission"} className="primary-action" onClick={() => onAction({ type: "mission.run" })}>Run</button> : null}
-        {mission.phase === "draft" && mission.checks.length === 0 ? <button disabled={busy} onClick={() => onCommand("/mission check add -- ")}>Add check</button> : null}
-        {mission.phase === "paused" ? <button disabled={busy} className="primary-action" onClick={() => onAction({ type: "mission.continue" })}>Continue</button> : null}
-        {mission.phase === "awaiting-approval" ? <button disabled={busy} className="primary-action" onClick={() => onAction({ type: "mission.complete", taskResult: "success" })}>Approve</button> : null}
-        {mission.phase === "awaiting-approval" && mission.attempt - 1 < mission.maxRepairAttempts ? <button disabled={busy} onClick={() => onCommand('/mission repair --note "')}>Repair</button> : null}
-        {cancellable ? <button className="danger-action" onClick={() => onAction({ type: "mission.cancel" })}>Cancel</button> : null}
-        <button onClick={() => onCommand(mission.phase === "draft" ? "/mission status" : "/mission report")}>{mission.phase === "draft" ? "Inspect" : "Report"}</button>
-      </div>
-    </article>
-  </section>;
-}
-
 function LaunchScreen({ error }: { readonly error: string | null }): React.JSX.Element {
   return <main className="launch-shell"><section className="launch-card" aria-live="polite"><span className="brand-mark"><FirekeepMark size={30} /></span><h1>Firekeep Studio</h1><div className="launch-status"><span className="pulse-dot" /> Loading…</div>{error ? <p className="launch-error">{error}</p> : null}</section></main>;
 }
@@ -640,7 +620,27 @@ interface TimelineActions {
   readonly decisionLoading: string | null;
 }
 
-function RunTimeline({ run, runtime, resolveApproval, openDecision, decisionLoading }: { readonly run: TimelineRun; readonly runtime: RuntimeDescriptor | undefined } & TimelineActions): React.JSX.Element {
+interface ReceiptActions {
+  /** The run whose receipt may offer retry (null while a run is active). */
+  readonly newestRunId: string | null;
+  readonly onFeedback: (memoryIds: readonly string[], useful: boolean) => Promise<void>;
+  readonly onRetry: (runId: string) => void;
+}
+
+interface SecondOpinionProps {
+  readonly messageId: string | null;
+  readonly primaryRuntimeId: string | null;
+  readonly onRun: (runtimeId: string, focus: string) => void;
+}
+
+function RunTimeline({ run, reviews, runtime, runtimes, resolveApproval, openDecision, decisionLoading, receipts, secondOpinion }: {
+  readonly run: TimelineRun;
+  readonly reviews?: readonly TimelineRun[];
+  readonly runtime: RuntimeDescriptor | undefined;
+  readonly runtimes: readonly RuntimeDescriptor[];
+  readonly receipts: ReceiptActions;
+  readonly secondOpinion: SecondOpinionProps | null;
+} & TimelineActions): React.JSX.Element {
   const hasFinalAnswer = run.messages.some((item) => item.role !== "user" && item.complete);
   const [activityOpen, setActivityOpen] = useState(!hasFinalAnswer);
   const previousFinal = useRef(hasFinalAnswer);
@@ -650,21 +650,57 @@ function RunTimeline({ run, runtime, resolveApproval, openDecision, decisionLoad
   }, [hasFinalAnswer]);
   const steps = run.activity.length;
   const working = run.activity.some((item) => item.kind === "tool" && item.status === "running");
+  const cardProps = { runtime, resolveApproval, openDecision, decisionLoading };
+
+  const reviewers = runtimes.filter((candidate) => candidate.capabilities.includes("review"));
+  const defaultReviewer = (reviewers.find((candidate) => candidate.id !== secondOpinion?.primaryRuntimeId) ?? reviewers[0])?.id ?? "";
+  const [chooserOpen, setChooserOpen] = useState(false);
+  const [chooserRuntime, setChooserRuntime] = useState("");
+  const [focus, setFocus] = useState("");
+  const chooserRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const answerHere = Boolean(secondOpinion?.messageId) && run.messages.some((item) => item.id === secondOpinion?.messageId);
+  const chooserVisible = chooserOpen && answerHere && reviewers.length > 0;
+  useEffect(() => {
+    if (!chooserVisible) return;
+    const escape = (event: KeyboardEvent): void => {
+      // Capture phase + stopImmediatePropagation: closing the chooser must not also reach App's Escape (run.cancel).
+      if (event.key === "Escape") { event.stopImmediatePropagation(); setChooserOpen(false); triggerRef.current?.focus(); }
+    };
+    window.addEventListener("keydown", escape, true);
+    return () => window.removeEventListener("keydown", escape, true);
+  }, [chooserVisible]);
+  const effectiveRuntime = reviewers.some((candidate) => candidate.id === chooserRuntime) ? chooserRuntime : defaultReviewer;
+
   return <section className="run-timeline" data-run-id={run.runId}>
-    {run.messages.map((item) => <SafeTimelineCard key={`${item.kind}:${item.id}`} item={item} runtime={runtime} resolveApproval={resolveApproval} openDecision={openDecision} decisionLoading={decisionLoading} />)}
-    {run.attention.map((item) => <SafeTimelineCard key={`${item.kind}:${item.id}`} item={item} runtime={runtime} resolveApproval={resolveApproval} openDecision={openDecision} decisionLoading={decisionLoading} />)}
-    {steps ? <details className="run-activity" open={activityOpen} onToggle={(event) => setActivityOpen(event.currentTarget.open)}><summary><span className={working ? "pulse-dot" : "work-log-dot"} /><span>{working ? "Working" : "Work log"} · {steps} step{steps === 1 ? "" : "s"}</span><ChevronDown size={14} /></summary><div className="run-activity-items">{run.activity.map((item) => <SafeTimelineCard key={`${item.kind}:${item.id}`} item={item} runtime={runtime} resolveApproval={resolveApproval} openDecision={openDecision} decisionLoading={decisionLoading} />)}</div></details> : null}
+    {run.messages.map((item) => <SafeTimelineCard
+      key={`${item.kind}:${item.id}`}
+      item={item}
+      {...cardProps}
+      extra={answerHere && item.id === secondOpinion?.messageId && reviewers.length > 0
+        ? <button ref={triggerRef} type="button" className="second-opinion-button" aria-label="Second opinion" aria-expanded={chooserVisible} title="Ask another agent to review this answer" onClick={() => setChooserOpen((value) => !value)}><ShieldCheck size={13} /></button>
+        : null}
+    />)}
+    {chooserVisible ? <div className="second-opinion-chooser" ref={chooserRef}>
+      <select aria-label="Reviewer" value={effectiveRuntime} onChange={(event) => setChooserRuntime(event.target.value)}>{reviewers.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.displayName}</option>)}</select>
+      <input type="text" placeholder="Focus (optional), e.g. security" value={focus} onChange={(event) => setFocus(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); secondOpinion?.onRun(effectiveRuntime, focus.trim()); setChooserOpen(false); } }} />
+      <button type="button" className="primary-action" onClick={() => { secondOpinion?.onRun(effectiveRuntime, focus.trim()); setChooserOpen(false); }}>Run</button>
+    </div> : null}
+    {run.attention.map((item) => <SafeTimelineCard key={`${item.kind}:${item.id}`} item={item} {...cardProps} />)}
+    {steps ? <details className="run-activity" open={activityOpen} onToggle={(event) => setActivityOpen(event.currentTarget.open)}><summary><span className={working ? "pulse-dot" : "work-log-dot"} /><span>{working ? "Working" : "Work log"} · {steps} step{steps === 1 ? "" : "s"}</span><ChevronDown size={14} /></summary><div className="run-activity-items">{run.activity.map((item) => <SafeTimelineCard key={`${item.kind}:${item.id}`} item={item} {...cardProps} />)}</div></details> : null}
+    {run.receipt ? <KeepReceiptCard receipt={run.receipt} runId={run.runId} canRetry={receipts.newestRunId === run.runId} onFeedback={receipts.onFeedback} onRetry={receipts.onRetry} /> : null}
+    {reviews?.map((review) => <div key={review.id} className="second-opinion"><RunTimeline run={review} runtime={runtimes.find((candidate) => candidate.id === review.runtimeId)} runtimes={runtimes} resolveApproval={resolveApproval} openDecision={openDecision} decisionLoading={decisionLoading} receipts={receipts} secondOpinion={null} /></div>)}
   </section>;
 }
 
-function SafeTimelineCard(props: { readonly item: TimelineItem; readonly runtime: RuntimeDescriptor | undefined } & TimelineActions): React.JSX.Element {
+function SafeTimelineCard(props: { readonly item: TimelineItem; readonly runtime: RuntimeDescriptor | undefined; readonly extra?: React.ReactNode } & TimelineActions): React.JSX.Element {
   const resetKey = props.item.kind === "message" ? props.item.text : props.item.id;
   return <RenderBoundary resetKey={resetKey}><TimelineCard {...props} /></RenderBoundary>;
 }
 
-function TimelineCard({ item, runtime, resolveApproval, openDecision, decisionLoading }: { readonly item: TimelineItem; readonly runtime: RuntimeDescriptor | undefined; readonly resolveApproval: (id: string, decision: string) => void; readonly openDecision: (url: string) => void; readonly decisionLoading: string | null }): React.JSX.Element | null {
+function TimelineCard({ item, runtime, extra, resolveApproval, openDecision, decisionLoading }: { readonly item: TimelineItem; readonly runtime: RuntimeDescriptor | undefined; readonly extra?: React.ReactNode; readonly resolveApproval: (id: string, decision: string) => void; readonly openDecision: (url: string) => void; readonly decisionLoading: string | null }): React.JSX.Element | null {
   const name = runtime?.displayName ?? item.runtimeId;
-  if (item.kind === "message") return <article className={`message-card ${item.role}`}><header><span className="runtime-orb" style={{ "--runtime-accent": runtime?.accent ?? "#df7e45" } as React.CSSProperties}>{item.role === "user" ? "Y" : name[0]}</span><div><strong>{item.role === "user" ? "You" : item.role === "reviewer" ? `${name} review` : name}</strong><small>{formatTime(item.timestamp)}{item.complete ? "" : " · streaming"}</small></div><CopyButton text={item.text} /></header><div className="markdown"><RichMarkdown>{item.text}</RichMarkdown></div></article>;
+  if (item.kind === "message") return <article className={`message-card ${item.role}`}><header><span className="runtime-orb" style={{ "--runtime-accent": runtime?.accent ?? "#df7e45" } as React.CSSProperties}>{item.role === "user" ? "Y" : name[0]}</span><div><strong>{item.role === "user" ? "You" : item.role === "reviewer" ? `${name} review` : name}</strong><small>{formatTime(item.timestamp)}{item.complete ? "" : " · streaming"}</small></div>{extra}<CopyButton text={item.text} /></header><div className="markdown"><RichMarkdown>{item.text}</RichMarkdown></div></article>;
   if (item.kind === "reasoning") return <details className="activity-card reasoning"><summary><Sparkles size={14} /> Reasoning <ChevronDown size={14} /></summary><pre>{item.text}</pre></details>;
   if (item.kind === "tool") {
     const boardUrl = findDecisionBoardUrl(item.output);

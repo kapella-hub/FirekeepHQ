@@ -391,3 +391,38 @@ kbd { padding: 1px 4px; border: 1px solid var(--line); border-radius: 4px; backg
 .usage-detail .usage-breakdown { display: flex; gap: 12px; }
 .usage-detail .budget-track { height: 4px; border-radius: 999px; background: var(--surface-3); overflow: hidden; }
 .usage-detail .budget-track span { display: block; height: 100%; background: var(--ember); }
+
+/* Conversation: Keep receipts, Second opinion, inline mission stepper */
+.keep-receipt-row { margin: 0 0 12px; }
+.keep-receipt { display: inline-flex; align-items: center; padding: 3px 9px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--muted); font-size: 10.5px; cursor: pointer; }
+.keep-receipt:hover { border-color: var(--line-strong); color: var(--text); }
+.keep-receipt.muted { color: var(--faint); }
+.keep-receipt.unavailable { color: var(--yellow); }
+span.keep-receipt { cursor: default; }
+.keep-receipt-details { margin: 7px 0 0; padding: 8px 12px; list-style: none; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); font-size: 11px; color: var(--muted); }
+.keep-receipt-details li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 3px 0; }
+.receipt-thumbs { display: inline-flex; gap: 4px; flex: none; }
+.receipt-thumbs button { padding: 1px 6px; border: 1px solid var(--line); border-radius: 6px; background: transparent; cursor: pointer; font-size: 11px; }
+.receipt-thumbs button:disabled { opacity: 0.4; cursor: default; }
+.receipt-thumbs .receipt-retry { color: var(--yellow); font-size: 10px; }
+.second-opinion-button { margin-left: auto; padding: 3px 5px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; opacity: 0.35; }
+.second-opinion-button + .copy-button { margin-left: 4px; }
+.message-card:hover .second-opinion-button, .second-opinion-button:focus-visible, .second-opinion-button[aria-expanded="true"] { opacity: 1; }
+.second-opinion-chooser { display: flex; align-items: center; gap: 7px; margin: 0 0 12px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.second-opinion-chooser input { flex: 1; min-width: 0; }
+.second-opinion { margin: 0 0 13px 18px; padding-left: 12px; border-left: 2px solid color-mix(in srgb, var(--ember) 35%, var(--line)); }
+.mission-stepper { margin: 8px 0 14px; padding: 12px 14px; border: 1px solid color-mix(in srgb, var(--ember) 28%, var(--line)); border-radius: 12px; background: linear-gradient(145deg, color-mix(in srgb, var(--surface-2) 95%, transparent), color-mix(in srgb, var(--ember) 4%, var(--surface))); }
+.mission-stepper > header { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12px; }
+.mission-stepper .status-pill { margin-left: 0; }
+.mission-steps { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 4px; padding: 0; list-style: none; }
+.mission-step { padding: 2px 9px; border: 1px solid var(--line); border-radius: 999px; color: var(--faint); font-size: 10.5px; }
+.mission-step.done { color: var(--green); border-color: color-mix(in srgb, var(--green) 35%, var(--line)); }
+.mission-step.current { color: var(--ember); border-color: var(--ember); background: var(--ember-soft); }
+.mission-stepper small { display: block; margin-top: 6px; color: var(--faint); font-size: 10px; }
+.mission-stepper .mission-block { color: var(--yellow); }
+.mission-stepper .mission-outcome { color: var(--green); text-transform: capitalize; }
+.mission-stepper .mission-actions { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 10px; }
+.mission-stepper .mission-actions button { min-height: 30px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--muted); font-size: 10px; cursor: pointer; }
+.mission-stepper .mission-actions button.primary-action { border-color: color-mix(in srgb, var(--ember) 45%, var(--line)); background: var(--ember-soft); color: var(--ember); }
+.mission-stepper .mission-actions button.danger-action { border-color: color-mix(in srgb, var(--red) 35%, var(--line)); color: var(--red); }
+.mission-stepper .mission-actions button:disabled { opacity: 0.45; cursor: default; }

@@ -1,4 +1,5 @@
 import type { MessageRole, RuntimeEvent, RuntimeUsage } from "../../core/runtime.js";
+import type { KeepReceipt } from "../../core/keep/receipt.js";
 
 interface TimelineBase {
   readonly id: string;
@@ -14,7 +15,8 @@ export type TimelineItem =
   | TimelineBase & { readonly kind: "diff"; readonly diff: string }
   | TimelineBase & { readonly kind: "notice"; readonly level: "info" | "warning" | "error"; readonly message: string; readonly detail?: string }
   | TimelineBase & { readonly kind: "approval"; readonly approvalId: string; readonly title: string; readonly detail: string; readonly options: readonly string[]; readonly decision?: string }
-  | TimelineBase & { readonly kind: "usage"; readonly usage: RuntimeUsage };
+  | TimelineBase & { readonly kind: "usage"; readonly usage: RuntimeUsage }
+  | TimelineBase & { readonly kind: "receipt"; readonly receipt: KeepReceipt };
 
 export type MessageTimelineItem = Extract<TimelineItem, { readonly kind: "message" }>;
 
@@ -26,6 +28,7 @@ export interface TimelineRun {
   readonly messages: readonly MessageTimelineItem[];
   readonly attention: readonly TimelineItem[];
   readonly activity: readonly TimelineItem[];
+  readonly receipt?: KeepReceipt;
 }
 
 export function buildTimeline(events: readonly RuntimeEvent[]): TimelineItem[] {
@@ -80,7 +83,7 @@ export function buildTimeline(events: readonly RuntimeEvent[]): TimelineItem[] {
       const existing = positions.get(key) === undefined ? undefined : items[positions.get(key) as number];
       if (existing?.kind === "approval") upsert(key, { ...existing, decision: payload.decision });
     } else if (payload.kind === "keep.receipt") {
-      /* rendered in Task 14 */
+      upsert(`receipt:${event.runId}`, { ...base, kind: "receipt", receipt: payload.receipt });
     }
   }
   return items;
@@ -95,6 +98,7 @@ export function groupTimeline(items: readonly TimelineItem[]): TimelineRun[] {
     messages: MessageTimelineItem[];
     attention: TimelineItem[];
     activity: TimelineItem[];
+    receipt?: KeepReceipt;
   }> = [];
   const positions = new Map<string, number>();
   for (const item of items) {
@@ -107,6 +111,7 @@ export function groupTimeline(items: readonly TimelineItem[]): TimelineRun[] {
     }
     const run = runs[position] as (typeof runs)[number];
     if (item.kind === "message") run.messages.push(item);
+    else if (item.kind === "receipt") run.receipt = item.receipt;
     else if (item.kind === "approval" || (item.kind === "notice" && item.level !== "info")) run.attention.push(item);
     else run.activity.push(item);
   }

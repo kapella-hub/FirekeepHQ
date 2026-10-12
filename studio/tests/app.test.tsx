@@ -268,9 +268,8 @@ describe("Firekeep Studio renderer", () => {
   it("makes the mission harness discoverable without exposing a process bridge", async () => {
     installBridge();
     render(<App />);
-    await screen.findByText("Give an agent a goal and verify the result.");
 
-    fireEvent.click(screen.getByRole("button", { name: "Start a mission" }));
+    fireEvent.click(await screen.findByRole("button", { name: "/mission" }));
 
     expect(screen.getByRole("textbox")).toHaveValue('/mission new "');
   });
@@ -612,4 +611,56 @@ describe("Firekeep Studio renderer", () => {
     expect(await screen.findByRole("form", { name: "Decision Board" })).toBeInTheDocument();
     expect(invoke).not.toHaveBeenCalledWith({ type: "decision.load", url: board.url });
   });
+
+  it("renders the receipt and sends one-shot knowledge feedback", async () => {
+    const receipt = { status: "measured", final: true, recalls: [{ query: "deploy vps", trigger: "prompt-hook", resultCount: 2, memoryIds: ["m1", "m2"] }], writes: [], recalledCount: 2, learnedCount: 0, keepSessionIds: ["k1"], cursorsAfter: { k1: 3 } };
+    const invoke = installBridge({ snapshot: state("alpha"), events: [
+      { id: "1", runId: "r1", studioSessionId: "session-1", runtimeId: "alpha", timestamp: "t", payload: { kind: "message.completed", messageId: "a", role: "assistant", text: "Done." } },
+      { id: "2", runId: "r1", studioSessionId: "session-1", runtimeId: "alpha", timestamp: "t", payload: { kind: "keep.receipt", receipt } },
+    ] as never });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Keep · recalled 2 · learned 0" }));
+    expect(screen.getByText("deploy vps")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Knowledge was right" }));
+    expect(invoke).toHaveBeenCalledWith({ type: "keep.feedback", memoryIds: ["m1", "m2"], useful: true });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Knowledge was right" })).toBeDisabled());
+  });
+
+  it("an unavailable receipt retries", async () => {
+    const receipt = { status: "unavailable", final: true, recalls: [], writes: [], recalledCount: 0, learnedCount: 0, keepSessionIds: [], cursorsAfter: {}, detail: "timeout" };
+    const invoke = installBridge({ snapshot: state("alpha"), events: [{ id: "2", runId: "r1", studioSessionId: "session-1", runtimeId: "alpha", timestamp: "t", payload: { kind: "keep.receipt", receipt } }] as never });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Keep receipt unavailable · retry" }));
+    expect(invoke).toHaveBeenCalledWith({ type: "keep.receipt.retry", runId: "r1" });
+  });
+
+  it("offers retry only on the newest receipt and not while a run is active", async () => {
+    const receipt = { status: "unavailable", final: true, recalls: [], writes: [], recalledCount: 0, learnedCount: 0, keepSessionIds: [], cursorsAfter: {}, detail: "timeout" };
+    const ev = (id: string, runId: string) => ({ id, runId, studioSessionId: "session-1", runtimeId: "alpha", timestamp: "t", payload: { kind: "keep.receipt", receipt } });
+    const invoke = installBridge({ snapshot: state("alpha"), events: [ev("1", "r1"), ev("2", "r2")] as never });
+    render(<App />);
+    await screen.findAllByText("Keep receipt unavailable");
+    expect(screen.getAllByRole("button", { name: "Keep receipt unavailable · retry" })).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "Keep receipt unavailable · retry" }));
+    expect(invoke).toHaveBeenCalledWith({ type: "keep.receipt.retry", runId: "r2" });
+  });
+
+  it("asks for a second opinion on the last answer", async () => {
+    const invoke = installBridge({ snapshot: state("alpha"), events: [{ id: "1", runId: "r1", studioSessionId: "session-1", runtimeId: "alpha", timestamp: "t", payload: { kind: "message.completed", messageId: "a", role: "assistant", text: "Answer" } }] as never });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Second opinion" }));
+    fireEvent.change(screen.getByPlaceholderText(/Focus \(optional\)/), { target: { value: "security" } });
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+    expect(invoke).toHaveBeenCalledWith({ type: "review.run", runtimeId: "beta", focus: "security" });
+  });
+
+  it("renders mission progress inline and accepts on the turn", async () => {
+    const mission = { ...draftMission([{ id: "c1", name: "npm test", command: "npm test", timeoutMs: 60_000 }] as never), phase: "awaiting-approval" } as MissionSnapshot;
+    const invoke = installBridge({ snapshot: { ...state("alpha"), mission } as never });
+    render(<App />);
+    expect(await screen.findByRole("list", { name: "Mission progress" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Accept" }));
+    expect(invoke).toHaveBeenCalledWith(expect.objectContaining({ type: "mission.complete", taskResult: "success" }));
+  });
 });
+
