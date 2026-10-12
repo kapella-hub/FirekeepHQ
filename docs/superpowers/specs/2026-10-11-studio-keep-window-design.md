@@ -44,7 +44,8 @@ Observations (2026-10-11):
 Piece 2 has two prerequisites outside `studio/`, each shipped and released before Studio
 0.5.0:
 
-- a **client kit release** (§7.1 preset and `whoami`, §7.2 session adoption);
+- a **client kit release** (§7.1 preset and `whoami`; §7.2 session report file, Codex
+  `env_vars`, prompt-recall attribution);
 - a **server release** (§7.3: `replay_timeline` gains a JSON format).
 
 Studio 0.5.0 must still work against an older kit or server, with "partial" receipts.
@@ -208,14 +209,16 @@ The cuts remove code from `studio-service.ts`; no new logic is added there for p
 - **New kit preset `studio`** (in `client/firekeep_client/gateway.py` `TOOLSET_PRESETS`):
   - reads: `memory_recall`, `skill_list`, `skill_recall`, `relay_who_is_online`,
     `relay_read`, `ctx_list_sessions`, `replay_timeline`, `corpus_sources`;
-  - writes: `memory_feedback`, `ctx_start_session`, `ctx_complete_session`.
+  - writes: `memory_feedback` only. Studio never starts or completes a Keep session (§7.2).
   - The kit owns and tests this list. Studio never calls a tool outside it.
 - **New kit command `firekeep whoami --json`** prints `{agent_id, kit_version,
   personal_mode, server_configured}` from the kit config. It never prints the API key.
-  - Studio calls it in the launch probe. It is how Studio learns the kit agent id for §7.2.
+  - Studio calls it in the launch probe. It is how Studio learns the kit agent id it needs
+    to form the panel label (§7.2).
   - Studio never reads `~/.firekeep/config` itself, because that file holds the API key.
-  - On an older kit (`whoami` missing), the Keep panel still works. Receipts use the
-    §7.3 partial fallback because §7.2 cannot be set up.
+  - On an older kit (`whoami` missing), Studio spawns the panel gateway without the
+    panel label. The panel still works. Receipts fall back to §7.3 "partial", because an
+    older kit never writes the session report file either.
 - The renderer gets **typed IPC only**:
   - `keep:status`
   - `keep:search {query, kind: memory|skill}`
@@ -232,53 +235,56 @@ The cuts remove code from `studio-service.ts`; no new logic is added there for p
   - Killed as a process tree on quit, reusing `process.ts`.
   - Calls time out after 10 s. A timed-out call never blocks a runtime turn.
 
-### 7.2 Session correlation (Studio session ⇄ Keep session)
+### 7.2 Session correlation (Studio session ⇄ Keep sessions)
 
-Receipts need the Keep session id that the agent's memory calls were attributed to. They
-also need to exclude Studio's own Keep-panel reads, which travel through the same kit and
-key.
+Receipts need the Keep (Bridge) session ids that the agent's memory calls were attributed
+to, and they must exclude Studio's own Keep-panel reads. Facts this rests on (verified
+2026-10-11):
 
-**Two labels, one key.** Every Keep call made by the panel or highlights passes an explicit
-`agent_id = <kit agent id>-studio` (for example `agent-marat_pc-5a60-studio`).
+- No kit hook starts a Keep session. The **agent** calls `ctx_start_session` through the
+  gateway, and the bridge shim's `_BridgeSessionTap` captures the returned id into the
+  per-agent session stash.
+- Cortex attributes an event to an explicit `session_id` argument first, then to the
+  `X-Session-Id` header (`_resolve_identity`). Agents are told to pass their session id, so
+  the id that matters is the one the agent itself started.
+- Hook-pushed prompt recall (`promptrecall`) currently resolves cortex with no session id,
+  so it lands in session `"unknown"`.
 
-- Cortex records the event's `agent_id` from that parameter (`mcp_server.py` sets
-  `X-Agent-Id` from it, and `/memory/recall` stamps the `memory_read` event with it).
-- Receipts therefore drop every event carrying the `-studio` label. A Memory-tab search
-  made during a turn can never appear in that turn's receipt, even though the shim also
-  attributes it to the same session.
+**The child owns its session; Studio discovers it.**
 
-**Studio owns session start.**
+- Studio launches every runtime child for a Studio session with
+  `FIREKEEP_SESSION_REPORT_FILE=<userData>/sessions/<studioSessionId>.keep`.
+- **Kit change:** when that variable is set, the bridge tap appends each session id it
+  captures from `ctx_start_session` / `ctx_resume_session` to that file, one id per line,
+  right where it already writes the stash. The write is best-effort and never blocks the
+  call.
+- After each turn, Studio reads the file and stores the ids in the session index as
+  `keepSessionIds` (ordered, de-duplicated). An agent may start more than one Keep session
+  in a Studio session; receipts read all of them.
+- Studio never starts, resumes, completes or rewrites a Keep session. The agent's own
+  session lifecycle, its `briefing_id` attribution and its stop-hook distillation are
+  unchanged.
+- **Codex:** Codex clears the environment of the MCP servers it launches. The kit's Codex
+  adapter therefore renders `env_vars = ["FIREKEEP_SESSION_REPORT_FILE"]` on each
+  `[mcp_servers.firekeep-*]` block. Claude and Kiro inherit the parent environment.
+- **Kit change:** `promptrecall` (and every hook REST call through `resolver.resolve`)
+  defaults `session_id` to the stashed Keep session id. Hook-pushed recall is then
+  attributed to the agent's session and appears in receipts.
 
-- When a Studio session sends its first turn, Studio calls `ctx_start_session(goal=<session
-  name or first prompt, truncated>, agent_id=<kit agent id>)` over its gateway. That is the
-  same label the runtime children use. Studio stores the returned id in the session index
-  as `keepSessionId`.
-- Every runtime child for that Studio session is launched with
-  `FIREKEEP_SESSION_ID=<keepSessionId>`. The variable is already on the kit's `childenv.py`
-  pass-through allowlist, but nothing consumes it yet.
+**Panel isolation.**
 
-**Kit change (required):** when `FIREKEEP_SESSION_ID` is set,
+- Studio spawns its own gateway with `FIREKEEP_AGENT_ID=<kit agent id>-studio-panel`.
+  `resolver.agent_id` honours that variable first, so the panel's shims use their own stash
+  file and send `X-Agent-Id: …-studio-panel`.
+- Studio never starts a Keep session under that label, so panel reads carry no session id
+  and land in no agent session's timeline.
+- The receipt builder still drops events whose `agent_id` ends in `-studio-panel`, as a
+  guard.
+- Disclosed: panel searches are untagged, so they count toward the briefing's "memory
+  calls had no session_id" discipline line for that label.
 
-- The session-start hook **does not call `ctx_start_session` or `ctx_resume_session`.**
-  - It writes that id into the per-agent session stash and proceeds.
-  - So no adopt/resume is attempted, and the "active for another agent" refusal cannot
-    trigger.
-- The pre-flight briefing still runs and is still injected into the agent's context.
-  - **Disclosed limitation:** its `briefing_id` is not attached to the Studio-owned session.
-  - The A/B tip-shown attribution is therefore not recorded for Studio sessions.
-  - Terminal sessions are unaffected.
-- The gateway shim's `X-Session-Id` tap prefers `FIREKEEP_SESSION_ID` over both the
-  captured and the stashed id.
-  - This covers hook-capable runtimes (Claude, Kiro) and hookless Codex, whose MCP calls go
-    only through the shim.
-- The stop / session-end hooks do not complete a session whose id came from
-  `FIREKEEP_SESSION_ID`. Studio owns its lifecycle.
-
-**Lifecycle.**
-
-- Deleting or archiving a Studio session calls `ctx_complete_session(task_result=…)`. The
-  result is unset unless a mission receipt supplies one.
-- Plain closing does not complete the session, because the Studio session may be resumed.
+**Lifecycle.** Deleting a Studio session deletes its `.keep` report file. It does not
+complete any Keep session: those belong to the agent.
 
 ### 7.3 Keep receipts (per turn)
 
@@ -298,17 +304,17 @@ them as JSON.
 **Cutting the timeline into turns.** Studio never compares its own clock with the server's
 timestamps, because a workstation's clock and the Keep's can disagree by seconds.
 
-- Each Studio session keeps a cursor: the number of session events already assigned to a
-  receipt.
-- When a turn completes, Studio fetches the events from the cursor onward and builds a
-  provisional receipt.
+- For each Keep session id in its `keepSessionIds` (§7.2), a Studio session keeps a cursor:
+  the number of that session's events already assigned to a receipt.
+- When a turn completes, Studio re-reads the report file, then fetches each Keep session's
+  events from its cursor onward and builds a provisional receipt from the union.
 - When the user sends the **next** prompt, Studio fetches once more before the prompt
   leaves. That fetch finalizes the previous receipt and advances the cursor.
 - Late writes, such as a stop-hook learn that lands just after the answer, are therefore
   credited to the turn that caused them. Because Studio serializes runs, everything between
   two sends belongs to one turn.
-- In the batch, the receipt drops events whose `agent_id` ends in `-studio` (§7.2) and keeps
-  `memory_read` and `memory_write`.
+- In the batch, the receipt drops events whose `agent_id` ends in `-studio-panel` (§7.2) and
+  keeps `memory_read` and `memory_write`.
 - A mission turn's receipt includes its repair loop and its reviewers, because they run
   inside that turn.
 
@@ -324,7 +330,8 @@ timestamps, because a workstation's clock and the Keep's can disagree by seconds
   - The UI copy says "Was this knowledge right?", not "rate this answer". That matches the
     kit rule that feedback is about knowledge, not the turn.
   - Feedback is one-shot per recall.
-- **Fallback.** If the kit predates §7.2, or replay is unreachable, Studio builds the
+- **Fallback.** If the report file is empty after a turn (an older kit, or an agent that
+  never started a Keep session), or the server predates `format="json"`, Studio builds the
   receipt from `mcp__firekeep__*` tool calls visible in the runtime stream and marks it
   **"partial — hook-injected recall not shown"**. Studio never shows a confident zero it did
   not measure.
@@ -375,7 +382,8 @@ Chat always works without the Keep. Only the panel and receipts degrade.
 
 - **Unit (vitest):**
   - `test-command-detect` rules;
-  - receipt builder: replay events → receipt, the `-studio` filter, the cursor (late writes
+  - receipt builder: replay events → receipt, the union across several Keep sessions, the
+    `-studio-panel` filter, the cursor (late writes
     land on the turn that caused them), Markdown-reply detection for old servers, the
     fallback path, and the "partial" label;
   - Keep IPC validation: unknown tool names rejected, argument shapes enforced;
@@ -386,10 +394,11 @@ Chat always works without the Keep. Only the panel and receipts degrade.
   quit.
 - **Kit (pytest, `client/`):**
   - the `studio` preset contents, and that an unknown preset still fails closed;
-  - with `FIREKEEP_SESSION_ID` set: the session-start hook makes no start/resume call,
-    writes the stash, and still injects the briefing;
-  - the shim's `X-Session-Id` tap prefers `FIREKEEP_SESSION_ID`;
-  - end hooks leave that session open;
+  - with `FIREKEEP_SESSION_REPORT_FILE` set, the bridge tap appends each captured
+    session id; unset, it writes nothing; an unwritable path never breaks the call;
+  - the Codex adapter renders `env_vars = ["FIREKEEP_SESSION_REPORT_FILE"]`, and
+    `childenv` passes the variable through;
+  - `promptrecall` sends the stashed Keep session id as `X-Session-Id`;
   - `firekeep whoami --json` prints the agent id and never the API key.
 - **Server (pytest, `cortex/`):** `replay_timeline(format="json")` returns the route's
   JSON with `agent_id` and `payload.memory_ids`; the default format is byte-identical to
@@ -417,7 +426,8 @@ Update together, per the repo's change-consistency rule:
   bullets, and new Keep-link bullets;
 - `client/firekeep_client/gateway.py` and `docs/guides/client-kit.md` "Gateway toolsets":
   the `studio` preset;
-- the kit's session-start / shim docs: `FIREKEEP_SESSION_ID` and `firekeep whoami`;
+- the kit docs (`client-kit.md` childenv and Session Hooks sections):
+  `FIREKEEP_SESSION_REPORT_FILE`, prompt-recall attribution, and `firekeep whoami`;
 - `docs/guides/replay-evals-patterns.md`: the `replay_timeline` JSON format;
 - root `CLAUDE.md`: the Studio row (drop Grok, mention the Keep link).
 
