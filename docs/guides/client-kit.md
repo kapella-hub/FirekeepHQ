@@ -604,14 +604,6 @@ member. Now every child the gateway builds — the four shims, `decision`, and e
   `FIREKEEP_DECISION_*` settings, …). Names match case-insensitively and keep
   their spelling.
 
-`FIREKEEP_SESSION_REPORT_FILE` (client 1.8.0) is set by Firekeep Studio on every agent it
-launches. The bridge shim's session tap appends each Keep session id it captures (one per
-line), so Studio can build per-turn receipts from the sessions the agent itself started.
-Codex receives it through `env_vars` in the rendered `config.toml`. Unset, nothing is
-written. Session ids remain in the file until the bridge shim appends `#ended <id>` when
-`ctx_complete_session` or `ctx_abandon_session` exits; the kit's own fallback
-(`state.current_session_id`) never revives an ended session.
-
 - **Forwarded to one child only** (`CHILD_EXTRAS`): a credential that child is
   documented to read — symdex gets `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`,
   `OPENAI_API_*` and `GITHUB_TOKEN` (AI summaries, GitHub indexing); decision gets
@@ -631,6 +623,16 @@ written. Session ids remain in the file until the bridge shim appends `#ended <i
   forwarded: the config, not ambient environment, decides who symdex is. The shims,
   decision and Hands need no injection — they read the key from the config through
   `firekeep_client.resolver`.
+
+`FIREKEEP_SESSION_REPORT_FILE` (client 1.8.0) is set by Firekeep Studio on every agent it
+launches. The bridge shim's session tap appends each Keep session id it captures (one per
+line), so Studio can build per-turn receipts from the sessions the agent itself started.
+Codex receives it through `env_vars` in the rendered `config.toml`. Unset, nothing is
+written. Ids are never removed from the file: on `ctx_complete_session` or
+`ctx_abandon_session` the shim appends `#ended <id>` for the session the call targeted
+(the explicit `session_id` argument, else the one this shim captured). The kit's own
+fallback (`state.current_session_id`) ignores an ended id, and ignores a report file
+older than 12 hours (the session stash TTL).
 
 Behaviour change that came with it: nothing in the kit used to set
 `FIREKEEP_CORTEX_URL`, so `recall_with_code`, `learn_from_changes` and
@@ -1017,8 +1019,10 @@ The prompt hook consults the Keep on every user prompt and injects up to 3 genui
 
 Since 1.8.0 the pushed recall carries the agent's current Keep session (`X-Session-Id`:
 the fresh stash, else Studio's report file), so it appears in that session's replay
-timeline instead of session `unknown`. A fresh agent's first prompt runs before it has
-started a Keep session and stays unattributed.
+timeline instead of session `unknown`. The recall is attributed to the agent's current Keep
+session (the fresh stash, else Studio's report file); with no current session it carries no
+session header. As with the existing cortex shim, terminals sharing one agent id share the
+stash, so a pushed recall can be filed under the other terminal's session.
 
 ## Maildex bridge (client kit — `firekeep maildex`, `firekeep_client.maildexsync`)
 `firekeep maildex add/list/sync/remove` lazy-imports the wheel (bridge works whether or not the dex is registered; registration gates the background trigger and the doctor row). `maildexsync.py` is the docdexsync twin — same interval-bucket claim, same detached spawn (`-m firekeep_maildex.sync --all --quiet`), gated on registration + ≥1 account + staleness; `FIREKEEP_NO_AUTO_SYNC` suspends both document and mail background syncs with one switch. Doctor shows accounts · last sync · failures from local files only. Full behavior + invariants: [`docs/guides/dexes.md`](dexes.md).
@@ -1067,9 +1071,9 @@ An in-session escape hatch: make Firekeep go **dormant** for personal work — n
 
 **Config (client, all optional):** `FIREKEEP_BYPASS` (truthy → hard startup bypass), `FIREKEEP_PERSONAL_TTL_HOURS` (default 12; marker staleness backstop). Concurrency caveat: the marker is machine-global, so concurrent sessions share personal mode — fine for focused personal work, coarse if several run at once.
 
-## Identity and Configuration (`firekeep whoami`, `firekeep doctor`)
+## Identity (`firekeep whoami`)
 
-**`firekeep whoami [--json]`** (client 1.8.0) — prints `agent_id`, `kit_version`, `personal_mode`, `server_configured` — never the API key. Exits 0 when `agent_id` is known, 1 otherwise. With `--json` the output is a single line of JSON suitable for script use; without it, the output is plain text. Usable in any runtime via `! firekeep whoami` or as a shell command.
+**`firekeep whoami [--json]`** (client 1.8.0) — prints `agent_id`, `kit_version`, `personal_mode`, `server_configured` — never the API key. `personal_mode` is true when personal mode is on or `FIREKEEP_BYPASS` is set (the same gate the shims and doctor use). An unconfigured agent id (missing, or the installer's `CHANGEME` placeholder) is reported as `null`. Exits 0 when `agent_id` is known, 1 otherwise. With `--json` the output is a single line of JSON suitable for script use; without it, the output is plain text.
 
 ## Session Resumption
 Automatic discovery and resumption of paused or crashed sessions on conversation start. No new tools or endpoints — purely hook-layer.
