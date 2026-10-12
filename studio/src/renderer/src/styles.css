@@ -406,3 +406,20 @@ kbd { padding: 1px 4px; border: 1px solid var(--line); border-radius: 4px; backg
 .keep-warning-row:hover { background: var(--surface-3); color: var(--text); }
 .keep-warning-row svg { flex: 0 0 auto; color: var(--gold, var(--ember)); }
 .keep-panel > h2 { margin: 0; padding: 14px 14px 10px; font-size: 13px; letter-spacing: 0.02em; }
+
+/* Composer chips, Agent popover, one-line usage */
+.composer-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; padding: 8px 2px 0; }
+.agent-chip-root { position: relative; }
+.agent-chip { display: inline-flex; align-items: center; gap: 7px; max-width: 320px; height: 28px; padding: 0 9px 0 4px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface-2); color: var(--text); font-size: 11px; cursor: pointer; }
+.agent-chip:hover, .agent-chip[aria-expanded="true"] { border-color: var(--line-strong); }
+.agent-chip .runtime-orb { width: 20px; height: 20px; font-size: 10px; }
+.agent-chip-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-popover { position: absolute; z-index: 20; bottom: calc(100% + 8px); left: 0; width: min(300px, calc(100vw - 48px)); padding: 10px 12px 4px; border: 1px solid var(--line-strong); border-radius: 13px; background: var(--surface); box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5); }
+.agent-popover > label { display: flex; flex-direction: column; gap: 6px; margin: 0 4px 12px; color: var(--muted); font-size: 10px; }
+.usage-line { padding: 0; border: 0; background: transparent; color: var(--faint); font: inherit; cursor: pointer; }
+.usage-line:hover, .usage-line[aria-expanded="true"] { color: var(--text); }
+.usage-detail { display: flex; flex-direction: column; gap: 5px; margin-top: 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); color: var(--muted); font-size: 10px; }
+.usage-detail .usage-total { display: flex; align-items: baseline; justify-content: space-between; }
+.usage-detail .usage-breakdown { display: flex; gap: 12px; }
+.usage-detail .budget-track { height: 4px; border-radius: 999px; background: var(--surface-3); overflow: hidden; }
+.usage-detail .budget-track span { display: block; height: 100%; background: var(--ember); }

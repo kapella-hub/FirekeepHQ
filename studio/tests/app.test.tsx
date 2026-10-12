@@ -116,8 +116,7 @@ afterEach(() => {
 });
 
 async function openRuntimeCenter(): Promise<HTMLElement> {
-  fireEvent.click(await screen.findByRole("button", { name: /Primary runtime:/i }));
-  fireEvent.click(screen.getByRole("button", { name: "Manage runtimes" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
   return screen.getByRole("dialog", { name: "Runtime Center" });
 }
 
@@ -134,8 +133,47 @@ describe("Firekeep Studio renderer", () => {
     fireEvent.click(screen.getAllByRole("button", { name: /Alpha/i })[0] as HTMLElement);
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "primary.set", runtimeId: "alpha" }));
-    expect(await screen.findByText(/0 fresh · 0 total/)).toBeInTheDocument();
-    expect(screen.getByText("No reviewers")).toBeInTheDocument();
+    expect(await screen.findByText(/0 fresh · 0 cached/)).toBeInTheDocument();
+  });
+
+  it("sets model and effort from the Agent chip popover", async () => {
+    const invoke = installBridge({ snapshot: state("alpha"), models: [{ id: "fable", displayName: "Fable", isDefault: true, efforts: ["low", "high"] }] });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /^Agent: Alpha/ }));
+    const dialog = screen.getByRole("dialog", { name: "Agent settings" });
+    await waitFor(() => expect(within(dialog).getByLabelText("Reasoning").querySelectorAll("option")).toHaveLength(3));
+    fireEvent.change(within(dialog).getByLabelText("Reasoning"), { target: { value: "high" } });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "effort.set", runtimeId: "alpha", effort: "high" }));
+    expect(screen.getByRole("button", { name: "Agent: Alpha · Fable" })).toBeInTheDocument();
+  });
+
+  it("shows one usage line that expands to the breakdown", async () => {
+    const invoke = installBridge({ snapshot: { ...state("alpha"), usage: { tokens: 52_000, freshTokens: 12_000, cachedTokens: 40_000, costUsd: 0, runs: 1, totalRuns: 1, measuredRuns: 1, byRuntime: {} } } as never });
+    render(<App />);
+    expect(screen.queryByRole("button", { name: "Set guard" })).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: /12k fresh · 40k cached/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Set guard" }));
+    expect(screen.getByLabelText("Message composer")).toHaveValue("/budget ");
+    expect(invoke).not.toHaveBeenCalledWith(expect.objectContaining({ type: "reviewer.mode" }));
+  });
+
+  it("keeps the old Turn controls out of the Keep panel and the reviewer mode in the Agent chip", async () => {
+    const invoke = installBridge({ snapshot: state("alpha") });
+    render(<App />);
+    await screen.findByRole("button", { name: /^Agent: Alpha/ });
+    expect(screen.queryByText("Turn controls")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Permissions")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^Agent: Alpha/ }));
+    fireEvent.change(screen.getByLabelText("After each turn"), { target: { value: "manual" } });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "reviewer.mode", mode: "manual" }));
+  });
+
+  it("switches the primary from the Agent chip", async () => {
+    const invoke = installBridge({ snapshot: state("alpha") });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /^Agent: Alpha/ }));
+    fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "beta" } });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "primary.set", runtimeId: "beta" }));
   });
 
   it("applies the persisted appearance and announces the next theme", async () => {
@@ -233,9 +271,7 @@ describe("Firekeep Studio renderer", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add check" }));
     expect(screen.getByRole("textbox")).toHaveValue("/mission check add -- ");
 
-    const reviewRun = screen.getByRole("button", { name: "Run now" });
-    expect(reviewRun).toBeDisabled();
-    expect(reviewRun).toHaveAttribute("title", "Send a primary message before running a review");
+    expect(screen.queryByRole("button", { name: "Run now" })).not.toBeInTheDocument();
     fireEvent.keyDown(window, { key: "R", ctrlKey: true, shiftKey: true });
     expect(invoke.mock.calls.some(([action]) => action.type === "mission.run" || action.type === "review.run")).toBe(false);
   });
@@ -254,14 +290,12 @@ describe("Firekeep Studio renderer", () => {
     render(<App />);
 
     const missionRun = await screen.findByRole("button", { name: "Run" });
-    const reviewRun = screen.getByRole("button", { name: "Run now" });
     expect(missionRun).toBeEnabled();
-    expect(reviewRun).toBeEnabled();
 
+    fireEvent.keyDown(window, { key: "R", ctrlKey: true, shiftKey: true });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "review.run" }));
     fireEvent.click(missionRun);
     await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "mission.run" }));
-    fireEvent.click(reviewRun);
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "review.run" }));
   });
 
   it("surfaces typed action failures without an Electron handler stack", async () => {
@@ -306,6 +340,7 @@ describe("Firekeep Studio renderer", () => {
 
     render(<App />);
 
+    fireEvent.click(await screen.findByRole("button", { name: /^Agent: Alpha/ }));
     const reasoning = await screen.findByLabelText("Reasoning");
     await waitFor(() => expect(reasoning.querySelectorAll("option")).toHaveLength(3));
     expect([...reasoning.querySelectorAll("option")].map((option) => option.textContent)).toEqual(["Provider default", "low", "high"]);
@@ -327,6 +362,7 @@ describe("Firekeep Studio renderer", () => {
     });
     render(<App />);
 
+    fireEvent.click(await screen.findByRole("button", { name: /^Agent: Alpha/ }));
     expect(await screen.findByRole("option", { name: "Old model" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Refresh live model options" }));
 
@@ -334,19 +370,6 @@ describe("Firekeep Studio renderer", () => {
     expect(screen.queryByRole("option", { name: "Old model" })).not.toBeInTheDocument();
     expect(screen.getByText("2 live models updated")).toBeInTheDocument();
     expect(invoke).toHaveBeenCalledWith({ type: "runtime.models", runtimeId: "alpha" });
-  });
-
-  it("uses a status-aware primary runtime picker with keyboard selection", async () => {
-    const invoke = installBridge({ snapshot: state("alpha") });
-    render(<App />);
-
-    const picker = await screen.findByRole("button", { name: /Primary runtime: Alpha, ready/i });
-    fireEvent.keyDown(picker, { key: "ArrowDown" });
-    expect(screen.getByRole("listbox", { name: "Primary runtime" })).toBeInTheDocument();
-    fireEvent.keyDown(picker, { key: "ArrowDown" });
-    fireEvent.keyDown(picker, { key: "Enter" });
-
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "primary.set", runtimeId: "beta" }));
   });
 
   it("copies responses through typed IPC and pastes at the composer caret", async () => {

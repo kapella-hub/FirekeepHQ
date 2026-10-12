@@ -4,11 +4,9 @@ import {
   ArrowDownToLine,
   CheckCircle2,
   ChevronDown,
-  ClipboardPaste,
   Code2,
   Copy,
   Cpu,
-  Eye,
   ExternalLink,
   FileDiff,
   FolderOpen,
@@ -16,10 +14,8 @@ import {
   LogOut,
   Palette,
   RefreshCw,
-  Send,
   ShieldCheck,
   Sparkles,
-  Square,
   SunMoon,
   Terminal,
   X,
@@ -41,7 +37,8 @@ import { SessionRail } from "./rail/SessionRail.js";
 import { sessionAccentStyle } from "./rail/session-style.js";
 import { RichMarkdown } from "./RichMarkdown.js";
 import { RenderBoundary } from "./RenderBoundary.js";
-import { RuntimePicker } from "./RuntimePicker.js";
+import { AgentChip } from "./composer/AgentChip.js";
+import { Composer } from "./composer/Composer.js";
 import { coalesceRuntimeEvents } from "./runtime-event-buffer.js";
 import { buildTimeline, groupTimeline, type TimelineItem, type TimelineRun } from "./timeline";
 
@@ -429,16 +426,6 @@ export function App(): React.JSX.Element {
       />}
       conversation={
       <main className="conversation">
-        <div className="conversation-toolbar">
-          <RuntimePicker runtimes={bootstrap.runtimes} selectedId={snapshot.primaryRuntimeId} diagnostics={diagnostics} onSelect={(runtimeId) => void choosePrimary(runtimeId)} onManage={() => { setRuntimeManagerOpen(true); ignore(refreshDiagnostics()); }} />
-          <div className="reviewer-strip" aria-label="Reviewers">
-            <Eye size={15} /><span className="reviewer-label">Reviewers</span>
-            {!snapshot.reviewerRuntimeIds.length ? <span className="reviewer-empty">No reviewers</span> : null}
-            {snapshot.reviewerRuntimeIds.map((id) => <span className="reviewer-chip" key={id}>{runtimeName(bootstrap.runtimes, id)}<button aria-label={`Remove ${id} reviewer`} onClick={() => ignore(invoke({ type: "reviewer.remove", runtimeId: id }).then(applyResult))}><X size={12} /></button></span>)}
-            <button className="review-now" title={!snapshot.reviewerRuntimeIds.length ? "Add a reviewer in Runtime Center" : !hasPrimaryResponse ? "Send a primary message before running a review" : "Run a review now"} disabled={!snapshot.reviewerRuntimeIds.length || !hasPrimaryResponse || busy} onClick={() => ignore(runReview())}>Run now</button>
-          </div>
-        </div>
-
         <div className="transcript-frame">
           <div className="transcript" ref={transcriptRef} aria-live="polite" onScroll={updateTranscriptFollow}>
             {timeline.length === 0 && commandCards.length === 0 ? <Welcome runtimes={bootstrap.runtimes} workspacePath={snapshot.workspacePath} onWorkspace={() => ignore(chooseWorkspace())} onChoose={(id) => void choosePrimary(id)} onCommand={(value) => { setComposer(value); composerRef.current?.focus(); }} /> : null}
@@ -449,22 +436,41 @@ export function App(): React.JSX.Element {
           {!followingTail ? <button type="button" className="jump-latest" aria-label="Jump to latest response" onClick={jumpToLatest}><ArrowDownToLine size={14} /> Latest</button> : null}
         </div>
 
-        <div className="composer-zone">
-          {completions.length ? <div className="command-menu" role="listbox">{completions.slice(0, 9).map((item, index) => <button role="option" aria-selected={index === completionIndex} key={`${item.value}:${index}`} className={index === completionIndex ? "selected" : ""} onMouseDown={(event) => { event.preventDefault(); setComposer(item.value); setCompletions([]); composerRef.current?.focus(); }}><span>{item.label}</span><small>{item.description}</small></button>)}</div> : null}
-          <div className="composer-shell">
-            <textarea ref={composerRef} aria-label="Message composer" value={composer} rows={1} placeholder={snapshot.primaryRuntimeId ? `Message ${primary?.displayName ?? "your agent"}, or type / for commands…` : "Choose a primary runtime, or type /doctor…"} onChange={(event) => setComposer(event.target.value)} onKeyDown={(event) => {
-              if (event.key === "ArrowDown" && completions.length) { event.preventDefault(); setCompletionIndex((value) => Math.min(value + 1, completions.length - 1)); }
-              else if (event.key === "ArrowUp" && completions.length) { event.preventDefault(); setCompletionIndex((value) => Math.max(value - 1, 0)); }
-              else if (event.key === "Tab" && completions[completionIndex]) { event.preventDefault(); setComposer(completions[completionIndex].value); setCompletions([]); }
-              else if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); ignore(submit()); }
-            }} />
-            <div className="composer-actions">
-              <button type="button" className="paste-button" aria-label="Paste from clipboard" title="Paste from clipboard" onClick={() => ignore(pasteClipboard())}><ClipboardPaste size={17} /></button>
-              {snapshot.activeRunId ? <button className="send-button stop" title="Cancel run" onClick={() => ignore(invoke({ type: "run.cancel", runId: snapshot.activeRunId! }))}><Square size={15} fill="currentColor" /></button> : <button className="send-button" title="Send" disabled={!composer.trim() || busy} onClick={() => ignore(submit())}><Send size={17} /></button>}
-            </div>
-          </div>
-          <div className="composer-hint"><span><kbd>Enter</kbd> send · <kbd>Shift Enter</kbd> newline · <kbd>⌘K</kbd> commands</span><span>{busy ? <><span className="pulse-dot" /> Agent working</> : `${snapshot.usage.freshTokens.toLocaleString()} fresh · ${snapshot.usage.tokens.toLocaleString()} total`}</span></div>
-        </div>
+        <Composer
+          value={composer}
+          onChange={setComposer}
+          onSubmit={() => ignore(submit())}
+          busy={busy}
+          canStop={Boolean(snapshot.activeRunId)}
+          onStop={() => ignore(invoke({ type: "run.cancel", runId: snapshot.activeRunId! }))}
+          onPaste={() => ignore(pasteClipboard())}
+          placeholder={snapshot.primaryRuntimeId ? `Message ${primary?.displayName ?? "your agent"}, or type / for commands…` : "Choose a primary runtime, or type /doctor…"}
+          textareaRef={composerRef}
+          completions={completions}
+          completionIndex={completionIndex}
+          onCompletionIndex={setCompletionIndex}
+          onPickCompletion={(value) => { setComposer(value); setCompletions([]); composerRef.current?.focus(); }}
+          usage={{ ...snapshot.usage, tokenBudget: snapshot.tokenBudget ?? null }}
+          chips={<AgentChip
+            runtimes={bootstrap.runtimes}
+            diagnostics={diagnostics}
+            primaryRuntimeId={snapshot.primaryRuntimeId}
+            models={primaryModels}
+            selectedModel={primaryRuntimeId ? snapshot.selectedModels[primaryRuntimeId] ?? "" : ""}
+            selectedEffort={selectedEffort}
+            liveEfforts={liveEfforts}
+            permissionMode={primaryRuntimeId ? snapshot.permissionModes[primaryRuntimeId] ?? "standard" : "standard"}
+            onPrimary={(runtimeId) => void choosePrimary(runtimeId)}
+            onModel={(modelId) => { if (primaryRuntimeId) ignore(invoke({ type: "model.set", runtimeId: primaryRuntimeId, modelId }).then(applyResult)); }}
+            onEffort={(effort) => { if (primaryRuntimeId) ignore(invoke({ type: "effort.set", runtimeId: primaryRuntimeId, effort }).then(applyResult)); }}
+            onPermission={(mode) => { if (primaryRuntimeId) ignore(invoke({ type: "permission.set", runtimeId: primaryRuntimeId, mode }).then(applyResult)); }}
+            onLoadModels={() => { if (primaryRuntimeId && !models[primaryRuntimeId]) ignore(loadModels(primaryRuntimeId)); }}
+            onRefreshModels={() => { if (primaryRuntimeId) ignore(loadModels(primaryRuntimeId)); }}
+            refresh={modelRefresh?.runtimeId === primaryRuntimeId ? modelRefresh : null}
+            reviewerMode={snapshot.reviewerMode}
+            onReviewerMode={(mode) => ignore(invoke({ type: "reviewer.mode", mode }).then(applyResult))}
+          />}
+        />
       </main>
       }
       keepPanel={<aside className="keep-panel" aria-label="The Keep">
@@ -477,14 +483,6 @@ export function App(): React.JSX.Element {
           onAction={(action) => ignore(controlMission(action))}
           onCommand={(value) => { setComposer(value); composerRef.current?.focus(); }}
         />
-        <section className="inspector-section">
-          <div className="section-heading"><span>Turn controls</span><button className="icon-button compact" disabled={!snapshot.primaryRuntimeId || (modelRefresh?.runtimeId === snapshot.primaryRuntimeId && modelRefresh.state === "loading")} aria-label="Refresh live model options" title="Refresh live model options" onClick={() => { if (snapshot.primaryRuntimeId) ignore(loadModels(snapshot.primaryRuntimeId)); }}><RefreshCw className={modelRefresh?.runtimeId === snapshot.primaryRuntimeId && modelRefresh.state === "loading" ? "spin" : undefined} size={14} /></button></div>
-          {snapshot.primaryRuntimeId && modelRefresh?.runtimeId === snapshot.primaryRuntimeId ? <p className={`model-refresh-status ${modelRefresh.state}`} role="status" aria-live="polite">{modelRefresh.message}</p> : null}
-          <label>Model<select disabled={!snapshot.primaryRuntimeId} value={snapshot.primaryRuntimeId ? snapshot.selectedModels[snapshot.primaryRuntimeId] ?? "" : ""} onFocus={() => { if (snapshot.primaryRuntimeId && !models[snapshot.primaryRuntimeId]) ignore(loadModels(snapshot.primaryRuntimeId)); }} onChange={(event) => { if (snapshot.primaryRuntimeId) ignore(invoke({ type: "model.set", runtimeId: snapshot.primaryRuntimeId, modelId: event.target.value }).then(applyResult)); }}><option value="">Provider default</option>{primaryModels.filter((model) => !(model.id === "default" && model.isDefault)).map((model) => <option key={model.id} value={model.id}>{model.displayName}</option>)}</select></label>
-          <label>Reasoning<select disabled={!snapshot.primaryRuntimeId || !primary?.capabilities.includes("reasoning") || liveEfforts.length === 0} value={selectedEffort} onChange={(event) => { if (snapshot.primaryRuntimeId) ignore(invoke({ type: "effort.set", runtimeId: snapshot.primaryRuntimeId, effort: event.target.value ? event.target.value as RuntimeEffort : null }).then(applyResult)); }}><option value="">Provider default</option>{liveEfforts.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
-          <label>Permissions<select disabled={!snapshot.primaryRuntimeId} value={snapshot.primaryRuntimeId ? snapshot.permissionModes[snapshot.primaryRuntimeId] ?? "standard" : "standard"} onChange={(event) => { if (snapshot.primaryRuntimeId) ignore(invoke({ type: "permission.set", runtimeId: snapshot.primaryRuntimeId, mode: event.target.value as "safe" | "standard" | "unrestricted" }).then(applyResult)); }}><option value="safe">Safe · read only</option><option value="standard">Standard · ask</option><option value="unrestricted">Unrestricted · explicit</option></select></label>
-          <label>Reviewer mode<select value={snapshot.reviewerMode} onChange={(event) => ignore(invoke({ type: "reviewer.mode", mode: event.target.value as "off" | "manual" | "after-turn" }).then(applyResult))}><option value="off">Off</option><option value="manual">Manual</option><option value="after-turn">After every turn</option></select></label>
-        </section>
       </aside>}
     >
 
