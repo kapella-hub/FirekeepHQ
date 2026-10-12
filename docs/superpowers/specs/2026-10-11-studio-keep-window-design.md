@@ -9,13 +9,11 @@ security boundaries in that spec still stand unless changed below).
 Studio 0.4.1 is a capable control panel. It is not a workspace a new teammate understands in
 two minutes, and it barely shows the thing only Firekeep has: the Keep.
 
-Evidence (2026-10-11):
+Observations (2026-10-11):
 
-- About 126 Studio installers were downloaded between 2026-09-20 and 2026-10-11 (site counter,
-  browser user agent). By contrast, client install scripts were fetched only 25 times,
-  mostly by internal release testing.
-- The founder's own machine has two Studio sessions, the last on 2026-08-26. The builder
-  does not use it day to day.
+- Studio installers are downloaded steadily from firekeep.ai, at a rate well above the
+  client kit's install scripts. For many people Studio is the first Firekeep surface they
+  touch, so it has to explain the Keep on its own.
 - The first screen asks for a runtime and a workspace before you can type, gives a zeros-only
   token card the best spot in the rail, and puts Missions behind eight slash commands.
 - Studio reaches the Keep only by shelling out to `firekeep status|doctor|update`. It never
@@ -42,6 +40,14 @@ Evidence (2026-10-11):
 | 3 | Changes + undo (git checkpoint per turn) | Own spec, after 2 |
 | 4 | "Needs you" inbox + OS notifications | Own spec, after 2 |
 | 5 | Composer @files + images | Own spec, after 2 |
+
+Piece 2 has two prerequisites outside `studio/`, each shipped and released before Studio
+0.5.0:
+
+- a **client kit release** (§7.1 preset and `whoami`, §7.2 session adoption);
+- a **server release** (§7.3: `replay_timeline` gains a JSON format).
+
+Studio 0.5.0 must still work against an older kit or server, with "partial" receipts.
 
 Pieces 1 and 2 ship together as **Studio 0.5.0**. Piece 1 alone would remove features
 without adding the reason to use Studio, so it must not be released on its own. Pieces 3–5
@@ -204,6 +210,12 @@ The cuts remove code from `studio-service.ts`; no new logic is added there for p
     `relay_read`, `ctx_list_sessions`, `replay_timeline`, `corpus_sources`;
   - writes: `memory_feedback`, `ctx_start_session`, `ctx_complete_session`.
   - The kit owns and tests this list. Studio never calls a tool outside it.
+- **New kit command `firekeep whoami --json`** prints `{agent_id, kit_version,
+  personal_mode, server_configured}` from the kit config. It never prints the API key.
+  - Studio calls it in the launch probe. It is how Studio learns the kit agent id for §7.2.
+  - Studio never reads `~/.firekeep/config` itself, because that file holds the API key.
+  - On an older kit (`whoami` missing), the Keep panel still works. Receipts use the
+    §7.3 partial fallback because §7.2 cannot be set up.
 - The renderer gets **typed IPC only**:
   - `keep:status`
   - `keep:search {query, kind: memory|skill}`
@@ -215,7 +227,7 @@ The cuts remove code from `studio-service.ts`; no new logic is added there for p
   There is no generic "call tool" IPC. This preserves the 0.1 rule that the renderer has no
   generic process or network API.
 - **Lifecycle:**
-  - One gateway per Studio process, started lazily at first launch probe.
+  - One gateway per Studio process, started by the launch probe.
   - Restarted with backoff (1 s, 5 s, 30 s, then manual) if it exits.
   - Killed as a process tree on quit, reusing `process.ts`.
   - Calls time out after 10 s. A timed-out call never blocks a runtime turn.
@@ -270,21 +282,48 @@ key.
 
 ### 7.3 Keep receipts (per turn)
 
-- When a turn completes, Studio calls `keep:receipt`.
-  - The main process queries `replay_timeline(keepSessionId, event_type=memory_read|
-    memory_write)` for events between the turn's start and end timestamps.
-  - It drops events whose `agent_id` ends in `-studio` (§7.2).
-  - Because Studio serializes runs, the time window then holds only that turn's agent
-    activity.
-  - It also collects skill ids surfaced in those events.
-- The receipt renders under the answer: **"Keep · recalled 3 · learned 1 · skill
-  recall-bench"**.
-- Expanding it lists each memory with its summary, score and a "claim" trust marker for
-  non-self-authored items, using the kit's existing trust semantics.
-- 👍/👎 on the receipt, or per item, calls `memory_feedback` for the ids acted on.
+**Server change (required).** Today `replay_timeline` returns Markdown. That Markdown omits
+each event's `id`, its `agent_id` and the `memory_ids` payload, which are exactly the fields
+receipts need. The REST route it wraps (`GET /replay/sessions/{id}/events`) already returns
+them as JSON.
+
+- `replay_timeline` gains `format: "markdown" | "json"` (default `"markdown"`, so existing
+  callers are unchanged) and an `offset` parameter.
+- `"json"` returns the route's `TimelineResponse` unchanged: events oldest first, with
+  `total` and `has_more`.
+- This is a new parameter on an existing MCP tool, not a new endpoint. It ships in a server
+  release before Studio 0.5.0. Against an older server, Studio detects the Markdown reply
+  and uses the fallback below.
+
+**Cutting the timeline into turns.** Studio never compares its own clock with the server's
+timestamps, because a workstation's clock and the Keep's can disagree by seconds.
+
+- Each Studio session keeps a cursor: the number of session events already assigned to a
+  receipt.
+- When a turn completes, Studio fetches the events from the cursor onward and builds a
+  provisional receipt.
+- When the user sends the **next** prompt, Studio fetches once more before the prompt
+  leaves. That fetch finalizes the previous receipt and advances the cursor.
+- Late writes, such as a stop-hook learn that lands just after the answer, are therefore
+  credited to the turn that caused them. Because Studio serializes runs, everything between
+  two sends belongs to one turn.
+- In the batch, the receipt drops events whose `agent_id` ends in `-studio` (§7.2) and keeps
+  `memory_read` and `memory_write`.
+- A mission turn's receipt includes its repair loop and its reviewers, because they run
+  inside that turn.
+
+**What the receipt shows.**
+
+- Under the answer: **"Keep · recalled 3 · learned 1"**. "Recalled" counts distinct
+  `memory_ids` across reads. "Learned" counts writes.
+- Expanding it lists each recall (its query, whether a prompt hook or the agent issued it,
+  and the result count) and each write (its `action_summary`).
+- Memory text, scores and named skills are **not** shown in 0.5. The replay event does not
+  carry them, and fetching each memory would need a tool outside the `studio` preset.
+- 👍/👎 on a recall calls `memory_feedback` with that recall's `memory_ids`.
   - The UI copy says "Was this knowledge right?", not "rate this answer". That matches the
     kit rule that feedback is about knowledge, not the turn.
-  - Feedback is one-shot per item.
+  - Feedback is one-shot per recall.
 - **Fallback.** If the kit predates §7.2, or replay is unreachable, Studio builds the
   receipt from `mcp__firekeep__*` tool calls visible in the runtime stream and marks it
   **"partial — hook-injected recall not shown"**. Studio never shows a confident zero it did
@@ -296,7 +335,7 @@ key.
 
 | Tab | Default content | Search |
 |---|---|---|
-| **Memory** | The memories surfaced in this session's receipts (most recent first) | `memory_recall(task=query, format=raw)`, debounced 300 ms |
+| **Memory** | This session's recalls from its receipts (most recent first); clicking one re-runs it as a search | `memory_recall(task=query, format=raw)`, debounced 300 ms |
 | **Skills** | `skill_list` (active), with trial-ladder skills marked `TRIAL` | `skill_recall(task=query)` |
 | **Team** | `relay_who_is_online` (agent, goal, idle/active) and the latest `relay_read` bulletin posts | none |
 
@@ -336,7 +375,9 @@ Chat always works without the Keep. Only the panel and receipts degrade.
 
 - **Unit (vitest):**
   - `test-command-detect` rules;
-  - receipt builder: replay events → receipt, the fallback path, and the "partial" label;
+  - receipt builder: replay events → receipt, the `-studio` filter, the cursor (late writes
+    land on the turn that caused them), Markdown-reply detection for old servers, the
+    fallback path, and the "partial" label;
   - Keep IPC validation: unknown tool names rejected, argument shapes enforced;
   - settings migration for the cut features;
   - command palette ranking.
@@ -348,7 +389,11 @@ Chat always works without the Keep. Only the panel and receipts degrade.
   - with `FIREKEEP_SESSION_ID` set: the session-start hook makes no start/resume call,
     writes the stash, and still injects the briefing;
   - the shim's `X-Session-Id` tap prefers `FIREKEEP_SESSION_ID`;
-  - end hooks leave that session open.
+  - end hooks leave that session open;
+  - `firekeep whoami --json` prints the agent id and never the API key.
+- **Server (pytest, `cortex/`):** `replay_timeline(format="json")` returns the route's
+  JSON with `agent_id` and `payload.memory_ids`; the default format is byte-identical to
+  today's Markdown; `offset` pages correctly.
 - **Receipt isolation:** a panel `memory_recall` issued mid-turn (fake gateway) is excluded
   from that turn's receipt.
 - **Packaged smoke (`smoke:package`):** replace the grid geometry and inspector assertions
@@ -372,11 +417,11 @@ Update together, per the repo's change-consistency rule:
   bullets, and new Keep-link bullets;
 - `client/firekeep_client/gateway.py` and `docs/guides/client-kit.md` "Gateway toolsets":
   the `studio` preset;
-- the kit's session-start / shim docs: `FIREKEEP_SESSION_ID`;
+- the kit's session-start / shim docs: `FIREKEEP_SESSION_ID` and `firekeep whoami`;
+- `docs/guides/replay-evals-patterns.md`: the `replay_timeline` JSON format;
 - root `CLAUDE.md`: the Studio row (drop Grok, mention the Keep link).
 
-The kit change ships in a client release **before** Studio 0.5.0. Studio must still work,
-with "partial" receipts, against an older kit.
+The kit and server changes ship in their own releases **before** Studio 0.5.0 (§3).
 
 ## 11. Out of scope
 
