@@ -515,3 +515,57 @@ def test_tap_still_captures_session_id_from_resume_response(tmp_path, monkeypatc
     tap.on_response(_tool_result(5, {"session_id": "sess-r", "created_at": "t"}))
 
     assert state.read_session_stash("tester")["session_id"] == "sess-r"
+
+
+# --- FIREKEEP_SESSION_REPORT_FILE (Studio 0.5) --------------------------------
+
+
+def test_tap_appends_captured_id_to_report_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
+    report = tmp_path / "studio-1.keep"
+    monkeypatch.setenv("FIREKEEP_SESSION_REPORT_FILE", str(report))
+    monkeypatch.setattr(shim, "is_bypassed", lambda: False)
+
+    tap = shim._BridgeSessionTap("tester")
+    tap.on_request(_tools_call(1, "ctx_start_session", {"goal": "g"}))
+    tap.on_response(_tool_result(1, {"session_id": "sess-mine"}))
+    tap.on_request(_tools_call(2, "ctx_resume_session", {"session_id": "sess-old"}))
+    tap.on_response(_tool_result(2, {"session_id": "sess-old"}))
+
+    assert report.read_text(encoding="utf-8") == "sess-mine\nsess-old\n"
+    assert state.read_session_stash("tester")["session_id"] == "sess-old"
+
+
+def test_unwritable_report_path_never_breaks_capture(tmp_path, monkeypatch):
+    monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("FIREKEEP_SESSION_REPORT_FILE", str(tmp_path / "nope" / "x.keep"))
+    tap = shim._BridgeSessionTap("tester")
+    tap.on_request(_tools_call(1, "ctx_start_session", {"goal": "g"}))
+    tap.on_response(_tool_result(1, {"session_id": "sess-mine"}))
+    assert tap._session_id == "sess-mine"
+    assert state.read_session_stash("tester")["session_id"] == "sess-mine"
+
+
+def test_tapless_auth_falls_back_to_report_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
+    report = tmp_path / "studio-1.keep"
+    report.write_text("sess-reported\n", encoding="utf-8")
+    monkeypatch.setenv("FIREKEEP_SESSION_REPORT_FILE", str(report))
+    monkeypatch.setattr(shim, "is_bypassed", lambda: False)
+    state.clear_session_stash("tester")
+
+    out = _run_auth_flow(shim._StashSessionAuth("tester"), _req())
+    assert out.headers["X-Session-Id"] == "sess-reported"
+
+
+def test_tapless_auth_without_report_env_is_unchanged(tmp_path, monkeypatch):
+    monkeypatch.setenv("FIREKEEP_CACHE_DIR", str(tmp_path))
+    monkeypatch.delenv("FIREKEEP_SESSION_REPORT_FILE", raising=False)
+    monkeypatch.setattr(shim, "is_bypassed", lambda: False)
+    state.clear_session_stash("tester")
+    out = _run_auth_flow(shim._StashSessionAuth("tester"), _req())
+    assert "X-Session-Id" not in out.headers
+
+    state.write_session_stash("tester", session_id="sess-stash")
+    out = _run_auth_flow(shim._StashSessionAuth("tester"), _req())
+    assert out.headers["X-Session-Id"] == "sess-stash"

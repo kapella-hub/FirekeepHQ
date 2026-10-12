@@ -159,8 +159,9 @@ class _StashSessionAuth(httpx.Auth):
                     # Tap-wired: what THIS process observed, or nothing.
                     sid = self._tap._session_id
                 else:
-                    stash = state.read_session_stash(self._agent)
-                    sid = (stash or {}).get("session_id")
+                    # Fresh stash first; under Studio, the report file survives
+                    # the stash clear a resumed runtime's session_start performs.
+                    sid = state.current_session_id(self._agent)
                 if sid:
                     request.headers["X-Session-Id"] = sid
         except Exception:
@@ -557,6 +558,9 @@ class _BridgeSessionTap:
                 # Keep writing the agent-keyed disk stash: hook cores in other
                 # processes still read it, and it is the restart fallback.
                 state.write_session_stash(self._agent, session_id=sid)
+                # Studio 0.5: tell the launching Studio session which Keep
+                # session this agent is in (no-op unless the env var is set).
+                state.append_session_report(sid)
         except Exception:
             pass
         return item

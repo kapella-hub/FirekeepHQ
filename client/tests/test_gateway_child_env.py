@@ -345,3 +345,9 @@ def test_every_env_name_a_child_reads_is_classified():
         "child may see it, CHILD_EXTRAS[<child>] if it is that child's own secret, "
         "NOT_FORWARDED if no gateway child needs it"
     )
+
+
+def test_session_report_file_reaches_backend_children():
+    from firekeep_client import childenv
+
+    assert "FIREKEEP_SESSION_REPORT_FILE" in childenv.ALLOWED_NAMES

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -446,6 +447,57 @@ def clear_session_stash(agent_id: str) -> None:
         delete_scratch(_session_stash_key(agent_id))
     except Exception:
         pass
+
+
+# Firekeep Studio 0.5 (spec 2026-10-11 §7.2): Studio launches each agent with
+# this variable naming a per-Studio-session file. The bridge tap appends every
+# Keep session id it captures, so Studio can build per-turn receipts from the
+# sessions the AGENT started — Studio never starts one itself.
+SESSION_REPORT_ENV = "FIREKEEP_SESSION_REPORT_FILE"
+# Ids travel in an HTTP header (X-Session-Id): no whitespace, no newline, ever.
+_SESSION_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
+
+
+def _report_path() -> str | None:
+    raw = os.environ.get(SESSION_REPORT_ENV, "").strip()
+    return raw or None
+
+
+def append_session_report(session_id: str) -> None:
+    """Append a captured Keep session id to $FIREKEEP_SESSION_REPORT_FILE.
+    No-op when the variable is unset or the id is not header-safe. Never raises."""
+    try:
+        path = _report_path()
+        if not path or not isinstance(session_id, str) or not _SESSION_ID_RE.fullmatch(session_id):
+            return
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(session_id + "\n")
+    except Exception:
+        pass
+
+
+def reported_session_id() -> str | None:
+    """The last header-safe id in $FIREKEEP_SESSION_REPORT_FILE, else None."""
+    try:
+        path = _report_path()
+        if not path:
+            return None
+        with open(path, encoding="utf-8") as fh:
+            ids = [line.strip() for line in fh if _SESSION_ID_RE.fullmatch(line.strip())]
+        return ids[-1] if ids else None
+    except Exception:
+        return None
+
+
+def current_session_id(agent_id: str) -> str | None:
+    """The Keep session this agent is working in: the fresh stash, else the
+    Studio report file (which survives the stash clear a resumed runtime's
+    session_start performs). Never raises."""
+    try:
+        stash = read_session_stash(agent_id) or {}
+        return stash.get("session_id") or reported_session_id()
+    except Exception:
+        return None
 
 
 # --- runbook bundle store (Enforced Runbooks Phase B) ------------------------
