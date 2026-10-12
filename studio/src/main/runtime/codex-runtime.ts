@@ -21,7 +21,7 @@ interface VersionProbeResult { readonly found: boolean; readonly version?: strin
 
 export interface CodexRuntimeOptions {
   readonly command?: string;
-  readonly peerFactory?: () => RpcPeer;
+  readonly peerFactory?: (env?: Readonly<Record<string, string>>) => RpcPeer;
   readonly versionProbe?: () => Promise<VersionProbeResult>;
   readonly appVersion?: string;
   readonly firekeepMemory?: boolean;
@@ -40,7 +40,7 @@ export class CodexRuntime implements AgentRuntime {
   readonly descriptor;
   readonly #command: string;
   readonly #commandPrefix: readonly string[];
-  readonly #peerFactory: () => RpcPeer;
+  readonly #peerFactory: (env?: Readonly<Record<string, string>>) => RpcPeer;
   readonly #versionProbe: () => Promise<VersionProbeResult>;
   readonly #appVersion: string;
   readonly #loginTimeoutMs: number;
@@ -50,8 +50,8 @@ export class CodexRuntime implements AgentRuntime {
     const invocation = options.command ? { command: options.command, prefix: [] as string[] } : defaultCodexInvocation();
     this.#command = invocation.command;
     this.#commandPrefix = invocation.prefix;
-    this.#peerFactory = options.peerFactory ?? (() => new JsonlRpcPeer(
-      new ChildProcessJsonlTransport(this.#command, [...this.#commandPrefix, "app-server"], { env: process.env }),
+    this.#peerFactory = options.peerFactory ?? ((env) => new JsonlRpcPeer(
+      new ChildProcessJsonlTransport(this.#command, [...this.#commandPrefix, "app-server"], { env: { ...process.env, ...env } }),
       { requestTimeoutMs: 60_000 },
     ));
     this.#versionProbe = options.versionProbe ?? (() => probeVersion(this.#command, [...this.#commandPrefix, "--version"]));
@@ -184,7 +184,7 @@ export class CodexRuntime implements AgentRuntime {
   }
 
   async run(request: RunRequest, sink: RuntimeEventSink, signal: AbortSignal): Promise<RunResult> {
-    const peer = this.#peerFactory();
+    const peer = this.#peerFactory(request.env);
     let threadId: string | null = null;
     let turnId: string | null = null;
     let finalText = "";

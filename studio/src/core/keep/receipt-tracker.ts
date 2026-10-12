@@ -80,7 +80,8 @@ export class ReceiptTracker {
       }
       after[id] = offset;
     }
-    if (final) this.#cursors.set(studioSessionId, after);
+    // Merge, never set: a final collect Studio stopped waiting for can resolve after a later turn committed further.
+    if (final) this.commit(studioSessionId, after);
     const receipt = measuredReceipt(events, ids, after, final);
     if (hitMaxPages) return { ...receipt, detail: "more Keep activity than one receipt shows" };
     return receipt;

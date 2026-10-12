@@ -29,7 +29,7 @@ export interface AcpTargetHandle {
 
 interface KiroRuntimeOptions {
   readonly command?: string;
-  readonly targetFactory?: (args: readonly string[], cwd?: string) => AcpTargetHandle;
+  readonly targetFactory?: (args: readonly string[], cwd?: string, env?: Readonly<Record<string, string>>) => AcpTargetHandle;
   readonly runCommand?: (args: readonly string[]) => Promise<ProcessResult>;
   readonly launchLogin?: (device: boolean) => void;
   readonly versionProbe?: () => Promise<{ found: boolean; version?: string; detail: string }>;
@@ -42,7 +42,7 @@ interface JsonObject { readonly [key: string]: unknown }
 export class KiroRuntime implements AgentRuntime {
   readonly descriptor: RuntimeDescriptor;
   readonly #command: string;
-  readonly #targetFactory: (args: readonly string[], cwd?: string) => AcpTargetHandle;
+  readonly #targetFactory: (args: readonly string[], cwd?: string, env?: Readonly<Record<string, string>>) => AcpTargetHandle;
   readonly #runCommand: (args: readonly string[]) => Promise<ProcessResult>;
   readonly #launchLogin: (device: boolean) => void;
   readonly #versionProbe: () => Promise<{ found: boolean; version?: string; detail: string }>;
@@ -51,7 +51,7 @@ export class KiroRuntime implements AgentRuntime {
 
   constructor(options: KiroRuntimeOptions = {}) {
     this.#command = options.command ?? (process.platform === "win32" ? "kiro-cli.exe" : "kiro-cli");
-    this.#targetFactory = options.targetFactory ?? ((args, cwd) => createProcessTarget(this.#command, args, cwd));
+    this.#targetFactory = options.targetFactory ?? ((args, cwd, env) => createProcessTarget(this.#command, args, cwd, env));
     this.#runCommand = options.runCommand ?? ((args) => runProcess(this.#command, args, { timeoutMs: 20_000, outputLimit: 64 * 1024 }));
     this.#launchLogin = options.launchLogin ?? ((device) => {
       const child = spawn(this.#command, ["login", ...(device ? ["--use-device-flow"] : [])], { detached: true, stdio: "ignore", windowsHide: true });
@@ -136,7 +136,7 @@ export class KiroRuntime implements AgentRuntime {
     const args = ["acp", ...(this.#agentName ? ["--agent", this.#agentName] : []), ...(request.permissionMode === "unrestricted" ? ["--trust-all-tools"] : [])];
     if (request.model && request.model !== "auto") args.push("--model", request.model);
     if (request.effort) args.push("--effort", request.effort);
-    const handle = this.#targetFactory(args, request.cwd);
+    const handle = this.#targetFactory(args, request.cwd, request.env);
     try {
       return await runAcpConversation(handle.target, request, sink, signal, this.#appVersion);
     } catch (error) {
@@ -276,10 +276,10 @@ function acpUsage(value: acp.Usage): RuntimeUsage {
   };
 }
 
-function createProcessTarget(command: string, args: readonly string[], cwd?: string): AcpTargetHandle {
+function createProcessTarget(command: string, args: readonly string[], cwd?: string, env?: Readonly<Record<string, string>>): AcpTargetHandle {
   const child = spawnRuntime(command, args, {
     ...(cwd ? { cwd } : {}),
-    env: process.env,
+    env: { ...process.env, ...env },
     ...(process.platform === "win32" ? {} : { detached: true }),
   });
   let stderr = "";

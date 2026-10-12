@@ -145,4 +145,16 @@ describe("ClaudeRuntime", () => {
     await expect(runtime.login({ method: "browser" })).resolves.toMatchObject({ state: "external" });
     expect(launchLogin).toHaveBeenCalledOnce();
   });
+  it("passes RunRequest.env to the process factory", async () => {
+    const transport = new FakeTransport();
+    let seen: Readonly<Record<string, string>> | undefined;
+    const runtime = new ClaudeRuntime({ processFactory: (_args, _cwd, env) => { seen = env; return transport; } });
+    const running = runtime.run(request({ env: { FIREKEEP_SESSION_REPORT_FILE: "/tmp/s.keep" } }), () => undefined, new AbortController().signal);
+    transport.events.emit("stdout", `${JSON.stringify({ type: "result", subtype: "success", result: "done", usage: {} })}
+`);
+    transport.events.emit("exit", 0, null);
+    await running;
+
+    expect(seen).toEqual({ FIREKEEP_SESSION_REPORT_FILE: "/tmp/s.keep" });
+  });
 });

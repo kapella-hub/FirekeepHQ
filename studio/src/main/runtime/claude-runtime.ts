@@ -22,7 +22,7 @@ import { probeVersion, runProcess, type ProcessResult } from "./process.js";
 
 interface ClaudeRuntimeOptions {
   readonly command?: string;
-  readonly processFactory?: (args: readonly string[], cwd?: string) => JsonlTransport;
+  readonly processFactory?: (args: readonly string[], cwd?: string, env?: Readonly<Record<string, string>>) => JsonlTransport;
   readonly runCommand?: (args: readonly string[]) => Promise<ProcessResult>;
   readonly launchLogin?: () => void;
   readonly versionProbe?: () => Promise<{ found: boolean; version?: string; detail: string }>;
@@ -35,14 +35,14 @@ interface JsonObject { readonly [key: string]: unknown }
 export class ClaudeRuntime implements AgentRuntime {
   readonly descriptor;
   readonly #command: string;
-  readonly #processFactory: (args: readonly string[], cwd?: string) => JsonlTransport;
+  readonly #processFactory: (args: readonly string[], cwd?: string, env?: Readonly<Record<string, string>>) => JsonlTransport;
   readonly #runCommand: (args: readonly string[]) => Promise<ProcessResult>;
   readonly #launchLogin: () => void;
   readonly #versionProbe: () => Promise<{ found: boolean; version?: string; detail: string }>;
 
   constructor(options: ClaudeRuntimeOptions = {}) {
     this.#command = options.command ?? (process.platform === "win32" ? "claude.exe" : "claude");
-    this.#processFactory = options.processFactory ?? ((args, cwd) => new ChildProcessJsonlTransport(this.#command, args, { ...(cwd ? { cwd } : {}), env: process.env }));
+    this.#processFactory = options.processFactory ?? ((args, cwd, env) => new ChildProcessJsonlTransport(this.#command, args, { ...(cwd ? { cwd } : {}), env: { ...process.env, ...env } }));
     this.#runCommand = options.runCommand ?? ((args) => runProcess(this.#command, args, { timeoutMs: 15_000, outputLimit: 64 * 1024 }));
     this.#launchLogin = options.launchLogin ?? (() => {
       const child = spawn(this.#command, ["auth", "login"], { detached: true, stdio: "ignore", windowsHide: true });
@@ -110,7 +110,7 @@ export class ClaudeRuntime implements AgentRuntime {
 
   async run(request: RunRequest, sink: RuntimeEventSink, signal: AbortSignal): Promise<RunResult> {
     const args = claudeArgs(request);
-    const transport = this.#processFactory(args, request.cwd);
+    const transport = this.#processFactory(args, request.cwd, request.env);
     let sessionId = request.nativeSessionId;
     let finalText = "";
     let streamedText = "";

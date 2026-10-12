@@ -180,4 +180,13 @@ describe("CodexRuntime", () => {
     second.emit("account/login/completed", { loginId: "login-2", success: true });
     expect(second.closed).toBe(true);
   });
+  it("passes RunRequest.env to the peer factory", async () => {
+    const peer = configuredPeer();
+    let seen: Readonly<Record<string, string>> | undefined;
+    const runtime = new CodexRuntime({ peerFactory: (env) => { seen = env; return peer; } });
+
+    await runtime.run(request({ env: { FIREKEEP_SESSION_REPORT_FILE: "/tmp/s.keep" } }), () => undefined, new AbortController().signal);
+
+    expect(seen).toEqual({ FIREKEEP_SESSION_REPORT_FILE: "/tmp/s.keep" });
+  });
 });

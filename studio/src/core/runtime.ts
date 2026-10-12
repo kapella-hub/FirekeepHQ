@@ -139,6 +139,8 @@ export interface RunRequest {
   readonly permissionMode: RuntimePermissionMode;
   readonly focus?: string;
   readonly requestApproval?: RuntimeApprovalHandler;
+  /** Extra environment for the provider process, merged over process.env (e.g. FIREKEEP_SESSION_REPORT_FILE). */
+  readonly env?: Readonly<Record<string, string>>;
 }
 
 export interface RunResult {

@@ -73,6 +73,27 @@ describe("ReceiptTracker", () => {
     expect(receipt.cursorsAfter).toEqual({ s1: 7 });
   });
 
+  it("a final collect that resolves after a newer commit never moves cursors backwards", async () => {
+    const events: Record<string, ReplayEvent[]> = { s1: [read("e1", ["m1"]), read("e2", ["m2"]), read("e3", ["m3"])] };
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const tracker = new ReceiptTracker({
+      source: () => ({ timeline: async (id, offset) => {
+        await gate;
+        const all = events[id] ?? [];
+        return { kind: "page", events: all.slice(offset), total: all.length, hasMore: false };
+      } }),
+      readReport: async () => ["s1"],
+    });
+    const late = tracker.collect("studio-1", [], true);   // a finalize the service gave up on
+    events.s1!.push(read("e4", ["m4"]), read("e5", ["m5"]));
+    tracker.commit("studio-1", { s1: 5 });               // a later turn committed further
+    events.s1!.splice(3);                                 // the late reply only sees 3 events
+    release?.();
+    await late;
+    expect(tracker.cursors("studio-1")).toEqual({ s1: 5 });
+  });
+
   it("commit() merges cursors forward (never backwards)", async () => {
     const src = source({ s1: [read("a", ["m1"])] });
     const tracker = new ReceiptTracker({ source: () => src, readReport: async () => ["s1"] });

@@ -35,6 +35,8 @@ import type {
   RunResult,
 } from "./runtime.js";
 import { withStudioVisualHint } from "./visuals.js";
+import type { ReceiptTracker } from "./keep/receipt-tracker.js";
+import { unavailableReceipt, type KeepReceipt } from "./keep/receipt.js";
 import { RUNTIME_EFFORTS } from "./runtime.js";
 import { cachedUsageTokens, claudeUsageSample, freshUsageTokens, sumRuntimeUsage, usageTokens } from "./usage.js";
 
@@ -92,11 +94,35 @@ interface StudioServiceOptions {
   readonly sessions?: SessionStore;
   readonly missionChecks?: MissionCheckRunner;
   readonly confirmMission?: (summary: string) => Promise<boolean>;
+  readonly keep?: StudioKeepOptions;
+}
+
+/** Keep link (spec §7.2-7.3). Main owns the files; StudioService never reads or writes them itself. */
+export interface StudioKeepOptions {
+  readonly tracker: ReceiptTracker;
+  /** One report file per run role, so an after-turn reviewer's Keep session cannot take over the primary's attribution. */
+  readonly reportPath: (studioSessionId: string, role: "primary" | "review") => string;
+  /** Removes every report file of a deleted Studio session. */
+  readonly removeReport: (studioSessionId: string) => Promise<void>;
 }
 
 const DEFAULT_PERMISSION: RuntimePermissionMode = "standard";
 const REVIEW_PACKET_LIMIT = 40_000;
 const MISSION_EVIDENCE_LIMIT = 32_000;
+/** A slow Keep delays the next Send by at most this long (spec §7.3). */
+const FINALIZE_BUDGET_MS = 2000;
+
+interface KeepTurn {
+  readonly studioSessionId: string;
+  readonly runId: string;
+  readonly runtimeId: string;
+  readonly events: RuntimeEventPayload[];
+  provisional?: KeepReceipt;
+}
+
+interface FinalizedKeepTurn extends Omit<KeepTurn, "provisional"> {
+  readonly cursorsBefore: Readonly<Record<string, number>>;
+}
 
 export class StudioService {
   readonly runtimes: RuntimeRegistry;
@@ -107,6 +133,12 @@ export class StudioService {
   readonly #sessions: SessionStore | undefined;
   readonly #missionChecks: MissionCheckRunner;
   readonly #confirmMission: (summary: string) => Promise<boolean>;
+  readonly #keep: StudioKeepOptions | undefined;
+  #keepTurn: KeepTurn | null = null;
+  #lastFinalized: FinalizedKeepTurn | null = null;
+  /** Serializes the operations that commit Keep cursors (finalize, retry). */
+  #keepSerial: Promise<void> = Promise.resolve();
+  readonly #deletedSessions = new Set<string>();
   readonly #events: RuntimeEvent[] = [];
   readonly #listeners = new Set<(event: RuntimeEvent) => void>();
   #state: StudioPersistedState | null = null;
@@ -136,6 +168,7 @@ export class StudioService {
       run: async () => { throw new Error("local mission verification is unavailable"); },
     };
     this.#confirmMission = options.confirmMission ?? (async () => false);
+    this.#keep = options.keep;
   }
 
   async initialize(): Promise<void> {
@@ -160,6 +193,7 @@ export class StudioService {
         }
       }
       this.#events.push(...await this.#sessions.load(this.#state.activeSessionId));
+      this.#restoreKeepCursors(this.#state.activeSessionId, this.#events);
     }
     await this.#persist();
   }
@@ -330,6 +364,7 @@ export class StudioService {
     if (this.#activeRun) throw new Error("cannot change sessions while a run is active");
     if (this.#activeMission) throw new Error("cannot change sessions while a mission is active");
     if (this.#missionLaunchPending) throw new Error("cannot change sessions while mission approval is open");
+    await this.#finalizeKeepTurn();
     const state = this.#requireState();
     this.#events.length = 0;
     this.#mission = null;
@@ -370,8 +405,16 @@ export class StudioService {
     if (this.#activeRun) throw new Error("cannot delete a session while a run is active");
     if (!this.#sessions) throw new Error("persistent sessions are unavailable");
     if (confirmation !== sessionId) throw new Error("session deletion requires --confirm with the exact session id");
+    await this.#finalizeKeepTurn();
     if (sessionId === this.#requireState().activeSessionId) await this.startNewSession();
+    // Both session stores recreate a session on append, so no late receipt may write here again.
+    this.#deletedSessions.add(sessionId);
     await this.#sessions.remove(sessionId);
+    if (this.#keep) {
+      await this.#keep.removeReport(sessionId).catch(() => undefined);
+      this.#keep.tracker.forget(sessionId);
+      if (this.#lastFinalized?.studioSessionId === sessionId) this.#lastFinalized = null;
+    }
   }
 
   async resumeSession(sessionId: string): Promise<void> {
@@ -380,8 +423,10 @@ export class StudioService {
     if (!this.#sessions) throw new Error("persistent sessions are unavailable");
     const summary = (await this.#sessions.list()).find((item) => item.id === sessionId);
     if (!summary) throw new Error(`unknown session: ${sessionId}`);
+    await this.#finalizeKeepTurn();
     this.#events.length = 0;
     this.#events.push(...await this.#sessions.load(sessionId));
+    this.#restoreKeepCursors(sessionId, this.#events);
     this.#mission = summary.mission ? structuredClone(summary.mission) : null;
     this.#replaceState({ activeSessionId: sessionId, nativeSessionIds: { ...summary.nativeSessionIds } });
     await this.#persist();
@@ -566,6 +611,7 @@ export class StudioService {
       if (mission.checks.length === 0) throw new Error("add at least one deterministic mission check before running");
       const approved = await this.#confirmMission(missionApprovalSummary({ ...bound, runtimeSettings }));
       if (!approved) return this.mission() as MissionSnapshot;
+      await this.#finalizeKeepTurn();
       const timestamp = this.#now();
       await this.#updateMission({
         phase: "running",
@@ -591,6 +637,7 @@ export class StudioService {
   async continueMission(): Promise<MissionSnapshot> {
     const mission = this.#requireMission();
     if (mission.phase !== "paused" || !mission.nextAction) throw new Error("mission is not paused at a resumable step");
+    await this.#finalizeKeepTurn();
     await this.#updateMission({ blockReason: null });
     return this.#driveMission();
   }
@@ -602,6 +649,7 @@ export class StudioService {
     const cleanNote = note.trim();
     if (!cleanNote) throw new Error("human-directed repair requires a note");
     if (cleanNote.length > 4_000) throw new Error("mission repair note is too long");
+    await this.#finalizeKeepTurn();
     await this.#updateMission({
       phase: "repairing",
       attempt: mission.attempt + 1,
@@ -690,11 +738,16 @@ export class StudioService {
     if (!state.primaryRuntimeId) throw new Error("choose a primary runtime first");
     if (this.#activeRun) throw new Error("a run is already active");
 
-    const result = await this.#run(state.primaryRuntimeId, withStudioVisualHint(text), "primary", { displayPrompt: text });
-    if (this.#requireState().reviewerMode === "after-turn") {
-      await this.#runConfiguredReviewers(result.finalText);
+    await this.#finalizeKeepTurn();
+    try {
+      const result = await this.#run(state.primaryRuntimeId, withStudioVisualHint(text), "primary", { displayPrompt: text });
+      if (this.#requireState().reviewerMode === "after-turn") {
+        await this.#runConfiguredReviewers(result.finalText);
+      }
+      return result;
+    } finally {
+      void this.#provisionalKeepReceipt();
     }
-    return result;
   }
 
   async runReview(runtimeId?: string, focus?: string): Promise<RunResult[]> {
@@ -703,11 +756,18 @@ export class StudioService {
     if (reviewers.length === 0) throw new Error("no reviewers configured");
     const answer = this.#lastCompletedMessage("assistant");
     if (!answer) throw new Error("there is no primary response to review");
+    if (this.#activeRun) throw new Error("a run is already active");
+    // A Second opinion is its own turn: the answer's receipt is finalized first.
+    await this.#finalizeKeepTurn();
     const results: RunResult[] = [];
     const failures: string[] = [];
-    for (const id of reviewers) {
-      try { results.push(await this.#runReview(id, answer, focus)); }
-      catch (error) { failures.push(`${id}: ${errorMessage(error)}`); }
+    try {
+      for (const id of reviewers) {
+        try { results.push(await this.#runReview(id, answer, focus)); }
+        catch (error) { failures.push(`${id}: ${errorMessage(error)}`); }
+      }
+    } finally {
+      void this.#provisionalKeepReceipt();
     }
     if (results.length === 0 && failures.length) throw new Error(`all reviewers failed: ${failures.join("; ")}`);
     return results;
@@ -730,7 +790,38 @@ export class StudioService {
       transcript,
     ].filter(Boolean).join("\n\n");
     await this.setPrimary(runtimeId);
-    return this.#run(runtimeId, packet, "handoff");
+    await this.#finalizeKeepTurn();
+    try {
+      return await this.#run(runtimeId, packet, "handoff");
+    } finally {
+      void this.#provisionalKeepReceipt();
+    }
+  }
+
+  /**
+   * Re-collect a receipt the Keep could not answer. Only the pending turn or,
+   * with no turn pending, the most recently finalized one: an older turn (or a
+   * finalized one once a newer turn is open) would take later turns' events.
+   */
+  async retryReceipt(runId: string): Promise<void> {
+    if (!this.#keep) throw new Error("the Keep link is unavailable");
+    if (this.#keepTurn?.runId === runId) {
+      await this.#provisionalKeepReceipt();
+      return;
+    }
+    const last = this.#lastFinalized;
+    if (!last || last.runId !== runId || this.#keepTurn) throw new Error("only the latest receipt can be retried");
+    const tracker = this.#keep.tracker;
+    await this.#withKeepLock(async () => {
+      if (this.#keepTurn || this.#lastFinalized !== last) throw new Error("only the latest receipt can be retried");
+      const committed = tracker.cursors(last.studioSessionId);
+      tracker.restore(last.studioSessionId, last.cursorsBefore);
+      const receipt = await withinBudget(tracker.collect(last.studioSessionId, [...last.events], true).catch(() => null), FINALIZE_BUDGET_MS);
+      // A measured re-collect committed from cursorsBefore; anything else must not leave cursors rolled back.
+      if (receipt?.status === "measured") tracker.commit(last.studioSessionId, committed);
+      else tracker.restore(last.studioSessionId, committed);
+      this.#emitInto(last, receipt ?? unavailableReceipt("Keep did not answer in time", true, committed));
+    });
   }
 
   cancel(runId?: string): boolean {
@@ -846,6 +937,7 @@ export class StudioService {
       }
     } finally {
       if (this.#activeMission === active) this.#activeMission = null;
+      void this.#provisionalKeepReceipt();
     }
     return this.mission() as MissionSnapshot;
   }
@@ -1024,6 +1116,7 @@ export class StudioService {
     mode: RunRequest["mode"],
     options: { readonly signal?: AbortSignal; readonly cwd?: string; readonly runtimeSettings?: MissionRuntimeSettings; readonly displayPrompt?: string } = {},
   ): Promise<RunResult> {
+    if (this.#keep) await this.#keepSerial; // a run never starts while a receipt retry has cursors rolled back
     if (this.#activeRun) throw new Error("a run is already active");
     const runtime = this.runtimes.requireCapability(runtimeId, mode === "review" ? "review" : "chat");
     const state = this.#requireState();
@@ -1031,6 +1124,8 @@ export class StudioService {
       throw new Error(`session token budget reached (${state.tokenBudget.toLocaleString()} tokens); use /budget set or /budget off to continue`);
     }
     const runId = this.#idFactory("run");
+    // The first run after a finalize opens the turn; after-turn and mission reviewers join it.
+    if (this.#keep && !this.#keepTurn) this.#keepTurn = { studioSessionId: state.activeSessionId, runId, runtimeId, events: [] };
     const started = performance.now();
     const controller = new AbortController();
     const abortFromParent = (): void => controller.abort();
@@ -1062,6 +1157,9 @@ export class StudioService {
         : {}),
       ...(selectedModel ? { model: selectedModel } : {}),
       ...(selectedEffort ? { effort: selectedEffort } : {}),
+      ...(this.#keep
+        ? { env: { FIREKEEP_SESSION_REPORT_FILE: this.#keep.reportPath(state.activeSessionId, mode === "review" ? "review" : "primary") } }
+        : {}),
     };
     this.#emit(runtimeId, runId, {
       kind: "run.started",
@@ -1076,6 +1174,7 @@ export class StudioService {
         request,
         (payload, raw) => {
           if (payload.kind === "usage.updated") usageEmitted = true;
+          this.#keepTurn?.events.push(payload);
           this.#emit(runtimeId, runId, payload, raw);
         },
         controller.signal,
@@ -1150,20 +1249,92 @@ export class StudioService {
     return waiting;
   }
 
-  #emit(runtimeId: string, runId: string, payload: RuntimeEventPayload, raw?: unknown): void {
+  /**
+   * Appends to `studioSessionId` (default: the active session). Only the active
+   * session's events are held in memory and pushed to listeners: the renderer
+   * shows one transcript and does not filter by session, so another session's
+   * event is stored and appears when that session is resumed.
+   */
+  #emit(runtimeId: string, runId: string, payload: RuntimeEventPayload, raw?: unknown, studioSessionId?: string): void {
     const state = this.#requireState();
+    const sessionId = studioSessionId ?? state.activeSessionId;
     const event: RuntimeEvent = {
       id: this.#idFactory("event"),
       runId,
-      studioSessionId: state.activeSessionId,
+      studioSessionId: sessionId,
       runtimeId,
       timestamp: this.#now(),
       payload,
       ...(raw === undefined ? {} : { raw }),
     };
-    this.#events.push(event);
+    const active = sessionId === state.activeSessionId;
+    if (active) this.#events.push(event);
     if (this.#sessions) void this.#sessions.append(event).catch(() => undefined);
-    for (const listener of this.#listeners) listener(structuredClone(event));
+    if (active) for (const listener of this.#listeners) listener(structuredClone(event));
+  }
+
+  /**
+   * Finalize the pending turn's receipt before a new turn's prompt leaves or the
+   * active session changes (spec §7.3). Bounded: a slow Keep delays Send by at
+   * most FINALIZE_BUDGET_MS. A turn whose work is still running is never finalized.
+   */
+  async #finalizeKeepTurn(): Promise<void> {
+    if (!this.#keep) return;
+    const turn = this.#activeRun || this.#activeMission ? null : this.#keepTurn;
+    if (turn) this.#keepTurn = null;
+    await this.#withKeepLock(async () => {
+      if (!turn || !this.#keep) return;
+      const tracker = this.#keep.tracker;
+      const before = tracker.cursors(turn.studioSessionId);
+      const collected = await withinBudget(tracker.collect(turn.studioSessionId, [...turn.events], true).catch(() => null), FINALIZE_BUDGET_MS);
+      let receipt: KeepReceipt;
+      if (collected && collected.status !== "unavailable") receipt = collected;
+      else if (turn.provisional?.status === "measured") {
+        // Keep did not answer in time: the receipt measured when the turn ended becomes final;
+        // anything that arrived later rolls into the next turn.
+        receipt = { ...turn.provisional, final: true };
+        tracker.commit(turn.studioSessionId, turn.provisional.cursorsAfter);
+      } else receipt = collected ?? unavailableReceipt("Keep did not answer in time", true, before);
+      this.#lastFinalized = { studioSessionId: turn.studioSessionId, runId: turn.runId, runtimeId: turn.runtimeId, events: turn.events, cursorsBefore: before };
+      this.#emitInto(turn, receipt);
+    });
+  }
+
+  /** Fire-and-forget after a turn: never awaited by the turn, the receipt arrives by push event. Never rejects. */
+  #provisionalKeepReceipt(): Promise<void> {
+    const turn = this.#keepTurn;
+    if (!turn || !this.#keep) return Promise.resolve();
+    return this.#keep.tracker.collect(turn.studioSessionId, [...turn.events], false)
+      .then((receipt) => {
+        if (this.#keepTurn !== turn) return; // already finalized; the final receipt wins
+        turn.provisional = receipt;
+        this.#emitInto(turn, receipt);
+      })
+      .catch(() => undefined); // a Keep failure never fails or blocks a turn (spec §8)
+  }
+
+  /** Append to the session that produced the turn, even if another session is active now. */
+  #emitInto(turn: Pick<KeepTurn, "studioSessionId" | "runId" | "runtimeId">, receipt: KeepReceipt): void {
+    if (this.#deletedSessions.has(turn.studioSessionId)) return;
+    this.#emit(turn.runtimeId, turn.runId, { kind: "keep.receipt", receipt }, undefined, turn.studioSessionId);
+  }
+
+  #withKeepLock(operation: () => Promise<void>): Promise<void> {
+    const next = this.#keepSerial.then(operation);
+    this.#keepSerial = next.catch(() => undefined);
+    return next;
+  }
+
+  /** Cursors only move forward: a resumed session never re-counts events its last final receipt covered. */
+  #restoreKeepCursors(sessionId: string, events: readonly RuntimeEvent[]): void {
+    if (!this.#keep) return;
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const payload = events[index]?.payload;
+      if (payload?.kind === "keep.receipt" && payload.receipt.final) {
+        this.#keep.tracker.commit(sessionId, payload.receipt.cursorsAfter);
+        return;
+      }
+    }
   }
 
   #lastCompletedMessage(role: "assistant" | "reviewer"): string | null {
@@ -1312,6 +1483,16 @@ function missionWasInterrupted(phase: MissionSnapshot["phase"]): boolean {
 }
 
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error); }
+
+/** `work` must not reject; resolves null once `ms` passes. The timer is always cleared. */
+async function withinBudget<T>(work: Promise<T>, ms: number): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([work, new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), ms); })]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 async function waitForSettlement(settled: Promise<void>, timeoutMs: number): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;

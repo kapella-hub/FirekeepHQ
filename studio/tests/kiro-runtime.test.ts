@@ -158,4 +158,15 @@ describe("KiroRuntime", () => {
     expect(runtime.descriptor.capabilities).toContain("firekeep-hooks");
     expect(runtime.descriptor.capabilities).toContain("firekeep-memory");
   });
+  it("passes RunRequest.env to the target factory", async () => {
+    let seen: Readonly<Record<string, string>> | undefined;
+    const runtime = new KiroRuntime({
+      agentName: null,
+      targetFactory: (_args, _cwd, env) => { seen = env; return { target: testAgent(), close: () => undefined, stderr: () => "" }; },
+    });
+
+    await runtime.run(request({ permissionMode: "safe", env: { FIREKEEP_SESSION_REPORT_FILE: "/tmp/s.keep" } }), () => undefined, new AbortController().signal);
+
+    expect(seen).toEqual({ FIREKEEP_SESSION_REPORT_FILE: "/tmp/s.keep" });
+  });
 });
