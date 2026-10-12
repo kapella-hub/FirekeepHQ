@@ -123,7 +123,11 @@ export class KeepGateway implements KeepTimelineSource {
     try {
       return parseTimelineReply(await this.#call("replay_timeline", { session_id: keepSessionId, offset, limit, format: "json" }));
     } catch (error) {
-      return { kind: "error", message: error instanceof Error ? error.message : String(error) };
+      const message = error instanceof Error ? error.message : String(error);
+      // A pre-v1.6.2 server rejects the new offset/format arguments with a pydantic validation error
+      // instead of replying; that means "timeline not supported here", not a failure.
+      if (/validation errors? for call\[replay_timeline\]/i.test(message)) return { kind: "unsupported" };
+      return { kind: "error", message };
     }
   }
 

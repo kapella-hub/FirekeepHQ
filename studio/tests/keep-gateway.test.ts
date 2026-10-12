@@ -80,6 +80,18 @@ describe("KeepGateway", () => {
     expect(mcp.calls[0]).toEqual(["replay_timeline", { session_id: "s1", offset: 4, limit: 200, format: "json" }]);
   });
 
+  it("timeline() maps a pre-v1.6.2 argument validation error to unsupported, other errors stay errors", async () => {
+    const failing = (text: string): McpLike => ({ closed: false, async callTool() { return { text, isError: true }; }, async close() {} });
+    for (const [text, expected] of [
+      ["2 validation errors for call[replay_timeline]\noffset\n  Unexpected keyword argument", { kind: "unsupported" }],
+      ["Keep timeout", { kind: "error", message: "Keep timeout" }],
+    ] as const) {
+      const gateway = new KeepGateway({ whoami: whoamiOk, connect: async () => failing(text) });
+      await gateway.start();
+      expect(await gateway.timeline("s1", 0, 200)).toEqual(expected);
+    }
+  });
+
   it("timeline() returns an error page instead of throwing when not connected", async () => {
     const gateway = new KeepGateway({ whoami: async () => ({ ok: false, missing: true, output: "" }), connect: vi.fn() });
     await gateway.start();
