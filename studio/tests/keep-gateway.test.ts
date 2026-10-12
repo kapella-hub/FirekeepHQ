@@ -364,6 +364,14 @@ describe("KeepGateway connection truthfulness", () => {
     expect(gateway.status().state).toBe("connected");
   });
 
+  it("tool errors the server answered with never demote the status", async () => {
+    const refusing: McpLike = { closed: false, async callTool(name) { return name === "memory_feedback" ? { text: "feedback refused: not your memory", isError: true } : { text: "ok", isError: false }; }, async close() {} };
+    const gateway = new KeepGateway({ whoami: whoamiOk, connect: async () => refusing, sleep: async () => {} });
+    await gateway.start();
+    for (let i = 0; i < 5; i += 1) await expect(gateway.feedback(["m1"], true)).rejects.toThrow(/feedback refused/);
+    expect(gateway.status().state).toBe("connected");
+  });
+
   it("a pre-v1.6.2 timeline validation error counts as an answer, not a failure", async () => {
     const old: McpLike = { closed: false, async callTool(name) { return name === "replay_timeline" ? { text: "2 validation errors for call[replay_timeline]", isError: true } : { text: "ok", isError: false }; }, async close() {} };
     const gateway = new KeepGateway({ whoami: whoamiOk, connect: async () => old });

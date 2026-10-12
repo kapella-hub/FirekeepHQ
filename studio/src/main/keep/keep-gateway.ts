@@ -139,7 +139,7 @@ export class KeepGateway implements KeepTimelineSource {
 
   async timeline(keepSessionId: string, offset: number, limit: number): Promise<TimelinePage> {
     try {
-      return parseTimelineReply(await this.#call("replay_timeline", { session_id: keepSessionId, offset, limit, format: "json" }, OLD_TIMELINE));
+      return parseTimelineReply(await this.#call("replay_timeline", { session_id: keepSessionId, offset, limit, format: "json" }));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       // A pre-v1.6.2 server rejects the new offset/format arguments with a pydantic validation error
@@ -149,8 +149,7 @@ export class KeepGateway implements KeepTimelineSource {
     }
   }
 
-  /** `answered`: an error text proving the server replied; it counts as a success for the failure counter. */
-  async #call(name: string, args: Record<string, unknown>, answered?: RegExp): Promise<string> {
+  async #call(name: string, args: Record<string, unknown>): Promise<string> {
     if (!STUDIO_TOOLS.includes(name)) throw new Error(`tool outside the studio preset: ${name}`);
     const mcp = this.#mcp;
     if (!mcp || mcp.closed) throw new Error("Keep not connected");
@@ -162,18 +161,18 @@ export class KeepGateway implements KeepTimelineSource {
       throw error;
     }
     if (result.isError) {
-      const message = result.text.split("\n")[0] || `${name} failed`;
-      if (answered?.test(result.text)) this.#callFailures = 0;
-      else this.#callFailed(mcp, message);
-      throw new Error(message);
+      // A tool error (a refused feedback, a bad argument) proves the server answered: it never counts toward demotion.
+      this.#callFailures = 0;
+      throw new Error(result.text.split("\n")[0] || `${name} failed`);
     }
     this.#callFailures = 0;
     return result.text;
   }
 
   /**
-   * The kit gateway answers locally, so a server that dies after connect shows up only as failing calls.
-   * After CALL_FAILURE_LIMIT in a row, report unreachable and reconnect through the normal backoff.
+   * The kit gateway answers locally, so a server that dies after connect shows up only as failing calls: the kit
+   * turns an unreachable backend into a JSON-RPC error, which rejects callTool (as do timeouts and a dead child).
+   * After CALL_FAILURE_LIMIT such rejections in a row, report unreachable and reconnect through the normal backoff.
    */
   #callFailed(mcp: McpLike, message: string): void {
     if (mcp !== this.#mcp) return;   // a call on a client that has since been replaced
