@@ -218,7 +218,7 @@ export class ClaudeRuntime implements AgentRuntime {
 }
 
 function claudeArgs(request: RunRequest): string[] {
-  const ephemeral = request.mode === "review" || request.mode === "compare";
+  const ephemeral = request.mode === "review";
   const safe = ephemeral || request.permissionMode === "safe";
   const permissionMode = safe ? "plan" : request.permissionMode === "unrestricted" ? "bypassPermissions" : "auto";
   const args = ["-p", "--input-format", "text", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-mode", permissionMode];

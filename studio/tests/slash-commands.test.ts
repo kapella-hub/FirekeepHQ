@@ -73,7 +73,6 @@ describe("slash command registry", () => {
       "/runtime use beta",
     ]);
     expect(commands.complete("/use a").map((item) => item.value)).toEqual(["/use alpha"]);
-    expect(commands.complete("/compare alpha ").map((item) => item.value)).toEqual(["/compare alpha beta"]);
     expect(commands.complete("/connect alpha ").map((item) => item.value)).toContain("/connect <runtime-id> [--method browser|device|api-key]");
   });
 
@@ -121,17 +120,11 @@ describe("slash command registry", () => {
     expect(updates.install).toHaveBeenCalledOnce();
   });
 
-  it("runs compare and consensus workflows through runtime-neutral commands", async () => {
-    const { service, commands } = setup();
-    await service.initialize();
-    await service.setPrimary("alpha");
-    await service.addReviewer("beta");
-
-    const compared = await commands.execute('/compare --prompt "Which option is safer?"');
-    const consensus = await commands.execute("/consensus alpha --focus evidence");
-
-    expect(compared).toMatchObject({ title: "Comparison complete", tone: "success" });
-    expect(consensus).toMatchObject({ title: "Consensus complete", tone: "success" });
+  it("no longer offers /compare or /consensus", async () => {
+    const { commands } = setup();
+    const names = (await commands.complete("/c")).map((item) => item.value);
+    expect(names).not.toContain("/compare");
+    expect(names).not.toContain("/consensus");
   });
 
   it("supports honest token guards and usage reporting", async () => {

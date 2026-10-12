@@ -721,57 +721,6 @@ export class StudioService {
     return results;
   }
 
-  async compare(prompt: string, runtimeIds?: readonly string[]): Promise<RunResult[]> {
-    const text = prompt.trim();
-    if (!text) throw new Error("comparison prompt cannot be empty");
-    const state = this.#requireState();
-    const selected = runtimeIds?.length
-      ? runtimeIds
-      : [state.primaryRuntimeId, ...state.reviewerRuntimeIds].filter((value): value is string => value !== null);
-    const ids = [...new Set(selected)];
-    if (ids.length < 2) throw new Error("compare needs at least two distinct runtimes");
-    for (const id of ids) this.runtimes.requireCapability(id, "chat");
-    if (this.#activeRun) throw new Error("a run is already active");
-    this.#emit(ids[0] as string, this.#idFactory("compare"), {
-      kind: "message.completed",
-      messageId: this.#idFactory("message"),
-      role: "user",
-      text,
-    });
-    const results: RunResult[] = [];
-    const failures: string[] = [];
-    for (const id of ids) {
-      try { results.push(await this.#run(id, text, "compare")); }
-      catch (error) { failures.push(`${id}: ${errorMessage(error)}`); }
-    }
-    if (results.length === 0) throw new Error(`all comparison runtimes failed: ${failures.join("; ")}`);
-    return results;
-  }
-
-  async synthesize(runtimeId?: string, focus?: string): Promise<RunResult> {
-    const selected = runtimeId ?? this.#requireState().primaryRuntimeId;
-    if (!selected) throw new Error("choose a synthesis runtime first");
-    this.runtimes.requireCapability(selected, "chat");
-    const candidates: Array<{ readonly runtimeId: string; readonly text: string }> = [];
-    const seen = new Set<string>();
-    for (let index = this.#events.length - 1; index >= 0 && candidates.length < 8; index -= 1) {
-      const event = this.#events[index];
-      if (!event || event.payload.kind !== "message.completed" || event.payload.role === "user") continue;
-      const key = `${event.runtimeId}:${event.payload.role}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      candidates.push({ runtimeId: event.runtimeId, text: event.payload.text });
-    }
-    if (candidates.length < 2) throw new Error("consensus needs at least two completed agent responses");
-    const packet = [
-      "Synthesize the independent candidate responses below into one decision-quality answer.",
-      "State agreements, resolve disagreements using evidence, preserve material uncertainty, and do not claim unanimity where none exists.",
-      focus ? `User focus: ${focus}` : "",
-      ...candidates.reverse().map((candidate) => `## ${candidate.runtimeId}\n${candidate.text}`),
-    ].filter(Boolean).join("\n\n").slice(0, REVIEW_PACKET_LIMIT);
-    return this.#run(selected, packet, "compare");
-  }
-
   async handoff(runtimeId: string, note?: string): Promise<RunResult> {
     this.runtimes.requireCapability(runtimeId, "chat");
     const transcript = this.#events
@@ -1105,7 +1054,7 @@ export class StudioService {
     }
     const selectedModel = options.runtimeSettings?.model ?? state.selectedModels[runtimeId];
     const selectedEffort = options.runtimeSettings?.effort ?? state.selectedEfforts[runtimeId];
-    const permissionMode = mode === "review" || mode === "compare"
+    const permissionMode = mode === "review"
       ? "safe"
       : (options.runtimeSettings?.permissionMode ?? state.permissionModes[runtimeId] ?? DEFAULT_PERMISSION);
     const request: RunRequest = {

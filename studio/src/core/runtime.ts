@@ -17,7 +17,7 @@ export type RuntimeCapability = (typeof RUNTIME_CAPABILITIES)[number];
 export type RuntimePermissionMode = "safe" | "standard" | "unrestricted";
 export const RUNTIME_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 export type RuntimeEffort = (typeof RUNTIME_EFFORTS)[number];
-export type RunMode = "primary" | "review" | "handoff" | "compare";
+export type RunMode = "primary" | "review" | "handoff";
 
 export interface RuntimeDescriptor {
   readonly id: string;

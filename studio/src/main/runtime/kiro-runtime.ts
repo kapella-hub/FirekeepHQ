@@ -168,7 +168,7 @@ export async function runAcpConversation(
     .onRequest(acp.methods.client.session.requestPermission, async (ctx) => {
       const options = ctx.params.options;
       let optionId: string | undefined;
-      if (request.permissionMode === "safe" || request.mode === "review" || request.mode === "compare") {
+      if (request.permissionMode === "safe" || request.mode === "review") {
         optionId = options.find((option) => option.kind.startsWith("reject"))?.optionId;
       } else if (request.permissionMode === "unrestricted") {
         optionId = options.find((option) => option.kind === "allow_once")?.optionId;

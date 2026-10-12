@@ -125,12 +125,9 @@ export class CommandRegistry {
         }));
     };
 
-    const firstRuntimeCommands = ["primary", "use", "connect", "disconnect", "model", "effort", "permissions", "handoff", "consensus"];
+    const firstRuntimeCommands = ["primary", "use", "connect", "disconnect", "model", "effort", "permissions", "handoff"];
     if (firstRuntimeCommands.includes(commandName) && (args.length === 0 || (args.length === 1 && !trailingSpace))) {
       return runtimeValues();
-    }
-    if (commandName === "compare" && !args.includes("--prompt")) {
-      return runtimeValues(args, prefix, true);
     }
     if (["runtime", "agents"].includes(commandName)
       && ["use", "status", "models"].includes(args[0] ?? "")
@@ -404,32 +401,6 @@ export function createCommandRegistry(service: StudioService, integrations: Comm
   });
 
   commands.register({
-    name: "compare",
-    summary: "Ask multiple runtimes independently in fresh, read-only contexts.",
-    usages: ["/compare [runtime-id...] --prompt <text>", "/compare all --prompt <text>"],
-    execute: async (command) => {
-      const prompt = typeof command.flags.prompt === "string" ? command.flags.prompt : undefined;
-      if (!prompt) throw new Error("compare requires --prompt <text>");
-      const runtimeIds = command.args[0] === "all"
-        ? service.runtimes.list().filter((runtime) => runtime.descriptor.capabilities.includes("chat")).map((runtime) => runtime.descriptor.id)
-        : command.args.length ? command.args : undefined;
-      const results = await service.compare(prompt, runtimeIds);
-      return notice("Comparison complete", `${results.length} independent runtime${results.length === 1 ? "" : "s"} answered in safe contexts.`, "success");
-    },
-  });
-
-  commands.register({
-    name: "consensus",
-    summary: "Synthesize recent independent answers without hiding disagreement.",
-    usages: ["/consensus [runtime-id] [--focus <text>]"],
-    execute: async (command) => {
-      const focus = typeof command.flags.focus === "string" ? command.flags.focus : undefined;
-      await service.synthesize(command.args[0], focus);
-      return notice("Consensus complete", "Studio preserved the source answers and added a fresh synthesis.", "success");
-    },
-  });
-
-  commands.register({
     name: "reviewer",
     aliases: ["reviewers"],
     summary: "Configure independent review runtimes and automatic review mode.",
@@ -577,7 +548,7 @@ export function createCommandRegistry(service: StudioService, integrations: Comm
   commands.register({ name: "doctor", aliases: ["status"], summary: "Check runtime connectivity and authentication.", usages: ["/doctor [runtime-id|all]", "/status [runtime-id|all]"], execute: async (command) => { const target = command.args[0] ?? "all"; const diagnostics = target === "all" ? await service.probeAll() : [await service.probeRuntime(target)]; return { kind: "table", title: "Studio doctor", body: `${diagnostics.length} checks`, rows: diagnostics.map((item) => [item.runtimeId, item.connection.state, item.auth.state, item.connection.detail]) }; } });
   commands.register({ name: "cancel", summary: "Cancel the active run.", usages: ["/cancel"], execute: async () => notice("Cancel", service.cancel() ? "Cancellation requested." : "No active run.", "neutral") });
   commands.register({ name: "clear", summary: "Start a clean local transcript while preserving settings.", usages: ["/clear"], execute: async () => { await service.startNewSession(); return notice("Transcript cleared", "A new Studio session is active."); } });
-  commands.register({ name: "budget", summary: "Set a session token guard across primary, review, compare, and synthesis runs.", usages: ["/budget show", "/budget set <tokens>", "/budget off"], execute: async (command) => {
+  commands.register({ name: "budget", summary: "Set a session token guard across primary and review runs.", usages: ["/budget show", "/budget set <tokens>", "/budget off"], execute: async (command) => {
     const action = command.args[0] ?? "show";
     if (action === "set") await service.setTokenBudget(parseTokenAmount(requireArg(command, 1, "token amount")));
     else if (action === "off") await service.setTokenBudget(null);

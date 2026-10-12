@@ -256,7 +256,7 @@ export class CodexRuntime implements AgentRuntime {
       };
       const threadResponse = object(request.nativeSessionId && (request.mode === "primary" || request.mode === "handoff")
         ? await peer.request("thread/resume", { threadId: request.nativeSessionId, ...common }, { signal })
-        : await peer.request("thread/start", { ...common, ephemeral: request.mode === "review" || request.mode === "compare", serviceName: "Firekeep Studio" }, { signal }));
+        : await peer.request("thread/start", { ...common, ephemeral: request.mode === "review", serviceName: "Firekeep Studio" }, { signal }));
       threadId = string(object(threadResponse.thread).id);
       if (!threadId) throw new Error("Codex App Server returned no thread id");
       const turnResponse = object(await peer.request("turn/start", {

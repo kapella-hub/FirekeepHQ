@@ -322,7 +322,7 @@ describe("StudioService", () => {
     expect(service.snapshot().usage).toMatchObject({ tokens: 70, freshTokens: 20, cachedTokens: 50, measuredRuns: 1, totalRuns: 1, byRuntime: { claude: { tokens: 70, freshTokens: 20, cachedTokens: 50, runs: 1 } } });
   });
 
-  it("runs comparisons and reviewers sequentially in isolated safe contexts", async () => {
+  it("runs reviewers sequentially in isolated safe contexts", async () => {
     const { service, alpha, beta } = createService();
     await service.initialize();
     await service.setPrimary("alpha");
@@ -343,26 +343,17 @@ describe("StudioService", () => {
     }
 
     await service.runReview();
-    const compared = await service.compare("independent question", ["alpha", "beta"]);
 
-    expect(compared).toHaveLength(2);
     expect(maximum).toBe(1);
-    expect(alpha.runs.at(-1)).toMatchObject({ mode: "compare", permissionMode: "safe" });
+    expect(alpha.runs.at(-1)).toMatchObject({ mode: "review", permissionMode: "safe" });
     expect(alpha.runs.at(-1)?.nativeSessionId).toBeUndefined();
-    expect(beta.runs.at(-1)).toMatchObject({ mode: "compare", permissionMode: "safe" });
+    expect(beta.runs.at(-1)).toMatchObject({ mode: "review", permissionMode: "safe" });
     expect(beta.runs.at(-1)?.nativeSessionId).toBeUndefined();
-    expect(service.events().filter((event) => event.payload.kind === "message.completed" && event.payload.role === "user").at(-1)?.payload).toMatchObject({ text: "independent question" });
   });
 
-  it("builds a fresh consensus packet and keeps an explicit handoff's new native session", async () => {
-    const { service, alpha, beta } = createService();
+  it("keeps an explicit handoff's new native session", async () => {
+    const { service, beta } = createService();
     await service.initialize();
-    await service.compare("compare this", ["alpha", "beta"]);
-
-    await service.synthesize("alpha", "prefer evidence");
-    expect(alpha.runs.at(-1)?.prompt).toContain("## beta");
-    expect(alpha.runs.at(-1)?.prompt).toContain("prefer evidence");
-
     await service.handoff("beta", "continue carefully");
     expect(service.snapshot()).toMatchObject({ primaryRuntimeId: "beta", nativeSessionIds: { beta: "beta-session" } });
     expect(beta.runs.at(-1)).toMatchObject({ mode: "handoff" });
