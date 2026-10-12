@@ -40,6 +40,7 @@ import { AgentChip } from "./composer/AgentChip.js";
 import { Composer } from "./composer/Composer.js";
 import { coalesceRuntimeEvents } from "./runtime-event-buffer.js";
 import { KeepReceiptCard } from "./conversation/KeepReceiptCard.js";
+import { SecondOpinionChooser } from "./conversation/SecondOpinion.js";
 import { MissionStepper } from "./conversation/MissionStepper.js";
 import { buildTimeline, groupTimeline, type TimelineItem, type TimelineRun } from "./timeline";
 
@@ -423,7 +424,11 @@ export function App(): React.JSX.Element {
   const receiptActions: ReceiptActions = {
     // The service refuses retrying turn N while turn N+1 is pending, so retry is offered only when idle.
     newestRunId: snapshot.activeRunId ? null : newestReceiptRunId,
-    onFeedback: async (memoryIds, useful) => { await invoke({ type: "keep.feedback", memoryIds: [...memoryIds], useful }); },
+    onFeedback: async (memoryIds, useful) => {
+      // Bypasses `invoke` on purpose: a failed thumb shows its own inline retry, not the global error banner.
+      const result = await window.firekeepStudio.invoke({ type: "keep.feedback", memoryIds: [...memoryIds], useful });
+      if (result.type === "error") throw new Error(result.message);
+    },
     onRetry: (runId) => ignore(invoke({ type: "keep.receipt.retry", runId }).then(applyResult)),
   };
 
@@ -653,24 +658,12 @@ function RunTimeline({ run, reviews, runtime, runtimes, resolveApproval, openDec
   const cardProps = { runtime, resolveApproval, openDecision, decisionLoading };
 
   const reviewers = runtimes.filter((candidate) => candidate.capabilities.includes("review"));
-  const defaultReviewer = (reviewers.find((candidate) => candidate.id !== secondOpinion?.primaryRuntimeId) ?? reviewers[0])?.id ?? "";
   const [chooserOpen, setChooserOpen] = useState(false);
-  const [chooserRuntime, setChooserRuntime] = useState("");
-  const [focus, setFocus] = useState("");
-  const chooserRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const answerHere = Boolean(secondOpinion?.messageId) && run.messages.some((item) => item.id === secondOpinion?.messageId);
   const chooserVisible = chooserOpen && answerHere && reviewers.length > 0;
-  useEffect(() => {
-    if (!chooserVisible) return;
-    const escape = (event: KeyboardEvent): void => {
-      // Capture phase + stopImmediatePropagation: closing the chooser must not also reach App's Escape (run.cancel).
-      if (event.key === "Escape") { event.stopImmediatePropagation(); setChooserOpen(false); triggerRef.current?.focus(); }
-    };
-    window.addEventListener("keydown", escape, true);
-    return () => window.removeEventListener("keydown", escape, true);
-  }, [chooserVisible]);
-  const effectiveRuntime = reviewers.some((candidate) => candidate.id === chooserRuntime) ? chooserRuntime : defaultReviewer;
+  useEffect(() => { if (!answerHere) setChooserOpen(false); }, [answerHere]);
+  const closeChooser = useCallback(() => { setChooserOpen(false); triggerRef.current?.focus(); }, []);
 
   return <section className="run-timeline" data-run-id={run.runId}>
     {run.messages.map((item) => <SafeTimelineCard
@@ -681,11 +674,7 @@ function RunTimeline({ run, reviews, runtime, runtimes, resolveApproval, openDec
         ? <button ref={triggerRef} type="button" className="second-opinion-button" aria-label="Second opinion" aria-expanded={chooserVisible} title="Ask another agent to review this answer" onClick={() => setChooserOpen((value) => !value)}><ShieldCheck size={13} /></button>
         : null}
     />)}
-    {chooserVisible ? <div className="second-opinion-chooser" ref={chooserRef}>
-      <select aria-label="Reviewer" value={effectiveRuntime} onChange={(event) => setChooserRuntime(event.target.value)}>{reviewers.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.displayName}</option>)}</select>
-      <input type="text" placeholder="Focus (optional), e.g. security" value={focus} onChange={(event) => setFocus(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); secondOpinion?.onRun(effectiveRuntime, focus.trim()); setChooserOpen(false); } }} />
-      <button type="button" className="primary-action" onClick={() => { secondOpinion?.onRun(effectiveRuntime, focus.trim()); setChooserOpen(false); }}>Run</button>
-    </div> : null}
+    {chooserVisible && secondOpinion ? <SecondOpinionChooser reviewers={reviewers} primaryRuntimeId={secondOpinion.primaryRuntimeId} onRun={secondOpinion.onRun} onClose={closeChooser} /> : null}
     {run.attention.map((item) => <SafeTimelineCard key={`${item.kind}:${item.id}`} item={item} {...cardProps} />)}
     {steps ? <details className="run-activity" open={activityOpen} onToggle={(event) => setActivityOpen(event.currentTarget.open)}><summary><span className={working ? "pulse-dot" : "work-log-dot"} /><span>{working ? "Working" : "Work log"} · {steps} step{steps === 1 ? "" : "s"}</span><ChevronDown size={14} /></summary><div className="run-activity-items">{run.activity.map((item) => <SafeTimelineCard key={`${item.kind}:${item.id}`} item={item} {...cardProps} />)}</div></details> : null}
     {run.receipt ? <KeepReceiptCard receipt={run.receipt} runId={run.runId} canRetry={receipts.newestRunId === run.runId} onFeedback={receipts.onFeedback} onRetry={receipts.onRetry} /> : null}

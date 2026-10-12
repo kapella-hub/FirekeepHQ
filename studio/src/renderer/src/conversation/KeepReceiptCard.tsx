@@ -15,7 +15,7 @@ export interface KeepReceiptCardProps {
 
 export function KeepReceiptCard({ receipt, runId, canRetry, onFeedback, onRetry }: KeepReceiptCardProps): React.JSX.Element {
   const [open, setOpen] = useState(false);
-  const [feedback, setFeedback] = useState<Readonly<Record<number, FeedbackPhase>>>({});
+  const [feedback, setFeedback] = useState<Readonly<Record<string, FeedbackPhase>>>({});
 
   if (receipt.status === "unavailable") {
     return canRetry
@@ -24,11 +24,12 @@ export function KeepReceiptCard({ receipt, runId, canRetry, onFeedback, onRetry 
   }
 
   const empty = receipt.recalledCount === 0 && receipt.learnedCount === 0;
-  const send = (index: number, ids: readonly string[], useful: boolean): void => {
-    setFeedback((current) => ({ ...current, [index]: { useful, phase: "sending" } }));
+  const send = (ids: readonly string[], useful: boolean): void => {
+    const key = ids.join("|");
+    setFeedback((current) => ({ ...current, [key]: { useful, phase: "sending" } }));
     onFeedback(ids, useful).then(
-      () => setFeedback((current) => ({ ...current, [index]: { useful, phase: "done" } })),
-      () => setFeedback((current) => ({ ...current, [index]: { useful, phase: "failed" } })),
+      () => setFeedback((current) => ({ ...current, [key]: { useful, phase: "done" } })),
+      () => setFeedback((current) => ({ ...current, [key]: { useful, phase: "failed" } })),
     );
   };
 
@@ -36,13 +37,13 @@ export function KeepReceiptCard({ receipt, runId, canRetry, onFeedback, onRetry 
     <button type="button" className={`keep-receipt${receipt.status === "measured" && empty ? " muted" : ""}`} aria-expanded={open} onClick={() => setOpen((value) => !value)}>{receiptLabel(receipt)}</button>
     {open ? <ul className="keep-receipt-details">
       {receipt.recalls.map((recall, index) => {
-        const state = feedback[index];
+        const state = feedback[recall.memoryIds.join("|")];
         return <li key={`recall:${index}`}>
           <span className="receipt-text"><strong>{recall.query}</strong> · {recall.trigger === "prompt-hook" ? "via prompt hook" : "asked by the agent"} · {recall.resultCount} result{recall.resultCount === 1 ? "" : "s"}</span>
           {recall.memoryIds.length > 0 ? <span className="receipt-thumbs">
-            <button type="button" aria-label="Knowledge was right" title="Was this knowledge right?" disabled={Boolean(state)} onClick={() => send(index, recall.memoryIds, true)}>👍</button>
-            <button type="button" aria-label="Knowledge was wrong" title="Was this knowledge right?" disabled={Boolean(state)} onClick={() => send(index, recall.memoryIds, false)}>👎</button>
-            {state?.phase === "failed" ? <button type="button" className="receipt-retry" onClick={() => send(index, recall.memoryIds, state.useful)}>retry</button> : null}
+            <button type="button" aria-label="Knowledge was right" title="Was this knowledge right?" disabled={Boolean(state)} onClick={() => send(recall.memoryIds, true)}>👍</button>
+            <button type="button" aria-label="Knowledge was wrong" title="Was this knowledge right?" disabled={Boolean(state)} onClick={() => send(recall.memoryIds, false)}>👎</button>
+            {state?.phase === "failed" ? <button type="button" className="receipt-retry" onClick={() => send(recall.memoryIds, state.useful)}>retry</button> : null}
           </span> : null}
         </li>;
       })}

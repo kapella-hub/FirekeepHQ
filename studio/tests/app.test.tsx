@@ -662,5 +662,31 @@ describe("Firekeep Studio renderer", () => {
     fireEvent.click(screen.getByRole("button", { name: "Accept" }));
     expect(invoke).toHaveBeenCalledWith(expect.objectContaining({ type: "mission.complete", taskResult: "success" }));
   });
-});
 
+  it("Escape closes the Second opinion chooser without cancelling a run", async () => {
+    const invoke = installBridge({ snapshot: state("alpha"), events: [{ id: "1", runId: "r1", studioSessionId: "session-1", runtimeId: "alpha", timestamp: "t", payload: { kind: "message.completed", messageId: "a", role: "assistant", text: "Answer" } }] as never });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Second opinion" }));
+    expect(screen.getByPlaceholderText(/Focus \(optional\)/)).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByPlaceholderText(/Focus \(optional\)/)).not.toBeInTheDocument();
+    expect(invoke.mock.calls.some(([action]) => action.type === "run.cancel")).toBe(false);
+  });
+
+  it("a failed knowledge feedback shows only an inline retry that resends the same ids", async () => {
+    const receipt = { status: "measured", final: true, recalls: [{ query: "deploy vps", trigger: "agent", resultCount: 1, memoryIds: ["m1"] }], writes: [], recalledCount: 1, learnedCount: 0, keepSessionIds: ["k1"], cursorsAfter: {} };
+    const invoke = installBridge({ snapshot: state("alpha"), events: [{ id: "2", runId: "r1", studioSessionId: "session-1", runtimeId: "alpha", timestamp: "t", payload: { kind: "keep.receipt", receipt } }] as never });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Keep · recalled 1 · learned 0" }));
+    invoke.mockImplementationOnce(async () => ({ type: "error", message: "feedback down" }));
+    fireEvent.click(screen.getByRole("button", { name: "Knowledge was wrong" }));
+    const retry = await screen.findByRole("button", { name: "retry" });
+    expect(screen.queryByText("feedback down")).not.toBeInTheDocument();
+    fireEvent.click(retry);
+    await waitFor(() => expect(invoke.mock.calls.filter(([action]) => action.type === "keep.feedback")).toHaveLength(2));
+    expect(invoke).toHaveBeenLastCalledWith({ type: "keep.feedback", memoryIds: ["m1"], useful: false });
+    await waitFor(() => expect(screen.queryByRole("button", { name: "retry" })).not.toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Knowledge was right" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Knowledge was wrong" })).toBeDisabled();
+  });
+});
