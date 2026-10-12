@@ -449,8 +449,9 @@ export function App(): React.JSX.Element {
   }, []);
   const retryKeep = useCallback(() => {
     const seq = keepSeq.current;
-    ignore(keepRead({ type: "keep.retry" }).then((result) => { if (seq === keepSeq.current && result.type === "keep-status") setKeepStatus(result.status); }));
-  }, [keepRead]);
+    // Retry is a user action, so a failure surfaces in the global banner rather than vanishing.
+    ignore(invoke({ type: "keep.retry" }).then((result) => { if (seq === keepSeq.current && result.type === "keep-status") setKeepStatus(result.status); }));
+  }, [invoke]);
   const insertQuote = useCallback((text: string) => setComposer((value) => `${value}${value && !value.endsWith("\n") ? "\n" : ""}${text}`), []);
   const lastAnswerId = useMemo(() => {
     for (let index = timeline.length - 1; index >= 0; index -= 1) {
