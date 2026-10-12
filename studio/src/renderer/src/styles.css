@@ -476,3 +476,9 @@ span.keep-receipt { cursor: default; }
 .keep-detail header { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .keep-detail header button { border: 0; background: none; color: var(--muted); font-size: 16px; }
 .start-agent-card:focus-visible { outline: 2px solid color-mix(in srgb, var(--ember) 72%, white); outline-offset: 2px; }
+.command-palette { width: min(560px, 100%); align-self: start; margin-top: 12vh; display: grid; gap: 8px; padding: 12px; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--surface-raised, var(--surface)); }
+.command-palette input { width: 100%; }
+.command-palette ul { list-style: none; margin: 0; padding: 0; max-height: 50vh; overflow-y: auto; display: grid; gap: 2px; }
+.command-palette li { display: flex; gap: 10px; align-items: baseline; padding: 7px 10px; border-radius: 8px; cursor: pointer; }
+.command-palette li[aria-selected="true"] { background: color-mix(in srgb, var(--accent, #d97b3a) 18%, transparent); }
+.command-palette li small { color: var(--muted); }

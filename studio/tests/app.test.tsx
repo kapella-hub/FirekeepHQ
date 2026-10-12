@@ -633,6 +633,59 @@ describe("Firekeep Studio renderer", () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "run.cancel", runId: "run-1" }));
   });
 
+  it("Ctrl+K opens the palette with Search the Keep first", async () => {
+    installBridge({ snapshot: state("alpha") });
+    render(<App />);
+    await screen.findByRole("button", { name: /^Agent:/ });
+    fireEvent.keyDown(window, { key: "k", ctrlKey: true });
+    const palette = await screen.findByRole("dialog", { name: "Command palette" });
+    expect(within(palette).getAllByRole("option")[0]).toHaveTextContent("Search the Keep…");
+    expect(screen.getByRole("textbox", { name: "Message composer" })).toHaveValue("");
+  });
+
+  it("palette: Escape closes it without cancelling the run and returns focus", async () => {
+    const invoke = installBridge({ snapshot: { ...state("alpha"), activeRunId: "run-1" } });
+    render(<App />);
+    const opener = await screen.findByRole("button", { name: /^Agent:/ });
+    opener.focus();
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+    await screen.findByRole("dialog", { name: "Command palette" });
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Command palette" })).not.toBeInTheDocument());
+    expect(invoke).not.toHaveBeenCalledWith({ type: "run.cancel", runId: "run-1" });
+    expect(opener).toHaveFocus();
+  });
+
+  it("palette: Enter on a command fills the composer without sending", async () => {
+    const invoke = installBridge({ snapshot: state("alpha") });
+    render(<App />);
+    await screen.findByRole("button", { name: /^Agent:/ });
+    fireEvent.keyDown(window, { key: "k", ctrlKey: true });
+    const palette = await screen.findByRole("dialog", { name: "Command palette" });
+    await within(palette).findByRole("option", { name: /\/doctor/ });
+    const input = within(palette).getByRole("combobox");
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    expect(input).toHaveAttribute("aria-activedescendant", within(palette).getAllByRole("option")[1]!.id);
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Command palette" })).not.toBeInTheDocument());
+    expect(screen.getByRole("textbox", { name: "Message composer" })).toHaveValue("/doctor ");
+    expect(invoke).not.toHaveBeenCalledWith(expect.objectContaining({ type: "command.execute" }));
+  });
+
+  it("palette: Search the Keep fills and focuses the Keep search box and runs the search", async () => {
+    const invoke = installBridge({ snapshot: state("alpha"), keepStatus: { state: "connected", agentId: "a", personalMode: false, kitVersion: "1.8.0" } });
+    render(<App />);
+    await screen.findByRole("button", { name: /^Agent:/ });
+    fireEvent.keyDown(window, { key: "k", ctrlKey: true });
+    const palette = await screen.findByRole("dialog", { name: "Command palette" });
+    fireEvent.change(within(palette).getByRole("combobox"), { target: { value: "deploy notes" } });
+    fireEvent.keyDown(within(palette).getByRole("combobox"), { key: "Enter" });
+    const search = await screen.findByRole("searchbox", { name: "Search team memory" });
+    await waitFor(() => expect(search).toHaveValue("deploy notes"));
+    expect(search).toHaveFocus();
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "keep.search", query: "deploy notes", kind: "memory" }));
+  });
+
   it("ignores Ctrl+Alt+\ and key repeat for the Keep toggle", async () => {
     const invoke = installBridge();
     render(<App />);

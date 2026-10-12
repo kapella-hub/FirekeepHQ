@@ -17,7 +17,13 @@ export interface KeepPanelProps {
   readonly onOpenKeepSettings: () => void;
   /** Re-checks the kit; App applies the reply unless a newer push arrived meanwhile. */
   readonly onRetry: () => void;
+  /** An externally supplied query (the command palette): switches to Memory, fills and focuses the search box. */
+  readonly searchRequest?: KeepSearchRequest | null;
+  /** Called once the panel has taken the request, so a remount does not replay it. */
+  readonly onSearchRequestHandled?: (() => void) | undefined;
 }
+
+export interface KeepSearchRequest { readonly query: string; readonly nonce: number }
 
 type Tab = "memory" | "skills" | "team";
 const TABS: readonly { readonly id: Tab; readonly label: string }[] = [{ id: "memory", label: "Memory" }, { id: "skills", label: "Skills" }, { id: "team", label: "Team" }];
@@ -37,14 +43,14 @@ export function quoteBlock(body: string): string {
   return `${body.replace(/\n+$/, "").split("\n").map((line) => `> ${line}`).join("\n")}\n`;
 }
 
-export function KeepPanel({ status, receipts, invoke, onInsert, onOpenKeepSettings, onRetry }: KeepPanelProps): React.JSX.Element {
+export function KeepPanel({ status, receipts, invoke, onInsert, onOpenKeepSettings, onRetry, searchRequest = null, onSearchRequestHandled }: KeepPanelProps): React.JSX.Element {
   return <aside className="keep-panel" aria-label="The Keep">
     <h2>The Keep</h2>
     {!status || status.state === "starting" ? <div className="keep-skeleton" aria-busy="true" aria-label="Connecting to the Keep"><span /><span /><span /></div>
       : status.state === "missing" ? <MissingCard onRetry={onRetry} />
       : status.state === "connected" ? <>
         {status.personalMode ? <p className="keep-personal-banner" role="status">Personal mode — nothing from this session is shared</p> : null}
-        <ConnectedTabs receipts={receipts} invoke={invoke} onInsert={onInsert} />
+        <ConnectedTabs receipts={receipts} invoke={invoke} onInsert={onInsert} searchRequest={searchRequest} onSearchRequestHandled={onSearchRequestHandled} />
       </>
       : <div className="keep-state-card">
         <p className="keep-state-detail"><AlertTriangle size={13} /> {status.detail}</p>
@@ -66,9 +72,17 @@ function MissingCard({ onRetry }: Pick<KeepPanelProps, "onRetry">): React.JSX.El
   </div>;
 }
 
-function ConnectedTabs({ receipts, invoke, onInsert }: Pick<KeepPanelProps, "receipts" | "invoke" | "onInsert">): React.JSX.Element {
+function ConnectedTabs({ receipts, invoke, onInsert, searchRequest, onSearchRequestHandled }: Pick<KeepPanelProps, "receipts" | "invoke" | "onInsert" | "searchRequest" | "onSearchRequestHandled">): React.JSX.Element {
   const [tab, setTab] = useState<Tab>(readTab);
   const [detail, setDetail] = useState<KeepItem | null>(null);
+  const [pending, setPending] = useState<KeepSearchRequest | null>(null);
+  useEffect(() => {
+    if (!searchRequest) return;
+    setPending(searchRequest);
+    setTab("memory");
+    setDetail(null);
+    onSearchRequestHandled?.();
+  }, [searchRequest, onSearchRequestHandled]);
   const choose = (next: Tab): void => { setTab(next); setDetail(null); writeTab(next); };
   const closeDetail = useCallback(() => setDetail(null), []);
   return <>
@@ -77,14 +91,22 @@ function ConnectedTabs({ receipts, invoke, onInsert }: Pick<KeepPanelProps, "rec
     </div>
     <div role="tabpanel" id="keep-tabpanel" aria-labelledby={`keep-tab-${tab}`} className="keep-tabpanel">
       {tab === "team" ? <TeamTab invoke={invoke} />
-        : <SearchTab key={tab} kind={tab === "skills" ? "skill" : "memory"} receipts={receipts} invoke={invoke} onOpen={setDetail} />}
+        : <SearchTab key={tab} kind={tab === "skills" ? "skill" : "memory"} receipts={receipts} invoke={invoke} onOpen={setDetail} request={pending} onRequestApplied={() => setPending(null)} />}
     </div>
     {detail ? <ItemDetail item={detail} onClose={closeDetail} onInsert={(text) => { onInsert(text); setDetail(null); }} /> : null}
   </>;
 }
 
-function SearchTab({ kind, receipts, invoke, onOpen }: { readonly kind: "memory" | "skill"; readonly receipts: readonly KeepReceipt[]; readonly invoke: KeepPanelProps["invoke"]; readonly onOpen: (item: KeepItem) => void }): React.JSX.Element {
+function SearchTab({ kind, receipts, invoke, onOpen, request, onRequestApplied }: { readonly kind: "memory" | "skill"; readonly receipts: readonly KeepReceipt[]; readonly invoke: KeepPanelProps["invoke"]; readonly onOpen: (item: KeepItem) => void; readonly request: KeepSearchRequest | null; readonly onRequestApplied: () => void }): React.JSX.Element {
   const [query, setQuery] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (!request || kind !== "memory") return;
+    // The existing 300 ms debounce below runs the search once the query lands.
+    setQuery(request.query);
+    inputRef.current?.focus();
+    onRequestApplied();
+  }, [request, kind, onRequestApplied]);
   const [items, setItems] = useState<readonly KeepItem[] | null>(null);
   const [skills, setSkills] = useState<readonly KeepItem[] | null>(null);
   const [failed, setFailed] = useState(false);
@@ -120,7 +142,7 @@ function SearchTab({ kind, receipts, invoke, onOpen }: { readonly kind: "memory"
   const searching = query.trim() !== "";
   const shown = searching ? items : kind === "skill" ? skills : null;
   return <>
-    <input type="search" className="keep-search" aria-label={label} placeholder={kind === "skill" ? "Search skills" : "Search the team's memory"} value={query} onChange={(event) => setQuery(event.target.value)} />
+    <input ref={inputRef} type="search" className="keep-search" aria-label={label} placeholder={kind === "skill" ? "Search skills" : "Search the team's memory"} value={query} onChange={(event) => setQuery(event.target.value)} />
     {failed ? <p className="keep-empty">Could not reach the Keep. Try again.</p> : null}
     {shown ? shown.length === 0 ? <p className="keep-empty">{searching ? "Nothing found." : "No active skills yet."}</p>
       : <ul className="keep-results">{shown.map((item, index) => <li key={`${item.title}:${index}`}>

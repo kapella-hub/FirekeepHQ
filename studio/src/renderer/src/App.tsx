@@ -29,6 +29,7 @@ import { ignore } from "./util.js";
 import { CopyButton } from "./CopyButton.js";
 import { SettingsSheet, type SettingsSection } from "./settings/SettingsSheet.js";
 import { KeepPanel } from "./keep/KeepPanel.js";
+import { CommandPalette } from "./palette/CommandPalette.js";
 import { SessionRail } from "./rail/SessionRail.js";
 import { sessionAccentStyle } from "./rail/session-style.js";
 import { RichMarkdown } from "./RichMarkdown.js";
@@ -75,6 +76,10 @@ export function App(): React.JSX.Element {
   // The last section used this app session, and the element to hand focus back to when the sheet closes.
   const lastSettingsSection = useRef<SettingsSection>("agents");
   const settingsOpener = useRef<HTMLElement | null>(null);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [paletteCompletions, setPaletteCompletions] = useState<readonly CommandCompletion[]>([]);
+  const [keepSearchRequest, setKeepSearchRequest] = useState<{ readonly query: string; readonly nonce: number } | null>(null);
+  const paletteOpener = useRef<HTMLElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
   const followingTailRef = useRef(true);
@@ -294,12 +299,34 @@ export function App(): React.JSX.Element {
     } catch { return null; }
   }, [applyResult, invoke]);
 
+  const openPalette = useCallback((): void => {
+    paletteOpener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setPaletteCompletions([]);
+    setPaletteOpen(true);
+    ignore(invoke({ type: "command.complete", input: "/" }).then((result) => {
+      if (result.type === "completions") setPaletteCompletions(result.items);
+    }));
+  }, [invoke]);
+  const closePalette = useCallback((restoreFocus: boolean): void => {
+    setPaletteOpen(false);
+    const opener = paletteOpener.current;
+    paletteOpener.current = null;
+    if (!restoreFocus) return;
+    if (opener?.isConnected) opener.focus();
+    else composerRef.current?.focus();
+  }, []);
+  const searchKeepFromPalette = useCallback((query: string): void => {
+    closePalette(false);
+    setKeepSearchRequest((previous) => ({ query, nonce: (previous?.nonce ?? 0) + 1 }));
+    if (!(snapshot?.keepPanelOpen ?? true)) ignore(invoke({ type: "settings.keepPanel", open: true }).then(applyResult));
+  }, [applyResult, closePalette, invoke, snapshot?.keepPanelOpen]);
+
   useEffect(() => {
     const keyboard = (event: KeyboardEvent): void => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
-        setComposer((value) => value.startsWith("/") ? value : "/");
-        composerRef.current?.focus();
+        if (event.repeat) return;
+        openPalette();
       } else if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "r") {
         event.preventDefault();
         if (!busy) ignore(runReview());
@@ -316,7 +343,7 @@ export function App(): React.JSX.Element {
     };
     window.addEventListener("keydown", keyboard);
     return () => window.removeEventListener("keydown", keyboard);
-  }, [applyResult, busy, connectDialog, invoke, runReview, sessionEditorId, snapshot?.activeRunId, snapshot?.keepPanelOpen]);
+  }, [applyResult, busy, connectDialog, invoke, openPalette, runReview, sessionEditorId, snapshot?.activeRunId, snapshot?.keepPanelOpen]);
 
   const submit = async (): Promise<void> => {
     const input = composer.trim();
@@ -604,9 +631,18 @@ export function App(): React.JSX.Element {
         onInsert={insertQuote}
         onOpenKeepSettings={() => openSettings("keep")}
         onRetry={retryKeep}
+        searchRequest={keepSearchRequest}
+        onSearchRequestHandled={() => setKeepSearchRequest(null)}
       />}
     >
 
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => closePalette(true)}
+        completions={paletteCompletions}
+        onRun={(command) => { closePalette(false); setComposer(`${command.value} `); setCompletions([]); composerRef.current?.focus(); }}
+        onSearchKeep={searchKeepFromPalette}
+      />
       {settingsSection ? <SettingsSheet
         section={settingsSection}
         onSection={chooseSettingsSection}
