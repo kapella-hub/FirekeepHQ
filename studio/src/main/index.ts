@@ -8,7 +8,7 @@ import { createCommandRegistry } from "../core/slash-commands.js";
 import { StudioService, type StudioPersistedState, type ThemeMode } from "../core/studio-service.js";
 import { STUDIO_EVENT_CHANNEL, STUDIO_INVOKE_CHANNEL, type StudioPushEvent } from "../shared/ipc.js";
 import { ElectronUpdateClient } from "./electron-update-client.js";
-import { FirekeepClient } from "./firekeep-client.js";
+import { FirekeepClient, defaultFirekeepCommand, isMissingExecutable } from "./firekeep-client.js";
 import { loadConfiguredDashboardUrl } from "./firekeep-config.js";
 import { LoopbackDecisionBoardClient } from "./decision-board-client.js";
 import { StudioDecisionBoardReceiver } from "./decision-board-receiver.js";
@@ -17,6 +17,11 @@ import { KiroIdeLauncher } from "./kiro-ide.js";
 import { ProcessMissionCheckRunner } from "./mission-check-runner.js";
 import { createRuntimeRegistry } from "./runtime/index.js";
 import { JsonlSessionStore } from "./session-store.js";
+import { KeepGateway } from "./keep/keep-gateway.js";
+import { McpStdioClient } from "./keep/mcp-stdio-client.js";
+import { readReportFile, removeReportFile } from "./keep/report-file.js";
+import { ReceiptTracker } from "../core/keep/receipt-tracker.js";
+import { detectWorkspaceTestCommand } from "./workspace-detect.js";
 import { windowThemeColors } from "./window-theme.js";
 import { HttpSignedManifestSource, StudioUpdater } from "./studio-updater.js";
 
@@ -24,6 +29,7 @@ const currentDirectory = fileURLToPath(new URL(".", import.meta.url));
 let activeController: StudioController | null = null;
 let activeDecisionReceiver: StudioDecisionBoardReceiver | null = null;
 let activeUpdater: StudioUpdater | null = null;
+let activeKeep: KeepGateway | null = null;
 let shutdownStarted = false;
 
 function packageSmokeTrace(phase: string): void {
@@ -107,10 +113,45 @@ async function createController(): Promise<StudioController> {
   packageSmokeTrace("decision receiver ready");
   activeDecisionReceiver = receiver;
   Object.assign(process.env, receiverEnvironment);
+  const sessionsRoot = join(userData, "sessions");
+  const firekeep = new FirekeepClient();
+  const keep: KeepGateway = new KeepGateway({
+    whoami: async () => {
+      try {
+        const result = await firekeep.execute("whoami", []);
+        return { ok: result.ok, output: result.output, missing: false };
+      } catch (error) {
+        return { ok: false, output: "", missing: isMissingExecutable(error) };
+      }
+    },
+    connect: async (env) => {
+      // onExit needs the client it belongs to. It only fires after initialize, and connect resumes
+      // (a microtask) before any child "close" event, so the holder is always set by then.
+      const holder: { client: McpStdioClient | null } = { client: null };
+      holder.client = await McpStdioClient.connect({
+        command: defaultFirekeepCommand(),
+        args: ["gateway"],
+        env,
+        onExit: () => { if (holder.client) keep.handleExit(holder.client); },
+      });
+      return holder.client;
+    },
+    onStatus: (status) => broadcast({ type: "keep-status", status }),
+  });
+  activeKeep = keep;
+  const reportFile = (id: string, role: "primary" | "review"): string =>
+    join(sessionsRoot, role === "review" ? `${id}.review.keep` : `${id}.keep`);
+  const tracker = new ReceiptTracker({
+    source: () => (keep.status().state === "connected" ? keep : null),
+    readReport: async (id) => [
+      ...await readReportFile(reportFile(id, "primary")),
+      ...await readReportFile(reportFile(id, "review")),
+    ],
+  });
   const service = new StudioService({
     runtimes: createRuntimeRegistry(app.getVersion()),
     settings: new JsonSettingsStore<StudioPersistedState>(join(userData, "settings.json"), { onWarning: warning }),
-    sessions: new JsonlSessionStore(join(userData, "sessions"), warning),
+    sessions: new JsonlSessionStore(sessionsRoot, warning),
     cwd: () => app.getPath("home"),
     missionChecks: new ProcessMissionCheckRunner(),
     confirmMission: async (summary) => {
@@ -125,6 +166,13 @@ async function createController(): Promise<StudioController> {
         noLink: true,
       });
       return result.response === 0;
+    },
+    keep: {
+      tracker,
+      reportPath: reportFile,
+      removeReport: async (id) => {
+        await Promise.all([removeReportFile(reportFile(id, "primary")), removeReportFile(reportFile(id, "review"))]);
+      },
     },
   });
   await service.initialize();
@@ -177,7 +225,7 @@ async function createController(): Promise<StudioController> {
   activeUpdater = updates;
   packageSmokeTrace("updater ready");
   const commands = createCommandRegistry(service, {
-    firekeep: new FirekeepClient(),
+    firekeep,
     kiroIde: new KiroIdeLauncher(),
     login,
     exportSession,
@@ -189,7 +237,7 @@ async function createController(): Promise<StudioController> {
   return new StudioController(service, commands, app.getVersion(), (url) => shell.openExternal(url), selectWorkspace, dashboardUrl, decisionBoards, {
     readText: () => clipboard.readText(),
     writeText: (text) => clipboard.writeText(text),
-  }, updates);
+  }, updates, keep, () => detectWorkspaceTestCommand(service.snapshot().workspacePath));
 }
 
 app.whenReady().then(async () => {
@@ -213,6 +261,7 @@ app.whenReady().then(async () => {
   createWindow(controller.service.snapshot().theme);
   packageSmokeTrace("window created");
   activeUpdater?.start();
+  void activeKeep?.start();
   app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(controller.service.snapshot().theme); });
 }).catch((error) => {
   const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
@@ -233,6 +282,7 @@ app.on("before-quit", (event) => {
   void Promise.all([
     activeController?.service.shutdown() ?? Promise.resolve(),
     activeDecisionReceiver?.close() ?? Promise.resolve(),
+    activeKeep?.stop() ?? Promise.resolve(),
   ])
     .catch((error) => console.warn("Studio shutdown did not finish cleanly", error))
     .finally(() => {

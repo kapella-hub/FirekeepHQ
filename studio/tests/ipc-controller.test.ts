@@ -4,12 +4,13 @@ import { MemorySessionStore } from "../src/core/session-store.js";
 import { MemorySettingsStore } from "../src/core/settings-store.js";
 import { createCommandRegistry } from "../src/core/slash-commands.js";
 import { StudioService, type StudioPersistedState } from "../src/core/studio-service.js";
-import { StudioController, parseStudioAction } from "../src/main/ipc-controller.js";
+import { StudioController, parseStudioAction, type KeepPanelSource } from "../src/main/ipc-controller.js";
+import type { KeepStatus } from "../src/shared/keep.js";
 import type { DecisionBoardTransport } from "../src/main/decision-board-client.js";
 import type { StudioUpdateControl } from "../src/main/studio-updater.js";
 import { FakeRuntime } from "./helpers/fake-runtime.js";
 
-async function controller(openExternal: (url: string) => Promise<void> = async () => undefined, dashboardUrl: string | null = "http://keep.example:8040/", decisionBoards?: DecisionBoardTransport, clipboard?: { readText(): string; writeText(text: string): void }, updates?: StudioUpdateControl): Promise<StudioController> {
+async function controller(openExternal: (url: string) => Promise<void> = async () => undefined, dashboardUrl: string | null = "http://keep.example:8040/", decisionBoards?: DecisionBoardTransport, clipboard?: { readText(): string; writeText(text: string): void }, updates?: StudioUpdateControl, keep: KeepPanelSource | null = null, detectTest: () => Promise<string | null> = async () => null): Promise<StudioController> {
   const service = new StudioService({
     runtimes: new RuntimeRegistry([new FakeRuntime({ id: "alpha", displayName: "Alpha", description: "test", transport: "test", capabilities: ["chat", "review", "models"] })]),
     settings: new MemorySettingsStore<StudioPersistedState>(),
@@ -20,7 +21,7 @@ async function controller(openExternal: (url: string) => Promise<void> = async (
     now: () => "2026-08-24T00:00:00.000Z",
   });
   await service.initialize();
-  return new StudioController(service, createCommandRegistry(service), "0.3.7", openExternal, async () => "C:\\workspace", dashboardUrl, decisionBoards, clipboard, updates);
+  return new StudioController(service, createCommandRegistry(service), "0.3.7", openExternal, async () => "C:\\workspace", dashboardUrl, decisionBoards, clipboard, updates, keep, detectTest);
 }
 
 describe("Studio IPC controller", () => {
@@ -169,6 +170,104 @@ describe("Studio IPC controller", () => {
       type: "state",
       snapshot: { mission: { phase: "succeeded" } },
       sessions: [expect.objectContaining({ mission: expect.objectContaining({ phase: "succeeded" }) })],
+    });
+  });
+
+  it.each([
+    [{ type: "keep.status" }],
+    [{ type: "keep.retry" }],
+    [{ type: "keep.search", query: "vps", kind: "memory" }],
+    [{ type: "keep.skills" }],
+    [{ type: "keep.team" }],
+    [{ type: "keep.highlights" }],
+    [{ type: "keep.feedback", memoryIds: ["m1"], useful: true }],
+    [{ type: "keep.feedback", memoryIds: ["mem:1.a-b_c"], useful: false, comment: "stale" }],
+    [{ type: "keep.receipt.retry", runId: "run-1" }],
+    [{ type: "workspace.detectTest" }],
+    [{ type: "settings.keepPanel", open: false }],
+    [{ type: "mission.quick", goal: "fix it", checks: ["npm test"] }],
+    [{ type: "workspace.set", path: "C:\\work" }],
+  ])("parses %j", (action) => {
+    expect(parseStudioAction(action)).toEqual(action);
+  });
+
+  it.each([
+    [{ type: "keep.call", tool: "vault_retrieve", args: {} }],
+    [{ type: "keep.search", query: "", kind: "memory" }],
+    [{ type: "keep.search", query: "x".repeat(501), kind: "memory" }],
+    [{ type: "keep.search", query: "x", kind: "vault" }],
+    [{ type: "keep.feedback", memoryIds: ["bad id\n"], useful: true }],
+    [{ type: "keep.feedback", memoryIds: [], useful: true }],
+    [{ type: "keep.feedback", memoryIds: Array.from({ length: 51 }, (_, i) => `m${i}`), useful: true }],
+    [{ type: "keep.feedback", memoryIds: ["m1"], useful: true, comment: "x".repeat(501) }],
+    [{ type: "keep.search", query: "x", kind: "memory", extra: 1 }],
+    [{ type: "keep.status", tool: "memory_recall" }],
+    [{ type: "mission.quick", goal: "fix it", checks: [] }],
+    [{ type: "mission.quick", goal: "fix it", checks: Array.from({ length: 9 }, () => "npm test") }],
+    [{ type: "mission.quick", goal: "", checks: ["npm test"] }],
+    [{ type: "mission.quick", goal: "fix it", checks: ["x".repeat(1001)] }],
+    [{ type: "workspace.set", path: "" }],
+    [{ type: "settings.keepPanel", open: "yes" }],
+  ])("rejects %j", (action) => {
+    expect(() => parseStudioAction(action)).toThrow();
+  });
+
+  it("routes keep actions to the gateway and turns failures into error results", async () => {
+    const status: KeepStatus = { state: "connected", agentId: "agent", personalMode: false, kitVersion: "1.8.0" };
+    const keep: KeepPanelSource = {
+      status: vi.fn(() => status),
+      retry: vi.fn(async () => status),
+      search: vi.fn(async () => [{ title: "t", body: "b" }]),
+      skills: vi.fn(async () => [{ title: "s", body: "sb" }]),
+      team: vi.fn(async () => "# team"),
+      highlights: vi.fn(async () => ({ online: "o", bulletin: "b", paused: [] })),
+      feedback: vi.fn(async () => { throw new Error("Keep not connected"); }),
+    };
+    const studio = await controller(undefined, null, undefined, undefined, undefined, keep);
+
+    await expect(studio.dispatch({ type: "keep.status" })).resolves.toEqual({ type: "keep-status", status });
+    await expect(studio.dispatch({ type: "keep.retry" })).resolves.toEqual({ type: "keep-status", status });
+    await expect(studio.dispatch({ type: "keep.search", query: "vps", kind: "skill" })).resolves.toEqual({ type: "keep-items", items: [{ title: "t", body: "b" }] });
+    expect(keep.search).toHaveBeenCalledWith("vps", "skill");
+    await expect(studio.dispatch({ type: "keep.skills" })).resolves.toEqual({ type: "keep-items", items: [{ title: "s", body: "sb" }] });
+    await expect(studio.dispatch({ type: "keep.team" })).resolves.toEqual({ type: "keep-team", markdown: "# team" });
+    await expect(studio.dispatch({ type: "keep.highlights" })).resolves.toEqual({ type: "keep-highlights", highlights: { online: "o", bulletin: "b", paused: [] } });
+    await expect(studio.invoke({ type: "keep.feedback", memoryIds: ["m1"], useful: true, comment: "helped" })).resolves.toEqual({ type: "error", message: "Keep not connected" });
+    expect(keep.feedback).toHaveBeenCalledWith(["m1"], true, "helped");
+    await expect(studio.invoke({ type: "keep.receipt.retry", runId: "run-1" })).resolves.toEqual({ type: "error", message: "the Keep link is unavailable" });
+  });
+
+  it("reports a missing Keep without a gateway and errors on Keep queries", async () => {
+    const studio = await controller();
+    await expect(studio.dispatch({ type: "keep.status" })).resolves.toEqual({ type: "keep-status", status: { state: "missing" } });
+    await expect(studio.dispatch({ type: "keep.retry" })).resolves.toEqual({ type: "keep-status", status: { state: "missing" } });
+    await expect(studio.invoke({ type: "keep.team" })).resolves.toMatchObject({ type: "error" });
+  });
+
+  it("detects the workspace test command, switches only to recent workspaces and stores the panel state", async () => {
+    const detectTest = vi.fn(async () => "npm test");
+    const studio = await controller(undefined, null, undefined, undefined, undefined, null, detectTest);
+    await expect(studio.dispatch({ type: "workspace.detectTest" })).resolves.toEqual({ type: "test-command", command: "npm test" });
+
+    await expect(studio.invoke({ type: "workspace.set", path: "C:\\anywhere" })).resolves.toMatchObject({ type: "error", message: expect.stringMatching(/not a recent workspace/) });
+    await studio.dispatch({ type: "workspace.choose" });
+    await studio.service.setWorkspace("C:\\other");
+    await expect(studio.dispatch({ type: "workspace.set", path: "C:\\workspace" })).resolves.toMatchObject({ type: "state", snapshot: { workspacePath: "C:\\workspace" } });
+
+    await expect(studio.dispatch({ type: "settings.keepPanel", open: false })).resolves.toMatchObject({ type: "state", snapshot: { keepPanelOpen: false } });
+  });
+
+  it("runs a quick mission through create, checks and the confirmed run", async () => {
+    const studio = await controller();
+    await studio.service.setWorkspace("C:\\workspace");
+    await studio.service.setPrimary("alpha");
+
+    const result = await studio.dispatch({ type: "mission.quick", goal: "Fix the bug", checks: ["npm test", "npm run lint"] });
+
+    expect(result).toMatchObject({
+      type: "state",
+      snapshot: { mission: { goal: "Fix the bug", phase: "succeeded", checks: [{ command: "npm test" }, { command: "npm run lint" }] } },
+      sessions: expect.any(Array),
     });
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { FirekeepClient } from "../src/main/firekeep-client.js";
+import { FirekeepClient, isMissingExecutable } from "../src/main/firekeep-client.js";
 import type { ProcessResult } from "../src/main/runtime/process.js";
 
 const result = (stdout: string, exitCode = 0, stderr = ""): ProcessResult => ({
@@ -43,5 +43,20 @@ describe("FirekeepClient whoami", () => {
     await client.execute("whoami", []);
     expect(runner).toHaveBeenLastCalledWith(["whoami", "--json"], expect.anything());
     await expect(client.execute("whoami", ["x"])).rejects.toThrow(/no arguments/);
+  });
+});
+
+describe("isMissingExecutable", () => {
+  it("recognises a spawn ENOENT error code and missing-command messages", () => {
+    expect(isMissingExecutable(Object.assign(new Error("spawn firekeep.exe"), { code: "ENOENT" }))).toBe(true);
+    expect(isMissingExecutable(new Error("spawn firekeep ENOENT"))).toBe(true);
+    expect(isMissingExecutable(new Error("'firekeep' is not recognized as an internal or external command"))).toBe(true);
+    expect(isMissingExecutable("spawn firekeep ENOENT")).toBe(true);
+  });
+
+  it("does not treat other failures as a missing kit", () => {
+    expect(isMissingExecutable(Object.assign(new Error("spawn EACCES"), { code: "EACCES" }))).toBe(false);
+    expect(isMissingExecutable(new Error("timed out"))).toBe(false);
+    expect(isMissingExecutable(null)).toBe(false);
   });
 });

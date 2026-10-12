@@ -46,6 +46,13 @@ export function defaultFirekeepCommand(): string {
   return candidates.find((candidate) => existsSync(candidate)) ?? "firekeep.exe";
 }
 
+/** True when spawning failed because the kit's executable does not exist (no kit installed). */
+export function isMissingExecutable(error: unknown): boolean {
+  if (error && typeof error === "object" && (error as { code?: unknown }).code === "ENOENT") return true;
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  return /ENOENT|not recognized/i.test(message);
+}
+
 function validateArgs(action: FirekeepClientAction, args: readonly string[]): string[] {
   if (["status", "version", "update", "night-shift"].includes(action)) {
     if (args.length) throw new Error(`/firekeep ${action} takes no arguments`);

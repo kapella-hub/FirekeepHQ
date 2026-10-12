@@ -11,6 +11,7 @@ import type {
   RuntimePermissionMode,
 } from "../core/runtime.js";
 import type { DecisionAnswers, DecisionBoardDocument } from "./decision-board.js";
+import type { KeepHighlights, KeepItem, KeepStatus } from "./keep.js";
 
 export const STUDIO_INVOKE_CHANNEL = "studio:invoke";
 export const STUDIO_EVENT_CHANNEL = "studio:event";
@@ -48,11 +49,25 @@ export type StudioAction =
   | { type: "permission.set"; runtimeId: string; mode: RuntimePermissionMode }
   | { type: "approval.resolve"; approvalId: string; decision: string }
   | { type: "workspace.choose" }
+  /** Only a path already in `recentWorkspaces`; any other path needs the native dialog (workspace.choose). */
+  | { type: "workspace.set"; path: string }
+  | { type: "workspace.detectTest" }
+  | { type: "settings.keepPanel"; open: boolean }
+  | { type: "keep.status" }
+  | { type: "keep.retry" }
+  | { type: "keep.search"; query: string; kind: "memory" | "skill" }
+  | { type: "keep.skills" }
+  | { type: "keep.team" }
+  | { type: "keep.highlights" }
+  | { type: "keep.feedback"; memoryIds: string[]; useful: boolean; comment?: string }
+  | { type: "keep.receipt.retry"; runId: string }
   | { type: "session.new" }
   | { type: "session.resume"; sessionId: string }
   | { type: "session.rename"; name: string }
   | { type: "session.update"; sessionId: string; name: string; color: SessionColor }
   | { type: "mission.run" }
+  /** createMission + addMissionCheck per check + runMission; the native confirmation still gates execution. */
+  | { type: "mission.quick"; goal: string; checks: string[] }
   | { type: "mission.continue" }
   | { type: "mission.repair"; note: string }
   | { type: "mission.complete"; taskResult: "success" | "partial" | "failure"; note?: string }
@@ -88,14 +103,21 @@ export type StudioActionResult =
   | { readonly type: "clipboard-written" }
   | { readonly type: "decision"; readonly board: DecisionBoardDocument }
   | { readonly type: "decision-submitted"; readonly url: string }
-  | { readonly type: "update"; readonly state: StudioUpdateState };
+  | { readonly type: "update"; readonly state: StudioUpdateState }
+  | { readonly type: "keep-status"; readonly status: KeepStatus }
+  | { readonly type: "keep-items"; readonly items: readonly KeepItem[] }
+  | { readonly type: "keep-team"; readonly markdown: string }
+  | { readonly type: "keep-highlights"; readonly highlights: KeepHighlights }
+  | { readonly type: "keep-feedback" }
+  | { readonly type: "test-command"; readonly command: string | null };
 
 export type StudioPushEvent =
   | { readonly type: "runtime.event"; readonly event: RuntimeEvent }
   | { readonly type: "snapshot"; readonly snapshot: StudioSnapshot }
   | { readonly type: "decision.available"; readonly board: DecisionBoardDocument }
   | { readonly type: "update"; readonly state: StudioUpdateState }
-  | { readonly type: "sessions"; readonly sessions: readonly StudioSessionSummary[] };
+  | { readonly type: "sessions"; readonly sessions: readonly StudioSessionSummary[] }
+  | { readonly type: "keep-status"; readonly status: KeepStatus };
 
 export interface StudioBridge {
   invoke(action: StudioAction): Promise<StudioActionResult>;

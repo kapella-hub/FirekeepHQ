@@ -195,7 +195,7 @@ export function App(): React.JSX.Element {
       else if (event.type === "decision.available") {
         surfacedBoardsRef.current.add(event.board.url);
         setDecisionBoard(event.board);
-      } else setSessions([...event.sessions]);
+      } else if (event.type === "sessions") setSessions([...event.sessions]);
     });
     ignore(invoke({ type: "bootstrap" }).then((result) => {
       if (!active || result.type !== "bootstrap") return;

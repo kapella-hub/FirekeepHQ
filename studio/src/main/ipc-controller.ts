@@ -5,6 +5,7 @@ import type { StudioAction, StudioActionResult } from "../shared/ipc.js";
 import type { DecisionBoardTransport } from "./decision-board-client.js";
 import { LoopbackDecisionBoardClient } from "./decision-board-client.js";
 import type { StudioUpdateControl } from "./studio-updater.js";
+import type { KeepGateway } from "./keep/keep-gateway.js";
 import { SESSION_COLORS } from "../core/session-store.js";
 
 const id = z.string().min(1).max(128).regex(/^[a-zA-Z0-9._:-]+$/);
@@ -17,6 +18,7 @@ const decisionAnswer = z.object({
 const decisionAnswers = z.record(z.string().min(1).max(128), decisionAnswer)
   .refine((value) => Object.keys(value).length <= 64, "too many Decision Board answers");
 const MAX_CLIPBOARD_TEXT = 1_000_000;
+const memoryId = z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/);
 const actionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("bootstrap") }).strict(),
   z.object({ type: z.literal("dashboard.open") }).strict(),
@@ -41,11 +43,23 @@ const actionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("permission.set"), runtimeId: id, mode: z.enum(["safe", "standard", "unrestricted"]) }).strict(),
   z.object({ type: z.literal("approval.resolve"), approvalId: id, decision: z.string().min(1).max(128) }).strict(),
   z.object({ type: z.literal("workspace.choose") }).strict(),
+  z.object({ type: z.literal("workspace.set"), path: z.string().min(1).max(4_096) }).strict(),
+  z.object({ type: z.literal("workspace.detectTest") }).strict(),
+  z.object({ type: z.literal("settings.keepPanel"), open: z.boolean() }).strict(),
+  z.object({ type: z.literal("keep.status") }).strict(),
+  z.object({ type: z.literal("keep.retry") }).strict(),
+  z.object({ type: z.literal("keep.search"), query: z.string().min(1).max(500), kind: z.enum(["memory", "skill"]) }).strict(),
+  z.object({ type: z.literal("keep.skills") }).strict(),
+  z.object({ type: z.literal("keep.team") }).strict(),
+  z.object({ type: z.literal("keep.highlights") }).strict(),
+  z.object({ type: z.literal("keep.feedback"), memoryIds: z.array(memoryId).min(1).max(50), useful: z.boolean(), comment: z.string().max(500).optional() }).strict(),
+  z.object({ type: z.literal("keep.receipt.retry"), runId: id }).strict(),
   z.object({ type: z.literal("session.new") }).strict(),
   z.object({ type: z.literal("session.resume"), sessionId: id }).strict(),
   z.object({ type: z.literal("session.rename"), name: z.string().min(1).max(120) }).strict(),
   z.object({ type: z.literal("session.update"), sessionId: id, name: z.string().min(1).max(120), color: z.enum(SESSION_COLORS) }).strict(),
   z.object({ type: z.literal("mission.run") }).strict(),
+  z.object({ type: z.literal("mission.quick"), goal: z.string().min(1).max(4_000), checks: z.array(z.string().min(1).max(1_000)).min(1).max(8) }).strict(),
   z.object({ type: z.literal("mission.continue") }).strict(),
   z.object({ type: z.literal("mission.repair"), note: z.string().min(1).max(4_000) }).strict(),
   z.object({ type: z.literal("mission.complete"), taskResult: z.enum(["success", "partial", "failure"]), note: z.string().max(4_000).optional() }).strict(),
@@ -66,6 +80,10 @@ export interface ClipboardTransport {
 }
 
 const emptyClipboard: ClipboardTransport = { readText: () => "", writeText: () => undefined };
+
+/** The Keep panel's fixed query surface. There is deliberately no generic tool call. */
+export type KeepPanelSource = Pick<KeepGateway, "status" | "retry" | "search" | "skills" | "team" | "highlights" | "feedback">;
+
 export class StudioController {
   constructor(
     readonly service: StudioService,
@@ -77,6 +95,8 @@ export class StudioController {
     readonly decisionBoards: DecisionBoardTransport = new LoopbackDecisionBoardClient(),
     readonly clipboard: ClipboardTransport = emptyClipboard,
     readonly updates?: StudioUpdateControl,
+    readonly keep: KeepPanelSource | null = null,
+    readonly detectTest: () => Promise<string | null> = async () => null,
   ) {}
 
   async invoke(rawAction: unknown): Promise<StudioActionResult> {
@@ -120,6 +140,17 @@ export class StudioController {
       await this.decisionBoards.submit(action.url, action.answers);
       return { type: "decision-submitted", url: action.url };
     }
+    if (action.type === "keep.status") return { type: "keep-status", status: this.keep?.status() ?? { state: "missing" } };
+    if (action.type === "keep.retry") return { type: "keep-status", status: this.keep ? await this.keep.retry() : { state: "missing" } };
+    if (action.type === "keep.search") return { type: "keep-items", items: await this.#requireKeep().search(action.query, action.kind) };
+    if (action.type === "keep.skills") return { type: "keep-items", items: await this.#requireKeep().skills() };
+    if (action.type === "keep.team") return { type: "keep-team", markdown: await this.#requireKeep().team() };
+    if (action.type === "keep.highlights") return { type: "keep-highlights", highlights: await this.#requireKeep().highlights() };
+    if (action.type === "keep.feedback") {
+      await this.#requireKeep().feedback(action.memoryIds, action.useful, action.comment);
+      return { type: "keep-feedback" };
+    }
+    if (action.type === "workspace.detectTest") return { type: "test-command", command: await this.detectTest() };
     if (action.type === "command.complete") return { type: "completions", items: this.commands.complete(action.input) };
     if (action.type === "command.execute") return { type: "command", result: await this.commands.execute(action.input), snapshot: this.service.snapshot(), sessions: await this.service.listSessions(), events: this.service.events() };
     if (action.type === "message.send") await this.service.sendMessage(action.text);
@@ -146,11 +177,15 @@ export class StudioController {
       const selected = await this.selectWorkspace();
       if (selected) await this.service.setWorkspace(selected);
     }
+    else if (action.type === "workspace.set") await this.service.switchToRecentWorkspace(action.path);
+    else if (action.type === "settings.keepPanel") await this.service.setKeepPanelOpen(action.open);
+    else if (action.type === "keep.receipt.retry") await this.service.retryReceipt(action.runId);
     else if (action.type === "session.new") await this.service.startNewSession();
     else if (action.type === "session.resume") await this.service.resumeSession(action.sessionId);
     else if (action.type === "session.rename") await this.service.renameSession(action.name);
     else if (action.type === "session.update") await this.service.updateSession(action.sessionId, { name: action.name, color: action.color });
     else if (action.type === "mission.run") await this.service.runMission();
+    else if (action.type === "mission.quick") await this.service.quickMission(action.goal, action.checks);
     else if (action.type === "mission.continue") await this.service.continueMission();
     else if (action.type === "mission.repair") await this.service.repairMission(action.note);
     else if (action.type === "mission.complete") await this.service.completeMission(action.taskResult, action.note);
@@ -159,6 +194,11 @@ export class StudioController {
     else if (action.type === "run.cancel") this.service.cancel(action.runId);
     const sessions = action.type.startsWith("session.") || action.type.startsWith("mission.") ? await this.service.listSessions() : undefined;
     return { type: "state", snapshot: this.service.snapshot(), ...(sessions ? { sessions, events: this.service.events() } : {}) };
+  }
+
+  #requireKeep(): KeepPanelSource {
+    if (!this.keep) throw new Error("the Keep link is unavailable in this Studio build");
+    return this.keep;
   }
 
   async #openProviderUrl(value: string): Promise<void> {

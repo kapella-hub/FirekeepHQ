@@ -56,6 +56,9 @@ export interface StudioPersistedState {
   readonly nativeSessionIds: Readonly<Record<string, string>>;
   readonly tokenBudget: number | null;
   readonly theme: ThemeMode;
+  /** Most recent first, at most MAX_RECENT_WORKSPACES; only these can be re-selected without the native dialog. */
+  readonly recentWorkspaces: readonly string[];
+  readonly keepPanelOpen: boolean;
 }
 
 export interface RuntimeUsageSummary {
@@ -107,6 +110,8 @@ export interface StudioKeepOptions {
 }
 
 const DEFAULT_PERMISSION: RuntimePermissionMode = "standard";
+const MAX_RECENT_WORKSPACES = 8;
+const MAX_WORKSPACE_PATH = 4_096;
 const REVIEW_PACKET_LIMIT = 40_000;
 const MISSION_EVIDENCE_LIMIT = 32_000;
 /** A slow Keep delays the next Send by at most this long (spec §7.3). */
@@ -235,8 +240,25 @@ export class StudioService {
     if (this.#activeRun) throw new Error("cannot change workspace while a run is active");
     if (this.#missionLaunchPending) throw new Error("cannot change workspace while mission approval is open");
     const normalized = path?.trim() || null;
-    if (normalized && normalized.length > 4_096) throw new Error("workspace path is too long");
-    this.#replaceState({ workspacePath: normalized });
+    if (normalized && normalized.length > MAX_WORKSPACE_PATH) throw new Error("workspace path is too long");
+    const state = this.#requireState();
+    this.#replaceState({
+      workspacePath: normalized,
+      ...(normalized
+        ? { recentWorkspaces: [normalized, ...state.recentWorkspaces.filter((item) => item !== normalized)].slice(0, MAX_RECENT_WORKSPACES) }
+        : {}),
+    });
+    await this.#persist();
+  }
+
+  /** Re-selects a workspace the user already chose through the native dialog; any other path is refused. */
+  async switchToRecentWorkspace(path: string): Promise<void> {
+    if (!this.#requireState().recentWorkspaces.includes(path)) throw new Error("not a recent workspace");
+    await this.setWorkspace(path);
+  }
+
+  async setKeepPanelOpen(open: boolean): Promise<void> {
+    this.#replaceState({ keepPanelOpen: open });
     await this.#persist();
   }
 
@@ -618,6 +640,24 @@ export class StudioService {
   async runMission(): Promise<MissionSnapshot> {
     this.#requireDraftMission();
     return this.#exclusively("turn", () => this.#launchMission());
+  }
+
+  /**
+   * Draft, checks and run in one step. The run still takes the turn lock through runMission
+   * and still needs the native confirmation; a check that cannot be added cancels the draft.
+   */
+  async quickMission(goal: string, checks: readonly string[]): Promise<MissionSnapshot> {
+    // createMission does not consult the turn/session lock, so refuse up front rather than leave a draft behind.
+    if (this.#exclusive === "turn") throw new Error("a run is already active");
+    if (this.#exclusive === "session") throw new Error("cannot start work while the session is changing");
+    await this.createMission(goal);
+    try {
+      for (const check of checks) await this.addMissionCheck(check);
+    } catch (error) {
+      this.cancelMission();
+      throw error;
+    }
+    return this.runMission();
   }
 
   async #launchMission(): Promise<MissionSnapshot> {
@@ -1429,6 +1469,13 @@ export class StudioService {
       nativeSessionIds: stringRecord(stored.nativeSessionIds),
       tokenBudget: typeof stored.tokenBudget === "number" && Number.isSafeInteger(stored.tokenBudget) && stored.tokenBudget > 0 ? stored.tokenBudget : null,
       theme: stored.theme === "dark" || stored.theme === "light" ? stored.theme : "system",
+      recentWorkspaces: Array.isArray(stored.recentWorkspaces)
+        ? stored.recentWorkspaces
+          .filter((path): path is string => typeof path === "string" && path.trim().length > 0 && path.length <= MAX_WORKSPACE_PATH)
+          .map((path) => path.trim())   // setWorkspace stores trimmed paths; keep membership checks exact
+          .slice(0, MAX_RECENT_WORKSPACES)
+        : [],
+      keepPanelOpen: stored.keepPanelOpen !== false,
     };
   }
 
@@ -1446,6 +1493,8 @@ export class StudioService {
       nativeSessionIds: {},
       tokenBudget: null,
       theme: "system",
+      recentWorkspaces: [],
+      keepPanelOpen: true,
     };
   }
 

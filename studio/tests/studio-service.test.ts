@@ -285,6 +285,8 @@ describe("StudioService", () => {
       nativeSessionIds: {},
       tokenBudget: null,
       theme: "system",
+      recentWorkspaces: [],
+      keepPanelOpen: true,
     };
     const timestamp = "2026-08-24T00:00:00.000Z";
     await sessions.ensure("session-existing", timestamp);
@@ -344,6 +346,67 @@ describe("StudioService", () => {
     expect(service.snapshot()).toMatchObject({ primaryRuntimeId: "beta", nativeSessionIds: { beta: "beta-session" } });
     expect(beta.runs.at(-1)).toMatchObject({ mode: "handoff" });
     expect(beta.runs.at(-1)?.nativeSessionId).toBeUndefined();
+  });
+
+  it("keeps recent workspaces most-recent-first, capped at 8, and only switches to known ones", async () => {
+    const { service } = createService();
+    await service.initialize();
+    for (let i = 0; i < 10; i += 1) await service.setWorkspace(`C:\w${i}`);
+    expect(service.snapshot().recentWorkspaces).toEqual(["C:\w9", "C:\w8", "C:\w7", "C:\w6", "C:\w5", "C:\w4", "C:\w3", "C:\w2"]);
+    await expect(service.switchToRecentWorkspace("C:\elsewhere")).rejects.toThrow(/not a recent workspace/);
+    await service.switchToRecentWorkspace("C:\w5");
+    expect(service.snapshot().workspacePath).toBe("C:\w5");
+    expect(service.snapshot().recentWorkspaces[0]).toBe("C:\w5");
+    await service.setWorkspace(null);
+    expect(service.snapshot().recentWorkspaces).toHaveLength(8);
+  });
+
+  it("persists the Keep panel state, open by default, and normalizes stored recents", async () => {
+    const settings = new MemorySettingsStore<StudioPersistedState>();
+    const { service: prior } = createService();
+    const service = new StudioService({ runtimes: prior.runtimes, settings });
+    await service.initialize();
+    expect(service.snapshot().keepPanelOpen).toBe(true);
+    expect(service.snapshot().recentWorkspaces).toEqual([]);
+    await service.setKeepPanelOpen(false);
+    expect(settings.value?.keepPanelOpen).toBe(false);
+
+    const stored = { ...settings.value, recentWorkspaces: ["C:\a", 7, "  ", "x".repeat(4097), ...Array.from({ length: 10 }, (_, i) => `C:\r${i}`)] } as unknown as StudioPersistedState;
+    const restored = new MemorySettingsStore<StudioPersistedState>();
+    restored.value = stored;
+    const reloaded = new StudioService({ runtimes: prior.runtimes, settings: restored });
+    await reloaded.initialize();
+    expect(reloaded.snapshot().keepPanelOpen).toBe(false);
+    expect(reloaded.snapshot().recentWorkspaces).toEqual(["C:\a", "C:\r0", "C:\r1", "C:\r2", "C:\r3", "C:\r4", "C:\r5", "C:\r6"]);
+  });
+
+  it("cancels a quick mission's draft when a check is invalid", async () => {
+    const { service } = createService();
+    await service.initialize();
+    await service.setWorkspace("C:\work");
+    await service.setPrimary("alpha");
+    await expect(service.quickMission("fix it", ["npm test", "npm run lint\nrm -rf /"])).rejects.toThrow(/check command/);
+    expect(service.snapshot().mission).toMatchObject({ goal: "fix it", phase: "cancelled" });
+  });
+
+  it("refuses a quick mission while another turn holds the session", async () => {
+    let release!: (approved: boolean) => void;
+    const { service: prior } = createService();
+    const service = new StudioService({
+      runtimes: prior.runtimes,
+      settings: new MemorySettingsStore<StudioPersistedState>(),
+      confirmMission: () => new Promise<boolean>((resolve) => { release = resolve; }),
+    });
+    await service.initialize();
+    await service.setWorkspace("C:\work");
+    await service.setPrimary("alpha");
+    await service.createMission("first");
+    await service.addMissionCheck("npm test");
+    const running = service.runMission();
+    await expect(service.quickMission("second", ["npm test"])).rejects.toThrow(/already active/);
+    expect(service.snapshot().mission).toMatchObject({ goal: "first", phase: "draft" });
+    release(false);
+    await running;
   });
 });
 
