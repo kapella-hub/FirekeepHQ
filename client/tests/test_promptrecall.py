@@ -245,6 +245,13 @@ class TestThreshold:
                             degraded=True)
         assert promptrecall.nudge(_cfg(), {"prompt": REAL_PROMPT}) == ""
 
+    def test_source_without_a_real_score_is_dropped_not_admitted(self, client_env, fake_recall):
+        """The resolution-bonus entry carries a sentinel score and no raw_score.
+        Unknown relevance must fail dark, not loud."""
+        fake_recall.returns({"store": "graph", "content": "a resolution", "score": 1.2,
+                             "metadata": {"name": "resolution"}})
+        assert promptrecall.nudge(_cfg(), {"prompt": REAL_PROMPT}) == ""
+
 
 class TestPromptRecallAttribution:
     """Hook-pushed recall used to land in session "unknown" because recall()
@@ -268,13 +275,6 @@ class TestPromptRecallAttribution:
         state.clear_session_stash("tester")
         promptrecall.recall(_cfg(), REAL_PROMPT)
         assert "X-Session-Id" not in fake_recall.calls[0]["kwargs"]["headers"]
-
-    def test_source_without_a_real_score_is_dropped_not_admitted(self, client_env, fake_recall):
-        """The resolution-bonus entry carries a sentinel score and no raw_score.
-        Unknown relevance must fail dark, not loud."""
-        fake_recall.returns({"store": "graph", "content": "a resolution", "score": 1.2,
-                             "metadata": {"name": "resolution"}})
-        assert promptrecall.nudge(_cfg(), {"prompt": REAL_PROMPT}) == ""
 
 
 class TestDedupe:
