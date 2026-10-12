@@ -310,7 +310,7 @@ Expected: `server-release.yml` succeeds and publishes `server/v1.6.2/` and `serv
 
 - [ ] **Step 4: Deploy and verify live**
 
-On the VPS (tailnet host `srv1143982`): run `firekeep-admin keys audit`, then `bash update.sh`. From a workstation agent session, call `replay_timeline(session_id=<your current session>, format="json", limit=5)`.
+On the VPS (tailnet host `keep.example.com`): run `firekeep-admin keys audit`, then `bash update.sh`. From a workstation agent session, call `replay_timeline(session_id=<your current session>, format="json", limit=5)`.
 Expected: a JSON string whose `events[*]` each have `id`, `agent_id` and `payload`.
 
 - [ ] **Step 5: Confirm the ids are feedback-able.** Take one id from a `memory_read` event's `payload.memory_ids` in that reply and call `memory_feedback(memory_ids=[<id>], useful=true, comment="studio 0.5 id check")`.

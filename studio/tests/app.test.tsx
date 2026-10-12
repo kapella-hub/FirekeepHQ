@@ -1097,7 +1097,7 @@ describe("Firekeep Studio renderer", () => {
 
   it("searches team memory after a 300 ms debounce and inserts a result", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    const invoke = installBridge({ keepStatus: { state: "connected", agentId: "a", personalMode: false, kitVersion: "1.8.0" }, keepItems: [{ title: "VPS is on the tailnet", body: "VPS is on the tailnet\nuse srv1143982" }] });
+    const invoke = installBridge({ keepStatus: { state: "connected", agentId: "a", personalMode: false, kitVersion: "1.8.0" }, keepItems: [{ title: "VPS is on the tailnet", body: "VPS is on the tailnet\nuse keep.example.com" }] });
     render(<App />);
     fireEvent.change(await screen.findByRole("searchbox", { name: "Search team memory" }), { target: { value: "vps" } });
     expect(invoke).not.toHaveBeenCalledWith(expect.objectContaining({ type: "keep.search" }));
@@ -1105,7 +1105,7 @@ describe("Firekeep Studio renderer", () => {
     expect(invoke).toHaveBeenCalledWith({ type: "keep.search", query: "vps", kind: "memory" });
     fireEvent.click(await screen.findByRole("button", { name: "VPS is on the tailnet" }));
     fireEvent.click(screen.getByRole("button", { name: "Insert into composer" }));
-    expect(screen.getByRole("textbox", { name: /Message/i })).toHaveValue("> VPS is on the tailnet\n> use srv1143982\n");
+    expect(screen.getByRole("textbox", { name: /Message/i })).toHaveValue("> VPS is on the tailnet\n> use keep.example.com\n");
     vi.useRealTimers();
   });
 
