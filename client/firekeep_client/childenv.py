@@ -118,6 +118,9 @@ NOT_FORWARDED: frozenset[str] = frozenset({
     "FIREKEEP_SIGNING_KEY",
     # An enrolment code is a credential; only `firekeep join` reads it.
     "FIREKEEP_JOIN",
+    # The bootstrap's fresh-install answer belongs to the install hand-off
+    # alone; a child seeing it could count a non-install as a new install.
+    "FIREKEEP_INSTALL_REPORT_CONSENT",
     # Set by the gateway from ~/.firekeep/config for symdex alone; a parent's
     # copy (stale shell export, another member's key) is never authoritative.
     "FIREKEEP_CORTEX_URL", "FIREKEEP_CLIENT_API_KEY", "FIREKEEP_CORTEX_CA",

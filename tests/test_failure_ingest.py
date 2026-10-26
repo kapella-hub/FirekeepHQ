@@ -127,3 +127,24 @@ def test_process_inbox_leaves_segment_in_inbox_on_failed_post(tmp_path, monkeypa
     assert seg.exists()                      # still in inbox
     assert not (done / seg.name).exists()     # never moved
     assert [p.name for p in inbox.glob("failures.*.log")] == [seg.name]
+
+
+def test_vocabulary_matches_client_report_py():
+    """ingest.py copies report.py's tables by hand (it runs on the VPS with no
+    client installed). A runtime added to the client but not here — `pi` was —
+    makes every such event fail re-validation silently."""
+    import ast
+    report_py = Path(__file__).resolve().parents[1] / "client" / "firekeep_client" / "report.py"
+    tables = {}
+    for node in ast.parse(report_py.read_text(encoding="utf-8")).body:
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and isinstance(node.value, ast.Tuple)):
+            try:
+                tables[node.targets[0].id] = ast.literal_eval(node.value)
+            except ValueError:
+                continue
+    for name in ("KINDS", "INSTALL_STAGES", "BOOTSTRAP_STAGES", "CONNECTIVITY_STAGES",
+                 "RUNTIME_STAGES", "ERRORS", "OS_FAMILIES", "ARCHES", "PY_BUCKETS",
+                 "RUNTIMES", "DEX_NAMES", "BACKENDS"):
+        assert getattr(ingest, name) == tables[name], name

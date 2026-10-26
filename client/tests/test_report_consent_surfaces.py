@@ -90,7 +90,7 @@ def test_cmd_doctor_asks_once_after_output_and_preserves_exit_code(
     assert cli.cmd_doctor(Args()) == 1                       # fail row -> rc 1, EOF didn't change it
     assert "[report]" not in cfg_path.read_text()            # EOF recorded nothing
     out = capsys.readouterr().out
-    assert out.index("[FAIL] cortex") < out.index("Send anonymous failure reports")
+    assert out.index("[FAIL] cortex") < out.index("Send anonymous reports")
 
     monkeypatch.setattr(builtins, "input", lambda prompt="": "y")
     assert cli.cmd_doctor(Args()) == 1

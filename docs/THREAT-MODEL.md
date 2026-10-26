@@ -279,6 +279,15 @@ labelled `integrity: "unverified"`
 in `details`, and any dashboard or agent-facing summary treats it as a signal to
 corroborate, not to act on directly.
 
+**Install milestones (2026-10-26) ride the same endpoint and inherit its
+residual.** `kind: "milestone"` events are validated against their own exact key
+set (no `error`, no tagged-union extras, released `client` only) and appended to
+`failure-stats/milestones.log`, which is size-capped with one rotated
+generation (4MB). They never touch the signature state, the mail path or the
+sealed segments, so they add no mail or ingest surface. Counts are inflatable by
+anyone who can POST, exactly like failures: read them as a floor from consenting
+installs, corroborated against download and release counts, never as a census.
+
 **Outbound mail composition is its own attack surface**, one the earlier
 `doctor-report.php` review never had to consider because that endpoint sends no
 mail. Recipients and subject are fixed, never derived from a request; every

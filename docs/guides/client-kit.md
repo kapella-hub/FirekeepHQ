@@ -781,6 +781,37 @@ survive that stronger, later guarantee. Same gate every other sender in the kit
 consults, and it fails toward not-bypassed, so a bug in the gate itself cannot
 silently disable reporting.
 
+### Install milestones (`report.milestone`)
+
+Failures alone cannot say whether a download became a working install, so the
+same channel carries two **milestones**: `installed` (`firekeep install`
+completed) and `connected` (that machine later reached its Keep — `doctor`
+all-green, or a session briefing served). Each is sent **at most once per
+machine** (marker: `~/.firekeep/report-milestones.json`, written before the
+event is spooled, so a milestone can be lost but never repeated).
+
+- **Own consent key, never widened after the fact.** `[report] installs`. The
+  prompt wording (bootstrap, wizard and doctor alike) now names milestones, and
+  one answer records both keys. Machines enrolled under the earlier
+  failures-only wording keep `installs` absent and never send a milestone.
+- **Fresh installs only.** `installed` fires only when a human answered the
+  prompt *in this run* — the bootstrap relays that answer as
+  `FIREKEEP_INSTALL_REPORT_CONSENT` (never set by `FIREKEEP_FAILURE_REPORT` or an
+  update re-exec; `childenv` does not forward it to gateway children).
+  `connected` fires only after `installed`, so the funnel is nested and an
+  existing machine opting in later counts as neither.
+- **No env opt-in.** `FIREKEEP_FAILURE_REPORT=1` does not enable milestones, so CI
+  never counts as an install. `FIREKEEP_NO_FAILURE_REPORT` and personal mode
+  silence them.
+- **Each spooled event travels only under its own consent**: a flush drops a
+  spooled failure when `failures` is off, and a milestone when `installs` is off.
+- **Wire shape:** the failure fields minus `error` and every tagged-union extra
+  (`{id, kind: "milestone", stage, os, arch, client, py}`). The collector logs
+  milestones to `failure-stats/milestones.log` only — no signature, no mail, no
+  digest, never in the segments the VPS pulls. Tally with
+  `firekeep-site/scripts/milestone-stats.sh`. Treat the counts as a floor: only
+  consenting interactive installs are counted.
+
 ## Server update visibility (`firekeep_client.serverupdate`)
 
 A companion gap to the `client-version` nudge above: nothing ever told an operator

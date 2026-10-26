@@ -98,13 +98,19 @@ if ($ReportConsentWasPreset) {
     $env:FIREKEEP_REPORT_CONSENT = '1'
 } elseif ([Environment]::UserInteractive -and -not [Console]::IsInputRedirected) {
     try {
-        $Answer = Read-Host ("Send anonymous failure reports to firekeep.ai? Category codes only - " +
-            "what failed, error class, OS family, versions; never paths, messages, " +
-            "addresses, or any persistent identifier [Y/n]")
+        # The wording covers install milestones too, so the answer is relayed in
+        # FIREKEEP_INSTALL_REPORT_CONSENT as well -- set ONLY here, by a human
+        # answer, never by the FIREKEEP_FAILURE_REPORT opt-in or an update re-exec.
+        $Answer = Read-Host ("Send anonymous reports to firekeep.ai? Once when this install " +
+            "succeeds and first reaches your Keep, and whenever something fails. Category " +
+            "codes only - what happened, error class, OS family, versions; never paths, " +
+            "messages, addresses, or any persistent identifier [Y/n]")
         if ($Answer -eq '' -or $Answer -match '^(?i)y(es)?$') {
             $ReportConsent = $true; $env:FIREKEEP_REPORT_CONSENT = '1'
+            $env:FIREKEEP_INSTALL_REPORT_CONSENT = '1'
         } else {
             $ReportConsent = $false; $env:FIREKEEP_REPORT_CONSENT = '0'
+            $env:FIREKEEP_INSTALL_REPORT_CONSENT = '0'
         }
     } catch {
         # ^C / closed console: unanswered — export nothing, send nothing
@@ -678,6 +684,7 @@ Remove-StaleVenvs
 if (-not $HadUvNativeTls) { Remove-Item Env:UV_NATIVE_TLS -ErrorAction SilentlyContinue }
 if ($RemovedSslCertFile) { $env:SSL_CERT_FILE = $OrigSslCertFile }
 if (-not $ReportConsentWasPreset) { Remove-Item Env:FIREKEEP_REPORT_CONSENT -ErrorAction SilentlyContinue }
+if (-not $ReportConsentWasPreset) { Remove-Item Env:FIREKEEP_INSTALL_REPORT_CONSENT -ErrorAction SilentlyContinue }
 $env:PSModulePath = $OrigPSModulePath
 
 exit $FirekeepExit
