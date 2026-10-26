@@ -137,7 +137,11 @@ git push origin vX.Y.Z
 
 `.github/workflows/server-release.yml` builds and pushes the Cortex, Bridge,
 Sentinel, and Relay images, logs out of GHCR, and proves each image can be pulled
-anonymously before it builds the source-free deployment bundle. The bundle and
+anonymously before it builds the source-free deployment bundle. Since v1.6.3 each
+tag is one OCI index over `linux/amd64` and `linux/arm64` (buildx, arm64 under
+QEMU — every locked dependency ships an aarch64 wheel, so nothing compiles under
+emulation); the anonymous check pulls and runs each platform and asserts the
+container's `platform.machine()`. A fresh tag missing a platform fails the job. The bundle and
 strict `server.json` manifest are then published to both
 `server/vX.Y.Z/` and (when the tag is newer) `server/latest/` in
 `firekeep-dist`. A release is incomplete until both the anonymous image pulls
