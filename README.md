@@ -229,7 +229,7 @@ claim. The preview
 build and installer commands, security boundaries, runtime matrix, and full `/` command
 inventory are in the [Studio README](studio/README.md).
 
-Studio 0.4 ships an x64 Windows installer and a universal macOS installer from an isolated,
+Studio 0.5 ships an x64 Windows installer and a universal macOS installer from an isolated,
 signed release channel. Packaged builds check for Studio updates shortly after launch; Windows
 downloads and installs a verified update on restart, while macOS uses native automatic updates
 only when the release is Apple-signed and notarized. The current release page, checksums, and
