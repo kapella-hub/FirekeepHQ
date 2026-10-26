@@ -46,8 +46,9 @@ curl -fsSL 'https://firekeep.ai/latest/install?src=github' | sh    # macOS / Lin
 irm 'https://firekeep.ai/latest/install.ps1?src=github' | iex      # Windows PowerShell
 ```
 
-The current server targets `linux/amd64` and needs Docker Compose v2, two x86-64
-CPU cores, and Git; 16 GB RAM is recommended for the default stack. It binds to
+The server runs on `linux/amd64` or `linux/arm64` (server releases after v1.6.2;
+v1.6.2 and earlier are amd64-only) and needs Docker Compose v2, two CPU cores,
+and Git; 16 GB RAM is recommended for the default stack. It binds to
 `127.0.0.1` by default. See the
 **[requirements and sizing notes](https://firekeep.ai/docs.html#requirements)**
 before choosing a host.
@@ -144,8 +145,10 @@ paste-ready command for your second machine when it finishes.
 The installer then offers one skippable prompt for another MCP client's rules
 file; the four shipped adapters are rendered either way.
 
-Current server images target `linux/amd64`: run them on an x86-64 Linux host,
-or through Docker Desktop with amd64 container support. The client bootstrap is exercised in CI on
+Server images after v1.6.2 are published for `linux/amd64` and `linux/arm64`, so
+an x86-64 or ARM64 Linux host (e.g. AWS Graviton, Ampere) or Docker
+Desktop on an Apple-silicon Mac runs them natively; v1.6.2 and earlier are
+amd64-only. The client bootstrap is exercised in CI on
 Ubuntu, Debian, Alpine, Fedora, Rocky, Arch and openSUSE (x86_64 and aarch64);
 macOS runs the same script but is not covered by CI.
 

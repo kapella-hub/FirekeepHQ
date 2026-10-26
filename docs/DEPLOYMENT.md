@@ -8,8 +8,9 @@
 
 ## Prerequisites
 
-- An x86-64 Linux host with Docker and Docker Compose v2, or Docker Desktop on
-  Windows/Mac with amd64 container support
+- An x86-64 or ARM64 Linux host with Docker and Docker Compose v2, or Docker
+  Desktop on Windows/Mac (ARM64 needs a server release after v1.6.2; v1.6.2 and
+  earlier publish amd64 images only)
 - **RAM:** 16 GB recommended for the full default stack (Neo4j JVM + Qdrant +
   Redis + Ollama + 7 Python services). 8 GB is the practical floor and requires
   a small embedding model (`EMBEDDING_MODEL=granite-embedding:30m`,
@@ -39,15 +40,16 @@ stop→learn, checkpoint or presence); see
 
 | Shape | Run it on | Command | Result |
 |-------|-----------|---------|--------|
-| **Both**, one machine | x86-64 Linux, or Docker Desktop on Windows/Mac with amd64 container support | `curl -fsSL https://firekeep.ai/latest/install \| sh` → answer **1** | Client *and* server, with this box enrolled against it. The default when Docker is present. |
+| **Both**, one machine | x86-64 or ARM64 Linux, or Docker Desktop on Windows/Mac | `curl -fsSL https://firekeep.ai/latest/install \| sh` → answer **1** | Client *and* server, with this box enrolled against it. The default when Docker is present. |
 | **Client only** | Any Mac / Windows / Linux machine | the same one-liner → answer **2** (join code), **3** (address + key) or **4** (not yet) | Just the kit, pointed at a server your team already runs — or at nothing yet, finished later. |
-| **Server only** | x86-64 Linux, or Docker Desktop on Windows/Mac with amd64 container support | `firekeep init --no-self-enroll`, or `bash install.sh` from a checkout/bundle | The full stack with **no** machine enrolled — CI, a build host, a golden image. Enrol laptops afterwards. |
+| **Server only** | x86-64 or ARM64 Linux, or Docker Desktop on Windows/Mac | `firekeep init --no-self-enroll`, or `bash install.sh` from a checkout/bundle | The full stack with **no** machine enrolled — CI, a build host, a golden image. Enrol laptops afterwards. |
 
 **Both** and **Server only** are the same provisioning with one difference:
 whether the box that builds the server also becomes a client of it. The server
-is a Docker Compose stack whose published images currently target `linux/amd64`:
-use an x86-64 Linux server or VPS, or Docker Desktop with amd64 container support
-on a Windows or Mac workstation. On Windows the
+is a Docker Compose stack whose published images target `linux/amd64` and, for
+server releases after v1.6.2, `linux/arm64` (v1.6.2 and earlier are amd64-only):
+use an x86-64 or ARM64 Linux server or VPS, or Docker Desktop on a Windows or
+Mac workstation. On Windows the
 one-command setup runs under WSL2 or Git Bash (Docker Desktop's own Linux
 backend). Linux install smoke runs on relevant main-branch changes and nightly;
 Windows and macOS are hand-checked on Docker Desktop. Enrol further machines

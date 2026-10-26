@@ -30,9 +30,9 @@ an absent registry is seeded with both (default-on), `firekeep dex remove` is
 the off-switch, and removals stick across updates.
 
 **Firekeep is self-hosted — this package needs a server to talk to.** A person
-or team runs its own server, with per-key authentication. Current server images
-target `linux/amd64`: use an x86-64 Linux host, or Docker Desktop with amd64
-container support on Windows or Mac. There is no hosted endpoint. Server install:
+or team runs its own server, with per-key authentication. Server images target
+`linux/amd64` and, for releases after v1.6.2, `linux/arm64`: use an x86-64 or
+ARM64 Linux host, or Docker Desktop on Windows or Mac. There is no hosted endpoint. Server install:
 [firekeep.ai/docs.html](https://firekeep.ai/docs.html#server).
 
 ## Install

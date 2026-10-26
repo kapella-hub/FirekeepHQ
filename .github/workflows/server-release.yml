@@ -35,6 +35,11 @@ env:
   REGISTRY: ghcr.io
   OWNER: kapella-hub
   FIRST_SERVER_RELEASE: v0.1.0
+  # Every release tag names an OCI index over both architectures, so a
+  # customer's daemon pulls its own: Graviton/Ampere VPSes and Apple-silicon
+  # Docker hosts were amd64-under-emulation or nothing. The datastores compose
+  # pins (neo4j, qdrant, redis, ollama, nginx) are already multi-arch indexes.
+  PLATFORMS: linux/amd64,linux/arm64
 
 jobs:
   publish:
@@ -69,6 +74,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # arm64 is built under QEMU on this amd64 runner. Nothing compiles under
+      # emulation: every package in the four service locks ships an aarch64
+      # wheel (highest floor manylinux_2_34, for caio and cryptography; the
+      # pinned python:3.11.15-slim is trixie, glibc 2.41), so the arm64 leg is
+      # a wheel install. Native arm runners would need a per-arch job plus a
+      # manifest-merge job for the same index.
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - uses: docker/setup-buildx-action@v3
+
       - name: Resolve the tag
         id: meta
         run: |
@@ -87,6 +104,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and publish once
+        id: build
         # Provenance args match what install.sh/update.sh pass locally, so a
         # published image answers GET /version with the same shape a
         # locally-built one does. APP_VERSION is the release tag itself. A
@@ -143,36 +161,74 @@ jobs:
           fi
 
           if [ "$PUBLISH" = "1" ]; then
-            docker build \
+            # One multi-platform push: the tag lands as a single index, never
+            # half-published. --provenance=false keeps that index to runnable
+            # platforms only (buildx otherwise adds unknown/unknown attestation
+            # entries); the digest record below is the audit evidence.
+            docker buildx build \
+              --platform "$PLATFORMS" \
+              --provenance=false \
               -f "${{ matrix.dockerfile }}" \
               --build-arg GIT_SHA="$EXPECTED_SHA" \
               --build-arg BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
               --build-arg APP_VERSION="${{ steps.meta.outputs.tag }}" \
               -t "$REF" \
+              --push \
               .
-            docker push "$REF"
           fi
+          echo "published=$PUBLISH" >> "$GITHUB_OUTPUT"
 
       - name: Record the release digest
         # Keep a content-addressed audit record for each repository in the job
         # summary. The customer bundle uses one shared version tag across the
         # four repositories, so these distinct digests are operator evidence.
+        # A buildx push leaves no local image to `docker inspect`, so read the
+        # index from the registry: its top-level Digest is what the tag names.
         run: |
-          DIGEST="$(docker inspect --format='{{index .RepoDigests 0}}' \
-            "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}" 2>/dev/null || echo unknown)"
-          echo "| firekeep-${{ matrix.name }} | \`$DIGEST\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "$DIGEST"
+          INSPECT="$(docker buildx imagetools inspect \
+            "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}")"
+          DIGEST="$(awk '/^Digest:/ {print $2; exit}' <<<"$INSPECT")"
+          PLATFORMS_FOUND="$(awk '/^[[:space:]]+Platform:/ {print $2}' <<<"$INSPECT" | paste -sd' ' -)"
+          echo "| firekeep-${{ matrix.name }} | \`${DIGEST:-unknown}\` | ${PLATFORMS_FOUND:-single-platform} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "${DIGEST:-unknown} ${PLATFORMS_FOUND:-single-platform}"
 
       - name: Verify an anonymous customer can pull and run the image
         # A push through the logged-in Actions session proves neither public
         # readability nor runtime health.  Log out, remove the local copy, then
-        # exercise exactly the registry path a customer uses.
+        # exercise exactly the registry path a customer uses — once per
+        # architecture, asserting the container really is that architecture
+        # (QEMU runs the arm64 one here).
+        #
+        # A freshly published tag must carry both platforms. A rerun that
+        # reused a tag published before multi-arch (a single-platform amd64
+        # manifest) verifies what exists and warns about the rest rather than
+        # failing a release that was correct when it shipped.
+        env:
+          PUBLISHED: ${{ steps.build.outputs.published }}
         run: |
+          REF="${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}"
           docker logout ghcr.io
-          docker rmi "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}" || true
-          docker pull "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}"
-          docker run --rm "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}" \
-            python -c "from pathlib import Path; assert Path('/app/LICENSE').stat().st_size; assert Path('/app/NOTICE').stat().st_size; import provenance; print('version:', provenance.get_version_info('${{ matrix.name }}'))"
+          FOUND="$(docker buildx imagetools inspect "$REF" | awk '/^[[:space:]]+Platform:/ {print $2}')"
+          [ -n "$FOUND" ] || FOUND=linux/amd64
+          for p in ${PLATFORMS//,/ }; do
+            if ! grep -Fxq "$p" <<<"$FOUND"; then
+              if [ "$PUBLISHED" = "1" ]; then
+                echo "::error::$REF was just published without $p"
+                exit 1
+              fi
+              echo "::warning::reused $REF predates multi-arch publishing; it has no $p image"
+              continue
+            fi
+            case "$p" in
+              linux/amd64) machine=x86_64 ;;
+              linux/arm64) machine=aarch64 ;;
+              *) echo "::error::no expected machine for $p"; exit 1 ;;
+            esac
+            docker rmi "$REF" || true
+            docker pull --platform "$p" "$REF"
+            docker run --rm --platform "$p" -e EXPECT_MACHINE="$machine" "$REF" \
+              python -c "import os, platform; assert platform.machine() == os.environ['EXPECT_MACHINE'], platform.machine(); from pathlib import Path; assert Path('/app/LICENSE').stat().st_size; assert Path('/app/NOTICE').stat().st_size; import provenance; print('$p version:', provenance.get_version_info('${{ matrix.name }}'))"
+          done
 
   bundle:
     needs: publish
