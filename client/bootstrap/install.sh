@@ -62,13 +62,19 @@ elif [ -n "${FIREKEEP_FAILURE_REPORT:-}" ]; then
     REPORT_CONSENT=1
     export FIREKEEP_REPORT_CONSENT=1
 elif ( : < /dev/tty ) 2>/dev/null; then
-    printf '%s' "Send anonymous failure reports to firekeep.ai? Category codes only — what \
-failed, error class, OS family, versions; never paths, messages, addresses, or \
-any persistent identifier. [Y/n] " > /dev/tty
+    # The wording covers install milestones too, so the answer is relayed in
+    # FIREKEEP_INSTALL_REPORT_CONSENT as well — set ONLY here, by a human
+    # answer, never by the FIREKEEP_FAILURE_REPORT opt-in or an update re-exec.
+    printf '%s' "Send anonymous reports to firekeep.ai? Once when this install succeeds \
+and first reaches your Keep, and whenever something fails. Category codes only — \
+what happened, error class, OS family, versions; never paths, messages, addresses, \
+or any persistent identifier. [Y/n] " > /dev/tty
     if IFS= read -r report_answer < /dev/tty; then
         case "${report_answer}" in
-            ""|y|Y|yes|YES|Yes) REPORT_CONSENT=1; export FIREKEEP_REPORT_CONSENT=1 ;;
-            *)                  REPORT_CONSENT=0; export FIREKEEP_REPORT_CONSENT=0 ;;
+            ""|y|Y|yes|YES|Yes) REPORT_CONSENT=1; export FIREKEEP_REPORT_CONSENT=1
+                                export FIREKEEP_INSTALL_REPORT_CONSENT=1 ;;
+            *)                  REPORT_CONSENT=0; export FIREKEEP_REPORT_CONSENT=0
+                                export FIREKEEP_INSTALL_REPORT_CONSENT=0 ;;
         esac
     fi   # read failure = EOF: leave unanswered — export NOTHING, report nothing
 fi

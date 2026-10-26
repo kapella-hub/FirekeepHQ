@@ -40,8 +40,9 @@ def _consent_snippet(tmp_path):
     end = text.index("# --- TLS trust", start)
     snippet = ("#!/bin/sh\nset -u\nPYTHON_VERSION=3.12\n"
                + text[start:end]
-               + '\nprintf "CONSENT=%s EXPORTED=%s\\n" '
-                 '"${REPORT_CONSENT}" "${FIREKEEP_REPORT_CONSENT-unset}"\n')
+               + '\nprintf "CONSENT=%s EXPORTED=%s INSTALLS=%s\\n" '
+                 '"${REPORT_CONSENT}" "${FIREKEEP_REPORT_CONSENT-unset}" '
+                 '"${FIREKEEP_INSTALL_REPORT_CONSENT-unset}"\n')
     script = tmp_path / "consent-only.sh"
     script.write_text(snippet, encoding="utf-8")
     script.chmod(0o755)
@@ -89,18 +90,18 @@ def _run_under_pty(script, keys, env=None):
 
 def test_enter_records_yes(tmp_path):
     out = _run_under_pty(_consent_snippet(tmp_path), b"\n")
-    assert "CONSENT=1 EXPORTED=1" in out
+    assert "CONSENT=1 EXPORTED=1 INSTALLS=1" in out
 
 
 def test_n_records_no(tmp_path):
     out = _run_under_pty(_consent_snippet(tmp_path), b"n\n")
-    assert "CONSENT=0 EXPORTED=0" in out
+    assert "CONSENT=0 EXPORTED=0 INSTALLS=0" in out
 
 
 def test_eof_records_nothing(tmp_path):
     # ^D at the prompt: unanswered — nothing exported, nothing reported
     out = _run_under_pty(_consent_snippet(tmp_path), b"\x04")
-    assert "CONSENT=0 EXPORTED=unset" in out
+    assert "CONSENT=0 EXPORTED=unset INSTALLS=unset" in out
 
 
 def test_env_opt_out_never_asks(tmp_path):
@@ -108,3 +109,17 @@ def test_env_opt_out_never_asks(tmp_path):
                          env={"FIREKEEP_NO_FAILURE_REPORT": "1"})
     assert "[Y/n]" not in out
     assert "CONSENT=0 EXPORTED=unset" in out
+
+
+def test_failure_env_opt_in_never_relays_install_consent(tmp_path):
+    """FIREKEEP_FAILURE_REPORT=1 (CI) enrolls failures without a prompt; it must
+    never stand in for a human's answer to the milestone wording."""
+    out = _run_under_pty(_consent_snippet(tmp_path), b"",
+                         env={"FIREKEEP_FAILURE_REPORT": "1"})
+    assert "[Y/n]" not in out
+    assert "CONSENT=1 EXPORTED=1 INSTALLS=unset" in out
+
+
+def test_prompt_names_the_milestones(tmp_path):
+    out = _run_under_pty(_consent_snippet(tmp_path), b"\n")
+    assert "Once when this install succeeds" in out

@@ -72,6 +72,15 @@ _STAGES_BY_KIND = {
     "runtime": RUNTIME_STAGES,
 }
 
+# Install milestones: the success half of the funnel, so downloads can be read
+# against installs that worked. NOT a failure kind — its own consent key
+# ([report] installs), its own once-per-machine marker, no `error` field, and
+# the collector logs it apart from failures (never mailed, never pulled into
+# Sentinel). installed = `firekeep install` completed; connected = the first
+# time this machine reached its Keep (doctor all-green or a served briefing).
+MILESTONE_KIND = "milestone"
+MILESTONE_STAGES = ("installed", "connected")
+
 _ERRNO_MAP = {
     _errno.EACCES: "permission-denied",
     _errno.EPERM: "permission-denied",
@@ -184,15 +193,43 @@ def build_event(kind, stage, *, error=None, exc=None, exit_code=None,
         return None
 
 
+def build_milestone(stage) -> dict | None:
+    """Validated milestone event, or None. Same closed fields as a failure
+    minus `error` and every tagged-union extra."""
+    try:
+        if stage not in MILESTONE_STAGES:
+            return None
+        os_family = detect_os()
+        if os_family not in OS_FAMILIES:
+            return None
+        from firekeep_client import __version__
+        return {
+            "id": uuid.uuid4().hex,
+            "kind": MILESTONE_KIND,
+            "stage": stage,
+            "os": os_family,
+            "arch": detect_arch(),
+            "client": __version__,
+            "py": py_bucket(),
+        }
+    except Exception:  # noqa: BLE001
+        return None
+
+
 _FALSEY = ("", "0", "false", "no", "off")
 
+# One question, two recorded answers ([report] failures + [report] installs).
+# Machines enrolled under the earlier failures-only wording keep `installs`
+# absent and so never send a milestone: their consent is not widened after
+# the fact. The bootstraps (install.sh / install.ps1) carry the same scope.
 CONSENT_PROMPT = (
-    "Send anonymous failure reports to firekeep.ai? When an install step fails, a\n"
-    "connection to your own Keep fails, or a Firekeep background task errors,\n"
-    "Firekeep sends category codes only — what failed, the error class, OS family,\n"
-    "versions. Never paths, messages, addresses, or any persistent device, account\n"
-    "or session identifier. Ongoing until you turn it off\n"
-    "([report] failures = false). [Y/n] "
+    "Send anonymous reports to firekeep.ai? Once when this install succeeds and\n"
+    "first reaches your Keep, and whenever an install step fails, a connection to\n"
+    "your own Keep fails, or a Firekeep background task errors, Firekeep sends\n"
+    "category codes only — what happened, the error class, OS family, versions.\n"
+    "Never paths, messages, addresses, or any persistent device, account or\n"
+    "session identifier. Ongoing until you turn it off\n"
+    "([report] failures = false, [report] installs = false). [Y/n] "
 )
 
 
@@ -216,6 +253,23 @@ def is_enabled(cfg=None) -> bool:
         return False
 
 
+def milestones_enabled(cfg=None) -> bool:
+    """Consent gate for install milestones. Stricter than is_enabled: only a
+    recorded `[report] installs = true` counts — there is deliberately no env
+    opt-in, so CI runs that set FIREKEEP_FAILURE_REPORT=1 never count as
+    installs. The failure opt-out and personal mode silence it too."""
+    try:
+        if os.environ.get("FIREKEEP_NO_FAILURE_REPORT", "").strip().lower() not in _FALSEY:
+            return False
+        if resolver.is_bypassed():
+            return False
+        if cfg is None:
+            cfg = resolver.load_config()
+        return cfg.get("report", "installs", fallback="").strip().lower() == "true"
+    except Exception:  # noqa: BLE001 — any doubt means OFF (fail closed)
+        return False
+
+
 def has_answer(cfg) -> bool:
     try:
         return cfg.get("report", "failures", fallback="").strip() != ""
@@ -223,13 +277,36 @@ def has_answer(cfg) -> bool:
         return False
 
 
-def record_consent(cfg, value: bool) -> None:
+def record_consent(cfg, value: bool, *, installs: bool | None = None) -> None:
+    """Record the failures answer, and the installs answer only when the
+    human was shown wording that covers milestones (installs is not None)."""
     try:
         if not cfg.has_section("report"):
             cfg.add_section("report")
         cfg.set("report", "failures", "true" if value else "false")
+        if installs is not None:
+            cfg.set("report", "installs", "true" if installs else "false")
     except Exception:  # noqa: BLE001
         pass
+
+
+# Set when THIS process recorded an answer from a human at the prompt. With
+# the bootstrap's relayed answer it defines a fresh install: the prompt only
+# ever appears on a machine with no recorded answer, so an update, a re-render
+# or a later opt-in never counts as a new install.
+_ANSWERED_HERE = False
+
+
+def _fresh_install_consented() -> bool:
+    return installs_env_answer() is True or _ANSWERED_HERE
+
+
+def installs_env_answer() -> bool | None:
+    """The bootstrap relays its prompt's answer in FIREKEEP_INSTALL_REPORT_CONSENT,
+    set ONLY when a human answered the milestone-covering wording — never by
+    FIREKEEP_FAILURE_REPORT or an update re-exec. None = not shown that prompt."""
+    pre = os.environ.get("FIREKEEP_INSTALL_REPORT_CONSENT", "").strip()
+    return (pre == "1") if pre in ("0", "1") else None
 
 
 def ask_consent(cfg) -> bool:
@@ -242,7 +319,7 @@ def ask_consent(cfg) -> bool:
             return False
         pre = os.environ.get("FIREKEEP_REPORT_CONSENT", "").strip()
         if pre in ("0", "1"):
-            record_consent(cfg, pre == "1")
+            record_consent(cfg, pre == "1", installs=installs_env_answer())
             return True
         if not sys.stdin.isatty():
             return False
@@ -256,7 +333,10 @@ def ask_consent(cfg) -> bool:
         except (EOFError, KeyboardInterrupt):
             print()
             return False
-        record_consent(cfg, answer in ("", "y", "yes"))
+        yes = answer in ("", "y", "yes")
+        record_consent(cfg, yes, installs=yes)
+        global _ANSWERED_HERE
+        _ANSWERED_HERE = yes
         return True
     except Exception:  # noqa: BLE001
         return False
@@ -373,6 +453,56 @@ def emit(kind, stage, *, error=None, exc=None, exit_code=None,
         pass
 
 
+def _milestones_path() -> Path:
+    return _report_dir() / "report-milestones.json"
+
+
+def _claim_milestone(stage: str) -> bool:
+    """Mark `stage` sent for this machine; True only for the caller that
+    newly marked it. The marker is written BEFORE the event is spooled and a
+    failed write means no event: a milestone may be lost, never repeated —
+    repeats would inflate exactly the count this exists to make honest.
+
+    The funnel is nested: `installed` only on a fresh install whose prompt was
+    answered yes in this run, `connected` only on a machine that already sent
+    `installed` — so an existing machine opting in later counts as neither."""
+    try:
+        path = _milestones_path()
+        seen = {}
+        if path.exists():
+            seen = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(seen, dict):
+                return False  # unreadable marker: assume sent
+        if stage in seen:
+            return False
+        if stage == "installed" and not _fresh_install_consented():
+            return False
+        if stage == "connected" and "installed" not in seen:
+            return False
+        seen[stage] = int(time.time())
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(seen), encoding="utf-8")
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def milestone(stage, *, cfg=None, flush_now: bool = True) -> None:
+    """Record an install milestone once per machine. Never raises; same spool
+    and wire as emit(), so an offline machine sends it on a later flush."""
+    try:
+        if not milestones_enabled(cfg):
+            return
+        event = build_milestone(stage)
+        if event is None or not _claim_milestone(stage):
+            return
+        _append_spool(event)
+        if flush_now:
+            flush(cfg=cfg)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _read_events(path: Path) -> list[dict]:
     out = []
     try:
@@ -443,7 +573,8 @@ def flush(cfg=None, timeout=None) -> None:
     if timeout is None:
         timeout = FLUSH_TIMEOUT
     try:
-        if not is_enabled(cfg):
+        failures_on, milestones_on = is_enabled(cfg), milestones_enabled(cfg)
+        if not (failures_on or milestones_on):
             return
         claims = _adoptable_claims()
         spool = _spool_path()
@@ -457,6 +588,11 @@ def flush(cfg=None, timeout=None) -> None:
                 claim_path.unlink()
             except OSError:
                 pass
+            # Each event travels only under its own consent: a spooled failure
+            # from before `failures = false` is dropped, not sent under the
+            # installs answer (and vice versa).
+            events = [e for e in events
+                      if (milestones_on if e.get("kind") == MILESTONE_KIND else failures_on)]
             if not events:
                 continue
             try:

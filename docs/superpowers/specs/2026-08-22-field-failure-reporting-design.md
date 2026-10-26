@@ -955,3 +955,16 @@ named here as one list for anyone diffing spec against build:
   branch.** The page carries a comment marking where the date changes when
   the site is actually deployed, rather than a speculative date landing with
   code that has not shipped yet.
+
+## Addendum (2026-10-26): install milestones
+
+The channel now also carries two once-per-machine success events, `installed`
+and `connected`, so downloads can be read against installs that worked. They
+are deliberately outside this spec's failure schema: `kind: "milestone"`, no
+`error`, own consent key `[report] installs`, logged by the collector to
+`milestones.log` only (no signature, mail, digest or VPS segment). Decision 1's
+rule is kept: the key is written only by a human answering the reworded
+prompt, failures-only enrollees are never widened, and `installed` fires only
+in the run where that answer was given. Behaviour and guards:
+`docs/guides/client-kit.md` "Install milestones"; tests:
+`client/tests/test_report_milestones.py`.

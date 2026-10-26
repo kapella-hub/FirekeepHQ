@@ -127,6 +127,8 @@ def run(payload: dict) -> dict:
             )
             if isinstance(data, dict) and data.get("rendered"):
                 rendered = data["rendered"]
+                # Once per machine; the flush below sends it.
+                report.milestone("connected", cfg=cfg, flush_now=False)
             # Stash the server-minted briefing_id so the bridge shim can inject it
             # into a ctx_start_session call the agent makes without it — closing the
             # briefing_id -> session_id A/B join mechanically. (The stale-id clear

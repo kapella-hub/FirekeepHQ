@@ -106,7 +106,10 @@ never bundled, with a `hands` doctor row that warns when nothing can approve; se
 A separate, ongoing field-failure reporting channel exists alongside `doctor --report`
 (`client/firekeep_client/report.py`): consent is tri-state (unset = not enrolled, never
 mirrors autoupdate's on-by-default), and an enrolled machine sends only closed-enum
-category codes on install/connectivity/runtime failures, never paths or messages. See
+category codes on install/connectivity/runtime failures, never paths or messages. The
+same channel carries two once-per-machine install milestones (`installed`, `connected`)
+under their own `[report] installs` key, set only by the reworded prompt on a fresh
+install — failures-only enrollees never send them. See
 [`docs/guides/client-kit.md`](docs/guides/client-kit.md) "Field failure reporting".
 Doctor and the session-start briefing also now surface a Keep running behind the
 latest published server release — cortex's version compared against

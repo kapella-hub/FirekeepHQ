@@ -461,7 +461,7 @@ def _apply_flags(cfg, args) -> bool:
         # overwrite an ALREADY-recorded answer — a re-render, an update's
         # re-exec, or a non-interactive run relaying a pre-set env must not
         # rewrite a "no" a human already gave.
-        report.record_consent(cfg, pre == "1")
+        report.record_consent(cfg, pre == "1", installs=report.installs_env_answer())
         touched = True
     return touched
 
@@ -710,8 +710,9 @@ def cmd_install(args) -> int:
         print(f"firekeep: install failed at '{step}': {exc}", file=sys.stderr)
         return 1
 
+    report.milestone("installed")
     print(f"firekeep: installed into {home}")
-    registered = "firekeep (gateway: memory, sessions, relay, monitoring, code, decisions)"
+    registered ="firekeep (gateway: memory, sessions, relay, monitoring, code, decisions)"
     print(f"firekeep: registered MCP servers: {registered}")
     print("firekeep: tip — `/personal` (Claude) or `firekeep personal` toggles a private "
           "session where Firekeep is fully bypassed (nothing logged/recalled); it "
@@ -1018,6 +1019,8 @@ def _check_health(cfg) -> list[tuple[str, str, str]]:
     else:
         for svc, category in failures:
             report.emit("connectivity", svc, error=category, cfg=cfg)
+    if not failures:
+        report.milestone("connected", cfg=cfg)
     return out
 
 
