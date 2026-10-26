@@ -186,6 +186,12 @@ To run it by hand on macOS/Linux:
 cd client && python -m pytest tests/test_e2e_bootstrap.py -m e2e -q
 ```
 
+- **server v1.6.4** — Security patch: the four service images ship
+  certifi 2026.10.23 (PYSEC-2026-4320), fastmcp 3.4.11 (GHSA-7xgj-8392-5q4r),
+  mcp 1.30.0 (CVE-2026-59951) and opentelemetry-api 1.45.1 (CVE-2026-114603).
+  The locks were bumped with targeted `--upgrade-package`, so nothing else
+  moved, and `pip-audit --strict` is clean for all four. Still amd64 + arm64.
+  No API, schema or configuration change.
 - **1.8.1** — Install milestones. The field-report channel carried only
   failures, so downloads could not be read against installs that worked. It now
   also sends two success events, each at most once per machine: `installed`
