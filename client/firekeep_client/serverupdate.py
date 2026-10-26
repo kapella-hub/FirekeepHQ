@@ -19,6 +19,7 @@ from firekeep_client.transport import get_json
 
 _TIMEOUT = 3.0
 _CACHE_KEY = "server_update_check"
+_RECHECK_KEY = "server_update_recheck"
 
 
 @dataclass
@@ -93,6 +94,26 @@ def _fetch_latest(cfg) -> str | None:
         return None
 
 
+def _recheck_ahead(cfg, running: str, cached: str | None) -> str | None:
+    """A server ahead of the day-cached latest usually means the cache predates
+    a release deployed since (a published server cannot outrun the published
+    series). Re-fetch once, at most once a day per running version so a
+    checkout parked on an unpublished tag pays the 3s once, not per call."""
+    try:
+        today = datetime.date.today().isoformat()
+        marker = f"{today}|{running}"
+        if state.read_scratch(_RECHECK_KEY) == marker:
+            return cached
+        state.write_scratch(_RECHECK_KEY, marker)
+        fresh = _fetch_latest_uncached(cfg)
+        if fresh:
+            state.write_scratch(_CACHE_KEY, f"{today}|{fresh}")
+            return fresh
+    except Exception:  # noqa: BLE001 — keep the cached verdict
+        pass
+    return cached
+
+
 def _relation(running: str, latest: str | None) -> str:
     # Checked BEFORE the manifest: provenance is a property of the server, not
     # of dist-host reachability, so this verdict must never degrade to
@@ -129,6 +150,8 @@ def check(cfg) -> ServerUpdateStatus | None:
         if running is None:
             return None
         latest = _fetch_latest(cfg)
+        if _relation(running, latest) == "ahead":
+            latest = _recheck_ahead(cfg, running, latest)
         return ServerUpdateStatus(
             running=running, latest=latest,
             relation=_relation(running, latest),

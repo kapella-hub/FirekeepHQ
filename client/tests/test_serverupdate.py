@@ -186,3 +186,41 @@ def test_real_releases_still_judge_normally(monkeypatch):
         _wire(monkeypatch, running=running, latest="v1.3.1")
         state.delete_scratch(serverupdate._CACHE_KEY)
         assert serverupdate.check(_cfg()).relation == relation
+
+
+def _seed_cache(latest):
+    import datetime
+    state.write_scratch(serverupdate._CACHE_KEY,
+                        f"{datetime.date.today().isoformat()}|{latest}")
+
+
+def test_ahead_of_a_cached_latest_rechecks_once_and_heals(monkeypatch):
+    # The morning's fetch saw v1.6.2; v1.6.4 was published and deployed later
+    # the same day. A published server cannot outrun the published series, so
+    # "ahead" of a CACHED latest is evidence the cache is stale.
+    _seed_cache("v1.6.2")
+    calls = _wire(monkeypatch, running="v1.6.4", latest="v1.6.4")
+    status = serverupdate.check(_cfg())
+    assert (status.relation, status.latest) == ("current", "v1.6.4")
+    assert calls["manifest"] == 1
+    assert serverupdate.check(_cfg()).latest == "v1.6.4"  # cache healed
+    assert calls["manifest"] == 1
+
+
+def test_genuinely_ahead_rechecks_at_most_once_per_day(monkeypatch):
+    # A checkout parked on a tag that was never published really is ahead:
+    # one recheck confirms it, and no later call pays the 3s again.
+    calls = _wire(monkeypatch, running="v1.7.0", latest="v1.6.4")
+    for _ in range(3):
+        assert serverupdate.check(_cfg()).relation == "ahead"
+    assert calls["manifest"] == 2  # the day's fetch + one recheck
+
+
+def test_failed_recheck_keeps_the_cached_verdict(monkeypatch):
+    _seed_cache("v1.6.2")
+    monkeypatch.setattr(serverupdate, "_fetch_running", lambda cfg: "v1.6.4")
+    def fail(cfg):
+        raise updater.UpdateError("down")
+    monkeypatch.setattr(serverupdate, "_fetch_latest_uncached", fail)
+    status = serverupdate.check(_cfg())
+    assert (status.relation, status.latest) == ("ahead", "v1.6.2")
