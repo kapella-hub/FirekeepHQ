@@ -186,8 +186,12 @@ def test_release_tags_are_not_overwritten_on_rerun() -> None:
     assert 'steps.meta.outputs.tag }}" = "$FIRST_SERVER_RELEASE"' in workflow
     assert "package exists but registry lookup was denied; refusing to overwrite" in workflow
     assert 'docker pull "$REF"' in workflow
-    assert 'docker push "$REF"' in workflow
-    assert workflow.index('docker manifest inspect "$REF"') < workflow.index('docker push "$REF"')
+    assert "docker buildx build" in workflow
+    assert workflow.index('docker manifest inspect "$REF"') < workflow.index("docker buildx build")
+    # the push is part of the buildx call and only inside the PUBLISH branch
+    push = workflow.index("--push", workflow.index("docker buildx build"))
+    assert workflow.rindex('if [ "$PUBLISH" = "1" ]', 0, push) > workflow.index("LOOKUP_STATUS=$?")
+    assert 'docker push "$REF"' not in workflow
 
     assert 'if [ -e "$VERSIONED" ]' in workflow
     assert 'Reusing immutable versioned bundle $VERSIONED' in workflow
@@ -265,6 +269,34 @@ def test_release_verifies_anonymous_image_pull() -> None:
     """Download access cannot become a hidden second entitlement system."""
     workflow = WORKFLOW.read_text(encoding="utf-8")
     logout = workflow.index("docker logout ghcr.io")
-    pull = workflow.index('docker pull "${{ steps.meta.outputs.image }}', logout)
+    pull = workflow.index('docker pull --platform "$p" "$REF"', logout)
     assert logout < pull
     assert "public package" in _install_sh().lower() or "public visibility" in _install_sh().lower()
+
+
+def test_release_publishes_and_runs_both_architectures() -> None:
+    """Every release tag is an amd64+arm64 index, and each half is run.
+
+    Until 2026-10 the images were amd64-only while every datastore compose pins
+    was already multi-arch, so an arm64 host (Graviton, Ampere, Apple silicon)
+    could run everything except Firekeep itself. Pushing two platforms is not
+    enough on its own: the anonymous check must pull AND run each one, and must
+    fail a fresh publish that is missing one.
+    """
+    wf = _workflow()
+    assert wf["env"]["PLATFORMS"] == "linux/amd64,linux/arm64"
+    steps = wf["jobs"]["publish"]["steps"]
+    uses = [s.get("uses", "") for s in steps]
+    assert any(u.startswith("docker/setup-qemu-action@") for u in uses)
+    assert any(u.startswith("docker/setup-buildx-action@") for u in uses)
+    # QEMU and buildx must be ready before the build step runs
+    build_at = next(i for i, s in enumerate(steps) if s.get("id") == "build")
+    assert max(i for i, u in enumerate(uses) if u.startswith("docker/setup-")) < build_at
+
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert '--platform "$PLATFORMS"' in workflow
+    assert "--provenance=false" in workflow
+    assert 'docker run --rm --platform "$p"' in workflow
+    assert "platform.machine() == os.environ['EXPECT_MACHINE']" in workflow
+    assert "linux/arm64) machine=aarch64" in workflow
+    assert "was just published without $p" in workflow

@@ -41,7 +41,21 @@ on:
 
 jobs:
   install-smoke:
-    runs-on: ubuntu-latest
+    # arm64 on a native runner (free for public repositories), not QEMU: this
+    # job builds every image from source and round-trips a memory through the
+    # embedding model, which under emulation would measure QEMU, not the
+    # install. server-release publishes arm64 images; this proves an arm64
+    # host can actually install and run them.
+    name: install-smoke (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
     timeout-minutes: 45
     # Every `run:` here uses `bash -eo pipefail`, not the Linux default `bash -e`.
     # Without pipefail, `a | b` reports b's exit status: a failing `curl` piped
