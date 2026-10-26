@@ -186,6 +186,27 @@ To run it by hand on macOS/Linux:
 cd client && python -m pytest tests/test_e2e_bootstrap.py -m e2e -q
 ```
 
+- **1.8.1** — Install milestones. The field-report channel carried only
+  failures, so downloads could not be read against installs that worked. It now
+  also sends two success events, each at most once per machine: `installed`
+  (`firekeep install` completed) and `connected` (that machine first reached its
+  Keep: doctor all-green or a served briefing). They carry the failure report's
+  fixed categories minus the error class. Consent is not widened after the fact:
+  the install prompt (py, `install.sh`, `install.ps1`) is reworded to name
+  milestones, one answer records both `[report] failures` and the new
+  `[report] installs`, and machines enrolled under the failures-only wording
+  never send a milestone. `installed` fires only in the run where a human
+  answered, so updates, CI and existing machines opting in later count as
+  neither. The firekeep.ai collector logs milestones apart from failures (no
+  signature, mail or digest). Needs `1.8.1` in the site's
+  `allowed-versions.txt`.
+- **server v1.6.3** — Server images are published for `linux/amd64` **and**
+  `linux/arm64` (one OCI index per tag; every pinned datastore was already
+  multi-arch), so Graviton/Ampere hosts and Apple-silicon Docker run Firekeep
+  natively. The release proves each platform by an anonymous pull and run that
+  asserts the container's machine type; install smoke gains a native arm64 leg.
+  Also: the VPS failure ingest accepts the `pi` runtime (its render-adapter
+  failures were being dropped). No API or schema change.
 - **1.8.0** — For Firekeep Studio 0.5: a `studio` gateway toolset (reads plus
   `memory_feedback`; no session-writing tool); `firekeep whoami [--json]`
   (identity without the key); `FIREKEEP_SESSION_REPORT_FILE`, through which the
