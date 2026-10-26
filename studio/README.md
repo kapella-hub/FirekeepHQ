@@ -1,9 +1,18 @@
 # Firekeep Studio
 
-Firekeep Studio is Firekeep's runtime-neutral desktop agent console. Version `0.5.0`
+Firekeep Studio is Firekeep's runtime-neutral desktop agent console. Version `0.5.1`
 is a separate Electron application: it does not replace or fork the Python Client Kit.
 The kit remains the source of truth for Keep connectivity, memory, hooks, instructions,
 personal mode, and runtime configuration.
+
+## 0.5.1 — Setup feedback invite
+
+The first time the Keep panel shows a connected Keep, it offers one small card: **Share what
+worked** opens the setup-feedback discussion, **Report a problem** opens a new GitHub issue, and
+the close button dismisses it. Any of the three retires the card for good (a persisted
+`feedbackInviteDismissed` setting; a 0.5.0 settings file lacks it, so an upgrade still sees the
+card once). The renderer names a destination, never a URL, so the action cannot open anything
+else.
 
 ## 0.5 — Window into the Keep
 
