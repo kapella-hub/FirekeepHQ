@@ -216,7 +216,10 @@ async def test_apply_archives_exactly_the_window_reversibly(
     assert hit["status"] == "archived"
     assert hit["archive_source"] == "revert"
     assert hit["revert_id"] == revert_id
-    assert hit["purge_eligible_at"] is None             # never auto-purged
+    # Never auto-purged: no boundary is recorded. Qdrant's payload merge drops a
+    # null key (server merge_map; qdrant-client local mode matches from 1.20), so
+    # absent and null are the same answer -- and GC purges only archive_source="gc".
+    assert hit.get("purge_eligible_at") is None
     assert BAD in hit["archive_reason"]
     assert SINCE in hit["archive_reason"] and UNTIL in hit["archive_reason"]
     assert (await _payload(vector, "superseded"))["archived_from_status"] == "superseded"
