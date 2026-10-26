@@ -181,7 +181,10 @@ export default function firekeepPi(pi: ExtensionAPI) {
 
 	// The prompt core is the heartbeat + inbox poll, AND the model-context event.
 	pi.on("before_agent_start", async (event: BeforeAgentStartEvent, ctx) => {
-		const res = runCore("prompt", { prompt: event.prompt, cwd: ctx.cwd });
+		// Pi 1.x also starts a run from an extension's custom message, which has no
+		// user prompt; pre-1.0 events carry no messageType and always have one.
+		const prompt = event.messageType === "custom" ? "" : event.prompt;
+		const res = runCore("prompt", { prompt, cwd: ctx.cwd });
 		const msg = messageOf(res);
 		if (msg) surface(ctx, msg);
 

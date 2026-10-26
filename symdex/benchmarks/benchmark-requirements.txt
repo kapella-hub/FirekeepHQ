@@ -3,12 +3,14 @@
 # Security bumps after the canonical run (2026-10-01, Dependabot): pyjwt 2.13.0 -> 2.15.1,
 # urllib3 2.7.0 -> 2.8.0. The canonical run itself used the old pins; neither is on the
 # benchmark's measured path (both arrive transitively via the HTTP/SDK clients).
+# Security bumps 2026-10-26 (Dependabot): certifi 2026.7.22 -> 2026.10.23, mcp 1.28.1 -> 1.30.0;
+# the canonical run used the old pins. `uv pip check` clean on Python 3.12.
 -e .
 annotated-types==0.8.0
 anthropic==0.120.0
 anyio==4.14.2
 attrs==26.1.0
-certifi==2026.7.22
+certifi==2026.10.23
 cffi==2.1.0
 charset-normalizer==3.4.9
 click==8.4.2
@@ -26,7 +28,7 @@ iniconfig==2.3.0
 jiter==0.16.0
 jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
-mcp==1.28.1
+mcp==1.30.0
 packaging==26.2
 pathspec==1.1.1
 pluggy==1.6.0
