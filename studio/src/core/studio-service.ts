@@ -59,6 +59,8 @@ export interface StudioPersistedState {
   /** Most recent first, at most MAX_RECENT_WORKSPACES; only these can be re-selected without the native dialog. */
   readonly recentWorkspaces: readonly string[];
   readonly keepPanelOpen: boolean;
+  /** The one-time "how did setup go?" invite, shown on the first connected Keep until used or dismissed. */
+  readonly feedbackInviteDismissed: boolean;
 }
 
 export interface RuntimeUsageSummary {
@@ -259,6 +261,11 @@ export class StudioService {
 
   async setKeepPanelOpen(open: boolean): Promise<void> {
     this.#replaceState({ keepPanelOpen: open });
+    await this.#persist();
+  }
+
+  async dismissFeedbackInvite(): Promise<void> {
+    this.#replaceState({ feedbackInviteDismissed: true });
     await this.#persist();
   }
 
@@ -1478,6 +1485,7 @@ export class StudioService {
       theme: stored.theme === "dark" || stored.theme === "light" ? stored.theme : "system",
       recentWorkspaces: normalizeRecentWorkspaces(stored.recentWorkspaces, workspacePath),
       keepPanelOpen: stored.keepPanelOpen !== false,
+      feedbackInviteDismissed: stored.feedbackInviteDismissed === true,
     };
   }
 
@@ -1497,6 +1505,7 @@ export class StudioService {
       theme: "system",
       recentWorkspaces: [],
       keepPanelOpen: true,
+      feedbackInviteDismissed: false,
     };
   }
 

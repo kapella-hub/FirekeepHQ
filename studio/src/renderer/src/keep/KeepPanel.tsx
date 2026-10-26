@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, X } from "lucide-react";
 import type { KeepReceipt } from "../../../core/keep/receipt.js";
-import type { StudioAction, StudioActionResult } from "../../../shared/ipc";
+import type { FeedbackTarget, StudioAction, StudioActionResult } from "../../../shared/ipc";
 import { KEEP_INSTALL_COMMANDS, type KeepItem, type KeepStatus } from "../../../shared/keep";
 import { CopyButton } from "../CopyButton.js";
 import { RichMarkdown } from "../RichMarkdown.js";
@@ -21,6 +21,9 @@ export interface KeepPanelProps {
   readonly searchRequest?: KeepSearchRequest | null;
   /** Called once the panel has taken the request, so a remount does not replay it. */
   readonly onSearchRequestHandled?: (() => void) | undefined;
+  /** True until the one-time setup feedback invite is answered or dismissed; shown only once connected. */
+  readonly feedbackInvite?: boolean;
+  readonly onFeedback?: (choice: FeedbackTarget | "dismiss") => void;
 }
 
 export interface KeepSearchRequest { readonly query: string; readonly nonce: number }
@@ -43,13 +46,14 @@ export function quoteBlock(body: string): string {
   return `${body.replace(/\n+$/, "").split("\n").map((line) => `> ${line}`).join("\n")}\n`;
 }
 
-export function KeepPanel({ status, receipts, invoke, onInsert, onOpenKeepSettings, onRetry, searchRequest = null, onSearchRequestHandled }: KeepPanelProps): React.JSX.Element {
+export function KeepPanel({ status, receipts, invoke, onInsert, onOpenKeepSettings, onRetry, searchRequest = null, onSearchRequestHandled, feedbackInvite = false, onFeedback }: KeepPanelProps): React.JSX.Element {
   return <aside className="keep-panel" aria-label="The Keep">
     <h2>The Keep</h2>
     {!status || status.state === "starting" ? <div className="keep-skeleton" aria-busy="true" aria-label="Connecting to the Keep"><span /><span /><span /></div>
       : status.state === "missing" ? <MissingCard onRetry={onRetry} />
       : status.state === "connected" ? <>
         {status.personalMode ? <p className="keep-personal-banner" role="status">Personal mode — nothing from this session is shared</p> : null}
+        {feedbackInvite && onFeedback ? <FeedbackInvite onFeedback={onFeedback} /> : null}
         <ConnectedTabs receipts={receipts} invoke={invoke} onInsert={onInsert} searchRequest={searchRequest} onSearchRequestHandled={onSearchRequestHandled} />
       </>
       : <div className="keep-state-card">
@@ -58,6 +62,18 @@ export function KeepPanel({ status, receipts, invoke, onInsert, onOpenKeepSettin
         <button type="button" onClick={onOpenKeepSettings}>Run doctor</button>
       </div>}
   </aside>;
+}
+
+function FeedbackInvite({ onFeedback }: { readonly onFeedback: (choice: FeedbackTarget | "dismiss") => void }): React.JSX.Element {
+  return <section className="keep-feedback-invite" aria-labelledby="keep-feedback-invite-title">
+    <button type="button" className="icon-button keep-feedback-dismiss" aria-label="Dismiss setup feedback invite" onClick={() => onFeedback("dismiss")}><X size={13} /></button>
+    <h3 id="keep-feedback-invite-title">How did setup go?</h3>
+    <p>You're connected. A line on what worked, or where you got stuck, shapes what gets fixed next.</p>
+    <div className="keep-feedback-actions">
+      <button type="button" className="primary-action" onClick={() => onFeedback("discussion")}>Share what worked</button>
+      <button type="button" onClick={() => onFeedback("issue")}>Report a problem</button>
+    </div>
+  </section>;
 }
 
 function MissingCard({ onRetry }: Pick<KeepPanelProps, "onRetry">): React.JSX.Element {

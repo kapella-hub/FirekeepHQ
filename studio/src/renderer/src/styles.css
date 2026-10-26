@@ -440,6 +440,11 @@ span.keep-receipt { cursor: default; }
 .keep-install code { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 10.5px; }
 .keep-install > div { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
 .keep-personal-banner { margin: 0 14px 8px; padding: 6px 10px; border-radius: 8px; background: var(--ember-soft); color: var(--text); font-size: 11px; }
+.keep-feedback-invite { position: relative; display: grid; gap: 8px; margin: 0 14px 10px; padding: 10px 12px; border: 1px solid var(--line); border-left: 3px solid var(--ember); border-radius: 8px; background: var(--surface); font-size: 12px; color: var(--muted); }
+.keep-feedback-invite h3 { margin: 0; padding-right: 22px; font-size: 13px; color: var(--text); }
+.keep-feedback-invite p { margin: 0; }
+.keep-feedback-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.keep-feedback-dismiss { position: absolute; top: 6px; right: 6px; }
 .keep-tabs { display: flex; gap: 2px; padding: 0 14px; border-bottom: 1px solid var(--line); }
 .keep-tabs [role="tab"] { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; color: var(--muted); padding: 6px 10px; font-size: 12px; }
 .keep-tabs [role="tab"][aria-selected="true"] { color: var(--text); border-bottom-color: var(--ember); }

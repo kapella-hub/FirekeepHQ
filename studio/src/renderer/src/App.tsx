@@ -644,6 +644,8 @@ export function App(): React.JSX.Element {
         onRetry={retryKeep}
         searchRequest={keepSearchRequest}
         onSearchRequestHandled={clearKeepSearchRequest}
+        feedbackInvite={!snapshot.feedbackInviteDismissed}
+        onFeedback={(choice) => ignore(invoke(choice === "dismiss" ? { type: "feedback.dismiss" } : { type: "feedback.open", target: choice }).then(applyResult))}
       />}
     >
 

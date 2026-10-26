@@ -296,6 +296,7 @@ describe("StudioService", () => {
       theme: "system",
       recentWorkspaces: [],
       keepPanelOpen: true,
+      feedbackInviteDismissed: false,
     };
     const timestamp = "2026-08-24T00:00:00.000Z";
     await sessions.ensure("session-existing", timestamp);
@@ -387,6 +388,29 @@ describe("StudioService", () => {
     await reloaded.initialize();
     expect(reloaded.snapshot().keepPanelOpen).toBe(false);
     expect(reloaded.snapshot().recentWorkspaces).toEqual(["C:\\a", "C:\\r0", "C:\\r1", "C:\\r2", "C:\\r3", "C:\\r4", "C:\\r5", "C:\\r6"]);
+  });
+
+  it("offers the first-connect feedback invite until it is dismissed, and remembers the dismissal", async () => {
+    const settings = new MemorySettingsStore<StudioPersistedState>();
+    const { service: prior } = createService();
+    const service = new StudioService({ runtimes: prior.runtimes, settings });
+    await service.initialize();
+    expect(service.snapshot().feedbackInviteDismissed).toBe(false);
+    await service.dismissFeedbackInvite();
+    expect(service.snapshot().feedbackInviteDismissed).toBe(true);
+    expect(settings.value?.feedbackInviteDismissed).toBe(true);
+
+    const reloaded = new StudioService({ runtimes: prior.runtimes, settings });
+    await reloaded.initialize();
+    expect(reloaded.snapshot().feedbackInviteDismissed).toBe(true);
+
+    // a 0.5 settings file predates the field: the invite is still owed
+    const legacy = new MemorySettingsStore<StudioPersistedState>();
+    const { feedbackInviteDismissed: _drop, ...older } = settings.value as StudioPersistedState;
+    legacy.value = older as unknown as StudioPersistedState;
+    const upgraded = new StudioService({ runtimes: prior.runtimes, settings: legacy });
+    await upgraded.initialize();
+    expect(upgraded.snapshot().feedbackInviteDismissed).toBe(false);
   });
 
   it("trims and de-duplicates stored recents, keeping the first occurrence", async () => {

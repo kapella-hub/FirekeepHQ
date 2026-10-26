@@ -321,6 +321,24 @@ describe("Studio IPC controller", () => {
     await expect(studio.dispatch({ type: "settings.keepPanel", open: false })).resolves.toMatchObject({ type: "state", snapshot: { keepPanelOpen: false } });
   });
 
+  it("opens only the fixed feedback destinations and retires the invite once used or dismissed", async () => {
+    expect(() => parseStudioAction({ type: "feedback.open", target: "discussion", url: "https://attacker.example" })).toThrow();
+    expect(() => parseStudioAction({ type: "feedback.open", target: "https://attacker.example" })).toThrow();
+    expect(() => parseStudioAction({ type: "feedback.dismiss", extra: true })).toThrow();
+
+    const openExternal = vi.fn(async (_url: string) => undefined);
+    const studio = await controller(openExternal);
+    expect(studio.service.snapshot().feedbackInviteDismissed).toBe(false);
+    await expect(studio.dispatch({ type: "feedback.open", target: "discussion" })).resolves.toMatchObject({ type: "state", snapshot: { feedbackInviteDismissed: true } });
+    expect(openExternal).toHaveBeenLastCalledWith("https://github.com/kapella-hub/FirekeepHQ/discussions/15");
+    await studio.dispatch({ type: "feedback.open", target: "issue" });
+    expect(openExternal).toHaveBeenLastCalledWith("https://github.com/kapella-hub/FirekeepHQ/issues/new/choose");
+
+    const fresh = await controller(openExternal);
+    await expect(fresh.dispatch({ type: "feedback.dismiss" })).resolves.toMatchObject({ type: "state", snapshot: { feedbackInviteDismissed: true } });
+    expect(openExternal).toHaveBeenCalledTimes(2);
+  });
+
   it("runs a quick mission through create, checks and the confirmed run", async () => {
     const studio = await controller();
     await studio.service.setWorkspace("C:\\workspace");
