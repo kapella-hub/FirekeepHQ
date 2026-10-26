@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { CommandRegistry } from "../core/slash-commands.js";
 import type { StudioService } from "../core/studio-service.js";
-import type { StudioAction, StudioActionResult } from "../shared/ipc.js";
+import { FEEDBACK_URLS, type StudioAction, type StudioActionResult } from "../shared/ipc.js";
 import type { DecisionBoardTransport } from "./decision-board-client.js";
 import { LoopbackDecisionBoardClient } from "./decision-board-client.js";
 import type { StudioUpdateControl } from "./studio-updater.js";
@@ -23,6 +23,8 @@ const memoryId = z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/);
 const actionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("bootstrap") }).strict(),
   z.object({ type: z.literal("dashboard.open") }).strict(),
+  z.object({ type: z.literal("feedback.open"), target: z.enum(["discussion", "issue"]) }).strict(),
+  z.object({ type: z.literal("feedback.dismiss") }).strict(),
   z.object({ type: z.literal("clipboard.read") }).strict(),
   z.object({ type: z.literal("clipboard.write"), text: z.string().max(MAX_CLIPBOARD_TEXT) }).strict(),
   z.object({ type: z.literal("decision.load"), url: z.string().min(1).max(512) }).strict(),
@@ -129,6 +131,12 @@ export class StudioController {
       await this.#openHttpUrl(this.dashboardUrl, "configured dashboard");
       return { type: "state", snapshot: this.service.snapshot() };
     }
+    if (action.type === "feedback.open") {
+      // Answering the invite retires it: it is a one-time ask, not a standing banner.
+      await this.#openHttpUrl(FEEDBACK_URLS[action.target], "feedback");
+      await this.service.dismissFeedbackInvite();
+      return { type: "state", snapshot: this.service.snapshot() };
+    }
     if (action.type === "clipboard.read") return { type: "clipboard-read", text: this.clipboard.readText().slice(0, MAX_CLIPBOARD_TEXT) };
     if (action.type === "clipboard.write") {
       this.clipboard.writeText(action.text);
@@ -194,6 +202,7 @@ export class StudioController {
     }
     else if (action.type === "workspace.set") await this.service.switchToRecentWorkspace(action.path);
     else if (action.type === "settings.keepPanel") await this.service.setKeepPanelOpen(action.open);
+    else if (action.type === "feedback.dismiss") await this.service.dismissFeedbackInvite();
     else if (action.type === "keep.receipt.retry") await this.service.retryReceipt(action.runId);
     else if (action.type === "session.new") await this.service.startNewSession();
     else if (action.type === "session.resume") await this.service.resumeSession(action.sessionId);

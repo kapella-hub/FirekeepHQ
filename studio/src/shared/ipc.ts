@@ -25,9 +25,18 @@ export interface StudioUpdateState {
   readonly detail: string;
 }
 
+/** Fixed destinations: the renderer names a target, never a URL. */
+export const FEEDBACK_URLS = {
+  discussion: "https://github.com/kapella-hub/FirekeepHQ/discussions/15",
+  issue: "https://github.com/kapella-hub/FirekeepHQ/issues/new/choose",
+} as const;
+export type FeedbackTarget = keyof typeof FEEDBACK_URLS;
+
 export type StudioAction =
   | { type: "bootstrap" }
   | { type: "dashboard.open" }
+  | { type: "feedback.open"; target: FeedbackTarget }
+  | { type: "feedback.dismiss" }
   | { type: "clipboard.read" }
   | { type: "clipboard.write"; text: string }
   | { type: "decision.load"; url: string }

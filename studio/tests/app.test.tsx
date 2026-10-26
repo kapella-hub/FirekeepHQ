@@ -35,6 +35,7 @@ function state(primaryRuntimeId: string | null = null): StudioSnapshot {
     theme: "system",
     recentWorkspaces: [],
     keepPanelOpen: true,
+    feedbackInviteDismissed: true,
     activeRunId: null,
     eventCount: 0,
     usage: { tokens: 0, freshTokens: 0, cachedTokens: 0, costUsd: 0, runs: 0, totalRuns: 0, measuredRuns: 0, byRuntime: {} },
@@ -101,6 +102,7 @@ function installBridge(options: { readonly snapshot?: StudioSnapshot; readonly s
     if (action.type === "keep.team") return { type: "keep-team", markdown: options.keepTeam ?? "" };
     if (action.type === "keep.skills") return { type: "keep-items", items: options.keepItems ?? [] };
     if (action.type === "settings.keepPanel") snapshot = { ...snapshot, keepPanelOpen: action.open };
+    if (action.type === "feedback.open" || action.type === "feedback.dismiss") snapshot = { ...snapshot, feedbackInviteDismissed: true };
     if (action.type === "workspace.set") snapshot = { ...snapshot, workspacePath: action.path };
     if (action.type === "session.update") sessions = sessions.map((session) => session.id === action.sessionId ? { ...session, name: action.name, color: action.color } : session);
     if (action.type === "primary.set") snapshot = { ...snapshot, primaryRuntimeId: action.runtimeId };
@@ -458,6 +460,35 @@ describe("Firekeep Studio renderer", () => {
     expect(within(card).getByRole("button", { name: "firekeep" })).toHaveAttribute("aria-pressed", "true");
     fireEvent.click(within(card).getByRole("button", { name: "site" }));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "workspace.set", path: "C:\\work\\site" }));
+  });
+
+  it("invites setup feedback once the Keep first connects, and retires the invite when answered", async () => {
+    const connected: KeepStatus = { state: "connected", agentId: "a", personalMode: false, kitVersion: "1.8.0" };
+    const invoke = installBridge({ snapshot: { ...state("alpha"), feedbackInviteDismissed: false }, keepStatus: connected });
+    render(<App />);
+    const invite = await screen.findByRole("region", { name: "How did setup go?" });
+    fireEvent.click(within(invite).getByRole("button", { name: "Share what worked" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "feedback.open", target: "discussion" }));
+    await waitFor(() => expect(screen.queryByRole("region", { name: "How did setup go?" })).toBeNull());
+  });
+
+  it("offers a problem report and a dismiss on the invite, and never shows it before the Keep connects", async () => {
+    const invoke = installBridge({ snapshot: { ...state("alpha"), feedbackInviteDismissed: false }, keepStatus: { state: "missing" } });
+    const { unmount } = render(<App />);
+    await screen.findByText("Connect Studio to your team's Keep");
+    expect(screen.queryByRole("region", { name: "How did setup go?" })).toBeNull();
+    unmount();
+
+    expect(invoke).not.toHaveBeenCalledWith(expect.objectContaining({ type: "feedback.open" }));
+
+    const connectedInvoke = installBridge({ snapshot: { ...state("alpha"), feedbackInviteDismissed: false }, keepStatus: { state: "connected", agentId: "a", personalMode: false, kitVersion: "1.8.0" } });
+    render(<App />);
+    const invite = await screen.findByRole("region", { name: "How did setup go?" });
+    expect(within(invite).getByRole("button", { name: "Report a problem" })).toBeInTheDocument();
+    fireEvent.click(within(invite).getByRole("button", { name: "Dismiss setup feedback invite" }));
+    await waitFor(() => expect(connectedInvoke).toHaveBeenCalledWith({ type: "feedback.dismiss" }));
+    await waitFor(() => expect(screen.queryByRole("region", { name: "How did setup go?" })).toBeNull());
+    expect(connectedInvoke).not.toHaveBeenCalledWith(expect.objectContaining({ type: "feedback.open" }));
   });
 
   it("shows Keep highlights only when connected", async () => {
