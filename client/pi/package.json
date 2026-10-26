@@ -1,8 +1,9 @@
 {
   "name": "firekeep-pi",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Firekeep hook bridge for the Pi coding agent — briefings in context, a hard-blocking pre-edit gate, and shared working state across every agent you run.",
   "keywords": [
+    "pi-package",
     "pi",
     "pi-extension",
     "coding-agent",
