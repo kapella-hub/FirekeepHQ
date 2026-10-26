@@ -60,7 +60,14 @@ faux.setResponses([
 	// Turn 1: capture exactly what the model was handed, then ask for a write.
 	(context) => {
 		observed.modelCalled = true;
-		observed.systemPrompt = context.systemPrompt ?? "";
+		// Older pi-ai handed providers `context.systemPrompt`; current pi-ai sends
+		// the system prompt as a role:"system" entry in `context.messages`.
+		observed.systemPrompt =
+			context.systemPrompt ??
+			(context.messages ?? [])
+				.filter((m) => m.role === "system")
+				.map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content)))
+				.join("\n");
 		return fauxAssistantMessage(
 			[fauxToolCall("write", { path: TARGET, content: "GATE-BREACH: the write was not blocked.\n" })],
 			{ stopReason: "toolUse" },
