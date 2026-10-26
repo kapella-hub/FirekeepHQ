@@ -190,6 +190,25 @@ To run it by hand on macOS/Linux:
 cd client && python -m pytest tests/test_e2e_bootstrap.py -m e2e -q
 ```
 
+- **server v1.7.0** — Relative-time recall. When a recall `task` names a
+  relative time ("10 days ago", "yesterday", "last Tuesday", "last month"), a
+  second vector search restricted to that window runs beside the unfiltered one,
+  and the two lanes take turns in the results. A query naming no relative time
+  is unchanged. `/memory/recall` gains an optional `as_of` (what the window is
+  measured from; default now) and `/memory/learn` an optional `occurred_at` (event
+  time when it is not write time); both are REST only. On LongMemEval-S the
+  temporal questions' top-3 recall went 0.866 → 0.890 with overall top-10 recall
+  and coverage not down. `TEMPORAL_RECALL_ENABLED` (default `true`) turns it off.
+  Also: `RECALL_GRAPH_ENABLED` (default `true`) can skip recall's graph leg,
+  and recall receipts now count which leg produced each returned row and whether
+  the token budget capped it, read at `GET /admin/recall-store-mix` (admin when
+  auth is enforced, the owner on an auth-off box). No schema migration; amd64 +
+  arm64.
+- **1.8.2** — `firekeep doctor` no longer reports a stale "published latest"
+  server version for the rest of the day after a release: when the running
+  server is ahead of the day-cached manifest, the client re-fetches it once (at
+  most once a day per running version). Needs `1.8.2` in the site's
+  `allowed-versions.txt`.
 - **server v1.6.4** — Security patch: the four service images ship
   certifi 2026.10.23 (PYSEC-2026-4320), fastmcp 3.4.11 (GHSA-7xgj-8392-5q4r),
   mcp 1.30.0 (CVE-2026-59951) and opentelemetry-api 1.45.1 (CVE-2026-114603).
