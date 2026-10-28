@@ -1,0 +1,5 @@
+# Enough to import each service's MCP app and list its tools; nothing else.
+# fastmcp matches the pin in every service's requirements.lock.
+fastmcp==3.4.11
+pydantic-settings>=2.0
+redis>=5.0

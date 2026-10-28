@@ -89,7 +89,7 @@ jobs:
           # compose-provenance checks parse docker-compose.yml); bash comes with
           # the runner and test_install_health_probe.py needs a real one.
           - name: repo-scripts
-            install: pip install pytest pyyaml packaging
+            install: pip install pytest pyyaml packaging -r deploy/glama/requirements.txt
             # `python -m pytest`, NOT `pytest`. The console script does not put the
             # CWD on sys.path; `python -m` does. tests/test_provenance.py imports
             # the repo-root `provenance` package, so the two invocations differ —
