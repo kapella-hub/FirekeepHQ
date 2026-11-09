@@ -190,6 +190,21 @@ To run it by hand on macOS/Linux:
 cd client && python -m pytest tests/test_e2e_bootstrap.py -m e2e -q
 ```
 
+- **server v1.7.1** — Dashboard fix: the Copy buttons (Devices → install
+  command, Members → invite, Vault → revealed value) work when the dashboard is
+  opened over plain http on a LAN/tailnet address. `navigator.clipboard` only
+  exists in a secure context, so every Copy there threw silently and copied
+  nothing; copies now fall back to `execCommand('copy')` and toast on failure.
+  Dashboard-only (ships in the server bundle); no API, schema, image-dependency
+  or configuration change.
+- **1.8.3** — Re-running the install one-liner (`FIREKEEP_JOIN=… install`) no
+  longer fails after a successful join. The redeemed ticket is recorded as
+  `[server] join_ticket`, so the same code again is a local "already joined" +
+  doctor; a config from before 1.8.3 is recognised when the server's
+  "already redeemed" names the credential the machine already holds. A pending
+  enrollment for the same code is resumed without `--resume`, and a definitive
+  4xx refusal deletes `pending-join.json` instead of blocking every join for
+  24h. Needs `1.8.3` in the site's `allowed-versions.txt`.
 - **server v1.7.0** — Relative-time recall. When a recall `task` names a
   relative time ("10 days ago", "yesterday", "last Tuesday", "last month"), a
   second vector search restricted to that window runs beside the unfiltered one,
