@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import stat
@@ -187,6 +188,108 @@ def test_enrollment_error_exit_codes(
     assert error.value.exit_code == expected_exit
     if status == 404 and not is_json:
         assert "predates client enrollment" in str(error.value)
+
+
+def _throw(exc):
+    def raiser(*a, **k):
+        raise exc
+    return raiser
+
+
+def test_rerun_of_the_same_code_is_a_local_no_op(home, monkeypatch, capsys):
+    """The install one-liner re-run on a machine it already joined must succeed
+    without spending a second attempt on the single-use ticket."""
+    monkeypatch.setattr(J, "get_json", lambda *a, **k: {"ok": True})
+    monkeypatch.setattr(J, "post_json", lambda *a, **k: response())
+    code = encode(payload())
+    assert J.join(code) == 0
+    assert "join_ticket" in home.read_text(encoding="utf-8")
+    before = home.read_text(encoding="utf-8")
+
+    posts = []
+    monkeypatch.setattr(J, "get_json", lambda *a, **k: posts.append(a))
+    monkeypatch.setattr(J, "post_json", lambda *a, **k: posts.append(a))
+    capsys.readouterr()
+    assert J.join(code) == 0
+    assert posts == []
+    assert "already joined with this code" in capsys.readouterr().out
+    assert home.read_text(encoding="utf-8") == before
+    assert not J.pending_path(home).exists()
+
+
+def test_rerun_against_a_legacy_config_recognises_its_own_credential(home, monkeypatch, capsys):
+    """A config written before join_ticket existed: the server's 'already
+    redeemed' names the credential, and it is the one this machine holds."""
+    home.parent.mkdir(parents=True)
+    home.write_text(
+        "[identity]\nagent_id = bob\n\n[server]\nkind = ports\nhost = firekeep.example\n"
+        f"api_key = nxs_{'a' * 64}\ncredential_id = {'1' * 16}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(J, "get_json", lambda *a, **k: {"ok": True})
+    monkeypatch.setattr(J, "post_json", _throw(TransportError(
+        '409 {"detail":"this join code was already redeemed at 2026-11-09T00:09:30 by a '
+        f'different device, issuing credential {"1" * 16}. Join codes are single-use."}}',
+        status=409, response_is_json=True,
+    )))
+    assert J.join(encode(payload())) == 0
+    assert "already joined with this code" in capsys.readouterr().out
+    assert not J.pending_path(home).exists()
+
+
+def test_code_redeemed_by_another_credential_still_fails_and_cleans_up(home, monkeypatch):
+    home.parent.mkdir(parents=True)
+    home.write_text(
+        f"[server]\nkind = ports\napi_key = nxs_{'a' * 64}\ncredential_id = {'9' * 16}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(J, "get_json", lambda *a, **k: {"ok": True})
+    monkeypatch.setattr(J, "post_json", _throw(TransportError(
+        f'409 {{"detail":"already redeemed ... issuing credential {"1" * 16}."}}',
+        status=409, response_is_json=True,
+    )))
+    with pytest.raises(J.JoinError, match="already redeemed") as error:
+        J.join(encode(payload()))
+    assert error.value.exit_code == 3
+    # Refused outright: the secret was never registered, so nothing to resume.
+    assert not J.pending_path(home).exists()
+
+
+def test_transport_failure_keeps_pending_and_a_plain_rerun_resumes_it(home, monkeypatch, capsys):
+    """A lost response may mean the server DID register the secret, so the
+    pending file stays -- and re-running the same command (no --resume) reuses
+    it instead of refusing with 'a pending enrollment already exists'."""
+    monkeypatch.setattr(J, "get_json", lambda *a, **k: {"ok": True})
+    hashes = []
+
+    def lost(url, body, **kwargs):
+        hashes.append(body["credential_hash"])
+        raise TransportError("response lost")
+
+    monkeypatch.setattr(J, "post_json", lost)
+    with pytest.raises(J.JoinError):
+        J.join(encode(payload()))
+    assert J.pending_path(home).exists()
+
+    def replay(url, body, **kwargs):
+        hashes.append(body["credential_hash"])
+        return {**response(), "replay": True}
+
+    monkeypatch.setattr(J, "post_json", replay)
+    assert J.join(encode(payload())) == 0
+    assert hashes[0] == hashes[1]
+    assert "resuming the pending enrollment" in capsys.readouterr().out
+    assert not J.pending_path(home).exists()
+
+
+def test_pending_for_a_different_code_still_refuses(home, monkeypatch):
+    monkeypatch.setattr(J, "get_json", lambda *a, **k: {"ok": True})
+    monkeypatch.setattr(J, "post_json", _throw(TransportError("response lost")))
+    with pytest.raises(J.JoinError):
+        J.join(encode(payload()))
+    other = encode(payload(q=base64.urlsafe_b64encode(bytes(range(1, 33))).decode().rstrip("=")))
+    with pytest.raises(J.JoinError, match="pending enrollment already exists"):
+        J.join(other)
 
 
 def test_tunnel_setup_failure_is_actionable_exit_7(home, monkeypatch):

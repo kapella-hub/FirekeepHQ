@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import configparser
 import hashlib
 import json
 import os
@@ -91,6 +92,19 @@ def _new_pending(code: JoinCode) -> dict:
 def _prepare_pending(code: JoinCode, *, resume: bool, config_path: Path) -> dict:
     path = pending_path(config_path)
     sweep_pending(config_path)
+    if not resume and path.exists():
+        # Re-running the SAME code after a crash or a lost response is the
+        # documented shape of "it failed, run it again" -- and reusing the
+        # pending secret is exactly the safe thing to do: the server answers
+        # `replay` if that secret was already registered, and spends nothing
+        # twice. Only a pending enrollment for a DIFFERENT code still refuses.
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            existing = {}
+        if existing.get("ticket_id") == code.tid:
+            print("resuming the pending enrollment for this join code")
+            resume = True
     if resume:
         try:
             pending = json.loads(path.read_text(encoding="utf-8"))
@@ -230,6 +244,10 @@ def _server_values(
     expires = response.get("credential_expires_at")
     if expires:
         server["credential_expires_at"] = str(expires)
+    # Which code produced this credential. Lets a re-run of the same install
+    # command recognise "already joined" locally instead of spending a second
+    # attempt on a single-use ticket and failing with "already redeemed".
+    server["join_ticket"] = code.tid
     if response["kind"] == "ports":
         server["host"] = "127.0.0.1" if code.transport == "tunnel" else str(response["host"])
     else:
@@ -237,6 +255,46 @@ def _server_values(
     if code.transport == "tls":
         server["ca_path"] = "os" if code.fingerprint == "os" else str(ca_path)
     return server
+
+
+_USED_CREDENTIAL = re.compile(r"issuing credential ([0-9a-f]{16})")
+
+
+def _joined_credential(config_path: Path) -> tuple[str, str]:
+    """(credential_id, join_ticket) of the connection this machine already holds.
+
+    Empty strings when there is no usable connection (no api_key). A RAW read,
+    never resolver.load_config(): that migrates and rewrites the file, and a
+    join that ends up refused must leave the config exactly as it found it."""
+    cfg = configparser.ConfigParser(interpolation=None)
+    try:
+        cfg.read_string(config_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, configparser.Error):
+        return "", ""
+    if not cfg.get("server", "api_key", fallback="").strip():
+        return "", ""
+    return (
+        cfg.get("server", "credential_id", fallback="").strip(),
+        cfg.get("server", "join_ticket", fallback="").strip(),
+    )
+
+
+def _already_joined(config_path: Path, credential_id: str) -> int:
+    """Report an install re-run against a code this machine already redeemed."""
+    try:
+        pending_path(config_path).unlink()
+    except OSError:
+        pass
+    print(
+        f"this machine already joined with this code (credential {credential_id}); "
+        "nothing to do."
+    )
+    from firekeep_client.cli import run_doctor
+
+    rows = run_doctor()
+    for name, status, detail in rows:
+        print(f"[{status.upper()}] {name}: {detail}")
+    return 1 if any(status == "fail" for _, status, _ in rows) else 0
 
 
 def join(
@@ -260,6 +318,14 @@ def join(
         raise JoinError(str(exc), exit_code=2) from exc
 
     config_path = resolver._config_path()
+    joined_credential, joined_ticket = _joined_credential(config_path)
+    if (
+        code.purpose == "device"
+        and not force
+        and joined_credential
+        and joined_ticket == code.tid
+    ):
+        return _already_joined(config_path, joined_credential)
     pending = (
         _prepare_pending(code, resume=resume, config_path=config_path)
         if code.purpose == "device"
@@ -333,6 +399,23 @@ def join(
                 pending = _new_pending(code)
                 _write_private_json(pending_path(config_path), pending)
                 continue
+            # A config written before `join_ticket` existed cannot be matched
+            # locally; the server's "already redeemed" names the credential the
+            # code issued, and if that is the one this machine holds, the
+            # earlier run succeeded -- this is a re-run, not a stolen code.
+            used = _USED_CREDENTIAL.search(str(exc)) if exc.status == 409 else None
+            if used and joined_credential and used.group(1) == joined_credential:
+                return _already_joined(config_path, joined_credential)
+            # A JSON 4xx is a definitive refusal: the enrollment script registers
+            # the credential only on success, so the pending secret was never
+            # stored and keeping it would only block the next join for 24h.
+            # Transport failures and 5xx keep it -- the response may have been
+            # lost after the server registered it, which is what --resume is for.
+            if exc.status is not None and 400 <= exc.status < 500 and exc.response_is_json:
+                try:
+                    pending_path(config_path).unlink()
+                except OSError:
+                    pass
             if exc.status == 404 and not exc.response_is_json:
                 raise JoinError(
                     "this server predates client enrollment (no POST /enroll). On "
