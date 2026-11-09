@@ -39,7 +39,24 @@ def test_reveal_opens_a_wrapping_row_not_a_nowrap_tooltip():
 def test_revealed_value_stays_long_enough_to_copy():
     src = _src()
     assert "var VAULT_REVEAL_MS = 30000;" in src
-    assert "navigator.clipboard.writeText(val)" in src
+    assert "copyText(val)" in src
+
+
+def test_every_copy_button_survives_plain_http():
+    """navigator.clipboard is undefined outside a secure context, and the
+    dashboard is routinely served over plain http on a LAN/tailnet IP -- where
+    every Copy button used to throw silently. All copies go through copyText(),
+    which is the only place allowed to touch navigator.clipboard and which falls
+    back to execCommand('copy')."""
+    src = _src()
+    assert src.count("navigator.clipboard.writeText(") == 1
+    helper = src[src.index("function copyText(text)"):]
+    helper = helper[:helper.index("\nfunction copyFailed")]
+    assert "window.isSecureContext" in helper
+    assert "navigator.clipboard.writeText(text)" in helper
+    assert "document.execCommand('copy')" in helper
+    for button in ("deviceInviteCommand", "memberInviteCommand"):
+        assert f"copyText($('{button}').textContent)" in src
 
 
 def test_vault_layout_gives_the_list_room_and_lets_it_shrink():

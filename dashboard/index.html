@@ -5117,11 +5117,33 @@ function cancelDeviceInvite(tid) {
 window.renameDevice = renameDevice; window.revokeDevice = revokeDevice;
 window.regenerateDevice = regenerateDevice; window.cancelDeviceInvite = cancelDeviceInvite;
 
+// navigator.clipboard exists only in a secure context (https or localhost). The
+// dashboard is routinely served over plain http on a LAN/tailnet IP, where it is
+// undefined and every Copy button threw silently. Fall back to execCommand.
+function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+        return navigator.clipboard.writeText(text);
+    }
+    return new Promise(function(resolve, reject) {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none';
+        document.body.appendChild(ta);
+        ta.select();
+        var ok = false;
+        try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+        document.body.removeChild(ta);
+        ok ? resolve() : reject(new Error('copy not permitted'));
+    });
+}
+function copyFailed() { toast('Copy failed — select the text and copy it manually', 'error'); }
+
 $('btnRefreshDevices').addEventListener('click', loadDevices);
 $('deviceInviteHost').addEventListener('input', updateDeviceInviteHostHint);
 $('deviceInvitePlatform').addEventListener('change', updateDeviceInviteCommand);
 $('btnCopyDeviceInvite').addEventListener('click', function() {
-    navigator.clipboard.writeText($('deviceInviteCommand').textContent).then(function() { toast('Install command copied', 'success'); });
+    copyText($('deviceInviteCommand').textContent).then(function() { toast('Install command copied', 'success'); }, copyFailed);
 });
 $('deviceInviteForm').addEventListener('submit', function(e) {
     e.preventDefault();
@@ -5235,7 +5257,7 @@ window.restoreMember = restoreMember;
 $('btnRefreshMembers').addEventListener('click', loadMembers);
 $('memberInvitePlatform').addEventListener('change', updateMemberInviteCommand);
 $('btnCopyMemberInvite').addEventListener('click', function() {
-    navigator.clipboard.writeText($('memberInviteCommand').textContent).then(function() { toast('Member invite copied', 'success'); });
+    copyText($('memberInviteCommand').textContent).then(function() { toast('Member invite copied', 'success'); }, copyFailed);
 });
 $('memberInviteForm').addEventListener('submit', function(e) {
     e.preventDefault();
@@ -5355,7 +5377,7 @@ function renderVaultSecrets() {
                 copyBtn.style.cssText = 'padding:3px 10px;font-size:11px';
                 copyBtn.textContent = 'Copy';
                 copyBtn.addEventListener('click', function() {
-                    navigator.clipboard.writeText(val).then(function() { toast('Copied "' + key + '"', 'success'); },
+                    copyText(val).then(function() { toast('Copied "' + key + '"', 'success'); },
                         function() { toast('Copy failed — select the value and copy it manually', 'error'); });
                 });
                 var hideBtn = document.createElement('button');
