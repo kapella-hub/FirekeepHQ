@@ -360,6 +360,20 @@ touch "$ENV_FILE"
 WORKSPACE_ID="$(ensure_deployment_id FIREKEEP_WORKSPACE_ID workspace)"
 OWNER_MEMBER_ID="$(ensure_deployment_id FIREKEEP_OWNER_MEMBER_ID member)"
 
+# Callers run `docker compose up -d redis` immediately before this, and that
+# returns once the container has STARTED, not once Redis accepts commands: a
+# recreated Redis spends a second or more loading its AOF ("Loading RDB ...")
+# and answers LOADING/refuses meanwhile. A single PING turned that window into a
+# failed `update.sh` on the live VPS (2026-11-09, 14k keys, ~1s load). Wait for
+# it, bounded, before declaring Redis unreachable.
+redis_wait="${BOOTSTRAP_REDIS_WAIT_SECONDS:-60}"
+until rcli PING 2>/dev/null | grep -q PONG; do
+    if [ "$redis_wait" -le 0 ]; then
+        break
+    fi
+    redis_wait=$((redis_wait - 1))
+    sleep 1
+done
 if ! rcli PING 2>/dev/null | grep -q PONG; then
     echo "ERROR: cannot reach Redis DB 7 via: ${REDIS[*]}" >&2
     echo "       (is the stack up? try: docker compose up -d redis)" >&2
