@@ -190,6 +190,13 @@ To run it by hand on macOS/Linux:
 cd client && python -m pytest tests/test_e2e_bootstrap.py -m e2e -q
 ```
 
+- **server v1.7.2** — Deploy fix: `deploy/bootstrap-keys.sh` waits up to 60 s
+  (`BOOTSTRAP_REDIS_WAIT_SECONDS`) for Redis to answer PING instead of pinging
+  once. When an install or update recreates the Redis container, Redis is still
+  loading its AOF for several seconds, so the single ping failed with "cannot
+  reach Redis DB 7" and `update.sh` stopped before restarting the services on
+  the new images. Script-only (ships in the server bundle); no image, API,
+  schema or configuration change.
 - **server v1.7.1** — Dashboard fix: the Copy buttons (Devices → install
   command, Members → invite, Vault → revealed value) work when the dashboard is
   opened over plain http on a LAN/tailnet address. `navigator.clipboard` only
