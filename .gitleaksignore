@@ -54,3 +54,11 @@ cortex/tests/test_eval_attribution.py:generic-api-key:313
 docs/superpowers/plans/2026-08-26-outcome-truth-pr5-controlled-nudge.md:generic-api-key:295
 docs/superpowers/plans/2026-08-26-outcome-truth-pr5-controlled-nudge.md:generic-api-key:296
 studio/src/main/release-signing.ts:generic-api-key:3
+
+# Studio's own secret detector (studio/src/core/keep/save.ts) is tested with made-up
+# values shaped like an AWS access key and two token assignments. The live test now
+# assembles them at run time; these fingerprints cover the commit that first carried
+# them as literals. They were never credentials.
+59cf94af01435e27e555ee983c75f9cbf4549752:studio/tests/keep-save.test.tsx:aws-access-token:18
+59cf94af01435e27e555ee983c75f9cbf4549752:studio/tests/keep-save.test.tsx:generic-api-key:20
+59cf94af01435e27e555ee983c75f9cbf4549752:studio/tests/keep-save.test.tsx:generic-api-key:30
