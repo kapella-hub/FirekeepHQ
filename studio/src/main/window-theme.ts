@@ -9,6 +9,6 @@ export interface WindowThemeColors {
 export function windowThemeColors(theme: ThemeMode, systemDark: boolean): WindowThemeColors {
   const dark = theme === "dark" || (theme === "system" && systemDark);
   return dark
-    ? { background: "#0b0f0c", overlay: "#111612", symbols: "#dce6de" }
-    : { background: "#f1f3ef", overlay: "#fafbf8", symbols: "#243027" };
+    ? { background: "#0b0a10", overlay: "#110f17", symbols: "#e6dfd3" }
+    : { background: "#f9f5ed", overlay: "#fdfbf6", symbols: "#2a2c3a" };
 }

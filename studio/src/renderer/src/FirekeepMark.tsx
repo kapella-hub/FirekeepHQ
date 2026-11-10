@@ -3,7 +3,11 @@ interface FirekeepMarkProps {
   readonly className?: string;
 }
 
-/** The id-free, currentColor Firekeep Beacon used by every in-app brand surface. */
+/**
+ * The id-free, currentColor Firekeep mark used by every in-app brand surface: the kept
+ * fire, five lines of light rising from a hearth plate. Same drawing as firekeep.ai's
+ * `brand/mark.svg`, with slightly heavier strokes because it is shown at 14-24px here.
+ */
 export function FirekeepMark({ size = 24, className }: FirekeepMarkProps): React.JSX.Element {
   return (
     <svg
@@ -11,18 +15,22 @@ export function FirekeepMark({ size = 24, className }: FirekeepMarkProps): React
       className={className}
       focusable="false"
       height={size}
-      viewBox="0 0 64 64"
+      viewBox="0 0 48 48"
       width={size}
     >
-      <path d="M14 35 A18 18 0 0 0 50 35 Z" fill="currentColor" />
-      <rect fill="currentColor" height="4" rx="2" width="6" x="29" y="49" />
-      <g transform="translate(17.90 5.77) scale(0.92)">
-        <path
-          d="M17.61 5.58C18.13 9.84 21.87 11.75 21.87 16.62C21.87 21.06 19.00 24.28 15.35 24.28C11.61 24.28 9.00 21.58 9.00 17.84C9.00 14.62 11.34 12.71 12.39 10.01C12.82 12.62 13.95 13.75 15.00 14.28C14.39 10.88 15.43 8.10 17.61 5.58Z M16.30 14.54C16.65 16.71 18.48 17.76 18.48 19.67C18.48 21.41 17.17 22.63 15.43 22.63C13.69 22.63 12.39 21.50 12.39 19.93C12.39 18.63 13.26 17.84 13.95 16.62C14.13 17.76 14.56 18.28 15.09 18.54C14.82 17.15 15.26 15.93 16.30 14.54Z"
-          fill="currentColor"
-          fillRule="evenodd"
-        />
-      </g>
+      <ellipse cx="24" cy="39.6" fill="none" rx="18.6" ry="4.7" stroke="currentColor" strokeWidth="2.6" />
+      <path
+        d="M11.5 38.5Q11.5 31.1 18.5 25 M17.5 38.5Q17.5 25.6 20.5 15 M24 38.5Q24 20.3 24.8 5.5 M30.5 38.5Q30.5 26.7 28.2 17 M36.5 38.5Q36.5 32.2 30.5 27"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeWidth="2.8"
+      />
+      <circle cx="18.5" cy="25" fill="currentColor" r="2.1" />
+      <circle cx="20.5" cy="15" fill="currentColor" r="2.1" />
+      <circle cx="24.8" cy="5.5" fill="currentColor" r="2.1" />
+      <circle cx="28.2" cy="17" fill="currentColor" r="2.1" />
+      <circle cx="30.5" cy="27" fill="currentColor" r="2.1" />
     </svg>
   );
 }
