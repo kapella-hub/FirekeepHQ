@@ -1,3 +1,4 @@
+import type { FileDiff, WorkspaceChanges } from "../core/workspace-changes.js";
 import { z } from "zod";
 import type { CommandRegistry } from "../core/slash-commands.js";
 import type { StudioService } from "../core/studio-service.js";
@@ -50,6 +51,11 @@ const actionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("workspace.detectTest") }).strict(),
   z.object({ type: z.literal("settings.keepPanel"), open: z.boolean() }).strict(),
   z.object({ type: z.literal("settings.notifications"), enabled: z.boolean() }).strict(),
+  z.object({ type: z.literal("changes.list") }).strict(),
+  z.object({ type: z.literal("changes.diff"), path: z.string().min(1).max(4_096) }).strict(),
+  z.object({ type: z.literal("changes.accept"), path: z.string().min(1).max(4_096) }).strict(),
+  z.object({ type: z.literal("changes.unaccept"), path: z.string().min(1).max(4_096) }).strict(),
+  z.object({ type: z.literal("changes.revert"), path: z.string().min(1).max(4_096) }).strict(),
   z.object({ type: z.literal("keep.status") }).strict(),
   z.object({ type: z.literal("keep.retry") }).strict(),
   z.object({ type: z.literal("keep.search"), query: z.string().max(500).refine((value) => value.trim().length > 0, "search query cannot be blank"), kind: z.enum(["memory", "skill"]) }).strict(),
@@ -88,6 +94,15 @@ const emptyClipboard: ClipboardTransport = { readText: () => "", writeText: () =
 /** The Keep panel's fixed query surface. There is deliberately no generic tool call. */
 export type KeepPanelSource = Pick<KeepGateway, "status" | "retry" | "refreshIdentity" | "restart" | "search" | "skills" | "team" | "highlights" | "feedback">;
 
+/** The review surface's view of the workspace; implemented by `WorkspaceChangesService`. */
+export interface WorkspaceChangesSource {
+  list(): Promise<WorkspaceChanges>;
+  diff(path: string): Promise<FileDiff>;
+  accept(path: string): Promise<WorkspaceChanges>;
+  unaccept(path: string): Promise<WorkspaceChanges>;
+  revert(path: string): Promise<WorkspaceChanges>;
+}
+
 export class StudioController {
   constructor(
     readonly service: StudioService,
@@ -101,6 +116,7 @@ export class StudioController {
     readonly updates?: StudioUpdateControl,
     readonly keep: KeepPanelSource | null = null,
     readonly detectTest: () => Promise<string | null> = async () => null,
+    readonly changes: WorkspaceChangesSource | null = null,
   ) {}
 
   async invoke(rawAction: unknown): Promise<StudioActionResult> {
@@ -159,6 +175,15 @@ export class StudioController {
     if (action.type === "keep.feedback") {
       await this.#requireKeep().feedback(action.memoryIds, action.useful, action.comment);
       return { type: "keep-feedback" };
+    }
+    if (action.type === "changes.list") return { type: "changes", changes: await this.#requireChanges().list() };
+    if (action.type === "changes.diff") return { type: "change-diff", diff: await this.#requireChanges().diff(action.path) };
+    if (action.type === "changes.accept") return { type: "changes", changes: await this.#requireChanges().accept(action.path) };
+    if (action.type === "changes.unaccept") return { type: "changes", changes: await this.#requireChanges().unaccept(action.path) };
+    if (action.type === "changes.revert") {
+      // An agent mid-run may be writing the very file: reverting under it loses work on both sides.
+      if (this.service.snapshot().activeRunId) throw new Error("Wait for the agent to finish before reverting a file");
+      return { type: "changes", changes: await this.#requireChanges().revert(action.path) };
     }
     if (action.type === "workspace.detectTest") return { type: "test-command", command: await this.detectTest() };
     if (action.type === "command.complete") return { type: "completions", items: this.commands.complete(action.input) };
@@ -227,6 +252,11 @@ export class StudioController {
     if (!this.keep) return { state: "missing" };
     const current = this.keep.status();
     return current.state === "connected" ? current : this.keep.retry();
+  }
+
+  #requireChanges(): WorkspaceChangesSource {
+    if (!this.changes) throw new Error("Change review is unavailable");
+    return this.changes;
   }
 
   #requireKeep(): KeepPanelSource {

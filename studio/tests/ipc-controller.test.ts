@@ -324,6 +324,30 @@ describe("Studio IPC controller", () => {
     await expect(studio.invoke({ type: "settings.notifications", enabled: "no" })).resolves.toMatchObject({ type: "error" });
   });
 
+  it("routes change review through the workspace source and refuses a revert during a run", async () => {
+    const studio = await controller();
+    await expect(studio.invoke({ type: "changes.list" })).resolves.toMatchObject({ type: "error", message: "Change review is unavailable" });
+
+    const empty = { state: "ok" as const, branch: "main", files: [], truncated: false };
+    const calls: string[] = [];
+    const source = {
+      list: async () => { calls.push("list"); return empty; },
+      diff: async (path: string) => { calls.push(`diff:${path}`); return { path, diff: "", binary: false, truncated: false }; },
+      accept: async (path: string) => { calls.push(`accept:${path}`); return empty; },
+      unaccept: async (path: string) => { calls.push(`unaccept:${path}`); return empty; },
+      revert: async (path: string) => { calls.push(`revert:${path}`); return empty; },
+    };
+    const reviewing = new StudioController(studio.service, createCommandRegistry(studio.service), "0.3.7", undefined, undefined, null, undefined, undefined, undefined, null, undefined, source);
+    await expect(reviewing.dispatch({ type: "changes.list" })).resolves.toEqual({ type: "changes", changes: empty });
+    await expect(reviewing.dispatch({ type: "changes.diff", path: "src/a.ts" })).resolves.toMatchObject({ type: "change-diff", diff: { path: "src/a.ts" } });
+    await reviewing.dispatch({ type: "changes.accept", path: "src/a.ts" });
+    await reviewing.dispatch({ type: "changes.unaccept", path: "src/a.ts" });
+    await reviewing.dispatch({ type: "changes.revert", path: "src/a.ts" });
+    expect(calls).toEqual(["list", "diff:src/a.ts", "accept:src/a.ts", "unaccept:src/a.ts", "revert:src/a.ts"]);
+    await expect(reviewing.invoke({ type: "changes.diff", path: "" })).resolves.toMatchObject({ type: "error" });
+    await expect(reviewing.invoke({ type: "changes.revert" })).resolves.toMatchObject({ type: "error" });
+  });
+
   it("opens only the fixed feedback destinations and retires the invite once used or dismissed", async () => {
     expect(() => parseStudioAction({ type: "feedback.open", target: "discussion", url: "https://attacker.example" })).toThrow();
     expect(() => parseStudioAction({ type: "feedback.open", target: "https://attacker.example" })).toThrow();

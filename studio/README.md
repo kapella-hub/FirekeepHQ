@@ -28,6 +28,34 @@ Studio now tells you when an agent is waiting, instead of expecting you to watch
 The rules for what deserves attention are pure functions in `src/core/attention.ts`; the
 main-process `AttentionNotifier` only tracks what was already said and whether anyone is looking.
 
+## Unreleased — Review changes
+
+The top-bar **Review changes** button (it carries the number of changed files) opens a review
+sheet over the workspace's uncommitted changes, read through the local `git`.
+
+- **Files and diffs.** The left column lists every file that differs from the last commit
+  (modified, added, deleted, renamed, new, conflicted) with its `+`/`−` counts; the right shows
+  that file's diff against `HEAD` with old and new line numbers. Untracked files are shown as
+  all additions; binary files are named but not rendered. Lists stop at 500 files and a diff at
+  400,000 characters, and the sheet says when it cut something.
+- **Accept / Unaccept.** Accept stages the file (`git add`); Unaccept takes it back out of the
+  index. Neither changes anything on disk, and Studio never commits.
+- **Revert…** discards the file's changes (`git restore` from `HEAD`, or deleting a file that is
+  not in the last commit). The main process asks in a native dialog first, and the action is
+  refused while a run is active.
+- **Comments.** Click a new-side line number, or **Comment** for the whole file, to write a
+  note. **Send to agent** sends every note as one message to the primary agent, grouped by
+  file with the quoted line, so the review loop stays inside the conversation.
+
+Boundaries: the renderer names a path and nothing else. The main process re-reads
+`git status` on every action and acts only on a path git itself reports as changed inside the
+workspace folder; git runs with `core.fsmonitor=false`, `--no-ext-diff`, no pager and no
+terminal prompt, because repository configuration is workspace content an agent can edit.
+IPC actions: `changes.list`, `changes.diff`, `changes.accept`, `changes.unaccept`,
+`changes.revert`. Parsing lives in `src/core/workspace-changes.ts`, the git process in
+`src/main/workspace-changes.ts`. A workspace that is not a git repository, or a machine
+without git, gets an explanation instead of a list.
+
 ## 0.5.1 — Setup feedback invite
 
 The first time the Keep panel shows a connected Keep, it offers one small card: **Share what

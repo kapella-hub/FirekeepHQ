@@ -24,6 +24,7 @@ import { McpStdioClient } from "./keep/mcp-stdio-client.js";
 import { readReportFile, removeReportFile } from "./keep/report-file.js";
 import { ReceiptTracker } from "../core/keep/receipt-tracker.js";
 import { detectWorkspaceTestCommand } from "./workspace-detect.js";
+import { WorkspaceChangesService } from "./workspace-changes.js";
 import { windowThemeColors } from "./window-theme.js";
 import { HttpSignedManifestSource, StudioUpdater } from "./studio-updater.js";
 
@@ -278,7 +279,25 @@ async function createController(): Promise<StudioController> {
   return new StudioController(service, commands, app.getVersion(), (url) => shell.openExternal(url), selectWorkspace, dashboardUrl, decisionBoards, {
     readText: () => clipboard.readText(),
     writeText: (text) => clipboard.writeText(text),
-  }, updates, keep, () => detectWorkspaceTestCommand(service.snapshot().workspacePath));
+  }, updates, keep, () => detectWorkspaceTestCommand(service.snapshot().workspacePath), new WorkspaceChangesService({
+    workspace: () => service.snapshot().workspacePath,
+    confirmRevert: async (file) => {
+      const untracked = file.status === "untracked" || file.status === "added";
+      const result = await dialog.showMessageBox({
+        type: "warning",
+        title: "Revert file",
+        message: untracked ? `Delete ${file.path}?` : `Discard the changes to ${file.path}?`,
+        detail: untracked
+          ? "This file is not in the last commit. Reverting deletes it from disk and it cannot be recovered from git."
+          : "The file returns to its state in the last commit. Uncommitted changes to it are lost.",
+        buttons: [untracked ? "Delete file" : "Discard changes", "Cancel"],
+        defaultId: 1,
+        cancelId: 1,
+        noLink: true,
+      });
+      return result.response === 0;
+    },
+  }));
 }
 
 app.whenReady().then(async () => {

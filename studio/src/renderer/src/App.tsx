@@ -11,8 +11,7 @@ import {
   Palette,
   ShieldCheck,
   Sparkles,
-  X,
-} from "lucide-react";
+  X, GitCompareArrows } from "lucide-react";
 import type { CommandCompletion } from "../../core/slash-commands";
 import type { SessionColor, StudioSessionSummary } from "../../core/session-store";
 import type { RuntimeDiagnostic, StudioSnapshot } from "../../core/studio-service";
@@ -26,6 +25,8 @@ import { FirekeepMark } from "./FirekeepMark.js";
 import { StudioShell } from "./layout/StudioShell.js";
 import { TopBar } from "./layout/TopBar.js";
 import { AttentionInbox } from "./layout/AttentionInbox.js";
+import { ReviewSheet } from "./review/ReviewSheet.js";
+import { EMPTY_CHANGES, type WorkspaceChanges } from "../../core/workspace-changes.js";
 import { buildInbox, type InboxItem, type PendingBoard } from "./inbox.js";
 import { ignore } from "./util.js";
 import { CopyButton } from "./CopyButton.js";
@@ -69,6 +70,8 @@ export function App(): React.JSX.Element {
   const [highlights, setHighlights] = useState<KeepHighlights | null>(null);
   const [settingsSection, setSettingsSection] = useState<SettingsSection | null>(null);
   const [connectDialog, setConnectDialog] = useState<ConnectDialog | null>(null);
+  const [changes, setChanges] = useState<WorkspaceChanges>(EMPTY_CHANGES);
+  const [reviewOpen, setReviewOpen] = useState(false);
   const [secret, setSecret] = useState("");
   const [decisionBoard, setDecisionBoard] = useState<DecisionBoardDocument | null>(null);
   const [decisionLoading, setDecisionLoading] = useState<string | null>(null);
@@ -494,6 +497,19 @@ export function App(): React.JSX.Element {
     } catch { /* invoke surfaced the actionable error. */ }
   };
   const timeline = useMemo(() => buildTimeline(events), [events]);
+  // The changed-file count in the top bar: re-read when the workspace changes and whenever a run ends.
+  const changesWorkspace = snapshot?.workspacePath ?? null;
+  const changesRunning = Boolean(snapshot?.activeRunId);
+  const hasSnapshot = snapshot !== null;
+  useEffect(() => {
+    if (!hasSnapshot || changesRunning) return;
+    let current = true;
+    // Bypasses `invoke`: a workspace git cannot read is an empty count, not an error banner.
+    void window.firekeepStudio.invoke({ type: "changes.list" }).then((result) => {
+      if (current && result.type === "changes") setChanges(result.changes);
+    }).catch(() => undefined);
+    return () => { current = false; };
+  }, [changesRunning, changesWorkspace, hasSnapshot]);
   const activeSessionId = snapshot?.activeSessionId ?? null;
   // A board belongs to the session whose agent opened it.
   const boardSessionRef = useRef<string | null>(null);
@@ -598,7 +614,10 @@ export function App(): React.JSX.Element {
         keepPanelOpen={snapshot.keepPanelOpen}
         onToggleKeep={() => ignore(invoke({ type: "settings.keepPanel", open: !snapshot.keepPanelOpen }).then(applyResult))}
         agentWorking={agentWorking}
-        actions={<AttentionInbox items={inbox} onOpen={openInboxItem} />}
+        actions={<>
+          <button type="button" className={`icon-button changes-button${changes.files.length > 0 ? " waiting" : ""}`} aria-label={changes.files.length > 0 ? `Review changes: ${changes.files.length} changed file${changes.files.length === 1 ? "" : "s"}` : "Review changes"} title="Review changes" onClick={() => setReviewOpen(true)}><GitCompareArrows size={17} />{changes.files.length > 0 ? <span className="inbox-count" aria-hidden="true">{changes.files.length > 99 ? "99+" : changes.files.length}</span> : null}</button>
+          <AttentionInbox items={inbox} onOpen={openInboxItem} />
+        </>}
         center={currentSession ? <div className="session-title-display" style={sessionAccentStyle(currentSession.color)}><span className="session-color-dot" /><span className="session-title">{currentSession.name}</span><button type="button" className="session-title-customize" aria-label={`Customize current session ${currentSession.name}`} aria-expanded={sessionEditorId === currentSession.id} title="Edit session name and color" onClick={() => setSessionEditorId((current) => current === currentSession.id ? null : currentSession.id)}><Palette size={11} /></button></div> : <span className="session-title">New session</span>}
       />}
       rail={<SessionRail
@@ -723,6 +742,17 @@ export function App(): React.JSX.Element {
         onUpdate={() => ignore(updateStudio())}
       /> : null}
       {connectDialog ? <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setConnectDialog(null)}><form className="modal" role="dialog" aria-modal="true" aria-labelledby="connect-runtime-title" onSubmit={(event) => { event.preventDefault(); ignore(connect()); }}><button type="button" className="modal-close" aria-label="Close connection dialog" onClick={() => setConnectDialog(null)}><X size={17} /></button><span className="modal-icon"><KeyRound size={22} /></span><h2 id="connect-runtime-title">Connect {runtimeName(bootstrap.runtimes, connectDialog.runtimeId)}</h2><p>Authentication stays with the provider. An API key is handed straight to the provider's own login and Studio does not store it.</p><label>Method<select value={connectDialog.method} onChange={(event) => setConnectDialog({ ...connectDialog, method: event.target.value as LoginMethod })}>{loginMethods(bootstrap.runtimes.find((runtime) => runtime.id === connectDialog.runtimeId)).map((method) => <option key={method} value={method}>{methodLabel(method)}</option>)}</select></label>{connectDialog.method === "api-key" ? <label>API key<input autoFocus type="password" autoComplete="off" value={secret} onChange={(event) => setSecret(event.target.value)} placeholder="Passed to the provider; Studio does not keep it" /></label> : null}<div className="modal-actions"><button type="button" onClick={() => setConnectDialog(null)}>Cancel</button><button className="primary-action" type="submit" disabled={connectDialog.method === "api-key" && !secret}>Continue securely</button></div></form></div> : null}
+      {reviewOpen ? <ReviewSheet
+        changes={changes}
+        request={(action) => window.firekeepStudio.invoke(action)}
+        onChanges={setChanges}
+        agentWorking={agentWorking}
+        onClose={() => setReviewOpen(false)}
+        onSend={(prompt) => {
+          setReviewOpen(false);
+          ignore(invoke({ type: "message.send", text: prompt }).then(applyResult));
+        }}
+      /> : null}
       {decisionBoard ? <DecisionBoardModal board={decisionBoard} close={() => setDecisionBoard(null)} submit={async (answers) => {
         const result = await invoke({ type: "decision.submit", url: decisionBoard.url, answers });
         if (result.type !== "decision-submitted") throw new Error("Decision Board returned an unexpected submission response");

@@ -1,3 +1,4 @@
+import type { FileDiff, WorkspaceChanges } from "../core/workspace-changes.js";
 import type { CommandCompletion, CommandResult } from "../core/slash-commands.js";
 import type { SessionColor, StudioSessionSummary } from "../core/session-store.js";
 import type { ReviewerMode, RuntimeDiagnostic, StudioSnapshot, ThemeMode } from "../core/studio-service.js";
@@ -63,6 +64,11 @@ export type StudioAction =
   | { type: "workspace.detectTest" }
   | { type: "settings.keepPanel"; open: boolean }
   | { type: "settings.notifications"; enabled: boolean }
+  | { type: "changes.list" }
+  | { type: "changes.diff"; path: string }
+  | { type: "changes.accept"; path: string }
+  | { type: "changes.unaccept"; path: string }
+  | { type: "changes.revert"; path: string }
   | { type: "keep.status" }
   | { type: "keep.retry" }
   | { type: "keep.search"; query: string; kind: "memory" | "skill" }
@@ -119,7 +125,9 @@ export type StudioActionResult =
   | { readonly type: "keep-team"; readonly markdown: string }
   | { readonly type: "keep-highlights"; readonly highlights: KeepHighlights }
   | { readonly type: "keep-feedback" }
-  | { readonly type: "test-command"; readonly command: string | null };
+  | { readonly type: "test-command"; readonly command: string | null }
+  | { readonly type: "changes"; readonly changes: WorkspaceChanges }
+  | { readonly type: "change-diff"; readonly diff: FileDiff };
 
 export type StudioPushEvent =
   | { readonly type: "runtime.event"; readonly event: RuntimeEvent }

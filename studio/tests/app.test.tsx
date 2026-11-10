@@ -79,7 +79,7 @@ function draftMission(checks: MissionSnapshot["checks"] = []): MissionSnapshot {
 
 let pushStudioEvent: ((event: StudioPushEvent) => void) | null = null;
 
-function installBridge(options: { readonly snapshot?: StudioSnapshot; readonly sessions?: readonly StudioSessionSummary[]; readonly models?: readonly RuntimeModel[] | (() => readonly RuntimeModel[]); readonly dashboardAvailable?: boolean; readonly events?: readonly RuntimeEvent[]; readonly decisionBoard?: DecisionBoardDocument; readonly pushEvents?: readonly StudioPushEvent[]; readonly clipboardText?: string; readonly update?: StudioUpdateState; readonly updateResult?: StudioUpdateState; readonly keepStatus?: KeepStatus; readonly testCommand?: string | null; readonly keepItems?: readonly KeepItem[]; readonly keepStatusGate?: Promise<void>; readonly keepSearch?: (query: string) => Promise<StudioActionResult>; readonly keepTeam?: string; readonly readyRuntimeIds?: readonly string[]; readonly highlights?: KeepHighlights; readonly actionError?: { readonly actionType: StudioAction["type"]; readonly message: string } } = {}): ReturnType<typeof vi.fn<(action: StudioAction) => Promise<StudioActionResult>>> {
+function installBridge(options: { readonly snapshot?: StudioSnapshot; readonly sessions?: readonly StudioSessionSummary[]; readonly models?: readonly RuntimeModel[] | (() => readonly RuntimeModel[]); readonly dashboardAvailable?: boolean; readonly events?: readonly RuntimeEvent[]; readonly decisionBoard?: DecisionBoardDocument; readonly pushEvents?: readonly StudioPushEvent[]; readonly clipboardText?: string; readonly update?: StudioUpdateState; readonly updateResult?: StudioUpdateState; readonly keepStatus?: KeepStatus; readonly testCommand?: string | null; readonly changes?: import("../src/core/workspace-changes.js").WorkspaceChanges; readonly changeDiff?: string; readonly keepItems?: readonly KeepItem[]; readonly keepStatusGate?: Promise<void>; readonly keepSearch?: (query: string) => Promise<StudioActionResult>; readonly keepTeam?: string; readonly readyRuntimeIds?: readonly string[]; readonly highlights?: KeepHighlights; readonly actionError?: { readonly actionType: StudioAction["type"]; readonly message: string } } = {}): ReturnType<typeof vi.fn<(action: StudioAction) => Promise<StudioActionResult>>> {
   let snapshot = options.snapshot ?? state();
   let sessions = [...(options.sessions ?? [{ id: "session-1", name: "UI test", color: "ember" as const, createdAt: "2026-08-24T00:00:00.000Z", updatedAt: "2026-08-24T00:00:00.000Z", eventCount: 0, nativeSessionIds: {} }])];
   const invoke = vi.fn(async (action: StudioAction): Promise<StudioActionResult> => {
@@ -94,6 +94,8 @@ function installBridge(options: { readonly snapshot?: StudioSnapshot; readonly s
     if (action.type === "decision.submit") return { type: "decision-submitted", url: action.url };
     if (action.type === "clipboard.read") return { type: "clipboard-read", text: options.clipboardText ?? "" };
     if (action.type === "clipboard.write") return { type: "clipboard-written" };
+    if (action.type === "changes.list" || action.type === "changes.accept" || action.type === "changes.unaccept" || action.type === "changes.revert") return { type: "changes", changes: options.changes ?? { state: "no-workspace", branch: null, files: [], truncated: false } };
+    if (action.type === "changes.diff") return { type: "change-diff", diff: { path: action.path, diff: options.changeDiff ?? "", binary: false, truncated: false } };
     if (action.type === "update.check" || action.type === "update.install") return { type: "update", state: options.updateResult ?? options.update ?? { phase: "current", currentVersion: "0.4.0", availableVersion: null, progressPercent: null, automatic: true, detail: "Firekeep Studio 0.4.0 is current." } };
     if (action.type === "keep.status" && options.keepStatusGate) await options.keepStatusGate;
     if (action.type === "keep.status" || action.type === "keep.retry") return { type: "keep-status", status: options.keepStatus ?? { state: "missing" } };
@@ -994,6 +996,21 @@ describe("Firekeep Studio renderer", () => {
     await screen.findByRole("form", { name: "Decision Board" });
     fireEvent.click(screen.getByRole("button", { name: "Send answers" }));
     expect(await screen.findByRole("button", { name: "Inbox: nothing is waiting on you" })).toBeInTheDocument();
+  });
+
+  it("counts changed files in the top bar and sends review comments to the agent", async () => {
+    const changes = { state: "ok" as const, branch: "main", truncated: false, files: [{ path: "src/a.ts", status: "modified" as const, accepted: false, additions: 1, deletions: 1 }] };
+    const invoke = installBridge({ snapshot: state("alpha"), changes, changeDiff: "--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-old\n+new\n" });
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Review changes: 1 changed file" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Comment on line 1" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Comment on line 1" }), { target: { value: "Keep the old name." } });
+    fireEvent.click(screen.getByRole("button", { name: "Add comment" }));
+    fireEvent.click(screen.getByRole("button", { name: /Send to agent/ }));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "message.send", text: expect.stringContaining("- **Line 1** (`new`): Keep the old name.") }));
+    expect(screen.queryByRole("dialog", { name: "Review changes" })).not.toBeInTheDocument();
   });
 
   it("lists a mission awaiting sign-off in the inbox and turns notifications off from Settings", async () => {
