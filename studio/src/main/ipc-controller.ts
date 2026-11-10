@@ -49,6 +49,7 @@ const actionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("workspace.set"), path: z.string().min(1).max(4_096) }).strict(),
   z.object({ type: z.literal("workspace.detectTest") }).strict(),
   z.object({ type: z.literal("settings.keepPanel"), open: z.boolean() }).strict(),
+  z.object({ type: z.literal("settings.notifications"), enabled: z.boolean() }).strict(),
   z.object({ type: z.literal("keep.status") }).strict(),
   z.object({ type: z.literal("keep.retry") }).strict(),
   z.object({ type: z.literal("keep.search"), query: z.string().max(500).refine((value) => value.trim().length > 0, "search query cannot be blank"), kind: z.enum(["memory", "skill"]) }).strict(),
@@ -202,6 +203,7 @@ export class StudioController {
     }
     else if (action.type === "workspace.set") await this.service.switchToRecentWorkspace(action.path);
     else if (action.type === "settings.keepPanel") await this.service.setKeepPanelOpen(action.open);
+    else if (action.type === "settings.notifications") await this.service.setNotifications(action.enabled);
     else if (action.type === "feedback.dismiss") await this.service.dismissFeedbackInvite();
     else if (action.type === "keep.receipt.retry") await this.service.retryReceipt(action.runId);
     else if (action.type === "session.new") await this.service.startNewSession();

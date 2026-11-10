@@ -479,3 +479,29 @@ span.keep-receipt { cursor: default; }
 /* Headings and the wordmark share the site's display face. */
 .brand, .launch-card h1, .start-card h2, .modal h2, .settings-nav h2, .settings-header h3, .keep-panel > h2, .markdown h1, .markdown h2, .markdown h3 { font-family: var(--font-display); }
 .brand { font-size: 14px; font-weight: 600; letter-spacing: -0.03em; }
+
+/* The attention inbox: everything in this session that is waiting on the human. */
+.inbox-wrap { position: relative; }
+.inbox-button { position: relative; }
+.inbox-button.waiting { color: var(--ember); }
+.inbox-count { position: absolute; top: 1px; right: 0; min-width: 14px; height: 14px; padding: 0 3px; border-radius: 7px; background: var(--ember); color: #14100c; font-size: 9px; font-weight: 700; line-height: 14px; text-align: center; }
+.inbox-menu { position: absolute; z-index: 30; top: calc(100% + 6px); right: 0; width: 330px; display: flex; flex-direction: column; padding: 5px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--surface); box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45); }
+.inbox-menu header { display: flex; align-items: baseline; justify-content: space-between; padding: 7px 9px 8px; font-family: var(--font-display); font-size: 12px; }
+.inbox-menu header small { color: var(--faint); font-family: inherit; font-size: 10px; }
+.inbox-empty { margin: 0; padding: 4px 9px 10px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.inbox-item { display: grid; grid-template-columns: 15px 1fr; gap: 9px; align-items: start; padding: 8px 9px; border: 0; border-radius: 7px; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+.inbox-item:hover, .inbox-item:focus-visible { background: var(--surface-3); }
+.inbox-item svg { margin-top: 1px; color: var(--ember); }
+.inbox-item.approval svg { color: var(--yellow); }
+.inbox-item span { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.inbox-item strong { font-size: 11.5px; font-weight: 600; }
+.inbox-item small { overflow: hidden; color: var(--muted); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
+.inbox-flash { animation: inbox-flash 1.4s ease-out 1; }
+@keyframes inbox-flash { 0%, 35% { box-shadow: 0 0 0 2px var(--ember); } 100% { box-shadow: 0 0 0 2px transparent; } }
+@media (prefers-reduced-motion: reduce) { .inbox-flash { animation: none; } }
+.settings-subhead { margin: 22px 0 10px; font-family: var(--font-display); font-size: 12px; font-weight: 600; }
+.settings-check { display: flex; align-items: flex-start; gap: 9px; font-size: 12px; cursor: pointer; }
+.modal .settings-check input, .settings-check input { flex: none; width: 14px; height: 14px; min-height: 0; margin: 2px 0 0; padding: 0; accent-color: var(--ember); }
+.settings-check span { display: flex; flex-direction: column; gap: 3px; }
+.settings-check small { color: var(--muted); font-size: 11px; line-height: 1.45; }
+

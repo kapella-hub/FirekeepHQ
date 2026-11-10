@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, session, shell } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, Notification, session, shell } from "electron";
 import { appendFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -12,6 +12,7 @@ import { FirekeepClient, defaultFirekeepCommand, isMissingExecutable } from "./f
 import { loadConfiguredDashboardUrl } from "./firekeep-config.js";
 import { LoopbackDecisionBoardClient } from "./decision-board-client.js";
 import { StudioDecisionBoardReceiver } from "./decision-board-receiver.js";
+import { AttentionNotifier } from "./attention-notifier.js";
 import { StudioController } from "./ipc-controller.js";
 import { KiroIdeLauncher } from "./kiro-ide.js";
 import { removeLegacySecrets } from "./legacy-cleanup.js";
@@ -62,6 +63,7 @@ function createWindow(theme: ThemeMode): BrowserWindow {
     },
   });
   window.once("ready-to-show", () => window.show());
+  window.on("focus", () => attention.focus());
   window.webContents.setWindowOpenHandler(({ url }) => {
     try {
       const parsed = new URL(url);
@@ -98,8 +100,44 @@ function applyThemeToAllWindows(theme: ThemeMode): void {
   for (const window of BrowserWindow.getAllWindows()) applyWindowTheme(window, theme);
 }
 
+function focusStudio(): void {
+  const window = BrowserWindow.getAllWindows()[0];
+  if (!window) return;
+  if (window.isMinimized()) window.restore();
+  window.show();
+  window.focus();
+}
+
+// Notifications are kept referenced until they close; an unreferenced one can be collected before its click fires.
+const liveNotifications = new Set<Notification>();
+
+const attention = new AttentionNotifier({
+  enabled: () => activeController?.service.snapshot().notifications !== false,
+  focused: () => BrowserWindow.getFocusedWindow() !== null,
+  show: (notice) => {
+    if (!Notification.isSupported()) return;
+    const notification = new Notification({ title: notice.title, body: notice.body });
+    liveNotifications.add(notification);
+    notification.on("click", () => { liveNotifications.delete(notification); focusStudio(); });
+    notification.on("close", () => liveNotifications.delete(notification));
+    notification.on("failed", () => liveNotifications.delete(notification));
+    notification.show();
+  },
+  setPending: (count) => {
+    if (process.platform !== "win32") app.setBadgeCount(count);
+    for (const window of BrowserWindow.getAllWindows()) window.flashFrame(count > 0);
+  },
+});
+
 function broadcast(event: StudioPushEvent): void {
   for (const window of BrowserWindow.getAllWindows()) window.webContents.send(STUDIO_EVENT_CHANNEL, event);
+  try {
+    if (event.type === "runtime.event") attention.event(event.event);
+    else if (event.type === "snapshot") attention.snapshot(event.snapshot);
+    else if (event.type === "decision.available") attention.decision(event.board);
+  } catch (error) {
+    console.warn("Studio notification failed", error instanceof Error ? error.message : String(error));
+  }
 }
 
 async function createController(): Promise<StudioController> {
@@ -244,6 +282,8 @@ async function createController(): Promise<StudioController> {
 }
 
 app.whenReady().then(async () => {
+  // Windows attributes toasts to this id; it must match the installer's appId.
+  if (process.platform === "win32") app.setAppUserModelId("ai.firekeep.studio");
   packageSmokeTrace("app ready");
   const controller = await createController();
   activeController = controller;

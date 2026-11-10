@@ -46,6 +46,8 @@ export interface SettingsSheetProps {
   // Appearance
   readonly theme: ThemeMode;
   readonly onTheme: (theme: ThemeMode) => void;
+  readonly notifications: boolean;
+  readonly onNotifications: (enabled: boolean) => void;
   // Studio updates
   readonly update: StudioUpdateState | null;
   readonly onUpdate: () => void;
@@ -213,13 +215,15 @@ function ReviewsSection({ runtimes, reviewerRuntimeIds, reviewerMode, onReviewer
 
 const THEMES: readonly { readonly id: ThemeMode; readonly label: string }[] = [{ id: "system", label: "System" }, { id: "dark", label: "Dark" }, { id: "light", label: "Light" }];
 
-function AppearanceSection({ theme, onTheme }: SettingsSheetProps): React.JSX.Element {
+function AppearanceSection({ theme, onTheme, notifications, onNotifications }: SettingsSheetProps): React.JSX.Element {
   return <>
     <header className="settings-header"><h3>Appearance</h3><p>System follows your operating system's light or dark setting.</p></header>
     <div className="settings-body">
       <div role="radiogroup" aria-label="Theme" className="settings-radios">
         {THEMES.map((entry) => <label key={entry.id}><input type="radio" name="studio-theme" value={entry.id} checked={theme === entry.id} onChange={() => onTheme(entry.id)} />{entry.label}</label>)}
       </div>
+      <h4 className="settings-subhead">Notifications</h4>
+      <label className="settings-check"><input type="checkbox" checked={notifications} onChange={(event) => onNotifications(event.target.checked)} /><span>Notify me when an agent needs me or finishes<small>Shown only while Studio is in the background: approvals, Decision Boards, missions awaiting sign-off, and finished or failed runs.</small></span></label>
     </div>
   </>;
 }

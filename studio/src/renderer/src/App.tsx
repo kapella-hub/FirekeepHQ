@@ -25,6 +25,8 @@ import { StartCard } from "./start/StartCard.js";
 import { FirekeepMark } from "./FirekeepMark.js";
 import { StudioShell } from "./layout/StudioShell.js";
 import { TopBar } from "./layout/TopBar.js";
+import { AttentionInbox } from "./layout/AttentionInbox.js";
+import { buildInbox, type InboxItem, type PendingBoard } from "./inbox.js";
 import { ignore } from "./util.js";
 import { CopyButton } from "./CopyButton.js";
 import { SettingsSheet, type SettingsSection } from "./settings/SettingsSheet.js";
@@ -89,6 +91,14 @@ export function App(): React.JSX.Element {
   // Bumped by every pushed keep-status; a poll/retry reply older than the latest push is dropped.
   const keepSeq = useRef(0);
   const surfacedBoardsRef = useRef(new Set<string>());
+  // Boards Studio has loaded and nobody has submitted: closing the dialog keeps them in the inbox.
+  const [pendingBoards, setPendingBoards] = useState<readonly PendingBoard[]>([]);
+  const rememberBoard = useCallback((board: DecisionBoardDocument): void => {
+    setPendingBoards((current) => current.some((entry) => entry.url === board.url)
+      ? current
+      : [...current, { url: board.url, questions: board.spec.questions.length, ...(board.spec.context ? { context: board.spec.context } : {}) }]);
+  }, []);
+  const forgetBoard = useCallback((url: string): void => setPendingBoards((current) => current.filter((entry) => entry.url !== url)), []);
   const seenEventIdsRef = useRef(new Set<string>());
   const pendingEventsRef = useRef<RuntimeEvent[]>([]);
   const eventFrameRef = useRef<number | null>(null);
@@ -157,10 +167,15 @@ export function App(): React.JSX.Element {
       const result = await invoke({ type: "decision.load", url });
       if (result.type !== "decision") throw new Error("Decision Board returned an unexpected response");
       setDecisionBoard(result.board);
+      rememberBoard(result.board);
+    } catch (error) {
+      // A board that no longer loads (answered elsewhere, expired) is not waiting on anyone.
+      forgetBoard(url);
+      throw error;
     } finally {
       setDecisionLoading((current) => current === url ? null : current);
     }
-  }, [invoke]);
+  }, [forgetBoard, invoke, rememberBoard]);
 
   const refreshDiagnostics = useCallback(async (): Promise<void> => {
     try {
@@ -207,6 +222,7 @@ export function App(): React.JSX.Element {
       else if (event.type === "decision.available") {
         surfacedBoardsRef.current.add(event.board.url);
         setDecisionBoard(event.board);
+        rememberBoard(event.board);
       } else if (event.type === "sessions") setSessions([...event.sessions]);
     });
     ignore(invoke({ type: "bootstrap" }).then((result) => {
@@ -228,7 +244,7 @@ export function App(): React.JSX.Element {
       eventFrameRef.current = null;
       pendingEventsRef.current = [];
     };
-  }, [enqueueEvent, invoke, loadModels, openDecisionBoard, refreshDiagnostics, replaceEvents]);
+  }, [enqueueEvent, invoke, loadModels, openDecisionBoard, refreshDiagnostics, rememberBoard, replaceEvents]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = snapshot?.theme ?? "system";
@@ -478,6 +494,27 @@ export function App(): React.JSX.Element {
     } catch { /* invoke surfaced the actionable error. */ }
   };
   const timeline = useMemo(() => buildTimeline(events), [events]);
+  const activeSessionId = snapshot?.activeSessionId ?? null;
+  // A board belongs to the session whose agent opened it.
+  const boardSessionRef = useRef<string | null>(null);
+  useEffect(() => {
+    // Only a real switch clears the list: the first snapshot can arrive after a board was pushed.
+    if (boardSessionRef.current !== null && activeSessionId !== null && boardSessionRef.current !== activeSessionId) setPendingBoards([]);
+    if (activeSessionId !== null) boardSessionRef.current = activeSessionId;
+  }, [activeSessionId]);
+  const inbox = useMemo(() => buildInbox(timeline, snapshot?.activeRunId ?? null, snapshot?.mission ?? null, pendingBoards), [pendingBoards, snapshot?.activeRunId, snapshot?.mission, timeline]);
+  const openInboxItem = useCallback((item: InboxItem): void => {
+    if (item.kind === "decision") { ignore(openDecisionBoard(item.url)); return; }
+    const target = item.kind === "approval"
+      ? document.querySelector<HTMLElement>(`[data-approval-id="${CSS.escape(item.approvalId)}"]`)
+      : document.querySelector<HTMLElement>(".mission-stepper");
+    if (!target) return;
+    target.scrollIntoView({ block: "center", behavior: "smooth" });
+    target.classList.remove("inbox-flash");
+    void target.offsetWidth;   // restart the highlight when the same item is opened twice
+    target.classList.add("inbox-flash");
+    target.querySelector<HTMLElement>("button:not([disabled])")?.focus({ preventScroll: true });
+  }, [openDecisionBoard]);
   const timelineRuns = useMemo(() => groupTimeline(timeline), [timeline]);
   const keepConnected = keepStatus?.state === "connected";
   const startVisible = timeline.length === 0 && commandCards.length === 0;
@@ -561,6 +598,7 @@ export function App(): React.JSX.Element {
         keepPanelOpen={snapshot.keepPanelOpen}
         onToggleKeep={() => ignore(invoke({ type: "settings.keepPanel", open: !snapshot.keepPanelOpen }).then(applyResult))}
         agentWorking={agentWorking}
+        actions={<AttentionInbox items={inbox} onOpen={openInboxItem} />}
         center={currentSession ? <div className="session-title-display" style={sessionAccentStyle(currentSession.color)}><span className="session-color-dot" /><span className="session-title">{currentSession.name}</span><button type="button" className="session-title-customize" aria-label={`Customize current session ${currentSession.name}`} aria-expanded={sessionEditorId === currentSession.id} title="Edit session name and color" onClick={() => setSessionEditorId((current) => current === currentSession.id ? null : currentSession.id)}><Palette size={11} /></button></div> : <span className="session-title">New session</span>}
       />}
       rail={<SessionRail
@@ -679,6 +717,8 @@ export function App(): React.JSX.Element {
         onReviewerMode={(mode) => ignore(invoke({ type: "reviewer.mode", mode }).then(applyResult))}
         theme={snapshot.theme}
         onTheme={(theme) => ignore(invoke({ type: "theme.set", theme }).then(applyResult))}
+        notifications={snapshot.notifications}
+        onNotifications={(enabled) => ignore(invoke({ type: "settings.notifications", enabled }).then(applyResult))}
         update={updateState}
         onUpdate={() => ignore(updateStudio())}
       /> : null}
@@ -686,6 +726,7 @@ export function App(): React.JSX.Element {
       {decisionBoard ? <DecisionBoardModal board={decisionBoard} close={() => setDecisionBoard(null)} submit={async (answers) => {
         const result = await invoke({ type: "decision.submit", url: decisionBoard.url, answers });
         if (result.type !== "decision-submitted") throw new Error("Decision Board returned an unexpected submission response");
+        forgetBoard(decisionBoard.url);
         setDecisionBoard(null);
       }} /> : null}
     </StudioShell>
@@ -774,7 +815,7 @@ function TimelineCard({ item, runtime, extra, resolveApproval, openDecision, dec
     return <details className={`activity-card tool ${item.status}`} open={item.status === "running"}><summary>{item.status === "running" ? <span className="pulse-dot" /> : item.status === "failed" ? <AlertTriangle size={14} /> : <CheckCircle2 size={14} />}<strong>{item.summary}</strong>{item.status === "running" ? <span>working</span> : null}<ChevronDown size={14} /></summary>{item.update ? <p>{item.update}</p> : null}{item.input !== undefined ? <><small>Input · {item.name}</small><pre>{pretty(item.input)}</pre></> : null}{item.output !== undefined ? <><small>Output</small><pre>{pretty(item.output)}</pre></> : null}</details>;
   }
   if (item.kind === "diff") return <details className="activity-card diff"><summary><FileDiff size={14} /><strong>Workspace diff</strong><ChevronDown size={14} /></summary><pre>{item.diff}</pre></details>;
-  if (item.kind === "approval") return <article className={`approval-card ${item.decision ? "resolved" : ""}`}><header><ShieldCheck size={18} /><div><strong>{item.title}</strong><small>{name} requests permission</small></div></header><pre>{item.detail}</pre>{item.decision ? <p className="approval-decision"><CheckCircle2 size={14} /> {item.decision}</p> : <div className="approval-actions">{item.options.map((option) => <button key={option} onClick={() => resolveApproval(item.approvalId, option)} className={/accept|allow/i.test(option) ? "approve" : ""}>{option}</button>)}</div>}</article>;
+  if (item.kind === "approval") return <article className={`approval-card ${item.decision ? "resolved" : ""}`} data-approval-id={item.approvalId}><header><ShieldCheck size={18} /><div><strong>{item.title}</strong><small>{name} requests permission</small></div></header><pre>{item.detail}</pre>{item.decision ? <p className="approval-decision"><CheckCircle2 size={14} /> {item.decision}</p> : <div className="approval-actions">{item.options.map((option) => <button key={option} onClick={() => resolveApproval(item.approvalId, option)} className={/accept|allow/i.test(option) ? "approve" : ""}>{option}</button>)}</div>}</article>;
   if (item.kind === "usage") return <div className="usage-row"><Cpu size={13} />{formatUsage(item.usage)}</div>;
   if (item.kind === "notice") {
     if (item.level === "info" && /run (started|completed)$/.test(item.message)) return null;

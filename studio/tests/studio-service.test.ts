@@ -297,6 +297,7 @@ describe("StudioService", () => {
       recentWorkspaces: [],
       keepPanelOpen: true,
       feedbackInviteDismissed: false,
+      notifications: true,
     };
     const timestamp = "2026-08-24T00:00:00.000Z";
     await sessions.ensure("session-existing", timestamp);
@@ -411,6 +412,14 @@ describe("StudioService", () => {
     const upgraded = new StudioService({ runtimes: prior.runtimes, settings: legacy });
     await upgraded.initialize();
     expect(upgraded.snapshot().feedbackInviteDismissed).toBe(false);
+
+    // notifications arrived later still: on by default, and the choice persists
+    expect(upgraded.snapshot().notifications).toBe(true);
+    await upgraded.setNotifications(false);
+    expect(legacy.value?.notifications).toBe(false);
+    const again = new StudioService({ runtimes: prior.runtimes, settings: legacy });
+    await again.initialize();
+    expect(again.snapshot().notifications).toBe(false);
   });
 
   it("trims and de-duplicates stored recents, keeping the first occurrence", async () => {

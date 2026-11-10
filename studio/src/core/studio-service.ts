@@ -61,6 +61,8 @@ export interface StudioPersistedState {
   readonly keepPanelOpen: boolean;
   /** The one-time "how did setup go?" invite, shown on the first connected Keep until used or dismissed. */
   readonly feedbackInviteDismissed: boolean;
+  /** Raise an OS notification when an agent waits or finishes while Studio is in the background. */
+  readonly notifications: boolean;
 }
 
 export interface RuntimeUsageSummary {
@@ -261,6 +263,11 @@ export class StudioService {
 
   async setKeepPanelOpen(open: boolean): Promise<void> {
     this.#replaceState({ keepPanelOpen: open });
+    await this.#persist();
+  }
+
+  async setNotifications(enabled: boolean): Promise<void> {
+    this.#replaceState({ notifications: enabled });
     await this.#persist();
   }
 
@@ -1486,6 +1493,7 @@ export class StudioService {
       recentWorkspaces: normalizeRecentWorkspaces(stored.recentWorkspaces, workspacePath),
       keepPanelOpen: stored.keepPanelOpen !== false,
       feedbackInviteDismissed: stored.feedbackInviteDismissed === true,
+      notifications: stored.notifications !== false,
     };
   }
 
@@ -1506,6 +1514,7 @@ export class StudioService {
       recentWorkspaces: [],
       keepPanelOpen: true,
       feedbackInviteDismissed: false,
+      notifications: true,
     };
   }
 

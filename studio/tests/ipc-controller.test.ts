@@ -319,6 +319,9 @@ describe("Studio IPC controller", () => {
     await expect(studio.dispatch({ type: "workspace.set", path: "C:\\workspace" })).resolves.toMatchObject({ type: "state", snapshot: { workspacePath: "C:\\workspace" } });
 
     await expect(studio.dispatch({ type: "settings.keepPanel", open: false })).resolves.toMatchObject({ type: "state", snapshot: { keepPanelOpen: false } });
+    expect(studio.service.snapshot().notifications).toBe(true);
+    await expect(studio.dispatch({ type: "settings.notifications", enabled: false })).resolves.toMatchObject({ type: "state", snapshot: { notifications: false } });
+    await expect(studio.invoke({ type: "settings.notifications", enabled: "no" })).resolves.toMatchObject({ type: "error" });
   });
 
   it("opens only the fixed feedback destinations and retires the invite once used or dismissed", async () => {

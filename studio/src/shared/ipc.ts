@@ -62,6 +62,7 @@ export type StudioAction =
   | { type: "workspace.set"; path: string }
   | { type: "workspace.detectTest" }
   | { type: "settings.keepPanel"; open: boolean }
+  | { type: "settings.notifications"; enabled: boolean }
   | { type: "keep.status" }
   | { type: "keep.retry" }
   | { type: "keep.search"; query: string; kind: "memory" | "skill" }

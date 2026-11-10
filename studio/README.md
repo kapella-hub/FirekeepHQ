@@ -5,6 +5,29 @@ is a separate Electron application: it does not replace or fork the Python Clien
 The kit remains the source of truth for Keep connectivity, memory, hooks, instructions,
 personal mode, and runtime configuration.
 
+## Unreleased — Attention inbox
+
+Studio now tells you when an agent is waiting, instead of expecting you to watch it.
+
+- **Inbox.** The top-bar inbox lists everything in the open session that is stopped until you
+  act: approvals from the live run, Decision Boards you closed without answering, and a mission
+  that is paused or awaiting sign-off. Choosing an item scrolls to the approval card or the
+  mission stepper, or reopens the board. The count on the button is the number of items.
+- **Notifications.** While no Studio window has focus, the main process raises an OS
+  notification (and flashes the taskbar entry, or sets the dock badge) for an approval request,
+  a new Decision Board, a mission that starts waiting or ends, and a finished or failed run.
+  Runs inside a mission are steps and do not notify on their own; a cancelled run never does.
+  Clicking a notification focuses Studio. Each moment notifies once, and nothing is replayed
+  for what happened while Studio was in front.
+- **Setting.** **Settings › Appearance › Notifications** turns the notifications off (a
+  persisted `notifications` setting, on by default; IPC action `settings.notifications`). The
+  inbox itself is always available. Notification text is the approval title, the board's
+  context line, the mission goal or the run error, clipped to 180 characters; it is shown by
+  the operating system and never leaves the machine.
+
+The rules for what deserves attention are pure functions in `src/core/attention.ts`; the
+main-process `AttentionNotifier` only tracks what was already said and whether anyone is looking.
+
 ## 0.5.1 — Setup feedback invite
 
 The first time the Keep panel shows a connected Keep, it offers one small card: **Share what

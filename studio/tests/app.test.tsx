@@ -36,6 +36,7 @@ function state(primaryRuntimeId: string | null = null): StudioSnapshot {
     recentWorkspaces: [],
     keepPanelOpen: true,
     feedbackInviteDismissed: true,
+    notifications: true,
     activeRunId: null,
     eventCount: 0,
     usage: { tokens: 0, freshTokens: 0, cachedTokens: 0, costUsd: 0, runs: 0, totalRuns: 0, measuredRuns: 0, byRuntime: {} },
@@ -102,6 +103,7 @@ function installBridge(options: { readonly snapshot?: StudioSnapshot; readonly s
     if (action.type === "keep.team") return { type: "keep-team", markdown: options.keepTeam ?? "" };
     if (action.type === "keep.skills") return { type: "keep-items", items: options.keepItems ?? [] };
     if (action.type === "settings.keepPanel") snapshot = { ...snapshot, keepPanelOpen: action.open };
+    if (action.type === "settings.notifications") snapshot = { ...snapshot, notifications: action.enabled };
     if (action.type === "feedback.open" || action.type === "feedback.dismiss") snapshot = { ...snapshot, feedbackInviteDismissed: true };
     if (action.type === "workspace.set") snapshot = { ...snapshot, workspacePath: action.path };
     if (action.type === "session.update") sessions = sessions.map((session) => session.id === action.sessionId ? { ...session, name: action.name, color: action.color } : session);
@@ -972,6 +974,42 @@ describe("Firekeep Studio renderer", () => {
 
     expect(await screen.findByRole("form", { name: "Decision Board" })).toBeInTheDocument();
     expect(invoke).not.toHaveBeenCalledWith({ type: "decision.load", url: board.url });
+  });
+
+  it("keeps an unanswered Decision Board in the inbox until it is submitted", async () => {
+    const board: DecisionBoardDocument = {
+      url: "http://127.0.0.1:43123/board/inbox-board",
+      spec: { boardId: "inbox-board", context: "Release scope", degraded: false, questions: [{ id: "q0", text: "Choose now?", knowledgeFound: false, evidence: [], suggestedAnswers: [], suggestedActions: [] }], boardEmbeds: [], embedsByQuestion: {} },
+      embeds: [],
+    };
+    const invoke = installBridge({ pushEvents: [{ type: "decision.available", board }], decisionBoard: board });
+    render(<App />);
+
+    await screen.findByRole("form", { name: "Decision Board" });
+    fireEvent.click(screen.getByRole("button", { name: "Not now" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Inbox: 1 waiting on you" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Decision Board/ }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "decision.load", url: board.url }));
+
+    await screen.findByRole("form", { name: "Decision Board" });
+    fireEvent.click(screen.getByRole("button", { name: "Send answers" }));
+    expect(await screen.findByRole("button", { name: "Inbox: nothing is waiting on you" })).toBeInTheDocument();
+  });
+
+  it("lists a mission awaiting sign-off in the inbox and turns notifications off from Settings", async () => {
+    const invoke = installBridge({ snapshot: { ...state("alpha"), mission: { ...draftMission(), phase: "awaiting-approval" } } });
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Inbox: 1 waiting on you" }));
+    expect(screen.getByRole("menuitem", { name: /Mission waiting for sign-off/ })).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "Escape" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Appearance" }));
+    const toggle = screen.getByRole("checkbox", { name: /Notify me when an agent needs me or finishes/ });
+    expect(toggle).toBeChecked();
+    fireEvent.click(toggle);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith({ type: "settings.notifications", enabled: false }));
   });
 
   it("renders the receipt and sends one-shot knowledge feedback", async () => {
