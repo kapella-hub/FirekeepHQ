@@ -28,11 +28,11 @@ export type GitRunner = (cwd: string, args: readonly string[]) => Promise<GitRes
 // read of the workspace from running a configured helper or pager (diffs also pass --no-ext-diff).
 const SAFE_CONFIG = ["-c", "core.fsmonitor=false", "-c", "core.quotepath=off", "-c", "core.pager=cat", "-c", "color.ui=never"];
 
-export const runGit: GitRunner = (cwd, args) => new Promise((resolvePromise) => {
+export const gitRunner = (timeout: number): GitRunner => (cwd, args) => new Promise((resolvePromise) => {
   execFile("git", [...SAFE_CONFIG, ...args], {
     cwd,
     windowsHide: true,
-    timeout: 20_000,
+    timeout,
     maxBuffer: 16 * 1024 * 1024,
     encoding: "utf8",
     env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", GIT_PAGER: "cat" },
@@ -42,6 +42,8 @@ export const runGit: GitRunner = (cwd, args) => new Promise((resolvePromise) => 
     else resolvePromise({ code: failure ? (typeof failure.code === "number" ? failure.code : 1) : 0, stdout: String(stdout), stderr: String(stderr), missing: false });
   });
 });
+
+export const runGit: GitRunner = gitRunner(20_000);
 
 export interface WorkspaceChangesOptions {
   /** The folder the agents work in, or null when none is chosen. */

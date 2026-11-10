@@ -19,6 +19,7 @@ import { removeLegacySecrets } from "./legacy-cleanup.js";
 import { ProcessMissionCheckRunner } from "./mission-check-runner.js";
 import { createRuntimeRegistry } from "./runtime/index.js";
 import { JsonlSessionStore } from "./session-store.js";
+import { SessionWorktrees } from "./session-worktrees.js";
 import { KeepGateway } from "./keep/keep-gateway.js";
 import { McpStdioClient } from "./keep/mcp-stdio-client.js";
 import { readReportFile, removeReportFile } from "./keep/report-file.js";
@@ -194,6 +195,7 @@ async function createController(): Promise<StudioController> {
     runtimes: createRuntimeRegistry(app.getVersion()),
     settings: new JsonSettingsStore<StudioPersistedState>(join(userData, "settings.json"), { onWarning: warning }),
     sessions: new JsonlSessionStore(sessionsRoot, warning),
+    worktrees: new SessionWorktrees(join(userData, "worktrees")),
     cwd: () => app.getPath("home"),
     missionChecks: new ProcessMissionCheckRunner(),
     confirmMission: async (summary) => {

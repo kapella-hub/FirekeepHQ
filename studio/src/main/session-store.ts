@@ -2,7 +2,7 @@ import { appendFile, mkdir, readFile, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { parseMissionSnapshot, type MissionSnapshot } from "../core/mission.js";
 import type { RuntimeEvent } from "../core/runtime.js";
-import { DEFAULT_SESSION_COLOR, isSessionColor, normalizeSessionMetadata, type SessionMetadataUpdate, type SessionStore, type StudioSessionSummary } from "../core/session-store.js";
+import { DEFAULT_SESSION_COLOR, isSessionColor, normalizeSessionMetadata, parseSessionWorktree, type SessionMetadataUpdate, type SessionStore, type SessionWorktree, type StudioSessionSummary } from "../core/session-store.js";
 import { JsonSettingsStore } from "../core/settings-store.js";
 
 interface SessionIndex { readonly version: 1; readonly sessions: Readonly<Record<string, StudioSessionSummary>> }
@@ -119,6 +119,15 @@ export class JsonlSessionStore implements SessionStore {
     });
   }
 
+  async setWorktree(id: string, worktree: SessionWorktree): Promise<void> {
+    validateId(id);
+    await this.#mutateIndex((sessions) => {
+      const current = sessions[id];
+      if (!current) throw new Error(`unknown session: ${id}`);
+      return { ...sessions, [id]: { ...current, worktree: { ...worktree } } };
+    });
+  }
+
   async flush(): Promise<void> { await this.#pending; }
 
   async #mutateIndex(update: (sessions: Readonly<Record<string, StudioSessionSummary>>) => Readonly<Record<string, StudioSessionSummary>>): Promise<void> {
@@ -151,6 +160,7 @@ function parseIndex(value: unknown): SessionIndex {
     if (typeof item.name !== "string" || typeof item.createdAt !== "string" || typeof item.updatedAt !== "string" || typeof item.eventCount !== "number") continue;
     const nativeSessionIds = item.nativeSessionIds && typeof item.nativeSessionIds === "object" ? Object.fromEntries(Object.entries(item.nativeSessionIds).filter((entry): entry is [string, string] => typeof entry[1] === "string")) : {};
     const mission = parseMissionSnapshot(item.mission);
+    const worktree = parseSessionWorktree(item.worktree);
     sessions[id] = {
       id,
       name: item.name,
@@ -160,6 +170,7 @@ function parseIndex(value: unknown): SessionIndex {
       eventCount: item.eventCount,
       nativeSessionIds,
       ...(mission ? { mission } : {}),
+      ...(worktree ? { worktree } : {}),
     };
   }
   return { version: 1, sessions };

@@ -600,3 +600,7 @@ tr.commented .diff-gutter { box-shadow: inset 3px 0 0 var(--ember); color: var(-
 @keyframes session-running { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .session-running { animation: none; border-color: var(--session-accent, var(--ember)); } }
 
+/* Sessions that work in their own git worktree. */
+.rail-actions { display: inline-flex; align-items: center; gap: 2px; }
+.session-worktree { display: inline-flex; align-items: center; gap: 3px; max-width: 100%; color: var(--session-accent, var(--ember)); font-family: var(--font-mono, ui-monospace, monospace); }
+

@@ -534,13 +534,14 @@ export function createCommandRegistry(service: StudioService, integrations: Comm
     const selected = service.snapshot().workspacePath;
     return notice("Workspace", selected ?? "No workspace selected.", selected ? "success" : "neutral");
   } });
-  commands.register({ name: "session", summary: "Create and manage Studio sessions.", usages: ["/session new [name]", "/session list", "/session rename <name>", `/session color <${SESSION_COLORS.join("|")}>`, "/session resume <id>", "/session delete <id> --confirm <id>"], execute: async (command) => {
+  commands.register({ name: "session", summary: "Create and manage Studio sessions.", usages: ["/session new [name]", "/session worktree [name]", "/session list", "/session rename <name>", `/session color <${SESSION_COLORS.join("|")}>`, "/session resume <id>", "/session delete <id> --confirm <id>"], execute: async (command) => {
     const action = command.args[0] ?? "list";
     if (action === "new") { await service.startNewSession(); const name = command.args.slice(1).join(" "); if (name) await service.renameSession(name); return notice("New session", name || service.snapshot().activeSessionId); }
+    if (action === "worktree") { await service.startNewSession({ worktree: true }); const name = command.args.slice(1).join(" "); if (name) await service.renameSession(name); const worktree = service.snapshot().worktree; return notice("New session in its own worktree", `${name || service.snapshot().activeSessionId} works on branch ${worktree?.branch} in ${worktree?.root}.`); }
     if (action === "rename") { await service.renameSession(command.args.slice(1).join(" ")); return notice("Session renamed", command.args.slice(1).join(" ")); }
     if (action === "color") { const color = requireArg(command, 1, "session color"); if (!isSessionColor(color)) throw new Error(`invalid session color: ${color}; choose ${SESSION_COLORS.join(", ")}`); await service.updateSession(service.snapshot().activeSessionId, { color }); return notice("Session color", color, "success"); }
     if (action === "resume") { const id = requireArg(command, 1, "session id"); await service.resumeSession(id); return notice("Session resumed", id); }
-    if (action === "delete") { const id = requireArg(command, 1, "session id"); const confirmation = command.flags.confirm; if (typeof confirmation !== "string") throw new Error("session deletion requires --confirm <session-id>"); await service.deleteSession(id, confirmation); return notice("Session deleted", `${id} was permanently removed from this device.`, "warning"); }
+    if (action === "delete") { const id = requireArg(command, 1, "session id"); const confirmation = command.flags.confirm; if (typeof confirmation !== "string") throw new Error("session deletion requires --confirm <session-id>"); const leftover = await service.deleteSession(id, confirmation); return notice("Session deleted", `${id} was permanently removed from this device.${leftover ? ` ${leftover}` : ""}`, "warning"); }
     if (action !== "list") throw new Error(`unknown session action: ${action}`);
     const sessions = await service.listSessions();
     return { kind: "table", title: "Studio sessions", body: `${sessions.length} local session${sessions.length === 1 ? "" : "s"}`, rows: sessions.map((item) => [item.id, item.name, item.color, String(item.eventCount), item.updatedAt]) };

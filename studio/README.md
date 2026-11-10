@@ -5,6 +5,32 @@ is a separate Electron application: it does not replace or fork the Python Clien
 The kit remains the source of truth for Keep connectivity, memory, hooks, instructions,
 personal mode, and runtime configuration.
 
+## Unreleased — A session in its own git worktree
+
+Two agents editing one folder collide. The branch button beside **New session** (or
+`/session worktree [name]`) starts a session whose agent works in a separate git worktree of
+the chosen workspace, on a new `studio/<id>` branch.
+
+- **Where it lives.** Under Studio's own data folder, at `worktrees/<session id>/<repository
+  name>`. The session opens the same subfolder of the repository that the workspace pointed
+  at. The worktree starts from the repository's current commit; uncommitted changes in the
+  original folder are not copied.
+- **What follows it.** For that session, `workspacePath` is the worktree folder, so runs,
+  missions, verification commands and **Review changes** all act there. The rail shows the
+  branch name under the session. The workspace picker is refused in a worktree session; start
+  another session to use another folder.
+- **Requirements.** The workspace must be inside a git repository that has at least one commit.
+  Otherwise the request fails with the reason and the open session is left as it was.
+- **Deleting.** Deleting the session removes its worktree only when it is clean. A worktree
+  with uncommitted or untracked files stays where it is, and a branch with unmerged commits is
+  kept; the deletion notice says what was left and where. Studio never forces either.
+- **Getting the work out.** The branch is an ordinary branch of your repository: merge it,
+  push it or open a pull request from it as usual. Studio does not merge for you.
+
+Creating the worktree does not run repository hooks. IPC: `session.new` takes an optional
+`worktree: true`; `StudioSnapshot.worktree` and `StudioSessionSummary.worktree` carry
+`{ path, root, branch, source }`. The git work is in `src/main/session-worktrees.ts`.
+
 ## Unreleased — Sessions keep working in the background
 
 Starting or opening another session no longer waits for the current one to finish.
@@ -23,7 +49,7 @@ Starting or opening another session no longer waits for the current one to finis
 `running`, `missionPhase`, pending `approvals`). In `StudioService`, per-session state lives in
 a `SessionContext` selected through `AsyncLocalStorage`; `subscribe` delivers the open session's
 events and `subscribeBackground` the rest. All sessions still share one workspace folder, so
-two agents editing the same files at once will collide.
+two agents editing the same files at once will collide unless one works in its own worktree (above).
 
 ## Unreleased — Attention inbox
 

@@ -637,6 +637,7 @@ export function App(): React.JSX.Element {
         runningSessionIds={runningSessionIds}
         activeRunning={agentWorking}
         onNew={() => ignore(invoke({ type: "session.new" }).then(applyResult))}
+        {...(snapshot.workspacePath ? { onNewWorktree: () => ignore(invoke({ type: "session.new", worktree: true }).then(applyResult)) } : {})}
         onResume={(sessionId) => ignore(invoke({ type: "session.resume", sessionId }).then(applyResult))}
         onEdit={saveSession}
         keepWarning={keepWarning(keepStatus)}

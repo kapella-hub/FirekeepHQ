@@ -1,10 +1,10 @@
 import { useState } from "react";
-import { AlertTriangle, Palette, Plus, Sparkles } from "lucide-react";
+import { AlertTriangle, GitBranch, Palette, Plus, Sparkles } from "lucide-react";
 import { DEFAULT_SESSION_COLOR, type SessionColor, type StudioSessionSummary } from "../../../core/session-store";
 import { ignore } from "../util.js";
 import { SESSION_COLOR_OPTIONS, relativeTime, sessionAccentStyle } from "./session-style.js";
 
-export function SessionRail({ sessions, activeSessionId, runningSessionIds, activeRunning = false, onNew, onResume, onEdit, keepWarning, onKeepWarning, editingId, saving, onToggleEdit, onCloseEdit }: {
+export function SessionRail({ sessions, activeSessionId, runningSessionIds, activeRunning = false, onNew, onNewWorktree, onResume, onEdit, keepWarning, onKeepWarning, editingId, saving, onToggleEdit, onCloseEdit }: {
   readonly sessions: readonly StudioSessionSummary[];
   readonly activeSessionId: string;
   /** Sessions with work running in the background. */
@@ -12,6 +12,8 @@ export function SessionRail({ sessions, activeSessionId, runningSessionIds, acti
   /** True while the foreground session's agent is working. */
   readonly activeRunning?: boolean;
   readonly onNew: () => void;
+  /** Starts a session in its own git worktree; omitted when no workspace folder is chosen. */
+  readonly onNewWorktree?: () => void;
   readonly onResume: (sessionId: string) => void;
   readonly onEdit: (sessionId: string, name: string, color: SessionColor) => Promise<void>;
   /** One line shown at the bottom when the Keep is not connected; null hides the row. */
@@ -24,13 +26,13 @@ export function SessionRail({ sessions, activeSessionId, runningSessionIds, acti
 }): React.JSX.Element {
   return (
     <aside className="session-rail">
-      <div className="rail-heading"><span>Sessions</span><button className="icon-button compact" title="New session" aria-label="New session" onClick={onNew}><Plus size={15} /></button></div>
+      <div className="rail-heading"><span>Sessions</span><span className="rail-actions">{onNewWorktree ? <button className="icon-button compact" title="New session in its own git worktree: its agent edits a separate copy of the repository on a new branch" aria-label="New session in its own worktree" onClick={onNewWorktree}><GitBranch size={14} /></button> : null}<button className="icon-button compact" title="New session" aria-label="New session" onClick={onNew}><Plus size={15} /></button></span></div>
       <nav className="session-list" aria-label="Studio sessions">
         {sessions.map((session) => (
           <div key={session.id} className={`session-entry ${session.id === activeSessionId ? "active" : ""} ${editingId === session.id ? "editing" : ""}`} style={sessionAccentStyle(session.color)}>
             <button className="session-row" aria-current={session.id === activeSessionId ? "page" : undefined} onClick={() => { if (session.id !== activeSessionId) onResume(session.id); }}>
               <span className="session-row-heading"><span className="session-color-dot" /><span className="session-row-title">{session.name}</span>{(session.id === activeSessionId ? activeRunning : runningSessionIds?.has(session.id)) ? <span className="session-running" role="status" aria-label="Working in this session" title="An agent is working in this session" /> : null}</span>
-              <span className="session-row-meta">{session.mission ? `${session.mission.phase} · ` : ""}{session.eventCount} events · {relativeTime(session.updatedAt)}</span>
+              <span className="session-row-meta">{session.worktree ? <span className="session-worktree" title={`Works in its own worktree on branch ${session.worktree.branch}`}><GitBranch size={10} aria-hidden="true" />{session.worktree.branch} · </span> : null}{session.mission ? `${session.mission.phase} · ` : ""}{session.eventCount} events · {relativeTime(session.updatedAt)}</span>
             </button>
             <button type="button" className="session-customize" aria-label={`Customize ${session.name}`} aria-expanded={editingId === session.id} onClick={() => onToggleEdit(session.id)}><Palette size={13} /></button>
             {editingId === session.id ? <SessionEditor session={session} saving={saving} close={onCloseEdit} save={(name, color) => onEdit(session.id, name, color)} /> : null}

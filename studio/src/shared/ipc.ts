@@ -79,7 +79,8 @@ export type StudioAction =
   | { type: "keep.learn"; action: string; outcome: string; resolution?: string; tags: string[] }
   | { type: "keep.skillDraft"; trigger: string; symptoms: string; steps: string; gotchas?: string; domain?: string }
   | { type: "keep.receipt.retry"; runId: string }
-  | { type: "session.new" }
+  /** `worktree` gives the new session its own git worktree of the chosen workspace. */
+  | { type: "session.new"; worktree?: boolean }
   | { type: "session.resume"; sessionId: string }
   | { type: "session.rename"; name: string }
   | { type: "session.update"; sessionId: string; name: string; color: SessionColor }

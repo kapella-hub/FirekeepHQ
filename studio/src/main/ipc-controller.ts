@@ -68,7 +68,7 @@ const actionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("keep.skillDraft"), trigger: keepText, symptoms: keepText, steps: keepText, gotchas: keepText.optional(), domain: z.string().min(1).max(80).optional() }).strict(),
   z.object({ type: z.literal("keep.feedback"), memoryIds: z.array(memoryId).min(1).max(50), useful: z.boolean(), comment: z.string().max(500).optional() }).strict(),
   z.object({ type: z.literal("keep.receipt.retry"), runId: id }).strict(),
-  z.object({ type: z.literal("session.new") }).strict(),
+  z.object({ type: z.literal("session.new"), worktree: z.boolean().optional() }).strict(),
   z.object({ type: z.literal("session.resume"), sessionId: id }).strict(),
   z.object({ type: z.literal("session.rename"), name: z.string().min(1).max(120) }).strict(),
   z.object({ type: z.literal("session.update"), sessionId: id, name: z.string().min(1).max(120), color: z.enum(SESSION_COLORS) }).strict(),
@@ -243,7 +243,7 @@ export class StudioController {
     else if (action.type === "settings.notifications") await this.service.setNotifications(action.enabled);
     else if (action.type === "feedback.dismiss") await this.service.dismissFeedbackInvite();
     else if (action.type === "keep.receipt.retry") await this.service.retryReceipt(action.runId);
-    else if (action.type === "session.new") await this.service.startNewSession();
+    else if (action.type === "session.new") await this.service.startNewSession({ worktree: action.worktree === true });
     else if (action.type === "session.resume") await this.service.resumeSession(action.sessionId);
     else if (action.type === "session.rename") await this.service.renameSession(action.name);
     else if (action.type === "session.update") await this.service.updateSession(action.sessionId, { name: action.name, color: action.color });

@@ -10,6 +10,32 @@ export interface SessionMetadataUpdate {
   readonly color?: SessionColor;
 }
 
+/** A git worktree Studio created for one session, so its agent edits files no other session touches. */
+export interface SessionWorktree {
+  /** The folder the session's agents work in: the workspace's own subfolder inside the worktree. */
+  readonly path: string;
+  /** The worktree's root folder. */
+  readonly root: string;
+  readonly branch: string;
+  /** The repository the worktree was created from. */
+  readonly source: string;
+}
+
+export interface WorktreeManager {
+  create(sessionId: string, workspacePath: string): Promise<SessionWorktree>;
+  /** Removes a clean worktree. Returns null when nothing is left behind, otherwise one sentence saying what stays and where. */
+  remove(worktree: SessionWorktree): Promise<string | null>;
+  exists(worktree: SessionWorktree): Promise<boolean>;
+}
+
+export function parseSessionWorktree(value: unknown): SessionWorktree | null {
+  if (!value || typeof value !== "object") return null;
+  const { path, root, branch, source } = value as Record<string, unknown>;
+  if (typeof path !== "string" || typeof root !== "string" || typeof branch !== "string" || typeof source !== "string") return null;
+  if (!path || !root || !branch || !source) return null;
+  return { path, root, branch, source };
+}
+
 export interface StudioSessionSummary {
   readonly id: string;
   readonly name: string;
@@ -19,6 +45,8 @@ export interface StudioSessionSummary {
   readonly eventCount: number;
   readonly nativeSessionIds: Readonly<Record<string, string>>;
   readonly mission?: MissionSnapshot;
+  /** Present when the session works in its own git worktree instead of the shared workspace folder. */
+  readonly worktree?: SessionWorktree;
 }
 
 export interface SessionStore {
@@ -30,6 +58,7 @@ export interface SessionStore {
   remove(id: string): Promise<void>;
   setNativeSessionIds(id: string, values: Readonly<Record<string, string>>): Promise<void>;
   setMission(id: string, mission: MissionSnapshot | null): Promise<void>;
+  setWorktree(id: string, worktree: SessionWorktree): Promise<void>;
   flush(): Promise<void>;
 }
 
@@ -65,6 +94,7 @@ export class MemorySessionStore implements SessionStore {
       this.#summaries.set(id, next);
     }
   }
+  async setWorktree(id: string, worktree: SessionWorktree): Promise<void> { const current = this.#require(id); this.#summaries.set(id, { ...current, worktree: { ...worktree } }); }
   async flush(): Promise<void> {}
   #require(id: string): StudioSessionSummary { const value = this.#summaries.get(id); if (!value) throw new Error(`unknown session: ${id}`); return value; }
 }

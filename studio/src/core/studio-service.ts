@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { RuntimeRegistry } from "./runtime-registry.js";
-import { DEFAULT_SESSION_COLOR, type SessionMetadataUpdate, type SessionStore, type StudioSessionSummary } from "./session-store.js";
+import { DEFAULT_SESSION_COLOR, type SessionMetadataUpdate, type SessionStore, type SessionWorktree, type StudioSessionSummary, type WorktreeManager } from "./session-store.js";
 import type { SettingsStore } from "./settings-store.js";
 import {
   DEFAULT_MISSION_CHECK_TIMEOUT_MS,
@@ -88,6 +88,8 @@ export interface StudioSnapshot extends StudioPersistedState {
   readonly eventCount: number;
   readonly usage: SessionUsageSummary;
   readonly mission: MissionSnapshot | null;
+  /** The open session's own git worktree, or null when it works in the shared workspace folder. `workspacePath` is then the worktree folder. */
+  readonly worktree: SessionWorktree | null;
 }
 
 export interface RuntimeDiagnostic {
@@ -106,6 +108,8 @@ interface StudioServiceOptions {
   readonly missionChecks?: MissionCheckRunner;
   readonly confirmMission?: (summary: string) => Promise<boolean>;
   readonly keep?: StudioKeepOptions;
+  /** Creates and removes per-session git worktrees; without it, worktree sessions are unavailable. */
+  readonly worktrees?: WorktreeManager;
 }
 
 /** Keep link (spec §7.2-7.3). Main owns the files; StudioService never reads or writes them itself. */
@@ -162,6 +166,8 @@ class SessionContext {
   activeRun: ActiveRun | null = null;
   keepTurn: KeepTurn | null = null;
   nativeSessionIds: Readonly<Record<string, string>> = {};
+  /** Set when this session works in its own git worktree; that folder is then its workspace. */
+  worktree: SessionWorktree | null = null;
 
   constructor(readonly id: string) {}
 
@@ -188,6 +194,7 @@ export class StudioService {
   readonly #missionChecks: MissionCheckRunner;
   readonly #confirmMission: (summary: string) => Promise<boolean>;
   readonly #keep: StudioKeepOptions | undefined;
+  readonly #worktrees: WorktreeManager | undefined;
   /** The most recently finalized turn of any session; it names its own session. */
   #lastFinalized: FinalizedKeepTurn | null = null;
   /** Serializes the operations that commit Keep cursors (finalize, retry). */
@@ -241,6 +248,7 @@ export class StudioService {
     };
     this.#confirmMission = options.confirmMission ?? (async () => false);
     this.#keep = options.keep;
+    this.#worktrees = options.worktrees;
   }
 
   async initialize(): Promise<void> {
@@ -255,6 +263,7 @@ export class StudioService {
       const summary = (await this.#sessions.list()).find((item) => item.id === this.#state?.activeSessionId);
       if (summary) {
         this.#replaceState({ nativeSessionIds: { ...summary.nativeSessionIds } });
+        this.#foreground.worktree = summary.worktree ?? null;
         this.#mission = summary.mission ? structuredClone(summary.mission) : null;
         if (this.#mission && missionWasInterrupted(this.#mission.phase)) {
           const timestamp = this.#now();
@@ -282,6 +291,7 @@ export class StudioService {
       usage: this.usageSummary(),
       mission: this.#mission ? structuredClone(this.#mission) : null,
       background: this.#backgroundSessions(),
+      worktree: this.#ctx.worktree,
     });
   }
 
@@ -332,6 +342,7 @@ export class StudioService {
   }
 
   async setWorkspace(path: string | null): Promise<void> {
+    if (this.#ctx.worktree) throw new Error("this session works in its own worktree; start a new session to use another folder");
     if (this.#activeRun) throw new Error("cannot change workspace while a run is active");
     if (this.#missionLaunchPending) throw new Error("cannot change workspace while mission approval is open");
     const normalized = path?.trim() || null;
@@ -497,16 +508,29 @@ export class StudioService {
    * Starts a fresh session in the foreground. Work running in the session being left keeps
    * running there; only an open mission confirmation dialog blocks the switch.
    */
-  async startNewSession(): Promise<void> {
+  async startNewSession(options: { readonly worktree?: boolean } = {}): Promise<void> {
     if (this.#foreground.missionLaunchPending) throw new Error("cannot change sessions while mission approval is open");
-    await this.#exclusively("session", () => this.#switchToNewSession());
+    const isolated = options.worktree === true;
+    if (isolated) {
+      if (!this.#worktrees || !this.#sessions) throw new Error("worktree sessions are unavailable");
+      if (!this.#rawState().workspacePath) throw new Error("choose a workspace folder before starting a worktree session");
+    }
+    await this.#exclusively("session", () => this.#switchToNewSession(isolated));
   }
 
-  async #switchToNewSession(): Promise<void> {
+  /**
+   * `isolated` gives the new session its own git worktree of the chosen workspace. The worktree
+   * is created first, so a repository that cannot have one leaves the open session untouched.
+   */
+  async #switchToNewSession(isolated = false): Promise<void> {
+    const id = this.#idFactory("session");
+    const worktree = isolated ? await (this.#worktrees as WorktreeManager).create(id, this.#rawState().workspacePath as string) : null;
     await this.#leaveForeground();
-    const next = new SessionContext(this.#idFactory("session"));
+    const next = new SessionContext(id);
+    next.worktree = worktree;
     this.#enterForeground(next);
     await this.#sessions?.ensure(next.id, this.#now());
+    if (worktree) await this.#sessions?.setWorktree(next.id, worktree);
     await this.#persist();
   }
 
@@ -557,13 +581,18 @@ export class StudioService {
     await this.#sessions.updateMetadata(sessionId, update);
   }
 
-  async deleteSession(sessionId: string, confirmation: string): Promise<void> {
+  /**
+   * Deletes a session. Its worktree, if it has one, is removed only when clean; the returned
+   * sentence says what was left behind and where, or is null when nothing was.
+   */
+  async deleteSession(sessionId: string, confirmation: string): Promise<string | null> {
     if (this.#live.get(sessionId)?.busy) throw new Error("cannot delete a session while a run is active");
     if (!this.#sessions) throw new Error("persistent sessions are unavailable");
     if (confirmation !== sessionId) throw new Error("session deletion requires --confirm with the exact session id");
     const sessions = this.#sessions;
-    await this.#exclusively("session", async () => {
+    return this.#exclusively("session", async () => {
       if (this.#live.get(sessionId)?.busy) throw new Error("cannot delete a session while a run is active");
+      const worktree = (await sessions.list()).find((item) => item.id === sessionId)?.worktree ?? null;
       await this.#finalizeKeepTurn();
       if (sessionId === this.#foreground.id) await this.#switchToNewSession();
       this.#live.delete(sessionId);
@@ -575,6 +604,9 @@ export class StudioService {
         this.#keep.tracker.forget(sessionId);
         if (this.#lastFinalized?.studioSessionId === sessionId) this.#lastFinalized = null;
       }
+      if (!worktree) return null;
+      if (!this.#worktrees) return `Its worktree was left at ${worktree.root}.`;
+      return this.#worktrees.remove(worktree).catch((error: unknown) => `Its worktree at ${worktree.root} could not be removed: ${errorMessage(error)}`);
     });
   }
 
@@ -603,6 +635,7 @@ export class StudioService {
         this.#restoreKeepCursors(sessionId, next.events);
         next.mission = summary.mission ? structuredClone(summary.mission) : null;
         next.nativeSessionIds = { ...summary.nativeSessionIds };
+        next.worktree = summary.worktree ?? null;
         this.#enterForeground(next);
       }
       await this.#persist();
@@ -1597,7 +1630,11 @@ export class StudioService {
     context.turn = true;
     context.turnWorkspace = this.#rawState().workspacePath;
     try {
-      return await this.#scope.run(context, work);
+      return await this.#scope.run(context, async () => {
+        const worktree = context.worktree;
+        if (worktree && this.#worktrees && !(await this.#worktrees.exists(worktree))) throw new Error(`this session's worktree is gone (${worktree.root}); start a new session to keep working`);
+        return work();
+      });
     } finally {
       context.turn = false;
       context.turnWorkspace = undefined;
@@ -1701,7 +1738,7 @@ export class StudioService {
   #requireState(): StudioPersistedState {
     const raw = this.#rawState();
     const context = this.#ctx;
-    const workspacePath = context.turnWorkspace === undefined ? raw.workspacePath : context.turnWorkspace;
+    const workspacePath = context.worktree ? context.worktree.path : context.turnWorkspace === undefined ? raw.workspacePath : context.turnWorkspace;
     if (context === this.#foreground && workspacePath === raw.workspacePath) return raw;
     return { ...raw, activeSessionId: context.id, nativeSessionIds: context.nativeSessionIds, workspacePath };
   }
