@@ -5,6 +5,30 @@ is a separate Electron application: it does not replace or fork the Python Clien
 The kit remains the source of truth for Keep connectivity, memory, hooks, instructions,
 personal mode, and runtime configuration.
 
+## Unreleased — OpenCode and Pi
+
+Two more agents can be the primary or a reviewer, beside Codex, Claude and Kiro. Studio finds
+each one if it is installed and shows it as missing, with the install command, if it is not.
+
+- **OpenCode** runs through `opencode acp`, the same protocol as Kiro. Safe mode and reviews
+  use OpenCode's `plan` mode, which disallows edit tools, and refuse every permission request.
+  Standard uses `build` mode and shows you each permission request OpenCode raises; which
+  tools raise one is decided by OpenCode's own `permission` configuration, so with OpenCode's
+  defaults most edits do not ask. Unrestricted allows every request. Sessions resume. OpenCode
+  serves some free models with no credential, so zero credentials is shown as "free models
+  only" rather than signed out.
+- **Pi** runs through its JSON event stream. Pi has no permission prompts by design, so Studio
+  cannot ask before a tool runs: Safe mode and reviews restrict Pi to its read-only tools
+  (`read`, `grep`, `find`, `ls`); in Standard and Unrestricted every tool, including shell
+  commands and file edits, runs without asking, and each Standard run starts with a notice
+  saying so. Pi does not advertise the `approvals` capability. Effort maps to Pi's
+  `--thinking` level (`max` becomes `xhigh`). Sign-in happens in Pi's own terminal UI.
+
+On Windows, npm installs both as `.cmd` shims, which Studio never launches: it resolves
+OpenCode's packaged `opencode.exe` and runs Pi's entry script through `node.exe`, both from the
+global npm folder. The adapters are `src/main/runtime/opencode-runtime.ts` and
+`pi-runtime.ts`; the shared protocol code is `runAcpConversation` in `kiro-runtime.ts`.
+
 ## Unreleased — Scheduled missions
 
 A mission can be approved now and started later. The calendar button in the top bar opens
@@ -303,6 +327,8 @@ Kiro's optional ACP usage honest when the provider omits token counts instead of
 | Codex | `codex app-server` JSONL RPC; live `model/list` | Keep memory when the managed Codex MCP block is detected; Codex exposes no hooks | Existing account or App Server-managed browser/device/API-key login |
 | Claude Code | Native `stream-json` CLI; live CLI aliases/efforts | Keep memory and automatic hooks are reported independently from the installed native configs | Existing provider-owned Claude login |
 | Kiro CLI | Stable ACP v1; live account models/efforts | Keep memory and hooks when the Client Kit's named `firekeep` agent is installed | Existing provider-owned browser/device login |
+| OpenCode | `opencode acp` (ACP v1); models from `opencode models` | Keep memory when the kit's `mcp` entries are in `opencode.json`; hooks when its `firekeep-hooks.js` plugin is installed | OpenCode's own `opencode auth login`, opened in a terminal |
+| Pi | `pi --mode json --print`, one process per run, prompt on stdin | Hooks when the `firekeep-pi` extension is in Pi's settings; Pi has no MCP, so no Keep tools | Pi's own `/login`, or a provider API key in the environment |
 
 Studio shows each agent's Keep status in Settings → Agents & accounts and never implies an
 agent has team memory merely because another installed runtime does.

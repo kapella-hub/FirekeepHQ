@@ -36,9 +36,9 @@ describe("0.5 settings migration", () => {
     expect("voiceEnabled" in snapshot).toBe(false);
   });
 
-  it("registers exactly codex, claude and kiro", async () => {
+  it("registers exactly claude, codex, kiro, opencode and pi", async () => {
     const { createRuntimeRegistry } = await import("../src/main/runtime/index.js");
     const ids = createRuntimeRegistry("0.5.0").list().map((runtime) => runtime.descriptor.id).sort();
-    expect(ids).toEqual(["claude", "codex", "kiro"]);
+    expect(ids).toEqual(["claude", "codex", "kiro", "opencode", "pi"]);
   });
 });

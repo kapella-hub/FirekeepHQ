@@ -152,12 +152,25 @@ function installedFirekeepAgent(): string | null {
   return existsSync(join(homedir(), ".kiro", "agents", "firekeep.json")) ? "firekeep" : null;
 }
 
+/** What differs between agents that speak the Agent Client Protocol. */
+export interface AcpProfile {
+  /** Shown in notices and errors, for example "Kiro". */
+  readonly name: string;
+  /** Prefix for the ids Studio gives this agent's messages and approvals. */
+  readonly prefix: string;
+  /** Session config options to set before the prompt, by option id (for example model or mode). */
+  readonly configOptions?: Readonly<Record<string, string>>;
+}
+
+const KIRO_PROFILE: AcpProfile = { name: "Kiro", prefix: "kiro" };
+
 export async function runAcpConversation(
   target: acp.Stream | acp.AgentApp,
   request: RunRequest,
   sink: RuntimeEventSink,
   signal: AbortSignal,
   appVersion = process.env.npm_package_version ?? "development",
+  profile: AcpProfile = KIRO_PROFILE,
 ): Promise<RunResult> {
   let finalText = "";
   let usage: RuntimeUsage | undefined;
@@ -174,8 +187,8 @@ export async function runAcpConversation(
         optionId = options.find((option) => option.kind === "allow_once")?.optionId;
       } else if (request.requestApproval) {
         optionId = await request.requestApproval({
-          id: `kiro:${ctx.params.toolCall.toolCallId}`,
-          title: ctx.params.toolCall.title ?? "Kiro tool permission",
+          id: `${profile.prefix}:${ctx.params.toolCall.toolCallId}`,
+          title: ctx.params.toolCall.title ?? `${profile.name} tool permission`,
           detail: options.map((option) => `${option.optionId}: ${option.name} (${option.kind})`).join("\n"),
           options: options.map((option) => option.optionId),
         });
@@ -185,7 +198,7 @@ export async function runAcpConversation(
     })
     .onNotification(acp.methods.client.session.update, (ctx) => {
       if (activeSessionId && ctx.params.sessionId !== activeSessionId) return;
-      normalizeAcpUpdate(ctx.params.update, request, sink, toolNames, (text) => { finalText += text; }, (next) => { usage = next; });
+      normalizeAcpUpdate(ctx.params.update, request, sink, toolNames, (text) => { finalText += text; }, (next) => { usage = next; }, profile);
     });
 
   const operation = async (ctx: acp.ClientContext): Promise<RunResult> => {
@@ -199,9 +212,12 @@ export async function runAcpConversation(
       await ctx.request(acp.methods.agent.session.load, { sessionId: resumableSessionId, cwd, mcpServers: [] }, { cancellationSignal: signal });
       activeSessionId = resumableSessionId;
     } else {
-      if (resumableSessionId) sink({ kind: "notice", level: "warning", message: "Kiro cannot load this saved session; starting a fresh provider session" });
+      if (resumableSessionId) sink({ kind: "notice", level: "warning", message: `${profile.name} cannot load this saved session; starting a fresh provider session` });
       const created = await ctx.request(acp.methods.agent.session.new, { cwd, mcpServers: [] }, { cancellationSignal: signal });
       activeSessionId = created.sessionId;
+    }
+    for (const [configId, value] of Object.entries(profile.configOptions ?? {})) {
+      await ctx.request(acp.methods.agent.session.setConfigOption, { sessionId: activeSessionId, configId, value }, { cancellationSignal: signal });
     }
     const abort = (): void => { if (activeSessionId) void ctx.notify(acp.methods.agent.session.cancel, { sessionId: activeSessionId }); };
     signal.addEventListener("abort", abort, { once: true });
@@ -211,8 +227,8 @@ export async function runAcpConversation(
         prompt: [{ type: "text", text: request.prompt }],
       }, { cancellationSignal: signal });
       if (response.usage) usage = acpUsage(response.usage);
-      if (response.stopReason === "cancelled") throw new Error("Kiro turn was cancelled");
-      sink({ kind: "message.completed", messageId: "kiro-message", role: role(request), text: finalText });
+      if (response.stopReason === "cancelled") throw new Error(`${profile.name} turn was cancelled`);
+      sink({ kind: "message.completed", messageId: `${profile.prefix}-message`, role: role(request), text: finalText });
       if (usage) sink({ kind: "usage.updated", usage });
       return { nativeSessionId: activeSessionId, finalText, ...(usage ? { usage } : {}) };
     } finally {
@@ -232,19 +248,20 @@ function normalizeAcpUpdate(
   toolNames: Map<string, string>,
   appendText: (text: string) => void,
   setUsage: (usage: RuntimeUsage) => void,
+  profile: AcpProfile,
 ): void {
   if (update.sessionUpdate === "agent_message_chunk" && update.content.type === "text") {
     appendText(update.content.text);
-    sink({ kind: "message.delta", messageId: update.messageId ?? "kiro-message", role: role(request), text: update.content.text }, update);
+    sink({ kind: "message.delta", messageId: update.messageId ?? `${profile.prefix}-message`, role: role(request), text: update.content.text }, update);
   } else if (update.sessionUpdate === "agent_thought_chunk" && update.content.type === "text") {
-    sink({ kind: "reasoning.delta", itemId: update.messageId ?? "kiro-thought", text: update.content.text }, update);
+    sink({ kind: "reasoning.delta", itemId: update.messageId ?? `${profile.prefix}-thought`, text: update.content.text }, update);
   } else if (update.sessionUpdate === "tool_call") {
     const name = update.name ?? update.title;
     toolNames.set(update.toolCallId, name);
     sink({ kind: "tool.started", toolCallId: update.toolCallId, name, input: update.rawInput }, update);
     emitAcpDiffs(update.toolCallId, update.content, sink);
   } else if (update.sessionUpdate === "tool_call_update") {
-    const name = update.name ?? toolNames.get(update.toolCallId) ?? update.title ?? "Kiro tool";
+    const name = update.name ?? toolNames.get(update.toolCallId) ?? update.title ?? `${profile.name} tool`;
     if (update.title || update.status === "pending" || update.status === "in_progress") {
       sink({ kind: "tool.updated", toolCallId: update.toolCallId, update: update.title ?? update.status ?? "updated" }, update);
     }
@@ -253,7 +270,7 @@ function normalizeAcpUpdate(
       sink({ kind: "tool.completed", toolCallId: update.toolCallId, name, output: update.rawOutput ?? update.content, failed: update.status === "failed" }, update);
     }
   } else if (update.sessionUpdate === "plan") {
-    sink({ kind: "reasoning.delta", itemId: "kiro-plan", text: JSON.stringify(update.entries) }, update);
+    sink({ kind: "reasoning.delta", itemId: `${profile.prefix}-plan`, text: JSON.stringify(update.entries) }, update);
   } else if (update.sessionUpdate === "usage_update") {
     const cost = update.cost?.currency === "USD" ? update.cost.amount : undefined;
     setUsage({ totalTokens: update.used, ...(cost !== undefined ? { costUsd: cost } : {}) });
@@ -276,7 +293,7 @@ function acpUsage(value: acp.Usage): RuntimeUsage {
   };
 }
 
-function createProcessTarget(command: string, args: readonly string[], cwd?: string, env?: Readonly<Record<string, string>>): AcpTargetHandle {
+export function createProcessTarget(command: string, args: readonly string[], cwd?: string, env?: Readonly<Record<string, string>>): AcpTargetHandle {
   const child = spawnRuntime(command, args, {
     ...(cwd ? { cwd } : {}),
     env: { ...process.env, ...env },
