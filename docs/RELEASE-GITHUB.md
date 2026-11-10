@@ -190,6 +190,26 @@ To run it by hand on macOS/Linux:
 cd client && python -m pytest tests/test_e2e_bootstrap.py -m e2e -q
 ```
 
+- **server v1.8.0** — Atomic session memories and observed command outcomes.
+  A completed session is distilled into a bounded summary plus one memory per
+  recorded decision (at most 12, tagged `decision`) instead of one long blob;
+  existing memories are not rewritten. Recall ranks every live result ahead of
+  every superseded one, without dropping any or changing scores. New
+  `POST /agent/action/observed` (scope `eval:write`) records a command outcome
+  with no policy evaluation and no prediction; session evals gain
+  `command_count`, `command_failure_rate`, `final_command_failed` and
+  `outcome_brier_score`, while `tool_success_rate`, `failure_rate` and
+  `outcome_event_count` keep their meaning. Also carries joserfc 1.7.6 in all
+  four service locks (CVE-2026-119283, CVE-2026-119284). No schema or
+  configuration change.
+- **1.9.0** — Tool outcomes reach session evals. The Claude Code hooks now
+  register `PostToolUseFailure` and treat `PowerShell` as a shell tool, send
+  the Keep session id instead of the runtime's own, and report each ungated
+  command's program name and exit status to `/agent/action/observed`
+  (server v1.8.0+; against an older server the client pauses reporting for
+  24h after one 404). A UTF-8 BOM in a hook payload no longer discards it.
+  Existing installs pick up the new hook rows on update. Needs `1.9.0` in the
+  site's `allowed-versions.txt`.
 - **server v1.7.2** — Deploy fix: `deploy/bootstrap-keys.sh` waits up to 60 s
   (`BOOTSTRAP_REDIS_WAIT_SECONDS`) for Redis to answer PING instead of pinging
   once. When an install or update recreates the Redis container, Redis is still
