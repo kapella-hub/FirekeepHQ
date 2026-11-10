@@ -183,7 +183,7 @@ def _order_results(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out-of-window evidence for a multi-session question ("which book did I
     finish a week ago" — the book was started earlier) never made the cut.
     """
-    by_score = sorted(entries, key=lambda e: e["score"], reverse=True)
+    by_score = sorted(entries, key=_rank_key, reverse=True)
     windowed = [e for e in by_score if _in_window(e)]
     if not windowed:
         return by_score
@@ -195,6 +195,33 @@ def _order_results(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if i < len(rest):
             ordered.append(rest[i])
     return ordered
+
+
+def _rank_key(entry: dict[str, Any]) -> tuple[int, float]:
+    """Sort key for recall results: superseded memories after everything else,
+    then by score. Used with ``reverse=True``.
+
+    ``_lifecycle_status`` is set by ``_apply_lifecycle_scoring``; an entry
+    that has not been through it reads as not superseded, so this is plain
+    score order for any other caller.
+
+    Why a rank and not a score: the 0.5 status multiplier is applied after
+    min-max normalization and next to the confidence/OWM/feedback multipliers,
+    so a superseded memory with one confirmation, or simply a much closer
+    match, still outranked live results and pushed them out of ``top_k``
+    (observed 2026-11-09: a superseded distillate at rank 3 of 4, above an
+    active one). No multiplier can fix that — min-max pins the weakest live
+    candidate at exactly 0.0, which nothing scaled can sort below.
+
+    Nothing is dropped and no score changes. A superseded memory is still
+    returned, labelled "[SUPERSEDED]", whenever the other candidates cannot
+    fill ``top_k`` — supersession on the write path is a similarity collapse
+    that can be wrong (app/contradiction.py), and a corrected fact shown under
+    its correction is useful context (tests/test_recall_lifecycle.py pins both
+    being returned).
+    """
+    return (0 if entry.get("_lifecycle_status") == "superseded" else 1,
+            entry["score"])
 
 
 def _min_max_normalize(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -410,7 +437,8 @@ class RAGEngine:
             merged, include_archived=include_archived
         )
 
-        # Sort descending by score, take top_k (or more for re-ranking). A
+        # Sort descending by score — superseded memories after everything else
+        # (_rank_key) — and take top_k (or more for re-ranking). A
         # relative-time window the query named gets every other slot.
         merged = _order_results(merged)
 
@@ -419,7 +447,9 @@ class RAGEngine:
             candidate_count = query.top_k * self._settings.RERANK_CANDIDATES_MULTIPLIER
             candidates = merged[:candidate_count]
             merged = await self._rerank(query.task, candidates)
-            merged.sort(key=lambda e: e["score"], reverse=True)
+            # Same key as _order_results: the re-ranker scores text, not
+            # lifecycle, and must not lift a superseded row over a live one.
+            merged.sort(key=_rank_key, reverse=True)
 
         merged = self._take_top_k(merged, query.top_k)
 
