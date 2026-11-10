@@ -1,3 +1,4 @@
+import { memoryDraftProblem, skillDraftProblem, type MemoryDraft, type SkillDraft } from "../../core/keep/save.js";
 import { PANEL_AGENT_SUFFIX, parseTimelineReply, type TimelinePage } from "../../core/keep/receipt.js";
 import type { KeepTimelineSource } from "../../core/keep/receipt-tracker.js";
 import type { KeepHighlights, KeepItem, KeepStatus } from "../../shared/keep.js";
@@ -18,14 +19,19 @@ export interface KeepGatewayDeps {
   readonly onStatus?: (status: KeepStatus) => void;
 }
 
-/** Exactly the kit's `studio` preset (client 1.8.0). */
+/** Exactly the kit's `studio` preset (client 1.8.0; the two writes arrive in the release after 1.9.1). */
 export const STUDIO_TOOLS: readonly string[] = [
   "memory_recall", "memory_feedback", "skill_list", "skill_recall",
   "relay_who_is_online", "relay_read", "ctx_list_sessions", "replay_timeline", "corpus_sources",
+  "memory_learn", "skill_create",
 ];
+/** The preset's writes. A kit that predates them refuses the call; that is not a dead server. */
+const WRITE_TOOLS = new Set(["memory_learn", "skill_create"]);
+const TOOL_UNAVAILABLE = /unknown or unavailable tool/i;
+export const KIT_TOO_OLD_TO_SAVE = "This Firekeep kit cannot save from Studio yet. Run `firekeep update`, restart Studio, and try again.";
 export const BACKOFF_MS: readonly number[] = [1000, 5000, 30_000];
 /** Tools whose `agent_id` is an attribution label. ctx_list_sessions treats it as a FILTER; others lack it. */
-const TAGGED_TOOLS = new Set(["memory_recall", "memory_feedback"]);
+const TAGGED_TOOLS = new Set(["memory_recall", "memory_feedback", "memory_learn", "skill_create"]);
 
 /** Gateway must stay up this long before the consecutive-failure counter resets. */
 export const STABLE_MS = 60_000;
@@ -137,6 +143,32 @@ export class KeepGateway implements KeepTimelineSource {
     await this.#call("memory_feedback", { memory_ids: [...memoryIds], useful, ...(comment ? { comment } : {}) });
   }
 
+  /** Saves a memory the human typed into Studio. Returns the Keep's one-line confirmation. */
+  async learn(draft: MemoryDraft): Promise<string> {
+    const problem = memoryDraftProblem(draft);
+    if (problem) throw new Error(problem);
+    return firstLine(await this.#call("memory_learn", {
+      action: draft.action.trim(),
+      outcome: draft.outcome.trim(),
+      ...(draft.resolution?.trim() ? { resolution: draft.resolution.trim() } : {}),
+      ...(draft.tags.length > 0 ? { tags: [...draft.tags] } : {}),
+    }));
+  }
+
+  /** Saves a skill as a DRAFT: it waits for human review and is excluded from recall until approved. */
+  async draftSkill(draft: SkillDraft): Promise<string> {
+    const problem = skillDraftProblem(draft);
+    if (problem) throw new Error(problem);
+    return firstLine(await this.#call("skill_create", {
+      trigger: draft.trigger.trim(),
+      symptoms: draft.symptoms.trim(),
+      steps: draft.steps.trim(),
+      gotchas: draft.gotchas?.trim() ?? "",
+      domain: draft.domain?.trim() ?? "",
+      status: "draft",
+    }));
+  }
+
   async timeline(keepSessionId: string, offset: number, limit: number): Promise<TimelinePage> {
     try {
       return parseTimelineReply(await this.#call("replay_timeline", { session_id: keepSessionId, offset, limit, format: "json" }));
@@ -157,7 +189,13 @@ export class KeepGateway implements KeepTimelineSource {
     try {
       result = await mcp.callTool(name, TAGGED_TOOLS.has(name) ? { ...args, agent_id: this.#label } : args);
     } catch (error) {
-      this.#callFailed(mcp, error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      if (WRITE_TOOLS.has(name) && TOOL_UNAVAILABLE.test(message)) {
+        // The kit answered and refused a tool it does not serve yet: the Keep is fine.
+        this.#callFailures = 0;
+        throw new Error(KIT_TOO_OLD_TO_SAVE);
+      }
+      this.#callFailed(mcp, message);
       throw error;
     }
     if (result.isError) {

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, X } from "lucide-react";
+import { AlertTriangle, X, Plus } from "lucide-react";
+import { SaveToKeepDialog } from "./SaveToKeepDialog.js";
 import type { KeepReceipt } from "../../../core/keep/receipt.js";
 import type { FeedbackTarget, StudioAction, StudioActionResult } from "../../../shared/ipc";
 import { KEEP_INSTALL_COMMANDS, type KeepItem, type KeepStatus } from "../../../shared/keep";
@@ -47,8 +48,15 @@ export function quoteBlock(body: string): string {
 }
 
 export function KeepPanel({ status, receipts, invoke, onInsert, onOpenKeepSettings, onRetry, searchRequest = null, onSearchRequestHandled, feedbackInvite = false, onFeedback }: KeepPanelProps): React.JSX.Element {
+  const [saving, setSaving] = useState(false);
+  const closeSave = useCallback(() => setSaving(false), []);
+  const canSave = status?.state === "connected" && !status.personalMode;
   return <aside className="keep-panel" aria-label="The Keep">
-    <h2>The Keep</h2>
+    <div className="keep-panel-head">
+      <h2>The Keep</h2>
+      {status?.state === "connected" ? <button type="button" className="keep-save-open" disabled={!canSave} title={canSave ? "Save a memory or a skill draft" : "Personal mode is on: nothing is shared with the team"} onClick={() => setSaving(true)}><Plus size={13} /> Save</button> : null}
+    </div>
+    {saving && canSave ? <SaveToKeepDialog invoke={invoke} onClose={closeSave} /> : null}
     {!status || status.state === "starting" ? <div className="keep-skeleton" aria-busy="true" aria-label="Connecting to the Keep"><span /><span /><span /></div>
       : status.state === "missing" ? <MissingCard onRetry={onRetry} />
       : status.state === "connected" ? <>

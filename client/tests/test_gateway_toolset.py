@@ -154,8 +154,8 @@ def test_chat_preset_is_exactly_the_decided_surface():
 
 
 STUDIO_SURFACE = frozenset({
-    "memory_recall", "memory_feedback",
-    "skill_list", "skill_recall",
+    "memory_recall", "memory_feedback", "memory_learn",
+    "skill_list", "skill_recall", "skill_create",
     "relay_who_is_online", "relay_read",
     "ctx_list_sessions", "replay_timeline", "corpus_sources",
 })
@@ -167,15 +167,20 @@ def test_studio_preset_is_exactly_the_decided_surface():
     assert TOOLSET_PRESETS["studio"] == STUDIO_SURFACE
 
 
-def test_studio_preset_cannot_write_sessions_or_memories():
-    """Studio reads the Keep and thumbs knowledge; it never owns a session
-    (spec §7.2) and never learns on the user's behalf."""
+def test_studio_preset_cannot_write_sessions_or_reach_the_vault():
+    """Studio never owns a Keep session (spec §7.2) and never touches the
+    vault, the corpus or relay writes. Its only writes are the two a human
+    types into "Save to the Keep": memory_learn and skill_create."""
     from firekeep_client.gateway import TOOLSET_PRESETS
 
     forbidden = {"ctx_start_session", "ctx_resume_session", "ctx_update",
-                 "ctx_complete_session", "ctx_abandon_session", "memory_learn",
-                 "vault_retrieve", "skill_create"}
+                 "ctx_complete_session", "ctx_abandon_session",
+                 "vault_retrieve", "vault_store", "vault_list", "vault_delete",
+                 "corpus_ingest", "corpus_delete", "relay_post", "relay_send_dm",
+                 "skill_add_step_specs", "memory_stream"}
     assert not (TOOLSET_PRESETS["studio"] & forbidden)
+    writes = TOOLSET_PRESETS["studio"] & {"memory_learn", "skill_create"}
+    assert writes == {"memory_learn", "skill_create"}
 
 
 def test_studio_preset_resolves_from_env(monkeypatch):

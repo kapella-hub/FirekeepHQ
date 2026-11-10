@@ -487,7 +487,11 @@ vars, read once at gateway start:
   - **`studio`** (client 1.8.0) is Firekeep Studio's Keep panel surface — `memory_recall`,
     `memory_feedback`, `skill_list`, `skill_recall`, `relay_who_is_online`, `relay_read`,
     `ctx_list_sessions`, `replay_timeline`, `corpus_sources`. It has no session-writing
-    tool: Studio never owns a Keep session. It keeps the default handshake text.
+    tool: Studio never owns a Keep session. It keeps the default handshake text. The release
+    after client 1.9.1 adds two writes for Studio's **Save to the Keep** dialog,
+    `memory_learn` and `skill_create`; both are typed by the human, and Studio always sends
+    `status="draft"` for a skill. On an older kit those two calls are refused at the gateway
+    and Studio asks for `firekeep update`.
 - `FIREKEEP_TOOLS_ALLOW=<comma,list>` — an explicit allowlist; wins over the preset.
 
 The rules are load-bearing. Filtering happens at the **routing layer**

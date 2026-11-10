@@ -20,6 +20,8 @@ const decisionAnswer = z.object({
 const decisionAnswers = z.record(z.string().min(1).max(128), decisionAnswer)
   .refine((value) => Object.keys(value).length <= 64, "too many Decision Board answers");
 const MAX_CLIPBOARD_TEXT = 1_000_000;
+/** Free text a human saves to the Keep; the gateway re-validates and refuses anything secret-shaped. */
+const keepText = z.string().min(1).max(4_000);
 const memoryId = z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/);
 const actionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("bootstrap") }).strict(),
@@ -62,6 +64,8 @@ const actionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("keep.skills") }).strict(),
   z.object({ type: z.literal("keep.team") }).strict(),
   z.object({ type: z.literal("keep.highlights") }).strict(),
+  z.object({ type: z.literal("keep.learn"), action: keepText, outcome: keepText, resolution: keepText.optional(), tags: z.array(z.string().min(1).max(40).regex(/^[a-z0-9._-]+$/)).max(8) }).strict(),
+  z.object({ type: z.literal("keep.skillDraft"), trigger: keepText, symptoms: keepText, steps: keepText, gotchas: keepText.optional(), domain: z.string().min(1).max(80).optional() }).strict(),
   z.object({ type: z.literal("keep.feedback"), memoryIds: z.array(memoryId).min(1).max(50), useful: z.boolean(), comment: z.string().max(500).optional() }).strict(),
   z.object({ type: z.literal("keep.receipt.retry"), runId: id }).strict(),
   z.object({ type: z.literal("session.new") }).strict(),
@@ -92,7 +96,7 @@ export interface ClipboardTransport {
 const emptyClipboard: ClipboardTransport = { readText: () => "", writeText: () => undefined };
 
 /** The Keep panel's fixed query surface. There is deliberately no generic tool call. */
-export type KeepPanelSource = Pick<KeepGateway, "status" | "retry" | "refreshIdentity" | "restart" | "search" | "skills" | "team" | "highlights" | "feedback">;
+export type KeepPanelSource = Pick<KeepGateway, "status" | "retry" | "refreshIdentity" | "restart" | "search" | "skills" | "team" | "highlights" | "feedback" | "learn" | "draftSkill">;
 
 /** The review surface's view of the workspace; implemented by `WorkspaceChangesService`. */
 export interface WorkspaceChangesSource {
@@ -172,6 +176,14 @@ export class StudioController {
     if (action.type === "keep.skills") return { type: "keep-items", items: await this.#requireKeep().skills() };
     if (action.type === "keep.team") return { type: "keep-team", markdown: await this.#requireKeep().team() };
     if (action.type === "keep.highlights") return { type: "keep-highlights", highlights: await this.#requireKeep().highlights() };
+    if (action.type === "keep.learn") {
+      const detail = await this.#requireKeep().learn({ action: action.action, outcome: action.outcome, ...(action.resolution ? { resolution: action.resolution } : {}), tags: action.tags });
+      return { type: "keep-saved", kind: "memory", detail };
+    }
+    if (action.type === "keep.skillDraft") {
+      const detail = await this.#requireKeep().draftSkill({ trigger: action.trigger, symptoms: action.symptoms, steps: action.steps, ...(action.gotchas ? { gotchas: action.gotchas } : {}), ...(action.domain ? { domain: action.domain } : {}) });
+      return { type: "keep-saved", kind: "skill-draft", detail };
+    }
     if (action.type === "keep.feedback") {
       await this.#requireKeep().feedback(action.memoryIds, action.useful, action.comment);
       return { type: "keep-feedback" };

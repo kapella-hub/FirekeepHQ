@@ -112,7 +112,42 @@ describe("KeepGateway", () => {
     for (const [name] of mcp.calls) expect(STUDIO_TOOLS).toContain(name);
   });
 
-  it("labels only memory_recall and memory_feedback (ctx_list_sessions treats agent_id as a filter)", async () => {
+  it("saves a memory and always saves a skill as a draft, attributed to the panel label", async () => {
+    const mcp = fakeMcp((name) => name === "memory_learn" ? "Stored memory in domain 'general'\nmore" : "Created skill draft abc");
+    const gateway = new KeepGateway({ whoami: whoamiOk, connect: async () => mcp });
+    await gateway.start();
+    mcp.calls.length = 0;
+    await expect(gateway.learn({ action: " Moved the backup ", outcome: "No overlap", tags: ["ops"] })).resolves.toBe("Stored memory in domain 'general'");
+    await expect(gateway.draftSkill({ trigger: "Deploy fails", symptoms: "Exit 1", steps: "1. Retry" })).resolves.toBe("Created skill draft abc");
+    expect(mcp.calls).toEqual([
+      ["memory_learn", { action: "Moved the backup", outcome: "No overlap", tags: ["ops"], agent_id: "agent-a-studio-panel" }],
+      ["skill_create", { trigger: "Deploy fails", symptoms: "Exit 1", steps: "1. Retry", gotchas: "", domain: "", status: "draft", agent_id: "agent-a-studio-panel" }],
+    ]);
+  });
+
+  it("refuses secret-shaped text before it reaches the Keep", async () => {
+    const mcp = fakeMcp();
+    const gateway = new KeepGateway({ whoami: whoamiOk, connect: async () => mcp });
+    await gateway.start();
+    mcp.calls.length = 0;
+    await expect(gateway.learn({ action: "Rotated the key", outcome: "password = hunter2hunter2", tags: [] })).rejects.toThrow(/store secrets in the vault/);
+    await expect(gateway.draftSkill({ trigger: "x", symptoms: "y", steps: "export TOKEN=ghp_" + "a".repeat(36) })).rejects.toThrow(/GitHub token/);
+    await expect(gateway.learn({ action: "", outcome: "x", tags: [] })).rejects.toThrow(/required/);
+    expect(mcp.calls).toEqual([]);
+  });
+
+  it("explains a kit that predates the write tools without treating the Keep as down", async () => {
+    const statuses: KeepStatus[] = [];
+    const mcp: McpLike = { closed: false, async callTool(name) { if (name === "memory_learn") throw new Error("unknown or unavailable tool: memory_learn"); return { text: "ok", isError: false }; }, async close() {} };
+    const gateway = new KeepGateway({ whoami: whoamiOk, connect: async () => mcp, onStatus: (status) => statuses.push(status) });
+    await gateway.start();
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      await expect(gateway.learn({ action: "a", outcome: "b", tags: [] })).rejects.toThrow(/firekeep update/);
+    }
+    expect(gateway.status().state).toBe("connected");
+  });
+
+  it("labels the read tools memory_recall and memory_feedback (ctx_list_sessions treats agent_id as a filter)", async () => {
     const mcp = fakeMcp(() => "");
     const gateway = new KeepGateway({ whoami: whoamiOk, connect: async () => mcp });
     await gateway.start();

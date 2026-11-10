@@ -224,7 +224,7 @@ describe("Studio IPC controller", () => {
       skills: vi.fn(async () => [{ title: "s", body: "sb" }]),
       team: vi.fn(async () => "# team"),
       highlights: vi.fn(async () => ({ online: "o", bulletin: "b", paused: [] })),
-      feedback: vi.fn(async () => { throw new Error("Keep not connected"); }),
+      feedback: vi.fn(async () => { throw new Error("Keep not connected"); }), learn: vi.fn(async () => "Stored memory"), draftSkill: vi.fn(async () => "Created skill draft"),
     };
     const studio = await controller(undefined, null, undefined, undefined, undefined, keep);
 
@@ -254,7 +254,7 @@ describe("Studio IPC controller", () => {
     const status: KeepStatus = { state: "connected", agentId: "agent", personalMode: false, kitVersion: "1.8.0" };
     const keep: KeepPanelSource = {
       status: vi.fn(() => status), retry: vi.fn(async () => status), refreshIdentity: vi.fn(async () => status), restart: vi.fn(async () => status),
-      search: vi.fn(), skills: vi.fn(), team: vi.fn(), highlights: vi.fn(), feedback: vi.fn(),
+      search: vi.fn(), skills: vi.fn(), team: vi.fn(), highlights: vi.fn(), feedback: vi.fn(), learn: vi.fn(async () => "Stored memory"), draftSkill: vi.fn(async () => "Created skill draft"),
     };
     const studio = await controller(undefined, null, undefined, undefined, undefined, keep);
     const withKit = new StudioController(studio.service, createCommandRegistry(studio.service, { firekeep: { execute: async () => ({ ok: true, exitCode: 0, output: "done" }) } as never }), "0.3.7", undefined, undefined, null, undefined, undefined, undefined, keep);
@@ -268,7 +268,7 @@ describe("Studio IPC controller", () => {
     const status: KeepStatus = { state: "connected", agentId: "agent", personalMode: false, kitVersion: "1.8.0" };
     const keep: KeepPanelSource = {
       status: vi.fn(() => status), retry: vi.fn(async () => status), refreshIdentity: vi.fn(async () => status), restart: vi.fn(async () => { throw new Error("spawn failed"); }),
-      search: vi.fn(), skills: vi.fn(), team: vi.fn(), highlights: vi.fn(), feedback: vi.fn(),
+      search: vi.fn(), skills: vi.fn(), team: vi.fn(), highlights: vi.fn(), feedback: vi.fn(), learn: vi.fn(async () => "Stored memory"), draftSkill: vi.fn(async () => "Created skill draft"),
     };
     const studio = await controller(undefined, null, undefined, undefined, undefined, keep);
     const withKit = new StudioController(studio.service, createCommandRegistry(studio.service, { firekeep: { execute: async () => { throw new Error("ssh failed"); } } as never }), "0.3.7", undefined, undefined, null, undefined, undefined, undefined, keep);
@@ -280,7 +280,7 @@ describe("Studio IPC controller", () => {
     const status: KeepStatus = { state: "connected", agentId: "agent", personalMode: false, kitVersion: "1.8.0" };
     const keep: KeepPanelSource = {
       status: vi.fn(() => status), retry: vi.fn(async () => status), refreshIdentity: vi.fn(async () => status), restart: vi.fn(async () => status),
-      search: vi.fn(), skills: vi.fn(), team: vi.fn(), highlights: vi.fn(), feedback: vi.fn(),
+      search: vi.fn(), skills: vi.fn(), team: vi.fn(), highlights: vi.fn(), feedback: vi.fn(), learn: vi.fn(async () => "Stored memory"), draftSkill: vi.fn(async () => "Created skill draft"),
     };
     const studio = await controller(undefined, null, undefined, undefined, undefined, keep);
     const withKit = new StudioController(studio.service, createCommandRegistry(studio.service, { firekeep: { execute: async () => { throw new Error("timed out"); } } as never }), "0.3.7", undefined, undefined, null, undefined, undefined, undefined, keep);
@@ -294,7 +294,7 @@ describe("Studio IPC controller", () => {
     const keep: KeepPanelSource = {
       status: vi.fn(() => unreachable),
       retry: vi.fn(async () => connected), refreshIdentity: vi.fn(async () => connected), restart: vi.fn(async () => connected),
-      search: vi.fn(), skills: vi.fn(), team: vi.fn(), highlights: vi.fn(), feedback: vi.fn(),
+      search: vi.fn(), skills: vi.fn(), team: vi.fn(), highlights: vi.fn(), feedback: vi.fn(), learn: vi.fn(async () => "Stored memory"), draftSkill: vi.fn(async () => "Created skill draft"),
     };
     const studio = await controller(undefined, null, undefined, undefined, undefined, keep);
     await expect(studio.dispatch({ type: "keep.retry" })).resolves.toEqual({ type: "keep-status", status: connected });
@@ -322,6 +322,24 @@ describe("Studio IPC controller", () => {
     expect(studio.service.snapshot().notifications).toBe(true);
     await expect(studio.dispatch({ type: "settings.notifications", enabled: false })).resolves.toMatchObject({ type: "state", snapshot: { notifications: false } });
     await expect(studio.invoke({ type: "settings.notifications", enabled: "no" })).resolves.toMatchObject({ type: "error" });
+  });
+
+  it("saves a memory and a skill draft through the Keep, and validates what the renderer sends", async () => {
+    const studio = await controller();
+    const learn = vi.fn(async () => "Stored memory in domain 'general'");
+    const draftSkill = vi.fn(async () => "Created skill draft");
+    const keep = { learn, draftSkill } as never;
+    const saving = new StudioController(studio.service, createCommandRegistry(studio.service), "0.3.7", undefined, undefined, null, undefined, undefined, undefined, keep);
+
+    await expect(saving.dispatch({ type: "keep.learn", action: "Moved the backup", outcome: "No overlap", tags: ["ops"] })).resolves.toEqual({ type: "keep-saved", kind: "memory", detail: "Stored memory in domain 'general'" });
+    expect(learn).toHaveBeenCalledWith({ action: "Moved the backup", outcome: "No overlap", tags: ["ops"] });
+    await expect(saving.dispatch({ type: "keep.skillDraft", trigger: "Deploy fails", symptoms: "Exit 1", steps: "1. Retry", domain: "deploy" })).resolves.toEqual({ type: "keep-saved", kind: "skill-draft", detail: "Created skill draft" });
+    expect(draftSkill).toHaveBeenCalledWith({ trigger: "Deploy fails", symptoms: "Exit 1", steps: "1. Retry", domain: "deploy" });
+
+    await expect(saving.invoke({ type: "keep.learn", action: "", outcome: "x", tags: [] })).resolves.toMatchObject({ type: "error" });
+    await expect(saving.invoke({ type: "keep.learn", action: "a", outcome: "b", tags: ["Not A Tag"] })).resolves.toMatchObject({ type: "error" });
+    await expect(saving.invoke({ type: "keep.skillDraft", trigger: "a", symptoms: "b", steps: "c", status: "active" })).resolves.toMatchObject({ type: "error" });
+    await expect(studio.invoke({ type: "keep.learn", action: "a", outcome: "b", tags: [] })).resolves.toMatchObject({ type: "error" });
   });
 
   it("routes change review through the workspace source and refuses a revert during a run", async () => {

@@ -67,11 +67,14 @@ TOOLSET_PRESETS: dict[str, frozenset[str]] = {
         "ctx_get_shadow",
     }),
     # Firekeep Studio's Keep panel and per-turn receipts (Studio 0.5, spec
-    # 2026-10-11 §7.1). Reads plus knowledge feedback only: Studio never
-    # starts, updates or completes a Keep session — the agent owns those.
+    # 2026-10-11 §7.1). Studio never starts, updates or completes a Keep
+    # session — the agent owns those. Two writes were added on 2026-11-10 for
+    # Studio's "Save to the Keep" dialog, both typed by the human, never by an
+    # agent turn: memory_learn, and skill_create (Studio always passes
+    # status="draft", so a skill lands in the review queue, not in recall).
     "studio": frozenset({
-        "memory_recall", "memory_feedback",
-        "skill_list", "skill_recall",
+        "memory_recall", "memory_feedback", "memory_learn",
+        "skill_list", "skill_recall", "skill_create",
         "relay_who_is_online", "relay_read",
         "ctx_list_sessions", "replay_timeline", "corpus_sources",
     }),

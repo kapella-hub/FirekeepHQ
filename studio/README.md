@@ -28,6 +28,26 @@ Studio now tells you when an agent is waiting, instead of expecting you to watch
 The rules for what deserves attention are pure functions in `src/core/attention.ts`; the
 main-process `AttentionNotifier` only tracks what was already said and whether anyone is looking.
 
+## Unreleased — Save to the Keep
+
+The Keep panel's **Save** button opens a dialog with two choices, both typed by you:
+
+- **Memory** (`memory_learn`): what was done, what came of it, optionally how it was resolved
+  and up to eight tags. It is shared with the team as soon as it is saved.
+- **Skill draft** (`skill_create` with `status="draft"`, always): when it applies, symptoms,
+  steps, optional gotchas and domain. A draft lands in the dashboard's review queue and is
+  not recalled until someone approves it. Studio cannot publish an active skill.
+
+Text that looks like a credential (a private key, an API or GitHub token, an AWS key, a
+connection string with a password, a `password=`/`token=` assignment) is refused in the dialog
+and again in the main process, before anything is sent: the Keep is team-visible and is not a
+secret store. Each field is capped at 4,000 characters. The button is disabled in personal mode.
+
+These two writes need a kit whose `studio` preset serves them (the release after client
+1.9.1). On an older kit the gateway refuses the call and Studio says to run `firekeep update`;
+the refusal does not count as a Keep failure. Studio still never starts, updates or completes
+a Keep session. IPC actions: `keep.learn`, `keep.skillDraft`.
+
 ## Unreleased — Review changes
 
 The top-bar **Review changes** button (it carries the number of changed files) opens a review
@@ -345,7 +365,8 @@ permission settings are frozen when execution begins; reviewer runs are always f
   whether Firekeep is wired into Claude and Codex.
 - IPC is typed: the renderer sends a schema-validated, discriminated action allowlist, and no
   action accepts a tool name.
-- Studio calls only the nine tools of the kit's `studio` preset. This is enforced twice: by
+- Studio calls only the eleven tools of the kit's `studio` preset (nine reads and feedback,
+  plus `memory_learn` and draft-only `skill_create` for **Save to the Keep**). This is enforced twice: by
   the gateway's toolset (`FIREKEEP_TOOLSET=studio`) and by Studio's own `STUDIO_TOOLS`
   allowlist in `src/main/keep/`, which refuses any other tool before it is sent.
 - Studio's generic update URL is fixed in the main process. The renderer cannot supply an

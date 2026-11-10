@@ -76,6 +76,8 @@ export type StudioAction =
   | { type: "keep.team" }
   | { type: "keep.highlights" }
   | { type: "keep.feedback"; memoryIds: string[]; useful: boolean; comment?: string }
+  | { type: "keep.learn"; action: string; outcome: string; resolution?: string; tags: string[] }
+  | { type: "keep.skillDraft"; trigger: string; symptoms: string; steps: string; gotchas?: string; domain?: string }
   | { type: "keep.receipt.retry"; runId: string }
   | { type: "session.new" }
   | { type: "session.resume"; sessionId: string }
@@ -125,6 +127,7 @@ export type StudioActionResult =
   | { readonly type: "keep-team"; readonly markdown: string }
   | { readonly type: "keep-highlights"; readonly highlights: KeepHighlights }
   | { readonly type: "keep-feedback" }
+  | { readonly type: "keep-saved"; readonly kind: "memory" | "skill-draft"; readonly detail: string }
   | { readonly type: "test-command"; readonly command: string | null }
   | { readonly type: "changes"; readonly changes: WorkspaceChanges }
   | { readonly type: "change-diff"; readonly diff: FileDiff };
