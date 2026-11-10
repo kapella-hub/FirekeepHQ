@@ -12,7 +12,12 @@ from typing import Literal
 import redis.asyncio as aioredis
 
 from app.evals.models import EvalResult
-from app.evals.scorers import brier_score, compute_tier1_metrics
+from app.evals.scorers import (
+    OBSERVED_EVENT_TYPE,
+    brier_score,
+    compute_tier1_metrics,
+    outcome_brier_score,
+)
 from app.evals.store import get_eval, store_eval
 
 logger = logging.getLogger(__name__)
@@ -142,14 +147,23 @@ async def compute_session_eval(
             if e.get("event_type") == "agent.action.reconcile":
                 aid = e.get("payload", {}).get("action_id")
                 if aid in predict_by_id:
+                    # `outcome` is a dict in the current reconcile schema and a
+                    # string in older events; only a real bool is a verdict.
+                    reconciled = e.get("payload", {}).get("outcome")
+                    success = (reconciled.get("success")
+                               if isinstance(reconciled, dict) else None)
                     reconcile_actions.append({
                         "prediction_confidence": predict_by_id[aid],
                         "prediction_match_score": e.get("payload", {}).get("prediction_match_score"),
+                        "success": success,
                     })
 
         brier = brier_score(reconcile_actions)
         if brier is not None:
             metrics["brier_score"] = brier
+        outcome_brier = outcome_brier_score(reconcile_actions)
+        if outcome_brier is not None:
+            metrics["outcome_brier_score"] = outcome_brier
 
         logger.info(
             "Eval computed for session %s: %d events, memory_reads=%d, memory_writes=%d, tool_success=%.2f",
@@ -159,10 +173,14 @@ async def compute_session_eval(
             metrics.get("tool_success_rate", 0),
         )
 
-        # Identify failure events
+        # Identify failure events. Observed commands are excluded: a failing
+        # command mid-session is ordinary work, and `has_failures` /
+        # `EvalResult.outcome` / optimism-skew all read this list as "something
+        # went wrong" (scorers.py, "Observed commands").
         failure_event_ids = [
             e.get("id", "") for e in events
             if e.get("outcome") == "failure"
+            and e.get("event_type") != OBSERVED_EVENT_TYPE
         ]
 
         from app.evals.models import recognized_grade_pair

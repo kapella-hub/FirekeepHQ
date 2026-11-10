@@ -45,20 +45,26 @@ def test_claude_render_writes_shim_servers_and_hooks(fake_home, tmp_path):
     assert settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"].endswith(
         "-m firekeep_client.hooks prompt --runtime claude")
     pre = settings["hooks"]["PreToolUse"][0]
-    assert pre["matcher"] == "^(Edit|Write|Bash)$", (
+    assert pre["matcher"] == "^(Edit|Write|Bash|PowerShell)$", (
         "Bash must reach the BLOCKING gate: pre_tool has always mapped it to "
         "run_command, but this matcher excluded it, so `git checkout -- <dir>` "
-        "destroyed uncommitted work while PostToolUse only watched it run.")
+        "destroyed uncommitted work while PostToolUse only watched it run. "
+        "PowerShell is the same tool on Windows.")
     # exit-code remap: rendered WITH --block-exit 2 so pre_tool's rc=1 (gateway
     # block/rethink) AND rc=2 (lease conflict) both actually block Claude's PreToolUse
     # gate, which otherwise blocks ONLY on exit 2.
     assert pre["hooks"][0]["command"].endswith(
         "-m firekeep_client.hooks pre_tool --block-exit 2 --runtime claude")
     post = settings["hooks"]["PostToolUse"][0]
-    assert post["matcher"] == "^(Edit|Write|MultiEdit|Bash)$"
+    assert post["matcher"] == "^(Edit|Write|MultiEdit|Bash|PowerShell)$"
     # post_tool renders WITHOUT the flag -- it always returns 0, so the remap is a no-op.
     assert post["hooks"][0]["command"].endswith(
         "-m firekeep_client.hooks post_tool --runtime claude")
+    # PostToolUse fires only on success; a failed command arrives on this event, and
+    # without it no failure is ever reported. Same core, same matcher.
+    failure = settings["hooks"]["PostToolUseFailure"][0]
+    assert failure["matcher"] == post["matcher"]
+    assert failure["hooks"][0]["command"] == post["hooks"][0]["command"]
 
 
 def test_claude_render_is_non_clobbering(fake_home, tmp_path):

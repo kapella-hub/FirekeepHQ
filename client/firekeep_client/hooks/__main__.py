@@ -175,6 +175,10 @@ def _read_payload(hook_name: str) -> dict:
     except Exception as e:  # noqa: BLE001
         hooklog.log_failure(hook_name, f"stdin read failed: {e!r}")
         return {}
+    # A UTF-8 BOM in front of the JSON (seen from Windows callers, 2026-11-09:
+    # "Unexpected UTF-8 BOM") made json.loads reject the whole payload, so the
+    # core ran on `{}` — for pre_tool that is a gate with no tool to look at.
+    raw = raw.lstrip("﻿")
     if not raw.strip():
         hooklog.log_failure(hook_name, "empty stdin payload")
         return {}

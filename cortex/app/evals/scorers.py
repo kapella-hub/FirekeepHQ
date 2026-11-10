@@ -37,8 +37,79 @@ def compute_tier1_metrics(events: list[dict[str, Any]]) -> dict[str, float]:
     metrics["session_duration_ms"] = _session_duration_ms(events)
     metrics["unique_event_types"] = _unique_event_types(events)
     metrics["context_snapshot_count"] = _context_snapshot_count(events)
+    metrics["command_count"] = _command_count(events)
+    metrics["command_failure_rate"] = _command_failure_rate(events)
+    metrics["final_command_failed"] = _final_command_failed(events)
 
     return {k: v for k, v in metrics.items() if v is not None}
+
+
+# ---------------------------------------------------------------------------
+# Observed commands (agent.action.observed, 2026-11-09)
+# ---------------------------------------------------------------------------
+#
+# Shell commands reported by the client's post-tool hooks with their real exit
+# status. They are the first outcome events that are neither a self-report nor
+# a pre-declared action, and they arrive in volume — tens to hundreds per
+# session, a healthy share of them failing, because a red test run before a
+# green one is how work normally goes.
+#
+# That is why they get THEIR OWN metrics and are EXCLUDED from the
+# outcome-bearing population the older ones read (`_has_legacy_outcome`):
+#
+#   * `tool_success_rate`, `failure_rate` and `outcome_event_count` are read by
+#     frozen consumers — compliance.py's optimism-skew counts any
+#     `tool_success_rate < 1.0` at `outcome_event_count >= 2` as an independent
+#     contradiction of a self-reported success. Folding commands in would turn
+#     that into "the session ran at least one failing command", true of nearly
+#     every session, and saturate the series instead of fixing it.
+#   * a failure RATE over commands is not a quality verdict either. What
+#     contradicts "task succeeded" is the session ENDING red, which is what
+#     `final_command_failed` reports.
+
+OBSERVED_EVENT_TYPE = "agent.action.observed"
+
+
+def _is_observed(event: dict) -> bool:
+    return event.get("event_type") == OBSERVED_EVENT_TYPE
+
+
+def _has_legacy_outcome(event: dict) -> bool:
+    """An outcome-bearing event of the pre-2026-11-09 population."""
+    return bool(event.get("outcome")) and not _is_observed(event)
+
+
+def _observed_outcomes(events: list[dict]) -> list[str]:
+    return [e["outcome"] for e in events if _is_observed(e) and e.get("outcome")]
+
+
+def _command_count(events: list[dict]) -> float:
+    """How many observed commands carried an outcome. Read it beside the two
+    metrics below, for the reason `outcome_event_count` exists."""
+    return float(len(_observed_outcomes(events)))
+
+
+def _command_failure_rate(events: list[dict]) -> float | None:
+    """Share of observed commands that failed; None when none were observed."""
+    outcomes = _observed_outcomes(events)
+    if not outcomes:
+        return None
+    return round(sum(1 for o in outcomes if o == "failure") / len(outcomes), 4)
+
+
+def _final_command_failed(events: list[dict]) -> float | None:
+    """1.0 when the LAST observed command of the session failed, else 0.0;
+    None when none were observed.
+
+    Events arrive in timeline order (compute.py hydrates them by session
+    index), so the last one is the state the session was left in. A coarse
+    signal on purpose: it does not know which commands were verification and
+    which were exploration, only that the final one was red.
+    """
+    outcomes = _observed_outcomes(events)
+    if not outcomes:
+        return None
+    return 1.0 if outcomes[-1] == "failure" else 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -49,9 +120,10 @@ def compute_tier1_metrics(events: list[dict[str, Any]]) -> dict[str, float]:
 def _tool_success_rate(events: list[dict]) -> float | None:
     """Ratio of successful outcomes to total events with outcomes.
 
-    Events without an outcome field are excluded from the calculation.
+    Events without an outcome field are excluded from the calculation, and so
+    are observed commands (see "Observed commands" above).
     """
-    with_outcome = [e for e in events if e.get("outcome")]
+    with_outcome = [e for e in events if _has_legacy_outcome(e)]
     if not with_outcome:
         return None
     successes = sum(1 for e in with_outcome if e["outcome"] == "success")
@@ -185,9 +257,10 @@ def _failure_rate(events: list[dict]) -> float | None:
     the asymmetry with _tool_success_rate is resolved — an empty population
     answers "cannot tell", not "no failures". Read `outcome_event_count`
     beside this number; policy's SessionHealthRule defaults an absent metric
-    to 0.0 (allow), the correct no-signal posture.
+    to 0.0 (allow), the correct no-signal posture. Observed commands are not
+    part of this population (see "Observed commands" above).
     """
-    with_outcome = [e for e in events if e.get("outcome")]
+    with_outcome = [e for e in events if _has_legacy_outcome(e)]
     if not with_outcome:
         return None
     failures = sum(1 for e in with_outcome if e["outcome"] == "failure")
@@ -201,9 +274,9 @@ def _outcome_event_count(events: list[dict]) -> float:
     it: both are ratios over this population, and the population is ~1 in
     production. A rate computed over a single self-reported event is not a
     quality measurement, and nothing downstream could previously tell the
-    difference.
+    difference. Observed commands are counted by `command_count` instead.
     """
-    return float(sum(1 for e in events if e.get("outcome")))
+    return float(sum(1 for e in events if _has_legacy_outcome(e)))
 
 
 def _session_duration_ms(events: list[dict]) -> float | None:
@@ -258,6 +331,38 @@ def brier_score(actions: list[dict]) -> float | None:
         for a in actions
         if a.get("prediction_match_score") is not None
         and a.get("prediction_confidence") is not None
+    ]
+    if not scored:
+        return None
+    return round(sum((c - s) ** 2 for c, s in scored) / len(scored), 4)
+
+
+def outcome_brier_score(actions: list[dict]) -> float | None:
+    """Brier score of stated confidence against whether the action SUCCEEDED.
+
+    Args:
+        actions: dicts with 'prediction_confidence' (float in [0,1]) and
+                 'success' (bool). Entries missing either are excluded.
+
+    ``brier_score`` above scores confidence against `prediction_match_score`,
+    which is the share of the agent's free-text success criteria that the
+    reconcile echoed back VERBATIM in `observed_criteria_met`
+    (agent_gateway/reconciler.py). No client populates that field with the
+    agent's own wording, so the criteria half scores 0 whenever criteria were
+    stated, the match lands near 0.5 for an action that went exactly as
+    predicted, and a well-calibrated 0.9 scores 0.16. Measured 2026-11-09:
+    mean 0.32 over 50 sessions — worse than the 0.25 a constant 0.5 earns —
+    which says the instrument is off, not the agents.
+
+    This one is the textbook definition: outcome is 1 if the action succeeded,
+    else 0. It is reported beside `brier_score`, which is left unchanged
+    because the Trust Ledger's formulas are frozen against it.
+    """
+    scored = [
+        (float(a["prediction_confidence"]), 1.0 if a["success"] else 0.0)
+        for a in actions
+        if a.get("prediction_confidence") is not None
+        and isinstance(a.get("success"), bool)
     ]
     if not scored:
         return None

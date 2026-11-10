@@ -415,6 +415,48 @@ class AgentGatewayService:
             recorded=True,
         )
 
+    async def observe(self, req) -> "ActionObservedResponse":  # noqa: F821 — runtime import below
+        """Record a tool outcome that had no /before (see ActionObservedRequest).
+
+        One replay event, no policy evaluation, no prediction record, no
+        fast-path update: nothing was decided, so there is nothing to settle.
+        ``recorded`` is False when the event could not be filed — no
+        attributable session (the same rule ``record`` applies to a reconcile
+        whose prediction record expired) or the emit failed. Never raises:
+        the client calls this from a post-tool hook.
+        """
+        from app.agent_gateway.models import (
+            OBSERVED_EVENT_TYPE,
+            OBSERVED_TARGET_MAX,
+            ActionObservedResponse,
+        )
+
+        session_id = (req.session_id or "").strip()
+        if not session_id or session_id == "unknown":
+            return ActionObservedResponse(recorded=False)
+        try:
+            await self.replay_emitter(
+                event_type=OBSERVED_EVENT_TYPE,
+                session_id=session_id,
+                agent_id=req.agent_id,
+                workspace_id=getattr(req, "_verified_workspace", "") or None,
+                member_id=getattr(req, "_verified_member", "") or None,
+                payload={
+                    "action": {
+                        "type": req.action.type,
+                        "target": (req.action.target or "")[:OBSERVED_TARGET_MAX],
+                    },
+                    "outcome": {"success": bool(req.outcome.success)},
+                    "exit_status": req.exit_status,
+                    "adapter": req.adapter,
+                },
+                outcome="success" if req.outcome.success else "failure",
+            )
+        except Exception as exc:
+            logger.warning("observed emit failed for session %s: %s", session_id, exc)
+            return ActionObservedResponse(recorded=False)
+        return ActionObservedResponse(recorded=True)
+
     @staticmethod
     def _reason_to_advisory(reason: str) -> Advisory:
         """Map free-text reason from policy rules to a structured advisory.

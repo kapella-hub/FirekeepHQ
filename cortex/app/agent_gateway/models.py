@@ -116,3 +116,41 @@ class ActionAfterResponse(BaseModel):
     action_id: str
     prediction_match_score: Optional[float] = None
     recorded: bool = True
+
+
+#: Event type for a tool outcome reported with NO preceding /before call.
+OBSERVED_EVENT_TYPE = "agent.action.observed"
+
+#: Stored length of an observed action's target. The client sends the program
+#: name, not the command line — this bound is the server's own floor under
+#: that, so a client that sends more cannot park a command (and whatever
+#: secrets its arguments carry) in the replay stream.
+OBSERVED_TARGET_MAX = 120
+
+
+class ActionObservedRequest(BaseModel):
+    """An outcome with no prediction and no gate: "this ran, and here is how
+    it ended" (POST /agent/action/observed).
+
+    Exists because ordinary shell commands never reach /before — pre_tool
+    keeps them off the network (client hooks/pre_tool.py) — so they had no
+    action_id for /after to reconcile and their exit status was never
+    recorded anywhere. Measured 2026-11-09: a 22-hour session with hundreds
+    of commands evaluated with zero tool-outcome events.
+    """
+
+    session_id: str
+    agent_id: str
+    adapter: Adapter
+    action: Action
+    outcome: Outcome
+    exit_status: Optional[int] = None
+
+    # Stamped by the REST router from the verified principal, exactly as on
+    # ActionBeforeRequest.
+    _verified_workspace: str = PrivateAttr(default="")
+    _verified_member: str = PrivateAttr(default="")
+
+
+class ActionObservedResponse(BaseModel):
+    recorded: bool = True

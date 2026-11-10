@@ -15,6 +15,8 @@ from app.agent_gateway.models import (
     ActionAfterResponse,
     ActionBeforeRequest,
     ActionBeforeResponse,
+    ActionObservedRequest,
+    ActionObservedResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -62,5 +64,22 @@ def create_agent_gateway_router(get_service: Callable[[], Any]) -> APIRouter:
         body._verified_workspace = (identity or {}).get("workspace_id") or ""
         service = get_service()
         return await service.record(body)
+
+    @router.post("/observed", response_model=ActionObservedResponse)
+    async def action_observed(
+        body: ActionObservedRequest,
+        identity: dict = Depends(require_scope("eval:write")),
+    ) -> ActionObservedResponse:
+        body._verified_workspace = (identity or {}).get("workspace_id") or ""
+        body._verified_member = (identity or {}).get("member_id") or ""
+        # Same rule as /before: an outcome naming a session the caller does
+        # not own is filed under "unknown", which observe() does not emit.
+        body.session_id = await attributable_session_id(
+            body.session_id,
+            workspace_id=body._verified_workspace,
+            member_id=body._verified_member,
+        )
+        service = get_service()
+        return await service.observe(body)
 
     return router

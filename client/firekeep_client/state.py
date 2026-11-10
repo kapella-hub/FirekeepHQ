@@ -441,6 +441,30 @@ def read_session_stash(agent_id: str,
         return None
 
 
+def keep_session_id(agent_id: str) -> str | None:
+    """The agent's current KEEP (Bridge) session id from the stash, or None.
+
+    The id the server grades. A runtime's own session id (Claude Code's
+    `payload["session_id"]`) is a different namespace: Bridge mints its own id
+    at ctx_start_session, and evals, OWM and the autopilot all compute over
+    THAT id. Until 2026-11-09 the tool hooks filed every predict/reconcile
+    event under the runtime's id, so the events existed and no eval ever read
+    them — a 22-hour session evaluated with zero tool outcomes. Hooks now send
+    this id on the wire and keep the runtime id only for LOCAL pre/post
+    pairing (`resolve_session_id`), which must not change mid-flight.
+
+    None when no Keep session has been started (or the stash aged out): the
+    caller falls back to the runtime id, exactly the old behaviour. Shares the
+    stash's known limit — it is keyed by agent, so two terminals running as
+    one agent id see whichever started a session last. Never raises.
+    """
+    data = read_session_stash(agent_id)
+    sid = (data or {}).get("session_id")
+    if isinstance(sid, str) and _SESSION_ID_RE.fullmatch(sid):
+        return sid
+    return None
+
+
 def clear_session_stash(agent_id: str) -> None:
     """Delete the session stash for {agent}. Idempotent, never raises."""
     try:

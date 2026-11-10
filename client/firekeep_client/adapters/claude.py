@@ -55,8 +55,17 @@ CLAUDE_HOOKS = (
     # PostToolUse below watched them execute. `git checkout -- cortex/app/` destroyed
     # nine files of uncommitted work through that gap. Bash takes the snapshot-then-allow
     # path in pre_tool and never reaches the network.
-    ("PreToolUse", "pre_tool", "^(Edit|Write|Bash)$", 5),
-    ("PostToolUse", "post_tool", "^(Edit|Write|MultiEdit|Bash)$", 10),
+    #
+    # PowerShell (Claude Code's built-in shell on Windows, command under `command`
+    # like Bash) joined both matchers 2026-11-09: without it a Windows session's shell
+    # commands were never gated and never reported.
+    ("PreToolUse", "pre_tool", "^(Edit|Write|Bash|PowerShell)$", 5),
+    ("PostToolUse", "post_tool", "^(Edit|Write|MultiEdit|Bash|PowerShell)$", 10),
+    # PostToolUse fires only when a tool SUCCEEDS. A command that exits non-zero fires
+    # PostToolUseFailure instead — unregistered until 2026-11-09, which is why no
+    # failed command was ever recorded. Same core: post_tool tells the two apart by
+    # the payload's `hook_event_name`.
+    ("PostToolUseFailure", "post_tool", "^(Edit|Write|MultiEdit|Bash|PowerShell)$", 10),
 )
 
 
