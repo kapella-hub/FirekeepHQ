@@ -25,12 +25,18 @@ from firekeep_client.hooks import _mcp, destructive, never_raise, runbooks
 
 _HOOK = "pre_tool"
 _EDIT_TOOLS = {"Edit", "Write", "MultiEdit"}
+# Shell tools. PowerShell is Claude Code's built-in shell on Windows and
+# carries its command under `command` exactly as Bash does. It was missing
+# here until 2026-11-09, so on Windows every shell command fell through to
+# "other": no destructive-command guard, no runbook gate, and a network
+# round trip to the generic gateway with an empty target on each one.
+COMMAND_TOOLS = frozenset({"Bash", "PowerShell"})
 
 
 def _action_type(tool_name: str) -> str:
     if tool_name in _EDIT_TOOLS:
         return "edit_file"
-    if tool_name == "Bash":
+    if tool_name in COMMAND_TOOLS:
         return "run_command"
     return "other"
 
@@ -149,15 +155,19 @@ def run(payload: dict) -> int:
                 hooklog.log_failure(_HOOK, f"relay_lease_status failed: {e}")
 
     # 2. Agent-gateway pre-action gate (Cortex REST). Unreachable -> allow (0).
+    #    The event is filed under the KEEP session when one exists — the id
+    #    evals grade (state.keep_session_id). `session_id` stays the local
+    #    pairing key for push_action/pop_action below.
+    wire_session_id = state.keep_session_id(agent) or session_id
     try:
-        cep = resolver.resolve("cortex", cfg=cfg, session_id=session_id)
+        cep = resolver.resolve("cortex", cfg=cfg, session_id=wire_session_id)
         # adapter MUST be one of the server's Adapter literals ("shell-hook",
         # "mcp", "rest") — anything else 422s and the fail-open path would make
         # the gateway gate permanently inert (caught by task review vs the real
         # cortex/app/agent_gateway/models.py).
         resp = transport.post_json(
             f"{cep.rest_base}/agent/action/before",
-            {"session_id": session_id, "agent_id": agent, "adapter": "shell-hook",
+            {"session_id": wire_session_id, "agent_id": agent, "adapter": "shell-hook",
              "action": {"type": action_type, "target": target}},
             headers=cep.headers, verify=cep.verify,
         )

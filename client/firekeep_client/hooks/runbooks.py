@@ -209,7 +209,17 @@ def gate(command: str, payload: dict, cfg, agent: str) -> int:
 def _escalate(command: str, payload: dict, cfg, agent: str, session_id: str):
     """POST /agent/action/before for a runbook-matched command. cwd rides in
     the action for audit (spec: "cwd sent for audit"); old servers ignore the
-    extra field (pydantic default), Phase A records it."""
+    extra field (pydantic default), Phase A records it.
+
+    Filed under the KEEP session when one exists (state.keep_session_id) —
+    the caller's `session_id` is the runtime's id and remains the LOCAL
+    pairing key for push_action. Resolved inside its own guard so a stash
+    problem can only fall back to the old id, never raise into the
+    fail-closed branch."""
+    try:
+        session_id = state.keep_session_id(agent) or session_id
+    except Exception:  # noqa: BLE001
+        pass
     cep = resolver.resolve("cortex", cfg=cfg, session_id=session_id)
     try:
         cwd = payload.get("cwd") or os.getcwd()

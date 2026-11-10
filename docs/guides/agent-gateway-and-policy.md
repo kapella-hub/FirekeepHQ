@@ -21,7 +21,9 @@ Compound policy evaluation for pre-edit safety checks. The policy engine runs on
 Predict-then-act surface for any agent runtime. Wraps consequential actions in a `predict → policy → execute → reconcile` flow with `allow | rethink | block` decisions.
 
 **MCP Tools:** `action_before`, `action_after`
-**REST Endpoints (on Cortex :8100):** `POST /agent/action/before`, `POST /agent/action/after`
+**REST Endpoints (on Cortex :8100):** `POST /agent/action/before`, `POST /agent/action/after`, `POST /agent/action/observed`
+
+`/agent/action/observed` (2026-11-09, scope `eval:write`) records a tool outcome that had no `/before`: `{session_id, agent_id, adapter, action:{type,target}, outcome:{success}, exit_status}` → one `agent.action.observed` replay event with a top-level outcome. No policy evaluation, no prediction record. The client sends it for shell commands that were not runbook-matched (which never reach `/before`), with the program name as `target`; the server truncates `target` to 120 characters regardless. A session the caller does not own, or no session, is not recorded (`recorded: false`). See [`replay-evals-patterns.md`](replay-evals-patterns.md) "Observed commands".
 **Legacy:** `POST /policy/evaluate` remains as a deprecated alias.
 **Adapters:** Claude Code via paired Pre+Post hooks; MCP-capable agents (Codex/Kiro/Cursor) via the two new MCP tools; custom Python via two HTTP calls.
 **Config:** `AGENT_GATEWAY_ENABLED`, `AGENT_PREDICTION_CONFIDENCE_THRESHOLD`, `AGENT_RECONCILE_DEADLINE_SECONDS`, `AGENT_RETHINK_MAX_LOOPS`, `AGENT_FASTPATH_MIN_SAMPLES`, `AGENT_FASTPATH_MIN_SUCCESS_RATE`, `AGENT_FASTPATH_CACHE_TTL_SECONDS`.
