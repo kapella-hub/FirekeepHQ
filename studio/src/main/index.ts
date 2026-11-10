@@ -223,6 +223,20 @@ async function createController(): Promise<StudioController> {
     broadcast({ type: "runtime.event", event });
     broadcast({ type: "snapshot", snapshot: service.snapshot() });
   });
+  // Sessions the human switched away from keep working. Their events never reach the renderer's
+  // transcript; they raise notifications, and the moments that change what the rail and the
+  // inbox show (a run starting or ending, an approval, a mission step) refresh both.
+  const railMoments = new Set(["run.started", "run.completed", "run.failed", "approval.requested", "approval.resolved", "notice"]);
+  service.subscribeBackground((event) => {
+    try { if (event) attention.event(event); }
+    catch (error) { warning("Studio notification failed", error); }
+    if (event && !railMoments.has(event.payload.kind)) return;
+    broadcast({ type: "snapshot", snapshot: service.snapshot() });
+    void service.listSessions().then((sessions) => {
+      attention.sessions(sessions);
+      broadcast({ type: "sessions", sessions });
+    }).catch((error) => warning("Studio could not list sessions", error));
+  });
   const login = async (runtimeId: string, request: Parameters<StudioService["login"]>[1]) => {
     const result = await service.login(runtimeId, request);
     if (result.state === "browser" || result.state === "device") {

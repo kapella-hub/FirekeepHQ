@@ -13,7 +13,7 @@ function event(payload: RuntimeEventPayload, runId = "run-1"): RuntimeEvent {
 }
 const mission = (phase: MissionSnapshot["phase"], extra: Partial<MissionSnapshot> = {}): MissionSnapshot =>
   ({ id: "m1", goal: "Ship the inbox", phase, attempt: 0, blockReason: null, ...extra }) as MissionSnapshot;
-const snap = (value: MissionSnapshot | null): StudioSnapshot => ({ mission: value }) as StudioSnapshot;
+const snap = (value: MissionSnapshot | null): StudioSnapshot => ({ activeSessionId: "s", mission: value, background: [] }) as unknown as StudioSnapshot;
 const board = { url: "http://127.0.0.1:1/b/1", spec: { context: "Scope of the release", questions: [{}, {}] } } as unknown as DecisionBoardDocument;
 
 describe("attention rules", () => {
@@ -94,5 +94,23 @@ describe("AttentionNotifier", () => {
     expect(shown.map((notice) => notice.title)).toEqual(["Mission is waiting for your sign-off"]);
     notifier.snapshot(snap(mission("succeeded", { id: "m2" })));
     expect(shown).toHaveLength(1);
+  });
+
+  it("notices a mission that starts waiting in a background session, once", () => {
+    const { shown, notifier } = harness();
+    const stored = (phase: MissionSnapshot["phase"]) => [{ id: "other", mission: mission(phase, { id: "m9" }) }] as never;
+    notifier.sessions(stored("running"));
+    notifier.sessions(stored("awaiting-approval"));
+    notifier.sessions(stored("awaiting-approval"));
+    expect(shown.map((notice) => notice.title)).toEqual(["Mission is waiting for your sign-off"]);
+  });
+
+  it("treats a background mission's runs as steps, using that session's own phase", () => {
+    const { shown, notifier } = harness();
+    notifier.snapshot({ activeSessionId: "s", mission: null, background: [{ sessionId: "other", running: true, missionPhase: "running", approvals: [] }] } as unknown as StudioSnapshot);
+    notifier.event({ ...event({ kind: "run.completed", durationMs: 1 }, "run-bg"), studioSessionId: "other" } as RuntimeEvent);
+    expect(shown).toEqual([]);
+    notifier.event(event({ kind: "run.completed", durationMs: 1 }, "run-fg"));
+    expect(shown.map((notice) => notice.key)).toEqual(["run:run-fg"]);
   });
 });

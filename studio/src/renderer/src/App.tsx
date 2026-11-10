@@ -27,7 +27,7 @@ import { TopBar } from "./layout/TopBar.js";
 import { AttentionInbox } from "./layout/AttentionInbox.js";
 import { ReviewSheet } from "./review/ReviewSheet.js";
 import { EMPTY_CHANGES, type WorkspaceChanges } from "../../core/workspace-changes.js";
-import { buildInbox, type InboxItem, type PendingBoard } from "./inbox.js";
+import { buildInbox, type InboxItem, type OtherSession, type PendingBoard } from "./inbox.js";
 import { ignore } from "./util.js";
 import { CopyButton } from "./CopyButton.js";
 import { SettingsSheet, type SettingsSection } from "./settings/SettingsSheet.js";
@@ -518,9 +518,20 @@ export function App(): React.JSX.Element {
     if (boardSessionRef.current !== null && activeSessionId !== null && boardSessionRef.current !== activeSessionId) setPendingBoards([]);
     if (activeSessionId !== null) boardSessionRef.current = activeSessionId;
   }, [activeSessionId]);
-  const inbox = useMemo(() => buildInbox(timeline, snapshot?.activeRunId ?? null, snapshot?.mission ?? null, pendingBoards), [pendingBoards, snapshot?.activeRunId, snapshot?.mission, timeline]);
+  const background = snapshot?.background;
+  // Other sessions that need the human: an approval a background run is blocked on, or a mission waiting there.
+  const otherSessions = useMemo((): OtherSession[] => sessions.filter((session) => session.id !== activeSessionId).map((session) => ({
+    sessionId: session.id,
+    name: session.name,
+    approvals: background?.find((entry) => entry.sessionId === session.id)?.approvals ?? [],
+    missionPhase: session.mission?.phase ?? null,
+    missionGoal: session.mission?.goal ?? null,
+  })), [activeSessionId, background, sessions]);
+  const runningSessionIds = useMemo(() => new Set((background ?? []).filter((entry) => entry.running).map((entry) => entry.sessionId)), [background]);
+  const inbox = useMemo(() => buildInbox(timeline, snapshot?.activeRunId ?? null, snapshot?.mission ?? null, pendingBoards, otherSessions), [otherSessions, pendingBoards, snapshot?.activeRunId, snapshot?.mission, timeline]);
   const openInboxItem = useCallback((item: InboxItem): void => {
     if (item.kind === "decision") { ignore(openDecisionBoard(item.url)); return; }
+    if (item.kind === "session") { ignore(invoke({ type: "session.resume", sessionId: item.sessionId }).then(applyResult)); return; }
     const target = item.kind === "approval"
       ? document.querySelector<HTMLElement>(`[data-approval-id="${CSS.escape(item.approvalId)}"]`)
       : document.querySelector<HTMLElement>(".mission-stepper");
@@ -530,7 +541,7 @@ export function App(): React.JSX.Element {
     void target.offsetWidth;   // restart the highlight when the same item is opened twice
     target.classList.add("inbox-flash");
     target.querySelector<HTMLElement>("button:not([disabled])")?.focus({ preventScroll: true });
-  }, [openDecisionBoard]);
+  }, [applyResult, invoke, openDecisionBoard]);
   const timelineRuns = useMemo(() => groupTimeline(timeline), [timeline]);
   const keepConnected = keepStatus?.state === "connected";
   const startVisible = timeline.length === 0 && commandCards.length === 0;
@@ -623,6 +634,8 @@ export function App(): React.JSX.Element {
       rail={<SessionRail
         sessions={sessions}
         activeSessionId={snapshot.activeSessionId}
+        runningSessionIds={runningSessionIds}
+        activeRunning={agentWorking}
         onNew={() => ignore(invoke({ type: "session.new" }).then(applyResult))}
         onResume={(sessionId) => ignore(invoke({ type: "session.resume", sessionId }).then(applyResult))}
         onEdit={saveSession}

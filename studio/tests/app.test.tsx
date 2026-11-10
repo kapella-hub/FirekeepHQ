@@ -41,6 +41,7 @@ function state(primaryRuntimeId: string | null = null): StudioSnapshot {
     eventCount: 0,
     usage: { tokens: 0, freshTokens: 0, cachedTokens: 0, costUsd: 0, runs: 0, totalRuns: 0, measuredRuns: 0, byRuntime: {} },
     mission: null,
+    background: [],
   };
 }
 

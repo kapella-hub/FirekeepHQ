@@ -1,5 +1,6 @@
 import { attentionForDecision, attentionForEvent, attentionForMission, type AttentionNotice } from "../core/attention.js";
-import type { MissionPhase } from "../core/mission.js";
+import type { MissionPhase, MissionSnapshot } from "../core/mission.js";
+import type { StudioSessionSummary } from "../core/session-store.js";
 import type { RuntimeEvent } from "../core/runtime.js";
 import type { StudioSnapshot } from "../core/studio-service.js";
 import type { DecisionBoardDocument } from "../shared/decision-board.js";
@@ -25,21 +26,37 @@ const REMEMBERED_KEYS = 500;
 export class AttentionNotifier {
   readonly #host: AttentionNotifierHost;
   readonly #seen = new Set<string>();
-  #mission: { readonly id: string; readonly phase: MissionPhase } | null = null;
+  /** The last phase seen for each mission, in any session. */
+  readonly #phases = new Map<string, MissionPhase>();
+  /** Which mission phase each session is in, to tell a mission's steps from a plain run. */
+  readonly #sessionPhase = new Map<string, MissionPhase | null>();
   #pending = 0;
 
   constructor(host: AttentionNotifierHost) {
     this.#host = host;
   }
 
+  /** An event from any session, foreground or background. */
   event(event: RuntimeEvent): void {
-    this.#raise(attentionForEvent(event, this.#mission?.phase ?? null));
+    this.#raise(attentionForEvent(event, this.#sessionPhase.get(event.studioSessionId) ?? null));
   }
 
+  /** The foreground session's state. */
   snapshot(snapshot: StudioSnapshot): void {
-    const mission = snapshot.mission;
-    const previous = mission && this.#mission?.id === mission.id ? this.#mission.phase : null;
-    this.#mission = mission ? { id: mission.id, phase: mission.phase } : null;
+    this.#mission(snapshot.activeSessionId, snapshot.mission);
+    for (const session of snapshot.background) this.#sessionPhase.set(session.sessionId, session.missionPhase);
+  }
+
+  /** Every stored session: how a mission that moved while its session was in the background is noticed. */
+  sessions(sessions: readonly StudioSessionSummary[]): void {
+    for (const session of sessions) this.#mission(session.id, session.mission ?? null);
+  }
+
+  #mission(sessionId: string, mission: MissionSnapshot | null): void {
+    this.#sessionPhase.set(sessionId, mission?.phase ?? null);
+    if (!mission) return;
+    const previous = this.#phases.get(mission.id) ?? null;
+    this.#phases.set(mission.id, mission.phase);
     this.#raise(attentionForMission(previous, mission));
   }
 

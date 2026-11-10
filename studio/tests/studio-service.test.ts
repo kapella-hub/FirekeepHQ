@@ -189,10 +189,11 @@ describe("StudioService", () => {
     expect(service.events().at(-1)?.payload.kind).toBe("run.failed");
   });
 
-  it("refuses to switch transcripts while a provider run is active", async () => {
+  it("keeps a run going in its own session when the human starts another one", async () => {
     const { service, alpha } = createService();
     await service.initialize();
     await service.setPrimary("alpha");
+    await service.setWorkspace("C:\\first");
     alpha.run = async (_request, _sink, signal) => new Promise((_resolve, reject) => {
       signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
     });
@@ -200,13 +201,139 @@ describe("StudioService", () => {
     const running = service.sendMessage("stay in this transcript");
     const observed = running.then(() => null, (error: unknown) => error);
     await vi.waitFor(() => expect(service.snapshot().activeRunId).not.toBeNull());
-
-    await expect(service.startNewSession()).rejects.toThrow(/run is active/i);
+    const runId = service.snapshot().activeRunId as string;
     await expect(service.setWorkspace("C:\\other")).rejects.toThrow(/run is active/i);
-    expect(service.snapshot().activeSessionId).toBe(originalSessionId);
 
-    expect(service.cancel()).toBe(true);
+    await service.startNewSession();
+    const snapshot = service.snapshot();
+    expect(snapshot.activeSessionId).not.toBe(originalSessionId);
+    expect(snapshot.activeRunId).toBeNull();
+    expect(service.events()).toEqual([]);
+    expect(snapshot.background).toEqual([{ sessionId: originalSessionId, running: true, missionPhase: null, approvals: [] }]);
+    // The new session is idle: its workspace can change without touching the run next door.
+    await service.setWorkspace("C:\\other");
+    expect(alpha.runs).toHaveLength(0);
+
+    expect(service.cancel()).toBe(false);          // nothing runs in the foreground
+    expect(service.cancel(runId)).toBe(true);      // the background run is still reachable by id
     await expect(observed).resolves.toMatchObject({ message: "aborted" });
+    await vi.waitFor(() => expect(service.snapshot().background).toEqual([]));
+  });
+
+  it("runs two sessions at once and keeps every event in the session that produced it", async () => {
+    const sessions = new MemorySessionStore();
+    const first = createService();
+    const service = new StudioService({
+      runtimes: first.service.runtimes,
+      settings: new MemorySettingsStore<StudioPersistedState>(),
+      sessions,
+      idFactory: (() => { let value = 0; return (prefix) => `${prefix}-${++value}`; })(),
+      now: () => "2026-08-24T00:00:00.000Z",
+    });
+    await service.initialize();
+    await service.setPrimary("alpha");
+    await service.setWorkspace("C:\\first");
+    const gates = new Map<string, () => void>();
+    first.alpha.run = async (request, sink) => {
+      first.alpha.runs.push(request);
+      sink({ kind: "message.delta", messageId: "a", role: "assistant", text: `start ${request.prompt.slice(0, 3)}` });
+      await new Promise<void>((resolve) => gates.set(request.studioSessionId, resolve));
+      // Emitted from a bare callback, as a real runtime's process stream would.
+      await new Promise<void>((resolve) => setTimeout(() => { sink({ kind: "message.completed", messageId: "a", role: "assistant", text: `done in ${request.studioSessionId}` }); resolve(); }, 0));
+      return { nativeSessionId: `native-${request.studioSessionId}`, finalText: `done in ${request.studioSessionId}` };
+    };
+    const foreground: string[] = [];
+    const background: string[] = [];
+    service.subscribe((event) => foreground.push(`${event.studioSessionId}:${event.payload.kind}`));
+    service.subscribeBackground((event) => { if (event) background.push(`${event.studioSessionId}:${event.payload.kind}`); });
+
+    const one = service.snapshot().activeSessionId;
+    const sendingOne = service.sendMessage("one");
+    await vi.waitFor(() => expect(gates.has(one)).toBe(true));
+    await service.startNewSession();
+    const two = service.snapshot().activeSessionId;
+    await service.setWorkspace("C:\\second");
+    const sendingTwo = service.sendMessage("two");
+    await vi.waitFor(() => expect(gates.has(two)).toBe(true));
+    expect(service.snapshot().background).toMatchObject([{ sessionId: one, running: true }]);
+    expect(first.alpha.runs.map((run) => [run.studioSessionId, run.cwd])).toEqual([[one, "C:\\first"], [two, "C:\\second"]]);
+
+    gates.get(one)?.();
+    await expect(sendingOne).resolves.toMatchObject({ finalText: `done in ${one}` });
+    gates.get(two)?.();
+    await expect(sendingTwo).resolves.toMatchObject({ finalText: `done in ${two}` });
+
+    const kinds = async (id: string): Promise<string[]> => (await sessions.load(id)).map((event) => event.payload.kind);
+    const expected = ["message.completed", "run.started", "message.delta", "message.completed", "run.completed"];
+    expect(await kinds(one)).toEqual(expected);
+    expect(await kinds(two)).toEqual(expected);
+    expect((await sessions.load(one)).every((event) => event.studioSessionId === one)).toBe(true);
+    expect(service.events().every((event) => event.studioSessionId === two)).toBe(true);
+    expect(background.every((entry) => entry.startsWith(`${one}:`))).toBe(true);
+    expect(background).toContain(`${one}:run.completed`);
+    expect(foreground.filter((entry) => entry.startsWith(`${one}:`))).toEqual([`${one}:message.completed`, `${one}:run.started`, `${one}:message.delta`]);
+    // Each session resumes its own native conversation, and the parked one is released when it ends.
+    const summaries = await sessions.list();
+    expect(summaries.find((item) => item.id === one)?.nativeSessionIds).toEqual({ alpha: `native-${one}` });
+    expect(summaries.find((item) => item.id === two)?.nativeSessionIds).toEqual({ alpha: `native-${two}` });
+    expect(service.snapshot().nativeSessionIds).toEqual({ alpha: `native-${two}` });
+    await vi.waitFor(() => expect(service.snapshot().background).toEqual([]));
+
+    await service.resumeSession(one);
+    expect(service.events().map((event) => event.payload.kind)).toEqual(expected);
+    expect(service.snapshot().nativeSessionIds).toEqual({ alpha: `native-${one}` });
+  });
+
+  it("answers an approval in the background session that asked, and picks that session up live", async () => {
+    const sessions = new MemorySessionStore();
+    const first = createService();
+    const service = new StudioService({ runtimes: first.service.runtimes, settings: new MemorySettingsStore<StudioPersistedState>(), sessions });
+    await service.initialize();
+    await service.setPrimary("alpha");
+    first.alpha.run = async (request) => {
+      const decision = await request.requestApproval!({ id: "approval-1", title: "Run npm test", detail: "npm test", options: ["Allow", "Deny"] });
+      return { finalText: decision };
+    };
+    const one = service.snapshot().activeSessionId;
+    const sending = service.sendMessage("needs approval");
+    await vi.waitFor(() => expect(service.events().some((event) => event.payload.kind === "approval.requested")).toBe(true));
+    await service.startNewSession();
+    const two = service.snapshot().activeSessionId;
+    expect(service.snapshot().background).toEqual([{ sessionId: one, running: true, missionPhase: null, approvals: [{ approvalId: "approval-1", title: "Run npm test" }] }]);
+
+    // Coming back while it still waits shows the live transcript, not a copy from disk.
+    await service.resumeSession(one);
+    expect(service.snapshot().activeRunId).not.toBeNull();
+    expect(service.snapshot().background).toEqual([]);
+    await service.resumeSession(two);
+
+    expect(service.resolveApproval("approval-1", "Allow")).toBe(true);
+    await expect(sending).resolves.toMatchObject({ finalText: "Allow" });
+    expect(service.events()).toEqual([]);
+    const stored = await sessions.load(one);
+    expect(stored.find((event) => event.payload.kind === "approval.resolved")).toMatchObject({ studioSessionId: one, payload: { decision: "Allow" } });
+    await expect(service.deleteSession(two, two)).resolves.toBeUndefined();
+  });
+
+  it("refuses to delete a session while work runs in it, from wherever it is asked", async () => {
+    const sessions = new MemorySessionStore();
+    const first = createService();
+    const service = new StudioService({ runtimes: first.service.runtimes, settings: new MemorySettingsStore<StudioPersistedState>(), sessions });
+    await service.initialize();
+    await service.setPrimary("alpha");
+    first.alpha.run = async (_request, _sink, signal) => new Promise((_resolve, reject) => {
+      signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+    });
+    const one = service.snapshot().activeSessionId;
+    const observed = service.sendMessage("long").then(() => null, (error: unknown) => error);
+    await vi.waitFor(() => expect(service.snapshot().activeRunId).not.toBeNull());
+    await expect(service.deleteSession(one, one)).rejects.toThrow(/run is active/i);
+    await service.startNewSession();
+    await expect(service.deleteSession(one, one)).rejects.toThrow(/run is active/i);
+    await service.shutdown();
+    await expect(observed).resolves.toMatchObject({ message: "aborted" });
+    await vi.waitFor(() => expect(service.snapshot().background).toEqual([]));
+    await expect(service.deleteSession(one, one)).resolves.toBeUndefined();
   });
 
   it("persists, names, and resumes local Studio sessions", async () => {
@@ -457,7 +584,7 @@ describe("StudioService", () => {
     expect(service.snapshot().mission).toMatchObject({ goal: "fix it", phase: "cancelled" });
   });
 
-  it("holds the turn lock for the whole quick mission, so a session change cannot split it", async () => {
+  it("builds a quick mission in its own session, even when the human switches away while it is drafted", async () => {
     let hold = false;
     let reached!: () => void;
     const reachedGate = new Promise<void>((resolve) => { reached = resolve; });
@@ -487,14 +614,19 @@ describe("StudioService", () => {
     hold = true;
     const quick = service.quickMission("quick goal", ["npm test", "npm run lint"]);
     await reachedGate;   // paused inside the first addMissionCheck, after the session switch and draft
-    await expect(service.resumeSession(other)).rejects.toThrow(/turn is starting/i);
+    const quickSession = service.snapshot().activeSessionId;
+    expect(quickSession).not.toBe(other);
+    await service.resumeSession(other);            // the draft keeps being built next door
     hold = false;
     release();
     const result = await quick;
 
     expect(result).toMatchObject({ goal: "quick goal", phase: "draft" });   // confirmation declined
     expect(result.checks.map((check) => check.command)).toEqual(["npm test", "npm run lint"]);
-    expect(service.snapshot().activeSessionId).not.toBe(other);
+    expect(service.snapshot().activeSessionId).toBe(other);
+    expect(service.snapshot().mission).toMatchObject({ goal: "other mission" });
+    const quickSummary = (await sessions.list()).find((item) => item.id === quickSession);
+    expect(quickSummary?.mission?.checks.map((check) => check.command)).toEqual(["npm test", "npm run lint"]);
     const otherSummary = (await sessions.list()).find((item) => item.id === other);
     expect(otherSummary?.mission).toMatchObject({ goal: "other mission", phase: "draft" });
     expect(otherSummary?.mission?.checks.map((check) => check.command)).toEqual(["npm run other"]);
@@ -730,7 +862,7 @@ describe("StudioService Keep receipts", () => {
     }
   });
 
-  it("a session switch during a slow finalize is refused, and no run event lands in the wrong session", async () => {
+  it("a session switch during a slow finalize parks the turn, and no run event lands in the wrong session", async () => {
     let hold = false;
     let release: (() => void) | undefined;
     let gate = new Promise<void>((resolve) => { release = resolve; });
@@ -754,18 +886,22 @@ describe("StudioService Keep receipts", () => {
     await vi.waitFor(() => expect(keepReceipts(service.events())).toHaveLength(1));
     hold = true;
     const sending = service.sendMessage("two");
-    await expect(service.resumeSession(other)).rejects.toThrow(/turn is starting/i);
-    await expect(service.startNewSession()).rejects.toThrow(/turn is starting/i);
-    await expect(service.deleteSession(other, other)).rejects.toThrow(/turn is starting/i);
+    await service.resumeSession(other);              // the turn is still finalizing; it is parked, not blocked
+    expect(service.snapshot().activeSessionId).toBe(other);
+    expect(service.snapshot().background).toMatchObject([{ sessionId: first, running: true }]);
+    await expect(service.deleteSession(first, first)).rejects.toThrow(/run is active/i);
     hold = false;
     release?.();
     await sending;
-    expect(service.snapshot().activeSessionId).toBe(first);
+    expect(service.snapshot().activeSessionId).toBe(other);
     expect(await sessions.load(other)).toEqual([]);
     expect((await sessions.load(first)).filter((event) => event.payload.kind === "run.started")).toHaveLength(2);
+    await vi.waitFor(() => expect(service.snapshot().background).toEqual([]));
+    await service.resumeSession(first);
 
     // The other direction: a Send during a slow session switch is refused, so it cannot run in either session by accident.
-    await vi.waitFor(() => expect(keepReceipts(service.events()).filter((item) => !item.receipt.final)).toHaveLength(2));
+    // A parked turn finalizes its own receipt when it ends, so both turns are final by now.
+    await vi.waitFor(() => expect(keepReceipts(service.events()).filter((item) => item.receipt.final)).toHaveLength(2));
     gate = new Promise<void>((resolve) => { release = resolve; });
     hold = true;
     const switching = service.resumeSession(other);

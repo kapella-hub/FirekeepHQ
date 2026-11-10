@@ -37,6 +37,18 @@ describe("buildInbox", () => {
   });
 });
 
+describe("buildInbox across sessions", () => {
+  it("lists what waits in other sessions after this session's own items", () => {
+    const items = buildInbox([approval("a1", "run-live")], "run-live", null, [], [
+      { sessionId: "s2", name: "Fix login", approvals: [{ approvalId: "b1", title: "Run npm test\nmore" }], missionPhase: "paused", missionGoal: "Ship login" },
+      { sessionId: "s3", name: "Idle", approvals: [], missionPhase: "running", missionGoal: "Quiet" },
+    ]);
+    expect(items.map((item) => item.id)).toEqual(["approval:a1", "session:s2:approval:b1", "session:s2:mission:paused"]);
+    expect(items[1]).toMatchObject({ kind: "session", sessionId: "s2", title: "Approval needed in Fix login", detail: "Run npm test" });
+    expect(items[2]).toMatchObject({ title: "Mission paused in Fix login", detail: "Ship login" });
+  });
+});
+
 describe("AttentionInbox", () => {
   const items: InboxItem[] = [
     { id: "approval:a1", kind: "approval", title: "Run npm test", detail: "npm test", approvalId: "a1" },

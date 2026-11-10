@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { Flag, Inbox, MessagesSquare, ShieldCheck } from "lucide-react";
+import { ArrowRightLeft, Flag, Inbox, MessagesSquare, ShieldCheck } from "lucide-react";
 import type { InboxItem } from "../inbox.js";
 
-const ICONS = { approval: ShieldCheck, decision: MessagesSquare, mission: Flag } as const;
+const ICONS = { approval: ShieldCheck, decision: MessagesSquare, mission: Flag, session: ArrowRightLeft } as const;
 
 /** The top-bar inbox: one list of everything in this session that is waiting on the human. */
 export function AttentionInbox({ items, onOpen }: {

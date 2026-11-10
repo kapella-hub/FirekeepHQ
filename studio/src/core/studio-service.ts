@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { RuntimeRegistry } from "./runtime-registry.js";
 import { DEFAULT_SESSION_COLOR, type SessionMetadataUpdate, type SessionStore, type StudioSessionSummary } from "./session-store.js";
 import type { SettingsStore } from "./settings-store.js";
@@ -14,6 +15,7 @@ import {
   type MissionCheckReceipt,
   type MissionCheckRunner,
   type MissionNextAction,
+  type MissionPhase,
   type MissionReviewReceipt,
   type MissionRuntimeSettings,
   type MissionSnapshot,
@@ -80,6 +82,8 @@ export interface SessionUsageSummary extends RuntimeUsageSummary {
 }
 
 export interface StudioSnapshot extends StudioPersistedState {
+  /** Other sessions with work still running or an approval waiting. */
+  readonly background: readonly BackgroundSession[];
   readonly activeRunId: string | null;
   readonly eventCount: number;
   readonly usage: SessionUsageSummary;
@@ -133,6 +137,47 @@ interface FinalizedKeepTurn extends Omit<KeepTurn, "provisional"> {
   readonly cursorsBefore: Readonly<Record<string, number>>;
 }
 
+interface ActiveRun {
+  readonly id: string;
+  readonly controller: AbortController;
+  readonly settled: Promise<void>;
+  readonly settle: () => void;
+}
+
+/**
+ * Everything that belongs to ONE Studio session while it is loaded: its transcript, its
+ * mission, and the work running in it. The foreground session always has a context; a
+ * session the human switched away from keeps its context for as long as work is running
+ * there ("parked"), then is released and lives only in the session store again.
+ */
+class SessionContext {
+  readonly events: RuntimeEvent[] = [];
+  mission: MissionSnapshot | null = null;
+  missionLaunchPending = false;
+  /** True from the moment a turn (prompt -> runs -> reviewers) is claimed until it has fully ended. */
+  turn = false;
+  /** The workspace the running turn started in; later runs of that turn do not follow a workspace change. */
+  turnWorkspace: string | null | undefined = undefined;
+  activeMission: { readonly id: string; readonly controller: AbortController } | null = null;
+  activeRun: ActiveRun | null = null;
+  keepTurn: KeepTurn | null = null;
+  nativeSessionIds: Readonly<Record<string, string>> = {};
+
+  constructor(readonly id: string) {}
+
+  get busy(): boolean {
+    return this.turn || this.activeRun !== null || this.activeMission !== null || this.missionLaunchPending;
+  }
+}
+
+/** A session other than the foreground one that still has work running or waiting in it. */
+export interface BackgroundSession {
+  readonly sessionId: string;
+  readonly running: boolean;
+  readonly missionPhase: MissionPhase | null;
+  readonly approvals: readonly { readonly approvalId: string; readonly title: string }[];
+}
+
 export class StudioService {
   readonly runtimes: RuntimeRegistry;
   readonly #settings: SettingsStore<StudioPersistedState>;
@@ -143,34 +188,46 @@ export class StudioService {
   readonly #missionChecks: MissionCheckRunner;
   readonly #confirmMission: (summary: string) => Promise<boolean>;
   readonly #keep: StudioKeepOptions | undefined;
-  #keepTurn: KeepTurn | null = null;
+  /** The most recently finalized turn of any session; it names its own session. */
   #lastFinalized: FinalizedKeepTurn | null = null;
   /** Serializes the operations that commit Keep cursors (finalize, retry). */
   #keepSerial: Promise<void> = Promise.resolve();
   readonly #deletedSessions = new Set<string>();
-  readonly #events: RuntimeEvent[] = [];
   readonly #listeners = new Set<(event: RuntimeEvent) => void>();
+  readonly #backgroundListeners = new Set<(event: RuntimeEvent | null) => void>();
   #state: StudioPersistedState | null = null;
-  #mission: MissionSnapshot | null = null;
-  #missionLaunchPending = false;
   /**
-   * A turn (prompt -> runs -> reviewers) and a session change exclude each other for their whole
-   * duration, including the awaited Keep finalize, so a run can never start in one session and
-   * emit into another.
+   * Sessions run in parallel. A turn is bound to the context of the session it started in
+   * through this scope, so everything it does after an await (emit events, update its mission,
+   * read "the active session") still lands in ITS session when the human has switched to
+   * another one. Code that runs outside any turn (IPC handlers) sees the foreground session.
    */
-  #exclusive: "turn" | "session" | null = null;
-  #activeMission: { readonly id: string; readonly controller: AbortController } | null = null;
-  #activeRun: {
-    readonly id: string;
-    readonly controller: AbortController;
-    readonly settled: Promise<void>;
-    readonly settle: () => void;
-  } | null = null;
+  readonly #scope = new AsyncLocalStorage<SessionContext>();
+  #foreground = new SessionContext("uninitialized");
+  /** The foreground context plus every parked one, by session id. */
+  readonly #live = new Map<string, SessionContext>();
+  /** One session change (new, resume, delete) at a time. */
+  #sessionChanging = false;
   readonly #pendingApprovals = new Map<string, {
+    readonly sessionId: string;
+    readonly title: string;
     readonly options: readonly string[];
     readonly resolve: (decision: string) => void;
     readonly reject: (error: Error) => void;
   }>();
+
+  get #ctx(): SessionContext { return this.#scope.getStore() ?? this.#foreground; }
+  get #events(): RuntimeEvent[] { return this.#ctx.events; }
+  get #mission(): MissionSnapshot | null { return this.#ctx.mission; }
+  set #mission(value: MissionSnapshot | null) { this.#ctx.mission = value; }
+  get #missionLaunchPending(): boolean { return this.#ctx.missionLaunchPending; }
+  set #missionLaunchPending(value: boolean) { this.#ctx.missionLaunchPending = value; }
+  get #activeMission(): SessionContext["activeMission"] { return this.#ctx.activeMission; }
+  set #activeMission(value: SessionContext["activeMission"]) { this.#ctx.activeMission = value; }
+  get #activeRun(): ActiveRun | null { return this.#ctx.activeRun; }
+  set #activeRun(value: ActiveRun | null) { this.#ctx.activeRun = value; }
+  get #keepTurn(): KeepTurn | null { return this.#ctx.keepTurn; }
+  set #keepTurn(value: KeepTurn | null) { this.#ctx.keepTurn = value; }
 
   constructor(options: StudioServiceOptions) {
     this.runtimes = options.runtimes;
@@ -190,6 +247,9 @@ export class StudioService {
     if (this.#state) return;
     const stored = await this.#settings.load();
     this.#state = this.#normalizeState(stored);
+    this.#foreground = new SessionContext(this.#state.activeSessionId);
+    this.#foreground.nativeSessionIds = this.#state.nativeSessionIds;
+    this.#live.set(this.#foreground.id, this.#foreground);
     if (this.#sessions) {
       await this.#sessions.ensure(this.#state.activeSessionId, this.#now());
       const summary = (await this.#sessions.list()).find((item) => item.id === this.#state?.activeSessionId);
@@ -221,6 +281,37 @@ export class StudioService {
       eventCount: this.#events.length,
       usage: this.usageSummary(),
       mission: this.#mission ? structuredClone(this.#mission) : null,
+      background: this.#backgroundSessions(),
+    });
+  }
+
+  /** Sessions other than the one the caller is in that still have work running or waiting. */
+  #backgroundSessions(): BackgroundSession[] {
+    const current = this.#ctx;
+    const sessions: BackgroundSession[] = [];
+    for (const context of this.#live.values()) {
+      if (context === current) continue;
+      const approvals = [...this.#pendingApprovals].filter(([, pending]) => pending.sessionId === context.id).map(([approvalId, pending]) => ({ approvalId, title: pending.title }));
+      if (!context.busy && approvals.length === 0) continue;
+      sessions.push({ sessionId: context.id, running: context.busy, missionPhase: context.mission?.phase ?? null, approvals });
+    }
+    return sessions;
+  }
+
+  /**
+   * Events of sessions that are NOT in the foreground, and `null` whenever the set of
+   * background sessions changes. `subscribe` keeps delivering the foreground transcript only.
+   */
+  subscribeBackground(listener: (event: RuntimeEvent | null) => void): () => void {
+    this.#backgroundListeners.add(listener);
+    return () => this.#backgroundListeners.delete(listener);
+  }
+
+  #backgroundChanged(): void {
+    this.#scope.exit(() => {
+      for (const listener of this.#backgroundListeners) {
+        try { listener(null); } catch { /* a throwing listener never affects a session */ }
+      }
     });
   }
 
@@ -402,25 +493,44 @@ export class StudioService {
     await this.#persist();
   }
 
+  /**
+   * Starts a fresh session in the foreground. Work running in the session being left keeps
+   * running there; only an open mission confirmation dialog blocks the switch.
+   */
   async startNewSession(): Promise<void> {
-    if (this.#activeRun) throw new Error("cannot change sessions while a run is active");
-    if (this.#activeMission) throw new Error("cannot change sessions while a mission is active");
-    if (this.#missionLaunchPending) throw new Error("cannot change sessions while mission approval is open");
+    if (this.#foreground.missionLaunchPending) throw new Error("cannot change sessions while mission approval is open");
     await this.#exclusively("session", () => this.#switchToNewSession());
   }
 
   async #switchToNewSession(): Promise<void> {
-    await this.#finalizeKeepTurn();
-    const state = this.#requireState();
-    this.#events.length = 0;
-    this.#mission = null;
-    this.#state = {
-      ...state,
-      activeSessionId: this.#idFactory("session"),
-      nativeSessionIds: {},
-    };
-    await this.#sessions?.ensure(this.#state.activeSessionId, this.#now());
+    await this.#leaveForeground();
+    const next = new SessionContext(this.#idFactory("session"));
+    this.#enterForeground(next);
+    await this.#sessions?.ensure(next.id, this.#now());
     await this.#persist();
+  }
+
+  /** The foreground session steps back: parked while work runs in it, otherwise finalized and released. */
+  async #leaveForeground(): Promise<void> {
+    const current = this.#foreground;
+    if (current.busy) return;   // parked: its turn finalizes its own Keep receipt when it ends
+    await this.#finalizeKeepTurn();
+    if (!current.busy) this.#live.delete(current.id);
+  }
+
+  #enterForeground(context: SessionContext): void {
+    this.#live.set(context.id, context);
+    this.#foreground = context;
+    this.#state = { ...this.#rawState(), activeSessionId: context.id, nativeSessionIds: context.nativeSessionIds };
+    this.#backgroundChanged();
+  }
+
+  /** A parked session whose work has ended goes back to living only in the session store. */
+  async #release(context: SessionContext): Promise<void> {
+    if (context === this.#foreground || context.busy) { this.#backgroundChanged(); return; }
+    await this.#scope.run(context, () => this.#finalizeKeepTurn()).catch(() => undefined);
+    if (context !== this.#foreground && !context.busy) this.#live.delete(context.id);
+    this.#backgroundChanged();
   }
 
   async listSessions(): Promise<StudioSessionSummary[]> {
@@ -448,17 +558,15 @@ export class StudioService {
   }
 
   async deleteSession(sessionId: string, confirmation: string): Promise<void> {
-    if (this.#activeRun) throw new Error("cannot delete a session while a run is active");
+    if (this.#live.get(sessionId)?.busy) throw new Error("cannot delete a session while a run is active");
     if (!this.#sessions) throw new Error("persistent sessions are unavailable");
     if (confirmation !== sessionId) throw new Error("session deletion requires --confirm with the exact session id");
     const sessions = this.#sessions;
     await this.#exclusively("session", async () => {
+      if (this.#live.get(sessionId)?.busy) throw new Error("cannot delete a session while a run is active");
       await this.#finalizeKeepTurn();
-      if (sessionId === this.#requireState().activeSessionId) {
-        if (this.#activeMission) throw new Error("cannot change sessions while a mission is active");
-        if (this.#missionLaunchPending) throw new Error("cannot change sessions while mission approval is open");
-        await this.#switchToNewSession();
-      }
+      if (sessionId === this.#foreground.id) await this.#switchToNewSession();
+      this.#live.delete(sessionId);
       // Both session stores recreate a session on append, so no late receipt may write here again.
       this.#deletedSessions.add(sessionId);
       await sessions.remove(sessionId);
@@ -470,20 +578,33 @@ export class StudioService {
     });
   }
 
+  /**
+   * Brings a session to the foreground. A session with work still running is picked up live,
+   * exactly where it is; any other is loaded from the store. Work in the session being left
+   * keeps running.
+   */
   async resumeSession(sessionId: string): Promise<void> {
-    if (this.#activeRun) throw new Error("cannot change sessions while a run is active");
-    if (this.#activeMission) throw new Error("cannot change sessions while a mission is active");
+    if (this.#foreground.missionLaunchPending) throw new Error("cannot change sessions while mission approval is open");
     if (!this.#sessions) throw new Error("persistent sessions are unavailable");
     const sessions = this.#sessions;
     await this.#exclusively("session", async () => {
       const summary = (await sessions.list()).find((item) => item.id === sessionId);
       if (!summary) throw new Error(`unknown session: ${sessionId}`);
-      await this.#finalizeKeepTurn();
-      this.#events.length = 0;
-      this.#events.push(...await sessions.load(sessionId));
-      this.#restoreKeepCursors(sessionId, this.#events);
-      this.#mission = summary.mission ? structuredClone(summary.mission) : null;
-      this.#replaceState({ activeSessionId: sessionId, nativeSessionIds: { ...summary.nativeSessionIds } });
+      const live = this.#live.get(sessionId);
+      if (live?.busy) {
+        if (live === this.#foreground) return;
+        await this.#leaveForeground();
+        this.#enterForeground(live);
+      } else {
+        await this.#leaveForeground();
+        this.#live.delete(sessionId);
+        const next = new SessionContext(sessionId);
+        next.events.push(...await sessions.load(sessionId));
+        this.#restoreKeepCursors(sessionId, next.events);
+        next.mission = summary.mission ? structuredClone(summary.mission) : null;
+        next.nativeSessionIds = { ...summary.nativeSessionIds };
+        this.#enterForeground(next);
+      }
       await this.#persist();
     });
   }
@@ -667,8 +788,11 @@ export class StudioService {
   async quickMission(goal: string, checks: readonly string[]): Promise<MissionSnapshot> {
     if (this.#activeRun || this.#activeMission) throw new Error("cannot create a mission while work is active");
     const cleanGoal = cleanMissionGoal(goal);
+    if (this.#ctx.turn) throw new Error("a run is already active");
+    // A session that already holds a mission keeps it: the quick mission gets a session of its
+    // own, entered before the turn is claimed so the whole turn belongs to the new session.
+    if (this.#mission) await this.#exclusively("session", () => this.#switchToNewSession());
     return this.#exclusively("turn", async () => {
-      if (this.#mission) await this.#switchToNewSession();
       await this.#createDraftMission(cleanGoal);
       try {
         for (const check of checks) await this.addMissionCheck(check);
@@ -924,13 +1048,17 @@ export class StudioService {
     });
   }
 
+  /** Cancels the named run in whichever session it is running, or the current session's run. */
   cancel(runId?: string): boolean {
-    if (!this.#activeRun) return false;
-    if (runId && this.#activeRun.id !== runId) return false;
-    this.#activeRun.controller.abort();
+    const run = runId
+      ? [...this.#live.values()].find((context) => context.activeRun?.id === runId)?.activeRun
+      : this.#activeRun;
+    if (!run) return false;
+    run.controller.abort();
     return true;
   }
 
+  /** Answers an approval in whichever session asked for it. */
   resolveApproval(approvalId: string, decision: string): boolean {
     const pending = this.#pendingApprovals.get(approvalId);
     if (!pending || !pending.options.includes(decision)) return false;
@@ -940,10 +1068,15 @@ export class StudioService {
   }
 
   async shutdown(): Promise<void> {
-    const active = this.#activeRun;
-    this.#activeMission?.controller.abort();
-    this.cancel();
-    if (active) await waitForSettlement(active.settled, 5_000);
+    const running: ActiveRun[] = [];
+    for (const context of this.#live.values()) {
+      context.activeMission?.controller.abort();
+      if (context.activeRun) {
+        running.push(context.activeRun);
+        context.activeRun.controller.abort();
+      }
+    }
+    await Promise.all(running.map((run) => waitForSettlement(run.settled, 5_000)));
     await this.#sessions?.flush();
   }
 
@@ -1219,6 +1352,9 @@ export class StudioService {
     if (this.#keep) await this.#keepSerial; // a run never starts while a receipt retry has cursors rolled back
     if (this.#activeRun) throw new Error("a run is already active");
     const runtime = this.runtimes.requireCapability(runtimeId, mode === "review" ? "review" : "chat");
+    // A runtime calls back from its own process streams, outside any turn: every callback is
+    // re-entered into this run's session so it can never land in whichever session is in front.
+    const context = this.#ctx;
     const state = this.#requireState();
     if (state.tokenBudget !== null && this.usageSummary().tokens >= state.tokenBudget) {
       throw new Error(`session token budget reached (${state.tokenBudget.toLocaleString()} tokens); use /budget set or /budget off to continue`);
@@ -1251,7 +1387,7 @@ export class StudioService {
       mode,
       cwd: options.cwd ?? state.workspacePath ?? this.#cwd(),
       permissionMode,
-      requestApproval: (prompt) => this.#requestApproval(runtimeId, runId, prompt, controller.signal, permissionMode),
+      requestApproval: (prompt) => this.#scope.run(context, () => this.#requestApproval(runtimeId, runId, prompt, controller.signal, permissionMode)),
       ...(state.nativeSessionIds[runtimeId] && mode === "primary"
         ? { nativeSessionId: state.nativeSessionIds[runtimeId] }
         : {}),
@@ -1272,11 +1408,11 @@ export class StudioService {
       let usageEmitted = false;
       const result = await runtime.run(
         request,
-        (payload, raw) => {
+        (payload, raw) => this.#scope.run(context, () => {
           if (payload.kind === "usage.updated") usageEmitted = true;
           this.#keepTurn?.events.push(payload);
           this.#emit(runtimeId, runId, payload, raw);
-        },
+        }),
         controller.signal,
       );
       if (result.nativeSessionId && (mode === "primary" || mode === "handoff")) {
@@ -1320,6 +1456,7 @@ export class StudioService {
       return Promise.resolve(decision);
     }
     if (this.#pendingApprovals.has(prompt.id)) return Promise.reject(new Error(`duplicate approval id: ${prompt.id}`));
+    const context = this.#ctx;
     const waiting = new Promise<string>((resolve, reject) => {
       const abort = (): void => {
         this.#pendingApprovals.delete(prompt.id);
@@ -1327,12 +1464,15 @@ export class StudioService {
       };
       signal.addEventListener("abort", abort, { once: true });
       this.#pendingApprovals.set(prompt.id, {
+        sessionId: context.id,
+        title: prompt.title,
         options: [...prompt.options],
-        resolve: (decision) => {
+        // The answer arrives from an IPC handler; it is recorded in the session that asked.
+        resolve: (decision) => this.#scope.run(context, () => {
           signal.removeEventListener("abort", abort);
           this.#emit(runtimeId, runId, { kind: "approval.resolved", approvalId: prompt.id, decision });
           resolve(decision);
-        },
+        }),
         reject,
       });
       if (signal.aborted) abort();
@@ -1350,14 +1490,15 @@ export class StudioService {
   }
 
   /**
-   * Appends to `studioSessionId` (default: the active session). Only the active
-   * session's events are held in memory and pushed to listeners: the renderer
-   * shows one transcript and does not filter by session, so another session's
-   * event is stored and appears when that session is resumed.
+   * Appends to `studioSessionId` (default: the session of the turn that is emitting). The
+   * event is held in memory when that session is loaded, and always stored. Foreground
+   * events go to `subscribe` listeners (the renderer shows one transcript and does not
+   * filter by session); a parked session's events go to `subscribeBackground` listeners.
    */
   #emit(runtimeId: string, runId: string, payload: RuntimeEventPayload, raw?: unknown, studioSessionId?: string): void {
-    const state = this.#requireState();
-    const sessionId = studioSessionId ?? state.activeSessionId;
+    this.#requireState();
+    const owner = studioSessionId === undefined ? this.#ctx : this.#live.get(studioSessionId) ?? null;
+    const sessionId = studioSessionId ?? this.#ctx.id;
     const event: RuntimeEvent = {
       id: this.#idFactory("event"),
       runId,
@@ -1367,10 +1508,14 @@ export class StudioService {
       payload,
       ...(raw === undefined ? {} : { raw }),
     };
-    const active = sessionId === state.activeSessionId;
-    if (active) this.#events.push(event);
+    if (owner) owner.events.push(event);
     if (this.#sessions) void this.#sessions.append(event).catch(() => undefined);
-    if (active) for (const listener of this.#listeners) listener(structuredClone(event));
+    if (!owner) return;
+    // Listeners run outside the turn's scope: they describe the foreground (snapshot()), not this session.
+    this.#scope.exit(() => {
+      if (owner === this.#foreground) for (const listener of this.#listeners) listener(structuredClone(event));
+      else for (const listener of this.#backgroundListeners) listener(structuredClone(event));
+    });
   }
 
   /**
@@ -1427,19 +1572,36 @@ export class StudioService {
     }
   }
 
-  /** Claims the turn/session exclusion synchronously (callers invoke it before their first await). */
+  /**
+   * Claims an exclusion synchronously (callers invoke it before their first await).
+   *
+   * "turn": one turn at a time PER SESSION. The whole turn, including every await and the
+   * Keep finalize, runs bound to the session it was claimed in, so it can never start in one
+   * session and emit into another, however often the foreground changes meanwhile.
+   * "session": one session change at a time. It does not wait for running turns; the session
+   * being left is parked instead. No turn may start in the foreground while it is changing.
+   */
   async #exclusively<T>(kind: "turn" | "session", work: () => Promise<T>): Promise<T> {
-    if (this.#exclusive === "turn") {
-      throw new Error(kind === "session" ? "cannot change sessions while a turn is starting or running" : "a run is already active");
+    if (kind === "session") {
+      if (this.#sessionChanging) throw new Error("another session change is in progress");
+      this.#sessionChanging = true;
+      try {
+        return await this.#scope.exit(work);
+      } finally {
+        this.#sessionChanging = false;
+      }
     }
-    if (this.#exclusive === "session") {
-      throw new Error(kind === "turn" ? "cannot start work while the session is changing" : "another session change is in progress");
-    }
-    this.#exclusive = kind;
+    const context = this.#ctx;
+    if (context.turn) throw new Error("a run is already active");
+    if (this.#sessionChanging && context === this.#foreground) throw new Error("cannot start work while the session is changing");
+    context.turn = true;
+    context.turnWorkspace = this.#rawState().workspacePath;
     try {
-      return await work();
+      return await this.#scope.run(context, work);
     } finally {
-      this.#exclusive = null;
+      context.turn = false;
+      context.turnWorkspace = undefined;
+      void this.#release(context);
     }
   }
 
@@ -1518,17 +1680,39 @@ export class StudioService {
     };
   }
 
+  /**
+   * Shared settings are written to the persisted state from any session. The session-specific
+   * parts (which session is active, its native session ids) belong to the context: a parked
+   * session updates its own and never the foreground's.
+   */
   #replaceState(patch: Partial<StudioPersistedState>): void {
-    this.#state = { ...this.#requireState(), ...patch };
+    const raw = this.#rawState();
+    const context = this.#ctx;
+    if (patch.nativeSessionIds) context.nativeSessionIds = patch.nativeSessionIds;
+    if (context === this.#foreground) {
+      this.#state = { ...raw, ...patch };
+      return;
+    }
+    const { nativeSessionIds: _native, activeSessionId: _active, ...shared } = patch;
+    this.#state = { ...raw, ...shared };
   }
 
+  /** The persisted state as the calling session sees it: a parked session is its own "active session". */
   #requireState(): StudioPersistedState {
+    const raw = this.#rawState();
+    const context = this.#ctx;
+    const workspacePath = context.turnWorkspace === undefined ? raw.workspacePath : context.turnWorkspace;
+    if (context === this.#foreground && workspacePath === raw.workspacePath) return raw;
+    return { ...raw, activeSessionId: context.id, nativeSessionIds: context.nativeSessionIds, workspacePath };
+  }
+
+  #rawState(): StudioPersistedState {
     if (!this.#state) throw new Error("StudioService.initialize() must be called first");
     return this.#state;
   }
 
   async #persist(): Promise<void> {
-    await this.#settings.save(structuredClone(this.#requireState()));
+    await this.#settings.save(structuredClone(this.#rawState()));
   }
 }
 

@@ -4,9 +4,13 @@ import { DEFAULT_SESSION_COLOR, type SessionColor, type StudioSessionSummary } f
 import { ignore } from "../util.js";
 import { SESSION_COLOR_OPTIONS, relativeTime, sessionAccentStyle } from "./session-style.js";
 
-export function SessionRail({ sessions, activeSessionId, onNew, onResume, onEdit, keepWarning, onKeepWarning, editingId, saving, onToggleEdit, onCloseEdit }: {
+export function SessionRail({ sessions, activeSessionId, runningSessionIds, activeRunning = false, onNew, onResume, onEdit, keepWarning, onKeepWarning, editingId, saving, onToggleEdit, onCloseEdit }: {
   readonly sessions: readonly StudioSessionSummary[];
   readonly activeSessionId: string;
+  /** Sessions with work running in the background. */
+  readonly runningSessionIds?: ReadonlySet<string>;
+  /** True while the foreground session's agent is working. */
+  readonly activeRunning?: boolean;
   readonly onNew: () => void;
   readonly onResume: (sessionId: string) => void;
   readonly onEdit: (sessionId: string, name: string, color: SessionColor) => Promise<void>;
@@ -25,7 +29,7 @@ export function SessionRail({ sessions, activeSessionId, onNew, onResume, onEdit
         {sessions.map((session) => (
           <div key={session.id} className={`session-entry ${session.id === activeSessionId ? "active" : ""} ${editingId === session.id ? "editing" : ""}`} style={sessionAccentStyle(session.color)}>
             <button className="session-row" aria-current={session.id === activeSessionId ? "page" : undefined} onClick={() => { if (session.id !== activeSessionId) onResume(session.id); }}>
-              <span className="session-row-heading"><span className="session-color-dot" /><span className="session-row-title">{session.name}</span></span>
+              <span className="session-row-heading"><span className="session-color-dot" /><span className="session-row-title">{session.name}</span>{(session.id === activeSessionId ? activeRunning : runningSessionIds?.has(session.id)) ? <span className="session-running" role="status" aria-label="Working in this session" title="An agent is working in this session" /> : null}</span>
               <span className="session-row-meta">{session.mission ? `${session.mission.phase} · ` : ""}{session.eventCount} events · {relativeTime(session.updatedAt)}</span>
             </button>
             <button type="button" className="session-customize" aria-label={`Customize ${session.name}`} aria-expanded={editingId === session.id} onClick={() => onToggleEdit(session.id)}><Palette size={13} /></button>

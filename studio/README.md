@@ -5,6 +5,26 @@ is a separate Electron application: it does not replace or fork the Python Clien
 The kit remains the source of truth for Keep connectivity, memory, hooks, instructions,
 personal mode, and runtime configuration.
 
+## Unreleased — Sessions keep working in the background
+
+Starting or opening another session no longer waits for the current one to finish.
+
+- **A run stays with its session.** Switch away mid-run and the agent carries on there: its
+  transcript, mission, approvals and Keep receipt are recorded against that session, and the
+  rail shows a spinner beside every session with an agent at work. Each session still runs one
+  turn at a time; several sessions can run at once.
+- **Nothing waits unseen.** An approval a background run is blocked on, or a mission that
+  pauses or reaches sign-off in another session, appears in the inbox as an item that opens
+  that session, and raises the same OS notification as a foreground one.
+- **Guards.** A session cannot be deleted while work runs in it. Stop reaches the run in the
+  open session; quitting Studio stops every run.
+
+`StudioSnapshot.background` lists the busy sessions that are not on screen (`sessionId`,
+`running`, `missionPhase`, pending `approvals`). In `StudioService`, per-session state lives in
+a `SessionContext` selected through `AsyncLocalStorage`; `subscribe` delivers the open session's
+events and `subscribeBackground` the rest. All sessions still share one workspace folder, so
+two agents editing the same files at once will collide.
+
 ## Unreleased — Attention inbox
 
 Studio now tells you when an agent is waiting, instead of expecting you to watch it.

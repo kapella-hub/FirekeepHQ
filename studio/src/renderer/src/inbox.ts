@@ -12,13 +12,24 @@ export interface PendingBoard {
 export type InboxItem =
   | { readonly id: string; readonly kind: "approval"; readonly title: string; readonly detail: string; readonly approvalId: string }
   | { readonly id: string; readonly kind: "decision"; readonly title: string; readonly detail: string; readonly url: string }
-  | { readonly id: string; readonly kind: "mission"; readonly title: string; readonly detail: string };
+  | { readonly id: string; readonly kind: "mission"; readonly title: string; readonly detail: string }
+  /** Something waits in a session that is not on screen; opening it switches to that session. */
+  | { readonly id: string; readonly kind: "session"; readonly title: string; readonly detail: string; readonly sessionId: string };
+
+/** What the inbox needs to know about the sessions that are not in the foreground. */
+export interface OtherSession {
+  readonly sessionId: string;
+  readonly name: string;
+  readonly approvals: readonly { readonly approvalId: string; readonly title: string }[];
+  readonly missionPhase: MissionSnapshot["phase"] | null;
+  readonly missionGoal: string | null;
+}
 
 /**
  * Everything in the open session that is stopped until the human acts, most urgent first:
  * approvals block a live run, boards block an agent's next step, a mission waits for sign-off.
  */
-export function buildInbox(timeline: readonly TimelineItem[], activeRunId: string | null, mission: MissionSnapshot | null, boards: readonly PendingBoard[]): InboxItem[] {
+export function buildInbox(timeline: readonly TimelineItem[], activeRunId: string | null, mission: MissionSnapshot | null, boards: readonly PendingBoard[], others: readonly OtherSession[] = []): InboxItem[] {
   const items: InboxItem[] = [];
   for (const item of timeline) {
     // An unanswered approval from a run that already ended can no longer be answered.
@@ -36,6 +47,14 @@ export function buildInbox(timeline: readonly TimelineItem[], activeRunId: strin
       title: mission.phase === "paused" ? "Mission paused" : "Mission waiting for sign-off",
       detail: mission.phase === "paused" && mission.blockReason ? firstLine(mission.blockReason) : firstLine(mission.goal),
     });
+  }
+  for (const other of others) {
+    for (const approval of other.approvals) {
+      items.push({ id: `session:${other.sessionId}:approval:${approval.approvalId}`, kind: "session", title: `Approval needed in ${other.name}`, detail: firstLine(approval.title) || "An agent is waiting for permission.", sessionId: other.sessionId });
+    }
+    if (isMissionWaiting(other.missionPhase)) {
+      items.push({ id: `session:${other.sessionId}:mission:${other.missionPhase}`, kind: "session", title: other.missionPhase === "paused" ? `Mission paused in ${other.name}` : `Mission waiting for sign-off in ${other.name}`, detail: firstLine(other.missionGoal ?? ""), sessionId: other.sessionId });
+    }
   }
   return items;
 }

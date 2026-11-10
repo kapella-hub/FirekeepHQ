@@ -595,3 +595,8 @@ tr.commented .diff-gutter { box-shadow: inset 3px 0 0 var(--ember); color: var(-
 .keep-save-actions button.primary-action { border-color: color-mix(in srgb, var(--ember) 45%, var(--line)); background: var(--ember-soft); color: var(--ember); }
 .keep-save-actions button:disabled { opacity: 0.45; cursor: default; }
 
+/* A session with an agent at work, in the foreground or behind it. */
+.session-running { flex: none; width: 9px; height: 9px; margin-left: auto; border: 1.5px solid color-mix(in srgb, var(--session-accent, var(--ember)) 30%, transparent); border-top-color: var(--session-accent, var(--ember)); border-radius: 50%; animation: session-running 0.9s linear infinite; }
+@keyframes session-running { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .session-running { animation: none; border-color: var(--session-accent, var(--ember)); } }
+
