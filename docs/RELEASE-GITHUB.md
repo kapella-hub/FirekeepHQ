@@ -190,6 +190,11 @@ To run it by hand on macOS/Linux:
 cd client && python -m pytest tests/test_e2e_bootstrap.py -m e2e -q
 ```
 
+- **1.9.1** — The 24h pause on `/agent/action/observed` reports (set after a
+  404 from a server older than v1.8.0) is now lifted at the next session start
+  or `firekeep doctor` run that sees the server report a different version.
+  Before this, a machine stayed silent for up to a day after its Keep was
+  updated. Needs `1.9.1` in the site's `allowed-versions.txt`.
 - **server v1.8.0** — Atomic session memories and observed command outcomes.
   A completed session is distilled into a bounded summary plus one memory per
   recorded decision (at most 12, tagged `decision`) instead of one long blob;
