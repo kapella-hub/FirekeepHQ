@@ -224,3 +224,42 @@ def test_failed_recheck_keeps_the_cached_verdict(monkeypatch):
     monkeypatch.setattr(serverupdate, "_fetch_latest_uncached", fail)
     status = serverupdate.check(_cfg())
     assert (status.relation, status.latest) == ("ahead", "v1.6.2")
+
+
+# --- the observed-outcome pause follows the server's version ---------------
+
+def _pause():
+    from firekeep_client.hooks import post_tool
+    return post_tool._OBSERVED_PAUSE_KEY
+
+
+def test_a_changed_server_version_lifts_the_observed_pause(monkeypatch):
+    """A 404 from an old server pauses reports for a day; updating the server
+    must not leave the machine silent for the rest of it."""
+    _wire(monkeypatch, running="v1.7.0")
+    serverupdate.check(_cfg())
+    state.write_scratch(_pause(), "server has no /agent/action/observed",
+                        ttl_seconds=86400.0)
+
+    serverupdate.check(_cfg())                      # same server: pause holds
+    assert state.read_scratch(_pause())
+
+    monkeypatch.setattr(serverupdate, "_fetch_running", lambda cfg: "v1.8.0")
+    serverupdate.check(_cfg())
+    assert state.read_scratch(_pause()) is None
+
+
+def test_a_first_sighting_lifts_the_observed_pause(monkeypatch):
+    # A client updated to this code has no remembered version yet.
+    state.write_scratch(_pause(), "server has no /agent/action/observed",
+                        ttl_seconds=86400.0)
+    _wire(monkeypatch, running="v1.8.0")
+    serverupdate.check(_cfg())
+    assert state.read_scratch(_pause()) is None
+
+
+def test_a_silent_server_leaves_the_observed_pause(monkeypatch):
+    state.write_scratch(_pause(), "unreachable", ttl_seconds=300.0)
+    monkeypatch.setattr(serverupdate, "_fetch_running", lambda cfg: None)
+    assert serverupdate.check(_cfg()) is None
+    assert state.read_scratch(_pause())
