@@ -21,8 +21,9 @@ each one if it is installed and shows it as missing, with the install command, i
   cannot ask before a tool runs: Safe mode and reviews restrict Pi to its read-only tools
   (`read`, `grep`, `find`, `ls`); in Standard and Unrestricted every tool, including shell
   commands and file edits, runs without asking, and each Standard run starts with a notice
-  saying so. Pi does not advertise the `approvals` capability. Effort maps to Pi's
-  `--thinking` level (`max` becomes `xhigh`). Sign-in happens in Pi's own terminal UI.
+  saying so. Pi does not advertise the `approvals` capability. Effort is passed as Pi's
+  `--thinking` level. Sign-in happens in Pi's own terminal UI. The package is
+  `@earendil-works/pi-coding-agent` (checked against 1.5.2).
 
 On Windows, npm installs both as `.cmd` shims, which Studio never launches: it resolves
 OpenCode's packaged `opencode.exe` and runs Pi's entry script through `node.exe`, both from the

@@ -116,7 +116,7 @@ describe("PiRuntime", () => {
     const runtime = new PiRuntime({ firekeepHooks: false, processFactory: (value) => { args = value; return transport; } });
     const events: RuntimeEventPayload[] = [];
     const running = runtime.run(request({ prompt: "@not-a-file --flag", permissionMode: "unrestricted", model: "anthropic/claude-x", effort: "max" }), (event) => events.push(event), new AbortController().signal);
-    expect(args).toEqual(["--mode", "json", "--print", "--model", "anthropic/claude-x", "--thinking", "xhigh"]);
+    expect(args).toEqual(["--mode", "json", "--print", "--model", "anthropic/claude-x", "--thinking", "max"]);
     expect(transport.writes).toEqual(["@not-a-file --flag"]);
     transport.emit(
       { type: "session", version: 3, id: "pi-session", cwd: "C:\\work" },
@@ -129,7 +129,8 @@ describe("PiRuntime", () => {
       { type: "message_end", message: { role: "toolResult", content: [] } },
       { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "All done." } },
       { type: "message_end", message: assistant("All done.") },
-      { type: "agent_end", messages: [] },
+      { type: "agent_end", messages: [], willRetry: false },
+      { type: "agent_settled", aborted: false },
     );
     transport.events.emit("exit", 0, null);
     const result = await running;
@@ -154,6 +155,21 @@ describe("PiRuntime", () => {
 
     expect(piArgs(request({ permissionMode: "safe", nativeSessionId: "abc" }), true)).toEqual(["--mode", "json", "--print", "--tools", "read,grep,find,ls", "--session", "abc"]);
     expect(piArgs(request({ mode: "review", nativeSessionId: "abc" }), true)).toEqual(["--mode", "json", "--print", "--tools", "read,grep,find,ls", "--no-session"]);
+  });
+
+  it("reports the retry's answer when Pi retries a failed response on its own", async () => {
+    const transport = new FakeTransport();
+    const running = new PiRuntime({ firekeepHooks: false, processFactory: () => transport }).run(request({ permissionMode: "safe" }), () => undefined, new AbortController().signal);
+    transport.emit(
+      { type: "message_update", usage: usage(1, 0, 0), assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "Recovered." } },
+      { type: "message_end", message: assistant("", { stopReason: "error", errorMessage: "overloaded" }) },
+      { type: "agent_end", messages: [], willRetry: true },
+      { type: "message_end", message: assistant("Recovered.") },
+      { type: "agent_end", messages: [], willRetry: false },
+      { type: "agent_settled", aborted: false },
+    );
+    transport.events.emit("exit", 0, null);
+    await expect(running).resolves.toMatchObject({ finalText: "Recovered." });
   });
 
   it("fails the run on a provider error or a bad exit, and stops the process when cancelled", async () => {

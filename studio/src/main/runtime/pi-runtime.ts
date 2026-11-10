@@ -36,7 +36,7 @@ interface JsonObject { readonly [key: string]: unknown }
 
 const DEFAULT_MODEL = "default";
 const READ_ONLY_TOOLS = "read,grep,find,ls";
-const PI_EFFORTS: readonly RuntimeEffort[] = ["low", "medium", "high", "xhigh"];
+const PI_EFFORTS: readonly RuntimeEffort[] = ["low", "medium", "high", "xhigh", "max"];
 const SIGN_IN_HELP = "Run `pi` in a terminal and use /login, or set a provider API key in your environment.";
 
 /**
@@ -76,7 +76,7 @@ export class PiRuntime implements AgentRuntime {
     const result = await this.#versionProbe();
     return result.found
       ? { state: "ready", ...(result.version ? { version: result.version } : {}), detail: result.detail, executable: this.#invocation.command }
-      : { state: "missing", detail: `${result.detail}. Install it with: npm install -g @mariozechner/pi-coding-agent` };
+      : { state: "missing", detail: `${result.detail}. Install it with: npm install -g @earendil-works/pi-coding-agent` };
   }
 
   async authStatus(): Promise<RuntimeAuthStatus> {
@@ -167,7 +167,8 @@ export class PiRuntime implements AgentRuntime {
               usage = sumUsage(perMessage);
               sink({ kind: "usage.updated", usage }, raw);
             }
-          } else if (type === "agent_end") {
+          } else if (type === "agent_settled" || (type === "agent_end" && value.willRetry !== true)) {
+            // `agent_end` can be followed by an automatic retry; `agent_settled` is Pi's own "nothing more will happen".
             ended = true;
           }
         }
@@ -204,7 +205,7 @@ export function piArgs(request: RunRequest, readOnly: boolean): string[] {
   if (request.mode === "review") args.push("--no-session");
   else if (request.nativeSessionId) args.push("--session", request.nativeSessionId);
   if (request.model && request.model !== DEFAULT_MODEL) args.push("--model", request.model);
-  if (request.effort) args.push("--thinking", request.effort === "max" ? "xhigh" : request.effort);
+  if (request.effort) args.push("--thinking", request.effort);
   return args;
 }
 
@@ -268,8 +269,13 @@ function defaultPiInvocation(): PiInvocation {
   if (process.platform !== "win32") return { command: "pi", prefix: [] };
   const appData = process.env.APPDATA;
   if (appData) {
-    const script = join(appData, "npm", "node_modules", "@mariozechner", "pi-coding-agent", "dist", "cli.js");
-    if (existsSync(script)) return { command: "node.exe", prefix: [script] };
+    const modules = join(appData, "npm", "node_modules");
+    // The current package first, then the name it was published under before it moved.
+    const script = [
+      join(modules, "@earendil-works", "pi-coding-agent", "dist", "bundle", "cli.js"),
+      join(modules, "@mariozechner", "pi-coding-agent", "dist", "cli.js"),
+    ].find((candidate) => existsSync(candidate));
+    if (script) return { command: "node.exe", prefix: [script] };
   }
   return { command: "pi.exe", prefix: [] };
 }
