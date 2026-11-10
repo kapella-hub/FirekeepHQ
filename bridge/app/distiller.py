@@ -57,6 +57,29 @@ def _session_owner(data: dict[str, Any]) -> tuple[str, str] | None:
 _MAX_FIELD_LEN = 5000
 _MAX_TAGS = 20
 
+# Atomic distillation (see Distiller, "Atomic distillation"). The summary is
+# sized to fit inside cortex's EMBED_MAX_CHARS (2000) so the whole of it is
+# what gets embedded, not a prefix.
+_SUMMARY_FIELD_LEN = 700
+_SUMMARY_RESOLUTION_LEN = 500
+_SUMMARY_MAX_STEPS = 8
+_SUMMARY_MAX_FILES = 12
+_SUMMARY_PROGRESS_ENTRIES = 3
+_ATOM_FIELD_LEN = 1500
+_MAX_ATOMS = 12
+_MIN_ATOM_CHARS = 40
+_GOAL_CONTEXT_CHARS = 80
+
+
+def _decision_texts(data: dict[str, Any]) -> list[str]:
+    """Recorded decisions as stripped, non-empty strings, in recorded order."""
+    out: list[str] = []
+    for d in data.get("decisions", []) or []:
+        text = (d.get("content") or "").strip() if isinstance(d, dict) else ""
+        if text:
+            out.append(text)
+    return out
+
 
 def _truncate(text: str, limit: int = _MAX_FIELD_LEN) -> str:
     """Truncate text to *limit* characters, appending '...' if trimmed."""
@@ -173,6 +196,129 @@ class Distiller:
             "memory_type": "episodic",
         }
 
+    # ------------------------------------------------------------------
+    # Atomic distillation (2026-11-09)
+    # ------------------------------------------------------------------
+    #
+    # A session used to become ONE memory shaped
+    # "Task: … | Plan: … | Decisions: a → b → … | Files: …" plus the whole
+    # progress log as its resolution — up to 15,000 characters. Three things
+    # went wrong with that, all observed on the live store:
+    #
+    #   * recall returned the blob for any query that brushed one of its ten
+    #     topics, and a single hit spent the caller's whole token budget;
+    #   * the embedding only ever saw the first EMBED_MAX_CHARS (2,000) of it,
+    #     so decisions past that point were stored but not findable;
+    #   * "Plan: No plan steps recorded | Decisions: No decisions recorded |
+    #     Files: No files" was embedded into every session that had none.
+    #
+    # So a session now distills into a COMPACT SUMMARY (what was asked, what
+    # came of it) plus ONE MEMORY PER DECISION, each recallable on its own.
+    # They are tied together by the X-Session-Id every write carries.
+    #
+    # Retries stay idempotent: a memory's point id is derived from its text
+    # (cortex `memory_point_id`), and every text below is a pure function of
+    # the session data, so re-running a half-finished distillation re-upserts
+    # the same points instead of minting duplicates.
+
+    def _build_summary_payload(
+        self, data: dict[str, Any], outcome: str | None = None
+    ) -> dict[str, Any]:
+        """The session-level memory: goal, outcome, and nothing boilerplate.
+
+        Sections appear only when the session recorded something for them.
+        Decisions long enough to stand alone are NOT repeated here — they are
+        written by ``_build_decision_payloads``; the short ones that are not
+        atomized ride along so nothing recorded is dropped.
+        """
+        goal = (data.get("goal") or "").strip() or "Unknown task"
+        plan = data.get("plan", "") or ""
+
+        parts = [goal]
+        completed = re.findall(r"- \[x\] (.+)", plan)
+        if completed:
+            parts.append("Steps: " + "; ".join(completed[:_SUMMARY_MAX_STEPS]))
+        short = [t for t in _decision_texts(data) if len(t) < _MIN_ATOM_CHARS]
+        if short:
+            parts.append("Decisions: " + "; ".join(short))
+        file_paths = sorted((data.get("files") or {}).keys())
+        if file_paths:
+            shown = file_paths[:_SUMMARY_MAX_FILES]
+            more = len(file_paths) - len(shown)
+            parts.append("Files: " + ", ".join(shown)
+                         + (f" (+{more} more)" if more > 0 else ""))
+        action = _truncate(" | ".join(parts), _SUMMARY_FIELD_LEN)
+
+        progress_texts = [p.get("content", "") for p in data.get("progress", [])
+                          if p.get("content")]
+        if not outcome:
+            outcome = progress_texts[-1] if progress_texts else "Session completed"
+        outcome = _truncate(outcome, _SUMMARY_FIELD_LEN)
+
+        # The tail of the progress log, not all of it: the full sequence is
+        # what made the old distillate a transcript. Skipped when it would
+        # only repeat the outcome.
+        tail = progress_texts[-_SUMMARY_PROGRESS_ENTRIES:]
+        resolution: str | None = None
+        if tail and not (len(tail) == 1 and tail[0] == outcome):
+            resolution = _truncate(" → ".join(tail), _SUMMARY_RESOLUTION_LEN)
+
+        return {
+            "action": action,
+            "outcome": outcome,
+            "resolution": resolution,
+            "tags": self._session_tags(data, file_paths),
+            "domain": "development",
+            "namespace": self._namespace,
+            "memory_type": "episodic",
+        }
+
+    def _build_decision_payloads(self, data: dict[str, Any]) -> list[dict[str, Any]]:
+        """One memory per recorded decision, newest ``_MAX_ATOMS`` kept.
+
+        A decision shorter than ``_MIN_ATOM_CHARS`` is not atomized: with the
+        goal context appended, two short decisions from one session ("Use
+        approach A" / "Use approach B") embed within the near-duplicate
+        threshold of each other and cortex would collapse one into the other
+        (app/contradiction.py). Those stay in the summary instead.
+        """
+        goal = (data.get("goal") or "").strip() or "Unknown task"
+        context = _truncate(goal, _GOAL_CONTEXT_CHARS)
+        tags = self._session_tags(data, [])
+        if "decision" not in tags:
+            tags = (tags[: _MAX_TAGS - 1]) + ["decision"]
+
+        payloads: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        atoms = [t for t in _decision_texts(data) if len(t) >= _MIN_ATOM_CHARS]
+        for text in atoms[-_MAX_ATOMS:]:
+            if text in seen:
+                continue
+            seen.add(text)
+            payloads.append({
+                "action": _truncate(text, _ATOM_FIELD_LEN),
+                "outcome": f"Decided while working on: {context}",
+                "resolution": None,
+                "tags": tags,
+                "domain": "development",
+                "namespace": self._namespace,
+                "memory_type": "episodic",
+            })
+        return payloads
+
+    @staticmethod
+    def _session_tags(data: dict[str, Any], file_paths: list[str]) -> list[str]:
+        """Session tags + file extensions + the ``firekeepbridge`` marker."""
+        tags = list(data.get("tags", []) or [])
+        for path in file_paths:
+            _, ext = os.path.splitext(path)
+            tag = ext.lstrip(".")
+            if tag and tag not in tags:
+                tags.append(tag)
+        if "firekeepbridge" not in tags:
+            tags = tags[: _MAX_TAGS - 1] + ["firekeepbridge"]
+        return tags[:_MAX_TAGS]
+
     async def distill(
         self,
         data: dict[str, Any],
@@ -180,6 +326,12 @@ class Distiller:
         session_id: str | None = None,
     ) -> dict[str, Any]:
         """Send distilled session to FirekeepCortex. Returns status dict.
+
+        Writes the session summary first, then one memory per decision (see
+        "Atomic distillation" above). ``firekeep_memory_id`` is the SUMMARY's
+        id — the one a session points at — and ``atom_ids`` lists the decision
+        memories. Any failed write fails the whole distillation so the worker
+        retries it; retries are idempotent because point ids are text-derived.
 
         Sends X-Session-Id / X-Agent-Id headers and the session's declared
         project (SP0 D2) so distillates are attributed instead of landing
@@ -195,14 +347,16 @@ class Distiller:
         the DLQ). With auth disabled there is one principal and the request
         is exactly what it always was.
         """
-        payload = self._build_episodic_payload(data, outcome)
+        payloads = [self._build_summary_payload(data, outcome)]
+        payloads.extend(self._build_decision_payloads(data))
         # Fall back to the session data dict so callers that pass only the
         # data (e.g. direct/legacy call sites) still produce attributed
         # distillates; Task 18's worker passes session_id explicitly.
         session_id = session_id or (data.get("session_id") or "").strip() or None
         project = (data.get("project") or "").strip()
         if project:
-            payload["project"] = project
+            for payload in payloads:
+                payload["project"] = project
 
         headers: dict[str, str] = {"Content-Type": "application/json"}
         if self._api_key:
@@ -232,17 +386,33 @@ class Distiller:
             if credential:
                 headers["X-Firekeep-Delegated-Credential-Id"] = credential
 
+        memory_ids: list[str | None] = []
         try:
-            resp = await self._client.post(
-                f"{self._api_url}{endpoint}",
-                json=payload,
-                headers=headers,
-            )
-            resp.raise_for_status()
-            resp_data = resp.json()
-            memory_id = resp_data.get("vector_id") or resp_data.get("graph_id")
-            logger.info("Distilled session to FirekeepCortex: %s", memory_id)
-            return {"status": "success", "firekeep_memory_id": memory_id}
+            for payload in payloads:
+                resp = await self._client.post(
+                    f"{self._api_url}{endpoint}",
+                    json=payload,
+                    headers=headers,
+                )
+                resp.raise_for_status()
+                resp_data = resp.json()
+                memory_ids.append(
+                    resp_data.get("vector_id") or resp_data.get("graph_id"))
         except Exception as exc:
-            logger.error("Distillation failed: %s", exc)
+            # Whatever landed before the failure stays; the retry re-upserts
+            # the same text-derived points and then writes the rest.
+            logger.error(
+                "Distillation failed after %d of %d write(s): %s",
+                len(memory_ids), len(payloads), exc,
+            )
             return {"status": "failed", "error": str(exc)}
+
+        logger.info(
+            "Distilled session to FirekeepCortex: %s (+%d decision memories)",
+            memory_ids[0], len(memory_ids) - 1,
+        )
+        return {
+            "status": "success",
+            "firekeep_memory_id": memory_ids[0],
+            "atom_ids": [m for m in memory_ids[1:] if m],
+        }
