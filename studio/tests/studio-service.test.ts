@@ -425,6 +425,7 @@ describe("StudioService", () => {
       keepPanelOpen: true,
       feedbackInviteDismissed: false,
       notifications: true,
+      schedules: [],
     };
     const timestamp = "2026-08-24T00:00:00.000Z";
     await sessions.ensure("session-existing", timestamp);

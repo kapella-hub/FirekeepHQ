@@ -91,6 +91,9 @@ export type StudioAction =
   | { type: "mission.repair"; note: string }
   | { type: "mission.complete"; taskResult: "success" | "partial" | "failure"; note?: string }
   | { type: "mission.cancel" }
+  /** Opens the native confirmation; the schedule is stored only when the human approves it there. */
+  | { type: "schedule.create"; goal: string; checks: string[]; firstRunAt: string; repeat: "once" | "daily" | "weekdays" | "weekly"; worktree?: boolean }
+  | { type: "schedule.delete"; scheduleId: string }
   | { type: "theme.set"; theme: ThemeMode }
   | { type: "update.check" }
   | { type: "update.install" }

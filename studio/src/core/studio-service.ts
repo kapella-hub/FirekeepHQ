@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { RuntimeRegistry } from "./runtime-registry.js";
 import { DEFAULT_SESSION_COLOR, type SessionMetadataUpdate, type SessionStore, type SessionWorktree, type StudioSessionSummary, type WorktreeManager } from "./session-store.js";
 import type { SettingsStore } from "./settings-store.js";
+import { MAX_SCHEDULES, cleanScheduleChecks, describeRepeat, nextOccurrence, parseSchedules, settleMissed, type MissionSchedule, type ScheduleRepeat, type ScheduleRun } from "./schedule.js";
 import {
   DEFAULT_MISSION_CHECK_TIMEOUT_MS,
   DEFAULT_MISSION_REPAIR_ATTEMPTS,
@@ -65,6 +66,8 @@ export interface StudioPersistedState {
   readonly feedbackInviteDismissed: boolean;
   /** Raise an OS notification when an agent waits or finishes while Studio is in the background. */
   readonly notifications: boolean;
+  /** Missions approved in advance to start at a set time while Studio is open. */
+  readonly schedules: readonly MissionSchedule[];
 }
 
 export interface RuntimeUsageSummary {
@@ -168,6 +171,8 @@ class SessionContext {
   nativeSessionIds: Readonly<Record<string, string>> = {};
   /** Set when this session works in its own git worktree; that folder is then its workspace. */
   worktree: SessionWorktree | null = null;
+  /** The folder a scheduled mission was approved for; it does not follow later workspace changes. */
+  boundWorkspace: string | null = null;
 
   constructor(readonly id: string) {}
 
@@ -255,6 +260,8 @@ export class StudioService {
     if (this.#state) return;
     const stored = await this.#settings.load();
     this.#state = this.#normalizeState(stored);
+    // Nothing fires late: a time that passed while Studio was closed is noted and moved on.
+    this.#state = { ...this.#state, schedules: settleMissed(this.#state.schedules, this.#now()) };
     this.#foreground = new SessionContext(this.#state.activeSessionId);
     this.#foreground.nativeSessionIds = this.#state.nativeSessionIds;
     this.#live.set(this.#foreground.id, this.#foreground);
@@ -837,7 +844,104 @@ export class StudioService {
     });
   }
 
-  async #launchMission(): Promise<MissionSnapshot> {
+  /**
+   * Approves a mission now so it can start later without asking again. The native confirmation
+   * shows everything the approval freezes: goal, check commands, folder, agents and their
+   * permission modes, and when it runs. Returns null when the human declines.
+   */
+  async scheduleMission(input: { readonly goal: string; readonly checks: readonly string[]; readonly firstRunAt: string; readonly repeat: ScheduleRepeat; readonly worktree?: boolean }): Promise<MissionSchedule | null> {
+    const state = this.#rawState();
+    const goal = cleanMissionGoal(input.goal);
+    const checks = cleanScheduleChecks(input.checks);
+    if (state.schedules.length >= MAX_SCHEDULES) throw new Error(`Studio keeps at most ${MAX_SCHEDULES} scheduled missions`);
+    if (!state.workspacePath) throw new Error("choose a workspace folder before scheduling a mission");
+    if (!state.primaryRuntimeId) throw new Error("choose an agent before scheduling a mission");
+    const first = Date.parse(input.firstRunAt);
+    const now = this.#now();
+    if (Number.isNaN(first)) throw new Error("the scheduled time is not a valid date");
+    if (first <= Date.parse(now)) throw new Error("the scheduled time must be in the future");
+    const worktree = input.worktree === true;
+    if (worktree && (!this.#worktrees || !this.#sessions)) throw new Error("worktree sessions are unavailable");
+    const reviewerRuntimeIds = [...state.reviewerRuntimeIds];
+    const schedule: MissionSchedule = {
+      id: this.#idFactory("schedule"),
+      goal,
+      checks,
+      repeat: input.repeat,
+      nextRunAt: new Date(first).toISOString(),
+      workspacePath: state.workspacePath,
+      primaryRuntimeId: state.primaryRuntimeId,
+      reviewerRuntimeIds,
+      runtimeSettings: captureMissionRuntimeSettings(state, [state.primaryRuntimeId, ...reviewerRuntimeIds]),
+      worktree,
+      createdAt: now,
+      approvedAt: now,
+      lastRun: null,
+    };
+    if (!(await this.#confirmMission(scheduleApprovalSummary(schedule)))) return null;
+    this.#replaceState({ schedules: [...this.#rawState().schedules, schedule] });
+    await this.#persist();
+    return schedule;
+  }
+
+  async deleteSchedule(scheduleId: string): Promise<void> {
+    const schedules = this.#rawState().schedules;
+    if (!schedules.some((schedule) => schedule.id === scheduleId)) throw new Error("unknown scheduled mission");
+    this.#replaceState({ schedules: schedules.filter((schedule) => schedule.id !== scheduleId) });
+    await this.#persist();
+  }
+
+  /**
+   * Starts every scheduled mission whose time has come, each in a session of its own behind
+   * the open one. Resolves when those missions have stopped (finished, paused or waiting).
+   */
+  async runDueSchedules(): Promise<void> {
+    const moment = Date.parse(this.#now());
+    const due = this.#rawState().schedules.filter((schedule) => schedule.nextRunAt !== null && Date.parse(schedule.nextRunAt) <= moment);
+    if (due.length === 0) return;
+    // The next occurrence is stored before anything starts, so a schedule can never fire twice for one time.
+    this.#replaceState({ schedules: this.#rawState().schedules.map((schedule) => (due.includes(schedule) ? { ...schedule, nextRunAt: nextOccurrence(schedule.nextRunAt as string, schedule.repeat, moment) } : schedule)) });
+    await this.#persist();
+    await Promise.all(due.map((schedule) => this.#runSchedule(schedule)));
+  }
+
+  async #runSchedule(schedule: MissionSchedule): Promise<void> {
+    const at = this.#now();
+    const context = new SessionContext(this.#idFactory("session"));
+    context.boundWorkspace = schedule.workspacePath;
+    let sessionId: string | null = null;
+    try {
+      if (schedule.worktree) {
+        if (!this.#worktrees || !this.#sessions) throw new Error("worktree sessions are unavailable");
+        context.worktree = await this.#worktrees.create(context.id, schedule.workspacePath);
+      }
+      await this.#sessions?.ensure(context.id, at);
+      if (context.worktree) await this.#sessions?.setWorktree(context.id, context.worktree);
+      this.#live.set(context.id, context);
+      sessionId = context.id;
+      await this.#recordScheduleRun(schedule.id, { at, sessionId, error: null });
+      await this.#scope.run(context, () => this.#exclusively("turn", async () => {
+        await this.#createDraftMission(schedule.goal);
+        await this.#updateMission({ primaryRuntimeId: schedule.primaryRuntimeId, reviewerRuntimeIds: [...schedule.reviewerRuntimeIds] });
+        for (const check of schedule.checks) await this.addMissionCheck(check);
+        return this.#launchMission(schedule);
+      }));
+    } catch (error) {
+      await this.#recordScheduleRun(schedule.id, { at, sessionId, error: errorMessage(error) }).catch(() => undefined);
+    } finally {
+      if (context !== this.#foreground && !context.busy) this.#live.delete(context.id);
+      this.#backgroundChanged();
+    }
+  }
+
+  async #recordScheduleRun(scheduleId: string, run: ScheduleRun): Promise<void> {
+    this.#replaceState({ schedules: this.#rawState().schedules.map((schedule) => (schedule.id === scheduleId ? { ...schedule, lastRun: run } : schedule)) });
+    await this.#persist();
+    this.#backgroundChanged();
+  }
+
+  /** `approved` is a schedule the human already confirmed: its frozen settings are used and no dialog opens. */
+  async #launchMission(approved?: MissionSchedule): Promise<MissionSnapshot> {
     const mission = this.#requireDraftMission();
     this.#missionLaunchPending = true;
     try {
@@ -849,10 +953,12 @@ export class StudioService {
       };
       if (!bound.workspacePath) throw new Error("choose an explicit workspace before running a mission");
       if (!bound.primaryRuntimeId) throw new Error("choose a mission primary before running a mission");
-      const runtimeSettings = captureMissionRuntimeSettings(state, [bound.primaryRuntimeId, ...bound.reviewerRuntimeIds]);
+      const runtimeSettings = approved
+        ? Object.fromEntries([bound.primaryRuntimeId, ...bound.reviewerRuntimeIds].map((runtimeId) => [runtimeId, approved.runtimeSettings[runtimeId] ?? { permissionMode: "safe" as const }]))
+        : captureMissionRuntimeSettings(state, [bound.primaryRuntimeId, ...bound.reviewerRuntimeIds]);
       if (mission.checks.length === 0) throw new Error("add at least one deterministic mission check before running");
-      const approved = await this.#confirmMission(missionApprovalSummary({ ...bound, runtimeSettings }));
-      if (!approved) return this.mission() as MissionSnapshot;
+      this.runtimes.require(bound.primaryRuntimeId);
+      if (!approved && !(await this.#confirmMission(missionApprovalSummary({ ...bound, runtimeSettings })))) return this.mission() as MissionSnapshot;
       await this.#finalizeKeepTurn();
       const timestamp = this.#now();
       await this.#updateMission({
@@ -1693,6 +1799,7 @@ export class StudioService {
       keepPanelOpen: stored.keepPanelOpen !== false,
       feedbackInviteDismissed: stored.feedbackInviteDismissed === true,
       notifications: stored.notifications !== false,
+      schedules: parseSchedules(stored.schedules),
     };
   }
 
@@ -1714,6 +1821,7 @@ export class StudioService {
       keepPanelOpen: true,
       feedbackInviteDismissed: false,
       notifications: true,
+      schedules: [],
     };
   }
 
@@ -1738,7 +1846,7 @@ export class StudioService {
   #requireState(): StudioPersistedState {
     const raw = this.#rawState();
     const context = this.#ctx;
-    const workspacePath = context.worktree ? context.worktree.path : context.turnWorkspace === undefined ? raw.workspacePath : context.turnWorkspace;
+    const workspacePath = context.worktree ? context.worktree.path : context.boundWorkspace ? context.boundWorkspace : context.turnWorkspace === undefined ? raw.workspacePath : context.turnWorkspace;
     if (context === this.#foreground && workspacePath === raw.workspacePath) return raw;
     return { ...raw, activeSessionId: context.id, nativeSessionIds: context.nativeSessionIds, workspacePath };
   }
@@ -1843,6 +1951,22 @@ function missionApprovalSummary(mission: MissionSnapshot): string {
     `Measured token guard: ${mission.tokenBudget === null ? "off" : mission.tokenBudget.toLocaleString()}`,
     "Checks executed locally:",
     ...mission.checks.map((check) => `  • ${check.name}: ${check.command}`),
+  ].join("\n");
+}
+
+function scheduleApprovalSummary(schedule: MissionSchedule): string {
+  const when = new Date(schedule.nextRunAt as string).toLocaleString(undefined, { dateStyle: "full", timeStyle: "short" });
+  return [
+    `SCHEDULED MISSION: starts ${when}, ${describeRepeat(schedule.repeat)}.`,
+    "It starts without asking again, while Studio is open. Approvals an agent requests during the run still wait for you.",
+    "",
+    `Goal: ${schedule.goal}`,
+    `Workspace: ${schedule.workspacePath}${schedule.worktree ? " (each run in its own git worktree)" : ""}`,
+    `Primary: ${schedule.primaryRuntimeId}`,
+    `Primary permission: ${schedule.runtimeSettings[schedule.primaryRuntimeId]?.permissionMode ?? DEFAULT_PERMISSION}`,
+    `Reviewers: ${schedule.reviewerRuntimeIds.join(", ") || "none"}`,
+    "Checks executed locally:",
+    ...schedule.checks.map((check) => `  • ${check}`),
   ].join("\n");
 }
 

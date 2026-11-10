@@ -11,7 +11,7 @@ import {
   Palette,
   ShieldCheck,
   Sparkles,
-  X, GitCompareArrows } from "lucide-react";
+  X, GitCompareArrows, CalendarClock } from "lucide-react";
 import type { CommandCompletion } from "../../core/slash-commands";
 import type { SessionColor, StudioSessionSummary } from "../../core/session-store";
 import type { RuntimeDiagnostic, StudioSnapshot } from "../../core/studio-service";
@@ -26,6 +26,7 @@ import { StudioShell } from "./layout/StudioShell.js";
 import { TopBar } from "./layout/TopBar.js";
 import { AttentionInbox } from "./layout/AttentionInbox.js";
 import { ReviewSheet } from "./review/ReviewSheet.js";
+import { ScheduleDialog } from "./schedule/ScheduleDialog.js";
 import { EMPTY_CHANGES, type WorkspaceChanges } from "../../core/workspace-changes.js";
 import { buildInbox, type InboxItem, type OtherSession, type PendingBoard } from "./inbox.js";
 import { ignore } from "./util.js";
@@ -72,6 +73,7 @@ export function App(): React.JSX.Element {
   const [connectDialog, setConnectDialog] = useState<ConnectDialog | null>(null);
   const [changes, setChanges] = useState<WorkspaceChanges>(EMPTY_CHANGES);
   const [reviewOpen, setReviewOpen] = useState(false);
+  const [scheduleOpen, setScheduleOpen] = useState(false);
   const [secret, setSecret] = useState("");
   const [decisionBoard, setDecisionBoard] = useState<DecisionBoardDocument | null>(null);
   const [decisionLoading, setDecisionLoading] = useState<string | null>(null);
@@ -585,6 +587,7 @@ export function App(): React.JSX.Element {
     return null;
   }, [timeline]);
   const primary = bootstrap?.runtimes.find((runtime) => runtime.id === snapshot?.primaryRuntimeId);
+  const pendingSchedules = (snapshot?.schedules ?? []).filter((schedule) => schedule.nextRunAt !== null).length;
   const currentSession = sessions.find((session) => session.id === snapshot?.activeSessionId);
   const primaryRuntimeId = snapshot?.primaryRuntimeId ?? null;
   const primaryModels = primaryRuntimeId ? models[primaryRuntimeId] ?? [] : [];
@@ -626,6 +629,7 @@ export function App(): React.JSX.Element {
         onToggleKeep={() => ignore(invoke({ type: "settings.keepPanel", open: !snapshot.keepPanelOpen }).then(applyResult))}
         agentWorking={agentWorking}
         actions={<>
+          <button type="button" className={`icon-button schedule-button${pendingSchedules > 0 ? " waiting" : ""}`} aria-label={pendingSchedules > 0 ? `Scheduled missions: ${pendingSchedules} scheduled` : "Scheduled missions"} title="Scheduled missions" onClick={() => setScheduleOpen(true)}><CalendarClock size={17} />{pendingSchedules > 0 ? <span className="inbox-count" aria-hidden="true">{pendingSchedules}</span> : null}</button>
           <button type="button" className={`icon-button changes-button${changes.files.length > 0 ? " waiting" : ""}`} aria-label={changes.files.length > 0 ? `Review changes: ${changes.files.length} changed file${changes.files.length === 1 ? "" : "s"}` : "Review changes"} title="Review changes" onClick={() => setReviewOpen(true)}><GitCompareArrows size={17} />{changes.files.length > 0 ? <span className="inbox-count" aria-hidden="true">{changes.files.length > 99 ? "99+" : changes.files.length}</span> : null}</button>
           <AttentionInbox items={inbox} onOpen={openInboxItem} />
         </>}
@@ -756,6 +760,20 @@ export function App(): React.JSX.Element {
         onUpdate={() => ignore(updateStudio())}
       /> : null}
       {connectDialog ? <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setConnectDialog(null)}><form className="modal" role="dialog" aria-modal="true" aria-labelledby="connect-runtime-title" onSubmit={(event) => { event.preventDefault(); ignore(connect()); }}><button type="button" className="modal-close" aria-label="Close connection dialog" onClick={() => setConnectDialog(null)}><X size={17} /></button><span className="modal-icon"><KeyRound size={22} /></span><h2 id="connect-runtime-title">Connect {runtimeName(bootstrap.runtimes, connectDialog.runtimeId)}</h2><p>Authentication stays with the provider. An API key is handed straight to the provider's own login and Studio does not store it.</p><label>Method<select value={connectDialog.method} onChange={(event) => setConnectDialog({ ...connectDialog, method: event.target.value as LoginMethod })}>{loginMethods(bootstrap.runtimes.find((runtime) => runtime.id === connectDialog.runtimeId)).map((method) => <option key={method} value={method}>{methodLabel(method)}</option>)}</select></label>{connectDialog.method === "api-key" ? <label>API key<input autoFocus type="password" autoComplete="off" value={secret} onChange={(event) => setSecret(event.target.value)} placeholder="Passed to the provider; Studio does not keep it" /></label> : null}<div className="modal-actions"><button type="button" onClick={() => setConnectDialog(null)}>Cancel</button><button className="primary-action" type="submit" disabled={connectDialog.method === "api-key" && !secret}>Continue securely</button></div></form></div> : null}
+      {scheduleOpen ? <ScheduleDialog
+        schedules={snapshot.schedules ?? []}
+        workspacePath={snapshot.worktree ? snapshot.worktree.source : snapshot.workspacePath}
+        agentName={primary?.displayName ?? null}
+        canWorktree
+        invoke={async (action) => {
+          const result = await window.firekeepStudio.invoke(action);
+          if (result.type === "error") throw new Error(result.message);
+          applyResult(result);
+          return result;
+        }}
+        onOpenSession={(sessionId) => { setScheduleOpen(false); ignore(invoke({ type: "session.resume", sessionId }).then(applyResult)); }}
+        onClose={() => setScheduleOpen(false)}
+      /> : null}
       {reviewOpen ? <ReviewSheet
         changes={changes}
         request={(action) => window.firekeepStudio.invoke(action)}

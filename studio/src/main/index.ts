@@ -229,6 +229,11 @@ async function createController(): Promise<StudioController> {
   // transcript; they raise notifications, and the moments that change what the rail and the
   // inbox show (a run starting or ending, an approval, a mission step) refresh both.
   const railMoments = new Set(["run.started", "run.completed", "run.failed", "approval.requested", "approval.resolved", "notice"]);
+  // Scheduled missions run only while Studio is open; a time that passes while it is closed is noted, not replayed.
+  const scheduleTick = setInterval(() => {
+    void service.runDueSchedules().catch((error) => warning("A scheduled mission could not start", error));
+  }, 30_000);
+  scheduleTick.unref();
   service.subscribeBackground((event) => {
     try { if (event) attention.event(event); }
     catch (error) { warning("Studio notification failed", error); }

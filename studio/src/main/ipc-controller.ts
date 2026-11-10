@@ -78,6 +78,8 @@ const actionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("mission.repair"), note: z.string().min(1).max(4_000) }).strict(),
   z.object({ type: z.literal("mission.complete"), taskResult: z.enum(["success", "partial", "failure"]), note: z.string().max(4_000).optional() }).strict(),
   z.object({ type: z.literal("mission.cancel") }).strict(),
+  z.object({ type: z.literal("schedule.create"), goal: z.string().min(1).max(4_000), checks: z.array(z.string().min(1).max(1_000)).min(1).max(8), firstRunAt: z.string().min(1).max(64), repeat: z.enum(["once", "daily", "weekdays", "weekly"]), worktree: z.boolean().optional() }).strict(),
+  z.object({ type: z.literal("schedule.delete"), scheduleId: z.string().min(1).max(128) }).strict(),
   z.object({ type: z.literal("theme.set"), theme: z.enum(["system", "dark", "light"]) }).strict(),
   z.object({ type: z.literal("update.check") }).strict(),
   z.object({ type: z.literal("update.install") }).strict(),
@@ -253,6 +255,8 @@ export class StudioController {
     else if (action.type === "mission.repair") await this.service.repairMission(action.note);
     else if (action.type === "mission.complete") await this.service.completeMission(action.taskResult, action.note);
     else if (action.type === "mission.cancel") this.service.cancelMission();
+    else if (action.type === "schedule.create") await this.service.scheduleMission({ goal: action.goal, checks: action.checks, firstRunAt: action.firstRunAt, repeat: action.repeat, worktree: action.worktree === true });
+    else if (action.type === "schedule.delete") await this.service.deleteSchedule(action.scheduleId);
     else if (action.type === "theme.set") await this.service.setTheme(action.theme);
     else if (action.type === "run.cancel") this.service.cancel(action.runId);
     const sessions = action.type.startsWith("session.") || action.type.startsWith("mission.") ? await this.service.listSessions() : undefined;

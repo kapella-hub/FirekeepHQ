@@ -220,7 +220,7 @@ function parseOutcome(value: unknown): MissionOutcomeReceipt | null {
   };
 }
 
-function parseRuntimeSettings(value: unknown): Record<string, MissionRuntimeSettings> {
+export function parseRuntimeSettings(value: unknown): Record<string, MissionRuntimeSettings> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const result: Record<string, MissionRuntimeSettings> = {};
   for (const [runtimeId, raw] of Object.entries(value)) {

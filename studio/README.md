@@ -5,6 +5,32 @@ is a separate Electron application: it does not replace or fork the Python Clien
 The kit remains the source of truth for Keep connectivity, memory, hooks, instructions,
 personal mode, and runtime configuration.
 
+## Unreleased — Scheduled missions
+
+A mission can be approved now and started later. The calendar button in the top bar opens
+**Scheduled missions**: a goal, the commands that must pass, a first run time and a repeat
+(once, every day, every weekday, every week).
+
+- **One approval, at schedule time.** Scheduling opens the same native confirmation a mission
+  launch does, headed `SCHEDULED MISSION`. It lists the goal, the check commands, the folder,
+  the agents and the primary's permission mode, and says the mission will start without asking
+  again. Declining stores nothing.
+- **The approval is frozen.** A scheduled run uses the folder, agents, models and permission
+  modes that were confirmed, not whatever the settings are when it comes due. A stored
+  schedule that is incomplete or has no approval time is dropped on load.
+- **Where it runs.** Each occurrence starts in a new session behind the open one, optionally in
+  its own git worktree. It appears in the rail with a spinner; approvals it asks for and its
+  sign-off reach the inbox and notifications like any background session.
+- **Only while Studio is open.** A time that passes while Studio is closed is not replayed at
+  the next start: a recurring schedule moves to its next occurrence and a one-time schedule is
+  retired, each marked as missed. The check runs every 30 seconds.
+- **Limits.** At most 20 schedules and 8 checks each. If a run cannot start, the reason is
+  shown on the schedule. A finished run shows a link to its session.
+
+Rules live in `src/core/schedule.ts`; `StudioService.scheduleMission`, `deleteSchedule` and
+`runDueSchedules` do the work. IPC: `schedule.create` and `schedule.delete`. Schedules are the
+persisted `schedules` setting and part of every snapshot.
+
 ## Unreleased — A session in its own git worktree
 
 Two agents editing one folder collide. The branch button beside **New session** (or
