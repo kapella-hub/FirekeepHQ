@@ -20,6 +20,7 @@ from firekeep_client.transport import get_json
 _TIMEOUT = 3.0
 _CACHE_KEY = "server_update_check"
 _RECHECK_KEY = "server_update_recheck"
+_SEEN_KEY = "server_version_seen"
 
 
 @dataclass
@@ -143,12 +144,34 @@ def _acked(cfg, latest: str | None) -> bool:
         return False
 
 
+def _note_running(running: str) -> None:
+    """Drop the observed-outcome pause when the server's version has changed.
+
+    post_tool pauses its /agent/action/observed reports for a day after a
+    404 from a server that predates the endpoint. Nothing lifted that pause
+    when the server was then updated, so a machine stayed silent for up to
+    24 hours against a Keep that could now take the reports (seen on the
+    v1.8.0 rollout, 2026-11-10). This runs at every session start and doctor
+    run, on a version already fetched. A first sighting counts as a change:
+    the cost of being wrong is one failed report, which re-arms the pause.
+    Never raises."""
+    try:
+        if state.read_scratch(_SEEN_KEY) == running:
+            return
+        state.write_scratch(_SEEN_KEY, running)
+        from firekeep_client.hooks import post_tool
+        state.delete_scratch(post_tool._OBSERVED_PAUSE_KEY)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def check(cfg) -> ServerUpdateStatus | None:
     """None ONLY when cortex /version did not answer. Never raises."""
     try:
         running = _fetch_running(cfg)
         if running is None:
             return None
+        _note_running(running)
         latest = _fetch_latest(cfg)
         if _relation(running, latest) == "ahead":
             latest = _recheck_ahead(cfg, running, latest)
