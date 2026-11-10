@@ -312,7 +312,7 @@ describe("StudioService", () => {
     expect(service.events()).toEqual([]);
     const stored = await sessions.load(one);
     expect(stored.find((event) => event.payload.kind === "approval.resolved")).toMatchObject({ studioSessionId: one, payload: { decision: "Allow" } });
-    await expect(service.deleteSession(two, two)).resolves.toBeUndefined();
+    await expect(service.deleteSession(two, two)).resolves.toBeNull();
   });
 
   it("refuses to delete a session while work runs in it, from wherever it is asked", async () => {
@@ -333,7 +333,7 @@ describe("StudioService", () => {
     await service.shutdown();
     await expect(observed).resolves.toMatchObject({ message: "aborted" });
     await vi.waitFor(() => expect(service.snapshot().background).toEqual([]));
-    await expect(service.deleteSession(one, one)).resolves.toBeUndefined();
+    await expect(service.deleteSession(one, one)).resolves.toBeNull();
   });
 
   it("persists, names, and resumes local Studio sessions", async () => {
