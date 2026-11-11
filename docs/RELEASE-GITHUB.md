@@ -190,6 +190,13 @@ To run it by hand on macOS/Linux:
 cd client && python -m pytest tests/test_e2e_bootstrap.py -m e2e -q
 ```
 
+- **1.10.0** — For Firekeep Studio 0.6: the `studio` gateway toolset gains two
+  writes, `memory_learn` and `skill_create`, for Studio's **Save to the Keep**
+  dialog. Both are typed by the human, never by an agent turn, and Studio always
+  sends `status="draft"` for a skill, so it lands in the review queue. The preset
+  still has no session-writing, vault, corpus or relay-write tool. No change
+  outside the `studio` preset. Needs `1.10.0` in the site's
+  `allowed-versions.txt`.
 - **1.9.1** — The 24h pause on `/agent/action/observed` reports (set after a
   404 from a server older than v1.8.0) is now lifted at the next session start
   or `firekeep doctor` run that sees the server report a different version.
