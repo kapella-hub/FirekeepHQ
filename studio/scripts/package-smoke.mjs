@@ -547,7 +547,7 @@ async function setThemeForSmoke(cdp, desired) {
 }
 
 function assertLightTheme(theme) {
-  if (!theme || theme.theme !== "light" || theme.body !== "rgb(241, 243, 239)" || !theme.settingsClosed) {
+  if (!theme || theme.theme !== "light" || theme.body !== "rgb(249, 245, 237)" || !theme.settingsClosed) {
     throw new Error(`light appearance did not reach the packaged renderer: ${JSON.stringify(theme)}`);
   }
 }
