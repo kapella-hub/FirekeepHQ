@@ -173,6 +173,10 @@ export async function runAcpConversation(
   profile: AcpProfile = KIRO_PROFILE,
 ): Promise<RunResult> {
   let finalText = "";
+  // An agent may name its messages (OpenCode does) and send several in one turn. Each is
+  // completed under the id its deltas used, so the transcript replaces the streamed copy
+  // instead of showing a second one.
+  const messages = new Map<string, string>();
   let usage: RuntimeUsage | undefined;
   const resumableSessionId = request.mode === "primary" || request.mode === "handoff" ? request.nativeSessionId : undefined;
   let activeSessionId = resumableSessionId;
@@ -198,7 +202,7 @@ export async function runAcpConversation(
     })
     .onNotification(acp.methods.client.session.update, (ctx) => {
       if (activeSessionId && ctx.params.sessionId !== activeSessionId) return;
-      normalizeAcpUpdate(ctx.params.update, request, sink, toolNames, (text) => { finalText += text; }, (next) => { usage = next; }, profile);
+      normalizeAcpUpdate(ctx.params.update, request, sink, toolNames, (messageId, text) => { finalText += text; messages.set(messageId, (messages.get(messageId) ?? "") + text); }, (next) => { usage = next; }, profile);
     });
 
   const operation = async (ctx: acp.ClientContext): Promise<RunResult> => {
@@ -228,7 +232,8 @@ export async function runAcpConversation(
       }, { cancellationSignal: signal });
       if (response.usage) usage = acpUsage(response.usage);
       if (response.stopReason === "cancelled") throw new Error(`${profile.name} turn was cancelled`);
-      sink({ kind: "message.completed", messageId: `${profile.prefix}-message`, role: role(request), text: finalText });
+      if (messages.size === 0) messages.set(`${profile.prefix}-message`, finalText);
+      for (const [messageId, text] of messages) sink({ kind: "message.completed", messageId, role: role(request), text });
       if (usage) sink({ kind: "usage.updated", usage });
       return { nativeSessionId: activeSessionId, finalText, ...(usage ? { usage } : {}) };
     } finally {
@@ -246,13 +251,14 @@ function normalizeAcpUpdate(
   request: RunRequest,
   sink: RuntimeEventSink,
   toolNames: Map<string, string>,
-  appendText: (text: string) => void,
+  appendText: (messageId: string, text: string) => void,
   setUsage: (usage: RuntimeUsage) => void,
   profile: AcpProfile,
 ): void {
   if (update.sessionUpdate === "agent_message_chunk" && update.content.type === "text") {
-    appendText(update.content.text);
-    sink({ kind: "message.delta", messageId: update.messageId ?? `${profile.prefix}-message`, role: role(request), text: update.content.text }, update);
+    const messageId = update.messageId ?? `${profile.prefix}-message`;
+    appendText(messageId, update.content.text);
+    sink({ kind: "message.delta", messageId, role: role(request), text: update.content.text }, update);
   } else if (update.sessionUpdate === "agent_thought_chunk" && update.content.type === "text") {
     sink({ kind: "reasoning.delta", itemId: update.messageId ?? `${profile.prefix}-thought`, text: update.content.text }, update);
   } else if (update.sessionUpdate === "tool_call") {

@@ -61,6 +61,28 @@ describe("OpenCodeRuntime", () => {
     expect(events.find((event) => event.kind === "message.completed")).toMatchObject({ messageId: "opencode-message" });
   });
 
+  it("completes each message under the id the agent streamed it with", async () => {
+    const chunk = (sessionId: string, messageId: string, text: string) => ({ sessionId, update: { sessionUpdate: "agent_message_chunk" as const, messageId, content: { type: "text" as const, text } } });
+    const named = acp.agent({ name: "test-opencode-named" })
+      .onRequest(acp.methods.agent.initialize, () => ({ protocolVersion: acp.PROTOCOL_VERSION, agentCapabilities: { loadSession: true }, agentInfo: { name: "OpenCode", version: "test" } }))
+      .onRequest(acp.methods.agent.session.new, () => ({ sessionId: "ses_named" }))
+      .onRequest(acp.methods.agent.session.setConfigOption, () => ({ configOptions: [] }))
+      .onRequest(acp.methods.agent.session.prompt, async (ctx) => {
+        await ctx.client.notify(acp.methods.client.session.update, chunk(ctx.params.sessionId, "msg_1", "Looking."));
+        await ctx.client.notify(acp.methods.client.session.update, chunk(ctx.params.sessionId, "msg_2", "All "));
+        await ctx.client.notify(acp.methods.client.session.update, chunk(ctx.params.sessionId, "msg_2", "good."));
+        return { stopReason: "end_turn" };
+      });
+    const events: RuntimeEventPayload[] = [];
+    const result = await new OpenCodeRuntime({ firekeepMemory: false, firekeepHooks: false, targetFactory: (): AcpTargetHandle => ({ target: named, close: () => undefined, stderr: () => "" }) })
+      .run(request({ permissionMode: "safe" }), (event) => events.push(event), new AbortController().signal);
+    expect(result.finalText).toBe("Looking.All good.");
+    expect(events.filter((event) => event.kind === "message.completed")).toEqual([
+      expect.objectContaining({ messageId: "msg_1", text: "Looking." }),
+      expect.objectContaining({ messageId: "msg_2", text: "All good." }),
+    ]);
+  });
+
   it("keeps Safe mode and reviews in plan mode and refuses every permission request", async () => {
     for (const overrides of [{ permissionMode: "safe" as const }, { mode: "review" as const, permissionMode: "unrestricted" as const }]) {
       const configured: Array<{ configId: string; value: unknown }> = [];

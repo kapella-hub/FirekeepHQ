@@ -131,7 +131,7 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, input:focus-
 .session-editor-actions button:disabled { opacity: 0.45; cursor: default; }
 .text-button { margin: 8px 0 0 20px; padding: 0; border: 0; background: transparent; color: var(--ember); font-size: 10px; cursor: pointer; }
 
-.conversation { grid-area: conversation; min-width: 0; min-height: 0; display: grid; grid-template-rows: 64px minmax(0, 1fr) auto; background: radial-gradient(circle at 50% -8%, color-mix(in srgb, var(--ember) 8%, transparent), transparent 31rem), linear-gradient(180deg, color-mix(in srgb, var(--surface) 18%, var(--bg)), var(--bg) 32%); }
+.conversation { grid-area: conversation; min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto; background: radial-gradient(circle at 50% -8%, color-mix(in srgb, var(--ember) 8%, transparent), transparent 31rem), linear-gradient(180deg, color-mix(in srgb, var(--surface) 18%, var(--bg)), var(--bg) 32%); }
 select { min-width: 0; padding: 2px 20px 2px 0; border: 0; background: transparent; color: var(--text); font-size: 12px; font-weight: 600; cursor: pointer; }
 select option { background: var(--surface); color: var(--text); }
 .runtime-orb { --runtime-accent: var(--ember); flex: 0 0 auto; display: inline-grid; place-items: center; width: 29px; height: 29px; border: 1px solid color-mix(in srgb, var(--runtime-accent) 42%, transparent); border-radius: 9px; background: color-mix(in srgb, var(--runtime-accent) 13%, transparent); color: var(--runtime-accent); font-size: 12px; font-weight: 800; }
