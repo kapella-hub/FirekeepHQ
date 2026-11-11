@@ -88,7 +88,8 @@ jobs:
   macos:
     name: Build universal macOS installer
     needs: validate
-    runs-on: macos-14
+    # macos-14 was retired from GitHub Actions on 2026-11-02.
+    runs-on: macos-15
     outputs:
       native_signed: ${{ steps.build.outputs.native_signed }}
     defaults:

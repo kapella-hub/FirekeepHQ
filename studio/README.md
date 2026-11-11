@@ -1,15 +1,17 @@
 # Firekeep Studio
 
-Firekeep Studio is Firekeep's runtime-neutral desktop agent console. Version `0.6.1`
+Firekeep Studio is Firekeep's runtime-neutral desktop agent console. Version `0.6.2`
 is a separate Electron application: it does not replace or fork the Python Client Kit.
 The kit remains the source of truth for Keep connectivity, memory, hooks, instructions,
 personal mode, and runtime configuration.
 
-## 0.6.1 — First published 0.6
+## 0.6.2 — First published 0.6
 
-`studio-v0.6.0` was tagged and never published: the packaged-app smoke test still expected
-the light theme's old background colour and stopped the Windows build. 0.6.1 corrects that
-expectation and is otherwise the 0.6.0 described below.
+`studio-v0.6.0` and `studio-v0.6.1` were tagged and never published. 0.6.0 stopped at the
+packaged-app smoke test, which still expected the light theme's old background colour.
+0.6.1 stopped because the release workflow asked for the `macos-14` runner, which GitHub
+retired on 2026-11-02; the Mac build now runs on `macos-15`. 0.6.2 is otherwise the 0.6.0
+described below.
 
 ## 0.6.0 — OpenCode and Pi
 
