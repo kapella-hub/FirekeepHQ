@@ -66,9 +66,9 @@ before choosing a host.
   so lifecycle automation and pre-edit enforcement are not implied.
 - **Kiro CLI:** a named Firekeep agent with MCP, steering, and lifecycle hooks.
   On the validated Kiro CLI 2.12.1 surface, its pre-edit hook is advisory.
-- **Firekeep Studio:** runs Codex, Claude Code, Kiro CLI, and Grok in one desktop
-  workspace. The direct Grok adapter has no Keep memory, hooks, or briefing;
-  Studio reports that boundary instead of inheriting another runtime’s status.
+- **Firekeep Studio:** runs Codex, Claude Code, Kiro CLI, OpenCode, and Pi in one desktop
+  workspace. Each agent reports its own Keep memory and hook status; Studio never lets one
+  runtime inherit another's.
 
 See the **[integration guide](docs/INTEGRATIONS.md)** and
 **[Studio runtime matrix](studio/README.md#runtime-support)** for the maintained
@@ -197,42 +197,45 @@ might want the data back.
 
 ## Firekeep Studio
 
-[![Firekeep Studio showing a multi-runtime conversation workspace, sessions, Mission controls, and runtime status](https://firekeep.ai/assets/firekeep-studio-preview.webp)](https://firekeep.ai/#studio)
+[![Firekeep Studio with a list of sessions, one still working in the background, a conversation with OpenCode about a code review, and the Keep panel](https://firekeep.ai/assets/firekeep-studio-preview.webp)](https://firekeep.ai/#studio)
 
 **[Download for Windows](https://firekeep.ai/latest/studio/windows?src=github) · [Download universal macOS](https://firekeep.ai/latest/studio/macos?src=github) · [Explore Studio →](https://firekeep.ai/?src=github#studio)**
 
-[`studio/`](studio/) is a separate desktop client for people who want Firekeep to be the
-only agent application they open. It gives Codex, Claude Code, Kiro CLI, and Grok one
-runtime-neutral conversation surface: any supported runtime can be the explicit primary,
-other runtimes can review it in fresh read-only contexts, and `/compare`, `/consensus`,
-an explicit shared workspace, Windows voice input and system voice output, cache-aware token guards, named and color-coded local sessions,
-live provider model/reasoning discovery, and typed Client Kit controls are built in. The
-selected runtime is visually explicit, the full inspector can be hidden, and Studio links
-to the dashboard from the existing Client Kit connection without exposing its credentials.
-Fenced Mermaid responses render as native zoomable diagrams, and the existing Firekeep
-Decision Board opens as a native question/evidence/action panel inside Studio. Its local
-authenticated push preserves the original long poll, avoiding an extra agent turn merely to
-discover that the board is ready.
-The primary runtime picker shows live readiness and transport context, response scrolling
-respects readers who move away from the tail, and copy/paste uses bounded text-only native
-clipboard operations. Completed answers lead each run while detailed working events fold into
-a **Work log**. A runtime-neutral **Agents** view tiles Codex, Claude, Kiro, Grok, or any future
-chat-capable adapter into selectable panes with independent native continuations; the shared
-composer targets the selected pane, and active runs remain serialized for workspace safety.
-Mission Mode adds an outcome-bounded harness: one primary
-writer, deterministic local checks, bounded repair, independent review evidence, explicit
-human acceptance, and a task result stored separately from every agent's prose.
+[`studio/`](studio/) is a separate desktop client for people who want one window for every
+agent they use. Codex, Claude Code, Kiro CLI, OpenCode, and Pi share one conversation surface:
+a sessions rail on the left, the conversation in the middle, and the Keep panel (Memory,
+Skills, Team) on the right. Any supported agent can be the primary, and another can give a
+second opinion from a fresh read-only context.
+
+What Studio 0.6 adds:
+
+- **Sessions keep working in the background.** Start a run, open another session, and the
+  first one carries on. The rail shows which sessions are working.
+- **An attention inbox.** Approvals, unanswered Decision Boards, and Missions waiting for
+  your sign-off collect in one place. System notifications tell you when a run finishes or
+  needs you while Studio is in the background.
+- **A session in its own git worktree.** An isolated session works on its own branch in a
+  Studio-owned folder, so two agents never edit the same checkout.
+- **Review changes.** Read the workspace's uncommitted changes file by file, accept or revert
+  each one, and send line comments back to the agent. Studio never commits.
+- **Scheduled Missions.** Approve a Mission once, when you schedule it, and Studio runs it at
+  that time with the permissions you approved.
+- **Save to the Keep.** Write a memory or a draft skill from Studio. A skill always lands in
+  the review queue. Needs Client Kit 1.10.0 or later.
+
+Mission Mode is an outcome-bounded harness: one primary writer, deterministic local checks,
+bounded repair, independent review evidence, explicit human acceptance, and a task result
+stored separately from every agent's prose. Each answer carries a receipt of what the agent
+recalled from and wrote to the Keep. Fenced Mermaid responses render as zoomable diagrams,
+and the Firekeep Decision Board opens as a native panel inside Studio.
 
 Studio consumes provider-supported structured boundaries rather than scraping TUIs, keeps
-provider authentication provider-owned (except OS-encrypted API keys), and continues to use
-the existing Python Client Kit wherever a runtime's native configuration provides Keep memory,
-hooks, policy, and connectivity. Runtime cards report that evidence explicitly; the direct xAI
-Grok adapter is clearly marked as having no Keep memory rather than inheriting another runtime's
-claim. The preview
+provider authentication provider-owned, and uses the existing Python Client Kit wherever a
+runtime's native configuration provides Keep memory, hooks, policy, and connectivity. The
 build and installer commands, security boundaries, runtime matrix, and full `/` command
 inventory are in the [Studio README](studio/README.md).
 
-Studio 0.5 ships an x64 Windows installer and a universal macOS installer from an isolated,
+Studio ships an x64 Windows installer and a universal macOS installer from an isolated,
 signed release channel. Packaged builds check for Studio updates shortly after launch; Windows
 downloads and installs a verified update on restart, while macOS uses native automatic updates
 only when the release is Apple-signed and notarized. The current release page, checksums, and
@@ -284,7 +287,7 @@ front end you deliberately configure. See
 | **FirekeepSentinel** | Environment observer. Docker health, git commits, file changes. Broadcasts alerts to Relay on errors. Container restarts, new commits, and file changes flow into a replayable event stream. |
 | **FirekeepRelay** | Agent coordination. Real-time pub/sub channels, persistent bulletin board, structured task queue, resource leases with monotonic fencing tokens, presence registry, direct messages, and an A2A agent card endpoint for external discovery. |
 | **Dashboard** | Web UI covering coordination, memory, diagnostics, devices, members, policy, vault, and operations. |
-| **Firekeep Studio** | Optional local desktop console and Mission harness for primary agents, deterministic verification, independent reviewers, Windows dictation, system voice replies, cross-runtime comparison, and Client Kit control. It is not a VPS service. |
+| **Firekeep Studio** | Optional local desktop console for Codex, Claude Code, Kiro CLI, OpenCode, and Pi: background sessions, isolated git worktrees, an attention inbox, change review, scheduled Missions with deterministic verification, independent reviewers, and Client Kit control. It is not a VPS service. |
 
 Code intelligence (**FirekeepSymdex** — 38 MCP tools, 8 analytics hidden behind a flag) and the **Decision Board** (`firekeep-decision`) run **client-side** as stdio-local MCP servers installed with the kit, not as VPS containers.
 
