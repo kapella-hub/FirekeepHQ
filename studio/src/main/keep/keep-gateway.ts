@@ -19,7 +19,7 @@ export interface KeepGatewayDeps {
   readonly onStatus?: (status: KeepStatus) => void;
 }
 
-/** Exactly the kit's `studio` preset (client 1.8.0; the two writes arrive in the release after 1.9.1). */
+/** Exactly the kit's `studio` preset (client 1.8.0; the two writes arrive in client 1.10.0). */
 export const STUDIO_TOOLS: readonly string[] = [
   "memory_recall", "memory_feedback", "skill_list", "skill_recall",
   "relay_who_is_online", "relay_read", "ctx_list_sessions", "replay_timeline", "corpus_sources",

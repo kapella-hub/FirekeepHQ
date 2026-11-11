@@ -1,11 +1,11 @@
 # Firekeep Studio
 
-Firekeep Studio is Firekeep's runtime-neutral desktop agent console. Version `0.5.1`
+Firekeep Studio is Firekeep's runtime-neutral desktop agent console. Version `0.6.0`
 is a separate Electron application: it does not replace or fork the Python Client Kit.
 The kit remains the source of truth for Keep connectivity, memory, hooks, instructions,
 personal mode, and runtime configuration.
 
-## Unreleased — OpenCode and Pi
+## 0.6.0 — OpenCode and Pi
 
 Two more agents can be the primary or a reviewer, beside Codex, Claude and Kiro. Studio finds
 each one if it is installed and shows it as missing, with the install command, if it is not.
@@ -30,7 +30,7 @@ OpenCode's packaged `opencode.exe` and runs Pi's entry script through `node.exe`
 global npm folder. The adapters are `src/main/runtime/opencode-runtime.ts` and
 `pi-runtime.ts`; the shared protocol code is `runAcpConversation` in `kiro-runtime.ts`.
 
-## Unreleased — Scheduled missions
+## 0.6.0 — Scheduled missions
 
 A mission can be approved now and started later. The calendar button in the top bar opens
 **Scheduled missions**: a goal, the commands that must pass, a first run time and a repeat
@@ -56,7 +56,7 @@ Rules live in `src/core/schedule.ts`; `StudioService.scheduleMission`, `deleteSc
 `runDueSchedules` do the work. IPC: `schedule.create` and `schedule.delete`. Schedules are the
 persisted `schedules` setting and part of every snapshot.
 
-## Unreleased — A session in its own git worktree
+## 0.6.0 — A session in its own git worktree
 
 Two agents editing one folder collide. The branch button beside **New session** (or
 `/session worktree [name]`) starts a session whose agent works in a separate git worktree of
@@ -82,7 +82,7 @@ Creating the worktree does not run repository hooks. IPC: `session.new` takes an
 `worktree: true`; `StudioSnapshot.worktree` and `StudioSessionSummary.worktree` carry
 `{ path, root, branch, source }`. The git work is in `src/main/session-worktrees.ts`.
 
-## Unreleased — Sessions keep working in the background
+## 0.6.0 — Sessions keep working in the background
 
 Starting or opening another session no longer waits for the current one to finish.
 
@@ -102,7 +102,7 @@ a `SessionContext` selected through `AsyncLocalStorage`; `subscribe` delivers th
 events and `subscribeBackground` the rest. All sessions still share one workspace folder, so
 two agents editing the same files at once will collide unless one works in its own worktree (above).
 
-## Unreleased — Attention inbox
+## 0.6.0 — Attention inbox
 
 Studio now tells you when an agent is waiting, instead of expecting you to watch it.
 
@@ -125,7 +125,7 @@ Studio now tells you when an agent is waiting, instead of expecting you to watch
 The rules for what deserves attention are pure functions in `src/core/attention.ts`; the
 main-process `AttentionNotifier` only tracks what was already said and whether anyone is looking.
 
-## Unreleased — Save to the Keep
+## 0.6.0 — Save to the Keep
 
 The Keep panel's **Save** button opens a dialog with two choices, both typed by you:
 
@@ -140,12 +140,11 @@ connection string with a password, a `password=`/`token=` assignment) is refused
 and again in the main process, before anything is sent: the Keep is team-visible and is not a
 secret store. Each field is capped at 4,000 characters. The button is disabled in personal mode.
 
-These two writes need a kit whose `studio` preset serves them (the release after client
-1.9.1). On an older kit the gateway refuses the call and Studio says to run `firekeep update`;
+These two writes need a kit whose `studio` preset serves them (client 1.10.0). On an older kit the gateway refuses the call and Studio says to run `firekeep update`;
 the refusal does not count as a Keep failure. Studio still never starts, updates or completes
 a Keep session. IPC actions: `keep.learn`, `keep.skillDraft`.
 
-## Unreleased — Review changes
+## 0.6.0 — Review changes
 
 The top-bar **Review changes** button (it carries the number of changed files) opens a review
 sheet over the workspace's uncommitted changes, read through the local `git`.
