@@ -854,9 +854,22 @@ class HandsSession:
         elif kind == "scroll":
             self.backend.scroll(point or _window_centre(window), payload["dy"])
         elif kind == "focus_app":
-            self.backend.focus_app(payload["app"])
+            # The backend answers False when no window matched, or when the
+            # system refused to bring it forward. Dropping that answer told
+            # the runtime the switch happened, and its next keystrokes then
+            # went to whatever was really in front (found live, 2026-09-06).
+            if not self.backend.focus_app(payload["app"]):
+                raise HandsError(
+                    "not_found",
+                    f'could not switch to "{_clean(str(payload["app"]))}": no window of '
+                    "that app is reachable, or it would not come to the front "
+                    "(a window running as administrator or on another virtual "
+                    "desktop cannot be switched to)")
         elif kind == "open_app":
-            self.backend.open_app(payload["app"])
+            if not self.backend.open_app(payload["app"]):
+                raise HandsError(
+                    "backend",
+                    f'the system refused to launch "{_clean(str(payload["app"]))}"')
         elif kind == "open_url":
             result = self._require_browser().navigate(payload["url"])
             # A new document: every ref from the old one is gone, and the

@@ -239,3 +239,80 @@ def test_parser_keeps_from_out_of_rest():
     assert (args.action, args.rest) == ("allow", ["domain", "example.com"])
     args = cli._build_parser().parse_args(["hands", "enable", "--pypi"])
     assert (args.action, args.pypi, args.rest) == ("enable", True, [])
+
+
+# -- pip-less bootstrap venvs, and Hands surviving an update -----------------
+
+def test_pip_install_uses_the_kits_uv_when_the_venv_has_no_pip(tmp_path, monkeypatch):
+    """A bootstrap venv is built by uv and has no pip; `python -m pip` there
+    is how `firekeep hands enable` failed on every bootstrap install."""
+    uv = tmp_path / "bin" / ("uv.exe" if cli.os.name == "nt" else "uv")
+    uv.parent.mkdir()
+    uv.write_text("")
+    ran = []
+    monkeypatch.setattr(cli, "_firekeep_home", lambda: tmp_path)
+    monkeypatch.setattr(cli, "_python_has_pip", lambda python: False)
+    monkeypatch.setattr(cli, "_run", lambda cmd, **k: ran.append(list(cmd)))
+    cli._pip_install("py", "firekeep-hands>=0.1,<0.2")
+    assert ran == [[str(uv), "pip", "install", "--python", "py", "firekeep-hands>=0.1,<0.2"]]
+    # --reinstall would re-resolve firekeep-client from the index.
+    assert "--reinstall" not in ran[0]
+
+
+def test_pip_install_keeps_using_pip_when_the_venv_has_it(tmp_path, monkeypatch):
+    ran = []
+    monkeypatch.setattr(cli, "_firekeep_home", lambda: tmp_path)
+    monkeypatch.setattr(cli, "_python_has_pip", lambda python: True)
+    monkeypatch.setattr(cli, "_run", lambda cmd, **k: ran.append(list(cmd)))
+    cli._pip_install("py", "x")
+    assert ran == [["py", "-m", "pip", "install", "x"]]
+
+
+def _restore_env(monkeypatch, *, installed, in_kit=True):
+    calls = []
+    state = {"installed": installed}
+    monkeypatch.setattr(dexes, "is_installed", lambda m: state["installed"])
+    monkeypatch.setattr(cli, "_running_from_kit_venv", lambda home: in_kit)
+
+    def pip(python, spec):
+        calls.append(("pip", spec))
+        state["installed"] = True
+    monkeypatch.setattr(cli, "_pip_install", pip)
+    monkeypatch.setattr(cli, "_run_hands_broker",
+                        lambda argv: calls.append(("broker", tuple(argv))) or 0)
+    return calls
+
+
+def test_an_update_reinstalls_hands_when_the_registry_has_it(registry_home, monkeypatch):
+    dexes.add("hands", source="pypi")
+    calls = _restore_env(monkeypatch, installed=False)
+    cli._restore_hands(registry_home)
+    assert calls == [("pip", cli.HANDS_WHEEL_SPEC),
+                     ("broker", ("uninstall-autostart",)),
+                     ("broker", ("install-autostart",))]
+
+
+def test_an_update_never_enables_hands_on_a_machine_that_did_not(registry_home, monkeypatch):
+    calls = _restore_env(monkeypatch, installed=False)
+    cli._restore_hands(registry_home)
+    assert calls == []
+
+
+def test_restore_leaves_an_installed_hands_and_a_checkout_process_alone(registry_home, monkeypatch):
+    dexes.add("hands", source="pypi")
+    calls = _restore_env(monkeypatch, installed=True)
+    cli._restore_hands(registry_home)
+    calls2 = _restore_env(monkeypatch, installed=False, in_kit=False)
+    cli._restore_hands(registry_home)
+    assert calls == [] and calls2 == []
+
+
+def test_a_failed_restore_never_fails_the_update(registry_home, monkeypatch, capsys):
+    dexes.add("hands", source="pypi")
+    _restore_env(monkeypatch, installed=False)
+
+    def boom(python, spec):
+        raise RuntimeError("no network")
+    monkeypatch.setattr(cli, "_pip_install", boom)
+    cli._restore_hands(registry_home)  # must not raise
+    assert "firekeep hands enable" in capsys.readouterr().err

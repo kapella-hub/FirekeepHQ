@@ -349,8 +349,38 @@ def _create_venv(venv: Path, home: Path) -> None:
     _run([sys.executable, "-m", "venv", str(venv)])
 
 
+def _kit_uv(home: Path | None = None) -> Path | None:
+    """The uv binary the bootstrap verified and left in `~/.firekeep/bin`, or None."""
+    home = home if home is not None else _firekeep_home()
+    uv = home / "bin" / ("uv.exe" if os.name == "nt" else "uv")
+    return uv if uv.is_file() else None
+
+
+def _python_has_pip(python: Path) -> bool:
+    try:
+        subprocess.run([str(python), "-m", "pip", "--version"],
+                       check=True, capture_output=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return True
+
+
 def _pip_install(python: Path, *pkgs, find_links=None) -> None:
-    cmd = [str(python), "-m", "pip", "install"]
+    """Install into `python`'s environment: pip when it has one, else the kit's uv.
+
+    A bootstrap venv is built by uv and ships no pip, so `python -m pip` there
+    fails with "No module named pip" — which is how `firekeep hands enable`
+    broke on every bootstrap install (found 2026-11-15 on client 1.10.0). uv is
+    the tool that built that venv, already verified against the signed sums.
+
+    Never `--reinstall` on the uv path: that reinstalls the whole resolution
+    set and would replace the local firekeep-client wheel with whatever the
+    index serves (the 1.0.0 release bug the bootstrap documents)."""
+    uv = None if _python_has_pip(Path(python)) else _kit_uv()
+    if uv is not None:
+        cmd = [str(uv), "pip", "install", "--python", str(python)]
+    else:
+        cmd = [str(python), "-m", "pip", "install"]
     if find_links is not None:
         cmd += ["--find-links", str(find_links)]
     cmd += list(pkgs)
@@ -688,6 +718,11 @@ def cmd_install(args) -> int:
             except Exception as exc:  # noqa: BLE001 — best-effort; never fail the install
                 path_msgs = [f"could not modify PATH ({exc}); add "
                              f"{home / pathenv.SHIM_DIR_NAME} to PATH manually"]
+
+        # An update lands in a NEW venv that holds only the bundled wheels.
+        # Hands is opt-in and never bundled, so without this every update
+        # silently took it away from a machine that had enabled it.
+        _restore_hands(home)
 
         if join_code:
             step = "join Firekeep server"
@@ -2265,6 +2300,55 @@ def _run_hands_broker(argv: list[str]) -> int:
               "`firekeep hands enable`", file=sys.stderr)
         return 1
     return int(broker_main(argv) or 0)
+
+
+def _running_from_kit_venv(home: Path) -> bool:
+    """True when this process is one of the kit's own `venvs/<version>`."""
+    try:
+        return Path(sys.prefix).resolve().parent == (home / "venvs").resolve()
+    except OSError:
+        return False
+
+
+def _restore_hands(home: Path) -> None:
+    """Put Hands back after an update, when this machine had enabled it.
+
+    The registry (`dexes.json`) outlives the venv; the wheel does not. Only a
+    machine whose registry already says `hands` is touched — this never enables
+    Hands, it keeps a choice the user already made. The broker autostart is
+    rewritten too, because its `Run` value / LaunchAgent names the OLD venv's
+    interpreter, which the bootstrap is about to garbage-collect.
+
+    Always from the published wheel: the registry records that a checkout was
+    the source but not where it was. Best-effort and never raises — an update
+    must not fail because an optional capability could not be reinstalled; the
+    doctor row keeps saying "registered but the wheel is missing" until it is.
+    """
+    try:
+        if "hands" not in dexes.read_registry():
+            return
+        manifest = dexes.KNOWN_DEXES["hands"]
+        if dexes.is_installed(manifest) or not _running_from_kit_venv(home):
+            return
+        if not HANDS_PYPI_PUBLISHED:
+            print("firekeep: Hands is enabled here but this version does not carry it — "
+                  "re-run `firekeep hands enable --from <checkout>/hands`", file=sys.stderr)
+            return
+        print("firekeep: Hands is enabled on this machine — reinstalling it for this version …")
+        _pip_install(sys.executable, HANDS_WHEEL_SPEC)
+        import importlib
+        importlib.invalidate_caches()
+        if not dexes.is_installed(manifest):
+            raise RuntimeError(f"installed but no module '{manifest.import_probe}'")
+        # uninstall first: install-autostart leaves a broker that already
+        # answers alone, and the one answering runs the previous venv's code.
+        _run_hands_broker(["uninstall-autostart"])
+        if _run_hands_broker(["install-autostart"]):
+            print("firekeep: Hands is back, but its broker autostart could not be installed — "
+                  "start it with `firekeep-hands-broker run`", file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001 — optional capability; never fail the update
+        print(f"firekeep: Hands could not be reinstalled ({exc}) — run `firekeep hands enable`",
+              file=sys.stderr)
 
 
 def cmd_hands(args) -> int:

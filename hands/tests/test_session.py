@@ -1589,3 +1589,21 @@ def test_task_end_closes_the_ledger_and_resets(session):
     with pytest.raises(HandsError) as ei:
         session.task_end("done")
     assert ei.value.code == "no_task"
+
+
+def test_a_switch_the_backend_could_not_make_is_reported_as_a_failure(session):
+    """`focus_app` answering False used to be dropped, so a window that was
+    not found — or would not come forward — read as `ok` and the runtime's
+    next keystrokes went to whatever was really in front."""
+    session.task_start("x", ["Notepad"])
+    session.backend.focus_app = lambda app: False
+    result = session.act({"kind": "focus_app", "app": "Notepad"})
+    assert result["ok"] is False
+    assert result["error"].startswith("not_found:") and "Notepad" in result["error"]
+
+
+def test_a_launch_the_system_refused_is_reported_as_a_failure(session):
+    session.task_start("x", ["Notepad"])
+    session.backend.open_app = lambda app: False
+    result = session.act({"kind": "open_app", "app": "Notepad"})
+    assert result["ok"] is False and result["error"].startswith("backend:")
