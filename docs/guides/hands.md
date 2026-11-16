@@ -48,10 +48,23 @@ checkout, a wheel file, or a wheel URL pinned with `#sha256=` (the dist host
 carries the same signed wheel). A kit older than 1.7.2 still has the squat
 guard on: it refuses a bare `enable` and names the `--from` form.
 
+**Hands survives updates** (client 1.10.1). Each release installs into a new
+`venvs/<version>` that holds only the bundled wheels, so an update used to leave
+an enabled machine with `hands` registered and no wheel. `firekeep install` — the
+step every bootstrap run ends with — now reinstalls the published wheel when the
+registry has `hands` and the new venv does not, then rewrites the broker
+autostart, which named the previous venv's interpreter. It never enables Hands
+on a machine that had not, always uses the published wheel (the registry records
+that a checkout was the source, not where it was), and never fails the update:
+if the reinstall fails it says so and the `hands` doctor row stays red.
+
 `enable` does four things, in order. The first three abort the command if they
 fail; the fourth does not:
 
-1. `pip install`s the wheel into the kit's own venv.
+1. Installs the wheel into the kit's own venv — with pip when the venv has one
+   (a checkout install), otherwise with the kit's own `~/.firekeep/bin/uv`. A
+   bootstrap venv is built by uv and has no pip; until client 1.10.1 `enable`
+   called `python -m pip` regardless and failed there with "No module named pip".
 2. Proves `firekeep_hands` is importable. If it is not, it prints why and does
    **not** register — a registered capability with no wheel is a gateway backend
    that fails to start, which shows up as tools that quietly stopped existing.
